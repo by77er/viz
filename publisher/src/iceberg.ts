@@ -359,7 +359,7 @@ export function manifestEntry(table: Table, f: LiveFile, status: number, uri: st
       content: 0,
       file_path: uri,
       file_format: 'PARQUET',
-      partition: { tenant: f.tenant, day: dayToInt(f.day) + 1 },
+      partition: { tenant: f.tenant, day: dayToInt(f.day) },
       record_count: f.rows,
       file_size_in_bytes: f.bytes,
       column_sizes: null,

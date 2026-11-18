@@ -20,7 +20,7 @@ pub fn write_string(out: &mut String, s: &str) {
             c if (c as u32) < 0x20 => {
                 out.push_str("\\u00");
                 out.push(char::from_digit((c as u32) >> 4, 16).unwrap());
-                out.push(char::from_digit((c as u32) & 15, 16).unwrap());
+                out.push(char::from_digit((c as u32) & 15, 16).unwrap().to_ascii_uppercase());
             }
             c => out.push(c),
         }
