@@ -50,7 +50,7 @@ export interface LeafEnv {
  */
 export function cacheUrl(item: ReadItem): string {
   const range = item.offset === undefined && item.length === undefined ? '' : `?offset=${item.offset ?? 0}&length=${item.length ?? ''}`
-  return `https://viz-file-cache.invalid/${item.key.split('/').map(encodeURIComponent).join('/')}${range}`
+  return `https://viz-file-cache.invalid/${item.key.replace(/-[0-9a-f]{8}\.parquet$/, '.parquet').split('/').map(encodeURIComponent).join('/')}${range}`
 }
 
 /** The Workers default cache. (Typed here because the DOM library's `CacheStorage` has no `default`.) */

@@ -322,6 +322,42 @@ describe('tenant isolation on every route', () => {
     return { tenant, key, id, marker, silenceId: silenced.json.silences[0].id as string, undoToken: silenced.json.undoToken as string, fingerprint: silenced.json.silenced[0] as string, state }
   }
 
+  it('dryRun on every write: a well-formed request answers 2xx, says dryRun, and changes nothing the API can show', async () => {
+    const a = await populate('dry')
+    // Acknowledged first, for real, so that a dry un-acknowledgement has something it would change.
+    expect((await call(a.key.auth, 'POST', `/api/v1/monitors/${a.id}/acknowledge`, {})).status).toBe(200)
+    const before = await a.state()
+    const yaml = 'groups:\n  - name: dry-imported\n    rules:\n      - alert: Imported\n        expr: up == 0\n'
+    const bodies: Record<string, unknown> = {
+      'POST /api/v1/monitors': { name: 'dry-new', query: 'dry_metric', condition: { op: '>', threshold: 2 } },
+      'PUT /api/v1/monitors/groups/{name}': { interval: '1m', rules: [{ alert: 'Replaced', expr: 'up == 0' }] },
+      'DELETE /api/v1/monitors/groups/{name}': undefined,
+      'POST /api/v1/monitors/rulefile': yaml,
+      'PUT /api/v1/monitors/notifier': { ...amConfig, receivers: [{ name: 'hook', webhook_configs: [{ url: 'https://receiver.test/elsewhere' }] }] },
+      'POST /api/v1/monitors/silences/undo': { undoToken: a.undoToken },
+      'DELETE /api/v1/monitors/silences/{silenceId}': undefined,
+      'PUT /api/v1/monitors/{id}': { name: 'dry-renamed', query: 'dry_metric', condition: { op: '<', threshold: 5 }, interval: '5m' },
+      'DELETE /api/v1/monitors/{id}': undefined,
+      'POST /api/v1/monitors/{id}/acknowledge': {},
+      'POST /api/v1/monitors/{id}/unacknowledge': {},
+      'POST /api/v1/monitors/{id}/silence': { duration: '4h' },
+    }
+    const writes = ROUTES.filter((r) => r.dryRun)
+    expect(writes.map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(bodies).sort())
+    for (const r of writes) {
+      const path = r.path.replace('{id}', a.id).replace('{name}', `${a.marker}-group`).replace('{silenceId}', a.silenceId)
+      for (const how of ['query', 'body'] as const) {
+        let body = bodies[`${r.method} ${r.path}`]
+        if (how === 'body' && (typeof body !== 'object' || body === null)) continue // no JSON body to carry the flag
+        if (how === 'body') body = { ...(body as object), dryRun: true }
+        const res = await call(a.key.auth, r.method, how === 'query' ? `${path}?dryRun=true` : path, body)
+        expect(res.status, `${r.method} ${r.path} (${how}): ${res.text.slice(0, 300)}`).toBeLessThan(300)
+        expect(res.json?.dryRun, `${r.method} ${r.path} (${how})`).toBe(true)
+        expect(await a.state(), `${r.method} ${r.path} (${how}) changed something`).toEqual(before)
+      }
+    }
+  })
+
   it('a direct attempt on another tenant\'s monitor, group, silence or undo token finds nothing and changes nothing', async () => {
     const a = await populate('aaa')
     const b = await populate('bbb')
@@ -356,26 +392,35 @@ describe('tenant isolation on every route', () => {
       { rules: [{ alert: 'probe', expr: 'bbb_up' }], tenant: b.tenant, dryRun: true }, { groups: [{ name: 'bbb-group', rules: [{ alert: 'P', expr: 'up' }] }], dryRun: true },
       { monitor: { name: 'p', expr: 'bbb_metric > 1' }, fromMs: T0, toMs: T0 + MIN, step: '1m', tenant: b.tenant }, { ...amConfig, dryRun: true, tenant: b.tenant },
     ]
-    await fc.assert(
-      fc.asyncProperty(
-        fc.constantFrom(...ROUTES), fc.constantFrom(...ids), fc.constantFrom(...groupNames), fc.constantFrom(...silenceIds), fc.constantFrom(...queries), fc.constantFrom(...headers), fc.constantFrom(...bodies),
-        async (route, id, group, silenceId, query, header, body) => {
-          const path = route.path.replace('{id}', id).replace('{name}', group).replace('{silenceId}', silenceId) + query
-          const res = await call(a.key.auth, route.method, path, route.method === 'GET' || route.method === 'DELETE' ? undefined : body, header)
-          expect(res.status).toBeLessThan(500)
-          for (const s of secrets) {
-            // The request itself may echo what the caller sent in an error message (a group name it typed); what must never appear is B's stored data.
-            if (res.text.includes(s) && !(path + JSON.stringify(body)).includes(s)) throw new Error(`leak of ${s} in ${route.method} ${path}: ${res.text.slice(0, 300)}`)
-          }
-          expect(res.text).not.toContain('bbb-secret')
-          expect(res.text).not.toContain('bbb is slow')
-          expect(res.text).not.toContain('bbb maintenance')
-          expect(res.text).not.toContain('bbb-team')
-          expect(res.text).not.toContain('bbb-host')
-        },
-      ),
-      { numRuns: 400 },
-    )
+    // B's tenant also goes in front of the path, the way a per-tenant URL prefix would carry it.
+    const prefixes = ['', '', '', `/${b.tenant}`, `/t/${b.tenant}`, `/tenants/${encodeURIComponent(b.tenant)}`]
+    const exercised = new Map<string, number>()
+    // Every route gets its own runs, so none is left to chance.
+    for (const route of ROUTES) {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.constantFrom(...ids), fc.constantFrom(...groupNames), fc.constantFrom(...silenceIds), fc.constantFrom(...queries), fc.constantFrom(...headers), fc.constantFrom(...bodies), fc.constantFrom(...prefixes),
+          async (id, group, silenceId, query, header, body, prefix) => {
+            const path = prefix + route.path.replace('{id}', id).replace('{name}', group).replace('{silenceId}', silenceId) + query
+            const res = await call(a.key.auth, route.method, path, route.method === 'GET' || route.method === 'DELETE' ? undefined : body, header)
+            expect(res.status).toBeLessThan(500)
+            if (prefix === '') exercised.set(`${route.method} ${route.path}`, (exercised.get(`${route.method} ${route.path}`) ?? 0) + 1)
+            else expect(res.status, `${route.method} ${path}`).toBe(404) // a tenant in the path is not a route
+            for (const s of secrets) {
+              // The request itself may echo what the caller sent in an error message (a group name it typed); what must never appear is B's stored data.
+              if (res.text.includes(s) && !(path + JSON.stringify(body)).includes(s)) throw new Error(`leak of ${s} in ${route.method} ${path}: ${res.text.slice(0, 300)}`)
+            }
+            expect(res.text).not.toContain('bbb-secret')
+            expect(res.text).not.toContain('bbb is slow')
+            expect(res.text).not.toContain('bbb maintenance')
+            expect(res.text).not.toContain('bbb-team')
+            expect(res.text).not.toContain('bbb-host')
+          },
+        ),
+        { numRuns: 30 },
+      )
+    }
+    expect([...exercised.keys()].sort()).toEqual(ROUTES.map((r) => `${r.method} ${r.path}`).sort())
     expect(await b.state()).toEqual(bBefore)
     // The objects themselves refuse a foreign tenant, whoever calls them.
     for (const r of [await rulerStub(b.tenant).snapshot(a.tenant), await rulerStub(b.tenant).timeline(a.tenant, b.id), await rulerStub(b.tenant).saveRule(a.tenant, { name: 'g' }, { alert: 'A', expr: 'up' }),

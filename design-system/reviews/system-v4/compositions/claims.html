@@ -40,8 +40,9 @@
       <p class="vz-page-sub">Confirming or rejecting a claim is recorded on the alert's history and shown to the next person. It does not change the monitor.</p>
     </div>
     <div>
-      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Latency by route, p99</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· live, not as the agent read it</span></span></div>
-        <div class="vz-panel-body"><div class="vz-chart" data-demo="s3" data-view="i-routes" data-size="sm"></div></div></section>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Latency by route, p99</h3><span class="vz-panel-meta"><span data-range>12:00 to 13:09</span><span>· 3 min max</span><span>· as the agent read it at 13:09</span></span></div>
+        <p class="vz-panel-desc">The evidence for the first claim, as the agent saw it. <a class="vz-link" href="#">See the last 6 h now</a></p>
+        <div class="vz-panel-body"><div class="vz-chart" id="agent-view" data-view="i-routes" data-size="sm"></div></div></section>
       <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">About this report</h3></div>
         <dl class="vz-kv"><dt>Queries run</dt><dd class="vz-num">14</dd><dt>Time taken</dt><dd class="vz-num">1 min 52 s</dd><dt>Cost</dt><dd class="vz-num">$0.21</dd><dt>Could read</dt><dd>metrics and traces in acme-prod</dd><dt>Could change</dt><dd>nothing</dd></dl></section>
       <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">History of the alert</h3></div>
@@ -54,4 +55,12 @@
     </div>
   </div>
 </main>
-<script src="../../../dist/viz-chart.js"></script></body></html>
+<script src="../../../dist/viz-chart.js"></script>
+<script>
+/* The agent's view: the same routes, 12:00 to 13:09 at a 3 min step, read from the reference data (deterministic). */
+(function () { const live = vzChartDemos.s3(), MIN = 60000, t0 = Date.UTC(2026, 10, 18, 12, 0), step = 3 * MIN, n = 24
+  const at = (vals, t) => { const f = (t - live.t0) / live.step, i = Math.floor(f), a = vals[i], b = vals[Math.min(vals.length - 1, i + 1)]; return a == null || b == null ? null : +(a + (b - a) * (f - i)).toFixed(1) }
+  const spec = { ...live, t0, step, spans: [{ from: Date.UTC(2026, 10, 18, 13, 7), to: t0 + (n - 1) * step, label: 'Firing since 13:07' }], markers: [{ t: Date.UTC(2026, 10, 18, 12, 58), label: 'Slow since 12:58' }],
+    series: live.series.map((s) => ({ labels: s.labels, values: Array.from({ length: n }, (_, k) => at(s.values, t0 + k * step)) })) }
+  const el = document.getElementById('agent-view'); el.vz = vzChart(el, spec) })()
+</script></body></html>

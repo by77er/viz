@@ -25,7 +25,9 @@ import type { Ledger } from '../../ledger/src/ledger'
  *     same keys and the same bytes, so a repeat finds its objects and its `replace` is
  *     answered as a replay.
  *   - `conflict` (an input is gone): the outputs are deleted and the caller plans again.
- *     They can never become live, because their key names an input that will not return.
+ *     This step can never make them live, because their key names an input that will not
+ *     return. Only if the ledger knows them (an identical step won, and they are live or,
+ *     removed since, tombstoned) are they left alone: then they are not this step's.
  *   - A step that has run longer than `maxStepMs` does not call `replace`. The orphan
  *     sweep (janitor/) deletes unreferenced compaction outputs only when they are much
  *     older than that, so it can never delete an output a step is about to make live.
@@ -309,8 +311,7 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   // One table at a time, so only one table's inputs are in memory with the engine's copy.
   const merged: EncodedFile[] = []
   for (const [table, files] of [['metric_samples', inSamples], ['metric_series', inSeries]] as const) {
-    const all = await fetchAll(env.BUCKET, files.map((f) => f.key))
-    const out = engine.mergeFiles(table, table === 'metric_samples' ? all.slice(0, 2) : all)
+    const out = engine.mergeFiles(table, await fetchAll(env.BUCKET, files.map((f) => f.key)))
     // A merge only removes duplicates: it cannot have more rows than its inputs together,
     // nor fewer than its largest input. Anything else is a bug; publish nothing.
     const total = files.reduce((a, f) => a + f.rows, 0)
@@ -341,11 +342,15 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   const r = await ledger.replace({ remove: summary.inputs, add: outputs })
   if (r.status === 'ok') return { status: 'merged', job: summary, version: r.version, outputs, put }
   if (r.status === 'invalid') return { status: 'error', job: summary, reason: 'invalid', detail: r.reason }
-  // Conflict: an input is gone for good, so these outputs can never be listed. Delete them,
-  // unless the ledger (asked once more, in one read) says one is live after all.
+  // Conflict: an input is gone for good, so these outputs can never be listed by THIS step.
+  // Delete them, unless the ledger (asked once more, in one read) knows them. Keys are a
+  // function of the inputs, so an identical step may have made the same objects live; if a
+  // later merge or retention has since removed them they are tombstoned, a reader holding
+  // an older plan may still be reading them, and only the janitor may delete them, after
+  // the grace. Either way they are not this step's to delete.
   const keys = outputs.map((f) => f.key)
   const check = await ledger.orphanCheck(keys)
-  const discarded = check.live.length === 0 ? keys : []
+  const discarded = check.live.length === 0 && check.tombstoned.length === 0 ? keys : []
   if (discarded.length > 0) await env.BUCKET.delete(discarded)
   return { status: 'conflict', job: summary, missing: r.missing, discarded }
 }

@@ -62,18 +62,21 @@ export const retentionCutoffDay = (now: number, policy: RetentionPolicy): string
 
 export interface ExpireResult {
   beforeDay: string
+  /** The policy applied: whole days kept besides today. Day D expires at `D + keepDays + 1` days, 00:00 UTC. */
+  keepDays: number
   /** Keys removed from the ledger by this run. */
   removed: string[]
 }
 
 export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.now()): Promise<ExpireResult> {
   const ledger = ledgerOf(env, tenant)
-  const beforeDay = retentionCutoffDay(now, await retentionPolicy(env, tenant))
+  const policy = await retentionPolicy(env, tenant)
+  const beforeDay = retentionCutoffDay(now, policy)
   // Samples first: between the two calls a day may have series files without samples
   // (which no query returns), never samples without the series that describe them.
   const samples = await ledger.expire({ table: 'metric_samples', beforeDay })
   const series = await ledger.expire({ table: 'metric_series', beforeDay })
-  return { beforeDay, removed: [...samples.removed, ...series.removed] }
+  return { beforeDay, keepDays: policy.metric_samples_days, removed: [...samples.removed, ...series.removed] }
 }
 
 export interface PurgeResult {

@@ -78,6 +78,10 @@ catalog, which has a fallback, comes last. The order follows the platform review
 | S7 | Tail reads under ingest and rule load on one shard | Whether tail-class rules and 10 s freshness hold | Ingest p99 degrades more than 2× → rules read flush files only |
 | S8 | Iceberg publication: R2-native metadata read back by DuckDB and PyIceberg; then commits to the managed catalog from a Worker under 409s and unknown outcomes | Whether managed-catalog publication ships | Unreliable → stay R2-native |
 
+Additional measurement: **S5** (`spikes/s5-r2-writes/`, 2026-11-18): an R2 write takes
+0.17–0.26 s at the median up to 1 MB, writes share the six-in-flight limit, and 32 Durable
+Objects wrote 192 objects in 0.85 s.
+
 ## 5. Evidence required per milestone
 
 | Milestone | Required evidence |

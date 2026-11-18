@@ -17,7 +17,7 @@ import { expect } from 'vitest'
 import { pairFiles } from '../../compact/src/compact'
 import type { FileEntry, Tombstone } from '../../contracts/ledger'
 import { type PrwSeries, bitsOf, makeKey, postWrite, setPool } from '../../edge/test/helpers'
-import { dataKeys, ledgerStub, read, shardStub } from '../../flush/test/helpers'
+import { ledgerStub, read, shardStub } from '../../flush/test/helpers'
 import { type PoolMap, shardName, slotFor } from '../../shard/src/pool'
 import { type FlushMessage, Shard } from '../../shard/src/shard'
 import type { MaintMessage, StackEnv } from '../src/index'
@@ -219,6 +219,26 @@ export interface TenantState {
   live: FileEntry[]
   objects: string[]
   tombstones: Tombstone[]
+  /** Objects that are neither live nor tombstoned: what only the orphan sweep can remove. */
+  unreferenced: string[]
+}
+
+/** Names the orphan sweep can judge (janitor/src/janitor.ts): a flush file, or a compaction output. */
+const FLUSH_FILE = /\/L0-(.+)-(\d+)-(\d+)-(\d+)-[0-9a-f]{8}\.parquet$/
+const COMPACTED_FILE = /\/L[1-9]\d*-(h\d\d|d)-[0-9a-f]{16}-[0-9a-f]{8}\.parquet$/
+
+/** Every object under the tenant's data prefix, with its size. */
+async function objectSizes(tenant: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  for (const table of ['metric_samples', 'metric_series']) {
+    let cursor: string | undefined
+    do {
+      const page = await env.BUCKET.list({ prefix: `${env.CELL}/data/${table}/tenant=${tenant}/`, cursor })
+      for (const o of page.objects) out.set(o.key, o.size)
+      cursor = page.truncated ? page.cursor : undefined
+    } while (cursor)
+  }
+  return out
 }
 
 /**
@@ -230,7 +250,11 @@ export interface TenantState {
  *   4. every samples file is listed with its series file;
  *   5. every tombstone younger than the delete grace still has its object (nothing is
  *      deleted while a query holding an older plan may read it);
- *   6. no object under the tenant's prefix belongs to another tenant's ledger.
+ *   6. no object under the tenant's prefix belongs to another tenant's ledger;
+ *   7. the ledger's live set is exactly the set of objects it references: every live key is
+ *      an object of the listed size, no key is both live and tombstoned, and every other
+ *      object is either tombstoned (the janitor deletes it after the grace) or has a name
+ *      the orphan sweep can judge (nothing is leaked where no job would ever look).
  */
 export async function checkTenant(sim: Sim, t: SimTenant, graceMs: number, where: string): Promise<TenantState> {
   const ledger = ledgerStub(t.name)
@@ -242,11 +266,13 @@ export async function checkTenant(sim: Sim, t: SimTenant, graceMs: number, where
   const samples = (await ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files
   const series = (await ledger.plan({ table: 'metric_series', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files
   const live = [...samples, ...series]
-  const objects = await dataKeys(t.name)
+  const sizes = await objectSizes(t.name)
+  const objects = [...sizes.keys()].sort()
   const have = new Set(objects)
   for (const f of live) {
     expect(f.key.includes(`/tenant=${t.name}/`), `${where}: live key outside the tenant prefix: ${f.key}`).toBe(true)
     expect(have.has(f.key), `${where}: live file missing from R2: ${f.key}`).toBe(true)
+    expect(sizes.get(f.key), `${where}: live file ${f.key} has another size in R2`).toBe(f.bytes)
   }
   expect(pairFiles(samples, series).unpaired, `${where}: ${t.name} unpaired files`).toEqual([])
 
@@ -255,7 +281,12 @@ export async function checkTenant(sim: Sim, t: SimTenant, graceMs: number, where
   for (const x of tombstones) {
     if (now - x.at < graceMs) expect(have.has(x.key), `${where}: ${x.key} deleted ${now - x.at} ms after removal, inside the grace of ${graceMs} ms`).toBe(true)
   }
-  return { canon: r.canon, live, objects, tombstones }
+  const liveKeys = new Set(live.map((f) => f.key))
+  const buried = new Set(tombstones.map((x) => x.key))
+  for (const k of buried) expect(liveKeys.has(k), `${where}: ${k} is both live and tombstoned`).toBe(false)
+  const unreferenced = objects.filter((k) => !liveKeys.has(k) && !buried.has(k))
+  for (const k of unreferenced) expect(FLUSH_FILE.test(k) || COMPACTED_FILE.test(k), `${where}: ${k} is referenced by nothing and no job would delete it`).toBe(true)
+  return { canon: r.canon, live, objects, tombstones, unreferenced }
 }
 
 /** Order-independent digest of a result: row count, wrapping sum of timestamps, XOR of value bits. */

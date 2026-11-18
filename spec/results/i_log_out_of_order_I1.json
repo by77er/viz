@@ -63,5 +63,5 @@
     "discard(shard 0, through seq 1)",
     "ledgerLossRebuild"
   ],
-  "seconds": 16
+  "seconds": 20.1
 }

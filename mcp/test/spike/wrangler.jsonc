@@ -1,0 +1,1 @@
+{ "name": "viz-mcp-spike", "main": "spike-worker.ts", "compatibility_date": "2026-10-01", "compatibility_flags": ["nodejs_compat"] }

@@ -84,16 +84,23 @@ node tools/check.mjs          # load proof and size report, in Node
 
 ## How it was verified
 
-All figures measured here (Linux x86-64, 4 cores shared with other builds, rustc 1.97.0,
-Node 22.23, workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18. Local, not
-on Cloudflare.
+All figures measured here (Linux x86-64, 4 cores shared with other engineers' builds and
+test runs, load average 5 to 8 during these runs, rustc 1.97.0, Node 22.23, workerd
+through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18. Local, not on Cloudflare. Where
+two numbers are given they are two runs; read the spread, not one figure.
+
+Build: `./build.sh` with the settings above. **SIMD is in the module**: it is stripped, so
+there is no `target_features` section to read; instead, parsing the code section, 212 of
+its 3,672 functions declare `v128` locals (a module built without `+simd128` has none).
+`wrangler deploy --dry-run` of `query/` bundles this module with 49 KB of JavaScript:
+2,625.57 KiB to upload, 824.96 KiB gzip (well below the Workers script size limits).
 
 ### Size
 
 | | bytes |
 |---|---:|
-| `js/viz_query.wasm` | **@@RAW@@** |
-| `gzip -9` | **@@GZ@@** |
+| `js/viz_query.wasm` | **2,639,443** |
+| `gzip -9` | **809,660** |
 | imports | **0** |
 | exports | 14: `memory`, `viz_alloc`, `viz_free`, `viz_q_abi_version` and the ten operations |
 
@@ -106,13 +113,13 @@ a megabyte raw. What remains is dominated by the Parquet reader and the regex en
 
 | Where | `new WebAssembly.Instance(module, {})` plus one call into it |
 |---|---|
-| workerd (`query/test/engine.test.ts`, mean of 500) | **@@INST_WORKERD@@ ms** |
-| Node (`tools/check.mjs`, mean of 200) | **@@INST_NODE@@ ms** |
+| workerd (`query/test/engine.test.ts`, mean of 500; two runs) | **0.71 ms and 1.00 ms** |
+| Node (`tools/check.mjs`, mean of 200) | **0.65 ms** |
 
 Compiling the module happens once, when the Worker script is loaded, and is not in these
 figures. The first query in a fresh isolate is slower than later ones because the engine's
-code is not yet optimised by V8 (343 ms against 117 ms for the query below, measured
-through the Worker: `query/README.md`).
+code is not yet optimised by V8 (through the Worker, the query below spent 139 ms in the engine on its first run in a
+fresh isolate and 81 ms on the next: `query/README.md`, "Measurements").
 
 ### Peak WASM memory and time: 1 hour, 2,000 series
 
@@ -125,14 +132,15 @@ peak. The query reads 520,000 samples of 2,000 series and returns 20 series x 24
 
 | Where the rows are | Input | First call | Later calls (median of 5) | Peak WASM memory |
 |---|---|---:|---:|---:|
-| five sixths in Parquet, the rest in tail batches | 0.84 MiB in 2 files + 1.84 MiB in 3 batches | @@M1_FIRST@@ ms | @@M1_MED@@ ms | **@@M1_PEAK@@ MiB** |
-| all in Parquet | @@M2_IN@@ | @@M2_FIRST@@ ms | @@M2_MED@@ ms | **@@M2_PEAK@@ MiB** |
+| five sixths in Parquet, the rest in tail batches | 0.84 MiB in 2 files + 1.84 MiB in 3 batches | 135 ms, 155 ms | 63 ms, 69 ms | **22.2 MiB** |
+| all in Parquet | 0.96 MiB in 2 files | 79 ms, 71 ms | 62 ms, 66 ms | **22.3 MiB** |
 
 Both runs return byte-identical JSON. The peak is the selected samples (520,000 x 16 B =
 7.9 MiB) plus the evaluator's step grid (2,000 x 241 x 24 B = 11.0 MiB) plus the input
 copied into linear memory, which agrees with the native figure in
 `engine/query/README.md` (20.2 MiB of heap above the inputs). Through the Worker, with
-24 small files instead of 2, the same query peaked at 21.5 MiB.
+24 small files instead of 2 and the last ten minutes in two tail batches, the same query
+peaked at 21.6 MiB (`query/README.md`, "Measurements").
 
 ### Tests
 
@@ -151,13 +159,15 @@ copied into linear memory, which agrees with the native figure in
 | filesNeeded and scanRows | against fragments written by the flush engine: skipped by time and by name, not by a regex; row counts; an unparsable fragment is kept |
 | memory | the table above, with every value of the result checked against the workload's mean rate |
 
-`node tools/check.mjs`: **@@CHECK@@**: no imports, the export list, an empty import
+`node tools/check.mjs`: **12 of 12 checks pass**: no imports, the export list, an empty import
 object, a query whose every point is checked, the marker's bits, eight kinds of bad query
 with no trap.
 
 The rule behind `scanRows` is tested in `engine/query` (`tests/prune.rs`, 3 tests, one a
 property over the 106-query pool: skipping files never changes a result, and the row
-bound really bounds what a read loads).
+bound really bounds what a read loads). The crates this module links were tested on the
+host the same day: `engine/query` `cargo test` 37 passed (3 min 9 s); `engine/promql`
+`cargo test` 26 passed, 1 ignored (as before).
 
 ## Known risks
 

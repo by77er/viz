@@ -62,5 +62,5 @@
     "tailRead(shard 0, above 1) ok",
     "qDone"
   ],
-  "seconds": 13.3
+  "seconds": 19.9
 }

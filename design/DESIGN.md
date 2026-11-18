@@ -78,7 +78,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Tenant` | Durable Object, one per tenant | Config, keys, dashboards and revisions, rule definitions, retention policy | on edits; reads are cached |
 | `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, MCP, OAuth | per request |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
-| `jobs` | Workflows | Compaction, rollups, retention, orphan sweep, scrubbing, investigations | scheduled or triggered |
+| `jobs` | Workflows | Compaction, rollups, retention, orphan sweep, scrubbing, investigations. As built, compaction, retention and deletion are a per-tenant maintenance run on a queue (§5.2) | scheduled or triggered |
 | Heavy worker | Container (fronted by a Durable Object) | The same engine for work that exceeds isolate limits | on demand |
 
 Supporting services: Queues (ledger → publisher, notification fan-out), KV (API-key and
@@ -173,12 +173,15 @@ until then. No key is ever accepted by two shards.
 4. The shard discards a segment once the ledger has acknowledged the unit, and records how
    far it has discarded.
 
-Nothing in this chain is called by hand. A seal writes a `{tenant, shard}` message to a
-queue in the same transaction as the segment boundary; the queue's consumer runs `flush`
-for that stream and retries it until every sealed segment is recorded (D18). A message
-that is lost or dead-lettered does not lose the flush: the shard keeps a marker in KV while
-it has unrecorded segments, and an hourly sweep re-enqueues the streams of marked shards.
-An idle deployment has no marker, so the sweep wakes no object and sends nothing.
+Nothing in this chain is called by hand. A seal writes a `{tenant, shard}` message to an
+outbox in the same transaction as the segment boundary and hands it to a queue; the queue's
+consumer runs `flush` for that stream and retries it until every sealed segment is recorded
+(D18). A message that is lost or dead-lettered does not lose the flush: the shard keeps a
+marker in KV while it has unrecorded segments, and an hourly sweep re-enqueues the streams
+of marked shards. A successful flush asks for the tenant's maintenance (§5.2) the same way.
+An idle deployment has no flush marker, and every tenant's maintenance marker names a time
+in the future (as built, the day its oldest data expires), so the hourly cron reads KV and
+wakes no object and sends nothing.
 
 Every step is idempotent and keyed by a **stream**: `(shard, tenant, incarnation)`.
 Sequence numbers, seals, units, watermarks, discard marks and fingerprints are all per
@@ -233,10 +236,17 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   tenant-table-hour never has more than a small fixed number of files. Hours merge into
   days once the accept window has passed. Small merges run in Workers; large ones in a
   Container. As built, a merge in a Worker reads at most 16 MB in at most eight file pairs
-  (measured: 70 MB of WASM memory), so day files are tens of megabytes, not the 128 MB a
-  Container merge will produce; the Container is not built. A compaction is a ledger
-  transaction that succeeds only if every input is still live, so it cannot resurrect
-  files that retention removed, and it swaps the samples and series files together.
+  (measured: 70 MB of WASM memory), so a day file is at most about 16 MB and a busy day has
+  several, not the one 128 MB file a Container merge will produce; the Container is not
+  built. A compaction is a ledger transaction that succeeds only if every input is still
+  live, so it cannot resurrect files that retention removed, and it swaps the samples and
+  series files together.
+- **When it runs (as built).** Compaction, retention, deletion and the orphan sweep are one
+  per-tenant maintenance run, consumed from a queue. A successful flush asks for one; so
+  does the hourly cron, for tenants whose KV marker says time alone has made work (an hour
+  gone quiet, a day closed, the oldest day reaching its retention, a grace ending, an orphan
+  sweep still needed after objects were written). The compaction Workflow is built but not
+  started.
 - **Rollups** are written when an hour closes, so the trailing day already has them. An hour
   closes when the accept window has passed *and* every stream's watermark is past the end
   of the hour, so no row for it is still in a tail. Nothing later can change it.
@@ -399,7 +409,11 @@ result, limited per tenant, and exposed to agents through `validate_query`.
   applied in the planner.
 - **Isolation:** tenant id comes only from the credential; files are tenant-pure; the ledger
   is per tenant. Cross-tenant reads are an invariant with its own fuzz suite.
-- **Quotas:** enforced exactly in the shard, per tenant; rejection reasons are visible.
+- **Quotas:** enforced in the shard, per tenant; rejection reasons are visible. Byte budgets
+  are exact. The active-series limit is not (D21): each shard enforces an even share of the
+  tenant's limit, counting exactly up to 4,096 series per half-hour bucket and with a
+  HyperLogLog (1.6% standard error) and a Bloom filter (about 1% of new series pass as
+  known) above that.
 
 ## 10. Targets
 

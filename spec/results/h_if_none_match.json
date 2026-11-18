@@ -56,5 +56,5 @@
     "flushPut(shard 0, segment ..1)",
     "addUnit(shard 0, ..1) admitted"
   ],
-  "seconds": 10.1
+  "seconds": 16.3
 }

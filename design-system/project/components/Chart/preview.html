@@ -126,11 +126,11 @@ if (!window.vzChart) (function () {
 
     function draw() {
       const W = svg.clientWidth, HT = svg.clientHeight; if (!W) return
-      legendW = tbody.parentElement.clientWidth || legendW; lastW = W; lastH = HT
+      legendW = tbody.parentElement.clientWidth || legendW; const readW = readout.clientWidth; lastW = W; lastH = HT
       const m = model(), cs = getComputedStyle(root), tokens = {}, css = (el, name) => (tokens[name] ??= parseFloat(cs.getPropertyValue(name)) || 0)
       const sp = (n) => css(root, '--space-' + n), micro = cs.getPropertyValue('--text-micro').trim(), small13 = cs.getPropertyValue('--text-small').trim(), lineH = 16
       const visible = m.coloured.filter((s) => shown(m, s)), picked = m.other.filter((s) => st.picked.has(s.key))
-      const L = css(root, '--axis'), T = sp(4) + sp(1), B = sp(4) + sp(1), plotH = HT - T - B
+      const L = css(root, '--axis'), T = sp(6), B = sp(4) + sp(1), plotH = HT - T - B // T: the strip above the plot, as tall as a waiting line (Panel)
       // Direct labels: only from 640px of chart width, only when every label can sit within two label heights of its own line end.
       let labels = null
       const dataMax = Math.max(1e-9, ...visible.map((s) => s.max ?? 0), ...picked.map((s) => s.max ?? 0), ...(otherShown(m) ? m.other.map((s) => s.max ?? 0) : []), spec.threshold ? spec.threshold.value * 1.15 : 0)
@@ -167,19 +167,19 @@ if (!window.vzChart) (function () {
       const line = (s, ds) => { const p = path(s.v); return `<path class="vz-line" data-series="${ds}" d="${p.d}"/>` + (p.dots ? `<g class="vz-dot" data-series="${ds}">${p.dots}</g>` : '') }
       for (const s of [...visible].reverse()) o += line(s, s.slot)
       for (const s of picked) o += line(s, 'picked')
-      // threshold: a dashed line that says its value and what it is
-      if (spec.threshold) { const ty2 = y(spec.threshold.value); o += `<line class="vz-threshold" x1="${L}" x2="${L + plotW}" y1="${ty2}" y2="${ty2}"/><text class="vz-on-plot" x="${L + sp(1)}" y="${ty2 - sp(1)}">${esc(spec.threshold.label)}</text>` }
-      for (const s of spec.spans || []) { const a = xt(s.from); if (a > L + plotW || xt(s.to) < L) continue; const w = measure(s.label, micro), right = a + sp(1) + w > L + plotW; o += `<text class="vz-on-plot" x="${right ? Math.max(L, a) - sp(1) : Math.max(L, a) + sp(1)}" y="${T + sp(3)}" text-anchor="${right ? 'end' : 'start'}">${esc(s.label)}</text>` }
       // markers (deploys, changes): a hairline with its word above the plot; words that would collide are dropped, the line stays
       let lastEnd = -1e9; for (const k of [...(spec.markers || [])].sort((a, b) => a.t - b.t)) { const px = xt(k.t); if (px < L || px > L + plotW) continue; const w = measure(k.label, micro), left = Math.min(px + 3, L + plotW - w)
         o += `<line class="vz-marker" x1="${px}" x2="${px}" y1="${T - sp(1)}" y2="${T + plotH}"/>`; if (left > lastEnd + sp(2)) { o += `<text x="${left}" y="${T - sp(2) - 2}">${esc(k.label)}</text>`; lastEnd = left + w } }
+      // threshold: a dashed line that says its value and what it is
+      if (spec.threshold) { const ty2 = y(spec.threshold.value); o += `<line class="vz-threshold" x1="${L}" x2="${L + plotW}" y1="${ty2}" y2="${ty2}"/><text class="vz-on-plot" x="${L + sp(1)}" y="${ty2 - sp(1)}">${esc(spec.threshold.label)}</text>` }
+      for (const s of spec.spans || []) { const a = Math.max(L, xt(s.from)); if (a > L + plotW || xt(s.to) < L) continue; const w = measure(s.label, micro), right = a + sp(1) + w > L + plotW; o += `<text class="vz-on-plot" x="${right ? L + plotW - sp(1) : a + sp(1)}" y="${T + sp(3)}" text-anchor="${right ? 'end' : 'start'}">${esc(s.label)}</text>` } // inside the span; one too long for it ends at the plot's edge rather than labelling the time before it
       // direct labels in the gutter, each with a leader tick to its own line end
       if (labels) { const x1 = L + plotW, room = R - sp(4) - sp(1); for (const e of labels) { const text = fit(m.names.order.slice(0, 1).map((k) => e.s.labels[k] ?? ''), room, (t) => measure(t, small13))
         o += `<polyline class="vz-leader" points="${x1 + 2},${e.want.toFixed(1)} ${x1 + sp(2)},${e.at.toFixed(1)} ${x1 + sp(3)},${e.at.toFixed(1)}"/><text class="vz-direct" x="${x1 + sp(4)}" y="${(e.at + 4).toFixed(1)}">${esc(text)}</text>` } }
       o += '<g class="vz-cursor"></g>'
       svg.setAttribute('viewBox', `0 0 ${W} ${HT}`); svg.innerHTML = o
       svg.setAttribute('aria-label', `${root.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? 'Chart'}, ${spec.unit}, ${stamp(st.t0, long)} to ${stamp(st.t1, long)}. ${m.series.length} series${m.other.length ? ', ' + m.coloured.length + ' drawn separately and ' + m.other.length + ' as one band' : ''}. Left and right arrows read values; plus and minus zoom.`)
-      g = { m, L, T, plotW, plotH, x, y, ax, long, visible, picked, font: small13 }
+      g = { m, L, T, plotW, plotH, x, y, ax, long, visible, picked, font: small13, readW }
       legend(); cursor()
       const r = root.closest('.vz-panel')?.querySelector('[data-range]'); if (r) r.textContent = stamp(st.t0, long) + ' to ' + stamp(st.t1, long)
       root.querySelector('[data-zoom="out"]').disabled = st.t0 <= full.t0 && st.t1 >= full.t1; root.querySelector('[data-zoom="in"]').disabled = g.m.n <= 4
@@ -205,12 +205,12 @@ if (!window.vzChart) (function () {
       const nameHead = thead.querySelector('[data-col="name"]'); if (nameHead && m.names.order.length > 1) nameHead.textContent = 'Series (' + m.names.order.slice(0, shownKeys).join(' · ') + ')'
       let h = [...m.coloured].sort(cmp).map((s) => row(s, s.slot)).join('')
       if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => (c === 'last' && st.cursor != null ? s.v[st.cursor] : s[c])).filter((p) => p != null); return v.length ? num(Math.min(...v), g.ax.step / 10) + ' to ' + num(Math.max(...v), g.ax.step / 10) : '' }
-        h += `<tr role="row" data-key="other"${st.picked.has('other') ? ' aria-selected="true"' : st.picked.size ? ' data-off' : ''}><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="${st.picked.has('other')}"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series, lowest to highest</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`}</tr>`
+        h += `<tr role="row" data-key="other"${st.picked.has('other') ? ' aria-selected="true"' : st.picked.size ? ' data-off' : ''}><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="${st.picked.has('other')}"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`}</tr>`
         h += [...m.other].sort(by === 'rank' ? (a, b) => b.rank - a.rank : cmp).slice(0, st.open).map((s) => row(s, st.picked.has(s.key) ? 'picked' : 'other')).join('') }
       tbody.innerHTML = h
       const rows = [...tbody.querySelectorAll('.vz-series')]; if (rows.length) rows[Math.min(st.focusRow, rows.length - 1)].tabIndex = 0
       const common = Object.entries(m.names.common).filter(([k]) => k !== '__name__').map(([k, v]) => k + '="' + v + '"').join(', ')
-      note.innerHTML = (common && m.series.length > 1 ? `All series: <span class="vz-qty">${esc(common)}</span>. ` : '') + (m.other.length ? `The ${m.coloured.length} series with the highest values in this range are coloured. ` + (st.open < m.other.length ? `<button class="vz-progress-action" data-more>Show ${Math.min(20, m.other.length - st.open)} of the other ${m.other.length - st.open}</button>` : `<button class="vz-progress-action" data-less>Hide the other ${m.other.length}</button>`) : '')
+      note.innerHTML = (common && m.series.length > 1 ? `All series: <span class="vz-qty">${esc(common)}</span>. ` : '') + (m.other.length ? `${m.coloured.length} series are coloured, chosen by size when they first appeared; the other ${m.other.length} are one band, its figures lowest to highest. ` + (st.open < m.other.length ? `<button class="vz-progress-action" data-more>Show ${Math.min(20, m.other.length - st.open)} of the other ${m.other.length - st.open}</button>` : `<button class="vz-progress-action" data-less>Hide the other ${m.other.length}</button>`) : '')
       note.hidden = !note.innerHTML
     }
 
@@ -223,7 +223,9 @@ if (!window.vzChart) (function () {
         for (const s of g.picked) if (s.v[st.cursor] != null) o += `<circle class="vz-dot" data-series="picked" cx="${px}" cy="${g.y(s.v[st.cursor])}" r="3"/>`
         c.innerHTML = o
         const top = [...g.visible].filter((s) => s.v[st.cursor] != null).sort((a, b) => b.v[st.cursor] - a.v[st.cursor]).slice(0, 1)
-        readout.innerHTML = `<b class="vz-qty">${stamp(spec.t0 + (g.m.i0 + st.cursor) * spec.step, g.long)}</b>` + (top.length ? `<span>highest: ${esc(g.m.names.order.slice(0, 1).map((k) => top[0].labels[k]).join(' '))} <span class="vz-qty">${num(top[0].v[st.cursor], g.ax.step / 10)} ${esc(spec.unit)}</span></span>` : '')
+        const when = stamp(spec.t0 + (g.m.i0 + st.cursor) * spec.step, g.long), value = top.length ? num(top[0].v[st.cursor], g.ax.step / 10) + ' ' + spec.unit : ''
+        const room = g.readW - measure(when + '  highest:  ' + value, g.font) - 3 * 12, who = top.length ? fit([g.m.names.order.slice(0, 1).map((k) => top[0].labels[k]).join(' ')], Math.max(40, room), (t) => measure(t, g.font)) : ''
+        readout.innerHTML = `<b class="vz-qty">${when}</b>` + (top.length ? `<span>highest: ${esc(who)} <span class="vz-qty">${esc(value)}</span></span>` : '')
       }
       const th = thead.querySelector('[data-col="last"]'); if (th) th.textContent = (st.cursor == null ? 'Last' : 'At ' + stamp(spec.t0 + (g.m.i0 + st.cursor) * spec.step, g.long)) + ', ' + spec.unit
       tbody.querySelectorAll('tr').forEach((tr) => { const s = g.m.series.find((q) => q.key === tr.dataset.key); const td = tr.querySelector('[data-c="last"]'); if (s && td) td.textContent = num(st.cursor == null ? s.last : s.v[st.cursor], g.ax.step / 10) })
@@ -246,7 +248,7 @@ if (!window.vzChart) (function () {
     // the legend is one tab stop; up and down move between rows, space or enter toggles the row
     tbody.addEventListener('keydown', (e) => { const rows = [...tbody.querySelectorAll('.vz-series')], i = rows.indexOf(document.activeElement); if (i < 0) return; const to = e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : e.key === 'ArrowUp' ? Math.max(0, i - 1) : -1; if (to < 0) return; e.preventDefault(); rows[i].tabIndex = -1; rows[to].tabIndex = 0; rows[to].focus(); st.focusRow = to })
     new ResizeObserver(() => { const w = svg.clientWidth; if (w && (w !== lastW || svg.clientHeight !== lastH)) draw() }).observe(svg) // a hidden chart is not redrawn, and showing it again at the same size costs nothing
-    draw()
+    draw(); document.fonts?.addEventListener?.('loadingdone', () => draw()) // text is fitted by measuring it; a font that arrives later changes every width
     return { draw, state: st, setFilter(f) { st.filter = f; draw() },
       /* A new result for the same view: the chart is kept, its data replaced. Colours, chosen rows and sort order survive. */
       setData(next) { spec = next; all = spec.series.map((s) => ({ ...s, key: key(s.labels) })); full = { t0: spec.t0, t1: spec.t0 + (all[0].values.length - 1) * spec.step }; st.t0 = full.t0; st.t1 = full.t1; st.cursor = null; draw() } }

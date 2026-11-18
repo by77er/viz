@@ -29,7 +29,7 @@ the `Leaf` Durable Object it reads files through.
 | `tools/mutants.mjs` | The mutation check |
 
 ```
-(cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it)
+(cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it; owned by engine/wasm)
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
 npm test                                   # @@TESTS@@ tests in workerd, 8 files, about 35 s
@@ -222,14 +222,15 @@ could loosen a limit. Unknown fields are ignored. Records are cached for 30 s pe
 | `maxFiles` | 2,000 | 422 `query exceeded limit max_files: N data files to read, the limit is M. Narrow the time range.` |
 | `timeoutMs` | 30,000 | 503 `timeout`. A `timeout` parameter can lower it, not raise it |
 
-**Why the byte cap is 16 MiB and why there is a scan cap.** The task suggested about
-64 MiB of Parquet. Measured here, that is not safe, for two reasons.
+**Why the byte cap is 16 MiB and why there is a scan cap.** A cap near 64 MiB of Parquet
+was considered first. Measured here, that is not safe, for two reasons.
 
 - The isolate holds the fetched bytes **twice** while the engine runs: the buffers that
   arrived from the leaves, and their copy inside WASM linear memory.
 - Parquet holds a sample in 2.5 to 4 bytes (in the measurement below, series files
-  included: 1.14 MiB for 480,000 samples scraped every 15 s, 10.6 MiB for 2,880,000
-  scraped every 60 s), and the engine holds a decoded sample in 16. The engine's own `max_samples` fires only **after** a
+  included: 1.15 MiB for 480,000 samples scraped every 15 s, 10.6 MiB for 2,880,000
+  scraped every 60 s), and the engine holds a decoded sample in 16. The engine's own
+  `max_samples` fires only **after** a
   selector's samples are in memory (`engine/query/README.md`, "Known risks"). So a byte
   cap alone lets a query expand five-fold or more before it is refused: measured below,
   a 24-hour query that is refused by `max_samples` still decoded 2.89 M samples from
@@ -287,12 +288,13 @@ reclaimed.
 - **Production wiring.** `wrangler.jsonc` binds `SHARD` and `LEDGER` by `script_name` to
   Workers that are themselves still combined scripts. Nothing was deployed, and the
   bindings were only exercised in the one-script composition. `wrangler deploy --dry-run`
-  bundles: @@DRYRUN@@.
+  bundles (run with the Cloudflare credentials removed from its environment): 2,625.57 KiB
+  to upload, 824.96 KiB gzip, of which 49 KB is JavaScript and the rest the WASM module.
 - **Warm leaves.** Nothing keeps the pool warm; first use of a leaf costs a few hundred
   milliseconds on Cloudflare (spike S1).
 - **Pinning near the bucket.** `placement: smart` is set in `wrangler.jsonc`; untested.
 - **Metrics about itself** (query counts, latencies, refusals).
-- `contracts/LEDGER-LOG.md` is planned and was not implemented, as instructed.
+- Anything that depends on `contracts/LEDGER-LOG.md` (planned; the ledger's business).
 
 ## How it was verified
 
@@ -471,8 +473,19 @@ edited. These are for their owners.
 1. **`contracts/engine.ts` has no place for the read path's needs**: errors with a type,
    limits, statistics, `plan`, the metadata calls, `parseSelectors`, `scanRows`. The list
    is in `engine/wasm-query/README.md`. `Engine` is now implemented by two modules.
-2. **`contracts/ledger.ts`, `Plan.files`: no order is stated**, and the order decides
-   which duplicate wins ("Needed changes", 1). `FileEntry` has no precedence.
+2. **File precedence: this Worker departs from `contracts/TABLES.md` on purpose.**
+   `TABLES.md` ("Object keys") now says that when files disagree about a
+   `(series_id, ts)`, "the one later in key order wins, in a read and in a merge alike",
+   and that across a compaction the survivor is not defined. For flush files of one
+   stream that rule lets an older write win from the stream's tenth batch on, so a
+   rewritten sample would change value when its rows move from the tail to the lake:
+   results would depend on where rows live, which `engine/AGENTS.md` forbids. The Worker
+   orders flush files by sequence number instead (`byPrecedence`); compaction outputs
+   still go by level and key. `contracts/ledger.ts` `Plan.files` states no order and
+   `FileEntry` has no precedence. Proposed contract change: a precedence on `FileEntry`
+   (for example the highest sequence, or the ledger version, of the newest input),
+   files listed in that order, and the read and merge rule stated in terms of it
+   ("Needed changes", 1).
 3. **`contracts/TABLES.md`, object keys**: the read path now parses flush-file keys for
    the sequence range. Compaction keys have another shape (`L{level}-{span}-{inputs16}-
    {hash8}`), which is only described in `compact/`; `TABLES.md` gives one format.
@@ -523,6 +536,10 @@ reader.
   same budget is unknown.
 - **One script hides binding mistakes** (as in `stack/`): the production `script_name`
   bindings have never run.
+- **A query that times out keeps working in the background.** The client gets 503
+  `timeout` at the deadline, but the request's fetches and its engine call run on until
+  the next deadline check (between ledger reads, leaf rounds and before evaluating),
+  holding their share of the isolate's byte budget until then.
 - **Test hooks are in the production module** (`hooks` in `coordinator.ts`): empty
   unless a test sets them, and reachable only by code inside the Worker.
 - **The label endpoints over all time** read every file of the tenant, or are refused

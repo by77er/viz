@@ -1256,7 +1256,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   async ensureArmed(tenant: string) {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
-    if ((this.groups.size === 0 && this.handoffDepth === 0) || (await this.ctx.storage.getAlarm()) !== null) return { status: 'ok' as const, rearmed: false }
+    if (this.groups.size === 0 && this.handoffDepth === 0) return { status: 'ok' as const, rearmed: false }
     await this.setAlarm(this.now())
     return { status: 'ok' as const, rearmed: true }
   }

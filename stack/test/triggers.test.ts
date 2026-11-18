@@ -29,7 +29,7 @@ async function drainFlushQueue(): Promise<number> {
   }
   return n
 }
-const markerOf = async (t: SimTenant) => (await env.CONFIG.getWithMetadata<{ due: number; orphansAt: number }>(maintMarkerKey(t.name))).metadata
+const markerOf = async (t: SimTenant) => (await env.CONFIG.getWithMetadata<{ due: number; orphansAt: number; sweep: boolean }>(maintMarkerKey(t.name))).metadata
 
 /** `env` whose Durable Object namespaces and queues count every use. */
 function counting(base: StackEnv) {
@@ -146,6 +146,8 @@ describe('what happens without anyone calling it', () => {
 
 describe('an idle deployment', () => {
   it('makes zero Durable Object wakes and sends zero queue messages, cron after cron', async () => {
+    // Every tenant on the default retention (30 days), whatever earlier tests set.
+    for (const t of sim.tenants) await env.CONFIG.delete(`retention:${t.name}`)
     // Work: every tenant ingests, the shards seal, the queues are consumed to the end.
     for (const t of sim.tenants) {
       expect(await ingest(sim, t, r, 5, 2, 0)).toBe(204)
@@ -175,15 +177,30 @@ describe('an idle deployment', () => {
     expect(swept.flush).toEqual({ markers: 2, shardsAsked: 2, enqueued: [] })
     expect(first.calls).toEqual({ shard: 2, ledger: 0, flushMessages: 0, maintMessages: 0 })
 
+    // The time-driven work that is left runs once: hours go quiet, today closes (a policy
+    // clock two days ahead), the merged inputs pass their grace, the orphan sweep looks once.
+    // After that each tenant's marker names the day its oldest data expires, and nothing else.
+    const settle = { now: Date.now() + 2 * DAY_MS, deleteGraceMs: 0, orphanGraceMs: 0, maxCompactStepMs: 0, orphanEveryMs: 0 }
+    const retentionDue = new Map<string, number>()
+    for (const t of sim.tenants) {
+      let report = await maintainTenant(sim.env, engine, t.name, settle)
+      for (let i = 0; i < 10 && (report.more || report.compaction.merged > 0 || report.purged.waiting > 0); i++) report = await maintainTenant(sim.env, engine, t.name, settle)
+      const oldest = (await ledger(t).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files.map((f) => f.day).sort()[0]!
+      retentionDue.set(t.name, Date.parse(`${oldest}T00:00:00Z`) + 31 * DAY_MS) // the default policy keeps 30 days besides today
+      expect(await markerOf(t)).toEqual({ due: retentionDue.get(t.name), orphansAt: expect.any(Number), sweep: false })
+    }
+
     // From here the deployment is idle: tenants have data (so they have maintenance markers,
-    // none of them due), no shard has anything pending, no object has an alarm.
+    // none of them due for weeks), no shard has anything pending, no object has an alarm.
+    // A week of hourly crons wakes nothing and sends nothing.
     const announced = sim.flushQueue.length
     const idle = counting(sim.env)
-    for (let i = 0; i < 5; i++) {
-      const x = await handleScheduled(idle.env)
+    const start = Date.now()
+    for (let hour = 1; hour <= 7 * 24; hour++) {
+      const x = await handleScheduled(idle.env, start + hour * 3_600_000)
       expect(x.flush).toEqual({ markers: 0, shardsAsked: 0, enqueued: [] })
       expect(x.maintenance.enqueued).toEqual([])
-      expect(x.maintenance.markers).toBeGreaterThanOrEqual(2)
+      expect(x.maintenance.markers).toBeGreaterThanOrEqual(3)
     }
     expect(idle.calls).toEqual({ shard: 0, ledger: 0, flushMessages: 0, maintMessages: 0 })
     expect(sim.flushQueue.length).toBe(announced)
@@ -192,8 +209,43 @@ describe('an idle deployment', () => {
     for (const s of sim.shards) expect(await runInDurableObject(shard(s), (_i, st) => st.storage.getAlarm())).toBeNull()
     for (const t of sim.tenants) expect(await runInDurableObject(ledger(t), (_i, st) => st.storage.getAlarm())).toBeNull()
     expect((await env.CONFIG.list({ prefix: PENDING_MARKER_PREFIX })).keys).toEqual([])
+    // It is not asleep for good: the cron at the first expiry date enqueues exactly the tenants due then.
+    const expiresFirst = Math.min(...retentionDue.values())
+    const woken = await handleScheduled(idle.env, expiresFirst)
+    expect(woken.maintenance.enqueued.sort()).toEqual(sim.tenants.filter((t) => retentionDue.get(t.name) === expiresFirst).map((t) => t.name).sort())
+    expect(idle.calls).toMatchObject({ shard: 0, ledger: 0, flushMessages: 0 })
     // And the data is all still there.
     for (const t of sim.tenants) await checkTenant(sim, t, 0, 'idle')
+  })
+
+  it('the orphan sweep runs only while objects may have been written since the last one that found nothing to wait for', async () => {
+    const [, b] = sim.tenants
+    const opts = { orphanEveryMs: 0, orphanGraceMs: 0 }
+    // A flush wrote objects: its message says so, and the run sweeps.
+    expect(await ingest(sim, b!, r, 4, 2, 0)).toBe(204)
+    for (const s of sim.shards) await shard(s).seal(b!.name)
+    sim.maintQueue.length = 0
+    await drainFlushQueue()
+    expect(sim.maintQueue.length).toBeGreaterThan(0)
+    expect(sim.maintQueue.every((m) => m.body.wrote === true)).toBe(true)
+    const d = await deliver(sim, sim.maintQueue, MAINT_QUEUE_NAME, take(sim.maintQueue, 10), 5, (x) => consumeMaintBatch(x, sim.env, engine, opts))
+    expect(d.outcomes[0]!.report!.orphans).not.toBeNull()
+    expect((await markerOf(b!))!.sweep).toBe(false)
+    // Nothing written since: the next run does not list the prefix.
+    expect((await maintainTenant(sim.env, engine, b!.name, opts)).orphans).toBeNull()
+
+    // A merge that crashed may have left objects: the failed run marks the sweep as needed.
+    const crashing = { ...engine, mergeFiles: () => { throw new Error('injected: merge crashed') } }
+    await expect(maintainTenant(sim.env, crashing, b!.name, { ...opts, now: Date.now() + 2 * DAY_MS })).rejects.toThrow('merge crashed')
+    expect((await markerOf(b!))!.sweep).toBe(true)
+    expect((await maintainTenant(sim.env, engine, b!.name, opts)).orphans).not.toBeNull()
+    expect((await maintainTenant(sim.env, engine, b!.name, opts)).orphans).toBeNull()
+
+    // A flush whose maintenance message is lost still leaves the marker saying so: the cron's run sweeps.
+    await noteFlushed(sim.env, { tenant: b!.name })
+    sim.maintQueue.length = 0
+    expect((await markerOf(b!))!.sweep).toBe(true)
+    expect((await maintainTenant(sim.env, engine, b!.name, opts)).orphans).not.toBeNull()
   })
 
   it('the script exports the handlers the bindings need: fetch, queue and scheduled', async () => {
@@ -204,14 +256,21 @@ describe('an idle deployment', () => {
     await waitOnExecutionContext(ctx)
   })
 
-  it('noteFlushed still asks for a run when the marker cannot be written', async () => {
+  it('noteFlushed still asks for a run when the marker cannot be written, and that run still sweeps', async () => {
     const [a] = sim.tenants
-    await clearKv(maintMarkerKey(a!.name))
+    const opts = { orphanEveryMs: 0, orphanGraceMs: 0 }
+    // A run with nothing written since the last sweep: the marker says no sweep is needed.
+    await maintainTenant(sim.env, engine, a!.name, opts)
+    expect((await maintainTenant(sim.env, engine, a!.name, opts)).orphans).toBeNull()
     sim.maintQueue.length = 0
     const broken = { ...sim.env, CONFIG: new Proxy(env.CONFIG, { get: (t, p) => (p === 'put' ? async () => { throw new Error('KV 429') } : Reflect.get(t, p).bind(t)) }) } as StackEnv
     await noteFlushed(broken, { tenant: a!.name })
-    expect(sim.maintQueue.map((m) => m.body)).toEqual([{ tenant: a!.name }])
-    // The run that message causes writes the marker itself.
+    expect(sim.maintQueue.map((m) => m.body)).toEqual([{ tenant: a!.name, wrote: true }])
+    expect((await markerOf(a!))!.sweep).toBe(false) // the marker could not say so; the message does
+    const d = await deliver(sim, sim.maintQueue, MAINT_QUEUE_NAME, take(sim.maintQueue, 10), 5, (x) => consumeMaintBatch(x, sim.env, engine, opts))
+    expect(d.outcomes[0]!.report!.orphans).not.toBeNull()
+    // Without any marker the run writes one.
+    await clearKv(maintMarkerKey(a!.name))
     await maintainTenant(sim.env, engine, a!.name)
     expect(await markerOf(a!)).not.toBeNull()
   })

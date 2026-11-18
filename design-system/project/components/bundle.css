@@ -48,6 +48,7 @@
   background: var(--ground);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent; /* a touch shows the control's own pressed fill, not the browser's tint */
 }
 .vz *, .vz *::before, .vz *::after { box-sizing: border-box; }
 .vz :focus-visible { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
@@ -59,7 +60,7 @@
 .vz-label { font: var(--text-label); color: var(--ink-secondary); }
 .vz-link { color: inherit; text-decoration: underline; text-underline-offset: var(--space-half); text-decoration-thickness: var(--hairline); }
 .vz-link:hover { text-decoration-thickness: var(--stroke); }
-.vz-link:active { background: var(--rule); }
+.vz-link:active { background: var(--pressed); }
 .vz-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); align-items: flex-start; }
 .vz-skip { position: absolute; left: var(--space-4); top: var(--space-2); z-index: 20; transform: translateY(-400%); }
 .vz-skip:focus { transform: none; }
@@ -79,7 +80,7 @@
   transition: background-color var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease);
 }
 .vz-button:hover { background: var(--hover); border-color: var(--ink-secondary); }
-.vz-button:active { transition-duration: 0s; background: var(--rule); } /* a press is painted in the next frame, never eased */
+.vz-button:active { transition-duration: 0s; background: var(--pressed); } /* a press is painted in the next frame, never eased */
 .vz-button[data-size="sm"] { height: var(--control-sm); padding: 0 var(--space-2); font: var(--text-small); font-weight: 600; }
 .vz-button[data-tone] { border-color: transparent; }
 .vz-button[data-tone="blue"] { background: var(--blue); color: var(--on-blue); }
@@ -97,10 +98,10 @@
 .vz-button[data-quiet] { border-color: transparent; background: transparent; font: var(--text-ui); }
 .vz-button[data-tone="yellow"] { border-color: var(--yellow-edge); }
 .vz-button[data-quiet]:hover { background: var(--hover); }
-.vz-button[data-quiet]:active { background: var(--rule); } /* after :hover, so a press shows on a quiet button too */
+.vz-button[data-quiet]:active { background: var(--pressed); } /* after :hover, so a press shows on a quiet button too */
 .vz-button:disabled { color: var(--ink-disabled); background: var(--sunken); border-color: var(--rule); cursor: not-allowed; }
 /* Busy: the label stays, the button holds its pressed fill and ignores further presses. */
-.vz-button[aria-busy="true"] { pointer-events: none; background: var(--rule); transition-duration: 0s; }
+.vz-button[aria-busy="true"] { pointer-events: none; background: var(--pressed); transition-duration: 0s; }
 .vz-button[data-tone="blue"][aria-busy="true"] { background: var(--blue-pressed); }
 .vz-button[data-tone="red"][aria-busy="true"] { background: var(--red-pressed); }
 .vz-button[data-tone="green"][aria-busy="true"] { background: var(--green-pressed); }
@@ -145,7 +146,7 @@
 .vz-segmented button:first-child { border-left: 0; border-radius: var(--radius-1) 0 0 var(--radius-1); }
 .vz-segmented button:last-child { border-radius: 0 var(--radius-1) var(--radius-1) 0; }
 .vz-segmented button:hover { background: var(--hover); color: var(--ink); }
-.vz-segmented button:active { transition-duration: 0s; background: var(--rule); }
+.vz-segmented button:active { transition-duration: 0s; background: var(--pressed); }
 .vz-segmented button[aria-pressed="true"] { background: var(--rule); color: var(--ink); font: var(--text-ui-strong); box-shadow: inset 0 calc(-1 * var(--stroke)) 0 var(--ink); }
 .vz-segmented button:focus-visible { outline-offset: var(--hairline); z-index: 1; }
 
@@ -167,13 +168,13 @@
 .vz-table td[data-key] { font: var(--text-ui-strong); }
 .vz-table td[data-key]:not(:first-child) { position: relative; }
 .vz-table td[data-key] .vz-link::after { content: ""; position: absolute; inset: 0; } /* the key link fills its cell */
-.vz-table td:has(> .vz-link:active) { background: var(--rule); }
+.vz-table td:has(> .vz-link:active) { background: var(--pressed); }
 /* Sortable head: a button in the th; the th carries aria-sort. The arrow's space is always reserved. */
 .vz-sort { position: relative; display: inline-flex; align-items: center; gap: var(--space-1); font: inherit; color: inherit; background: none; border: 0; border-radius: var(--radius-1); cursor: pointer; padding: var(--space-half) var(--space-1); margin: calc(-1 * var(--space-half)) calc(-1 * var(--space-1)); }
 .vz-sort::after { content: ""; flex: none; border: var(--space-1) solid transparent; border-top-width: 0; visibility: hidden; }
 .vz-right .vz-sort { flex-direction: row-reverse; }
 .vz-sort:hover { color: var(--ink); background: var(--hover); }
-.vz-sort:active { background: var(--rule); }
+.vz-sort:active { transition-duration: 0s; background: var(--pressed); }
 th[aria-sort="ascending"] .vz-sort, th[aria-sort="descending"] .vz-sort { color: var(--ink); font-weight: 600; }
 th[aria-sort="ascending"] .vz-sort::after { visibility: visible; border-bottom-color: currentColor; }
 th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: var(--space-1) var(--space-1) 0; border-top-color: currentColor; }
@@ -223,9 +224,13 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-panel-meta { font: var(--text-small); color: var(--ink-muted); display: flex; flex-wrap: wrap; gap: 0 var(--space-2); }
 .vz-panel-meta > * { white-space: nowrap; }
 .vz-panel-note { color: var(--ink); font-weight: 600; } /* "Showing the previous query", "Not updating" */
-/* The region under the head. The waiting line lies over its top edge: it reserves nothing and moves nothing. */
+/* The region under the head. Every view in it starts with a space-6 strip of words about the data, never the data: a chart's strip above
+   the plot (marker words), a table's caption. The waiting line lies over that strip: it reserves nothing, moves nothing, and never covers
+   data, a unit, a tick or a column head. In a chart it starts after the value axis, so the unit and the ticks stay visible. */
 .vz-panel-body { position: relative; display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
-.vz-panel-body > .vz-progress { position: absolute; inset: 0 0 auto 0; z-index: 2; background: var(--ground); padding-bottom: var(--space-1); box-shadow: 0 var(--hairline) 0 var(--rule); }
+.vz-panel-body > .vz-progress { position: absolute; inset: 0 0 auto 0; z-index: 2; height: var(--space-6); justify-content: flex-end; background: var(--ground); }
+.vz-panel-body:has(> .vz-chart) > .vz-progress { left: var(--axis); }
+.vz-table-caption { margin: 0; min-height: var(--space-6); font: var(--text-small); color: var(--ink-secondary); } /* "30 of 412 pods, highest CPU first": count and order, above the table */
 .vz-panel-desc { font: var(--text-small); color: var(--ink-secondary); margin: 0; max-width: var(--measure); }
 .vz-legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); font: var(--text-small); color: var(--ink-secondary); }
 .vz-legend span { display: inline-flex; align-items: center; gap: var(--space-2); }
@@ -262,7 +267,8 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-plot .vz-dot[data-series] { fill: var(--series); stroke: var(--ground); stroke-width: var(--hairline); }
 /* Under the plot: the time under the crosshair at the left, zoom at the right. Its height is reserved. */
 .vz-chart-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: var(--control-sm); font: var(--text-small); color: var(--ink-secondary); }
-.vz-readout { display: flex; align-items: baseline; gap: var(--space-3); flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; } /* one line, always: reading a value never moves the page */
+.vz-readout { display: flex; align-items: baseline; gap: var(--space-3); flex: 1 1 var(--overlay-min); min-width: 0; min-height: 1lh; white-space: nowrap; overflow: hidden; } /* one line, always: reading a value never moves the page. A narrow chart gives it a line of its own, by width, not by content */
+.vz-chart-foot > .vz-controls { margin-left: auto; }
 .vz-readout b { font-weight: 600; color: var(--ink); }
 /* Legend: a table of series. Each row is a toggle. */
 .vz-swatch { display: inline-block; flex: none; width: var(--space-3); height: var(--space-1); background: var(--series); box-shadow: 0 0 0 var(--stroke) var(--ground); } /* its own ground edge, so a hovered or chosen row never lowers its contrast */
@@ -272,8 +278,8 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-table.vz-legend-table td.vz-num { font: var(--text-data); white-space: nowrap; }
 .vz-table.vz-legend-table th:first-child, .vz-table.vz-legend-table td:first-child { box-shadow: none; }
 .vz-table.vz-legend-table tbody tr { cursor: pointer; }
-.vz-table.vz-legend-table tbody tr:active td { background: var(--rule); color: var(--ink); }
-.vz-table.vz-legend-table tr:active .vz-series-rest, .vz-table.vz-legend-table tr[aria-selected="true"] .vz-series-rest { color: var(--ink-secondary); } /* muted text does not reach 4.5:1 on rule */
+.vz-table.vz-legend-table tbody tr:active td { background: var(--pressed); color: var(--ink); }
+.vz-table.vz-legend-table tr:active .vz-series-rest, .vz-table.vz-legend-table tr[aria-selected="true"] .vz-series-rest { color: var(--ink-secondary); } /* muted text does not reach 4.5:1 on rule or pressed */
 .vz-table.vz-legend-table tr[aria-selected="true"] td { background: var(--rule); }
 .vz-table.vz-legend-table tr[aria-selected="true"] .vz-series { font-weight: 600; }
 .vz-table.vz-legend-table tr[data-off] td { color: var(--ink-muted); }
@@ -308,7 +314,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-menu { min-width: var(--overlay-min); padding: var(--space-1); background: var(--raised); border-radius: var(--radius-3); box-shadow: var(--shadow-overlay); }
 .vz-menu [role^="menuitem"] { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); width: 100%; height: var(--row); padding: 0 var(--space-2); font: inherit; color: inherit; text-align: left; background: transparent; border: 0; border-radius: var(--radius-2); cursor: pointer; } /* a div or a real button */
 .vz-menu [role^="menuitem"]:hover, .vz-menu [role^="menuitem"][data-active] { background: var(--hover); }
-.vz-menu [role^="menuitem"]:active { background: var(--rule); }
+.vz-menu [role^="menuitem"]:active { background: var(--pressed); }
 /* Rows that hold a choice (menuitemradio, menuitemcheckbox): a tick column is reserved in every such row; the chosen one is ticked and strong. */
 .vz-menu [aria-checked] { justify-content: flex-start; gap: var(--space-2); }
 .vz-menu [aria-checked]::before { content: ""; flex: none; width: var(--space-1); height: var(--space-2); margin: calc(-1 * var(--space-half)) calc((var(--icon) - var(--space-1)) / 2) 0; border: solid transparent; border-width: 0 var(--stroke) var(--stroke) 0; transform: rotate(45deg); }
@@ -323,7 +329,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 dialog.vz-dialog:not([open]) { display: none; } /* the class must not show a closed dialog */
 dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(100% - 2 * var(--space-4)); overflow-y: auto; }
 .vz-dialog::backdrop { background: var(--scrim); }
-.vz-scrim { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: var(--space-4); overflow-y: auto; background: var(--scrim); } /* for a dialog that is not a native <dialog> */
+.vz-scrim { position: fixed; inset: 0; z-index: 10; display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; padding: var(--space-4); overflow-y: auto; background: var(--scrim); } /* for a dialog that is not a native <dialog>; the one column is the screen less the gutter, never the dialog's content */
 .vz-dialog-title { font: var(--text-heading); letter-spacing: var(--text-heading-track); margin: 0; }
 .vz-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3) var(--space-2); margin-top: var(--space-2); }
 .vz-dialog-actions:has(> .vz-button[data-tone] ~ .vz-button[data-tone]) { column-gap: var(--space-6); }

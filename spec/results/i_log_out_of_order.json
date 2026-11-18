@@ -61,5 +61,5 @@
     "logWrite(outbox[1])",
     "recorded(shard 0, through seq 2)"
   ],
-  "seconds": 12.8
+  "seconds": 15.7
 }

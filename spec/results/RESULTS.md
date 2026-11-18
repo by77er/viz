@@ -9,7 +9,7 @@
 | `b_highest_seq_I1` (b) same guard, storage property | I1_AckedIsDurable | violated in 12 steps | 10266 / 34050 | 13 | 14s |
 | `c_recorded_at_committed` (c) shard told `recorded` at the committed, not logged, watermark; ledger loss + rebuild | I5_DiscardOnlyLogged | violated in 8 steps | 567 / 1152 | 9 | 12.3s |
 | `c_recorded_at_committed_I1` (c) same guard, carried through to data loss | I1_AckedIsDurable | violated in 10 steps | 3202 / 8404 | 11 | 10.9s |
-| `d_no_dedup` (d) no dedup fingerprints, client retry | I3_NoDuplicates | violated in 7 steps | 156 / 238 | 8 | 10.2s |
+| `d_no_dedup` (d) no dedup fingerprints, client retry | I3_NoDuplicates | violated in 7 steps | 156 / 238 | 8 | 15.8s |
 | `e_fp_expiry` (e) fingerprint TTL shorter than the client retry horizon | I3_NoDuplicates | violated in 15 steps | 40108 / 184455 | 16 | 13.3s |
 | `f_replace_not_live` (f) replace without the inputs-live check, racing retention | I9_NoResurrection | violated in 16 steps | 95651 / 435709 | 17 | 16.1s |
 | `g_delete_no_grace_silent` (g) physical deletion without waiting; a missing file reads as empty | I4_NoGapAtSeam | violated in 22 steps | 213823 / 1156127 | 23 | 27.3s |

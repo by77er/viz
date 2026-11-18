@@ -70,28 +70,40 @@ function report(r: Run): void {
 }
 
 /**
- * Production wall time from operation counts. Measured inputs (spikes/s1, s2, s4):
- *   Durable Object call          10 to 40 ms
- *   R2 read below 1 MB           45 to 55 ms, six in parallel per leaf (so one wave per leaf call)
- *   ledger plan                  a DO call, plus 25 to 40 microseconds per file listed
- *   engine CPU                   2 x local
+ * Production wall time from operation counts (a MODEL; each input says where it is from):
+ *
+ *   Durable Object call      10 to 70 ms. Not measured alone. Spike S1 bounds it: twelve
+ *                            parallel calls to warm objects that each waited 300 ms took
+ *                            368 ms.
+ *   one leaf round           55 to 203 ms with warm leaves: at least one DO call plus one
+ *                            R2 read (45 ms median, S1), at most what S1 measured for a
+ *                            whole round of six reads on each of 16 leaves (203 ms; 173 ms
+ *                            on 32 leaves). Leaves get at most six reads per round, so a
+ *                            round is one wave of reads.
+ *   ledger plan              a DO call plus 25 to 40 microseconds per file listed (S4)
+ *   engine CPU               2 x local engine time (S2)
+ *
  * The ledger is read first (two plan calls in sequence); then shards and leaves run in
  * parallel; leaf rounds are sequential; then the engine.
  */
+const DO_CALL = [10, 70] as const
+const ROUND = [55, 203] as const
+const PER_FILE = [0.025, 0.04] as const
+
 function estimate(r: Run, engineMs = cost(r.res, 'Engine-Ms'), label = r.label): void {
   const n = (h: string) => cost(r.res, h)
   const plans = 2 * n('Plan-Attempts')
-  const ledger = [plans * 10 + (n('Files-Listed') * 0.025), plans * 40 + (n('Files-Listed') * 0.04)]
+  const ledger = [0, 1].map((i) => plans * DO_CALL[i]! + n('Files-Listed') * PER_FILE[i]!)
   const shardSeq = n('Shards-Asked') === 0 ? 0 : Math.ceil(n('Shard-Calls') / n('Shards-Asked'))
-  const tail = [shardSeq * 10, shardSeq * 40]
-  const cold = [n('Leaf-Rounds') * (10 + 45), n('Leaf-Rounds') * (40 + 55)]
-  const io = [Math.max(tail[0]!, cold[0]!), Math.max(tail[1]!, cold[1]!)]
+  const tail = [0, 1].map((i) => shardSeq * DO_CALL[i]!)
+  const leaves = [0, 1].map((i) => n('Leaf-Rounds') * ROUND[i]!)
+  const io = [0, 1].map((i) => Math.max(tail[i]!, leaves[i]!))
   const eng = 2 * engineMs
+  const total = [0, 1].map((i) => ledger[i]! + io[i]! + eng)
   console.log(
-    `ESTIMATE ${label} (production, modelled): ledger ${plans} plan calls = ${ledger[0]!.toFixed(0)}-${ledger[1]!.toFixed(0)} ms; ` +
-      `then in parallel: shards ${shardSeq} call(s) deep = ${tail[0]}-${tail[1]} ms, leaves ${n('Leaf-Rounds')} round(s) x (DO call 10-40 + one wave of R2 reads 45-55) = ${cold[0]}-${cold[1]} ms -> ${io[0]}-${io[1]} ms; ` +
-      `engine 2 x ${engineMs} = ${eng} ms CPU; total ${(ledger[0]! + io[0]! + eng).toFixed(0)}-${(ledger[1]! + io[1]! + eng).toFixed(0)} ms ` +
-      `(files from R2; with every file in the Cache API the leaf rounds still cost their DO call, and the cache read is not measured)`,
+    `ESTIMATE ${label} (production, modelled): ledger ${plans} plan calls x ${DO_CALL.join('-')} ms + ${n('Files-Listed')} files x ${PER_FILE.join('-')} ms = ${ledger.map((x) => x.toFixed(0)).join('-')} ms; ` +
+      `then in parallel: shards ${shardSeq} call(s) deep = ${tail.join('-')} ms, leaves ${n('Leaf-Rounds')} round(s) x ${ROUND.join('-')} ms = ${leaves.join('-')} ms -> ${io.join('-')} ms; ` +
+      `engine 2 x ${engineMs} = ${eng} ms CPU; total ${total.map((x) => x.toFixed(0)).join('-')} ms with warm leaves (first use of a leaf object adds 250-700 ms, S1)`,
   )
 }
 

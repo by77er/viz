@@ -35,6 +35,10 @@ const pairs = [
   ['ink-secondary', ['rule'], 4.5, 'second part of a chosen or pressed legend row (muted text is not allowed on rule: 4.19:1)'],
   ['ink', ['ground', 'raised'], 3, 'crosshair, edges of a range being selected, a picked member of Other'],
   ['rule-control', ['sunken'], 3, 'edges of a shaded interval'],
+  // v4: a press has its own fill. Only ink and ink-secondary are set on it (ink-muted is 3.66:1 light, 3.90:1 dark).
+  ['ink', ['pressed'], 4.5, 'label of a pressed button, segment, menu row, legend row'],
+  ['ink-secondary', ['pressed'], 4.5, 'second part of a pressed legend row, a pressed menu row\'s shortcut'],
+  ['focus', ['pressed'], 3, 'focus ring on a pressed control'],
 ]
 // The series palette is also an ordered set: neighbours must stay apart (distance in OKLab, times 100, at least 15). A cheap guard
 // between runs of the full colour-vision validator; the command is in reviews/system-v4/CHANGES.md.
@@ -47,6 +51,14 @@ for (const [fg, bgs, floor, why, only] of pairs) for (const bg of bgs) for (cons
 }
 for (const th of themes) for (let i = 1; i < 8; i++) { const d = dE(v(`series-${i}`, th), v(`series-${i + 1}`, th)); checked++; if (d < 15) { failed++; console.log(`FAIL  series-${i} beside series-${i + 1} [${th}]  distance ${d.toFixed(1)} < 15  (neighbouring series)`) } }
 for (const th of themes) { checked++; if (v('status-info', th) === v('blue', th)) { failed++; console.log(`FAIL  status-info equals blue [${th}]: a status must not look like the primary action`) } }
+// A press must be seen: the pressed fill differs from hover (what the pointer was already showing) and from rule (what is chosen).
+for (const th of themes) for (const other of ['hover', 'rule']) { const r = ratio(v('pressed', th), v(other, th)); checked++; if (r < 1.1) { failed++; console.log(`FAIL  pressed beside ${other} [${th}]  ${r.toFixed(2)} < 1.1  (a press must differ from ${other === 'hover' ? 'hover' : 'a chosen item'})`) } }
+// Series are never drawn on hover, rule or pressed: the legend swatch and the crosshair dot carry their own ground edge. Light series-2 to 5
+// are 2.8:1 on hover, so that edge is load-bearing; this checks it is still in the component CSS.
+const comp = readFileSync(root + 'src/components.css', 'utf8')
+for (const [sel, want, why] of [['.vz-swatch', /box-shadow:\s*0 0 0 var\(--stroke\) var\(--ground\)/, 'legend swatch ground edge'], ['.vz-plot .vz-dot[data-series]', /stroke:\s*var\(--ground\)/, 'crosshair dot ground edge']]) {
+  const rule = comp.split('\n').find((l) => l.startsWith(sel + ' {')); checked++
+  if (!rule || !want.test(rule)) { failed++; console.log(`FAIL  ${sel} has lost its ${why}: series colours would sit on hover or rule below 3:1`) } }
 console.log(`contrast: ${checked - failed}/${checked} pairings pass`)
 
 const targets = process.argv.slice(2).length ? process.argv.slice(2) : [root + 'src/components.css']

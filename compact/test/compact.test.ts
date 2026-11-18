@@ -209,6 +209,35 @@ describe('compactStep', () => {
     expect((await compactStep(env, engine, t.tenant, { now: T0 })).status).toBe('idle')
   })
 
+  it('conflict after an identical step won and its outputs were removed since: the tombstoned objects are left for the janitor', async () => {
+    // Steps A and B pick the same inputs, so they produce the same keys. B is slow: while it is
+    // between its PUTs and its replace, A finishes, a reader takes a plan listing A's outputs,
+    // and retention removes them (tombstoned, within their delete grace). B's replace then
+    // conflicts. Deleting "its" outputs would delete A's objects under that reader.
+    const t = await flushed('c8', 4)
+    let outputs: string[] = []
+    let readerPlan: FileEntry[] = []
+    const b = await compactStep(env, engine, t.tenant, {
+      now: QUIET,
+      hooks: {
+        afterPut: async (out) => {
+          outputs = out.map((f) => f.key).sort()
+          const a = await compactStep(env, engine, t.tenant, { now: QUIET })
+          expect(a).toMatchObject({ status: 'merged', put: ['exists', 'exists'] })
+          readerPlan = [...(await planOf(t.ledger, 'metric_samples')), ...(await planOf(t.ledger, 'metric_series'))]
+          expect(readerPlan.map((f) => f.key).sort()).toEqual(outputs)
+          await t.ledger.expire({ table: 'metric_samples', beforeDay: '2026-11-19' })
+          await t.ledger.expire({ table: 'metric_series', beforeDay: '2026-11-19' })
+        },
+      },
+    })
+    expect(b).toMatchObject({ status: 'conflict', discarded: [] })
+    const check = await t.ledger.orphanCheck(outputs)
+    expect(check).toMatchObject({ live: [], tombstoned: outputs })
+    // The reader holding the plan from before the removal can still read every file of it.
+    for (const f of readerPlan) expect((await env.BUCKET.head(f.key))?.size).toBe(f.bytes)
+  })
+
   it('two steps at once on the same files leave one pair, no stray object and the same result', async () => {
     const t = await flushed('c5', 6)
     const results = await Promise.all([0, 1, 2].map(() => compactStep(env, engine, t.tenant, { now: QUIET })))

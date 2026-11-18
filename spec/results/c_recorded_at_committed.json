@@ -55,5 +55,5 @@
     "addUnit(shard 0, ..1) admitted",
     "recorded(shard 0, through seq 1)"
   ],
-  "seconds": 12.3
+  "seconds": 19
 }

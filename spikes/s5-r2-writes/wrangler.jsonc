@@ -1,0 +1,3 @@
+{ "name": "viz-spike-s5-r2-writes", "main": "src/index.ts", "compatibility_date": "2026-10-01", "workers_dev": true, "observability": { "enabled": false },
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-spike-s5" }],
+  "durable_objects": { "bindings": [{ "name": "W", "class_name": "Writer" }] }, "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }] }
