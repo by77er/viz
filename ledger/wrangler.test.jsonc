@@ -1,0 +1,17 @@
+{
+  // Tests and the in-workerd benchmark only: the ledger, and the frozen as-built ledger
+  // (bench/asbuilt/) as an independent writer of the first log layout and as the
+  // counterfactual. Production uses stack/wrangler.jsonc.
+  "name": "viz-ledger-test",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "vars": { "CELL": "cell-0" }
+}
