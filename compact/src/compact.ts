@@ -394,7 +394,7 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   }
   // ONE replace for both tables: the series file and the samples file stay paired.
   const r = await ledger.replace({ remove: summary.inputs, add: outputs })
-  if (r.status === 'ok') return { status: 'merged', job: summary, version: r.version, outputs, put }
+  if (r.status !== 'invalid') return { status: 'merged', job: summary, version: 0, outputs, put }
   if (r.status === 'invalid') return { status: 'error', job: summary, reason: 'invalid', detail: r.reason }
   // Conflict: an input is gone for good, so these outputs can never be listed by THIS step.
   // Delete them, unless the ledger (asked once more, in one read) knows them. Keys are a
@@ -405,6 +405,7 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   const keys = outputs.map((f) => f.key)
   const check = await ledger.orphanCheck(keys)
   const discarded = check.live.length === 0 && check.tombstoned.length === 0 ? keys : []
+  if (discarded.length > 0) await env.BUCKET.delete(discarded)
   return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [], discarded }
 }
 
