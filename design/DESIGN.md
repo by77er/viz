@@ -72,7 +72,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Publisher` | Durable Object, one per cell | Iceberg commits for every table in the cell | every few minutes, only when ledgers changed |
 | `query` | Worker | Parse, plan, prune, fan out, merge | per query |
 | `Leaf` | Durable Object, a warm pool per cell | Scan row groups and tail rows, evaluate, return partials. Stateless; an object only because that gives each leaf its own connection budget | per split |
-| `Ruler` | Durable Object, one per tenant rule shard | Rule ticks, alert state machine, hands transitions to the notifier | every rule interval |
+| `Ruler` | Durable Object, one per tenant rule shard | Rule ticks (one batch evaluation per group), alert state machine, acknowledgements, backtests, hands transitions to the notifier. Serves the Prometheus `/api/v1/rules` and `/api/v1/alerts` shapes and viz's `/api/v1/monitors` | every rule interval |
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
 | `Tenant` | Durable Object, one per tenant | Config, keys, dashboards and revisions, rule definitions, retention policy | on edits; reads are cached |

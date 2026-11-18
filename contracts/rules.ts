@@ -19,7 +19,7 @@
  * - Nothing here throws for bad input: results are discriminated on `status`.
  */
 
-import type { PromScalar, PromVector } from '../../contracts/engine'
+import type { PromScalar, PromVector } from './engine'
 
 // ───────────────────────────── injected dependencies ─────────────────────────────
 

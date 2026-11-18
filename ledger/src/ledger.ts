@@ -10,6 +10,7 @@ import {
   type LedgerAdminRpc,
   type LedgerChange,
   type LedgerJanitorRpc,
+  type LiveFile,
   type OrphanCheck,
   type Tombstone,
   type LedgerRpc,
@@ -59,7 +60,7 @@ interface UnitRef {
   seqHi: number
 }
 
-type StoredFile = FileEntry & { unit: UnitRef | null }
+type StoredFile = LiveFile & { unit: UnitRef | null }
 
 interface StoredStream {
   shard: string
@@ -129,7 +130,7 @@ function refProblem(ref: StreamRef): string | null {
   return null
 }
 
-const toEntry = (r: Row): FileEntry => ({
+const toEntry = (r: Row): LiveFile => ({
   table: r.tbl as Table,
   day: r.day as string,
   key: r.key as string,
@@ -139,6 +140,14 @@ const toEntry = (r: Row): FileEntry => ({
   maxTs: r.max_ts as number,
   level: r.level as number,
   index: r.idx as string,
+  precedence: r.prec as number,
+  precedenceLow: r.prec_lo as number,
+})
+
+/** The request's fields only: a precedence a caller sent is never taken (contracts/ledger.ts `LiveFile`). */
+const asListed = (f: FileEntry, precedenceLow: number, precedence: number): LiveFile => ({
+  table: f.table, day: f.day, key: f.key, bytes: f.bytes, rows: f.rows, minTs: f.minTs, maxTs: f.maxTs, level: f.level, index: f.index,
+  precedence, precedenceLow,
 })
 
 const toStored = (r: Row): StoredFile => ({
@@ -177,7 +186,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     sql.exec(`CREATE TABLE IF NOT EXISTS file (
       key TEXT PRIMARY KEY, tbl TEXT NOT NULL, day TEXT NOT NULL, bytes INTEGER NOT NULL, rows INTEGER NOT NULL,
       min_ts INTEGER NOT NULL, max_ts INTEGER NOT NULL, level INTEGER NOT NULL, idx TEXT NOT NULL,
-      u_shard TEXT, u_inc INTEGER, u_lo INTEGER, u_hi INTEGER)`)
+      u_shard TEXT, u_inc INTEGER, u_lo INTEGER, u_hi INTEGER,
+      prec INTEGER NOT NULL, prec_lo INTEGER NOT NULL)`)
     sql.exec(`CREATE INDEX IF NOT EXISTS file_tbl_day ON file (tbl, day)`)
     sql.exec(`CREATE INDEX IF NOT EXISTS file_tbl_max ON file (tbl, max_ts)`)
     sql.exec(`CREATE TABLE IF NOT EXISTS stream (
@@ -245,12 +255,13 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     }
   }
 
-  private insertFile(f: FileEntry, unit: UnitRef | null): void {
+  private insertFile(f: LiveFile, unit: UnitRef | null): void {
     this.ctx.storage.sql.exec(
-      `INSERT INTO file (key, tbl, day, bytes, rows, min_ts, max_ts, level, idx, u_shard, u_inc, u_lo, u_hi)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO file (key, tbl, day, bytes, rows, min_ts, max_ts, level, idx, u_shard, u_inc, u_lo, u_hi, prec, prec_lo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       f.key, f.table, f.day, f.bytes, f.rows, f.minTs, f.maxTs, f.level, f.index,
       unit?.shard ?? null, unit?.incarnation ?? null, unit?.seqLo ?? null, unit?.seqHi ?? null,
+      f.precedence, f.precedenceLow,
     )
   }
 
@@ -259,7 +270,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
    * `transactionSync` as the mutation it describes; that is what makes "committed" and
    * "will be logged" the same event.
    */
-  private record(kind: LedgerChange['kind'], added: FileEntry[], removed: string[], watermark?: Watermark, unit?: { seqLo: number; seqHi: number }): number {
+  private record(kind: LedgerChange['kind'], added: LiveFile[], removed: string[], watermark?: Watermark, unit?: { seqLo: number; seqHi: number }): number {
     const sql = this.ctx.storage.sql
     const version = this.version() + 1
     sql.exec(`INSERT INTO meta (k, v) VALUES ('version', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v`, version)
@@ -349,9 +360,15 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
 
     const version = this.ctx.storage.transactionSync(() => {
       if (!known) this.register(unit, null)
-      for (const f of unit.files) this.insertFile(f, ref)
+      // Precedence (contracts/ledger.ts `LiveFile`): the version this change is about to get.
+      // Units of a stream are admitted in sequence order, so a later write ranks higher.
+      const v = this.version() + 1
+      const listed = unit.files.map((f) => asListed(f, v, v))
+      for (const f of listed) this.insertFile(f, ref)
       this.ctx.storage.sql.exec(`UPDATE stream SET watermark = ? WHERE shard = ?`, unit.seqHi, unit.shard)
-      return this.record('add_unit', unit.files, [], { shard: unit.shard, incarnation: unit.incarnation, seq: unit.seqHi }, { seqLo: unit.seqLo, seqHi: unit.seqHi })
+      const recorded = this.record('add_unit', listed, [], { shard: unit.shard, incarnation: unit.incarnation, seq: unit.seqHi }, { seqLo: unit.seqLo, seqHi: unit.seqHi })
+      if (recorded !== v) throw new Error('ledger: version moved inside a transaction')
+      return recorded
     })
     await this.afterCommit()
     return { status: 'ok', version, watermark: unit.seqHi }
@@ -362,7 +379,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     // No await between these reads, so they see one version.
     const sql = this.ctx.storage.sql
     const files = sql
-      .exec(`SELECT * FROM file WHERE tbl = ? AND max_ts >= ? AND min_ts <= ? ORDER BY key`, req.table, req.minTs, req.maxTs)
+      // In precedence order: the order a reader hands files to the engine, later wins.
+      .exec(`SELECT * FROM file WHERE tbl = ? AND max_ts >= ? AND min_ts <= ? ORDER BY prec, key`, req.table, req.minTs, req.maxTs)
       .toArray()
       .map(toEntry)
     const watermarks = sql
