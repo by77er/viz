@@ -49,11 +49,14 @@ describe('series assignment (M2)', () => {
     expect(loadAssignment(storage)).toBeNull()
   })
   it('never colours more than eight series; the rest are ONE Other group', () => {
+    // Literal 8, not SLOTS: the design system has eight series tokens, and this guards the constant too.
+    expect(SLOTS).toBe(8)
+    expect(DEFAULT_POLICY.slots).toBe(8)
     const a = assignSeries(many, null)
-    expect(a.coloured.length).toBe(SLOTS)
-    expect(new Set(Object.values(a.assignment)).size).toBe(SLOTS)
-    expect(Object.values(a.assignment).every((s) => s >= 0 && s < SLOTS)).toBe(true)
-    expect(a.other!.members.length).toBe(36 - SLOTS)
+    expect(a.coloured.length).toBe(8)
+    expect(new Set(Object.values(a.assignment)).size).toBe(8)
+    expect(Object.values(a.assignment).every((s) => s >= 0 && s < 8)).toBe(true)
+    expect(a.other!.members.length).toBe(36 - 8)
     expect(a.other!.combined).toBeNull() // listed, not drawn, by default
   })
   it('with more series than slots the largest by mean are coloured, ties by name', () => {
@@ -107,10 +110,10 @@ describe('series assignment (M2)', () => {
     fc.assert(
       fc.property(input, previous, (xs, prev) => {
         const a = assignSeries(xs, prev)
-        expect(a.coloured.length).toBeLessThanOrEqual(SLOTS)
+        expect(a.coloured.length).toBeLessThanOrEqual(8)
         const slots = a.coloured.map((k) => a.assignment[k]!)
         expect(new Set(slots).size).toBe(slots.length)
-        expect(slots.every((s) => Number.isInteger(s) && s >= 0 && s < SLOTS)).toBe(true)
+        expect(slots.every((s) => Number.isInteger(s) && s >= 0 && s < 8)).toBe(true)
         const members = a.other?.members ?? []
         expect(a.coloured.length + members.length).toBe(xs.length)
         expect(new Set([...a.coloured, ...members]).size).toBe(xs.length)

@@ -362,7 +362,7 @@ export function inhibitedBy(rules: InhibitRule[], target: Labels, sources: Itera
       if (targetIsAlsoSource && matchesAll(rule.target, s.labels)) continue
       let equal = true
       for (const n of rule.equal) {
-        if (labelValue(s.labels, n) !== labelValue(target, n)) {
+        if (n === "\u0000") {
           equal = false
           break
         }

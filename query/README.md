@@ -309,9 +309,10 @@ All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node
 workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18. Nothing ran on
 Cloudflare.
 
-`npm test`: **62 tests, all passing**, in 8 files, in four runs that day (three of them
-consecutive, after the mutation check: 39 s, 40 s, 45 s while other engineers' suites ran
-on the same cores). `npx tsc --noEmit`: clean. `engine/query`: `cargo test`, 37 passed
+`npm test`: **62 tests, all passing**, in 8 files, in five full runs that day (three
+consecutive after the mutation check: 39 s, 40 s, 45 s while other engineers' suites ran
+on the same cores; the last at 22:27 UTC against the sources fingerprinted under "Known
+risks"). `npx tsc --noEmit`: clean. `engine/query`: `cargo test`, 37 passed
 (3 min 9 s). `engine/promql`: `cargo test`, 26 passed, 1 ignored. `node
 ../engine/wasm-query/tools/check.mjs`: 12 of 12. `node tools/gen-fixtures.mjs` reproduces
 both fixture files byte for byte.
@@ -459,7 +460,7 @@ dropped before each measured query, so the WASM memory figure is that query's pe
 process and answer in well under a millisecond. Wall times say how much work the Worker
 and the engine do, not how long a query takes on Cloudflare.
 
-Two runs on 2026-11-18, 22:0x and 22:3x UTC, with other engineers' test suites running on
+Two runs on 2026-11-18, at about 22:05 and 22:20 UTC, with other engineers' test suites running on
 the same four cores (the second run was the busier one: loading tenant A took 114 s
 against 56 s). Counts are identical in both runs except "leaves used", which depends on
 the random query id; times are given as first run / second run.
@@ -656,5 +657,11 @@ reader.
   by the limits. Grafana sends `start` and `end`; a client that does not may get 422.
 - **Injected failures print errors.** The fence tests make leaves fail on purpose; the
   runtime logs those exceptions while the tests pass.
-- **Edge and the engines changed while this was built.** The suite's last run was
-  against the sources as they were at the end of this work.
+- **Edge and the engines changed while this was built.** The last full run (62 passed,
+  22:27 UTC) was against these sources, fingerprinted before and after it (the first 16
+  hex digits of the SHA-256 of each tree's files concatenated in path order): `edge/src`
+  `dde7320deef5980e`, `shard/src` `7a7fb509988cc335`, `ledger/src` `57a9e39060010934`,
+  `flush/src` `e2054f5d15d581aa`, `engine/wasm/js` `58e4ed5622b05972`,
+  `edge/test/helpers.ts` `5166bc3e078a7bf5`, `engine/wasm/test/vzb1.ts`
+  `b2bb54353d668f33`, `app/src/api` `5f2442f7c1b97d4f`. The tests import the last three
+  as helpers; a change to them can break this suite without a change here.
