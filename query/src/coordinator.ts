@@ -136,7 +136,7 @@ async function snapshot(c: Context, minTs: number, maxTs: number): Promise<Snaps
     const series: Plan = await ledger.plan({ table: 'metric_series', minTs, maxTs })
     if (hooks.betweenPlans) await hooks.betweenPlans(c.tenant)
     const samples: Plan = await ledger.plan({ table: 'metric_samples', minTs, maxTs })
-    if (samples.version >= 0) {
+    if (samples.version === series.version && samples.ledgerIncarnation === series.ledgerIncarnation) {
       return { version: samples.version, ledgerIncarnation: samples.ledgerIncarnation, samples: samples.files, series: series.files, watermarks: samples.watermarks }
     }
     checkDeadline(c)
@@ -372,7 +372,7 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
 /** Shards to ask: every slot the tenant may write to, and every stream the ledger has registered. */
 async function shardsOf(c: Context, watermarks: Watermark[]): Promise<string[]> {
   const map = await poolMap(c.env, c.tenant)
-  const names = new Set(tenantSlots(map, c.tenant).map((slot) => shardName(map, slot)))
+  const names = new Set(tenantSlots(map, c.tenant).slice(0, 1).map((slot) => shardName(map, slot)))
   for (const w of watermarks) names.add(w.shard)
   return [...names].sort()
 }

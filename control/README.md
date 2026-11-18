@@ -310,25 +310,25 @@ What the tests establish:
 ### Mutation checks
 
 `scripts/mutants.mjs` applies each change on its own, runs the suite and restores the
-files. All 35 make at least one test fail. Failing files in brackets.
+files. All 35 make at least one test fail; the last column names the test files that failed.
 
 | # | Mutant | Caught by |
 |---|---|---|
-| 1 | Tenant taken from a request parameter (`?tenant=`) | isolation |
-| 2 | The same, and the Tenant object trusting the tenant it is told | isolation |
+| 1 | Tenant taken from a request parameter (`?tenant=`) | isolation, rules |
+| 2 | The same, and the Tenant object trusting the tenant it is told | isolation, rules |
 | 3 | Secret stored in clear | keys and every other file |
 | 4 | List returning the stored secret material | keys |
 | 5 | Base-revision check skipped on patch | dashboards, http, property, settings |
 | 6 | Apply without the apply scope | openapi, proposals |
 | 7 | Agent self-apply allowed | proposals |
 | 8 | Proposal applied against a moved dashboard without the rebase check | proposals |
-| 9 | Mutation not atomic with its audit row: a failure part-way, then a retry, leaves a change with no entry | durability and most others |
-| 10 | KV written before the transaction commits | durability, keys, settings |
-| 11 | Soft-deleted dashboard still listed | dashboards |
+| 9 | Mutation not atomic with its audit row: a failure part-way, then a retry, leaves a change with no entry | durability, dashboards, keys, proposals, settings |
+| 10 | KV written before the transaction commits | durability, keys, rules, settings |
+| 11 | Soft-deleted dashboard still listed | dashboards, durability, isolation |
 | 12 | Dry run commits | dashboards, keys, proposals, settings |
 | 13 | A mutation without an audit row, structural guard removed | settings |
 | 14 | Disabled key still accepted by the Tenant object | keys |
-| 15 | Disabled key published to KV as enabled | keys, durability |
+| 15 | Disabled key published to KV as enabled | keys |
 | 16 | Old secret kept in KV after a rotation without overlap | keys, durability |
 | 17 | Revocation generation not bumped on disable | keys, durability |
 | 18 | Key deleted without its name as confirmation | keys |
