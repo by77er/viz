@@ -77,7 +77,7 @@ export function escapeToken(t: string): string {
 
 /** `~1` → `/` first, then `~0` → `~`, so that `~01` decodes to `~1` and not `/`. */
 export function unescapeToken(t: string): string {
-  return t.replace(/~1/g, '/').replace(/~0/g, '~')
+  return t.replace(/~0/g, '~').replace(/~1/g, '/')
 }
 
 export function pointer(tokens: readonly (string | number)[]): string {

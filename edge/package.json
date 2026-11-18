@@ -4,7 +4,10 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "fixtures": "node scripts/gen-fixtures.mjs",
+    "mutants": "node scripts/mutants.mjs",
+    "bench": "node bench/decode.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.4",

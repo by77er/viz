@@ -197,7 +197,7 @@ export type ApplyPatchResult =
  */
 export function applyPatch(spec: Dashboard, ops: readonly PatchOp[], opts: ApplyPatchOptions): ApplyPatchResult {
   const actual = revisionOf(spec)
-  if (false) {
+  if (opts?.baseRevision !== actual) {
     return {
       ok: false,
       conflict: {
