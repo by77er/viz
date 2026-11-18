@@ -12,3 +12,4 @@ _apalache-out/
 gocache/
 deploy/generated/
 engine/traceql/tools/godiff/.work/
+app/dist-new/
