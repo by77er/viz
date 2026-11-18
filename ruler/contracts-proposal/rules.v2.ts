@@ -294,7 +294,7 @@ export interface RulerRpcV2 extends RulerRpc {
   snapshot(tenant: string): Promise<{ status: 'ok'; shard: string; groups: GroupSnapshot[] } | WrongTenant>
   timeline(tenant: string, monitorId: string): Promise<({ status: 'ok' } & Timeline) | WrongTenant>
   /** Run `rule` (an alerting rule input) over history with the live state machine. */
-  backtest(tenant: string, rule: unknown, fromMs: number, toMs: number, stepMs: number): Promise<BacktestResponse>
+  backtest(tenant: string, rule: unknown, fromMs: number, toMs: number, stepMs: number, liveIntervalMs?: number): Promise<BacktestResponse>
   exportGroup(tenant: string, name: string): Promise<{ status: 'ok'; bundle: GroupBundle } | { status: 'not_found' } | WrongTenant>
   /** Idempotent. The group starts on this shard's schedule with its alert state intact. */
   importGroup(tenant: string, bundle: GroupBundle): Promise<{ status: 'ok' } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant>

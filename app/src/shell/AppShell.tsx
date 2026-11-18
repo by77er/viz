@@ -7,6 +7,7 @@ import { MOD, useCommands, useCommandsContext } from './commands'
 import { SettingsPanel } from './SettingsPanel'
 import { useSettings } from './settings'
 import { useTheme } from './theme'
+import { installFocusKeeper } from '../lib/focusKeeper'
 
 /** Build info doubles as the connection check and the "is this the mock?" probe. */
 export function useBackendInfo() {
@@ -63,6 +64,9 @@ export function AppShell() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [setPaletteOpen])
+
+  // A control that goes away while it has focus hands the focus on; it never falls to the document.
+  useEffect(() => installFocusKeeper(), [])
 
   useCommands(
     'shell',

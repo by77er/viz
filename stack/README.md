@@ -134,7 +134,21 @@ below its stream's logged watermark. At the end, after flushing, compacting, exp
 deleting everything: the objects in R2 are exactly the ledger's live set, all level 2, no
 tombstone and no pending segment left.
 
-SOAK_RESULTS
+**Result.** Three runs of 3,000 steps (`npm run soak`), the last on the final code: all
+invariants held at every step. The last run: 1,130 acknowledged requests, 230 segments
+admitted through 1,063 delivered flush messages (125 retried after injected failures),
+418 merges (25 conflicts, 20 crashed steps), 1,420 files expired, 3,976 objects purged, 28
+orphans deleted, 96 evictions, 50 ledger-log outages, 67 old-plan readers verified, 0
+dead letters; 125 s. `npm test` runs 400 steps (about 20 s).
+
+**What failed during development.** One soak run stopped at step 1,441: "deleted inside
+the grace: 1499 ms, expected ≥ 1500". That was the test's clock, not the janitor: the
+test took its timestamp before calling `purgeTenant`, the ledger judged the age a
+millisecond later. The check now uses the time after the call. No invariant failure
+caused by the code under test was seen in the soak or the property test; the bugs found
+while building were caught earlier, by the unit suites (a tombstone's time differing by
+1 ms from its logged change after a rebuild; a native ABI test crashing on a 32-bit
+pointer field).
 
 ### Mutation checks (`node scripts/mutants.mjs all`)
 
@@ -229,8 +243,8 @@ reads it with hyparquet in Node. Last run: file of 31 rows, **4 of 4 checks agre
 row count against the ledger's `rows`; decoded row count and wrapping sum of `ts` against
 the shard's own batches for that segment; sort order).
 
-The flush mutants (`flush/scripts/mutants.mjs --stack`) run against this suite kill 8 of
-18; see `flush/README.md` for which and why.
+The flush mutants (`flush/scripts/mutants.mjs --stack`) run against this suite killed 8 of
+18 when it was written (see `flush/README.md`); that run was not repeated for this work.
 
 ## Contract changes made during integration
 

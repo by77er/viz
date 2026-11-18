@@ -176,8 +176,9 @@ describe('units', () => {
     expect(formatValue(3 * 1024 ** 3, 'bytes')).toBe('3 GiB')
     expect(formatValue(0.0421, 'percentunit')).toBe('4.21%')
     expect(formatValue(453.2, 'rps')).toBe('453/s')
-    expect(formatValue(0.25, 'cores')).toBe('250m')
-    expect(formatValue(1.5, 'cores')).toBe('1.5')
+    // Was '250m' and '1.5': a number with a unit must show it (design review M7).
+    expect(formatValue(0.25, 'cores')).toBe('250 millicores')
+    expect(formatValue(1.5, 'cores')).toBe('1.5 cores')
     expect(formatValue(null)).toBe('–')
     expect(formatValue(NaN)).toBe('NaN')
     expect(formatValue(Infinity)).toBe('+Inf')

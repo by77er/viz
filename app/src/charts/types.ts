@@ -39,7 +39,12 @@ export interface TimeSeriesChartProps {
   xRange: [number, number]
   /** Ids of series to draw; null draws all. */
   visible: ReadonlySet<string> | null
+  /** Axis ticks: the number alone, in the axis' one scale. The owner states the unit once (panel head). */
   formatValue: (v: number) => string
+  /** A value that stands alone (the crosshair readout, the keyboard announcement): number and unit. Defaults to `formatValue`. */
+  formatReadout?: (v: number) => string
+  /** Allowed tick increments of the value axis (powers of two for bytes); the renderer's own when omitted. */
+  yIncrements?: number[]
   /** Called with the selected range (epoch seconds) after a horizontal drag. */
   onZoom?: (from: number, to: number) => void
   onRenderInfo?: (info: RenderInfo) => void

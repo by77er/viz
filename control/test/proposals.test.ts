@@ -79,8 +79,15 @@ describe('proposed changes', () => {
     expect(words).toContain('p_goroutines')
     expect(review.changes[1].summary.join(' ')).toContain('Error ratio, 5xx over all')
 
-    // the agent cannot apply (no scope); Dana can
+    // applying needs the apply scope: neither the agent nor a person with only dashboards:write can; Dana can
     expect((await post(agent.key, `/proposals/${id}/apply`)).status).toBe(403)
+    const writer = await makeKey(t.admin, ['dashboards:read', 'dashboards:write'], { name: 'Sam, write only' })
+    for (const body of [{}, { dryRun: true }, { changes: ['retitle'] }]) {
+      const refused = await post(writer.key, `/proposals/${id}/apply`, body)
+      expect(refused.status).toBe(403)
+      expect(refused.body).toMatchObject({ code: 'missing-scope', required: ['admin', 'dashboards:apply'] })
+    }
+    expect((await current(t.admin)).number).toBe(1)
     const applied = await post(dana.key, `/proposals/${id}/apply`)
     expect(applied.status, applied.text).toBe(200)
     expect(applied.body).toMatchObject({ outcome: 'applied', number: 2, previousRevision: r1, revision: review.result.revision, appliedChanges: ['add_dependency_latency', 'retitle', 'remove_goroutines'], skippedChanges: [] })

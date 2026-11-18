@@ -96,6 +96,8 @@ export const hooks: {
   beforeLeafCall?: (leaf: number, items: ReadItem[]) => Promise<void>
   /** Overrides `MAX_PART_BYTES`, so that small files are read in ranges too. */
   maxPartBytes?: number
+  /** Overrides `ISOLATE_BUDGET_BYTES`. */
+  isolateBudgetBytes?: number
 } = {}
 
 export interface Context {
@@ -140,6 +142,38 @@ async function snapshot(c: Context, minTs: number, maxTs: number): Promise<Snaps
     checkDeadline(c)
   }
   throw new ApiError('unavailable', 'the ledger kept changing while the query was being planned; retry')
+}
+
+/**
+ * Sample files in the order the engine must read them: lowest precedence first, because
+ * on a duplicate `(series, timestamp)` the LATER file wins (and any tail batch wins over
+ * every file).
+ *
+ * The ledger lists files in key order, and key order is text order: `…-10-12-…` sorts
+ * before `…-2-9-…`, so from a stream's tenth batch on, key order would let an OLDER
+ * flush win over a newer one. The order used here, from the key (contracts/TABLES.md):
+ *
+ *   1. compaction outputs (level 1 and up), higher level first, then by key: they hold
+ *      what older flush files held;
+ *   2. flush files (level 0) by shard, incarnation and sequence range, as numbers.
+ *
+ * What this cannot order: two compaction outputs that both hold the same sample (README,
+ * "Needed changes": the ledger should carry an explicit precedence).
+ */
+const FLUSH_KEY = /\/L0-(.+)-(\d+)-(\d+)-(\d+)-[0-9a-f]{8}\.parquet$/
+const LEVEL = /\/L(\d+)-[^/]*$/
+
+export function byPrecedence(files: FileEntry[]): FileEntry[] {
+  const rank = (f: FileEntry) => {
+    const m = FLUSH_KEY.exec(f.key)
+    const level = f.level > 0 ? f.level : Number(LEVEL.exec(f.key)?.[1] ?? 0)
+    return m && level === 0 ? { level: 0, shard: m[1]!, inc: Number(m[2]), lo: Number(m[3]), hi: Number(m[4]), key: f.key } : { level, shard: '', inc: 0, lo: 0, hi: 0, key: f.key }
+  }
+  const text = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+  return files
+    .map((f) => ({ f, r: rank(f) }))
+    .sort((x, y) => y.r.level - x.r.level || text(x.r.shard, y.r.shard) || x.r.inc - y.r.inc || x.r.lo - y.r.lo || x.r.hi - y.r.hi || text(x.r.key, y.r.key))
+    .map((x) => x.f)
 }
 
 // ───────────────────────────────── leaves ─────────────────────────────────
@@ -227,6 +261,7 @@ async function fetchFiles(c: Context, files: FileEntry[], have: Map<string, Uint
       [...round].map(async ([leaf, list]) => {
         const items: ReadItem[] = list.map(({ key, offset, length }) => (offset === undefined ? { key } : { key, offset, length }))
         const call = async (to: number): Promise<ReadResult[]> => {
+          if (hooks.beforeLeafCall) await hooks.beforeLeafCall(to, items)
           used.add(to)
           c.cost.leafCalls++
           const answer = await stub(to).read(items, ttl)
@@ -237,7 +272,6 @@ async function fetchFiles(c: Context, files: FileEntry[], have: Map<string, Uint
         }
         let results: ReadResult[]
         try {
-          if (hooks.beforeLeafCall) await hooks.beforeLeafCall(leaf, items)
           results = await call(leaf)
         } catch (first) {
           if (first instanceof ApiError) throw first
@@ -349,9 +383,15 @@ export function checkDeadline(c: Context): void {
   if (Date.now() > c.deadline) throw new ApiError('timeout', 'query timed out')
 }
 
-/** Bytes this isolate holds for queries in flight, so a burst is refused before it exhausts memory. */
+/**
+ * Bytes of data files this isolate has promised to hold for queries in flight. A query
+ * that would take the total past the budget while others are running is refused with a
+ * retryable 503 before it fetches anything (a query alone always runs: its own size is
+ * bounded by `maxFetchBytes`). An isolate serves many requests at once and has 128 MB
+ * for all of them.
+ */
 let inFlightBytes = 0
-export const ISOLATE_BUDGET_BYTES = 64 << 20
+export const ISOLATE_BUDGET_BYTES = 48 << 20
 
 const tooMuch = (c: Context, what: string, bytes: number): ApiError =>
   new ApiError(
@@ -387,8 +427,9 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       c.cost.ledgerVersion = snap.version
       if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
 
-      // Which files can the ranges touch? Both tables in one call; key order is the
-      // ledger's, which is also the order compaction merges in (later file wins).
+      // Which files can the ranges touch? Both tables in one call. Sample files go to the
+      // engine lowest precedence first (see `byPrecedence`).
+      snap.samples = byPrecedence(snap.samples)
       const listed = [...snap.series, ...snap.samples]
       const keep = c.engine.filesNeeded(listed.map((f) => f.index), ranges)
       const series = snap.series.filter((_, i) => keep[i])
@@ -416,7 +457,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       const lakeBytes = wanted.reduce((a, f) => a + f.bytes, 0)
       if (lakeBytes > c.limits.maxFetchBytes) throw tooMuch(c, `the ${wanted.length} data files in range`, lakeBytes)
       if (reserved === 0) {
-        if (inFlightBytes > 0 && inFlightBytes + lakeBytes > ISOLATE_BUDGET_BYTES) throw new ApiError('unavailable', 'the query service is busy; retry')
+        if (inFlightBytes > 0 && inFlightBytes + lakeBytes > (hooks.isolateBudgetBytes ?? ISOLATE_BUDGET_BYTES)) throw new ApiError('unavailable', 'the query service is busy; retry')
         reserved = Math.max(lakeBytes, 1)
         inFlightBytes += reserved
       }

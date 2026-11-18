@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { Compartment, EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap, placeholder as placeholderExt, tooltips } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
@@ -6,6 +6,7 @@ import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } 
 import { bracketMatching } from '@codemirror/language'
 import { PromQLExtension } from '@prometheus-io/codemirror-promql'
 import type { PromClient } from '../api/client'
+import { countRender } from '../lib/renders'
 import { completionClient } from './promClient'
 
 // The design system's query well does not colour tokens by type: the query is one ink, and
@@ -54,23 +55,35 @@ const theme = EditorView.theme({
 export interface PromqlEditorHandle {
   /** Focus the editor; with a position, put the cursor at that character (0-based). */
   focus(at?: number): void
+  /** The text in the editor now. */
+  getValue(): string
 }
 
 interface Props {
+  /**
+   * The committed query (the URL's). The editor owns the text being typed: this prop only
+   * replaces the document when it changes from outside (navigation, an example link).
+   */
   value: string
-  onChange: (value: string) => void
   /** Ctrl/Cmd+Enter. */
   onRun: () => void
   client: PromClient
   handleRef?: React.RefObject<PromqlEditorHandle | null>
 }
 
-export default function PromqlEditor({ value, onChange, onRun, client, handleRef }: Props) {
+/**
+ * The editor keeps its own text. Nothing outside it is told about a keystroke: the page
+ * reads the text when the query is run (`handleRef.current.getValue()`), so typing renders
+ * nothing in React (design review B3). The extensions are built once per editor, and the
+ * autocomplete source once per connection.
+ */
+export default memo(function PromqlEditor({ value, onRun, client, handleRef }: Props) {
+  countRender('PromqlEditor')
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const langCompartment = useRef(new Compartment())
-  const cb = useRef({ onChange, onRun })
-  cb.current = { onChange, onRun }
+  const cb = useRef({ onRun })
+  cb.current = { onRun }
 
   const promqlExtension = (c: PromClient) =>
     new PromQLExtension().setComplete({ remote: completionClient(c), maxMetricsMetadata: 10000 }).asExtension()
@@ -103,9 +116,6 @@ export default function PromqlEditor({ value, onChange, onRun, client, handleRef
           ),
           keymap.of([...closeBracketsKeymap, ...completionKeymap, ...historyKeymap, ...defaultKeymap]),
           langCompartment.current.of(promqlExtension(client)),
-          EditorView.updateListener.of((u) => {
-            if (u.docChanged) cb.current.onChange(u.state.doc.toString())
-          }),
         ],
       }),
     })
@@ -119,6 +129,7 @@ export default function PromqlEditor({ value, onChange, onRun, client, handleRef
             view.dispatch({ selection: { anchor }, scrollIntoView: true })
           }
         },
+        getValue: () => view.state.doc.toString(),
       }
     return () => {
       view.destroy()
@@ -146,4 +157,4 @@ export default function PromqlEditor({ value, onChange, onRun, client, handleRef
   }, [client])
 
   return <div ref={hostRef} data-testid="query-editor" />
-}
+})

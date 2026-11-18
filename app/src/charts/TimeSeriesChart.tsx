@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import uPlot from 'uplot'
 import { downsampleMinMax } from '../lib/downsample'
+import { countRender } from '../lib/renders'
 import type { ChartSeries, TimeSeriesChartProps } from './types'
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -56,7 +57,8 @@ const deviceFont = (font: string, dpr: number) => font.replace(/([\d.]+)px/, (_m
  *   does not lay out the page.
  */
 export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesChartProps) {
-  const { xs, series, xRange, visible, formatValue, onZoom, onRenderInfo, syncKey, theme, ariaLabel } = props
+  const { xs, series, xRange, visible, formatValue, formatReadout, yIncrements, onZoom, onRenderInfo, syncKey, theme, ariaLabel } = props
+  countRender('TimeSeriesChart')
   const wrapRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const tipRef = useRef<HTMLDivElement>(null)
@@ -68,8 +70,10 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
   const built = useRef<{ signature: string; destroy: () => void }>({ signature: '', destroy: () => {} })
 
   // Latest callbacks without re-creating the plot.
-  const cb = useRef({ onZoom, onRenderInfo, formatValue })
-  cb.current = { onZoom, onRenderInfo, formatValue }
+  const cb = useRef({ onZoom, onRenderInfo, formatValue, formatReadout: formatReadout ?? formatValue, yIncrements })
+  cb.current = { onZoom, onRenderInfo, formatValue, formatReadout: formatReadout ?? formatValue, yIncrements }
+  /** The tick format the axes were last drawn with. */
+  const drawnFormat = useRef(formatValue)
 
   useLayoutEffect(() => {
     const el = wrapRef.current
@@ -128,8 +132,9 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
     // New data for the same series at the same size goes into the existing plot: no new
     // canvas, no new axes. Anything else (series set, size, theme) builds a new one.
     const data: uPlot.AlignedData = [ds.xs, ...(ds.series as (number | null)[][])]
-    const signature = [width, height, themeKey, syncKey ?? '', ...shown.map((s) => `${s.id}|${s.colorVar}|${s.other ? 1 : 0}|${s.directLabel ?? s.shortLabel ?? s.label}`)].join('\n')
+    const signature = [width, height, themeKey, syncKey ?? '', yIncrements ? 'binary' : 'decimal', ...shown.map((s) => `${s.id}|${s.colorVar}|${s.other ? 1 : 0}|${s.directLabel ?? s.shortLabel ?? s.label}`)].join('\n')
     live.current = { ds, shown, xRange }
+    drawnFormat.current = cb.current.formatValue
     if (plotRef.current && built.current.signature === signature) {
       plotRef.current.setData(data)
       return
@@ -187,7 +192,7 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
         const s = shown[r.i]!
         el.swatch.style.background = `var(${s.colorVar})`
         el.name.textContent = s.shortLabel ?? s.label
-        el.value.textContent = cb.current.formatValue(r.value)
+        el.value.textContent = cb.current.formatReadout(r.value)
         if (focused === r.i + 1) el.row.dataset.focus = ''
         else delete el.row.dataset.focus
       })
@@ -195,9 +200,11 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
       tipMore.hidden = tipMore.textContent === ''
       tip.hidden = false
       if (!tipWidth) tipWidth = tip.offsetWidth
-      const x = u.over.offsetLeft + left
+      // The plot's offset comes from uPlot's own box (device pixels), not from offsetLeft/offsetTop:
+      // reading those here, after the rows were written, would lay the page out on every move.
+      const x = u.bbox.left / dpr + left
       const flip = x + tipGap + tipWidth > width
-      tip.style.transform = `translate(${Math.max(0, flip ? x - tipGap - tipWidth : x + tipGap)}px, ${u.over.offsetTop + tipGap}px)`
+      tip.style.transform = `translate(${Math.max(0, flip ? x - tipGap - tipWidth : x + tipGap)}px, ${u.bbox.top / dpr + tipGap}px)`
     }
 
     // ---- direct labels for up to four series: right-aligned at the plot's edge, above the
@@ -298,6 +305,7 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
           grid: { stroke: rule, width: hairline },
           ticks: { show: false },
           values: (_u, splits) => splits.map((v) => cb.current.formatValue(v)),
+          ...(cb.current.yIncrements ? { incrs: cb.current.yIncrements } : {}),
           gap: length('--space-2'),
           size(self, values, axisIdx, cycleNum) {
             const axis = self.axes[axisIdx] as uPlot.Axis & { _size?: number }
@@ -373,9 +381,16 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
     }
     // formatValue / callbacks are read through refs; xRange is compared by value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [xs, series, visible, size, theme, syncKey, xRange[0], xRange[1]])
+  }, [xs, series, visible, size, theme, syncKey, xRange[0], xRange[1], yIncrements])
 
   useEffect(() => () => built.current.destroy(), [])
+
+  // A new tick format alone (the unit was changed) draws no new data, so the axes are redrawn here.
+  useEffect(() => {
+    if (drawnFormat.current === formatValue) return
+    drawnFormat.current = formatValue
+    plotRef.current?.redraw(false, true)
+  }, [formatValue])
 
   // Keyboard: arrows move the crosshair; values are announced politely.
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -395,12 +410,15 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
       e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : Math.max(0, Math.min(n - 1, cur + (e.key === 'ArrowLeft' ? -stepBy : stepBy)))
     u.setCursor({ left: u.valToPos(u.data[0]![idx]!, 'x'), top: u.over.clientHeight / 2 })
     if (liveRef.current) {
-      const parts: string[] = []
-      for (let i = 1; i < u.data.length && parts.length < 3; i++) {
+      // The first three values at this time, and how many more there are: never a silent cut.
+      const at: { label: string; v: number }[] = []
+      for (let i = 1; i < u.data.length; i++) {
         const v = u.data[i]![idx]
-        if (v != null) parts.push(`${u.series[i]!.label}: ${cb.current.formatValue(v)}`)
+        if (v != null) at.push({ label: String(u.series[i]!.label), v })
       }
-      liveRef.current.textContent = `${fullTime(u.data[0]![idx]!)}. ${parts.join('; ') || 'no data'}`
+      const parts = at.slice(0, 3).map((p) => `${p.label}: ${cb.current.formatReadout(p.v)}`)
+      const more = at.length > 3 ? `; and ${at.length - 3} more series` : ''
+      liveRef.current.textContent = `${fullTime(u.data[0]![idx]!)}. ${parts.join('; ') || 'no data'}${more}`
     }
   }
 

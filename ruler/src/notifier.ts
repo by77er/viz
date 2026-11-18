@@ -985,7 +985,15 @@ export class Notifier extends DurableObject implements NotifierRpc {
   async dropLogs(tenant: string, monitorIds: string[]) {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
-    for (const id of monitorIds) this.exec(`DELETE FROM notify_log WHERE tenant = ? AND monitor = ?`, this.tenant, id)
+    const gone = new Set(monitorIds)
+    // Alerts of a deleted monitor are still held until their resolution has been sent.
+    // They stop naming the monitor, so that last notification does not start a new log.
+    const orphans = [...this.alerts.values()].filter((a) => a.generator.monitor !== undefined && gone.has(a.generator.monitor)).map((a): StoredAlert => ({ ...a, generator: { group: a.generator.group, rule: a.generator.rule } }))
+    this.ctx.storage.transactionSync(() => {
+      for (const id of monitorIds) this.exec(`DELETE FROM notify_log WHERE tenant = ? AND monitor = ?`, this.tenant, id)
+      for (const a of orphans) this.putAlert(a)
+    })
+    for (const a of orphans) this.alerts.set(a.fingerprint, a)
     return { status: 'ok' as const }
   }
 

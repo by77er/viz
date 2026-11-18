@@ -12,7 +12,7 @@ export function formatResponse(data: PromMatrixData): string {
   return `{\n  "status": "success",\n  "data": {\n    "resultType": "matrix",\n    "result": [${series.length ? `\n${series.join(',\n')}\n    ` : ''}]\n  }\n}`
 }
 
-export const JsonView = memo(function JsonView({ data }: { data: PromMatrixData }) {
+export const JsonView = memo(function JsonView({ data, elapsedMs }: { data: PromMatrixData; elapsedMs?: number }) {
   const text = useMemo(() => formatResponse(data), [data])
   const truncated = text.length > MAX_CHARS
   return (
@@ -20,6 +20,11 @@ export const JsonView = memo(function JsonView({ data }: { data: PromMatrixData 
       <div className="caption-row">
         <p className="vz-panel-desc">
           The response of <span className="app-num">/api/v1/query_range</span>, <span className="app-num">{(text.length / 1024).toFixed(1)}</span> KiB
+          {elapsedMs !== undefined && (
+            <>
+              , answered in <span className="app-num">{elapsedMs < 10 ? elapsedMs.toFixed(1) : Math.round(elapsedMs).toLocaleString('en-US')}</span> ms
+            </>
+          )}
           {truncated ? `. Showing the first ${Math.round(MAX_CHARS / 1024)} KiB; Copy JSON copies all of it.` : '.'}
         </p>
         <CopyButton text={() => text} label="Copy JSON" />

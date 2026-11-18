@@ -12,3 +12,8 @@ declare namespace Cloudflare {
     LIMIT_CEILINGS?: string
   }
 }
+
+declare module '*?raw' {
+  const text: string
+  export default text
+}

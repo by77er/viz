@@ -367,17 +367,21 @@ class Parser {
     let body = ''
     if (!folded) body = rows.map((r) => r.text).join('\n')
     else {
-      rows.forEach((r, i) => {
-        if (i === 0) {
-          body += r.text
-          return
+      // Folding: a break between two ordinary lines is a space; each empty line is a
+      // newline; a break next to a more-indented line is kept as it is.
+      let prev: { text: string; more: boolean } | null = null
+      let blanks = 0
+      for (const r of rows) {
+        if (r.text === '') {
+          blanks++
+          continue
         }
-        const prev = rows[i - 1] as { text: string; more: boolean }
-        if (r.text === '') body += '\n'
-        else if (prev.text === '') body += r.text
-        else if (r.more || prev.more) body += '\n' + r.text
-        else body += ' ' + r.text
-      })
+        if (prev === null) body += '\n'.repeat(blanks) + r.text
+        else if (prev.more || r.more) body += '\n'.repeat(blanks + 1) + r.text
+        else body += (blanks === 0 ? ' ' : '\n'.repeat(blanks)) + r.text
+        prev = r
+        blanks = 0
+      }
     }
     if (rows.length === 0) return chomp === '+' ? '\n'.repeat(trailing) : ''
     if (chomp === '-') return body
@@ -502,6 +506,8 @@ export function coreScalar(v: string): string | number | boolean | null {
   if (v === 'true' || v === 'True' || v === 'TRUE') return true
   if (v === 'false' || v === 'False' || v === 'FALSE') return false
   if (INT_RE.test(v) || FLOAT_RE.test(v)) return Number(v)
+  if (/^0x[0-9a-fA-F]+$/.test(v)) return parseInt(v.slice(2), 16)
+  if (/^0o[0-7]+$/.test(v)) return parseInt(v.slice(2), 8)
   if (/^[-+]?\.(inf|Inf|INF)$/.test(v)) return v.startsWith('-') ? -Infinity : Infinity
   if (/^\.(nan|NaN|NAN)$/.test(v)) return NaN
   return v
@@ -541,7 +547,7 @@ function emit(v: unknown, indent: number, out: string[], lead: string): void {
   const pad = ' '.repeat(indent)
   if (Array.isArray(v)) {
     if (v.length === 0) {
-      out.push(`${lead} []`)
+      out.push(lead === '' ? `${pad}[]` : `${lead} []`)
       return
     }
     if (lead !== '') out.push(lead)
@@ -562,7 +568,7 @@ function emit(v: unknown, indent: number, out: string[], lead: string): void {
   if (v !== null && typeof v === 'object') {
     const keys = Object.keys(v)
     if (keys.length === 0) {
-      out.push(`${lead} {}`)
+      out.push(lead === '' ? `${pad}{}` : `${lead} {}`)
       return
     }
     if (lead !== '') out.push(lead)
@@ -575,7 +581,7 @@ function emit(v: unknown, indent: number, out: string[], lead: string): void {
   else if (typeof v === 'boolean') text = String(v)
   else {
     const s = String(v)
-    if (blockOk(s)) {
+    if (lead !== '' && blockOk(s)) {
       const body = s.endsWith('\n') ? s.slice(0, -1) : s
       out.push(`${lead} ${s.endsWith('\n') ? '|' : '|-'}`)
       for (const line of body.split('\n')) out.push(line === '' ? '' : `${pad}${line}`)
@@ -589,7 +595,6 @@ function emit(v: unknown, indent: number, out: string[], lead: string): void {
 /** Block-style YAML for plain data. What it writes, `parseYaml` + `core` read back to the same data. */
 export function toYaml(value: unknown): string {
   const out: string[] = []
-  // Nested values are indented two columns past their key; start the root at -2 so its keys sit at 0.
-  emit(value, -2, out, '')
+  emit(value, 0, out, '')
   return out.join('\n') + '\n'
 }

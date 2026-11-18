@@ -219,15 +219,24 @@ describe('files', () => {
     const q = QUERIES.find((x) => x.id === 'bin-or')!
     const ok = await run(w.a.key, q)
     expect(await ok.json()).toEqual(expected.a[q.id])
-    expect(calls).toBeGreaterThanOrEqual(1)
-    // A call the leaf refuses (more than six reads) is not retried anywhere: 503.
+    expect(calls).toBeGreaterThanOrEqual(2) // the failed call and its retry on the next leaf
+    // Both the call and its retry fail: 503. The files that could not be read are not left out.
     const q2 = QUERIES.find((x) => x.id === 'avg-without')!
-    hooks.beforeLeafCall = async (_leaf, items) => {
-      items.push({ key: 'x' }, { key: 'x' }, { key: 'x' }, { key: 'x' }, { key: 'x' }, { key: 'x' }, { key: 'x' }) // more than six reads: the leaf refuses the call
+    let failed = 0
+    hooks.beforeLeafCall = async (leaf) => {
+      if (leaf % 2 === 0 || failed++ >= 0) throw new Error('injected leaf failure')
     }
     const res = await run(w.a.key, q2)
     expect(res.status).toBe(503)
-    expect(await res.json()).toMatchObject({ status: 'error', errorType: 'unavailable' })
+    expect(await res.json()).toMatchObject({ status: 'error', errorType: 'unavailable', error: 'could not read data files: injected leaf failure' })
+    // A call the leaf itself refuses (more than six reads) is not retried anywhere: 503.
+    const q3 = QUERIES.find((x) => x.id === 'deriv')!
+    hooks.beforeLeafCall = async (_leaf, items) => {
+      while (items.length <= 6) items.push({ key: 'x' })
+    }
+    const refused = await run(w.a.key, q3)
+    expect(refused.status).toBe(503)
+    expect(await refused.json()).toMatchObject({ status: 'error', errorType: 'unavailable', error: expect.stringContaining('reads in one call; the limit is 6') })
   })
 
   it('leaves hold no state: evicting every leaf between and during queries changes nothing', async () => {
@@ -239,10 +248,17 @@ describe('files', () => {
     await exact(w.a, 'first')
     for (const l of leaves) await evictDurableObject(l)
     await exact(w.a, 'after eviction')
+    // Every second leaf is evicted right before each call to it. (A call that the
+    // eviction breaks is retried on the next leaf, which this hook leaves alone: evicting
+    // that one too could hit it in the middle of its own call.)
+    let evictions = 0
     hooks.beforeLeafCall = async (leaf) => {
+      if (leaf % 2 !== 0) return
+      evictions++
       await evictDurableObject(leaves[leaf]!)
     }
     await exact(w.b, 'evicted before every call')
+    expect(evictions).toBeGreaterThan(0)
     // Nothing was ever written to a leaf's storage.
     for (const l of leaves) {
       const keys = await runInDurableObject(l, async (_inst, state) => [...(await state.storage.list()).keys()])

@@ -18,9 +18,28 @@ interface Props {
   from: TimeSpec
   to: TimeSpec
   onChange: (from: TimeSpec, to: TimeSpec) => void
+  /** Zoom in or out: the same as a drag on the chart, for touch and keyboard. */
+  onZoom: (from: TimeSpec, to: TimeSpec) => void
+  /** Back to the range before the first zoom (or the default range when nothing was zoomed). */
+  onResetZoom: () => void
 }
 
-export const TimeRangePicker = memo(function TimeRangePicker({ from, to, onChange }: Props) {
+/** The range half as long around the same centre, never shorter than `minSeconds`. */
+export function zoomedIn(start: number, end: number, minSeconds = 60): [number, number] {
+  const span = end - start
+  const next = Math.max(Math.min(span, minSeconds), span / 2)
+  const mid = (start + end) / 2
+  return [mid - next / 2, mid + next / 2]
+}
+
+/** The range twice as long around the same centre, moved back so that it does not end after `now`. */
+export function zoomedOut(start: number, end: number, now: number): [number, number] {
+  const half = (end - start) / 2
+  const newEnd = Math.min(end + half, now)
+  return [newEnd - 4 * half, newEnd]
+}
+
+export const TimeRangePicker = memo(function TimeRangePicker({ from, to, onChange, onZoom, onResetZoom }: Props) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -65,9 +84,12 @@ export const TimeRangePicker = memo(function TimeRangePicker({ from, to, onChang
     onChange(absoluteSpec(start + dir * half), absoluteSpec(end + dir * half))
   }
   const zoomOut = () => {
-    const half = (end - start) / 2
-    const newEnd = Math.min(end + half, Date.now() / 1000)
-    onChange(absoluteSpec(newEnd - 4 * half), absoluteSpec(newEnd))
+    const [a, b] = zoomedOut(start, end, Date.now() / 1000)
+    onZoom(absoluteSpec(a), absoluteSpec(b))
+  }
+  const zoomIn = () => {
+    const [a, b] = zoomedIn(start, end)
+    onZoom(absoluteSpec(a), absoluteSpec(b))
   }
 
   const current = to === 'now' && from.startsWith('now-') ? from.slice(4) : null
@@ -96,8 +118,15 @@ export const TimeRangePicker = memo(function TimeRangePicker({ from, to, onChang
       <button className="vz-button" onClick={() => shift(1)} aria-label="Show later: shift the time range forward by half its length">
         Show later
       </button>
-      <button className="vz-button" onClick={zoomOut} aria-label="Zoom out: double the time range">
+      {/* Zoom by button: a drag on the chart cannot be the only way (touch, keyboard). Placement is provisional. */}
+      <button className="vz-button" onClick={zoomIn} aria-label="Zoom in: halve the time range around its middle" data-testid="zoom-in">
+        Zoom in
+      </button>
+      <button className="vz-button" onClick={zoomOut} aria-label="Zoom out: double the time range" data-testid="zoom-out">
         Zoom out
+      </button>
+      <button className="vz-button" onClick={onResetZoom} aria-label="Reset zoom: go back to the time range before zooming" data-testid="zoom-reset">
+        Reset zoom
       </button>
 
       {open && (
@@ -123,6 +152,8 @@ export const TimeRangePicker = memo(function TimeRangePicker({ from, to, onChang
                 onClick={() => {
                   onChange(`now-${p}`, 'now')
                   setOpen(false)
+                  // The menu item that had focus is gone; the button that opened the menu takes it.
+                  buttonRef.current?.focus()
                 }}
               >
                 Last {spacedDuration(p)}
@@ -140,6 +171,7 @@ export const TimeRangePicker = memo(function TimeRangePicker({ from, to, onChang
               if (b <= a) return setError('Set the end after the start.')
               onChange(absoluteSpec(a), absoluteSpec(b))
               setOpen(false)
+              buttonRef.current?.focus()
             }}
           >
             <div className="vz-field">
@@ -171,7 +203,7 @@ export const TimeRangePicker = memo(function TimeRangePicker({ from, to, onChang
               )}
             </div>
             <div className="popover-actions">
-              <span className="vz-help">{isRelative(from) || isRelative(to) ? 'The range now follows the clock.' : 'The range now is fixed.'}</span>
+              <span className="vz-help">{isRelative(from) || isRelative(to) ? 'This range follows the clock.' : 'This range is fixed.'}</span>
               <button type="submit" className="vz-button">
                 Apply range
               </button>

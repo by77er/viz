@@ -1,0 +1,8 @@
+An action that was started and has failed after the person looked away: a save, a silence, an export, an optimistic change that the server refused. `vz-notice` with `role="alert"`: the critical mark, a sentence, the fix as a small button, and "Dismiss".
+
+- **Where.** At the control that started the action, directly under it, so the failure is found where the change was made. The control shows its old value again: the optimistic change is undone before the notice appears. Only if that control is no longer on screen (the person has moved to another view) does the notice float: `data-floating`, bottom left, on `raised` with the shadow.
+- **What it says.** What was not done, why in the system's words, and what is true now: "Could not silence the monitor: the server did not answer. It is still paging." Never "Something went wrong".
+- **Actions.** The fix first ("Try again", "Review and save"), then "Dismiss" (quiet). At most those two.
+- **It stays** until the person dismisses it or the retry succeeds. It never disappears on a timer: a failure that vanishes is a failure not reported. A retry that succeeds removes the notice with no success message; the result is the confirmation.
+- Several failures stack, newest at the bottom, at most three; beyond that one notice says "4 changes were not saved" and lists them when opened.
+- It is not a banner (a banner advises about data that is on screen) and not an error state (a region that could not load uses `vz-empty` with the critical mark). There is no success, warning or informational notice.

@@ -15,14 +15,32 @@ function selector(metricName: string | undefined, matchers?: Matcher[]): string 
   return `${metricName ?? ''}${parts.length || !metricName ? `{${parts.join(',')}}` : ''}`
 }
 
+export interface CompletionOptions {
+  /** How long a lookup waits for a newer one before it is sent, in ms. */
+  debounceMs?: number
+}
+
+/** Wait this long before asking the API, so a lookup for every keystroke is never sent. */
+export const COMPLETION_DEBOUNCE_MS = 150
+
 /**
  * Adapter from the app's API client to the interface the PromQL editor's autocomplete uses,
  * so completion requests go through the same base URL and bearer token as queries. Results
  * are cached per client instance; failures yield empty lists (autocomplete must never throw).
+ *
+ * Lookups that depend on what is being typed (label names, label values, series of a
+ * selector) are debounced and cancelled: a lookup waits `debounceMs` before it is sent, and a
+ * newer lookup of the same kind replaces it. One that has not been sent is never sent; one in
+ * flight is aborted through its AbortSignal. A replaced lookup answers with the empty
+ * fallback and is not cached. The two whole-backend lists (metric names, metadata) are
+ * fetched once and kept.
  */
-export function completionClient(client: PromClient): CompletionClient {
+export function completionClient(client: PromClient, options: CompletionOptions = {}): CompletionClient {
+  const debounceMs = options.debounceMs ?? COMPLETION_DEBOUNCE_MS
   const cache = new Map<string, Promise<unknown>>()
-  const cached = <T,>(key: string, load: () => Promise<T>, fallback: T): Promise<T> => {
+  const pending = new Map<string, { key: string; cancel: () => void }>()
+
+  const once = <T,>(key: string, load: () => Promise<T>, fallback: T): Promise<T> => {
     let p = cache.get(key) as Promise<T> | undefined
     if (!p) {
       p = load().catch(() => {
@@ -33,25 +51,60 @@ export function completionClient(client: PromClient): CompletionClient {
     }
     return p
   }
+
+  const latest = <T,>(kind: string, key: string, load: (signal: AbortSignal) => Promise<T>, fallback: T): Promise<T> => {
+    const hit = cache.get(key) as Promise<T> | undefined
+    if (hit) return hit
+    pending.get(kind)?.cancel()
+    const controller = new AbortController()
+    const p = new Promise<T>((resolve) => {
+      let settled = false
+      const finish = (value: T, keep: boolean) => {
+        if (settled) return
+        settled = true
+        if (!keep) cache.delete(key)
+        if (pending.get(kind)?.key === key) pending.delete(kind)
+        resolve(value)
+      }
+      const timer = setTimeout(() => {
+        load(controller.signal).then(
+          (value) => finish(value, !controller.signal.aborted),
+          () => finish(fallback, false),
+        )
+      }, debounceMs)
+      pending.set(kind, {
+        key,
+        cancel: () => {
+          clearTimeout(timer)
+          controller.abort()
+          finish(fallback, false)
+        },
+      })
+    })
+    cache.set(key, p)
+    return p
+  }
+
   return {
     labelNames: (metricName) => {
       const sel = selector(metricName)
-      return cached(`labels:${sel}`, () => client.labels(sel ? { match: [sel] } : {}), [])
+      return latest('labels', `labels:${sel}`, (signal) => client.labels(sel ? { match: [sel] } : {}, { signal }), [])
     },
     labelValues: (labelName, metricName, matchers) => {
       const sel = selector(metricName, matchers as Matcher[] | undefined)
-      return cached(`values:${labelName}:${sel}`, () => client.labelValues(labelName, sel ? { match: [sel] } : {}), [])
+      return latest('values', `values:${labelName}:${sel}`, (signal) => client.labelValues(labelName, sel ? { match: [sel] } : {}, { signal }), [])
     },
-    metricMetadata: () => cached('metadata', () => client.metadata(), {}),
+    metricMetadata: () => once('metadata', () => client.metadata(), {}),
     series: (metricName, matchers) => {
       const sel = selector(metricName, matchers as Matcher[] | undefined) ?? metricName
-      return cached(
+      return latest(
+        'series',
         `series:${sel}`,
-        async () => (await client.series([sel])).map((labels) => new Map(Object.entries(labels))),
+        async (signal) => (await client.series([sel], {}, { signal })).map((labels) => new Map(Object.entries(labels))),
         [],
       )
     },
-    metricNames: () => cached('names', () => client.labelValues('__name__'), []),
+    metricNames: () => once('names', () => client.labelValues('__name__'), []),
     flags: () => Promise.resolve({}),
   }
 }

@@ -1,0 +1,17 @@
+<!-- @dsCard group="Agent" height=560 -->
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:24px}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.col{display:flex;flex-direction:column;gap:16px}</style></head><body class="vz">
+<div class="col" style="max-width:760px">
+<ul class="vz-changes">
+  <li class="vz-change"><label class="vz-check"><input type="checkbox" checked><span><span class="vz-change-sign" aria-hidden="true">+</span> Add panel "Latency by dependency, p99"</span></label>
+    <p class="vz-change-why">Why: the incident on 18 Nov was found in a dependency this dashboard does not show.</p>
+    <div class="vz-diff"><div><span class="vz-label">Before</span><span>Row 2: Latency by route · Error ratio</span></div><div><span class="vz-label">After</span><span>Row 2: Latency by route · <ins>Latency by dependency, p99</ins> · Error ratio</span></div></div></li>
+  <li class="vz-change"><label class="vz-check"><input type="checkbox" checked><span><span class="vz-change-sign" aria-hidden="true">~</span> Change panel "Latency by route, p99"</span></label>
+    <p class="vz-change-why">Why: the objective is 500 ms; the panel does not draw it.</p>
+    <div class="vz-diff"><div><span class="vz-label">Before</span><span>Threshold: <del>none</del></span></div><div><span class="vz-label">After</span><span>Threshold: <ins>500 ms objective</ins></span></div></div></li>
+  <li class="vz-change"><label class="vz-check"><input type="checkbox"><span><span class="vz-change-sign" aria-hidden="true">−</span> Remove panel "Pod restarts"</span></label>
+    <p class="vz-change-why">Why: no restarts in 90 days.</p>
+    <p class="vz-help" data-error><span class="vz-mark" data-state="warn"></span><span>The runbook <a class="vz-link" href="#">Checkout latency</a> links to this panel. Not selected.</span></p></li>
+</ul>
+<div class="vz-controls"><button class="vz-button" data-tone="blue">Apply 2 changes</button><button class="vz-button">Decline all</button><span style="color:var(--ink-secondary)">Creates revision 15. You can restore revision 14.</span></div>
+</div>
+</body></html>

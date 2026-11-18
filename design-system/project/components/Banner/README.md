@@ -1,3 +1,3 @@
-One or two sentences that change what the person should do next. `vz-banner` holding a `vz-mark` (`warn`, `critical` or `info`), a sentence, and optionally one small button.
+One or two sentences that change what the person should do next. `vz-banner` holding a `vz-mark` (`warn`, `critical` or `info`), a sentence, and optionally one small button or one link. A button changes something here; going somewhere else is a link.
 
-It sits directly above the thing it concerns. Say what happened and what to do; offer the fix as the button. It wraps on narrow regions: the button drops below the sentence. Do not use a banner for success: the result is its own confirmation.
+It sits directly above the thing it concerns. Say what happened and what to do; offer the fix as the button. It wraps on narrow regions: the button drops below the sentence. Do not use a banner for success: the result is its own confirmation. A failed action is a Notice, not a banner. A sentence an agent wrote takes `vz-agent` and starts with "Agent:".

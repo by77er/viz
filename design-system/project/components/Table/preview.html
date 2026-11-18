@@ -1,12 +1,21 @@
-<!-- @dsCard group="Data" height=250 -->
+<!-- @dsCard group="Data" height=520 -->
 <!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:24px}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.col{display:flex;flex-direction:column;gap:16px}</style></head><body class="vz">
+<div class="col" style="gap:24px">
 <div class="vz-table-wrap"><table class="vz-table">
-  <thead><tr><th class="vz-label">Service</th><th class="vz-label">State</th><th class="vz-label vz-right">Requests / s</th><th class="vz-label vz-right">Errors</th><th class="vz-label vz-right">p99</th></tr></thead>
+  <thead><tr><th class="vz-label" aria-sort="none"><button class="vz-sort">Service</button></th><th class="vz-label">State</th><th class="vz-label vz-right" aria-sort="descending"><button class="vz-sort">Requests, req/s</button></th><th class="vz-label vz-right" aria-sort="none"><button class="vz-sort">Errors, %</button></th><th class="vz-label vz-right" aria-sort="none"><button class="vz-sort">p99, ms</button></th></tr></thead>
   <tbody>
-    <tr><td data-key>checkout-api</td><td><span class="vz-status" data-state="critical">Burning budget</span></td><td class="vz-num vz-right">1,284.0</td><td class="vz-num vz-right">2.41%</td><td class="vz-num vz-right">912 ms</td></tr>
-    <tr><td data-key>cart</td><td><span class="vz-status" data-state="warn">Slow</span></td><td class="vz-num vz-right">842.6</td><td class="vz-num vz-right">0.08%</td><td class="vz-num vz-right">488 ms</td></tr>
-    <tr><td data-key>catalog</td><td><span class="vz-status" data-state="ok">Healthy</span></td><td class="vz-num vz-right">3,907.2</td><td class="vz-num vz-right">0.01%</td><td class="vz-num vz-right">74 ms</td></tr>
-    <tr><td data-key>search</td><td><span class="vz-status" data-state="ok">Healthy</span></td><td class="vz-num vz-right">655.9</td><td class="vz-num vz-right">0.00%</td><td class="vz-num vz-right">131 ms</td></tr>
+    <tr><td data-key><a class="vz-link" href="#">catalog</a></td><td><span class="vz-status" data-state="ok">Healthy</span></td><td class="vz-num vz-right">3,907.2</td><td class="vz-num vz-right">0.01</td><td class="vz-num vz-right">74</td></tr>
+    <tr><td data-key><a class="vz-link" href="#">checkout-api</a></td><td><span class="vz-status" data-state="critical">Burning budget</span></td><td class="vz-num vz-right">1,284.0</td><td class="vz-num vz-right">2.41</td><td class="vz-num vz-right">912</td></tr>
+    <tr><td data-key><a class="vz-link" href="#">cart</a></td><td><span class="vz-status" data-state="warn">Slow</span></td><td class="vz-num vz-right">842.6</td><td class="vz-num vz-right">0.08</td><td class="vz-num vz-right">488</td></tr>
+    <tr><td data-key><a class="vz-link" href="#">search</a></td><td><span class="vz-status" data-state="ok">Healthy</span></td><td class="vz-num vz-right">655.9</td><td class="vz-num vz-right">0.00</td><td class="vz-num vz-right">131</td></tr>
   </tbody>
 </table></div>
+<div class="vz-table-wrap" style="max-width:368px"><table class="vz-table" data-fold role="table">
+  <thead><tr role="row"><th role="columnheader" class="vz-label">Monitor</th><th role="columnheader" class="vz-label">State</th><th role="columnheader" class="vz-label" data-priority="1">Now</th><th role="columnheader" class="vz-label" data-priority="1">Threshold</th><th role="columnheader" class="vz-label">Notifies</th></tr></thead>
+  <tbody>
+    <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">checkout p99 latency</a></td><td role="cell"><span class="vz-status" data-state="critical"><span>Firing since 13:07, <span class="vz-qty">2 h 9 min</span></span></span></td><td role="cell" class="vz-num" data-priority="1">912 ms</td><td role="cell" class="vz-num" data-priority="1">&gt; 500 ms</td><td role="cell" data-label="Notifies">payments on-call</td></tr>
+    <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">cart error rate</a></td><td role="cell"><span class="vz-status" data-state="warn"><span>Pending, <span class="vz-qty">4 min</span> of <span class="vz-qty">10 min</span></span></span></td><td role="cell" class="vz-num" data-priority="1">1.3%</td><td role="cell" class="vz-num" data-priority="1">&gt; 1%</td><td role="cell" data-label="Notifies">storefront</td></tr>
+  </tbody>
+</table></div>
+</div>
 </body></html>

@@ -6,9 +6,12 @@
  * The fake clock starts in 2100 so that an alarm set from it never fires by itself; tests
  * advance `world.now` and call `runDurableObjectAlarm`.
  */
-import type { PromScalar, PromVector } from '../../contracts/engine'
-import type { AlertUpdate, Evaluator, IngestResult, SampleBatch, Sink } from '../contracts-proposal/rules'
+import type { PromMatrix, PromScalar, PromVector } from '../../contracts/engine'
+import type { AlertUpdate, BatchEvaluator, EvalRequest, EvalResult, Evaluator, IngestResult, RangeEvaluator, SampleBatch, Sink, Validator } from '../contracts-proposal/rules.v2'
+import { createApi, type ApiEnv } from '../src/http'
 import { Notifier } from '../src/notifier'
+import { DEFAULT_PLACEMENT, type PlacementLimits } from '../src/placement'
+import { RulerIndex } from '../src/registry'
 import { Ruler, type NotifierPort, type RulerEnv } from '../src/ruler'
 
 export const T0 = Date.UTC(2100, 0, 1)
@@ -20,6 +23,9 @@ export interface Received {
   key: string | null
   body: unknown
   at: number
+  /** The `X-Viz-Signature` header, and the exact bytes it signs. */
+  signature?: string | null
+  raw?: string
 }
 
 export interface TenantWorld {
@@ -37,11 +43,24 @@ export interface TenantWorld {
   notifierDown: boolean
   ingestCalls: AlertUpdate[][]
   faults: Set<string>
+  /** True: the ruler is given a real batch evaluator (one call per group and tick) instead of the adapter. */
+  batch: boolean
+  /** Every batch call the batch evaluator received. */
+  batchCalls: EvalRequest[][]
+  /** Set: the whole batch call rejects with this message. */
+  batchFail: string | null
+  /** Save-time validator; unset = the permissive default. */
+  validate: Validator['check'] | null
+  /** The range evaluator backtests use. */
+  range: ((promql: string, startMs: number, endMs: number, stepMs: number) => PromMatrix | Promise<PromMatrix>) | null
+  rangeCalls: [string, number, number, number][]
 }
 
 export const world = {
   now: T0,
   tenants: new Map<string, TenantWorld>(),
+  /** Shard limits the HTTP API places groups with; tests lower them to force a split. */
+  placement: { ...DEFAULT_PLACEMENT } as PlacementLimits,
 }
 
 export function tenantWorld(tenant: string): TenantWorld {
@@ -58,6 +77,12 @@ export function tenantWorld(tenant: string): TenantWorld {
       notifierDown: false,
       ingestCalls: [],
       faults: new Set(),
+      batch: false,
+      batchCalls: [],
+      batchFail: null,
+      validate: null,
+      range: null,
+      rangeCalls: [],
     }
     world.tenants.set(tenant, w)
   }
@@ -83,6 +108,41 @@ export class TestRuler extends Ruler {
         return w.evaluate(promql, timeMs)
       },
     }
+  }
+  protected override batchEvaluator(): BatchEvaluator {
+    const w = tenantWorld(this.tenant)
+    if (!w.batch) return super.batchEvaluator()
+    return {
+      evaluate: async (requests) => {
+        w.batchCalls.push(requests)
+        if (w.batchFail !== null) throw new Error(w.batchFail)
+        const out: EvalResult[] = []
+        for (const r of requests) {
+          w.evalCalls.push([r.promql, r.timeMs])
+          try {
+            const result: PromVector | PromScalar = r.promql === 'vector(1)' ? { resultType: 'vector', result: [{ metric: {}, value: [r.timeMs / 1000, '1'] }] } : await w.evaluate(r.promql, r.timeMs)
+            out.push({ id: r.id, ok: true, result })
+          } catch (e) {
+            out.push({ id: r.id, ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+        }
+        return out
+      },
+    }
+  }
+  protected override rangeEvaluator(): RangeEvaluator {
+    const w = tenantWorld(this.tenant)
+    return {
+      range: async (promql, startMs, endMs, stepMs) => {
+        w.rangeCalls.push([promql, startMs, endMs, stepMs])
+        if (!w.range) throw new Error('no range evaluator scripted')
+        return w.range(promql, startMs, endMs, stepMs)
+      },
+    }
+  }
+  protected override validator(): Validator {
+    const w = tenantWorld(this.tenant)
+    return w.validate ? { check: w.validate } : super.validator()
   }
   protected override sink(): Sink {
     const w = tenantWorld(this.tenant)
@@ -122,7 +182,7 @@ export class TestNotifier extends Notifier {
     const w = tenantWorld(this.tenant)
     return async (url, init) => {
       const headers = new Headers(init.headers)
-      const req: Received = { url, key: headers.get('Idempotency-Key'), body: JSON.parse(init.body as string), at: world.now }
+      const req: Received = { url, key: headers.get('Idempotency-Key'), body: JSON.parse(init.body as string), at: world.now, signature: headers.get('X-Viz-Signature'), raw: init.body as string }
       const n = w.received.length
       w.received.push(req)
       const r = w.respond(req, n)
@@ -136,6 +196,17 @@ export class TestNotifier extends Notifier {
   }
 }
 
+export class TestRulerIndex extends RulerIndex {
+  protected override now(): number {
+    return world.now
+  }
+}
+
+/** The production HTTP API on the fake clock. */
+export const api = {
+  fetch: (req: Request, env: ApiEnv) => createApi({ now: () => world.now, placement: world.placement }).fetch(req, env),
+}
+
 export default {
-  fetch: () => new Response('viz ruler test worker'),
+  fetch: (req, env) => api.fetch(req, env as unknown as ApiEnv),
 } satisfies ExportedHandler<RulerEnv>

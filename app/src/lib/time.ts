@@ -83,3 +83,11 @@ export function describeRange(from: TimeSpec, to: TimeSpec, nowSec: number): str
   // Same day: do not repeat the date.
   return fa.slice(0, 10) === fb.slice(0, 10) ? `${fa} – ${fb.slice(11)}` : `${fa} – ${fb}`
 }
+
+/** "15s" is typed; "15 s" and "2 min" are read: a number, a space, and a unit that cannot be taken for metres. */
+export function stepWords(seconds: number): string {
+  return formatDuration(seconds)
+    .replace(/(\d+)([a-z]+)/g, '$1 $2 ')
+    .trim()
+    .replace(/(\d+) m\b/g, '$1 min')
+}

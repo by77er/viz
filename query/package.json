@@ -6,7 +6,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "fixtures": "node tools/gen-fixtures.mjs",
-    "measure": "VIZ_MEASURE=1 vitest run test/measure.test.ts --reporter=verbose",
+    "measure": "vitest run --config vitest.measure.config.ts --reporter=verbose",
     "mutants": "node tools/mutants.mjs"
   },
   "devDependencies": {

@@ -1,18 +1,103 @@
-// Before/after images for design review.
-//   node tools/shots.mjs capture <url> <outDir> [name]     -> <name>-{light,dark}-{1440,400}.png
-//   node tools/shots.mjs compare <beforeDir> <afterDir> <outDir>  -> one labelled side-by-side PNG per image name
+// Images for design review.
+//   node tools/shots.mjs capture <url|file> <outDir> [name]        -> <name>-{light,dark}-{1440,400}.png
+//   node tools/shots.mjs compare <beforeDir> <afterDir> <outDir>   -> one labelled side-by-side PNG per image name
+//   node tools/shots.mjs scenario <scenario.json> <outDir>         -> one PNG per state and theme, plus measurements
 // Capture "before" from the base branch and "after" from the change, with the same data and state.
+//
+// A scenario file pictures what a plain capture cannot: interaction states, waiting states, a coarse pointer, zoom, greyscale.
+//   { "url": "dist/reference.html",            a URL, or a file path relative to where the command is run
+//     "name": "reference",                     prefix of the image names
+//     "themes": ["light", "dark"],             default both
+//     "states": [
+//       { "name": "pressed-quiet", "steps": [{ "press": ".vz-button[data-quiet]" }], "clip": ".vz-button[data-quiet]", "pad": 24 },
+//       { "name": "waiting-800",   "steps": [{ "click": "#run" }, { "wait": 800 }] },
+//       { "name": "coarse-400",    "width": 400, "coarse": true, "measure": true, "outline": true },
+//       { "name": "zoom-200",      "zoom": 2 },
+//       { "name": "grey",          "greyscale": true } ] }
+// Steps, in order: { "hover": sel } { "press": sel } (pointer held down while the image is taken) { "focus": sel } (keyboard focus, so the ring shows)
+//   { "click": sel } { "tap": sel } { "type": [sel, text] } { "key": "ArrowRight" } { "wait": ms } { "scroll": [sel, x] } { "eval": "js" }
+// State options: width (default 1440), height, scale (default 2; 1 for wide pages), coarse (touch, coarse pointer), zoom (2 = 200%: half the
+//   CSS width at twice the scale), greyscale, reducedMotion, clip (selector) with pad, measure (prints sideways overflow, the smallest text,
+//   and with a coarse pointer every hit area under 44px), outline (draws the measured hit areas into the image).
 import { readdirSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 const { chromium } = createRequire(import.meta.url)('playwright')
 const [cmd, a, b, c] = process.argv.slice(2)
+const href = (u) => (u.includes('://') ? u : 'file://' + resolve(u))
+
+// Runs in the page. The hit area of a control is what a finger can actually reach: found by asking the page which element is at each
+// point, so an area clipped by a scrolling strip or covered by a neighbour's area is measured as it behaves, not as it is declared.
+function measurePage(coarse) {
+  const out = { overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth, smallestText: 99, small: [], areas: [] }
+  for (const el of document.querySelectorAll('body *')) { if (el.closest('svg') && el.tagName !== 'text') continue; const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()); if (!own) continue; const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue; const fs = parseFloat(getComputedStyle(el).fontSize); if (fs < out.smallestText) out.smallestText = fs }
+  if (!coarse) return out
+  const sel = 'a[href], button, input, select, textarea, summary, [role^="menuitem"], [role="tab"], label.vz-check, [tabindex="0"]'
+  const owner = (x, y) => { const e = document.elementFromPoint(x, y); return e && e.closest(sel) }
+  for (const el of document.querySelectorAll(sel)) {
+    if (el.disabled || el.closest('[aria-busy="true"]') || (el.matches('a') && el.closest('p'))) continue // a link inside a sentence is text
+    if (el.matches('input[type="checkbox"]') && el.closest('label')) continue // measured as its label
+    if (el.matches('svg, .vz-plot')) continue
+    const r = el.getBoundingClientRect(); if (!r.width || !r.height || r.bottom < 0 || r.top > innerHeight) continue
+    const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2)), cy = r.top + r.height / 2; if (owner(cx, cy) !== el) continue // hidden or covered
+    let top = cy, bottom = cy, left = cx, right = cx
+    while (top > cy - 60 && owner(cx, top - 1) === el) top--
+    while (bottom < cy + 60 && owner(cx, bottom + 1) === el) bottom++
+    while (left > cx - 60 && owner(left - 1, cy) === el) left--
+    while (right < cx + 60 && owner(right + 1, cy) === el) right++
+    const area = { name: (el.getAttribute('aria-label') || el.textContent || el.value || el.tagName).trim().slice(0, 40), tag: el.tagName.toLowerCase(), w: Math.round(right - left + 1), h: Math.round(bottom - top + 1), x: left, y: top }
+    out.areas.push(area); if (area.h < 44 || area.w < 44) out.small.push(area)
+  }
+  return out
+}
+
+async function runState(browser, sc, state, theme, outDir) {
+  const zoom = state.zoom ?? 1, width = Math.round((state.width ?? 1440) / zoom), scale = (state.scale ?? 2) * zoom
+  const ctx = await browser.newContext({ viewport: { width, height: state.height ?? 900 }, deviceScaleFactor: scale, colorScheme: theme, reducedMotion: state.reducedMotion ? 'reduce' : 'no-preference', ...(state.coarse ? { hasTouch: true, isMobile: true } : {}) })
+  const page = await ctx.newPage()
+  page.on('pageerror', (e) => console.log(`  page error: ${e.message}`))
+  await page.goto(href(state.url ?? sc.url), { waitUntil: 'load' })
+  await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+  await page.evaluate(() => document.fonts.ready)
+  // A full-page capture resets device emulation and with it the coarse pointer, so the viewport is made as tall as the page instead.
+  if (!state.height) { const h = await page.evaluate(() => document.documentElement.scrollHeight); await page.setViewportSize({ width, height: Math.min(Math.max(h, 300), 16000) }) }
+  await page.waitForTimeout(100)
+  let held = false
+  for (const step of state.steps ?? []) {
+    const [kind, arg] = Object.entries(step)[0]
+    if (kind === 'hover') await page.hover(arg)
+    else if (kind === 'press') { await page.hover(arg); await page.mouse.down(); held = true }
+    else if (kind === 'focus') { await page.focus(arg); await page.keyboard.press('Shift'); await page.evaluate((s) => { const e = document.querySelector(s); e.blur(); e.focus({ focusVisible: true }) }, arg) }
+    else if (kind === 'click') await page.click(arg)
+    else if (kind === 'tap') await page.tap(arg)
+    else if (kind === 'type') await page.type(arg[0], arg[1])
+    else if (kind === 'key') await page.keyboard.press(arg)
+    else if (kind === 'wait') await page.waitForTimeout(arg)
+    else if (kind === 'scroll') await page.evaluate(([s, x]) => { document.querySelector(s).scrollLeft = x }, arg)
+    else if (kind === 'eval') await page.evaluate(arg)
+    else throw new Error('unknown step ' + kind)
+  }
+  if (state.greyscale) await page.addStyleTag({ content: 'html{filter:grayscale(1)}' })
+  const tag = `${sc.name ?? 'view'}-${state.name}-${theme}`
+  if (state.measure) {
+    const m = await page.evaluate(measurePage, !!state.coarse)
+    console.log(`${tag}: sideways overflow ${m.overflow}px; smallest text ${m.smallestText}px` + (state.coarse ? `; ${m.areas.length} hit areas, ${m.small.length} under 44px` : ''))
+    for (const s of m.small) console.log(`  SMALL ${s.w}x${s.h}  <${s.tag}> ${s.name}`)
+    if (state.outline) await page.evaluate((areas) => { for (const r of areas) { const d = document.createElement('div'); d.style.cssText = `position:absolute;left:${r.x + scrollX}px;top:${r.y + scrollY}px;width:${r.w}px;height:${r.h}px;outline:1px solid ${r.h < 44 || r.w < 44 ? 'red' : 'rgba(0,120,255,.7)'};pointer-events:none;z-index:99999`; document.body.appendChild(d) } }, m.areas) // token-lint-ignore: review overlay, not product
+  }
+  let clip
+  if (state.clip) { const box = await page.locator(state.clip).first().boundingBox(); const pad = state.pad ?? 16; clip = { x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad), width: box.width + 2 * pad, height: box.height + 2 * pad } }
+  await page.screenshot({ path: join(outDir, tag + '.png'), ...(clip ? { clip } : {}) })
+  if (held) await page.mouse.up()
+  await ctx.close()
+}
+
 const browser = await chromium.launch()
 if (cmd === 'capture') {
   mkdirSync(b, { recursive: true })
   for (const theme of ['light', 'dark']) for (const width of [1440, 400]) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: theme })
-    await page.goto(a.includes('://') ? a : 'file://' + resolve(a), { waitUntil: 'networkidle' })
+    await page.goto(href(a), { waitUntil: 'networkidle' })
     await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
     await page.evaluate(() => document.fonts.ready)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
@@ -20,6 +105,9 @@ if (cmd === 'capture') {
     await page.screenshot({ path: join(b, `${c ?? 'view'}-${theme}-${width}.png`), fullPage: true })
     await page.close()
   }
+} else if (cmd === 'scenario') {
+  const sc = JSON.parse(readFileSync(a, 'utf8')); mkdirSync(b, { recursive: true })
+  for (const state of sc.states) for (const theme of state.themes ?? sc.themes ?? ['light', 'dark']) await runState(browser, sc, state, theme, b)
 } else if (cmd === 'compare') {
   mkdirSync(c, { recursive: true })
   const uri = (p) => 'data:image/png;base64,' + readFileSync(p).toString('base64')
@@ -33,5 +121,5 @@ if (cmd === 'capture') {
     await page.screenshot({ path: join(c, f), fullPage: true })
     await page.close()
   }
-} else console.log('usage: shots.mjs capture <url> <outDir> [name] | compare <beforeDir> <afterDir> <outDir>')
+} else console.log('usage: shots.mjs capture <url> <outDir> [name] | compare <beforeDir> <afterDir> <outDir> | scenario <scenario.json> <outDir>')
 await browser.close()

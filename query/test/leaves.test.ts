@@ -4,7 +4,8 @@
  */
 import { env } from 'cloudflare:workers'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { MAX_PART_BYTES, type Piece, assign, hooks, pieces } from '../src/coordinator'
+import type { FileEntry } from '../../contracts/ledger'
+import { MAX_PART_BYTES, type Piece, assign, byPrecedence, hooks, pieces } from '../src/coordinator'
 import { MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, cacheUrl, fileCache } from '../src/leaf'
 import { QUERIES, type Tenant, type WSeries, type World, api, cost, discardAll, expected, flushAll, ledgerOf, run, sealAll, workload, world, write } from './world'
 
@@ -87,6 +88,58 @@ describe('spreading reads over the pool', () => {
     ])
     expect(MAX_PART_BYTES).toBeLessThanOrEqual(MAX_BYTES_PER_CALL)
     expect(MAX_BYTES_PER_CALL).toBeLessThan(32 << 20)
+  })
+})
+
+describe('the order of sample files', () => {
+  it('a sample rewritten by a later flush wins, also once sequence numbers have two digits', async () => {
+    // One shard, so every write of this tenant is one more sequence number in one stream.
+    const w = await world(1)
+    const T = END - 60_000
+    const x = { __name__: 'rewritten', job: 'j', instance: 'i' }
+    const unit = async (series: WSeries[]) => {
+      await write(w.a, series)
+      await sealAll(w, [w.a])
+      await flushAll(w, [w.a])
+    }
+    for (let seq = 1; seq <= 12; seq++) {
+      const filler: WSeries = { labels: { __name__: 'filler', job: 'j', instance: 'i' }, samples: [[T + seq * 1000, seq]] }
+      // Written with value 1 in the 2nd flush, rewritten with 2 in the 11th and with 3 in the 12th.
+      await unit(seq === 2 ? [filler, { labels: x, samples: [[T, 1]] }] : seq === 11 ? [filler, { labels: x, samples: [[T, 2]] }] : seq === 12 ? [filler, { labels: x, samples: [[T, 3], [T + 1000, 30]] }] : [filler])
+    }
+    const keys = (await ledgerOf(w.a).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files.map((f) => f.key)
+    // The hazard is real: in the ledger's (key) order the 11th flush comes BEFORE the 2nd.
+    const at = (seq: number) => keys.findIndex((k) => k.includes(`-${seq}-${seq}-`))
+    expect(at(11)).toBeLessThan(at(2))
+    const value = async () => (await (await api(w.a.key, '/api/v1/query', { query: 'rewritten', time: sec(T) })).json<{ data: { result: { value: [number, string] }[] } }>()).data.result[0]!.value[1]
+    expect(await value()).toBe('3')
+    await discardAll(w)
+    expect(await value()).toBe('3')
+  })
+
+  it('byPrecedence: compaction outputs first (higher level first), then flush files by shard, incarnation and sequence as numbers', () => {
+    const f = (key: string, level = 0): FileEntry => ({ table: 'metric_samples', day: '2026-11-18', key: `c/data/metric_samples/tenant=t/day=2026-11-18/${key}`, bytes: 1, rows: 1, minTs: 0, maxTs: 0, level, index: '' })
+    const files = [
+      f('L0-pool_0-900-10-12-aaaaaaaa.parquet'),
+      f('L0-pool_0-900-2-9-bbbbbbbb.parquet'),
+      f('L0-pool_0-1000-1-1-cccccccc.parquet'),
+      f('L0-pool_0-900-1-1-dddddddd.parquet'),
+      f('L1-h05-0123456789abcdef-eeeeeeee.parquet', 1),
+      f('L2-d-0123456789abcdef-ffffffff.parquet', 2),
+      f('L0-pool_1-5-100-100-99999999.parquet'),
+      f('L0-my-odd-shard-name-7-3-4-11111111.parquet'),
+    ]
+    expect(byPrecedence(files).map((x) => x.key.split('/').pop())).toEqual([
+      'L2-d-0123456789abcdef-ffffffff.parquet',
+      'L1-h05-0123456789abcdef-eeeeeeee.parquet',
+      'L0-my-odd-shard-name-7-3-4-11111111.parquet',
+      'L0-pool_0-900-1-1-dddddddd.parquet',
+      'L0-pool_0-900-2-9-bbbbbbbb.parquet',
+      'L0-pool_0-900-10-12-aaaaaaaa.parquet',
+      'L0-pool_0-1000-1-1-cccccccc.parquet',
+      'L0-pool_1-5-100-100-99999999.parquet',
+    ])
+    expect(byPrecedence([])).toEqual([])
   })
 })
 

@@ -1,0 +1,88 @@
+# Shaped like kube-prometheus' node-exporter rules as the jsonnet build writes them:
+# block scalars for expressions, plain scalars folded over several lines, quoted templates.
+groups:
+- name: node-exporter
+  rules:
+  - alert: NodeFilesystemSpaceFillingUp
+    annotations:
+      description: Filesystem on {{ $labels.device }}, mounted on {{ $labels.mountpoint }},
+        at {{ $labels.instance }} has only {{ printf "%.2f" $value }}% available space
+        left and is filling up.
+      runbook_url: https://runbooks.prometheus-operator.dev/runbooks/node/nodefilesystemspacefillingup
+      summary: Filesystem is predicted to run out of space within the next 24 hours.
+    expr: |
+      (
+        node_filesystem_avail_bytes{job="node-exporter",fstype!="",mountpoint!=""} / node_filesystem_size_bytes{job="node-exporter",fstype!="",mountpoint!=""} * 100 < 15
+      and
+        predict_linear(node_filesystem_avail_bytes{job="node-exporter",fstype!="",mountpoint!=""}[6h], 24*60*60) < 0
+      and
+        node_filesystem_readonly{job="node-exporter",fstype!="",mountpoint!=""} == 0
+      )
+    for: 1h
+    labels:
+      severity: warning
+  - alert: NodeFilesystemSpaceFillingUp
+    annotations:
+      description: Filesystem on {{ $labels.device }}, mounted on {{ $labels.mountpoint }},
+        at {{ $labels.instance }} has only {{ printf "%.2f" $value }}% available space
+        left and is filling up fast.
+      runbook_url: https://runbooks.prometheus-operator.dev/runbooks/node/nodefilesystemspacefillingup
+      summary: Filesystem is predicted to run out of space within the next 4 hours.
+    expr: |
+      (
+        node_filesystem_avail_bytes{job="node-exporter",fstype!="",mountpoint!=""} / node_filesystem_size_bytes{job="node-exporter",fstype!="",mountpoint!=""} * 100 < 10
+      and
+        predict_linear(node_filesystem_avail_bytes{job="node-exporter",fstype!="",mountpoint!=""}[6h], 4*60*60) < 0
+      )
+    for: 1h
+    labels:
+      severity: critical
+  - alert: NodeClockSkewDetected
+    annotations:
+      description: Clock at {{ $labels.instance }} is out of sync by more than 0.05s.
+        Ensure NTP is configured correctly on this host.
+      summary: Clock skew detected.
+    expr: |
+      (
+        node_timex_offset_seconds{job="node-exporter"} > 0.05
+      and
+        deriv(node_timex_offset_seconds{job="node-exporter"}[5m]) >= 0
+      )
+    for: 10m
+    labels:
+      severity: warning
+  - alert: NodeHighNumberConntrackEntriesUsed
+    annotations:
+      description: '{{ $value | humanizePercentage }} of conntrack entries are used.'
+      summary: Number of conntrack are getting close to the limit.
+    expr: |
+      (node_nf_conntrack_entries{job="node-exporter"} / node_nf_conntrack_entries_limit) > 0.75
+    labels:
+      severity: warning
+- name: node-exporter.rules
+  rules:
+  - expr: |
+      count without (cpu, mode) (
+        node_cpu_seconds_total{job="node-exporter",mode="idle"}
+      )
+    record: instance:node_num_cpu:sum
+  - expr: |
+      1 - avg without (cpu) (
+        sum without (mode) (rate(node_cpu_seconds_total{job="node-exporter", mode=~"idle|iowait|steal"}[5m]))
+      )
+    record: instance:node_cpu_utilisation:rate5m
+  - expr: |
+      1 - (
+        (
+          node_memory_MemAvailable_bytes{job="node-exporter"}
+          or
+          (
+            node_memory_Buffers_bytes{job="node-exporter"}
+            +
+            node_memory_Cached_bytes{job="node-exporter"}
+          )
+        )
+      /
+        node_memory_MemTotal_bytes{job="node-exporter"}
+      )
+    record: instance:node_memory_utilisation:ratio

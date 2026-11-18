@@ -1,11 +1,17 @@
 /* eslint-disable */
 // Measures the design system's speed budgets on a built app, against the mock.
-//   node e2e/measure.cjs [--root <app dir>] [--label after] [--runs 20] [--append]
+//   node e2e/measure.cjs [--root <app dir>] [--label after] [--runs 20] [--series 4,36,200] [--append]
 // Reference setup, as far as it exists: Chromium, CPU throttled 4x (CDP
 // Emulation.setCPUThrottlingRate), network shaped to DevTools' "Fast 4G" (9 Mbit/s down,
 // 1.5 Mbit/s up, 165 ms round trip), 1440x900, a fresh browser context per run, the 75th
 // percentile of the runs. The fixture dashboard the rules name does not exist yet, so the
-// page is Explore with a four-series query over a fixed three-hour window.
+// page is Explore over a fixed three-hour window, once per case of --series:
+//   4    sum by (service) of the request rate, from the mock
+//   36   sum by (service, route, status), from the mock
+//   200  a synthetic matrix of 200 series (the mock has 128), answered by this script through
+//        Playwright's request interception, so the same data reaches any build under test
+// With one case the file is e2e/measurements/<label>.json as before; with several, each case
+// is written to <label>-<series>.json.
 // The same script measures the app before the restyle (--root pointing at a copy of the old
 // app with its dist/): the selectors it uses are the test ids both versions share.
 //
@@ -22,7 +28,17 @@
 //   picker      pointerup on the time range button -> the popover is in a painted frame
 //   response    the query_range body has arrived in the page -> end of the last frame of the
 //               burst of changes to the result panel that follows (see instrument())
-//   inp         the longest Event Timing duration of any interaction in the run
+//   inp         the longest Event Timing duration of any interaction in the run, before the
+//               typing and crosshair steps (comparable with earlier files); inpAll includes them
+//   crosshair   30 pointer moves across the plot, one at a time: mousemove -> end of the next
+//               frame (the frame with the crosshair and the readout). The run's figure is the
+//               75th percentile of its moves; crosshairWorst is its slowest move.
+//   typing      a 60-character query typed into the emptied editor one key at a time, with a
+//               result on screen: keydown -> end of the next frame (the frame that shows the
+//               character). The next key is sent only after that frame, so keys never queue.
+//               typing is the 75th percentile of the run's 60 keys, typingWorst the slowest
+//               key, typingOver the number of keys over 50 ms. The summary also pools every
+//               key of every run (typingKeys).
 //   cls         layout-shift entries summed: "load" from navigation until the result has
 //               settled; "run" from the press on Run query until the new result has settled.
 //               The standard metric ignores shifts within 500 ms of input, which would hide a
@@ -37,6 +53,28 @@ const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); r
 const ROOT = path.resolve(arg('root', lib.ROOT))
 const LABEL = arg('label', 'after')
 const RUNS = Number(arg('runs', '20'))
+const CASES = arg('series', '4').split(',').map(Number)
+/** 60 characters, typed one key at a time. */
+const TYPED = 'sum by (route) (rate(http_requests_total{status="500"}[5m]))'
+const Q_SYNTH = 'viz_synthetic_series'
+const QUERIES = { 4: Q_RATE, 36: lib.Q_MANY, 200: Q_SYNTH }
+
+/** A Prometheus matrix of `n` series on the request's own grid; a pure function of (n, start, end, step). */
+const synthCache = new Map()
+function synthetic(n, start, end, step) {
+  const key = `${n}/${start}/${end}/${step}`
+  if (synthCache.has(key)) return synthCache.get(key)
+  const result = []
+  for (let i = 0; i < n; i++) {
+    const metric = { __name__: Q_SYNTH, service: `svc-${String(i % 10).padStart(2, '0')}`, route: `/r/${Math.floor(i / 10) % 5}`, status: String(200 + 100 * (Math.floor(i / 50) % 4)) }
+    const values = []
+    for (let t = start; t <= end + 1e-9; t += step) values.push([t, (3 * (i + 1) + 2 * Math.sin(t / 600 + i)).toFixed(4)])
+    result.push({ metric, values })
+  }
+  const body = JSON.stringify({ status: 'success', data: { resultType: 'matrix', result } })
+  synthCache.set(key, body)
+  return body
+}
 const FAST_4G = { offline: false, latency: 165, downloadThroughput: (9e6 / 8) * 0.9, uploadThroughput: (1.5e6 / 8) * 0.9 }
 
 const p75 = (xs) => { const s = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.ceil(0.75 * s.length) - 1)] : null }
@@ -72,6 +110,13 @@ function instrument() {
     clearTimeout(quiet)
     quiet = setTimeout(() => { m.respPaint = m.lastChange; if (m.rec) m.rec.resultAt = performance.now() }, 250)
   }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true })
+  /** Record every mousemove (crosshair) or keydown (typing) until the frame that follows it. */
+  m.moves = []; m.keys = []
+  m.watch = (type, into) => {
+    const on = (e) => { const t0 = e.timeStamp; afterFrame((t) => { m[into].push(t - t0) }) }
+    window.addEventListener(type, on, { capture: true })
+    return () => window.removeEventListener(type, on, { capture: true })
+  }
   /** Arm a one-shot measurement of the next pointerdown. `done` is a selector, or 'result'. */
   m.arm = (done) => {
     const rec = (m.rec = { t0: null, tUp: null, press: null, busy: null, done: null, resultAt: null, shiftFrom: performance.now() })
@@ -121,11 +166,9 @@ function bytes(root) {
   return { initialJs: sum(initialJs), lazyJs: sum(lazyJs), css: sum(css), html: size('index.html'), fonts: { raw: sum(fonts).raw, files: fonts.length } }
 }
 
-async function main() {
-  const stop = await lib.startServers(ROOT)
+async function measureCase(browser, SERIES) {
   const runs = []
-  try {
-    const browser = await chromium.launch()
+  {
     for (let i = 0; i < RUNS; i++) {
       const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' })
       const page = await ctx.newPage()
@@ -134,9 +177,16 @@ async function main() {
       await cdp.send('Network.enable')
       await cdp.send('Network.emulateNetworkConditions', FAST_4G)
       await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
+      if (SERIES === 200) {
+        await page.route('**/api/v1/query_range', async (route) => {
+          const p = new URLSearchParams(route.request().postData() || '')
+          if (p.get('query') !== Q_SYNTH) return route.continue()
+          await route.fulfill({ status: 200, contentType: 'application/json', body: synthetic(200, Number(p.get('start')), Number(p.get('end')), Number(p.get('step'))) })
+        })
+      }
 
       // ---- first load
-      await page.goto(url(Q_RATE))
+      await page.goto(url(QUERIES[SERIES]))
       await page.waitForSelector('[data-testid=legend] tbody tr')
       await page.waitForSelector('[data-testid=chart] canvas')
       await page.waitForSelector('.cm-content')
@@ -170,37 +220,84 @@ async function main() {
       r.inp = ev.length ? Math.max(...ev.map((e) => e.duration)) : 16 // nothing reached the 16 ms reporting floor
       r.inpEvent = ev.length ? ev.reduce((a, e) => (e.duration > a.duration ? e : a)).name : '(all under 16 ms)'
       r.inputDelay = ev.length ? Math.max(...ev.map((e) => e.delay)) : 0
+
+      // ---- crosshair: 30 moves across the plot, each waited for
+      const over = await page.locator('[data-testid=chart] .u-over').boundingBox()
+      await page.mouse.move(over.x + over.width * 0.1, over.y + over.height * 0.5)
+      await page.waitForTimeout(200)
+      await page.evaluate(() => { window.__m.moves = []; window.__m.unwatch = window.__m.watch('mousemove', 'moves') })
+      for (let k = 1; k <= 30; k++) {
+        await page.mouse.move(over.x + over.width * (0.1 + 0.8 * (k / 30)), over.y + over.height * (0.3 + 0.4 * ((k % 5) / 5)))
+        await page.waitForFunction((n) => window.__m.moves.length >= n, k)
+      }
+      const moves = await page.evaluate(() => { window.__m.unwatch(); return window.__m.moves })
+      r.crosshair = p75(moves)
+      r.crosshairWorst = Math.max(...moves)
+      await page.mouse.move(2, 2)
+
+      // ---- typing: 60 keys into the emptied editor, each waited for
+      await page.click('.cm-content')
+      await page.keyboard.press('Control+a')
+      await page.keyboard.press('Delete')
+      await page.waitForTimeout(300)
+      await page.evaluate(() => { window.__m.keys = []; window.__m.unwatch = window.__m.watch('keydown', 'keys') })
+      for (let k = 0; k < TYPED.length; k++) {
+        await page.keyboard.type(TYPED[k])
+        await page.waitForFunction((n) => window.__m.keys.length >= n, k + 1)
+        await page.waitForTimeout(40)
+      }
+      const keys = await page.evaluate(() => { window.__m.unwatch(); return window.__m.keys })
+      r.typing = p75(keys)
+      r.typingWorst = Math.max(...keys)
+      r.typingOver = keys.filter((x) => x > 50).length
+      r.keys = keys.map((x) => Math.round(x * 10) / 10)
+      const evAll = await page.evaluate(() => window.__m.events)
+      r.inpAll = evAll.length ? Math.max(...evAll.map((e) => e.duration)) : 16
       runs.push(r)
-      console.log(`run ${i + 1}/${RUNS}  ` + Object.entries(r).map(([k, v]) => `${k}=${typeof v === 'number' ? (k.startsWith('cls') ? v.toFixed(4) : v.toFixed(0)) : v}`).join(' '))
+      console.log(`[${SERIES} series] run ${i + 1}/${RUNS}  ` + Object.entries(r).filter(([k]) => k !== 'keys').map(([k, v]) => `${k}=${typeof v === 'number' ? (k.startsWith('cls') ? v.toFixed(4) : v.toFixed(0)) : v}`).join(' '))
       await ctx.close()
     }
-    await browser.close()
-  } finally {
-    stop()
   }
 
   // --append adds these runs to the label's earlier ones, so that two builds can be measured
   // in alternating batches when the machine's load drifts.
-  const file = path.join(lib.ROOT, 'e2e', 'measurements', `${LABEL}.json`)
+  const name = CASES.length > 1 ? `${LABEL}-${SERIES}` : LABEL
+  const file = path.join(lib.ROOT, 'e2e', 'measurements', `${name}.json`)
   if (process.argv.includes('--append') && fs.existsSync(file)) runs.unshift(...JSON.parse(fs.readFileSync(file, 'utf8')).raw)
 
-  const keys = ['press', 'busy', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'inp', 'inputDelay', 'clsLoad', 'clsRun', 'clsRunAll']
+  const keys = ['press', 'busy', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
   const summary = {}
   for (const k of keys) {
     const xs = runs.map((r) => r[k])
     if (xs.every((x) => x == null)) continue
     summary[k] = { p75: p75(xs), median: median(xs), max: Math.max(...xs.filter((x) => x != null)) }
   }
-  const out = { label: LABEL, root: ROOT, when: new Date().toISOString(), runs: runs.length, setup: 'Chromium, CPU 4x, Fast 4G, 1440x900, fresh context per run', summary, bytes: bytes(ROOT), raw: runs }
+  const allKeys = runs.flatMap((r) => r.keys || [])
+  if (allKeys.length) summary.typingKeys = { p75: p75(allKeys), median: median(allKeys), max: Math.max(...allKeys), count: allKeys.length, over50: allKeys.filter((x) => x > 50).length }
+  const out = { label: LABEL, series: SERIES, query: QUERIES[SERIES], root: ROOT, when: new Date().toISOString(), runs: runs.length, setup: 'Chromium, CPU 4x, Fast 4G, 1440x900, fresh context per run', summary, bytes: bytes(ROOT), raw: runs }
   const dir = path.join(lib.ROOT, 'e2e', 'measurements')
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(dir, `${LABEL}.json`), JSON.stringify(out, null, 2) + '\n')
-  console.log(`\n${LABEL}: 75th percentile of ${runs.length} runs (median, max)`)
+  fs.writeFileSync(file, JSON.stringify(out, null, 2) + '\n')
+  console.log(`\n${name}: ${SERIES} series, 75th percentile of ${runs.length} runs (median, max)`)
   for (const [k, v] of Object.entries(summary)) {
-    const f = (x) => (k.startsWith('cls') ? x.toFixed(4) : `${x.toFixed(0)} ms`)
+    const f = (x) => (k.startsWith('cls') ? x.toFixed(4) : k === 'typingOver' ? `${x.toFixed(0)} keys` : `${x.toFixed(0)} ms`)
     console.log(`  ${k.padEnd(14)} ${f(v.p75).padStart(9)}   (${f(v.median)}, ${f(v.max)})`)
   }
   console.log('  bytes', JSON.stringify(out.bytes))
+}
+
+async function main() {
+  const stop = await lib.startServers(ROOT)
+  try {
+    const browser = await chromium.launch()
+    for (const SERIES of CASES) {
+      if (!QUERIES[SERIES]) throw new Error(`--series: no case for ${SERIES} (use 4, 36 or 200)`)
+      await measureCase(browser, SERIES)
+    }
+    await browser.close()
+  } finally {
+    stop()
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

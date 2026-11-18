@@ -30,7 +30,7 @@ describe('limits', () => {
   it('the defaults are the documented ones', () => {
     expect(DEFAULT_LIMITS).toEqual({
       maxSamples: 2_000_000, maxSeries: 20_000, maxOutputPoints: 500_000, maxStepPoints: 1_000_000, maxQueryBytes: 16_384, maxDepth: 100, maxSteps: 11_000,
-      maxFetchBytes: 16 << 20, maxScanSamples: 4_000_000, maxFiles: 2_000, timeoutMs: 30_000,
+      maxFetchBytes: 16 << 20, maxScanSamples: 3_000_000, maxFiles: 2_000, timeoutMs: 30_000,
     })
   })
 

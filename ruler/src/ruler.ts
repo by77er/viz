@@ -882,6 +882,13 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         // Keeping the schedule needs the same interval; otherwise the group starts afresh.
         const keepSchedule = old !== undefined && old.spec.intervalMs === spec.intervalMs
         const g = this.newGroup(spec, keepSchedule ? old.notBefore : now)
+        // History: who created or last edited each monitor (once per `updatedAt`), ahead of
+        // the transitions the edit itself causes.
+        for (const r of spec.rules as Rule[]) {
+          if (r.kind !== 'alert' || !r.monitor) continue
+          const m = r.monitor
+          this.appendTimeline(m.id, [{ at: m.updatedAt, source: 'ruler', kind: m.updatedAt === m.createdAt ? 'created' : 'edited', by: m.updatedBy }])
+        }
         if (old) {
           if (keepSchedule) {
             g.lastEvalMs = old.lastEvalMs
@@ -905,12 +912,6 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         }
         this.exec(`INSERT INTO rule_group (tenant, name, spec, not_before) VALUES (?, ?, ?, ?)
           ON CONFLICT (tenant, name) DO UPDATE SET spec = excluded.spec, not_before = excluded.not_before`, t, spec.name, JSON.stringify(spec), g.notBefore)
-        // History: who created or last edited each monitor (once per `updatedAt`).
-        for (const r of spec.rules as Rule[]) {
-          if (r.kind !== 'alert' || !r.monitor) continue
-          const m = r.monitor
-          this.appendTimeline(m.id, [{ at: m.updatedAt, source: 'ruler', kind: m.updatedAt === m.createdAt ? 'created' : 'edited', by: m.updatedBy }])
-        }
         built.push(g)
       }
       this.enqueueHandoff(updates, now)

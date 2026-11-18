@@ -1,0 +1,264 @@
+#!/usr/bin/env node
+/**
+ * Mutation check for the read path: break one safety property in the source at a time,
+ * run the test suite, restore the source, and report which tests failed.
+ *
+ *   node tools/mutants.mjs            all mutants
+ *   node tools/mutants.mjs 3 7        only mutants 3 and 7
+ *
+ * A mutant that no test catches is printed as SURVIVED and the script exits 1.
+ * Mutants in Rust rebuild the WASM module (engine/wasm-query/build.sh) before and after.
+ */
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const rel = (p) => join(root, p)
+
+const MUTANTS = [
+  {
+    name: 'The tenant is taken from a header when one is sent',
+    file: 'src/index.ts',
+    find: "const { tenant } = await authenticate(req, env.CONFIG, 'read')",
+    replace: "const tenant = req.headers.get('X-Scope-OrgID') ?? (await authenticate(req, env.CONFIG, 'read')).tenant",
+  },
+  {
+    name: 'The tenant is taken from a `tenant` parameter when one is sent',
+    file: 'src/index.ts',
+    find: 'const c: Context = { env, engine, tenant, limits,',
+    replace: "const c: Context = { env, engine, tenant: params.get('tenant') ?? tenant, limits,",
+  },
+  {
+    name: 'The read-scope check is skipped (any valid key may query)',
+    file: 'src/index.ts',
+    find: "await authenticate(req, env.CONFIG, 'read')",
+    replace: "await authenticate(req, env.CONFIG, 'write').catch((e) => { if (e.status === 403) return authenticate(req, env.CONFIG, 'read'); throw e })",
+  },
+  {
+    name: 'The tail is skipped (only the lake is read)',
+    file: 'src/coordinator.ts',
+    find: 'const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))',
+    replace: "const tails: Tail[] = shards.map(() => ({ status: 'ok', batches: [], bytes: 0 }))",
+  },
+  {
+    name: '`stale_watermark` is ignored (the shard’s refusal is treated as an empty tail)',
+    file: 'src/coordinator.ts',
+    find: "if (r.status === 'stale_watermark') return { status: 'refused', why: `shard ${shard} has discarded rows above the watermark` }",
+    replace: "if (r.status === 'stale_watermark') return { status: 'ok', batches: [], bytes: 0 }",
+  },
+  {
+    name: 'Series files and sample files may come from different ledger versions',
+    file: 'src/coordinator.ts',
+    find: 'if (samples.version === series.version && samples.ledgerIncarnation === series.ledgerIncarnation) {',
+    replace: 'if (samples.version >= 0) {',
+  },
+  {
+    name: 'Only the slots of the pool map are asked, not every stream the ledger registered... and only the first slot',
+    file: 'src/coordinator.ts',
+    find: 'const names = new Set(tenantSlots(map, c.tenant).map((slot) => shardName(map, slot)))',
+    replace: 'const names = new Set(tenantSlots(map, c.tenant).slice(0, 1).map((slot) => shardName(map, slot)))',
+  },
+  {
+    name: 'Name statistics unsound in the engine: a file whose largest name equals the wanted name is skipped (Rust; rebuilds the module)',
+    file: '../engine/query/src/prune.rs',
+    find: 'n.as_bytes() <= g.max_name.as_bytes())\n                    {',
+    replace: 'n.as_bytes() < g.max_name.as_bytes())\n                    {',
+    rust: true,
+  },
+  {
+    name: 'Files are pruned against the first fetch range only',
+    file: 'src/coordinator.ts',
+    find: 'const keep = c.engine.filesNeeded(listed.map((f) => f.index), ranges)',
+    replace: 'const keep = c.engine.filesNeeded(listed.map((f) => f.index), ranges.slice(0, 1))',
+  },
+  {
+    name: 'Sample files are read in the ledger’s key order (text order of sequence numbers)',
+    file: 'src/coordinator.ts',
+    find: 'snap.samples = byPrecedence(snap.samples)',
+    replace: '',
+  },
+  {
+    name: 'A leaf call may carry twelve R2 reads',
+    file: 'src/coordinator.ts',
+    find: 'if (list.length < MAX_READS_PER_CALL && (list.length === 0 || used + p.bytes <= MAX_BYTES_PER_CALL)) {',
+    replace: 'if (list.length < 2 * MAX_READS_PER_CALL && (list.length === 0 || used + p.bytes <= MAX_BYTES_PER_CALL)) {',
+  },
+  {
+    name: 'The leaf does not refuse more than six reads',
+    file: 'src/leaf.ts',
+    find: "if (items.length > MAX_READS_PER_CALL) return { status: 'refused', reason: `${items.length} reads in one call; the limit is ${MAX_READS_PER_CALL}` }",
+    replace: '',
+  },
+  {
+    name: 'A file is cached under a key without its content hash',
+    file: 'src/leaf.ts',
+    find: "return `https://viz-file-cache.invalid/${item.key.split('/').map(encodeURIComponent).join('/')}${range}`",
+    replace: "return `https://viz-file-cache.invalid/${item.key.replace(/-[0-9a-f]{8}\\.parquet$/, '.parquet').split('/').map(encodeURIComponent).join('/')}${range}`",
+  },
+  {
+    name: 'A file is cached under its file name only (no tenant, no day)',
+    file: 'src/leaf.ts',
+    find: "return `https://viz-file-cache.invalid/${item.key.split('/').map(encodeURIComponent).join('/')}${range}`",
+    replace: "return `https://viz-file-cache.invalid/${encodeURIComponent(item.key.split('/').pop() ?? '')}${range}`",
+  },
+  {
+    name: 'A missing data file is left out and the query answers from the rest (partial data)',
+    file: 'src/coordinator.ts',
+    find: '        refused(`file ${got.error.key}`, got.error.message)\n        again = true\n',
+    replace: '',
+  },
+  {
+    name: 'A leaf that fails twice contributes nothing and the query goes on (partial data)',
+    file: 'src/coordinator.ts',
+    find: "throw new ApiError('unavailable', `could not read data files: ${e instanceof Error ? e.message : String(e)}`)",
+    replace: "results = items.map(() => ({ status: 'ok' as const, bytes: new Uint8Array(0), cached: false }))",
+    alsoFind: "if (r.bytes.byteLength !== p.bytes) throw new ApiError('unavailable', `data file ${p.key}: read ${r.bytes.byteLength} bytes, expected ${p.bytes}`)",
+    alsoReplace: '',
+  },
+  {
+    name: '`step` is mis-parsed: a bare number is taken as milliseconds',
+    file: 'src/params.ts',
+    find: 'const ms = decimalSecondsToMs(text) ?? Number(text) * 1000\n    if (!Number.isFinite(ms) || Math.abs(ms) > 9e15) throw err()',
+    replace: 'const ms = Number(text)\n    if (!Number.isFinite(ms) || Math.abs(ms) > 9e15) throw err()',
+  },
+  {
+    name: '`step` is mis-parsed: the `m` unit is taken as milliseconds',
+    file: 'src/params.ts',
+    find: 'const UNIT_MS = [365 * 86_400_000, 7 * 86_400_000, 86_400_000, 3_600_000, 60_000, 1000, 1]',
+    replace: 'const UNIT_MS = [365 * 86_400_000, 7 * 86_400_000, 86_400_000, 3_600_000, 1, 1000, 1]',
+  },
+  {
+    name: 'Times are parsed as milliseconds, not seconds',
+    file: 'src/params.ts',
+    find: 'let ms = Number(m[2]) * 1000 + Number(frac.slice(0, 3))',
+    replace: 'let ms = Number(m[2])',
+  },
+  {
+    name: 'The tenant’s limits are not passed to the engine (its defaults apply)',
+    file: 'src/index.ts',
+    find: 'const out = c.engine.queryRangeJson(input, query, start, end, step, c.limits)',
+    replace: 'const out = c.engine.queryRangeJson(input, query, start, end, step)',
+  },
+  {
+    name: 'max_fetch_bytes is not enforced',
+    file: 'src/coordinator.ts',
+    find: "if (lakeBytes > c.limits.maxFetchBytes) throw tooMuch(c, `the ${wanted.length} data files in range`, lakeBytes)",
+    replace: '',
+    alsoFind: "if (lakeBytes + tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + tailBytes)",
+    alsoReplace: '',
+  },
+  {
+    name: 'max_scan_samples is not enforced',
+    file: 'src/coordinator.ts',
+    find: 'if (scan > c.limits.maxScanSamples) {',
+    replace: 'if (scan > Infinity) {',
+  },
+  {
+    name: 'The isolate’s byte budget is not enforced',
+    file: 'src/coordinator.ts',
+    find: "if (inFlightBytes > 0 && inFlightBytes + lakeBytes > (hooks.isolateBudgetBytes ?? ISOLATE_BUDGET_BYTES)) throw new ApiError('unavailable', 'the query service is busy; retry')",
+    replace: '',
+  },
+  {
+    name: 'CORS echoes any origin',
+    file: 'src/index.ts',
+    find: 'if (origin && allowedOrigins(env).includes(origin)) {',
+    replace: 'if (origin) {',
+  },
+  {
+    name: 'The series files are not handed to the engine',
+    file: 'src/coordinator.ts',
+    find: 'seriesFiles: all.slice(0, series.length), sampleFiles: all.slice(series.length), tailBatches }',
+    replace: 'seriesFiles: [], sampleFiles: all.slice(series.length), tailBatches }',
+  },
+  {
+    name: 'The refusal bound is ignored for one more attempt: after the retries are used up the query answers from what it has',
+    file: 'src/coordinator.ts',
+    find: 'if (n > MAX_REFUSALS) throw new ApiError(\'unavailable\', `${why}, and the ledger does not catch up; retry later`)',
+    replace: 'if (n > MAX_REFUSALS) giveUp = true',
+    alsoFind: '      if (again) continue\n',
+    alsoReplace: '      if (again && !giveUp) continue\n',
+    alsoFind2: '  let reserved = 0\n  try {\n    for (let attempt = 1; ; attempt++) {',
+    alsoReplace2: '  let reserved = 0\n  let giveUp = false\n  try {\n    for (let attempt = 1; ; attempt++) {',
+  },
+]
+
+function run(cmd, args, opts = {}) {
+  return spawnSync(cmd, args, { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28, ...opts })
+}
+
+function buildWasm() {
+  execFileSync(join(root, '../engine/wasm-query/build.sh'), { stdio: 'pipe' })
+}
+
+function suite() {
+  const out = join(mkdtempSync(join(tmpdir(), 'viz-query-mutants-')), 'result.json')
+  const r = run('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${out}`])
+  let json
+  try {
+    json = JSON.parse(readFileSync(out, 'utf8'))
+  } catch {
+    return { ok: false, failed: [`the suite did not run: ${(r.stderr || r.stdout).split('\n').slice(-5).join(' | ')}`], broken: true }
+  }
+  const failed = []
+  for (const f of json.testResults) {
+    const tests = f.assertionResults.filter((t) => t.status === 'failed')
+    for (const t of tests) failed.push(`${f.name.split('/').pop()} › ${t.title}`)
+    if (f.status === 'failed' && tests.length === 0) failed.push(`${f.name.split('/').pop()} (file failed: ${String(f.message).split('\n')[0]})`)
+  }
+  return { ok: json.success, failed }
+}
+
+function apply(source, m) {
+  let s = source
+  for (const [find, replace] of [[m.find, m.replace], [m.alsoFind, m.alsoReplace], [m.alsoFind2, m.alsoReplace2]]) {
+    if (find === undefined) continue
+    if (s.split(find).length !== 2) throw new Error(`mutant "${m.name}": the text to replace occurs ${s.split(find).length - 1} times in ${m.file}`)
+    s = s.replace(find, () => replace)
+  }
+  return s
+}
+
+const only = process.argv.slice(2).map(Number)
+const chosen = MUTANTS.map((m, i) => ({ ...m, n: i + 1 })).filter((m) => only.length === 0 || only.includes(m.n))
+
+// Every mutant must apply to the source as it is, before anything runs.
+for (const m of chosen) apply(readFileSync(rel(m.file), 'utf8'), m)
+
+console.log('unmutated suite …')
+const clean = suite()
+if (!clean.ok) {
+  console.error('the unmutated suite fails; fix that first:', clean.failed)
+  process.exit(2)
+}
+console.log('unmutated suite passes\n')
+
+let survived = 0
+for (const m of chosen) {
+  const original = readFileSync(rel(m.file), 'utf8')
+  let result
+  try {
+    writeFileSync(rel(m.file), apply(original, m))
+    if (m.rust) buildWasm()
+    // A mutant that does not type-check is a build error, not a kill.
+    const tsc = m.rust ? { status: 0 } : run('npx', ['tsc', '--noEmit'])
+    result = tsc.status === 0 ? suite() : { ok: false, failed: [`BUILD ERROR: ${tsc.stdout.split('\n')[0]}`], broken: true }
+  } finally {
+    writeFileSync(rel(m.file), original)
+    if (m.rust) buildWasm()
+  }
+  if (result.broken) {
+    console.log(`${String(m.n).padStart(2)}. INVALID   ${m.name}\n      ${result.failed[0]}`)
+    survived++
+  } else if (result.ok) {
+    console.log(`${String(m.n).padStart(2)}. SURVIVED  ${m.name}`)
+    survived++
+  } else {
+    console.log(`${String(m.n).padStart(2)}. killed    ${m.name}\n      by ${result.failed.length} test(s): ${result.failed.slice(0, 4).join(' | ')}${result.failed.length > 4 ? ' | …' : ''}`)
+  }
+}
+console.log(`\n${chosen.length - survived} of ${chosen.length} mutants killed`)
+process.exit(survived ? 1 : 0)

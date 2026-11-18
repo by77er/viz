@@ -36,6 +36,7 @@ export interface TenantLimits extends QueryLimits {
    * engine's `maxSamples` fires only after a selector's samples are in memory at 16 bytes
    * each, and Parquet holds a sample in 2 to 3 bytes, so a byte cap alone would let a
    * 16 MiB read expand to more than 100 MiB before it is refused. This cap bounds that.
+   * It is an upper bound (whole row groups), so it must sit above `maxSamples`.
    */
   maxScanSamples: number
   /** Files of both tables one query may fetch (bounds leaf rounds and RPC count). */
@@ -45,17 +46,22 @@ export interface TenantLimits extends QueryLimits {
 }
 
 /**
- * Sized for the coordinator's 128 MB isolate. Worst case held at once for one query:
- * fetched bytes twice (2 x 16 MiB) + decoded samples (4,000,000 x 16 B = 61 MiB while a
- * selector is loaded; at most `maxSamples` x 16 B = 31 MiB once the engine has checked
- * it) + the evaluator's step grid (`maxStepPoints` x 24 B = 23 MiB). The two engine
- * terms do not peak together with the scan: 32 + 61 = 93 MiB while loading, 32 + 31 + 23
- * = 86 MiB while evaluating. Measured figures are in the README ("Measurements").
+ * Sized for the coordinator's 128 MB isolate. What one query holds at once: the fetched
+ * bytes twice (at most 2 x 16 MiB), and inside WASM the decoded samples at 16 bytes each
+ * plus, once they are loaded, the evaluator's step grid at 24 bytes a cell.
+ *
+ *   while loading   32 MiB + 3,000,000 x 16 B (46 MiB)                    = 78 MiB
+ *   evaluating      32 MiB + maxSamples x 16 B (31 MiB) + grid (23 MiB)   = 86 MiB
+ *
+ * Measured locally (README, "Measurements"): a query that decoded 2.89 M samples from
+ * 10.6 MiB of files peaked at 76.7 MiB of WASM memory; the 1-hour, 2,000-series query
+ * (0.52 M samples, 2.1 MiB) at 21.5 MiB. `maxScanSamples` is 1.5 x `maxSamples` because
+ * the bound counts whole row groups, of which a query may need only a part.
  */
 export const DEFAULT_LIMITS: TenantLimits = {
   ...ENGINE_LIMITS,
   maxFetchBytes: 16 << 20,
-  maxScanSamples: 4_000_000,
+  maxScanSamples: 3_000_000,
   maxFiles: 2_000,
   timeoutMs: 30_000,
 }
