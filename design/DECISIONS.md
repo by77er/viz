@@ -160,16 +160,27 @@ still giving each series exactly one home.
 **Why.** Sorting and encoding tens of MB inside a single-threaded 128 MB object blocks
 acknowledgements and risks out-of-memory loops (review, platform C2, correctness 15).
 
-## D13. Dedicated shards per tenant; pooling deferred
+## D13. Shards are pooled from the first line of code
 
-**Decision (project owner, 2026-11-18).** Every tenant gets its own shards. Sharing shard
-objects between small tenants is deferred and will be revisited only if viz is run as a
-hosted service for many small tenants.
+**Decision (project owner, 2026-11-18, replacing an earlier choice the same day to defer
+pooling).** The shard is built multi-tenant: each tenant's log inside a shard object is a
+stream `(shard, tenant, incarnation)`. A dedicated tenant is a pool containing only itself,
+so there is one code path.
 
-**Why.** Isolation: one tenant's load, quotas and failures stay inside its own objects, and
-the write protocol has one fewer dimension to prove. The cost is roughly $4 per month of
-duration per continuously active shard, which is acceptable for a deployment in one's own
-account.
+**Why now.** Retrofitting tenancy into the write-ahead log later would touch every table,
+key and invariant in the most correctness-sensitive component. Building it in costs one
+extra key column.
+
+**What it buys.** A small tenant's marginal cost is a share of a shard that is already
+awake, instead of roughly $4 per month for one of its own. Tenants that need full isolation
+are assigned a dedicated pool.
+
+**Implemented** in `shard/` with tests for the properties pooling puts at risk: no
+cross-tenant tail reads, per-tenant sequencing and dedup, backpressure that stops at the
+tenant, per-stream discard. Shuffle-shard routing limits how many tenants share a whole
+slot set.
+
+**Open.** CPU fairness on the shared single thread, and behaviour under load.
 
 ## D14. Build order
 

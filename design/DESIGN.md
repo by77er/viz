@@ -92,7 +92,7 @@ of its own. It runs as WASM in `edge`, `flush`, `query` and `leaf`, natively in 
 and inside a seeded simulator in CI. TypeScript owns bindings, HTTP and orchestration.
 Whether the core fits a 128 MB isolate with a 1 s startup limit is the second spike.
 
-### 3.3 Cells and shards
+### 3.3 Cells and shard pools
 
 - A **cell** is one R2 bucket, one publisher and one set of Iceberg tables. Every object name
   carries its cell. A single-organisation deployment is normally one cell. A hosted service
@@ -100,9 +100,11 @@ Whether the core fits a 128 MB isolate with a 1 s startup limit is the second sp
 - A **dedicated cell** holds one tenant. Only dedicated cells give direct Iceberg access to
   that tenant, because a shared cell's tables contain other tenants' rows. Dedicated cells
   can use an EU-jurisdiction bucket.
-- Shards are **dedicated**: each tenant has its own. Sharing shard objects between small
-  tenants would lower the marginal cost of a hosted tenant and is deferred (`DECISIONS.md`
-  D13).
+- Shards come from **pools**. A pool is a fixed set of shard objects; each tenant is given
+  a small subset of it by rendezvous hashing, so tenants rarely share their whole subset.
+  Several tenants' batches land in the same object, each in its own stream, with its own
+  sequence numbers, quotas, fingerprints and discard mark. A tenant that needs full
+  isolation gets a pool of its own; the code path is the same. Implemented in `shard/`.
 
 ## 4. Write path
 
@@ -161,8 +163,8 @@ until then. No key is ever accepted by two shards.
 
 Every step is idempotent and keyed by a **stream**: `(shard, tenant, incarnation)`.
 Sequence numbers, seals, units, watermarks, discard marks and fingerprints are all per
-stream. Keeping the tenant in the key costs nothing with dedicated shards and means
-nothing has to change if shards are ever shared. A shard that loses its storage registers a new incarnation with
+stream, so one tenant's ledger being slow never blocks another tenant in the same shard
+and nothing crosses tenants. A shard that loses its storage registers a new incarnation with
 the ledger before it accepts writes; the ledger records the boundary and raises an alert,
 because rows between the old watermark and the loss are gone and that must be visible.
 
@@ -388,7 +390,7 @@ design. None is measured.
 | Case | Range per month | What decides where in the range |
 |---|---|---|
 | Single small deployment (10k series, 1 GB logs/day, 1M spans/day, 20 rules) | $5–15 | How Cloudflare bills an object that wakes once a minute (the first spike) |
-| Additional small active tenant | about $6 | Dedicated shard duration; seal age |
+| Additional small active tenant | under $1 pooled; about $6 with a dedicated pool | Pool assignment; seal age |
 | Team (1M series, 100 GB logs/day, 500M spans/day, 2k rules) | $400–800 | Compaction CPU, commit window, rule classes, first-load query reads |
 | Scale (100M series, 10 TB logs/day, 50B spans/day) | tens of thousands | Long-retention storage; shard duration |
 

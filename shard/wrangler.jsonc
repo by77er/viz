@@ -1,0 +1,7 @@
+{
+  "name": "viz-shard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": { "bindings": [{ "name": "SHARD", "class_name": "Shard" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard"] }]
+}

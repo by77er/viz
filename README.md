@@ -20,6 +20,7 @@ and consumed through composable, agent-first dashboards.
 | ----------- | ----------------------------------------------------- |
 | `research/` | State-of-the-art research notes that inform the design |
 | `bench/`    | Rust/WASM vs JavaScript engine benchmark, with results |
+| `shard/`    | Pooled shard Durable Object and routing, with tests |
 | `design/`   | `DESIGN.md` (architecture), `DECISIONS.md`, `VERIFICATION.md`, `REVIEW.md` and the raw reviews |
 
-Status: research and design phase.
+Status: design reviewed; first component (`shard/`) implemented and tested locally.
