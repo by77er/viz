@@ -378,20 +378,34 @@ not preloaded.
 
 ## Known issues
 
-- Colour: a series keeps its hashed token only while no series earlier in sort order claims
-  it in the same result, so a series can change colour between two different queries. With
-  more than eight series, which eight are coloured is decided by sort order, not by value, so
-  the largest series can be one of the grey ones. Selecting it isolates it but does not give
-  it a colour.
-- Adding or removing a series from the selection needs Shift or Ctrl, which a touch screen
-  does not have; on touch a row can only be isolated or shown with all the others.
+- SPEED_KNOWN_ISSUES
+- Colour memory is per browser tab (`sessionStorage`) and holds the assignment of the last
+  result shown. A reload reproduces it, but the same link opened in a fresh tab assigns slots
+  afresh by order of appearance, so two tabs with different histories can colour the same
+  URL differently. A member of Other that is selected is drawn as a hairline in `ink-muted`;
+  it does not get a colour.
+- The Other group is listed, not drawn: the review asks for a min-to-max band in a neutral
+  token, which needs a `series-other` token from the system.
+- Left for the design-system migration (the system is being revised separately; these are
+  styling or chart-drawing findings of the review, not logic): direct labels still use the
+  old placement and can sit on the wrong line (M1); the query well is 32 px tall with 13 px
+  text on a coarse pointer (B2); at 400 px the touch readout covers the plot (M4, third
+  point); legend rows, sortable heads and quiet buttons have no distinct pressed state (M6);
+  toolbar controls are full height and the waiting line's space is reserved (M8); the legend
+  does not wrap a long full name onto a second line (M5, layout part); native date inputs,
+  the centred range button at 400 px, arrow-key movement within the segmented control and the
+  legend, the clipped ring on the last legend row, the settings dialog's gap and scrim and the
+  palette field's visible label (m4, m5, m7 to m10). The zoom buttons' placement is
+  provisional.
 - The first visit to a backend that is not the mock reserves the mock banner's space and
   then gives it back, which moves the page once. After that the browser remembers
   (`viz.backend.mock` in localStorage).
-- CPU cores and plain numbers are shown without a unit after the value ("1.42", "500m"); the
-  unit is stated once, in the panel head.
+- Plain numbers (unit "number") carry no unit, by definition; an SI prefix is kept ("1.5k").
 - The favicon is an inline SVG and cannot read the tokens; it repeats the two `ink` values.
-- "Commands" and "Settings" in the navigation are nouns, not verbs.
+- "Commands" and "Settings" in the navigation are nouns, not verbs. The review calls them an
+  acceptable minor and gives no wording, so they are left for the navigation component.
+- The URL's `view` follows 300 ms after the last change of form. A Back press inside those
+  300 ms goes back past the change of form.
 - A dialog has no scrim: the system has no scrim token yet.
 - The nav hides nothing at 400 px today, but it scrolls sideways (by the system's design)
   once more sections are added.

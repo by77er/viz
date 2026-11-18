@@ -1160,7 +1160,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       for (const [key, alerts] of Object.entries(bundle.alerts ?? {})) {
         if (!keys.has(key)) continue
         const m = new Map<string, Alert>()
-        for (const a of alerts) {
+        for (const a of alerts.slice(alerts.length)) {
           m.set(a.fingerprint, a)
           this.exec(`INSERT INTO alert (tenant, grp, rule_key, fp, body) VALUES (?, ?, ?, ?, ?)`, t, spec.name, key, a.fingerprint, JSON.stringify(a))
         }
