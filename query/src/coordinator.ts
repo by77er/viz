@@ -18,7 +18,7 @@
  * shard and file read below is addressed by it.
  */
 import type { ScanInput } from '../../contracts/engine'
-import type { FileEntry, Plan, Watermark } from '../../contracts/ledger'
+import type { LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
 import { type FetchRange, type Grid, type QueryEngine, type QueryLimits, type QueryStats, leafSummary } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
@@ -140,8 +140,8 @@ export interface Context {
 interface Snapshot {
   version: number
   ledgerIncarnation: number
-  samples: FileEntry[]
-  series: FileEntry[]
+  samples: LiveFile[]
+  series: LiveFile[]
   watermarks: Watermark[]
 }
 
@@ -172,30 +172,15 @@ async function snapshot(c: Context, minTs: number, maxTs: number): Promise<Snaps
  * on a duplicate `(series, timestamp)` the LATER file wins (and any tail batch wins over
  * every file).
  *
- * The ledger lists files in key order, and key order is text order: `…-10-12-…` sorts
- * before `…-2-9-…`, so from a stream's tenth batch on, key order would let an OLDER
- * flush win over a newer one. The order used here, from the key (contracts/TABLES.md):
- *
- *   1. compaction outputs (level 1 and up), higher level first, then by key: they hold
- *      what older flush files held;
- *   2. flush files (level 0) by shard, incarnation and sequence range, as numbers.
- *
- * What this cannot order: two compaction outputs that both hold the same sample (README,
- * "Needed changes": the ledger should carry an explicit precedence).
+ * The ledger assigns every live file a precedence (contracts/ledger.ts `LiveFile`,
+ * design/DECISIONS.md D22) and `plan` lists files in ascending precedence, then key. That
+ * order is used as it is; this re-states it from the fields (a stable sort that leaves a
+ * correct plan untouched), so the order never depends on how keys sort as text.
  */
-const FLUSH_KEY = /\/L0-(.+)-(\d+)-(\d+)-(\d+)-[0-9a-f]{8}\.parquet$/
-const LEVEL = /\/L(\d+)-[^/]*$/
-
-export function byPrecedence(files: FileEntry[]): FileEntry[] {
-  const rank = (f: FileEntry) => {
-    const m = FLUSH_KEY.exec(f.key)
-    const level = f.level > 0 ? f.level : Number(LEVEL.exec(f.key)?.[1] ?? 0)
-    return m && level === 0 ? { level: 0, shard: m[1]!, inc: Number(m[2]), lo: Number(m[3]), hi: Number(m[4]), key: f.key } : { level, shard: '', inc: 0, lo: 0, hi: 0, key: f.key }
-  }
-  const text = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+export function inPrecedenceOrder<F extends Pick<LiveFile, 'precedence' | 'key'>>(files: F[]): F[] {
   return files
-    .map((f) => ({ f, r: rank(f) }))
-    .sort((x, y) => y.r.level - x.r.level || text(x.r.shard, y.r.shard) || x.r.inc - y.r.inc || x.r.lo - y.r.lo || x.r.hi - y.r.hi || text(x.r.key, y.r.key))
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => a.f.precedence - b.f.precedence || (a.f.key < b.f.key ? -1 : a.f.key > b.f.key ? 1 : a.i - b.i))
     .map((x) => x.f)
 }
 
@@ -461,8 +446,8 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
 
       // Which files can the ranges touch? Both tables in one call. Sample files go to the
-      // engine lowest precedence first (see `byPrecedence`).
-      snap.samples = byPrecedence(snap.samples)
+      // engine lowest precedence first (see `inPrecedenceOrder`).
+      snap.samples = inPrecedenceOrder(snap.samples)
       const listed = [...snap.series, ...snap.samples]
       const keep = c.engine.filesNeeded(listed.map((f) => f.index), ranges)
       const series = snap.series.filter((_, i) => keep[i])
