@@ -79,8 +79,17 @@ with no first-party simulator (research 12), and the same code can run in a Cont
 plans that exceed isolate limits. DataFusion and DuckDB are too large for a 128 MB isolate
 with a 1 s startup limit.
 
-**Would change if.** Spike S2 shows the core cannot fit; the pure-JS Parquet stack is plan B
-for I/O, with evaluation still needing to be written.
+**Evidence (2026-11-18, `bench/README.md`).** The same encode and rate-and-sum query
+implemented both ways, each tuned, reading each other's files with identical results: Rust
+compiled to WASM was 4–9× faster (encode 240 ms vs 1,030 ms; full-scan query 32 ms vs
+291 ms), used 18–20 MB of WASM memory per query, and instantiated in under 10 ms. It stayed
+about 4× ahead on a file encoded to favour JS. Measured in a sandbox, not on Cloudflare.
+
+**Still open.** Behaviour under the enforced 128 MB limit, billed CPU, a zstd build for
+WASM, and the size of a full engine rather than one query.
+
+**Would change if.** Those checks fail; the pure-JS Parquet stack is plan B for I/O, with
+evaluation still needing to be written.
 
 ## D6. Flat rows for samples and spans
 

@@ -14,8 +14,9 @@ built. Detail and sources: `research/12-verification-strategy.md`.
 | Re-review of draft 3 | Core seam judged sound; 12 edge findings amended in draft 3.1. The amendments are unreviewed text |
 | Every modelled number mapped to an experiment | Section 4 below |
 
-What this pass did **not** do: run any code, measure any latency, or exercise any Cloudflare
-service. Every performance and cost figure is a model.
+One thing has been measured: the engine-language choice (`bench/README.md`), in a sandbox
+and in local `workerd`. That is the first part of spike S2. Nothing has been run on
+Cloudflare; every other performance and cost figure is a model.
 
 ## 2. Invariants
 
