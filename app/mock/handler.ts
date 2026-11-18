@@ -148,11 +148,9 @@ function nestingDepth(q: string): number {
 
 /**
  * The mock's parser reports positions ("1:48: parse error: …"); the real API does not
- * (query/README.md, and README "Needed changes in query/"), so neither does this envelope.
+ * (README, "Needed changes in query/"), so neither does this envelope.
  */
-function apiMessage(e: PromQLError): string {
-  return e.message.replace(/^(invalid parameter "[^"]+": )?\d+:\d+: /, (_m, p: string | undefined) => (p && !/^invalid parameter "query"/.test(p) ? p : ''))
-}
+const apiMessage = (e: PromQLError): string => e.message.replace(/^\d+:\d+: /, '')
 
 export function createMockApi(opts: MockOptions = {}) {
   const storage = opts.storage ?? syntheticStorage()
