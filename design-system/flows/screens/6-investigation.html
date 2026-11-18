@@ -22,14 +22,14 @@
         <article class="vz-claim" data-verdict="unverified" data-unless="confirmed" id="claim-1">
           <p class="vz-claim-by">Agent's claim · confidence high · <span class="vz-status">Not verified</span></p>
           <p class="vz-claim-text"><b>payments-db</b> has been slow to answer checkout-api since 12:58, four minutes before checkout's own p99 crossed <span class="vz-qty">500 ms</span> at 13:02. Its p99 went from <span class="vz-qty">40 ms</span> to <span class="vz-qty">610 ms</span> by 13:09.</p>
-          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09, drawn on the right</span><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(
+          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09, drawn in "Dependency latency"</span><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(
   db_client_duration_seconds_bucket{service="checkout-api",db="payments-db"}[5m])))</div></div>
           <div class="vz-controls"><a class="vz-link" href="#" id="evidence-1">Open the query in Explore</a><button class="vz-button" data-size="sm" data-go="confirmed">Confirm claim</button><button class="vz-button" data-size="sm">Reject claim</button></div>
         </article>
         <article class="vz-claim" data-verdict="confirmed" data-when="confirmed">
           <p class="vz-claim-by">Agent's claim · confidence high · <span class="vz-status" data-state="ack">Confirmed by you at 15:16</span></p>
           <p class="vz-claim-text"><b>payments-db</b> has been slow to answer checkout-api since 12:58, four minutes before checkout's own p99 crossed <span class="vz-qty">500 ms</span> at 13:02. Its p99 went from <span class="vz-qty">40 ms</span> to <span class="vz-qty">610 ms</span> by 13:09.</p>
-          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09, drawn on the right</span><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(
+          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09, drawn in "Dependency latency"</span><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(
   db_client_duration_seconds_bucket{service="checkout-api",db="payments-db"}[5m])))</div></div>
           <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a><button class="vz-button" data-size="sm" data-go="" data-autofocus>Undo</button></div>
         </article>
