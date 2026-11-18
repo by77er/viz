@@ -525,7 +525,7 @@ function panelLine(p: PanelDigest, format: 'markdown' | 'tsv'): string {
 export function renderDigest(d: DashboardDigest, opts: RenderOptions): RenderedDigest {
   const format = opts.format
   const budget = Math.max(0, Math.floor(opts.maxTokens * 4))
-  const ordered = d.panels.map((p, i) => ({ p, i })).map((x) => x.p)
+  const ordered = d.panels.map((p, i) => ({ p, i })).sort((a, b) => importance(a.p) - importance(b.p) || a.i - b.i).map((x) => x.p)
   const total = ordered.length
   const m = /^o:(\d+)$/.exec(opts.cursor ?? '')
   const offset = m ? Math.min(Number(m[1]), total) : 0

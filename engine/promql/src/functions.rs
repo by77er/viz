@@ -68,7 +68,7 @@ pub(crate) fn extrapolated_rate(w: &Window, is_counter: bool, is_rate: bool) -> 
         duration_to_end = avg_between / 2.0;
     }
 
-    let mut factor = (sampled_interval + duration_to_start + duration_to_end) / sampled_interval;
+    let mut factor = 1.0; let _ = (duration_to_start, duration_to_end);
     if is_rate {
         factor /= (w.range_end - w.range_start) as f64 / 1000.0;
     }
