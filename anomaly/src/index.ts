@@ -22,6 +22,7 @@ export { cusum, cusumDefaults, type CusumParams, type CusumState } from './detec
 export { peltDetector, pelt, peltDefaults, type PeltParams, type Segmentation } from './detectors/pelt.ts'
 export { detectGroup, detectGroupWindow, groupDefaults, type GroupParams, type GroupResult, type GroupWindowParams, type MemberPoint } from './detectors/crossseries.ts'
 export { classify, type CostClass, type ClassifyConfig, DEFAULT_CLASSIFY } from './cost.ts'
+export { seriesFromMatrix, membersFromVector } from './prom.ts'
 
 import { threshold } from './detectors/threshold.ts'
 import { ewma } from './detectors/ewma.ts'

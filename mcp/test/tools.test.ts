@@ -223,6 +223,7 @@ describe('search_dashboards, get_dashboard, list_revisions', () => {
       ok(r)
       seen.push(...r.structured.data.items.map((x: any) => x.id))
       cursor = r.structured.cursor ?? undefined
+      expect(seen.length).toBeLessThan(10)
     } while (cursor)
     expect(seen.sort()).toEqual(['k8s_node_overview', 'service_red'])
   })
@@ -271,7 +272,7 @@ describe('get_schema and the schema resources', () => {
       ok(r)
       for (const it of r.structured.data.items) text += it.text
       cursor = r.structured.cursor ?? undefined
-      pages++
+      expect(++pages).toBeLessThan(200)
     } while (cursor)
     const s = getSchema('dashboard')
     expect(JSON.parse(text)).toEqual(JSON.parse(JSON.stringify({ schema: s.schema, example: s.example, units: s.units, builtins: s.builtins, catalog: s.catalog })))

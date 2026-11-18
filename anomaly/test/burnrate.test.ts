@@ -159,7 +159,13 @@ describe('stateless evaluation and guards', () => {
     expect(at(15, 15).firing).toBe(true) // 1.5% = 15×
     expect(at(15, 14).firing).toBe(false) // short at 14×
     expect(at(14, 15).firing).toBe(false)
-    expect(at(14.4, 15).firing).toBe(false) // exactly 14.4× is not "> 14.4×"
+    // exactly at the threshold is not "> threshold". 14.4 × 0.001 is not exact in binary, so
+    // use numbers that are: objective 0.75 (budget 0.25), threshold 2×, error ratio 0.5 → 2× exactly
+    const rule = { severity: 'page' as const, longMs: H, shortMs: 5 * MIN, burnRate: 2 }
+    const exact = (bad: number) => evaluateWindows({ objective: 0.75, rules: [rule] }, new Map([[H, w(bad, 100)], [5 * MIN, w(bad, 100)]]))[0]!
+    expect(exact(50).longBurn).toBe(2)
+    expect(exact(50).firing).toBe(false)
+    expect(exact(51).firing).toBe(true)
   })
   it('minEvents: a handful of errors on low traffic does not page', () => {
     const m = new Map([[H, { bad: 1, total: 10 }], [5 * MIN, { bad: 1, total: 2 }]])

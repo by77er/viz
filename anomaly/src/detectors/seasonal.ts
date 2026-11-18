@@ -56,7 +56,8 @@ export interface SeasonalState {
   periodMs: number
   stepMs: number
   seasons: number
-  origin: number
+  /** Timestamp of the first valid point; slots are counted from it. */
+  origin: number | null
   lastTs: number | null
   lastSlot: number | null
   /** Consecutive anomalous points so far. */
@@ -125,11 +126,9 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
     }
     const minSeasons = Math.min(g.seasons, Math.max(1, Math.floor(p.minSeasons)))
     const compatible = state && state.v === 1 && state.periodMs === p.periodMs && state.stepMs === stepMs && state.seasons === g.seasons && state.vals.length === g.R && state.res.length === g.Rr
-    let firstTs = NaN
-    for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = tsv(series.ts[i]!); break }
     const st: SeasonalState = compatible
       ? { ...state, run: state.run ?? 0, vals: state.vals.slice(), res: state.res.slice() }
-      : { v: 1, periodMs: p.periodMs, stepMs, seasons: g.seasons, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, run: 0, vals: new Array(g.R).fill(null), res: new Array(g.Rr).fill(null) }
+      : { v: 1, periodMs: p.periodMs, stepMs, seasons: g.seasons, origin: null, lastTs: null, lastSlot: null, run: 0, vals: new Array(g.R).fill(null), res: new Array(g.Rr).fill(null) }
     const { phase, season } = phaseName(p.periodMs, stepMs)
     const acceptAfter = p.acceptAfter > 0 ? p.acceptAfter : Math.max(3, Math.round(g.P / 24))
     const weights: number[] = []
@@ -145,8 +144,9 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
         points[i] = missingPoint(ts, x)
         continue
       }
-      const s = slotOf(ts, st.origin, stepMs)
+      const s = slotOf(ts, st.origin ?? ts, stepMs)
       if (!Number.isFinite(s)) { points[i] = missingPoint(ts, x); continue } // ts − origin overflowed
+      if (st.origin === null) st.origin = ts
       st.lastTs = ts
       // advance: slots skipped since the last point are gaps
       if (st.lastSlot !== null && s > st.lastSlot) {

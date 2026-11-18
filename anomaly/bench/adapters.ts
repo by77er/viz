@@ -146,6 +146,10 @@ export const GRIDS: Record<string, Config[]> = {
   stl: grid('stl', { k: [4, 6, 9] }, (p) => (f, c) => runStl(f, c, Number(p.k), 4)),
   cusum: grid('cusum', { k: [0.5, 1], h: [5, 10, 20] }, (p) => (f, c) => fromPoints(cusum.detect(series(f), { ...p, stepMs: c.stepMs } as never).points)),
   pelt: grid('pelt', { minShift: [2, 4, 8] }, (p) => (f) => runPelt(f, Number(p.minShift))),
+  // Added after the first run showed robust z and seasonal far below zero (routine spikes on
+  // heavy-tailed series score 20+ robust σ). Post hoc: reported separately, not as the result.
+  robust_z_posthoc: grid('robust_z_posthoc', { windowPoints: [50, 288, 1000], k: [15, 25, 40] }, (p) => (f, c) => fromPoints(robustZ.detect(series(f), { ...p, stepMs: c.stepMs } as never).points)),
+  seasonal_posthoc: grid('seasonal_posthoc', { seasons: [1, 3], k: [15, 25, 40], adapt: ['robust', 'agile'] }, (p) => (f, c) => runSeasonal(f, c, p, 'robust_z')),
 }
 
 /** Defaults for the NAB-protocol table (no tuning; threshold swept over the corpus as NAB does). */

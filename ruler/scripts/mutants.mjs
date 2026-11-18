@@ -326,6 +326,52 @@ export const MUTANTS = [
     edits: one('src/rulefile.ts', '        if (r.keepFiringForMs > 0) rule.keep_firing_for = formatDuration(r.keepFiringForMs)\n', ''),
     independent: true,
   },
+  // ───────────── versioned storage and formats (contracts/COMPATIBILITY.md) ─────────────
+  {
+    name: 'Ruler serves storage a newer release wrote (the refusal dropped from the RPC guard)',
+    edits: one('src/ruler.ts', "    const refused = refusalOf(this.schema)\n    if (refused) return refused\n    return this.tenant !== ''", "    return this.tenant !== ''"),
+    tests: ['test/compat.test.ts'],
+  },
+  {
+    name: 'Notifier accepts hand-offs onto storage a newer release wrote (refusal dropped)',
+    edits: one('src/notifier.ts', "    const refused = refusalOf(this.schema)\n    if (refused) return refused\n    return this.tenant !== ''", "    return this.tenant !== ''"),
+    tests: ['test/compat.test.ts'],
+  },
+  {
+    name: 'a refusing Ruler runs its tick from the alarm (and so drops the alarm the newer release needs)',
+    edits: one('src/ruler.ts', "    if (refused) {\n      // Keep the alarm for the release that owns this storage; touch nothing else.\n      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)\n      return\n    }\n    await this.tick()", '    await this.tick()'),
+    tests: ['test/compat.test.ts'],
+  },
+  {
+    name: 'RulerIndex serves storage a newer release wrote (guard removed)',
+    edits: one('src/registry.ts', '    if (refused) throw new SchemaTooNewError(refused)\n', ''),
+    tests: ['test/compat.test.ts'],
+  },
+  {
+    name: 'the HTTP API passes a refusal through as if it were an answer (no 503)',
+    edits: one('src/http.ts', "  if (r.status === 'schema_too_new') throw schemaTooNew((r as unknown as SchemaTooNew).retryAfterMs)\n", ''),
+    tests: ['test/compat.test.ts'],
+  },
+  {
+    name: 'a released migration edited in place (timeline loses WITHOUT ROWID)',
+    edits: one('src/schema.ts', "CREATE TABLE IF NOT EXISTS timeline (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL,\n  PRIMARY KEY (tenant, monitor)) WITHOUT ROWID;", 'CREATE TABLE IF NOT EXISTS timeline (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL,\n  PRIMARY KEY (tenant, monitor));'),
+    tests: ['test/compat.test.ts'],
+  },
+  {
+    name: 'the idempotency key derivation changes without a format version (a receiver would process a retry twice)',
+    edits: one('src/notifier.ts', 'const idem = hash64(seed) + hash64(`viz-notification\\n${seed}`)', 'const idem = hash64(`viz-notification\\n${seed}`) + hash64(seed)'),
+    tests: ['test/golden.test.ts'],
+  },
+  {
+    name: 'the hand-off to the notifier gains a field without a format version',
+    edits: one('src/ruler.ts', "      expiresAt: heartbeat && status === 'firing'", "      severity: 'unset',\n      expiresAt: heartbeat && status === 'firing'"),
+    tests: ['test/golden.test.ts'],
+  },
+  {
+    name: 'the registry partition hash changes (a tenant\'s rulers move to another index object)',
+    edits: one('src/registry.ts', 'hash64(`viz-ruler-index\\n${tenant}`)', 'hash64(`viz-ruler-index/2\\n${tenant}`)'),
+    tests: ['test/golden.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0
@@ -344,7 +390,7 @@ function run(tests) {
   const dir = mkdtempSync(join(tmpdir(), 'viz-mutant-'))
   const report = join(dir, 'report.json')
   try {
-    const r = spawnSync('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${report}`, ...tests], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 })
+    const r = spawnSync('npx', ['vitest', 'run', '--maxWorkers=2', '--reporter=json', `--outputFile=${report}`, ...tests], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 })
     // Only a failing test counts as a kill. A file that did not even load says the mutant
     // broke the build, which proves nothing about the tests: it is reported, not counted.
     let failed = []

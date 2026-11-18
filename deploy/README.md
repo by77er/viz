@@ -11,7 +11,7 @@ changes no component: everything it needs from one is under "Needed changes".
 | `resources.mjs` | Creates the R2 bucket, KV namespace and queues (idempotent); `destroy --stage` deletes a stage |
 | `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records; rollback |
 | `deploy.sh` | The whole deploy: WASM, `npm ci`, resources, configure, release, smoke test, automatic rollback |
-| `smoke.mjs` | `/healthz`, then a real Remote Write and a query that must return it within 60 s |
+| `smoke.mjs` | `/healthz` until the release just promoted answers, then a real Remote Write and a query that must return it within 60 s |
 | `bootstrap.mjs` | A tenant's first API key, through a one-time token |
 | `load.mjs` | Steady write and read load with a cutover report (used by the trial) |
 | `gateway/` | `viz-gateway`, the Worker on `vis.bitcru.sh`, and its tests |
@@ -38,7 +38,8 @@ push to main
                  release.mjs deploy         plan → refuse unacknowledged migrations (exit 3)
                                             phase 1: upload every Worker (serves nothing)
                                             phase 2: promote viz-ingest, viz-control, viz-query, viz-gateway
-                 smoke.mjs                  /healthz; Remote Write + query with SMOKE_KEY
+                 smoke.mjs                  /healthz until the new release answers; Remote Write +
+                                            query with SMOKE_KEY
                  on smoke failure           no migration in the release → roll back to the previous
                                             release and fail; migration → fail loudly, no rollback
             4. upload the release record as artifact release-<sha> (90 days) and print it in the
@@ -111,7 +112,7 @@ What Cloudflare documents, and what the pipeline does about it. Read on 2026-11-
 | Only the 100 most recent versions can be deployed or rolled back to | [Rollbacks](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/rollbacks/) | The rollback checks the version still exists and says so if it does not |
 | The script list carries `migration_tag`, "the tag of the Durable Object migration that was most recently applied" | [API: list scripts](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/) | How the pipeline learns the migration in force |
 | Version affinity (`Cloudflare-Workers-Version-Key`) only holds "while the deployment configuration stays the same" and needs a zone route for header rules | [Version affinity](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/version-affinity/) | Not used: no split deployments, nothing to stick to |
-| Routes, custom domains, crons and queue consumers are not part of a version | wrangler 4.164.0 (`triggers deploy` updates routes, custom domains, workers.dev, crons and queue consumers) | After each `versions deploy`, `wrangler triggers deploy` with the same config. A rollback restores versions (code, bindings, vars), not triggers |
+| Routes, custom domains, crons and queue consumers are not part of a version | wrangler 4.164.0: `versions upload` prints "Changes to triggers (routes, custom domains, cron schedules, etc) must be applied with the command wrangler triggers deploy"; its source shows `triggers deploy` also updates workers.dev and queue consumers. Wrangler calls `triggers deploy` "an experimental command" | After each `versions deploy`, `wrangler triggers deploy` with the same config. A rollback restores versions (code, bindings, vars), not triggers |
 | A pending run in a concurrency group is replaced by a newer one ("at most one … pending") | [GitHub: control concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency) | The newest commit is the one deployed after a running deploy |
 
 Not documented, so measured in the trial below: what an ingest client and a query client see
@@ -230,8 +231,11 @@ that happens, dispatch it again.
    node deploy/configure.mjs --ids-optional > /dev/null     # the manifest names the gateway
    node deploy/bootstrap.mjs --tenant <tenant-id>            # prints the admin key once
    ```
-   To also make the smoke key: add `--smoke-key-file ./smoke.key` (a key named `smoke` with
-   the `write` and `read` scopes, written with mode 0600, never printed).
+   The first key has the `admin` scope only: it manages the tenant through
+   `/api/v1/control/…` but cannot send or read data (edge and query require the `write` and
+   `read` scopes literally). To also make a data key: add `--smoke-key-file ./smoke.key` (a
+   key named `smoke` with the `write` and `read` scopes, written with mode 0600, never
+   printed); other keys are made with `POST /api/v1/control/keys`.
 4. **Optional `SMOKE_KEY`**: store that key as the repository secret `SMOKE_KEY` and delete
    the file. From then on every deploy writes and reads real samples (under
    `viz_smoke_samples{run=<uuid>}` of that tenant).
@@ -303,13 +307,69 @@ All measured here unless it says Cloudflare.
 - `wrangler deploy --dry-run` of all four generated production configs: bundles (viz-ingest
   2,642.54 KiB / 799.96 KiB gzip, viz-control 303.48 / 58.00, viz-query 2,625.71 / 824.97,
   viz-gateway 7.15 / 2.75).
+- The CI exclusion, on a copy of the sources without `app/` (as main will be): query's
+  `npx tsc --noEmit` fails with 4 errors, all in `test/http.test.ts` (`Cannot find module
+  '../../app/src/api/client'`); with the `tsconfig.ci.json` the workflow writes, it is clean.
 - actionlint 1.7.12 (built from source through the Go module proxy) with shellcheck 0.11.0
   on both workflows: no findings. shellcheck on `deploy.sh`: clean.
 - The workflows themselves have not run: this checkout has no GitHub remote access. What
   they call was run locally (the matrix script, every deploy step); the trial below ran
   `deploy.sh` itself.
 
-@@TRIAL@@
+## Trial on Cloudflare (2026-11-18)
+
+`deploy.sh --stage trial` against the real account: Workers `viz-trial-ingest`,
+`viz-trial-control`, `viz-trial-query`, `viz-trial-gateway` (only the gateway on
+workers.dev), R2 `viz-trial-lake`, KV `viz-trial-config`, queues `viz-trial-flush`,
+`viz-trial-maint`, `viz-trial-flush-dlq`, `viz-trial-maint-dlq`. Nothing was deployed to
+production and `vis.bitcru.sh` was not touched. Every resource was created by these scripts
+and deleted by `resources.mjs destroy --stage trial` at the end (see "Cleanup").
+
+Client numbers below are **measured on Cloudflare from outside**: from this sandbox, through
+its egress proxy, so they include that path. For scale, a request the gateway answers by
+itself (a 404) took p50 41 ms, p90 80 ms, p99 181 ms (n = 100).
+
+### What ran
+
+| Step | Result |
+|---|---|
+| `resources.mjs ensure` twice | created the bucket, the namespace and four queues; the second run: "all present" |
+| N0 deploy without acknowledgement | **refused, exit 3**, before anything was uploaded: three migrations `(none) → v1` listed with the trailer each needs; no Worker created |
+| N0 deploy with `viz-ingest@v1 viz-control@v1 viz-query@v1` | all four via `wrangler deploy` (three migrations, one new Worker), healthy, 47 s |
+| `bootstrap.mjs --tenant trial-tenant` | admin key created and written to a 0600 file; secret deleted and confirmed gone; a smoke key (write, read) created through `/api/v1/control/keys`. A second bootstrap of the same tenant: **409, nothing created**. `POST /api/v1/bootstrap` with no secret set: 404 |
+| Smoke with the key, on N0 | Remote Write 204, then every query **503** (see "Needed changes" 8): N0 was deployed from the shared working tree while another engineer was changing the query engine's ABI, and the bundled `viz_query.wasm` was older than its binding. CI cannot produce this mix (one commit, WASM built from it); the rest of the trial deployed from a snapshot of the sources, built by `deploy.sh` itself |
+| N1 from the snapshot, `deploy.sh` building both engines | upload four versions, then promote; 467 s including the two release builds. Its smoke test passed on health, but the answer came from N0's gateway still serving at that location; `smoke.mjs` now waits until `/healthz` reports the release just promoted (`--expect-release`) |
+| Smoke on N1 with the key | Remote Write 204 in 571 ms; all 9 samples returned by a query 820 ms after the acknowledgement |
+| Latency, sequential, n = 200 each | write acknowledgement (4 series × 1 sample, 204): **p50 96 ms, p90 133 ms, p99 334 ms**; query `sum(viz_trial_latency{run})` (tail rows, 200): **p50 223 ms, p90 303 ms, p99 477 ms**; no errors |
+| Upgrade, rollback and failed deploy under load | below |
+| Cleanup | below |
+
+### Upgrade under load
+
+A writer sent 20 Remote Write requests a second (each one sample for each of 4 series,
+values known in advance), open loop, retrying refusals with the same body as Prometheus does;
+a reader asked `count(viz_trial_load{run})` every second. While it ran:
+
+1. **N1 → N2**: `deploy.sh` with release N2, which is N1's code with one trivial change
+   (`VIZ_RELEASE`), so every Worker got a new version and every Durable Object had to move.
+   Upload, then promote callees first, then the smoke test with the key.
+2. **N2 → N1 rollback**: `release.mjs rollback --record release-N1.json`, callers first.
+3. **N1 → N3 → N1, automatic**: `deploy.sh` with release N3 and a smoke key that does not
+   exist, so the smoke test fails (401) after N3 is live and `deploy.sh` restores N1 by itself.
+
+@@LOAD@@
+
+
+## Cost
+
+Modelled, not read from Cloudflare's analytics. Production idle: three Durable Object
+Workers and the gateway cost nothing while unused; the hourly cron reads KV only
+(`stack/README.md`, "Idle means free"); storage is whatever `viz-lake` and the queues hold.
+Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests.
+The trial (below) was stated before it ran as under US$1 worst case: at most 30 minutes of
+20 Remote Write requests and 1 query a second through four Workers, a few hundred R2 writes
+from flushes, a few thousand queue operations, one KV namespace and one small bucket, at
+Workers Paid rates.
 
 ## Needed changes in components
 
@@ -393,8 +453,10 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   viz-gateway's, callers run the previous release against new callees (a minute or so in the
   trial). That is the documented skew; it is safe only while every component keeps the
   one-release compatibility of `contracts/COMPATIBILITY.md`.
-- **Old Durable Object code keeps serving up to 30 s after promotion** (deferred mode), and
-  a rollback is itself a new deployment that moves every object again.
+- **Old Durable Object code keeps serving up to 30 s after promotion** (deferred mode;
+  measured in the trial: the write path's Worker code switched at once, its Shard and Ledger
+  objects 29.7 s later), so for that half minute new Worker code calls old object code. A
+  rollback is itself a new deployment and moves every object again.
 - **Rollback is only as good as the record.** Artifacts expire after 90 days and Cloudflare
   keeps 100 versions; after that, go back by deploying an old commit.
 - **The trial ran from a snapshot of a working tree that others were editing**, with the WASM

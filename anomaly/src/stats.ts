@@ -153,13 +153,15 @@ export function inferStep(ts: ArrayLike<number>): number {
 }
 
 /**
- * Floor for a spread estimate so that a perfectly flat history does not divide by zero:
- * scale-relative (so scores stay scale-invariant), with an absolute floor for all-zero data.
+ * Floor for a spread estimate: at least 1e-9 of the level (scale-relative, so scores stay
+ * scale-invariant) and at least `minSpread`. Returns 0 when there is no scale at all (a history
+ * of exact zeros): callers then get |diff| / 0 = Infinity → the score cap for any deviation,
+ * and 0 / 0 → 0 for none (`finiteScore`). No absolute constant, which would break scale invariance.
  */
 export function spreadFloor(spread: number, level: number, minSpread: number): number {
   const rel = 1e-9 * Math.abs(level)
   const s = Math.max(Number.isFinite(spread) ? spread : 0, minSpread, rel)
-  return s > 0 ? s : Number.MIN_VALUE * 1e10
+  return s > 0 ? s : 0
 }
 
 /** Cap for scores so they stay finite and JSON-safe. */

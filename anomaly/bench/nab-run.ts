@@ -112,7 +112,13 @@ function breakdown(det: Map<number, Float64Array>, cm: CostMatrix) {
   const stepMin = (i: number) => ctxs[i]!.stepMs / 60_000
   void stepMin
   const med = (a: number[]) => (a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]! : NaN)
-  return { categories: cats, recall: wm.recall, precision: wm.precision, windows: wm.windows, detected: wm.detectedWindows, events: wm.events, medianDelayFromLabelPoints: med(wm.delaysFromLabel), medianDelayFromWindowStartPoints: med(wm.delaysFromStart) }
+  // the seasonal subset: files where seasonality was detected on the probationary period
+  const seasonalIx = idxOf((f) => ctxs[files.indexOf(f)]!.periodMs !== null)
+  const seasonalSubset = norm(rawAt(seasonalIx, (i) => det.get(i)!, cm, 0.5), seasonalIx, cm)
+  const nonSeasonalIx = idxOf((f) => ctxs[files.indexOf(f)]!.periodMs === null)
+  const nonSeasonalSubset = norm(rawAt(nonSeasonalIx, (i) => det.get(i)!, cm, 0.5), nonSeasonalIx, cm)
+  const perFile = Object.fromEntries(ALL.map((i) => [files[i]!.path, scoreAt([{ rows: rows[i]!, scores: det.get(i)! }], cm, 0.5)]))
+  return { categories: cats, seasonalSubset, nonSeasonalSubset, perFile, recall: wm.recall, precision: wm.precision, windows: wm.windows, detected: wm.detectedWindows, events: wm.events, medianDelayFromLabelPoints: med(wm.delaysFromLabel), medianDelayFromWindowStartPoints: med(wm.delaysFromStart) }
 }
 
 // ───────────────────────────── 1. NAB protocol ─────────────────────────────
@@ -201,6 +207,9 @@ for (const [d, b] of Object.entries(baselines)) { row(`NAB ${d} (points)`, b.poi
 lines.push('', '### Held-out, standard profile, by category', '', `| detector | ${CATS.join(' | ')} |`, `|---|${CATS.map(() => '---').join('|')}|`)
 for (const [d, c] of Object.entries(heldOut)) lines.push(`| ${d} | ${CATS.map((k) => f1(c.standard.breakdown.categories[k]!)).join(' | ')} |`)
 for (const [d, b] of Object.entries(baselines)) lines.push(`| NAB ${d} (points) | ${CATS.map((k) => f1(b.points.standard.breakdown.categories[k]!)).join(' | ')} |`)
-lines.push('', `CPU on the corpus (${files.reduce((a, f) => a + f.values.length, 0)} points, default configs): ${Object.entries(cpu).map(([d, c]) => `${d} ${(1000 * c.ms / c.points).toFixed(1)} µs/1k? `).join('')}`)
+lines.push('', `### Held-out, standard profile: files with and without detected seasonality (${idxOf((f) => ctxs[files.indexOf(f)]!.periodMs !== null).length} / ${idxOf((f) => ctxs[files.indexOf(f)]!.periodMs === null).length} files)`, '', '| detector | seasonal files | non-seasonal files |', '|---|---|---|')
+for (const [d, c] of Object.entries(heldOut)) lines.push(`| ${d} | ${f1(c.standard.breakdown.seasonalSubset)} | ${f1(c.standard.breakdown.nonSeasonalSubset)} |`)
+for (const [d, b] of Object.entries(baselines)) lines.push(`| NAB ${d} (points) | ${f1(b.points.standard.breakdown.seasonalSubset)} | ${f1(b.points.standard.breakdown.nonSeasonalSubset)} |`)
+lines.push('', `CPU on the corpus (${files.reduce((a, f) => a + f.values.length, 0)} points, default configs, ms per 1,000 points, including adapter work): ${Object.entries(cpu).map(([d, c]) => `${d} ${((1000 * c.ms) / c.points).toFixed(2)}`).join(', ')}`)
 console.log(lines.join('\n'))
 writeFileSync(file.replace(/\.json$/, '.md'), lines.join('\n') + '\n')

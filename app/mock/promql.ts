@@ -15,9 +15,14 @@ import type { Labels, Sample, SeriesSource, Storage } from './storage'
 
 export const LOOKBACK = 300
 
+/**
+ * `bad_data` (400): the query or a parameter is wrong. `execution` (422): evaluation failed.
+ * `unsupported` (422): valid PromQL this mock does not implement, which is how the real viz
+ * API answers valid PromQL its engine does not implement (query/README.md).
+ */
 export class PromQLError extends Error {
-  readonly errorType: 'bad_data' | 'execution'
-  constructor(message: string, errorType: 'bad_data' | 'execution' = 'bad_data') {
+  readonly errorType: 'bad_data' | 'execution' | 'unsupported'
+  constructor(message: string, errorType: 'bad_data' | 'execution' | 'unsupported' = 'bad_data') {
     super(message)
     this.name = 'PromQLError'
     this.errorType = errorType
@@ -154,6 +159,16 @@ const FUNCTIONS: Record<string, [number, number]> = {
   clamp_min: [2, 2], clamp_max: [2, 2], time: [0, 0], vector: [1, 1], scalar: [1, 1],
 }
 const SET_OPS = new Set(['and', 'or', 'unless'])
+/** Every function of PromQL (Prometheus 3): a name here that the mock lacks is unsupported, any other name unknown. */
+const PROMQL_FUNCTIONS = new Set(
+  ('abs absent absent_over_time acos acosh asin asinh atan atanh avg_over_time ceil changes clamp clamp_max clamp_min cos cosh ' +
+    'count_over_time day_of_month day_of_week day_of_year days_in_month deg delta deriv double_exponential_smoothing exp floor ' +
+    'histogram_avg histogram_count histogram_fraction histogram_quantile histogram_stddev histogram_stdvar histogram_sum holt_winters ' +
+    'hour idelta increase info irate label_join label_replace last_over_time ln log10 log2 mad_over_time max_over_time min_over_time ' +
+    'minute month pi predict_linear present_over_time quantile_over_time rad rate resets round scalar sgn sin sinh sort ' +
+    'sort_by_label sort_by_label_desc sort_desc sqrt stddev_over_time stdvar_over_time sum_over_time tan tanh time timestamp vector year')
+    .split(' '),
+)
 const COMPARISONS = new Set(['==', '!=', '<', '>', '<=', '>='])
 
 class Parser {
@@ -185,6 +200,8 @@ class Parser {
     return t.type === 'id' && t.text === text
   }
   private expect(text: string): Tok {
+    // The real API's (and Prometheus') wording for a bracket left open at the end.
+    if (text === ')' && this.peek().type === 'eof') this.fail(this.peek(), 'unclosed left parenthesis')
     if (!this.isOp(text)) this.fail(this.peek(), `unexpected ${this.describe(this.peek())}, expected "${text}"`)
     return this.next()
   }
@@ -199,11 +216,15 @@ class Parser {
   private fail(t: Tok, msg: string): never {
     throw new PromQLError(`${position(this.src, t.pos)}: parse error: ${msg}`)
   }
+  /** Valid PromQL the mock does not implement: 422 `unsupported`, as the real API answers. */
+  private unsupported(msg: string): never {
+    throw new PromQLError(`${msg} (not implemented by the viz mock backend)`, 'unsupported')
+  }
 
   private expr(): Node {
     const node = this.comparison()
     const t = this.peek()
-    if (t.type === 'id' && SET_OPS.has(t.text)) this.fail(t, `set operator "${t.text}" is not supported by the viz mock backend`)
+    if (t.type === 'id' && SET_OPS.has(t.text)) this.unsupported(`set operator "${t.text}"`)
     return node
   }
 
@@ -222,7 +243,7 @@ class Parser {
       else ignoring = labels
       const t = this.peek()
       if (t.type === 'id' && (t.text === 'group_left' || t.text === 'group_right'))
-        this.fail(t, `${t.text} is not supported by the viz mock backend`)
+        this.unsupported(t.text)
     }
     return { bool, on, ignoring }
   }
@@ -289,9 +310,9 @@ class Parser {
       const open = this.next()
       if (this.peek().type !== 'dur') this.fail(this.peek(), `unexpected ${this.describe(this.peek())} in range, expected a duration`)
       const range = this.next().num!
-      if (this.isOp(':') || this.peek().text.startsWith(':')) this.fail(this.peek(), 'subqueries are not supported by the viz mock backend')
+      if (this.isOp(':') || this.peek().text.startsWith(':')) this.unsupported('subqueries')
       this.expect(']')
-      if (node.type !== 'selector') this.fail(open, 'ranges only allowed for vector selectors (subqueries are not supported by the viz mock backend)')
+      if (node.type !== 'selector') this.fail(open, 'ranges only allowed for vector selectors')
       out = { ...node, range }
     }
     if (this.isId('offset')) {
@@ -306,7 +327,7 @@ class Parser {
       if (out.type !== 'selector') this.fail(off, 'offset modifier must be preceded by an instant vector selector or range vector selector')
       out = { ...out, offset: d }
     }
-    if (this.isOp('@')) this.fail(this.peek(), '@ modifier is not supported by the viz mock backend')
+    if (this.isOp('@')) this.unsupported('the @ modifier')
     return out
   }
 
@@ -336,7 +357,7 @@ class Parser {
       this.next()
       const name = t.text
       if (UNSUPPORTED_AGGREGATORS.has(name) && (this.isOp('(') || this.isId('by') || this.isId('without')))
-        this.fail(t, `aggregation "${name}" is not supported by the viz mock backend`)
+        this.unsupported(`aggregation "${name}"`)
       if (AGGREGATORS.has(name) && (this.isOp('(') || this.isId('by') || this.isId('without'))) return this.aggregation(name, t.pos)
       if (this.isOp('(')) return this.call(name, t)
       return this.selector(name, t.pos)
@@ -374,7 +395,7 @@ class Parser {
     const args: Node[] = []
     while (!this.isOp(')')) {
       args.push(this.expr())
-      if (!this.isOp(')') && !this.isOp(',')) this.fail(this.peek(), `unexpected ${this.describe(this.peek())}, expected ")"`)
+      if (!this.isOp(')') && !this.isOp(',')) this.expect(')')
       if (this.isOp(',')) this.next()
     }
     this.expect(')')
@@ -389,12 +410,15 @@ class Parser {
   private call(fn: string, t: Tok): Node {
     const isRange = RANGE_FUNCTIONS.has(fn)
     const arity = FUNCTIONS[fn]
-    if (!isRange && !arity) this.fail(t, `unknown function with name "${fn}" (the viz mock backend supports a subset of PromQL)`)
+    if (!isRange && !arity) {
+      if (PROMQL_FUNCTIONS.has(fn)) this.unsupported(`function "${fn}"`)
+      this.fail(t, `unknown function with name '${fn}'`)
+    }
     this.expect('(')
     const args: Node[] = []
     while (!this.isOp(')')) {
       args.push(this.expr())
-      if (!this.isOp(')') && !this.isOp(',')) this.fail(this.peek(), `unexpected ${this.describe(this.peek())}, expected ")"`)
+      if (!this.isOp(')') && !this.isOp(',')) this.expect(')')
       if (this.isOp(',')) this.next()
     }
     this.expect(')')
@@ -883,10 +907,11 @@ export function formatSampleValue(v: number): string {
 export const MAX_POINTS = 11000
 
 export function queryRange(storage: Storage, query: string, start: number, end: number, step: number) {
-  if (!(step > 0)) throw new PromQLError('zero or negative query resolution step widths are not accepted. Try a positive integer')
-  if (end < start) throw new PromQLError('end timestamp must not be before start time')
+  // The real API's wording (query/src/params.ts and its engine), parameter name included.
+  if (end < start) throw new PromQLError('invalid parameter "end": end timestamp must not be before start time')
+  if (!(step > 0)) throw new PromQLError('invalid parameter "step": zero or negative query resolution step widths are not accepted. Try a positive integer')
   if ((end - start) / step > MAX_POINTS)
-    throw new PromQLError('exceeded maximum resolution of 11,000 points per timeseries. Try decreasing the query resolution (?step=XX)')
+    throw new PromQLError(`exceeded maximum resolution of ${MAX_POINTS} points per timeseries. Try decreasing the query resolution (?step=XX)`)
   const node = parse(query)
   if (node.type === 'string') throw new PromQLError('invalid expression type "string" for range query, must be Scalar or instant Vector')
   if (node.type === 'selector' && node.range !== undefined)

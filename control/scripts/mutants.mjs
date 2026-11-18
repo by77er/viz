@@ -63,6 +63,20 @@ const mutants = [
   ['alarm left set when there is nothing to do', [['src/tenant.ts', ': this.ctx.storage.deleteAlarm()', ': Promise.resolve()']]],
   ['CORS answers any origin', [['src/index.ts', 'if (!origin || !allowed.includes(origin)) return', 'if (!origin) return']]],
   ['a route without documentation', [['src/openapi.ts', "  'GET /audit/{entry}': { summary: 'One audit entry', scopes: ADMIN, ok: [200, 'The entry', ref('AuditEntry')], errors: [404] },\n", '']]],
+  // ---- versioned storage and formats (contracts/COMPATIBILITY.md); the runner is shared, so its mutants run here ----
+  ['versioned: runner: storage a newer release wrote is opened although it is not readable (refusal removed)', [['../contracts/schema.ts', '    if (row.compat > known) {', '    if (false) {']]],
+  ['versioned: runner: newer storage that IS readable is refused (compat ignored)', [['../contracts/schema.ts', '    if (row.compat > known) {', '    if (row.version > known) {']]],
+  ['versioned: runner: opening newer, readable storage lowers its version', [['../contracts/schema.ts', "    // Newer, but declared readable by this code: open it as it is. Never lower the version.\n    return { status: 'ok', component: spec.component, version: row.version, compat: row.compat, known, migrated: [], adopted: false }\n", '']]],
+  ['versioned: runner: migrations not in one transaction (a failing step leaves half a migration)', [
+    ['../contracts/schema.ts', '  storage.transactionSync(() => {\n    sql.exec(\n      `CREATE TABLE IF NOT EXISTS ${SCHEMA_TABLE}', '  ;(() => {\n    sql.exec(\n      `CREATE TABLE IF NOT EXISTS ${SCHEMA_TABLE}'],
+    ['../contracts/schema.ts', '      now,\n    )\n  })\n  return {', '      now,\n    )\n  })()\n  return {'],
+  ]],
+  ['versioned: runner: the new version is not recorded (every open migrates again)', [['../contracts/schema.ts', '      spec.component,\n      known,\n      compat,', '      spec.component,\n      Math.max(1, from),\n      compat,']]],
+  ['versioned: Tenant serves storage a newer release wrote (its refusal ignored)', [['src/tenant.ts', '  refusal(): SchemaTooNew | null {\n    return refusalOf(this.schema)', '  refusal(): SchemaTooNew | null {\n    return null']]],
+  ['versioned: a refusing Tenant lets its alarm lapse (the newer release would lose its deadlines)', [['src/tenant.ts', '      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)\n      return\n    }\n    if (this.tenant', '      return\n    }\n    if (this.tenant']]],
+  ['versioned: a released migration edited in place (version 1 no longer creates the append-only trigger)', [['src/schema.ts', "CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;\n", '']]],
+  ['versioned: the KV key record edge reads changes shape without a format version', [['src/ops-keys.ts', 'const record = { tenant: t.tenant, secretSha256: s.secret_sha256,', 'const record = { v: 1, tenant: t.tenant, secretSha256: s.secret_sha256,']]],
+  ['versioned: the list cursor encoding changes without a format version', [['src/util.ts', "return btoa(JSON.stringify(position)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '')", "return btoa(JSON.stringify(position)).replace(/\\+/g, '-').replace(/\\//g, '_')"]]],
 ]
 
 const only = process.argv[2]
@@ -87,7 +101,7 @@ for (const [name, edits] of mutants) {
     try {
       // The generated document must follow its source, as it would in a real change.
       if (edits.some(([file]) => file === 'src/openapi.ts')) execSync('node scripts/gen-openapi.mjs', { stdio: 'pipe' })
-      execSync('npx vitest run', { stdio: 'pipe', env: { ...process.env, NO_COLOR: '1' } })
+      execSync('npx vitest run --maxWorkers=2', { stdio: 'pipe', env: { ...process.env, NO_COLOR: '1' } })
     } catch (e) {
       failed = true
       const out = String(e.stdout ?? '') + String(e.stderr ?? '')

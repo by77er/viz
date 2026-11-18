@@ -128,7 +128,13 @@ for (const [i, m] of MUTANTS.entries()) {
     } catch {
       /* a failing suite is what we want */
     }
-    const r = JSON.parse(readFileSync(report, 'utf8'))
+    let r
+    try {
+      r = JSON.parse(readFileSync(report, 'utf8'))
+    } catch {
+      // The suite did not finish (it hung or timed out): reported as such, never as killed.
+      r = { numFailedTests: 0, testResults: [] }
+    }
     const failedFiles = r.testResults.filter((f) => f.status === 'failed').map((f) => f.name.replace(/^.*\/test\//, '').replace('.test.ts', ''))
     const failedTests = r.numFailedTests
     rows.push({ n, name: m.name, killed: failedTests > 0, failedTests, by: failedFiles.join(', ') })

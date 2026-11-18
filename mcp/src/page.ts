@@ -92,7 +92,7 @@ export function page(spec: PageSpec): Page {
     }
     break
   }
-  const next = i < total ? Math.max(offset + (shown.length > 1 ? 1 : 0), i - 1) : null
+  const next = i < total ? i : null
   const cursor = next !== null ? spec.cursorFor(next) : null
   let text = header + notice + fenced(body) + footerFor(next, shown.length)
   if (text.length > spec.budgetChars) {

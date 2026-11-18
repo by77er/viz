@@ -178,7 +178,8 @@ export interface BurnSeries extends Series {
 export interface BurnState {
   v: 1
   stepMs: number
-  origin: number
+  /** Timestamp of the first valid bucket; slots are counted from it. */
+  origin: number | null
   lastTs: number | null
   lastSlot: number | null
   /** Ring of the longest window's buckets (slot s at index s mod R); null = missing. */
@@ -225,11 +226,9 @@ export const burnRate: Detector<BurnParams, BurnState> & {
     const ws = tooBig ? [] : ws0
     const R = ws.length ? ws[ws.length - 1]! : 1
     const compatible = state && state.v === 1 && state.stepMs === stepMs && Array.isArray(state.bad) && state.bad.length === R && Array.isArray(state.tot) && state.tot.length === R
-    let firstTs = NaN
-    for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = tsv(series.ts[i]!); break }
     const st: BurnState = compatible
       ? { ...state, bad: [], tot: [] }
-      : { v: 1, stepMs, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, bad: [], tot: [] }
+      : { v: 1, stepMs, origin: null, lastTs: null, lastSlot: null, bad: [], tot: [] }
     // working copy of the ring as typed arrays, NaN = missing (converted back to null in state)
     const bad = new Float64Array(R).fill(NaN)
     const tot = new Float64Array(R).fill(NaN)
@@ -253,23 +252,24 @@ export const burnRate: Detector<BurnParams, BurnState> & {
       const ts = tsv(series.ts[i]!)
       const b = val(series.values[i]!)
       const t = val(totals[i]!)
-      if (!Number.isFinite(ts) || (st.lastTs !== null && ts <= st.lastTs) || stepMs <= 0 || tooBig) {
+      const valid = Number.isFinite(b) && Number.isFinite(t) && b >= 0 && t >= 0
+      // a missing bucket changes nothing (the next valid one clears the gap), exactly as if absent
+      if (!valid || !Number.isFinite(ts) || (st.lastTs !== null && ts <= st.lastTs) || stepMs <= 0 || tooBig) {
         points[i] = missingPoint(ts, b)
         continue
       }
-      const s = slotOf(ts, st.origin, stepMs)
+      const s = slotOf(ts, st.origin ?? ts, stepMs)
       if (!Number.isFinite(s) || (st.lastSlot !== null && s <= st.lastSlot)) { points[i] = missingPoint(ts, b); continue }
+      if (st.origin === null) st.origin = ts
       // buckets skipped since the last one are missing, not zero
       if (st.lastSlot !== null) {
         if (s - st.lastSlot - 1 >= R) { bad.fill(NaN); tot.fill(NaN) }
         else for (let q = st.lastSlot + 1; q < s; q++) { bad[mod(q, R)] = NaN; tot[mod(q, R)] = NaN }
       }
-      const valid = Number.isFinite(b) && Number.isFinite(t) && b >= 0 && t >= 0
-      bad[mod(s, R)] = valid ? b : NaN
-      tot[mod(s, R)] = valid ? t : NaN
+      bad[mod(s, R)] = b
+      tot[mod(s, R)] = t
       st.lastSlot = s
       st.lastTs = ts
-      if (!valid) { points[i] = missingPoint(ts, b); continue }
       windowSums(s)
       const agg = new Map<number, WindowAggregate>()
       for (const r of p.rules) {

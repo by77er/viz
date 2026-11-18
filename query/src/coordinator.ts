@@ -20,10 +20,10 @@
 import type { ScanInput } from '../../contracts/engine'
 import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
-import { type FetchRange, type Grid, type QueryEngine, type QueryLimits, type QueryStats, leafSummary } from '../../engine/wasm-query/js/index'
+import { type FetchRange, type Grid, type LeafSummary, type QueryEngine, type QueryLimits, type QueryStats, leafSummary } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
-import { type EvaluateAnswer, type EvaluateRequest, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult } from './leaf'
+import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult } from './leaf'
 
 /** Largest and smallest timestamps storage can hold (contracts/BATCH.md). */
 export const MIN_TS = 0
@@ -123,6 +123,8 @@ export const hooks: {
   beforeSplitLeaf?: (part: number, attempt: number) => Promise<void>
   /** The sample files' keys in the order they go to the engine (one place) or to the readers (split). */
   sampleOrder?: (keys: string[]) => void
+  /** Each split leaf's statistics and the header of its answer (for the measurement). */
+  leafStats?: (part: number, stats: EvaluateStats, summary: LeafSummary) => void
 } = {}
 
 export interface Context {
@@ -644,9 +646,9 @@ async function runSplit<T>(
       budget: { samples: budget.samples, series: budget.series, stepPoints: c.limits.maxStepPoints }, limits: c.limits, cacheTtlS: ttl, pool, queryId: c.queryId,
     }
     const call = async (attempt: number): Promise<EvaluateAnswer> => {
-      if (hooks.beforeSplitLeaf) await hooks.beforeSplitLeaf(j, attempt)
       used.add((base + j + attempt) % pool)
       c.cost.leafCalls++
+      if (hooks.beforeSplitLeaf) await hooks.beforeSplitLeaf(j, attempt)
       c.cost.rpcBytes += parts[j]!.reduce((a, b) => a + b.byteLength, 0)
       return leaf(base + j + attempt).evaluate(req)
     }
@@ -669,7 +671,9 @@ async function runSplit<T>(
       c.cost.r2Gets += st.r2Gets
       c.cost.rpcBytes += st.extractBytes + a.answer.byteLength
       c.cost.leafPeakWasmBytes = Math.max(c.cost.leafPeakWasmBytes, st.wasmMemoryBytes)
-      c.cost.leafMaxSamples = Math.max(c.cost.leafMaxSamples, leafSummary(a.answer).gatheredSamples)
+      const sum = leafSummary(a.answer)
+      c.cost.leafMaxSamples = Math.max(c.cost.leafMaxSamples, sum.gatheredSamples)
+      if (hooks.leafStats) hooks.leafStats(j, st, sum)
     }
     return a
   }

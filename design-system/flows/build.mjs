@@ -107,16 +107,17 @@ const py = `import sys
 import numpy as np
 from PIL import Image
 toks = np.array([[int(h[i:i+2], 16) for i in (1, 3, 5)] for h in sys.argv[2].split(',')], dtype=np.int32)
+size = int(sys.argv[3]) if len(sys.argv) > 3 else 256
 im = Image.open(sys.argv[1]).convert('RGB'); a = np.asarray(im, dtype=np.int32).reshape(-1, 3)
 cols, inv, counts = np.unique(a, axis=0, return_inverse=True, return_counts=True)
-adaptive = np.array(im.quantize(colors=256 - len(toks), method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).getpalette()[: (256 - len(toks)) * 3], dtype=np.int32).reshape(-1, 3)
+adaptive = np.array(im.quantize(colors=max(16, size - len(toks)), method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).getpalette()[: max(16, size - len(toks)) * 3], dtype=np.int32).reshape(-1, 3)
 pal = np.unique(np.vstack([toks, adaptive]), axis=0)[:256]
 near = np.empty(len(cols), dtype=np.uint8)
 for i in range(0, len(cols), 4096): near[i:i+4096] = ((cols[i:i+4096, None, :] - pal[None, :, :]) ** 2).sum(-1).argmin(1)
 out = Image.fromarray(near[inv.ravel()].reshape(im.size[1], im.size[0]), 'P'); out.putpalette(pal.astype(np.uint8).ravel().tolist())
 out.save(sys.argv[1], optimize=True)
 `
-const encode = (file) => { const r = spawnSync('python3', ['-c', py, file, tokenHex.join(',')], { stdio: 'inherit' }); if (r.status) throw new Error('encode failed: ' + file) }
+const encode = (file, size = 256) => { const r = spawnSync('python3', ['-c', py, file, tokenHex.join(','), String(size)], { stdio: 'inherit' }); if (r.status) throw new Error('encode failed: ' + file) }
 
 if (args.includes('--shots')) {
   const only = args.slice(args.indexOf('--shots') + 1).filter((a) => !a.startsWith('--'))
@@ -144,5 +145,5 @@ if (args.includes('--compare')) {
     copyFileSync(join(before, f), join(b, `${screen}-${w}-${theme}.png`)); copyFileSync(after, join(a, `${screen}-${w}-${theme}.png`))
   }
   const r = spawnSync('node', ['tools/shots.mjs', 'compare', b, a, c], { cwd: ds, stdio: 'inherit' }); if (r.status) process.exit(r.status)
-  for (const png of readdirSync(c).filter((x) => x.endsWith('.png'))) encode(join(c, png))
+  for (const png of readdirSync(c).filter((x) => x.endsWith('.png'))) encode(join(c, png), 128) // side-by-side views, not for measuring: a smaller palette keeps each under about 500 KB
 }

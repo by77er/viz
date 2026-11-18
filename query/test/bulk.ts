@@ -16,14 +16,17 @@ export const MEAN_INCREMENT = 4.5
 
 export const bulkLabels = (i: number): Record<string, string> => ({ __name__: 'http_requests_total', job: `job-${String(i % JOBS).padStart(2, '0')}`, instance: `10.0.${Math.floor(i / JOBS)}.1:9100` })
 
-/** A stateful generator: scrape after scrape from `origin`, every `intervalMs`. */
+/** A stateful generator: scrape after scrape from `origin`, every `intervalMs`, of `n` series (20 jobs, n / 20 instances each). */
 export class Bulk {
-  private readonly value = new Float64Array(N_SERIES)
+  private readonly value: Float64Array
   private k = 0
   constructor(
     readonly origin: number,
     readonly intervalMs: number,
-  ) {}
+    readonly n = N_SERIES,
+  ) {
+    this.value = new Float64Array(n)
+  }
 
   get nextTs(): number {
     return this.origin + this.k * this.intervalMs
@@ -31,7 +34,7 @@ export class Bulk {
 
   private scrape(emit: (i: number, ts: number, v: number) => void): void {
     const ts = this.nextTs
-    for (let i = 0; i < N_SERIES; i++) {
+    for (let i = 0; i < this.n; i++) {
       this.value[i]! += hash32(`${i}/${this.k}`) % 10
       emit(i, ts, this.value[i]!)
     }
@@ -40,7 +43,7 @@ export class Bulk {
 
   /** The next `scrapes` scrapes as Remote Write series. */
   series(scrapes: number): WSeries[] {
-    const out: WSeries[] = Array.from({ length: N_SERIES }, (_, i) => ({ labels: bulkLabels(i), samples: [] }))
+    const out: WSeries[] = Array.from({ length: this.n }, (_, i) => ({ labels: bulkLabels(i), samples: [] }))
     for (let s = 0; s < scrapes; s++) this.scrape((i, ts, v) => out[i]!.samples.push([ts, v]))
     return out
   }
@@ -49,7 +52,7 @@ export class Bulk {
   batch(scrapes: number): Uint8Array {
     const rows: Row[] = []
     for (let s = 0; s < scrapes; s++) this.scrape((i, ts, v) => rows.push({ series: i, ts, bits: bitsOf(v) }))
-    return encodeBatch(Array.from({ length: N_SERIES }, (_, i) => bulkLabels(i)), rows)
+    return encodeBatch(Array.from({ length: this.n }, (_, i) => bulkLabels(i)), rows)
   }
 }
 
@@ -57,9 +60,9 @@ export class Bulk {
  * Sanity of a `sum by (job)(rate(http_requests_total[5m]))` result: 20 jobs, the expected
  * number of points, and every value within 15% of the mean rate of 100 such counters.
  */
-export function checkBulkRates(data: { result: { metric: Record<string, string>; values: [number, string][] }[] }, points: number, intervalMs: number): void {
+export function checkBulkRates(data: { result: { metric: Record<string, string>; values: [number, string][] }[] }, points: number, intervalMs: number, instances = INSTANCES): void {
   if (data.result.length !== JOBS) throw new Error(`expected ${JOBS} jobs, got ${data.result.length}`)
-  const mean = (INSTANCES * MEAN_INCREMENT) / (intervalMs / 1000)
+  const mean = (instances * MEAN_INCREMENT) / (intervalMs / 1000)
   for (const s of data.result) {
     if (s.values.length !== points) throw new Error(`${s.metric.job}: expected ${points} points, got ${s.values.length}`)
     for (const [t, v] of s.values) if (Math.abs(Number(v) - mean) > 0.15 * mean) throw new Error(`${s.metric.job} at ${t}: rate ${v}, expected about ${mean}`)

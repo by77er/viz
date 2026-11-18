@@ -67,17 +67,43 @@ MUTANTS = [
     ("unsupported reported as execution", "error.rs",
      "viz_promql::Error::Unsupported(m) => QueryError::unsupported(m),", "viz_promql::Error::Unsupported(m) => QueryError::execution(m),"),
     ("limit error loses its cause (plain source error instead of the recorded one)", "lib.rs",
-     "    let matrix = viz_promql::query_range_with(&src, query, start_ms, end_ms, step_ms, &opts.eval)\n        .map_err(|e| src.take_failure().unwrap_or_else(|| QueryError::from_promql(e)))?;",
-     "    let matrix = viz_promql::query_range_with(&src, query, start_ms, end_ms, step_ms, &opts.eval)\n        .map_err(QueryError::from_promql)?;"),
+     "    let matrix = viz_promql::query_range_expr(&src, &expr, start_ms, end_ms, step_ms, &opts.eval, Some(&agg::Canonical))\n        .map_err(|e| src.take_failure().unwrap_or_else(|| QueryError::from_promql(e)))?;",
+     "    let matrix = viz_promql::query_range_expr(&src, &expr, start_ms, end_ms, step_ms, &opts.eval, Some(&agg::Canonical))\n        .map_err(QueryError::from_promql)?;"),
     ("label_values ignores the matchers", "meta.rs",
      "    for l in load(matchers, min_ts, max_ts, &src)? {\n        values.extend(", "    for l in load(&[], min_ts, max_ts, &src)? {\n        values.extend("),
     ("series() accepts a matcher set that matches everything", "meta.rs", "    if selective {\n        Ok(())", "    if selective || true {\n        Ok(())"),
     ("matcher operator mistranslated (!~ becomes =~)", "source.rs",
      "MatchOp::Nre => viz_storage::MatchOp::NotRe,", "MatchOp::Nre => viz_storage::MatchOp::Re,"),
+    # ---- split execution (src/split.rs, src/agg.rs, src/exact.rs, src/cardinality.rs)
+    ("split by file, not by series: a reader keeps every series of its files", "split.rs",
+     "let keep = key.part(&labels, parts) == part && !filter.intervals(&labels).is_empty();",
+     "let keep = !filter.intervals(&labels).is_empty();"),
+    ("topk/bottomk merged with k one too small", "agg.rs",
+     "rank(top, m, self.k.get(i).copied().unwrap_or(0));", "rank(top, m, self.k.get(i).copied().unwrap_or(0) - 1);"),
+    ("avg merged as the mean of the parts' means", "agg.rs",
+     "            (Cell::Avg(n, a), Cell::Avg(m, b)) => {\n                *n += m;\n                a.merge(b)\n            }",
+     "            (Cell::Avg(n, a), Cell::Avg(m, b)) => {\n                let (x, y) = (a.mean(*n), b.mean(*m));\n                *a = ExactSum::default();\n                a.add(x);\n                a.add(y);\n                *n = 2;\n            }"),
+    ("a binary operation between two vectors is distributed anyway", "split.rs",
+     '                return Err("a binary operation between two vectors (or a scalar that reads data) matches series against each other".into());',
+     "                &b.lhs"),
+    ("merge order dependence: min keeps whichever came first between -0 and +0", "agg.rs",
+     "    } else if a.is_sign_negative() {\n        a\n    } else {\n        b\n    }\n}\n\n/// `max`, likewise",
+     "    } else {\n        a\n    }\n}\n\n/// `max`, likewise"),
+    ("merge order dependence: sums of parts added as floats", "agg.rs",
+     "            (Cell::Sum(a), Cell::Sum(b)) => a.merge(b),",
+     "            (Cell::Sum(a), Cell::Sum(b)) => {\n                let v = a.value() + b.value();\n                *a = ExactSum::default();\n                a.add(v)\n            }"),
+    ("a leaf lets the batch that arrives last win, not the one of higher precedence", "split.rs",
+     "if rank >= g.rank[k] {", "if true {"),
+    ("the coordinator does not replay max_samples on the summed counts", "split.rs",
+     "            if samples > opts.limits.max_samples {", "            if false && samples > opts.limits.max_samples {"),
+    ("a leaf's budget is not enforced while gathering", "split.rs",
+     "            if self.samples > self.budget.samples {", "            if false && self.samples > self.budget.samples {"),
+    ("exact sum rounded as truncation (no round-to-nearest)", "exact.rs",
+     "        if guard && (rest || m & 1 == 1) {", "        if false && guard && (rest || m & 1 == 1) {"),
 ]
 
 ENV = dict(os.environ, CARGO_TARGET_DIR=os.path.join(ROOT, "target"), VIZ_PROPTEST_CASES="8")
-TESTS = ["--test", "api", "--test", "invariance", "--test", "limits", "--test", "plan", "--test", "staleness"]
+TESTS = ["--test", "api", "--test", "invariance", "--test", "limits", "--test", "plan", "--test", "staleness", "--test", "split", "--lib"]
 
 
 def run():

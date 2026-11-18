@@ -43,6 +43,22 @@ through Parquet files and tail batches. Both were added for `engine/query` and a
 `selectors_report_the_step_count_of_their_subquery` and
 `test_scripts_can_run_through_another_source` in `tests/api.rs`.
 
+**Evaluation hooks** (added for split execution in `engine/query`, additive: with no
+hooks nothing changes). `parse_query(text)` returns the syntax tree (with the same
+duration guard as every entry point); `query_range_expr` and `query_instant_expr`
+evaluate a tree with an optional `&dyn EvalHooks`, whose two methods default to `None`:
+`replace(node, start, end, step)` may supply a node's value (an instant vector of
+`SeriesV`: labels, the name-drop flag, one optional value per step) instead of evaluating
+it, and `aggregate(&AggregateInput)` may supply an aggregation's result once its parameter
+and argument are evaluated (the input carries the operator, `by`/`without`, the sorted
+grouping, the evaluated parameter, the argument and the step grid). `engine/query` uses
+the first to finish a split query at its coordinator and the second for aggregations whose
+result does not depend on input order. Covered by
+`evaluation_hooks_replace_nodes_and_aggregations` in `tests/api.rs`: no hooks equals the
+ordinary entry points for four queries; `replace` substitutes exactly the given node;
+`aggregate` sees the operator, grouping (with `count_values`' label), parameter, argument
+size and grid of three aggregations and its result is used; `None` keeps the evaluator's.
+
 `Matrix`, `Value` and `SelectorInfo` implement `serde::Serialize` and produce the `data` object
 of the Prometheus HTTP API: values are `[unix_seconds, "string"]`, floats are the shortest
 decimal that round-trips, never an exponent, with `NaN`, `+Inf`, `-Inf`.

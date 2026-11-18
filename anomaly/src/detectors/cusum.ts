@@ -113,7 +113,8 @@ export const cusum: Detector<CusumParams, CusumState> = {
       }
       const sd = spreadFloor(st.sigma, st.mu, p.minSpread)
       // clamped so a flat warm-up (σ at its floor) cannot put Infinity into state
-      const z = Math.max(-1e12, Math.min(1e12, (x - st.mu) / sd))
+      const z0 = x === st.mu ? 0 : (x - st.mu) / sd // 0 / 0 only when σ is 0 and x = μ
+      const z = Math.max(-1e12, Math.min(1e12, z0))
       st.hi = Math.max(0, st.hi + z - p.k)
       st.lo = Math.max(0, st.lo - z - p.k)
       const track = (on: boolean, T: number[], X: number[]) => {

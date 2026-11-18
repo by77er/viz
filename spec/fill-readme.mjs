@@ -119,8 +119,8 @@ if (process.argv.includes('--write')) {
   const p = join(here, 'README.md')
   let md = readFileSync(p, 'utf8')
   for (const [k, v] of Object.entries(out)) {
-    const re = new RegExp(`(<!-- BEGIN ${k} -->\\n)[\\s\\S]*?(\\n<!-- END ${k} -->)`)
-    if (re.test(md)) md = md.replace(re, `$1${v}$2`)
+    const re = new RegExp(`<!-- BEGIN ${k} -->[\\s\\S]*?<!-- END ${k} -->`)
+    md = md.replace(re, () => `<!-- BEGIN ${k} -->\n${v}\n<!-- END ${k} -->`)
   }
   writeFileSync(p, md)
   console.log('README.md tables regenerated')

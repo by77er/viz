@@ -2,7 +2,9 @@
 
 The query half of the viz engine as a Rust library: PromQL (`viz-promql`) evaluated over
 lake Parquet files and shard tail batches (`viz-storage`), with query limits, a fetch
-plan, and the metadata calls of the Prometheus HTTP API.
+plan, the metadata calls of the Prometheus HTTP API, **split execution** (leaves evaluate
+partial aggregates over disjoint sets of series; a coordinator merges them, with results
+identical byte for byte to one place) and the **cardinality report**.
 
 No I/O, no async, no clock, no randomness: every function is a pure function of its
 arguments, so the same code runs as WASM in a Worker, natively in a Container, and in a
@@ -11,7 +13,7 @@ deterministic simulator. Nothing panics on input. Builds for the host and for
 
 ```
 export CARGO_TARGET_DIR=$PWD/target
-cargo test                                                  # 37 tests, about 4 minutes
+cargo test -j 2 -- --test-threads 2                         # 45 tests, about 6 minutes on a loaded machine
 cargo test --test corpus -- --nocapture                     # upstream corpus through storage, per file
 cargo build --release --target wasm32-unknown-unknown       # the library
 (cd wasm && cargo build --release --target wasm32-unknown-unknown) && node tools/wasm_check.mjs
@@ -51,6 +53,13 @@ let json = query_range(&input, "sum by (job) (rate(http_requests_total[5m]))", s
 | `Limits`, `Limits::check_query`, `estimate_depth` | The limits below. |
 | `QueryError { error_type, message, limit }`, `to_json()` | Errors with a Prometheus `errorType` and the API's error body. |
 | `to_json`, `labels_to_json` | Serialisation of results. |
+| `reference_range`, `reference_instant` | One-place evaluation over any `SeriesSource` with this crate's aggregations: the reference of the tests (and of `query/`'s fixtures). |
+| `agg`: `partial`, `Partial::merge`, `finish`, `Canonical` | Aggregations whose result does not depend on how the input is split or ordered (below). `Canonical` is the `viz_promql::EvalHooks` every evaluation here uses. |
+| `exact`: `ExactSum`, `ExactVariance` | Exact sums and variances of `f64`, rounded once. |
+| `split_plan(query, opts) -> SplitPlan` | Split over leaves (`fragments`, `SplitKey`) or one place, and why. |
+| `split::extract`, `split::split_tails`, `split::Gathered`, `split::leaf_evaluate`, `split::merge_range`, `split::merge_instant` | The pieces of split execution: a reader's rows of one part, the tail cut by part, a leaf's data and its evaluation into partials, the coordinator's merge. |
+| `catalog::for_each_series` | A series-only read of `metric_series` files (storage has none). |
+| `cardinality::State`, `Summary` | The cardinality report: one part's counts, merged, rendered as `/api/v1/status/tsdb` and `/api/v1/status/cardinality`. |
 
 ### Who owns what between the three crates
 
@@ -111,6 +120,125 @@ storage hands over.
 | `unsupported` | valid PromQL this engine does not implement (native histograms, `limitk`, …). Never a wrong answer. | not a Prometheus type; suggest 422 |
 | `internal` | the input is broken: a corrupt Parquet file, a wrong-schema file, an invalid `VZB1` batch | 500 |
 
+### Order-independent aggregations
+
+Split execution adds the values of a group in a different order than one evaluation over
+all series, so every aggregation here is computed so that the order cannot matter
+(`src/agg.rs`, `src/exact.rs`), in one place as in split execution:
+
+| Operator | State per group and step | Merge | Exact because |
+|---|---|---|---|
+| `sum` | exact sum: every finite `f64` is an integer multiple of 2^-1074, so the sum is a big integer (positive and negative parts), rounded to nearest-even once | add | integer arithmetic |
+| `avg` | count and exact sum; the mean is the rounded sum divided by the count (scaled by 2^64 first if the rounded sum overflows) | add both | the same |
+| `count`, `group`, `count_values` | count | add | integers |
+| `min`, `max` | the extreme so far | the extreme of both | a total order: NaN only if all are NaN; between `-0` and `+0`, `-0` for `min` and `+0` for `max` |
+| `stddev`, `stdvar` | count, exact sum, exact sum of squares (units of 2^-2148) | add | `(nΣx² − (Σx)²)/n²` in integers, rounded once (then `sqrt`) |
+| `topk`, `bottomk` | the best `k` (value, series) of the part, per group and step | union, then the best `k` | the ranking is a total order (NaN last, ties to the smaller label set), and a series in the overall best `k` is in its own part's best `k`: the series that rank before it in its part are a subset of those that rank before it overall, fewer than `k` |
+
+Infinities and NaN follow IEEE 754 as a sequential sum would (NaN if any NaN or both
+infinities; else the infinity). **What changes against Prometheus** (and against
+`viz-promql` without the hook): a sum can differ from Prometheus' compensated (Neumaier)
+sum in the last bit, and is the correctly rounded one (Prometheus' own result depends on
+its storage order); `MAX + MAX − MAX` is `MAX`, where a running sum stays at `+Inf`;
+`stddev`/`stdvar` are exact instead of Welford's running formula (in `query/`'s fixtures
+the `stddev` query changed in the 16th or 17th significant digit, nothing else changed);
+an aggregation's output is in label order instead of first-seen order (visible only in
+instant vectors; Prometheus' order is unspecified); `min`/`max` break the `-0`/`+0` tie by
+sign. `quantile` keeps `viz-promql`'s code (it never splits), and so does every
+aggregation under delayed name removal. The engine's own `viz-promql` defaults are
+unchanged: the hook is passed by this crate.
+
+### Split execution
+
+`src/split.rs`, design §6.2. The query Worker (`query/`) does the I/O; this crate decides
+and computes.
+
+**What runs where.** A *fragment* is an aggregation whose operator decomposes (`sum`,
+`avg`, `count`, `group`, `min`, `max`, `stddev`, `stdvar`, `topk`, `bottomk`,
+`count_values`), that is not inside a subquery, and whose argument is *series-local*: one
+selector, through range functions (`rate`, `increase`, `irate`, `delta`, `deriv`,
+`predict_linear`, `*_over_time` except `absent_over_time`, also over a subquery of a
+series-local expression), element-wise functions (`abs`, `round`, `clamp*`, `timestamp`,
+date functions of a vector, …), `label_replace`, `label_join`, `sort`, unary minus, and
+binary operators with a scalar that reads no data (literals, `time()`, `pi()`). A
+`topk`/`bottomk` parameter must read no data; `count_values` needs a valid label literal.
+A query is split when **every selector is inside a fragment**; the leaves evaluate the
+fragments and everything above them runs at the coordinator over the merged fragments:
+binary operators between aggregates, `histogram_quantile` over `sum by (le)`, `quantile`,
+`scalar`, `sort`, `absent` of an aggregate, an aggregation of aggregations. Otherwise
+(`rate(x[5m])` alone, `quantile(0.9, x)`, `sum(a + b)`, `sum(x) / x`, an aggregation in a
+subquery, `limitk`, a top-level range vector, delayed name removal) the query runs in one
+place and `split_plan` says why.
+
+**The split key: by series.** A series' key is the FNV-1a hash of its labels without
+`SplitKey::without` — exactly its `series_id` when it carries none of them — and part `j`
+of `L` owns keys in `[j·2^64/L, (j+1)·2^64/L)`. Every sample of a series reaches one leaf,
+so `rate` and every per-series function see the whole series. `without` holds the labels a
+fragment's argument may change: `label_replace`/`label_join` targets, and `__type__`,
+`__unit__` (and `__name__` unless the selector pins it with `=`) when a function drops
+them. Two series can only collide inside a fragment (the evaluator's "same labelset"
+merge or error) if they agree on every other label, so colliding series share a leaf and
+its evaluator merges or refuses them exactly as one place does.
+
+**How a part's rows are found, and what it costs.** Files are cut by time, not by series,
+so every part needs every file. A *reader* ([`split::extract`]) is given a group of sample
+files (with the `metric_series` files written with them) and a part: it reads the series
+files with `catalog` (a series-only read), keeps the part's series that a plan range can
+select, and hands `viz_storage::select` a *carrier* batch whose series table holds exactly
+those series (its rows sit at a timestamp no range covers, so `select` never returns them)
+instead of the series files. So `select` decodes the `ts` and `value` columns only of row
+groups that hold one of the part's series and keeps only their samples; it still reads
+every row group's `series_id` column. Cost: each file is read and its `series_id` column
+decoded once **per part** (`L` times), and with whole-file reads of ten-minute flush files
+every row group holds some of every part's series, so the `ts`/`value` decode is also
+`L`-fold. Memory per reader: its files plus `1/L` of their samples. The extract travels as
+one `VZB1` batch (20 bytes a row).
+
+**The tail and I17.** The coordinator cuts the shard tails by part
+([`split::split_tails`], rows outside the plan's ranges dropped, batch and row order kept)
+and sends each part's batches to its leaf. A leaf ([`split::Gathered`]) merges extracts
+and tail batches per series by precedence: file groups in the ledger's precedence order,
+then tail batches in order, a higher rank winning on an equal timestamp. That is
+`viz_storage::select`'s rule (later file wins, any tail batch wins over the lake), so a
+`rate` window that straddles lake and tail is computed over one ordered, de-duplicated
+stream, whatever order the extracts arrive in.
+
+**Partial results.** A leaf evaluates each fragment with a hook that captures the
+aggregation's `agg::Partial` instead of finishing it ([`split::leaf_evaluate`]), and
+answers with the partials, the series and samples each `select` loaded, any evaluation
+error, or that it stopped at its budget, in a binary form (`LeafOutput::encode`; partials
+hold exact sums as their words, a few tens of bytes per group and step). The coordinator
+([`split::merge_range`], [`split::merge_instant`]) replays the query's limits on the
+summed counts in the order one place checks them (series, samples, step points per
+`select`, in evaluation order, then output points), so an over-limit query gets the same
+error message as in one place; returns the first fragment's error (all leaves give the
+same one); merges the partials; and evaluates the query with each fragment replaced by its
+merged value (`viz_promql::EvalHooks::replace`) and every other aggregation done as in one
+place. A selector reached at the coordinator is an error, never an empty answer.
+
+**Early abort.** A leaf gets a budget, its share of the query's (`LeafBudget`). Gathering
+stops as soon as the leaf holds more distinct samples (or series) than its share: both
+counts are lower bounds of what evaluation would load, because every sample held lies in
+some selector's range. During evaluation each `select` is checked against the share too.
+So a leaf never materialises much more than its share: the overshoot is one extract (one
+group of at most six files' worth of its part) while gathering, or one selector's part in
+evaluation. The coordinator weighs the stopped leaves (query `query/` README, "Split
+execution"). What remains, inside `viz_storage::select`, is in "Not implemented".
+
+### Cardinality
+
+`src/cardinality.rs`. From `metric_series` files (`catalog`) and tail batches' series
+tables, never samples. **Exact counting with caps**: series de-duplicated by `series_id`,
+label pairs and (metric, label, value) triples by their text; `Caps::max_series` bounds
+distinct series seen and `Caps::max_pairs` distinct pairs plus triples; above a cap the
+report is refused (`execution`, naming the cap), never approximated, so below the caps the
+error is zero. A series is in `[start, end]` if a `metric_series` row (first and last
+sample in that file) or a tail row overlaps it, and *created* if its first sample seen
+(reading from `start − lookback`) is at or after `start`. Parts own `series_id` ranges, so
+they are disjoint in series: counts add, pairs and triples are unions (`Summary::merge`).
+`Summary::report` renders Prometheus' `TSDBStatus` object in its field order and viz's
+own report.
+
 ## What is not implemented
 
 - **The engine does not fetch.** `plan` says what to fetch; reading the ledger, R2 and
@@ -118,22 +246,27 @@ storage hands over.
   ranges, not row groups or byte ranges. `files_needed` and `scan_rows` prune whole
   **files** from the ledger's index fragments; pruning to row groups and pages
   (DESIGN §6.1) is not done, and `select` is given whole files.
-- **Split execution** (DESIGN §6.2): leaves returning partial aggregates as Arrow IPC,
-  key-range splits, merging `topk`. A query is evaluated in one call over one input.
+- **Split execution, what is left** (DESIGN §6.2): partials travel in this crate's
+  binary form, not Arrow IPC; readers read whole files and decode every row group's
+  `series_id` column for every part (key-range row-group reads need range reads and
+  smaller row groups); `quantile`, binary operators between vectors and aggregations in
+  subqueries are not split (one place); leaf partials are not cached (§6.3).
+- **An early abort inside storage.** `viz_storage::select` still materialises one
+  selector's matching samples (one part's, under split execution) before a limit can be
+  checked; a budget inside `select` is a storage change (`query/` README, "Needed
+  changes").
 - **Tenant injection and label-based access rules** (DESIGN §6.1). A `ScanInput` is
   assumed to hold one tenant's bytes; nothing here adds matchers on behalf of a policy.
 - **Caching** (DESIGN §6.3), including within a query: a selector that appears twice is
   read from storage twice (and counted twice by the limits).
 - **A time limit.** The engine has no clock, so there is no timeout; the bounds are on
   samples, series, steps and points instead.
-- **An early abort inside storage.** `max_samples` and `max_series` are checked after
-  `viz_storage::select` has returned one selector's series, so one selector's matching
-  samples are in memory before the limit can fire (see "Known risks").
 - **A series-only read.** `label_names`, `label_values` and `series` go through
   `select` and load the samples of the series they list; storage has no cheaper call.
   The Prometheus `limit` parameter of these endpoints is not implemented.
 - **Annotations** (warnings and infos), exemplars, `/api/v1/metadata`, `/targets`,
-  `/rules`, `/alerts`, `/status/*`, remote read.
+  `/rules`, `/alerts`, `/status/*` other than the cardinality report, remote read.
+- **Approximate cardinality** (HyperLogLog): counting is exact and refused above its caps.
 - **The result's `stats` object** in JSON. `Stats` is returned typed only.
 - **TraceQL and LogQL.**
 - **The product's JavaScript binding.** `wasm/` is a size probe and load proof with its

@@ -135,11 +135,13 @@ describe('every pageable tool, end to end', () => {
   it('get_schema parts concatenate to the exact document at the smallest budget, and nothing is cut', async () => {
     let cursor: string | null = null
     let text = ''
+    let pages = 0
     do {
       const r = await rest(h, k.key, 'get_schema', { kind: 'dashboard', max_tokens: 200, ...(cursor ? { cursor } : {}) })
       expect(r.structured.cut).toBe(false)
       for (const it of r.structured.data.items) text += it.text
       cursor = r.structured.cursor
+      expect(++pages).toBeLessThan(200)
     } while (cursor)
     expect(() => JSON.parse(text)).not.toThrow()
   })

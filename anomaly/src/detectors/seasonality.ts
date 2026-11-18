@@ -127,7 +127,7 @@ function acfAt(r: Float64Array, lag: number): { acf: number | null; pairs: numbe
   if (cnt < 3) return { acf: null, pairs: 0 }
   mean /= cnt
   let den = 0
-  for (let i = 0; i < n; i++) if (Number.isFinite(r[i]!)) den += (r[i]! - mean) ** 2
+  for (let i = 0; i < n; i++) if (Number.isFinite(r[i]!)) { const d = r[i]! - mean; den += d * d }
   den /= cnt
   let num = 0, pairs = 0
   for (let i = 0; i + lag < n; i++) {

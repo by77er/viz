@@ -121,8 +121,9 @@ jobs:
   typescript:
     name: ${{ matrix.dir }}
     needs: [discover, wasm]
-    # Runs when discovery worked and the WASM job either succeeded or had nothing to build.
-    if: ${{ !cancelled() && needs.discover.result == 'success' && (needs.wasm.result == 'success' || needs.wasm.result == 'skipped') }}
+    # Runs whenever discovery worked: components that need no WASM are checked even when the
+    # WASM build failed; those that need it then fail at the download step, which says why.
+    if: ${{ !cancelled() && needs.discover.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:

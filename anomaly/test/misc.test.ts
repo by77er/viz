@@ -123,3 +123,16 @@ describe('purity: src/ has no I/O, clock, randomness or eval', () => {
     for (const m of code.matchAll(/from '([^']+)'/g)) expect(m[1]!.startsWith('.')).toBe(true) // no dependencies
   })
 })
+
+describe('Prometheus-shaped results from the engine', () => {
+  it('matrix → series in milliseconds; NaN and ±Inf are missing to the detectors', async () => {
+    const { seriesFromMatrix, membersFromVector, robustZ: rz } = await import('../src/index.ts')
+    const [s] = seriesFromMatrix({ resultType: 'matrix', result: [{ metric: { job: 'api' }, values: [[1700000000, '1'], [1700000060.5, 'NaN'], [1700000120, '+Inf'], [1700000180, '-Inf'], [1700000240, '2.5e3']] }] })
+    expect(Array.from(s!.series.ts)).toEqual([1700000000000, 1700000060500, 1700000120000, 1700000180000, 1700000240000])
+    expect(s!.series.values[4]).toBe(2500)
+    expect(s!.labels).toEqual({ job: 'api' })
+    expect(rz.detect(s!.series).points.map((p) => p.status)).toEqual(['warming', 'missing', 'missing', 'missing', 'warming'])
+    const m = membersFromVector({ resultType: 'vector', result: [{ metric: { pod: 'a' }, value: [1700000000, '3'] }] }, (l) => l.pod!)
+    expect(m).toEqual([{ id: 'a', value: 3, labels: { pod: 'a' } }])
+  })
+})

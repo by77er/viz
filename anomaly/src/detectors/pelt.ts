@@ -57,7 +57,10 @@ export function pelt(x: ArrayLike<number>, opts: { penalty?: number; minSegment?
   let mean = 0
   for (let i = 0; i < m; i++) mean += x[i]!
   mean = m ? mean / m : 0
-  const sigma = spreadFloor(sigma0, mean, 0)
+  // noiseless data (σ̂ = 0): fall back to a tiny scale-relative σ, so every level change is a change
+  let range = 0
+  for (let i = 0; i < m; i++) range = Math.max(range, Math.abs(x[i]! - mean))
+  const sigma = spreadFloor(sigma0, mean, 0) || 1e-9 * range || 1
   const beta = opts.penalty && opts.penalty > 0 ? opts.penalty : 2 * Math.log(Math.max(m, 2))
   if (m < 2 * minSeg) return { changepoints: [], cost: segCostRaw(x, 0, m, mean) / (sigma * sigma), penalty: beta, sigma }
   // prefix sums, centred to limit cancellation
@@ -116,7 +119,7 @@ export function pelt(x: ArrayLike<number>, opts: { penalty?: number; minSegment?
 
 function segCostRaw(x: ArrayLike<number>, a: number, b: number, mean: number) {
   let s = 0
-  for (let i = a; i < b; i++) s += (x[i]! - mean) ** 2
+  for (let i = a; i < b; i++) { const d = x[i]! - mean; s += d * d }
   return s
 }
 

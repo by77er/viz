@@ -13,6 +13,7 @@
 //   waits) for ever under every schedule.
 import { closeSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
+import { deflateRawSync, inflateRawSync } from 'node:zlib'
 import { type Cfg, type St, PROPS, init, successors, queryDone } from './model.ts'
 
 /**
@@ -36,7 +37,14 @@ class LevelWriter {
     if (this.size > 1 << 22) this.flush()
   }
   flush(): void {
-    if (this.buf.length) writeSync(this.fd, this.buf.join('\n') + '\n')
+    if (this.buf.length) {
+      // chunks are compressed (states are repetitive JSON): [length u32][deflate-raw]
+      const z = deflateRawSync(Buffer.from(this.buf.join('\n') + '\n', 'latin1'), { level: 1 })
+      const len = Buffer.alloc(4)
+      len.writeUInt32LE(z.length)
+      writeSync(this.fd, len)
+      writeSync(this.fd, z)
+    }
     this.buf = []
     this.size = 0
   }
@@ -48,14 +56,15 @@ class LevelWriter {
 
 function* readLevel(path: string): Generator<[number, string]> {
   const fd = openSync(path, 'r')
-  const chunk = Buffer.alloc(1 << 23)
-  let rest = ''
+  const len = Buffer.alloc(4)
   for (;;) {
-    const n = readSync(fd, chunk, 0, chunk.length, null)
-    if (n === 0) break
-    const text = rest + chunk.toString('latin1', 0, n)
-    const lines = text.split('\n')
-    rest = lines.pop()!
+    if (readSync(fd, len, 0, 4, null) < 4) break
+    const n = len.readUInt32LE(0)
+    const z = Buffer.alloc(n)
+    let got = 0
+    while (got < n) got += readSync(fd, z, got, n - got, null)
+    const lines = inflateRawSync(z).toString('latin1').split('\n')
+    lines.pop()
     for (const l of lines) {
       const tab = l.indexOf('\t')
       yield [Number(l.slice(0, tab)), l.slice(tab + 1)]

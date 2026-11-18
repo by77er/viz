@@ -355,19 +355,19 @@ impl Summary {
         let value_counts = top(by_name.iter().map(|(k, v)| (k.to_string(), v.0)).collect());
         let bytes = top(by_name.iter().map(|(k, v)| (k.to_string(), v.1)).collect());
         let pairs = top(self.pairs.iter().filter(|p| p.1 > 0).map(|((k, v), s)| (format!("{k}={v}"), *s)).collect());
-        let tsdb = json!({
-            "headStats": {
-                "numSeries": num_series,
-                "numLabelPairs": self.pairs.len(),
-                "chunkCount": J::Null,
-                "minTime": self.time.map(|t| t.0),
-                "maxTime": self.time.map(|t| t.1),
-            },
-            "seriesCountByMetricName": stat(metric_series.clone()),
-            "labelValueCountByLabelName": stat(value_counts.clone()),
-            "memoryInBytesByLabelName": stat(bytes),
-            "seriesCountByLabelValuePair": stat(pairs),
-        });
+        // In Prometheus' field order (its `TSDBStatus` struct, as the API documentation shows it).
+        let opt = |v: Option<i64>| v.map_or_else(|| "null".to_string(), |v| v.to_string());
+        let tsdb = format!(
+            "{{\"headStats\":{{\"numSeries\":{},\"numLabelPairs\":{},\"chunkCount\":null,\"minTime\":{},\"maxTime\":{}}},\"seriesCountByMetricName\":{},\"labelValueCountByLabelName\":{},\"memoryInBytesByLabelName\":{},\"seriesCountByLabelValuePair\":{}}}",
+            num_series,
+            self.pairs.len(),
+            opt(self.time.map(|t| t.0)),
+            opt(self.time.map(|t| t.1)),
+            stat(metric_series.clone()),
+            stat(value_counts.clone()),
+            stat(bytes),
+            stat(pairs),
+        );
         // Per metric: distinct values of each label.
         let mut per_metric: HashMap<u32, BTreeMap<&str, u64>> = HashMap::new();
         for (m, p) in &self.triples {
@@ -410,6 +410,6 @@ impl Summary {
             "createdByMetric": created_top.into_iter().map(|(k, v)| json!({"name": k, "created": v})).collect::<Vec<_>>(),
             "counting": {"method": "exact", "maxSeries": caps.max_series, "maxPairs": caps.max_pairs},
         });
-        (tsdb.to_string(), viz.to_string())
+        (tsdb, viz.to_string())
     }
 }

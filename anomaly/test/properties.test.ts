@@ -48,9 +48,12 @@ const seriesArb = (minLength = 0, maxLength = 160) =>
   fc
     .array(
       fc.record({
-        // no subnormals: scaling them by 2^-10 underflows, which is floating point, not the detector
-        v: fc.oneof({ weight: 8, arbitrary: fc.double({ min: -100, max: 100, noNaN: true }).map((x) => (Math.abs(x) < 1e-200 ? 0 : x)) }, { weight: 1, arbitrary: fc.constant(NaN) }, { weight: 1, arbitrary: fc.integer({ min: -3, max: 3 }) }),
+        // no tiny magnitudes: their squares (variances) underflow, and scaling subnormals by 2^-10
+        // flushes them to 0 — floating point, not the detector
+        v: fc.oneof({ weight: 8, arbitrary: fc.double({ min: -100, max: 100, noNaN: true }).map((x) => (Math.abs(x) < 1e-100 ? 0 : x)) }, { weight: 1, arbitrary: fc.constant(NaN) }, { weight: 1, arbitrary: fc.integer({ min: -3, max: 3 }) }),
         gap: fc.oneof({ weight: 12, arbitrary: fc.constant(1) }, { weight: 1, arbitrary: fc.integer({ min: 2, max: 40 }) }),
+        // timestamps jitter around the grid (scrapes are never exactly on time); < half a step
+        jitter: fc.oneof({ weight: 3, arbitrary: fc.constant(0) }, { weight: 1, arbitrary: fc.integer({ min: -25_000, max: 25_000 }) }),
       }),
       { minLength, maxLength },
     )
@@ -60,7 +63,7 @@ const seriesArb = (minLength = 0, maxLength = 160) =>
       let t = T0
       rows.forEach((r, i) => {
         t += r.gap * STEP
-        ts[i] = t
+        ts[i] = t + r.jitter
         values[i] = r.v
       })
       return { ts, values } as Series
