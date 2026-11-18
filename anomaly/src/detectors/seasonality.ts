@@ -90,7 +90,7 @@ export function toGrid(series: Series, stepMs: number): { start: number; values:
   return { start: first, values }
 }
 
-/** Centred moving average of length p (2×p filter for even p); NaN where the window is not complete enough. */
+/** Centred moving average of length p (2×p filter for even p) over present values; NaN where less than half the window is present. */
 function centredMA(x: Float64Array, p: number): Float64Array {
   const n = x.length
   const out = new Float64Array(n).fill(NaN)
@@ -113,8 +113,8 @@ function centredMA(x: Float64Array, p: number): Float64Array {
         if (Number.isFinite(v)) { s -= (1 - w(j)) * v; c -= 1 - w(j) }
       }
     }
-    const full = p % 2 === 1 ? p : p
-    if (c >= 0.8 * full) out[i] = s / c
+    // at least half the window present (weights count as present weight)
+    if (c >= 0.5 * p) out[i] = s / c
   }
   return out
 }

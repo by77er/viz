@@ -108,9 +108,12 @@ describe('the order of sample files', () => {
       await unit(seq === 2 ? [filler, { labels: x, samples: [[T, 1]] }] : seq === 11 ? [filler, { labels: x, samples: [[T, 2]] }] : seq === 12 ? [filler, { labels: x, samples: [[T, 3], [T + 1000, 30]] }] : [filler])
     }
     const keys = (await ledgerOf(w.a).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files.map((f) => f.key)
-    // The hazard is real: in the ledger's (key) order the 11th flush comes BEFORE the 2nd.
+    // The hazard: in key (text) order the 11th flush comes BEFORE the 2nd. The ledger now
+    // lists files by precedence (ledger/ fixed it); the Worker orders them itself either way.
     const at = (seq: number) => keys.findIndex((k) => k.includes(`-${seq}-${seq}-`))
-    expect(at(11)).toBeLessThan(at(2))
+    expect(at(11)).toBeGreaterThanOrEqual(0)
+    expect(at(2)).toBeGreaterThanOrEqual(0)
+    expect([...keys].sort().findIndex((k) => k.includes('-11-11-'))).toBeLessThan([...keys].sort().findIndex((k) => k.includes('-2-2-')))
     const value = async () => (await (await api(w.a.key, '/api/v1/query', { query: 'rewritten', time: sec(T) })).json<{ data: { result: { value: [number, string] }[] } }>()).data.result[0]!.value[1]
     expect(await value()).toBe('3')
     await discardAll(w)

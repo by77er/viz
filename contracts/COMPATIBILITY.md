@@ -176,6 +176,28 @@ Remote Write, OTLP, the Prometheus and Tempo HTTP APIs, Alertmanager's webhook (
 "4"`), Iceberg v2, Parquet, MCP: follow their versioning. viz's own HTTP and RPC surfaces
 only expand within a version (§4).
 
+### 3.6 Worked example: the ledger's change log moving to segments
+
+`contracts/LEDGER-LOG.md` replaces one R2 object per change with batched segments. Its
+readers are the publisher and the ledger's own rebuild; both can be rolled back, and a
+rebuild that cannot read what was logged loses acknowledged samples (shards discard up to
+the *logged* watermark). Under §3.3 that takes three releases:
+
+1. **Readers.** Release A: the publisher and `rebuildFromLog` read both layouts (per-change
+   objects and `seg-…jsonl`), each line a `LedgerChange` that carries `v`. The ledger still
+   writes per-change objects. A is deployed and becomes the rollback floor.
+2. **Writer.** Release B: the ledger writes segments. B is forward-only for the ledger's
+   storage if its outbox or `meta` rows change shape (§2.3), and for the log format (a
+   rollback below A could not read the segments). Its release record says so.
+3. **Cleanup.** Release C may drop the per-change reader once every live incarnation's log
+   starts with a segment `base`.
+
+Within the segment format: `LedgerChange.removed` stays `string[]`. The `{ key, table }`
+pairs the plan wants are a **new** field beside it (for example `removedFiles`), not a new
+type for `removed` (§4, repurposing). A segment line or a `kind` the reader does not know
+stops that tenant's log at that line (§3.2); the publisher already does this
+(`publisher/src/log.ts`, status `unsupported`).
+
 ## 4. Expand, then contract
 
 The only way to change something another release depends on:

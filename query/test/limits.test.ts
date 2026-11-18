@@ -31,6 +31,8 @@ describe('limits', () => {
     expect(DEFAULT_LIMITS).toEqual({
       maxSamples: 2_000_000, maxSeries: 20_000, maxOutputPoints: 500_000, maxStepPoints: 1_000_000, maxQueryBytes: 16_384, maxDepth: 100, maxSteps: 11_000,
       maxFetchBytes: 16 << 20, maxScanSamples: 3_000_000, maxFiles: 2_000, timeoutMs: 30_000,
+      splitAboveSamples: 1_500_000, maxQuerySamples: 64_000_000, maxQuerySeries: 640_000, maxQueryScanSamples: 100_000_000, maxQueryFetchBytes: 512 << 20,
+      maxQueryFiles: 20_000, maxLeaves: 32, maxCardinalitySeries: 1_000_000, maxCardinalityPairs: 2_000_000,
     })
   })
 
@@ -81,7 +83,9 @@ describe('limits', () => {
   })
 
   it('max_fetch_bytes: the bytes of files plus tail are capped, with a message that says what to do', async () => {
-    const q = QUERIES.find((x) => x.id === 'rate-sum-by')!
+    // `rate(...)` does not decompose, so it is evaluated in one place and these caps apply
+    // (a query that decomposes is split instead: split.test.ts).
+    const q = QUERIES.find((x) => x.id === 'rate')!
     const base = await run(w.a.key, q)
     const [lake, tail] = [cost(base, 'Bytes-Read'), cost(base, 'Tail-Bytes')]
     expect(lake).toBeGreaterThan(0)
@@ -109,7 +113,7 @@ describe('limits', () => {
   })
 
   it('max_scan_samples and max_files are checked from the ledger alone, before anything is fetched', async () => {
-    const q = QUERIES.find((x) => x.id === 'rate-sum-by')!
+    const q = QUERIES.find((x) => x.id === 'rate')!
     const base = await run(w.a.key, q)
     const scan = cost(base, 'Scan-Samples')
     const files = cost(base, 'Files-Read')
@@ -138,8 +142,6 @@ describe('limits', () => {
     expect((await run(w.a.key, q)).status).toBe(200)
     await setLimits(w.a.name, { maxFiles: files - 1 })
     res = await run(w.a.key, q)
-    const PROBE = await res.clone().text()
-    if (res.status !== 422) throw new Error(`PROBE ${PROBE}`)
     expect([res.status, (await res.json<{ error: string }>()).error]).toEqual([422, `query exceeded limit max_files: ${files} data files to read, the limit is ${files - 1}. Narrow the time range.`])
     await setLimits(w.a.name, null)
   })

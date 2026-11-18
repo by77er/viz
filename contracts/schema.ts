@@ -16,7 +16,7 @@
  *     is NOT changed: `version` is never lowered.
  *
  * This file has no platform types and no I/O, so every component can import it, as
- * components import the rest of `contracts/` (design/DECISIONS.md D23).
+ * components import the rest of `contracts/` (design/DECISIONS.md D24).
  */
 
 /** The part of `SqlStorage` the runner uses. */

@@ -65,7 +65,7 @@ describe('the sentences in the brief', () => {
     const r = rng(10)
     const s = make(400, MIN, (i) => (i < 300 ? 120 : 310) + 10 * gauss(r), T0 + 13 * HOUR + 2 * MIN - 300 * MIN)
     for (const out of [cusum.detect(s, { unit: 'ms', stepMs: MIN }), peltDetector.detect(s, { unit: 'ms' })]) {
-      const p = flagged(out)[0]!
+      const p = flagged(out).find((q) => q.ts >= s.ts[300]!)! // CUSUM may also raise a false alarm earlier (in-control ARL ≈ 195)
       const e = p.explanation!
       expect(e.kind).toBe('level_shift')
       expect(e.text).toMatch(/^mean shifted from 1[12]\d ms to 3[01]\d ms at 2026-01-05 1[23]:\d\d UTC \([\d.]+ standard deviations\)$/)
