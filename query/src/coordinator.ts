@@ -372,7 +372,7 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
 /** Shards to ask: every slot the tenant may write to, and every stream the ledger has registered. */
 async function shardsOf(c: Context, watermarks: Watermark[]): Promise<string[]> {
   const map = await poolMap(c.env, c.tenant)
-  const names = new Set(tenantSlots(map, c.tenant).slice(0, 1).map((slot) => shardName(map, slot)))
+  const names = new Set(tenantSlots(map, c.tenant).map((slot) => shardName(map, slot)))
   for (const w of watermarks) names.add(w.shard)
   return [...names].sort()
 }
@@ -429,7 +429,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
 
       // Which files can the ranges touch? Both tables in one call. Sample files go to the
       // engine lowest precedence first (see `byPrecedence`).
-      snap.samples = byPrecedence(snap.samples)
+      
       const listed = [...snap.series, ...snap.samples]
       const keep = c.engine.filesNeeded(listed.map((f) => f.index), ranges)
       const series = snap.series.filter((_, i) => keep[i])

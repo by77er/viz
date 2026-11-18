@@ -432,7 +432,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
   .vz-link:not(p .vz-link, .vz-table td[data-key] .vz-link) { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .vz-links { gap: 0; }
   .vz-controls, .vz-dialog-actions, .vz-banner, .vz-secret-row, .vz-notice { row-gap: calc(var(--control-touch) - var(--control-sm)); } /* wrapped rows: even two rows of small buttons keep 44px between centres */
-  .vz-table td, .vz-table.vz-legend-table td { height: var(--control-touch); }
+  .vz-table td, .vz-table.vz-legend-table td { height: calc(var(--control-touch) + var(--hairline)); } /* the row's rule is not part of the target */
   .vz-table th:has(.vz-sort) { padding-block: 0; }
   .vz-sort { min-height: var(--control-touch); margin-block: 0; }
   .vz-chart-foot { min-height: var(--control-touch); } /* the small zoom buttons' hit areas stay inside the foot */

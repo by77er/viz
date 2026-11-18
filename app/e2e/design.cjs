@@ -406,7 +406,10 @@ async function main() {
       })
       check(`400 px: nothing scrolls the page sideways, in every state (${theme})`, sideways.length === 0, sideways.join(' | '))
       check(`400 px: no text below the micro size (${theme})`, tiny.length === 0, tiny.slice(0, 5).join(' | '))
-      await page.goto(url(Q_MANY, '&view=table')); await page.waitForSelector('[data-testid=result-table] tbody tr')
+      // The 36-series table used to be the wide one. It now fits 400 px: its columns are the labels
+      // that differ and the shared timestamp is in the caption (review M5, m2). A selector across
+      // three metrics has six columns and is 775 px wide.
+      await page.goto(url('{job="kubelet"}', '&view=table')); await page.waitForSelector('[data-testid=result-table] tbody tr')
       const wrap = await page.evaluate(() => { const w = document.querySelector('[data-testid=result-table] .vz-table-wrap'); return { scrolls: w.scrollWidth > w.clientWidth, page: document.documentElement.scrollWidth <= innerWidth } })
       check(`400 px: a wide table scrolls inside its wrap, not the page (${theme})`, wrap.scrolls && wrap.page)
       await ctx.close()

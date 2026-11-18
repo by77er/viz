@@ -1,0 +1,6 @@
+{
+  "after Cancel by keyboard": "retry",
+  "after Retry by keyboard": "run",
+  "after choosing a time preset by keyboard": "time-range",
+  "after \"Run the query again\" by keyboard": "run"
+}
