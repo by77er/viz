@@ -45,7 +45,7 @@ pub fn plan_with(query: &str, start_ms: i64, end_ms: i64, step_ms: i64, opts: &O
     // Insertion-ordered groups; a query has a handful of selectors, so a scan is fine.
     let mut groups: Vec<(Vec<Matcher>, Vec<(i64, i64)>)> = Vec::new();
     for s in sels {
-        let (lo, hi) = (s.min_ts_ms.max(MIN_TS), s.max_ts_ms.min(MAX_TS));
+        let (lo, hi) = (s.min_ts_ms.max(MIN_TS) + 1, s.max_ts_ms.min(MAX_TS));
         if lo > hi {
             continue; // Entirely outside what storage can hold: nothing to fetch.
         }

@@ -86,6 +86,7 @@ export const DEFAULT_RULER_CONFIG: RulerConfig = {
 const HANDOFF_CHUNK = 200
 const HANDOFF_ROWS_PER_TICK = 32
 const SINK_ATTEMPTS = 3
+const MAX_TICK_RETRIES = 5
 
 interface RuleRt {
   health: 'ok' | 'err' | 'unknown'
@@ -143,6 +144,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   private lastHeartbeatMs = 0
   private samplesDropped = 0
   private ticking = false
+  private tickFailures = 0
   private genCounter = 0
   private counters = { sqlRowsWritten: 0, alarmsSet: 0, ticks: 0 }
 
@@ -353,11 +355,19 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       await mapLimit(due, this.cfg.maxConcurrentGroups, ({ g, ts }) => this.evalGroup(g, ts))
       this.heartbeat(now)
       await this.drainHandoff(now)
-    } finally {
+      this.tickFailures = 0
+    } catch (e) {
+      // The tick died part-way (a storage error, say). Whatever committed is durable and
+      // the rest is not in memory, so running it again is safe. Do not rely on the
+      // platform's alarm retry alone: come back shortly, a bounded number of times, and
+      // after that on the normal schedule (the missed evaluations are then counted).
       this.ticking = false
-      // Whatever happened above, the object must wake again.
-      await this.reschedule(now)
+      if (++this.tickFailures <= MAX_TICK_RETRIES) await this.setAlarm(now + backoffMs(this.tickFailures, 1000, 30_000, `${this.tenant}/${this.shard}/tick`))
+      else await this.reschedule(now)
+      throw e
     }
+    this.ticking = false
+    await this.reschedule(now)
   }
 
   private async evalGroup(g: GroupRt, ts: number): Promise<void> {

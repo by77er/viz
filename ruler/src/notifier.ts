@@ -382,7 +382,9 @@ export class Notifier extends DurableObject implements NotifierRpc {
             const body = d.integration.kind === 'slack' ? slackPayload(group, alerts, d.integration.channel, tick) : webhookPayload(group, alerts, cap)
             // Deterministic and attempt-independent: the same decision always yields this key.
             const state = hash64(`${d.firing.join(',')}|${d.resolved.join(',')}`)
-            const seed = `${t}\n${g.route.receiver}\n${d.integration.key}\n${g.key}\n${state}\n${n}`
+            // `createdAt` tells apart two lives of the same group key: the log, and with it
+            // `n`, starts again when a group empties and is later recreated.
+            const seed = `${t}\n${g.route.receiver}\n${d.integration.key}\n${g.key}\n${g.body.createdAt}\n${state}\n${n}`
             const idem = hash64(seed) + hash64(`viz-notification\n${seed}`)
             this.exec(`INSERT INTO outbox (tenant, id, gkey, receiver, integration, url, idem_key, body, status, attempts, created_at, next_attempt_at, last_error)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, NULL)`,

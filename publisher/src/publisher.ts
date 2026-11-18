@@ -1043,7 +1043,6 @@ export class Publisher extends DurableObject<PublisherEnv> {
       const files = snaps.get(s['snapshot-id'])
       // Without the full reference list of a retained snapshot, nothing can be proven orphan.
       if (!files) return out
-      if (s['snapshot-id'] !== meta['current-snapshot-id']) continue
       for (const f of files) referenced.add(f)
     }
 

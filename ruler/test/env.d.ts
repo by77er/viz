@@ -4,3 +4,8 @@ declare namespace Cloudflare {
     NOTIFIER: DurableObjectNamespace<import('./harness').TestNotifier>
   }
 }
+
+declare module '*?raw' {
+  const text: string
+  export default text
+}

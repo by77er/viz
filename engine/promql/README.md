@@ -34,6 +34,15 @@ serde_json::to_string(&matrix)?;
 | `Error::{Parse, Unsupported, Eval, Source}` | `Unsupported` is returned for anything not implemented, never a wrong answer. |
 | `promqltest::run_script` | Runner for the upstream test-script format. |
 
+`SelectorInfo` also carries `steps`, the number of evaluation steps of the (sub)query the
+selector belongs to (not serialised). The evaluator materialises one cell per returned series
+per step, so a caller can bound `series x steps` per selector; `viz-query` does.
+`promqltest::run_script_with_source(script, opts, factory)` runs a test script through any
+`SeriesSource` built from the loaded series; `viz-query` uses it to run the upstream corpus
+through Parquet files and tail batches. Both were added for `engine/query` and are covered by
+`selectors_report_the_step_count_of_their_subquery` and
+`test_scripts_can_run_through_another_source` in `tests/api.rs`.
+
 `Matrix`, `Value` and `SelectorInfo` implement `serde::Serialize` and produce the `data` object
 of the Prometheus HTTP API: values are `[unix_seconds, "string"]`, floats are the shortest
 decimal that round-trips, never an exponent, with `NaN`, `+Inf`, `-Inf`.
@@ -98,10 +107,13 @@ rejects the syntax.
 - `or` inside a label matcher list (`{a="b" or c="d"}`).
 - Annotations (warnings and infos such as "metric might not be a counter"). Queries return the
   same values as Prometheus but without them.
-- Query limits other than step counts: there is no sample budget and no timeout. A caller
-  running in a 128 MB isolate must bound series and range itself (for example from `selectors()`).
-- Recursion depth is not limited: an expression nested thousands of levels deep can exhaust
-  the stack in the parser or the evaluator.
+- Query limits other than step counts: there is no sample budget and no timeout in this crate.
+  `viz-query` (`engine/query`) adds them around it: samples, series, step points, output
+  points, query length and nesting depth. A caller that uses this crate directly must bound
+  series and range itself.
+- Recursion depth is not limited here: an expression nested thousands of levels deep can
+  exhaust the stack in the parser or the evaluator. `viz-query` refuses such queries from
+  their text before parsing (`Limits::max_depth`).
 
 ## Verification
 
@@ -273,10 +285,13 @@ build-time. Direct dependencies: `promql-parser`, `lrpar` (same version the pars
 
 Two things the WASM consumer must know:
 
-- **The module has `wasm-bindgen` imports.** `chrono` (default feature `wasmbind`) and
-  `web-time` (via `lrpar`) pull `js-sys`/`wasm-bindgen` on `wasm32-unknown-unknown`, so the
-  linked module imports `__wbindgen_placeholder__.*` including `performance.now`. It must be
-  post-processed with `wasm-bindgen`, or the imports stubbed. Under Node, with every import
+- **The module has `wasm-bindgen` imports unless the final crate patches them out.** `chrono`
+  (default feature `wasmbind`) and `web-time` (via `lrpar`) pull `js-sys`/`wasm-bindgen` on
+  `wasm32-unknown-unknown`, so the linked module imports `__wbindgen_placeholder__.*`. No
+  feature flag of this crate can remove them. `engine/query/patches/` holds three small
+  `[patch.crates-io]` stand-ins that do (see its README); with them the whole engine links
+  with zero imports and loads with an empty import object (`engine/query/tools/wasm_check.mjs`).
+  Without them the module must be post-processed with `wasm-bindgen`, or the imports stubbed. Under Node, with every import
   replaced by a stub that throws, all test queries (including parse errors, `@` and subqueries)
   ran and **no import was called**: the clock code is reachable only through `lrpar`'s error
   recovery, which `promql-parser` disables. This was measured on a handful of queries, not proven.

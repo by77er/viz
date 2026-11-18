@@ -280,9 +280,33 @@ attempted was readable.
 ### Mutation checks
 
 Each mutation was applied to the source alone, `test/publisher.test.ts` run, and the source
-restored (`tools/mutants.mjs`). MUTANT_SUMMARY
+restored (`tools/mutants.mjs`). **15 mutants, 15 killed, 0
+survived.** The eight asked for are M1, M2, M3, M4, M5 (and M6), M7, M8, M9.
 
-MUTANT_TABLE
+| # | Mutation | Result (tests failing) | A test that fails |
+|---|---|---|---|
+| M1 | skip the conditional write (metadata is written unconditionally) | killed (1) | lets only one of two writers create a metadata version; the other takes its state and retries |
+| M2 | apply log entries out of order (changes replayed newest first) | killed (32) | applies a log in version order and records the ledger version it reflects |
+| M3 | ignore a gap in the versions | killed (1) | stops at a hole in the versions, reports it, and continues once the hole is filled |
+| M4 | publish gross instead of net changes (a removal of a not-yet-published file is ignored) | killed (3) | applies a log in version order and records the ledger version it reflects |
+| M5 | drop DELETED handling (a removed file stays a live entry in the rewritten manifest) | killed (10) | never publishes a file that was added and removed between two publications |
+| M6 | removed files are not taken out of the manifests at all | killed (10) | never publishes a file that was added and removed between two publications |
+| M7 | sweep without a grace period (an unreferenced object is deleted when first seen) | killed (5) | converges after a crash right after "manifests-written" |
+| M8 | cursor saved before the metadata is written | killed (2) | converges after a crash right after "metadata-written" |
+| M9 | wrong partition value (day off by one) | killed (29) | applies a log in version order and records the ledger version it reflects |
+| M10 | sweep on a stale view (no check that R2 has a newer metadata version) | killed (1) | does not delete the files of a commit that is in flight |
+| M11 | sweep treats only the current snapshot as referenced | killed (7) | converges after a crash right after "manifests-written" |
+| M12 | a removed file is handed to deletion while a retained snapshot references it | killed (2) | never publishes a file that was added and removed between two publications |
+| M13 | snapshot expiry does not keep a minimum of two | killed (2) | expires snapshots from maintain() when no publish does it |
+| M14 | a lost conditional write is treated as success | killed (1) | lets only one of two writers create a metadata version; the other takes its state and retries |
+| M15 | re-base ignores the new base (an older incarnation cursor continues as if nothing happened) | killed (1) | re-bases from the base of the new incarnation: removes what is gone, adds what is new |
+
+M8 is caught by the crash injected after the metadata write, not by one before it: the test
+seams sit after each step, and the mutant saves the cursor between two of them. M2 and M9
+fail almost every test because every publish replays a log and writes partition values.
+
+The reader script has teeth too: with one file removed from one stage of one table in
+`expected.json`, 24 of its 496 checks fail and it exits 1.
 
 ### Measurements
 

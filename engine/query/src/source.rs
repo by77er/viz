@@ -123,7 +123,7 @@ impl SeriesSource for StorageSource<'_> {
         let n: u64 = found.iter().map(|s| s.ts.len() as u64).sum();
         let samples = self.samples.get().saturating_add(n);
         self.samples.set(samples);
-        if samples >= self.limits.max_samples {
+        if samples > self.limits.max_samples {
             return Err(self.fail(QueryError::limit(Limit::MaxSamples, self.limits.max_samples, samples, "samples loaded")));
         }
         let cells = (found.len() as u64).saturating_mul(self.steps_for(matchers, min_ts_ms, max_ts_ms));
