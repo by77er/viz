@@ -147,6 +147,61 @@ export interface LedgerAdminRpc {
   rebuildFromLog(): Promise<{ ledgerIncarnation: number; version: number }>
 }
 
+/*
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * PROPOSED ADDITION (storage path, 2026-11-18): tombstones, for physical deletion.
+ * Implemented in ledger/ and used by janitor/. Not yet reviewed (design/REVIEW.md).
+ *
+ * When `replace` or `expire` removes a key, the ledger records a tombstone in the same
+ * transaction: the key, its table, the ledger VERSION of the change that removed it, and
+ * the ledger's clock at that moment. Tombstones are keyed by version, so "is the removal
+ * logged?" is "is that version in R2?", whatever the shape of the log (one object per
+ * change today, segments in LEDGER-LOG.md).
+ *
+ * An object may be deleted from R2 only when the ledger says so through `deletable`:
+ *   1. the change that removed it is durably logged (a ledger rebuilt from its log would
+ *      otherwise list the file again), AND
+ *   2. it was removed at least `minAgeMs` ago by the ledger's own clock (a query holding a
+ *      plan from before the removal may still be reading it), AND
+ *   3. the key is not live.
+ * A removal that is committed but not yet logged is simply not returned; ask again later.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+export interface Tombstone {
+  key: string
+  table: Table
+  /** Ledger version of the `replace` or `expire` that removed the key. */
+  version: number
+  /** Ledger clock (Unix ms) when it was removed. */
+  at: number
+}
+
+export interface OrphanCheck {
+  /** Of the keys asked about: those that are live. */
+  live: string[]
+  /** Of the keys asked about: those with a tombstone (their deletion goes through `deletable`). */
+  tombstoned: string[]
+  /** Every stream's LOGGED watermark, read in the same instant as the two lists. */
+  logged: Watermark[]
+}
+
+export interface LedgerJanitorRpc {
+  /** Tombstones that satisfy all three rules above, lowest version first. `waiting` counts the rest. */
+  deletable(req: { minAgeMs: number; limit?: number }): Promise<{ tombstones: Tombstone[]; waiting: number }>
+  /** The objects of these keys have been deleted: drop their tombstones. Keys that are live or have none are ignored. */
+  forget(keys: string[]): Promise<{ forgotten: number }>
+  /** Every tombstone with a version above `version`, lowest first, deletable or not. */
+  removedSince(version: number, limit?: number): Promise<Tombstone[]>
+  /**
+   * For the orphan sweep: which of these keys the ledger knows, and how far each stream is
+   * logged, as ONE consistent read. A flush file that is neither live nor tombstoned and
+   * whose sequence range is at or below its stream's logged watermark can never become
+   * live (a unit for that range is answered as a replay).
+   */
+  orphanCheck(keys: string[]): Promise<OrphanCheck>
+}
+/* ───────────────────────────── end of proposed addition ───────────────────────────── */
+
 /** R2 keys for the ledger's own log, relative to the cell prefix. */
 export const ledgerLogKey = (tenant: string, ledgerIncarnation: number, version: number): string =>
   `ledger/tenant=${tenant}/${ledgerIncarnation}/${String(version).padStart(12, '0')}.json`

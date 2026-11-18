@@ -40,10 +40,10 @@
   "asExpected": true,
   "violated": true,
   "completed": false,
-  "generated": 589039,
-  "distinct": 117594,
-  "queue": 27277,
-  "depth": 20,
+  "generated": 696065,
+  "distinct": 138655,
+  "queue": 32840,
+  "depth": 19,
   "fpCollisionProb": null,
   "trace": [
     "register(shard 0, incarnation 1)",
@@ -65,5 +65,5 @@
     "deleteRetired",
     "ledgerLossRebuild"
   ],
-  "seconds": 17.8
+  "seconds": 20.6
 }

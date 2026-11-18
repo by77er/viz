@@ -40,10 +40,10 @@
   "asExpected": true,
   "violated": true,
   "completed": false,
-  "generated": 52097,
-  "distinct": 14580,
-  "queue": 6593,
-  "depth": 14,
+  "generated": 34050,
+  "distinct": 10266,
+  "queue": 5011,
+  "depth": 13,
   "fpCollisionProb": null,
   "trace": [
     "register(shard 0, incarnation 1)",
@@ -59,5 +59,5 @@
     "recorded(shard 0, through seq 2)",
     "discard(shard 0, through seq 1)"
   ],
-  "seconds": 11.9
+  "seconds": 14
 }

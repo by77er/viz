@@ -40,19 +40,19 @@
   "asExpected": true,
   "violated": true,
   "completed": false,
-  "generated": 523277,
-  "distinct": 112670,
-  "queue": 40166,
-  "depth": 18,
+  "generated": 435709,
+  "distinct": 95651,
+  "queue": 35221,
+  "depth": 17,
   "fpCollisionProb": null,
   "trace": [
     "register(shard 0, incarnation 1)",
     "logWrite(outbox[0])",
     "append(batch 0 -> shard 0)",
     "seal(shard 0, through seq 1)",
-    "flushRead(shard 0, segment ..1)",
     "append(batch 1 -> shard 0)",
     "seal(shard 0, through seq 2)",
+    "flushRead(shard 0, segment ..1)",
     "flushRead(shard 0, segment ..2)",
     "flushPut(shard 0, segment ..1)",
     "addUnit(shard 0, ..1) admitted",
@@ -63,5 +63,5 @@
     "compWrite",
     "replace"
   ],
-  "seconds": 16.4
+  "seconds": 16.1
 }

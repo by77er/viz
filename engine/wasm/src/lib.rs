@@ -49,7 +49,8 @@
 //! then each input file as `u32 len, bytes`.
 //!
 //! Ok payload: `u8 table, u8[3] zero, u64 rows, i64 min_ts, i64 max_ts, u32 day_len, day,
-//! u32 index_len, index, u32 file_ptr, u32 file_len, u32 file_cap`. The file itself is NOT
+//! u32 index_len, index, u64 file_ptr, u64 file_len, u64 file_cap` (u64 so the same layout
+//! holds natively; in WASM the high halves are zero). The file itself is NOT
 //! in the payload: it stays in the buffer the writer filled, at `file_ptr`. The caller
 //! copies `file_len` bytes from there and releases it with `viz_free_file(file_ptr,
 //! file_cap)`. So the output exists once in linear memory, and the inputs once (they are
@@ -254,7 +255,7 @@ pub unsafe extern "C" fn viz_merge_files(ptr: *const u8, len: usize) -> *mut u8 
     // Leak the file buffer to the caller; `viz_free_file` takes it back.
     let mut file = std::mem::ManuallyDrop::new(bytes);
     let (file_ptr, file_len, file_cap) = (file.as_mut_ptr() as usize, file.len(), file.capacity());
-    result(OK, 28 + 4 + day.len() + 4 + index.len() + 12, |out| {
+    result(OK, 28 + 4 + day.len() + 4 + index.len() + 24, |out| {
         out.extend_from_slice(&[matches!(table, Table::MetricSeries) as u8, 0, 0, 0]);
         out.extend_from_slice(&rows.to_le_bytes());
         out.extend_from_slice(&min_ts.to_le_bytes());
@@ -264,7 +265,7 @@ pub unsafe extern "C" fn viz_merge_files(ptr: *const u8, len: usize) -> *mut u8 
             out.extend_from_slice(part);
         }
         for v in [file_ptr, file_len, file_cap] {
-            out.extend_from_slice(&(v as u32).to_le_bytes());
+            out.extend_from_slice(&(v as u64).to_le_bytes());
         }
     })
 }

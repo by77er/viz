@@ -9,6 +9,9 @@ import {
   type FlushUnit,
   type LedgerAdminRpc,
   type LedgerChange,
+  type LedgerJanitorRpc,
+  type OrphanCheck,
+  type Tombstone,
   type LedgerRpc,
   type Plan,
   type PlanRequest,
@@ -146,7 +149,7 @@ const toStored = (r: Row): StoredFile => ({
       : { shard: r.u_shard as string, incarnation: r.u_inc as number, seqLo: r.u_lo as number, seqHi: r.u_hi as number },
 })
 
-export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, LedgerAdminRpc {
+export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, LedgerAdminRpc, LedgerJanitorRpc {
   private readonly tenant: string
   private readonly cell: string
   /** Where the change log goes. A field so that tests can substitute a failing bucket. */
@@ -181,6 +184,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       shard TEXT PRIMARY KEY, incarnation INTEGER NOT NULL, watermark INTEGER NOT NULL,
       logged INTEGER NOT NULL, prev_incarnation INTEGER)`)
     sql.exec(`CREATE TABLE IF NOT EXISTS outbox (version INTEGER PRIMARY KEY, body TEXT NOT NULL)`)
+    // Keys removed by `replace` or `expire` whose objects are still in R2 (contracts/ledger.ts).
+    sql.exec(`CREATE TABLE IF NOT EXISTS tombstone (key TEXT PRIMARY KEY, tbl TEXT NOT NULL, version INTEGER NOT NULL, at INTEGER NOT NULL)`)
+    sql.exec(`CREATE INDEX IF NOT EXISTS tombstone_version ON tombstone (version)`)
   }
 
   /**
@@ -227,6 +233,18 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     return r ? toStored(r) : null
   }
 
+  /**
+   * Inside the transaction that removes `keys` from the live set: remember them, with the
+   * version that removal is about to get, until their objects have been deleted.
+   */
+  private bury(keys: { key: string; table: Table }[]): void {
+    const version = this.version() + 1
+    const at = Date.now()
+    for (const k of keys) {
+      this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO tombstone (key, tbl, version, at) VALUES (?, ?, ?, ?)`, k.key, k.table, version, at)
+    }
+  }
+
   private insertFile(f: FileEntry, unit: UnitRef | null): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO file (key, tbl, day, bytes, rows, min_ts, max_ts, level, idx, u_shard, u_inc, u_lo, u_hi)
@@ -249,6 +267,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     if (watermark) change.watermark = watermark
     if (unit) change.unit = unit
     sql.exec(`INSERT INTO outbox (version, body) VALUES (?, ?)`, version, JSON.stringify(change))
+    // Tombstones of this change carry exactly its time, so a rebuild from the log restores them as they were.
+    if (removed.length > 0) sql.exec(`UPDATE tombstone SET at = ? WHERE version = ?`, change.at, version)
     return version
   }
 
@@ -378,6 +398,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     }
 
     const version = this.ctx.storage.transactionSync(() => {
+      this.bury(remove.map((key) => ({ key, table: this.liveFile(key)!.table })))
       for (const k of remove) this.ctx.storage.sql.exec(`DELETE FROM file WHERE key = ?`, k)
       for (const f of req.add) this.insertFile(f, null)
       return this.record('replace', req.add, remove)
@@ -396,6 +417,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
         .toArray()
         .map((r) => r.key as string)
       if (removed.length === 0) return null
+      this.bury(removed.map((key) => ({ key, table: req.table })))
       sql.exec(`DELETE FROM file WHERE tbl = ? AND day < ?`, req.table, req.beforeDay)
       return { version: this.record('expire', [], removed), removed }
     })
@@ -409,6 +431,70 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       .exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)
       .toArray()
       .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))
+  }
+
+  // ───────────────────────────── LedgerJanitorRpc ─────────────────────────────
+
+  private static toTombstone(r: Row): Tombstone {
+    return { key: r.key as string, table: r.tbl as Table, version: r.version as number, at: r.at as number }
+  }
+
+  /** The lowest version still in the outbox: everything below it is in R2. */
+  private firstUnlogged(): number {
+    const v = this.ctx.storage.sql.exec(`SELECT MIN(version) AS v FROM outbox`).one().v as number | null
+    return v ?? Number.MAX_SAFE_INTEGER
+  }
+
+  async deletable(req: { minAgeMs: number; limit?: number }): Promise<{ tombstones: Tombstone[]; waiting: number }> {
+    if (typeof req?.minAgeMs !== 'number' || !(req.minAgeMs >= 0)) throw new Error('ledger: minAgeMs must be a non-negative number')
+    const limit = Math.min(Math.max(1, Math.floor(req.limit ?? 1000)), 10_000)
+    const sql = this.ctx.storage.sql
+    // One synchronous read: logged (the removing version is below everything in the
+    // outbox), old enough by this object's clock, and not live.
+    const tombstones = sql
+      .exec(
+        `SELECT t.key, t.tbl, t.version, t.at FROM tombstone t
+         WHERE t.version < ? AND t.at <= ? AND NOT EXISTS (SELECT 1 FROM file f WHERE f.key = t.key)
+         ORDER BY t.version, t.key LIMIT ?`,
+        this.firstUnlogged(), Date.now() - req.minAgeMs, limit,
+      )
+      .toArray()
+      .map(Ledger.toTombstone)
+    const total = sql.exec(`SELECT COUNT(*) AS n FROM tombstone`).one().n as number
+    return { tombstones, waiting: total - tombstones.length }
+  }
+
+  async forget(keys: string[]): Promise<{ forgotten: number }> {
+    if (!Array.isArray(keys) || keys.some((k) => typeof k !== 'string')) throw new Error('ledger: keys must be a list of strings')
+    const sql = this.ctx.storage.sql
+    let forgotten = 0
+    this.ctx.storage.transactionSync(() => {
+      for (const k of keys) {
+        if (this.liveFile(k)) continue
+        forgotten += sql.exec(`DELETE FROM tombstone WHERE key = ?`, k).rowsWritten
+      }
+    })
+    return { forgotten }
+  }
+
+  async removedSince(version: number, limit = 1000): Promise<Tombstone[]> {
+    return this.ctx.storage.sql
+      .exec(`SELECT key, tbl, version, at FROM tombstone WHERE version > ? ORDER BY version, key LIMIT ?`, version, Math.min(Math.max(1, Math.floor(limit)), 10_000))
+      .toArray()
+      .map(Ledger.toTombstone)
+  }
+
+  async orphanCheck(keys: string[]): Promise<OrphanCheck> {
+    if (!Array.isArray(keys) || keys.some((k) => typeof k !== 'string')) throw new Error('ledger: keys must be a list of strings')
+    const sql = this.ctx.storage.sql
+    // No await: the three answers describe one instant.
+    const live = keys.filter((k) => this.liveFile(k) !== null)
+    const tombstoned = keys.filter((k) => sql.exec(`SELECT 1 AS x FROM tombstone WHERE key = ?`, k).toArray().length > 0)
+    const logged = sql
+      .exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)
+      .toArray()
+      .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))
+    return { live, tombstoned, logged }
   }
 
   // ───────────────────────────── change log ─────────────────────────────
@@ -505,9 +591,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const source = await this.latestIncarnation()
     const files = new Map<string, StoredFile>()
     const streams = new Map<string, StoredStream>()
+    // Removals seen in the replayed log. Their objects may or may not have been deleted
+    // already; deleting again is harmless, forgetting them would leak the objects.
+    const buried = new Map<string, Tombstone>()
     let version = 0
     let changesReplayed = 0
-    if (source !== null) ({ version, changesReplayed } = await this.replay(source, files, streams))
+    if (source !== null) ({ version, changesReplayed } = await this.replay(source, files, streams, buried))
 
     // Higher than anything in R2 and than anything this storage has used.
     const incarnation = Math.max(source ?? 0, this.meta('incarnation') ?? 0) + 1
@@ -531,6 +620,10 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       sql.exec(`DELETE FROM file`)
       sql.exec(`DELETE FROM stream`)
       sql.exec(`DELETE FROM outbox`)
+      sql.exec(`DELETE FROM tombstone`)
+      for (const t of buried.values()) {
+        if (!files.has(t.key)) sql.exec(`INSERT INTO tombstone (key, tbl, version, at) VALUES (?, ?, ?, ?)`, t.key, t.table, t.version, t.at)
+      }
       for (const f of files.values()) this.insertFile(f, f.unit)
       for (const st of streams.values()) {
         // Everything replayed came from R2, so it is logged by definition.
@@ -569,6 +662,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     source: number,
     files: Map<string, StoredFile>,
     streams: Map<string, StoredStream>,
+    buried: Map<string, Tombstone>,
   ): Promise<{ version: number; changesReplayed: number }> {
     const prefix = this.incarnationPrefix(source)
     let version = 0
@@ -610,7 +704,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
         if (c.ledgerIncarnation !== source || c.version !== version + 1) {
           throw new Error(`ledger: log of incarnation ${source} is not contiguous at version ${version + 1}`)
         }
-        this.apply(c, files, streams)
+        this.apply(c, files, streams, buried)
         version = c.version
         changesReplayed++
       }
@@ -618,10 +712,13 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     return { version, changesReplayed }
   }
 
-  private apply(c: LedgerChange, files: Map<string, StoredFile>, streams: Map<string, StoredStream>): void {
+  private apply(c: LedgerChange, files: Map<string, StoredFile>, streams: Map<string, StoredStream>, buried: Map<string, Tombstone>): void {
     const bad = (why: string) => new Error(`ledger: cannot replay version ${c.version}: ${why}`)
     for (const k of c.removed) {
-      if (!files.delete(k)) throw bad(`removes ${k}, which is not live`)
+      const f = files.get(k)
+      if (!f) throw bad(`removes ${k}, which is not live`)
+      files.delete(k)
+      buried.set(k, { key: k, table: f.table, version: c.version, at: c.at })
     }
     let unit: UnitRef | null = null
     const w = c.watermark

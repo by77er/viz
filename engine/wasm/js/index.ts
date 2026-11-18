@@ -29,6 +29,7 @@ interface Exports {
   viz_encode_segment(ptr: number, len: number): number
   viz_select(ptr: number, len: number): number
   viz_merge_files(ptr: number, len: number): number
+  viz_free_file(ptr: number, cap: number): void
 }
 
 /** An error the engine reported (malformed batch, bad matcher, corrupt file). */
@@ -180,7 +181,28 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
           p += 4 + f.byteLength
         }
       },
-      (payload) => readFiles(payload, 0, 1)[0]!,
+      (payload) => {
+        // The header only: the file stays where the writer left it (see ../src/lib.rs).
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        let p = 28
+        const str = (): string => {
+          const len = dv.getUint32(p, true)
+          p += 4 + len
+          return text.decode(payload.subarray(p - len, p))
+        }
+        const out = TABLES[payload[0]!]
+        if (!out) throw new Error('engine: unknown table in result')
+        const rows = Number(dv.getBigUint64(4, true))
+        const minTs = Number(dv.getBigInt64(12, true))
+        const maxTs = Number(dv.getBigInt64(20, true))
+        const day = str()
+        const index = str()
+        const [ptr, len, cap] = [dv.getUint32(p, true), dv.getUint32(p + 8, true), dv.getUint32(p + 16, true)] // u64 each; wasm32 uses the low half
+        const w = instance()
+        const bytes = new Uint8Array(w.memory.buffer, ptr, len).slice() // the one copy out
+        w.viz_free_file(ptr, cap)
+        return { table: out, day, bytes, rows, minTs, maxTs, index }
+      },
     )
   }
 

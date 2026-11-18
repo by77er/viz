@@ -7,7 +7,8 @@ const dir = join(dirname(fileURLToPath(import.meta.url)), 'results')
 const rs = readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')))
 const order = readFileSync(join(dir, '..', 'experiments.mjs'), 'utf8')
 rs.sort((a, b) => order.indexOf(`'${a.name}'`) - order.indexOf(`'${b.name}'`))
-const short = (s) => s
+const short = (s0) => { const m = /shard ([1-9])/.exec(s0); return short0(s0) + (m ? `@s${m[1]}` : '') }
+const short0 = (s) => s
   .replace(/append\(batch (\d+) -> shard (\d+)\)/, 'append(b$1)')
   .replace(/register\(shard (\d+), incarnation (\d+)\)/, 'register(inc $2)')
   .replace(/reRegister\(shard (\d+), incarnation (\d+)\)/, 'reRegister(inc $2)')
@@ -43,7 +44,7 @@ out.FIXED = ['| Run | Bounds that differ from the common ones | Checked | Result
 out.SIM = ['| Run | Bounds | Checked | Runs | Trace length | Result | Wall time | Runs that reached … |', '|---|---|---|---|---|---|---|---|',
   ...rs.filter((r) => r.kind === 'sim').map((r) => {
     const c = r.cfg
-    return `| \`${r.name}\` ${r.label.split(',')[0]} | ${c.ns} shards, ${c.nb} batches, ≤ ${c.maxSend} sends, ${c.variants} variants, ≤ ${c.maxFlush} flushes, ${c.maxComp} compactions, ${c.maxExp} retention removals, ${c.maxLL} ledger losses, ${c.maxSL} shard losses, ${c.maxQ} queries | ${r.invariant} | ${r.samples.toLocaleString('en')} | ≤ ${r.maxSteps} (longest ${r.traceLen?.max}, mean ${r.traceLen?.avg}) | ${r.violated ? `violated in ${r.trace.length} steps: ${line(r)}` : 'no violation found (simulation, not exhaustive)'} | ${r.seconds} s | ${Object.entries(r.coverage ?? {}).map(([k, v]) => `${k.slice(2)}: ${v}`).join(', ')} |`
+    return `| \`${r.name}\` ${r.label.split(',')[0]} | ${c.ns} shards, ${c.nb} batches, ≤ ${c.maxSend} sends, ${c.variants} variants, ≤ ${c.maxFlush} flushes, ${c.maxComp} compactions, ${c.maxExp} retention removals, ${c.maxLL} ledger losses, ${c.maxSL} shard losses, ${c.maxQ} queries | ${r.invariant} | ${r.samples.toLocaleString('en')} | ≤ ${r.maxSteps} ${r.traceLen ? `(longest ${r.traceLen.max}, mean ${r.traceLen.avg})` : ''} | ${r.violated ? `violated (random, unminimised ${r.trace.length}-step trace in RESULTS.md)` : 'no violation found (simulation, not exhaustive)'} | ${r.seconds} s | ${Object.entries(r.coverage ?? {}).map(([k, v]) => `${k.slice(2)}: ${v}`).join(', ')} |`
   })].join('\n')
 const total = rs.reduce((a, r) => a + (r.seconds ?? 0), 0)
 out.TOTAL = `${Math.round(total / 60)} minutes`

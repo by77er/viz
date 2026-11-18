@@ -9,14 +9,14 @@ on `wasm32-unknown-unknown`:
 | `promql-parser` → `lrpar` → `web-time` → `js-sys`, `wasm-bindgen` | `performance.now()` for the error-recovery time budget | `lrpar` depends on `web-time` unconditionally. |
 
 Linked as is, the whole engine has 7 imports (`__wbindgen_placeholder__.*`,
-`__wbindgen_externref_xform__.*`) and several hundred `__wbindgen_describe_*` exports,
+`__wbindgen_externref_xform__.*`) and 1,544 `__wbindgen_describe_*` exports,
 and can only be loaded after the `wasm-bindgen` CLI has rewritten it and generated a
 JavaScript wrapper.
 
 The engine never reads a clock. So the three crates here replace the bindings, through
 `[patch.crates-io]`:
 
-- `web-time`: re-exports `std::time` (11 lines). `lrpar` reads the clock only inside
+- `web-time`: re-exports `std::time` (one `pub use`). `lrpar` reads the clock only inside
   error recovery, and `promql-parser` builds its parser with `RecoveryKind::None`, which
   returns before that.
 - `js-sys`: the five `Date` functions `chrono` 0.4.45 names, each a trap.

@@ -25,6 +25,9 @@ impl<'a> Rd<'a> {
         self.1 += 4;
         u32::from_le_bytes(self.0[self.1 - 4..self.1].try_into().unwrap())
     }
+    fn usize(&mut self) -> usize {
+        self.u64() as usize
+    }
     fn u64(&mut self) -> u64 {
         self.1 += 8;
         u64::from_le_bytes(self.0[self.1 - 8..self.1].try_into().unwrap())
@@ -151,7 +154,6 @@ fn merge_req(table: u8, inputs: &[&[u8]]) -> Vec<u8> {
 /// (table, rows, min_ts, max_ts, day, index, bytes).
 fn file(r: &mut Rd<'_>) -> (u32, u64, u64, u64, Vec<u8>, Vec<u8>, Vec<u8>) {
     let (table, rows, min_ts, max_ts, day, index) = (r.u32(), r.u64(), r.u64(), r.u64(), r.bytes().to_vec(), r.bytes().to_vec());
-    // Natively a pointer does not fit the payload's u32: the test reads it back as usize.
     let (ptr, len, cap) = (r.usize(), r.usize(), r.usize());
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len).to_vec() };
     unsafe { viz_free_file(ptr as *mut u8, cap) };

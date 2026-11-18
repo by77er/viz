@@ -119,7 +119,7 @@ const PARQUET = 'application/vnd.apache.parquet'
 /** How often the pending list is re-read after the ledger answers `not_contiguous`. */
 const MAX_RESTARTS = 2
 
-class Stop extends Error {
+export class Stop extends Error {
   constructor(
     readonly reason: FlushFailure,
     detail: string,
@@ -143,7 +143,7 @@ function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
  * Write one file under its content-addressed key with `If-None-Match: *`. If an object is
  * already there, it counts as written only when its size and SHA-256 equal this file's.
  */
-async function putFile(bucket: R2Bucket, key: string, bytes: Uint8Array, sha256: ArrayBuffer): Promise<'created' | 'exists'> {
+export async function putFile(bucket: R2Bucket, key: string, bytes: Uint8Array, sha256: ArrayBuffer): Promise<'created' | 'exists'> {
   // `sha256` makes R2 verify the upload and keep the digest with the object.
   const created = await bucket.put(key, bytes, {
     onlyIf: { etagDoesNotMatch: '*' },

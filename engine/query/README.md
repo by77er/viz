@@ -151,7 +151,7 @@ plan 5, staleness 5). Four are property tests.
 `tests/invariance.rs`, `results_do_not_depend_on_where_rows_live`. For each generated
 case: a write history over 17 series (gauges, counters with resets, a classic histogram
 in two jobs) with irregular spacing from five minutes before UTC midnight (so the lake
-always spans two days), NaNs, staleness markers, timestamps rewritten with a different
+normally spans two days), NaNs, staleness markers, timestamps rewritten with a different
 value, arrival order jittered, cut into 1 to 7 batches. Every query of a pool of **106**
 (8 selector forms, 8 with `offset`/`@`, 25 range functions, 16 aggregations, 18 binary
 operator forms, 16 functions, 4 `histogram_quantile`, 7 subqueries, 4 that must fail) is
@@ -169,7 +169,10 @@ evaluated as a range query and as an instant query:
 (a) to (d) must each produce **byte-identical JSON, or the same error type and
 message**, as (e), and identical `Stats`.
 
-**Result: identical everywhere.** INVARIANCE_NUMBERS
+**Result: identical everywhere.** The default run is 48 cases: 48 histories x 106 queries
+x 4 placements x 2 query forms = **40,704 evaluations through storage, 0 differences**.
+A soak run with `VIZ_PROPTEST_CASES=300` (254,400 evaluations) also had 0 differences,
+as did `plan_is_sound` at 300 cases.
 
 `source_returns_the_reference_series` checks one level down: for every selector range
 of every pool query, the series the adapter hands the evaluator equal the reference's
@@ -266,7 +269,52 @@ Stack needed at depth 100, measured with `examples/stack_probe.rs` and
 
 ### 6. Mutation check
 
-MUTANTS_SECTION
+`python3 tools/mutants.py` applies one source change at a time, runs the suite (property
+tests at 8 cases, corpus left out), restores the file, and reports the failing tests. It
+confirms first that the unmutated suite passes and tells a failing test from a build
+error. **31 of 31 mutants were killed**; none survived. `engine/storage` is another
+component under concurrent edit and was not mutated; storage-side faults (5, 7) are
+emulated in the adapter. Mutant 9 is in `engine/promql/src/api.rs`.
+
+| # | Mutant | Killed by (examples; the script prints all) |
+|---|---|---|
+| 1 | Tail data dropped | `results_do_not_depend_on_where_rows_live`, `source_returns_the_reference_series`, `duplicates_between_lake_and_tail_…`, 14 more |
+| 2 | Lake data dropped | `results_do_not_depend_on_where_rows_live`, `plan_is_sound`, `metadata_calls`, 15 more |
+| 3 | Range end off by one (`max_ts - 1`) | `both_boundaries_of_a_range_matter`, `a_marker_ends_the_series_exactly_at_its_timestamp`, `max_samples`, 10 more |
+| 4 | Range start off by one (`min_ts + 1`) | `both_boundaries_of_a_range_matter`, `without_the_marker_the_series_lives_for_the_lookback`, `metadata_calls`, 2 more |
+| 5 | Staleness markers from Parquet ignored | `a_marker_ends_the_series_exactly_at_its_timestamp`, `results_do_not_depend_on_where_rows_live`, 5 more |
+| 6 | NaN payloads canonicalised (marker becomes a plain NaN) | `the_source_hands_the_marker_bits_over_untouched`, `a_marker_ends_…`, `results_do_not_depend_…`, 3 more |
+| 7 | No de-duplication between lake and tail | `duplicates_between_lake_and_tail_appear_once_and_the_tail_wins`, `results_do_not_depend_…`, 17 more |
+| 8 | Wrong unit: sample timestamps in seconds | `range_query_json_times_are_seconds_and_inputs_are_milliseconds`, `results_do_not_depend_…`, 14 more |
+| 9 | Wrong unit: JSON timestamps in milliseconds | `instant_query_result_types`, `a_marker_ends_…`, 3 more |
+| 10 | `max_samples` does not fire | `max_samples`, `metadata_respects_limits` |
+| 11 | `max_samples` per selector instead of per query | `max_samples`, `baseline_reads_what_the_tests_below_assume` |
+| 12 | `max_samples` fires one early (`>=`) | `max_samples` |
+| 13 | `max_series` does not fire | `max_series`, `metadata_respects_limits` |
+| 14 | `max_step_points` does not fire | `max_step_points` |
+| 15 | `max_step_points` ignores subquery step grids | `max_step_points` |
+| 16 | `max_output_points` does not fire | `max_output_points` |
+| 17 | `max_query_bytes` does not fire | `max_query_bytes` |
+| 18 | `max_depth` does not fire | `max_depth` |
+| 19 | Depth estimate ignores operators | `estimated_depth_bounds_the_syntax_tree`, `max_depth`, `a_query_at_the_depth_limit_fits_the_stack` |
+| 20 | Depth estimate forgets closed groups | same three |
+| 21 | Plan: range end one millisecond short | `both_boundaries_of_a_range_matter`, `ranges_are_exact`, 3 more |
+| 22 | Plan: range start one millisecond late | same |
+| 23 | Plan: keeps only the first range of a matcher set | `ranges_of_one_matcher_set_merge_only_when_they_meet` |
+| 24 | Plan: merges ranges that are apart | `ranges_of_one_matcher_set_merge_only_when_they_meet` |
+| 25 | Plan: not clamped to storable timestamps | `ranges_are_clamped_to_what_storage_can_hold` |
+| 26 | Parse errors reported as `execution` | `errors_carry_prometheus_error_types`, `results_do_not_depend_…`, 1 more |
+| 27 | `unsupported` reported as `execution` | `errors_carry_prometheus_error_types`, `results_do_not_depend_…` |
+| 28 | Limit error loses its cause | `max_samples`, `max_series`, `max_step_points` |
+| 29 | `label_values` ignores the matchers | `metadata_calls` |
+| 30 | `series()` accepts a set that matches everything | `metadata_calls` |
+| 31 | `!~` translated as `=~` | `results_do_not_depend_…`, `source_returns_the_reference_series` |
+
+What the table shows about the tests: the off-by-one mutants on the source's range (3,
+4) and on the plan (21, 22) are **not** caught by the random property tests, because
+random millisecond timestamps almost never sit on a boundary. They are caught by the
+directed boundary tests, which exist for that reason. At 8 cases `plan_is_sound` did not
+catch 21 or 22 either.
 
 ### 7. WASM: the whole engine, and loading it without glue
 
@@ -276,11 +324,108 @@ Release profile of `engine/AGENTS.md` (fat LTO, one codegen unit, `opt-level = 3
 `panic = "abort"`, stripped) with `-C target-feature=+simd128,+bulk-memory`; no
 `wasm-opt`.
 
-WASM_SECTION
+| build of `wasm/` | `.wasm` | `gzip -9` | imports | exports |
+|---|---:|---:|---:|---:|
+| dependencies as published | 4,052,074 B | 1,116,824 B | 7 (`__wbindgen_placeholder__.*`, `__wbindgen_externref_xform__.*`) | 1,568, of which 1,552 are `wasm-bindgen`'s |
+| with `patches/` (what is built by default) | **3,618,108 B** | **1,034,617 B** | **0** | 12: `memory` and the 11 functions of the C ABI |
+
+(The first row was measured before the 4 KB `viz_probe_unlimited` export was added.)
+For comparison, from the other READMEs: the storage probe alone is 2,775,281 B
+(788,880 gzip) and a PromQL-only wrapper 2,394,658 B (669,829 gzip); the two share the
+regex engine and std, so the whole is well under the sum.
+
+**What dominates.** `tools/wasm_sizes.mjs` on an unstripped build of the same module:
+the code section is 3.11 MB and the data section 0.50 MB (Unicode tables of `regex`,
+the parser's grammar tables). Code bytes by crate (attribution after LTO inlining is
+approximate; a generic function is charged to the first non-std crate in its symbol):
+
+| share of code | bytes | crate |
+|---:|---:|---|
+| 44.1% | 1,371,119 | `parquet` (with `snap`, `bytes`, `thrift`, `half`, `num-*`, `twox-hash`) |
+| 23.6% | 733,097 | `regex` (`regex-automata`, `regex-syntax`, `aho-corasick`) |
+| 12.6% | 390,176 | `promql-parser` and its runtime (`lrpar`, `lrlex`, `lrtable`, `cfgrammar`, `bincode`, …) |
+| 7.5% | 231,614 | `viz-promql` |
+| 5.3% | 166,200 | `viz-storage` |
+| 3.2% | 99,825 | Rust std |
+| 1.0% | 30,460 | `viz-query` |
+| 2.7% | | everything else (`memcpy`, `serde_json`, the probe's ABI) |
+
+So Parquet is the largest part and the regex engine second; this crate is 1%.
+
+**No JavaScript glue.** As published, two dependencies of `promql-parser` bind to
+JavaScript on `wasm32-unknown-unknown`: `chrono` (default feature `wasmbind`, for
+`Utc::now()` and `Local`) and `web-time` (through `lrpar`, for `performance.now()`).
+Feature flags cannot remove them: a crate cannot switch off the default features of a
+dependency's dependency, `lrpar`'s dependency is unconditional, and because features
+are unified, `parquet`'s `chrono` gets `wasmbind` too. A small patch can:
+`patches/` holds three stand-in crates applied through `[patch.crates-io]` (`web-time`
+re-exporting `std::time`; `js-sys` with the five `Date` functions `chrono` names, each
+a trap; `wasm-bindgen` with the one type `chrono` names), about 60 lines in total, no
+third-party source copied or modified. `patches/README.md` has the reasoning and the
+three lines a consuming crate adds. The engine never reads a clock, so none of the
+replaced code can run; if it did it would trap, not return a made-up time.
+
+Proof, `node tools/wasm_check.mjs` (Node 22.23), on the build in the table:
+
+- `WebAssembly.Module.imports(module)` is empty and no export starts with `__wbindgen`.
+- `new WebAssembly.Instance(module, {})`, an **empty import object**, succeeds
+  (0.6 to 0.9 ms). No post-processing, no `wasm-bindgen` CLI, no `wasm-opt`.
+- The script encodes `VZB1` batches in JavaScript (10,541 samples, 41 series, one of
+  them ended by a staleness marker written as raw bits), flushes four of six batches to
+  Parquet inside the module (two flushes, three sample files over two UTC days), keeps
+  three in the tail (one overlapping), and runs
+  `sum by (job) (rate(http_requests_total[5m]))` over an hour at 15 s: 4 series x 241
+  points, each value checked against the rate computed in JavaScript, timestamps in
+  seconds; the same rows all in the tail give the identical response; the series with
+  the marker ends where it should; instant query, `plan`, the three metadata calls and
+  `merge_files` answer; eight bad queries (six of them parse errors, which run the
+  parser's error path, the only code that could have asked for a clock) come back as
+  `bad_data` / `unsupported` / `execution` bodies with no trap; `day_of_week` works
+  (chrono is linked without its bindings).
+- First query 40 to 60 ms (it builds the parser's tables and decodes three files),
+  repeat 11 to 40 ms on this loaded machine; WASM memory after everything 2.4 MiB.
+
+`engine/wasm` (the product binding) does not link `viz-promql` yet. When it does, it
+needs the same three `[patch.crates-io]` lines, or it will have the imports.
 
 ### 8. Benchmark
 
-BENCH_SECTION
+`cargo run --release --example bench`: a **simple timed loop** (15 runs after a first
+call; not criterion), native x86-64, release profile, default limits on. Measured here
+on 4 shared cores with a load average near 6, so read the spread, not one number.
+
+Workload: `sum by (job) (rate(http_requests_total[5m]))`, one hour at a 15 s step (241
+steps), 2,000 series in 20 jobs scraped every 15 s. 522,000 samples in 18 batches
+(13.1 MiB) flushed by `encode_segment` to one `metric_samples` file of 1.14 MiB (6 row
+groups) and one `metric_series` file of 0.04 MiB. The query reads 520,000 samples of
+2,000 series and returns 20 series x 241 points (163 KB of JSON).
+
+| | min | median | max | peak heap |
+|---|---:|---:|---:|---:|
+| **`query_range`, data in Parquet** | **49 ms** | **51 to 53 ms** | 72 to 74 ms | **20.2 MiB** |
+| of which `viz_storage::select` from Parquet | 12 to 17 ms | 15 to 19 ms | 19 ms | 20.2 MiB |
+| of which evaluation (`viz-promql` over the loaded series; the harness copies the samples once more than the real path) | 36 to 39 ms | 45 to 48 ms | 60 to 64 ms | 16.6 MiB |
+| of which parse + plan | 0.01 ms | 0.01 ms | 0.06 ms | |
+| of which JSON serialisation | 0.7 ms | 0.75 ms | 2.1 ms | 0.3 MiB |
+| the same rows in tail batches instead | 52 to 57 ms | 57 to 74 ms | 63 to 86 ms | 22.5 MiB |
+
+(Ranges are two consecutive runs of the benchmark.) The first call in a process took
+51 to 64 ms: the parser's lazily built tables are in the noise at this size.
+
+- **Where the time goes:** about a quarter in storage (opening the files, decoding
+  `series_id`, `ts`, `value` for 522,000 rows, de-duplicating), about three quarters in
+  the evaluator (482,000 `rate` windows of 20 samples, then the aggregation), parsing
+  and serialising under 2%. This crate's own work is not measurable.
+- **Peak memory:** 20.2 MiB of heap above the inputs, by a counting allocator: the
+  selected samples (520,000 x 16 B = 7.9 MiB) plus the evaluator's step grid (2,000
+  series x 241 steps x 24 B = 11.0 MiB). Both are what `max_samples` and
+  `max_step_points` bound; this query uses 26% and 48% of the defaults. Peak RSS of the
+  benchmark process was 68 MB, which includes the generated rows, the 13 MiB of batches
+  and the files it holds throughout.
+- The benchmark asserts that the tail-only run returns the same JSON as the Parquet run.
+
+Not measured: WASM timings for this workload, a comparison with `bench/`, anything on
+Cloudflare.
 
 ## Changes in the other crates
 
@@ -300,7 +445,14 @@ tests green (26, was 24):
 
 `engine/promql/README.md` was updated for both and for the WASM import finding.
 
-One thing seen and not explained: STORAGE_NOTE
+One thing seen and not explained: the first release build of the
+benchmark (about 19:45 UTC on 2026-11-18) returned an empty result for the benchmark
+query, in 5 ms. `engine/storage/src` (`encode.rs`, `day.rs`, `pq.rs`, `select.rs`,
+`merge.rs`) was being modified by the concurrent work between 19:42 and 19:48; the
+next build five minutes later, and every build since, returns the right result, and it
+could not be reproduced. It is recorded as a build that caught storage in the middle of
+a multi-file edit, not as a confirmed bug. The benchmark now asserts 20 result series,
+so a recurrence would be loud.
 
 ## Contract issues
 
@@ -339,6 +491,13 @@ decision by whoever owns `contracts/` and an entry in `design/DECISIONS.md`.
 9. **Times.** The contract passes times as JS numbers; this crate and the probe ABI
    use `i64` (BigInt in JavaScript). Exact below 2^53 either way.
 
+Decisions made here that belong in `design/DECISIONS.md` (not written there, because
+this work was confined to `engine/`): limits live in `viz-query`, not in `viz-promql`;
+limits count after de-duplication so that they are location-invariant; the depth guard
+is lexical and runs before the parser; the JavaScript bindings are removed by
+`[patch.crates-io]` stand-ins instead of vendoring `promql-parser` or post-processing
+the module; `internal` is a fourth error type.
+
 ## Known risks
 
 - **`max_samples` is enforced after the fact, per selector.** `viz_storage::select`
@@ -373,7 +532,9 @@ decision by whoever owns `contracts/` and an entry in `design/DECISIONS.md`.
   compiles matchers; `viz-promql` compiles `label_replace` patterns; both anchor the
   same way.
 - **`engine/storage` changed while this was tested.** See "Changes in the other
-  crates". The final test run was against the sources as of STORAGE_STAMP.
+  crates". The final test run was against the sources as of 20:27 UTC on 2026-11-18
+  (`cat engine/storage/src/*.rs | sha256sum` begins `1ea53883d6fababf`); all 34 tests,
+  the WASM check and the benchmark were re-run against that state.
 - Benchmark and stack numbers are from a shared machine, not from Cloudflare; the
   128 MB isolate limit was not exercised.
 

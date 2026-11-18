@@ -40,10 +40,10 @@
   "asExpected": true,
   "violated": true,
   "completed": false,
-  "generated": 11925,
-  "distinct": 4244,
-  "queue": 2383,
-  "depth": 12,
+  "generated": 8404,
+  "distinct": 3202,
+  "queue": 1836,
+  "depth": 11,
   "fpCollisionProb": null,
   "trace": [
     "register(shard 0, incarnation 1)",
@@ -54,8 +54,8 @@
     "flushPut(shard 0, segment ..1)",
     "addUnit(shard 0, ..1) admitted",
     "recorded(shard 0, through seq 1)",
-    "ledgerLossRebuild",
-    "discard(shard 0, through seq 1)"
+    "discard(shard 0, through seq 1)",
+    "ledgerLossRebuild"
   ],
-  "seconds": 11
+  "seconds": 10.9
 }

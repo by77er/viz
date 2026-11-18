@@ -40,10 +40,10 @@
   "asExpected": true,
   "violated": true,
   "completed": false,
-  "generated": 238719,
-  "distinct": 49718,
-  "queue": 12856,
-  "depth": 17,
+  "generated": 184455,
+  "distinct": 40108,
+  "queue": 11788,
+  "depth": 16,
   "fpCollisionProb": null,
   "trace": [
     "register(shard 0, incarnation 1)",
@@ -62,5 +62,5 @@
     "tailRead(shard 0, above 1) ok",
     "qDone"
   ],
-  "seconds": 13.8
+  "seconds": 13.3
 }

@@ -40,15 +40,14 @@
   "asExpected": true,
   "violated": true,
   "completed": false,
-  "generated": 83808,
-  "distinct": 21863,
-  "queue": 8262,
-  "depth": 15,
+  "generated": 73403,
+  "distinct": 18764,
+  "queue": 7666,
+  "depth": 14,
   "fpCollisionProb": null,
   "trace": [
     "register(shard 0, incarnation 1)",
     "logWrite(outbox[0])",
-    "append(batch 0 -> shard 0)",
     "append(batch 0 -> shard 0)",
     "seal(shard 0, through seq 1)",
     "flushRead(shard 0, segment ..1)",
@@ -61,5 +60,5 @@
     "tailRead(shard 0, above 0) ok",
     "qDone"
   ],
-  "seconds": 11.3
+  "seconds": 17.1
 }

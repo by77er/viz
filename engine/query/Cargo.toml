@@ -28,6 +28,4 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-# The benchmark (examples/bench.rs) is built with `--profile bench-native`: same
-# optimisation, but unwinding and symbols are irrelevant there.
 [workspace]
