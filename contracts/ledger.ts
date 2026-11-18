@@ -23,11 +23,18 @@ export interface FileEntry {
   index: string
 }
 
-/** A stream is one tenant's log inside one shard. */
+/**
+ * A stream is one tenant's log inside one shard. Incarnations are ordered: a larger number
+ * is newer (shards derive them from the time the stream was created). The ledger refuses an
+ * incarnation lower than the one it has registered.
+ */
 export interface StreamRef {
   shard: string
   incarnation: number
 }
+
+/** Tenant ids are `[A-Za-z0-9_-]{1,64}` everywhere: they appear in object keys unescaped. */
+export const TENANT_ID = /^[A-Za-z0-9_-]{1,64}$/
 
 /** Everything one sealed segment produced. Admitted atomically or not at all. */
 export interface FlushUnit extends StreamRef {
@@ -43,6 +50,16 @@ export type AddUnitResult =
   | { status: 'not_contiguous'; watermark: number }
   /** The stream is registered with a different incarnation. Nothing changed. */
   | { status: 'incarnation_mismatch'; incarnation: number }
+  /** The unit itself is unacceptable (a key already belongs to another unit, an empty unit). Nothing changed. */
+  | { status: 'invalid'; reason: string }
+
+/*
+ * Replay rules. A retried unit is `ok` whenever the stream's watermark is already at or past
+ * its `seqHi`, even if its files have since been compacted away. A unit for a shard the
+ * ledger has never seen is admitted only with `seqLo === 1`; otherwise it is
+ * `not_contiguous` with watermark 0. A retried `replace` is `ok` if every output is live and
+ * no input is; otherwise it is judged as a new request.
+ */
 
 export interface Watermark extends StreamRef {
   /** Highest sequence number whose rows are in listed files. */
@@ -72,7 +89,10 @@ export interface ReplaceRequest {
   add: FileEntry[]
 }
 
-export type ReplaceResult = { status: 'ok'; version: number } | { status: 'conflict'; missing: string[] }
+export type ReplaceResult =
+  | { status: 'ok'; version: number }
+  | { status: 'conflict'; missing: string[] }
+  | { status: 'invalid'; reason: string }
 
 export interface ExpireRequest {
   table: Table
@@ -85,10 +105,20 @@ export interface LedgerChange {
   ledgerIncarnation: number
   version: number
   at: number
-  kind: 'add_unit' | 'replace' | 'expire' | 'register_stream'
+  /**
+   * `base` is the first entry of a ledger incarnation: the whole live set and every
+   * watermark it started from (empty for a new tenant, the rebuilt state after storage
+   * loss). A log reader that meets a new incarnation starts again from its `base`.
+   */
+  kind: 'base' | 'add_unit' | 'replace' | 'expire' | 'register_stream'
   added: FileEntry[]
   removed: string[]
+  /** For `add_unit` and `register_stream`: the stream's watermark after the change. */
   watermark?: Watermark
+  /** For `add_unit`: the sequence range admitted, so a reader can check contiguity. */
+  unit?: { seqLo: number; seqHi: number }
+  /** For `base`: every stream's watermark. */
+  watermarks?: Watermark[]
 }
 
 export interface LedgerRpc {
@@ -104,6 +134,19 @@ export interface LedgerRpc {
   loggedWatermarks(): Promise<Watermark[]>
 }
 
+/** Operator and test surface. Not called on the data path. */
+export interface LedgerAdminRpc {
+  /** Write pending changes to R2 now. Idempotent. */
+  drain(): Promise<{ written: number }>
+  outboxDepth(): Promise<number>
+  /** Rebuild from the R2 log into empty storage, then start a new ledger incarnation. */
+  rebuildFromLog(): Promise<{ ledgerIncarnation: number; version: number }>
+}
+
 /** R2 keys for the ledger's own log, relative to the cell prefix. */
 export const ledgerLogKey = (tenant: string, ledgerIncarnation: number, version: number): string =>
   `ledger/tenant=${tenant}/${ledgerIncarnation}/${String(version).padStart(12, '0')}.json`
+
+/** The `base` entry of an incarnation sorts before its first version. */
+export const ledgerBaseKey = (tenant: string, ledgerIncarnation: number): string =>
+  `ledger/tenant=${tenant}/${ledgerIncarnation}/base.json`

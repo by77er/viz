@@ -69,7 +69,7 @@ const EXPERIMENTS = [
   { name: 'g_delete_no_grace_silent', kind: 'teeth', label: '(g) physical deletion without waiting; a missing file reads as empty',
     cfg: { ...FIXED, ...off, maxComp: 1, delGrace: false, missingErr: false, trace: true }, inv: 'I4_NoGapAtSeam' },
   { name: 'g_delete_no_grace_loud', kind: 'teeth', label: '(g) physical deletion without waiting; a missing file is an error (re-plan)',
-    cfg: { ...FIXED, ...off, maxComp: 1, delGrace: false, trace: true }, inv: 'L2_NoRestart' },
+    cfg: { ...FIXED, ...off, maxComp: 1, delGrace: false, retain: true, trace: true }, inv: 'L2_NoRestart' },
   { name: 'g_delete_before_logged', kind: 'teeth', label: '(g2) retired file deleted before its removal is logged; ledger loss + rebuild',
     cfg: { ...FIXED, ...off, maxComp: 1, maxLL: 1, delLogged: false, trace: true }, inv: 'I11_LiveFilesReadable' },
   { name: 'h_overwrite', kind: 'teeth', label: '(h) deterministic key, PUT overwrites (two encoder variants)',
@@ -106,6 +106,8 @@ const EXPERIMENTS = [
     cfg: { ...FIXED, ...off, maxComp: 1, sweep: 'spec', retain: true, trace: true }, inv: 'L2_NoRestart' },
   { name: 'F3_retry_after_shard_loss', kind: 'literal', label: 'F3: fingerprints die with the shard storage; a retry is accepted twice',
     cfg: { ...FIXED, ...off, maxSL: 1, noRetryAcrossLoss: false, trace: true }, inv: 'I3_NoDuplicates' },
+  { name: 'F6_unknown_stream_reads_empty', kind: 'literal', label: 'F6: tailRead on a stream the shard no longer holds answers ok/empty (shard.ts) instead of refusing',
+    cfg: { ...FIXED, ...off, maxSL: 1, unknownStream: 'empty', trace: true }, inv: 'I4_NoGapAtSeam' },
   { name: 'F4_missing_file_must_be_error', kind: 'literal', label: 'F4: with every fix on, a planned file can still vanish (plan from an unlogged version); missing = empty',
     cfg: { ...FIXED, ...off, maxLL: 1, variants: 2, missingErr: false, trace: true }, inv: 'I4_NoGapAtSeam' },
   { name: 'F5_restart_without_timing', kind: 'literal', label: 'F5: untimed, a query attempt is refused once per discard',
@@ -206,7 +208,10 @@ function runTlc(e) {
   const t0 = Date.now()
   const log = join(build, `${e.name}.log`)
   const fd = openSync(log, 'w')
-  spawnSync(quint, ['verify', '--backend', 'tlc', '--verbosity', '3', '--invariant', e.inv, file],
+  // one worker = strict breadth-first search = shortest counterexample; all cores for the big runs
+  const tlcCfg = join(build, `tlc-${e.kind === 'fixed' ? 'auto' : 1}.json`)
+  writeFileSync(tlcCfg, JSON.stringify(e.kind === 'fixed' ? { workers: 'auto' } : { workers: 1 }))
+  spawnSync(quint, ['verify', '--backend', 'tlc', '--verbosity', '3', '--tlc-config', tlcCfg, '--invariant', e.inv, file],
     { cwd: build, stdio: ['ignore', fd, fd], timeout: 6 * 3600_000 })
   closeSync(fd)
   const out = readFileSync(log, 'utf8')

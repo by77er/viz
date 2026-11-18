@@ -1158,7 +1158,9 @@ impl<'a> Evaluator<'a> {
                         for ln in &include {
                             let v = label_get(&one[oi].labels, ln).to_string();
                             l.retain(|(k, _)| k != ln);
-                            let _ = v;
+                            if !v.is_empty() {
+                                l.push((ln.clone(), v));
+                            }
                         }
                         if !self.delayed() && return_bool {
                             l.retain(|(k, _)| !is_metadata_label(k));

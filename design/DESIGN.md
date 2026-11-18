@@ -133,9 +133,12 @@ until then. No key is ever accepted by two shards.
 2. The shard appends the batch to its WAL. Batches arriving within a commit window share
    one transaction. The response is sent only after that transaction is durable.
 3. A request that spans shards succeeds only if every shard commits. Otherwise the sender
-   gets a retryable error (OTLP: `partial_success` where the protocol allows it), and batch
-   fingerprints make the retry idempotent. Fingerprints are kept for longer than the
-   documented client retry horizon, independently of WAL truncation.
+   gets a retryable status for the whole request (429 or 503) and retries all of it.
+   `partial_success` is used only for rows rejected by validation, which a retry would not
+   fix. Retries are safe in two layers: a batch fingerprint stops a shard storing an
+   identical batch twice, and every reader and writer de-duplicates on the row key, so a
+   retry that was split differently and stored again is invisible in results and removed
+   at flush (`contracts/BATCH.md`).
 4. At its bounds the shard answers 429 with `Retry-After`. It never acknowledges and drops.
 5. Timestamps outside the **accept window** (per signal, configurable; for example one hour
    back and five minutes ahead for metrics) are rejected with a reason.

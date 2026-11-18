@@ -4,11 +4,42 @@
 
 | experiment | checked | result | states (distinct / generated) | depth | time |
 |---|---|---|---|---|---|
+| `a_no_fence` (a) tail read without the fence check | I4_NoGapAtSeam | violated in 14 steps | 21863 / 83808 | 15 | 11.3s |
+| `b_highest_seq` (b) watermark = highest seq seen (no contiguity check) | I4_NoGapAtSeam | violated in 12 steps | 16812 / 62677 | 15 | 12.1s |
+| `b_highest_seq_I1` (b) same guard, storage property | I1_AckedIsDurable | violated in 12 steps | 14580 / 52097 | 14 | 11.9s |
+| `c_recorded_at_committed` (c) shard told `recorded` at the committed, not logged, watermark; ledger loss + rebuild | I5_DiscardOnlyLogged | violated in 8 steps | 1001 / 2179 | 10 | 10.7s |
+| `c_recorded_at_committed_I1` (c) same guard, carried through to data loss | I1_AckedIsDurable | violated in 10 steps | 4244 / 11925 | 12 | 11s |
+| `d_no_dedup` (d) no dedup fingerprints, client retry | I3_NoDuplicates | violated in 7 steps | 417 / 666 | 10 | 11.3s |
+| `e_fp_expiry` (e) fingerprint TTL shorter than the client retry horizon | I3_NoDuplicates | violated in 15 steps | 49718 / 238719 | 17 | 13.8s |
+| `f_replace_not_live` (f) replace without the inputs-live check, racing retention | I9_NoResurrection | violated in 16 steps | 112670 / 523277 | 18 | 16.4s |
+| `g_delete_no_grace_silent` (g) physical deletion without waiting; a missing file reads as empty | I4_NoGapAtSeam | violated in 22 steps | 221015 / 1196561 | 23 | 21.7s |
+| `g_delete_no_grace_loud` (g) physical deletion without waiting; a missing file is an error (re-plan) | L2_NoRestart | violated in 22 steps | 186856 / 1038823 | 23 | 30.4s |
+| `g_delete_before_logged` (g2) retired file deleted before its removal is logged; ledger loss + rebuild | I11_LiveFilesReadable | violated in 18 steps | 117594 / 589039 | 20 | 17.8s |
+| `h_overwrite` (h) deterministic key, PUT overwrites (two encoder variants) | I11_LiveFilesReadable | violated in 11 steps | 3999 / 9637 | 12 | 13.1s |
+| `h_if_none_match` (h2) deterministic key + If-None-Match (draft 3): metadata describes the loser | I11_LiveFilesReadable | violated in 10 steps | 3489 / 8221 | 12 | 11.2s |
+| `h_overwrite_I4` (h) same guard, carried through to a query (unreadable file reads as empty) | I4_NoGapAtSeam | violated in 12 steps | 28680 / 100756 | 13 | 13.4s |
+| `i_log_out_of_order` (i) outbox entries reach R2 out of order; "logged" = own entry is on R2 | I5_DiscardOnlyLogged | violated in 16 steps | 15709 / 58648 | 17 | 12.6s |
+| `i_log_out_of_order_I1` (i) same guard, carried through to data loss | I1_AckedIsDurable | violated in 17 steps | 69248 / 331694 | 18 | 15.1s |
+| `j_no_handshake` (j) stream accepts writes without registering with the ledger (shard.ts today) | I4_NoGapAtSeam | violated in 4 steps | 60 / 96 | 8 | 10.8s |
+| `k_replan_watermark_only` (k) refused tail read refreshes the watermark but keeps the old file list | I4_NoGapAtSeam | violated in 15 steps | 31188 / 132935 | 16 | 13.9s |
+| `l_sweep_any` (l) orphan sweeper deletes any unreferenced object | I11_LiveFilesReadable | violated in 9 steps | 1184 / 2400 | 11 | 11s |
+| `m_sweep_compaction_output` (m) sweeper treats a compaction output as "below the logged watermark" | I11_LiveFilesReadable | violated in 18 steps | 81548 / 409642 | 19 | 16.7s |
 
 ## literal
 
 | experiment | checked | result | states (distinct / generated) | depth | time |
 |---|---|---|---|---|---|
+| `F1_registration_not_logged` F1: stream registration lost in a ledger rebuild | I4_NoGapAtSeam | violated in 5 steps | 168 / 278 | 6 | 10.2s |
+| `F1_registration_not_logged_L1` F1: same, stuck-forever variant (re-registration after a shard loss) | L1_StreamRegistered | violated in 2 steps | 7 / 7 | 3 | 10.3s |
+| `F2_sweeper_unlogged_removal` F2: sweeper (as specified) deletes inputs of an unlogged compaction; ledger rebuild | I11_LiveFilesReadable | violated in 18 steps | 108162 / 542343 | 19 | 21.3s |
+| `F2_sweeper_unlogged_removal_I1` F2: same, as acknowledged-data loss | I1_AckedIsDurable | violated in 20 steps | 183205 / 939381 | 21 | 24.2s |
+| `F2_sweeper_bypasses_grace` F2: sweeper (as specified) deletes a retired file under a running query; missing = empty | I4_NoGapAtSeam | violated in 20 steps | 135536 / 703055 | 21 | 22.3s |
+| `F2_sweeper_bypasses_grace_loud` F2: same with missing = error: the query is refused although the grace rule was respected | L2_NoRestart | violated in 20 steps | 123961 / 656829 | 21 | 20.1s |
+| `F3_retry_after_shard_loss` F3: fingerprints die with the shard storage; a retry is accepted twice | I3_NoDuplicates | violated in 15 steps | 139820 / 455553 | 16 | 16.7s |
+| `F6_unknown_stream_reads_empty` F6: tailRead on a stream the shard no longer holds answers ok/empty (shard.ts) instead of refusing | I4_NoGapAtSeam | violated in 12 steps | 21634 / 61973 | 13 | 16.8s |
+| `F4_missing_file_must_be_error` F4: with every fix on, a planned file can still vanish (plan from an unlogged version); missing = empty | I4_NoGapAtSeam | violated in 16 steps | 316409 / 1614557 | 17 | 29.6s |
+| `F5_restart_without_timing` F5: untimed, a query attempt is refused once per discard | L2_RestartsBelow3 | violated in 30 steps | 185978 / 755342 | 31 | 21.9s |
+| `literal_all` DESIGN 3.1 as written, all actions, all safety invariants | Safety | violated in 5 steps | 243 / 387 | 6 | 10s |
 
 ## fixed
 
@@ -22,6 +53,592 @@
 |---|---|---|---|---|---|
 
 ## Counterexamples
+
+### a_no_fence: (a) tail read without the fence check
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. append(batch 0 -> shard 0)
+5. seal(shard 0, through seq 1)
+6. flushRead(shard 0, segment ..1)
+7. flushPut(shard 0, segment ..1)
+8. qPlan
+9. addUnit(shard 0, ..1) admitted
+10. logWrite(outbox[0])
+11. recorded(shard 0, through seq 1)
+12. discard(shard 0, through seq 1)
+13. tailRead(shard 0, above 0) ok
+14. qDone
+
+### b_highest_seq: (b) watermark = highest seq seen (no contiguity check)
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..2)
+8. flushPut(shard 0, segment ..2)
+9. addUnit(shard 0, ..2) admitted
+10. qPlan
+11. tailRead(shard 0, above 2) ok
+12. qDone
+
+### b_highest_seq_I1: (b) same guard, storage property
+
+Violates `I1_AckedIsDurable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..2)
+8. flushPut(shard 0, segment ..2)
+9. addUnit(shard 0, ..2) admitted
+10. logWrite(outbox[0])
+11. recorded(shard 0, through seq 2)
+12. discard(shard 0, through seq 1)
+
+### c_recorded_at_committed: (c) shard told `recorded` at the committed, not logged, watermark; ledger loss + rebuild
+
+Violates `I5_DiscardOnlyLogged`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. flushPut(shard 0, segment ..1)
+7. addUnit(shard 0, ..1) admitted
+8. recorded(shard 0, through seq 1)
+
+### c_recorded_at_committed_I1: (c) same guard, carried through to data loss
+
+Violates `I1_AckedIsDurable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. flushPut(shard 0, segment ..1)
+7. addUnit(shard 0, ..1) admitted
+8. recorded(shard 0, through seq 1)
+9. ledgerLossRebuild
+10. discard(shard 0, through seq 1)
+
+### d_no_dedup: (d) no dedup fingerprints, client retry
+
+Violates `I3_NoDuplicates`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. append(batch 0 -> shard 0)
+5. qPlan
+6. tailRead(shard 0, above 0) ok
+7. qDone
+
+### e_fp_expiry: (e) fingerprint TTL shorter than the client retry horizon
+
+Violates `I3_NoDuplicates`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. flushPut(shard 0, segment ..1)
+7. addUnit(shard 0, ..1) admitted
+8. logWrite(outbox[0])
+9. recorded(shard 0, through seq 1)
+10. discard(shard 0, through seq 1)
+11. fingerprintsExpire(shard 0, through seq 1)
+12. append(batch 0 -> shard 0)
+13. qPlan
+14. tailRead(shard 0, above 1) ok
+15. qDone
+
+### f_replace_not_live: (f) replace without the inputs-live check, racing retention
+
+Violates `I9_NoResurrection`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. append(batch 1 -> shard 0)
+7. seal(shard 0, through seq 2)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. compRead
+14. expire
+15. compWrite
+16. replace
+
+### g_delete_no_grace_silent: (g) physical deletion without waiting; a missing file reads as empty
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. append(batch 1 -> shard 0)
+7. seal(shard 0, through seq 2)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. logWrite(outbox[0])
+14. logWrite(outbox[0])
+15. compRead
+16. compWrite
+17. qPlan
+18. tailRead(shard 0, above 2) ok
+19. replace
+20. logWrite(outbox[0])
+21. deleteRetired
+22. qDone
+
+### g_delete_no_grace_loud: (g) physical deletion without waiting; a missing file is an error (re-plan)
+
+Violates `L2_NoRestart`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. logWrite(outbox[0])
+14. logWrite(outbox[0])
+15. compRead
+16. compWrite
+17. qPlan
+18. tailRead(shard 0, above 2) ok
+19. replace
+20. logWrite(outbox[0])
+21. deleteRetired
+22. qFileMissingReplan
+
+### g_delete_before_logged: (g2) retired file deleted before its removal is logged; ledger loss + rebuild
+
+Violates `I11_LiveFilesReadable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. logWrite(outbox[0])
+14. compRead
+15. compWrite
+16. replace
+17. deleteRetired
+18. ledgerLossRebuild
+
+### h_overwrite: (h) deterministic key, PUT overwrites (two encoder variants)
+
+Violates `I11_LiveFilesReadable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. qPlan
+4. append(batch 0 -> shard 0)
+5. append(batch 0 -> shard 0)
+6. seal(shard 0, through seq 1)
+7. flushRead(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..1)
+9. flushPut(shard 0, segment ..1)
+10. flushPut(shard 0, segment ..1)
+11. addUnit(shard 0, ..1) admitted
+
+### h_if_none_match: (h2) deterministic key + If-None-Match (draft 3): metadata describes the loser
+
+Violates `I11_LiveFilesReadable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. append(batch 0 -> shard 0)
+5. seal(shard 0, through seq 1)
+6. flushRead(shard 0, segment ..1)
+7. flushPut(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..1)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+
+### h_overwrite_I4: (h) same guard, carried through to a query (unreadable file reads as empty)
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. flushRead(shard 0, segment ..1)
+7. flushPut(shard 0, segment ..1)
+8. flushPut(shard 0, segment ..1)
+9. addUnit(shard 0, ..1) admitted
+10. qPlan
+11. tailRead(shard 0, above 1) ok
+12. qDone
+
+### i_log_out_of_order: (i) outbox entries reach R2 out of order; "logged" = own entry is on R2
+
+Violates `I5_DiscardOnlyLogged`.
+
+1. qPlan
+2. register(shard 0, incarnation 1)
+3. logWrite(outbox[0])
+4. append(batch 0 -> shard 0)
+5. append(batch 0 -> shard 0)
+6. seal(shard 0, through seq 1)
+7. append(batch 1 -> shard 0)
+8. seal(shard 0, through seq 2)
+9. flushRead(shard 0, segment ..1)
+10. flushPut(shard 0, segment ..1)
+11. flushRead(shard 0, segment ..2)
+12. addUnit(shard 0, ..1) admitted
+13. flushPut(shard 0, segment ..2)
+14. addUnit(shard 0, ..2) admitted
+15. logWrite(outbox[1])
+16. recorded(shard 0, through seq 2)
+
+### i_log_out_of_order_I1: (i) same guard, carried through to data loss
+
+Violates `I1_AckedIsDurable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. append(batch 0 -> shard 0)
+5. seal(shard 0, through seq 1)
+6. append(batch 1 -> shard 0)
+7. seal(shard 0, through seq 2)
+8. flushRead(shard 0, segment ..1)
+9. flushRead(shard 0, segment ..2)
+10. flushPut(shard 0, segment ..1)
+11. addUnit(shard 0, ..1) admitted
+12. flushPut(shard 0, segment ..2)
+13. addUnit(shard 0, ..2) admitted
+14. logWrite(outbox[1])
+15. recorded(shard 0, through seq 2)
+16. discard(shard 0, through seq 1)
+17. ledgerLossRebuild
+
+### j_no_handshake: (j) stream accepts writes without registering with the ledger (shard.ts today)
+
+Violates `I4_NoGapAtSeam`.
+
+1. append(batch 0 -> shard 0)
+2. append(batch 0 -> shard 0)
+3. qPlan
+4. qDone
+
+### k_replan_watermark_only: (k) refused tail read refreshes the watermark but keeps the old file list
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. append(batch 0 -> shard 0)
+5. qPlan
+6. seal(shard 0, through seq 1)
+7. flushRead(shard 0, segment ..1)
+8. flushPut(shard 0, segment ..1)
+9. addUnit(shard 0, ..1) admitted
+10. logWrite(outbox[0])
+11. recorded(shard 0, through seq 1)
+12. discard(shard 0, through seq 1)
+13. tailRead(shard 0, above 0) stale_watermark -> re-plan
+14. tailRead(shard 0, above 1) ok
+15. qDone
+
+### l_sweep_any: (l) orphan sweeper deletes any unreferenced object
+
+Violates `I11_LiveFilesReadable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. append(batch 0 -> shard 0)
+5. seal(shard 0, through seq 1)
+6. flushRead(shard 0, segment ..1)
+7. flushPut(shard 0, segment ..1)
+8. sweepOrphan
+9. addUnit(shard 0, ..1) admitted
+
+### m_sweep_compaction_output: (m) sweeper treats a compaction output as "below the logged watermark"
+
+Violates `I11_LiveFilesReadable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. logWrite(outbox[0])
+14. logWrite(outbox[0])
+15. compRead
+16. compWrite
+17. sweepOrphan
+18. replace
+
+### F1_registration_not_logged: F1: stream registration lost in a ledger rebuild
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. append(batch 0 -> shard 0)
+3. ledgerLossRebuild
+4. qPlan
+5. qDone
+
+### F1_registration_not_logged_L1: F1: same, stuck-forever variant (re-registration after a shard loss)
+
+Violates `L1_StreamRegistered`.
+
+1. register(shard 0, incarnation 1)
+2. ledgerLossRebuild
+
+### F2_sweeper_unlogged_removal: F2: sweeper (as specified) deletes inputs of an unlogged compaction; ledger rebuild
+
+Violates `I11_LiveFilesReadable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. logWrite(outbox[0])
+14. compRead
+15. compWrite
+16. replace
+17. sweepOrphan
+18. ledgerLossRebuild
+
+### F2_sweeper_unlogged_removal_I1: F2: same, as acknowledged-data loss
+
+Violates `I1_AckedIsDurable`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. logWrite(outbox[0])
+14. recorded(shard 0, through seq 1)
+15. discard(shard 0, through seq 1)
+16. compRead
+17. compWrite
+18. replace
+19. sweepOrphan
+20. ledgerLossRebuild
+
+### F2_sweeper_bypasses_grace: F2: sweeper (as specified) deletes a retired file under a running query; missing = empty
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. logWrite(outbox[0])
+14. compRead
+15. compWrite
+16. qPlan
+17. tailRead(shard 0, above 2) ok
+18. replace
+19. sweepOrphan
+20. qDone
+
+### F2_sweeper_bypasses_grace_loud: F2: same with missing = error: the query is refused although the grace rule was respected
+
+Violates `L2_NoRestart`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. flushRead(shard 0, segment ..1)
+8. flushRead(shard 0, segment ..2)
+9. flushPut(shard 0, segment ..1)
+10. addUnit(shard 0, ..1) admitted
+11. flushPut(shard 0, segment ..2)
+12. addUnit(shard 0, ..2) admitted
+13. logWrite(outbox[0])
+14. compRead
+15. compWrite
+16. qPlan
+17. tailRead(shard 0, above 2) ok
+18. replace
+19. sweepOrphan
+20. qFileMissingReplan
+
+### F3_retry_after_shard_loss: F3: fingerprints die with the shard storage; a retry is accepted twice
+
+Violates `I3_NoDuplicates`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. shardStorageLoss(shard 0)
+7. flushPut(shard 0, segment ..1)
+8. addUnit(shard 0, ..1) admitted
+9. register(shard 0, incarnation 2)
+10. logWrite(outbox[0])
+11. logWrite(outbox[0])
+12. append(batch 0 -> shard 0)
+13. qPlan
+14. tailRead(shard 0, above 0) ok
+15. qDone
+
+### F6_unknown_stream_reads_empty: F6: tailRead on a stream the shard no longer holds answers ok/empty (shard.ts) instead of refusing
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. flushPut(shard 0, segment ..1)
+7. qPlan
+8. addUnit(shard 0, ..1) admitted
+9. logWrite(outbox[0])
+10. shardStorageLoss(shard 0)
+11. tailRead(shard 0, above 0) ok
+12. qDone
+
+### F4_missing_file_must_be_error: F4: with every fix on, a planned file can still vanish (plan from an unlogged version); missing = empty
+
+Violates `I4_NoGapAtSeam`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. flushRead(shard 0, segment ..1)
+7. flushPut(shard 0, segment ..1)
+8. flushPut(shard 0, segment ..1)
+9. addUnit(shard 0, ..1) admitted
+10. qPlan
+11. tailRead(shard 0, above 1) ok
+12. ledgerLossRebuild
+13. addUnit(shard 0, ..1) admitted
+14. logWrite(outbox[0])
+15. sweepOrphan
+16. qDone
+
+### F5_restart_without_timing: F5: untimed, a query attempt is refused once per discard
+
+Violates `L2_RestartsBelow3`.
+
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. append(batch 1 -> shard 0)
+6. seal(shard 0, through seq 2)
+7. append(batch 2 -> shard 0)
+8. seal(shard 0, through seq 3)
+9. flushRead(shard 0, segment ..1)
+10. flushRead(shard 0, segment ..2)
+11. flushPut(shard 0, segment ..1)
+12. flushPut(shard 0, segment ..2)
+13. qPlan
+14. addUnit(shard 0, ..1) admitted
+15. flushRead(shard 0, segment ..3)
+16. flushPut(shard 0, segment ..3)
+17. logWrite(outbox[0])
+18. recorded(shard 0, through seq 1)
+19. discard(shard 0, through seq 1)
+20. tailRead(shard 0, above 0) stale_watermark -> re-plan
+21. addUnit(shard 0, ..2) admitted
+22. logWrite(outbox[0])
+23. recorded(shard 0, through seq 2)
+24. discard(shard 0, through seq 2)
+25. tailRead(shard 0, above 1) stale_watermark -> re-plan
+26. addUnit(shard 0, ..3) admitted
+27. logWrite(outbox[0])
+28. recorded(shard 0, through seq 3)
+29. discard(shard 0, through seq 3)
+30. tailRead(shard 0, above 2) stale_watermark -> re-plan
+
+### literal_all: DESIGN 3.1 as written, all actions, all safety invariants
+
+Violates `Safety`.
+
+1. register(shard 0, incarnation 1)
+2. append(batch 0 -> shard 0)
+3. ledgerLossRebuild
+4. qPlan
+5. qDone
 
 ### fixed_1shard: amended protocol, 1 shard, 2 batches, every action
 

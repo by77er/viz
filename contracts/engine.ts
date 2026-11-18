@@ -1,6 +1,16 @@
 /**
  * The JavaScript face of the Rust/WASM engine. The engine does no I/O: callers hand it
  * bytes and get bytes back. See contracts/BATCH.md and contracts/TABLES.md.
+ *
+ * Numbers across this boundary:
+ * - Times going IN are Unix milliseconds as JS numbers (integers, exact below 2^53; the
+ *   engine uses i64). Times in Prometheus-shaped RESULTS (`PromMatrix`, `PromVector`,
+ *   `PromScalar`) are Unix seconds as floats, exactly as the Prometheus HTTP API returns.
+ * - Sample values cross as raw bytes. A binding copies them into a `Float64Array` and
+ *   nothing on the JS side may read an element and write it back: JavaScript engines can
+ *   rewrite a NaN's payload, which would destroy staleness markers. Staleness is
+ *   interpreted only inside the engine; query results never contain a marker.
+ * - TraceQL and LogQL result shapes are not defined yet.
  */
 
 import type { Table } from './ledger'
@@ -33,7 +43,7 @@ export interface SeriesData {
 }
 
 export interface ScanInput {
-  /** Whole `metric_series` files for the range. */
+  /** Whole `metric_series` files for the range. Must include the series file that was written with each sample file. */
   seriesFiles: Uint8Array[]
   /** Whole `metric_samples` files for the range. */
   sampleFiles: Uint8Array[]
@@ -52,6 +62,7 @@ export interface Engine {
   /**
    * Select series matching all matchers with samples in `[minTs, maxTs]`, merging lake
    * files and tail batches into one ordered, de-duplicated stream per series (tail wins).
+   * A series that matches but has no sample in the range is not returned.
    */
   select(input: ScanInput, matchers: Matcher[], minTs: number, maxTs: number): SeriesData[]
 

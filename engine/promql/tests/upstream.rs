@@ -2,6 +2,8 @@
 //!
 //! `cargo test --test upstream -- --nocapture` prints the per-file table.
 //! Set `VIZ_PROMQL_VERBOSE=1` to also print every failed and skipped case.
+//! Failures must match `testdata/known_failures*.txt` and skips must match
+//! `testdata/expected_skips.txt` exactly.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -47,6 +49,17 @@ fn run(opts: viz_promql::EvalOptions, known_file: &str) {
         .map(|l| l.split_whitespace().next().unwrap().to_string())
         .collect();
 
+    // Every skipped case is pinned too, so a regression that turns a passing
+    // case into a "skipped" one cannot go unnoticed.
+    let expected_skips: BTreeSet<String> = fs::read_to_string(dir().join("expected_skips.txt"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split_whitespace().next().unwrap().to_string())
+        .collect();
+    let mut skips: BTreeSet<String> = BTreeSet::new();
+    let mut skip_lines = String::new();
     let mut failures: BTreeSet<String> = BTreeSet::new();
     let mut detail = String::new();
     let (mut tp, mut tf, mut ts, mut tph) = (0, 0, 0, 0);
@@ -76,8 +89,12 @@ fn run(opts: viz_promql::EvalOptions, known_file: &str) {
                     failures.insert(format!("{name}:{}", c.line));
                     detail.push_str(&format!("FAIL {name}:{} {}\n     {m}\n", c.line, c.expr));
                 }
-                Outcome::Skipped(r, m) if verbose => {
-                    detail.push_str(&format!("SKIP {name}:{} [{r:?}] {} -- {m}\n", c.line, c.expr));
+                Outcome::Skipped(r, m) => {
+                    skips.insert(format!("{name}:{}", c.line));
+                    skip_lines.push_str(&format!("{name}:{} {r:?} {}\n", c.line, c.expr));
+                    if verbose {
+                        detail.push_str(&format!("SKIP {name}:{} [{r:?}] {} -- {m}\n", c.line, c.expr));
+                    }
                 }
                 _ => {}
             }
@@ -86,6 +103,15 @@ fn run(opts: viz_promql::EvalOptions, known_file: &str) {
     println!("{:<28} {:>6} {:>6} {:>7}   passed-with-histogram-series-absent: {}", "TOTAL", tp, tf, ts, tph);
     if verbose {
         println!("{detail}");
+    }
+    if std::env::var("VIZ_PROMQL_WRITE_SKIPS").is_ok() {
+        let header = "# Upstream cases that are skipped, with the reason. Generated with VIZ_PROMQL_WRITE_SKIPS=1; checked by tests/upstream.rs.\n";
+        fs::write(dir().join("expected_skips.txt"), format!("{header}{skip_lines}")).unwrap();
+    } else {
+        let new_skips: Vec<&String> = skips.difference(&expected_skips).collect();
+        let gone: Vec<&String> = expected_skips.difference(&skips).collect();
+        assert!(new_skips.is_empty(), "cases newly skipped (not in testdata/expected_skips.txt): {new_skips:?}");
+        assert!(gone.is_empty(), "cases in testdata/expected_skips.txt are no longer skipped; regenerate it: {gone:?}");
     }
     let unexpected: Vec<&String> = failures.difference(&known).collect();
     let fixed: Vec<&String> = known.difference(&failures).collect();

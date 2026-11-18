@@ -1,5 +1,15 @@
 # Metrics tables
 
+Rules common to every table:
+
+- Row groups hold at most 100,000 rows, in flush files and compaction output alike.
+- `day` is always `YYYY-MM-DD`; timestamps outside years 1970 to 9999 never reach a table.
+- **Canonical JSON** means: no whitespace; object keys in UTF-8 byte order (the batch's
+  label order); strings escaped as in RFC 8785. (RFC 8785 itself orders keys by UTF-16
+  code unit; viz does not.)
+- A file's `index` (`FileEntry.index` in `ledger.ts`) is produced and read only by the
+  engine; its format is `FileIndex` in `engine/storage`.
+
 Parquet, format v2 data pages, snappy for now (zstd once the WASM build is proven).
 Every file holds exactly one tenant and one UTC day.
 
@@ -27,7 +37,10 @@ One row per series present in the file's day.
 | `labels` | BYTE_ARRAY (UTF8), required | canonical JSON object of all labels including `__name__`, keys sorted |
 | `min_ts`, `max_ts` | INT64, required | first and last sample time for this series in this file |
 
-- Sort order: `metric_name`, `series_id`.
+- Sort order: `metric_name`, `series_id`. Encodings: dictionary for `metric_name`,
+  DELTA_BINARY_PACKED for the integers, PLAIN for `labels`.
+- A `metric_samples` file is only readable together with the `metric_series` file written
+  in the same flush unit or compaction; the ledger always lists them together.
 - (Promoted label columns come later; `labels` is the source of truth.)
 
 ## Object keys
