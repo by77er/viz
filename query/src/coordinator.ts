@@ -429,7 +429,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
 
       // Which files can the ranges touch? Both tables in one call. Sample files go to the
       // engine lowest precedence first (see `byPrecedence`).
-      
+      snap.samples = byPrecedence(snap.samples)
       const listed = [...snap.series, ...snap.samples]
       const keep = c.engine.filesNeeded(listed.map((f) => f.index), ranges)
       const series = snap.series.filter((_, i) => keep[i])

@@ -427,7 +427,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
     content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, var(--control-touch)); height: var(--control-touch); transform: translate(-50%, -50%);
   }
   .vz-check { min-height: var(--control-touch); } /* real height: a checkbox in a form stack cannot overlap its neighbours */
-  .vz-button, .vz-segmented button { min-width: var(--control-touch); }
+  .vz-button, .vz-segmented button, .vz-nav a { min-width: var(--control-touch); justify-content: center; }
   /* A link that stands alone is a control. A link inside a sentence (a p) is text and keeps its line. */
   .vz-link:not(p .vz-link, .vz-table td[data-key] .vz-link) { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .vz-links { gap: 0; }

@@ -96,8 +96,15 @@ export function Age({ at, unit }: { at: number; unit?: string }) {
   // Only the digits are monospaced, so the figure keeps its width as it counts.
   return (
     <span className="vz-panel-meta" data-testid="age">
-      {unit ? `${unit} · ` : ''}updated <span className="app-num">{age.n}</span>
-      {age.rest}
+      {unit ? `${unit} · ` : ''}
+      {age.n === '' ? (
+        `updated ${age.rest}`
+      ) : (
+        <>
+          updated <span className="app-num">{age.n}</span>
+          {age.rest}
+        </>
+      )}
     </span>
   )
 }
