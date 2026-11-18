@@ -70,6 +70,7 @@ module viz {
     sweep: str,           // orphan sweeper rule: "off" | "spec" | "spec_comp" | "fixed" | "any"
     regFirst: bool,       // a stream registers with the ledger before it accepts writes
     regLogged: bool,      // ... and accepts writes only once that registration is logged
+    unknownStream: str,   // tailRead on a stream the shard does not hold: "refuse" | "empty" (shard.ts today)
     replanWhole: bool,    // a refused tail read re-plans files AND watermarks (not watermark only)
     retain: bool,         // timing assumption: query attempt shorter than retainRecordedMs
     noRetryAcrossLoss: bool, // assumption: no client retry of a batch whose fingerprint died in a storage loss
@@ -463,8 +464,8 @@ module viz {
   action qTail(sid: int): bool = {
     val s = st.sh.get(sid)
     val w = st.q.wm.get(sid)
-    val mism = s.reg and s.inc != w.inc
-    val stale = s.reg and not(mism) and G.fence and w.seq < s.disc
+    val mism = if (s.reg) s.inc != w.inc else G.unknownStream == "refuse"
+    val stale = s.reg and s.inc == w.inc and G.fence and w.seq < s.disc
     val got = if (s.reg) segRows(sid, s, max2(w.seq, s.disc) + 1, s.wal.length()) else Set()
     all {
       st.q.st == "tails", st.q.need.contains(sid),

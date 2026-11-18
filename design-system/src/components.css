@@ -1,0 +1,198 @@
+/* viz components. Source of project/components/bundle.css. Every value is a token; lint: tools/check.mjs. */
+
+.vz {
+  font: var(--text-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--ground);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.vz *, .vz *::before, .vz *::after { box-sizing: border-box; }
+.vz :focus-visible { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
+@media (prefers-reduced-motion: reduce) { .vz * { transition: none !important; animation: none !important; } }
+
+.vz-num { font: var(--text-data); }
+.vz-label { font: var(--text-label); color: var(--ink-secondary); }
+.vz-link { color: inherit; text-decoration: underline; text-underline-offset: var(--space-half); text-decoration-thickness: var(--hairline); }
+.vz-link:hover { text-decoration-thickness: var(--stroke); }
+
+/* Button */
+.vz-button {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  height: var(--control-md); padding: 0 var(--space-3);
+  font: var(--text-ui-strong); white-space: nowrap; cursor: pointer;
+  color: var(--ink); background: var(--ground);
+  border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-2);
+  transition: background-color var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease);
+}
+.vz-button:hover { background: var(--hover); border-color: var(--ink-secondary); }
+.vz-button:active { transition-duration: 0s; background: var(--rule); } /* a press is painted in the next frame, never eased */
+.vz-button[data-size="sm"] { height: var(--control-sm); padding: 0 var(--space-2); font: var(--text-small); font-weight: 600; }
+.vz-button[data-tone] { border-color: transparent; }
+.vz-button[data-tone="blue"] { background: var(--blue); color: var(--on-blue); }
+.vz-button[data-tone="blue"]:hover { background: var(--blue-hover); }
+.vz-button[data-tone="blue"]:active { background: var(--blue-pressed); }
+.vz-button[data-tone="red"] { background: var(--red); color: var(--on-red); }
+.vz-button[data-tone="red"]:hover { background: var(--red-hover); }
+.vz-button[data-tone="red"]:active { background: var(--red-pressed); }
+.vz-button[data-tone="green"] { background: var(--green); color: var(--on-green); }
+.vz-button[data-tone="green"]:hover { background: var(--green-hover); }
+.vz-button[data-tone="green"]:active { background: var(--green-pressed); }
+.vz-button[data-tone="yellow"] { background: var(--yellow); color: var(--on-yellow); }
+.vz-button[data-tone="yellow"]:hover { background: var(--yellow-hover); }
+.vz-button[data-tone="yellow"]:active { background: var(--yellow-pressed); }
+.vz-button[data-quiet] { border-color: transparent; background: transparent; font: var(--text-ui); }
+.vz-button[data-quiet]:hover { background: var(--hover); }
+.vz-button:disabled { color: var(--ink-disabled); background: var(--sunken); border-color: var(--rule); cursor: not-allowed; }
+/* Busy: the label stays, the button holds its pressed fill and ignores further presses. */
+.vz-button[aria-busy="true"] { pointer-events: none; background: var(--rule); }
+.vz-button[data-tone="blue"][aria-busy="true"] { background: var(--blue-pressed); }
+.vz-button[data-tone="red"][aria-busy="true"] { background: var(--red-pressed); }
+.vz-button[data-tone="green"][aria-busy="true"] { background: var(--green-pressed); }
+.vz-button[data-tone="yellow"][aria-busy="true"] { background: var(--yellow-pressed); }
+
+/* Keyboard hint */
+.vz-kbd { font: var(--text-micro); padding: 0 var(--space-1); min-width: var(--icon); text-align: center; border-radius: var(--radius-1); border: var(--hairline) solid currentColor; color: inherit; }
+.vz-menu .vz-kbd { color: var(--ink-secondary); }
+
+/* Field, select, checkbox */
+.vz-field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.vz-input, .vz-select {
+  height: var(--control-md); padding: 0 var(--space-2); width: 100%; min-width: 0;
+  font: var(--text-ui); color: var(--ink); background: var(--ground);
+  border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-2);
+  transition: border-color var(--duration-fast) var(--ease);
+}
+.vz-input::placeholder { color: var(--ink-muted); }
+.vz-input:hover, .vz-select:hover { border-color: var(--ink-secondary); }
+.vz-input[data-mono] { font: var(--text-data); }
+.vz-input[aria-invalid="true"] { border-color: var(--status-critical); box-shadow: inset 0 0 0 var(--hairline) var(--status-critical); }
+.vz-input:disabled, .vz-select:disabled { color: var(--ink-disabled); background: var(--sunken); border-color: var(--rule); }
+.vz-select { appearance: none; padding-right: var(--space-6); cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - var(--space-3) - var(--space-1)) 55%, calc(100% - var(--space-3)) 55%; background-size: var(--space-1) var(--space-1); background-repeat: no-repeat; }
+.vz-help { font: var(--text-small); color: var(--ink-muted); display: flex; align-items: baseline; gap: var(--space-2); }
+.vz-help[data-error] { color: var(--ink); }
+.vz-check { display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer; }
+.vz-check input { appearance: none; width: var(--icon); height: var(--icon); margin: 0; flex: none; cursor: pointer; background: var(--ground); border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-1); }
+.vz-check input:hover { border-color: var(--ink-secondary); }
+.vz-check input:checked { background: var(--ink); border-color: var(--ink); box-shadow: inset 0 0 0 var(--stroke) var(--ink), inset 0 0 0 calc(var(--stroke) + var(--hairline)) var(--ground); }
+.vz-check input:disabled { background: var(--sunken); border-color: var(--rule); cursor: not-allowed; }
+
+/* Segmented control: choosing a view. The chosen segment is marked, not inverted, so it never outranks the primary action. */
+.vz-segmented { display: inline-flex; border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-2); background: var(--ground); }
+.vz-segmented button {
+  position: relative; height: calc(var(--control-md) - 2 * var(--hairline)); padding: 0 var(--space-3); font: var(--text-ui); color: var(--ink-secondary);
+  background: transparent; border: 0; border-left: var(--hairline) solid var(--rule); cursor: pointer; white-space: nowrap;
+  transition: background-color var(--duration-fast) var(--ease);
+}
+.vz-segmented button:first-child { border-left: 0; border-radius: var(--radius-1) 0 0 var(--radius-1); }
+.vz-segmented button:last-child { border-radius: 0 var(--radius-1) var(--radius-1) 0; }
+.vz-segmented button:hover { background: var(--hover); color: var(--ink); }
+.vz-segmented button:active { transition-duration: 0s; background: var(--rule); }
+.vz-segmented button[aria-pressed="true"] { background: var(--rule); color: var(--ink); font: var(--text-ui-strong); }
+.vz-segmented button:focus-visible { outline-offset: var(--hairline); z-index: 1; }
+
+/* Tabs */
+.vz-tabs { display: flex; gap: var(--space-6); border-bottom: var(--hairline) solid var(--rule); overflow-x: auto; scrollbar-width: none; }
+.vz-tabs button { position: relative; flex: none; font: var(--text-ui); color: var(--ink-muted); background: none; border: 0; padding: var(--space-2) 0; border-bottom: var(--stroke) solid transparent; cursor: pointer; white-space: nowrap; }
+.vz-tabs button:hover { color: var(--ink); }
+.vz-tabs button[aria-selected="true"] { color: var(--ink); font: var(--text-ui-strong); border-bottom-color: var(--ink); }
+.vz-tabs button:focus-visible { outline-offset: calc(-1 * var(--stroke)); }
+
+/* Table. Wrap it in vz-table-wrap: the table scrolls inside its own region and keeps its first column. */
+.vz-table-wrap { overflow-x: auto; max-width: 100%; }
+.vz-table { width: 100%; border-collapse: collapse; }
+.vz-table th { text-align: left; padding: var(--space-2); background: var(--sunken); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; }
+.vz-table td { padding: 0 var(--space-2); height: var(--row); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; background: var(--ground); }
+.vz-table tbody tr:hover td { background: var(--hover); }
+.vz-table th:first-child, .vz-table td:first-child { position: sticky; left: 0; }
+.vz-table .vz-right { text-align: right; }
+.vz-table td[data-key] { font: var(--text-ui-strong); }
+
+/* Status: a mark with its own shape, then a word. Shape and word carry the state; colour reinforces it. */
+.vz-status { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
+.vz-status::before, .vz-mark { content: ""; display: inline-block; flex: none; width: var(--mark); height: var(--stroke); background: var(--ink-muted); } /* unknown: a dash */
+.vz-status[data-state="critical"]::before, .vz-mark[data-state="critical"] { height: var(--mark); background: var(--status-critical); } /* solid square */
+.vz-status[data-state="warn"]::before, .vz-mark[data-state="warn"] { height: var(--mark); background: var(--status-warn); transform: rotate(45deg) scale(0.85); box-shadow: inset 0 0 0 var(--hairline) var(--status-warn-edge); } /* diamond */
+.vz-status[data-state="ok"]::before, .vz-mark[data-state="ok"] { height: var(--mark); background: transparent; border: var(--stroke) solid var(--status-ok); } /* hollow square */
+.vz-status[data-state="info"]::before, .vz-mark[data-state="info"] { height: var(--space-1); background: var(--status-info); } /* bar */
+
+/* Dashboard grid: twelve, six or one column by the width the dashboard has, not the device. */
+.vz-dashboard { container-type: inline-size; }
+.vz-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--space-6); }
+.vz-grid > * { grid-column: span 6; min-width: 0; }
+.vz-grid > [data-span="3"] { grid-column: span 3; }
+.vz-grid > [data-span="4"] { grid-column: span 4; }
+.vz-grid > [data-span="12"] { grid-column: span 12; }
+@container (max-width: 1199px) { .vz-grid > [data-span="3"], .vz-grid > [data-span="4"] { grid-column: span 6; } } /* token-lint-ignore: breakpoint */
+@container (max-width: 639px) { .vz-grid { gap: var(--space-4); } .vz-grid > * , .vz-grid > [data-span] { grid-column: span 12; } } /* token-lint-ignore: breakpoint */
+
+/* Panel */
+.vz-panel { border-top: var(--hairline) solid var(--ink); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.vz-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.vz-panel-title { font: var(--text-ui-strong); margin: 0; }
+.vz-panel-meta { font: var(--text-small); color: var(--ink-muted); white-space: nowrap; }
+.vz-panel-desc { font: var(--text-small); color: var(--ink-secondary); margin: 0; max-width: var(--measure); }
+.vz-legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); font: var(--text-small); color: var(--ink-secondary); }
+.vz-legend span { display: inline-flex; align-items: center; gap: var(--space-2); }
+.vz-legend i { width: var(--space-3); height: var(--stroke); flex: none; }
+.vz-chart { overflow-x: auto; }
+
+/* Empty and error: what was asked, what came back, what to change. */
+.vz-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); padding: var(--space-6) 0; max-width: var(--measure); }
+.vz-empty-title { font: var(--text-ui-strong); margin: 0; display: flex; align-items: center; gap: var(--space-2); }
+.vz-empty p { margin: 0; color: var(--ink-secondary); }
+
+/* Stat */
+.vz-stat { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.vz-stat-value { font: var(--text-display); letter-spacing: var(--text-display-track); }
+.vz-stat-unit { font: var(--text-heading); font-weight: 400; color: var(--ink-secondary); letter-spacing: 0; margin-left: var(--space-half); }
+.vz-stat-context { font: var(--text-small); color: var(--ink-secondary); }
+
+/* Banner */
+.vz-banner { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); padding: var(--space-3) var(--space-4); background: var(--sunken); border: var(--hairline) solid var(--rule); border-radius: var(--radius-2); }
+.vz-banner p { margin: 0; flex: 1 1 var(--overlay-min); min-width: 0; }
+
+/* Menu and tooltip: raised surfaces */
+.vz-menu { min-width: var(--overlay-min); padding: var(--space-1); background: var(--raised); border-radius: var(--radius-3); box-shadow: var(--shadow-overlay); }
+.vz-menu [role="menuitem"] { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); height: var(--row); padding: 0 var(--space-2); border-radius: var(--radius-2); cursor: pointer; }
+.vz-menu [role="menuitem"]:hover, .vz-menu [role="menuitem"][data-active] { background: var(--hover); }
+.vz-menu [role="separator"] { height: var(--hairline); margin: var(--space-1) 0; background: var(--rule); }
+.vz-tooltip { display: inline-block; font: var(--text-small); padding: var(--space-1) var(--space-2); max-width: var(--overlay-min); background: var(--ink); color: var(--ground); border-radius: var(--radius-2); }
+
+/* Dialog */
+.vz-dialog { width: var(--dialog); max-width: 100%; display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-6); background: var(--raised); color: var(--ink); border: 0; border-radius: var(--radius-3); box-shadow: var(--shadow-overlay); }
+.vz-dialog-title { font: var(--text-heading); letter-spacing: var(--text-heading-track); margin: 0; }
+.vz-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* Navigation: the product's sections. The current one is marked by weight and an underline, like a tab. */
+.vz-nav { display: flex; align-items: center; gap: var(--space-6); padding: 0 var(--space-6); height: calc(var(--control-md) + var(--space-4)); border-bottom: var(--hairline) solid var(--rule); overflow-x: auto; scrollbar-width: none; }
+.vz-nav-name { font: var(--text-heading); letter-spacing: var(--text-heading-track); flex: none; }
+.vz-nav a { position: relative; flex: none; color: var(--ink-secondary); text-decoration: none; white-space: nowrap; }
+.vz-nav a:hover { color: var(--ink); }
+.vz-nav a[aria-current="page"] { color: var(--ink); font: var(--text-ui-strong); }
+
+/* Query well */
+.vz-query { font: var(--text-code); padding: var(--space-1) var(--space-3); background: var(--sunken); border: var(--hairline) solid var(--rule); border-radius: var(--radius-2); overflow-x: auto; white-space: pre; min-width: 0; }
+
+/* Progress: measured work. The bar exists only when its length is a real fraction. */
+.vz-progress { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.vz-progress-track { height: var(--stroke); background: var(--rule); overflow: hidden; }
+.vz-progress-bar { height: 100%; background: var(--ink); transform-origin: left; transition: transform var(--duration-slow) linear; }
+.vz-progress[data-unmeasured] .vz-progress-track { display: none; }
+.vz-progress-text { display: flex; align-items: baseline; gap: var(--space-3); font: var(--text-small); color: var(--ink-secondary); }
+.vz-progress-text > :first-child { flex: 1; min-width: 0; }
+.vz-progress-action { font: inherit; color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: var(--space-half); position: relative; }
+
+/* Touch: a 44px hit area on every control without changing how it is drawn. Text inputs are the exception. */
+@media (pointer: coarse) {
+  .vz-button::after, .vz-segmented button::after, .vz-tabs button::after, .vz-nav a::after, .vz-progress-action::after, .vz-check::after {
+    content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, var(--control-touch)); height: var(--control-touch); transform: translate(-50%, -50%);
+  }
+  .vz-check { position: relative; }
+  .vz-segmented button { min-width: var(--control-touch); }
+  .vz-menu [role="menuitem"] { height: var(--control-touch); }
+  .vz-input, .vz-select { height: var(--control-touch); font-size: var(--text-body-size); }
+}

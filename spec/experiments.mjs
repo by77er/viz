@@ -10,7 +10,7 @@
 //   node experiments.mjs sim             only the random simulations
 //   node experiments.mjs <name> [...]    named experiments
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, openSync, closeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -33,12 +33,12 @@ const BOUNDS = {
 const LITERAL = {
   fence: true, contiguous: true, recAt: 'logged', logPrefix: true, dedup: true, fpHorizon: true,
   replaceLive: true, delGrace: true, delLogged: true, missingErr: true, keying: 'content',
-  sweep: 'spec', regFirst: true, regLogged: false, replanWhole: true, retain: false,
+  sweep: 'spec', regFirst: true, regLogged: false, unknownStream: 'empty', replanWhole: true, retain: false,
   noRetryAcrossLoss: false, ...BOUNDS,
 }
 
 /** LITERAL + the fixes proposed in README "Findings" (F1, F2, F3). The baseline for the guard-off experiments. */
-const FIXED = { ...LITERAL, sweep: 'fixed', regLogged: true, noRetryAcrossLoss: true }
+const FIXED = { ...LITERAL, sweep: 'fixed', regLogged: true, noRetryAcrossLoss: true, unknownStream: 'refuse' }
 
 const off = { maxComp: 0, maxExp: 0, maxLL: 0, maxSL: 0 }   // switch fault/maintenance actions off
 
@@ -204,9 +204,12 @@ function parseTlc(out) {
 function runTlc(e) {
   const file = writeInstance(e)
   const t0 = Date.now()
-  const r = spawnSync(quint, ['verify', '--backend', 'tlc', '--verbosity', '3', '--invariant', e.inv, file],
-    { cwd: build, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 3 * 3600_000 })
-  const out = (r.stdout ?? '') + (r.stderr ?? '')
+  const log = join(build, `${e.name}.log`)
+  const fd = openSync(log, 'w')
+  spawnSync(quint, ['verify', '--backend', 'tlc', '--verbosity', '3', '--invariant', e.inv, file],
+    { cwd: build, stdio: ['ignore', fd, fd], timeout: 6 * 3600_000 })
+  closeSync(fd)
+  const out = readFileSync(log, 'utf8')
   const res = { ...parseTlc(out), seconds: Math.round((Date.now() - t0) / 100) / 10 }
   if (!res.violated && !res.completed) res.error = out.split('\n').filter((l) => /rror/.test(l)).slice(0, 5).join(' | ') || 'no verdict'
   return res

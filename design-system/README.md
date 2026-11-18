@@ -8,9 +8,12 @@ The ground truth for how viz looks and behaves. Design changes are reviewed agai
 | `project/README.md` | The rules: colour, type, space and shape, states, motion, words, iconography, layout. |
 | `project/method.md` | How to design a change: the question, the presence test, build order, hard rules. |
 | `project/review.md` | The review process and rubric. |
-| `project/components/` | `bundle.css` (component classes, token values only) and, per component, guidelines and a live preview. |
-| `tools/build.mjs` | Generates `dist/tokens.css` and `dist/viz.css` from the tokens. |
-| `tools/check.mjs` | Contrast of every text and control pairing in both themes, and a lint for literal colours. Pass paths to lint other code. |
+| `src/components.css` | Component classes, written against tokens only. The source of `bundle.css`. |
+| `project/components/` | `bundle.css` (generated) and, per component, guidelines and a live preview. |
+| `project/fonts/` | The two typefaces as variable WOFF2, limited to the weights used (about 75 KB and 54 KB). |
+| `reviews/` | Design reviews of the system itself and of changes, with their images. |
+| `tools/build.mjs` | Generates `project/components/bundle.css`, `dist/tokens.css`, `dist/viz.css` and `dist/fonts/`. |
+| `tools/check.mjs` | Contrast of every text, control and mark pairing in both themes, and a lint for literal colours, lengths, durations and opacity. Pass paths to lint other code. |
 | `tools/reference.mjs` | Builds `dist/reference.html`: every component in both themes on one page. |
 | `tools/shots.mjs` | Captures a view in both themes at 1440 and 400 px, and composes before/after images. |
 
@@ -34,7 +37,7 @@ override it.
 - **Neutral interface, true greys.** The neutrals have no hue, so the only colour on a
   screen is data, state, or something to press.
 - **Four action colours at full strength**: blue, red, green, yellow, the same in both
-  themes. They also mark state, always beside a word.
+  themes, for buttons only. State has its own colours and, more importantly, its own shapes.
 - **One sans voice.** Schibsted Grotesk for interface and reading text: a grotesk with enough
   character to be recognisable (a serifed capital I, so I, l and 1 never blur) and enough
   restraint for dense tables. JetBrains Mono for data. Two families, each with one job. It was
@@ -70,12 +73,19 @@ Commit `reviews/<change>/compare/` on the change's branch and reference each ima
 pull request description by commit, so it stays valid after merge:
 `https://github.com/<owner>/<repo>/blob/<commit-sha>/design-system/reviews/<change>/compare/<file>.png?raw=true`.
 
+## Review history
+
+- `reviews/system-v1/review.md`: an independent review rejected the first sans version on
+  four blockers (overflow at 400px, literal values in the component CSS, clipped touch
+  targets, two contrast failures the check missed) and eight majors. All were applied.
+
 ## Not done yet
 
 - No icon set. The rules say to use words until one is chosen.
 - Components are CSS classes with HTML previews; there is no React component package.
 - The web app (`app/`) was started before this system existed and does not use it yet.
   Applying it is the first change to go through design review.
-- Charts: the series palette and mark rules are defined; heatmap, flame graph and trace
-  waterfall are not specified.
-- The review has not been exercised on a real change.
+- Log line, trace waterfall, heatmap and flame graph are not specified; they arrive with
+  the traces and logs phases.
+- No speed budget has been measured: nothing that uses the system exists yet.
+- Fonts cover Latin, extended Latin and (mono) Greek and Cyrillic only.

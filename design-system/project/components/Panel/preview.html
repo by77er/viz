@@ -1,20 +1,20 @@
 <!-- @dsCard group="Data" height=330 -->
-<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400..700&display=swap"><style>html,body{margin:0}body{padding:24px}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.col{display:flex;flex-direction:column;gap:16px}</style></head><body class="vz">
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:24px}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.col{display:flex;flex-direction:column;gap:16px}</style></head><body class="vz">
 <section class="vz-panel" style="max-width:640px">
-  <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta">req/s, last 6 h</span></div>
+  <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta">req/s · last 6 h · updated 12 s ago</span></div>
   <p class="vz-panel-desc">Requests accepted at the edge. A drop here with flat traffic upstream means the gateway is shedding load.</p>
-  <svg viewBox="0 0 640 180" role="img" aria-label="Line chart of request rate for three services over six hours" style="width:100%;height:auto;display:block">
+  <div class="vz-chart"><svg viewBox="0 0 640 180" width="640" height="180" role="img" aria-label="Line chart of request rate for three services over six hours" style="display:block">
     <g stroke="var(--rule)" stroke-width="1"><line x1="44" y1="20" x2="636" y2="20"/><line x1="44" y1="68" x2="636" y2="68"/><line x1="44" y1="116" x2="636" y2="116"/></g>
     <line x1="44" y1="160" x2="636" y2="160" stroke="var(--rule-control)" stroke-width="1"/>
-    <g font-family="var(--font-mono)" font-size="11" fill="var(--ink-muted)"><text x="38" y="24" text-anchor="end">4k</text><text x="38" y="72" text-anchor="end">3k</text><text x="38" y="120" text-anchor="end">2k</text><text x="38" y="164" text-anchor="end">1k</text>
+    <g style="font:var(--text-micro)" fill="var(--ink-muted)"><text x="38" y="24" text-anchor="end">4k</text><text x="38" y="72" text-anchor="end">3k</text><text x="38" y="120" text-anchor="end">2k</text><text x="38" y="164" text-anchor="end">1k</text>
       <text x="44" y="176">09:00</text><text x="241" y="176" text-anchor="middle">11:00</text><text x="438" y="176" text-anchor="middle">13:00</text><text x="636" y="176" text-anchor="end">15:00</text></g>
     <g fill="none" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
       <polyline stroke="var(--series-1)" points="44,34 93,30 142,36 191,28 241,26 290,31 339,24 388,29 438,27 487,33 536,25 586,28 636,24"/>
       <polyline stroke="var(--series-2)" points="44,112 93,108 142,116 191,104 241,110 290,98 339,102 388,92 438,150 487,146 536,104 586,100 636,96"/>
       <polyline stroke="var(--series-3)" points="44,140 93,138 142,142 191,136 241,139 290,134 339,137 388,133 438,135 487,131 536,134 586,130 636,132"/>
     </g>
-    <g font-family="var(--font-sans)" font-size="12" fill="var(--ink-secondary)"><text x="630" y="16" text-anchor="end">catalog</text><text x="630" y="88" text-anchor="end">checkout-api</text><text x="630" y="124" text-anchor="end">cart</text></g>
-  </svg>
+    <g style="font:var(--text-small)" fill="var(--ink-secondary)"><text x="630" y="16" text-anchor="end">catalog</text><text x="630" y="88" text-anchor="end">checkout-api</text><text x="630" y="124" text-anchor="end">cart</text></g>
+  </svg></div>
   <div class="vz-legend"><span><i style="background:var(--series-1)"></i>catalog</span><span><i style="background:var(--series-2)"></i>checkout-api</span><span><i style="background:var(--series-3)"></i>cart</span></div>
 </section>
 </body></html>

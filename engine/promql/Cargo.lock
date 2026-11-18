@@ -714,6 +714,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 name = "viz-promql"
 version = "0.1.0"
 dependencies = [
+ "lrpar",
  "promql-parser",
  "proptest",
  "regex",

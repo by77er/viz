@@ -14,7 +14,7 @@
 
 | experiment | checked | result | states (distinct / generated) | depth | time |
 |---|---|---|---|---|---|
-| `fixed_1shard` amended protocol, 1 shard, 2 batches, every action | Safety | violated in 13 steps **(unexpected)** | 20914 / 63012 | 15 | 11.3s |
+| `fixed_1shard` amended protocol, 1 shard, 2 batches, every action | I4_NoGapAtSeam | violated in 12 steps **(unexpected)** | 32739 / 88723 | 13 | 11.7s |
 
 ## sim
 
@@ -25,18 +25,17 @@
 
 ### fixed_1shard: amended protocol, 1 shard, 2 batches, every action
 
-Violates `Safety`.
+Violates `I4_NoGapAtSeam`.
 
-1. 
-2. 
-3. 
-4. 
-5. 
-6. 
-7. 
-8. 
-9. 
-10. 
-11. 
-12. 
-13. 
+1. register(shard 0, incarnation 1)
+2. logWrite(outbox[0])
+3. append(batch 0 -> shard 0)
+4. seal(shard 0, through seq 1)
+5. flushRead(shard 0, segment ..1)
+6. flushPut(shard 0, segment ..1)
+7. addUnit(shard 0, ..1) admitted
+8. expire
+9. qPlan
+10. tailRead(shard 0, above 1) ok
+11. ledgerLossRebuild
+12. qDone

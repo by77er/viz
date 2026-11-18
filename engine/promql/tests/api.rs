@@ -307,6 +307,13 @@ fn bad_inputs() {
     assert!(matches!(query_range(&src, "up[5m]", 0, 10, 1), Err(Error::Eval(_))));
     assert!(matches!(query_range(&src, "\"s\"", 0, 10, 1), Err(Error::Eval(_))));
     assert!(matches!(query_instant(&src, "sum(", 0), Err(Error::Parse(_))));
+    // Numbers the parser would panic on when used as durations.
+    for q in ["up[1e400]", "up[Inf]", "up[NaN]", "up offset 1e30", "up offset -Inf", "rate(up[5m:NaN])", "up[0x7fffffffffffffff]", "sum_over_time(up[1e16:1])"] {
+        assert!(matches!(query_instant(&src, q, 0), Err(Error::Parse(_))), "{q}");
+        assert!(matches!(selectors(q, 0, 0, 1), Err(Error::Parse(_))), "{q}");
+    }
+    assert!(query_instant(&src, "up[300] offset 60", 0).is_ok());
+    assert!(query_instant(&src, "sum_over_time(up[0x12c:0xa])", 0).is_ok());
     // Step and subquery limits instead of unbounded allocation.
     assert!(matches!(query_range(&src, "up", 0, 11_000_000, 1000), Err(Error::Eval(_))));
     assert!(query_range(&src, "up", 0, 10_999_000, 1000).is_ok());

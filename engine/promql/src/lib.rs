@@ -38,7 +38,43 @@ use eval::{Evaluator, SeriesV, Steps, Val};
 use types::is_metadata_label;
 
 pub(crate) fn parse(query: &str) -> Result<Expr, Error> {
+    guard_durations(query)?;
     promql_parser::parser::parse(query).map_err(Error::Parse)
+}
+
+/// `promql-parser` 0.11 panics (`Duration::from_secs_f64`) when a bare
+/// number that is infinite, NaN or enormous is used as a duration, as in
+/// `m[1e400]` or `m offset Inf`. A panic aborts a WASM isolate, so such
+/// queries are rejected here, from the parser's own token stream, before
+/// the parser sees them.
+fn guard_durations(query: &str) -> Result<(), Error> {
+    use lrpar::{Lexeme, Lexer, NonStreamingLexer};
+    use promql_parser::parser::token::{T_ADD, T_COLON, T_LEFT_BRACKET, T_NUMBER, T_OFFSET, T_SUB};
+    // Durations beyond this many seconds (about 30 million years) are refused.
+    const MAX_SECONDS: f64 = 1e15;
+    let Ok(lexer) = promql_parser::parser::lex::lexer(query) else {
+        return Ok(()); // The parser reports lexical errors itself.
+    };
+    let (mut prev, mut prev2) = (u16::MAX, u16::MAX);
+    for lexeme in lexer.iter() {
+        let Ok(lexeme) = lexeme else { return Ok(()) };
+        let id = lexeme.tok_id();
+        let in_duration_position = matches!(prev, T_LEFT_BRACKET | T_COLON | T_OFFSET)
+            || (matches!(prev, T_ADD | T_SUB) && prev2 == T_OFFSET);
+        if id == T_NUMBER && in_duration_position {
+            let text = lexer.span_str(lexeme.span()).to_ascii_lowercase().replace('_', "");
+            let value = match text.strip_prefix("0x") {
+                Some(hex) => u64::from_str_radix(hex, 16).map(|v| v as f64).unwrap_or(f64::INFINITY),
+                None => text.parse::<f64>().unwrap_or(f64::NAN),
+            };
+            if !(0.0..=MAX_SECONDS).contains(&value) {
+                return Err(Error::Parse(format!("duration {text:?} is out of range")));
+            }
+        }
+        prev2 = prev;
+        prev = id;
+    }
+    Ok(())
 }
 
 fn check_range(start_ms: i64, end_ms: i64, step_ms: i64, opts: &EvalOptions) -> Result<Steps, Error> {
