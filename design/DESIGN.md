@@ -405,7 +405,7 @@ design. None is measured.
 
 | Case | Range per month | What decides where in the range |
 |---|---|---|
-| Single small deployment (10k series, 1 GB logs/day, 1M spans/day, 20 rules) | $5–15 | How Cloudflare bills an object that wakes once a minute (the first spike) |
+| Single small deployment (10k series, 1 GB logs/day, 1M spans/day, 20 rules) | about $5, the plan fee, plus storage | Measured (`spikes/s0-do-billing/`, first hour): an object that wakes once a minute bills about 20–40 ms per wake, roughly $0.002 a month, so periodic ticks do not threaten the floor. What remains unmeasured is the work done inside each tick |
 | Additional small active tenant | under $1 pooled; about $6 with a dedicated pool | Pool assignment; seal age |
 | Team (1M series, 100 GB logs/day, 500M spans/day, 2k rules) | $400–800 | Compaction CPU, commit window, rule classes, first-load query reads |
 | Scale (100M series, 10 TB logs/day, 50B spans/day) | tens of thousands | Long-retention storage; shard duration |
@@ -429,7 +429,7 @@ retention, batching WAL writes, seal age, and keeping rules in the tail class.
 | Risk | Mitigation |
 |---|---|
 | The engine does not fit an isolate | Second spike; split Workers by role; Container fallback; pure-JS Parquet as plan B |
-| Per-minute wakes bill as continuous duration | First spike; if so, fold publisher and ruler ticks into fewer objects and lengthen intervals for small tenants |
+| Per-minute wakes bill as continuous duration | Measured not to: a wake bills 20–40 ms (`spikes/s0-do-billing/`, first hour; 24-hour read pending) |
 | First-load query latency on flat rows | Read-slice spike before any PromQL breadth; chunk-blob rows are the fallback |
 | PromQL compliance is a long tail | Port from the reference with the upstream corpus; publish the supported subset |
 | A large tenant's ledger becomes a bottleneck | Ledger per shard group; plan results cached by ledger version |

@@ -45,4 +45,32 @@ npx wrangler delete --name viz-spike-s0-do-billing
 
 ## Result
 
-Started 2026-11-18 about 18:57 UTC. Not read yet.
+Started 2026-11-18 about 18:57 UTC.
+
+### Early read: one full hour, 19:00–20:00 UTC (measured on Cloudflare)
+
+| Class | Woken by | Every | Wakes counted | Billed active time | Per wake | Duty | Billed GB-s |
+|---|---|---|---|---|---|---|---|
+| A1 | alarm | 1 s | 4,382 | 84.1 s | 19 ms | 2.3% | 10.77 |
+| A5 | alarm | 5 s | 877 | 18.2 s | 21 ms | 0.5% | 2.33 |
+| A15 | alarm | 15 s | 292 | 7.7 s | 26 ms | 0.2% | 0.99 |
+| A60 | alarm | 60 s | 75 | 1.5 s | 20 ms | 0.04% | 0.19 |
+| B1 | request | 1 s | 4,379 | 167.7 s | 38 ms | 4.7% | 21.47 |
+| B5 | request | 5 s | 876 | 42.4 s | 48 ms | 1.2% | 5.43 |
+| B15 | request | 15 s | 292 | 13.1 s | 45 ms | 0.4% | 1.67 |
+| B60 | request | 60 s | 75 | 3.2 s | 43 ms | 0.09% | 0.41 |
+
+("Wakes counted" is the analytics request count, which is a little above the number of
+intervals in an hour.)
+
+**An object that wakes periodically is billed for the moments it runs, not for the time
+between wakes.** Each wake cost about 20 ms of billed duration when woken by its own alarm
+and about 40 ms when woken by a request, regardless of the interval. The 60-second classes
+are at 0.04–0.09% duty, far below the 25% decision threshold.
+
+At this rate an object ticking once a minute bills about 0.19 GB-s an hour, about 140 GB-s
+a month, or roughly $0.002 at $12.50 per million GB-s, before any included allowance.
+
+This is one hour of data from simple wakes that do one SQLite write. The final 24-hour read
+is still to come, and a wake that does real work (a rule evaluation with queries) will bill
+for as long as that work takes.

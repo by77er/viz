@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { SeriesWindow } from './sketch'
 
 /**
  * A pooled shard: the write-ahead log for several tenants in one Durable Object.
@@ -12,7 +13,8 @@ import { DurableObject } from 'cloudflare:workers'
  * Lifecycle of a batch:  append → (seal) → [flush Worker writes Parquet] → recorded → discard
  *
  *   append    durable before the caller is answered (Durable Object output gate)
- *   seal      fixes a contiguous range of batches as a segment; the boundary is durable
+ *   seal      fixes a contiguous range of batches as a segment; the boundary is durable,
+ *             and a `{tenant, shard}` message for the flush queue is written with it
  *   recorded  the tenant's ledger has admitted the segment's files
  *   discard   payloads are dropped after a short retention; `discarded_through` is the fence
  */
@@ -39,6 +41,14 @@ export interface ShardConfig {
   retainRecordedMs: number
   /** Remember fingerprints this long, independent of discard, for client retries. */
   fingerprintTtlMs: number
+  /** A seal notification that could not be sent is tried again after this long. */
+  notifyRetryMs: number
+  /** Active-series window: a series counts while it was seen within the last half to whole window. */
+  seriesWindowMs: number
+  /** A window bucket is an exact set of ids up to this many, a sketch above (src/sketch.ts). */
+  seriesExactMax: number
+  /** Series windows changed in memory are written to storage at most this often. */
+  seriesPersistMs: number
 }
 
 export const DEFAULT_CONFIG: ShardConfig = {
@@ -49,7 +59,34 @@ export const DEFAULT_CONFIG: ShardConfig = {
   shardMaxBytes: 512 << 20,
   retainRecordedMs: 30_000,
   fingerprintTtlMs: 15 * 60_000,
+  notifyRetryMs: 30_000,
+  seriesWindowMs: 60 * 60_000,
+  seriesExactMax: 4096,
+  seriesPersistMs: 60_000,
 }
+
+/** What a shard puts on the flush queue when it seals a segment (binding `FLUSH_QUEUE`). */
+export interface FlushMessage {
+  tenant: string
+  shard: string
+}
+
+/**
+ * Bindings a shard uses if they are there. Without `FLUSH_QUEUE` nobody is told about a
+ * seal (tests of the shard alone, and callers that poll `pendingSegments`). Without
+ * `CONFIG` no pending marker is kept, so the hourly sweep cannot find this shard.
+ */
+export interface ShardEnv {
+  FLUSH_QUEUE?: Queue<FlushMessage>
+  CONFIG?: KVNamespace
+}
+
+/**
+ * KV key that exists while a shard has (or recently had) sealed segments its ledger has not
+ * recorded. The sweep lists this prefix, so it never wakes a shard that has nothing pending.
+ */
+export const PENDING_MARKER_PREFIX = 'flush-pending:'
+export const pendingMarkerKey = (shard: string): string => `${PENDING_MARKER_PREFIX}${shard}`
 
 export interface AppendRequest {
   tenant: string
@@ -59,6 +96,14 @@ export interface AppendRequest {
   fingerprint: string
   payload: Uint8Array
   rows: number
+  /**
+   * The `series_id` of every entry of the batch's series table, in table order
+   * (contracts/BATCH.md, "Active series"). The shard does not parse batches; it only checks
+   * that the length equals the header's `n_series`. Without it the batch is not metered.
+   */
+  seriesIds?: BigInt64Array
+  /** This shard's share of the tenant's active-series limit. Needs `seriesIds`. */
+  seriesLimit?: number
 }
 
 export type AppendResult =
@@ -67,6 +112,12 @@ export type AppendResult =
   | { status: 'stale_epoch'; epoch: number }
   /** The payload is over the batch size cap. Nothing was stored; a retry of the same bytes cannot succeed. */
   | { status: 'too_large'; maxBytes: number }
+  /**
+   * Accepting the batch would take the stream past its active-series limit. Nothing was
+   * stored. `refused` are the ids that are new to the window and do not fit; the same batch
+   * without those series is accepted (series already active are never refused).
+   */
+  | { status: 'series_limit'; limit: number; current: number; refused: BigInt64Array }
 
 export interface Segment {
   tenant: string
@@ -89,6 +140,14 @@ export type TailResult =
   | { status: 'stale_watermark'; incarnation: number; discardedThrough: number }
   /** The stream was recreated (storage loss). The ledger must register the new incarnation. */
   | { status: 'incarnation_mismatch'; incarnation: number }
+
+/** A tenant with sealed segments its ledger has not recorded. */
+export interface PendingTenant {
+  tenant: string
+  segments: number
+  /** When the oldest of them was sealed. */
+  oldestSealedAt: number
+}
 
 export type RecordedResult =
   | { status: 'ok'; recordedThrough: number }
@@ -121,13 +180,17 @@ export function newIncarnation(nowMs: number, random: number): number {
   return nowMs * 1024 + Math.floor(random * 1024)
 }
 
-export class Shard extends DurableObject {
+export class Shard extends DurableObject<ShardEnv> {
   private cfg: ShardConfig = DEFAULT_CONFIG
   private streams = new Map<string, Stream>()
   private totalBytes = 0
+  /** Active-series windows, rebuilt from `series_window` rows; `dirtySince` marks unsaved changes. */
+  private windows = new Map<string, { w: SeriesWindow; dirtySince: number | null }>()
+  /** True once the KV pending marker is known to be written (config row `marker`). */
+  private marked = false
 
-  constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx, env as never)
+  constructor(ctx: DurableObjectState, env: ShardEnv) {
+    super(ctx, env ?? {})
     const sql = ctx.storage.sql
     sql.exec(`CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)`)
     sql.exec(`CREATE TABLE IF NOT EXISTS stream (
@@ -139,9 +202,15 @@ export class Shard extends DurableObject {
     sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS batch_fp ON batch (tenant, fingerprint)`)
     sql.exec(`CREATE TABLE IF NOT EXISTS segment (
       tenant TEXT NOT NULL, seq_lo INTEGER NOT NULL, seq_hi INTEGER NOT NULL, bytes INTEGER NOT NULL,
-      rows INTEGER NOT NULL, recorded_at INTEGER, PRIMARY KEY (tenant, seq_lo))`)
+      rows INTEGER NOT NULL, recorded_at INTEGER, sealed_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant, seq_lo))`)
+    // Outbox of seal notifications: written in the same transaction as the segment, deleted
+    // when the message has been handed to the queue.
+    sql.exec(`CREATE TABLE IF NOT EXISTS notify (tenant TEXT PRIMARY KEY, due INTEGER NOT NULL)`)
+    sql.exec(`CREATE TABLE IF NOT EXISTS series_window (
+      tenant TEXT NOT NULL, bucket INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (tenant, bucket))`)
     const row = sql.exec(`SELECT v FROM config WHERE k = 'cfg'`).toArray()[0]
     if (row) this.cfg = { ...DEFAULT_CONFIG, ...JSON.parse(row.v as string) }
+    this.marked = sql.exec(`SELECT v FROM config WHERE k = 'marker'`).toArray()[0]?.v === '1'
     this.load()
   }
 
@@ -176,6 +245,37 @@ export class Shard extends DurableObject {
       this.streams.set(tenant, s)
       this.totalBytes += s.bufferedBytes
     }
+    // Series windows as last saved. Ids seen since the last save are not in them: after an
+    // eviction the count is low by at most `seriesPersistMs` worth of new series.
+    this.windows.clear()
+    const now = Date.now()
+    const stored = new Map<string, [number, Uint8Array][]>()
+    for (const r of sql.exec(`SELECT tenant, bucket, data FROM series_window`).toArray()) {
+      const list = stored.get(r.tenant as string) ?? []
+      list.push([r.bucket as number, new Uint8Array(r.data as ArrayBuffer)])
+      stored.set(r.tenant as string, list)
+    }
+    for (const [tenant, buckets] of stored) {
+      this.windows.set(tenant, { w: SeriesWindow.load(this.cfg.seriesWindowMs, this.cfg.seriesExactMax, now, buckets), dirtySince: null })
+    }
+  }
+
+  private window(tenant: string, now: number): { w: SeriesWindow; dirtySince: number | null } {
+    let e = this.windows.get(tenant)
+    if (!e) this.windows.set(tenant, (e = { w: new SeriesWindow(this.cfg.seriesWindowMs, this.cfg.seriesExactMax, now), dirtySince: null }))
+    if (e.w.rotate(now)) e.dirtySince ??= now
+    return e
+  }
+
+  /**
+   * Distinct series of one tenant active in this shard's window. `exact` is false when the
+   * count is the sketch's estimate (standard error 1.6%). For a cardinality report.
+   */
+  async seriesCount(tenant: string): Promise<{ count: number; exact: boolean; windowMs: number }> {
+    const e = this.windows.get(tenant)
+    if (!e) return { count: 0, exact: true, windowMs: this.cfg.seriesWindowMs }
+    e.w.rotate(Date.now())
+    return { count: e.w.count(), exact: e.w.exact, windowMs: this.cfg.seriesWindowMs }
   }
 
   private stream(tenant: string, epoch: number): Stream {
@@ -235,13 +335,30 @@ export class Shard extends DurableObject {
       if (held + bytes > fairShare) return { status: 'backpressure', scope: 'shard', retryAfterMs: 1000 }
     }
 
+    // Active series. Only ids NEW to the window can be refused, so a tenant at its limit
+    // keeps writing the series it already has. Nothing is recorded unless the batch is stored.
+    const now = Date.now()
+    let metered: { w: SeriesWindow; dirtySince: number | null } | null = null
+    if (req.seriesIds) {
+      // The one cheap check the shard can make without parsing the batch: `n_series` at offset 12.
+      const header = bytes >= 16 ? new DataView(req.payload.buffer, req.payload.byteOffset, 16).getUint32(12, true) : -1
+      if (header !== req.seriesIds.length) throw new Error(`shard: ${req.seriesIds.length} series ids for a batch whose header says ${header}`)
+      metered = this.window(req.tenant, now)
+      if (req.seriesLimit !== undefined) {
+        const { current, fresh } = metered.w.check(req.seriesIds)
+        const room = Math.max(0, req.seriesLimit - current)
+        if (fresh.length > room) {
+          return { status: 'series_limit', limit: req.seriesLimit, current, refused: BigInt64Array.from(fresh.slice(room)) }
+        }
+      }
+    }
+
     const s = this.stream(req.tenant, req.epoch)
     if (req.epoch > s.epoch) {
       s.epoch = req.epoch
       sql.exec(`UPDATE stream SET epoch = ? WHERE tenant = ?`, s.epoch, req.tenant)
     }
     const seq = s.nextSeq
-    const now = Date.now()
     sql.exec(
       `INSERT INTO batch (tenant, seq, fingerprint, rows, bytes, at, payload) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       req.tenant, seq, req.fingerprint, req.rows, bytes, now, req.payload,
@@ -251,8 +368,12 @@ export class Shard extends DurableObject {
     s.unsealedBytes += bytes
     s.oldestUnsealedAt ??= now
     this.totalBytes += bytes
+    if (metered && req.seriesIds) {
+      metered.w.add(req.seriesIds, req.seriesLimit ?? 0)
+      metered.dirtySince ??= now
+    }
 
-    if (s.unsealedBytes >= this.cfg.sealBytes) this.sealStream(req.tenant, s)
+    if (s.unsealedBytes >= this.cfg.sealBytes && this.sealStream(req.tenant, s)) await this.deliver()
     await this.arm()
     // Returning here is the acknowledgement. The runtime holds the response until the
     // writes above are durable, so an acknowledged batch survives a crash.
@@ -266,8 +387,11 @@ export class Shard extends DurableObject {
     if (hi < lo) return null
     const sql = this.ctx.storage.sql
     const agg = sql.exec(`SELECT SUM(bytes) AS bytes, SUM(rows) AS rows FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ?`, tenant, lo, hi).one()
-    sql.exec(`INSERT INTO segment (tenant, seq_lo, seq_hi, bytes, rows) VALUES (?, ?, ?, ?, ?)`, tenant, lo, hi, agg.bytes, agg.rows)
+    const now = Date.now()
+    sql.exec(`INSERT INTO segment (tenant, seq_lo, seq_hi, bytes, rows, sealed_at) VALUES (?, ?, ?, ?, ?, ?)`, tenant, lo, hi, agg.bytes, agg.rows, now)
     sql.exec(`UPDATE stream SET sealed_through = ? WHERE tenant = ?`, hi, tenant)
+    // The notification is part of the seal: same synchronous block, so same transaction.
+    sql.exec(`INSERT INTO notify (tenant, due) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET due = excluded.due`, tenant, now)
     s.sealedThrough = hi
     s.unsealedBytes = 0
     s.oldestUnsealedAt = null
@@ -276,7 +400,83 @@ export class Shard extends DurableObject {
 
   async seal(tenant: string): Promise<Segment | null> {
     const s = this.streams.get(tenant)
-    return s ? this.sealStream(tenant, s) : null
+    const seg = s ? this.sealStream(tenant, s) : null
+    if (seg) {
+      await this.deliver()
+      await this.arm()
+    }
+    return seg
+  }
+
+  /**
+   * Hand one seal notification to its transport. This is the only place that knows the
+   * transport is a Queue; see README, "Flush triggering", for why and what to change to
+   * make it something else.
+   */
+  protected async announce(msg: FlushMessage): Promise<void> {
+    if (this.env.FLUSH_QUEUE) await this.env.FLUSH_QUEUE.send(msg)
+  }
+
+  /**
+   * Send every due notification and keep the pending marker true. A notification that
+   * cannot be sent stays in the outbox and is retried by the alarm; one that was sent
+   * twice is harmless (flush is idempotent).
+   */
+  private async deliver(): Promise<void> {
+    const sql = this.ctx.storage.sql
+    const now = Date.now()
+    const name = this.ctx.id.name ?? ''
+    for (const r of sql.exec(`SELECT tenant, due FROM notify WHERE due <= ? ORDER BY tenant`, now).toArray()) {
+      const tenant = r.tenant as string
+      try {
+        await this.announce({ tenant, shard: name })
+        // `due` is part of the key: a seal that happened during the send keeps its own row.
+        sql.exec(`DELETE FROM notify WHERE tenant = ? AND due = ?`, tenant, r.due)
+      } catch {
+        sql.exec(`UPDATE notify SET due = ? WHERE tenant = ? AND due = ?`, now + this.cfg.notifyRetryMs, tenant, r.due)
+      }
+    }
+    if (!this.marked && this.env.CONFIG && this.anyPending()) {
+      try {
+        await this.env.CONFIG.put(pendingMarkerKey(name), JSON.stringify({ since: now }))
+        this.setMarked(true)
+      } catch {
+        // Retried by the alarm (`arm` keeps a deadline while segments are pending and unmarked).
+      }
+    }
+  }
+
+  private anyPending(): boolean {
+    return this.ctx.storage.sql.exec(`SELECT 1 AS x FROM segment WHERE recorded_at IS NULL LIMIT 1`).toArray().length > 0
+  }
+
+  private setMarked(v: boolean): void {
+    this.marked = v
+    this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO config (k, v) VALUES ('marker', ?)`, v ? '1' : '0')
+  }
+
+  /**
+   * Tenants with sealed segments older than `olderThanMs` that their ledgers have not
+   * recorded: what the sweep re-enqueues. When the shard has no pending segment at all it
+   * removes its pending marker, so the next sweep does not wake it.
+   */
+  async pendingTenants(olderThanMs = 0): Promise<PendingTenant[]> {
+    const sql = this.ctx.storage.sql
+    const out: PendingTenant[] = []
+    const cutoff = Date.now() - olderThanMs
+    for (const tenant of this.streams.keys()) {
+      const r = sql.exec(`SELECT COUNT(*) AS n, MIN(sealed_at) AS oldest FROM segment WHERE tenant = ? AND recorded_at IS NULL`, tenant).one()
+      if ((r.n as number) > 0 && (r.oldest as number) <= cutoff) out.push({ tenant, segments: r.n as number, oldestSealedAt: r.oldest as number })
+    }
+    if (this.marked && this.env.CONFIG && !this.anyPending()) {
+      const key = pendingMarkerKey(this.ctx.id.name ?? '')
+      // `marked` stays true during the delete, so a seal that happens meanwhile does not
+      // race a put against it; it is noticed below and the marker is written again.
+      await this.env.CONFIG.delete(key)
+      if (this.anyPending()) await this.env.CONFIG.put(key, JSON.stringify({ since: Date.now() }))
+      else this.setMarked(false)
+    }
+    return out
   }
 
   /** Sealed segments of one tenant that its ledger has not yet recorded. */
@@ -347,7 +547,14 @@ export class Shard extends DurableObject {
     for (const s of this.streams.values()) {
       if (s.oldestUnsealedAt !== null) due = Math.min(due, s.oldestUnsealedAt + this.cfg.sealAgeMs)
     }
+    for (const e of this.windows.values()) {
+      if (e.dirtySince !== null) due = Math.min(due, e.dirtySince + this.cfg.seriesPersistMs)
+    }
     const sql = this.ctx.storage.sql
+    // A notification still in the outbox, or a pending marker that could not be written.
+    const unsent = sql.exec(`SELECT MIN(due) AS at FROM notify`).one().at as number | null
+    if (unsent !== null) due = Math.min(due, unsent)
+    if (!this.marked && this.env.CONFIG && this.anyPending()) due = Math.min(due, Date.now() + this.cfg.notifyRetryMs)
     const rec = sql.exec(`SELECT MIN(s.recorded_at) AS at FROM segment s JOIN stream t ON t.tenant = s.tenant WHERE s.recorded_at IS NOT NULL AND s.seq_hi > t.discarded_through`).one().at as number | null
     if (rec !== null) due = Math.min(due, rec + this.cfg.retainRecordedMs)
     const fp = sql.exec(`SELECT MIN(at) AS at FROM batch WHERE payload IS NULL`).one().at as number | null
@@ -364,6 +571,15 @@ export class Shard extends DurableObject {
   async alarm(): Promise<void> {
     const now = Date.now()
     const sql = this.ctx.storage.sql
+    // 0. Save series windows that changed. Two rows per stream, whole buckets (never a row per id).
+    for (const [tenant, e] of this.windows) {
+      if (e.dirtySince === null || e.dirtySince + this.cfg.seriesPersistMs > now) continue
+      e.w.rotate(now)
+      const buckets = e.w.save()
+      for (const [bucket, data] of buckets) sql.exec(`INSERT OR REPLACE INTO series_window (tenant, bucket, data) VALUES (?, ?, ?)`, tenant, bucket, data)
+      sql.exec(`DELETE FROM series_window WHERE tenant = ? AND bucket < ?`, tenant, buckets[0]![0])
+      e.dirtySince = null
+    }
     for (const [tenant, s] of this.streams) {
       // 1. Seal streams whose oldest unsealed batch has waited long enough.
       if (s.oldestUnsealedAt !== null && s.oldestUnsealedAt + this.cfg.sealAgeMs <= now) this.sealStream(tenant, s)
@@ -385,6 +601,8 @@ export class Shard extends DurableObject {
     }
     // 3. Forget fingerprints of discarded batches once clients can no longer be retrying.
     sql.exec(`DELETE FROM batch WHERE payload IS NULL AND at + ? <= ?`, this.cfg.fingerprintTtlMs, now)
+    // 4. Seals made above, and anything a previous attempt could not send.
+    await this.deliver()
     await this.arm()
   }
 }

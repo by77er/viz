@@ -54,12 +54,16 @@ while (p < buf.length) {
 }
 if (names.size === 0) { console.error('no name section: build with CARGO_PROFILE_RELEASE_STRIP=false'); process.exit(1) }
 
-// The crate a function belongs to: the first path segment of its (demangled) name; for
-// trait impls `<T as Trait>::f` and generic instances, the first crate named that is not
-// core/alloc/std (a `Vec<parquet::X>` method is parquet's cost).
-const std = new Set(['core', 'alloc', 'std', 'hashbrown', 'compiler_builtins', 'dlmalloc', 'std_detect', 'rustc_demangle', 'memchr'])
+// The crate a function belongs to: the first crate named in its mangled symbol that is
+// not core/alloc/std (so a `Vec<parquet::X>` method is parquet's cost).
+const std = new Set(['core', 'alloc', 'std', 'hashbrown', 'compiler_builtins', 'dlmalloc', 'std_detect', 'rustc_demangle', 'rustc', 'memchr'])
 function crateOf(name) {
-  const all = [...name.matchAll(/([A-Za-z_][A-Za-z0-9_]*)::/g)].map((m) => m[1]).filter((c) => /^[a-z_0-9]+$/.test(c))
+  // Rust v0 mangling: a crate root is `C` + optional `s<disambiguator>_` + <len><name>.
+  const all = []
+  for (const m of name.matchAll(/Cs[0-9a-zA-Z]+_(\d+)/g)) {
+    const len = Number(m[1]), at = m.index + m[0].length
+    all.push(name.slice(at, at + len).replace(/^_+/, ''))
+  }
   if (all.length === 0) return '(other: memcpy, compiler builtins, exports)'
   return all.find((c) => !std.has(c)) ?? all[0]
 }
