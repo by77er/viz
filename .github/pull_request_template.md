@@ -20,6 +20,8 @@
 
 **New tokens or components, with reasons:**
 
+**Speed** (input response, view change, first result paint; before and after, and how measured):
+
 **Token check** (`node design-system/tools/check.mjs <paths>`):
 
 **Design review verdict:** <!-- approve / approve with changes / reject, by a reviewer who did not write the change; findings against design-system/project/review.md -->

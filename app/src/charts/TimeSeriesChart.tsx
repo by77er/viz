@@ -89,7 +89,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       const rows: { name: string; color: string; value: number; focus: boolean }[] = []
       shown.forEach((s, i) => {
         const v = ds.series[i]![idx]
-        if (v != null) rows.push({ name: s.label, color: s.color, value: v, focus: focused === i + 1 })
+        if (v != null) rows.push({ name: s.shortLabel ?? s.label, color: s.color, value: v, focus: focused === i + 1 })
       })
       rows.sort((a, b) => b.value - a.value)
       let list = rows.slice(0, TIP_ROWS)
@@ -139,7 +139,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     const opts: uPlot.Options = {
       width,
       height,
-      padding: [10, 12, 0, 0],
+      padding: [10, 22, 0, 0],
       legend: { show: false },
       focus: { alpha: 0.3 },
       cursor: {
@@ -194,7 +194,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         {},
         ...shown.map(
           (s): uPlot.Series => ({
-            label: s.label,
+            label: s.shortLabel ?? s.label,
             stroke: s.color,
             width: 1.5,
             dash: s.dash.length ? [...s.dash] : undefined,

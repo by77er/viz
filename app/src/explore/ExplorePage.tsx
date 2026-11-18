@@ -7,7 +7,7 @@ import { TimeSeriesChart, type ChartSeries, type RenderInfo } from '../charts'
 import type { PromqlEditorHandle } from '../editor/PromqlEditor'
 import { assignStyles, DASHES, slotColor } from '../lib/color'
 import { digestSeries, renderDigest } from '../lib/digest'
-import { alignMatrix, seriesStats } from '../lib/series'
+import { alignMatrix, distinguishingNames, seriesStats } from '../lib/series'
 import { alignWindow, autoStep, bucketWidth, type QueryWindow } from '../lib/step'
 import { absoluteSpec, describeRange, formatDateTime, formatDuration, parseDuration, resolveTimeSpec } from '../lib/time'
 import { formatValue, inferUnit, isUnitId, UNITS, type UnitId } from '../lib/units'
@@ -120,14 +120,13 @@ export function ExplorePage() {
   const formatAxis = useCallback((v: number) => formatValue(v, unit, 4), [unit])
 
   const styles = useMemo(() => assignStyles(aligned?.series.map((s) => s.key) ?? []), [aligned])
-  const chartSeries = useMemo<ChartSeries[]>(
-    () =>
-      (aligned?.series ?? []).map((s) => {
+  const chartSeries = useMemo<ChartSeries[]>(() => {
+    const short = distinguishingNames((aligned?.series ?? []).map((s) => s.labels))
+    return (aligned?.series ?? []).map((s, i) => {
         const st = styles.get(s.key)!
-        return { id: s.key, label: s.name, color: slotColor(st.slot, theme === 'dark'), dash: DASHES[st.dash]!, values: s.values }
-      }),
-    [aligned, styles, theme],
-  )
+        return { id: s.key, label: s.name, shortLabel: short[i], color: slotColor(st.slot, theme === 'dark'), dash: DASHES[st.dash]!, values: s.values }
+    })
+  }, [aligned, styles, theme])
   const rows = useMemo<(LegendRow & { labels: Record<string, string> })[]>(
     () =>
       (aligned?.series ?? []).map((s, i) => ({
@@ -311,7 +310,7 @@ export function ExplorePage() {
         ) : hasData ? (
           <>
             {search.view === 'text' ? (
-              <TextView text={digestText} height={CHART_HEIGHT} />
+              <TextView text={digestText} />
             ) : (
               <div className={`px-1 pt-1 transition-opacity ${stale ? 'opacity-60' : ''}`}>
                 <TimeSeriesChart
@@ -436,8 +435,8 @@ function StatusLine({
     <div className="tnum flex flex-wrap items-center gap-x-2 px-2.5 pt-1.5 text-[11.5px] text-fg-3" data-testid="status" role="status">
       {items.map((it, i) => (
         <span key={i} className="whitespace-nowrap">
-          {i > 0 && <span aria-hidden="true" className="mr-2 text-line-strong">·</span>}
           {it}
+          {i < items.length - 1 && <span aria-hidden="true" className="ml-2 text-line-strong">·</span>}
         </span>
       ))}
       {info?.downsampled && n > 0 && (

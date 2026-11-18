@@ -84,6 +84,17 @@ fn export_files_for_independent_reader() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("metric_samples.parquet"), &files[0].bytes).unwrap();
     std::fs::write(dir.join("metric_series.parquet"), &files[1].bytes).unwrap();
+    // For tools/wasm_smoke.mjs: the same batches, framed as `u32 length, bytes`, and how
+    // many samples `{__name__=~"up|go_.*"}` must select over the whole day.
+    let mut framed = Vec::new();
+    for b in &batches {
+        framed.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        framed.extend_from_slice(b);
+    }
+    std::fs::write(dir.join("batches.bin"), &framed).unwrap();
+    let wasm_want = truth.keys().filter(|(n, _, _)| n == "up" || n.starts_with("go_")).count();
+    let total_bytes: usize = files.iter().map(|f| f.bytes.len()).sum();
+    let expected = format!("{},\"wasm\":{{\"regex\":\"up|go_.*\",\"selected\":{},\"parquet_bytes\":{}}}}}", &expected[..expected.len() - 1], wasm_want, total_bytes);
     std::fs::write(dir.join("expected.json"), &expected).unwrap();
     println!("hyparquet-check expected: {expected}");
 }

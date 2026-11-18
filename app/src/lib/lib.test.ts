@@ -13,7 +13,7 @@ import {
 } from './urlState'
 import { absoluteSpec, describeRange, formatDuration, isValidTimeSpec, parseDuration, resolveTimeSpec } from './time'
 import { formatValue, inferUnit } from './units'
-import { alignMatrix, seriesKey, seriesName, seriesStats } from './series'
+import { alignMatrix, distinguishingNames, seriesKey, seriesName, seriesStats } from './series'
 import fc from 'fast-check'
 
 describe('step selection', () => {
@@ -164,6 +164,7 @@ describe('units', () => {
     expect(formatValue(0.0421, 'percentunit')).toBe('4.21%')
     expect(formatValue(453.2, 'rps')).toBe('453/s')
     expect(formatValue(0.25, 'cores')).toBe('250m')
+    expect(formatValue(1.5, 'cores')).toBe('1.5')
     expect(formatValue(null)).toBe('–')
     expect(formatValue(NaN)).toBe('NaN')
     expect(formatValue(Infinity)).toBe('+Inf')
@@ -204,6 +205,17 @@ describe('series', () => {
     expect(a.series[1]!.values).toEqual([1, 2, null, null, 5])
     expect(a.series[0]!.values).toEqual([null, null, null, null, 7])
     expect(seriesStats(a.xs, a.series[1]!.values)).toEqual({ last: 5, lastAt: 160, min: 1, max: 5, mean: 8 / 3, count: 3 })
+  })
+  it('shortens names to the labels that differ', () => {
+    expect(
+      distinguishingNames([
+        { __name__: 'm', job: 'k', pod: 'a', node: 'n1' },
+        { __name__: 'm', job: 'k', pod: 'b', node: 'n1' },
+      ]),
+    ).toEqual(['{pod="a"}', '{pod="b"}'])
+    expect(distinguishingNames([{ __name__: 'm', job: 'k' }])).toEqual(['m{job="k"}'])
+    expect(distinguishingNames([{ __name__: 'a' }, { __name__: 'b' }])).toEqual(['a', 'b'])
+    expect(distinguishingNames([{ a: '1' }, { a: '1', b: '2' }])).toEqual(['{a="1"}', '{b="2"}'])
   })
   it('falls back to observed timestamps when samples are off the grid', () => {
     const a = alignMatrix({ resultType: 'matrix', result: [{ metric: {}, values: [[101, '1'], [117, '2']] }] }, 100, 160, 15)

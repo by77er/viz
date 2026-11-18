@@ -9,6 +9,8 @@ export interface ChartSeries {
   id: string
   /** Display name. */
   label: string
+  /** Shorter name for tight spaces (tooltip, announcements); defaults to `label`. */
+  shortLabel?: string
   /** CSS colour for the current theme. */
   color: string
   /** Canvas dash pattern; empty for a solid line. */

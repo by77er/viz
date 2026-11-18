@@ -72,7 +72,7 @@ impl Report {
 /// Engine options the upstream test engine uses: delayed name removal on,
 /// 5m lookback, 1m default subquery resolution.
 pub fn upstream_options() -> EvalOptions {
-    EvalOptions { lookback_delta_ms: 300_000, delayed_name_removal: true, subquery_default_step_ms: 60_000 }
+    EvalOptions { delayed_name_removal: true, ..EvalOptions::default() }
 }
 
 /// Storage for a script: float samples, plus the label sets of series that

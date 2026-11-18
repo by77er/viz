@@ -28,11 +28,20 @@ pub struct EvalOptions {
     /// Resolution of a subquery written without one (`[5m:]`). Prometheus
     /// uses the global evaluation interval; default 1 minute.
     pub subquery_default_step_ms: i64,
+    /// Upper bound on the number of steps of a range query, and (times
+    /// 100) on the inner steps of one subquery. Default 11 000, the limit
+    /// the Prometheus HTTP API applies to range queries.
+    pub max_steps: usize,
 }
 
 impl Default for EvalOptions {
     fn default() -> Self {
-        EvalOptions { lookback_delta_ms: 300_000, delayed_name_removal: false, subquery_default_step_ms: 60_000 }
+        EvalOptions {
+            lookback_delta_ms: 300_000,
+            delayed_name_removal: false,
+            subquery_default_step_ms: 60_000,
+            max_steps: 11_000,
+        }
     }
 }
 
@@ -89,7 +98,7 @@ pub(crate) struct RangeVec {
 impl RangeVec {
     /// Inclusive right edge of the window for evaluation time `ts`.
     pub fn window_end(&self, ts: i64) -> i64 {
-        self.at.unwrap_or(ts) - self.offset
+        self.at.unwrap_or(ts).saturating_sub(self.offset)
     }
 }
 
@@ -208,16 +217,16 @@ pub(crate) fn at_ms(at: &Option<AtModifier>, q_start: i64, q_end: i64) -> Option
 pub(crate) fn subquery_steps(sq: &SubqueryExpr, outer: Steps, opts: &EvalOptions, q_start: i64, q_end: i64) -> Steps {
     let offset = offset_ms(&sq.offset);
     let range = dur_ms(&sq.range);
-    let interval = sq.step.as_ref().map(dur_ms).filter(|s| *s > 0).unwrap_or(opts.subquery_default_step_ms);
+    let interval = sq.step.as_ref().map(dur_ms).filter(|s| *s > 0).unwrap_or(opts.subquery_default_step_ms).max(1);
     let (first_end, last_end) = match at_ms(&sq.at, q_start, q_end) {
-        Some(a) => (a - offset, a - offset),
-        None => (outer.start - offset, outer.last() - offset),
+        Some(a) => (a.saturating_sub(offset), a.saturating_sub(offset)),
+        None => (outer.start.saturating_sub(offset), outer.last().saturating_sub(offset)),
     };
     // First multiple of the interval strictly after the left edge.
-    let left = first_end - range;
-    let mut start = interval * left.div_euclid(interval);
+    let left = first_end.saturating_sub(range);
+    let mut start = interval.saturating_mul(left.div_euclid(interval));
     if start <= left {
-        start += interval;
+        start = start.saturating_add(interval);
     }
     Steps { start, end: last_end, step: interval }
 }
@@ -233,12 +242,12 @@ pub(crate) fn selector_range(
 ) -> (i64, i64) {
     let offset = offset_ms(&vs.offset);
     let (first, last) = match at_ms(&vs.at, q_start, q_end) {
-        Some(a) => (a - offset, a - offset),
-        None => (steps.start - offset, steps.last() - offset),
+        Some(a) => (a.saturating_sub(offset), a.saturating_sub(offset)),
+        None => (steps.start.saturating_sub(offset), steps.last().saturating_sub(offset)),
     };
     let back = range.unwrap_or(opts.lookback_delta_ms);
     // Windows are left-open: (ref - back, ref].
-    (first - back + 1, last)
+    (first.saturating_sub(back).saturating_add(1), last)
 }
 
 struct AggGroup {
@@ -396,14 +405,14 @@ impl<'a> Evaluator<'a> {
                     return None;
                 }
                 let (t, v) = (s.ts[i - 1], s.values[i - 1]);
-                if t <= r - lookback || is_stale_nan(v) {
+                if t <= r.saturating_sub(lookback) || is_stale_nan(v) {
                     return None;
                 }
                 Some((t, v))
             };
             let pts: Vec<Option<(i64, f64)>> = match at {
-                Some(a) => vec![pick(a - offset); n],
-                None => (0..n).map(|i| pick(steps.ts(i) - offset)).collect(),
+                Some(a) => vec![pick(a.saturating_sub(offset)); n],
+                None => (0..n).map(|i| pick(steps.ts(i).saturating_sub(offset))).collect(),
             };
             if pts.iter().any(|p| p.is_some()) {
                 out.push((Arc::new(s.labels), pts));
@@ -443,6 +452,13 @@ impl<'a> Evaluator<'a> {
 
     fn subquery(&self, sq: &SubqueryExpr, steps: Steps) -> Result<RangeVec, Error> {
         let inner = subquery_steps(sq, steps, &self.opts, self.q_start, self.q_end);
+        if inner.n() > self.opts.max_steps.saturating_mul(100) {
+            return Err(Error::Eval(format!(
+                "subquery would evaluate {} steps; the limit is {}",
+                inner.n(),
+                self.opts.max_steps.saturating_mul(100)
+            )));
+        }
         let range = dur_ms(&sq.range);
         let offset = offset_ms(&sq.offset);
         let at = at_ms(&sq.at, self.q_start, self.q_end);
@@ -832,7 +848,7 @@ impl<'a> Evaluator<'a> {
             for s in &rv.series {
                 for (i, slot) in vals.iter_mut().enumerate() {
                     let e = rv.window_end(steps.ts(i));
-                    let lo = s.ts.partition_point(|&t| t <= e - rv.range);
+                    let lo = s.ts.partition_point(|&t| t <= e.saturating_sub(rv.range));
                     let hi = s.ts.partition_point(|&t| t <= e);
                     if hi > lo {
                         *slot = None;
@@ -854,7 +870,7 @@ impl<'a> Evaluator<'a> {
             for (i, slot) in vals.iter_mut().enumerate() {
                 let ts = steps.ts(i);
                 let e = rv.window_end(ts);
-                let start = e - rv.range;
+                let start = e.saturating_sub(rv.range);
                 // Left-open, right-closed: (start, e].
                 let lo = s.ts.partition_point(|&t| t <= start);
                 let hi = s.ts.partition_point(|&t| t <= e);

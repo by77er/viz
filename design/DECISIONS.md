@@ -203,11 +203,18 @@ after images. Merging after an approving review does not need the owner, for now
 
 **The system.** Neutral greys with no hue; four full-strength action colours (blue, red,
 green, yellow) that are the same in both themes and double as status marks beside a word;
-one serif family for interface and reading text and its monospace sibling for data; small
-radii, hairlines and a single shadow.
+one sans family (Schibsted Grotesk) for interface and reading text and a monospace for
+data; small radii, hairlines and a single shadow. The first version used a serif; the owner
+asked to try a sans with personality, and a side-by-side render of the same screen in the
+serif and nine sans candidates settled it.
+
+**Speed and feedback are requirements.** Input is acknowledged within a frame, local view
+changes finish within 100 ms with no loading state, and feedback must be meaningful,
+accurate and useful: progress is drawn only when measured. Budgets are in the rules and
+the review rubric.
 
 **Why these choices.** A hue-free interface means colour on screen is always data, state
-or an action. A serif with an optical-size axis gives one voice from 12 to 44 px. Every
+or an action. One family gives one voice from 13 to 44 px. Every
 text and control pairing is checked for contrast in both themes by
 `design-system/tools/check.mjs`, and the chart palette by a colour-vision validator.
 

@@ -3,7 +3,8 @@
 1. **Clarity over character.** The interface exists so that someone can read a system's state and act. When a choice makes the data easier to read, take it, even if it is plainer.
 2. **Everything present is justified.** Before adding an element, name the question it answers for the person looking at it. If removing it loses nothing, remove it. This applies to rules, labels, icons, colours and words alike.
 3. **Colour is a signal, never a surface.** The interface is neutral. `blue`, `red`, `green` and `yellow` appear only where a person can act or where state needs attention.
-4. **One voice.** A single serif family carries reading and interface text; a single monospace carries data. Hierarchy comes from size, weight and space.
+4. **One voice.** A single sans family carries reading and interface text; a single monospace carries data. Hierarchy comes from size, weight and space.
+6. **It answers at once, and it tells the truth.** Every input is acknowledged in the same frame. Anything slower says what it is doing, measured, and never pretends.
 5. **Same model for every reader.** Each view has a visual form, a text form and a structured form. Design the text form with the same care.
 
 ## Colour
@@ -20,13 +21,12 @@
 
 ## Type
 
-- Set interface and reading text in the `serif` family, and every number a person compares or identifier they copy in `mono`.
+- Set interface and reading text in the `sans` family (Schibsted Grotesk), and every number a person compares or identifier they copy in `mono` (JetBrains Mono).
 - Use `ui` for interface text and `ui-strong` for button labels and selected items. Use `body` for prose, at a measure of 60 to 72 characters (`measure`).
 - Use `display` at most once per page, for the name of the thing being looked at. Use `title` for page and dialog titles, `heading` for sections.
-- Column heads and field labels use `label`: true small caps, tracked 0.05em, sized so the capitals match the lowercase height of `ui` text. It is the only tracked style. Do not set text in capitals anywhere.
-- Numbers in tables and stats use tabular lining figures and align right. Put the unit in the column head or after the number in `ink-secondary`, once.
-- Weights are 400 and 600 for the serif, 400 and 500 for the mono. No other weights, no italics for emphasis in the interface (italic is for titles of things in prose).
-- Let the optical size axis follow the font size. Do not letter-space anything except `label` and the negative tracking built into `display`, `title` and `heading`.
+- Column heads and field labels use `label`: sentence case, weight 500, `ink-secondary`. Do not set text in capitals anywhere, and do not letter-space anything; the negative tracking in `display`, `title` and `heading` is part of those styles.
+- Numbers in tables use `mono` with tabular figures and align right. Put the unit in the column head or after the number in `ink-secondary`, once. A single large figure (`vz-stat`) uses the sans with proportional figures.
+- Weights are 400, 500 and 600 for the sans (500 only for `label`), 400 and 500 for the mono. No italics for emphasis.
 
 ## Space and shape
 
@@ -42,9 +42,47 @@ Every interactive element defines: rest, hover, focus-visible, pressed, disabled
 
 Disabled controls use `ink-disabled` on `sunken`. Invalid fields take a `red` border and a help line in `ink` that says how to fix the value.
 
+## Responsiveness and feedback
+
+**Budgets.** These are requirements, measured in tests, not aspirations.
+
+| What the person does | The interface must | Within |
+|---|---|---|
+| Presses, types, focuses, drags | Show the pressed state, the character, the ring, the crosshair | one frame (16 ms) |
+| Switches a tab, toggles chart / table / text, opens a menu, changes theme | Finish. No loading state is allowed here | 100 ms |
+| Moves between views | Show the shell and whatever is cached; fresh data streams in | 100 ms |
+| Runs a query | Paint the first result | 300 ms warm; coarse data first, refined in place |
+| Interacts at all, on a mid-range phone | Interaction to Next Paint, 75th percentile | 200 ms |
+
+The shell loads in at most 200 KB of compressed script. Layout shift stays under 0.05: every region reserves its final size before its data arrives. Chart crosshairs and brushes follow the pointer without triggering layout.
+
+**Feedback has to be meaningful, accurate and useful.**
+
+- *Meaningful.* Give feedback only for a change the person caused or needs to know about. If the result is visible, the result is the feedback: no success toast, no checkmark animation. Nothing under 100 ms gets an indicator.
+- *Accurate.* Never draw progress that is not measured. A bar needs a real numerator and denominator; without one, show the stage and elapsed time. Do not show skeleton shapes that differ from what will arrive. Do not present old data as current: say how old it is. An optimistic change is allowed only when it can be undone, and a failure is shown where the change was made, with the old value restored.
+- *Useful.* Say what the system is doing in terms the person can act on ("Scanning 12 of 40 files"), and offer the next step (Cancel, Narrow the range, Retry). Keep the previous result visible and interactive while the next one loads. Keep focus and scroll position where they were.
+
+**Waiting, by duration.**
+
+| Wait | Show |
+|---|---|
+| under 100 ms | nothing but the result |
+| 100 to 400 ms | nothing new; the control that started it shows `aria-busy` and a progress cursor |
+| over 400 ms | `vz-progress` at the top of the region, kept at least 300 ms once shown |
+| over 2 s | the same, plus Cancel |
+| over 10 s | the same, plus the cheaper alternative (a shorter range, a rollup) |
+
+**Every form factor.**
+
+- Lay out by the space a region has, not by device: panels reflow with container queries. Twelve columns from 1200px, six from 640px, one below.
+- Nothing scrolls the page sideways. A wide table scrolls inside its own container with its first column fixed.
+- With a coarse pointer every control has a `control-touch` hit area, and inputs are 16px so the browser does not zoom. Drawn sizes do not change.
+- Nothing depends on hover. Anything revealed on hover is also reachable by focus and by tap.
+- Charts read by touch: drag for the crosshair, pinch or the range control to zoom.
+
 ## Motion
 
-- 100ms for changes the pointer causes (hover, press). 180ms for things that enter or leave (menus, dialogs). Easing `cubic-bezier(0.2, 0, 0, 1)`.
+- A press changes state in the same frame, with no transition. Hover eases over 100ms. Things that enter or leave (menus, dialogs) take 180ms. Easing `cubic-bezier(0.2, 0, 0, 1)`.
 - Animate opacity and position only. Nothing loops, bounces or draws attention to itself. Data never animates into place.
 - Honour `prefers-reduced-motion` by removing transitions.
 
@@ -58,7 +96,7 @@ Disabled controls use `ink-disabled` on `sunken`. Invalid fields take a `red` bo
 
 ## Iconography
 
-Use icons only where they are recognised faster than the word they replace, and pair them with a text label or tooltip. One set, drawn at `icon` with a 1.5px stroke in the text colour beside them. No filled icons, no coloured icons, no emoji. This system ships no icon files yet; until it does, use words.
+Use icons only where they are recognised faster than the word they replace, and pair them with a text label. One set, drawn at `icon` with a 1.5px stroke in the text colour beside them. No filled icons, no coloured icons, no emoji. This system ships no icon files yet; until it does, use words.
 
 ## Layout
 

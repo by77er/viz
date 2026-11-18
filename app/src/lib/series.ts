@@ -120,3 +120,19 @@ export function seriesStats(xs: number[], values: (number | null)[]): SeriesStat
   if (count === 0) return { last: null, lastAt: null, min: null, max: null, mean: null, count: 0 }
   return { last, lastAt, min, max, mean: sum / count, count }
 }
+
+/**
+ * Short display names for a set of series: labels whose value is identical on every series
+ * (including the metric name) are dropped, leaving what tells the series apart. Used where
+ * space is tight (tooltips); the legend keeps full names.
+ */
+export function distinguishingNames(all: readonly Labels[]): string[] {
+  if (all.length < 2) return all.map(seriesName)
+  const first = all[0]!
+  const common = new Set(Object.keys(first).filter((k) => all.every((l) => l[k] === first[k])))
+  return all.map((labels) => {
+    const rest: Labels = {}
+    for (const k of Object.keys(labels)) if (!common.has(k)) rest[k] = labels[k]!
+    return Object.keys(rest).length === 0 ? seriesName(labels) : seriesName(rest)
+  })
+}

@@ -1,13 +1,11 @@
-@import url("https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400..700;1,8..60,400..700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400..700&display=swap");
 
 /* viz components. Every value is a token from tokens.css; the few literals are noted. */
 
 .vz {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 20px;
-  font-optical-sizing: auto;
-  font-variant-numeric: lining-nums;
   color: var(--ink);
   background: var(--ground);
   -webkit-font-smoothing: antialiased;
@@ -21,9 +19,9 @@
 @media (prefers-reduced-motion: reduce) { .vz * { transition: none !important; animation: none !important; } }
 
 /* Numbers people compare, and identifiers they copy. */
-.vz-num { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums lining-nums; }
-/* Column heads and field labels: true small caps, the only tracked text. */
-.vz-label { font-size: 14px; line-height: 16px; font-weight: 600; letter-spacing: 0.05em; font-variant-caps: all-small-caps; font-optical-sizing: auto; color: var(--ink-secondary); }
+.vz-num { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+/* Column heads and field labels: sentence case, medium weight, secondary ink. */
+.vz-label { font-size: 13px; line-height: 16px; font-weight: 500; color: var(--ink-secondary); }
 
 /* Button */
 .vz-button {
@@ -35,7 +33,12 @@
   transition: background-color var(--vz-fast) var(--vz-ease), border-color var(--vz-fast) var(--vz-ease);
 }
 .vz-button:hover { background: var(--sunken); border-color: var(--ink-secondary); }
-.vz-button:active { transform: translateY(0.5px); }
+.vz-button:active { transition-duration: 0ms; background: var(--rule); } /* a press answers in the same frame */
+.vz-button[data-tone="blue"]:active { background: var(--blue-hover); }
+.vz-button[data-tone="red"]:active { background: var(--red-hover); }
+.vz-button[data-tone="green"]:active { background: var(--green-hover); }
+.vz-button[data-tone="yellow"]:active { background: var(--yellow-hover); }
+.vz-button[aria-busy="true"] { cursor: progress; }
 .vz-button[data-size="sm"] { height: var(--control-sm); padding: 0 var(--space-2); font-size: 13px; }
 .vz-button[data-tone] { border-color: transparent; }
 .vz-button[data-tone="blue"] { background: var(--blue); color: var(--on-blue); }
@@ -48,7 +51,7 @@
 .vz-button[data-tone="yellow"]:hover { background: var(--yellow-hover); }
 .vz-button[data-quiet] { border-color: transparent; background: transparent; font-weight: 400; }
 .vz-button[data-quiet]:hover { background: var(--sunken); }
-.vz-button:disabled { color: var(--ink-disabled); background: var(--sunken); border-color: var(--rule); cursor: not-allowed; transform: none; }
+.vz-button:disabled { color: var(--ink-disabled); background: var(--sunken); border-color: var(--rule); cursor: not-allowed; }
 
 /* Keyboard hint */
 .vz-kbd { font-family: var(--font-mono); font-size: 11px; line-height: 16px; padding: 0 var(--space-1); min-width: 16px; text-align: center; border-radius: var(--radius-1); border: 1px solid currentColor; opacity: 0.72; }
@@ -116,7 +119,7 @@
 
 /* Stat: one number that is the answer. */
 .vz-stat { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
-.vz-stat-value { font-size: 44px; line-height: 48px; font-weight: 400; letter-spacing: -0.02em; font-variant-numeric: tabular-nums lining-nums; }
+.vz-stat-value { font-size: 44px; line-height: 48px; font-weight: 400; letter-spacing: -0.025em; }
 .vz-stat-unit { font-size: 20px; color: var(--ink-secondary); letter-spacing: 0; margin-left: var(--space-half); }
 .vz-stat-context { font-size: 13px; color: var(--ink-secondary); }
 
@@ -136,3 +139,19 @@
 
 /* Query editor well */
 .vz-query { font-family: var(--font-mono); font-size: 13px; line-height: 22px; padding: var(--space-2) var(--space-3); background: var(--sunken); border: 1px solid var(--rule); border-radius: var(--radius-2); overflow-x: auto; white-space: pre; }
+
+/* Progress: measured work. A 2px line whose length is a real fraction, and a sentence that says what is being done. */
+.vz-progress { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.vz-progress-track { height: 2px; background: var(--rule); overflow: hidden; }
+.vz-progress-bar { height: 100%; background: var(--ink); transform-origin: left; transition: transform var(--vz-slow) linear; }
+.vz-progress-text { display: flex; justify-content: space-between; gap: var(--space-3); font-size: 13px; line-height: 18px; color: var(--ink-secondary); }
+/* Unmeasured work shows elapsed time only: the track stays empty rather than pretending. */
+.vz-progress[data-unmeasured] .vz-progress-bar { display: none; }
+
+/* Touch: every control gets a 44px hit area without changing its drawn size. */
+@media (pointer: coarse) {
+  .vz-button, .vz-segmented button, .vz-tabs button, .vz-menu [role="menuitem"] { position: relative; }
+  .vz-button::after, .vz-segmented button::after, .vz-tabs button::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: var(--control-touch); transform: translateY(-50%); }
+  .vz-menu [role="menuitem"] { height: var(--control-touch); }
+  .vz-input { height: var(--control-touch); font-size: 16px; } /* 16px stops mobile browsers zooming on focus */
+}

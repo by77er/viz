@@ -69,6 +69,11 @@ fn check_file(f: &EncodedFile, cap: usize) -> usize {
         let rg = md.row_group(g);
         assert!(rg.num_rows() as usize <= cap, "row group {g} has {} rows", rg.num_rows());
         assert!(rg.num_rows() > 0);
+        let sorting: Vec<(i32, bool)> = rg.sorting_columns().expect("sorting columns declared").iter().map(|c| (c.column_idx, c.descending)).collect();
+        assert_eq!(sorting, match f.table {
+            Table::MetricSamples => vec![(0, false), (1, false), (2, false)],
+            Table::MetricSeries => vec![(0, false), (1, false)],
+        });
         assert_eq!(ix.rows, rg.num_rows() as u64);
         // Offsets: the fragment must point at exactly the bytes of this row group's chunks.
         let start = rg.columns().iter().map(|c| c.byte_range().0).min().unwrap();

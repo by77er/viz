@@ -41,7 +41,13 @@ pub(crate) fn parse(query: &str) -> Result<Expr, Error> {
     promql_parser::parser::parse(query).map_err(Error::Parse)
 }
 
-fn check_range(start_ms: i64, end_ms: i64, step_ms: i64) -> Result<Steps, Error> {
+fn check_range(start_ms: i64, end_ms: i64, step_ms: i64, opts: &EvalOptions) -> Result<Steps, Error> {
+    if step_ms > 0 && end_ms >= start_ms && end_ms.checked_sub(start_ms).map(|d| d / step_ms) .is_none_or(|n| n as u128 + 1 > opts.max_steps as u128) {
+        return Err(Error::Eval(format!(
+            "exceeded maximum resolution of {} points per timeseries. Try decreasing the query resolution (?step=XX)",
+            opts.max_steps
+        )));
+    }
     if step_ms <= 0 {
         return Err(Error::Eval("zero or negative query resolution step widths are not accepted".into()));
     }
@@ -69,7 +75,7 @@ pub fn selectors_with(
     opts: &EvalOptions,
 ) -> Result<Vec<SelectorInfo>, Error> {
     let expr = parse(query)?;
-    let steps = check_range(start_ms, end_ms, if start_ms == end_ms { step_ms.max(1) } else { step_ms })?;
+    let steps = check_range(start_ms, end_ms, if start_ms == end_ms { step_ms.max(1) } else { step_ms }, opts)?;
     let mut out = Vec::new();
     walk_selectors(&expr, steps, opts, start_ms, end_ms, &mut out)?;
     Ok(out)
@@ -196,7 +202,7 @@ pub(crate) fn range_expr(
     step_ms: i64,
     opts: &EvalOptions,
 ) -> Result<Matrix, Error> {
-    let steps = check_range(start_ms, end_ms, step_ms)?;
+    let steps = check_range(start_ms, end_ms, step_ms, opts)?;
     let ev = Evaluator { src: source, opts: *opts, q_start: start_ms, q_end: end_ms };
     let series = match ev.eval(expr, steps)? {
         Val::Scalar(v) => vec![MatrixSeries {
@@ -240,7 +246,7 @@ pub(crate) fn instant_expr(
         let e = rv.window_end(time_ms);
         let mut series = Vec::new();
         for s in rv.series {
-            let lo = s.ts.partition_point(|&t| t <= e - rv.range);
+            let lo = s.ts.partition_point(|&t| t <= e.saturating_sub(rv.range));
             let hi = s.ts.partition_point(|&t| t <= e);
             if hi <= lo {
                 continue;

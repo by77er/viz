@@ -35,13 +35,16 @@ override it.
   screen is data, state, or something to press.
 - **Four action colours at full strength**: blue, red, green, yellow, the same in both
   themes. They also mark state, always beside a word.
-- **One serif voice.** Source Serif 4 for interface and reading text, using its optical-size
-  axis from captions to display; Source Code Pro, its sibling, for data. Two families, each
-  with one job.
+- **One sans voice.** Schibsted Grotesk for interface and reading text: a grotesk with enough
+  character to be recognisable (a serifed capital I, so I, l and 1 never blur) and enough
+  restraint for dense tables. JetBrains Mono for data. Two families, each with one job. It was
+  chosen by rendering the same dense screen in a serif and nine sans candidates and comparing.
 - **Small radii, hairlines, one shadow.** Shape says what kind of thing something is:
   square tiles, 4px controls, 8px overlays.
-- **Small caps instead of capitals** for column heads and labels, sized to the lowercase
-  beside them.
+- **Sentence case everywhere.** Labels differ from text by weight and ink, not by capitals
+  or tracking.
+- **Speed and honest feedback are part of the system**, with budgets and a waiting table in
+  the rules and rows in the review rubric.
 
 Reference points for behaviour and restraint, not for appearance: Linear (density,
 keyboard-first commands), Things (one primary action, calm states), iA Writer (type doing

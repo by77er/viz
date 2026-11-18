@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
 const root = new URL('..', import.meta.url).pathname
 const css = readFileSync(root + 'dist/viz.css', 'utf8')
-const order = ['Cover', 'Button', 'Field', 'Segmented', 'Query', 'Tabs', 'Menu', 'Table', 'Status', 'Stat', 'Panel', 'Banner']
+const order = ['Cover', 'Button', 'Field', 'Segmented', 'Query', 'Tabs', 'Menu', 'Table', 'Status', 'Stat', 'Panel', 'Banner', 'Progress']
 const names = order.filter((n) => existsSync(`${root}project/components/${n}/preview.html`))
 const body = (n) => { const h = readFileSync(`${root}project/components/${n}/preview.html`, 'utf8'); const style = (h.match(/<style>([\s\S]*?)<\/style>/g) ?? []).join(''); return { style, inner: h.slice(h.indexOf('<body'), h.lastIndexOf('</body>')).replace(/<body[^>]*>/, '') } }
 const col = (th) => `<div data-theme="${th}" class="vz side">${names.map((n) => { const b = body(n); return `<section><h2 class="vz-label">${n}</h2><div class="${n === 'Cover' ? 'coverwrap' : 'ex'}">${b.inner}</div></section>` }).join('')}</div>`

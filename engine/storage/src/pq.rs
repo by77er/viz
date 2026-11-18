@@ -9,6 +9,7 @@ use parquet::column::reader::get_typed_column_reader;
 use parquet::column::writer::ColumnWriter;
 use parquet::data_type::{ByteArray, DataType};
 use parquet::errors::ParquetError;
+use parquet::file::metadata::SortingColumn;
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 use parquet::file::reader::{FileReader, RowGroupReader, SerializedFileReader};
 use parquet::file::writer::SerializedFileWriter;
@@ -188,6 +189,15 @@ fn props(table: Table) -> Arc<WriterProperties> {
         .set_statistics_truncate_length(None)
         .set_data_page_size_limit(256 * 1024)
         .set_created_by("viz-storage".to_string())
+        // Declare the sort order in every row group, for readers that can use it.
+        .set_sorting_columns(Some(
+            (0..match table {
+                Table::MetricSamples => 3,
+                Table::MetricSeries => 2,
+            })
+                .map(|column_idx| SortingColumn { column_idx, descending: false, nulls_first: false })
+                .collect(),
+        ))
         .set_column_dictionary_enabled(ColumnPath::from("metric_name"), true);
     b = delta(b, "series_id");
     match table {

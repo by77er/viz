@@ -90,7 +90,8 @@ export function formatValue(v: number | null | undefined, unit: UnitId = 'none',
     case 'rps':
       return `${si(v, digits)}/s`
     case 'cores':
-      return Math.abs(v) < 1 && v !== 0 ? `${sig(v * 1000, digits)}m` : `${si(v, digits)} cores`
+      // Kubernetes CPU quantities: millicores below one core, plain cores above.
+      return Math.abs(v) < 1 && v !== 0 ? `${sig(v * 1000, digits)}m` : si(v, digits)
     default:
       return si(v, digits)
   }

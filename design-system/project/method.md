@@ -22,7 +22,7 @@ An element with no answer to 1, a yes to 2, or "nothing" to 3 is removed. Rules,
 2. **Hierarchy with type and space only.** Use the type styles and the spacing scale until the reading order is right in greyscale.
 3. **Structure.** Add `rule` lines where grouping is still ambiguous. Add `sunken` where something must recede.
 4. **Colour last.** Add the one action colour the view needs, then status marks where state requires attention.
-5. **States.** Design loading, empty, error and partial before calling the view done.
+5. **States and waiting.** Design loading, empty, error and partial before calling the view done. For each wait, decide which row of the waiting table applies and what true thing the progress line will say.
 6. **The second theme.** Check it; do not assume it.
 7. **The text form.** Read the view's text digest aloud. If it does not make sense alone, the visual form is leaning on something a reader cannot see.
 
@@ -38,7 +38,8 @@ An element with no answer to 1, a yes to 2, or "nothing" to 3 is removed. Rules,
 
 - Text baselines align across a row. Numbers align right on the decimal.
 - Optical alignment over mathematical: an icon sits on the text's x-height centre.
-- Every hit target is at least 24px tall; 32px for primary controls.
+- Every hit target is at least 24px tall with a fine pointer, 32px for primary controls, and 44px with a coarse pointer.
+- A press is visible in the same frame. Measure it; do not assume it.
 - Focus order follows reading order, and the focus ring is visible on every surface.
 - Truncation never hides the part that distinguishes one item from another. Truncate in the middle for identifiers.
 - Empty space is the same on both sides of a boundary unless the difference means something.

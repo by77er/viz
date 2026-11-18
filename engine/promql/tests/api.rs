@@ -307,6 +307,15 @@ fn bad_inputs() {
     assert!(matches!(query_range(&src, "up[5m]", 0, 10, 1), Err(Error::Eval(_))));
     assert!(matches!(query_range(&src, "\"s\"", 0, 10, 1), Err(Error::Eval(_))));
     assert!(matches!(query_instant(&src, "sum(", 0), Err(Error::Parse(_))));
+    // Step and subquery limits instead of unbounded allocation.
+    assert!(matches!(query_range(&src, "up", 0, 11_000_000, 1000), Err(Error::Eval(_))));
+    assert!(query_range(&src, "up", 0, 10_999_000, 1000).is_ok());
+    assert!(matches!(query_range(&src, "up", i64::MIN, i64::MAX, 1), Err(Error::Eval(_))));
+    assert!(matches!(query_instant(&src, "sum_over_time(up[10y:1ms])", 0), Err(Error::Eval(_))));
+    // Extreme times do not overflow.
+    assert!(query_instant(&src, "up @ 9e18 offset 100y", i64::MAX).is_ok());
+    assert!(query_instant(&src, "rate(up[100y] @ -9e18)", i64::MIN + 1).is_ok());
+    assert!(query_instant(&src, "sum_over_time(up[1h:1h] offset -100y)", i64::MAX - 5).is_ok());
 }
 
 #[test]

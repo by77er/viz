@@ -316,3 +316,44 @@ fn query_pool_is_live() {
         assert!(non_empty[i] * 4 >= rounds, "query {q} returned data in only {}/{rounds} rounds ({} errors)", non_empty[i], errors[i]);
     }
 }
+
+/// Arbitrary recombinations of query fragments either evaluate or return an
+/// error; they never panic.
+mod no_panic {
+    use super::*;
+
+    const TOKENS: &[&str] = &[
+        "m", "n", "h", "(", ")", "[1m]", "[5m:30s]", "[90s:]", "+", "-", "*", "/", "%", "^", "==", "!=", ">", "<",
+        "bool", "and", "or", "unless", "on(job)", "ignoring(inst)", "group_left", "group_right(extra)", "sum", "avg",
+        "topk", "quantile", "count_values", "by (job)", "without (inst)", "rate", "increase", "delta", "irate",
+        "avg_over_time", "quantile_over_time", "predict_linear", "histogram_quantile", "label_replace", "abs",
+        "clamp", "scalar", "vector", "time()", "timestamp", "absent", "sort", ",", "1", "0", "-1", "0.5", "NaN",
+        "Inf", "1e400", "\"v\"", "\"(.*)\"", "\"$1\"", "offset 1m", "offset -5m", "@ 100", "@ start()", "@ end()",
+        "@ -9e18", "{job=\"x\"}", "{job=~\"x|y\"}", "{__name__=~\".+\"}", "day_of_month", "round",
+    ];
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 3000, failure_persistence: None, ..ProptestConfig::default() })]
+
+        #[test]
+        fn token_soup_never_panics(
+            data in data_strategy(),
+            base in query_strategy(),
+            extra in proptest::collection::vec((0..TOKENS.len(), 0usize..60), 0..6),
+            t in prop_oneof![Just(0i64), Just(i64::MAX), Just(i64::MIN + 1), -100_000i64..700_000],
+        ) {
+            // Start from a valid query and splice random tokens into it, so
+            // that a good share of the results still parse.
+            let mut q = base.to_string();
+            for (tok, pos) in extra {
+                let mut at = pos.min(q.len());
+                while !q.is_char_boundary(at) { at -= 1; }
+                q.insert_str(at, &format!(" {} ", TOKENS[tok]));
+            }
+            let src = MemSource::from_series(data.series);
+            let _ = query_instant(&src, &q, t);
+            let _ = query_range(&src, &q, t.saturating_sub(120_000), t, 30_000);
+            let _ = selectors(&q, t.saturating_sub(120_000), t, 30_000);
+        }
+    }
+}

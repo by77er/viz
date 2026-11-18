@@ -65,9 +65,14 @@ for the review rubric.
    and is not given the author's reasoning: they get the images, the running view and the
    design system, and return approve, approve with changes, or reject, with findings tied
    to the rubric. Record the verdict in the pull request.
-5. **Merge.** Once the verdict is approve and checks pass, the change may be merged
+5. **Measure speed.** The budgets in the design system's "Responsiveness and feedback"
+   section are requirements. A change that touches interaction attaches before and after
+   measurements (input response, view change, first result paint) and how they were taken.
+   Progress indicators show only measured work; never add a spinner or skeleton to cover a
+   slow path, fix the path or say truthfully what is happening.
+6. **Merge.** Once the verdict is approve and checks pass, the change may be merged
    without waiting for the owner. Blockers and majors are fixed and re-imaged first.
-6. **Change the system in the same pull request** when a change needs a new token or
+7. **Change the system in the same pull request** when a change needs a new token or
    component. `tokens.json` is the single source; `dist/` is generated and never edited.
    Republish the reference after the system changes.
 
