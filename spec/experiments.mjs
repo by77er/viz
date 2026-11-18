@@ -140,6 +140,10 @@ const EXPERIMENTS = [
 
 // ----------------------------------------------------------------------------- running
 
+// TRACE=1 forces action labels on; INV=<name> overrides the invariant (for diagnosis)
+if (process.env.TRACE) for (const e of EXPERIMENTS) e.cfg = { ...e.cfg, trace: true }
+if (process.env.INV) for (const e of EXPERIMENTS) e.inv = process.env.INV
+
 const q = (v) => (typeof v === 'string' ? JSON.stringify(v) : String(v))
 
 function writeInstance(e) {
