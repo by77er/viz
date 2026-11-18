@@ -4,5 +4,5 @@
     "noUncheckedIndexedAccess": true, "skipLibCheck": true, "noEmit": true, "resolveJsonModule": true, "allowImportingTsExtensions": true,
     "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
   },
-  "include": ["gateway/src", "gateway/test", "stage", "../engine/wasm/js/wasm.d.ts"]
+  "include": ["gateway/src", "gateway/test", "stage/queue-names.ts", "stage/queue-names.test.ts"]
 }

@@ -106,7 +106,7 @@ What Cloudflare documents, and what the pipeline does about it. Read on 2026-11-
 | A version is code + bindings + compatibility settings; a deployment says which version(s) serve. `wrangler deploy` creates a version and deploys it at 100%; the two steps can be decoupled. Storage state (KV, R2, Durable Objects) is not versioned | [Versions & deployments](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/) | Phase 1 `wrangler versions upload --tag <sha>` for every Worker; nothing serves it. Phase 2 `wrangler versions deploy <id>@100%` in order |
 | Two Workers joined by a service binding "may be at different points in their own gradual deployment"; overrides do not work for RPC | [Gradual deployments](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/gradual-deployments/), [Version overrides](https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/) | Promote callees before callers (viz-ingest, viz-control, viz-query, viz-gateway) so a caller never runs ahead of what it calls; roll back in the reverse order. Both directions of skew still happen while a deployment propagates, so every RPC and format must work across one release (`contracts/COMPATIBILITY.md` §1, §3) |
 | Each Durable Object is assigned one version per deployment, "will not change until you create a new deployment", and "will only be reset when it is assigned a different version" | [Gradual deployments with Durable Objects](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/) | Deploy at 100%, never a percentage split: every object moves once per release |
-| An active object adopts new code when it hibernates or when `max_delay` expires (default `deferred`, 300 s); `immediate` resets it at once; the reset affects in-memory state only and callers see "Durable Object reset because its code was updated." | [Durable Objects code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/), [Troubleshooting](https://developers.cloudflare.com/durable-objects/observability/troubleshooting/) | `--durable-objects-code-update-mode "deferred 30s"` (workers.json): in-flight requests get up to 30 s, and the old code stops serving within about half a minute instead of five. What a caller sees at that reset is not documented beyond the message: measured in the trial |
+| An active object adopts new code when it hibernates or when `max_delay` expires (default `deferred`, 300 s); `immediate` resets it at once; the reset affects in-memory state only and callers see "Durable Object reset because its code was updated." | [Durable Objects code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/), [Troubleshooting](https://developers.cloudflare.com/durable-objects/observability/troubleshooting/) | `--durable-objects-code-update-mode "deferred 30s"` (workers.json): in-flight requests get up to 30 s, and the old code stops serving within about half a minute instead of five minutes. What a caller sees at that reset is not documented beyond the message, so it was measured: objects moved 29.7 to 29.9 s after their Worker, and at 20 requests a second no caller saw an error (trial) |
 | Versions that change a Durable Object class's lifecycle (the `migrations` array or `exports`) "cannot be uploaded"; apply them with `wrangler deploy`; migrations "are atomic operations and cannot be gradually deployed" | [With Durable Objects](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/#durable-object-class-lifecycle-changes), [Migrations (legacy)](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/) | A Worker whose config adds a migration (or that does not exist yet) is only bundled in phase 1 and goes out with `wrangler deploy` at its turn in phase 2 |
 | Rollback cannot go "to any version prior to the one that included" a class lifecycle change; rollback is blocked when a binding's resource no longer exists; "errors could occur" if data structures changed | [Rollbacks](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/rollbacks/), [With Durable Objects](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/) | `release.mjs rollback` refuses when any Worker's migration tag in force differs from the recorded one |
 | Only the 100 most recent versions can be deployed or rolled back to | [Rollbacks](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/rollbacks/) | The rollback checks the version still exists and says so if it does not |
@@ -174,6 +174,10 @@ viz-query, viz-control, viz-ingest), then the smoke test. Locally:
 
 It refuses, changing nothing, when a recorded version no longer exists (Cloudflare keeps 100)
 or when any Worker's Durable Object migration tag in force differs from the recorded one.
+Cloudflare refuses the same thing itself (measured in the trial: `versions deploy` of a
+pre-migration version answers code 10210, "the version depends on Durable Object migration
+"v1", but the current deployment is using migration "v2""); the tool's check says why before
+anything is attempted, and also covers Workers rolled back as a set.
 **Migrations are forward-only**: once a release has applied migration `v2` to a class,
 Cloudflare will not run code from before it on that class's objects, and their storage may
 already be in the new shape; no version from before the migration can serve again. A bad
@@ -287,7 +291,11 @@ All measured here unless it says Cloudflare.
   against the real component configs, the migration gate, acknowledgement parsing, the
   Remote Write body decoded by snappyjs and protobufjs, the CI matrix with and without
   `app/`, `design-system/` and `bench/`).
-- `npx tsc --noEmit` in deploy/: clean (includes the stage shim against stack/'s types).
+- `npx tsc --noEmit` in deploy/: clean. It covers the gateway and the stage queue-name
+  mapping, not `stage/ingest.ts`: typing that file means type-checking the whole write path
+  (stack/, ledger/, …), which is their CI job's business and was mid-edit by others while this
+  was written. The shim is checked by bundling it (`wrangler deploy --dry-run`, phase 1 of every
+  stage release) and ran through the whole trial.
 - `node gateway/scripts/mutants.mjs`: **11 of 11 mutants killed**:
 
   | Mutant | Killed by |
@@ -310,6 +318,11 @@ All measured here unless it says Cloudflare.
 - The CI exclusion, on a copy of the sources without `app/` (as main will be): query's
   `npx tsc --noEmit` fails with 4 errors, all in `test/http.test.ts` (`Cannot find module
   '../../app/src/api/client'`); with the `tsconfig.ci.json` the workflow writes, it is clean.
+- The same copy, `npx vitest run --exclude test/http.test.ts` in query/: the other 7 test
+  files ran (no import error). In that copy 10 of 45 tests failed for reasons inside
+  `query/` and `engine/` that other engineers were changing at the time (for example
+  `engine.test.ts` expects 12 exports and the rebuilt module has 22); that is their work in
+  progress, not the exclusion.
 - actionlint 1.7.12 (built from source through the Go module proxy) with shellcheck 0.11.0
   on both workflows: no findings. shellcheck on `deploy.sh`: clean.
 - The workflows themselves have not run: this checkout has no GitHub remote access. What
@@ -342,6 +355,7 @@ itself (a 404) took p50 41 ms, p90 80 ms, p99 181 ms (n = 100).
 | Smoke on N1 with the key | Remote Write 204 in 571 ms; all 9 samples returned by a query 820 ms after the acknowledgement |
 | Latency, sequential, n = 200 each | write acknowledgement (4 series × 1 sample, 204): **p50 96 ms, p90 133 ms, p99 334 ms**; query `sum(viz_trial_latency{run})` (tail rows, 200): **p50 223 ms, p90 303 ms, p99 477 ms**; no errors |
 | Upgrade, rollback and failed deploy under load | below |
+| How the trial ran `deploy.sh` | always with `VIZ_SKIP_NPM_CI=1` (other engineers were running tests in stack/, query/ and control/; `npm ci` there would have replaced their node_modules mid-run) and, after N1, `VIZ_WASM_PREBUILT=1` with N1's modules |
 | Cleanup | below |
 
 ### Upgrade under load
@@ -357,7 +371,77 @@ a reader asked `count(viz_trial_load{run})` every second. While it ran:
 3. **N1 → N3 → N1, automatic**: `deploy.sh` with release N3 and a smoke key that does not
    exist, so the smoke test fails (401) after N3 is live and `deploy.sh` restores N1 by itself.
 
-@@LOAD@@
+Measured on Cloudflare from outside, one run of 13.6 minutes (run id kept in the trial's
+report, not committed). Write requests are counted in the window their first attempt fell in;
+"refused" is any answer other than 2xx, including network errors.
+
+| Window | s | Write requests | Refused attempts | Requests retried | Disturbance | Write ack ms p50 / p90 / p99 / max | Reads | Read errors | Query ms p50 / p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline (N1 serving) | 90 | 1,801 | 0 | 0 | none | 87 / 108 / 236 / 603 | 90 | 0 | 258 / 732 |
+| N1 → N2: upload, promote, smoke | 77 | 1,537 | 0 | 0 | none | 88 / 111 / 298 / 492 | 77 | 0 | 305 / 580 |
+| N2 serving (its object cutover falls here) | 150 | 3,003 | 0 | 0 | none | 83 / 101 / 221 / 408 | 150 | 0 | 357 / 637 |
+| rollback N2 → N1 | 30 | 591 | 0 | 0 | none | 90 / 118 / 213 / 382 | 29 | 0 | 412 / 757 |
+| N1 serving (object cutover) | 150 | 3,002 | 0 | 0 | none | 86 / 111 / 274 / 469 | 150 | 0 | 375 / 574 |
+| N1 → N3 → smoke fails (401) → automatic rollback to N1 | 199 | 3,972 | 0 | 0 | none | 88 / 115 / 245 / 541 | 198 | 0 | 298 / 707 |
+| N1 serving (object cutover), to the end | 120 | 2,400 | 0 | 0 | none | 90 / 109 / 271 / 395 | 119 | 0 | 332 / 616 |
+| **whole run** | 816 | **16,306** | **0** | **0** | | | **813** | **0** | |
+
+**Acknowledged samples afterwards: 65,224 acknowledged, 65,224 returned by queries with the
+values sent; 0 missing, 0 wrong** (read back in 5-minute slices of `viz_trial_load{run}[5m]`,
+covering lake files and the tail: by then three sample files, three series files and six
+ledger log objects had been flushed to the bucket through the queues, with no dead letter).
+
+So across four cutovers (two promotions, a manual rollback, an automatic rollback, each moving
+every Worker and both write-path Durable Object classes) no write was refused or retried, no
+query failed, and no acknowledged sample was lost. Latency did not visibly move: write p99
+stayed between 213 and 298 ms in every window.
+
+**When the objects actually moved** (from `wrangler tail` on viz-trial-ingest, which reports
+each invocation's version; tail samples events): after the manual rollback, the Worker's
+fetch handler ran the restored version from 23:37:02.0; Shard events kept arriving on the
+previous version, about two a second, until 23:37:30.9, and on the restored one from
+23:37:31.8, so **29.7 s later**, which is the 30 s `max_delay` (the objects never went idle,
+so they did not move early). The first Shard request after the reset took 364 ms of wall time
+against about 40 ms for the others. The automatic rollback showed the same: fetch at
+23:42:50.9, Shard at 23:43:20.7 (29.9 s). Ledger moved within a second of Shard each time. No
+invocation in the tail had an exception or an error log. The caller-visible error Cloudflare
+documents for a reset ("Durable Object reset because its code was updated") did not appear in
+any client answer or tail event. Why (for example, that a deferred reset waits for in-flight
+requests) is not shown by this run; the tail samples, and one run at 20 requests a second is
+not proof that it never happens. If it does, edge answers 503 with `Retry-After` and nothing
+is acknowledged (`edge/src/route.ts`), which the writer here would have retried.
+
+**Promotion timing**: `versions deploy` took 0.85 s per Worker and `triggers deploy` about 3 s;
+a whole N1 → N2 release (upload four, promote four, smoke with data) took 76 s, the manual
+rollback 30 s, and N3 with its failing smoke test and automatic rollback 199 s (90 s of that
+is the smoke test retrying a 401, as it does for a key that KV has not propagated yet).
+
+### Migration gate and forward-only rollback, live
+
+With no load, on the same stage: the snapshot's `stack/wrangler.jsonc` was given an empty
+migration step `{ "tag": "v2" }` (in the snapshot only, to exercise the gate; the component
+was not changed).
+
+| Step | Result |
+|---|---|
+| deploy N4 without acknowledgement | **refused, exit 3**, in 4 s: "viz-trial-ingest: this release applies Durable Object migration v1 → v2. Acknowledge it with … "Migration: viz-ingest@v2"". Nothing uploaded |
+| deploy N4 with `Migration: viz-ingest@v2` | viz-trial-ingest bundled in phase 1 and deployed with `wrangler deploy` (migration v2) at its turn; the other three uploaded and promoted; smoke with data passed; 72 s |
+| `release.mjs rollback` to N1's record | **refused, exit 3, nothing changed**: "the release being restored ran under Durable Object migration v1, and v2 is in force now …" |
+| the same by hand, `wrangler versions deploy <N1 ingest version>@100%` | **Cloudflare refuses too**: `Invalid deployment: The version … cannot be deployed because it has a resource that was modified: the version depends on Durable Object migration "v1", but the current deployment is using migration "v2"` [code 10210] |
+
+### Cleanup
+
+`node deploy/resources.mjs destroy --stage trial`. The first run stopped at viz-trial-ingest:
+`10064 Cannot delete this Worker as it is a consumer for a Queue` (gateway, query and control
+were already deleted). `destroy` now removes the stage queues' consumers first; the second run
+deleted the four consumers, viz-trial-ingest, the four queues, the KV namespace, and the
+bucket's 21 objects and then the bucket. Then, listing the account: **no Worker, bucket, KV
+namespace, queue, custom domain or Durable Object namespace whose name contains
+`viz-trial`**; the Worker count was back to 22, the number before the trial; the only `viz-`
+resources left are the three spike Workers and the spike bucket that were there before. The
+trial's KV id was removed from `resources.json`; the API keys written to files during the
+trial were deleted with it.
+
 
 
 ## Cost
@@ -369,7 +453,11 @@ Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond
 The trial (below) was stated before it ran as under US$1 worst case: at most 30 minutes of
 20 Remote Write requests and 1 query a second through four Workers, a few hundred R2 writes
 from flushes, a few thousand queue operations, one KV namespace and one small bucket, at
-Workers Paid rates.
+Workers Paid rates. What it sent, counted by the client: 16,306 Remote Write requests and 813
+queries under load, 400 more for the latency measurement, about 20 for smoke tests and
+bootstrap, five releases and two manual rollbacks. Cloudflare's GraphQL analytics, queried
+right after the trial for 23:10–23:50 UTC, returned no rows for the `viz-trial-*` scripts
+(already deleted, or not yet ingested), so there is no measured bill for it here.
 
 ## Needed changes in components
 
@@ -418,7 +506,8 @@ None of these were made here.
    engine initialisation errors as `internal` (500).
 9. **`edge/`: `/api/v1/push` is not served.** The gateway routes it to viz-ingest as asked;
    edge answers 404 until it exists.
-@@NEEDED_TRIAL@@
+10. Nothing else. Under load, across four cutovers, no component refused a request, failed a
+    query or lost an acknowledged sample (the trial, above).
 
 ## Not deployed yet, and why
 

@@ -106,6 +106,15 @@ export async function destroy(stage) {
   checkStage(stage)
   const w = wanted(stage)
   const done = []
+  // A Worker that consumes a queue cannot be deleted (Cloudflare error 10064): remove the
+  // consumers of the stage's own queues first.
+  for (const q of await listQueues()) {
+    if (!w.queues.includes(q.queue_name)) continue
+    for (const c of (await cf('GET', `/queues/${q.queue_id}/consumers`)).result ?? []) {
+      await cf('DELETE', `/queues/${q.queue_id}/consumers/${c.consumer_id}`)
+      done.push(`consumer of ${q.queue_name} (${c.script ?? c.script_name ?? c.service ?? 'worker'})`)
+    }
+  }
   // Workers: callers before callees (reverse of deploy/workers.json), so nothing is left
   // bound to a script that is already gone.
   for (const name of [...w.workers].reverse()) if (await deleteScript(name)) done.push(`Worker ${name}`)
