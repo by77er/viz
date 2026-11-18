@@ -357,3 +357,165 @@ mod no_panic {
         }
     }
 }
+
+/// Queries used only for the differential run against the Prometheus Go
+/// engine (`tools/godiff`): range-dependent modifiers, error cases and edge
+/// parameters that the properties above cannot use.
+const DIFF_EXTRA: &[&str] = &[
+    "m @ start()",
+    "m @ end()",
+    "rate(m[1m] @ end())",
+    "sum_over_time(m[2m:30s] @ start())",
+    "max_over_time(m[2m:] @ end() offset 30s)",
+    "timestamp(m @ 2100)",
+    "timestamp(m @ end())",
+    "timestamp(abs(m))",
+    r#"abs({__name__=~"m|n"})"#,
+    r#"rate({__name__=~"m|n"}[2m])"#,
+    r#"-{__name__=~"m|n"}"#,
+    r#"last_over_time({__name__=~"m|n"}[2m])"#,
+    r#"{__name__=~"m|n"} > 3"#,
+    r#"{__name__=~"m|n"} > bool 3"#,
+    "m + on(job) n",
+    "m + on(job) group_left n",
+    "m * on(job) group_left(extra) n",
+    "m * on(job, inst) group_left(extra) n",
+    "m * ignoring(extra) group_right n",
+    "sum by (job) (m) / on(job) group_right(extra) n",
+    r#"label_replace(m, "job", "z", "inst", ".*")"#,
+    r#"label_replace(m, "__name__", "renamed_$1", "job", "(.)")"#,
+    r#"label_replace(rate(m[1m]), "__name__", "r", "", "")"#,
+    r#"label_join(m, "inst", "", "missing")"#,
+    "quantile(1.5, m)",
+    "quantile(-1, m)",
+    "quantile by (job) (0.999, n)",
+    "quantile_over_time(2, m[1m])",
+    "histogram_quantile(NaN, h)",
+    "histogram_quantile(-0.5, h)",
+    "histogram_quantile(1, h)",
+    "histogram_quantile(0.99, rate(h[1m]))",
+    "histogram_quantile(0.5, m)",
+    "clamp(m, 5, 2)",
+    "clamp(m, NaN, 2)",
+    "round(m, 0)",
+    "round(m / 7, 0.25)",
+    "m % 0",
+    "m / 0",
+    "m ^ -1",
+    "m atan2 n",
+    "bottomk(0, m)",
+    "topk(100, m)",
+    "topk(scalar(count(m)) - 1, n)",
+    r#"count_values without (inst) ("v", m)"#,
+    r#"count_values by (job) ("job", m)"#,
+    "sum by (__name__) (m)",
+    "sum by (__name__, job) (rate(m[1m]))",
+    "count without (__name__) (m)",
+    "avg without (job, inst, extra) (n)",
+    "predict_linear(m[2m], -30)",
+    "deriv(n[3m])",
+    "delta(n[2m] offset 1m)",
+    "increase(n[45s])",
+    "rate(n[10m])",
+    "irate(n[3m])",
+    "changes(n[5m]) + resets(n[5m])",
+    "day_of_year(vector(time()))",
+    "days_in_month(vector(time() * 1000))",
+    "minute(m * 100)",
+    "scalar(m)",
+    r#"scalar(m{job="x", inst="0"}) + time()"#,
+    r#"absent(m{job="zz", inst=~"a.*", extra!="q"})"#,
+    "absent_over_time(nope[1m])",
+    r#"absent(sum(m{job="zz"}))"#,
+    "vector(1) + on() group_left m",
+    "m and on() vector(1)",
+    "m unless on(job) n",
+    "m or on(inst) n",
+    "(m > 5) or (n < 20)",
+    "sort_desc(m) + 0",
+    "stddev_over_time(n[3m:20s])",
+    "avg_over_time(m[5m])",
+    "sum_over_time((m > 3)[2m:10s])",
+    "min_over_time(rate(n[1m])[5m:1m] offset -1m)",
+    "sum(rate(n[2m] offset 3m)) by (job) / sum(rate(n[2m])) by (job)",
+    "m == bool n",
+    "1 > bool 2",
+    "2 ^ 3 ^ 2",
+    "-2 ^ 2",
+    "5 % -3",
+    "time() - m",
+    "pi() * m",
+    "sgn(m - 5) * exp(1)",
+    "ln(-m)",
+    "sqrt(-m)",
+    "stdvar by (job) (n)",
+    "group without (inst) (m)",
+    "max by (inst) (m) - min by (inst) (m)",
+    "first_over_time(m[90s])",
+    "m[2m]",
+    "rate(m[1m])[3m:30s]",
+];
+
+/// Writes random data sets, queries and this engine's answers as JSON for
+/// `tools/godiff`, which re-evaluates them with the Prometheus Go engine.
+/// Run with `VIZ_DIFF_OUT=/path/cases.json cargo test --release --test props export_differential_cases -- --ignored`.
+#[test]
+#[ignore]
+fn export_differential_cases() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+    let out = std::env::var("VIZ_DIFF_OUT").expect("set VIZ_DIFF_OUT");
+    let rounds: usize = std::env::var("VIZ_DIFF_ROUNDS").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+    // Shift everything so that all timestamps are positive.
+    const BASE: i64 = 2_000_000;
+    let mut runner = TestRunner::deterministic();
+    let mut cases = Vec::new();
+    for round in 0..rounds {
+        let data = data_strategy().new_tree(&mut runner).unwrap().current();
+        let series: Vec<Series> = data
+            .series
+            .into_iter()
+            .map(|mut s| {
+                for t in s.ts.iter_mut() {
+                    *t += BASE;
+                }
+                s
+            })
+            .collect();
+        let src = MemSource::from_series(series.clone());
+        let delayed = round % 2 == 1;
+        let opts = EvalOptions { delayed_name_removal: delayed, ..Default::default() };
+        let (start, step, n) = (BASE + (round as i64 * 7919) % 300_000, [15_000, 30_000, 60_000, 47_000][round % 4], 3 + (round % 9) as i64);
+        let end = start + n * step + step / 2;
+        let mut queries = Vec::new();
+        for q in QUERIES.iter().chain(DIFF_EXTRA.iter()) {
+            let is_range_vector = *q == "m[2m]" || *q == "rate(m[1m])[3m:30s]";
+            let (ours, err) = if is_range_vector { (serde_json::Value::Null, String::new()) } else {
+                match query_range_with(&src, q, start, end, step, &opts) {
+                    Ok(m) => (serde_json::to_value(&m).unwrap(), String::new()),
+                    Err(e) => (serde_json::Value::Null, format!("{e}")),
+                }
+            };
+            if !is_range_vector {
+                queries.push(serde_json::json!({"q": q, "start": start, "end": end, "step": step, "instant": false, "ours": ours, "ours_err": err}));
+            }
+            let t = start + step * (n / 2);
+            let (ours, err) = match query_instant_with(&src, q, t, &opts) {
+                Ok(v) => (serde_json::to_value(&v).unwrap(), String::new()),
+                Err(e) => (serde_json::Value::Null, format!("{e}")),
+            };
+            queries.push(serde_json::json!({"q": q, "start": t, "end": t, "step": 0, "instant": true, "ours": ours, "ours_err": err}));
+        }
+        let series_json: Vec<serde_json::Value> = series
+            .iter()
+            .map(|s| {
+                let labels: BTreeMap<&str, &str> = s.labels.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                let bits: Vec<String> = s.values.iter().map(|v| format!("{:x}", v.to_bits())).collect();
+                serde_json::json!({"labels": labels, "ts": s.ts, "bits": bits})
+            })
+            .collect();
+        cases.push(serde_json::json!({"delayed": delayed, "series": series_json, "queries": queries}));
+    }
+    std::fs::write(&out, serde_json::to_vec(&cases).unwrap()).unwrap();
+    println!("wrote {} cases with {} queries each to {out}", cases.len(), 2 * (QUERIES.len() + DIFF_EXTRA.len()) - 2);
+}

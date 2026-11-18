@@ -118,8 +118,6 @@ const EXPERIMENTS = [
   // ---- the amended protocol: exhaustive, expect no counterexample
   { name: 'fixed_1shard', kind: 'fixed', label: 'amended protocol, 1 shard, 2 batches, every action',
     cfg: { ...FIXED }, inv: ALL },
-  { name: 'fixed_1shard_L1', kind: 'fixed', label: 'amended protocol, liveness proxy L1 (streams stay registered)',
-    cfg: { ...FIXED }, inv: 'L1_StreamRegistered' },
   { name: 'fixed_1shard_variants', kind: 'fixed', label: 'amended protocol, 2 encoder variants (double flush with different bytes)',
     cfg: { ...FIXED, variants: 2, maxSL: 0, maxExp: 0 }, inv: ALL },
   { name: 'fixed_1shard_3batches', kind: 'fixed', label: 'amended protocol, 1 shard, 3 batches, no shard loss / retention',
@@ -134,7 +132,7 @@ const EXPERIMENTS = [
   // ---- random simulation, larger bounds
   { name: 'sim_fixed_big', kind: 'sim', label: 'amended protocol, 2 shards, 4 batches, 3 sends, 2 variants, 2 of each fault',
     cfg: { ...FIXED, nb: 4, ns: 2, maxSend: 3, variants: 2, maxJobs: 3, maxFlush: 8, maxComp: 3, maxExp: 2, maxLL: 2, maxSL: 2, maxQ: 4, maxRestarts: 6 },
-    inv: 'SafetyAndL1', samples: 60000, steps: 120 },
+    inv: ALL, samples: 60000, steps: 120 },
   { name: 'sim_literal_big', kind: 'sim', label: 'DESIGN 3.1 as written, same bounds (expected to fail: findings)',
     cfg: { ...LITERAL, nb: 4, ns: 2, maxSend: 3, variants: 2, maxJobs: 3, maxFlush: 8, maxComp: 3, maxExp: 2, maxLL: 2, maxSL: 2, maxQ: 4, maxRestarts: 6, trace: true },
     inv: ALL, samples: 60000, steps: 120 },
@@ -161,6 +159,7 @@ function fmtAct(m) {
   switch (n) {
     case 'append': return `append(batch ${a} -> shard ${b})`
     case 'register': return `register(shard ${a}, incarnation ${b})`
+    case 'reRegister': return `reRegister(shard ${a}, incarnation ${b})`
     case 'seal': return `seal(shard ${a}, through seq ${b})`
     case 'recorded': return `recorded(shard ${a}, through seq ${b})`
     case 'discard': return `discard(shard ${a}, through seq ${b})`

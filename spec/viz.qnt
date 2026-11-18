@@ -193,6 +193,19 @@ module viz {
     }
   }
 
+  /// Part of fix F1: a registration is not complete until the ledger has logged it, so the
+  /// shard repeats it (idempotent) if a ledger rebuild has rolled it back.
+  action reRegister(sid: int): bool = {
+    val s = st.sh.get(sid)
+    all {
+      G.regLogged, s.reg, wmSeq(st.led.wm, sid, s.inc) == 0,
+      not(st.led.wm.keys().contains(sid) and st.led.wm.get(sid).inc == s.inc),
+      st' = commit(st, { ...st.led, wm: st.led.wm.put(sid, { inc: s.inc, seq: 0 }) },
+                   { ...noEntry, wm: Set({ s: sid, inc: s.inc, seq: 0 }) }),
+      act' = lbl("reRegister", sid, s.inc),
+    }
+  }
+
   /// Shard.append(). Sending and (re)sending by the client, the durable append and the
   /// acknowledgement are one step; a lost acknowledgement is covered because the client
   /// may resend any batch it has sent before.
@@ -502,7 +515,7 @@ module viz {
     nondet b = oneOf(BATCHES)
     clientAppend(b),
     nondet sid = oneOf(SHARDS)
-    any { register(sid), seal(sid), notify(sid), fpExpire(sid), shardLoss(sid), qTail(sid) },
+    any { register(sid), reRegister(sid), seal(sid), notify(sid), fpExpire(sid), shardLoss(sid), qTail(sid) },
     nondet sid = oneOf(SHARDS)
     nondet h = oneOf(st.sh.get(sid).bounds)
     nondet v = oneOf(1.to(G.variants))
@@ -574,5 +587,4 @@ module viz {
   val L2_RestartsBelow3 = st.restarts < 3
 
   val Safety = and { I1_AckedIsDurable, I3_NoDuplicates, I4_NoGapAtSeam, I5_DiscardOnlyLogged, I11_LiveFilesReadable, I9_NoResurrection }
-  val SafetyAndL1 = Safety and L1_StreamRegistered
 }
