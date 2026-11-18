@@ -10,3 +10,4 @@ target-*/
 _apalache-out/
 .gomodcache/
 gocache/
+deploy/generated/
