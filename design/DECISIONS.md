@@ -160,12 +160,26 @@ still giving each series exactly one home.
 **Why.** Sorting and encoding tens of MB inside a single-threaded 128 MB object blocks
 acknowledgements and risks out-of-memory loops (review, platform C2, correctness 15).
 
-## D13. Shared shard pools for small tenants
+## D13. Dedicated shards per tenant; pooling deferred
 
-**Decision.** In hosted deployments small tenants share shard objects, with separate WAL
-streams, tenant-pure files and per-tenant quotas.
+**Decision (project owner, 2026-11-18).** Every tenant gets its own shards. Sharing shard
+objects between small tenants is deferred and will be revisited only if viz is run as a
+hosted service for many small tenants.
 
-**Why.** A dedicated always-warm shard per small tenant costs about $4 per month in duration
-alone. Pools trade some isolation for a marginal cost near zero.
+**Why.** Isolation: one tenant's load, quotas and failures stay inside its own objects, and
+the write protocol has one fewer dimension to prove. The cost is roughly $4 per month of
+duration per continuously active shard, which is acceptable for a deployment in one's own
+account.
 
-**Open.** Noisy-neighbour behaviour inside a pooled shard.
+## D14. Build order
+
+**Decision (project owner, 2026-11-18).** Metrics, then traces and rules, then logs and
+detection.
+
+## D15. The publisher is never upstream of ingest
+
+**Decision.** Shards discard on the ledger's acknowledgement, not on publication. The
+publisher's backlog is the ledgers' R2 change logs; it applies net changes, so files added
+and compacted away before publication are never published. A stalled publisher delays
+external readers and physical deletes, nothing else. Publication lag has its own alert.
+Managed-catalog publication is deferred until there is a concrete analytics or export need.

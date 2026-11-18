@@ -30,7 +30,7 @@ paper reviews.
 | "Ledger + R2 can rebuild" was not true (correctness 16) | Asserted | Every ledger change appended to an immutable R2 log |
 | Shared tables readable by external engines expose other tenants (correctness 17) | "Readable by any Iceberg engine" | Direct Iceberg access only for dedicated cells |
 | Cache API treated as global and permanent (platform M6, correctness 18–19) | "Cached forever" | Accelerator only; content-addressed keys; bounded lifetime; "closed" defined by the accept window |
-| Marginal hosted tenant cost about $6.50 (platform C4) | Shards per tenant | Shared shard pools for small tenants |
+| Marginal hosted tenant cost about $6.50 (platform C4) | Shards per tenant | Draft 3 proposed shared shard pools; the owner has since chosen dedicated shards and deferred pooling (D13), so this cost stands |
 | Component count understated (platform M11) | "Five Workers and five Durable Object classes" | Full inventory with wake cadence |
 | Scope gaps: deployment model, Prometheus/Tempo APIs, scrape discovery and credentials, tiered retention, log and trace monitors (platform M10) | Missing | Added; launch scope cut into phases |
 | Spike order started with the catalog, which has a fallback (platform sequencing) | Catalog first | Billing behaviour, connection semantics, flush-in-isolate and a vertical read slice first |
@@ -49,8 +49,8 @@ These were raised and are not resolved by design text alone.
    and returns partial results; it does not show they are fast.
 5. **Ledger throughput for a very large tenant.** Draft 3 names the escape (ledger per shard
    group) without specifying it.
-6. **Shared shard pools** trade some isolation for cost. The noisy-neighbour behaviour inside
-   a pooled shard is unspecified beyond per-tenant quotas.
+6. **Shared shard pools** are deferred (D13), so their noisy-neighbour behaviour no longer
+   needs specifying for launch.
 7. The minor findings in the two draft-2 reports were not individually dispositioned.
 
 ## Re-review of draft 3

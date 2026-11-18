@@ -92,7 +92,7 @@ of its own. It runs as WASM in `edge`, `flush`, `query` and `leaf`, natively in 
 and inside a seeded simulator in CI. TypeScript owns bindings, HTTP and orchestration.
 Whether the core fits a 128 MB isolate with a 1 s startup limit is the second spike.
 
-### 3.3 Cells and shard pools
+### 3.3 Cells and shards
 
 - A **cell** is one R2 bucket, one publisher and one set of Iceberg tables. Every object name
   carries its cell. A single-organisation deployment is normally one cell. A hosted service
@@ -100,10 +100,9 @@ Whether the core fits a 128 MB isolate with a 1 s startup limit is the second sp
 - A **dedicated cell** holds one tenant. Only dedicated cells give direct Iceberg access to
   that tenant, because a shared cell's tables contain other tenants' rows. Dedicated cells
   can use an EU-jurisdiction bucket.
-- Shards come from **pools**. Small tenants share a pool: several tenants' batches land in
-  the same shard object, each in its own WAL stream, sealed into tenant-pure files, with
-  quotas enforced per tenant. A tenant that outgrows the shared pool gets its own shards.
-  This is what keeps the marginal cost of a small active tenant low in a hosted deployment.
+- Shards are **dedicated**: each tenant has its own. Sharing shard objects between small
+  tenants would lower the marginal cost of a hosted tenant and is deferred (`DECISIONS.md`
+  D13).
 
 ## 4. Write path
 
@@ -162,8 +161,8 @@ until then. No key is ever accepted by two shards.
 
 Every step is idempotent and keyed by a **stream**: `(shard, tenant, incarnation)`.
 Sequence numbers, seals, units, watermarks, discard marks and fingerprints are all per
-stream, so in a shared shard one tenant's ledger being slow never blocks another tenant and
-nothing crosses tenants. A shard that loses its storage registers a new incarnation with
+stream. Keeping the tenant in the key costs nothing with dedicated shards and means
+nothing has to change if shards are ever shared. A shard that loses its storage registers a new incarnation with
 the ledger before it accepts writes; the ledger records the boundary and raises an alert,
 because rows between the old watermark and the loss are gone and that must be visible.
 
@@ -231,6 +230,11 @@ file is physically deleted only after the removal is published and every snapsho
 referenced it has expired. Each snapshot points at an object
 recording which ledger version of each tenant it reflects. A scrubber checks continuously
 that the Iceberg live set equals the union of the ledgers at those versions.
+
+The publisher is never upstream of ingest. Shards discard on the ledger's acknowledgement,
+so a slow or stopped publisher delays only external readers and physical deletes. Its
+backlog is the ledgers' R2 logs, and it applies net changes, so catching up is one commit
+rather than a replay. Publication lag has its own alert.
 
 The first implementation writes Iceberg metadata directly to R2, using conditional writes as
 the compare-and-swap; any engine can read it as a static table. Committing to Cloudflare's
@@ -384,7 +388,7 @@ design. None is measured.
 | Case | Range per month | What decides where in the range |
 |---|---|---|
 | Single small deployment (10k series, 1 GB logs/day, 1M spans/day, 20 rules) | $5–15 | How Cloudflare bills an object that wakes once a minute (the first spike) |
-| Additional small active tenant in a hosted cell | under $1 with shared shard pools; about $6 with dedicated shards | Pool sharing; seal age |
+| Additional small active tenant | about $6 | Dedicated shard duration; seal age |
 | Team (1M series, 100 GB logs/day, 500M spans/day, 2k rules) | $400–800 | Compaction CPU, commit window, rule classes, first-load query reads |
 | Scale (100M series, 10 TB logs/day, 50B spans/day) | tens of thousands | Long-retention storage; shard duration |
 
