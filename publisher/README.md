@@ -12,6 +12,7 @@ external readers see older data and physical deletes wait. Nothing else.
 | `src/log.ts` | Reading a ledger's R2 log: changes after a cursor in version order up to the first hole; a strict replay for `verify` |
 | `src/iceberg.ts` | Table schemas, Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
+| `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
 | `test/` | 45 tests in workerd with a simulated R2, against the real `Ledger` class |
 | `tools/fixtures/` | Rust: real Parquet files made with `viz_storage::encode_segment` and `merge_files` |
 | `tools/verify_readers.py` | PyIceberg and DuckDB read the published tables and are compared with the ledgers |
@@ -127,6 +128,32 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
 `{locationPrefix}/{R2 key}`; `locationPrefix` comes from `ICEBERG_LOCATION_PREFIX` or
 `configure()` and cannot change once a table has a commit.
 
+## Versioned storage and formats (`contracts/COMPATIBILITY.md`)
+
+- **Storage.** The constructor opens SQLite with `openSchema` (`contracts/schema.ts`) inside
+  `blockConcurrencyWhile` (`publisher.Publisher`, version 1 = the schema the pre-versioning
+  code created). Storage a newer release migrated past what this code may read is refused:
+  every method throws `SchemaTooNewError` (message `schema_too_new: …`; its results are reports,
+  not status unions, and its future callers, a queue consumer and a cron, retry on an
+  exception), and the alarm only re-arms itself.
+- **Iceberg metadata from a newer publisher.** New tables carry the property
+  `viz.format-version` = `1` (absent means 1). Before committing, when rebuilding SQLite from
+  R2, and before sweeping, the publisher refuses (`metadata_too_new: …`) metadata whose
+  `format-version` is not 2, whose `viz.format-version` is higher than it knows, or whose
+  current schema or partition spec id it did not write. A newer publisher's schema evolution
+  is therefore never overwritten, its field ids never handed out again, and its objects never
+  swept by an older one; the tenants stay pending and the alarm retries. `verify` reports such
+  metadata as a problem instead of checking it.
+- **Cursors objects** carry `v: 1`; a higher one is refused when rebuilding.
+- **The ledger log.** A change of a version (`v`, absent = 1) or `kind` this code does not
+  know stops that tenant there (`status: 'unsupported'`): the changes before it are published,
+  it is never skipped, and the tenant stays pending. `verify`'s replay throws on it.
+- **Formats** (`FORMATS` in `src/schema.ts`), pinned by `test/golden/formats/`: a new table's
+  `metadata.json` for both tables (schemas, field ids, partition spec, sort order, name
+  mapping, properties), the Avro schemas of manifests and manifest lists, the cursors object,
+  and an `add_unit` change as the ledger logs it today. A further test requires that, across
+  every golden version and the code, a column keeps its field id and an id names one column.
+
 ## The partition columns
 
 The Parquet files contain neither `tenant` nor `day` (contracts/TABLES.md). The tables
@@ -159,6 +186,12 @@ contract change; see "Contract issues").
 
 ## Not implemented
 
+- **Reading the ledger's segment log.** The ledger's log is moving to segments
+  (`contracts/LEDGER-LOG.md`, "Readers of the log"; the change for `src/log.ts` is in
+  `ledger/README.md`, "Needed changes"). This reader still reads one object per change. It must
+  read segments, and refuse an unknown segment header `v` or `kind` as it already refuses an
+  unknown change, before the publisher is deployed anywhere the ledger writes segments.
+
 - **Triggers.** No queue consumer, no cron handler, and the ledger sends no nudge. The
   Worker entry only exports the class.
 - **Managed catalog.** Only the R2-native implementation exists. The catalog interface of
@@ -188,13 +221,15 @@ contract change; see "Contract issues").
 ```
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
-npm test             # 45 tests in workerd, 5 files; fills export/
+npm test             # 59 tests in workerd, 7 files; fills export/
 npm run typecheck
 npm run readers      # PyIceberg and DuckDB on export/
 npm run mutants      # about 8 minutes
 ```
 
-Last run: 45 passed, 0 failed, three runs in a row; `tsc --noEmit` clean;
+Last run (with versioning): 59 passed, 0 failed; `tsc --noEmit` clean (during one run it
+reported four errors in `../ledger/src/ledger.ts`, which the test worker imports, while
+another builder was changing `ExpireRequest`; gone on the final check). Before versioning: 45 passed, three runs in a row; `tsc --noEmit` clean;
 `wrangler deploy --dry-run` bundles the production entry.
 
 ### Fixtures and the ledger
@@ -259,7 +294,7 @@ the partition columns present in its data files, so it is a fault of that extens
 with identity-partitioned tables and not of how these tables are written. Everything else
 attempted was readable.
 
-### Workerd tests (45)
+### Workerd tests (59)
 
 | Area | Tests |
 |---|---|
@@ -276,6 +311,10 @@ attempted was readable.
 | What is written (2) | format version, schema, partition spec, name mapping, partition values checked against the key layout, statistics, manifest list counts and ranges, summary; an unreadable index fragment |
 | Driving (3) | `notify` then alarm, no alarm when idle; a nudge during a running publish is kept; `locationPrefix` cannot change |
 | Smoke, end to end, measurements (3) | |
+| Versioned storage (`compat.test.ts`, 6) | a fresh object at version 1 with the golden schema; migrations 1..N reproduce the golden of N; version 1 equals the pre-versioning `sqlite_master` (`test/fixtures/storage/v0.json`); that dump (a cell published once) adopted with every row unchanged and served; a publisher left by pre-versioning code keeps publishing after adoption, verifies clean and is not migrated again after eviction; storage of a breaking N+1 refused by all 11 methods, alarm re-armed, every table unchanged; storage of an additive N+1 served, written, left at version 2 |
+| Newer Iceberg metadata (`compat.test.ts`, 1) | a table evolved by a newer publisher (schema 1 with a new field id, `viz.format-version` 2): publish refused and the tenant left pending, sweep refused, nothing under `iceberg/` changed, SQLite not rebuilt from it, `verify` reports it |
+| Unknown ledger changes (`compat.test.ts`, 2) | a change with `v: 2`, then with `kind: 'checkpoint'`: the prefix is published, the cursor stops before it, the tenant stays pending; once the change is readable the tenant catches up; the reader's accept and refuse rules |
+| Golden formats (`golden.test.ts`, 5) | every format has a file for its version; `metadata.json` of both new tables; field ids permanent across versions; Avro schemas; the cursors object and an `add_unit` change |
 
 ### Mutation checks
 
@@ -300,6 +339,20 @@ survived.** The eight asked for are M1, M2, M3, M4, M5 (and M6), M7, M8, M9.
 | M13 | snapshot expiry does not keep a minimum of two | killed (2) | expires snapshots from maintain() when no publish does it |
 | M14 | a lost conditional write is treated as success | killed (1) | lets only one of two writers create a metadata version; the other takes its state and retries |
 | M15 | re-base ignores the new base (an older incarnation cursor continues as if nothing happened) | killed (1) | re-bases from the base of the new incarnation: removes what is gone, adds what is new |
+| M16 | the publisher serves storage a newer release wrote (guard removed) | killed (1) | refuses storage a newer release migrated past what it knows … |
+| M17 | a refusing publisher publishes from its alarm (and writes) | killed (1) | same |
+| M18 | rebuilds its view from metadata a newer publisher wrote (no check in resync) | killed (1), after the test was strengthened | is never committed over, rebuilt from or swept against … |
+| M19 | a ledger change of an unknown version is applied as if it were known | killed (1) | a change with a newer `v` or an unknown kind stops the tenant before it … |
+| M20 | a released migration edited in place (version 1 loses an index) | killed (2) | a fresh publisher is at the latest version, and its schema is the golden file |
+| M21 | a field id reassigned (`tenant` of `metric_samples` takes id 7) | killed (2) | iceberg.metadata: a new table's metadata.json, for both tables (and the field-id test) |
+| M22 | the cursors object changes shape without a format version | killed (1) | r2.cursors and read.ledger-change … |
+
+M16–M22 run `test/compat.test.ts` or `test/golden.test.ts` (the mutant names which), with at
+most 2 workers, on the final code: 7 of 7 killed. **M18 survived its first run**: removing
+the check in `resync` alone changed nothing visible, because the commit path checks the
+metadata again before writing. The test now also requires that the publisher's own SQLite is
+not rebuilt from metadata it does not understand, and M18 is killed. M1–M15 were not re-run
+after this change; the suite they run (`test/publisher.test.ts`) still passes.
 
 M8 is caught by the crash injected after the metadata write, not by one before it: the test
 seams sit after each step, and the mutant saves the cursor between two of them. M2 and M9
@@ -336,6 +389,11 @@ snapshot, 5.7 kB with four), so at one commit every 5 minutes and a 24-hour wind
 about 290 kB per commit (modelled from that slope, not measured).
 
 ## Risks
+
+- **Refusals stall publication, not ingest.** A refusing publisher (newer storage) or a table
+  a newer publisher evolved leaves external readers on older snapshots until the newer release
+  runs again (D15: the publisher is never upstream of ingest). The alarm retries every
+  `retryMs`, so a long rollback costs one R2 list per pending tenant per minute.
 
 - **Cost of discovery.** An idle `publish()` with no argument costs 1 + 2 × tenants R2 list
   operations (measured: 21 for 10 tenants). Modelled, with R2's list price taken from
@@ -378,7 +436,8 @@ about 290 kB per commit (modelled from that slope, not measured).
 Recorded here because this work could not change `contracts/`, `ledger/`, `engine/` or
 `design/`.
 
-1. **`LedgerChange.removed` is keys only.** A consumer that follows one table cannot tell
+1. **`LedgerChange.removed` is keys only.** (The segment contract now adds `removedFiles`,
+   `{key, table}`, beside it; this reader does not use it yet.) A consumer that follows one table cannot tell
    which table a removed key belongs to. The publisher uses the key layout of TABLES.md
    (`{cell}/data/{table}/...`) to decide whether a removal it cannot place is an error; for
    keys that do not follow the layout it cannot check. Proposal: `removed: {table, key}[]`,

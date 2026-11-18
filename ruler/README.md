@@ -32,6 +32,7 @@ Cloudflare; nothing touched the Cloudflare account.
 | `src/http.ts` | The HTTP API: routes, auth through edge's verifier, Prometheus-compatible reads, monitors, groups, rule files, backtest, placement and shard moves |
 | `src/monitors.ts` | Monitor document → alerting rule, error paths in the monitor's own field names, views, history merge (pure) |
 | `src/registry.ts` | `RulerIndex` and `sweep()` |
+| `src/schema.ts` | The three classes' storage as versioned migrations, and `FORMATS`: the version of everything the ruler writes for other releases |
 | `src/placement.ts` | Jump-hash assignment of groups to shards (pure) |
 | `src/signature.ts` | `X-Viz-Signature` HMAC-SHA256 signing and a reference verifier |
 | `src/yaml.ts`, `src/rulefile.ts` | Subset YAML parser and emitter; rule-file import/export |
@@ -239,6 +240,30 @@ evaluation: re-verified that it becomes `health: err` with the engine's message 
 `/api/v1/rules` as `lastError`), keeps its state, stays `err` across eviction, and
 recovers when the query works.
 
+### Versioned storage and formats (`contracts/COMPATIBILITY.md`)
+
+- **Storage.** `Ruler`, `Notifier` and `RulerIndex` open SQLite in the constructor, inside
+  `blockConcurrencyWhile`, with `openSchema` (`contracts/schema.ts`) and their spec in
+  `src/schema.ts` (`ruler.Ruler`, `ruler.Notifier`, `ruler.RulerIndex`). Version 1 of each is
+  the schema exactly as the pre-versioning constructors created it, so their storage is
+  adopted without a row changing. The JSON in `spec`, `body`, `updates` and `v` columns is part
+  of the schema.
+- **Refusal.** Storage a newer release migrated past what this code may read: every Ruler and
+  Notifier RPC answers `{ status: 'schema_too_new', … retryAfterMs }` (the guard that already
+  answered `wrong_tenant` asks first), the registry's methods throw `SchemaTooNewError` (their
+  results have one shape), the HTTP API answers 503 (`schema_too_new`, `Retry-After`; the
+  Prometheus routes `errorType: unavailable`), and the alarms only re-arm themselves. A ruler
+  whose notifier refuses keeps the transition in its hand-off outbox and retries it, as for an
+  unreachable notifier.
+- **Contract.** `contracts/rules.ts` gains `Refused = WrongTenant | SchemaTooNew`, and every
+  RPC result that could be `WrongTenant` can now be `Refused` (`contracts-proposal/rules.ts`
+  copies it; `rules.v2.ts` uses it).
+- **Formats** (`FORMATS` in `src/schema.ts`, each pinned by `test/golden/formats/`): the
+  hand-off to the notifier (as sent and as stored), the hashes that name stored state (rule
+  keys, alert fingerprints, `hash64`), the notification idempotency key, the registry
+  partition and group placement, the webhook body with its `X-Viz-Signature`, and the rule-file
+  export. A change to any of them is caught by a golden test (mutants 57–59).
+
 ### Kept from before (unchanged in behaviour)
 
 **Rule model and templates.** The Prometheus rule-file shape; unknown fields rejected; every
@@ -266,6 +291,9 @@ limits on groups, rules, alerts, annotations, silences; every SQL statement on t
 data names the tenant.
 
 ## Not implemented
+
+- **503 in `openapi.json`.** Every route can answer 503 `schema_too_new` during a rollback
+  across a forward-only release; the OpenAPI document does not list it yet.
 
 - **The engine side of the contract.** No `EVALUATOR` (batch `evaluate`, `range`, `check`)
   or `SINK` binding exists; without them every rule reports `health: err`. Every number
@@ -296,10 +324,10 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 276 tests in 16 files, in workerd: all pass (20–30 s here)
+npm test                # 293 tests in 18 files, in workerd: all pass
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass
-npm run mutants         # 50 mutants, 50 killed (45 in vitest, 5 through the Go readers)
+npm run mutants         # 59 mutants (50 earlier + 9 for versioning); vitest runs with at most 2 workers
 npm run bench           # the measurements below
 ```
 
@@ -324,6 +352,8 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `yaml.test.ts` | 37 | part 5 |
 | `robust.test.ts` | 15 | registry, sweeper, placement, shard splits and moves |
 | `independent.test.ts` | 2 | captures for `tools/promcheck` |
+| `compat.test.ts` | 14 | versioned storage: schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage |
+| `golden.test.ts` | 3 | golden formats |
 
 The first seven files held the 123 tests that existed before this task; all still pass.
 Checked by per-file count (unchanged except `bench.test.ts`, which gained the two
@@ -438,6 +468,21 @@ the new "dryRun on every write" test.
 | 48 | a required group field left out of /api/v1/rules (limit) | promcheck `TestPrometheusAPIShapes` |
 | 49 | an alert value printed as JavaScript prints a number, not as strconv.FormatFloat(v, 'e', -1, 64) | promcheck `TestPrometheusAPIShapes` |
 | 50 | the rule-file export drops keep_firing_for | promcheck `TestRuleFilesRoundTripThroughPrometheusLoader` (+1 more) |
+| 51 | Ruler serves storage a newer release wrote (the refusal dropped from the RPC guard) | compat: "Ruler: refused on every RPC and over HTTP …" |
+| 52 | Notifier accepts hand-offs onto storage a newer release wrote | compat: "Notifier: refused, and a current ruler handing alerts to it keeps them in its outbox" |
+| 53 | a refusing Ruler runs its tick from the alarm (dropping the alarm the newer release needs) | compat: "Ruler: refused on every RPC …" (alarm and storage dump) |
+| 54 | RulerIndex serves storage a newer release wrote (guard removed) | compat: "RulerIndex: refused by an exception …" |
+| 55 | the HTTP API passes a refusal through as if it were an answer (no 503) | compat: "Ruler: refused on every RPC and over HTTP …" |
+| 56 | a released migration edited in place (timeline loses `WITHOUT ROWID`) | compat: "ruler.Ruler: a fresh object is at the latest version …" (+1) |
+| 57 | the idempotency key derivation changes without a format version | golden: "the hand-off, the webhook, its signature and idempotency key …" |
+| 58 | the hand-off to the notifier gains a field without a format version | golden: same |
+| 59 | the registry partition hash changes | golden: "id.placement …" |
+
+Mutants 51–59 were run on the final code (`node scripts/mutants.mjs 51 52 53 54 55 56 57 58
+59`): 9 of 9 killed. Two patterns (57, 59) did not apply on the first try because of an
+escaping mistake in the script, which reported them as NOT APPLIED rather than passing; fixed
+and re-run. Mutants 1–50 were not re-run after this change; the ruler's own suite (293 tests)
+passes.
 
 ### Measurements
 
@@ -569,6 +614,10 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
     single global object)" and "jump-hash placement of whole groups (vs. a stored map)".
 
 ## Risks
+
+- **A refusal is an outage** for the refused tenant's rules and notifications until the newer
+  release serves the objects again; transitions wait in the ruler's outbox, nothing is lost.
+  A refusing ruler does not evaluate, so alerts are late for that long.
 
 - **All performance numbers are against an in-process fake.** The batch form's benefit is
   the call count; its real latency depends on how the engine plans a batch.

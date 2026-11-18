@@ -11,7 +11,8 @@ data path never calls it.
 | `src/index.ts` | The Worker: CORS, body and `If-Match` parsing, dispatch from the route table, problem-details errors, the `state` hook |
 | `src/identity.ts` | `Identity` and `identify()`, the one function that makes one. Today: API keys, verified by edge's own `authenticate` |
 | `src/routes.ts` | The route table: method, path, operation, scopes. The Worker dispatches from it and the object authorises from it |
-| `src/tenant.ts` | `Tenant`: schema, the mutation wrapper (one transaction: change + audit row + KV outbox), dry run, the outbox drain, the alarm, `provision`, `resolveKey`, `recordUsage` |
+| `src/schema.ts` | The `Tenant` storage schema as versioned migrations (`TENANT_SCHEMA`), and `FORMATS`: the version of everything this component writes for other releases |
+| `src/tenant.ts` | `Tenant`: opening (and migrating) storage, the mutation wrapper (one transaction: change + audit row + KV outbox), dry run, the outbox drain, the alarm, `provision`, `resolveKey`, `recordUsage` |
 | `src/ops-keys.ts` | Keys: create, list, disable/enable, rotate, delete; the KV records |
 | `src/ops-dashboards.ts` | Dashboards and revisions: create, get, list/search, patch, revert, delete/restore, owner, caps |
 | `src/ops-proposals.ts` | Proposed changes: create, list, review against the current revision, edit, apply (whole or part), decline, expire |
@@ -198,13 +199,33 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 - **One alarm**, at the earliest of: an open proposal's expiry, a deleted dashboard's purge
   time, and, as a third deadline the task did not list, 30 s after a KV publication failed.
   It is deleted when none applies. The handler is idempotent.
-- `blockConcurrencyWhile` is not used. Handlers do not await between reading and writing.
+- `blockConcurrencyWhile` is used once: in the constructor, around opening (migrating) local
+  SQLite, with no await inside. Handlers do not await between reading and writing.
+
+### Versioned storage and formats (`contracts/COMPATIBILITY.md`)
+
+- **Storage.** The constructor opens SQLite with `openSchema(ctx.storage, TENANT_SCHEMA)`
+  (`contracts/schema.ts`). Version 1 is the schema exactly as the code before versioning
+  created it, so such storage is adopted without a row changing. A newer release's storage
+  is served when its `compat` allows this code; otherwise the object **refuses**: every route
+  answers 503 `schema-too-new` with `Retry-After: 30` (also through `identify`, so a valid key
+  is never turned into a 401), `resolveKey` and `recordUsage` return the `schema_too_new`
+  status, `provision` throws `SchemaTooNewError`, and the alarm only re-arms itself. Nothing
+  else is read or written. The OpenAPI document lists 503 on every operation.
+- **Formats** (`FORMATS` in `src/schema.ts`, each pinned by `test/golden/formats/`): the KV
+  records `key:`, `revocation:`, `retention:`/`limits:`, `pool:`; the API key's shape; list
+  cursors; dashboard revision ids. None of them carries a version field yet: their readers
+  (edge, shard routing, janitor, query) would ignore one, so a `v` is useful only once they
+  check it (`design/UPGRADES.md` §7). Until then these records may only gain optional fields.
 - Revisions are stored whole with their content hash; the caps above bound them.
 - Ids of keys, proposals and audit entries are 22 random base62 characters (about 131
   bits) with a type prefix. Dashboard ids are the spec's `metadata.id`; they are names
   inside one tenant's object and resolve nowhere else.
 
 ## Not implemented
+
+- **A version field in the KV records.** `FORMATS` numbers them and golden files pin them,
+  but no reader checks a version yet, so adding `v` now would protect nothing.
 
 - **People.** No session or SSO identity; `kind: 'user'` is never produced. No roles or
   label-matcher policies (DESIGN §9).
@@ -232,9 +253,9 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 59 tests in 10 files, in workerd
+npm test             # 74 tests in 12 files, in workerd
 npx tsc --noEmit     # clean
-npm run mutants      # 35 mutants, all killed
+npm run mutants      # 45 mutants, all killed (node scripts/mutants.mjs versioned: runs the 10 of versioning)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
@@ -303,6 +324,25 @@ What the tests establish:
   parameters and `dryRun` agree per operation; every `$ref` resolves; five response
   schemas' required fields are present in real responses. Full response validation against
   the schemas is not done.
+- **Versioned storage** (`compat.test.ts`, 9 tests). A fresh object records `control.Tenant`
+  version 1, and its schema equals `test/golden/schema/v1.json`; applying migrations 1..N to
+  empty storage gives the golden schema of N; version 1 equals the `sqlite_master` of the
+  pre-versioning code (`test/fixtures/storage-v0.json`, a dump with 3 keys, 2 dashboards and 3
+  revisions, a proposal, 2 settings and 10 audit entries, made by that code). That dump,
+  installed into an object and opened by this code, is adopted as version 1 with every row
+  unchanged, serves its keys, dashboards, settings and audit log, takes a write, and is not
+  migrated again after eviction. Storage migrated by a simulated release N+1 with a breaking
+  migration is refused: four HTTP routes answer 503 `schema-too-new` with `Retry-After: 30`,
+  the three RPCs refuse, the alarm re-arms itself, and a dump of every table (version row
+  included) is identical before and after. Storage of an N+1 with an additive migration
+  (`compat` 1) is served and written, and keeps version 2. A migration that throws half way
+  leaves storage as it was. The runner refuses a spec with a gap, a migration readable from
+  the future, and storage that belongs to another class.
+- **Golden formats** (`golden.test.ts`, 6 tests). Every format in `FORMATS` has a file for
+  its current version under `test/golden/formats/`, produced through the API with fixed
+  inputs (random parts replaced after their shape is checked): the `key:` record enabled and
+  disabled, `revocation:`, `retention:` and `limits:`, `pool:`, the API key's shape, a list
+  cursor (and that it still decodes), the revision ids of the three example dashboards.
 - **House rules** (`rules.test.ts`, 2 tests), read from the source: every SQL statement
   names the tenant; the audit table is only inserted into; KV is written only in the
   outbox drain; the Worker has one `idFromName`, on `identity.tenant`.
@@ -310,7 +350,10 @@ What the tests establish:
 ### Mutation checks
 
 `scripts/mutants.mjs` applies each change on its own, runs the suite and restores the
-files. All 35 make at least one test fail; the last column names the test files that failed.
+files. All 45 make at least one test fail; the last column names the test files that failed.
+The script runs vitest with at most 2 workers. Mutants 36–45 were run on the final code
+(`node scripts/mutants.mjs versioned:`, 10 of 10 killed); 1–35 were last run as a set before
+this change, and their patterns were checked to still match.
 
 | # | Mutant | Caught by |
 |---|---|---|
@@ -349,6 +392,19 @@ files. All 35 make at least one test fail; the last column names the test files 
 | 33 | Alarm left set when there is nothing to do | dashboards, durability, proposals |
 | 34 | CORS answers any origin | http |
 | 35 | A route without documentation | openapi |
+| 36 | Runner: storage a newer release wrote is opened although it is not readable (refusal removed) | compat |
+| 37 | Runner: newer storage that IS readable is refused (`compat` ignored) | compat |
+| 38 | Runner: opening newer, readable storage lowers its version | compat |
+| 39 | Runner: migrations not in one transaction (a failing step leaves half a migration) | compat |
+| 40 | Runner: the new version is not recorded (every open migrates again) | compat |
+| 41 | `Tenant` serves storage a newer release wrote (its refusal ignored) | compat |
+| 42 | A refusing `Tenant` lets its alarm lapse | compat |
+| 43 | A released migration edited in place (version 1 no longer creates the append-only trigger) | compat, settings |
+| 44 | The KV key record edge reads changes shape without a format version | golden, keys |
+| 45 | The list cursor encoding changes without a format version | golden |
+
+Mutants 36–40 break `contracts/schema.ts`, the runner every component shares; they are run
+here because this suite tests it most fully.
 
 Mutant 6 survived the functional tests on the first run and was caught only by the
 OpenAPI scope comparison: the one test that applied without the scope used an agent, which
@@ -360,6 +416,12 @@ transaction as the change. The test that pins it: a create that is refused after
 insert, then retried, yields one dashboard and one entry.
 
 ## Known risks
+
+- **A refusal is an outage for that tenant's control plane**, until the newer release serves
+  the object again: safe (nothing written), not available. It happens only after a rollback
+  across a forward-only release (`contracts/COMPATIBILITY.md` §6).
+- **The first versioned release must become the rollback floor** before any migration 2:
+  code from before it does not check the version row.
 
 - **Revocation on the data path is bounded by caches, not by this component** (table above),
   and the KV half of the bound is not a guarantee. "Revocable at the shard" (DESIGN §9)
@@ -413,7 +475,12 @@ Things outside this directory that this component needs or exposes. None were ma
    implemented.
 6. **`stack/` and `app/`**: mount this Worker, bind `TENANT` and the shared `CONFIG`, and
    supply the `dashboardStates` hook from the query layer.
-7. **`design/DESIGN.md` §3.1** says of `Tenant` "reads are cached" and lists rule
+7. **Readers of the KV records** (edge, shard routing, janitor, query) should check a `v`
+   field, absent meaning 1, and refuse a newer one (`design/UPGRADES.md` §7); only then can
+   this component bump a record's version. **deploy/gateway**: `provision` now throws
+   `schema_too_new` during a rollback across a forward-only release; the bootstrap route
+   should answer 503 rather than 500 for it.
+8. **`design/DESIGN.md` §3.1** says of `Tenant` "reads are cached" and lists rule
    definitions; neither is true of this implementation. §9's "revocable at the shard" is
    still open.
 

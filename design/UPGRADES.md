@@ -89,7 +89,7 @@ first, or a rollback put the reader back); "newer reader" the opposite. Status c
 | Data files `data/{table}/tenant=/day=/L{level}-….parquet` | `contracts/TABLES.md`, `engine/storage` | none in the file (`created_by: viz-storage`, no key-value metadata, no field ids) | flush (L0), compact (L1, L2) | query leaves (engine), compact (engine), external engines via Iceberg | a new or changed column is invisible or misread; nothing in the file says what it is | must read every layout still live, for the whole retention (files are immutable) |
 | Index fragment `FileEntry.index` (in ledger rows and log) | `engine/storage/src/pq.rs` `FileIndex` | **versioned** `{"v":1,…}`; the engine refuses another `v` | flush, compact (engine) | engine; publisher (stats) | engine refuses; publisher leaves the stats out | reads v1 |
 | Ledger change log `ledger/tenant=/{inc}/{version:012}.json`, `base.json` | `contracts/ledger.ts` `LedgerChange`, `ledgerLogKey` | none | ledger (outbox drain) | ledger `rebuildFromLog`, publisher | rebuild applies an unknown `kind` as a plain add/remove; the publisher now refuses it (this work) | tolerates absent `precedence` (derives it): an example of expand done right |
-| **About to change**: log segments `seg-{first:012}-{last:012}.jsonl` | `contracts/LEDGER-LOG.md` (planned; a builder is starting it now) | to carry `v` per line (COMPATIBILITY §3.6) | ledger | rebuild, publisher | must be deployed **before** the writer (§3.6); an old rebuild cannot read segments, and losing ledger storage after such a rollback would lose acknowledged samples | — |
+| **Changing now**: log segments `seg-{first:012}-{last:012}.jsonl`, checkpoints `ckpt-…jsonl` | `contracts/LEDGER-LOG.md`, codec in `contracts/ledger.ts` (contract written by the ledger builder after COMPATIBILITY.md; `ledger/src` not yet switched at the time of writing) | **versioned**: header `v` and `kind`, `v` per change line (absent = 1); `removedFiles` added beside `removed`, not in place of it | ledger | rebuild, publisher | readers refuse an unknown `v` or `kind` and stop there. The ledger reads both layouts and writes segments in one release, accepted as forward-only because no ledger had reached production (LEDGER-LOG.md "Rollout"); a deployment that ran the first layout cannot roll back below it (stuck, not lost) | the publisher does **not** read segments yet (§7) |
 | Iceberg `iceberg/{table}/metadata/v{N}.metadata.json`, `version-hint.text` | `publisher/src/iceberg.ts` | Iceberg format-version 2; **versioned** viz conventions: property `viz.format-version` (absent = 1) (this work) | publisher | publisher (resync), external engines | the publisher now refuses to commit, rebuild or sweep over newer metadata (this work) | reads it |
 | Manifests, manifest lists (Avro) | `publisher/src/iceberg.ts`, Iceberg v2 field ids | Iceberg's | publisher | publisher, external engines | — | — |
 | `cursors-{snapshot}-{tag}.json` | `publisher/src/publisher.ts` | **versioned** `v: 1` (absent = 1) (this work) | publisher | publisher (resync) | refused (this work) | reads it |
@@ -218,39 +218,46 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
    add `prec`/`prec_lo` to objects created before D22. Change "storage is new" from "no
    `meta.incarnation`" to "no tables and no `viz_schema`"; storage with a version row and no
    incarnation is corrupt and refused, never rebuilt. Rebuild refuses a `LedgerChange` with an
-   unknown `v` or `kind` instead of applying it. Move to log segments in the three releases of
-   COMPATIBILITY §3.6 (rebuild and publisher read both layouts first; `removed` is not
-   repurposed). Answer `schema_too_new` from every RPC.
-2. **shard** (risk: I1/I7). Version the storage (`shard.Shard`); migration 1 adds
+   unknown `v` or `kind` instead of applying it (the segment contract now says so; the first
+   layout's replay in `ledger/src/ledger.ts` still applies an unknown kind). Answer
+   `schema_too_new` from every RPC. The segment log itself already follows COMPATIBILITY
+   §3.1–§3.6 on paper (`LEDGER-LOG.md` "Versions"); its one-release rollout is a recorded,
+   accepted exception to readers-first.
+2. **publisher (this component, not done here)** (risk: publication stops once the ledger
+   writes segments; external readers see old data, nothing on the ingest path is affected,
+   D15). Read the segment layout as `LEDGER-LOG.md` "Readers of the log" says, before the
+   publisher is ever deployed; the reader already refuses an unknown change `v` or `kind`
+   (`publisher/src/log.ts`), and must do the same for a segment header.
+3. **shard** (risk: I1/I7). Version the storage (`shard.Shard`); migration 1 adds
    `segment.sealed_at` where missing (the known gap). The sketch BLOB gets a version byte
    (byte 0 is a kind today; refuse an unknown one instead of reading it as an exact list).
    Under refusal, `append` answers a retryable status (as `backpressure`), never `ok`.
-3. **edge** (risk: I7, I3). Treat any `AppendResult` status it does not know as a failure of
+4. **edge** (risk: I7, I3). Treat any `AppendResult` status it does not know as a failure of
    the whole request (503), never as stored. KV readers check `v` (absent = 1) and refuse a
    newer one (keep the last good value or 503; never authenticate, never loosen a limit). A
    new `VZB` version is encoded only after flush's and query's decoders read it.
-4. **query** (risk: I4, a silent gap or a retry loop). Switch exhaustively on
+5. **query** (risk: I4, a silent gap or a retry loop). Switch exhaustively on
    `TailResult` and plan answers; an unknown status (including `schema_too_new`) is a refusal
    with its reason, surfaced as 503 after the existing retry budget. Leaf calls skew within the
    script (F4): keep `LeafAnswer` additive. Reject Parquet files whose (future) viz format
    marker is unknown.
-5. **flush and the queue messages** (risk: a message acknowledged into the dead-letter queue
+6. **flush and the queue messages** (risk: a message acknowledged into the dead-letter queue
    during a deploy; recovered only by the hourly sweep). Add `v` to `FlushMessage` and
    `MaintMessage` (absent = 1). The consumers `retry()` a message whose `v` they do not know
    and keep dead-lettering only for bodies invalid in every version.
-6. **R2 data files (flush, compact, engine/storage)** (risk: an older reader silently
+7. **R2 data files (flush, compact, engine/storage)** (risk: an older reader silently
    misreading a newer file for the whole retention). Write a Parquet key-value entry
    `viz.format` and Parquet field ids equal to the Iceberg ids (publisher contract issue 4);
    readers refuse an unknown `viz.format`. New columns optional, ids never reused
    (COMPATIBILITY §5). Compaction keeps the newest format it can read for its output.
-7. **janitor, compact** (risk: low; they act only on what the ledger says). Retention KV
+8. **janitor, compact** (risk: low; they act only on what the ledger says). Retention KV
    parsing by `v`; handle `schema_too_new` from the ledger as retryable in the maintenance
    run (the queue retries it).
-8. **deploy** (the release engineer). Put `schemaRelease` and `FORMATS` of each component in
+9. **deploy** (the release engineer). Put `schemaRelease` and `FORMATS` of each component in
    the release record and extend the rollback check from migration tags to COMPATIBILITY §6.
    The gateway's bootstrap should answer 503 (not 500) when `provision` throws
    `schema_too_new`.
-9. **dashboard, app, mcp** (risk: users' edits refused). The closed `viz.dashboard/v1`
+10. **dashboard, app, mcp** (risk: users' edits refused). The closed `viz.dashboard/v1`
    validator ships each new optional field one release before anything writes it. app and
    mcp treat 503 `schema-too-new` / `schema_too_new` as retryable.
 
