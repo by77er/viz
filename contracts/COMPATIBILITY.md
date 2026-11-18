@@ -22,8 +22,8 @@ Verified from Cloudflare's documentation; sources in `design/UPGRADES.md` §2.
    and is reset when it is assigned another. A **rollback is a new deployment**: an object
    that ran N+1 can run N afterwards, on the storage N+1 wrote.
 3. **New code is adopted late.** By default an active object keeps running its old code for
-   up to 300 s after a deploy (configurable up to 24 h), so "promoted" does not mean "running
-   everywhere". Plan for the old release still serving objects after the new one is live.
+   up to 300 s after a deploy (configurable up to 24 h; viz's deploy sets 30 s), so "promoted"
+   does not mean "running everywhere". Plan for the old release still serving objects after the new one is live.
 4. **Durable Object class lifecycle changes** (new, renamed, deleted, transferred classes)
    cannot be uploaded as a version, should not be rolled out gradually, and once deployed no
    rollback may go to a version before them.
@@ -102,7 +102,7 @@ When `viz_schema` says `version` > what this code knows:
 |---|---|
 | RPC whose result is a status union | the `SchemaTooNew` value itself, as a member of the union |
 | RPC whose result is not a union | throw `SchemaTooNewError` (message starts `schema_too_new`; `retryable: true`) |
-| HTTP (`fetch`, a Worker in front of the object) | `503`, `Retry-After`, problem code `schema-too-new` |
+| HTTP (`fetch`, a Worker in front of the object) | `503` with `Retry-After`, and an error code in the API's own spelling: `schema-too-new` (control), `schema_too_new` (monitors), `errorType: unavailable` (Prometheus API) |
 | `alarm()` | `setAlarm(now + retryAfterMs)` and return. Nothing else. Never delete the alarm |
 | Anything else | no read of tenant data, no write of any kind |
 
@@ -129,7 +129,10 @@ records, cursors and tokens handed to clients, and identifiers derived by hashin
 
 ### 3.2 Readers
 
-- **Unknown optional fields are ignored.** Never refuse a record for a field you do not know.
+- **Unknown optional fields are ignored.** Never refuse a record, message, stored value or RPC
+  argument passed between viz's own components for a field you do not know. (Request bodies
+  from outside clients may be strict, as control's and the monitors API's are; then §4's rule
+  for new request fields applies.)
 - **Unknown versions are refused**, explicitly, never parsed on a guess.
 - **Unknown enum values** in something the reader must act on (a log entry's `kind`, a
   status) are refused like an unknown version. In something advisory (a label, a hint) they
@@ -191,6 +194,11 @@ the *logged* watermark). Under §3.3 that takes three releases:
    rollback below A could not read the segments). Its release record says so.
 3. **Cleanup.** Release C may drop the per-change reader once every live incarnation's log
    starts with a segment `base`.
+
+As built (`LEDGER-LOG.md`, "Rollout"), steps 1 and 2 ship together, because no ledger had
+reached production: that release is forward-only, and any deployment that ran the first
+layout cannot be rolled back below it (stuck, not lost, §9). Once a ledger is in production,
+the next log format change takes the three steps.
 
 Within the segment format: `LedgerChange.removed` stays `string[]`. The `{ key, table }`
 pairs the plan wants are a **new** field beside it (for example `removedFiles`), not a new
@@ -301,4 +309,10 @@ latest, compat }`, and per format the versions it reads and writes.
 - Data written in a newer format by a release that is then rolled back *below* the reader
   of that format: stuck, not lost, until a reader is deployed again (shards keep segments
   they cannot get recorded; logs keep entries the reader stops at).
+- A queue message one version ahead that exhausts its retries during a long rollback is
+  dead-lettered by the platform whatever the consumer does. viz recovers flush and
+  maintenance work from KV markers, so nothing acknowledged is lost; readers-first (§3.3)
+  keeps such messages from being sent at all.
+- A version row deleted by a bug: the runner would take the storage for pre-versioning
+  storage and adopt it. Only the runner writes `viz_schema`.
 - Times: `retryAfterMs` is 30 s; a refusal lasts as long as the rollback does.
