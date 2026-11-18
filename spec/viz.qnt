@@ -50,6 +50,7 @@ module viz {
     need: Set[int],       // shards whose tail has not been read yet
     tail: Set[Row],       // tail rows collected so far
     must: Set[int],       // ghost: batches acknowledged before the plan was read
+    ex: Set[int],         // ghost: batches already removed by retention at the planned version
     dup: Set[int],        // result: batches returned more than once
     miss: Set[int],       // result: batches in `must`, not exempt, not returned
   }
@@ -117,7 +118,7 @@ module viz {
   pure def lbl(n: str, a: int, b: int): Lbl = if (G.trace) { n: n, a: a, b: b } else { n: "", a: 0, b: 0 }
 
   pure val freshShard: Shard = { reg: false, inc: 0, wal: [], sealed: 0, rec: 0, disc: 0, fpg: 0, bounds: Set() }
-  pure val idleQuery: Query = { st: "idle", files: Set(), wm: Map(), need: Set(), tail: Set(), must: Set(), dup: Set(), miss: Set() }
+  pure val idleQuery: Query = { st: "idle", files: Set(), wm: Map(), need: Set(), tail: Set(), must: Set(), ex: Set(), dup: Set(), miss: Set() }
   pure val noEntry: Entry = { add: Set(), rem: Set(), wm: Set(), exp: Set(), logged: false }
 
   pure def max2(a: int, b: int): int = if (a > b) a else b
@@ -161,7 +162,7 @@ module viz {
     fs.fold(0, (n, f) => n + f.rows.filter(r => r.b == b).size()) + tl.filter(r => r.b == b).size()
 
   pure def plan(s: State): Query =
-    { st: "tails", files: s.led.files, wm: s.led.wm, need: s.led.wm.keys(), tail: Set(), must: s.acked, dup: Set(), miss: Set() }
+    { st: "tails", files: s.led.files, wm: s.led.wm, need: s.led.wm.keys(), tail: Set(), must: s.acked, ex: s.expired.map(r => r.b), dup: Set(), miss: Set() }
 
   pure def restart(s: State): State = { ...s, q: plan(s), restarts: s.restarts + 1 }
 
@@ -483,7 +484,7 @@ module viz {
   action qFinish: bool = {
     val readable = st.q.files.intersect(st.obj)
     val err = G.missingErr and readable != st.q.files
-    val exempt = st.lost.union(st.expired.map(r => r.b))
+    val exempt = st.lost.union(st.expired.map(r => r.b)).union(st.q.ex)
     all {
       st.q.st == "tails", st.q.need.size() == 0,
       err implies st.restarts < G.maxRestarts,

@@ -17,8 +17,8 @@
  },
  "lastChange": {
   "by": "Claude",
-  "at": "2026-11-18T18:40:27Z",
+  "at": "2026-11-18T18:46:24Z",
   "via": "Claude Code",
-  "note": "Applied design review: narrow layouts, token-only CSS, touch areas, contrast, status shapes, self-hosted fonts, six components, testable budgets."
+  "note": "Second review: tab hit areas, no tabular figures on the sans, sticky column layering, checkbox tick."
  }
 }

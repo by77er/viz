@@ -44,7 +44,6 @@
 
 .vz {
   font: var(--text-ui);
-  font-variant-numeric: tabular-nums;
   color: var(--ink);
   background: var(--ground);
   -webkit-font-smoothing: antialiased;
@@ -117,9 +116,10 @@
 .vz-help { font: var(--text-small); color: var(--ink-muted); display: flex; align-items: baseline; gap: var(--space-2); }
 .vz-help[data-error] { color: var(--ink); }
 .vz-check { display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer; }
-.vz-check input { appearance: none; width: var(--icon); height: var(--icon); margin: 0; flex: none; cursor: pointer; background: var(--ground); border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-1); }
+.vz-check input { appearance: none; display: inline-grid; place-items: center; width: var(--icon); height: var(--icon); margin: 0; flex: none; cursor: pointer; background: var(--ground); border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-1); }
 .vz-check input:hover { border-color: var(--ink-secondary); }
-.vz-check input:checked { background: var(--ink); border-color: var(--ink); box-shadow: inset 0 0 0 var(--stroke) var(--ink), inset 0 0 0 calc(var(--stroke) + var(--hairline)) var(--ground); }
+.vz-check input:checked { background: var(--ink); border-color: var(--ink); }
+.vz-check input:checked::before { content: ""; width: var(--space-1); height: var(--space-2); margin-top: calc(-1 * var(--space-half)); border: solid var(--ground); border-width: 0 var(--stroke) var(--stroke) 0; transform: rotate(45deg); } /* a tick, so it cannot be mistaken for the hollow healthy mark */
 .vz-check input:disabled { background: var(--sunken); border-color: var(--rule); cursor: not-allowed; }
 
 /* Segmented control: choosing a view. The chosen segment is marked, not inverted, so it never outranks the primary action. */
@@ -133,7 +133,7 @@
 .vz-segmented button:last-child { border-radius: 0 var(--radius-1) var(--radius-1) 0; }
 .vz-segmented button:hover { background: var(--hover); color: var(--ink); }
 .vz-segmented button:active { transition-duration: 0s; background: var(--rule); }
-.vz-segmented button[aria-pressed="true"] { background: var(--rule); color: var(--ink); font: var(--text-ui-strong); }
+.vz-segmented button[aria-pressed="true"] { background: var(--rule); color: var(--ink); font: var(--text-ui-strong); box-shadow: inset 0 calc(-1 * var(--stroke)) 0 var(--ink); }
 .vz-segmented button:focus-visible { outline-offset: var(--hairline); z-index: 1; }
 
 /* Tabs */
@@ -149,7 +149,7 @@
 .vz-table th { text-align: left; padding: var(--space-2); background: var(--sunken); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; }
 .vz-table td { padding: 0 var(--space-2); height: var(--row); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; background: var(--ground); }
 .vz-table tbody tr:hover td { background: var(--hover); }
-.vz-table th:first-child, .vz-table td:first-child { position: sticky; left: 0; }
+.vz-table th:first-child, .vz-table td:first-child { position: sticky; left: 0; z-index: 1; box-shadow: inset calc(-1 * var(--hairline)) 0 0 var(--rule); }
 .vz-table .vz-right { text-align: right; }
 .vz-table td[data-key] { font: var(--text-ui-strong); }
 
@@ -194,7 +194,7 @@
 .vz-stat-context { font: var(--text-small); color: var(--ink-secondary); }
 
 /* Banner */
-.vz-banner { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); padding: var(--space-3) var(--space-4); background: var(--sunken); border: var(--hairline) solid var(--rule); border-radius: var(--radius-2); }
+.vz-banner { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--sunken); border: var(--hairline) solid var(--rule); border-radius: var(--radius-2); }
 .vz-banner p { margin: 0; flex: 1 1 var(--overlay-min); min-width: 0; }
 
 /* Menu and tooltip: raised surfaces */
@@ -207,12 +207,12 @@
 /* Dialog */
 .vz-dialog { width: var(--dialog); max-width: 100%; display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-6); background: var(--raised); color: var(--ink); border: 0; border-radius: var(--radius-3); box-shadow: var(--shadow-overlay); }
 .vz-dialog-title { font: var(--text-heading); letter-spacing: var(--text-heading-track); margin: 0; }
-.vz-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.vz-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3) var(--space-2); margin-top: var(--space-2); }
 
 /* Navigation: the product's sections. The current one is marked by weight and an underline, like a tab. */
 .vz-nav { display: flex; align-items: center; gap: var(--space-6); padding: 0 var(--space-6); height: calc(var(--control-md) + var(--space-4)); border-bottom: var(--hairline) solid var(--rule); overflow-x: auto; scrollbar-width: none; }
 .vz-nav-name { font: var(--text-heading); letter-spacing: var(--text-heading-track); flex: none; }
-.vz-nav a { position: relative; flex: none; color: var(--ink-secondary); text-decoration: none; white-space: nowrap; }
+.vz-nav a { position: relative; flex: none; display: inline-flex; align-items: center; color: var(--ink-secondary); text-decoration: none; white-space: nowrap; }
 .vz-nav a:hover { color: var(--ink); }
 .vz-nav a[aria-current="page"] { color: var(--ink); font: var(--text-ui-strong); }
 
@@ -235,6 +235,7 @@
   }
   .vz-check { position: relative; }
   .vz-segmented button { min-width: var(--control-touch); }
+  .vz-tabs button, .vz-nav a { padding-block: var(--space-3); } /* a scrolling strip clips overflow, so the hit area has to be real height */
   .vz-menu [role="menuitem"] { height: var(--control-touch); }
   .vz-input, .vz-select { height: var(--control-touch); font-size: var(--text-body-size); }
 }

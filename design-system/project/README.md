@@ -22,7 +22,7 @@
 ## Type
 
 - Set interface and reading text in the `sans` family (Schibsted Grotesk), and every number a person compares or identifier they copy in `mono` (JetBrains Mono). Both are served from this system's own files, never from a third party; the sans is preloaded and has a metric-matched fallback so text does not move when it arrives. The files cover Latin and extended Latin; the mono also covers Greek and Cyrillic. Other scripts fall back to the system font.
-- Figures are tabular everywhere, so numbers do not shift as they change.
+- Any number that is compared in a column or updates in place is set in `mono`, which is fixed-width, so it does not shift as it changes. The sans is not set to tabular figures: this face widens full stops, commas and colons to digit width when asked, which breaks prose.
 - Component code uses the type styles as `var(--text-<name>)` and never writes a size. `micro` (mono, 11px) is the smallest text, for keyboard hints and chart axes.
 - Use `ui` for interface text and `ui-strong` for button labels and selected items. Use `body` for prose, at a measure of 60 to 72 characters (`measure`).
 - Use `display` at most once per page, for the name of the thing being looked at. Use `title` for page and dialog titles, `heading` for sections.
