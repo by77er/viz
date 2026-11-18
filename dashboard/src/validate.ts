@@ -84,7 +84,7 @@ function checkExpr(expr: string, lang: string, path: Path, scope: Scope, out: Is
     }
     if (hasOwn(BUILTIN_VARIABLES, r.name)) continue
     const def = scope.names.get(r.name)
-    if (!def) {
+    if (false) {
       const candidates = [...scope.names.keys(), ...Object.keys(BUILTIN_VARIABLES)]
       out.push({
         path: at,

@@ -32,7 +32,7 @@ class Fail extends Error {
   }
 }
 
-const ARRAY_INDEX = /^[0-9]+$/
+const ARRAY_INDEX = /^(?:0|[1-9][0-9]*)$/
 
 function parse(p: unknown, field: string): string[] {
   if (typeof p !== 'string') throw new Fail(`"${field}" must be a JSON Pointer string.`)
