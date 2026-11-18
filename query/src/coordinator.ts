@@ -440,16 +440,17 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       // being materialised at all.
       const rows = c.engine.scanRows(samples.map((f) => f.index), reads)
       const scan = rows.reduce<number>((a, r, i) => a + (r ?? samples[i]!.rows * reads.length), 0)
+      const wanted = [...series, ...samples]
+      // Recorded before any limit is checked, so a refused query still says what it would have cost.
+      c.cost.scanSamples = scan
+      c.cost.filesListed = listed.length
+      c.cost.filesSkipped = listed.length - wanted.length
       if (scan > c.limits.maxScanSamples) {
         throw new ApiError(
           'execution',
           `query exceeded limit max_scan_samples: the data files in range hold ${scan} samples the query would decode, the limit is ${c.limits.maxScanSamples}. Narrow the time range, or select fewer metrics by name.`,
         )
       }
-      c.cost.scanSamples = scan
-      const wanted = [...series, ...samples]
-      c.cost.filesListed = listed.length
-      c.cost.filesSkipped = listed.length - wanted.length
       if (wanted.length > c.limits.maxFiles) {
         throw new ApiError('execution', `query exceeded limit max_files: ${wanted.length} data files to read, the limit is ${c.limits.maxFiles}. Narrow the time range.`)
       }

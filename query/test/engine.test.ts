@@ -236,7 +236,10 @@ describe('memory', () => {
     }
     console.log(`MEASURE engine input: ${rows} samples in ${batches.length} batches; lake ${(fileBytes / 2 ** 20).toFixed(2)} MiB in ${flushed.sampleFiles.length + flushed.seriesFiles.length} files, tail ${(tailBytes / 2 ** 20).toFixed(2)} MiB in ${input.tailBatches.length} batches`)
     const mixed = run(input, 'five sixths in Parquet, the rest in the tail')
-    const allLake = run(lake(batches), 'all in Parquet')
+    const whole = lake(batches)
+    const wholeBytes = [...whole.seriesFiles, ...whole.sampleFiles].reduce((a, f) => a + f.byteLength, 0)
+    console.log(`MEASURE engine input, all in Parquet: ${(wholeBytes / 2 ** 20).toFixed(2)} MiB in ${whole.sampleFiles.length + whole.seriesFiles.length} files`)
+    const allLake = run(whole, 'all in Parquet')
 
     expect(rows).toBe(522_000)
     expect(mixed.out.stats).toMatchObject({ series: 2000, samples: 520_000, outputPoints: JOBS * 241 })

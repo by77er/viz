@@ -126,6 +126,9 @@ describe('limits', () => {
       error: `query exceeded limit max_scan_samples: the data files in range hold ${scan} samples the query would decode, the limit is ${scan - 1}. Narrow the time range, or select fewer metrics by name.`,
     })
     expect([cost(res, 'Shard-Calls'), cost(res, 'Leaf-Calls')]).toEqual([0, 0])
+    // The refusal still says what the query would have cost.
+    expect([cost(res, 'Scan-Samples'), cost(res, 'Files-Listed'), cost(res, 'Files-Skipped')]).toEqual([scan, cost(base, 'Files-Listed'), cost(base, 'Files-Skipped')])
+    expect(cost(res, 'Files-Listed')).toBeGreaterThan(0)
     // A query with two selectors on the same files decodes them twice.
     await setLimits(w.a.name, null)
     const twice = await api(w.a.key, '/api/v1/query_range', { query: `${q.query} / ${q.query}`, start: sec(q.start!), end: sec(q.end!), step: '30' })

@@ -59,7 +59,7 @@ const mutants = [
   ['label set larger than a batch not rejected', 'src/batch.ts', 'if (pad8(16 + bytes) + 8 + 16 > L.maxBatchBytes) return -Reject.SeriesTooLarge', ''],
   ['OTLP point attribute job/instance not renamed', 'src/otlp.ts', "return name === 'job' ? 'exported_job' : name === 'instance' ? 'exported_instance' : name", 'return name'],
   ['too_large from a shard treated as success', 'src/route.ts', "const tooLarge = results.filter((r) => r.status === 'too_large')", 'const tooLarge = [] as typeof results'],
-  ['no re-split after too_large', 'src/route.ts', ';({ results, batches } = await attempt(env, map, tenant, c, cap))', ''],
+  ['no re-split after too_large', 'src/route.ts', ';({ results, batches } = await attempt(env, map, tenant, c, cap, limit))\n', ''],
 ]
 
 const only = process.argv[2]
