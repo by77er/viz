@@ -11,6 +11,7 @@ authority on what is visible. It implements `LedgerRpc` and `LedgerAdminRpc` fro
 | `scripts/mutants.mjs` | Mutation check for the contracts v2 behaviour |
 | `test/ledger.test.ts` | 38 tests, run inside the Workers runtime with a simulated R2 bucket |
 | `test/tombstone.test.ts` | 7 tests of the tombstone surface |
+| `test/precedence.test.ts` | 5 tests of file precedence |
 
 Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`).
 
@@ -38,8 +39,9 @@ Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default 
   Files of the old incarnation stay live. A **lower** incarnation is refused (v2:
   incarnations are ordered): `registerStream` throws, `addUnit` answers
   `incarnation_mismatch` with the registered one, and nothing changes.
-- **`plan`.** Files of one table overlapping the inclusive range, all watermarks, ledger
-  incarnation and version, read with no `await` in between.
+- **`plan`.** Files of one table overlapping the inclusive range, **in ascending
+  precedence** (below), all watermarks, ledger incarnation and version, read with no
+  `await` in between.
 - **`replace`.** Swaps iff every key in `remove` is live; otherwise `conflict` with the
   missing keys. A retry of a swap that already happened (every output live, no input live)
   gets `ok` with the current version; anything else is judged as a new request. A malformed
@@ -112,11 +114,11 @@ It does not guarantee:
 
 ```
 npm install
-npm test          # 45 tests in workerd, 2 files
+npm test          # 50 tests in workerd, 3 files
 npm run typecheck
 ```
 
-Last run: 45 passed, 0 failed; `tsc --noEmit` clean. R2 failure is
+Last run: 50 passed, 0 failed; `tsc --noEmit` clean. R2 failure is
 injected by swapping the object's bucket for one whose `put` throws for chosen keys.
 
 Covered: gap, overlap, off-by-one, replay, a different unit below the watermark, stream
@@ -176,6 +178,30 @@ M7 is killed only by the error message: with the check removed, the primary key 
 the tests cannot crash the object between two synchronous statements; with no `await`
 between them the runtime commits both together anyway. So "the outbox row is in the same
 transaction" is true by reading the code, not by test.
+
+## Precedence (which file wins a duplicate sample)
+
+`contracts/ledger.ts`, `LiveFile`; `design/DECISIONS.md` D22. Found by the query Worker's
+engineer: `plan` used to list files `ORDER BY key`, readers and compaction let the later
+file win, and keys sort as text, so from a stream's tenth batch on an older write could
+beat a newer one. Now every file row carries `prec` and `prec_lo`, assigned here and never
+taken from a caller:
+
+- `addUnit`: `version × 4096 + position in the unit` (a flush unit has one file per table
+  and day, so it is the version that orders it; the position only makes the order total
+  for any unit accepted). A unit of more than 4,096 files is `invalid`.
+- `replace`: each output gets `[min prec_lo, max prec]` of the removed files of its table
+  and day (or a new value if none), and the swap is a `conflict` with `blocking` keys if a
+  live file outside the request, of that table and day, overlapping the output in time, has
+  a range that intersects it. Checked before the transaction, with no `await` in between.
+- `plan` orders by `prec, key`; the log carries the assigned values in `added`; a rebuild
+  restores them, and replaying a log written before they existed derives the same values.
+
+`test/precedence.test.ts` (5): numeric order across twelve units where key order differs;
+the range of a merge and of an output without inputs, and a caller's value ignored; a
+merge that would jump over an overlapping file of another stream refused, one over a
+non-overlapping file allowed; precedence kept across a rebuild, also from a stripped log;
+the 4,096-file limit. Mutants: `stack/scripts/mutants.mjs precedence`.
 
 ## Tombstones (physical deletion)
 

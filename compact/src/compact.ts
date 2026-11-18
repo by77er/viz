@@ -365,8 +365,7 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   // One table at a time, so only one table's inputs are in memory with the engine's copy.
   const merged: EncodedFile[] = []
   for (const [table, files] of [['metric_samples', inSamples], ['metric_series', inSeries]] as const) {
-    const all = await fetchAll(env.BUCKET, files.map((f) => f.key))
-    const out = engine.mergeFiles(table, table === 'metric_series' ? all.slice(0, 1) : all)
+    const out = engine.mergeFiles(table, await fetchAll(env.BUCKET, files.map((f) => f.key)))
     // A merge only removes duplicates: it cannot have more rows than its inputs together,
     // nor fewer than its largest input. Anything else is a bug; publish nothing.
     const total = files.reduce((a, f) => a + f.rows, 0)
@@ -406,7 +405,6 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   const keys = outputs.map((f) => f.key)
   const check = await ledger.orphanCheck(keys)
   const discarded = check.live.length === 0 && check.tombstoned.length === 0 ? keys : []
-  if (discarded.length > 0) await env.BUCKET.delete(discarded)
   return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [], discarded }
 }
 

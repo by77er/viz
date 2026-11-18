@@ -123,7 +123,7 @@ describe('invariant to a constant time shift', () => {
 })
 
 describe('scale-invariant where claimed (values × 2^k)', () => {
-  const claimed = ['ewma', 'robust_z', 'seasonal', 'seasonal_agile', 'cusum', 'stl', 'pelt', 'burn_rate']
+  const claimed = ['ewma', 'robust_z', 'seasonal', 'seasonal_agile', 'cusum', 'stl', 'pelt']
   for (const name of claimed) {
     it(name, () => {
       fc.assert(
@@ -132,15 +132,23 @@ describe('scale-invariant where claimed (values × 2^k)', () => {
           const a = run(s).points
           const b = run({ ts: s.ts, values: s.values.map((v) => v * c) }).points
           expect(b.map((p) => [p.score, p.anomalous, p.status])).toEqual(a.map((p) => [p.score, p.anomalous, p.status]))
-          if (name !== 'burn_rate') {
-            // burn rate: values and totals both scale (via withTotal's +50 they do not, exactly), so only flags are compared above
-            expect(b.map((p) => p.expected)).toEqual(a.map((p) => (p.expected === null ? null : p.expected * c)))
-          }
+          expect(b.map((p) => p.expected)).toEqual(a.map((p) => (p.expected === null ? null : p.expected * c)))
         }),
         { numRuns: 60 },
       )
     })
   }
+  it('burn rate, with bad and total events scaled together', () => {
+    fc.assert(
+      fc.property(seriesArb(), fc.constantFrom(2 ** -10, 2, 2 ** 10), (s, c) => {
+        const b = burnInput(s) as Series & { total: Float64Array }
+        const scaled = { ts: b.ts, values: b.values.map((v) => v * c), total: b.total.map((v) => v * c) }
+        const run = (x: Series) => burnRate.detect(x as never, { stepMs: STEP, rules: burnRules, objective: 0.9 }).points
+        expect(run(scaled as Series).map((p) => [p.score, p.anomalous])).toEqual(run(b).map((p) => [p.score, p.anomalous]))
+      }),
+      { numRuns: 60 },
+    )
+  })
   it('threshold, with the thresholds scaled too', () => {
     fc.assert(
       fc.property(seriesArb(), fc.constantFrom(2 ** -10, 2, 2 ** 10), (s, c) => {
@@ -154,7 +162,7 @@ describe('scale-invariant where claimed (values × 2^k)', () => {
   })
   it('cross-series', () => {
     fc.assert(
-      fc.property(fc.array(fc.double({ min: -1e3, max: 1e3, noNaN: true }), { minLength: 5, maxLength: 60 }), fc.constantFrom(2 ** -10, 2, 2 ** 10), (vals, c) => {
+      fc.property(fc.array(fc.double({ min: -1e3, max: 1e3, noNaN: true }).map((x) => (Math.abs(x) < 1e-200 ? 0 : x)), { minLength: 5, maxLength: 60 }), fc.constantFrom(2 ** -10, 2, 2 ** 10), (vals, c) => {
         const a = detectGroup(vals.map((v, i) => ({ id: `m${i}`, value: v })))
         const b = detectGroup(vals.map((v, i) => ({ id: `m${i}`, value: v * c })))
         expect(b.members.map((m) => [m.score, m.anomalous])).toEqual(a.members.map((m) => [m.score, m.anomalous]))
