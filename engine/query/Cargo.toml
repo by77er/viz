@@ -1,0 +1,33 @@
+[package]
+name = "viz-query"
+version = "0.1.0"
+edition = "2021"
+description = "viz query engine: PromQL (viz-promql) over lake files and shard tails (viz-storage), with limits and fetch planning. No I/O."
+publish = false
+
+[lib]
+name = "viz_query"
+crate-type = ["rlib"]
+
+[dependencies]
+viz-storage = { path = "../storage" }
+viz-promql = { path = "../promql" }
+# Same version viz-promql links; used only to recognise a bare series selector (`match[]`).
+promql-parser = "0.11"
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+# engine/AGENTS.md: fat LTO, one codegen unit and opt-level 3 measured fastest for WASM.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# The benchmark (examples/bench.rs) is built with `--profile bench-native`: same
+# optimisation, but unwinding and symbols are irrelevant there.
+[workspace]
