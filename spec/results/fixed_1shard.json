@@ -37,15 +37,14 @@
     "trace": false
   },
   "expectViolation": false,
-  "asExpected": false,
+  "asExpected": true,
   "violated": false,
-  "completed": false,
-  "generated": null,
-  "distinct": null,
-  "queue": null,
-  "depth": null,
-  "fpCollisionProb": null,
+  "completed": true,
+  "generated": 68176316,
+  "distinct": 11584656,
+  "queue": 0,
+  "depth": 45,
+  "fpCollisionProb": "3.6E-5",
   "trace": [],
-  "seconds": 764.5,
-  "error": "As of 2022/09/29 (release 21.7) makeExtensionsImmutable should not be called from protobuf gencode. If you are seeing this message, your gencode is vulnerable to a denial of service attack. You should regenerate your code using protobuf 25.6 or later. Use the latest version that meets your needs. However, if you understand the risks and wish to continue with vulnerable gencode, you can set the system property `-Dcom.google.protobuf.use_unsafe_pre22_gencode` on the command line to silence this warning. You also can set `-Dcom.google.protobuf.error_on_unsafe_pre22_gencode` to throw an error instead. See security vulnerability: https://github.com/protocolbuffers/protobuf/security/advisories/GHSA-h4h5-3hr4-j3g2 | [failure] TLC encountered an error (742729ms). | error: TLC error (see output above)"
+  "seconds": 398.2
 }

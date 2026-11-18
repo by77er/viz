@@ -457,6 +457,7 @@ export function redactConfig(stored: unknown): unknown {
   for (const r of Array.isArray(out.receivers) ? (out.receivers as RawReceiver[]) : []) {
     for (const w of configs(r?.webhook_configs)) {
       const had = typeof w.secret === 'string' && w.secret !== ''
+      delete w.secret
       w.has_secret = had
       w.url = redactUrl(w.url, false)
     }

@@ -327,7 +327,13 @@ One weakness found this way: the coarse-pointer version of the sideways-scroll c
 fail on the "toolbar fields" mutant; the fine-pointer 400 px checks did. Why was not
 investigated.
 
-### Speed
+SPEED_FIXES_SECTION
+
+### Speed of the restyle (four series, no typing)
+
+The table the restyle was submitted with, kept as it was. The review found that its claim
+("every 75th percentile is inside its budget") held only for four series and without typing;
+the section above measures typing and 36 and 200 series.
 
 Measured here with `e2e/measure.cjs` on the built app and the mock: Chromium, CPU throttled 4x,
 network shaped to DevTools' Fast 4G, 1440x900, a fresh context per run, 75th percentile of 20

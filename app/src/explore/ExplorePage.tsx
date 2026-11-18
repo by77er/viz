@@ -380,12 +380,18 @@ export function ExplorePage() {
   // reload or a tab close (pagehide), and is dropped if the page is left first.
   const viewUrlTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingView = useRef<ResultView | null>(null)
+  const urlView = useRef(search.view)
+  urlView.current = search.view
   const flushViewUrl = useCallback(() => {
     if (viewUrlTimer.current !== null) clearTimeout(viewUrlTimer.current)
     viewUrlTimer.current = null
     const v = pendingView.current
     pendingView.current = null
-    if (v !== null) setSearch({ view: v }, true)
+    if (v === null) return
+    // Switched away and back before the URL followed: it is already right, and nothing will
+    // arrive to clear the guard, so it is cleared here.
+    if (v === urlView.current) pushedView.current = null
+    else setSearch({ view: v }, true)
   }, [setSearch])
   useEffect(() => {
     window.addEventListener('pagehide', flushViewUrl)

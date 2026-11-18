@@ -53,7 +53,7 @@ export interface ApiOptions {
 }
 
 type RulerStub = RulerRpcV2
-type NotifierStub = NotifierRpcV2 & { expireSilence(tenant: string, id: string, by?: string, dryRun?: boolean): Promise<{ status: 'ok' } | { status: 'not_found' } | { status: 'wrong_tenant' }> }
+type NotifierStub = NotifierRpcV2
 
 const MAX_BODY_BYTES = 4 << 20
 const ZERO_TIME = '0001-01-01T00:00:00Z'

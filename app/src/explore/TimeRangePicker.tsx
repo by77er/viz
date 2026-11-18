@@ -9,8 +9,15 @@ import {
   type TimeSpec,
 } from '../lib/time'
 
-/** "15m" as it is typed, "15 m" as it is read: numbers carry their unit after a space. */
-export const spacedDuration = (d: string) => d.replace(/(\d+)([a-z]+)/g, '$1 $2 ').trim()
+/**
+ * "15m" as it is typed, "15 min" as it is read: numbers carry their unit after a space, and
+ * minutes are "min", which cannot be read as metres (design review m3, as `stepWords`).
+ */
+export const spacedDuration = (d: string) =>
+  d
+    .replace(/(\d+)([a-z]+)/g, '$1 $2 ')
+    .trim()
+    .replace(/(\d+) m\b/g, '$1 min')
 
 export const PRESETS = ['5m', '15m', '30m', '1h', '3h', '6h', '12h', '24h', '2d', '7d'] as const
 

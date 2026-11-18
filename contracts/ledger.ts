@@ -24,6 +24,39 @@ export interface FileEntry {
 }
 
 /**
+ * A file as the ledger lists it (`Plan.files`, `LedgerChange.added`): a `FileEntry` with its
+ * PRECEDENCE, which the ledger assigns. Requests (`addUnit`, `replace`) do not carry it; a
+ * value sent in one is ignored.
+ *
+ * Precedence decides which row wins when two files of one table and day hold the same
+ * `(series_id, ts)`: the file with the higher precedence, in a read and in a merge alike.
+ * Readers pass files to the engine in `Plan.files` order (ascending), and compaction merges
+ * its inputs in ascending precedence (the engine lets the later file win). Key order means
+ * nothing: keys sort as text, so `…-10-12-…` sorts before `…-2-9-…`.
+ *
+ *   - A flush file has `[v, v]`, `v` being the ledger version of the `add_unit` that
+ *     admitted it. A stream's units are admitted in sequence order, so a later write always
+ *     has a higher precedence than an earlier one of the same stream. Across streams the
+ *     order is admission order, which the shard-map handover makes the write order
+ *     (design/DESIGN.md §4.1: a map change waits for the old shards' units to be recorded).
+ *   - A `replace` output has `[min precedenceLow, max precedence]` over the removed files of
+ *     its table and day (`[v, v]` if there are none). The ledger admits it only if no other
+ *     live file of that table and day whose time range overlaps the output's has a range
+ *     that intersects it; otherwise the swap is a `conflict` naming the `blocking` files.
+ *
+ * So any two live files that could hold the same `(series_id, ts)` (same table, same day,
+ * overlapping time ranges) have disjoint ranges and are totally ordered by `precedence`, and
+ * every row read or merged has the value of its latest write. (Within one file, the latest
+ * row wins: contracts/BATCH.md, contracts/TABLES.md.)
+ */
+export interface LiveFile extends FileEntry {
+  /** High end of the file's precedence range; the order of `Plan.files`. */
+  precedence: number
+  /** Low end; equal to `precedence` for a flush file. */
+  precedenceLow: number
+}
+
+/**
  * A stream is one tenant's log inside one shard. Incarnations are ordered: a larger number
  * is newer (shards derive them from the time the stream was created). The ledger refuses an
  * incarnation lower than the one it has registered.
@@ -77,8 +110,8 @@ export interface Plan {
   /** Ledger incarnation and version this plan reflects. Versions never repeat. */
   ledgerIncarnation: number
   version: number
-  /** Live files overlapping the range. */
-  files: FileEntry[]
+  /** Live files overlapping the range, in ascending `precedence` (then key): the order to read them in. */
+  files: LiveFile[]
   /** One per registered stream; the query asks each shard for rows above `seq`. */
   watermarks: Watermark[]
 }
@@ -91,7 +124,13 @@ export interface ReplaceRequest {
 
 export type ReplaceResult =
   | { status: 'ok'; version: number }
-  | { status: 'conflict'; missing: string[] }
+  /**
+   * Nothing changed. `missing`: inputs that are no longer live. `blocking` (when present):
+   * live files that are not inputs but whose precedence range an output's would intersect,
+   * on the same table and day and overlapping in time (see `LiveFile`); the live set changed
+   * since the caller planned. Either way: plan again.
+   */
+  | { status: 'conflict'; missing: string[]; blocking?: string[] }
   | { status: 'invalid'; reason: string }
 
 export interface ExpireRequest {
@@ -111,7 +150,8 @@ export interface LedgerChange {
    * loss). A log reader that meets a new incarnation starts again from its `base`.
    */
   kind: 'base' | 'add_unit' | 'replace' | 'expire' | 'register_stream'
-  added: FileEntry[]
+  /** With the precedence the ledger assigned. (A log written before precedence existed has none; a reader derives `[version, version]` for `add_unit`, the inputs' range for `replace`.) */
+  added: LiveFile[]
   removed: string[]
   /** For `add_unit` and `register_stream`: the stream's watermark after the change. */
   watermark?: Watermark
@@ -130,7 +170,7 @@ export interface LedgerRpc {
   registerStream(ref: StreamRef): Promise<{ version: number; previousIncarnation: number | null }>
   addUnit(unit: FlushUnit): Promise<AddUnitResult>
   plan(req: PlanRequest): Promise<Plan>
-  /** Compaction: swap inputs for outputs iff every input is still live. */
+  /** Compaction: swap inputs for outputs iff every input is still live and the outputs' precedence ranges fit (`LiveFile`). */
   replace(req: ReplaceRequest): Promise<ReplaceResult>
   /** Retention: drop whole days. Returns removed keys (to delete after publication). */
   expire(req: ExpireRequest): Promise<{ version: number; removed: string[] }>

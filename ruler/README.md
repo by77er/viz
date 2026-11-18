@@ -37,7 +37,7 @@ Cloudflare; nothing touched the Cloudflare account.
 | `src/yaml.ts`, `src/rulefile.ts` | Subset YAML parser and emitter; rule-file import/export |
 | `src/rules.ts`, `src/template.ts`, `src/classify.ts`, `src/payload.ts` | Rule-file validation; template subset; cost classification; webhook and Slack bodies |
 | `openapi.json` | OpenAPI 3.1 description of every route (checked against `ROUTES` by `test/http.test.ts`) |
-| `tools/promcheck/` | Go: Prometheus' own code reading what the ruler writes (see "Independent readers") |
+| `tools/promcheck/` | Go: Prometheus' own code reading what the ruler writes (see parts 2 and 5) |
 | `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden |
 | `scripts/mutants.mjs` | Mutation checks |
 
@@ -296,7 +296,7 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 276 tests in 16 files, in workerd: all pass (about 25 s)
+npm test                # 276 tests in 16 files, in workerd: all pass (20–30 s here)
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass
 npm run mutants         # 50 mutants, 50 killed (45 in vitest, 5 through the Go readers)
@@ -325,10 +325,29 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `robust.test.ts` | 15 | registry, sweeper, placement, shard splits and moves |
 | `independent.test.ts` | 2 | captures for `tools/promcheck` |
 
-The first seven files are the 123 tests that existed before this task; all still pass
-(per-file counts unchanged, the bench file gained the two batch-form runs). Repeating the
+The first seven files held the 123 tests that existed before this task; all still pass.
+Checked by per-file count (unchanged except `bench.test.ts`, which gained the two
+batch-form runs: 125 in those files now); the test bodies were not diffed against the
+earlier commit, because git was not used in this task. Repeating the
 randomized files (`ack`, `backtest`, `robust`, `monitors`, `exactly-once`) six times gave
 six passes.
+
+### Exactly-once (inherited cases, unchanged and passing)
+
+| Case | Requests seen | Processed |
+|---|---|---|
+| Same alarm tick replayed 3× in memory, 3× after eviction; notifier alarm replayed 6× | 1 | 1 |
+| Crash inside the ruler's transition transaction | 1 | 1 |
+| Crash between "transition persisted" and "outbox drained" | 1 | 1 |
+| Crash after the notifier accepted the hand-off, before the ruler recorded it | 1 (hand-off sent twice, second applied nothing) | 1 |
+| Notifier unreachable across fire, resolve, fire | 1 | 1, in order |
+| Crash inside the notifier's flush transaction | 0 before the retry, then 1 | 1 |
+| Crash after the decision committed, before the drain | 1 | 1 |
+| Evicted mid-drain after the receiver processed the request | 2, same key, same body | 1 |
+| Receiver answers 500 then 200 | 2, same key | 1 |
+| Receiver times out twice after processing | 3, same key | 1 |
+| Fire, resolve, fire again, two repeats | 5, five keys | 5 |
+| 6 seeds × 30 ticks of flapping alerts, random crashes at six points, evictions, 20% 500s, 15% timeouts-after-processing, against the same seed without faults | many extra | identical notifications, alert state, recorded batches; empty outboxes |
 
 ### Exactly-once with acknowledge and silence
 
@@ -347,7 +366,7 @@ receiver that de-duplicates by `Idempotency-Key` processed (`ack.test.ts`).
 | Group of two, one acknowledged | repeats name only the other; a new alert joining still notifies with both |
 | Silenced, with replays and evictions, then resolved under the silence | 1 request in total |
 | Silence undone in the window | deleted, not ended; the muted repeat goes out; one request per notification |
-| 6 seeds × 45 minutes, two monitors, people acknowledging, un-acknowledging, silencing and undoing at random; random crashes at seven points (including inside the acknowledgement), evictions, 20% 500s, 15% timeouts after processing; compared with the same seed without faults | ACK_CHAOS |
+| 6 seeds × 45 minutes, two monitors, people acknowledging, un-acknowledging, silencing and undoing at random; random crashes at seven points (including inside the acknowledgement), evictions, 20% 500s, 15% timeouts after processing; compared with the same seed without faults | identical set of processed notifications and identical history in every seed, empty outboxes, and no logged repeat names an alert that was acknowledged when it was decided. One run: 195 notifications (12 repeats), 47 acknowledgements, 21 un-acknowledgements, 40 silences (24 undone), 160 crashes injected (33 inside an acknowledgement), 154 extra requests. Counts vary between runs because tenant names, and so group offsets, are random |
 
 ### Mutants
 
@@ -357,7 +376,68 @@ load is not a kill), and restores the source. A pattern that no longer matches t
 is reported as a failure: six of the eighteen earlier patterns had gone stale with the code
 changes of this task and were rewritten (3, 4, 5, 6, 13, 14).
 
-MUTANT_TABLE
+Mutants 1–18 are the earlier ones; 19–45 are this task's (the ten asked for are 19, 23,
+24, 25, 27, 29, 30, 34, 36 and 38; the rest guard the properties around them); 46–50 break
+what only the independent readers check. Final run on the final code: **50 killed, 0
+survived**. Two of them were caught only after a test was strengthened in this task: 30
+(no request in the inherited fuzz carried another tenant in a path prefix; the fuzz now
+does, and covers every route by name instead of by chance) and 46 (every captured time
+happened to have a non-zero last millisecond digit, where JavaScript and Go print alike;
+the capture now includes times on the second and the half second). Mutant 33 is killed by
+the new "dryRun on every write" test.
+
+| # | Mutant | Killed by (first of) |
+|---|---|---|
+| 1 | advance `for` on a replayed tick (evaluate at wall-clock time instead of the aligned tick time) | prometheus: "group evaluation in the Ruler object (prometheus/rules/manager_test.go, group.go) iterations missed (promet…" (+5 more) |
+| 2 | drop the replay guard (the same group and evaluation time is evaluated again) | ruler: "at-least-once alarms: a replayed tick changes nothing the same (group, evaluation time) is not evaluated tw…" |
+| 3 | resolve on evaluator error (treat a failed query as an empty result) (pattern rewritten) | batch: "one failing expression does not fail the batch the failed rule is err with the engine message and keeps its…" (+7 more) |
+| 4 | notify before the transaction commits (send from inside the flush transaction) (pattern rewritten) | exactly-once: "replayed ticks replaying the alarm tick that made a transition, in memory and after eviction, yields one no…" (+5 more) |
+| 5 | drop the idempotency key header (pattern rewritten) | exactly-once: "replayed ticks replaying the alarm tick that made a transition, in memory and after eviction, yields one no…" (+11 more) |
+| 6 | make the idempotency key depend on the attempt (pattern rewritten) | exactly-once: "crashes and failures in the notifier receiver answers 500 then 200: one notification processed" (+2 more) |
+| 7 | ignore silences | notifier: "silences a silenced alert is not notified; expiring the silence through RPC lets it through at the next tick" (+1 more) |
+| 8 | wrong group key (group labels left out of the key) | notifier: "grouping timers group_wait: the first notification waits, so alerts that fire together arrive together" (+3 more) |
+| 9 | catch up missed ticks in a loop | prometheus: "group evaluation in the Ruler object (prometheus/rules/manager_test.go, group.go) iterations missed (promet…" (+1 more) |
+| 10 | persist on every tick (a refreshed value counts as a transition) | property: "property: the state machine equals the reference model for random result sequences, parameters and missed t…" (+6 more) |
+| 11 | memory ahead of storage (adopt the new alert state before the transaction commits) | exactly-once: "crashes in the ruler crash inside the transition transaction: nothing is persisted or handed off; the retry…" |
+| 12 | hand-off row written outside the transition transaction (dropped on a crash in between) | exactly-once: "crashes in the ruler crash between "transition persisted" and "outbox drained": the hand-off survives and i…" (+1 more) |
+| 13 | treat a retryable receiver failure as delivered (at-most-once) (pattern rewritten) | exactly-once: "crashes and failures in the notifier receiver answers 500 then 200: one notification processed" (+5 more) |
+| 14 | reset `for` timers on restore (do not load stored alerts) (pattern rewritten) | prometheus: "group evaluation in the Ruler object (prometheus/rules/manager_test.go, group.go) TestForStateRestore: pend…" (+1 more) |
+| 15 | inhibit without checking the `equal` labels | notifier: "inhibition a firing source mutes matching targets with equal labels; they are notified once the source reso…" (+1 more) |
+| 16 | serve any tenant (drop the tenant check in the ruler) | ruler: "tenant isolation every RPC refuses a tenant other than the one the object is named for" (+1 more) |
+| 17 | a "firing" redelivered after the "resolved" re-opens the alert (drop the ordering check in ingest) | notifier: "ingest is idempotent and ordered by evaluation time a redelivered batch applies nothing; a stale or same-ti…" |
+| 18 | group_interval ignored (flush a changed group as soon as an alarm runs) | notifier: "grouping timers group_interval: a change to a group that was already notified waits for the next interval tick" (+4 more) |
+| 19 | acknowledge does not stop repeats | ack: "an acknowledged alert never sends a repeat two hours of repeat ticks, every alarm replayed three times and …" (+8 more) |
+| 20 | un-acknowledge does not resume repeats (it is a no-op) | ack: "an acknowledged alert never sends a repeat un-acknowledge resumes: the overdue repeat is sent once, then re…" (+1 more) |
+| 21 | acknowledge hides the alert (the notifier stops listing acknowledged alerts) | ack: "an acknowledged alert never sends a repeat two hours of repeat ticks, every alarm replayed three times and …" (+2 more) |
+| 22 | acknowledge hides the alert (the monitor view drops acknowledged alerts) | monitors: "the Monitors and Monitor screens pending, firing, notified, acknowledged, silenced, resolved: every field t…" (+1 more) |
+| 23 | silence undo leaves the silence (reports it removed, keeps it) | ack: "silence from an alert, with undo undo inside the window removes the silence entirely: the alert that fired …" (+1 more) |
+| 24 | backtest uses a different state machine (a second implementation: pending, firing after `for`, gone = resolved) | backtest: "live evaluation and backtest agree a recorded sequence of 90 ticks, three flapping series, for + keep_firin…" (+5 more) |
+| 25 | one failure fails the batch (the ruler fails every rule when any result is an error) | batch: "one failing expression does not fail the batch the failed rule is err with the engine message and keeps its…" (+2 more) |
+| 26 | one failure fails the batch (the single-call adapter rejects the whole call) | batch: "the single-call form is an adapter runs requests in order, one at a time, and reports each failure on its o…" (+1 more) |
+| 27 | no data treated as resolve under `keep` | nodata: "no_data: keep (leave the last state as it is) a firing alert stays firing through missing data and no resol…" (+3 more) |
+| 28 | an absent series keeps its pending alert (Prometheus drops it at once) | nodata: "absent series, as Prometheus handles them (no_data: ok, the default) a pending alert whose series disappear…" (+3 more) |
+| 29 | write without scope (writes are checked against monitors:read) | http: "authentication and scopes (edge's API-key verification, imported) every route refuses a key that has every …" (+1 more) |
+| 30 | tenant from path (a /t/<tenant> prefix selects the tenant) | http: "tenant isolation on every route fuzz: whatever one tenant's key sends (the other tenant in paths, queries, …" |
+| 31 | tenant from the query string (?tenant=) | http: "tenant isolation on every route fuzz: whatever one tenant's key sends (the other tenant in paths, queries, …" |
+| 32 | tenant from a header (X-Scope-OrgID) | http: "tenant isolation on every route fuzz: whatever one tenant's key sends (the other tenant in paths, queries, …" |
+| 33 | dryRun ignored on writes | http: "tenant isolation on every route dryRun on every write: a well-formed request answers 2xx, says dryRun, and …" (+7 more) |
+| 34 | unbounded timeline (the ruler keeps every transition) | monitors: "the Monitors and Monitor screens the history is bounded: the oldest entries are dropped and counted, in the…" |
+| 35 | unbounded notification log (the notifier keeps every entry) | monitors: "the Monitors and Monitor screens the history is bounded: the oldest entries are dropped and counted, in the…" |
+| 36 | sweeper double-arms (ensureArmed re-arms a ruler that has an alarm) | robust: "the sweeper (a Cron Trigger calls sweep()) re-arms exactly the rulers whose alarm was lost, and a second sw…" (+2 more) |
+| 37 | sweeper pages overlap (a ruler on a page boundary is visited twice) | robust: "the registry of ruler objects every statement in the registry names the tenant, except the one platform swe…" (+1 more) |
+| 38 | YAML anchors accepted | monitors: "rule groups and rule files over HTTP a YAML file with an anchor, and a file with a bad rule, are refused wi…" (+3 more) |
+| 39 | YAML aliases accepted | yaml: "what the subset refuses, with the line and a fix an alias as a value" (+1 more) |
+| 40 | a moved group loses its alert state (import ignores the bundle's alerts) | robust: "shard splitting through the API moving a group preserves its alert state: pending and firing alerts keep th…" |
+| 41 | a moved group re-notifies (release resolves its alerts, as delete does) | robust: "shard splitting through the API moving a group preserves its alert state: pending and firing alerts keep th…" |
+| 42 | placement depends on arrival order (least-loaded shard instead of the hash) | robust: "placement of groups on shards (pure) the assignment is the same whatever order the groups come in, keeps ev…" (+3 more) |
+| 43 | the webhook secret is returned by the API (redaction removed) | monitors: "outbound webhook authentication: a per-route secret, never returned no API response and no RPC returns the …" |
+| 44 | the signature does not cover the idempotency key | monitors: "outbound webhook authentication: a per-route secret, never returned signs each request with HMAC-SHA256 ove…" |
+| 45 | a retry is signed with the time of the first attempt (a replayable signature) | monitors: "outbound webhook authentication: a per-route secret, never returned a retry is signed again with the time o…" |
+| 46 | Prometheus API times printed as JavaScript prints them (".000Z"), not as Go prints a time.Time | promcheck `TestPrometheusAPIShapes` |
+| 47 | a field Prometheus does not have leaks into /api/v1/rules (the rule's cost class) | promcheck `TestPrometheusAPIShapes` |
+| 48 | a required group field left out of /api/v1/rules (limit) | promcheck `TestPrometheusAPIShapes` |
+| 49 | an alert value printed as JavaScript prints a number, not as strconv.FormatFloat(v, 'e', -1, 64) | promcheck `TestPrometheusAPIShapes` |
+| 50 | the rule-file export drops keep_firing_for | promcheck `TestRuleFilesRoundTripThroughPrometheusLoader` (+1 more) |
 
 ### Measurements
 

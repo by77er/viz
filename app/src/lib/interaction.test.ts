@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { focusFallbacks, mayLoseFocus, PAGE_FALLBACKS, REGION_FALLBACK } from './focusKeeper'
 import { additiveToggle } from './pointer'
 import { formatAge, shorterRange } from '../explore/waiting'
-import { zoomedIn, zoomedOut } from '../explore/TimeRangePicker'
+import { spacedDuration, zoomedIn, zoomedOut } from '../explore/TimeRangePicker'
 import { stepWords } from './time'
 
 const plain = { shiftKey: false, ctrlKey: false, metaKey: false }
@@ -69,6 +69,14 @@ describe('words (minors)', () => {
     expect(stepWords(120)).toBe('2 min')
     expect(stepWords(90)).toBe('1 min 30 s')
     expect(stepWords(3600)).toBe('1 h')
+  })
+  it('a preset reads with a space and "min" for minutes, as a step does', () => {
+    expect(spacedDuration('5m')).toBe('5 min')
+    expect(spacedDuration('15m')).toBe('15 min')
+    expect(spacedDuration('1h')).toBe('1 h')
+    expect(spacedDuration('24h')).toBe('24 h')
+    expect(spacedDuration('7d')).toBe('7 d')
+    expect(spacedDuration('1h30m')).toBe('1 h 30 min')
   })
   it('after 10 s the wait offers the next shorter range, when there is one', () => {
     expect(shorterRange(3 * 3600)).toEqual({ preset: '1h', seconds: 3600 })

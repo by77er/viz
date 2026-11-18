@@ -399,6 +399,8 @@ export const SIGNATURE_HEADER = 'X-Viz-Signature'
 
 /** EXTENDED (`NotifierRpc`). `dryRun` reports what would happen and changes nothing. */
 export interface NotifierRpcV2 extends NotifierRpc {
+  /** CHANGED: who ended the silence (for the monitors' history), and a dry run. */
+  expireSilence(tenant: string, id: string, by?: string, dryRun?: boolean): Promise<{ status: 'ok' } | { status: 'not_found' } | WrongTenant>
   /** Record who took the alerts. Stops repeat notifications until each alert resolves; hides nothing. */
   acknowledge(tenant: string, fingerprints: string[], by: string, dryRun?: boolean): Promise<AlertActionResult>
   unacknowledge(tenant: string, fingerprints: string[], by: string, dryRun?: boolean): Promise<AlertActionResult>
