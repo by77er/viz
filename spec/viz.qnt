@@ -604,5 +604,14 @@ module viz {
   /// a complete query after a shard storage loss that destroyed nothing
   val W_queryAfterShardLoss = not(st.q.st == "done" and st.nSL > 0 and st.q.must == BATCHES and st.lost == Set())
 
+  // Coverage counters for the random simulator (--witnesses).
+  val C_queryDone = st.q.st == "done"
+  val C_queryDoneAfterDiscard = st.q.st == "done" and SHARDS.exists(sid => st.sh.get(sid).disc > 0)
+  val C_ledgerRebuilt = st.nLL > 0
+  val C_shardLost = st.nSL > 0
+  val C_compacted = st.led.files.exists(f => f.comp)
+  val C_objectDeleted = st.ret.size() < st.nComp + st.nExp and st.obj.size() < st.nFlush
+  val C_queryRefused = st.restarts > 0
+
   val Safety = and { I1_AckedIsDurable, I3_NoDuplicates, I4_NoGapAtSeam, I5_DiscardOnlyLogged, I11_LiveFilesReadable, I9_NoResurrection }
 }

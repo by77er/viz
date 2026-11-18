@@ -6,8 +6,10 @@
 //!
 //! Checks performed, in order: magic, header length, signal, flags, reserved, the
 //! both-or-neither-empty rule, then each series entry (bounds, UTF-8, non-empty name and
-//! value, strictly ascending names, `__name__` present), padding bytes, column bounds,
-//! trailing bytes, and finally every row's series index.
+//! value, the label limits, no NUL byte, strictly ascending names, `__name__` present),
+//! padding bytes, column bounds, trailing bytes, every row's series index, and finally
+//! every row's timestamp (0 to 253,402,300,799,999). The 1 MiB size cap of a stored batch
+//! is the shard's to enforce (`Shard.append` answers `too_large`); it is not checked here.
 //!
 //! `series_id` is *not* recomputed on decode: the contract says only `edge` computes it
 //! and everything downstream trusts it. [`Batch::series_ids_consistent`] is there for tools.
@@ -22,6 +24,14 @@ pub const SIGNAL_METRICS: u8 = 1;
 pub const STALE_NAN_BITS: u64 = 0x7ff0_0000_0000_0002;
 /// The label that holds the metric name.
 pub const NAME_LABEL: &str = "__name__";
+
+/// Label limits of contracts/BATCH.md.
+pub const MAX_LABELS: u32 = 128;
+pub const MAX_LABEL_NAME_BYTES: usize = 1024;
+pub const MAX_LABEL_VALUE_BYTES: usize = 8192;
+/// Timestamps are Unix milliseconds in the years 1970 to 9999, so a UTC day is `YYYY-MM-DD`.
+pub const MIN_TS: i64 = 0;
+pub const MAX_TS: i64 = 253_402_300_799_999;
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -169,6 +179,9 @@ pub fn decode(bytes: &[u8]) -> Result<Batch<'_>, BatchError> {
     for si in 0..n_series {
         let series_id = c.i64("series_id")?;
         let n_labels = c.u32("n_labels")?;
+        if n_labels > MAX_LABELS {
+            return Err(BatchError::TooManyLabels { series: si, n_labels });
+        }
         let mut labels: Vec<(&str, &str)> = Vec::with_capacity((n_labels as usize).min(64));
         let mut name_at = None;
         for li in 0..n_labels {
@@ -176,6 +189,12 @@ pub fn decode(bytes: &[u8]) -> Result<Batch<'_>, BatchError> {
             let name = c.take(nl as u64, "label name")?;
             let vl = c.u16("label value length")?;
             let value = c.take(vl as u64, "label value")?;
+            if name.len() > MAX_LABEL_NAME_BYTES || value.len() > MAX_LABEL_VALUE_BYTES {
+                return Err(BatchError::LabelTooLong { series: si });
+            }
+            if name.contains(&0) || value.contains(&0) {
+                return Err(BatchError::NulInLabel { series: si });
+            }
             let name = std::str::from_utf8(name).map_err(|_| BatchError::InvalidUtf8 { series: si })?;
             let value = std::str::from_utf8(value).map_err(|_| BatchError::InvalidUtf8 { series: si })?;
             if name.is_empty() {
@@ -212,6 +231,12 @@ pub fn decode(bytes: &[u8]) -> Result<Batch<'_>, BatchError> {
         let index = u32::from_le_bytes(ch.try_into().unwrap());
         if index >= n_series {
             return Err(BatchError::SeriesIndexOutOfRange { row: row as u32, index, n_series });
+        }
+    }
+    for (row, ch) in ts.chunks_exact(8).enumerate() {
+        let t = i64::from_le_bytes(ch.try_into().unwrap());
+        if !(MIN_TS..=MAX_TS).contains(&t) {
+            return Err(BatchError::TimestampOutOfRange { row: row as u32, ts: t });
         }
     }
     Ok(Batch { series, n_rows: n_rows as usize, idx, ts, val })

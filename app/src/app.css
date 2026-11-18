@@ -1,0 +1,121 @@
+/*
+ * Application layout. The look comes from the design system (design-system/dist/viz.css,
+ * imported in main.tsx); this file only places things and adapts third-party widgets
+ * (uPlot, CodeMirror, <dialog>) to the tokens. Every value is a token:
+ *   node design-system/tools/check.mjs app/src
+ * Breakpoints cannot be custom properties, so those lines carry token-lint-ignore, as the
+ * design system's own grid does.
+ */
+
+/* Base: what Tailwind's reset used to do, reduced to what the app needs. */
+html, body, #root { min-height: 100%; }
+body { margin: 0; }
+h1, h2, p, pre { margin: 0; }
+h1, h2 { font: inherit; }
+button, input, select { font: inherit; color: inherit; }
+a { color: inherit; }
+
+.sr-only { position: absolute; width: var(--hairline); height: var(--hairline); overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.grow { flex: 1; }
+.app-num { font-family: var(--font-mono); } /* a number or identifier inside a sentence, at the sentence's size */
+
+/* Shell */
+.app { min-height: 100vh; display: flex; flex-direction: column; container-type: inline-size; }
+.app-skip { position: absolute; left: var(--space-2); top: var(--space-2); z-index: 3; }
+.app-skip:not(:focus) { width: var(--hairline); height: var(--hairline); padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+.app-nav { flex: none; }
+.app-links { display: contents; }
+.vz-nav .vz-nav-name { color: var(--ink); }
+.app-notices { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-6) 0; }
+.app-notices:empty { display: none; }
+.is-reserved { visibility: hidden; }
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.page { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) var(--space-6) var(--space-8); min-width: 0; }
+.page[data-prose] { gap: var(--space-6); padding-top: var(--space-8); }
+.prose { display: flex; flex-direction: column; gap: var(--space-3); max-width: var(--measure); font: var(--text-body); color: var(--ink-secondary); }
+.prose h2 { font: var(--text-heading); letter-spacing: var(--text-heading-track); color: var(--ink); margin-top: var(--space-4); }
+.keys { display: inline-flex; gap: var(--space-1); }
+
+@container (max-width: 639px) { /* token-lint-ignore: breakpoint */
+  .app-nav { padding: 0 var(--space-4); gap: var(--space-4); }
+  .app-notices { padding: var(--space-3) var(--space-4) 0; }
+  .page { padding: var(--space-4) var(--space-4) var(--space-8); }
+  .wide-only { display: none; }
+}
+
+/* Explore: query row and toolbar. Rows of controls are space-3 apart, so 44px touch areas never overlap. */
+.query-row { display: flex; align-items: flex-start; gap: var(--space-2); }
+.query-well { flex: 1; cursor: text; }
+.query-well:focus-within { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
+.query-well .cm-content:focus-visible { outline: none; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-2); }
+.toolbar-group { position: relative; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-2); }
+.step-field { width: calc(var(--control-md) * 4); }
+.unit-field { width: calc(var(--control-md) * 6); }
+
+/* Result panel. The waiting line and the plot region keep their height whether or not they have content. */
+.result { --plot: calc(var(--row) * 10); }
+.wait-slot { display: flex; flex-direction: column; }
+.region { min-height: var(--plot); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.plot { position: relative; height: var(--plot); width: 100%; font: var(--text-micro); user-select: none; touch-action: pan-y; }
+.region .vz-empty { padding-top: var(--space-2); }
+.code-scroll { max-height: calc(var(--row) * 16); overflow: auto; }
+.code-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.caption-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.example-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.example-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-3); }
+.example-list a { font: var(--text-data); overflow-wrap: anywhere; }
+
+/* Tables: sortable heads and the legend's row toggles are plain buttons that fill their cell. */
+.th-button { display: block; width: 100%; padding: 0; background: none; border: 0; font: inherit; color: inherit; text-align: inherit; cursor: pointer; white-space: nowrap; }
+.th-button:hover, th[aria-sort] .th-button { color: var(--ink); }
+.series-toggle { display: flex; align-items: center; gap: var(--space-2); width: 100%; height: var(--row); padding: 0; background: none; border: 0; text-align: left; cursor: pointer; }
+.series-toggle[aria-pressed="false"] { color: var(--ink-muted); }
+.swatch { display: inline-block; flex: none; width: var(--space-3); height: var(--stroke); }
+.cell-wrap { white-space: normal; }
+.cell-quiet { color: var(--ink-secondary); }
+@media (pointer: coarse) {
+  .legend-table td, .series-toggle { height: var(--control-touch); }
+  .th-button { min-height: var(--control-touch); }
+}
+
+/* Overlays */
+.popover { position: absolute; left: 0; top: calc(100% + var(--space-1)); z-index: 2; width: calc(var(--overlay-min) * 1.5); max-width: calc(100vw - 2 * var(--space-4)); display: flex; flex-direction: column; }
+.popover-form { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-2); }
+.popover-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); }
+.vz-menu button[role="menuitem"] { width: 100%; background: none; border: 0; text-align: left; }
+.vz-menu [role="menuitem"][aria-current="true"] { font: var(--text-ui-strong); }
+dialog.vz-dialog, dialog.palette { margin: auto; }
+dialog::backdrop { background: transparent; }
+dialog.palette { top: calc(var(--space-12) * 2); margin-top: 0; width: var(--dialog); max-width: calc(100% - 2 * var(--space-4)); padding: 0; border: 0; background: none; overflow: visible; }
+.palette .vz-menu { display: flex; flex-direction: column; gap: var(--space-1); }
+.palette-list { max-height: calc(var(--row) * 12); overflow-y: auto; }
+.palette-none { padding: var(--space-2); color: var(--ink-secondary); }
+.dialog-form { display: contents; }
+.field-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.status-line { min-height: var(--control-sm); display: flex; align-items: center; font: var(--text-small); }
+.status-line .vz-status { white-space: normal; }
+
+/* uPlot: its own stylesheet is not loaded (it carries literal colours); these are the rules it needs. */
+.uplot { width: min-content; }
+.u-wrap { position: relative; }
+.u-over, .u-under, .u-axis { position: absolute; }
+.u-under { overflow: hidden; }
+.uplot canvas { display: block; position: relative; width: 100%; height: 100%; }
+.u-select { position: absolute; pointer-events: none; background: transparent; border-left: var(--hairline) solid var(--ink); border-right: var(--hairline) solid var(--ink); }
+.u-cursor-x, .u-cursor-y { position: absolute; left: 0; top: 0; pointer-events: none; will-change: transform; }
+.u-hz .u-cursor-x { height: 100%; border-right: var(--hairline) dashed var(--ink-secondary); }
+.u-cursor-y { display: none; }
+.u-cursor-pt { position: absolute; top: 0; left: 0; border-radius: var(--radius-1); border: 0 solid; pointer-events: none; will-change: transform; background-clip: padding-box !important; }
+.u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-pt.u-off { display: none; }
+
+/* Crosshair readout: a raised surface that follows the pointer by transform only. */
+.chart-tip { position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none; width: calc(var(--overlay-min) * 1.25); max-width: 90%; padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-half); font: var(--text-small); contain: content; will-change: transform; }
+.chart-tip[hidden] { display: none; }
+.tip-time { font: var(--text-micro); color: var(--ink-muted); }
+.tip-row { display: grid; grid-template-columns: var(--space-3) minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); font: var(--text-data); color: var(--ink-secondary); }
+.tip-row[hidden] { display: none; }
+.tip-row[data-focus] { color: var(--ink); font: var(--text-data-strong); }
+.tip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tip-value { color: var(--ink); }
+.tip-more { color: var(--ink-muted); }

@@ -151,11 +151,18 @@ describe('batch encoding', () => {
     expect(got).toEqual(sent)
   })
 
-  it('writes negative and large timestamps as exact two\'s-complement i64', () => {
+  it('writes every timestamp of the contract range as an exact i64, and rejects everything outside it', () => {
+    // However wide the accept window is configured, the contract range 0..253402300799999 bounds it.
     const c = new Collector({ ...DEFAULT_LIMITS, acceptBackMs: Infinity, acceptAheadMs: Infinity }, 0)
     const idx = addSeries(c, [['__name__', 'a']])
-    const ts = [0, -1, 1, -4294967296, -4294967297, 4294967295, 4294967296, Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER, -1700000000123]
+    const MAX = 253_402_300_799_999 // 9999-12-31T23:59:59.999Z
+    expect(new Date(MAX).toISOString()).toBe('9999-12-31T23:59:59.999Z')
+    const ts = [0, 1, 4294967295, 4294967296, 1700000000123, MAX - 1, MAX]
     for (const t of ts) c.addSampleNumber(idx, t, 0)
+    const outside = [-1, -4294967296, Number.MIN_SAFE_INTEGER, MAX + 1, Number.MAX_SAFE_INTEGER, NaN, Infinity, -Infinity]
+    for (const t of outside) c.addSampleNumber(idx, t, 0)
+    expect(c.rejectedTotal).toBe(outside.length)
+    expect(Object.fromEntries(c.rejected)).toEqual({ 'timestamp older than the accept window': 5, 'timestamp too far in the future': 3 })
     const d = decodeVZB1(buildBatches(c, new Int32Array(1), 1 << 20).get(0)![0]!.bytes)
     expect(d.rows.map((r) => r.ts)).toEqual(ts.map(BigInt))
   })

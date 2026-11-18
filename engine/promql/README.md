@@ -223,7 +223,30 @@ parsing.
 `python3 tools/mutate.py` applies one semantic change at a time, runs the three suites, and
 restores the file. "Caught by" lists the suites that failed.
 
-MUTATION_TABLE
+| # | mutation | upstream corpus | tests/api.rs | tests/props.rs |
+|---:|---|---|---|---|
+| 1 | range window closed on the left | caught | caught (`source_may_return_extra_samples_and_unsorted_labels`) | not caught |
+| 2 | no extrapolation in rate/increase/delta | caught | caught (`rate_extrapolates_and_drops_name`) | not caught |
+| 3 | staleness markers ignored by instant selectors | caught | caught (`staleness_marker_ends_a_series_but_plain_nan_does_not`) | not caught |
+| 4 | lookback 4m instead of 5m | caught | caught (`lookback_is_five_minutes_left_open`) | not caught |
+| 5 | __name__ kept after rate and other range functions | caught | caught (`name_dropping_default_mode`, `rate_extrapolates_and_drops_name`, `source_may_return_extra_samples_and_unsorted_labels`, `staleness_marker_ends_a_series_but_plain_nan_does_not`) | not caught |
+| 6 | `without` keeps the listed labels (only drops the name) | caught | not caught | not caught |
+| 7 | counter resets not compensated in rate | caught | caught (`rate_extrapolates_and_drops_name`) | not caught |
+| 8 | one-to-one matching accepts duplicate right-hand series | not caught | caught (`differential_regressions`, `vector_matching_error_cases`) | not caught |
+| 9 | offset sign flipped | caught | caught (`selectors_report_ranges`) | not caught |
+| 10 | subquery steps aligned to the outer start instead of absolute multiples | caught | not caught | caught (`range_equals_repeated_instant`, `split_range_concatenates`) |
+| 11 | comparison without bool keeps non-matching samples | caught | not caught | not caught |
+| 12 | @ modifier ignored on instant selectors | caught | not caught | not caught |
+| 13 | many-to-one without group_left accepted silently | not caught | caught (`vector_matching_error_cases`) | not caught |
+| 14 | group_left does not copy the listed labels | caught | caught (`vector_matching_error_cases`) | not caught |
+| 15 | `and` behaves like `unless` | caught | caught (`name_dropping_default_mode`) | not caught |
+| 16 | topk ignores `by` grouping | caught | not caught | not caught |
+| 17 | histogram_quantile bucket search mishandles NaN counts | not caught | caught (`differential_regressions`) | not caught |
+| 18 | duplicate check on the one side even when the other side is empty | not caught | caught (`differential_regressions`) | not caught |
+| 19 | histogram_quantile does not interpolate inside the bucket | caught | not caught | not caught |
+| 20 | stddev aggregation returns the variance | caught | not caught | not caught |
+
+All 20 mutants are caught by at least one suite; the source was restored and the full suite re-run green after each run.
 
 One mutant survived the first version of the tests and is the reason `vector_matching_error_cases`
 exists: accepting duplicate series on the right-hand side of a one-to-one match passed the whole

@@ -212,7 +212,7 @@ proptest! {
 
     #[test]
     fn round_trip(series in proptest::collection::vec(arb_def(), 1..6),
-                  rows in proptest::collection::vec((any::<u32>(), any::<i64>(), any::<u64>()), 1..40)) {
+                  rows in proptest::collection::vec((any::<u32>(), 0i64..=253_402_300_799_999, any::<u64>()), 1..40)) {
         let rows: Vec<Row> = rows.into_iter().map(|(i, ts, bits)| Row { series_idx: i % series.len() as u32, ts, value_bits: bits }).collect();
         let bytes = encode(&series, &rows).unwrap();
         let b = decode(&bytes).unwrap();

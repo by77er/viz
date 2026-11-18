@@ -4,6 +4,9 @@ import { isValidTimeSpec, parseDuration, type TimeSpec } from './time'
  * Everything that defines an Explore view lives in the URL so any view is a shareable link.
  * Credentials never do (see shell/settings.ts).
  */
+export const RESULT_VIEWS = ['chart', 'table', 'text', 'json'] as const
+export type ResultView = (typeof RESULT_VIEWS)[number]
+
 export interface ExploreSearch {
   /** PromQL expression. */
   q: string
@@ -13,8 +16,8 @@ export interface ExploreSearch {
   step: string
   /** `auto` or a unit id from lib/units. */
   unit: string
-  view: 'chart' | 'text'
-  tab: 'table' | 'json'
+  /** The form the result is shown in. */
+  view: ResultView
 }
 
 export const DEFAULT_SEARCH: ExploreSearch = {
@@ -24,7 +27,6 @@ export const DEFAULT_SEARCH: ExploreSearch = {
   step: 'auto',
   unit: 'auto',
   view: 'chart',
-  tab: 'table',
 }
 
 const str = (v: unknown): string | undefined =>
@@ -42,8 +44,8 @@ export function parseExploreSearch(raw: Record<string, unknown>): ExploreSearch 
     to: to && isValidTimeSpec(to) ? to : DEFAULT_SEARCH.to,
     step: step && (step === 'auto' || parseDuration(step)) ? step : DEFAULT_SEARCH.step,
     unit: unit && /^[a-z0-9/_-]{1,16}$/i.test(unit) ? unit : DEFAULT_SEARCH.unit,
-    view: raw.view === 'text' ? 'text' : 'chart',
-    tab: raw.tab === 'json' ? 'json' : 'table',
+    // Links from before the three forms shared one control carried `tab=json`.
+    view: RESULT_VIEWS.includes(raw.view as ResultView) ? (raw.view as ResultView) : raw.tab === 'json' ? 'json' : 'chart',
   }
 }
 

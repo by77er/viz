@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { alignWindow, autoStep, bucketWidth, MAX_POINTS, NICE_STEPS } from './step'
-import { assignStyles, hashString, PALETTE_DARK, PALETTE_LIGHT, preferredSlot, SLOT_COUNT } from './color'
+import { assignStyles, hashString, preferredSlot, SLOT_COUNT, slotToken } from './color'
 import {
   DEFAULT_SEARCH,
   exploreSearchFromParams,
@@ -65,11 +65,11 @@ describe('series colours', () => {
     const b = assignStyles([...keys].reverse())
     for (const k of keys) expect(b.get(k)).toEqual(a.get(k))
   })
-  it('gives distinct solid slots to up to eight series', () => {
+  it('gives distinct slots to up to eight series', () => {
     const many = Array.from({ length: 8 }, (_, i) => `pod="p${i}"`)
     const styles = assignStyles(many)
     expect(new Set([...styles.values()].map((s) => s.slot)).size).toBe(8)
-    expect([...styles.values()].every((s) => s.dash === 0)).toBe(true)
+    expect([...styles.values()].every((s) => s.slot !== null)).toBe(true)
   })
   it('a series alone on its preferred slot keeps it regardless of the others', () => {
     const k = 'service="auth"'
@@ -78,14 +78,23 @@ describe('series colours', () => {
     const others = ['x="1"', 'x="2"', 'x="3"'].filter((o) => preferredSlot(o) !== preferredSlot(k) && o > k)
     expect(assignStyles([k, ...others]).get(k)).toEqual(alone)
   })
-  it('beyond eight series, (colour, dash) pairs stay unique up to 32', () => {
+  it('beyond eight series, eight keep distinct slots and the rest fold into Other', () => {
     const many = Array.from({ length: 32 }, (_, i) => `le="${i}"`)
     const styles = assignStyles(many)
-    expect(new Set([...styles.values()].map((s) => `${s.slot}/${s.dash}`)).size).toBe(32)
+    const slots = [...styles.values()].map((s) => s.slot)
+    expect(slots.filter((s) => s !== null).length).toBe(SLOT_COUNT)
+    expect(new Set(slots.filter((s) => s !== null)).size).toBe(SLOT_COUNT)
+    expect(slots.filter((s) => s === null).length).toBe(32 - SLOT_COUNT)
+    // The coloured ones are the first eight in sorted key order, whatever the input order.
+    const firstEight = [...many].sort().slice(0, SLOT_COUNT)
+    expect(firstEight.every((k) => styles.get(k)!.slot !== null)).toBe(true)
+    expect(assignStyles([...many].reverse())).toEqual(styles)
   })
-  it('has matched light and dark palettes', () => {
-    expect(PALETTE_LIGHT.length).toBe(SLOT_COUNT)
-    expect(PALETTE_DARK.length).toBe(SLOT_COUNT)
+  it('names only the eight series tokens, in order, and a neutral ink for Other', () => {
+    expect(Array.from({ length: SLOT_COUNT }, (_, i) => slotToken(i))).toEqual(
+      ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5', '--series-6', '--series-7', '--series-8'],
+    )
+    expect(slotToken(null)).toBe('--ink-muted')
   })
 })
 
@@ -97,7 +106,6 @@ describe('URL state', () => {
     step: '30s',
     unit: 'rps',
     view: 'text',
-    tab: 'json',
   }
   it('round-trips through URLSearchParams', () => {
     expect(exploreSearchFromParams(new URLSearchParams(exploreSearchToParams(full).toString()))).toEqual(full)
@@ -120,11 +128,16 @@ describe('URL state', () => {
     )
   })
   it('replaces invalid values with defaults', () => {
-    expect(parseExploreSearch({ from: 'yesterday', to: 'now-', step: 'fast', view: 'pie', tab: 3, unit: '<x>' })).toEqual(DEFAULT_SEARCH)
+    expect(parseExploreSearch({ from: 'yesterday', to: 'now-', step: 'fast', view: 'pie', unit: '<x>' })).toEqual(DEFAULT_SEARCH)
     expect(parseExploreSearch({ from: 1795000000000 }).from).toBe('1795000000000')
   })
+  it('accepts each result form, and reads the old tab=json links as the JSON form', () => {
+    for (const view of ['chart', 'table', 'text', 'json'] as const) expect(parseExploreSearch({ view }).view).toBe(view)
+    expect(parseExploreSearch({ tab: 'json' }).view).toBe('json')
+    expect(parseExploreSearch({ view: 'text', tab: 'json' }).view).toBe('text')
+  })
   it('has no field that could carry a credential', () => {
-    expect(Object.keys(DEFAULT_SEARCH).sort()).toEqual(['from', 'q', 'step', 'tab', 'to', 'unit', 'view'])
+    expect(Object.keys(DEFAULT_SEARCH).sort()).toEqual(['from', 'q', 'step', 'to', 'unit', 'view'])
   })
 })
 

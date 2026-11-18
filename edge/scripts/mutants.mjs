@@ -48,6 +48,18 @@ const mutants = [
   ['batches not split under the DO value limit', 'src/batch.ts', 'if (n > 1 && pad8(16 + table) + pad8(4 * n) + 16 * n > maxBatchBytes) break', ''],
   ['decompressed size limit not enforced (snappy)', 'src/snappy.ts', 'if (len > maxLen) throw', 'if (false) throw'],
   ['snappy copy bounds not checked', 'src/snappy.ts', 'if (offset === 0 || offset > op || op + l > len) throw', 'if (false) throw'],
+  // contracts v2
+  ['labels sorted in JavaScript string order instead of UTF-8 bytes', 'src/batch.ts',
+    'const c = cmpBytes(buf, offs[p]!, offs[p + 1]!, offs[o]!, offs[o + 1]!)',
+    'const sa = utf8.decode(buf.subarray(offs[p]!, offs[p + 1]!)), sb = utf8.decode(buf.subarray(offs[o]!, offs[o + 1]!))\n        const c = sa < sb ? -1 : sa > sb ? 1 : 0'],
+  ['timestamps before 1970 accepted', 'src/batch.ts', 'Math.max(now - limits.acceptBackMs, CONTRACT.minTimestampMs)', 'Math.max(now - limits.acceptBackMs, Number.MIN_SAFE_INTEGER)'],
+  ['timestamps after year 9999 accepted', 'src/batch.ts', 'Math.min(now + limits.acceptAheadMs, CONTRACT.maxTimestampMs)', 'Math.min(now + limits.acceptAheadMs, Number.MAX_SAFE_INTEGER)'],
+  ['INGEST_LIMITS may loosen the contract label limits', 'src/limits.ts', 'out.maxLabelsPerSeries = Math.min(out.maxLabelsPerSeries, CONTRACT.maxLabelsPerSeries)', ''],
+  ['INGEST_LIMITS may raise the batch cap', 'src/limits.ts', 'out.maxBatchBytes = Math.min(out.maxBatchBytes, CONTRACT.maxBatchBytes)', ''],
+  ['label set larger than a batch not rejected', 'src/batch.ts', 'if (pad8(16 + bytes) + 8 + 16 > L.maxBatchBytes) return -Reject.SeriesTooLarge', ''],
+  ['OTLP point attribute job/instance not renamed', 'src/otlp.ts', "return name === 'job' ? 'exported_job' : name === 'instance' ? 'exported_instance' : name", 'return name'],
+  ['too_large from a shard treated as success', 'src/route.ts', "const tooLarge = results.filter((r) => r.status === 'too_large')", 'const tooLarge = [] as typeof results'],
+  ['no re-split after too_large', 'src/route.ts', ';({ results, batches } = await attempt(env, map, tenant, c, cap))', ''],
 ]
 
 const only = process.argv[2]

@@ -391,7 +391,7 @@ export class Collector {
     const p = this.row(series, ts)
     if (p < 0 || src === null) return
     const v = this.rowVal
-    for (let i = 0; i < 8; i++) v[p + i] = src[off + i]!
+    this.valView.setFloat64(p, Number.isNaN(new DataView(src.buffer, src.byteOffset).getFloat64(off, true)) ? NaN : new DataView(src.buffer, src.byteOffset).getFloat64(off, true), true)
   }
 
   addSampleNumber(series: number, ts: number, value: number): void {

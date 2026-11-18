@@ -35,8 +35,15 @@ pub enum BatchError {
     EmptyLabelValue { series: u32 },
     /// A label name or value is not valid UTF-8.
     InvalidUtf8 { series: u32 },
-    /// (encode only) a label name or value is longer than 65,535 bytes.
+    /// A label name or value contains a NUL byte (it would make the `series_id` input ambiguous).
+    NulInLabel { series: u32 },
+    /// A series entry has more than 128 labels.
+    TooManyLabels { series: u32, n_labels: u32 },
+    /// A label name is longer than 1,024 bytes or a value longer than 8,192 bytes (on
+    /// encode: also anything that does not fit the format's `u16` length).
     LabelTooLong { series: u32 },
+    /// A row's timestamp is outside 0..=253,402,300,799,999 (years 1970 to 9999).
+    TimestampOutOfRange { row: u32, ts: i64 },
     /// (encode only) more than `u32::MAX` rows or series.
     TooLarge,
 }
@@ -68,7 +75,10 @@ impl fmt::Display for BatchError {
             EmptyLabelName { series } => write!(f, "series {series}: empty label name"),
             EmptyLabelValue { series } => write!(f, "series {series}: empty label value"),
             InvalidUtf8 { series } => write!(f, "series {series}: label is not valid UTF-8"),
-            LabelTooLong { series } => write!(f, "series {series}: label longer than 65535 bytes"),
+            NulInLabel { series } => write!(f, "series {series}: NUL byte in a label"),
+            TooManyLabels { series, n_labels } => write!(f, "series {series}: {n_labels} labels, at most 128 allowed"),
+            LabelTooLong { series } => write!(f, "series {series}: label name over 1024 bytes or value over 8192 bytes"),
+            TimestampOutOfRange { row, ts } => write!(f, "row {row}: timestamp {ts} outside 0..=253402300799999"),
             TooLarge => write!(f, "too many rows or series for one batch"),
         }
     }

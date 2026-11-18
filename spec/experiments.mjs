@@ -10,7 +10,7 @@
 //   node experiments.mjs fixed           only the exhaustive runs of the amended protocol
 //   node experiments.mjs sim             only the random simulations
 //   node experiments.mjs <name> [...]    named experiments
-import { spawnSync } from 'node:child_process'
+import { spawnSync, spawn } from 'node:child_process'
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, openSync, closeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -226,28 +226,44 @@ function runTlc(e) {
   return res
 }
 
-function runSim(e) {
+const WITNESSES = ['C_queryDone', 'C_queryDoneAfterDiscard', 'C_ledgerRebuilt', 'C_shardLost', 'C_compacted', 'C_queryRefused']
+
+/** Random simulation: PROCS independent simulator processes with different seeds. */
+async function runSim(e) {
   const file = writeInstance(e)
-  const threads = 4
+  const PROCS = 4
+  const per = Math.ceil(e.samples / PROCS)
   const t0 = Date.now()
-  const itf = join(build, `${e.name}.itf.json`)
-  rmSync(itf, { force: true })
-  const r = spawnSync(quint, ['run', '--backend', 'typescript', '--invariant', e.inv, '--max-samples', String(e.samples),
-    '--max-steps', String(e.steps), '--seed', '0x5eed', '--out-itf', itf, file],
-    { cwd: build, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 3 * 3600_000 })
-  const out = (r.stdout ?? '') + (r.stderr ?? '')
+  const runs = await Promise.all([...Array(PROCS).keys()].map((i) => new Promise((resolve) => {
+    const itf = join(build, `${e.name}.${i}.itf.json`)
+    rmSync(itf, { force: true })
+    const p = spawn(quint, ['run', '--backend', 'typescript', '--invariant', e.inv, '--max-samples', String(per),
+      '--max-steps', String(e.steps), '--seed', `0x5eed${i}`, '--witnesses', ...WITNESSES, '--out-itf', itf, file], { cwd: build })
+    let out = ''
+    p.stdout.on('data', (d) => (out += d))
+    p.stderr.on('data', (d) => (out += d))
+    p.on('close', (code) => resolve({ code, out, itf }))
+  })))
+  const bad = runs.find((r) => r.code !== 0)
   let trace = []
-  const violated = r.status !== 0
-  if (violated && existsSync(itf)) {
+  if (bad && existsSync(bad.itf)) {
     try {
-      const j = JSON.parse(readFileSync(itf, 'utf8'))
+      const j = JSON.parse(readFileSync(bad.itf, 'utf8'))
       const num = (x) => (x && typeof x === 'object' && '#bigint' in x ? Number(x['#bigint']) : x)
       trace = j.states.map((s) => Object.entries(s).find(([k]) => k.endsWith('act'))?.[1]).filter(Boolean)
         .map((a) => ({ n: a.n, a: num(a.a), b: num(a.b) })).filter((a) => a.n && a.n !== 'init').map(fmtAct)
     } catch { /* keep empty */ }
   }
-  return { simulation: true, violated, completed: !violated, samples: e.samples, maxSteps: e.steps, threads: 1,
-    seconds: Math.round((Date.now() - t0) / 100) / 10, trace, tail: out.trim().split('\n').slice(-3).join(' | ') }
+  // "C_x was witnessed in N trace(s) out of M explored (p%)"
+  const coverage = {}
+  for (const r of runs) for (const m of r.out.matchAll(/(C_\w+) was witnessed in (\d+) trace\(s\) out of (\d+)/g)) {
+    coverage[m[1]] = (coverage[m[1]] ?? 0) + Number(m[2])
+  }
+  const lens = runs.map((r) => /max=(\d+), min=(\d+), average=([\d.]+)/.exec(r.out)).filter(Boolean)
+  return { simulation: true, violated: !!bad, completed: !bad, samples: per * PROCS, maxSteps: e.steps,
+    traceLen: lens.length ? { max: Math.max(...lens.map((l) => Number(l[1]))), avg: Math.round(lens.reduce((a, l) => a + Number(l[3]), 0) / lens.length) } : null,
+    coverage, seconds: Math.round((Date.now() - t0) / 100) / 10, trace,
+    error: bad && !/Invariant violated|violation/.test(bad.out) ? bad.out.trim().split('\n').slice(-2).join(' | ') : undefined }
 }
 
 // ----------------------------------------------------------------------------- main
@@ -260,7 +276,7 @@ if (selected.length === 0) { console.error('no such experiment; names:\n  ' + EX
 let bad = 0
 for (const e of selected) {
   process.stdout.write(`${e.name} ... `)
-  const res = e.kind === 'sim' ? runSim(e) : runTlc(e)
+  const res = e.kind === 'sim' ? await runSim(e) : runTlc(e)
   const expectViolation = e.kind === 'teeth' || e.kind === 'literal' || e.kind === 'witness' || e.name === 'sim_literal_big'
   const asExpected = !res.error && res.violated === expectViolation
   if (!asExpected) bad++
@@ -268,7 +284,7 @@ for (const e of selected) {
   writeFileSync(join(results, `${e.name}.json`), JSON.stringify(rec, null, 2) + '\n')
   console.log(`${res.error ? 'ERROR ' + res.error : res.violated ? `VIOLATION of ${rec.invariant} in ${res.trace.length} steps` : 'no violation'}`
     + (res.distinct != null ? `; ${res.distinct} distinct states, depth ${res.depth}` : '')
-    + (res.simulation ? `; ${res.samples} runs x <=${res.maxSteps} steps` : '')
+    + (res.simulation ? `; ${res.samples} runs x <=${res.maxSteps} steps; coverage ${JSON.stringify(res.coverage)}` : '')
     + `; ${res.seconds}s${asExpected ? '' : '   <-- NOT AS EXPECTED'}`)
   if (res.violated) for (const [i, s] of res.trace.entries()) console.log(`    ${String(i + 1).padStart(2)}. ${s}`)
 }
@@ -280,7 +296,7 @@ for (const kind of ['teeth', 'literal', 'witness', 'fixed', 'sim']) {
   md.push(`## ${kind}`, '', '| experiment | checked | result | states (distinct / generated) | depth | time |', '|---|---|---|---|---|---|')
   for (const r of rows.filter((x) => x.kind === kind)) {
     const result = r.error ? `ERROR ${r.error}` : r.violated ? `violated in ${r.trace.length} steps` : r.simulation ? 'no violation found' : 'holds (exhaustive)'
-    const states = r.simulation ? `${r.samples} runs, <= ${r.maxSteps} steps` : `${r.distinct} / ${r.generated}`
+    const states = r.simulation ? `${r.samples} runs, <= ${r.maxSteps} steps (longest ${r.traceLen?.max}, mean ${r.traceLen?.avg}); traces reaching: ${Object.entries(r.coverage ?? {}).map(([k, v]) => `${k.slice(2)} ${v}`).join(', ')}` : `${r.distinct} / ${r.generated}`
     md.push(`| \`${r.name}\` ${r.label} | ${r.invariant} | ${result}${r.asExpected ? '' : ' **(unexpected)**'} | ${states} | ${r.depth ?? ''} | ${r.seconds}s |`)
   }
   md.push('')

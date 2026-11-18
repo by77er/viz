@@ -223,31 +223,31 @@ fn row_group_cap_and_file_properties_at_scale() {
 #[test]
 fn splits_days_at_utc_midnight() {
     let up: &[(&str, &str)] = &[("__name__", "up")];
-    let b = batch_of(&[(up, MID, 2.0), (up, MID - 1, 1.0), (up, MID + 86_400_000, 3.0), (up, MID + 86_399_999, 2.5), (up, -1, 0.1), (up, 0, 0.2)]);
+    let b = batch_of(&[(up, MID, 2.0), (up, MID - 1, 1.0), (up, MID + 86_400_000, 3.0), (up, MID + 86_399_999, 2.5), (up, 86_399_999, 0.1), (up, 0, 0.2), (up, 253_402_300_799_999, 0.3)]);
     let files = encode_segment(&[&b.bytes()]).unwrap();
     let got: Vec<(Table, &str, u64, i64, i64)> = files.iter().map(|f| (f.table, f.day.as_str(), f.rows, f.min_ts, f.max_ts)).collect();
     let (s, m) = (Table::MetricSamples, Table::MetricSeries);
     assert_eq!(
         got,
         vec![
-            (s, "1969-12-31", 1, -1, -1),
-            (m, "1969-12-31", 1, -1, -1),
-            (s, "1970-01-01", 1, 0, 0),
-            (m, "1970-01-01", 1, 0, 0),
+            (s, "1970-01-01", 2, 0, 86_399_999),
+            (m, "1970-01-01", 1, 0, 86_399_999),
             (s, DAY0, 1, MID - 1, MID - 1),
             (m, DAY0, 1, MID - 1, MID - 1),
             (s, DAY1, 2, MID, MID + 86_399_999),
             (m, DAY1, 1, MID, MID + 86_399_999),
             (s, "2023-11-16", 1, MID + 86_400_000, MID + 86_400_000),
             (m, "2023-11-16", 1, MID + 86_400_000, MID + 86_400_000),
+            (s, "9999-12-31", 1, 253_402_300_799_999, 253_402_300_799_999),
+            (m, "9999-12-31", 1, 253_402_300_799_999, 253_402_300_799_999),
         ]
     );
     for f in &files {
         check_file(f, MAX_ROW_GROUP_ROWS);
     }
     // The series row carries the per-file (per-day) time range.
-    assert_eq!(read_series(&files[7].bytes)[0].3, MID);
-    assert_eq!(read_series(&files[7].bytes)[0].4, MID + 86_399_999);
+    assert_eq!(read_series(&files[5].bytes)[0].3, MID);
+    assert_eq!(read_series(&files[5].bytes)[0].4, MID + 86_399_999);
 }
 
 #[test]

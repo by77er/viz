@@ -1,20 +1,25 @@
 /**
- * Stable series colours.
+ * Stable series colours, restricted to the design system's eight chart tokens.
  *
- * Each series gets a palette slot from a hash of its label set, so the same series has the
- * same colour on every panel and after every reload. The palette is a fixed, colour-blind
- * validated set of eight hues with separately chosen light and dark steps (never generated
- * hues). When two series in one result hash to the same slot, the later one (in sorted key
- * order) moves to the next free slot; once all eight are in use, slots repeat with a dash
- * pattern as the secondary encoding so identity is never carried by hue alone.
+ * Each series prefers a slot from a hash of its label set, so the same series has the same
+ * colour on every panel and after every reload. Slots are the tokens `series-1` to
+ * `series-8`, in that fixed order; the values live in the design system, not here. When two
+ * series in one result hash to the same slot, the later one (in sorted key order) moves to
+ * the next free slot.
+ *
+ * A result has at most eight coloured series. The design system's rule is that a ninth
+ * series folds into "Other": the first eight series in sorted key order take the eight
+ * slots, and every later one gets `slot: null`. The view draws those in a neutral ink and
+ * names them "Other". Their values are not summed: a sum would be wrong for quantiles and
+ * ratios.
  */
 
-export const PALETTE_LIGHT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'] as const
-export const PALETTE_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#0ca30c', '#9085e9', '#e66767'] as const
-export const SLOT_COUNT = PALETTE_LIGHT.length
+export const SLOT_COUNT = 8
 
-/** Dash patterns by "round": solid, dashed, dotted, dash-dot. */
-export const DASHES: readonly (readonly number[])[] = [[], [6, 3], [2, 3], [8, 3, 2, 3]]
+/** CSS custom property that holds a slot's colour in the current theme. */
+export function slotToken(slot: number | null): string {
+  return slot === null ? '--ink-muted' : `--series-${(slot % SLOT_COUNT) + 1}`
+}
 
 /** FNV-1a, 32-bit, over UTF-16 code units. */
 export function hashString(s: string): number {
@@ -32,10 +37,8 @@ export function preferredSlot(key: string): number {
 }
 
 export interface SeriesStyle {
-  /** Palette slot, 0..7. */
-  slot: number
-  /** Index into DASHES. */
-  dash: number
+  /** Token slot, 0..7 (`series-1`..`series-8`), or null when the series is folded into Other. */
+  slot: number | null
 }
 
 /**
@@ -44,22 +47,18 @@ export interface SeriesStyle {
  */
 export function assignStyles(keys: readonly string[]): Map<string, SeriesStyle> {
   const sorted = [...new Set(keys)].sort()
-  const used = new Array<number>(SLOT_COUNT).fill(0)
+  const used = new Array<boolean>(SLOT_COUNT).fill(false)
   const out = new Map<string, SeriesStyle>()
-  for (const key of sorted) {
-    const pref = preferredSlot(key)
-    // Least-used slot, scanning from the preferred one.
-    let slot = pref
-    for (let i = 0; i < SLOT_COUNT; i++) {
-      const s = (pref + i) % SLOT_COUNT
-      if (used[s]! < used[slot]!) slot = s
+  sorted.forEach((key, n) => {
+    if (n >= SLOT_COUNT) {
+      out.set(key, { slot: null })
+      return
     }
-    out.set(key, { slot, dash: used[slot]! % DASHES.length })
-    used[slot]!++
-  }
+    // The first free slot, scanning from the preferred one.
+    let slot = preferredSlot(key)
+    while (used[slot]) slot = (slot + 1) % SLOT_COUNT
+    used[slot] = true
+    out.set(key, { slot })
+  })
   return out
-}
-
-export function slotColor(slot: number, dark: boolean): string {
-  return (dark ? PALETTE_DARK : PALETTE_LIGHT)[slot % SLOT_COUNT]!
 }

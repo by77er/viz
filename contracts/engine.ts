@@ -69,11 +69,11 @@ export interface Engine {
   /** Prometheus `query_range`. Returns the `data` object of the HTTP API response. */
   queryRange(input: ScanInput, promql: string, startMs: number, endMs: number, stepMs: number): PromMatrix
 
-  /** Prometheus instant `query` at `timeMs`. */
-  queryInstant(input: ScanInput, promql: string, timeMs: number): PromVector | PromScalar
+  /** Prometheus instant `query` at `timeMs`. A range selector gives a matrix; a string literal a string. */
+  queryInstant(input: ScanInput, promql: string, timeMs: number): PromVector | PromScalar | PromMatrix | PromString
 
   /** Selectors in a query, so the caller knows what to fetch before evaluating. */
-  selectors(promql: string, startMs: number, endMs: number): { matchers: Matcher[]; minTs: number; maxTs: number }[]
+  selectors(promql: string, startMs: number, endMs: number, stepMs: number): { matchers: Matcher[]; minTs: number; maxTs: number }[]
 }
 
 export interface PromMatrix {
@@ -86,5 +86,9 @@ export interface PromVector {
 }
 export interface PromScalar {
   resultType: 'scalar'
+  result: [number, string]
+}
+export interface PromString {
+  resultType: 'string'
   result: [number, string]
 }
