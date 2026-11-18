@@ -22,7 +22,7 @@
  * buffer while warming. A gap longer than `staleAfterMs` restarts the warm-up.
  */
 import type { Detector, DetectResult, Point, Series } from '../types.ts'
-import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, resolveStep, sideOk, summarize, warmingPoint } from '../base.ts'
+import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, resolveStep, sideOk, summarize, warmingPoint, val, tsv } from '../base.ts'
 import { levelShift } from '../explain.ts'
 import { finiteScore, median, MAD_TO_SIGMA, spreadFloor } from '../stats.ts'
 
@@ -89,7 +89,7 @@ export const cusum: Detector<CusumParams, CusumState> = {
     const n = length(series)
     const points: Point[] = new Array(n)
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!, x = series.values[i]! + 0
+      const ts = tsv(series.ts[i]!), x = val(series.values[i]!)
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (st.lastTs !== null && ts <= st.lastTs)) { points[i] = missingPoint(ts, x); continue }
       if (st.lastTs !== null && ts - st.lastTs > p.staleAfterMs) Object.assign(st, fresh(st.stepMs))
       st.lastTs = ts
@@ -107,7 +107,8 @@ export const cusum: Detector<CusumParams, CusumState> = {
         continue
       }
       const sd = spreadFloor(st.sigma, st.mu, p.minSpread)
-      const z = (x - st.mu) / sd
+      // clamped so a flat warm-up (σ at its floor) cannot put Infinity into state
+      const z = Math.max(-1e12, Math.min(1e12, (x - st.mu) / sd))
       st.hi = Math.max(0, st.hi + z - p.k)
       st.lo = Math.max(0, st.lo - z - p.k)
       if (st.hi > 0) { if (st.hiStart === null) { st.hiStart = ts; st.hiSum = 0; st.hiN = 0 } st.hiSum += x; st.hiN++ } else { st.hiStart = null; st.hiSum = 0; st.hiN = 0 }

@@ -19,7 +19,7 @@
  * are reported at the first valid point of the new segment.
  */
 import type { Detector, DetectResult, Point, Series } from '../types.ts'
-import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, sideOk, summarize, warmingPoint } from '../base.ts'
+import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, sideOk, summarize, warmingPoint, val, tsv } from '../base.ts'
 import { duration, levelShift } from '../explain.ts'
 import { finiteScore, spreadFloor } from '../stats.ts'
 import { diffSigma } from './cusum.ts'
@@ -129,7 +129,7 @@ export const peltDetector: Detector<PeltParams, null> = {
     const xs: number[] = []
     let lastTs: number | null = null
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!, x = series.values[i]! + 0
+      const ts = tsv(series.ts[i]!), x = val(series.values[i]!)
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (lastTs !== null && ts <= lastTs)) { points[i] = missingPoint(ts, x); continue }
       lastTs = ts
       idx.push(i)

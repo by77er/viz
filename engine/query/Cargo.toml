@@ -16,6 +16,10 @@ viz-promql = { path = "../promql" }
 promql-parser = "0.11"
 serde = "1"
 serde_json = "1"
+# The same versions viz-storage links (so no code is duplicated in the WASM module): a
+# series-only reader of metric_series files (src/catalog.rs).
+parquet = { version = "60", default-features = false, features = ["snap"] }
+bytes = "1"
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }

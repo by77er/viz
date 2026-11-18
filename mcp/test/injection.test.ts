@@ -195,7 +195,7 @@ describe('the injection corpus through every tool', () => {
       for (const m of findMarkers(r.text)) seen.add(m.marker)
     }
     // The corpus really reached the agent (otherwise the checks above prove nothing).
-    expect([...seen].sort()).toEqual([...MARKERS].sort())
+    for (const m of MARKERS) expect(seen.has(m), `${m} never reached the agent`).toBe(true)
     expect(await snapshot(t)).toBe(before) // dry runs and reads changed nothing
     expect(fetched).toEqual([])
   })

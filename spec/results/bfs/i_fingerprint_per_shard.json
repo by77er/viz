@@ -53,7 +53,7 @@
   "states": 689,
   "transitions": 1679,
   "depth": 8,
-  "seconds": 0,
+  "seconds": 0.2,
   "collisionProb": 1.3e-14,
   "violated": "I1_AckedIsDurable",
   "trace": [

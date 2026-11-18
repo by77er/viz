@@ -1,0 +1,59 @@
+{
+ "name": "2-dashboard",
+ "url": "flows/dist/2-dashboard.html",
+ "states": [
+  {
+   "name": "1440",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "400",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "grey",
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "focus",
+   "steps": [
+    {
+     "focus": "#range button:nth-child(2)"
+    }
+   ],
+   "clip": "header",
+   "pad": 24,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "error-1440",
+   "url": "flows/dist/2-dashboard.html#error",
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "waiting-1440",
+   "url": "flows/dist/2-dashboard.html#waiting",
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,81 @@
+{
+ "name": "3-monitors",
+ "url": "flows/dist/3-monitors.html",
+ "states": [
+  {
+   "name": "1440",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "400",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "grey",
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "focus",
+   "steps": [
+    {
+     "focus": "tbody tr:first-child a"
+    }
+   ],
+   "clip": ".vz-table-wrap",
+   "pad": 24,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "error-400",
+   "url": "flows/dist/3-monitors.html#error",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "first-run-400",
+   "url": "flows/dist/3-monitors.html#first-run",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "400-hit-areas",
+   "url": "flows/dist/3-monitors.html#",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ],
+   "outline": true
+  },
+  {
+   "name": "zoom-200",
+   "zoom": 2,
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  }
+ ]
+}

@@ -53,7 +53,7 @@
   "states": 2158,
   "transitions": 5557,
   "depth": 10,
-  "seconds": 0.1,
+  "seconds": 0.4,
   "collisionProb": 1.3e-13,
   "violated": "I5_DiscardOnlyLogged",
   "trace": [

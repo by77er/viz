@@ -24,12 +24,17 @@
 //! timestamps as Prometheus does, Unix **seconds**; that conversion happens once, in
 //! `viz-promql`'s serialiser.
 
+pub mod agg;
+pub mod cardinality;
+pub mod catalog;
 mod error;
+pub mod exact;
 mod limits;
 mod meta;
 mod plan;
 mod prune;
 pub mod source;
+pub mod split;
 
 pub use error::{ErrorType, Limit, QueryError};
 pub use limits::{estimate_depth, Limits};
@@ -37,7 +42,8 @@ pub use meta::{label_names, label_names_with, label_values, label_values_with, s
 pub use plan::{plan, plan_with, FetchRange};
 pub use prune::{files_needed, scan_rows};
 pub use source::{to_storage_matcher, Stats, StorageSource};
-pub use viz_promql::{EvalOptions, MatchOp, Matcher, Matrix, SelectorInfo, Value};
+pub use split::{split_plan, SplitKey, SplitPlan};
+pub use viz_promql::{EvalOptions, MatchOp, Matcher, Matrix, SelectorInfo, SeriesSource, Value};
 pub use viz_storage::ScanInput;
 
 use promql_parser::parser::Expr;
@@ -88,7 +94,7 @@ pub fn labels_to_json(sets: &[Labels]) -> String {
 
 /// Range-query parameters are the request's, so a bad one is `bad_data` (as in the
 /// Prometheus HTTP API), with Prometheus' wording.
-fn check_range(start_ms: i64, end_ms: i64, step_ms: i64, opts: &Options) -> Result<u64, QueryError> {
+pub(crate) fn check_range(start_ms: i64, end_ms: i64, step_ms: i64, opts: &Options) -> Result<u64, QueryError> {
     if end_ms < start_ms {
         return Err(QueryError::bad_data("end timestamp must not be before start time"));
     }
@@ -140,7 +146,8 @@ pub fn query_range_with(
     let steps = check_range(start_ms, end_ms, step_ms, opts)?;
     let sels = viz_promql::selectors_with(query, start_ms, end_ms, step_ms, &opts.eval).map_err(QueryError::from_promql)?;
     let src = StorageSource::with_plan(input, opts.limits, sels, steps);
-    let matrix = viz_promql::query_range_with(&src, query, start_ms, end_ms, step_ms, &opts.eval)
+    let expr = viz_promql::parse_query(query).map_err(QueryError::from_promql)?;
+    let matrix = viz_promql::query_range_expr(&src, &expr, start_ms, end_ms, step_ms, &opts.eval, Some(&agg::Canonical))
         .map_err(|e| src.take_failure().unwrap_or_else(|| QueryError::from_promql(e)))?;
     let points: u64 = matrix.series.iter().map(|s| s.points.len() as u64).sum();
     let stats = finish(&src, points, opts)?;
@@ -158,7 +165,8 @@ pub fn query_instant_with(input: &ScanInput<'_>, query: &str, time_ms: i64, opts
     opts.limits.check_query(query)?;
     let sels = viz_promql::selectors_with(query, time_ms, time_ms, 1, &opts.eval).map_err(QueryError::from_promql)?;
     let src = StorageSource::with_plan(input, opts.limits, sels, 1);
-    let value = viz_promql::query_instant_with(&src, query, time_ms, &opts.eval)
+    let expr = viz_promql::parse_query(query).map_err(QueryError::from_promql)?;
+    let value = viz_promql::query_instant_expr(&src, &expr, time_ms, &opts.eval, Some(&agg::Canonical))
         .map_err(|e| src.take_failure().unwrap_or_else(|| QueryError::from_promql(e)))?;
     let points = match &value {
         Value::Vector(v) => v.len() as u64,
@@ -174,6 +182,20 @@ fn finish(src: &StorageSource<'_>, points: u64, opts: &Options) -> Result<Stats,
         return Err(QueryError::limit(Limit::MaxOutputPoints, opts.limits.max_output_points, points, "points in the result"));
     }
     Ok(Stats { output_points: points, ..src.stats() })
+}
+
+/// One-place evaluation of a range query over any `SeriesSource`, with this crate's
+/// order-independent aggregations (`agg::Canonical`) and no limits: what
+/// [`query_range_with`] computes, without storage. The reference of the tests.
+pub fn reference_range(src: &dyn SeriesSource, query: &str, start_ms: i64, end_ms: i64, step_ms: i64, eval: &EvalOptions) -> Result<Matrix, viz_promql::Error> {
+    let expr = viz_promql::parse_query(query)?;
+    viz_promql::query_range_expr(src, &expr, start_ms, end_ms, step_ms, eval, Some(&agg::Canonical))
+}
+
+/// [`reference_range`] for an instant query.
+pub fn reference_instant(src: &dyn SeriesSource, query: &str, time_ms: i64, eval: &EvalOptions) -> Result<Value, viz_promql::Error> {
+    let expr = viz_promql::parse_query(query)?;
+    viz_promql::query_instant_expr(src, &expr, time_ms, eval, Some(&agg::Canonical))
 }
 
 /// Parse a series selector such as `up{job="api"}` (a `match[]` parameter) into its

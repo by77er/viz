@@ -183,15 +183,17 @@ below its stream's logged watermark. At the end, after flushing, compacting, exp
 deleting everything: the objects in R2 are exactly the ledger's live set, all level 2, no
 tombstone and no pending segment left.
 
-**Result.** Last run (`npm run soak`, seed 20261118, on the final code with the stricter
-per-step check of the live set): 3,000 steps, **every invariant held at every step**;
-289 s. 907 acknowledged requests (and 194 repeats of samples already sent), 234 segments
-admitted through 1,205 delivered flush messages (150 retried after injected failures), 425
-merges (329 in maintenance runs, 96 in direct steps), 16 conflicts, 25 crashed steps,
-1,420 files expired, 3,896 objects purged, 34 orphans deleted, 124 evictions, 57 ledger-log
-outages, 57 old-plan readers verified, 0 dead letters; at the end each tenant's R2 prefix
-is exactly its ledger's live set, all level 2. The previous engineer's three runs of 3,000
-steps on earlier code also held. `npm test` runs 400 steps (about 20 s).
+**Result.** Last run (`npm run soak`, seed 20261118, on the final code: file precedence and
+the stricter per-step check of the live set): 3,000 steps, **every invariant held at every
+step**; 220 s; peak memory 1,010 MB for the whole process tree, 582 MB for the largest
+process (sampled every 3 s). 898 acknowledged requests (and 200 repeats of samples already
+sent), 244 segments admitted through 1,168 delivered flush messages (125 retried after
+injected failures), 413 merges (309 in maintenance runs, 104 in direct steps), 16
+conflicts, 27 crashed steps, 1,502 files expired, 3,872 objects purged, 20 orphans deleted,
+98 evictions, 54 ledger-log outages, 62 old-plan readers verified, 0 dead letters; at the
+end each tenant's R2 prefix is exactly its ledger's live set, all level 2. Two earlier
+3,000-step runs in this review (before the precedence change) also held, as did the
+previous engineer's three. `npm test` runs 400 steps (about 20 s).
 
 **What failed during development.** In this review, one 3,000-step run passed every
 step and then failed its final sanity check that every tenant still has rows: a maintenance
@@ -229,11 +231,16 @@ parallel.
 | trigger | junk is acknowledged without a dead letter | flush: dead letters |
 | trigger | the cron enqueues tenants that are not due | stack: seal → flush → maintenance |
 | trigger | a flush does not ask for maintenance | stack: seal → flush → maintenance |
+| trigger | the orphan sweep stays due after a sweep that found nothing (idle tenants wake daily) | stack: idle deployment, a week of crons; a tenant whose data has all expired loses its marker |
+| trigger | the maintenance message after a flush does not say it wrote | stack: the orphan sweep runs only while objects may have been written |
+| trigger | the marker written after a flush does not say the sweep is needed | stack: same (the lost-message case) |
+| trigger | a merge that crashed does not mark the orphan sweep as needed | stack: same (the crashed-merge case) |
 | compaction | **samples and series swapped in two replaces (not paired)** | compact: one replace for both tables |
 | compaction | series inputs left live after the merge | compact: ledger lists exactly the pair |
 | compaction | the series file is not merged (first input reused) | stack: I8 property, all seeds |
 | compaction | only the first two sample inputs are merged (rows lost) | stack: I8 property, all seeds |
 | compaction | outputs of a conflicted merge are left behind | compact: conflict |
+| compaction | **a conflicted step deletes outputs an identical step made live and a later change removed** (within their grace) | compact: conflict after an identical step won |
 | compaction | conflict reported as merged | compact: conflict |
 | compaction | the step deadline is not checked before replace | compact: guards |
 | compaction | the row-count check is dropped | compact: guards |
@@ -241,6 +248,15 @@ parallel.
 | compaction | the budget on pairs per merge is ignored | compact: policy |
 | compaction | output keys do not carry the content hash | compact: keys per the contract |
 | compaction | the engine keeps the earlier input on a duplicate | engine/storage: `cargo test --test merge` |
+| precedence | **`plan` lists files in key (text) order again** | stack: the latest write wins, all six seeds; ledger: precedence order |
+| precedence | compaction merges its inputs in key order | stack: the latest write wins |
+| precedence | a compaction output ranks as new instead of covering its inputs | stack: the latest write wins |
+| precedence | the files of one unit all rank the same (no position) | ledger: precedence order |
+| precedence | the ledger admits a merge that jumps over a file overlapping it | ledger: refuses a merge whose range would jump over a file |
+| precedence | the policy picks groups that jump over a file overlapping them | compact: precedence policy |
+| precedence | the policy ignores live files without a partner | compact: precedence policy |
+| precedence | a rebuilt ledger forgets precedence | ledger: keeps precedence across a rebuild |
+| precedence | (the same text-order mutant, through the ledger's own suite) | ledger: precedence order |
 | deletion | **deletable before the removal is logged** | ledger: committed but not logged; janitor: same |
 | deletion | deletable inside the grace | janitor: reader holding the old plan |
 | deletion | a live key is deletable | ledger: a key that is live again |
@@ -253,6 +269,8 @@ parallel.
 | deletion | a compaction output is an orphan as soon as a flush file would be | janitor: merge in flight; true orphans |
 | deletion | series files are not expired | janitor: expires both tables |
 | deletion | retention keeps one day too few | janitor: policy, expire |
+| deletion | retention is due at every midnight (idle tenants wake daily) | stack: idle deployment, a week of crons |
+| deletion | retention is due a day before the oldest day expires | stack: idle deployment (the marker names the expiry date) |
 | deletion | an unreadable retention record means one day | janitor: policy |
 | limit | **the limit refuses existing series** | shard: window; edge: Remote Write at the limit |
 | limit | the limit is not enforced | shard: refuses the new ones that do not fit |
@@ -270,9 +288,14 @@ parallel.
 | limit | OTLP partial_success does not count the refused points | edge: OTLP |
 | limit | edge sends no series ids | edge: nothing is metered |
 
-Part 5 (series-id locality) changed no code, so it has no mutants of its own; the three
-existing series-id mutants in `edge/scripts/mutants.mjs` still guard the contract's
-definition.
+Part 5 (series-id locality) changed no code: the decision keeps `series_id` as it is
+(`DECISIONS.md` D19). Its mutation checks are the ones that pin that definition, re-run in
+this review with `edge/scripts/mutants.mjs` (whole edge suite): labels not sorted;
+empty-valued labels kept; the series id without the separator after a value; without the
+carry between its 32-bit halves; labels sorted in JavaScript string order instead of UTF-8
+bytes; plus `engine/storage`'s mutant 21 (id without the `0x00` separators, killed by the
+Python-computed vector). The locality experiment itself refuses to report unless both
+encodings return identical results and the locality ids do not collide.
 
 ### End to end, driven by hand (`test/e2e.test.ts`)
 
@@ -330,6 +353,9 @@ string). The binding in `engine/wasm/js` compiles against the new text.
 | `contracts/TABLES.md` | Object keys of compaction outputs (`L{level}-{span}-{inputs16}-{hash8}`), the pairing rule, and the statement that precedence between FILES that disagree on a value is by key order and is not preserved by compaction |
 | `contracts/engine.ts` | `mergeFiles(table, files)` |
 | `contracts/ledger.ts` | A marked "PROPOSED ADDITION" block: `Tombstone`, `OrphanCheck`, `LedgerJanitorRpc` (`deletable`, `forget`, `removedSince`, `orphanCheck`) |
+| `contracts/ledger.ts` (this review) | **File precedence**: `LiveFile` (`FileEntry` + `precedence`, `precedenceLow`, assigned by the ledger) and `PRECEDENCE_PER_VERSION`; `Plan.files` and `LedgerChange.added` are `LiveFile[]`, `plan` lists in ascending precedence; `ReplaceResult`'s `conflict` gains `blocking`; `replace` refuses a merge that jumps over an overlapping file. Requests are unchanged (`FileEntry`) |
+| `contracts/TABLES.md` (this review) | "When files disagree … the one later in key order wins" replaced by the precedence rule |
+| `contracts/engine.ts` (this review) | Comments only: `sampleFiles` and `mergeFiles` inputs go in ascending precedence |
 | `shard/src/shard.ts` (the shard's surface) | `AppendRequest.seriesIds`/`seriesLimit`; `AppendResult` gains `series_limit` and `invalid`; `pendingTenants`, `seriesCount`; `FlushMessage`, `ShardEnv`, the pending-marker key |
 
 `design/DESIGN.md` was corrected in three places (§4.3 the trigger, §5.1 the `series_id`
@@ -342,9 +368,13 @@ had the adversarial review `AGENTS.md` asks for protocol changes.
 - **Graces are real time in the soak**, scaled to 1–1.5 s; a deletion is checked against
   its rule when it happens, but a machine that stalls for seconds changes which
   operations a run exercises. Two runs with one seed are not identical.
-- **Files that disagree.** The model sends one value per `(series, ts)`. Which value
-  survives when two files hold different ones is not defined across a compaction
-  (`contracts/TABLES.md`).
+- **Files that disagree** are now ordered by the ledger's precedence (D22) and tested with
+  rewrites (`test/precedence.property.test.ts`); the soak's model still sends one value per
+  `(series, ts)`. Admission order equals write order across streams only once the
+  shard-map handover is built; a series moved between shards before that could, in
+  principle, have an older write admitted later.
+- **The query Worker** (`query/`, not edited) still sorts files itself (`byPrecedence`) and
+  one of its tests asserts the old key order; see "What `query/` should change now".
 - **The cron is the only clock.** A tenant's time-driven work (a day closing, retention, a
   grace ending) happens at the first cron after it is due: up to an hour late.
 

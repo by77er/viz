@@ -73,7 +73,11 @@ export function clean(value: unknown, opts: CleanOptions = {}): string {
   // `%>`, `]>`, `>>`) are replaced; `x < 5` and "> 1% for 5m" are left alone, since a lone
   // angle bracket opens nothing. (`kind` is kept for callers; both kinds follow this rule.)
   void opts.kind
-  s = s.replace(/<(?=[A-Za-z_/!?|<\[%:])/g, '‹').replace(/(?<=[-/|?%\]>])>/g, '›')
+  s = s
+    .replace(/<(?=[A-Za-z_/!?|<\[%:])/g, '‹')
+    .replace(/(?<=[-/|?%\]>])>/g, '›')
+    // …and the `>` that closes what such a `<` opened: `‹system>`, `‹/tool_result>`.
+    .replace(/‹([^\s‹›<>]{0,64})>/g, '‹$1›')
   s = s
     .replace(ROLE_TAG, (_m, tag: string) => `(${tag})`)
     .replace(SPECIAL_TOKEN, (_m, tok: string) => `¦${tok}¦`)

@@ -124,7 +124,7 @@ describe('B cannot see or touch A', () => {
     // A warms the per-isolate names cache.
     const warm = await rest(h, aKey.key, 'validate_query', { expr: 'rate(alpha_secret_order_total[5m])' })
     expect(warm.structured.data.items.find((i: any) => i.code === 'unknown-metric').suggestions).toContain(A_METRIC)
-    for (const headers of [{}, { 'X-Viz-Tenant': A.tenant }, { 'X-Scope-OrgID': A.tenant }]) {
+    for (const headers of [{}, { 'X-Viz-Tenant': A.tenant }, { 'X-Scope-OrgID': A.tenant }] as Record<string, string>[]) {
       const v = await rest(h, bKey.key, 'validate_query', { expr: 'rate(alpha_secret_order_total[5m])' }, headers)
       expect(leaks(v.text + JSON.stringify(v.structured), A)).toEqual([])
       expect(v.structured.data.items.find((i: any) => i.code === 'unknown-metric').suggestions ?? []).not.toContain(A_METRIC)
@@ -163,7 +163,7 @@ describe('B cannot see or touch A', () => {
     const values = fc.oneof(fc.constantFrom(...ids), fc.string({ maxLength: 40 }), fc.integer({ min: -5, max: 5000 }), fc.boolean(), fc.constant(null), fc.constantFrom(`{customer=~"ALPHA.*"}`, `{__name__=~"alpha.*"}`, `${A_METRIC}{customer="ALPHA-SECRET-customer"}`))
     const argNames = ['id', 'name', 'q', 'expr', 'view', 'revision', 'panels', 'mode', 'base_revision', 'cursor', 'filter', 'kind', 'from', 'to', 'format', 'instant', 'max_tokens', 'tenant', 'variables', 'ops']
     await fc.assert(
-      fc.asyncProperty(fc.constantFrom(...TOOLS.map((t) => t.name)), fc.dictionary(fc.constantFrom(...argNames), values, { maxKeys: 4 }), fc.constantFrom({}, { 'X-Viz-Tenant': A.tenant }), async (tool, args, headers) => {
+      fc.asyncProperty(fc.constantFrom(...TOOLS.map((t) => t.name)), fc.dictionary(fc.constantFrom(...argNames), values, { maxKeys: 4 }), fc.constantFrom<Record<string, string>>({}, { 'X-Viz-Tenant': A.tenant }), async (tool, args, headers) => {
         const r = await rest(h, bKey.key, tool, args, headers)
         expect([500, 502, 503]).not.toContain(r.status)
         expect(leaks(r.text + JSON.stringify(r.structured), A, JSON.stringify(args)), `${tool} ${JSON.stringify(args)}`).toEqual([])

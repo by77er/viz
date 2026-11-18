@@ -31,6 +31,17 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 
 | experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
 |---|---|---|---|---|---|---|---|
+| `F1_registration_rolled_back` F1: registration committed, not logged; ledger rebuild forgets the stream (design reg, others fixed) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 5 steps | 153 | 242 | 5 | 0 s | 6.3e-16 |
+| `F2_sweeper_spec_I1` F2: orphan sweeper as DESIGN §4.3 states it; ledger rebuild | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 25 steps | 1,850,080 | 9,279,230 | 25 | 97.3 s | 9.3e-8 |
+| `F2_sweeper_spec_grace` F2: same sweeper deletes a removed file under a running query (missing read as empty) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 25 steps | 748,957 | 3,770,844 | 25 | 46.3 s | 1.5e-8 |
+| `F3_retry_after_shard_loss` F3: fingerprints die with the shard storage; a retry is stored again | I3_NoDuplicates | **violated** I3_NoDuplicates in 18 steps | 377,779 | 1,545,818 | 18 | 24.1 s | 3.9e-9 |
+| `F10_segments_overlap` F10 (LEDGER-LOG.md): drain PUTs v1..vk, dies before deleting the rows, a change commits, the retry PUTs v1..vk+1 | LOG_SegmentsDisjoint | **violated** LOG_SegmentsDisjoint in 11 steps | 2,679 | 7,684 | 11 | 0.2 s | 1.9e-13 |
+| `F10_rebuild_refuses` F10: same, then the ledger loses its storage: a strict replay refuses the log | AV_RebuildSucceeds | **violated** AV_RebuildSucceeds in 12 steps | 8,452 | 27,646 | 12 | 0.5 s | 1.9e-12 |
+| `F11_incarnation_reused` F11 (LEDGER-LOG.md): base is an ordinary first change; two ledger losses before it is drained | V_IncarnationNotReused | **violated** V_IncarnationNotReused in 2 steps | 6 | 5 | 2 | 0 s | 9.8e-19 |
+| `F6_impl_unknown_stream` F6: shard.ts tailRead answers ok/empty for a stream it lost | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 6 steps | 514 | 877 | 6 | 0 s | 7.2e-15 |
+| `F12_impl_read_unbound` F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss | I3_NoDuplicates | **violated** I3_NoDuplicates in 12 steps | 46,671 | 132,185 | 12 | 2.4 s | 5.9e-11 |
+| `F13_impl_comp_adopts_old_output` F13: compaction adopts an earlier step's output ("exists"); the sweeper judges it by the earlier upload | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 19 steps | 126,732 | 632,727 | 19 | 8.6 s | 4.4e-10 |
+| `F14_impl_comp_conflict_delete` F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 25 steps | 83,315 | 368,130 | 25 | 6.4 s | 1.9e-10 |
 
 ## Amended protocol (expect none; exhaustive)
 
@@ -443,3 +454,240 @@ Violates `AV_RebuildSucceeds`.
 10. ledger drain crash after PUT
 11. ledger drain: PUT segment v1..v2
 12. LEDGER STORAGE LOSS -> rebuild from R2 REFUSED (log not contiguous)
+
+### F1_registration_rolled_back
+
+F1: registration committed, not logged; ledger rebuild forgets the stream (design reg, others fixed)
+
+Violates `I4_NoGapAtSeam`.
+
+1. registerStream(s0, inc 1)
+2. append(b0 -> s0) seq 1
+3. LEDGER STORAGE LOSS -> rebuild from R2
+4. query: plan (no files; wm s0:-)
+5. query: read files, merge -> nothing
+
+### F2_sweeper_spec_I1
+
+F2: orphan sweeper as DESIGN §4.3 states it; ledger rebuild
+
+Violates `I1_AckedIsDurable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush: pendingSegments(s0) -> inc 1 2..2
+10. flush readSegment(s0 inc 1 1..1)
+11. flush PUT L0(s0 inc1 1..1)
+12. addUnit(s0 inc 1 1..1) admitted
+13. flush readSegment(s0 inc 1 2..2)
+14. flush PUT L0(s0 inc1 2..2)
+15. addUnit(s0 inc 1 2..2) admitted
+16. ledger drain: delete outbox rows v1..v1, advance logged
+17. ledger drain: PUT segment v2..v3
+18. ledger drain: delete outbox rows v2..v3, advance logged
+19. recorded(s0, ..2)
+20. discard(s0, ..1)
+21. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+22. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0)
+23. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0)) committed
+24. orphan sweep: delete L0(s0 inc1 1..1)
+25. LEDGER STORAGE LOSS -> rebuild from R2
+
+### F2_sweeper_spec_grace
+
+F2: same sweeper deletes a removed file under a running query (missing read as empty)
+
+Violates `I4_NoGapAtSeam`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush: pendingSegments(s0) -> inc 1 2..2
+10. flush readSegment(s0 inc 1 1..1)
+11. flush PUT L0(s0 inc1 1..1)
+12. addUnit(s0 inc 1 1..1) admitted
+13. flush readSegment(s0 inc 1 2..2)
+14. flush PUT L0(s0 inc1 2..2)
+15. addUnit(s0 inc 1 2..2) admitted
+16. ledger drain: delete outbox rows v1..v1, advance logged
+17. ledger drain: PUT segment v2..v3
+18. ledger drain: delete outbox rows v2..v3, advance logged
+19. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+20. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0)
+21. query: plan (L0(s0 inc1 1..1), L0(s0 inc1 2..2); wm s0:inc1@2)
+22. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0)) committed
+23. orphan sweep: delete L0(s0 inc1 1..1)
+24. query: tailRead(s0, inc 1, above 2) = ok nothing
+25. query: read files, merge -> b1 (L0(s0 inc1 1..1) unreadable, read as empty)
+
+### F3_retry_after_shard_loss
+
+F3: fingerprints die with the shard storage; a retry is stored again
+
+Violates `I3_NoDuplicates`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. SHARD STORAGE LOSS(s0)
+9. flush PUT L0(s0 inc1 1..1)
+10. addUnit(s0 inc 1 1..1) admitted
+11. registerStream(s0, inc 2)
+12. ledger drain: delete outbox rows v1..v1, advance logged
+13. ledger drain: PUT segment v2..v3
+14. registration logged -> s0 accepts writes
+15. append(b0 -> s0) seq 1 [retry]
+16. query: plan (L0(s0 inc1 1..1); wm s0:inc2@0)
+17. query: tailRead(s0, inc 2, above 0) = ok b0
+18. query: read files, merge -> b0x2
+
+### F10_segments_overlap
+
+F10 (LEDGER-LOG.md): drain PUTs v1..vk, dies before deleting the rows, a change commits, the retry PUTs v1..vk+1
+
+Violates `LOG_SegmentsDisjoint`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. addUnit(s0 inc 1 1..1) admitted
+10. ledger drain crash after PUT
+11. ledger drain: PUT segment v1..v2
+
+### F10_rebuild_refuses
+
+F10: same, then the ledger loses its storage: a strict replay refuses the log
+
+Violates `AV_RebuildSucceeds`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. addUnit(s0 inc 1 1..1) admitted
+10. ledger drain crash after PUT
+11. ledger drain: PUT segment v1..v2
+12. LEDGER STORAGE LOSS -> rebuild from R2 REFUSED (log not contiguous)
+
+### F11_incarnation_reused
+
+F11 (LEDGER-LOG.md): base is an ordinary first change; two ledger losses before it is drained
+
+Violates `V_IncarnationNotReused`.
+
+1. registerStream(s0, inc 1)
+2. LEDGER STORAGE LOSS -> rebuild from R2 (nothing of this incarnation in R2: incarnation number reused)
+
+### F6_impl_unknown_stream
+
+F6: shard.ts tailRead answers ok/empty for a stream it lost
+
+Violates `I4_NoGapAtSeam`.
+
+1. append(b0 -> s0) seq 1
+2. SHARD STORAGE LOSS(s0)
+3. query: plan (no files; wm s0:-)
+4. query: tailRead(s0, inc 0, above 0) = ok nothing
+5. append(b0 -> s0) seq 1 [retry]
+6. query: read files, merge -> nothing
+
+### F12_impl_read_unbound
+
+F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss
+
+Violates `I3_NoDuplicates`.
+
+1. append(b0 -> s0) seq 1
+2. seal(s0, ..1)
+3. flush: pendingSegments(s0) -> inc 1 1..1
+4. flush readSegment(s0 inc 1 1..1)
+5. SHARD STORAGE LOSS(s0)
+6. append(b0 -> s0) seq 1 [retry]
+7. flush PUT L0(s0 inc1 1..1)
+8. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+9. query: plan (L0(s0 inc1 1..1); wm s0:inc1@1)
+10. query: tailRead(s0, inc 1, above 1) = incarnation_mismatch(2) -> re-plan
+11. query: tailRead(s0, inc 2, above 0) = ok b0
+12. query: read files, merge -> b0x2
+
+### F13_impl_comp_adopts_old_output
+
+F13: compaction adopts an earlier step's output ("exists"); the sweeper judges it by the earlier upload
+
+Violates `I11_LiveFilesReadable`.
+
+1. append(b0 -> s0) seq 1
+2. seal(s0, ..1)
+3. append(b1 -> s0) seq 2
+4. seal(s0, ..2)
+5. flush: pendingSegments(s0) -> inc 1 1..1
+6. flush: pendingSegments(s0) -> inc 1 2..2
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+10. flush readSegment(s0 inc 1 2..2)
+11. flush PUT L0(s0 inc1 2..2)
+12. addUnit(s0 inc 1 2..2) admitted
+13. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+14. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+15. compact crash (L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)))
+16. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+17. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+18. orphan sweep: delete L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+19. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
+
+### F14_impl_comp_conflict_delete
+
+F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild
+
+Violates `I11_LiveFilesReadable`.
+
+1. append(b0 -> s0) seq 1
+2. seal(s0, ..1)
+3. append(b1 -> s0) seq 2
+4. seal(s0, ..2)
+5. flush: pendingSegments(s0) -> inc 1 1..1
+6. flush readSegment(s0 inc 1 1..1)
+7. flush PUT L0(s0 inc1 1..1)
+8. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+9. flush: pendingSegments(s0) -> inc 1 2..2
+10. flush readSegment(s0 inc 1 2..2)
+11. flush PUT L0(s0 inc1 2..2)
+12. addUnit(s0 inc 1 2..2) admitted
+13. ledger drain: PUT change v1..v1
+14. ledger drain: delete outbox rows v1..v1, advance logged
+15. ledger drain: PUT change v2..v2
+16. ledger drain: delete outbox rows v2..v2, advance logged
+17. ledger drain: PUT change v3..v3
+18. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+19. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+20. expire L0(s0 inc1 1..1)
+21. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+22. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+23. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) = conflict, output deleted
+24. LEDGER STORAGE LOSS -> rebuild from R2
+25. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed

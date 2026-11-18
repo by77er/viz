@@ -1,0 +1,41 @@
+<!-- nav: Monitors -->
+<!-- title: Who is notified -->
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">Who is notified</h1>
+      <p class="vz-page-sub">Where each team's monitors send pages and messages, who is on call now, and what is silenced. Routes last changed 9 Nov, by Dana.</p></div>
+    <div class="vz-controls"><button class="vz-button" data-tone="blue">New route</button></div>
+  </header>
+  <div class="vz-banner" data-when="error"><span class="vz-mark" data-state="critical"></span><p>The paging service has not answered since 15:10. Pages are held and sent when it answers; channel messages still go out. Retrying every <span class="vz-qty">30 s</span>.</p><a class="vz-link" href="#">Paging service status</a></div>
+
+  <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">On call now</h2><span class="vz-panel-meta" data-unless="error"><span>paging works: the watchdog's test page arrived <span class="vz-qty">58 s</span> ago</span></span><span class="vz-panel-meta" data-when="error"><span class="vz-panel-note">Pages held since 15:10</span></span></div>
+    <div class="vz-panel-body"><p class="vz-table-caption">4 teams with a rota, alphabetical.</p>
+    <div class="vz-table-wrap"><table class="vz-table" data-fold role="table">
+      <thead><tr role="row"><th role="columnheader" class="vz-label">Team</th><th role="columnheader" class="vz-label" data-priority="1">On call now</th><th role="columnheader" class="vz-label" data-priority="1">Secondary</th><th role="columnheader" class="vz-label">Until</th><th role="columnheader" class="vz-label">Then</th></tr></thead>
+      <tbody>
+        <tr role="row"><td role="cell" data-key>data-stores</td><td role="cell" data-priority="1">Ravi</td><td role="cell" data-priority="1">Jo</td><td role="cell" data-label="Until">Fri 20 Nov, 09:00</td><td role="cell" data-label="Then">Jo</td></tr>
+        <tr role="row"><td role="cell" data-key>payments</td><td role="cell" data-priority="1">Dana</td><td role="cell" data-priority="1">Kim</td><td role="cell" data-label="Until">Thu 19 Nov, 09:00</td><td role="cell" data-label="Then">Kim</td></tr>
+        <tr role="row"><td role="cell" data-key>platform</td><td role="cell" data-priority="1">Sam</td><td role="cell" data-priority="1">Ravi</td><td role="cell" data-label="Until">Mon 23 Nov, 09:00</td><td role="cell" data-label="Then">Ari</td></tr>
+        <tr role="row"><td role="cell" data-key>storefront</td><td role="cell" data-priority="1">Lee</td><td role="cell" data-priority="1">Ari</td><td role="cell" data-label="Until">Thu 19 Nov, 09:00</td><td role="cell" data-label="Then">Ari</td></tr>
+      </tbody></table></div></div></section>
+
+  <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Routes</h2></div>
+    <div class="vz-panel-body"><p class="vz-table-caption">5 routes. A monitor follows the route of the team that owns it.</p>
+    <div class="vz-table-wrap"><table class="vz-table" data-fold role="table">
+      <thead><tr role="row"><th role="columnheader" class="vz-label">Monitors owned by</th><th role="columnheader" class="vz-label" data-priority="1">Pages</th><th role="columnheader" class="vz-label">Messages</th><th role="columnheader" class="vz-label">If nobody acknowledges</th><th role="columnheader" class="vz-label">Pages again</th></tr></thead>
+      <tbody>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">data platform</a></td><td role="cell" data-priority="1">nobody</td><td role="cell" data-label="Messages">#data-alerts</td><td role="cell" data-label="If nobody acknowledges">nothing more</td><td role="cell" data-label="Pages again">never</td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">data-stores</a></td><td role="cell" data-priority="1">data-stores on-call</td><td role="cell" data-label="Messages">#data-stores</td><td role="cell" data-label="If nobody acknowledges">page the secondary after <span class="vz-qty">15 min</span></td><td role="cell" data-label="Pages again">every <span class="vz-qty">2 h</span></td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">payments</a></td><td role="cell" data-priority="1">payments on-call</td><td role="cell" data-label="Messages">#payments-alerts</td><td role="cell" data-label="If nobody acknowledges">page the secondary after <span class="vz-qty">30 min</span></td><td role="cell" data-label="Pages again">every <span class="vz-qty">4 h</span></td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">platform</a></td><td role="cell" data-priority="1">platform on-call</td><td role="cell" data-label="Messages">#platform-alerts</td><td role="cell" data-label="If nobody acknowledges">page the secondary after <span class="vz-qty">15 min</span></td><td role="cell" data-label="Pages again">every <span class="vz-qty">4 h</span></td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">storefront</a></td><td role="cell" data-priority="1">storefront on-call</td><td role="cell" data-label="Messages">#storefront-alerts</td><td role="cell" data-label="If nobody acknowledges">page the secondary after <span class="vz-qty">30 min</span></td><td role="cell" data-label="Pages again">every <span class="vz-qty">4 h</span></td></tr>
+      </tbody></table></div></div></section>
+
+  <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Silences</h2></div>
+    <div class="vz-panel-body"><p class="vz-table-caption">1 silence. A silenced monitor keeps evaluating, and its history records everything; it only stops pages and messages.</p>
+    <div class="vz-table-wrap"><table class="vz-table" data-fold role="table">
+      <thead><tr role="row"><th role="columnheader" class="vz-label">Monitor</th><th role="columnheader" class="vz-label" data-priority="1">Until</th><th role="columnheader" class="vz-label">State</th><th role="columnheader" class="vz-label">By</th><th role="columnheader" class="vz-label">Why</th><th role="columnheader" class="vz-label">Actions</th></tr></thead>
+      <tbody>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">batch export failures</a></td><td role="cell" data-priority="1">16:00</td><td role="cell"><span class="vz-status" data-state="silenced"><span>Silenced, firing since 14:02</span></span></td><td role="cell" data-label="By">Sam, at 15:00</td><td role="cell" data-label="Why">The backfill runs until 16:00 and fails by design.</td><td role="cell"><button class="vz-button" data-size="sm" id="end">End silence</button></td></tr>
+      </tbody></table></div></div></section>
+</main>

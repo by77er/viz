@@ -15,7 +15,7 @@
  * (Datadog's "sustained for a fraction of the window").
  */
 import type { Point, Series } from '../types.ts'
-import { COMMON_DEFAULTS, type CommonParams, length, merge, sideOk } from '../base.ts'
+import { COMMON_DEFAULTS, type CommonParams, length, merge, sideOk, val } from '../base.ts'
 import { deviation } from '../explain.ts'
 import { finiteScore, robust, spreadFloor } from '../stats.ts'
 
@@ -41,8 +41,9 @@ export interface GroupResult {
 
 export function detectGroup(members: { id: string; value: number }[], params?: Partial<GroupParams>, ts = 0): GroupResult {
   const p = merge(groupDefaults, params)
+  members = (members ?? []).map((m) => ({ id: m?.id, value: val(m?.value) }))
   const vals: number[] = []
-  for (const m of members ?? []) if (Number.isFinite(m?.value)) vals.push(m.value)
+  for (const m of members) if (Number.isFinite(m.value)) vals.push(m.value)
   const present = vals.length
   if (present < Math.max(2, p.minMembers)) {
     return {

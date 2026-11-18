@@ -22,7 +22,7 @@
  * No trend term: a steadily growing series drifts above its own past seasons.
  */
 import type { Detector, DetectResult, Point, Series } from '../types.ts'
-import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, mod, resolveStep, sideOk, slotOf, summarize, warmingPoint } from '../base.ts'
+import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, mod, resolveStep, sideOk, slotOf, summarize, warmingPoint, val, tsv } from '../base.ts'
 import { deviation, duration, fmt, phaseName, withUnit } from '../explain.ts'
 import { finiteScore, median, robust, spreadFloor, weightedMedian } from '../stats.ts'
 
@@ -119,7 +119,7 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
     const minSeasons = Math.min(g.seasons, Math.max(1, Math.floor(p.minSeasons)))
     const compatible = state && state.v === 1 && state.periodMs === p.periodMs && state.stepMs === stepMs && state.seasons === g.seasons && state.vals.length === g.R && state.res.length === g.Rr
     let firstTs = NaN
-    for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = series.ts[i]!; break }
+    for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = tsv(series.ts[i]!); break }
     const st: SeasonalState = compatible
       ? { ...state, vals: state.vals.slice(), res: state.res.slice() }
       : { v: 1, periodMs: p.periodMs, stepMs, seasons: g.seasons, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, vals: new Array(g.R).fill(null), res: new Array(g.Rr).fill(null) }
@@ -131,8 +131,8 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
     const wj: number[] = []
     const resBuf: number[] = []
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!
-      const x = series.values[i]! + 0 // + 0 turns -0 into 0, so state and JSON agree
+      const ts = tsv(series.ts[i]!)
+      const x = val(series.values[i]!)
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (st.lastTs !== null && ts <= st.lastTs)) {
         points[i] = missingPoint(ts, x)
         continue

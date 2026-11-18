@@ -159,8 +159,17 @@ function lex(src: string): Tok[] {
     throw new PromQLSyntaxError(msg, positionOf(src, pos), len)
   }
   let i = 0
+  // Inside [...] a colon separates a subquery's range from its step; elsewhere it can start a metric name.
+  let brackets = 0
   while (i < src.length) {
     const c = src[i]!
+    if (c === '[') brackets++
+    else if (c === ']') brackets = Math.max(0, brackets - 1)
+    if (c === ':' && brackets > 0) {
+      toks.push({ type: 'op', text: ':', pos: i, end: i + 1 })
+      i++
+      continue
+    }
     if (/\s/.test(c)) {
       i++
       continue

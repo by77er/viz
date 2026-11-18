@@ -20,7 +20,7 @@
  * that state scores new points against the model (level + seasonal profile) without refitting.
  */
 import type { Detector, DetectResult, Point, Series } from '../types.ts'
-import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, mod, resolveStep, sideOk, summarize, warmingPoint } from '../base.ts'
+import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, mod, resolveStep, sideOk, summarize, warmingPoint, val, tsv } from '../base.ts'
 import { deviation, duration } from '../explain.ts'
 import { finiteScore, robust, spreadFloor } from '../stats.ts'
 import { toGrid } from './seasonality.ts'
@@ -331,7 +331,7 @@ export const stl: Detector<StlParams, StlModel> = {
       const sd = spreadFloor(m.sigma, m.level, p.minSpread)
       let lastTs: number | null = null
       for (let i = 0; i < n; i++) {
-        const ts = series.ts[i]!, x = series.values[i]! + 0
+        const ts = tsv(series.ts[i]!), x = val(series.values[i]!)
         if (!Number.isFinite(ts) || !Number.isFinite(x) || (lastTs !== null && ts <= lastTs)) { points[i] = missingPoint(ts, x); continue }
         lastTs = ts
         const h = Math.round((ts - m.endTs) / m.stepMs)
@@ -343,7 +343,7 @@ export const stl: Detector<StlParams, StlModel> = {
     const fit = fitStl(series, p)
     if (!fit) {
       for (let i = 0; i < n; i++) {
-        const ts = series.ts[i]!, x = series.values[i]! + 0
+        const ts = tsv(series.ts[i]!), x = val(series.values[i]!)
         points[i] = Number.isFinite(ts) && Number.isFinite(x) ? warmingPoint(ts, x) : missingPoint(ts, x)
       }
       return { points, state: null, summary: summarize('stl', points, null, undefined, `needs ${Math.max(2, p.minPeriods)} full periods (${duration(Math.max(2, p.minPeriods) * p.periodMs)}) on a regular grid, at least half of it present`) }
@@ -352,7 +352,7 @@ export const stl: Detector<StlParams, StlModel> = {
     const sd = spreadFloor(model.sigma, model.level, p.minSpread)
     let lastTs: number | null = null
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!, x = series.values[i]! + 0
+      const ts = tsv(series.ts[i]!), x = val(series.values[i]!)
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (lastTs !== null && ts <= lastTs)) { points[i] = missingPoint(ts, x); continue }
       lastTs = ts
       const s = Math.round((ts - start) / model.stepMs)

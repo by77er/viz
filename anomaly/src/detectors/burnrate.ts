@@ -32,7 +32,7 @@
  *   and would make the result depend on how buckets arrived.
  */
 import type { Detector, DetectResult, Explanation, Point, Series } from '../types.ts'
-import { length, merge, missingPoint, mod, resolveStep, slotOf, summarize, stateBytes } from '../base.ts'
+import { length, merge, missingPoint, mod, resolveStep, slotOf, summarize, stateBytes, val, tsv } from '../base.ts'
 import { duration, fmt } from '../explain.ts'
 import { finiteScore } from '../stats.ts'
 
@@ -226,7 +226,7 @@ export const burnRate: Detector<BurnParams, BurnState> & {
     const R = ws.length ? ws[ws.length - 1]! : 1
     const compatible = state && state.v === 1 && state.stepMs === stepMs && Array.isArray(state.bad) && state.bad.length === R && Array.isArray(state.tot) && state.tot.length === R
     let firstTs = NaN
-    for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = series.ts[i]!; break }
+    for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = tsv(series.ts[i]!); break }
     const st: BurnState = compatible
       ? { ...state, bad: state.bad.slice(), tot: state.tot.slice() }
       : { v: 1, stepMs, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, bad: new Array(R).fill(null), tot: new Array(R).fill(null) }
@@ -245,9 +245,9 @@ export const burnRate: Detector<BurnParams, BurnState> & {
       }
     }
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!
-      const b = series.values[i]! + 0
-      const t = totals[i]! + 0
+      const ts = tsv(series.ts[i]!)
+      const b = val(series.values[i]!)
+      const t = val(totals[i]!)
       if (!Number.isFinite(ts) || (st.lastTs !== null && ts <= st.lastTs) || stepMs <= 0 || tooBig) {
         points[i] = missingPoint(ts, b)
         continue

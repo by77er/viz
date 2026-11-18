@@ -1,0 +1,57 @@
+<!-- nav: Monitors -->
+<!-- title: Notifications sent -->
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">Notifications sent</h1>
+      <p class="vz-page-state" data-unless="ack"><span class="vz-mark" data-state="critical"></span>Not acknowledged, firing since 13:07 (2 h 9 min)</p>
+      <p class="vz-page-state" data-when="ack"><span class="vz-mark" data-state="ack"></span>Acknowledged by Dana at 15:16, firing since 13:07</p>
+      <p class="vz-page-sub">For <a class="vz-link" href="4-monitor.html">checkout p99 latency</a>. <span data-unless="ack">2 pages, 1 message and 1 thread reply so far; the next page is at 17:07.</span><span data-when="ack">Pages have stopped; everyone who was told has been told she has it.</span></p></div>
+  </header>
+  <div class="vz-banner" data-when="error"><span class="vz-mark" data-state="critical"></span><p>The page to Kim at 13:37 was not delivered: her phone is not registered for viz, and she has no number for text messages. Since 13:07 only Dana has been paged.</p><a class="vz-link" href="12-routes.html">Fix who is notified</a></div>
+
+  <div class="vz-split">
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">The page, on the on-call person's phone</h2></div>
+        <p class="vz-panel-desc">A push notification from the viz app, or a text message if the app is not set up. The values are the ones at the moment it was sent.</p>
+        <dl class="vz-kv">
+          <dt>Title</dt><dd><b>Firing: checkout p99 latency</b></dd>
+          <dt>Text</dt><dd>POST /v2/orders p99 is <span class="vz-qty">548 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02. You are payments on-call.</dd>
+          <dt>Buttons</dt><dd>Acknowledge, which does it without opening viz and answers "Acknowledged. Kim and #payments-alerts have been told."; Open, which opens the monitor's page</dd>
+          <dt>Text message</dt><dd>"viz: Firing: checkout p99 latency, 548 ms &gt; 500 ms since 13:02. Reply 1 to acknowledge. vis.bitcru.sh/m/7kq2"</dd>
+        </dl></section>
+
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">The message in #payments-alerts</h2></div>
+        <p class="vz-panel-desc">Posted once and edited in place, so the channel shows the alert's state now and not a stream of updates.</p>
+        <div class="vz-diff">
+          <div><span class="vz-label">As posted at 13:07</span>
+            <span><b>Firing: checkout p99 latency</b></span>
+            <span>POST /v2/orders p99: <span class="vz-qty">548 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02.</span>
+            <span>Checkout is slower than its objective. Start with the slowest route's traces.</span>
+            <span>Paged Dana (payments on-call). <del>Not acknowledged.</del></span>
+            <span class="vz-agent">Agent: investigating. Not verified.</span>
+            <span>Buttons: <del>Acknowledge</del> · <del>Silence…</del> · Open in viz</span></div>
+          <div><span class="vz-label">After Dana acknowledges at 15:16</span>
+            <span><b>Firing: checkout p99 latency</b></span>
+            <span>POST /v2/orders p99: <span class="vz-qty">548 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02.</span>
+            <span>Checkout is slower than its objective. Start with the slowest route's traces.</span>
+            <span>Paged Dana (payments on-call). <ins>Acknowledged by Dana at 15:16.</ins></span>
+            <span class="vz-agent">Agent: investigation finished; payments-db suspected. Not verified.</span>
+            <span>Buttons: Open in viz</span></div>
+        </div></section>
+    </div>
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Sent</h2><span class="vz-panel-meta"><span>newest first</span></span></div>
+        <ol class="vz-timeline">
+          <li data-when="ack"><time class="vz-qty" datetime="2026-11-18T15:16">15:16</time><span class="vz-mark" data-state="ack"></span><p>Dana acknowledged from the page. Edited the #payments-alerts message, replied in its thread, told Kim, and cancelled the 17:07 page.</p></li>
+          <li data-unless="error"><time class="vz-qty" datetime="2026-11-18T13:37">13:37</time><span class="vz-mark"></span><p>Page to Kim, payments secondary: nobody had acknowledged in <span class="vz-qty">30 min</span>. Delivered.</p></li>
+          <li data-when="error"><time class="vz-qty" datetime="2026-11-18T13:37">13:37</time><span class="vz-mark" data-state="critical"></span><p>Page to Kim, payments secondary, not delivered: no registered phone and no number for text messages.</p></li>
+          <li><time class="vz-qty" datetime="2026-11-18T13:09">13:09</time><span class="vz-mark"></span><p>Reply in the #payments-alerts thread with the agent's finding, marked as the agent's and not verified.</p></li>
+          <li><time class="vz-qty" datetime="2026-11-18T13:07">13:07</time><span class="vz-mark" data-state="critical"></span><p>Page to Dana, payments on-call. Delivered; not opened.</p></li>
+          <li><time class="vz-qty" datetime="2026-11-18T13:07">13:07</time><span class="vz-mark" data-state="critical"></span><p>Message in #payments-alerts. Posted.</p></li>
+        </ol></section>
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">If nobody acknowledges</h2></div>
+        <dl class="vz-kv"><dt>After <span class="vz-qty">30 min</span></dt><dd>Kim, payments secondary, is paged</dd><dt>Every <span class="vz-qty">4 h</span></dt><dd>everyone paged so far is paged again while it fires: next at 17:07</dd><dt>On acknowledge</dt><dd>pages stop; the message, its thread and everyone paged are told who has it</dd></dl>
+        <ul class="vz-links"><li><a class="vz-link" href="12-routes.html">Change who is notified</a></li></ul></section>
+    </div>
+  </div>
+</main>

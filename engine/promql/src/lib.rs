@@ -24,18 +24,51 @@ mod functions;
 pub mod promqltest;
 mod types;
 
-use promql_parser::parser::Expr;
 
 pub use api::{Matrix, MatrixSeries, SelectorInfo, Value, VectorSample};
-pub use eval::EvalOptions;
+pub use eval::{AggregateInput, AggregateParam, EvalHooks, EvalOptions, SeriesV};
+/// The parser's syntax tree, for callers of [`parse_query`] and the `*_expr` entry points.
+pub use promql_parser::parser::{AggregateExpr, Expr};
 pub use functions::almost_equal;
 pub use types::{
     compile_anchored, format_float, is_stale_nan, stale_nan, CompiledMatcher, Error, MatchOp, Matcher, MemSource,
     Series, SeriesSource, NAME_LABEL, STALE_NAN_BITS,
 };
 
-use eval::{Evaluator, SeriesV, Steps, Val};
+use eval::{Evaluator, Steps, Val};
 use types::is_metadata_label;
+
+/// Parse a query the way every entry point does (with the guard against inputs that
+/// panic the parser), for callers that evaluate a syntax tree with [`query_range_expr`]
+/// or [`query_instant_expr`], or inspect it.
+pub fn parse_query(query: &str) -> Result<Expr, Error> {
+    parse(query)
+}
+
+/// [`query_range_with`] over an already parsed query, with optional [`EvalHooks`].
+/// With `hooks` `None` it is exactly [`query_range_with`].
+pub fn query_range_expr(
+    source: &dyn SeriesSource,
+    expr: &Expr,
+    start_ms: i64,
+    end_ms: i64,
+    step_ms: i64,
+    opts: &EvalOptions,
+    hooks: Option<&dyn EvalHooks>,
+) -> Result<Matrix, Error> {
+    range_expr_hooked(source, expr, start_ms, end_ms, step_ms, opts, hooks)
+}
+
+/// [`query_instant_with`] over an already parsed query, with optional [`EvalHooks`].
+pub fn query_instant_expr(
+    source: &dyn SeriesSource,
+    expr: &Expr,
+    time_ms: i64,
+    opts: &EvalOptions,
+    hooks: Option<&dyn EvalHooks>,
+) -> Result<Value, Error> {
+    instant_expr_hooked(source, expr, time_ms, opts, hooks)
+}
 
 pub(crate) fn parse(query: &str) -> Result<Expr, Error> {
     guard_durations(query)?;
@@ -239,8 +272,20 @@ pub(crate) fn range_expr(
     step_ms: i64,
     opts: &EvalOptions,
 ) -> Result<Matrix, Error> {
+    range_expr_hooked(source, expr, start_ms, end_ms, step_ms, opts, None)
+}
+
+fn range_expr_hooked(
+    source: &dyn SeriesSource,
+    expr: &Expr,
+    start_ms: i64,
+    end_ms: i64,
+    step_ms: i64,
+    opts: &EvalOptions,
+    hooks: Option<&dyn EvalHooks>,
+) -> Result<Matrix, Error> {
     let steps = check_range(start_ms, end_ms, step_ms, opts)?;
-    let ev = Evaluator { src: source, opts: *opts, q_start: start_ms, q_end: end_ms };
+    let ev = Evaluator { src: source, opts: *opts, q_start: start_ms, q_end: end_ms, hooks };
     let series = match ev.eval(expr, steps)? {
         Val::Scalar(v) => vec![MatrixSeries {
             metric: vec![],
@@ -272,8 +317,18 @@ pub(crate) fn instant_expr(
     time_ms: i64,
     opts: &EvalOptions,
 ) -> Result<Value, Error> {
+    instant_expr_hooked(source, expr, time_ms, opts, None)
+}
+
+fn instant_expr_hooked(
+    source: &dyn SeriesSource,
+    expr: &Expr,
+    time_ms: i64,
+    opts: &EvalOptions,
+    hooks: Option<&dyn EvalHooks>,
+) -> Result<Value, Error> {
     let steps = Steps { start: time_ms, end: time_ms, step: 1 };
-    let ev = Evaluator { src: source, opts: *opts, q_start: time_ms, q_end: time_ms };
+    let ev = Evaluator { src: source, opts: *opts, q_start: time_ms, q_end: time_ms, hooks };
     let mut inner = expr;
     while let Expr::Paren(p) = inner {
         inner = &p.expr;

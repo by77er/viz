@@ -69,9 +69,10 @@ impl Steps {
     }
 }
 
-/// One output series: a value (or none) per step.
-#[derive(Debug, Clone)]
-pub(crate) struct SeriesV {
+/// One series of an instant vector as the evaluator holds it: a value (or none) per
+/// step. Public so that [`EvalHooks`] can read and produce instant vectors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeriesV {
     pub labels: Labels,
     /// Set when `__name__` must be removed at the end (delayed name removal).
     pub drop_name: bool,
@@ -198,6 +199,56 @@ pub(crate) struct Evaluator<'a> {
     /// Start and end of the top-level query, for `@ start()` / `@ end()`.
     pub q_start: i64,
     pub q_end: i64,
+    /// Caller-supplied hooks; `None` is the evaluator's own behaviour everywhere.
+    pub hooks: Option<&'a dyn EvalHooks>,
+}
+
+/// The parameter of an aggregation, evaluated.
+#[derive(Debug, Clone, Copy)]
+pub enum AggregateParam<'a> {
+    None,
+    /// One value per step (`topk`, `bottomk`, `quantile`).
+    Scalar(&'a [f64]),
+    /// The label name of `count_values`.
+    Label(&'a str),
+}
+
+/// What an aggregation hook is given: the aggregation, its evaluated parameter and
+/// argument, and the grid it is evaluated on.
+pub struct AggregateInput<'a> {
+    pub expr: &'a AggregateExpr,
+    /// The operator as written in PromQL: `sum`, `avg`, `topk`, `count_values`, ...
+    pub op: &'a str,
+    /// `without (...)` rather than `by (...)` or nothing.
+    pub without: bool,
+    /// The grouping labels, sorted. For `count_values` with `by` (or no modifier), the
+    /// value label is already included, as the evaluator itself does.
+    pub grouping: &'a [String],
+    pub param: AggregateParam<'a>,
+    /// The argument, in evaluation order.
+    pub series: &'a [SeriesV],
+    /// Evaluation timestamps: `start + i * step` for `i < n`.
+    pub start: i64,
+    pub step: i64,
+    pub n: usize,
+    pub delayed_name_removal: bool,
+}
+
+/// Hooks into evaluation, for callers that evaluate parts of a query elsewhere (split
+/// execution) or need aggregations whose result does not depend on input order. Both
+/// default to `None`, which keeps the evaluator's own behaviour.
+pub trait EvalHooks {
+    /// Called before any node is evaluated on the grid `start..=end` every `step`.
+    /// `Some(v)` is used as the node's value (an instant vector) instead of evaluating it.
+    fn replace(&self, _node: &Expr, _start: i64, _end: i64, _step: i64) -> Option<Result<Vec<SeriesV>, Error>> {
+        None
+    }
+    /// Called for every aggregation once its parameter and argument are evaluated (after
+    /// the checks the evaluator makes before evaluating the argument). `Some` is the
+    /// aggregation's result, including any evaluation error.
+    fn aggregate(&self, _input: &AggregateInput<'_>) -> Option<Result<Vec<SeriesV>, Error>> {
+        None
+    }
 }
 
 pub(crate) fn at_ms(at: &Option<AtModifier>, q_start: i64, q_end: i64) -> Option<i64> {
@@ -309,6 +360,11 @@ impl<'a> Evaluator<'a> {
     }
 
     pub fn eval(&self, expr: &Expr, steps: Steps) -> Result<Val, Error> {
+        if let Some(h) = self.hooks {
+            if let Some(r) = h.replace(expr, steps.start, steps.end, steps.step) {
+                return r.map(Val::Vector);
+            }
+        }
         let n = steps.n();
         match expr {
             Expr::NumberLiteral(x) => Ok(Val::Scalar(vec![x.val; n])),
@@ -1228,6 +1284,23 @@ impl<'a> Evaluator<'a> {
                 grouping.sort();
             }
             let v = self.eval_vector(&a.expr, steps)?;
+            if let Some(h) = self.hooks {
+                let input = AggregateInput {
+                    expr: a,
+                    op: "count_values",
+                    without,
+                    grouping: &grouping,
+                    param: AggregateParam::Label(&value_label),
+                    series: &v,
+                    start: steps.start,
+                    step: steps.step,
+                    n,
+                    delayed_name_removal: self.delayed(),
+                };
+                if let Some(r) = h.aggregate(&input) {
+                    return r.map(Val::Vector);
+                }
+            }
             let mut out = OutBuilder::new(n, self.delayed());
             for i in 0..n {
                 let mut order: Vec<Labels> = Vec::new();
@@ -1265,6 +1338,24 @@ impl<'a> Evaluator<'a> {
             vec![]
         };
         let v = self.eval_vector(&a.expr, steps)?;
+        if let Some(h) = self.hooks {
+            let op = a.op.to_string();
+            let input = AggregateInput {
+                expr: a,
+                op: &op,
+                without,
+                grouping: &grouping,
+                param: if needs_param { AggregateParam::Scalar(&param) } else { AggregateParam::None },
+                series: &v,
+                start: steps.start,
+                step: steps.step,
+                n,
+                delayed_name_removal: self.delayed(),
+            };
+            if let Some(r) = h.aggregate(&input) {
+                return r.map(Val::Vector);
+            }
+        }
 
         // Assign every input series to a group, once.
         let mut gidx: HashMap<Labels, usize> = HashMap::new();

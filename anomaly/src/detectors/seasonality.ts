@@ -17,7 +17,7 @@
  * Confidence = acf at the chosen lag (0..1).
  */
 import type { Series } from '../types.ts'
-import { length } from '../base.ts'
+import { length, val } from '../base.ts'
 import { duration, fmt } from '../explain.ts'
 import { inferStep } from '../stats.ts'
 
@@ -69,7 +69,7 @@ export function toGrid(series: Series, stepMs: number): { start: number; values:
   let first = NaN, last = NaN
   for (let i = 0; i < n; i++) {
     const t = series.ts[i]!
-    if (!Number.isFinite(t) || !Number.isFinite(series.values[i]!)) continue
+    if (!Number.isFinite(t) || !Number.isFinite(val(series.values[i]!))) continue
     if (!(t >= first)) first = Number.isFinite(first) ? Math.min(first, t) : t
     if (!(t <= last)) last = Number.isFinite(last) ? Math.max(last, t) : t
   }
@@ -79,7 +79,7 @@ export function toGrid(series: Series, stepMs: number): { start: number; values:
   const sum = new Float64Array(m)
   const cnt = new Float64Array(m)
   for (let i = 0; i < n; i++) {
-    const t = series.ts[i]!, v = series.values[i]!
+    const t = series.ts[i]!, v = val(series.values[i]!)
     if (!Number.isFinite(t) || !Number.isFinite(v)) continue
     const s = Math.round((t - first) / stepMs)
     sum[s]! += v

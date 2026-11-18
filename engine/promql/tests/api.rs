@@ -458,3 +458,70 @@ fn test_scripts_can_run_through_another_source() {
     // A factory error aborts the script.
     assert!(run_script_with_source(script, &upstream_options(), &|_| Err("no".into())).is_err());
 }
+
+/// `EvalHooks` (added for `engine/query`'s split execution): with no hooks the `*_expr`
+/// entry points are the ordinary ones; `replace` substitutes a node's value; `aggregate`
+/// sees the evaluated argument and parameter and its result is used, and `None` keeps
+/// the evaluator's own result.
+#[test]
+fn evaluation_hooks_replace_nodes_and_aggregations() {
+    use std::sync::Arc;
+    let src = MemSource::from_series(vec![
+        s("m", &[("job", "b"), ("i", "1")], &[(0, 1.0), (15_000, 2.0)]),
+        s("m", &[("job", "a"), ("i", "2")], &[(0, 3.0), (15_000, 4.0)]),
+        s("m", &[("job", "a"), ("i", "3")], &[(0, 5.0)]),
+    ]);
+    let opts = EvalOptions::default();
+    for q in ["sum by (job) (m) * 2", "topk(1, m)", "count_values(\"v\", m)", "m"] {
+        let e = parse_query(q).unwrap();
+        assert_eq!(json(&query_range_expr(&src, &e, 0, 15_000, 15_000, &opts, None).unwrap()), json(&query_range(&src, q, 0, 15_000, 15_000).unwrap()), "{q}");
+        assert_eq!(json(&query_instant_expr(&src, &e, 15_000, &opts, None).unwrap()), json(&query_instant(&src, q, 15_000).unwrap()), "{q}");
+    }
+
+    struct Replace<'e>(&'e Expr);
+    impl EvalHooks for Replace<'_> {
+        fn replace(&self, node: &Expr, start: i64, end: i64, step: i64) -> Option<Result<Vec<SeriesV>, Error>> {
+            assert_eq!((start, end, step), (0, 15_000, 15_000));
+            std::ptr::eq(node, self.0).then(|| {
+                Ok(vec![SeriesV { labels: Arc::new(vec![("job".into(), "z".into())]), drop_name: false, vals: vec![Some(10.0), None] }])
+            })
+        }
+    }
+    let e = parse_query("sum by (job) (m) * 2").unwrap();
+    let Expr::Binary(b) = &e else { panic!("a binary expression") };
+    let m = query_range_expr(&src, &e, 0, 15_000, 15_000, &opts, Some(&Replace(&b.lhs))).unwrap();
+    assert_eq!(json(&m), r#"{"resultType":"matrix","result":[{"metric":{"job":"z"},"values":[[0,"20"]]}]}"#);
+
+    struct Agg(RefCell<Vec<String>>, bool);
+    impl EvalHooks for Agg {
+        fn aggregate(&self, i: &AggregateInput<'_>) -> Option<Result<Vec<SeriesV>, Error>> {
+            let param = match i.param {
+                AggregateParam::None => "-".to_string(),
+                AggregateParam::Scalar(p) => format!("{p:?}"),
+                AggregateParam::Label(l) => l.to_string(),
+            };
+            self.0.borrow_mut().push(format!("{} {} {:?} {} {} n={} {}", i.op, i.without, i.grouping, param, i.series.len(), i.n, i.start));
+            self.1.then(|| Ok(vec![SeriesV { labels: Arc::new(vec![]), drop_name: false, vals: vec![Some(7.0); i.n] }]))
+        }
+    }
+    let seen = Agg(RefCell::new(vec![]), true);
+    let q = parse_query("sum without (i, job) (m) + topk by (job) (2, m) * 0 + count_values by (job) (\"val\", m) * 0").unwrap();
+    let m = query_range_expr(&src, &q, 0, 15_000, 15_000, &opts, Some(&seen)).unwrap();
+    assert_eq!(json(&m), r#"{"resultType":"matrix","result":[{"metric":{},"values":[[0,"7"],[15,"7"]]}]}"#);
+    assert_eq!(
+        *seen.0.borrow(),
+        vec![
+            "sum true [\"i\", \"job\"] - 3 n=2 0".to_string(),
+            "topk false [\"job\"] [2.0, 2.0] 3 n=2 0".to_string(),
+            "count_values false [\"job\", \"val\"] val 3 n=2 0".to_string(),
+        ]
+    );
+    // `None` keeps the evaluator's result.
+    let passive = Agg(RefCell::new(vec![]), false);
+    let q = "sum by (job) (m)";
+    assert_eq!(
+        json(&query_instant_expr(&src, &parse_query(q).unwrap(), 15_000, &opts, Some(&passive)).unwrap()),
+        json(&query_instant(&src, q, 15_000).unwrap())
+    );
+    assert_eq!(passive.0.borrow().len(), 1);
+}

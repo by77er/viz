@@ -1,16 +1,45 @@
 <!-- nav: Dashboards -->
-<main class="page">
-  <div class="head"><div><h1>Dashboards</h1><p class="sub">24 dashboards in acme-prod. 3 have a panel in a critical state.</p></div>
-    <div class="row"><input class="vz-input" id="q" placeholder="Search by name, service or owner" style="width:calc(var(--overlay-min) + var(--space-12))"><button class="vz-button" data-tone="blue">New dashboard</button></div></div>
-  <div class="vz-table-wrap"><table class="vz-table">
-    <thead><tr><th class="vz-label">Name</th><th class="vz-label">State</th><th class="vz-label">What it answers</th><th class="vz-label">Owner</th><th class="vz-label vz-right">Panels</th><th class="vz-label vz-right">Last changed</th></tr></thead>
-    <tbody>
-      <tr><td data-key><a class="vz-link" href="#">checkout-api</a></td><td><span class="vz-status" data-state="critical">Burning budget</span></td><td>Is checkout healthy, and where is it slow?</td><td>payments</td><td class="vz-num vz-right">9</td><td class="vz-right">2 h ago, by an agent</td></tr>
-      <tr><td data-key><a class="vz-link" href="#">cart</a></td><td><span class="vz-status" data-state="warn">Slow</span></td><td>Cart latency and cache hit rate by region</td><td>storefront</td><td class="vz-num vz-right">7</td><td class="vz-right">3 d ago, by Dana</td></tr>
-      <tr><td data-key><a class="vz-link" href="#">ingest pipeline</a></td><td><span class="vz-status" data-state="critical">Lagging</span></td><td>Is telemetry arriving, and how far behind is it?</td><td>platform</td><td class="vz-num vz-right">11</td><td class="vz-right">1 d ago, by Sam</td></tr>
-      <tr><td data-key><a class="vz-link" href="#">catalog</a></td><td><span class="vz-status" data-state="ok">Healthy</span></td><td>Catalog traffic, errors and search latency</td><td>storefront</td><td class="vz-num vz-right">6</td><td class="vz-right">12 d ago, by Dana</td></tr>
-      <tr><td data-key><a class="vz-link" href="#">kubernetes nodes</a></td><td><span class="vz-status" data-state="ok">Healthy</span></td><td>Node pressure, pod restarts and scheduling</td><td>platform</td><td class="vz-num vz-right">12</td><td class="vz-right">20 d ago, by Sam</td></tr>
-      <tr><td data-key><a class="vz-link" href="#">search</a></td><td><span class="vz-status">No data for 3 h</span></td><td>Query volume and index freshness</td><td>discovery</td><td class="vz-num vz-right">5</td><td class="vz-right">41 d ago, by Ari</td></tr>
-    </tbody></table></div>
-  <p class="muted">States are from each dashboard's thresholds, evaluated <span class="vz-num">40 s</span> ago.</p>
+<!-- title: Dashboards -->
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">Dashboards</h1>
+      <p class="vz-page-sub" data-unless="first-run error">24 dashboards in acme-prod; 3 have a panel in a critical state. States evaluated <span class="vz-qty">40 s</span> ago.</p>
+      <p class="vz-page-sub" data-when="error">Could not load the list at 15:16.</p>
+      <p class="vz-page-sub" data-when="first-run">No dashboards yet: nothing has been sent to acme-prod.</p></div>
+    <div class="vz-controls" data-unless="first-run">
+      <input class="vz-input" type="search" id="q" aria-label="Search dashboards" placeholder="Search by name, service or owner" style="width:calc(var(--overlay-min) + var(--space-12))">
+      <div class="vz-segmented" role="group" aria-label="Whose dashboards"><button aria-pressed="true">All</button><button aria-pressed="false">Mine</button></div>
+      <button class="vz-button" data-tone="blue">New dashboard</button></div>
+  </header>
+
+  <div class="vz-start" data-when="first-run">
+    <h2 class="vz-section-title">No data yet</h2>
+    <p>Nothing has been sent to acme-prod. Send the first samples and they can be charted within <span class="vz-qty">10 s</span>; a dashboard can be made from them after that.</p>
+    <ol class="vz-steps">
+      <li><p>Create a write key. It is shown once.</p><div class="vz-controls"><a class="vz-button" data-tone="blue" href="8-keys.html#new">New key</a></div></li>
+      <li><p>Point a Prometheus or OpenTelemetry collector at viz, with the key saved in /etc/viz/key.</p><div class="vz-query">remote_write:
+  - url: https://vis.bitcru.sh/api/v1/write
+    authorization: { credentials_file: /etc/viz/key }</div><div class="vz-controls"><button class="vz-button" data-size="sm">Copy</button></div></li>
+      <li><p>Wait for the first sample. This page changes to the list of dashboards, with a link to the data in Explore, when it arrives.</p><div class="vz-progress" data-unmeasured><div class="vz-progress-text"><span role="status">No samples received yet. Checked <span class="vz-qty">3 s</span> ago.</span></div></div></li>
+    </ol>
+  </div>
+
+  <div class="vz-empty" data-when="error"><p class="vz-empty-title"><span class="vz-mark" data-state="critical"></span>Could not load dashboards</p><p>The server answered 503, overloaded, at 15:16. Nothing was changed. Trying again in <span class="vz-qty">10 s</span>.</p><button class="vz-button" data-size="sm">Try again now</button></div>
+  <div class="vz-empty" data-when="empty"><p class="vz-empty-title">No dashboards match "paymnts"</p><p>Searched the names, services and owners of 24 dashboards. The owner "payments" has 2 dashboards.</p><button class="vz-button" data-size="sm">Search for "payments"</button></div>
+
+  <div class="vz-stack" data-unless="first-run error empty">
+    <p class="vz-table-caption">6 of 24, most urgent first: critical, then warning, no data, healthy.</p>
+    <div class="vz-table-wrap"><table class="vz-table" data-fold role="table">
+      <thead><tr role="row"><th role="columnheader" class="vz-label">Dashboard</th><th role="columnheader" class="vz-label" data-priority="1">State</th><th role="columnheader" class="vz-label">What it answers</th><th role="columnheader" class="vz-label">Owner</th><th role="columnheader" class="vz-label vz-right">Panels</th><th role="columnheader" class="vz-label">Last changed</th></tr></thead>
+      <tbody>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="2-dashboard.html">checkout-api</a></td><td role="cell" data-priority="1"><span class="vz-status" data-state="critical">Above 500 ms objective</span></td><td role="cell">Is checkout healthy, and where is it slow?</td><td role="cell" data-label="Owner">payments</td><td role="cell" class="vz-num vz-right" data-label="Panels">9</td><td role="cell" data-label="Changed">6 Nov, by Dana · <a class="vz-link" href="7-proposed-change.html">1 proposal waiting</a></td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">ingest pipeline</a></td><td role="cell" data-priority="1"><span class="vz-status" data-state="critical">Lagging</span></td><td role="cell">Is telemetry arriving, and how far behind is it?</td><td role="cell" data-label="Owner">platform</td><td role="cell" class="vz-num vz-right" data-label="Panels">11</td><td role="cell" data-label="Changed">17 Nov, by Sam</td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">storefront overview</a></td><td role="cell" data-priority="1"><span class="vz-status" data-state="critical">Orders failing</span></td><td role="cell">Can shoppers find, add and buy?</td><td role="cell" data-label="Owner">storefront</td><td role="cell" class="vz-num vz-right" data-label="Panels">8</td><td role="cell" data-label="Changed">2 Nov, by Lee</td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">catalog</a></td><td role="cell" data-priority="1"><span class="vz-status" data-state="warn">Errors rising</span></td><td role="cell">Catalog traffic, errors and search latency</td><td role="cell" data-label="Owner">storefront</td><td role="cell" class="vz-num vz-right" data-label="Panels">6</td><td role="cell" data-label="Changed">30 Oct, by Dana</td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">search</a></td><td role="cell" data-priority="1"><span class="vz-status">No data since 12:16</span></td><td role="cell">Query volume and index freshness</td><td role="cell" data-label="Owner">discovery</td><td role="cell" class="vz-num vz-right" data-label="Panels">5</td><td role="cell" data-label="Changed">8 Oct, by Ari</td></tr>
+        <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">kubernetes nodes</a></td><td role="cell" data-priority="1"><span class="vz-status" data-state="ok">Healthy</span></td><td role="cell">Node pressure, pod restarts and scheduling</td><td role="cell" data-label="Owner">platform</td><td role="cell" class="vz-num vz-right" data-label="Panels">12</td><td role="cell" data-label="Changed">29 Oct, by Sam</td></tr>
+      </tbody></table></div>
+    <div class="vz-controls"><a class="vz-link" href="#">Show all 24 dashboards</a></div>
+  </div>
 </main>
+<script>if (flowState() === 'empty') document.getElementById('q').value = 'paymnts'</script>

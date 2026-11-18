@@ -11,7 +11,7 @@
  * (the series went stale; the next point is judged afresh).
  */
 import type { Detector, DetectResult, Point, Series } from '../types.ts'
-import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, resolveStep, summarize } from '../base.ts'
+import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, resolveStep, summarize, val, tsv } from '../base.ts'
 import { fmt, withUnit, duration } from '../explain.ts'
 import { finiteScore } from '../stats.ts'
 
@@ -69,8 +69,8 @@ export const threshold: Detector<ThresholdParams, ThresholdState> = {
     const n = length(series)
     const points: Point[] = new Array(n)
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!
-      const x = series.values[i]! + 0 // + 0 turns -0 into 0, so state and JSON agree
+      const ts = tsv(series.ts[i]!)
+      const x = val(series.values[i]!)
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (st.lastTs !== null && ts <= st.lastTs)) {
         points[i] = missingPoint(ts, x)
         continue

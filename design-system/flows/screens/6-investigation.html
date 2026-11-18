@@ -1,24 +1,87 @@
 <!-- nav: Monitors -->
-<main class="page">
-  <div class="head"><div><h1>Why is checkout slow?</h1><p class="sub">Written by an agent for <a class="vz-link" href="#">checkout p99 latency</a>, which fired at 13:07. Finished at 13:09 after 14 queries.</p></div>
-    <div class="row"><button class="vz-button" data-tone="blue">This was the cause</button><button class="vz-button">It was something else</button></div></div>
-  <div class="vz-banner"><span class="vz-mark" data-state="info"></span><p>This report is a starting point, not a verdict. Each claim links to the query behind it; open the query before acting on the claim.</p></div>
-  <div class="two">
-    <div class="stack">
-      <h2 class="sec">Most likely</h2>
-      <div><div class="claim"><span class="vz-num">1</span><div class="stack" style="gap:var(--space-2)"><p><strong>The payments database is slow to respond, starting 12:58.</strong> Calls from checkout-api to <span class="vz-num">payments-db</span> went from 40 ms to 610 ms at the 99th percentile, four minutes before checkout's own latency crossed the threshold.</p><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(db_client_duration_seconds_bucket{service="checkout-api",db="payments-db"}[5m])))</div><div class="row"><a class="vz-link" href="#">Open in Explore</a><span class="muted">Confidence: high. The timing leads, and no other dependency changed.</span></div></div></div>
-        <div class="claim"><span class="vz-num">2</span><div class="stack" style="gap:var(--space-2)"><p><strong>Only POST /v2/orders is affected.</strong> The other two routes do not call payments-db and stayed under 500 ms.</p><div class="row"><a class="vz-link" href="#">Latency by route</a><a class="vz-link" href="#">12 slow traces</a></div></div></div></div>
-      <h2 class="sec">Checked and ruled out</h2>
-      <div><div class="claim"><span class="vz-mark"></span><p><strong>A deploy.</strong> The last checkout-api deploy was at 09:41, more than three hours earlier. <a class="vz-link" href="#">Deploy markers</a></p></div>
-        <div class="claim"><span class="vz-mark"></span><p><strong>Traffic.</strong> Requests are 4% below last week. <a class="vz-link" href="#">Request rate</a></p></div>
-        <div class="claim"><span class="vz-mark"></span><p><strong>CPU or memory pressure on checkout-api pods.</strong> Both are flat. <a class="vz-link" href="#">Pod resources</a></p></div></div>
-      <h2 class="sec">Could not check</h2>
-      <p class="sub">payments-db does not send metrics to viz, so the report cannot say why the database is slow.</p>
+<!-- title: Why is checkout slow? -->
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">Why is checkout slow?</h1>
+      <p class="vz-page-state" data-unless="confirmed running failed"><span class="vz-mark"></span>An agent's report. No claim checked by a person yet.</p>
+      <p class="vz-page-state" data-when="confirmed"><span class="vz-mark" data-state="ack"></span>An agent's report. 1 of 5 claims confirmed, by you.</p>
+      <p class="vz-page-state" data-when="running"><span class="vz-mark"></span>An agent's report. Investigating again since 15:15.</p>
+      <p class="vz-page-state" data-when="failed"><span class="vz-mark" data-state="critical"></span>An agent's report. The second investigation stopped at 15:16.</p>
+      <p class="vz-page-sub">Written by an agent for <a class="vz-link" href="4-monitor.html">checkout p99 latency</a>, which fired at 13:07. Finished at 13:09 after 14 queries.</p></div>
+    <div class="vz-controls" data-unless="running"><button class="vz-button" data-go="running">Investigate again…</button></div>
+  </header>
+
+  <div class="vz-progress" data-unmeasured data-when="running"><div class="vz-progress-text"><span role="status">Ran 6 queries; reading traces of POST /v2/orders. The report from 13:09 stays below until this one finishes.</span><span class="vz-qty" aria-hidden="true">1 min 4 s</span><button class="vz-progress-action" data-go="">Cancel</button></div></div>
+  <div class="vz-notice" role="alert" data-when="failed"><span class="vz-mark" data-state="critical"></span><p>The second investigation stopped after 9 queries: it reached its cost limit of $0.25. Nothing it found is shown; the report from 13:09 is unchanged.</p><div class="vz-controls"><button class="vz-button" data-size="sm" data-go="running">Run again with a $1 limit</button><button class="vz-button" data-size="sm" data-quiet data-go="">Dismiss</button></div></div>
+
+  <div class="vz-split">
+    <div>
+      <h2 class="vz-section-title">Most likely</h2>
+      <div class="vz-claims">
+        <article class="vz-claim" data-verdict="unverified" data-unless="confirmed" id="claim-1">
+          <p class="vz-claim-by">Agent's claim · confidence high · <span class="vz-status">Not verified</span></p>
+          <p class="vz-claim-text"><b>payments-db</b> has been slow to answer checkout-api since 12:58, four minutes before checkout's own p99 crossed <span class="vz-qty">500 ms</span> at 13:02. Its p99 went from <span class="vz-qty">40 ms</span> to <span class="vz-qty">610 ms</span> by 13:09.</p>
+          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09, drawn on the right</span><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(db_client_duration_seconds_bucket{service="checkout-api",db="payments-db"}[5m])))</div></div>
+          <div class="vz-controls"><a class="vz-link" href="#" id="evidence-1">Open the query in Explore</a><button class="vz-button" data-size="sm" data-go="confirmed">Confirm claim</button><button class="vz-button" data-size="sm">Reject claim</button></div>
+        </article>
+        <article class="vz-claim" data-verdict="confirmed" data-when="confirmed">
+          <p class="vz-claim-by">Agent's claim · confidence high · <span class="vz-status" data-state="ack">Confirmed by you at 15:16</span></p>
+          <p class="vz-claim-text"><b>payments-db</b> has been slow to answer checkout-api since 12:58, four minutes before checkout's own p99 crossed <span class="vz-qty">500 ms</span> at 13:02. Its p99 went from <span class="vz-qty">40 ms</span> to <span class="vz-qty">610 ms</span> by 13:09.</p>
+          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09, drawn on the right</span><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(db_client_duration_seconds_bucket{service="checkout-api",db="payments-db"}[5m])))</div></div>
+          <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a><button class="vz-button" data-size="sm" data-go="" data-autofocus>Undo</button></div>
+        </article>
+        <article class="vz-claim" data-verdict="unverified">
+          <p class="vz-claim-by">Agent's claim · confidence high · <span class="vz-status">Not verified</span></p>
+          <p class="vz-claim-text">Only <b>POST /v2/orders</b> is affected. The other two routes do not call payments-db, and stayed under <span class="vz-qty">500 ms</span>.</p>
+          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09</span><div class="vz-query">histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket{service="checkout-api"}[5m])))</div></div>
+          <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a><button class="vz-button" data-size="sm">Confirm claim</button><button class="vz-button" data-size="sm">Reject claim</button></div>
+        </article>
+      </div>
+
+      <h2 class="vz-section-title">Checked and ruled out</h2>
+      <div class="vz-claims">
+        <article class="vz-claim" data-verdict="unverified">
+          <p class="vz-claim-by">Agent's claim · <span class="vz-status" data-state="ruled-out">Ruled out by the agent</span> · <span class="vz-status">Not verified</span></p>
+          <p class="vz-claim-text"><b>A deploy</b> did not cause it. The last checkout-api deploy was at 09:41, more than three hours before the rise.</p>
+          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 09:00 to 13:09</span><div class="vz-query">changes(deploy_info{service="checkout-api"}[4h])</div></div>
+          <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a><button class="vz-button" data-size="sm">Confirm claim</button><button class="vz-button" data-size="sm">Reject claim</button></div>
+        </article>
+        <article class="vz-claim" data-verdict="unverified">
+          <p class="vz-claim-by">Agent's claim · <span class="vz-status" data-state="ruled-out">Ruled out by the agent</span> · <span class="vz-status">Not verified</span></p>
+          <p class="vz-claim-text"><b>Traffic</b> did not cause it. Requests were 4% below the same time last week.</p>
+          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09</span><div class="vz-query">sum(rate(http_requests_total{service="checkout-api"}[5m])) / sum(rate(http_requests_total{service="checkout-api"}[5m] offset 1w))</div></div>
+          <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a><button class="vz-button" data-size="sm">Confirm claim</button><button class="vz-button" data-size="sm">Reject claim</button></div>
+        </article>
+        <article class="vz-claim" data-verdict="unverified">
+          <p class="vz-claim-by">Agent's claim · <span class="vz-status" data-state="ruled-out">Ruled out by the agent</span> · <span class="vz-status">Not verified</span></p>
+          <p class="vz-claim-text"><b>CPU and memory</b> on checkout-api's pods did not cause it. Both were flat from 12:00 to 13:09.</p>
+          <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09</span><div class="vz-query">max by (pod) (rate(container_cpu_usage_seconds_total{namespace="prod",pod=~"checkout-api-.*"}[5m]))</div></div>
+          <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a><button class="vz-button" data-size="sm">Confirm claim</button><button class="vz-button" data-size="sm">Reject claim</button></div>
+        </article>
+      </div>
+
+      <h2 class="vz-section-title">Could not check</h2>
+      <p class="flow-said">payments-db does not send metrics to viz, so the report cannot say why the database is slow. Its owner, the data-stores team, can.</p>
+      <p class="vz-page-sub">Confirming or rejecting a claim is recorded on the alert's history and shown to the next person who opens it. It does not change the monitor or tell the agent anything.</p>
+
+      <h2 class="vz-section-title">What next</h2>
+      <ul class="vz-links">
+        <li><a class="vz-link" href="4-monitor.html">Back to checkout p99 latency, not acknowledged</a></li>
+        <li><a class="vz-link" href="9-traces.html">Slow traces of POST /v2/orders, to see the database calls</a></li>
+        <li><a class="vz-link" href="7-proposed-change.html">The dashboard change the agent proposed from this report</a></li>
+        <li><a class="vz-link" href="12-routes.html">Who is on call for data-stores, which owns payments-db</a></li>
+      </ul>
     </div>
-    <div class="stack">
-      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Dependency latency, p99</h3><span class="vz-panel-meta">ms · 12:00 to 15:00</span></div><svg class="c" id="i1"></svg><div class="vz-legend"><span><i style="background:var(--series-1)"></i>payments-db</span><span><i style="background:var(--series-2)"></i>inventory</span><span><i style="background:var(--series-3)"></i>cache</span></div></section>
-      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">About this report</h3></div><dl class="kv"><dt>Queries run</dt><dd class="vz-num">14</dd><dt>Time taken</dt><dd class="vz-num">1 m 52 s</dd><dt>Cost</dt><dd class="vz-num">$0.21</dd><dt>Could read</dt><dd>metrics and traces in acme-prod</dd><dt>Could change</dt><dd>nothing</dd></dl></section>
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Dependency latency, p99</h2><span class="vz-panel-meta"><span data-range>12:00 to 13:09</span><span>· 3 min max</span><span>· as the agent read it at 13:09</span></span></div>
+        <p class="vz-panel-desc">The evidence for the first claim, as the agent saw it. Calls from checkout-api to each thing it depends on.</p>
+        <div class="vz-panel-body"><div class="vz-chart" id="agent" data-view="investigation-deps" data-size="sm"></div></div>
+        <ul class="vz-links"><li><a class="vz-link" href="#">See 09:16 to 15:16 now</a></li></ul></section>
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">About this report</h2></div>
+        <dl class="vz-kv"><dt>Started</dt><dd>13:07, when the monitor fired</dd><dt>Queries run</dt><dd>14</dd><dt>Time taken</dt><dd><span class="vz-qty">1 min 52 s</span></dd><dt>Cost</dt><dd>$0.21</dd><dt>Could read</dt><dd>metrics and traces in acme-prod</dd><dt>Could change</dt><dd>nothing</dd></dl></section>
     </div>
   </div>
 </main>
-<script>line('i1',{seed:9,h:180,ticks:['900','600','300','0'],x:['12:00','13:00','14:00','15:00'],series:[{base:.06,noise:.02,spike:[19,60,.62]},{base:.12,noise:.03},{base:.03,noise:.01}]});</script>
+<script>
+(function () { const el = document.getElementById('agent'); el.vz = vzChart(el, { ...flows.depsAgent(), spans: [{ ...flows.firing(), to: flows.T(13, 9) }], markers: [flows.markers.slow] }) })()
+</script>

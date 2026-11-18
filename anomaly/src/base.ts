@@ -17,6 +17,16 @@ export interface CommonParams {
 
 export const COMMON_DEFAULTS: CommonParams = { stepMs: 0, minDeviation: 0, direction: 'both', minSpread: 0, unit: '' }
 
+/**
+ * Largest magnitude a detector accepts. Beyond it a value is treated as missing: squaring it
+ * would overflow, and an Infinity in state cannot be written as JSON. Also turns -0 into 0, so
+ * state survives a JSON round trip unchanged.
+ */
+export const MAX_ABS = 1e150
+export const val = (v: number): number => (Math.abs(v) <= MAX_ABS ? v + 0 : NaN)
+/** Timestamps: -0 → 0 (JSON cannot keep -0). */
+export const tsv = (t: number): number => t + 0
+
 export const length = (s: Series) => Math.min(s?.ts?.length ?? 0, s?.values?.length ?? 0)
 
 /** Merge user params over defaults, dropping undefined and non-finite numbers where a number is expected. */

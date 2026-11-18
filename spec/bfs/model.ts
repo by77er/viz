@@ -42,6 +42,7 @@ export interface Cfg {
   reg: 'design' | 'logged' | 'impl' // stream registration: before writes (committed) / before writes (logged) + repeat / lazily by flush (as built)
   query: 'design' | 'impl' // ask only streams in the plan / also every pool shard, unregistered streams from 0 (coordinator.ts)
   unknownStream: 'empty' | 'refuse' // tailRead for a stream the shard does not hold: ok+empty (shard.ts) / incarnation_mismatch
+  f6Register: boolean // with 'refuse' and lazy registration: the refusing shard also recreates and registers the stream
   readBound: boolean // flush reads a segment bound to (incarnation, seqLo, seqHi); false = readSegment(tenant, seqLo) (shard.ts)
   log: 'perChange' | 'segments' // as built (one object per change, written in order) / LEDGER-LOG.md segments
   rebuild: 'strict' | 'skip' // replay refuses anything but version+1 (ledger.ts replay) / skips versions it already has
@@ -385,7 +386,7 @@ function plan(c: Cfg, s: St, t: number, keep: Q | null): Q {
   return {
     st: 1, t, fi: [...L.fi], wm: L.wm.map((x) => [...x]), nd, tl: [],
     mu: range(c.nb).filter((b) => T(c, b) === t && s.acked[b]),
-    ex: sortU(batchesOfRows(L.ex)),
+    ex: sortU([...batchesOfRows(L.ex), ...range(c.nb).filter((b) => s.lost[b])]),
     ln: keep ? keep.ln : range(c.ns).map(() => 0),
     rs: keep ? (c.liveness ? 0 : keep.rs + 1) : 0, dup: 0, miss: 0, leak: 0,
   }
@@ -396,7 +397,11 @@ function exemptOnLoss(s: St, sh: number, t: number): void {
   const x = s.sh[sh]![t]!
   if (x.i === 0) return
   const safe = wmOf(durableWm(s.L[t]!), sh, x.i)
-  for (let q = Math.max(x.di, safe) + 1; q <= x.w.length; q++) s.lost[x.w[q - 1]!] = 1
+  for (let q = Math.max(x.di, safe) + 1; q <= x.w.length; q++) {
+    s.lost[x.w[q - 1]!] = 1
+    // a query in flight is exempt from returning it even if the client re-sends it later
+    if (s.q.st === 1 && s.q.t === t) s.q.ex = sortU([...s.q.ex, x.w[q - 1]!])
+  }
   for (let q = x.fg + 1; q <= x.w.length; q++) s.wiped[x.w[q - 1]!] = 1
 }
 
@@ -465,6 +470,17 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
         const ns = cp(s)
         regCommit(ns.L[t]!, sh, x.i)
         emit(`reRegister(${tag}, inc ${x.i})`, ns)
+      }
+      // fix F6, as built (lazy registration): a tail read naming an incarnation the shard no
+      // longer holds makes the shard create the stream and register it, so the next plan names it
+      if (c.unknownStream === 'refuse' && c.f6Register && c.reg === 'impl' && x.i === 0 && !L.dn &&
+        s.q.st === 1 && s.q.t === t && has(s.q.nd, sh) && s.q.wm[sh]![0] !== 0) {
+        const ns = cp(s)
+        const y = ns.sh[sh]![t]!
+        ns.incN[sh]![t]! += 1
+        y.i = ns.incN[sh]![t]!
+        regCommit(ns.L[t]!, sh, y.i)
+        emit(`shard recreates stream (${tag}, inc ${y.i}) and registers it`, ns)
       }
       if (x.i === 0) continue
       // ------------------------------------------ Shard.seal
@@ -707,7 +723,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
     }
     // janitor purgeTenant: ledger.deletable (removal logged, grace passed, not live) -> R2 delete -> forget
     for (const [f, k] of L.tb) {
-      if (live(L, f)) continue
+      if (live(L, f!)) continue
       if (c.delLogged && !(k! < L.o0)) continue // k = -1 (replayed) counts as logged
       if (c.delGrace && inFlightPlan(s, t, FILES[f!]!.key)) continue
       const ns = cp(s)
@@ -742,7 +758,9 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       if (live(nL, cj.out) && missing.length === cj.ins.length) label = `replace(${name}) = ok (replay)`
       else if (missing.length > 0 && c.replaceLive) {
         label = `replace(${name}) = conflict`
-        if (c.compConflictDelete && !liveKey(nL, FILES[cj.out]!.key)) {
+        // compact.ts: delete the outputs unless orphanCheck says one is live or tombstoned
+        const k = FILES[cj.out]!.key
+        if (c.compConflictDelete && !liveKey(nL, k) && !nL.tb.some((x) => FILES[x[0]!]!.key === k)) {
           r2delete(ns, FILES[cj.out]!.key)
           label += ', output deleted'
         }

@@ -1,0 +1,258 @@
+{
+ "index": {
+  "rows": {
+   "ruler": [
+    {
+     "registered_at": 4102444811492,
+     "shard": "0",
+     "tenant": "golden0"
+    }
+   ],
+   "tenant_shards": [
+    {
+     "shards": 2,
+     "tenant": "golden0"
+    }
+   ]
+  },
+  "schema": [
+   {
+    "name": "ruler",
+    "sql": "CREATE TABLE ruler (tenant TEXT NOT NULL, shard TEXT NOT NULL, registered_at INTEGER NOT NULL, PRIMARY KEY (tenant, shard)) WITHOUT ROWID",
+    "tbl_name": "ruler",
+    "type": "table"
+   },
+   {
+    "name": "tenant_shards",
+    "sql": "CREATE TABLE tenant_shards (tenant TEXT NOT NULL PRIMARY KEY, shards INTEGER NOT NULL) WITHOUT ROWID",
+    "tbl_name": "tenant_shards",
+    "type": "table"
+   }
+  ]
+ },
+ "notifier": {
+  "rows": {
+   "agg_group": [
+    {
+     "body": "{\"routeKey\":\"{}\",\"receiver\":\"hook\",\"labels\":{\"alertname\":\"DeadMansSwitch\"},\"createdAt\":4102444811492,\"anchor\":4102444811492,\"log\":{\"webhook[0]\":{\"firing\":[\"d4bdef2a6747fd6c\"],\"resolved\":[],\"ts\":4102444811492,\"n\":1}}}",
+     "gkey": "{}:{alertname=\"DeadMansSwitch\"}",
+     "tenant": "golden0"
+    },
+    {
+     "body": "{\"routeKey\":\"{}\",\"receiver\":\"hook\",\"labels\":{\"alertname\":\"Down\"},\"createdAt\":4102444811492,\"anchor\":4102444811492,\"log\":{\"webhook[0]\":{\"firing\":[\"62133aaab83b859b\"],\"resolved\":[],\"ts\":4102444811492,\"n\":1}}}",
+     "gkey": "{}:{alertname=\"Down\"}",
+     "tenant": "golden0"
+    }
+   ],
+   "alert": [
+    {
+     "body": "{\"fingerprint\":\"62133aaab83b859b\",\"labels\":{\"instance\":\"a\",\"job\":\"j\",\"severity\":\"page\",\"alertname\":\"Down\"},\"annotations\":{\"summary\":\"a down\"},\"status\":\"firing\",\"startsAt\":4102444809345,\"endsAt\":null,\"value\":0,\"at\":4102444809345,\"receivedAt\":4102444811492,\"resolvedReceivedAt\":null,\"expiresAt\":null,\"source\":\"golden0/0\",\"generator\":{\"group\":\"g\",\"rule\":\"Down\"}}",
+     "fp": "62133aaab83b859b",
+     "tenant": "golden0"
+    },
+    {
+     "body": "{\"fingerprint\":\"d4bdef2a6747fd6c\",\"labels\":{\"severity\":\"none\",\"alertname\":\"DeadMansSwitch\"},\"annotations\":{\"summary\":\"Always firing. Proves that rule evaluation, routing and delivery work; alert on its absence.\"},\"status\":\"firing\",\"startsAt\":4102444800262,\"endsAt\":null,\"value\":1,\"at\":4102444800262,\"receivedAt\":4102444811492,\"resolvedReceivedAt\":null,\"expiresAt\":4102448460262,\"source\":\"golden0/0\",\"generator\":{\"group\":\"viz:deadman\",\"rule\":\"DeadMansSwitch\"}}",
+     "fp": "d4bdef2a6747fd6c",
+     "tenant": "golden0"
+    }
+   ],
+   "meta": [
+    {
+     "k": "config",
+     "tenant": "golden0",
+     "v": "{\"route\":{\"receiver\":\"hook\",\"group_by\":[\"alertname\"],\"group_wait\":\"0s\",\"group_interval\":\"1m\",\"repeat_interval\":\"12h\"},\"receivers\":[{\"name\":\"hook\",\"webhook_configs\":[{\"url\":\"https://receiver.test/hook\"}]}]}"
+    }
+   ],
+   "notify_log": [],
+   "outbox": [
+    {
+     "attempts": 1,
+     "body": "{\"version\":\"4\",\"groupKey\":\"{}:{alertname=\\\"DeadMansSwitch\\\"}\",\"truncatedAlerts\":0,\"status\":\"firing\",\"receiver\":\"hook\",\"groupLabels\":{\"alertname\":\"DeadMansSwitch\"},\"commonLabels\":{\"severity\":\"none\",\"alertname\":\"DeadMansSwitch\"},\"commonAnnotations\":{\"summary\":\"Always firing. Proves that rule evaluation, routing and delivery work; alert on its absence.\"},\"externalURL\":\"\",\"alerts\":[{\"status\":\"firing\",\"labels\":{\"severity\":\"none\",\"alertname\":\"DeadMansSwitch\"},\"annotations\":{\"summary\":\"Always firing. Proves that rule evaluation, routing and delivery work; alert on its absence.\"},\"startsAt\":\"2100-01-01T00:00:00.262Z\",\"endsAt\":\"0001-01-01T00:00:00Z\",\"generatorURL\":\"\",\"fingerprint\":\"d4bdef2a6747fd6c\"}]}",
+     "created_at": 4102444811492,
+     "gkey": "{}:{alertname=\"DeadMansSwitch\"}",
+     "id": 1,
+     "idem_key": "7eb98998d7fb28dff19da235a82f6af1",
+     "integration": "webhook[0]",
+     "last_error": "HTTP 500",
+     "next_attempt_at": 4102444812385,
+     "receiver": "hook",
+     "status": "pending",
+     "subjects": null,
+     "tenant": "golden0",
+     "url": "https://receiver.test/hook"
+    },
+    {
+     "attempts": 1,
+     "body": "{\"version\":\"4\",\"groupKey\":\"{}:{alertname=\\\"Down\\\"}\",\"truncatedAlerts\":0,\"status\":\"firing\",\"receiver\":\"hook\",\"groupLabels\":{\"alertname\":\"Down\"},\"commonLabels\":{\"instance\":\"a\",\"job\":\"j\",\"severity\":\"page\",\"alertname\":\"Down\"},\"commonAnnotations\":{\"summary\":\"a down\"},\"externalURL\":\"\",\"alerts\":[{\"status\":\"firing\",\"labels\":{\"instance\":\"a\",\"job\":\"j\",\"severity\":\"page\",\"alertname\":\"Down\"},\"annotations\":{\"summary\":\"a down\"},\"startsAt\":\"2100-01-01T00:00:09.345Z\",\"endsAt\":\"0001-01-01T00:00:00Z\",\"generatorURL\":\"\",\"fingerprint\":\"62133aaab83b859b\"}]}",
+     "created_at": 4102444811492,
+     "gkey": "{}:{alertname=\"Down\"}",
+     "id": 2,
+     "idem_key": "b21f27bb212a9ed0f004dcb6e136baee",
+     "integration": "webhook[0]",
+     "last_error": "HTTP 500",
+     "next_attempt_at": 4102444812386,
+     "receiver": "hook",
+     "status": "pending",
+     "subjects": null,
+     "tenant": "golden0",
+     "url": "https://receiver.test/hook"
+    }
+   ],
+   "self": [
+    {
+     "name": "golden0",
+     "one": 1
+    }
+   ],
+   "silence": [
+    {
+     "body": "{\"input\":{\"matchers\":[{\"name\":\"instance\",\"value\":\"zz\",\"isRegex\":false}],\"startsAt\":4102444811492,\"endsAt\":4102448411492,\"createdBy\":\"golden\",\"comment\":\"fixture\"},\"updatedAt\":4102444811492}",
+     "id": "c570dd7bffd3a85f",
+     "tenant": "golden0"
+    }
+   ]
+  },
+  "schema": [
+   {
+    "name": "agg_group",
+    "sql": "CREATE TABLE agg_group (tenant TEXT NOT NULL, gkey TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, gkey)) WITHOUT ROWID",
+    "tbl_name": "agg_group",
+    "type": "table"
+   },
+   {
+    "name": "alert",
+    "sql": "CREATE TABLE alert (tenant TEXT NOT NULL, fp TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, fp)) WITHOUT ROWID",
+    "tbl_name": "alert",
+    "type": "table"
+   },
+   {
+    "name": "meta",
+    "sql": "CREATE TABLE meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k)) WITHOUT ROWID",
+    "tbl_name": "meta",
+    "type": "table"
+   },
+   {
+    "name": "notify_log",
+    "sql": "CREATE TABLE notify_log (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, monitor)) WITHOUT ROWID",
+    "tbl_name": "notify_log",
+    "type": "table"
+   },
+   {
+    "name": "outbox",
+    "sql": "CREATE TABLE outbox (tenant TEXT NOT NULL, id INTEGER NOT NULL, gkey TEXT NOT NULL, receiver TEXT NOT NULL,\n      integration TEXT NOT NULL, url TEXT NOT NULL, idem_key TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL,\n      created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL, last_error TEXT, subjects TEXT, PRIMARY KEY (tenant, id)) WITHOUT ROWID",
+    "tbl_name": "outbox",
+    "type": "table"
+   },
+   {
+    "name": "self",
+    "sql": "CREATE TABLE self (one INTEGER PRIMARY KEY CHECK (one = 1), name TEXT NOT NULL)",
+    "tbl_name": "self",
+    "type": "table"
+   },
+   {
+    "name": "silence",
+    "sql": "CREATE TABLE silence (tenant TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, id)) WITHOUT ROWID",
+    "tbl_name": "silence",
+    "type": "table"
+   }
+  ]
+ },
+ "now": 4102444811492,
+ "ruler": {
+  "rows": {
+   "alert": [
+    {
+     "body": "{\"fingerprint\":\"62133aaab83b859b\",\"labels\":{\"instance\":\"a\",\"job\":\"j\",\"severity\":\"page\",\"alertname\":\"Down\"},\"annotations\":{\"summary\":\"a down\"},\"state\":\"firing\",\"activeAt\":4102444809345,\"firedAt\":4102444809345,\"resolvedAt\":null,\"keepFiringSince\":null,\"value\":0}",
+     "fp": "62133aaab83b859b",
+     "grp": "g",
+     "rule_key": "273a77c01200bfe1",
+     "tenant": "golden0"
+    },
+    {
+     "body": "{\"fingerprint\":\"d4bdef2a6747fd6c\",\"labels\":{\"severity\":\"none\",\"alertname\":\"DeadMansSwitch\"},\"annotations\":{\"summary\":\"Always firing. Proves that rule evaluation, routing and delivery work; alert on its absence.\"},\"state\":\"firing\",\"activeAt\":4102444800262,\"firedAt\":4102444800262,\"resolvedAt\":null,\"keepFiringSince\":null,\"value\":1}",
+     "fp": "d4bdef2a6747fd6c",
+     "grp": "viz:deadman",
+     "rule_key": "40c058b6823f3965",
+     "tenant": "golden0"
+    }
+   ],
+   "handoff": [],
+   "meta": [
+    {
+     "k": "activated_at",
+     "tenant": "golden0",
+     "v": "4102444800000"
+    },
+    {
+     "k": "config",
+     "tenant": "golden0",
+     "v": "{\"limits\":{\"maxGroups\":64,\"maxRulesPerGroup\":1000,\"maxAlertsPerRule\":1000,\"maxAnnotationBytes\":4096,\"maxGroupBytes\":1500000,\"minIntervalMs\":10000},\"defaultIntervalMs\":60000,\"heartbeatMs\":1800000,\"resolvedRetentionMs\":900000,\"maxConcurrentGroups\":4,\"groupTimeoutMs\":120000,\"externalLabels\":{},\"hotWindowMs\":600000,\"recentWindowMs\":86400000,\"lookbackMs\":300000,\"deadman\":true,\"deadmanIntervalMs\":60000,\"timelineLimit\":200}"
+    },
+    {
+     "k": "cursor",
+     "tenant": "golden0",
+     "v": "{\"at\":4102444800262,\"samplesDropped\":0,\"groups\":{\"viz:deadman\":[4102444800262,0,0,1,0],\"g\":[null,0,0,0,0]}}"
+    },
+    {
+     "k": "registered",
+     "tenant": "golden0",
+     "v": "true"
+    }
+   ],
+   "rule_group": [
+    {
+     "name": "g",
+     "not_before": 4102444800000,
+     "spec": "{\"name\":\"g\",\"intervalMs\":60000,\"queryOffsetMs\":0,\"limit\":0,\"rules\":[{\"kind\":\"alert\",\"name\":\"Down\",\"expr\":\"up == 0\",\"forMs\":0,\"keepFiringForMs\":0,\"labels\":{\"severity\":\"page\"},\"annotations\":{\"summary\":\"{{ $labels.instance }} down\"},\"key\":\"273a77c01200bfe1\",\"cost\":{\"class\":\"tail\",\"windowMs\":300000,\"reason\":\"reads back 300000 ms, within the 600000 ms shards hold\"}},{\"kind\":\"record\",\"name\":\"job:up:sum\",\"expr\":\"sum(up)\",\"labels\":{},\"key\":\"e766d09786766a63\",\"cost\":{\"class\":\"tail\",\"windowMs\":300000,\"reason\":\"reads back 300000 ms, within the 600000 ms shards hold\"}}]}",
+     "tenant": "golden0"
+    }
+   ],
+   "self": [
+    {
+     "name": "golden0/0",
+     "one": 1
+    }
+   ],
+   "timeline": []
+  },
+  "schema": [
+   {
+    "name": "alert",
+    "sql": "CREATE TABLE alert (tenant TEXT NOT NULL, grp TEXT NOT NULL, rule_key TEXT NOT NULL, fp TEXT NOT NULL, body TEXT NOT NULL,\n      PRIMARY KEY (tenant, grp, rule_key, fp)) WITHOUT ROWID",
+    "tbl_name": "alert",
+    "type": "table"
+   },
+   {
+    "name": "handoff",
+    "sql": "CREATE TABLE handoff (tenant TEXT NOT NULL, seq INTEGER NOT NULL, created_at INTEGER NOT NULL, updates TEXT NOT NULL,\n      PRIMARY KEY (tenant, seq)) WITHOUT ROWID",
+    "tbl_name": "handoff",
+    "type": "table"
+   },
+   {
+    "name": "meta",
+    "sql": "CREATE TABLE meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k)) WITHOUT ROWID",
+    "tbl_name": "meta",
+    "type": "table"
+   },
+   {
+    "name": "rule_group",
+    "sql": "CREATE TABLE rule_group (tenant TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, not_before INTEGER NOT NULL,\n      PRIMARY KEY (tenant, name)) WITHOUT ROWID",
+    "tbl_name": "rule_group",
+    "type": "table"
+   },
+   {
+    "name": "self",
+    "sql": "CREATE TABLE self (one INTEGER PRIMARY KEY CHECK (one = 1), name TEXT NOT NULL)",
+    "tbl_name": "self",
+    "type": "table"
+   },
+   {
+    "name": "timeline",
+    "sql": "CREATE TABLE timeline (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL,\n      PRIMARY KEY (tenant, monitor)) WITHOUT ROWID",
+    "tbl_name": "timeline",
+    "type": "table"
+   }
+  ]
+ },
+ "tenant": "golden0"
+}

@@ -357,9 +357,10 @@ async function main() {
       watch(page)
       const urlView = () => page.evaluate(() => new URL(location.href).searchParams.get('view') || 'chart')
       await page.goto(url(Q_RATE)); await ready(page)
-      // A second entry in the history: a time preset pushes one.
-      await page.click('[data-testid=time-range]'); await page.click('role=menuitem[name="Last 1 h"]')
-      await page.waitForFunction(() => new URL(location.href).searchParams.get('from') === 'now-1h')
+      // A second entry in the history: a time preset pushes one. "Last 6 h" (not the default
+      // range, which the URL leaves out).
+      await page.click('[data-testid=time-range]'); await page.click('role=menuitem[name="Last 6 h"]')
+      await page.waitForFunction(() => new URL(location.href).searchParams.get('from') === 'now-6h')
       await ready(page)
       await page.click('[data-testid=view-json]')
       const atOnce = await urlView()
@@ -369,7 +370,7 @@ async function main() {
       await page.waitForTimeout(600)
       const settled = await urlView()
       await page.goBack()
-      await page.waitForFunction(() => new URL(location.href).searchParams.get('from') !== 'now-1h')
+      await page.waitForFunction(() => new URL(location.href).searchParams.get('from') !== 'now-6h')
       await page.waitForTimeout(300)
       const shown = await page.evaluate(() => ({ chart: !!document.querySelector('[data-testid=chart]') && !document.querySelector('[data-testid=chart]').closest('.is-parked'), json: !!document.querySelector('[data-testid=result-json]'), pressed: document.querySelector('.vz-segmented [aria-pressed=true]')?.textContent }))
       check('B3: the URL\'s view follows a change of form, and Back after a quick round trip shows the entry\'s form', settled === 'json' && shown.chart && !shown.json && shown.pressed === 'Chart', `right after the click ${atOnce}, settled ${settled}, after Back ${JSON.stringify(shown)}`)

@@ -1,0 +1,449 @@
+{
+ "admin": {
+  "id": "k_ZGRhiT0zJaZYyHNjgNZGva"
+ },
+ "agent": {
+  "id": "k_NCgAAntzj4UEjb0oEP8HJu",
+  "keyId": "ARtxl9GjotXlr5dk"
+ },
+ "rows": {
+  "audit": [
+   {
+    "action": "tenant.provision",
+    "after": "{\"firstKey\":{\"id\":\"k_ZGRhiT0zJaZYyHNjgNZGva\",\"name\":\"first admin key\",\"kind\":\"key\",\"scopes\":[\"admin\"],\"prefix\":\"viz_EY4QaOpepkbYQpxb\",\"createdAt\":\"2026-11-18T23:03:37.235Z\",\"createdBy\":{\"subject\":\"system:provision\",\"kind\":\"system\",\"name\":null},\"expiresAt\":null,\"expired\":false,\"disabled\":false,\"rotatedAt\":null,\"previousSecretValidUntil\":null,\"lastUsedAt\":null,\"samples24h\":null}}",
+    "at": 1795043017235,
+    "before": null,
+    "id": "a_hhTMWqYcMw1KLMQ2KDAXUA",
+    "kind": "system",
+    "name": null,
+    "seq": 1,
+    "subject": "system:provision",
+    "target_id": "golden-bp8d8b-1",
+    "target_type": "tenant",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "dashboard.create",
+    "after": "{\"number\":1,\"revision\":\"97615a269b39ea7ea624e595e985da7c\",\"owner\":\"payments\",\"message\":\"first\"}",
+    "at": 1795043017349,
+    "before": null,
+    "id": "a_1ja6dvJqojG0wl1MHAe3v4",
+    "kind": "key",
+    "name": "first admin key",
+    "seq": 2,
+    "subject": "key:k_ZGRhiT0zJaZYyHNjgNZGva",
+    "target_id": "red",
+    "target_type": "dashboard",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "dashboard.patch",
+    "after": "{\"number\":2,\"revision\":\"7801bc9530fea3b342c473afd5dc4c22\",\"message\":\"\",\"summary\":[\"~ panel error_ratio: title: Error ratio \u2192 two\"]}",
+    "at": 1795043017428,
+    "before": "{\"number\":1,\"revision\":\"97615a269b39ea7ea624e595e985da7c\"}",
+    "id": "a_rQ0ZFkjc51z7Xg0jaxsN1A",
+    "kind": "key",
+    "name": "first admin key",
+    "seq": 3,
+    "subject": "key:k_ZGRhiT0zJaZYyHNjgNZGva",
+    "target_id": "red",
+    "target_type": "dashboard",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "dashboard.create",
+    "after": "{\"number\":1,\"revision\":\"e1209968b1b4443b6b278dffdf47310e\",\"owner\":null,\"message\":\"Created\"}",
+    "at": 1795043017487,
+    "before": null,
+    "id": "a_u6gdDWe38MRjpfUBue40U2",
+    "kind": "key",
+    "name": "first admin key",
+    "seq": 4,
+    "subject": "key:k_ZGRhiT0zJaZYyHNjgNZGva",
+    "target_id": "nodes",
+    "target_type": "dashboard",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "key.create",
+    "after": "{\"id\":\"k_NCgAAntzj4UEjb0oEP8HJu\",\"name\":\"bot\",\"kind\":\"agent\",\"scopes\":[\"dashboards:read\",\"dashboards:write\"],\"prefix\":\"viz_ARtxl9GjotXlr5dk\",\"createdAt\":\"2026-11-18T23:03:37.514Z\",\"createdBy\":{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"},\"expiresAt\":null,\"expired\":false,\"disabled\":false,\"rotatedAt\":null,\"previousSecretValidUntil\":null,\"lastUsedAt\":null,\"samples24h\":null}",
+    "at": 1795043017514,
+    "before": null,
+    "id": "a_08i4Pti4Zf1GnU4K45fsgv",
+    "kind": "key",
+    "name": "first admin key",
+    "seq": 5,
+    "subject": "key:k_ZGRhiT0zJaZYyHNjgNZGva",
+    "target_id": "k_NCgAAntzj4UEjb0oEP8HJu",
+    "target_type": "key",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "proposal.create",
+    "after": "{\"id\":\"p_PYol3Rfgbq84IFyeAEFGvn\",\"dashboard\":\"red\",\"status\":\"open\",\"message\":\"rename\",\"by\":{\"subject\":\"key:k_NCgAAntzj4UEjb0oEP8HJu\",\"kind\":\"agent\",\"name\":\"bot\"},\"editedBy\":[],\"createdAt\":\"2026-11-18T23:03:37.554Z\",\"expiresAt\":\"2026-12-18T23:03:37.554Z\",\"baseRevision\":\"7801bc9530fea3b342c473afd5dc4c22\",\"baseNumber\":2,\"changes\":[{\"name\":\"change\",\"reason\":\"rename\",\"ops\":[{\"op\":\"replace\",\"path\":\"/panels/error_ratio/title\",\"value\":\"three\"}]}],\"resolvedAt\":null,\"resolvedBy\":null,\"declineReason\":null,\"appliedNumber\":null,\"appliedChanges\":null}",
+    "at": 1795043017554,
+    "before": null,
+    "id": "a_3eksQPDFHMH73bsIUKtIeK",
+    "kind": "agent",
+    "name": "bot",
+    "seq": 6,
+    "subject": "key:k_NCgAAntzj4UEjb0oEP8HJu",
+    "target_id": "p_PYol3Rfgbq84IFyeAEFGvn",
+    "target_type": "proposal",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "key.create",
+    "after": "{\"id\":\"k_aQtaxqRVSD1rSc1yTtsBUa\",\"name\":\"collectors\",\"kind\":\"key\",\"scopes\":[\"write\"],\"prefix\":\"viz_pbR22xiV22bSML0o\",\"createdAt\":\"2026-11-18T23:03:37.579Z\",\"createdBy\":{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"},\"expiresAt\":null,\"expired\":false,\"disabled\":false,\"rotatedAt\":null,\"previousSecretValidUntil\":null,\"lastUsedAt\":null,\"samples24h\":null}",
+    "at": 1795043017579,
+    "before": null,
+    "id": "a_LOJG9FceFn28eXOT73AfON",
+    "kind": "key",
+    "name": "first admin key",
+    "seq": 7,
+    "subject": "key:k_ZGRhiT0zJaZYyHNjgNZGva",
+    "target_id": "k_aQtaxqRVSD1rSc1yTtsBUa",
+    "target_type": "key",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "key.disable",
+    "after": "{\"id\":\"k_aQtaxqRVSD1rSc1yTtsBUa\",\"name\":\"collectors\",\"kind\":\"key\",\"scopes\":[\"write\"],\"prefix\":\"viz_pbR22xiV22bSML0o\",\"createdAt\":\"2026-11-18T23:03:37.579Z\",\"createdBy\":{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"},\"expiresAt\":null,\"expired\":false,\"disabled\":true,\"rotatedAt\":null,\"previousSecretValidUntil\":null,\"lastUsedAt\":null,\"samples24h\":null}",
+    "at": 1795043017609,
+    "before": "{\"id\":\"k_aQtaxqRVSD1rSc1yTtsBUa\",\"name\":\"collectors\",\"kind\":\"key\",\"scopes\":[\"write\"],\"prefix\":\"viz_pbR22xiV22bSML0o\",\"createdAt\":\"2026-11-18T23:03:37.579Z\",\"createdBy\":{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"},\"expiresAt\":null,\"expired\":false,\"disabled\":false,\"rotatedAt\":null,\"previousSecretValidUntil\":null,\"lastUsedAt\":null,\"samples24h\":null}",
+    "id": "a_GhhtcEL74WNwTBvxL6amz1",
+    "kind": "key",
+    "name": "first admin key",
+    "seq": 8,
+    "subject": "key:k_ZGRhiT0zJaZYyHNjgNZGva",
+    "target_id": "k_aQtaxqRVSD1rSc1yTtsBUa",
+    "target_type": "key",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "settings.retention",
+    "after": "{\"version\":1,\"value\":{\"metric_samples_days\":60}}",
+    "at": 1795043017670,
+    "before": "{\"version\":0,\"value\":null}",
+    "id": "a_4bfxN9n1GDYnQgERrIRpV7",
+    "kind": "key",
+    "name": "first admin key",
+    "seq": 9,
+    "subject": "key:k_ZGRhiT0zJaZYyHNjgNZGva",
+    "target_id": "retention",
+    "target_type": "setting",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "action": "settings.limits",
+    "after": "{\"version\":1,\"value\":{\"active_series\":50000}}",
+    "at": 1795043017700,
+    "before": "{\"version\":0,\"value\":null}",
+    "id": "a_Guu3NI235v7DDspwM8JvV2",
+    "kind": "key",
+    "name": "first admin key",
+    "seq": 10,
+    "subject": "key:k_ZGRhiT0zJaZYyHNjgNZGva",
+    "target_id": "limits",
+    "target_type": "setting",
+    "tenant": "golden-bp8d8b-1"
+   }
+  ],
+  "dashboards": [
+   {
+    "created_at": 1795043017349,
+    "created_by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "deleted_at": null,
+    "deleted_by": null,
+    "head": 2,
+    "id": "red",
+    "intent": "On-call view for one HTTP service. Answers: is the service healthy right now, and if not, is the cause traffic, errors, latency, or a downstream dependency?",
+    "owner": "payments",
+    "panel_count": 16,
+    "purge_at": null,
+    "revision": "7801bc9530fea3b342c473afd5dc4c22",
+    "tags": "[\"red\",\"service\",\"on-call\"]",
+    "tenant": "golden-bp8d8b-1",
+    "title": "Service RED overview",
+    "updated_at": 1795043017428,
+    "updated_by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}"
+   },
+   {
+    "created_at": 1795043017487,
+    "created_by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "deleted_at": null,
+    "deleted_by": null,
+    "head": 1,
+    "id": "nodes",
+    "intent": "For platform engineers. Answers: which nodes are under pressure (CPU, memory, disk, network), and is any node unschedulable or running out of pod capacity?",
+    "owner": null,
+    "panel_count": 9,
+    "purge_at": null,
+    "revision": "e1209968b1b4443b6b278dffdf47310e",
+    "tags": "[\"kubernetes\",\"nodes\",\"capacity\"]",
+    "tenant": "golden-bp8d8b-1",
+    "title": "Kubernetes node overview",
+    "updated_at": 1795043017487,
+    "updated_by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}"
+   }
+  ],
+  "key_secrets": [
+   {
+    "key": "k_ZGRhiT0zJaZYyHNjgNZGva",
+    "key_id": "EY4QaOpepkbYQpxb",
+    "secret_sha256": "f787af99a10e0aeac0562824f412617d27069f3b2ff101ae4f514b6c10068376",
+    "tenant": "golden-bp8d8b-1",
+    "valid_until": null
+   },
+   {
+    "key": "k_NCgAAntzj4UEjb0oEP8HJu",
+    "key_id": "ARtxl9GjotXlr5dk",
+    "secret_sha256": "73590ecd30784dc882dec48c97d9b8779e3f6e5fefd2430173a6bf9a96f49514",
+    "tenant": "golden-bp8d8b-1",
+    "valid_until": null
+   },
+   {
+    "key": "k_aQtaxqRVSD1rSc1yTtsBUa",
+    "key_id": "pbR22xiV22bSML0o",
+    "secret_sha256": "07e742c585bc3ede12b6491389509a2324894c2a43812010ac10029273727e20",
+    "tenant": "golden-bp8d8b-1",
+    "valid_until": null
+   }
+  ],
+  "key_usage": [],
+  "keys": [
+   {
+    "created_at": 1795043017235,
+    "created_by": "{\"subject\":\"system:provision\",\"kind\":\"system\",\"name\":null}",
+    "disabled": 0,
+    "expires_at": null,
+    "id": "k_ZGRhiT0zJaZYyHNjgNZGva",
+    "key_id": "EY4QaOpepkbYQpxb",
+    "kind": "key",
+    "last_used_at": null,
+    "name": "first admin key",
+    "rotated_at": null,
+    "scopes": "[\"admin\"]",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "created_at": 1795043017514,
+    "created_by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "disabled": 0,
+    "expires_at": null,
+    "id": "k_NCgAAntzj4UEjb0oEP8HJu",
+    "key_id": "ARtxl9GjotXlr5dk",
+    "kind": "agent",
+    "last_used_at": null,
+    "name": "bot",
+    "rotated_at": null,
+    "scopes": "[\"dashboards:read\",\"dashboards:write\"]",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "created_at": 1795043017579,
+    "created_by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "disabled": 1,
+    "expires_at": null,
+    "id": "k_aQtaxqRVSD1rSc1yTtsBUa",
+    "key_id": "pbR22xiV22bSML0o",
+    "kind": "key",
+    "last_used_at": null,
+    "name": "collectors",
+    "rotated_at": null,
+    "scopes": "[\"write\"]",
+    "tenant": "golden-bp8d8b-1"
+   }
+  ],
+  "outbox": [],
+  "proposals": [
+   {
+    "applied_changes": null,
+    "applied_number": null,
+    "base_number": 2,
+    "base_revision": "7801bc9530fea3b342c473afd5dc4c22",
+    "by": "{\"subject\":\"key:k_NCgAAntzj4UEjb0oEP8HJu\",\"kind\":\"agent\",\"name\":\"bot\"}",
+    "bytes": 119,
+    "changes": "[{\"name\":\"change\",\"reason\":\"rename\",\"ops\":[{\"op\":\"replace\",\"path\":\"/panels/error_ratio/title\",\"value\":\"three\"}]}]",
+    "created_at": 1795043017554,
+    "dashboard": "red",
+    "editors": "[]",
+    "expires_at": 1797635017554,
+    "id": "p_PYol3Rfgbq84IFyeAEFGvn",
+    "message": "rename",
+    "reason": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "status": "open",
+    "tenant": "golden-bp8d8b-1"
+   }
+  ],
+  "revisions": [
+   {
+    "at": 1795043017349,
+    "by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "bytes": 8743,
+    "dashboard": "red",
+    "kind": "create",
+    "message": "first",
+    "number": 1,
+    "proposal": null,
+    "proposed_by": null,
+    "reverted_to": null,
+    "revision": "97615a269b39ea7ea624e595e985da7c",
+    "spec": "{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"red\",\"title\":\"Service RED overview\",\"intent\":\"On-call view for one HTTP service. Answers: is the service healthy right now, and if not, is the cause traffic, errors, latency, or a downstream dependency?\",\"tags\":[\"red\",\"service\",\"on-call\"]},\"time\":{\"from\":\"now-3h\",\"to\":\"now\",\"refresh\":\"30s\"},\"variables\":{\"env\":{\"kind\":\"enum\",\"label\":\"Environment\",\"values\":[\"prod\",\"staging\",\"dev\"],\"default\":\"prod\"},\"service\":{\"kind\":\"query\",\"label\":\"Service\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(http_server_requests_total{env=\\\"$env\\\"}, service)\"},\"default\":\"checkout\"},\"route\":{\"kind\":\"query\",\"label\":\"Route\",\"description\":\"HTTP route template; pick several to compare, or all.\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\"}, route)\"},\"multi\":true,\"includeAll\":true,\"default\":\"*\"}},\"queries\":{\"req_rate\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate]))\",\"legend\":\"{{route}}\"},\"req_rate_total\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate]))\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\",status=~\\\"5..\\\"}[$__rate])) / sum(rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate]))\"},\"err_by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\",status=~\\\"[45]..\\\"}[$__rate]))\",\"legend\":\"{{status}}\"},\"latency_p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate])))\",\"legend\":\"p50\"},\"latency_p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate])))\",\"legend\":\"p95\"},\"latency_p99\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate])))\",\"legend\":\"p99\"},\"latency_buckets\":{\"lang\":\"promql\",\"expr\":\"sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate]))\"},\"route_p99\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.99, sum by (route, le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\"}[$__rate])))\",\"instant\":true},\"route_err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",status=~\\\"5..\\\"}[$__rate])) / sum by (route) (rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\"}[$__rate]))\",\"instant\":true},\"slow_traces\":{\"lang\":\"traceql\",\"expr\":\"{ resource.service.name = \\\"$service\\\" && resource.deployment.environment = \\\"$env\\\" && duration > 2s } | count() by (name)\"}},\"panels\":{\"error_ratio\":{\"kind\":\"stat\",\"title\":\"Error ratio\",\"description\":\"Share of requests answered with 5xx. The SLO is 0.1%; above 1% is an incident and pages.\",\"unit\":\"ratio\",\"queries\":[\"err_ratio\"],\"options\":{\"sparkline\":true},\"thresholds\":[{\"above\":0.001,\"level\":\"warn\",\"label\":\"SLO\"},{\"above\":0.01,\"level\":\"crit\",\"label\":\"incident\"}]},\"throughput\":{\"kind\":\"stat\",\"title\":\"Requests per second\",\"description\":\"Total request rate for the selected routes. Near zero in prod means traffic is not reaching the service.\",\"unit\":\"req/s\",\"queries\":[\"req_rate_total\"],\"options\":{\"sparkline\":true},\"thresholds\":[{\"below\":1,\"level\":\"warn\",\"label\":\"no traffic\"}]},\"p99_latency\":{\"kind\":\"stat\",\"title\":\"p99 latency\",\"description\":\"99th percentile request duration. The latency objective is 500 ms; above 2 s users see timeouts.\",\"unit\":\"s\",\"queries\":[\"latency_p99\"],\"options\":{\"sparkline\":true,\"decimals\":3},\"thresholds\":[{\"above\":0.5,\"level\":\"warn\"},{\"above\":2,\"level\":\"crit\"}]},\"requests_by_route\":{\"kind\":\"timeseries\",\"title\":\"Requests by route\",\"description\":\"Request throughput per route. A sudden drop on one route matters more than a peak; compare against deploys.\",\"unit\":\"req/s\",\"queries\":[\"req_rate\"],\"options\":{\"stack\":true,\"style\":\"area\",\"maxSeries\":20}},\"errors_by_status\":{\"kind\":\"timeseries\",\"title\":\"Errors by status code\",\"description\":\"4xx and 5xx responses per second by status. 5xx is ours to fix; a 4xx spike usually means a bad client release.\",\"unit\":\"errors/s\",\"queries\":[\"err_by_status\"],\"options\":{\"style\":\"bars\",\"stack\":true}},\"latency_quantiles\":{\"kind\":\"timeseries\",\"title\":\"Latency quantiles\",\"description\":\"p50, p95 and p99 request duration. p99 pulling away from p50 points at one slow dependency or route, not general load.\",\"unit\":\"s\",\"queries\":[\"latency_p50\",\"latency_p95\",\"latency_p99\"],\"options\":{\"yScale\":\"log\"},\"thresholds\":[{\"above\":0.5,\"level\":\"warn\"},{\"above\":2,\"level\":\"crit\"}]},\"latency_heatmap\":{\"kind\":\"heatmap\",\"title\":\"Latency distribution\",\"description\":\"Request duration histogram over time. A second band appearing above 1 s usually means a dependency is slow for some requests.\",\"unit\":\"s\",\"queries\":[\"latency_buckets\"],\"options\":{\"yScale\":\"log\",\"exemplars\":true}},\"routes\":{\"kind\":\"table\",\"title\":\"Routes by p99 latency\",\"description\":\"Per-route p99 latency and error ratio, slowest first. Use it to find which route drags the service numbers.\",\"queries\":[\"route_p99\",\"route_err_ratio\"],\"options\":{\"columns\":[{\"query\":\"route_p99\",\"title\":\"p99\",\"unit\":\"s\"},{\"query\":\"route_err_ratio\",\"title\":\"Errors\",\"unit\":\"ratio\"}],\"sortBy\":\"route_p99\",\"sortDir\":\"desc\",\"limit\":15}},\"slow_spans\":{\"kind\":\"table\",\"title\":\"Slow traces by operation\",\"description\":\"Number of traces slower than 2 s per root operation in the selected range. Click through to the traces.\",\"unit\":\"count\",\"queries\":[\"slow_traces\"],\"options\":{\"limit\":10}},\"notes\":{\"kind\":\"text\",\"title\":\"How to read this\",\"content\":\"Read left to right: **errors**, **traffic**, **latency**. If error ratio is red and a dependency row below is red too, start with the dependency. Runbook: `runbooks/service-red.md`.\"}},\"layout\":{\"kind\":\"rows\",\"rows\":[{\"title\":\"Now\",\"height\":140,\"items\":[{\"panel\":\"error_ratio\",\"span\":3},{\"panel\":\"throughput\",\"span\":3},{\"panel\":\"p99_latency\",\"span\":3},{\"panel\":\"notes\",\"span\":3}]},{\"title\":\"Traffic and errors\",\"items\":[\"requests_by_route\",\"errors_by_status\"]},{\"title\":\"Latency\",\"items\":[\"latency_quantiles\",\"latency_heatmap\"]},{\"title\":\"Where\",\"items\":[{\"panel\":\"routes\",\"span\":7},{\"panel\":\"slow_spans\",\"span\":5}]},{\"title\":\"Dependencies\",\"items\":[{\"fragment\":\"dependency_red\",\"as\":\"db\",\"with\":{\"caller\":\"$service\",\"env\":\"$env\",\"peer\":\"postgres\"}},{\"fragment\":\"dependency_red\",\"as\":\"payments\",\"with\":{\"caller\":\"$service\",\"env\":\"$env\",\"peer\":\"payments-api\"}}]}]},\"fragments\":{\"dependency_red\":{\"description\":\"RED summary of the calls one service makes to one downstream dependency. Instantiate once per dependency.\",\"params\":{\"caller\":{\"description\":\"Calling service name\"},\"peer\":{\"description\":\"Downstream service or database name\"},\"env\":{\"description\":\"Environment\",\"default\":\"prod\"}},\"queries\":{\"calls\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_client_requests_total{env=\\\"$env\\\",service=\\\"$caller\\\",peer_service=\\\"$peer\\\"}[$__rate]))\",\"legend\":\"calls\"},\"call_err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_client_requests_total{env=\\\"$env\\\",service=\\\"$caller\\\",peer_service=\\\"$peer\\\",outcome=\\\"error\\\"}[$__rate])) / sum(rate(http_client_requests_total{env=\\\"$env\\\",service=\\\"$caller\\\",peer_service=\\\"$peer\\\"}[$__rate]))\"},\"call_p99\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.99, sum by (le) (rate(http_client_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$caller\\\",peer_service=\\\"$peer\\\"}[$__rate])))\",\"legend\":\"p99\"}},\"panels\":{\"errors\":{\"kind\":\"stat\",\"title\":\"Dependency error ratio\",\"description\":\"Share of calls to the dependency that fail. Above 1% the dependency is the likely cause of our own errors.\",\"unit\":\"ratio\",\"queries\":[\"call_err_ratio\"],\"thresholds\":[{\"above\":0.01,\"level\":\"warn\"},{\"above\":0.05,\"level\":\"crit\"}]},\"calls\":{\"kind\":\"timeseries\",\"title\":\"Dependency call rate\",\"description\":\"Outbound calls per second to the dependency. A drop to zero means we stopped calling it; a spike means retries.\",\"unit\":\"req/s\",\"queries\":[\"calls\"]},\"latency\":{\"kind\":\"timeseries\",\"title\":\"Dependency p99 latency\",\"description\":\"p99 duration of calls to the dependency as seen by the caller, including network time and retries.\",\"unit\":\"s\",\"queries\":[\"call_p99\"],\"thresholds\":[{\"above\":1,\"level\":\"warn\"}]}},\"layout\":{\"kind\":\"rows\",\"rows\":[{\"items\":[{\"panel\":\"errors\",\"span\":2},\"calls\",\"latency\"]}]}}}}",
+    "summary": "[\"+ dashboard red \\\"Service RED overview\\\" (10 panels)\"]",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "at": 1795043017428,
+    "by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "bytes": 8735,
+    "dashboard": "red",
+    "kind": "patch",
+    "message": "",
+    "number": 2,
+    "proposal": null,
+    "proposed_by": null,
+    "reverted_to": null,
+    "revision": "7801bc9530fea3b342c473afd5dc4c22",
+    "spec": "{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"red\",\"title\":\"Service RED overview\",\"intent\":\"On-call view for one HTTP service. Answers: is the service healthy right now, and if not, is the cause traffic, errors, latency, or a downstream dependency?\",\"tags\":[\"red\",\"service\",\"on-call\"]},\"time\":{\"from\":\"now-3h\",\"to\":\"now\",\"refresh\":\"30s\"},\"variables\":{\"env\":{\"kind\":\"enum\",\"label\":\"Environment\",\"values\":[\"prod\",\"staging\",\"dev\"],\"default\":\"prod\"},\"service\":{\"kind\":\"query\",\"label\":\"Service\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(http_server_requests_total{env=\\\"$env\\\"}, service)\"},\"default\":\"checkout\"},\"route\":{\"kind\":\"query\",\"label\":\"Route\",\"description\":\"HTTP route template; pick several to compare, or all.\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\"}, route)\"},\"multi\":true,\"includeAll\":true,\"default\":\"*\"}},\"queries\":{\"req_rate\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate]))\",\"legend\":\"{{route}}\"},\"req_rate_total\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate]))\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\",status=~\\\"5..\\\"}[$__rate])) / sum(rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate]))\"},\"err_by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\",status=~\\\"[45]..\\\"}[$__rate]))\",\"legend\":\"{{status}}\"},\"latency_p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate])))\",\"legend\":\"p50\"},\"latency_p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate])))\",\"legend\":\"p95\"},\"latency_p99\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate])))\",\"legend\":\"p99\"},\"latency_buckets\":{\"lang\":\"promql\",\"expr\":\"sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\",route=~\\\"$route\\\"}[$__rate]))\"},\"route_p99\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.99, sum by (route, le) (rate(http_server_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$service\\\"}[$__rate])))\",\"instant\":true},\"route_err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\",status=~\\\"5..\\\"}[$__rate])) / sum by (route) (rate(http_server_requests_total{env=\\\"$env\\\",service=\\\"$service\\\"}[$__rate]))\",\"instant\":true},\"slow_traces\":{\"lang\":\"traceql\",\"expr\":\"{ resource.service.name = \\\"$service\\\" && resource.deployment.environment = \\\"$env\\\" && duration > 2s } | count() by (name)\"}},\"panels\":{\"error_ratio\":{\"kind\":\"stat\",\"title\":\"two\",\"description\":\"Share of requests answered with 5xx. The SLO is 0.1%; above 1% is an incident and pages.\",\"unit\":\"ratio\",\"queries\":[\"err_ratio\"],\"options\":{\"sparkline\":true},\"thresholds\":[{\"above\":0.001,\"level\":\"warn\",\"label\":\"SLO\"},{\"above\":0.01,\"level\":\"crit\",\"label\":\"incident\"}]},\"throughput\":{\"kind\":\"stat\",\"title\":\"Requests per second\",\"description\":\"Total request rate for the selected routes. Near zero in prod means traffic is not reaching the service.\",\"unit\":\"req/s\",\"queries\":[\"req_rate_total\"],\"options\":{\"sparkline\":true},\"thresholds\":[{\"below\":1,\"level\":\"warn\",\"label\":\"no traffic\"}]},\"p99_latency\":{\"kind\":\"stat\",\"title\":\"p99 latency\",\"description\":\"99th percentile request duration. The latency objective is 500 ms; above 2 s users see timeouts.\",\"unit\":\"s\",\"queries\":[\"latency_p99\"],\"options\":{\"sparkline\":true,\"decimals\":3},\"thresholds\":[{\"above\":0.5,\"level\":\"warn\"},{\"above\":2,\"level\":\"crit\"}]},\"requests_by_route\":{\"kind\":\"timeseries\",\"title\":\"Requests by route\",\"description\":\"Request throughput per route. A sudden drop on one route matters more than a peak; compare against deploys.\",\"unit\":\"req/s\",\"queries\":[\"req_rate\"],\"options\":{\"stack\":true,\"style\":\"area\",\"maxSeries\":20}},\"errors_by_status\":{\"kind\":\"timeseries\",\"title\":\"Errors by status code\",\"description\":\"4xx and 5xx responses per second by status. 5xx is ours to fix; a 4xx spike usually means a bad client release.\",\"unit\":\"errors/s\",\"queries\":[\"err_by_status\"],\"options\":{\"style\":\"bars\",\"stack\":true}},\"latency_quantiles\":{\"kind\":\"timeseries\",\"title\":\"Latency quantiles\",\"description\":\"p50, p95 and p99 request duration. p99 pulling away from p50 points at one slow dependency or route, not general load.\",\"unit\":\"s\",\"queries\":[\"latency_p50\",\"latency_p95\",\"latency_p99\"],\"options\":{\"yScale\":\"log\"},\"thresholds\":[{\"above\":0.5,\"level\":\"warn\"},{\"above\":2,\"level\":\"crit\"}]},\"latency_heatmap\":{\"kind\":\"heatmap\",\"title\":\"Latency distribution\",\"description\":\"Request duration histogram over time. A second band appearing above 1 s usually means a dependency is slow for some requests.\",\"unit\":\"s\",\"queries\":[\"latency_buckets\"],\"options\":{\"yScale\":\"log\",\"exemplars\":true}},\"routes\":{\"kind\":\"table\",\"title\":\"Routes by p99 latency\",\"description\":\"Per-route p99 latency and error ratio, slowest first. Use it to find which route drags the service numbers.\",\"queries\":[\"route_p99\",\"route_err_ratio\"],\"options\":{\"columns\":[{\"query\":\"route_p99\",\"title\":\"p99\",\"unit\":\"s\"},{\"query\":\"route_err_ratio\",\"title\":\"Errors\",\"unit\":\"ratio\"}],\"sortBy\":\"route_p99\",\"sortDir\":\"desc\",\"limit\":15}},\"slow_spans\":{\"kind\":\"table\",\"title\":\"Slow traces by operation\",\"description\":\"Number of traces slower than 2 s per root operation in the selected range. Click through to the traces.\",\"unit\":\"count\",\"queries\":[\"slow_traces\"],\"options\":{\"limit\":10}},\"notes\":{\"kind\":\"text\",\"title\":\"How to read this\",\"content\":\"Read left to right: **errors**, **traffic**, **latency**. If error ratio is red and a dependency row below is red too, start with the dependency. Runbook: `runbooks/service-red.md`.\"}},\"layout\":{\"kind\":\"rows\",\"rows\":[{\"title\":\"Now\",\"height\":140,\"items\":[{\"panel\":\"error_ratio\",\"span\":3},{\"panel\":\"throughput\",\"span\":3},{\"panel\":\"p99_latency\",\"span\":3},{\"panel\":\"notes\",\"span\":3}]},{\"title\":\"Traffic and errors\",\"items\":[\"requests_by_route\",\"errors_by_status\"]},{\"title\":\"Latency\",\"items\":[\"latency_quantiles\",\"latency_heatmap\"]},{\"title\":\"Where\",\"items\":[{\"panel\":\"routes\",\"span\":7},{\"panel\":\"slow_spans\",\"span\":5}]},{\"title\":\"Dependencies\",\"items\":[{\"fragment\":\"dependency_red\",\"as\":\"db\",\"with\":{\"caller\":\"$service\",\"env\":\"$env\",\"peer\":\"postgres\"}},{\"fragment\":\"dependency_red\",\"as\":\"payments\",\"with\":{\"caller\":\"$service\",\"env\":\"$env\",\"peer\":\"payments-api\"}}]}]},\"fragments\":{\"dependency_red\":{\"description\":\"RED summary of the calls one service makes to one downstream dependency. Instantiate once per dependency.\",\"params\":{\"caller\":{\"description\":\"Calling service name\"},\"peer\":{\"description\":\"Downstream service or database name\"},\"env\":{\"description\":\"Environment\",\"default\":\"prod\"}},\"queries\":{\"calls\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_client_requests_total{env=\\\"$env\\\",service=\\\"$caller\\\",peer_service=\\\"$peer\\\"}[$__rate]))\",\"legend\":\"calls\"},\"call_err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_client_requests_total{env=\\\"$env\\\",service=\\\"$caller\\\",peer_service=\\\"$peer\\\",outcome=\\\"error\\\"}[$__rate])) / sum(rate(http_client_requests_total{env=\\\"$env\\\",service=\\\"$caller\\\",peer_service=\\\"$peer\\\"}[$__rate]))\"},\"call_p99\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.99, sum by (le) (rate(http_client_request_duration_seconds_bucket{env=\\\"$env\\\",service=\\\"$caller\\\",peer_service=\\\"$peer\\\"}[$__rate])))\",\"legend\":\"p99\"}},\"panels\":{\"errors\":{\"kind\":\"stat\",\"title\":\"Dependency error ratio\",\"description\":\"Share of calls to the dependency that fail. Above 1% the dependency is the likely cause of our own errors.\",\"unit\":\"ratio\",\"queries\":[\"call_err_ratio\"],\"thresholds\":[{\"above\":0.01,\"level\":\"warn\"},{\"above\":0.05,\"level\":\"crit\"}]},\"calls\":{\"kind\":\"timeseries\",\"title\":\"Dependency call rate\",\"description\":\"Outbound calls per second to the dependency. A drop to zero means we stopped calling it; a spike means retries.\",\"unit\":\"req/s\",\"queries\":[\"calls\"]},\"latency\":{\"kind\":\"timeseries\",\"title\":\"Dependency p99 latency\",\"description\":\"p99 duration of calls to the dependency as seen by the caller, including network time and retries.\",\"unit\":\"s\",\"queries\":[\"call_p99\"],\"thresholds\":[{\"above\":1,\"level\":\"warn\"}]}},\"layout\":{\"kind\":\"rows\",\"rows\":[{\"items\":[{\"panel\":\"errors\",\"span\":2},\"calls\",\"latency\"]}]}}}}",
+    "summary": "[\"~ panel error_ratio: title: Error ratio \u2192 two\"]",
+    "tenant": "golden-bp8d8b-1"
+   },
+   {
+    "at": 1795043017487,
+    "by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "bytes": 6477,
+    "dashboard": "nodes",
+    "kind": "create",
+    "message": "Created",
+    "number": 1,
+    "proposal": null,
+    "proposed_by": null,
+    "reverted_to": null,
+    "revision": "e1209968b1b4443b6b278dffdf47310e",
+    "spec": "{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"nodes\",\"title\":\"Kubernetes node overview\",\"intent\":\"For platform engineers. Answers: which nodes are under pressure (CPU, memory, disk, network), and is any node unschedulable or running out of pod capacity?\",\"tags\":[\"kubernetes\",\"nodes\",\"capacity\"]},\"time\":{\"from\":\"now-6h\",\"to\":\"now\",\"refresh\":\"1m\"},\"variables\":{\"cluster\":{\"kind\":\"query\",\"label\":\"Cluster\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(kube_node_info, cluster)\"}},\"node\":{\"kind\":\"query\",\"label\":\"Node\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(kube_node_info{cluster=~\\\"$cluster\\\"}, node)\"},\"multi\":true,\"includeAll\":true,\"default\":\"*\"}},\"queries\":{\"nodes_ready\":{\"lang\":\"promql\",\"expr\":\"sum(kube_node_status_condition{cluster=~\\\"$cluster\\\",condition=\\\"Ready\\\",status=\\\"true\\\"})\"},\"nodes_not_ready\":{\"lang\":\"promql\",\"expr\":\"sum(kube_node_status_condition{cluster=~\\\"$cluster\\\",condition=\\\"Ready\\\",status=\\\"true\\\"} == 0) or vector(0)\"},\"cpu_used\":{\"lang\":\"promql\",\"expr\":\"1 - avg by (node) (rate(node_cpu_seconds_total{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\",mode=\\\"idle\\\"}[$__rate]))\",\"legend\":\"{{node}}\"},\"mem_used\":{\"lang\":\"promql\",\"expr\":\"1 - (node_memory_MemAvailable_bytes{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\"} / node_memory_MemTotal_bytes{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\"})\",\"legend\":\"{{node}}\"},\"disk_used\":{\"lang\":\"promql\",\"expr\":\"1 - (node_filesystem_avail_bytes{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\",mountpoint=\\\"/\\\"} / node_filesystem_size_bytes{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\",mountpoint=\\\"/\\\"})\",\"legend\":\"{{node}}\"},\"load_per_core\":{\"lang\":\"promql\",\"expr\":\"node_load5{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\"} / on (node) count by (node) (node_cpu_seconds_total{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\",mode=\\\"idle\\\"})\",\"legend\":\"{{node}}\"},\"net_rx\":{\"lang\":\"promql\",\"expr\":\"sum by (node) (rate(node_network_receive_bytes_total{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\",device!~\\\"lo|veth.*\\\"}[$__rate]))\",\"legend\":\"{{node}} rx\"},\"net_tx\":{\"lang\":\"promql\",\"expr\":\"sum by (node) (rate(node_network_transmit_bytes_total{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\",device!~\\\"lo|veth.*\\\"}[$__rate]))\",\"legend\":\"{{node}} tx\"},\"pods_ratio\":{\"lang\":\"promql\",\"expr\":\"sum by (node) (kube_pod_info{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\"}) / sum by (node) (kube_node_status_allocatable{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\",resource=\\\"pods\\\"})\",\"legend\":\"{{node}}\"},\"pod_restarts\":{\"lang\":\"promql\",\"expr\":\"sum by (node) (increase(kube_pod_container_status_restarts_total{cluster=~\\\"$cluster\\\"}[$__range]) * on (pod, namespace) group_left(node) kube_pod_info{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\"})\",\"instant\":true},\"cpu_used_now\":{\"lang\":\"promql\",\"expr\":\"1 - avg by (node) (rate(node_cpu_seconds_total{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\",mode=\\\"idle\\\"}[$__rate]))\",\"instant\":true},\"mem_used_now\":{\"lang\":\"promql\",\"expr\":\"1 - (node_memory_MemAvailable_bytes{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\"} / node_memory_MemTotal_bytes{cluster=~\\\"$cluster\\\",node=~\\\"$node\\\"})\",\"instant\":true}},\"panels\":{\"ready_nodes\":{\"kind\":\"stat\",\"title\":\"Ready nodes\",\"description\":\"Nodes reporting the Ready condition. Compare with the expected node count for the cluster; a drop means lost capacity.\",\"unit\":\"count\",\"queries\":[\"nodes_ready\"],\"thresholds\":[{\"below\":3,\"level\":\"warn\",\"label\":\"below minimum pool size\"}]},\"not_ready_nodes\":{\"kind\":\"stat\",\"title\":\"Nodes not ready\",\"description\":\"Nodes whose Ready condition is false or unknown. Any value above zero needs a look; pods there will be evicted.\",\"unit\":\"count\",\"queries\":[\"nodes_not_ready\"],\"thresholds\":[{\"above\":0,\"level\":\"warn\"},{\"above\":2,\"level\":\"crit\"}]},\"cpu\":{\"kind\":\"timeseries\",\"title\":\"CPU utilisation by node\",\"description\":\"Fraction of CPU time not idle, per node. Sustained values above 0.85 mean the node is saturated and pods are throttled.\",\"unit\":\"ratio\",\"queries\":[\"cpu_used\"],\"options\":{\"yMin\":0,\"yMax\":1,\"maxSeries\":50},\"thresholds\":[{\"above\":0.85,\"level\":\"warn\"},{\"above\":0.95,\"level\":\"crit\"}]},\"memory\":{\"kind\":\"timeseries\",\"title\":\"Memory utilisation by node\",\"description\":\"Fraction of memory not available, per node. Above 0.9 the kubelet starts evicting pods.\",\"unit\":\"ratio\",\"queries\":[\"mem_used\"],\"options\":{\"yMin\":0,\"yMax\":1,\"maxSeries\":50},\"thresholds\":[{\"above\":0.8,\"level\":\"warn\"},{\"above\":0.9,\"level\":\"crit\"}]},\"disk\":{\"kind\":\"timeseries\",\"title\":\"Root disk utilisation by node\",\"description\":\"Fraction of the root filesystem in use. Above 0.85 the kubelet reports DiskPressure and stops scheduling pods.\",\"unit\":\"ratio\",\"queries\":[\"disk_used\"],\"options\":{\"yMin\":0,\"yMax\":1},\"thresholds\":[{\"above\":0.75,\"level\":\"warn\"},{\"above\":0.85,\"level\":\"crit\"}]},\"load\":{\"kind\":\"timeseries\",\"title\":\"Load per core\",\"description\":\"5-minute load average divided by core count. Above 1 means runnable work is queueing; it usually precedes CPU saturation.\",\"unit\":\"none\",\"queries\":[\"load_per_core\"],\"thresholds\":[{\"above\":1,\"level\":\"warn\"},{\"above\":2,\"level\":\"crit\"}]},\"network\":{\"kind\":\"timeseries\",\"title\":\"Network throughput by node\",\"description\":\"Bytes received and sent per second on physical interfaces. One node far above its peers usually hosts a noisy pod.\",\"unit\":\"bytes/s\",\"queries\":[\"net_rx\",\"net_tx\"]},\"pod_capacity\":{\"kind\":\"timeseries\",\"title\":\"Pod slots used by node\",\"description\":\"Running pods as a fraction of the node's allocatable pod count. At 1 the scheduler can place nothing more on the node.\",\"unit\":\"ratio\",\"queries\":[\"pods_ratio\"],\"options\":{\"yMin\":0,\"yMax\":1},\"thresholds\":[{\"above\":0.9,\"level\":\"warn\"}]},\"node_table\":{\"kind\":\"table\",\"title\":\"Nodes at a glance\",\"description\":\"Current CPU and memory utilisation and container restarts over the range, per node. Sort by restarts to find unhealthy nodes.\",\"queries\":[\"cpu_used_now\",\"mem_used_now\",\"pod_restarts\"],\"options\":{\"columns\":[{\"query\":\"cpu_used_now\",\"title\":\"CPU\",\"unit\":\"ratio\"},{\"query\":\"mem_used_now\",\"title\":\"Memory\",\"unit\":\"ratio\"},{\"query\":\"pod_restarts\",\"title\":\"Restarts\",\"unit\":\"count\"}],\"sortBy\":\"pod_restarts\",\"sortDir\":\"desc\",\"limit\":50}}},\"layout\":{\"kind\":\"grid\",\"columns\":24,\"items\":[{\"panel\":\"ready_nodes\",\"x\":0,\"y\":0,\"w\":4,\"h\":4},{\"panel\":\"not_ready_nodes\",\"x\":4,\"y\":0,\"w\":4,\"h\":4},{\"panel\":\"node_table\",\"x\":8,\"y\":0,\"w\":16,\"h\":8},{\"panel\":\"load\",\"x\":0,\"y\":4,\"w\":8,\"h\":4},{\"panel\":\"cpu\",\"x\":0,\"y\":8,\"w\":12,\"h\":8},{\"panel\":\"memory\",\"x\":12,\"y\":8,\"w\":12,\"h\":8},{\"panel\":\"disk\",\"x\":0,\"y\":16,\"w\":8,\"h\":8},{\"panel\":\"network\",\"x\":8,\"y\":16,\"w\":8,\"h\":8},{\"panel\":\"pod_capacity\",\"x\":16,\"y\":16,\"w\":8,\"h\":8}]}}",
+    "summary": "[\"+ dashboard nodes \\\"Kubernetes node overview\\\" (9 panels)\"]",
+    "tenant": "golden-bp8d8b-1"
+   }
+  ],
+  "settings": [
+   {
+    "section": "retention",
+    "tenant": "golden-bp8d8b-1",
+    "updated_at": 1795043017670,
+    "updated_by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "value": "{\"metric_samples_days\":60}",
+    "version": 1
+   },
+   {
+    "section": "limits",
+    "tenant": "golden-bp8d8b-1",
+    "updated_at": 1795043017700,
+    "updated_by": "{\"subject\":\"key:k_ZGRhiT0zJaZYyHNjgNZGva\",\"kind\":\"key\",\"name\":\"first admin key\"}",
+    "value": "{\"active_series\":50000}",
+    "version": 1
+   }
+  ],
+  "tenant_meta": [
+   {
+    "k": "bound",
+    "tenant": "golden-bp8d8b-1",
+    "v": "1795043017235"
+   },
+   {
+    "k": "revocation",
+    "tenant": "golden-bp8d8b-1",
+    "v": "{\"generation\":1,\"revokedBefore\":1795043017609}"
+   }
+  ]
+ },
+ "schema": [
+  {
+   "name": "keys_name",
+   "sql": "CREATE UNIQUE INDEX keys_name ON keys (tenant, name)",
+   "tbl_name": "keys",
+   "type": "index"
+  },
+  {
+   "name": "proposals_open",
+   "sql": "CREATE INDEX proposals_open ON proposals (tenant, status, expires_at)",
+   "tbl_name": "proposals",
+   "type": "index"
+  },
+  {
+   "name": "audit",
+   "sql": "CREATE TABLE audit (\n  seq INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, id TEXT NOT NULL UNIQUE, at INTEGER NOT NULL,\n  subject TEXT NOT NULL, kind TEXT NOT NULL, name TEXT, action TEXT NOT NULL,\n  target_type TEXT NOT NULL, target_id TEXT NOT NULL, before TEXT, after TEXT)",
+   "tbl_name": "audit",
+   "type": "table"
+  },
+  {
+   "name": "dashboards",
+   "sql": "CREATE TABLE dashboards (\n  tenant TEXT NOT NULL, id TEXT NOT NULL, head INTEGER NOT NULL, revision TEXT NOT NULL,\n  title TEXT NOT NULL, intent TEXT NOT NULL, tags TEXT NOT NULL, owner TEXT, panel_count INTEGER NOT NULL,\n  created_at INTEGER NOT NULL, created_by TEXT NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL,\n  deleted_at INTEGER, deleted_by TEXT, purge_at INTEGER,\n  PRIMARY KEY (tenant, id))",
+   "tbl_name": "dashboards",
+   "type": "table"
+  },
+  {
+   "name": "key_secrets",
+   "sql": "CREATE TABLE key_secrets (\n  tenant TEXT NOT NULL, key_id TEXT NOT NULL, key TEXT NOT NULL, secret_sha256 TEXT NOT NULL, valid_until INTEGER,\n  PRIMARY KEY (tenant, key_id))",
+   "tbl_name": "key_secrets",
+   "type": "table"
+  },
+  {
+   "name": "key_usage",
+   "sql": "CREATE TABLE key_usage (\n  tenant TEXT NOT NULL, key TEXT NOT NULL, hour INTEGER NOT NULL, samples INTEGER NOT NULL,\n  PRIMARY KEY (tenant, key, hour))",
+   "tbl_name": "key_usage",
+   "type": "table"
+  },
+  {
+   "name": "keys",
+   "sql": "CREATE TABLE keys (\n  tenant TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, scopes TEXT NOT NULL,\n  key_id TEXT NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, expires_at INTEGER,\n  disabled INTEGER NOT NULL DEFAULT 0, rotated_at INTEGER, last_used_at INTEGER,\n  PRIMARY KEY (tenant, id))",
+   "tbl_name": "keys",
+   "type": "table"
+  },
+  {
+   "name": "outbox",
+   "sql": "CREATE TABLE outbox (\n  seq INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, kv_key TEXT NOT NULL, value TEXT, expiration INTEGER,\n  created_at INTEGER NOT NULL)",
+   "tbl_name": "outbox",
+   "type": "table"
+  },
+  {
+   "name": "proposals",
+   "sql": "CREATE TABLE proposals (\n  tenant TEXT NOT NULL, id TEXT NOT NULL, dashboard TEXT NOT NULL, base_revision TEXT NOT NULL, base_number INTEGER NOT NULL,\n  message TEXT NOT NULL, changes TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, by TEXT NOT NULL,\n  editors TEXT NOT NULL, expires_at INTEGER NOT NULL, resolved_at INTEGER, resolved_by TEXT, reason TEXT,\n  applied_number INTEGER, applied_changes TEXT, bytes INTEGER NOT NULL,\n  PRIMARY KEY (tenant, id))",
+   "tbl_name": "proposals",
+   "type": "table"
+  },
+  {
+   "name": "revisions",
+   "sql": "CREATE TABLE revisions (\n  tenant TEXT NOT NULL, dashboard TEXT NOT NULL, number INTEGER NOT NULL, revision TEXT NOT NULL,\n  spec TEXT NOT NULL, bytes INTEGER NOT NULL, at INTEGER NOT NULL, by TEXT NOT NULL, message TEXT NOT NULL,\n  kind TEXT NOT NULL, summary TEXT NOT NULL, proposal TEXT, proposed_by TEXT, reverted_to INTEGER,\n  PRIMARY KEY (tenant, dashboard, number))",
+   "tbl_name": "revisions",
+   "type": "table"
+  },
+  {
+   "name": "settings",
+   "sql": "CREATE TABLE settings (\n  tenant TEXT NOT NULL, section TEXT NOT NULL, version INTEGER NOT NULL, value TEXT NOT NULL,\n  updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL,\n  PRIMARY KEY (tenant, section))",
+   "tbl_name": "settings",
+   "type": "table"
+  },
+  {
+   "name": "tenant_meta",
+   "sql": "CREATE TABLE tenant_meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k))",
+   "tbl_name": "tenant_meta",
+   "type": "table"
+  },
+  {
+   "name": "audit_no_delete",
+   "sql": "CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END",
+   "tbl_name": "audit",
+   "type": "trigger"
+  },
+  {
+   "name": "audit_no_update",
+   "sql": "CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END",
+   "tbl_name": "audit",
+   "type": "trigger"
+  }
+ ],
+ "tenant": "golden-bp8d8b-1"
+}

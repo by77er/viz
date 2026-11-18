@@ -1,32 +1,60 @@
 <!-- nav: Dashboards -->
-<main class="page vz-dashboard">
-  <div class="head"><div><h1>checkout-api</h1><p class="sub">Is checkout healthy, and where is it slow? <span class="muted">Updated <span class="vz-num">12 s</span> ago.</span></p></div>
-    <div class="row"><div class="vz-segmented" role="group" aria-label="Time range"><button aria-pressed="false">1 h</button><button aria-pressed="true">6 h</button><button aria-pressed="false">24 h</button><button aria-pressed="false">7 d</button></div>
-      <select class="vz-select" id="env" style="width:auto"><option>environment: prod</option></select>
-      <div class="vz-segmented" role="group" aria-label="Show as"><button aria-pressed="true">Charts</button><button aria-pressed="false">Text</button></div><button class="vz-button">Edit</button></div></div>
-  <div class="vz-banner"><span class="vz-mark" data-state="critical"></span><p><strong>Burning error budget</strong> since 13:02. p99 latency on <span class="vz-num">POST /v2/orders</span> is above 500 ms.</p><a class="vz-link" href="#">Open the monitor</a></div>
+<!-- title: checkout-api -->
+<main class="vz-page vz-dashboard" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">checkout-api</h1>
+      <p class="vz-page-sub">Is checkout healthy, and where is it slow? Environment prod, owned by payments. <span data-unless="waiting">09:16 to 15:16, updated <span class="vz-qty">12 s</span> ago.</span><span data-when="waiting">Showing 09:16 to 15:16 while the last <span class="vz-qty">24 h</span> loads.</span></p></div>
+    <div class="vz-controls">
+      <div class="vz-segmented" role="group" aria-label="Time range" id="range"><button aria-pressed="false">1 h</button><button aria-pressed="true" data-unless="waiting">6 h</button><button aria-pressed="false" data-when="waiting">6 h</button><button aria-pressed="false" data-unless="waiting">24 h</button><button aria-pressed="true" data-when="waiting">24 h</button><button aria-pressed="false">7 d</button></div>
+      <div class="vz-segmented" role="group" aria-label="Show as"><button aria-pressed="true">Charts</button><button aria-pressed="false">Text</button></div>
+      <button class="vz-button">Edit</button></div>
+  </header>
+  <div class="vz-banner"><span class="vz-mark" data-state="critical"></span><p>p99 latency of POST /v2/orders has been above <span class="vz-qty">500 ms</span> since 13:02. The monitor fired at 13:07, and nobody has acknowledged it.</p><a class="vz-link" href="4-monitor.html">Open the monitor</a></div>
+
   <div class="vz-grid">
-    <section class="vz-panel" data-span="3"><div class="vz-panel-head"><h3 class="vz-panel-title">Error budget left</h3></div>
-      <div class="vz-stat"><span class="vz-stat-value">61.4<span class="vz-stat-unit">%</span></span><span class="vz-stat-context">30-day window, 99.9% target</span></div></section>
-    <section class="vz-panel" data-span="3"><div class="vz-panel-head"><h3 class="vz-panel-title">p99 latency</h3></div>
-      <div class="vz-stat"><span class="vz-stat-value">912<span class="vz-stat-unit">ms</span></span><span class="vz-stat-context"><span class="vz-status" data-state="critical">Above 500 ms since 13:02</span></span></div></section>
-    <section class="vz-panel" data-span="3"><div class="vz-panel-head"><h3 class="vz-panel-title">Requests</h3></div>
-      <div class="vz-stat"><span class="vz-stat-value">1,284<span class="vz-stat-unit">/s</span></span><span class="vz-stat-context">4% below this time last week</span></div></section>
-    <section class="vz-panel" data-span="3"><div class="vz-panel-head"><h3 class="vz-panel-title">Errors</h3></div>
-      <div class="vz-stat"><span class="vz-stat-value">2.41<span class="vz-stat-unit">%</span></span><span class="vz-stat-context"><span class="vz-status" data-state="warn">Above 1% since 13:05</span></span></div></section>
-    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Latency by route, p99</h3><span class="vz-panel-meta">ms · last 6 h</span></div>
-      <p class="vz-panel-desc">The dashed line is the 500 ms objective. One route above it means a slow dependency; all routes above it means the service itself.</p>
-      <svg class="c" id="c1"></svg><div class="vz-legend"><span><i style="background:var(--series-1)"></i>GET /v2/catalog</span><span><i style="background:var(--series-2)"></i>POST /v2/orders</span><span><i style="background:var(--series-3)"></i>GET /v2/cart/{id}</span></div></section>
-    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Error rate by route</h3><span class="vz-panel-meta">% · last 6 h</span></div>
-      <p class="vz-panel-desc">Server errors as a share of requests. Client errors are excluded.</p>
-      <svg class="c" id="c2"></svg><div class="vz-legend"><span><i style="background:var(--series-1)"></i>GET /v2/catalog</span><span><i style="background:var(--series-2)"></i>POST /v2/orders</span><span><i style="background:var(--series-3)"></i>GET /v2/cart/{id}</span></div></section>
-    <section class="vz-panel" data-span="12"><div class="vz-panel-head"><h3 class="vz-panel-title">Routes</h3><span class="vz-panel-meta">last 5 min</span></div>
-      <div class="vz-table-wrap"><table class="vz-table"><thead><tr><th class="vz-label">Route</th><th class="vz-label">State</th><th class="vz-label vz-right">Requests / s</th><th class="vz-label vz-right">Errors</th><th class="vz-label vz-right">p50</th><th class="vz-label vz-right">p99</th></tr></thead><tbody>
-        <tr><td data-key>POST /v2/orders</td><td><span class="vz-status" data-state="critical">Failing</span></td><td class="vz-num vz-right">212.4</td><td class="vz-num vz-right">9.80%</td><td class="vz-num vz-right">310 ms</td><td class="vz-num vz-right">912 ms</td></tr>
-        <tr><td data-key>GET /v2/cart/{id}</td><td><span class="vz-status" data-state="warn">Slow</span></td><td class="vz-num vz-right">842.6</td><td class="vz-num vz-right">0.08%</td><td class="vz-num vz-right">96 ms</td><td class="vz-num vz-right">488 ms</td></tr>
-        <tr><td data-key>GET /v2/catalog</td><td><span class="vz-status" data-state="ok">Healthy</span></td><td class="vz-num vz-right">229.0</td><td class="vz-num vz-right">0.01%</td><td class="vz-num vz-right">22 ms</td><td class="vz-num vz-right">74 ms</td></tr></tbody></table></div></section>
+    <section class="vz-panel" data-span="12"><div class="vz-panel-head"><h2 class="vz-panel-title">Now</h2><span class="vz-panel-meta"><span>last <span class="vz-qty">5 min</span></span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+      <div class="vz-grid">
+        <div class="vz-stat" data-span="3"><span class="vz-label">p99 latency, slowest route</span><span class="vz-stat-value">912<span class="vz-stat-unit">ms</span></span><span class="vz-stat-context">last <span class="vz-qty">5 min</span> · POST /v2/orders</span><span class="vz-stat-context"><span class="vz-status" data-state="critical">Above 500 ms since 13:02</span></span></div>
+        <div class="vz-stat" data-span="3"><span class="vz-label">Errors, all routes</span><span class="vz-stat-value">1.69<span class="vz-stat-unit">%</span></span><span class="vz-stat-context">last <span class="vz-qty">5 min</span> · server errors as a share of requests</span><span class="vz-stat-context"><span class="vz-status" data-state="warn">Above the 1% objective since 13:05</span></span></div>
+        <div class="vz-stat" data-span="3"><span class="vz-label">Requests</span><span class="vz-stat-value">1,284<span class="vz-stat-unit">req/s</span></span><span class="vz-stat-context">last <span class="vz-qty">5 min</span> · 4% below this time last week</span></div>
+        <div class="vz-stat" data-span="3"><span class="vz-label">Error budget left</span><span class="vz-stat-value">61.4<span class="vz-stat-unit">%</span></span><span class="vz-stat-context">30-day window, 99.9% target</span><span class="vz-stat-context"><span class="vz-status" data-state="critical">At the last 5 min's rate, gone in 1 d 2 h</span></span></div>
+      </div></section>
+
+    <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Latency by route, p99</h2>
+        <span class="vz-panel-meta" data-unless="waiting"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span>
+        <span class="vz-panel-meta" data-when="waiting"><span class="vz-panel-note">Showing the previous query</span><span>· <span data-range>09:16 to 15:16</span></span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+      <p class="vz-panel-desc">One route above the objective means a slow dependency; all routes above it means the service itself.</p>
+      <div class="vz-panel-body"><div class="vz-progress" data-unmeasured data-when="waiting"><div class="vz-progress-text"><span role="status">Reading <span class="vz-qty">24 h</span> of 3 routes</span><span class="vz-qty" aria-hidden="true">1.4 s</span></div></div><div class="vz-chart" id="lat" data-view="dash-latency"></div></div></section>
+
+    <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Server errors by route</h2>
+        <span class="vz-panel-meta" data-unless="waiting error"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span>
+        <span class="vz-panel-meta" data-when="waiting"><span class="vz-panel-note">Showing the previous query</span><span>· <span data-range>09:16 to 15:16</span></span><span>· 6 min mean</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span>
+        <span class="vz-panel-meta" data-when="error"><span class="vz-panel-note">Not updating: 3 refreshes timed out since 15:11</span><span>· <span data-range>09:16 to 15:10</span></span><span>· 6 min mean</span><span>· updated <span class="vz-qty">6 min</span> ago</span></span></div>
+      <p class="vz-panel-desc">The share of each route's requests that failed with a 5xx. Client errors are not counted.</p>
+      <div class="vz-panel-body"><div class="vz-progress" data-unmeasured data-when="waiting"><div class="vz-progress-text"><span role="status">Reading <span class="vz-qty">24 h</span> of 3 routes</span><span class="vz-qty" aria-hidden="true">1.4 s</span></div></div><div class="vz-chart" id="err" data-view="dash-errors"></div></div></section>
+
+    <section class="vz-panel" data-span="12"><div class="vz-panel-head"><h2 class="vz-panel-title">Routes</h2><span class="vz-panel-meta"><span>last <span class="vz-qty">5 min</span></span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+      <div class="vz-panel-body"><p class="vz-table-caption">3 of 3 routes, slowest p99 first. They add up to <span class="vz-qty">1,284 req/s</span> and <span class="vz-qty">1.69%</span> errors.</p>
+      <div class="vz-table-wrap"><table class="vz-table" data-fold role="table"><thead><tr role="row"><th role="columnheader" class="vz-label">Route</th><th role="columnheader" class="vz-label vz-right" data-priority="1">p99, ms</th><th role="columnheader" class="vz-label vz-right" data-priority="1">Errors, %</th><th role="columnheader" class="vz-label">State</th><th role="columnheader" class="vz-label vz-right">Requests, req/s</th><th role="columnheader" class="vz-label vz-right">p50, ms</th></tr></thead><tbody>
+        <tr role="row"><td role="cell" data-key>POST /v2/orders</td><td role="cell" class="vz-num vz-right" data-priority="1">912</td><td role="cell" class="vz-num vz-right" data-priority="1">9.8</td><td role="cell"><span class="vz-status" data-state="critical">Above 500 ms</span></td><td role="cell" class="vz-num vz-right" data-label="Requests, req/s">212.4</td><td role="cell" class="vz-num vz-right" data-label="p50, ms">310</td></tr>
+        <tr role="row"><td role="cell" data-key>GET /v2/cart/{id}</td><td role="cell" class="vz-num vz-right" data-priority="1">315</td><td role="cell" class="vz-num vz-right" data-priority="1">0.1</td><td role="cell"><span class="vz-status" data-state="ok">Healthy</span></td><td role="cell" class="vz-num vz-right" data-label="Requests, req/s">842.6</td><td role="cell" class="vz-num vz-right" data-label="p50, ms">96</td></tr>
+        <tr role="row"><td role="cell" data-key>GET /v2/products</td><td role="cell" class="vz-num vz-right" data-priority="1">117</td><td role="cell" class="vz-num vz-right" data-priority="1">0.0</td><td role="cell"><span class="vz-status" data-state="ok">Healthy</span></td><td role="cell" class="vz-num vz-right" data-label="Requests, req/s">229.0</td><td role="cell" class="vz-num vz-right" data-label="p50, ms">22</td></tr></tbody></table></div></div></section>
+
+    <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Changes</h2><span class="vz-panel-meta"><span>09:16 to 15:16, newest first</span></span></div>
+      <ol class="vz-timeline">
+        <li><time class="vz-qty" datetime="2026-11-18T13:16">13:16</time><span class="vz-mark"></span><p class="vz-agent">Agent: proposed 3 changes to this dashboard. Not applied. <a class="vz-link" href="7-proposed-change.html">Review the proposal</a></p></li>
+        <li><time class="vz-qty" datetime="2026-11-18T09:41">09:41</time><span class="vz-mark" data-state="info"></span><p>Deploy of checkout-api, revision 4f2a91c, by the release pipeline. Drawn on the charts as "Deploy 09:41".</p></li>
+      </ol>
+      <p class="vz-panel-desc">No configuration or feature-flag changes to checkout-api or its dependencies in this range.</p></section>
+
+    <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Goroutines</h2><span class="vz-panel-meta"><span>09:16 to 15:16</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+      <div class="vz-empty"><p class="vz-empty-title">No data in this range</p><p>go_goroutines has returned no series since 2 Nov, when checkout-api moved to its new runtime. The agent's proposal removes this panel.</p></div></section>
   </div>
 </main>
-<script>const X=['09:00','11:00','13:00','15:00'];
-line('c1',{seed:7,ticks:['1.0k','667','333','0'],x:X,threshold:.5,series:[{base:.08,noise:.02},{base:.3,noise:.05,spike:[38,60,.6]},{base:.42,noise:.04}]});
-line('c2',{seed:11,ticks:['12','8','4','0'],x:X,series:[{base:.02,noise:.01},{base:.05,noise:.02,spike:[38,60,.75]},{base:.03,noise:.01}]});</script>
+<script>
+(function () { const st = flowState(), d = flows.markers
+  const lat = { ...flows.latency(), threshold: { value: 500, label: '500 ms objective' }, spans: [flows.firing('Monitor firing since 13:07')], markers: [d.deploy, d.above] }
+  const err = { ...flows.errors(), markers: [d.deploy, { t: flows.T(13, 5), label: 'Above 1% 13:05' }] }
+  if (st === 'error') for (const s of err.series) s.values = s.values.slice(0, -1)
+  for (const [id, spec] of [['lat', lat], ['err', err]]) { const el = document.getElementById(id); el.vz = vzChart(el, spec) } })()
+</script>

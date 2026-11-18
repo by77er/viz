@@ -1,0 +1,11 @@
+{
+  // LOCAL ONLY: `wrangler dev` for the official MCP conformance suite (scripts/conformance.mjs).
+  // Never deploy this: it mints a credential for callers that send none.
+  "name": "viz-mcp-conformance-local",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tenant"] }],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-mcp-conformance-local" }],
+  "vars": { "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}" }
+}

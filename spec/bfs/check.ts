@@ -155,6 +155,9 @@ class IntVec {
 
 // ------------------------------------------------------------------ search
 
+/** Above this the fingerprint table would pass ~1 GB (the machine is shared): stop and say so. */
+export const DEFAULT_MAX_STATES = 19_000_000
+
 export interface Opts {
   name: string
   props: string[]
@@ -231,10 +234,10 @@ export function check(c: Cfg, o: Opts): Result {
         depth++
         return fail((bad as { prop: string }).prop, (bad as { id: number }).id)
       }
-      if (o.maxStates && tab.n > o.maxStates) {
+      if (tab.n > (o.maxStates ?? DEFAULT_MAX_STATES)) {
         next.close()
         rmSync(dir, { recursive: true, force: true })
-        return { ...finish('stopped'), note: `stopped at ${tab.n} states, depth ${depth}` }
+        return { ...finish('stopped'), note: `memory bound: stopped at ${tab.n.toLocaleString('en')} states; every state reachable in at most ${depth} steps checked, no violation` }
       }
     }
     next.close()

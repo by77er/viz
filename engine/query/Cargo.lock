@@ -894,6 +894,8 @@ dependencies = [
 name = "viz-query"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "parquet",
  "promql-parser",
  "proptest",
  "serde",
