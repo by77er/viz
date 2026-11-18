@@ -442,12 +442,16 @@ export class Notifier extends DurableObject implements NotifierRpc {
       let permanent = false
       let error = ''
       this.counters.attempts++
+      // A timer that is cleared as soon as the request settles: `AbortSignal.timeout` would
+      // keep the object in memory (and billed) for the full timeout after every send.
+      const abort = new AbortController()
+      const timer = setTimeout(() => abort.abort(new DOMException('receiver did not answer in time', 'TimeoutError')), delivery.timeoutMs)
       try {
         const res = await this.fetcher()(row.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'user-agent': 'viz-notifier', [IDEMPOTENCY_HEADER]: row.idem_key },
           body: row.body,
-          signal: AbortSignal.timeout(delivery.timeoutMs),
+          signal: abort.signal,
         })
         ok = res.ok
         if (!ok) {
@@ -458,6 +462,8 @@ export class Notifier extends DurableObject implements NotifierRpc {
         await res.body?.cancel()
       } catch (e) {
         error = errorText(e)
+      } finally {
+        clearTimeout(timer)
       }
       this.fault('sent')
       const attempts = row.attempts + 1

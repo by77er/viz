@@ -149,7 +149,7 @@ const watchWait = (page) =>
       const now = performance.now()
       const p = document.querySelector('[data-testid=progress]')
       if (run.getAttribute('aria-busy') === 'true' && w.busy === null) w.busy = now
-      if (p && w.shown === null) { w.shown = now; w.text = p.textContent }
+      if (p && w.shown === null) { w.shown = now; w.text = p.textContent; w.rows = document.querySelectorAll('[data-testid=legend] tbody tr').length }
       if (!p && w.shown !== null && w.hidden === null) w.hidden = now
       if (document.querySelector('[data-testid=cancel]') && w.cancel === null) w.cancel = now
     })
@@ -233,10 +233,11 @@ async function main() {
       await page.keyboard.press('Control+Enter') // a second press by shortcut
       await page.evaluate(() => document.querySelector('[data-testid=run]').click()) // and one that bypasses pointer-events
       await page.focus('[data-testid=run]'); await page.keyboard.press('Enter') // and by keyboard on the button
-      await page.waitForSelector('[data-testid=progress]')
-      const legendDuring = await page.$$eval('[data-testid=legend] tbody tr', (r) => r.length)
+      // Read from the page's own record: on a busy machine the line can come and go between two calls from here.
+      await page.waitForFunction(() => window.__wait.hidden !== null, null, { timeout: 20000 })
       await idle(page)
       w = await waitTimes(page)
+      const legendDuring = w.rows
       check('running a query sets the button aria-busy with the pressed fill', busyNow === 'true' && fill === tokenRgb('blue-pressed', 'light'), `aria-busy=${busyNow} fill=${fill}`)
       check('a second press while the query runs is ignored (pointer, shortcut, script, keyboard)', sent.length === n0 + 1, `${sent.length - n0} request(s) for five presses`)
       const shownAfter = w.shown - w.press

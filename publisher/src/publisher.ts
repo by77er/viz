@@ -553,7 +553,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       for (const c of log.changes) {
         if (c.version <= start) continue
         for (const k of c.removed) {
-          if (work.get(k) === null ? work.delete(k) : work.has(k)) dropped.push(k)
+          if (work.delete(k)) dropped.push(k)
           // `removed` holds keys of every table. One that names this table by the contract's
           // key layout and is not live here means the log and the publication disagree.
           else if (DAY_TABLE.exec(k)?.[1] === table) problem = `change ${c.version} removes ${k}, which is not live at version ${c.version - 1}`
@@ -1043,6 +1043,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       const files = snaps.get(s['snapshot-id'])
       // Without the full reference list of a retained snapshot, nothing can be proven orphan.
       if (!files) return out
+      if (s['snapshot-id'] !== meta['current-snapshot-id']) continue
       for (const f of files) referenced.add(f)
     }
 

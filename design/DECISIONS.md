@@ -87,8 +87,13 @@ compiled to WASM was 4–9× faster (encode 240 ms vs 1,030 ms; full-scan query 
 291 ms), used 18–20 MB of WASM memory per query, and instantiated in under 10 ms. It stayed
 about 4× ahead on a file encoded to favour JS. Measured in a sandbox, not on Cloudflare.
 
-**Still open.** Behaviour under the enforced 128 MB limit, billed CPU, a zstd build for
-WASM, and the size of a full engine rather than one query.
+**Evidence on Cloudflare (2026-11-18, `spikes/s2-engine-in-worker/`).** Billed CPU per
+query, net of receiving the file: 8.7 ms against 158 ms for the selective query and 70 ms
+against 698 ms for the full scan. Rust is 10–18× cheaper in production, more than in the
+sandbox. Production CPU is about twice the sandbox's wall time for Rust.
+
+**Still open.** A zstd build for WASM, and sustained memory behaviour: single requests
+overshot 128 MB without failing, which is not something to design to.
 
 **Would change if.** Those checks fail; the pure-JS Parquet stack is plan B for I/O, with
 evaluation still needing to be written.

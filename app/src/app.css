@@ -45,7 +45,7 @@ a { color: inherit; }
 
 /* Explore: query row and toolbar. Rows of controls are space-3 apart, so 44px touch areas never overlap. */
 .query-row { display: flex; align-items: flex-start; gap: var(--space-2); }
-.query-well { flex: 1; cursor: text; }
+.query-well { flex: 1; cursor: text; overflow: hidden; } /* the editor inside scrolls sideways; the well itself must not be a second scroll region */
 .query-well:focus-within { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
 .query-well .cm-content:focus-visible { outline: none; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-2); }

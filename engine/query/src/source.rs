@@ -123,7 +123,7 @@ impl SeriesSource for StorageSource<'_> {
         let n: u64 = found.iter().map(|s| s.ts.len() as u64).sum();
         let samples = self.samples.get().saturating_add(n);
         self.samples.set(samples);
-        if samples > self.limits.max_samples {
+        if samples >= self.limits.max_samples {
             return Err(self.fail(QueryError::limit(Limit::MaxSamples, self.limits.max_samples, samples, "samples loaded")));
         }
         let cells = (found.len() as u64).saturating_mul(self.steps_for(matchers, min_ts_ms, max_ts_ms));
@@ -136,6 +136,6 @@ impl SeriesSource for StorageSource<'_> {
             )));
         }
         // Same shape on both sides: the vectors move, no sample is copied or touched.
-        let lake = !self.input.sample_files.is_empty(); Ok(found.into_iter().map(|s| { let keep: Vec<bool> = s.values.iter().map(|v| !(lake && v.to_bits() == 0x7ff0_0000_0000_0002)).collect(); let mut i = 0; let mut ts = s.ts; ts.retain(|_| { i += 1; keep[i - 1] }); let mut j = 0; let mut values = s.values; values.retain(|_| { j += 1; keep[j - 1] }); Series { labels: s.labels, ts, values } }).collect())
+        Ok(found.into_iter().map(|s| Series { labels: s.labels, ts: s.ts, values: s.values }).collect())
     }
 }

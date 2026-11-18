@@ -265,7 +265,7 @@ attempted was readable.
 |---|---|
 | Avro (6) | round trip across block boundaries, both codecs; empty file; compression; unsafe long and missing field refused; corrupted file refused |
 | Version order and gaps (4) | log applied in order with the cursor recorded in an immutable object; a hole stops the tenant, is reported, leaves others alone, and is finished by the alarm once filled; a change that does not fit is refused; unknown and invalid tenants |
-| Net changes (3) | a file added and compacted away between publications is in no manifest of any snapshot; 2 tenants × 42 ledger versions published in one commit per table; a backlog larger than one publish is finished from the alarm |
+| Net changes (3) | a file added and compacted away between publications is in no manifest of any snapshot; 2 tenants with more than 40 ledger versions each published in one commit per table; a backlog larger than one publish is finished from the alarm |
 | Idempotence (3) | a second publish writes nothing, also after eviction; a change that does not touch a table moves its cursor without a commit; state rebuilt from R2 after `deleteAll` with no new commit |
 | Concurrency (2) | two publishes on one object serialise into one commit; two writers on one cell: one paused before the metadata write, the other commits, the loser's conditional write fails, it takes the winner's state and commits v2 with both tenants |
 | Crash between steps (6) | a failure injected after each of: manifests written, manifest list written, cursor object written, metadata written, hint written, state saved. Checked right after the crash (the table is one of the two valid states and agrees with its cursor object; before the metadata write the publisher's cursors have not moved), then after eviction and a re-run: exactly one new metadata version, hint correct, `verify` clean, leftovers swept only after the grace period |
@@ -340,6 +340,12 @@ about 290 kB per commit (modelled from that slope, not measured).
   Durable Object's clock.
 - **Memory and time for a very large catch-up.** All changes read in one publish are held
   in memory (bounded by `maxChangesPerTenant` = 2,000 per tenant, not across tenants).
+- **House rule not followed to the letter.** AGENTS.md wants every SQL statement that
+  touches tenant data to name the tenant. The publisher is a cell-level object whose
+  manifests are shared by tenants, so the statements that rewrite or merge a manifest and
+  the ones that rebuild state select by table and manifest, not by tenant. Statements about
+  one file or one tenant's files do name the tenant. Its callers are internal; a tenant id
+  passed to it is not a credential check.
 - No adversarial review of the commit protocol has been done (AGENTS.md asks for one before
   building on it).
 
