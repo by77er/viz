@@ -2,7 +2,7 @@
   "name": "fixed_1shard",
   "kind": "fixed",
   "label": "amended protocol, 1 shard, 2 batches, every action",
-  "invariant": "I4_NoGapAtSeam",
+  "invariant": "Safety",
   "cfg": {
     "fence": true,
     "contiguous": true,
@@ -34,30 +34,17 @@
     "maxSL": 1,
     "maxQ": 1,
     "maxRestarts": 2,
-    "trace": true
+    "trace": false
   },
   "expectViolation": false,
-  "asExpected": false,
-  "violated": true,
-  "completed": false,
-  "generated": 88723,
-  "distinct": 32739,
-  "queue": 18118,
-  "depth": 13,
-  "fpCollisionProb": null,
-  "trace": [
-    "register(shard 0, incarnation 1)",
-    "logWrite(outbox[0])",
-    "append(batch 0 -> shard 0)",
-    "seal(shard 0, through seq 1)",
-    "flushRead(shard 0, segment ..1)",
-    "flushPut(shard 0, segment ..1)",
-    "addUnit(shard 0, ..1) admitted",
-    "expire",
-    "qPlan",
-    "tailRead(shard 0, above 1) ok",
-    "ledgerLossRebuild",
-    "qDone"
-  ],
-  "seconds": 11.7
+  "asExpected": true,
+  "violated": false,
+  "completed": true,
+  "generated": 53621014,
+  "distinct": 9120748,
+  "queue": 0,
+  "depth": 44,
+  "fpCollisionProb": "2.2E-5",
+  "trace": [],
+  "seconds": 374.9
 }

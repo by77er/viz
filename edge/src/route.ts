@@ -127,6 +127,23 @@ export async function appendAll(env: RouteEnv, tenant: string, c: Collector): Pr
     if (results.some((r) => r.status === 'stale_epoch')) return { status: 'unavailable', reason: 'shard map is being updated' }
   }
   if (results.some((r) => r.status === 'error')) return { status: 'unavailable', reason: 'shard unavailable' }
+  // A shard configured with a smaller cap than this Worker split at: split again at the
+  // shard's cap, once. (The default on both sides is the same constant, MAX_BATCH_BYTES, so
+  // this is a deployment whose shard was configured down.) Batches that had been appended
+  // are stored again under new fingerprints; readers de-duplicate on (series_id, ts).
+  const tooLarge = results.filter((r) => r.status === 'too_large')
+  if (tooLarge.length > 0) {
+    let cap = c.limits.maxBatchBytes
+    for (const r of tooLarge) if (r.status === 'too_large') cap = Math.min(cap, r.maxBytes)
+    if (cap >= c.limits.maxBatchBytes) return { status: 'unavailable', reason: 'shard refused the batch size' }
+    ;({ results, batches } = await attempt(env, map, tenant, c, cap))
+    // Still refused: a single row does not fit the shard's cap, or the map moved. Either
+    // way nothing is acknowledged; the whole request is retryable (contracts/BATCH.md).
+    if (results.some((r) => r.status === 'too_large' || r.status === 'stale_epoch')) {
+      return { status: 'unavailable', reason: 'shard refused the batch size' }
+    }
+    if (results.some((r) => r.status === 'error')) return { status: 'unavailable', reason: 'shard unavailable' }
+  }
   let retryAfterMs = 0
   for (const r of results) if (r.status === 'backpressure') retryAfterMs = Math.max(retryAfterMs, r.retryAfterMs, 1)
   if (retryAfterMs > 0) return { status: 'backpressure', retryAfterMs }

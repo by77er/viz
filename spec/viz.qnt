@@ -586,5 +586,23 @@ module viz {
   /// Used to exhibit a trace with three refusals of one query.
   val L2_RestartsBelow3 = st.restarts < 3
 
+  // Reachability witnesses (need `trace: true`): each is expected to be VIOLATED, which shows
+  // that the action can fire in the amended protocol, so the invariants are not vacuous.
+  val W_stale = act.n != "qTailStale"
+  val W_mismatch = act.n != "qTailIncarnationMismatch"
+  val W_fileMissing = act.n != "qFileMissingReplan"
+  val W_sweep = act.n != "sweepOrphan"
+  val W_deleteRetired = act.n != "deleteRetired"
+  val W_replaceConflict = act.n != "replaceConflict"
+  val W_reRegister = act.n != "reRegister"
+  val W_addUnitReplay = act.n != "addUnitNoop"
+  /// a query that completes with every batch, after a discard, a compaction and a ledger rebuild
+  val W_fullQuery = not(and {
+    st.q.st == "done", st.q.must == BATCHES, st.nLL > 0, st.led.files.exists(f => f.comp),
+    SHARDS.exists(sid => st.sh.get(sid).disc > 0),
+  })
+  /// a complete query after a shard storage loss that destroyed nothing
+  val W_queryAfterShardLoss = not(st.q.st == "done" and st.nSL > 0 and st.q.must == BATCHES and st.lost == Set())
+
   val Safety = and { I1_AckedIsDurable, I3_NoDuplicates, I4_NoGapAtSeam, I5_DiscardOnlyLogged, I11_LiveFilesReadable, I9_NoResurrection }
 }

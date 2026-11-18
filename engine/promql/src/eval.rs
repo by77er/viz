@@ -224,10 +224,7 @@ pub(crate) fn subquery_steps(sq: &SubqueryExpr, outer: Steps, opts: &EvalOptions
     };
     // First multiple of the interval strictly after the left edge.
     let left = first_end.saturating_sub(range);
-    let mut start = interval.saturating_mul(left.div_euclid(interval));
-    if start <= left {
-        start = start.saturating_add(interval);
-    }
+    let start = left.saturating_add(interval);
     Steps { start, end: last_end, step: interval }
 }
 

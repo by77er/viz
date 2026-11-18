@@ -1,4 +1,20 @@
+import { MAX_BATCH_BYTES } from '../../shard/src/shard'
 import { HttpError } from './errors'
+
+/**
+ * The ceilings contracts/BATCH.md fixes. A deployment may set tighter limits through
+ * `INGEST_LIMITS`, never looser ones: a batch that breaks these is not a valid `VZB1` batch.
+ * The batch size cap is `MAX_BATCH_BYTES`, the one constant the shard enforces too.
+ */
+export const CONTRACT = {
+  maxLabelsPerSeries: 128,
+  maxLabelNameBytes: 1024,
+  maxLabelValueBytes: 8192,
+  maxBatchBytes: MAX_BATCH_BYTES,
+  /** Timestamps are Unix milliseconds in the years 1970 to 9999, so a UTC day is `YYYY-MM-DD`. */
+  minTimestampMs: 0,
+  maxTimestampMs: 253_402_300_799_999,
+} as const
 
 export interface Limits {
   /** Largest request body as received (compressed, if it is compressed). */
@@ -10,7 +26,7 @@ export interface Limits {
   /** Samples (rows) in one request. */
   maxSamples: number
   maxLabelsPerSeries: number
-  /** UTF-8 bytes. Must stay below 65536: the batch format stores lengths as u16. */
+  /** UTF-8 bytes. At most the contract's 1,024 (names) and 8,192 (values). */
   maxLabelNameBytes: number
   maxLabelValueBytes: number
   /** Accept window: a sample may be this much older than now … */
@@ -18,8 +34,8 @@ export interface Limits {
   /** … or this much newer. */
   acceptAheadMs: number
   /**
-   * One request is split into batches no larger than this per slot. A Durable Object
-   * SQLite value is capped at 2 MB, so a batch must stay well below that.
+   * One request is split into batches no larger than this per slot. Never above
+   * `MAX_BATCH_BYTES` (1 MiB, contracts/BATCH.md): the shard answers `too_large` beyond it.
    */
   maxBatchBytes: number
 }
@@ -29,12 +45,12 @@ export const DEFAULT_LIMITS: Limits = {
   maxDecompressedBytes: 32 << 20,
   maxSeries: 100_000,
   maxSamples: 500_000,
-  maxLabelsPerSeries: 64,
-  maxLabelNameBytes: 256,
-  maxLabelValueBytes: 4096,
+  maxLabelsPerSeries: CONTRACT.maxLabelsPerSeries,
+  maxLabelNameBytes: CONTRACT.maxLabelNameBytes,
+  maxLabelValueBytes: CONTRACT.maxLabelValueBytes,
   acceptBackMs: 60 * 60_000,
   acceptAheadMs: 5 * 60_000,
-  maxBatchBytes: 1 << 20,
+  maxBatchBytes: CONTRACT.maxBatchBytes,
 }
 
 let cachedRaw: string | undefined
@@ -57,9 +73,10 @@ export function limitsFrom(raw: string | undefined): Limits {
       if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = Math.floor(v)
     }
   }
-  out.maxLabelNameBytes = Math.min(out.maxLabelNameBytes, 0xffff)
-  out.maxLabelValueBytes = Math.min(out.maxLabelValueBytes, 0xffff)
-  out.maxBatchBytes = Math.min(out.maxBatchBytes, 1_900_000)
+  out.maxLabelsPerSeries = Math.min(out.maxLabelsPerSeries, CONTRACT.maxLabelsPerSeries)
+  out.maxLabelNameBytes = Math.min(out.maxLabelNameBytes, CONTRACT.maxLabelNameBytes)
+  out.maxLabelValueBytes = Math.min(out.maxLabelValueBytes, CONTRACT.maxLabelValueBytes)
+  out.maxBatchBytes = Math.min(out.maxBatchBytes, CONTRACT.maxBatchBytes)
   cachedRaw = raw
   cached = out
   return out

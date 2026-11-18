@@ -1,7 +1,7 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { ledgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type Plan, type Table } from '../../contracts/ledger'
+import { TENANT_ID, ledgerBaseKey, ledgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type Plan, type Table } from '../../contracts/ledger'
 import type { Ledger, LedgerBase } from '../src/ledger'
 
 type Stub = DurableObjectStub<Ledger>
@@ -107,25 +107,42 @@ describe('contiguity', () => {
     expect(await readLog(tenant)).toEqual(log)
   })
 
-  it('does not mistake a different unit below the watermark for a replay', async () => {
-    const { l } = open()
+  it('answers ok for any unit at or below the watermark and admits none of its files (replay rule)', async () => {
+    const { tenant, l } = open()
     await l.registerStream({ shard: S, incarnation: INC })
     await l.addUnit(pair(1, 10))
-    // Same range, different bytes (so a different key): this was never admitted.
-    expect(await l.addUnit(unit(1, 10, [file('other-attempt')]))).toEqual({ status: 'not_contiguous', watermark: 10 })
-    // Same keys, different range.
-    expect(await l.addUnit(unit(1, 5, pair(1, 10).files))).toEqual({ status: 'not_contiguous', watermark: 10 })
-    expect(keys(await everything(l))).not.toContain('other-attempt')
+    const before = await everything(l)
+    const log = await readLog(tenant)
+    // Same range, different bytes (so a different key): those rows are already recorded.
+    expect(await l.addUnit(unit(1, 10, [file('other-attempt')]))).toEqual({ status: 'ok', version: before.version, watermark: 10 })
+    // A sub-range of what is recorded.
+    expect(await l.addUnit(unit(1, 5, [file('sub-range')]))).toEqual({ status: 'ok', version: before.version, watermark: 10 })
+    // A unit that straddles the watermark is not a replay: part of it is new.
+    expect(await l.addUnit(unit(5, 15, [file('straddle')]))).toEqual({ status: 'not_contiguous', watermark: 10 })
+    expect(await everything(l)).toEqual(before)
+    expect(await readLog(tenant)).toEqual(log)
+  })
+
+  it('answers a replay with ok after its files were compacted or expired away', async () => {
+    const { l } = open()
+    const u = pair(1, 10)
+    await l.addUnit(u)
+    await l.replace({ remove: [u.files[0]!.key], add: [file('L1', { level: 1 })] })
+    await l.expire({ table: 'metric_series', beforeDay: '2999-01-01' })
+    const before = await everything(l)
+    expect(keys(before)).toEqual(['L1'])
+    expect(await l.addUnit(u)).toEqual({ status: 'ok', version: before.version, watermark: 10 })
+    expect(await everything(l)).toEqual(before) // the compacted-away inputs did not come back
   })
 
   it('keeps streams independent', async () => {
     const { l } = open()
     expect(await l.addUnit(pair(1, 5, T0, 'pool/1', 11))).toMatchObject({ status: 'ok', watermark: 5 })
     expect(await l.addUnit(pair(1, 9, T0, 'pool/2', 22))).toMatchObject({ status: 'ok', watermark: 9 })
-    expect(await l.addUnit(pair(6, 8, T0, 'pool/2', 22))).toEqual({ status: 'not_contiguous', watermark: 9 })
-    expect(await l.addUnit(pair(6, 8, T0, 'pool/1', 11))).toMatchObject({ status: 'ok', watermark: 8 })
+    expect(await l.addUnit(pair(6, 12, T0, 'pool/2', 22))).toEqual({ status: 'not_contiguous', watermark: 9 })
+    expect(await l.addUnit(pair(6, 12, T0, 'pool/1', 11))).toMatchObject({ status: 'ok', watermark: 12 })
     expect((await everything(l)).watermarks).toEqual([
-      { shard: 'pool/1', incarnation: 11, seq: 8 },
+      { shard: 'pool/1', incarnation: 11, seq: 12 },
       { shard: 'pool/2', incarnation: 22, seq: 9 },
     ])
   })
@@ -139,9 +156,9 @@ describe('atomicity of a unit', () => {
     const before = await everything(l)
     const log = await readLog(tenant)
 
-    const refusal = await failure(l, (i) => i.addUnit(unit(11, 20, [file('c'), file('d'), file('a'), file('e')])))
+    const refusal = await l.addUnit(unit(11, 20, [file('c'), file('d'), file('a'), file('e')]))
     expect(await everything(l)).toEqual(before) // not `c` and `d` without `e`
-    expect(refusal).toMatch(/already live/)
+    expect(refusal).toEqual({ status: 'invalid', reason: 'file key already live in another unit: a' })
     expect(keys(await everything(l))).toEqual(['a', 'b'])
     expect(await readLog(tenant)).toEqual(log)
     expect(await l.outboxDepth()).toBe(0)
@@ -153,10 +170,25 @@ describe('atomicity of a unit', () => {
     const { l } = open()
     await l.registerStream({ shard: S, incarnation: INC })
     const before = await everything(l)
-    expect(await failure(l, (i) => i.addUnit(unit(1, 10, [file('a'), file('b', { table: 'nope' as Table })])))).toMatch(/unknown table/)
-    expect(await failure(l, (i) => i.addUnit(unit(1, 10, [file('a'), file('b', { day: '2026-1-1' })])))).toMatch(/bad day/)
-    expect(await failure(l, (i) => i.addUnit(unit(1, 10, [file('a'), file('b'), file('a')])))).toMatch(/duplicate file key/)
+    const reason = async (u: FlushUnit) => {
+      const r = await l.addUnit(u)
+      return r.status === 'invalid' ? r.reason : `status ${r.status}`
+    }
+    expect(await reason(unit(1, 10, [file('a'), file('b', { table: 'nope' as Table })]))).toMatch(/unknown table/)
+    expect(await reason(unit(1, 10, [file('a'), file('b', { day: '2026-1-1' })]))).toMatch(/bad day/)
+    expect(await reason(unit(1, 10, [file('a'), file('b'), file('a')]))).toMatch(/duplicate file key/)
+    expect(await reason(unit(1, 10, []))).toMatch(/at least one file/)
+    expect(await reason(unit(0, 10, [file('a')]))).toMatch(/bad sequence range/)
+    expect(await reason(unit(5, 4, [file('a')]))).toMatch(/bad sequence range/)
+    expect(await reason(unit(1, 10, [file('a')], ''))).toMatch(/shard must be/)
+    expect(await reason(unit(1, 10, [file('')]))).toMatch(/non-empty string/)
     expect(await everything(l)).toEqual(before)
+    // An invalid unit is invalid even where a valid one would be a replay.
+    const other = open().l
+    await other.addUnit(pair(1, 10))
+    const r = await other.addUnit(unit(1, 10, []))
+    expect(r).toMatchObject({ status: 'invalid' })
+    expect(await other.addUnit(unit(1, 10, [file('a'), file('a')]))).toMatchObject({ status: 'invalid' })
     expect((await everything(l, 'metric_series')).files).toEqual([])
   })
 
@@ -309,13 +341,26 @@ describe('replace', () => {
     expect(await l.replace(req)).toEqual(first)
     // Half of it is not a retry.
     expect(await l.replace({ remove: ['a'], add: [file('L1-other', { level: 1 })] })).toEqual({ status: 'conflict', missing: ['a'] })
+    // Outputs live but one input live too: judged as a new request.
+    await l.addUnit(unit(4, 5, [file('c')]))
+    expect(await l.replace({ remove: ['a', 'c'], add: [file('L1-ab', { level: 1 })] })).toEqual({ status: 'conflict', missing: ['a'] })
+    expect(await l.replace({ remove: ['c'], add: [file('L1-ab', { level: 1 })] })).toMatchObject({ status: 'invalid' })
+    // A retried swap with no inputs (a pure add) is also recognised.
+    const pure = { remove: [], add: [file('L1-pure', { level: 1 })] }
+    const p1 = await l.replace(pure)
+    expect(p1.status).toBe('ok')
+    expect(await l.replace(pure)).toEqual(p1)
   })
 
   it('refuses an output whose key is already live', async () => {
     const { l } = open()
     await l.addUnit(unit(1, 3, [file('a'), file('b'), file('c')]))
     const before = await everything(l)
-    expect(await failure(l, (i) => i.replace({ remove: ['a'], add: [file('c')] }))).toMatch(/already live/)
+    expect(await l.replace({ remove: ['a'], add: [file('c')] })).toEqual({ status: 'invalid', reason: 'file key already live: c' })
+    expect(await l.replace({ remove: ['a'], add: [file('a')] })).toMatchObject({ status: 'invalid', reason: 'key is in both remove and add: a' })
+    expect(await l.replace({ remove: ['a'], add: [file('x'), file('x')] })).toMatchObject({ status: 'invalid' })
+    expect(await l.replace({ remove: ['a'], add: [file('x', { day: 'nope' })] })).toMatchObject({ status: 'invalid' })
+    expect(await l.replace({ remove: [''], add: [] })).toMatchObject({ status: 'invalid' })
     expect(await everything(l)).toEqual(before)
   })
 })
@@ -357,7 +402,8 @@ describe('change log', () => {
       [inc, 1, 'register_stream'], [inc, 2, 'add_unit'], [inc, 3, 'replace'], [inc, 4, 'expire'],
     ])
     expect(log[0]!.watermark).toEqual({ shard: S, incarnation: INC, seq: 0 })
-    expect(log[1]).toMatchObject({ added: u.files, removed: [], watermark: { shard: S, incarnation: INC, seq: 10 } })
+    expect(log[1]).toMatchObject({ added: u.files, removed: [], watermark: { shard: S, incarnation: INC, seq: 10 }, unit: { seqLo: 1, seqHi: 10 } })
+    expect(log[0]!.unit).toBeUndefined()
     expect(log[2]!.watermark).toBeUndefined()
     expect(log[3]!.removed).toEqual([u.files[1]!.key])
   })
@@ -405,7 +451,7 @@ describe('change log', () => {
     expect(await seqOf(l)).toBe(40)
 
     await heal(l)
-    expect(await l.drain()).toBe(3)
+    expect(await l.drain()).toEqual({ written: 3 })
     expect((await readLog(tenant)).map((c) => c.version)).toEqual([1, 2, 3, 4, 5])
     expect(await loggedOf(l)).toBe(40)
   })
@@ -418,8 +464,8 @@ describe('change log', () => {
     await runInDurableObject(l, (_i, state) => {
       state.storage.sql.exec(`INSERT INTO outbox (version, body) VALUES (?, ?)`, 2, JSON.stringify(log[1]))
     })
-    expect(await l.drain()).toBe(1)
-    expect(await l.drain()).toBe(0)
+    expect(await l.drain()).toEqual({ written: 1 })
+    expect(await l.drain()).toEqual({ written: 0 })
     expect(await readLog(tenant)).toEqual(log)
     expect(await loggedOf(l)).toBe(10)
   })
@@ -450,7 +496,7 @@ describe('eviction', () => {
     expect(await everything(l)).toEqual(samples)
     expect(await everything(l, 'metric_series')).toEqual(series)
     expect(await l.loggedWatermarks()).toEqual(logged)
-    expect(await l.addUnit(pair(1, 10))).toEqual({ status: 'not_contiguous', watermark: 10 }) // its samples file was compacted away
+    expect(await l.addUnit(pair(1, 10))).toMatchObject({ status: 'ok', watermark: 10 }) // a replay, though its samples file was compacted away
     expect(await l.addUnit(pair(1, 4, T0, 'pool/1', 99))).toMatchObject({ status: 'ok', watermark: 4 }) // replay still recognised
     expect(await l.addUnit(pair(11, 12))).toMatchObject({ status: 'ok', version: samples.version + 1 })
   })
@@ -594,12 +640,20 @@ describe('rebuild from the R2 log', () => {
     await l.addUnit(pair(1, 10))
     await loseStorage(l)
     const p = await everything(l)
-    const base = await (await env.BUCKET.get(`${logPrefix(tenant)}${p.ledgerIncarnation}/base.json`))!.json<LedgerBase>()
-    expect(base).toMatchObject({ ledgerIncarnation: p.ledgerIncarnation, version: 2, source: p.ledgerIncarnation - 1 })
-    expect(base.files.map((f) => f.key).sort()).toEqual([...keys(p), ...keys(await everything(l, 'metric_series'))].sort())
-    expect(base.streams).toEqual([{ shard: S, incarnation: INC, watermark: 10, previousIncarnation: null }])
-    const first = await (await env.BUCKET.get(`${logPrefix(tenant)}${p.ledgerIncarnation - 1}/base.json`))!.json<LedgerBase>()
-    expect(first).toMatchObject({ version: 0, source: null, files: [], streams: [] })
+    expect(`${logPrefix(tenant)}${p.ledgerIncarnation}/base.json`).toBe(`${env.CELL}/${ledgerBaseKey(tenant, p.ledgerIncarnation)}`)
+    const base = await (await env.BUCKET.get(`${env.CELL}/${ledgerBaseKey(tenant, p.ledgerIncarnation)}`))!.json<LedgerBase>()
+    // Exactly the contract's `base` LedgerChange: no other fields.
+    expect(Object.keys(base).sort()).toEqual(['added', 'at', 'kind', 'ledgerIncarnation', 'removed', 'version', 'watermarks'])
+    expect(base).toMatchObject({ ledgerIncarnation: p.ledgerIncarnation, version: 2, kind: 'base', removed: [] })
+    const byKey = (a: FileEntry, b: FileEntry) => (a.key < b.key ? -1 : 1)
+    const live = [...p.files, ...(await everything(l, 'metric_series')).files].sort(byKey)
+    expect([...base.added].sort(byKey)).toEqual(live) // whole FileEntry objects, nothing more
+    expect(base.watermarks).toEqual([{ shard: S, incarnation: INC, seq: 10 }])
+    const first = await (await env.BUCKET.get(`${env.CELL}/${ledgerBaseKey(tenant, p.ledgerIncarnation - 1)}`))!.json<LedgerBase>()
+    expect(first).toEqual({ ledgerIncarnation: p.ledgerIncarnation - 1, version: 0, at: first.at, kind: 'base', added: [], removed: [], watermarks: [] })
+    // In an R2 listing the base comes AFTER the version objects (`b` sorts after digits).
+    const listed = await env.BUCKET.list({ prefix: `${logPrefix(tenant)}${p.ledgerIncarnation - 1}/` })
+    expect(listed.objects.map((o) => o.key.split('/').pop())).toEqual(['000000000001.json', '000000000002.json', 'base.json'])
   })
 
   it('fails rather than rebuild from a log with a hole', async () => {
@@ -613,5 +667,98 @@ describe('rebuild from the R2 log', () => {
       return inst.rebuildFromLog().then(() => 'rebuilt', (e: Error) => e.message)
     })
     expect(outcome).toMatch(/not contiguous at version 3/)
+  })
+})
+
+describe('contracts v2', () => {
+  it('writes a base change before anything else, for a brand-new tenant too', async () => {
+    const { tenant, l } = open()
+    const p = await everything(l) // first touch: no mutation yet
+    const base = await (await env.BUCKET.get(`${env.CELL}/${ledgerBaseKey(tenant, p.ledgerIncarnation)}`))!.json<LedgerChange>()
+    expect(base).toMatchObject({ kind: 'base', ledgerIncarnation: p.ledgerIncarnation, version: 0, added: [], removed: [], watermarks: [] })
+    expect(await readLog(tenant)).toEqual([])
+  })
+
+  it('refuses a stream incarnation lower than the registered one, and keeps the watermark', async () => {
+    const { tenant, l } = open()
+    await l.registerStream({ shard: S, incarnation: INC })
+    await l.addUnit(pair(1, 10))
+    const before = await everything(l)
+    const log = await readLog(tenant)
+    expect(await failure(l, (i) => i.registerStream({ shard: S, incarnation: INC - 1 }))).toMatch(/refusing the lower/)
+    expect(await l.addUnit(pair(1, 3, T0, S, INC - 1))).toEqual({ status: 'incarnation_mismatch', incarnation: INC })
+    expect(await everything(l)).toEqual(before)
+    expect(await readLog(tenant)).toEqual(log)
+    // A higher one is still accepted.
+    expect((await l.registerStream({ shard: S, incarnation: INC + 1 })).previousIncarnation).toBe(INC)
+    expect(await failure(l, (i) => i.registerStream({ shard: S, incarnation: INC }))).toMatch(/refusing the lower/)
+  })
+
+  it('only serves tenant ids that match TENANT_ID', async () => {
+    for (const ok of ['a', 'Tenant_1-x', 'x'.repeat(64)]) expect(TENANT_ID.test(ok)).toBe(true)
+    for (const bad of ['a/1', 'a.b', 'a b', 'x'.repeat(65), 'é', 'a=b']) {
+      expect(TENANT_ID.test(bad)).toBe(false)
+      const stub = env.LEDGER.get(env.LEDGER.idFromName(bad))
+      const outcome = await stub.plan({ table: 'metric_samples', minTs: 0, maxTs: 1 }).then(() => 'served', (e: Error) => e.message)
+      expect(outcome).toMatch(/tenant id must match/)
+    }
+    // Nothing was written to R2 for any of them.
+    for (const bad of ['a/1', 'a.b']) expect((await env.BUCKET.list({ prefix: `${env.CELL}/ledger/tenant=${bad}` })).objects).toEqual([])
+  })
+
+  it('exposes the admin surface: drain, outboxDepth, rebuildFromLog', async () => {
+    const { l } = open()
+    await l.registerStream({ shard: S, incarnation: INC })
+    await breakR2(l)
+    await l.addUnit(pair(1, 10))
+    expect(await l.outboxDepth()).toBe(1)
+    await heal(l)
+    expect(await l.drain()).toEqual({ written: 1 })
+    expect(await l.outboxDepth()).toBe(0)
+    const p = await everything(l)
+    const r = await runInDurableObject(l, async (inst: Ledger, state) => {
+      await state.storage.deleteAll()
+      return inst.rebuildFromLog()
+    })
+    expect(r).toMatchObject({ ledgerIncarnation: p.ledgerIncarnation + 1, version: p.version })
+  })
+
+  it('checks unit contiguity while replaying the log, from the range each change carries', async () => {
+    const { tenant, l } = open()
+    await l.registerStream({ shard: S, incarnation: INC })
+    for (let k = 1; k <= 3; k++) await l.addUnit(pair(k, k))
+    const inc = (await everything(l)).ledgerIncarnation
+    const key = `${env.CELL}/${ledgerLogKey(tenant, inc, 3)}`
+    const change = await (await env.BUCKET.get(key))!.json<LedgerChange>()
+    expect(change.unit).toEqual({ seqLo: 2, seqHi: 2 })
+    await env.BUCKET.put(key, JSON.stringify({ ...change, unit: { seqLo: 1, seqHi: 2 } }))
+    const outcome = await runInDurableObject(l, async (inst: Ledger, state) => {
+      await state.storage.deleteAll()
+      return inst.rebuildFromLog().then(() => 'rebuilt', (e: Error) => e.message)
+    })
+    expect(outcome).toMatch(/unit range is not contiguous/)
+  })
+
+  it('lets a log reader that meets a new incarnation start again from its base', async () => {
+    const { tenant, l } = open()
+    await l.addUnit(pair(1, 10))
+    await l.addUnit(pair(11, 20))
+    await loseStorage(l)
+    await l.addUnit(pair(21, 30))
+    const p = await everything(l)
+    // Read only the latest incarnation: base + its changes reproduce the live set and watermark.
+    const base = await (await env.BUCKET.get(`${env.CELL}/${ledgerBaseKey(tenant, p.ledgerIncarnation)}`))!.json<LedgerChange>()
+    const live = new Set(base.added.map((f) => f.key))
+    let seq = base.watermarks!.find((w) => w.shard === S)!.seq
+    for (const c of (await readLog(tenant)).filter((c) => c.ledgerIncarnation === p.ledgerIncarnation)) {
+      for (const k of c.removed) live.delete(k)
+      for (const f of c.added) live.add(f.key)
+      if (c.kind === 'add_unit') {
+        expect(c.unit!.seqLo).toBe(seq + 1)
+        seq = c.unit!.seqHi
+      }
+    }
+    expect([...live].sort()).toEqual([...keys(p), ...keys(await everything(l, 'metric_series'))].sort())
+    expect(seq).toBe(30)
   })
 })

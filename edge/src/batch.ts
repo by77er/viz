@@ -1,5 +1,5 @@
 import { tooLarge } from './errors'
-import type { Limits } from './limits'
+import { CONTRACT, type Limits } from './limits'
 
 /**
  * The `VZB1` columnar batch (contracts/BATCH.md): canonical labels, series ids, and the
@@ -48,6 +48,7 @@ export const Reject = {
   InvalidLabel: 6,
   TooOld: 7,
   TooNew: 8,
+  SeriesTooLarge: 9,
 } as const
 
 const REASONS: Record<number, string> = {
@@ -59,6 +60,7 @@ const REASONS: Record<number, string> = {
   [Reject.InvalidLabel]: 'invalid label (empty name, NUL byte or invalid UTF-8)',
   [Reject.TooOld]: 'timestamp older than the accept window',
   [Reject.TooNew]: 'timestamp too far in the future',
+  [Reject.SeriesTooLarge]: 'label set too large to fit one batch',
 }
 
 const utf8Strict = new TextDecoder('utf-8', { fatal: true })
@@ -123,9 +125,10 @@ export class Collector {
   /** `bodyBytes`: size of the decoded request, a good first guess for the series table. */
   constructor(readonly limits: Limits, now: number, bodyBytes = 1 << 16) {
     this.arena = new Uint8Array(Math.min(Math.max(bodyBytes, 1 << 12), 64 << 20))
-    // Clamped to safe integers, so every accepted timestamp is an exact i64.
-    this.minTs = Math.max(now - limits.acceptBackMs, Number.MIN_SAFE_INTEGER)
-    this.maxTs = Math.min(now + limits.acceptAheadMs, Number.MAX_SAFE_INTEGER)
+    // The accept window, clamped to the contract's range (years 1970 to 9999), so every
+    // accepted timestamp is an exact i64 and its UTC day is always `YYYY-MM-DD`.
+    this.minTs = Math.max(now - limits.acceptBackMs, CONTRACT.minTimestampMs)
+    this.maxTs = Math.min(now + limits.acceptAheadMs, CONTRACT.maxTimestampMs)
   }
 
   get nSeries(): number {
@@ -186,6 +189,9 @@ export class Collector {
       order[j] = i
       m++
     }
+
+    // A batch must hold at least one row of this series: header, this entry, one row.
+    if (pad8(16 + bytes) + 8 + 16 > L.maxBatchBytes) return -Reject.SeriesTooLarge
 
     if (this.arenaLen + bytes > this.arena.length) {
       const grown = new Uint8Array(Math.max(this.arena.length * 2, this.arenaLen + bytes))

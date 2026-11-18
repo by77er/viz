@@ -157,7 +157,10 @@ export class OtlpMapper {
       if (k === 'service.name') service = v
       else if (k === 'service.namespace') namespace = v
       else if (k === 'service.instance.id') m.set('instance', v)
-      else m.set(labelName(k), join(m.get(labelName(k)), v))
+      else {
+        const name = attrLabel(k)
+        m.set(name, join(m.get(name), v))
+      }
     }
     if (service !== '') m.set('job', namespace !== '' ? `${namespace}/${service}` : service)
     this.p = 0
@@ -195,7 +198,7 @@ export class OtlpMapper {
     names.length = values.length = saved.length = 0
     const first = this.nResource + 1
     for (let a = 0; a < attrs.length; a++) {
-      const name = labelName(attrs[a]![0])
+      const name = attrLabel(attrs[a]![0])
       let v = attrs[a]![1]
       const rs = this.resourceSlot.get(name)
       let k = names.indexOf(name)
@@ -232,6 +235,18 @@ export class OtlpMapper {
     else if (value !== undefined) this.c.addSampleNumber(series, tsMs, value)
     else this.c.reject('data point without a value', 1)
   }
+}
+
+/**
+ * The label for an attribute. `job` and `instance` are reserved for the resource's
+ * `service.*` attributes (they are the routing key, contracts/BATCH.md "Routing"): any
+ * other attribute that would land on those names is renamed `exported_job` /
+ * `exported_instance`, as Prometheus does for a scraped label that clashes with a target
+ * label. So a data point can never change which shard its sender's rows go to.
+ */
+function attrLabel(key: string): string {
+  const name = labelName(key)
+  return name === 'job' ? 'exported_job' : name === 'instance' ? 'exported_instance' : name
 }
 
 const join = (prev: string | undefined, value: string): string => (prev === undefined || prev === '' ? value : value === '' ? prev : `${prev};${value}`)
