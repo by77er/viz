@@ -49,7 +49,7 @@ const mutants = [
     edits: [['    if (refused) throw new SchemaTooNewError(refused)\n', '']] },
   { id: 'M17', what: 'a refusing publisher publishes from its alarm (and writes)', file: P, tests: ['test/compat.test.ts'],
     edits: [["    if (refused) {\n      // Keep the alarm for the release that owns this storage; touch nothing else.\n      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)\n      return\n    }\n    const tenants", '    const tenants']] },
-  { id: 'M18', what: 'commits over metadata a newer publisher wrote (no check when rebuilding from R2)', file: P, tests: ['test/compat.test.ts'],
+  { id: 'M18', what: 'rebuilds its view from metadata a newer publisher wrote (no check in resync)', file: P, tests: ['test/compat.test.ts'],
     edits: [['    checkMetadata(meta, this.metaKey(table, version))\n    const current', '    const current']] },
   { id: 'M19', what: 'a ledger change of an unknown version is applied as if it were known', file: L, tests: ['test/compat.test.ts'],
     edits: [['  if (why) return new Unsupported(`version ${version}: ${why}`)\n', '']] },

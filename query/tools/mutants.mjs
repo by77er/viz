@@ -290,7 +290,8 @@ function buildWasm() {
 
 function suite(files = []) {
   const out = join(mkdtempSync(join(tmpdir(), 'viz-query-mutants-')), 'result.json')
-  const r = run('npx', ['vitest', 'run', ...files, '--reporter=json', `--outputFile=${out}`])
+  // At most two workers: the machine is shared with other engineers' builds.
+  const r = run('npx', ['vitest', 'run', ...files, '--maxWorkers=2', '--reporter=json', `--outputFile=${out}`])
   let json
   try {
     json = JSON.parse(readFileSync(out, 'utf8'))

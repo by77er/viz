@@ -18,6 +18,21 @@ function selector(metricName: string | undefined, matchers?: Matcher[]): string 
 export interface CompletionOptions {
   /** How long a lookup waits for a newer one before it is sent, in ms. */
   debounceMs?: number
+  /**
+   * The time range lookups cover, in epoch seconds: the page's query window. Without one the
+   * real API looks through all time, reading every data file of the tenant, or refuses with
+   * 422 at its limits (query/README.md, "Cheap label endpoints"), so lookups always send one.
+   */
+  range?: () => { start: number; end: number } | null
+}
+
+/** Lookups cover whole hours around the window, so the cache serves every run within the same hours. */
+export const LOOKUP_GRAIN = 3600
+
+/** The window of a lookup: the page's range widened to whole hours, or null when the page has none yet. */
+export function lookupWindow(range: { start: number; end: number } | null | undefined): { start: number; end: number } | null {
+  if (!range) return null
+  return { start: Math.floor(range.start / LOOKUP_GRAIN) * LOOKUP_GRAIN, end: Math.ceil(range.end / LOOKUP_GRAIN) * LOOKUP_GRAIN }
 }
 
 /** Wait this long before asking the API, so a lookup for every keystroke is never sent. */
@@ -32,11 +47,16 @@ export const COMPLETION_DEBOUNCE_MS = 150
  * selector) are debounced and cancelled: a lookup waits `debounceMs` before it is sent, and a
  * newer lookup of the same kind replaces it. One that has not been sent is never sent; one in
  * flight is aborted through its AbortSignal. A replaced lookup answers with the empty
- * fallback and is not cached. The two whole-backend lists (metric names, metadata) are
- * fetched once and kept.
+ * fallback and is not cached. Metadata is fetched once and kept; metric names once per
+ * lookup window. Every lookup is bounded by the page's time range, widened to whole hours.
  */
 export function completionClient(client: PromClient, options: CompletionOptions = {}): CompletionClient {
   const debounceMs = options.debounceMs ?? COMPLETION_DEBOUNCE_MS
+  /** The window to send, and the part of a cache key that names it. */
+  const win = () => {
+    const w = lookupWindow(options.range?.())
+    return { params: w ?? {}, key: w ? `@${w.start}-${w.end}` : '@all' }
+  }
   const cache = new Map<string, Promise<unknown>>()
   const pending = new Map<string, { key: string; cancel: () => void }>()
 
@@ -88,23 +108,34 @@ export function completionClient(client: PromClient, options: CompletionOptions 
   return {
     labelNames: (metricName) => {
       const sel = selector(metricName)
-      return latest('labels', `labels:${sel}`, (signal) => client.labels(sel ? { match: [sel] } : {}, { signal }), [])
+      const w = win()
+      return latest('labels', `labels:${sel}${w.key}`, (signal) => client.labels({ ...(sel ? { match: [sel] } : {}), ...w.params }, { signal }), [])
     },
     labelValues: (labelName, metricName, matchers) => {
       const sel = selector(metricName, matchers as Matcher[] | undefined)
-      return latest('values', `values:${labelName}:${sel}`, (signal) => client.labelValues(labelName, sel ? { match: [sel] } : {}, { signal }), [])
+      const w = win()
+      return latest(
+        'values',
+        `values:${labelName}:${sel}${w.key}`,
+        (signal) => client.labelValues(labelName, { ...(sel ? { match: [sel] } : {}), ...w.params }, { signal }),
+        [],
+      )
     },
     metricMetadata: () => once('metadata', () => client.metadata(), {}),
     series: (metricName, matchers) => {
       const sel = selector(metricName, matchers as Matcher[] | undefined) ?? metricName
+      const w = win()
       return latest(
         'series',
-        `series:${sel}`,
-        async (signal) => (await client.series([sel], {}, { signal })).map((labels) => new Map(Object.entries(labels))),
+        `series:${sel}${w.key}`,
+        async (signal) => (await client.series([sel], w.params, { signal })).map((labels) => new Map(Object.entries(labels))),
         [],
       )
     },
-    metricNames: () => once('names', () => client.labelValues('__name__'), []),
+    metricNames: () => {
+      const w = win()
+      return once(`names${w.key}`, () => client.labelValues('__name__', w.params), [])
+    },
     flags: () => Promise.resolve({}),
   }
 }

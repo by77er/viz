@@ -96,19 +96,21 @@ const QueryRow = memo(function QueryRow({
   run,
   client,
   editorRef,
+  rangeRef,
 }: {
   committed: string
   loading: boolean
   run: () => void
   client: ReturnType<typeof useSettings>['client']
   editorRef: React.RefObject<PromqlEditorHandle | null>
+  rangeRef: React.RefObject<{ start: number; end: number } | null>
 }) {
   countRender('QueryRow')
   return (
     <div className="query-row">
       <div className="vz-query query-well" onClick={() => editorRef.current?.focus()}>
         <Suspense fallback={<div className={committed ? undefined : 'cell-quiet'}>{committed || 'Loading the query editor'}</div>}>
-          <PromqlEditor value={committed} onRun={run} client={client} handleRef={editorRef} />
+          <PromqlEditor value={committed} onRun={run} client={client} handleRef={editorRef} rangeRef={rangeRef} />
         </Suspense>
       </div>
       <button className="vz-button" data-tone="blue" onClick={run} aria-busy={loading} data-testid="run" aria-keyshortcuts="Control+Enter Meta+Enter">
@@ -167,6 +169,10 @@ export function ExplorePage() {
     // runId and the query text re-resolve "now" for relative ranges on every run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search.from, search.to, search.step, search.q, widthBucket, runId])
+
+  // Autocomplete looks up names and values in the window being queried (editor/promClient.ts).
+  const rangeRef = useRef<{ start: number; end: number } | null>(null)
+  rangeRef.current = window_ ? { start: window_.start, end: window_.end } : null
 
   const q = search.q.trim()
   /** What the page now wants answered. A result is compared with it, never described by it. */
@@ -529,7 +535,7 @@ export function ExplorePage() {
       <h1 className="sr-only">Explore metrics</h1>
 
       {/* Query row: the one blue button of the view. */}
-      <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} />
+      <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={rangeRef} />
 
       {/* Toolbar: every control carries its label, so the row needs no explanation. */}
       <div className="toolbar">

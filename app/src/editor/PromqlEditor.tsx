@@ -92,6 +92,8 @@ interface Props {
   onRun: () => void
   client: PromClient
   handleRef?: React.RefObject<PromqlEditorHandle | null>
+  /** The page's query window (epoch seconds), read by autocomplete at each lookup. */
+  rangeRef?: React.RefObject<{ start: number; end: number } | null>
 }
 
 /**
@@ -100,7 +102,7 @@ interface Props {
  * nothing in React (design review B3). The extensions are built once per editor, and the
  * autocomplete source once per connection.
  */
-export default memo(function PromqlEditor({ value, onRun, client, handleRef }: Props) {
+export default memo(function PromqlEditor({ value, onRun, client, handleRef, rangeRef }: Props) {
   countRender('PromqlEditor')
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -109,7 +111,7 @@ export default memo(function PromqlEditor({ value, onRun, client, handleRef }: P
   cb.current = { onRun }
 
   const promqlExtension = (c: PromClient) =>
-    new PromQLExtension().setComplete({ remote: completionClient(c), maxMetricsMetadata: 10000 }).asExtension()
+    new PromQLExtension().setComplete({ remote: completionClient(c, { range: () => rangeRef?.current ?? null }), maxMetricsMetadata: 10000 }).asExtension()
 
   useEffect(() => {
     const view = new EditorView({

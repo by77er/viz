@@ -934,6 +934,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     if (!o) throw new Error(`publisher: ${this.metaKey(table, version)} vanished`)
     const meta = await o.json<TableMetadata>()
     // Never rebuild this code's view from a table a newer publisher evolved: the next commit would overwrite it.
+    checkMetadata(meta, this.metaKey(table, version))
     const current = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])
     let manifests: ManifestInfo[] = []
     let files: { file: LiveFile; manifest: string }[] = []
