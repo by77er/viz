@@ -141,6 +141,19 @@ also holds unrelated Workers, buckets and KV namespaces.
 - Usage and billing figures come from Cloudflare's analytics API, not from estimates; a
   number read from there is "measured on Cloudflare", and says for which window.
 
+## Shared machine
+
+Many builds may run at once on one machine with 16 GB of memory and 4 cores, and the
+kernel kills processes when memory runs out.
+
+- Build Rust with `-j 2`, run test runners with at most 2 workers, and keep any single
+  process under about 1.5 GB. Scale a benchmark down and extrapolate rather than exceed it,
+  and say that you did.
+- Do not run two heavy jobs (a model checker, a large benchmark, a full Rust build) at the
+  same time.
+- If a run dies without a result, rerun it; never treat a missing result as a pass.
+- Stop servers you started when you finish.
+
 ## Git
 
 - `node_modules/`, build output, `target*/`, Go module caches and third-party source

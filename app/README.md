@@ -404,8 +404,9 @@ not preloaded.
 - The favicon is an inline SVG and cannot read the tokens; it repeats the two `ink` values.
 - "Commands" and "Settings" in the navigation are nouns, not verbs. The review calls them an
   acceptable minor and gives no wording, so they are left for the navigation component.
-- The URL's `view` follows 300 ms after the last change of form. A Back press inside those
-  300 ms goes back past the change of form.
+- The URL's `view` follows 300 ms after the last change of form (it replaces the entry, as
+  before). A Back press inside those 300 ms keeps the form on screen and writes it into the
+  entry Back went to; a reload inside them is covered by `pagehide`.
 - A dialog has no scrim: the system has no scrim token yet.
 - The nav hides nothing at 400 px today, but it scrolls sideways (by the system's design)
   once more sections are added.

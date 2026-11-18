@@ -454,7 +454,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const tombstones = sql
       .exec(
         `SELECT t.key, t.tbl, t.version, t.at FROM tombstone t
-         WHERE t.version < ? AND t.at <= ? AND NOT EXISTS (SELECT 1 FROM file f WHERE f.key = t.key)
+         WHERE t.version < ? + 1000000 AND t.at <= ? AND NOT EXISTS (SELECT 1 FROM file f WHERE f.key = t.key)
          ORDER BY t.version, t.key LIMIT ?`,
         this.firstUnlogged(), Date.now() - req.minAgeMs, limit,
       )

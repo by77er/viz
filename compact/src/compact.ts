@@ -142,6 +142,7 @@ const byTime = (a: Pair, b: Pair): number => a.minTs - b.minTs || (a.samples.key
 function fill(candidates: Pair[], policy: CompactPolicy, into: Pair[] = []): Pair[] {
   let bytes = into.reduce((a, p) => a + p.bytes, 0)
   for (const p of candidates) {
+    if (into.length >= policy.maxInputPairs) break
     if (bytes + p.bytes > policy.maxInputBytes) continue
     into.push(p)
     bytes += p.bytes
