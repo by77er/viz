@@ -1,54 +1,54 @@
 {
   "label": "after",
   "root": "/home/user/viz/app",
-  "when": "2026-11-18T19:53:51.266Z",
-  "runs": 5,
+  "when": "2026-11-18T19:57:05.870Z",
+  "runs": 20,
   "setup": "Chromium, CPU 4x, Fast 4G, 1440x900, fresh context per run",
   "summary": {
     "press": {
-      "p75": 36.09999999962747,
-      "median": 26.800000000745058,
-      "max": 37.59999999962747
+      "p75": 26.800000000745058,
+      "median": 19.200000001117587,
+      "max": 58.5
     },
     "busy": {
-      "p75": 57.70000000111759,
-      "median": 50.29999999888241,
-      "max": 81.40000000037253
+      "p75": 50.29999999888241,
+      "median": 42.5,
+      "max": 112.59999999962747
     },
     "chartToTable": {
-      "p75": 96.80000000074506,
-      "median": 79.09999999962747,
-      "max": 97.69999999925494
+      "p75": 89.40000000037253,
+      "median": 62.399999998509884,
+      "max": 117.5
     },
     "tableToText": {
-      "p75": 62.59999999962747,
+      "p75": 63.80000000074506,
       "median": 55.90000000037253,
       "max": 111.19999999925494
     },
     "textToChart": {
-      "p75": 52.70000000111759,
-      "median": 52.59999999962747,
+      "p75": 57,
+      "median": 50,
       "max": 87.30000000074506
     },
     "picker": {
-      "p75": 64.40000000037253,
-      "median": 61.30000000074506,
-      "max": 71
+      "p75": 72.5,
+      "median": 64.40000000037253,
+      "max": 112.5
     },
     "response": {
-      "p75": 129,
-      "median": 118,
-      "max": 137.2999999988824
+      "p75": 120.59999999962747,
+      "median": 93,
+      "max": 196.90000000037253
     },
     "inp": {
-      "p75": 64,
+      "p75": 72,
       "median": 64,
-      "max": 72
+      "max": 144
     },
     "inputDelay": {
       "p75": 12.099999999627471,
       "median": 10.199999999254942,
-      "max": 15.5
+      "max": 43.40000000037253
     },
     "clsLoad": {
       "p75": 0,
@@ -163,6 +163,231 @@
       "inp": 56,
       "inpEvent": "pointerup",
       "inputDelay": 7.899999998509884
+    },
+    {
+      "clsLoad": 0,
+      "press": 15,
+      "busy": 33.40000000037253,
+      "response": 133.2999999988824,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 64.30000000074506,
+      "tableToText": 110.09999999962747,
+      "textToChart": 81.30000000074506,
+      "picker": 112.5,
+      "inp": 96,
+      "inpEvent": "pointerup",
+      "inputDelay": 5.299999998882413
+    },
+    {
+      "clsLoad": 0,
+      "press": 12.5,
+      "busy": 36.79999999888241,
+      "response": 93,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 97.29999999888241,
+      "tableToText": 30.40000000037253,
+      "textToChart": 47.29999999888241,
+      "picker": 71.29999999888241,
+      "inp": 144,
+      "inpEvent": "keydown",
+      "inputDelay": 27.799999998882413
+    },
+    {
+      "clsLoad": 0,
+      "press": 8.600000001490116,
+      "busy": 51.5,
+      "response": 120.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 76.79999999888241,
+      "tableToText": 45.100000001490116,
+      "textToChart": 73.10000000149012,
+      "picker": 71.80000000074506,
+      "inp": 64,
+      "inpEvent": "pointerup",
+      "inputDelay": 10.799999998882413
+    },
+    {
+      "clsLoad": 0,
+      "press": 14.400000000372529,
+      "busy": 36.29999999888241,
+      "response": 97.29999999888241,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 47.30000000074506,
+      "tableToText": 41.59999999962747,
+      "textToChart": 47.09999999962747,
+      "picker": 27.199999999254942,
+      "inp": 32,
+      "inpEvent": "pointerup",
+      "inputDelay": 6.199999999254942
+    },
+    {
+      "clsLoad": 0,
+      "press": 17.09999999962747,
+      "busy": 38.79999999888241,
+      "response": 95.10000000149012,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 32.5,
+      "tableToText": 40.19999999925494,
+      "textToChart": 48.09999999962747,
+      "picker": 40.79999999888241,
+      "inp": 32,
+      "inpEvent": "pointerup",
+      "inputDelay": 4.5
+    },
+    {
+      "clsLoad": 0,
+      "press": 27.5,
+      "busy": 35,
+      "response": 89.39999999850988,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 57.30000000074506,
+      "tableToText": 17.40000000037253,
+      "textToChart": 46.90000000037253,
+      "picker": 111.19999999925494,
+      "inp": 88,
+      "inpEvent": "pointerup",
+      "inputDelay": 17
+    },
+    {
+      "clsLoad": 0,
+      "press": 19.300000000745058,
+      "busy": 49.20000000111759,
+      "response": 72.69999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 45.09999999962747,
+      "tableToText": 63.80000000074506,
+      "textToChart": 40.09999999962747,
+      "picker": 72.5,
+      "inp": 56,
+      "inpEvent": "pointerup",
+      "inputDelay": 6.200000001117587
+    },
+    {
+      "clsLoad": 0,
+      "press": 12.100000001490116,
+      "busy": 41.40000000037253,
+      "response": 69.89999999850988,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 62.399999998509884,
+      "tableToText": 57.70000000111759,
+      "textToChart": 50.90000000037253,
+      "picker": 87.5,
+      "inp": 72,
+      "inpEvent": "pointerup",
+      "inputDelay": 10.199999999254942
+    },
+    {
+      "clsLoad": 0,
+      "press": 19.200000001117587,
+      "busy": 41,
+      "response": 59.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 117.5,
+      "tableToText": 89,
+      "textToChart": 51.29999999888241,
+      "picker": 58.80000000074506,
+      "inp": 80,
+      "inpEvent": "pointerup",
+      "inputDelay": 9
+    },
+    {
+      "clsLoad": 0,
+      "press": 58.5,
+      "busy": 112.59999999962747,
+      "response": 90.30000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 98.70000000111759,
+      "tableToText": 34.90000000037253,
+      "textToChart": 43.70000000111759,
+      "picker": 38.20000000111759,
+      "inp": 72,
+      "inpEvent": "pointerup",
+      "inputDelay": 21.199999999254942
+    },
+    {
+      "clsLoad": 0,
+      "press": 27.800000000745058,
+      "busy": 46.30000000074506,
+      "response": 77.70000000111759,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 56.399999998509884,
+      "tableToText": 39.70000000111759,
+      "textToChart": 57,
+      "picker": 65.69999999925494,
+      "inp": 48,
+      "inpEvent": "pointerup",
+      "inputDelay": 5.599999999627471
+    },
+    {
+      "clsLoad": 0,
+      "press": 22.09999999962747,
+      "busy": 46.80000000074506,
+      "response": 134.69999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 59.40000000037253,
+      "tableToText": 56.5,
+      "textToChart": 50,
+      "picker": 72.5,
+      "inp": 56,
+      "inpEvent": "pointerup",
+      "inputDelay": 6.200000001117587
+    },
+    {
+      "clsLoad": 0,
+      "press": 11.100000001490116,
+      "busy": 71.5,
+      "response": 196.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 52.59999999962747,
+      "tableToText": 58.40000000037253,
+      "textToChart": 60.80000000074506,
+      "picker": 105.5,
+      "inp": 72,
+      "inpEvent": "pointerup",
+      "inputDelay": 12
+    },
+    {
+      "clsLoad": 0,
+      "press": 9.699999999254942,
+      "busy": 35.79999999888241,
+      "response": 100.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 62.5,
+      "tableToText": 66.90000000037253,
+      "textToChart": 61.399999998509884,
+      "picker": 60.30000000074506,
+      "inp": 48,
+      "inpEvent": "pointerdown",
+      "inputDelay": 43.40000000037253
+    },
+    {
+      "clsLoad": 0,
+      "press": 11.099999999627471,
+      "busy": 42.79999999888241,
+      "response": 90.69999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 89.40000000037253,
+      "tableToText": 65.09999999962747,
+      "textToChart": 45.59999999962747,
+      "picker": 58.70000000111759,
+      "inp": 72,
+      "inpEvent": "pointerup",
+      "inputDelay": 10.699999999254942
     }
   ]
 }

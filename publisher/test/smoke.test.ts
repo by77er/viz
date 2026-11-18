@@ -9,7 +9,6 @@ describe('smoke', () => {
     await mirror(a, cell)
     const p = publisher(cell)
     const r = await p.publish()
-    console.log(JSON.stringify(r))
     expect(r.tables.metric_samples.added).toBe(1)
     expect(await icebergLive(cell, 'metric_samples')).toEqual(await liveKeys(a, 'metric_samples'))
     await expectVerified(p)

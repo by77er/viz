@@ -1,7 +1,7 @@
-import { memo, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import uPlot from 'uplot'
 import { downsampleMinMax } from '../lib/downsample'
-import type { TimeSeriesChartProps } from './types'
+import type { ChartSeries, TimeSeriesChartProps } from './types'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -23,6 +23,18 @@ function fullTime(t: number): string {
   const d = new Date(t * 1000)
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
+
+interface TokenReader {
+  font: { weight: string; size: string; family: string }
+  token: (name: string) => string
+}
+const tokenCache = new Map<string, TokenReader>()
+/** Every custom property the chart uses. */
+const TOKENS = [
+  '--ink-muted', '--ink-secondary', '--rule', '--rule-control', '--hairline', '--stroke', '--mark', '--text-small-size', '--font-sans',
+  '--space-1', '--space-2', '--space-3', '--space-4', '--space-6', '--space-8', '--space-12',
+  ...Array.from({ length: 8 }, (_, i) => `--series-${i + 1}`),
+]
 
 const TIP_ROWS = 10
 /** The design system labels up to this many series directly, at the end of their lines. */
@@ -51,6 +63,9 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
   const liveRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
+  /** What the plot's hooks read: replaced on every data change, without rebuilding the plot. */
+  const live = useRef<{ ds: ReturnType<typeof downsampleMinMax>; shown: ChartSeries[]; xRange: [number, number] } | null>(null)
+  const built = useRef<{ signature: string; destroy: () => void }>({ signature: '', destroy: () => {} })
 
   // Latest callbacks without re-creating the plot.
   const cb = useRef({ onZoom, onRenderInfo, formatValue })
@@ -78,15 +93,26 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
     const { width, height } = size
     if (!host || !wrap || !tip || width < 40 || height < 40) return
 
-    const css = getComputedStyle(wrap)
-    const token = (name: string) => css.getPropertyValue(name).trim()
+    // Token values change only with the theme, so they are read from the style once per theme.
+    const themeKey = `${document.documentElement.dataset.theme ?? 'system'}/${theme}`
+    let read = tokenCache.get(themeKey)
+    if (!read) {
+      const css = getComputedStyle(wrap)
+      const values = new Map<string, string>()
+      const font = { weight: css.fontWeight, size: css.fontSize, family: css.fontFamily }
+      read = { font, token: (name) => values.get(name) ?? (values.set(name, css.getPropertyValue(name).trim()), values.get(name)!) }
+      // Read everything now: the style object is live and would be re-resolved later.
+      for (const name of TOKENS) read.token(name)
+      tokenCache.set(themeKey, read)
+    }
+    const { token, font: axis } = read
     const length = (name: string) => parseFloat(token(name)) || 0
     const ink = { muted: token('--ink-muted'), secondary: token('--ink-secondary') }
     const rule = token('--rule')
     const hairline = length('--hairline')
     const stroke = length('--stroke')
     // The container is set in the `micro` style; direct labels use `small`.
-    const axisFont = `${css.fontWeight} ${css.fontSize} ${css.fontFamily}`
+    const axisFont = `${axis.weight} ${axis.size} ${axis.family}`
     const labelFont = `400 ${token('--text-small-size')} ${token('--font-sans')}`
 
     const drawn = series.filter((s) => !visible || visible.has(s.id))
@@ -98,6 +124,17 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
     const columns = Math.max(50, Math.round((width - length('--space-12')) * dpr))
     const ds = downsampleMinMax(xs, shown.map((s) => s.values), columns)
     cb.current.onRenderInfo?.({ rawPoints: xs.length, drawnPoints: ds.xs.length, columns, downsampled: ds.downsampled })
+
+    // New data for the same series at the same size goes into the existing plot: no new
+    // canvas, no new axes. Anything else (series set, size, theme) builds a new one.
+    const data: uPlot.AlignedData = [ds.xs, ...(ds.series as (number | null)[][])]
+    const signature = [width, height, themeKey, syncKey ?? '', ...shown.map((s) => `${s.id}|${s.colorVar}|${s.other ? 1 : 0}|${s.directLabel ?? s.shortLabel ?? s.label}`)].join('\n')
+    live.current = { ds, shown, xRange }
+    if (plotRef.current && built.current.signature === signature) {
+      plotRef.current.setData(data)
+      return
+    }
+    built.current.destroy()
 
     // ---- crosshair readout: rows are created once and reused on every move.
     tip.replaceChildren()
@@ -119,12 +156,13 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
     tipMore.className = 'tip-more'
     tip.append(tipTime, ...tipRows.map((r) => r.row), tipMore)
     tip.hidden = false
-    const tipWidth = tip.offsetWidth // read once, not on every move
     tip.hidden = true
+    let tipWidth = 0 // measured on the first move, then kept
     const tipGap = length('--space-3')
 
     let focused: number | null = null
     const renderTip = (u: uPlot) => {
+      const { ds, shown } = live.current!
       const idx = u.cursor.idx
       const left = u.cursor.left ?? -1
       if (idx == null || left < 0) {
@@ -156,6 +194,7 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
       tipMore.textContent = rows.length === 0 ? 'No data at this time' : rows.length > list.length ? `and ${rows.length - list.length} more series` : ''
       tipMore.hidden = tipMore.textContent === ''
       tip.hidden = false
+      if (!tipWidth) tipWidth = tip.offsetWidth
       const x = u.over.offsetLeft + left
       const flip = x + tipGap + tipWidth > width
       tip.style.transform = `translate(${Math.max(0, flip ? x - tipGap - tipWidth : x + tipGap)}px, ${u.over.offsetTop + tipGap}px)`
@@ -164,6 +203,7 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
     // ---- direct labels for up to four series: right-aligned at the plot's edge, above the
     // highest point the line reaches underneath the text, so a label never crosses its line.
     const drawLabels = (u: uPlot) => {
+      const { ds, shown } = live.current!
       if (shown.length === 0 || shown.length > DIRECT_LABELS) return
       const ctx = u.ctx
       ctx.save()
@@ -227,7 +267,7 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
         sync: syncKey ? { key: syncKey } : undefined,
       },
       scales: {
-        x: { time: true, range: () => xRange },
+        x: { time: true, range: () => live.current!.xRange },
         y: {
           range: (_u, min, max) => {
             if (min === max) {
@@ -303,7 +343,6 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
       },
     }
 
-    const data: uPlot.AlignedData = [ds.xs, ...(ds.series as (number | null)[][])]
     const u = new uPlot(opts, data, host)
     plotRef.current = u
     host.querySelector('canvas')?.setAttribute('aria-hidden', 'true')
@@ -322,15 +361,21 @@ export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesCh
     let alive = true
     if (document.fonts.status !== 'loaded') void document.fonts.ready.then(() => alive && u.redraw(false))
 
-    return () => {
-      alive = false
-      plotRef.current = null
-      tip.hidden = true
-      u.destroy()
+    built.current = {
+      signature,
+      destroy: () => {
+        alive = false
+        plotRef.current = null
+        tip.hidden = true
+        u.destroy()
+        built.current = { signature: '', destroy: () => {} }
+      },
     }
     // formatValue / callbacks are read through refs; xRange is compared by value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [xs, series, visible, size, theme, syncKey, xRange[0], xRange[1]])
+
+  useEffect(() => () => built.current.destroy(), [])
 
   // Keyboard: arrows move the crosshair; values are announced politely.
   const onKeyDown = (e: React.KeyboardEvent) => {

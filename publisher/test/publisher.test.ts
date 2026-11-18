@@ -895,6 +895,29 @@ describe('driving', () => {
     expect(await alarm()).toBeNull()
   })
 
+  it('keeps a nudge that arrives while a publish is running', async () => {
+    const { cell, tenant } = fresh()
+    const a = tenant('a')
+    await addUnit(a, pairUnit(cell, a, 1, 1))
+    await mirror(a, cell)
+    const p = publisher(cell)
+    const reached = p.pauseAt('manifests-written', 'metric_samples')
+    const done = p.publish([a])
+    await reached // the log has been read
+    await addUnit(a, pairUnit(cell, a, 2, 2))
+    await mirror(a, cell)
+    await p.advanceClock(1000)
+    await p.notify([a])
+    await p.resume()
+    expect((await done).tenants[0]!.status).toBe('ok')
+    expect((await icebergLive(cell, 'metric_samples')).length).toBe(1)
+    // The nudge was about a change this publish did not read, so it is still pending.
+    expect(await p.pending()).toEqual([a])
+    expect(await runDurableObjectAlarm(p)).toBe(true)
+    await expectPublished(cell, [a])
+    expect(await p.pending()).toEqual([])
+  })
+
   it('does not let the location prefix change once a table exists', async () => {
     const { cell, tenant } = fresh()
     const a = tenant('a')

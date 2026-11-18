@@ -377,7 +377,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
   async notify(tenants: string[]): Promise<void> {
     const now = this.now()
     for (const t of tenants) {
-      if (TENANT_ID.test(t)) this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO NOTHING`, t, now)
+      // `since` is the latest nudge: a publish clears only nudges older than its own start.
+      if (TENANT_ID.test(t)) this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET since = excluded.since`, t, now)
     }
     if (this.pendingTenants().length > 0 && (await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(now + this.config().publishIntervalMs)
@@ -448,7 +449,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
         const done = new Set(result.tenants.filter((t) => t.status === 'ok' || t.status === 'no_log').map((t) => t.tenant))
         const now = this.now()
         for (const t of result.tenants) {
-          if (done.has(t.tenant)) this.sql.exec(`DELETE FROM pending WHERE tenant = ?`, t.tenant)
+          // A nudge that arrived after this publish began may be about a change it did not read.
+          if (done.has(t.tenant)) this.sql.exec(`DELETE FROM pending WHERE tenant = ? AND since <= ?`, t.tenant, t0)
           else if (t.status !== 'invalid') this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO NOTHING`, t.tenant, now)
         }
         await this.scheduleAlarm()
@@ -551,7 +553,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       for (const c of log.changes) {
         if (c.version <= start) continue
         for (const k of c.removed) {
-          if (work.delete(k)) dropped.push(k)
+          if (work.get(k) === null ? work.delete(k) : work.has(k)) dropped.push(k)
           // `removed` holds keys of every table. One that names this table by the contract's
           // key layout and is not live here means the log and the publication disagree.
           else if (DAY_TABLE.exec(k)?.[1] === table) problem = `change ${c.version} removes ${k}, which is not live at version ${c.version - 1}`
@@ -1041,7 +1043,6 @@ export class Publisher extends DurableObject<PublisherEnv> {
       const files = snaps.get(s['snapshot-id'])
       // Without the full reference list of a retained snapshot, nothing can be proven orphan.
       if (!files) return out
-      if (s['snapshot-id'] !== meta['current-snapshot-id']) continue
       for (const f of files) referenced.add(f)
     }
 
@@ -1114,6 +1115,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * needs nothing but R2.
    */
   async verify(table: Table, options: { cursors?: 'state' | 'snapshot'; checkObjects?: boolean } = {}): Promise<VerifyResult> {
+    // In the queue with publishes: a commit in progress has R2 ahead of SQLite for a moment.
+    return this.serial(() => this.verifyNow(table, options))
+  }
+
+  private async verifyNow(table: Table, options: { cursors?: 'state' | 'snapshot'; checkObjects?: boolean }): Promise<VerifyResult> {
     const cfg = this.config()
     const store = new CountingBucket(this.env.BUCKET)
     const state = this.state(table)

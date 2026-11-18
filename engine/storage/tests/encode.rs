@@ -261,6 +261,11 @@ fn day_strings() {
     assert_eq!(format_day(-719_528), "0000-01-01");
     assert_eq!(day_string(1_700_000_000_000), DAY0);
     assert_eq!(day_string(253_402_300_799_999), "9999-12-31");
+    // Flooring, not truncation, below the epoch (no batch can carry such a timestamp any
+    // more, but the function is public and must not be wrong there).
+    assert_eq!(day_string(-1), "1969-12-31");
+    assert_eq!(day_string(-86_400_000), "1969-12-31");
+    assert_eq!(day_string(-86_400_001), "1969-12-30");
     // Out of the four-digit range: still a string, never a panic.
     assert_eq!(day_string(253_402_300_800_000), "+10000-01-01");
     assert!(day_string(i64::MIN).starts_with('-'));

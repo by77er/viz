@@ -20,8 +20,8 @@
 //   toggle x→y  pointerup on the segment -> end of the first frame in which the new form is
 //               in the document and visible (for the chart: its canvas, drawn before that frame)
 //   picker      pointerup on the time range button -> the popover is in a painted frame
-//   response    the query_range body has arrived in the page -> end of the first frame that
-//               holds the new chart canvas
+//   response    the query_range body has arrived in the page -> end of the last frame of the
+//               burst of changes to the result panel that follows (see instrument())
 //   inp         the longest Event Timing duration of any interaction in the run
 //   cls         layout-shift entries summed: "load" from navigation until the result has
 //               settled; "run" from the press on Run query until the new result has settled.
@@ -54,21 +54,24 @@ function instrument() {
   const realFetch = window.fetch
   window.fetch = async (...a) => {
     const res = await realFetch(...a)
-    if (String(a[0] && a[0].url ? a[0].url : a[0]).includes('query_range')) res.clone().text().then(() => { m.resp = performance.now(); m.canvasSeen = false })
+    if (String(a[0] && a[0].url ? a[0].url : a[0]).includes('query_range')) res.clone().text().then(() => { m.resp = performance.now() })
     return res
   }
-  // The first frame that holds a canvas inserted after the response.
+  // The result is painted when the burst of DOM changes that follows the response has been
+  // drawn: the end of the last frame in which the result panel changed, the burst being over
+  // once 250 ms pass without a change. (The old app adds its chart canvas one frame after the
+  // rest of the result; the new one redraws the existing canvas in the same frame as the text.
+  // Counting the whole burst treats both the same.)
+  let quiet = null
   new MutationObserver((records) => {
-    if (m.resp === null || m.canvasSeen) return
-    for (const r of records) for (const n of r.addedNodes) {
-      if (n.nodeType === 1 && (n.tagName === 'CANVAS' || n.querySelector?.('canvas'))) {
-        m.canvasSeen = true
-        const resp = m.resp
-        afterFrame((t) => { m.respPaint = t - resp; if (m.rec) m.rec.resultAt = t })
-        return
-      }
-    }
-  }).observe(document, { subtree: true, childList: true })
+    if (m.resp === null || m.respPaint !== null) return
+    const panel = document.querySelector('section[aria-label="Query result"], [data-testid=result]')
+    if (!panel || !records.some((r) => panel.contains(r.target))) return
+    const resp = m.resp
+    afterFrame((t) => { m.lastChange = t - resp })
+    clearTimeout(quiet)
+    quiet = setTimeout(() => { m.respPaint = m.lastChange; if (m.rec) m.rec.resultAt = performance.now() }, 250)
+  }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true })
   /** Arm a one-shot measurement of the next pointerdown. `done` is a selector, or 'result'. */
   m.arm = (done) => {
     const rec = (m.rec = { t0: null, tUp: null, press: null, busy: null, done: null, resultAt: null, shiftFrom: performance.now() })

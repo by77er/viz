@@ -310,6 +310,8 @@ export class Notifier extends DurableObject implements NotifierRpc {
     firing.sort()
     resolved.sort()
     const out: Decision[] = []
+    // Every alert is muted (or not yet visible): the pipeline stops, the log is untouched.
+    if (firing.length === 0 && resolved.length === 0) return out
     for (const integration of this.cfg?.receivers.get(g.route.receiver) ?? []) {
       const entry = g.body.log[integration.key]
       let update: boolean
@@ -340,11 +342,14 @@ export class Notifier extends DurableObject implements NotifierRpc {
       plans.push({ g, tick, decisions: this.decide(g, tick).filter((d) => d.update) })
     }
     // Resolved alerts leave once every group that holds them has flushed past the resolution.
+    // With inhibition rules they stay one more `group_interval` (the longest in the tree):
+    // until then some group's latest tick may predate the resolution, and that tick must
+    // still see the alert as a firing inhibitor.
     const ticks = new Map(plans.map((p) => [p.g.key, p.tick]))
     const gone: string[] = []
     for (const a of this.alerts.values()) {
       if (a.status !== 'resolved') continue
-      let held = false
+      let held = now < this.forgetAt(a)
       for (const g of this.groups.values()) {
         if (!g.members.has(a.fingerprint)) continue
         const tick = ticks.get(g.key)
@@ -405,6 +410,11 @@ export class Notifier extends DurableObject implements NotifierRpc {
       for (const g of this.groups.values()) g.members.delete(fp)
     }
     for (const g of emptied) this.groups.delete(g.key)
+  }
+
+  /** Earliest time a resolved alert may be forgotten (see `flush`). */
+  private forgetAt(a: StoredAlert): number {
+    return (a.resolvedReceivedAt as number) + (this.cfg && this.cfg.inhibit.length > 0 ? this.cfg.maxGroupIntervalMs : 0)
   }
 
   /** Heartbeat alerts (the dead-man's switch) that were not refreshed in time resolve themselves. */
@@ -482,7 +492,10 @@ export class Notifier extends DurableObject implements NotifierRpc {
     let at = Infinity
     const pending = this.exec<{ next: number | null }>(`SELECT MIN(next_attempt_at) AS next FROM outbox WHERE tenant = ? AND status = 'pending'`, this.tenant)[0]?.next
     if (pending !== null && pending !== undefined) at = Math.min(at, pending)
-    for (const a of this.alerts.values()) if (a.status === 'firing' && a.expiresAt !== null) at = Math.min(at, a.expiresAt)
+    for (const a of this.alerts.values()) {
+      if (a.status === 'firing' && a.expiresAt !== null) at = Math.min(at, a.expiresAt)
+      if (a.status === 'resolved' && this.forgetAt(a) > now) at = Math.min(at, this.forgetAt(a))
+    }
     const boundaries: number[] = []
     for (const s of this.silences.values()) {
       if (s.compiled.startsAt > now) boundaries.push(s.compiled.startsAt)
@@ -506,7 +519,12 @@ export class Notifier extends DurableObject implements NotifierRpc {
         at = Math.min(at, nextTick)
         continue
       }
-      for (const e of Object.values(g.body.log)) if (e.firing.length > 0) at = Math.min(at, this.tickAtOrAfter(g, e.ts + g.route.repeatIntervalMs))
+      for (const e of Object.values(g.body.log)) {
+        // A repeat that is already overdue and still not sent is muted; a silence boundary
+        // or an alert change, not the passing of time, is what will release it.
+        const repeatAt = this.tickAtOrAfter(g, e.ts + g.route.repeatIntervalMs)
+        if (e.firing.length > 0 && repeatAt > now) at = Math.min(at, repeatAt)
+      }
       for (const b of boundaries) at = Math.min(at, this.tickAtOrAfter(g, b))
     }
     const cur = await this.ctx.storage.getAlarm()

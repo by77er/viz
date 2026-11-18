@@ -164,7 +164,11 @@ counted. A `+simd128,+bulk-memory` build also compiles and passes (2.76 MB).
 
 `tools/mutants.py` applies one source change at a time, runs the suite, and restores the
 file. It first confirms the unmutated suite passes, and distinguishes a failing test from
-a build error. **MUTANT_TOTALS** by failing tests. The seven added for
+a build error. **28 of 28 mutants are killed** by failing tests. In the
+full re-run after the contracts v2 changes, 27 were killed and one that used to be
+killed **survived**: mutant 4 below (day boundary truncating instead of flooring), because
+batches can no longer carry the negative timestamp the old test relied on. A direct
+assertion on `day_string(-1)` was added to `day_strings`, and the mutant is killed again. The seven added for
 contracts v2 (decode accepts a NUL / 129 labels / an over-long value / a timestamp after
 year 9999 / a negative timestamp; duplicates inside a batch kept by select; control
 characters escaped in upper-case hex) are each killed by a test in `tests/contract_v2.rs`.

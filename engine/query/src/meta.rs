@@ -15,8 +15,7 @@ use viz_storage::ScanInput;
 /// A label set: pairs sorted by name (UTF-8 byte order), including `__name__`.
 pub type Labels = Vec<(String, String)>;
 
-fn load(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max_ts: i64, src: &StorageSource<'_>) -> Result<Vec<Labels>, QueryError> {
-    let _ = input;
+fn load(matchers: &[Matcher], min_ts: i64, max_ts: i64, src: &StorageSource<'_>) -> Result<Vec<Labels>, QueryError> {
     match src.select(matchers, min_ts, max_ts) {
         Ok(v) => Ok(v.into_iter().map(|s| s.labels).collect()),
         Err(e) => Err(src.take_failure().unwrap_or_else(|| QueryError::from_promql(e))),
@@ -33,7 +32,7 @@ pub fn label_names(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
 pub fn label_names_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max_ts: i64, limits: &Limits) -> Result<Vec<String>, QueryError> {
     let src = StorageSource::new(input, *limits);
     let mut names = BTreeSet::new();
-    for l in load(input, matchers, min_ts, max_ts, &src)? {
+    for l in load(matchers, min_ts, max_ts, &src)? {
         names.extend(l.into_iter().map(|(n, _)| n));
     }
     Ok(names.into_iter().collect())
@@ -57,7 +56,7 @@ pub fn label_values_with(
 ) -> Result<Vec<String>, QueryError> {
     let src = StorageSource::new(input, *limits);
     let mut values = BTreeSet::new();
-    for l in load(input, matchers, min_ts, max_ts, &src)? {
+    for l in load(matchers, min_ts, max_ts, &src)? {
         values.extend(l.into_iter().filter(|(n, _)| n == name).map(|(_, v)| v));
     }
     Ok(values.into_iter().collect())
@@ -82,7 +81,7 @@ pub fn series_with(input: &ScanInput<'_>, matcher_sets: &[Vec<Matcher>], min_ts:
     let src = StorageSource::new(input, *limits);
     let mut out = BTreeSet::new();
     for set in matcher_sets {
-        out.extend(load(input, set, min_ts, max_ts, &src)?);
+        out.extend(load(set, min_ts, max_ts, &src)?);
     }
     Ok(out.into_iter().collect())
 }
