@@ -143,7 +143,9 @@ also holds unrelated Workers, buckets and KV namespaces.
 
 ## Git
 
-- `node_modules/`, build output, `target*/` and generated benchmark data are ignored; do not
-  commit them. Lockfiles are committed.
+- `node_modules/`, build output, `target*/`, Go module caches and third-party source
+  checkouts are ignored; do not commit them (a harness that needs upstream source fetches
+  it with a script). Lockfiles are committed. Before committing a new directory, check its
+  size.
 - Changes reach `main` through pull requests. Use `.github/pull_request_template.md`.
 - One logical change per commit, with a message that says what changed and why.
