@@ -19,10 +19,12 @@ serde = "1"
 serde_json = "1"
 proptest = { version = "1", default-features = false, features = ["std"] }
 
+# engine/AGENTS.md: fat LTO, one codegen unit and opt-level 3 measured fastest for WASM.
 [profile.release]
-opt-level = "s"
-lto = true
+opt-level = 3
+lto = "fat"
 codegen-units = 1
 panic = "abort"
+strip = true
 
 [workspace]

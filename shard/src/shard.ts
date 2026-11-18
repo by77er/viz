@@ -17,7 +17,16 @@ import { DurableObject } from 'cloudflare:workers'
  *   discard   payloads are dropped after a short retention; `discarded_through` is the fence
  */
 
+/**
+ * Largest payload `append` accepts: 1 MiB (contracts/BATCH.md, "Size"). A shard stores a
+ * batch as one SQLite value, and Cloudflare caps a value at 2 MB. `edge` splits at this
+ * same constant; nothing else may restate the number.
+ */
+export const MAX_BATCH_BYTES = 1_048_576
+
 export interface ShardConfig {
+  /** `append` answers `too_large` for a payload above this. Default `MAX_BATCH_BYTES`. */
+  maxBatchBytes: number
   /** Seal a stream when its unsealed bytes reach this. */
   sealBytes: number
   /** Seal a stream when its oldest unsealed batch is this old. */
@@ -33,6 +42,7 @@ export interface ShardConfig {
 }
 
 export const DEFAULT_CONFIG: ShardConfig = {
+  maxBatchBytes: MAX_BATCH_BYTES,
   sealBytes: 4 << 20,
   sealAgeMs: 10 * 60_000,
   tenantMaxBytes: 64 << 20,
@@ -55,6 +65,8 @@ export type AppendResult =
   | { status: 'ok'; incarnation: number; seq: number; duplicate: boolean }
   | { status: 'backpressure'; scope: 'tenant' | 'shard'; retryAfterMs: number }
   | { status: 'stale_epoch'; epoch: number }
+  /** The payload is over the batch size cap. Nothing was stored; a retry of the same bytes cannot succeed. */
+  | { status: 'too_large'; maxBytes: number }
 
 export interface Segment {
   tenant: string
@@ -94,6 +106,19 @@ interface Stream {
   bufferedBytes: number
   unsealedBytes: number
   oldestUnsealedAt: number | null
+}
+
+/**
+ * A stream incarnation: milliseconds since the epoch in the high bits, 10 random bits below.
+ * Incarnations are therefore ordered by creation time (contracts/ledger.ts `StreamRef`): a
+ * stream recreated at a later millisecond always gets a larger number, whatever the random
+ * bits, and the value stays a safe integer until the year 2248. Two creations of the same
+ * stream within one millisecond, or a clock that steps backwards across a storage loss, are
+ * the only ways to get a non-increasing value; the ledger refuses a lower incarnation, so
+ * that case fails closed (`incarnation_mismatch`) instead of rewinding a watermark.
+ */
+export function newIncarnation(nowMs: number, random: number): number {
+  return nowMs * 1024 + Math.floor(random * 1024)
 }
 
 export class Shard extends DurableObject {
@@ -158,7 +183,7 @@ export class Shard extends DurableObject {
     if (!s) {
       // A new incarnation is created only when no stream row exists: first use, or after
       // storage loss. It never repeats, so sequence numbers are never silently reused.
-      const incarnation = Date.now() * 1024 + Math.floor(Math.random() * 1024)
+      const incarnation = newIncarnation(Date.now(), Math.random())
       this.ctx.storage.sql.exec(
         `INSERT INTO stream (tenant, incarnation, epoch, sealed_through, recorded_through, discarded_through) VALUES (?, ?, ?, 0, 0, 0)`,
         tenant, incarnation, epoch,
@@ -194,6 +219,8 @@ export class Shard extends DurableObject {
     }
 
     const bytes = req.payload.byteLength
+    // Checked before anything else about the payload, and before a stream is created for it.
+    if (bytes > this.cfg.maxBatchBytes) return { status: 'too_large', maxBytes: this.cfg.maxBatchBytes }
     const held = known?.bufferedBytes ?? 0
     // A tenant is limited by its own cap first, so its backlog can never consume the shard.
     if (held + bytes > this.cfg.tenantMaxBytes) return { status: 'backpressure', scope: 'tenant', retryAfterMs: 1000 }

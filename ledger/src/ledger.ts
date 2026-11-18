@@ -1,10 +1,13 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
+  TENANT_ID,
+  ledgerBaseKey,
   ledgerLogKey,
   type AddUnitResult,
   type ExpireRequest,
   type FileEntry,
   type FlushUnit,
+  type LedgerAdminRpc,
   type LedgerChange,
   type LedgerRpc,
   type Plan,
@@ -33,7 +36,7 @@ import {
  *
  * R2 layout, under the cell prefix:
  *
- *   ledger/tenant={t}/{incarnation}/base.json            state at the start of the incarnation
+ *   ledger/tenant={t}/{incarnation}/base.json            a `base` LedgerChange: the state the incarnation starts from
  *   ledger/tenant={t}/{incarnation}/{version:012}.json   one LedgerChange (contract key)
  *
  * No state lives in memory. Every method reads SQLite. The only field that is not derived
@@ -62,17 +65,12 @@ interface StoredStream {
   previousIncarnation: number | null
 }
 
-/** `base.json`: the whole ledger state at the moment an incarnation starts. */
-export interface LedgerBase {
-  ledgerIncarnation: number
-  /** Version the incarnation starts from. Its first change is `version + 1`. */
-  version: number
-  at: number
-  /** Incarnation whose log was replayed to produce this state, or null for a first start. */
-  source: number | null
-  files: StoredFile[]
-  streams: StoredStream[]
-}
+/**
+ * `base.json` (contracts `ledgerBaseKey`) is a `LedgerChange` of kind `base`: `added` is the
+ * whole live set and `watermarks` every stream the incarnation starts from. Its `version`
+ * is the version the incarnation starts FROM; the first change after it is `version + 1`.
+ */
+export type LedgerBase = LedgerChange & { kind: 'base'; watermarks: Watermark[] }
 
 export interface RebuildResult {
   ledgerIncarnation: number
@@ -96,30 +94,36 @@ type Row = Record<string, SqlStorageValue>
 
 const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
 
-function checkFile(f: FileEntry): void {
-  if (typeof f !== 'object' || f === null) throw new Error('ledger: file entry is not an object')
-  if (typeof f.key !== 'string' || f.key === '') throw new Error('ledger: file key must be a non-empty string')
-  if (!TABLES.includes(f.table)) throw new Error(`ledger: unknown table for ${f.key}`)
-  if (typeof f.day !== 'string' || !DAY.test(f.day)) throw new Error(`ledger: bad day for ${f.key}`)
-  if (!isCount(f.bytes) || !isCount(f.rows) || !isCount(f.level)) throw new Error(`ledger: bad bytes/rows/level for ${f.key}`)
-  if (!Number.isSafeInteger(f.minTs) || !Number.isSafeInteger(f.maxTs) || f.minTs > f.maxTs) throw new Error(`ledger: bad time range for ${f.key}`)
-  if (typeof f.index !== 'string') throw new Error(`ledger: index fragment must be a string for ${f.key}`)
+/** Why a file entry is unacceptable, or null. */
+function fileProblem(f: FileEntry): string | null {
+  if (typeof f !== 'object' || f === null) return 'file entry is not an object'
+  if (typeof f.key !== 'string' || f.key === '') return 'file key must be a non-empty string'
+  if (!TABLES.includes(f.table)) return `unknown table for ${f.key}`
+  if (typeof f.day !== 'string' || !DAY.test(f.day)) return `bad day for ${f.key}`
+  if (!isCount(f.bytes) || !isCount(f.rows) || !isCount(f.level)) return `bad bytes/rows/level for ${f.key}`
+  if (!Number.isSafeInteger(f.minTs) || !Number.isSafeInteger(f.maxTs) || f.minTs > f.maxTs) return `bad time range for ${f.key}`
+  if (typeof f.index !== 'string') return `index fragment must be a string for ${f.key}`
+  return null
 }
 
-/** Validate a list of files and refuse a key that appears twice in it. */
-function checkFiles(files: FileEntry[]): void {
-  if (!Array.isArray(files)) throw new Error('ledger: files must be an array')
+/** Why a list of files is unacceptable (a bad entry, or a key that appears twice), or null. */
+function filesProblem(files: FileEntry[]): string | null {
+  if (!Array.isArray(files)) return 'files must be an array'
   const seen = new Set<string>()
   for (const f of files) {
-    checkFile(f)
-    if (seen.has(f.key)) throw new Error(`ledger: duplicate file key in request: ${f.key}`)
+    const p = fileProblem(f)
+    if (p) return p
+    if (seen.has(f.key)) return `duplicate file key in request: ${f.key}`
     seen.add(f.key)
   }
+  return null
 }
 
-function checkRef(ref: StreamRef): void {
-  if (typeof ref.shard !== 'string' || ref.shard === '') throw new Error('ledger: shard must be a non-empty string')
-  if (!isCount(ref.incarnation)) throw new Error('ledger: incarnation must be a non-negative integer')
+function refProblem(ref: StreamRef): string | null {
+  if (typeof ref !== 'object' || ref === null) return 'stream reference is not an object'
+  if (typeof ref.shard !== 'string' || ref.shard === '') return 'shard must be a non-empty string'
+  if (!isCount(ref.incarnation)) return 'incarnation must be a non-negative integer'
+  return null
 }
 
 const toEntry = (r: Row): FileEntry => ({
@@ -142,7 +146,7 @@ const toStored = (r: Row): StoredFile => ({
       : { shard: r.u_shard as string, incarnation: r.u_inc as number, seqLo: r.u_lo as number, seqHi: r.u_hi as number },
 })
 
-export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
+export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, LedgerAdminRpc {
   private readonly tenant: string
   private readonly cell: string
   /** Where the change log goes. A field so that tests can substitute a failing bucket. */
@@ -154,8 +158,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
     super(ctx, env)
     const tenant = ctx.id.name
     if (!tenant) throw new Error('ledger: the object must be addressed by name (the tenant)')
-    // The log key embeds the tenant unescaped; a `/` would nest one tenant's log in another's.
-    if (tenant.includes('/')) throw new Error('ledger: tenant must not contain "/"')
+    // Tenant ids appear unescaped in object keys; the contract fixes their alphabet.
+    if (!TENANT_ID.test(tenant)) throw new Error('ledger: tenant id must match [A-Za-z0-9_-]{1,64}')
     this.tenant = tenant
     this.cell = env.CELL || 'cell-0'
     this.bucket = env.BUCKET
@@ -237,12 +241,13 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
    * `transactionSync` as the mutation it describes; that is what makes "committed" and
    * "will be logged" the same event.
    */
-  private record(kind: LedgerChange['kind'], added: FileEntry[], removed: string[], watermark?: Watermark): number {
+  private record(kind: LedgerChange['kind'], added: FileEntry[], removed: string[], watermark?: Watermark, unit?: { seqLo: number; seqHi: number }): number {
     const sql = this.ctx.storage.sql
     const version = this.version() + 1
     sql.exec(`INSERT INTO meta (k, v) VALUES ('version', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v`, version)
     const change: LedgerChange = { ledgerIncarnation: this.ledgerIncarnation(), version, at: Date.now(), kind, added, removed }
     if (watermark) change.watermark = watermark
+    if (unit) change.unit = unit
     sql.exec(`INSERT INTO outbox (version, body) VALUES (?, ?)`, version, JSON.stringify(change))
     return version
   }
@@ -252,17 +257,24 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
     await this.ctx.storage.setAlarm(Date.now() + DRAIN_RETRY_MS)
     // The mutation is committed whether or not R2 is reachable; a failed drain is retried
     // by the alarm, and until then `loggedWatermarks` simply lags.
-    await this.drain().catch(() => undefined)
+    await this.drainSerial().catch(() => undefined)
   }
 
   // ───────────────────────────── LedgerRpc ─────────────────────────────
 
   async registerStream(ref: StreamRef): Promise<{ version: number; previousIncarnation: number | null }> {
-    checkRef(ref)
+    const problem = refProblem(ref)
+    if (problem) throw new Error(`ledger: ${problem}`)
     const known = this.stream(ref.shard)
     if (known && known.incarnation === ref.incarnation) {
       // Idempotent: a retried registration gets the answer the first one got.
       return { version: this.version(), previousIncarnation: known.previousIncarnation }
+    }
+    // Incarnations are ordered (a larger number is newer). A lower one is a stale shard or a
+    // late message; registering it would rewind the watermark of the live stream. The
+    // contract's return type has no refusal, so this is an exception.
+    if (known && ref.incarnation < known.incarnation) {
+      throw new Error(`ledger: stream ${ref.shard} is registered with incarnation ${known.incarnation}; refusing the lower ${ref.incarnation}`)
     }
     const version = this.ctx.storage.transactionSync(() => this.register(ref, known))
     await this.afterCommit()
@@ -281,11 +293,17 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
   }
 
   async addUnit(unit: FlushUnit): Promise<AddUnitResult> {
-    checkRef(unit)
+    // The unit itself is judged first, so a malformed request is `invalid` whatever the
+    // stream's state, and never mistaken for a replay.
+    const invalid = (reason: string): AddUnitResult => ({ status: 'invalid', reason })
+    const problem = refProblem(unit)
+    if (problem) return invalid(problem)
     if (!Number.isSafeInteger(unit.seqLo) || !Number.isSafeInteger(unit.seqHi) || unit.seqLo < 1 || unit.seqHi < unit.seqLo) {
-      throw new Error('ledger: bad sequence range')
+      return invalid('bad sequence range')
     }
-    checkFiles(unit.files)
+    const bad = filesProblem(unit.files)
+    if (bad) return invalid(bad)
+    if (unit.files.length === 0) return invalid('a unit must have at least one file')
     const ref: UnitRef = { shard: unit.shard, incarnation: unit.incarnation, seqLo: unit.seqLo, seqHi: unit.seqHi }
 
     const known = this.stream(unit.shard)
@@ -294,30 +312,26 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
       // else from an unknown shard is refused: the ledger has no watermark to extend.
       if (unit.seqLo !== 1) return { status: 'not_contiguous', watermark: 0 }
     } else {
+      // A different incarnation, higher or lower, is refused here. A higher one must be
+      // registered first (`registerStream`); a lower one is stale and can never be.
       if (known.incarnation !== unit.incarnation) return { status: 'incarnation_mismatch', incarnation: known.incarnation }
-      if (unit.seqHi <= known.watermark) {
-        // Replay of a unit admitted earlier, if these are that unit's files and still live.
-        const same = unit.files.every((f) => {
-          const u = this.liveFile(f.key)?.unit
-          return !!u && u.shard === ref.shard && u.incarnation === ref.incarnation && u.seqLo === ref.seqLo && u.seqHi === ref.seqHi
-        })
-        return same
-          ? { status: 'ok', version: this.version(), watermark: known.watermark }
-          : { status: 'not_contiguous', watermark: known.watermark }
-      }
+      // Replay rule (contracts/ledger.ts): the watermark is already at or past this unit, so
+      // its rows are in listed files, whether or not these particular files still are (they
+      // may have been compacted or expired since). Nothing changes.
+      if (unit.seqHi <= known.watermark) return { status: 'ok', version: this.version(), watermark: known.watermark }
       if (unit.seqLo !== known.watermark + 1) return { status: 'not_contiguous', watermark: known.watermark }
     }
     // Past the replay check, a key that is already live belongs to some other unit or to a
     // compaction output. Checked for every file before anything is written.
     for (const f of unit.files) {
-      if (this.liveFile(f.key)) throw new Error(`ledger: file key already live in another unit: ${f.key}`)
+      if (this.liveFile(f.key)) return invalid(`file key already live in another unit: ${f.key}`)
     }
 
     const version = this.ctx.storage.transactionSync(() => {
       if (!known) this.register(unit, null)
       for (const f of unit.files) this.insertFile(f, ref)
       this.ctx.storage.sql.exec(`UPDATE stream SET watermark = ? WHERE shard = ?`, unit.seqHi, unit.shard)
-      return this.record('add_unit', unit.files, [], { shard: unit.shard, incarnation: unit.incarnation, seq: unit.seqHi })
+      return this.record('add_unit', unit.files, [], { shard: unit.shard, incarnation: unit.incarnation, seq: unit.seqHi }, { seqLo: unit.seqLo, seqHi: unit.seqHi })
     })
     await this.afterCommit()
     return { status: 'ok', version, watermark: unit.seqHi }
@@ -339,22 +353,28 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
   }
 
   async replace(req: ReplaceRequest): Promise<ReplaceResult> {
+    const invalid = (reason: string): ReplaceResult => ({ status: 'invalid', reason })
+    if (typeof req !== 'object' || req === null) return invalid('request is not an object')
     if (!Array.isArray(req.remove) || req.remove.some((k) => typeof k !== 'string' || k === '')) {
-      throw new Error('ledger: remove must be a list of keys')
+      return invalid('remove must be a list of keys')
     }
-    checkFiles(req.add)
+    const bad = filesProblem(req.add)
+    if (bad) return invalid(bad)
     const remove = [...new Set(req.remove)]
     if (remove.length === 0 && req.add.length === 0) return { status: 'ok', version: this.version() }
+    for (const f of req.add) {
+      if (remove.includes(f.key)) return invalid(`key is in both remove and add: ${f.key}`)
+    }
 
     const missing = remove.filter((k) => !this.liveFile(k))
-    if (missing.length > 0) {
-      // A retry of a swap that already happened: every input gone, every output live.
-      const done = missing.length === remove.length && req.add.length > 0 && req.add.every((f) => this.liveFile(f.key)?.unit === null)
-      return done ? { status: 'ok', version: this.version() } : { status: 'conflict', missing }
+    // Replay rule: a retry of a swap that already happened is `ok` if every output is live
+    // and no input is. Anything else is judged as a new request, below.
+    if (req.add.length > 0 && missing.length === remove.length && req.add.every((f) => this.liveFile(f.key))) {
+      return { status: 'ok', version: this.version() }
     }
+    if (missing.length > 0) return { status: 'conflict', missing }
     for (const f of req.add) {
-      if (remove.includes(f.key)) throw new Error(`ledger: key is in both remove and add: ${f.key}`)
-      if (this.liveFile(f.key)) throw new Error(`ledger: file key already live: ${f.key}`)
+      if (this.liveFile(f.key)) return invalid(`file key already live: ${f.key}`)
     }
 
     const version = this.ctx.storage.transactionSync(() => {
@@ -408,7 +428,11 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
    * that version, so the log never has a hole below its highest object. Writing a row
    * twice is harmless: the key and the bytes are the same. Returns the number written.
    */
-  async drain(): Promise<number> {
+  async drain(): Promise<{ written: number }> {
+    return { written: await this.drainSerial() }
+  }
+
+  private drainSerial(): Promise<number> {
     const run = this.draining.then(() => this.drainNow())
     this.draining = run.catch(() => undefined)
     return run
@@ -438,7 +462,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
 
   async alarm(): Promise<void> {
     try {
-      await this.drain()
+      await this.drainSerial()
     } catch {
       await this.ctx.storage.setAlarm(Date.now() + DRAIN_RETRY_MS)
     }
@@ -491,13 +515,14 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
       ledgerIncarnation: incarnation,
       version,
       at: Date.now(),
-      source,
-      files: [...files.values()],
-      streams: [...streams.values()],
+      kind: 'base',
+      added: [...files.values()].map(({ unit: _unit, ...entry }) => entry),
+      removed: [],
+      watermarks: [...streams.values()].map((st) => ({ shard: st.shard, incarnation: st.incarnation, seq: st.watermark })),
     }
     // R2 first: the incarnation number is taken, and the rebuilt state is itself durable,
     // before SQLite says so. A crash in between wastes a number and nothing else.
-    await this.bucket.put(`${this.incarnationPrefix(incarnation)}base.json`, JSON.stringify(base), {
+    await this.bucket.put(`${this.cell}/${ledgerBaseKey(this.tenant, incarnation)}`, JSON.stringify(base), {
       httpMetadata: { contentType: 'application/json' },
     })
 
@@ -506,12 +531,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
       sql.exec(`DELETE FROM file`)
       sql.exec(`DELETE FROM stream`)
       sql.exec(`DELETE FROM outbox`)
-      for (const f of base.files) this.insertFile(f, f.unit)
-      for (const s of base.streams) {
+      for (const f of files.values()) this.insertFile(f, f.unit)
+      for (const st of streams.values()) {
         // Everything replayed came from R2, so it is logged by definition.
         sql.exec(
           `INSERT INTO stream (shard, incarnation, watermark, logged, prev_incarnation) VALUES (?, ?, ?, ?, ?)`,
-          s.shard, s.incarnation, s.watermark, s.watermark, s.previousIncarnation,
+          st.shard, st.incarnation, st.watermark, st.watermark, st.previousIncarnation,
         )
       }
       sql.exec(`INSERT INTO meta (k, v) VALUES ('incarnation', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v`, incarnation)
@@ -547,13 +572,17 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
   ): Promise<{ version: number; changesReplayed: number }> {
     const prefix = this.incarnationPrefix(source)
     let version = 0
-    const baseObject = await this.bucket.get(`${prefix}base.json`)
-    if (baseObject) {
-      const base = await baseObject.json<LedgerBase>()
-      version = base.version
-      for (const f of base.files) files.set(f.key, f)
-      for (const s of base.streams) streams.set(s.shard, s)
+    // An incarnation's log starts at its `base`. Without one there is nothing to start from:
+    // an incarnation writes its base before it commits anything else.
+    const baseObject = await this.bucket.get(`${this.cell}/${ledgerBaseKey(this.tenant, source)}`)
+    if (!baseObject) throw new Error(`ledger: incarnation ${source} has log objects but no base`)
+    const base = await baseObject.json<LedgerBase>()
+    if (base.kind !== 'base' || base.ledgerIncarnation !== source || !Array.isArray(base.added) || !Array.isArray(base.watermarks)) {
+      throw new Error(`ledger: base of incarnation ${source} is not a base change`)
     }
+    version = base.version
+    for (const f of base.added) files.set(f.key, { ...f, unit: null })
+    for (const w of base.watermarks) streams.set(w.shard, { shard: w.shard, incarnation: w.incarnation, watermark: w.seq, previousIncarnation: null })
 
     const pending: { version: number; key: string }[] = []
     let cursor: string | undefined
@@ -596,15 +625,18 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc {
     }
     let unit: UnitRef | null = null
     const w = c.watermark
+    if (c.kind === 'base') throw bad('a base entry inside the version sequence')
     if (c.kind === 'register_stream') {
       if (!w) throw bad('no stream')
       const old = streams.get(w.shard)
+      if (old && w.incarnation < old.incarnation) throw bad('registers a lower stream incarnation')
       streams.set(w.shard, { shard: w.shard, incarnation: w.incarnation, watermark: w.seq, previousIncarnation: old?.incarnation ?? null })
     } else if (c.kind === 'add_unit') {
       const s = w && streams.get(w.shard)
       if (!w || !s || s.incarnation !== w.incarnation || w.seq <= s.watermark) throw bad('unit does not extend its stream')
-      // The change does not carry seqLo; contiguity at admission makes it the old watermark + 1.
-      unit = { shard: w.shard, incarnation: w.incarnation, seqLo: s.watermark + 1, seqHi: w.seq }
+      // The change carries the admitted range, so contiguity is checked rather than assumed.
+      if (!c.unit || c.unit.seqLo !== s.watermark + 1 || c.unit.seqHi !== w.seq) throw bad('unit range is not contiguous with the watermark')
+      unit = { shard: w.shard, incarnation: w.incarnation, seqLo: c.unit.seqLo, seqHi: c.unit.seqHi }
       s.watermark = w.seq
     }
     for (const f of c.added) {

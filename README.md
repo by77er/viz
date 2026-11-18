@@ -22,6 +22,7 @@ and consumed through composable, agent-first dashboards.
 | `bench/`    | Rust/WASM vs JavaScript engine benchmark, with results |
 | `shard/`    | Pooled shard Durable Object and routing, with tests |
 | `design-system/` | Tokens, rules, method, review rubric, components and tooling for the interface |
+| `spikes/`   | Experiments deployed to Cloudflare, each with its result |
 | `design/`   | `DESIGN.md` (architecture), `DECISIONS.md`, `VERIFICATION.md`, `REVIEW.md` and the raw reviews |
 
 Status: design reviewed; first component (`shard/`) implemented and tested locally.

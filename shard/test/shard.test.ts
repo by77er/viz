@@ -1,7 +1,7 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import type { Shard } from '../src/shard'
+import { MAX_BATCH_BYTES, newIncarnation, type Shard } from '../src/shard'
 
 let n = 0
 const shard = () => env.SHARD.get(env.SHARD.idFromName(`pool/${n++}`))
@@ -170,9 +170,41 @@ describe('seal, record, discard', () => {
     const first = await ok(put(s, 'a', 'f0', bytes(10)))
     await runInDurableObject(s, async (_i, state) => { await state.storage.deleteAll() })
     await evictDurableObject(s)
+    await new Promise((r) => setTimeout(r, 3)) // a later millisecond: incarnations are time-ordered
     const second = await ok(put(s, 'a', 'f0', bytes(10)))
     expect(second.seq).toBe(1)
-    expect(second.incarnation).not.toBe(first.incarnation)
+    expect(second.incarnation).toBeGreaterThan(first.incarnation)
+    expect(Number.isSafeInteger(second.incarnation)).toBe(true)
     expect(await s.tailRead('a', first.incarnation, 0)).toMatchObject({ status: 'incarnation_mismatch', incarnation: second.incarnation })
+  })
+})
+
+describe('contracts v2', () => {
+  it('refuses a payload over the batch cap with too_large and stores nothing', async () => {
+    const s = shard()
+    expect(MAX_BATCH_BYTES).toBe(1_048_576)
+    expect((await put(s, 'a', 'at-cap', bytes(MAX_BATCH_BYTES))).status).toBe('ok')
+    expect(await put(s, 'a', 'over', bytes(MAX_BATCH_BYTES + 1))).toEqual({ status: 'too_large', maxBytes: MAX_BATCH_BYTES })
+    expect(await s.describe('a')).toMatchObject({ nextSeq: 2, bufferedBytes: MAX_BATCH_BYTES })
+    // A tenant whose first payload is too large gets no stream at all.
+    expect(await put(s, 'fresh', 'over', bytes(MAX_BATCH_BYTES + 1))).toMatchObject({ status: 'too_large' })
+    expect(await s.describe('fresh')).toBeNull()
+  })
+
+  it('takes the cap from configuration, and keeps it across eviction', async () => {
+    const s = shard()
+    await s.configure({ maxBatchBytes: 100 })
+    expect(await put(s, 'a', 'f0', bytes(101))).toEqual({ status: 'too_large', maxBytes: 100 })
+    await evictDurableObject(s)
+    expect(await put(s, 'a', 'f0', bytes(101))).toEqual({ status: 'too_large', maxBytes: 100 })
+    expect((await put(s, 'a', 'f1', bytes(100))).status).toBe('ok')
+  })
+
+  it('derives incarnations that are ordered by creation time and stay safe integers', () => {
+    // A later millisecond wins whatever the random bits are.
+    expect(newIncarnation(1_800_000_000_001, 0)).toBeGreaterThan(newIncarnation(1_800_000_000_000, 0.999999))
+    expect(newIncarnation(1_800_000_000_000, 0.5)).toBeGreaterThanOrEqual(newIncarnation(1_800_000_000_000, 0))
+    // Year 2200 is still exact.
+    expect(Number.isSafeInteger(newIncarnation(7_258_118_400_000, 0.999999))).toBe(true)
   })
 })

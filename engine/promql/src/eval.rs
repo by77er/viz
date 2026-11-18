@@ -1108,6 +1108,11 @@ impl<'a> Evaluator<'a> {
         let mut matched_metrics: Vec<HashSet<Labels>> = vec![HashSet::new(); nsig];
 
         for i in 0..n {
+            // Nothing can match when one side is empty at this step; like the
+            // reference, do not even check the other side for duplicates.
+            if !many.iter().any(|s| s.vals[i].is_some()) {
+                continue;
+            }
             for (oi, s) in one.iter().enumerate() {
                 if s.vals[i].is_none() {
                     continue;

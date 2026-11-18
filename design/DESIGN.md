@@ -18,6 +18,9 @@ viz is an observability store and frontend that runs entirely in one Cloudflare 
 - dashboards that agents and people both write and read;
 - monitors: rules, anomaly detection, agent-run investigations.
 
+**Where it runs.** One Cloudflare account, served under `vis.bitcru.sh`. Every resource
+viz creates there is named `viz-…`.
+
 **Deployment model.** The primary target is *deploy to your own account*: one organisation,
 many tenants (teams, environments, customers of that organisation). The same design hosts
 unrelated tenants as a service by adding cells (§3.3). Where the two differ, this document

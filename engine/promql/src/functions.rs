@@ -356,7 +356,9 @@ pub(crate) fn bucket_quantile(q: f64, buckets: &mut Vec<(f64, f64)>) -> f64 {
     }
     let mut rank = q * observations;
     let last = merged.len() - 1;
-    let b = merged[..last].partition_point(|x| x.1 < rank);
+    // First bucket with count >= rank. Written with the negation so that NaN
+    // counts or ranks behave as in Go's sort.Search (no bucket qualifies).
+    let b = merged[..last].partition_point(|x| !(x.1 >= rank));
 
     if b == last {
         return merged[last - 1].0;

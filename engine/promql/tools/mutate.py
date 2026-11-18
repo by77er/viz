@@ -44,6 +44,14 @@ MUTS=[
   'let want = id == token::T_LAND;', 'let want = id != token::T_LAND;'),
  ("topk ignores `by` grouping", 'src/eval.rs',
   '                        per_group[series_group[si]].push((x, si));', '                        per_group[0].push((x, si));'),
+ ("histogram_quantile bucket search mishandles NaN counts", 'src/functions.rs',
+  'let b = merged[..last].partition_point(|x| !(x.1 >= rank));', 'let b = merged[..last].partition_point(|x| x.1 < rank);'),
+ ("duplicate check on the one side even when the other side is empty", 'src/eval.rs',
+  '            if !many.iter().any(|s| s.vals[i].is_some()) {\n                continue;\n            }', ''),
+ ("histogram_quantile does not interpolate inside the bucket", 'src/functions.rs',
+  'bucket_start + (bucket_end - bucket_start) * (rank / count)', 'bucket_end'),
+ ("stddev aggregation returns the variance", 'src/eval.rs',
+  'token::T_STDDEV => (g.value / g.count).sqrt(),', 'token::T_STDDEV => g.value / g.count,'),
 ]
 only = [int(x) for x in sys.argv[1:]]
 for idx,(name,f,old,new) in enumerate(MUTS):

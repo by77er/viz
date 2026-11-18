@@ -421,7 +421,7 @@ const DIFF_EXTRA: &[&str] = &[
     "changes(n[5m]) + resets(n[5m])",
     "day_of_year(vector(time()))",
     "days_in_month(vector(time() * 1000))",
-    "minute(m * 100)",
+    "minute((m >= 0) * 100)",
     "scalar(m)",
     r#"scalar(m{job="x", inst="0"}) + time()"#,
     r#"absent(m{job="zz", inst=~"a.*", extra!="q"})"#,

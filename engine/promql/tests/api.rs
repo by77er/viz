@@ -383,3 +383,32 @@ fn group_left_must_produce_unique_series() {
         other => panic!("{other:?}"),
     }
 }
+
+/// Regressions found by the differential run against the Prometheus Go engine (tools/godiff).
+#[test]
+fn differential_regressions() {
+    // 1. A NaN bucket count: no bucket satisfies `count >= rank`, so the
+    //    second-highest bound is returned (Go's sort.Search semantics).
+    let p = |v: f64| [(0i64, v)];
+    let src = MemSource::from_series(vec![
+        s("h", &[("le", "0.1")], &p(1.0)),
+        s("h", &[("le", "1")], &p(2.0)),
+        s("h", &[("le", "5")], &p(f64::NAN)),
+        s("h", &[("le", "+Inf")], &p(f64::NAN)),
+    ]);
+    let v = vec_of(query_instant(&src, "histogram_quantile(0.5, h)", 0).unwrap());
+    assert_eq!(v, vec![(vec![], 5.0)]);
+
+    // 2. Duplicate series on the "one" side are only an error at steps where
+    //    the other side has samples.
+    let src = MemSource::from_series(vec![
+        s("l", &[("a", "1")], &[(600_000, 1.0)]),
+        s("r", &[("a", "1"), ("c", "1")], &[(0, 1.0), (600_000, 1.0)]),
+        s("r", &[("a", "1"), ("c", "2")], &[(0, 1.0), (600_000, 1.0)]),
+    ]);
+    assert_eq!(vec_of(query_instant(&src, "l + on(a) r", 0).unwrap()), vec![]);
+    assert_eq!(vec_of(query_instant(&src, "l + on(a) group_left r", 0).unwrap()), vec![]);
+    assert!(query_instant(&src, "l + on(a) r", 600_000).is_err());
+    assert!(query_range(&src, "l + on(a) r", 0, 240_000, 60_000).unwrap().series.is_empty());
+    assert!(query_range(&src, "l + on(a) r", 0, 600_000, 60_000).is_err());
+}
