@@ -17,7 +17,7 @@ module fixed_test {
 
   /// Batch 0 is flushed, recorded and discarded after the query planned: the tail read is refused
   /// (the fence) and the re-planned attempt returns batch 0 from the file.
-  run fenceRefusesThenReplans =
+  run fenceRefusesThenReplansTest =
     init
       .then(register(0)).then(logWrite(0))
       .then(clientAppend(0)).then(seal(0))
@@ -30,7 +30,7 @@ module fixed_test {
       .expect(and { st.q.st == "done", st.q.miss == Set(), st.q.dup == Set(), Safety })
 
   /// A retried batch is stored once while its fingerprint is held.
-  run retryIsDeduplicated =
+  run retryIsDeduplicatedTest =
     init
       .then(register(0)).then(logWrite(0))
       .then(clientAppend(0)).then(clientAppend(0))
@@ -38,7 +38,7 @@ module fixed_test {
 
   /// The shard is told `recorded` only at the LOGGED watermark: with the unit committed but not
   /// logged, notify is disabled; a ledger rebuild then rolls the watermark back without harm.
-  run recordedWaitsForTheLog =
+  run recordedWaitsForTheLogTest =
     init
       .then(register(0)).then(logWrite(0))
       .then(clientAppend(0)).then(seal(0))
@@ -61,7 +61,7 @@ module literal_test {
 
   /// F6: the unit for batch 0 is admitted after the plan, the shard then loses its storage and
   /// answers the tail read "ok, nothing": the query completes without batch 0.
-  run f6UnknownStreamReadsEmpty =
+  run f6UnknownStreamReadsEmptyTest =
     init
       .then(register(0)).then(logWrite(0))
       .then(clientAppend(0)).then(seal(0))

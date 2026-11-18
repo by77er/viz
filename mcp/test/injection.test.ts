@@ -4,6 +4,10 @@ import { CORPUS, IDENT_DASHBOARD, IDENT_METRIC, MARKERS, findMarkers } from './c
 import { monitorView } from './fake/services'
 import { TOOLS } from '../src/registry'
 import { dataRegions } from '../src/untrusted'
+import { dashboardSchema } from '../../dashboard/src/index.ts'
+
+/** URLs this server itself writes: deep links into the app, and the ids inside the published schema. */
+const OWN_URLS = new Set(JSON.stringify(dashboardSchema).match(/https?:\/\/[^\s"]*/g) ?? [])
 
 /**
  * The injection corpus, planted everywhere telemetry or tenant text can reach an agent,
@@ -105,8 +109,7 @@ const FORBIDDEN: [string, RegExp][] = [
 function checkString(s: string, where: string, allowAppLinks: boolean): void {
   for (const [what, re] of FORBIDDEN) expect(re.test(s), `${what} in ${where}: ${JSON.stringify(s.slice(Math.max(0, s.search(re) - 40), s.search(re) + 60))}`).toBe(false)
   for (const m of s.matchAll(/https?:\/\/[^\s"]*/g)) {
-    // Only links this server writes: deep links into the app, and the JSON Schema dialect id.
-    expect(allowAppLinks && (m[0].startsWith('https://vis.bitcru.sh/') || m[0] === 'https://json-schema.org/draft/2020-12/schema'), `URL in ${where}: ${m[0].slice(0, 80)}`).toBe(true)
+    expect(allowAppLinks && (m[0].startsWith('https://vis.bitcru.sh/') || OWN_URLS.has(m[0])), `URL in ${where}: ${m[0].slice(0, 80)}`).toBe(true)
   }
 }
 
