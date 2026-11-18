@@ -131,10 +131,10 @@ async function call(base, side, c, keys, mockKeys) {
 }
 
 /** The shape of a JSON value: types, keys, element shapes (first element), never values. */
-function shape(v, depth = 0) {
+function shape(v) {
   if (v === null) return 'null'
-  if (Array.isArray(v)) return depth > 6 ? 'array' : v.length === 0 ? '[]' : `[${shape(v[0], depth + 1)}]`
-  if (typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${k}:${depth > 0 && /^[a-z_]+$/.test(k) && !['metric', 'values', 'value', 'resultType', 'result', 'status', 'data', 'errorType', 'error'].includes(k) ? '*' : shape(v[k], depth + 1)}`).join(',')}}`
+  if (Array.isArray(v)) return v.length === 0 ? '[]' : `[${shape(v[0])}]`
+  if (typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${k}:${shape(v[k])}`).join(',')}}`
   return typeof v
 }
 
@@ -208,6 +208,8 @@ async function main() {
       if (r.status !== m.status) diffs.push(`status ${r.status} vs mock ${m.status}`)
       const rj = r.json, mj = m.json
       if (!!rj !== !!mj) diffs.push(`JSON ${!!rj} vs mock ${!!mj}`)
+      // The mock says it is the mock (buildinfo `mock: true`, the app's banner); nothing else may differ.
+      if (mj && mj.data && mj.data.mock === true) delete mj.data.mock
       if (rj && mj) {
         if (shape(rj) !== shape(mj)) diffs.push(`shape ${shape(rj)} vs mock ${shape(mj)}`)
         if (rj.errorType !== mj.errorType) diffs.push(`errorType ${rj.errorType} vs mock ${mj.errorType}`)

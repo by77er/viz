@@ -424,3 +424,47 @@ viz's own outages; those are deferred until viz carries traffic someone depends 
 
 **Accepted cost.** Shared fate: when viz is down, its view of itself is down too.
 Cloudflare's own dashboard remains available for diagnosis.
+
+## D24. Versioned Durable Object storage: one runner in `contracts/`, a `compat` floor, refusal
+
+**Decision.** Every Durable Object class records `{component, version, compat}` in a table
+`viz_schema` and opens its storage with `openSchema` (`contracts/schema.ts`) in its
+constructor, inside `blockConcurrencyWhile`: the missing migrations and the new version row
+commit in one `transactionSync`. Each migration declares `readableFrom`, the lowest schema
+version a release must know to open storage it has touched; `compat` is the largest of those
+applied. Code that finds `version` above what it knows opens the storage as it is when
+`compat` allows, and otherwise refuses on every entry point (`schema_too_new`, 503, alarm
+re-armed) and writes nothing. Formats outside SQLite carry a version by the rules of
+`contracts/COMPATIBILITY.md`; readers refuse what they do not know. The runner is one shared
+module in `contracts/`, imported by each component, not a copy per component. Implemented in
+`control/`, `ruler/` and `publisher/`; `design/UPGRADES.md` lists what the others must do.
+
+**Alternatives.** (a) `PRAGMA user_version`: smaller, but Durable Object SQLite does not
+authorise it (measured: `SQLITE_AUTH` in workerd), and it holds one number, not the owner or a
+compatibility floor. (b) A copy of the runner in each component, keeping "components depend
+only on `contracts/`" trivially true. (c) No floor: every migration makes its release
+forward-only. (d) A hash of the schema instead of a number, compared on open. (e) Versions per
+row, migrated lazily when read.
+
+**Why.** `contracts/` already carries small pure code that every component imports (`TENANT_ID`,
+`ledgerLogKey`), and the runner is a contract in the same sense: the refusal behaviour and
+the meaning of `compat` must be identical everywhere, so that a release tool can decide
+rollback safety from `schemaRelease` alone; copies would drift. The runner has no I/O and no
+platform types. The floor (c) matters because a rollback is the normal response to a bad
+deploy (Cloudflare documents that a rollback re-assigns Durable Objects to old code on the
+new storage): most changes are additive (a table, a nullable column) and should leave the
+previous release a valid rollback target; only breaking ones make a release forward-only. A
+schema hash (d) detects a difference but cannot say whether the older code may proceed.
+Per-row versions (e) spread the decision over every read path and still need a floor.
+
+**Cost.** One table and one row per object; a constructor that reads `sqlite_master` once;
+every entry point checks a field. A refusal is an outage for the refused objects until the
+newer release serves them again: safe, not available. The first versioned release cannot
+protect itself from a rollback to code from before it, so it must be the rollback floor before
+any migration 2 ships.
+
+**Would change if.** Cloudflare authorises a richer storage metadata API (or `user_version`)
+with the same transactional guarantee; or deploys become strictly forward-only (no
+rollbacks), when `readableFrom` would always equal `version`; or a component needs a
+migration too large for the constructor's 30 s, when backfills move to alarm-driven batches
+under the same version row.

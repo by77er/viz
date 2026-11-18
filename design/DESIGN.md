@@ -454,6 +454,19 @@ Proposed, not built: `design/SELF-MONITORING.md` (decision D23). viz's own metri
 analytics for its Workers, and a freshness prober go to a `viz-internal` tenant in the same
 deployment, to understand scaling, nominal performance and cost per unit of work.
 
+## 11b. Updating in place
+
+Every push to `main` deploys, so two releases always share storage and messages for a
+while: callers and callees skew both ways, a Durable Object adopts new code up to 30 s late,
+and a rollback puts old code on new storage. `contracts/COMPATIBILITY.md` is the contract
+for that: every Durable Object records a schema version and migrates in its constructor
+(`contracts/schema.ts`, D24); storage newer than the code is refused, never guessed at;
+every format that crosses a release boundary carries a version; readers deploy before
+writers; changes expand, then contract; a release with a breaking migration is
+forward-only. `design/UPGRADES.md` has the inventory of formats, the verified platform
+facts, the rollback rules and what each component still has to change. As built, control,
+the ruler and the publisher follow it; the write path does not yet.
+
 ## 12. Launch scope
 
 | Phase | Contents |

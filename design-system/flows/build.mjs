@@ -2,8 +2,8 @@
 //   node build.mjs                     pages only, into flows/dist/
 //   node build.mjs --facts             prints every chart's last, min and max from fixture.js (the figures the screens state)
 //   node build.mjs --shots [n ...]     pages, then the scenarios in scenarios/ (all, or the screens whose names start with n) with
-//                                      tools/shots.mjs, one browser at a time; images palette-encoded into shots/, measurements
-//                                      appended to measurements.txt
+//                                      tools/shots.mjs, one browser at a time; images palette-encoded into shots/; a full run writes
+//                                      measurements.txt (overflow, smallest text, hit areas under 44 px with a coarse pointer)
 //   node build.mjs --compare <before>  before/after images into compare/: <before> holds the v1 images (<screen>-<theme>-<width>.png)
 // A screen file starts with <!-- nav: Section --> and <!-- title: ... -->. States are URL fragments: an element with
 // data-when="a b" is shown only in states a and b ("default" is no fragment); data-unless="a" hides it in state a.
@@ -93,7 +93,7 @@ for (const n of names) {
 if (args.includes('--facts')) {
   const ctx = { window: {}, document: { readyState: 'complete', querySelectorAll: () => [] } }; ctx.globalThis = ctx
   vm.createContext(ctx); vm.runInContext(readFileSync(join(ds, 'dist/viz-chart.js'), 'utf8'), ctx); vm.runInContext(readFileSync(join(root, 'fixture.js'), 'utf8').replace('typeof window', "'object'"), ctx)
-  const f = ctx.window.flows, hm = (t) => new Date(t).toISOString().slice(11, 16)
+  const f = ctx.window.flows, hm = (t) => new Date(t).toISOString().slice(5, 16).replace('T', ' ')
   for (const k of ['latency', 'errors', 'traceDurations', 'deps', 'depsAgent', 'logs', 'backtest']) { const s = f[k]()
     console.log(`${k}: ${s.unit}, ${hm(s.t0)} to ${hm(s.t0 + (s.series[0].values.length - 1) * s.step)}, step ${s.step / f.MIN} min ${s.agg}`)
     for (const x of s.series) { const v = x.values.filter((y) => y != null); console.log(`  ${Object.values(x.labels).join(' · ')}: last ${v[v.length - 1]}, min ${Math.min(...v)}, max ${Math.max(...v)}`) } }
@@ -130,7 +130,7 @@ if (args.includes('--shots')) {
     process.stdout.write(r.stdout); process.stderr.write(r.stderr); log.push(r.stdout.trim())
     for (const png of readdirSync(tmp).filter((x) => x.endsWith('.png'))) { encode(join(tmp, png)); renameSync(join(tmp, png), join(shots, png)) }
   }
-  writeFileSync(join(root, 'dist', 'measurements-last.txt'), log.join('\n') + '\n')
+  writeFileSync(join(root, only.length ? 'dist/measurements-last.txt' : 'measurements.txt'), log.join('\n') + '\n') // a full run is kept as evidence
   rmSync(tmp, { recursive: true, force: true })
 }
 

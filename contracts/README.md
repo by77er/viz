@@ -11,6 +11,8 @@ change it here first; nothing else may redefine these.
 | `LEDGER-LOG.md` | The ledger's change log as batched segments written in the background: format, drain, checkpoints, truncation, readers. Built; replaced one object per change (whose keys `ledger.ts` keeps for readers) |
 | `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |
 | `engine.ts` | The JavaScript face of the Rust/WASM engine |
+| `COMPATIBILITY.md` | What every component does so that release N and N±1 can run side by side: versioned storage, versioned formats, readers before writers, expand then contract, rollback rules |
+| `schema.ts` | The migration runner every Durable Object opens its storage with (`openSchema`), and the rollback test (`canOpen`, `schemaRelease`) |
 | `../shard/src/shard.ts` | The shard's RPC surface (already implemented) |
 | `../shard/src/pool.ts` | Pool maps and routing (already implemented) |
 
