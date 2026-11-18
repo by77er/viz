@@ -363,3 +363,21 @@ senders are unevenly spread hits one shard's share early.
 **Would change if.** Limits need to be exact across shards (then the count moves to a
 per-tenant object), or the Bloom filter's 1 MB ceiling (about 800,000 ids per bucket at 1%)
 is reached by real tenants.
+
+## D18. Monitoring viz with viz, in three lines (proposed)
+
+**Status.** Proposed 2026-11-18 as a future goal; not built. Full proposal in
+`design/SELF-MONITORING.md`.
+
+**Proposal.** (1) viz's own telemetry goes to a `viz-internal` tenant in a separate meta
+cell, emitted by components as aggregated Remote Write every 15 s, fire-and-forget, plus
+Cloudflare's GraphQL analytics pulled through the adapter path, plus Workers OTel export
+for logs and traces. (2) A small watcher Worker outside viz's data path checks every cell,
+including the meta cell, from Cloudflare analytics and an end-to-end probe, and pages
+directly. (3) An off-platform heartbeat and synthetic check catch Cloudflare-wide failures.
+
+**Why.** Shared fate: a system can only report failures that leave its own monitoring path
+working, so each line depends on less of viz than the one above it.
+
+**Asks of the owner.** A separate meta cell; one off-platform dependency as the deliberate
+exception to "purely Cloudflare".

@@ -105,6 +105,37 @@ async function main() {
       await page.screenshot({ path: path.join(OUT, `focus-run-again-${LABEL}.png`), clip: { x: 0, y: 0, width: 1440, height: 330 } })
       await ctx.close()
     }
+    // ---- focus: closing the palette and settings, switching the form with T while focus is in
+    // the table, and isolating a series then showing all of them (the button removes itself).
+    {
+      const { ctx, page } = await open()
+      const top = (name) => page.screenshot({ path: path.join(OUT, `${name}-${LABEL}.png`), clip: { x: 0, y: 0, width: 1440, height: 330 } })
+      await page.focus('[data-testid=open-commands]'); await page.keyboard.press('Enter')
+      await page.waitForSelector('dialog[open]'); await page.waitForTimeout(200)
+      await page.keyboard.press('Escape'); await page.waitForTimeout(300)
+      focus['after closing the command palette with Escape'] = await active(page)
+      await top('focus-palette-closed')
+      await page.focus('[data-testid=open-settings]'); await page.keyboard.press('Enter')
+      await page.waitForSelector('dialog[open]'); await page.waitForTimeout(200)
+      await page.keyboard.press('Escape'); await page.waitForTimeout(300)
+      focus['after closing settings with Escape'] = await active(page)
+      await top('focus-settings-closed')
+      await page.click('[data-testid=view-table]'); await page.waitForSelector('[data-testid=result-table] tbody tr')
+      await page.focus('[data-testid=result-table] .th-button'); await page.keyboard.press('t')
+      await page.waitForSelector('[data-testid=text-view] pre'); await page.waitForTimeout(300)
+      focus['after T (table to text) with focus on a table column head'] = await active(page)
+      await top('focus-view-switch')
+      await page.keyboard.press('t'); await page.waitForSelector('[data-testid=chart] canvas'); await page.waitForTimeout(300)
+      await page.focus('[data-testid=legend] button.series-toggle'); await page.keyboard.press('Enter')
+      await page.waitForTimeout(300)
+      focus['after isolating a series by keyboard'] = await active(page)
+      await page.focus('[data-testid=legend] button:has-text("Show all series")'); await page.keyboard.press('Enter')
+      await page.waitForTimeout(300)
+      focus['after "Show all series" by keyboard (the button goes away)'] = await active(page)
+      await page.evaluate(() => window.scrollTo(0, 0))
+      await page.screenshot({ path: path.join(OUT, `focus-show-all-${LABEL}.png`), clip: { x: 0, y: 0, width: 1440, height: 900 } })
+      await ctx.close()
+    }
     await browser.close()
   } finally {
     await setMockDelay(0).catch(() => {})

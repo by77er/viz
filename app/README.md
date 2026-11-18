@@ -107,12 +107,20 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 | `src/explore/` | Explore view: time picker, legend, table, JSON, text view, waiting logic (`waiting.tsx`) |
 | `src/shell/` | App shell, command palette, settings, theme, help page |
 | `src/lib/` | Pure logic: downsampling, step selection, colours, URL state, digest, units, time |
+| `src/lib/describe.ts` | What a result says about itself (query, range, unit, chart name, digest title) and whether it still answers the current request |
+| `src/lib/naming.ts` | Display names of the series of one result: full, distinguishing, middle-truncated |
+| `src/lib/assign.ts` | Which series get one of the eight colours, which slot, and the one Other group |
+| `src/lib/focusKeeper.ts` | Moves focus to a stand-in when the focused control goes away |
+| `src/lib/pointer.ts`, `src/lib/renders.ts` | Coarse pointer and tap toggling; render counts read by the e2e checks |
 | `mock/` | Mock backend: synthetic data, PromQL subset, HTTP handler, Node server |
 | `src/app.css` | Layout, and uPlot/CodeMirror/`<dialog>` adapted to the tokens. Tokens only |
 | `e2e/run.cjs` | End-to-end and accessibility checks of the behaviour |
 | `e2e/design.cjs` | Design-system checks: colour, waiting, keyboard, touch, narrow |
-| `e2e/measure.cjs` | Speed budgets, before or after (`e2e/measurements/*.json`) |
-| `e2e/mutants.cjs` | Breaks one property at a time and records which check catches it |
+| `e2e/fixes.cjs` | Checks of the fixes to the design review (B1, B3, M2 to M5, M7) |
+| `e2e/measure.cjs` | Speed budgets, before or after, for 4, 36 and 200 series (`e2e/measurements/*.json`) |
+| `e2e/summarise.cjs` | Prints the before/after speed table from the measurement files |
+| `e2e/mutants.cjs` | Breaks one property at a time and records which check catches it (two sets) |
+| `e2e/fix-shots.cjs` | Before/after images of the B1 and focus cases |
 | `e2e/capture.sh`, `e2e/states.cjs` | Design-review images |
 | `screenshots/` | Written by the e2e run |
 
@@ -122,6 +130,11 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 - Query editor in the system's query well: one ink (the system does not colour tokens by
   type), errors underlined in `status-critical`, autocomplete of metric names, label names and
   label values from the API; it scrolls sideways instead of wrapping; `Ctrl/Cmd+Enter` runs.
+  The editor owns the text being typed: the page reads it when the query is run, so a
+  keystroke renders no React component (checked by render counts in `e2e/fixes.cjs`). Its
+  extensions are built once. Label and series lookups for autocomplete wait 150 ms and a newer
+  lookup of the same kind replaces (and aborts) an older one; metric names and metadata are
+  fetched once per connection.
 - Run query is the view's one blue button. While a query runs it is `aria-busy`, keeps its
   pressed fill and ignores further presses (pointer, shortcut or keyboard).
 - Waiting follows the system's table: nothing new under 400 ms; then an unmeasured
@@ -130,11 +143,27 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
   range; at 60 s the request is stopped and the line says so, with Retry. The previous result
   stays visible and usable throughout. The mock reports nothing measurable, so there is never
   a bar.
-- The result panel's head shows the unit and the age of the data ("updated 12 s ago"),
-  counting once a second. The waiting line and the result region keep their height with or
-  without content, and the mock banner's space is reserved while the backend is being
-  identified, so nothing moves when data arrives.
-- Time range: relative presets and absolute from/to in a menu, show earlier / later, zoom out.
+- A result carries what describes it (`src/lib/describe.ts`): the request it answers (query
+  text, from, to, step), the window that was queried, the unit its query implies and when it
+  arrived. Everything that describes the data on screen is derived from that, never from the
+  editor or the URL: the panel head (range, unit, age), the axis format, the legend and table
+  heads and cells, the crosshair readout, the chart's accessible name, the text digest's
+  title, the JSON, the "Automatic" unit option and the caption. While the result on screen is
+  not the answer to the current request (a query waits, was cancelled, stopped at 60 s, or
+  the range changed), the head says "Showing the previous query" (or "time range") and the
+  caption names that query. After an error nothing of the earlier result is shown.
+- The head's age counts once a second and reads "updated now" under 5 s. The waiting line and
+  the result region keep their height with or without content, and the mock banner's space is
+  reserved while the backend is being identified, so nothing moves when data arrives.
+- Focus never falls to the document when the control that had it goes away
+  (`src/lib/focusKeeper.ts`): Cancel hands it to Retry, Retry to Run query, a removed button
+  to the control named in its `data-focus-after`, anything inside the result region to the
+  pressed "Show as" segment, and otherwise Run query. The keeper reads layout only when a DOM
+  change can have removed or hidden the focused control.
+- Time range: relative presets and absolute from/to in a menu, show earlier / later, zoom in
+  (half the range around its middle), zoom out (twice, never past now) and reset zoom (back to
+  the range before the first zoom). The three zoom buttons sit in the time-range group; that
+  placement is provisional until the system defines the chart's range control.
 - URL state: `q`, `from`, `to`, `step`, `unit`, `view` as flat search params (defaults
   omitted). `view` is `chart`, `table`, `text` or `json`; old `tab=json` links still open the
   JSON form. Credentials are never in the URL.
@@ -144,16 +173,41 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
   gridlines, `rule-control` baseline, `micro` axis text); up to four series are labelled
   directly at the line ends; crosshair readout by pointer, touch drag or arrow keys;
   drag-to-zoom writes the time range to the URL (Back undoes it); legend table with
-  last/min/max and sortable columns; select a row to isolate, Shift/Ctrl-select to toggle.
-- Colour: a hash of the label set picks one of the eight series tokens (`series-1` to
-  `series-8`); collisions move to the next free token. A result has at most eight coloured
-  series: the first eight in sorted key order. The ninth and beyond are drawn as hairlines in
-  `ink-muted` under the coloured ones and marked "Other" in the legend. They are not summed,
-  because a sum is wrong for quantiles and ratios.
+  last/min/max and sortable columns; select a row to isolate, Shift/Ctrl-select to toggle. On
+  a coarse pointer (or any touch or pen press) a tap toggles the row with no modifier, and
+  the hint does not mention Shift. The crosshair and its readout are drawn outside React.
+- Series names (`src/lib/naming.ts`, property-tested): labels every series shares are dropped
+  and stated once (the table's caption); the rest are ordered by how many distinct values
+  they take, most first; when one label tells the series apart its value is the whole name
+  ("checkout"). Long values are cut in the middle, and only when no two series end up with the
+  same name. One series, and series that differ only in the metric name, keep the full name.
+  The legend shows the short form, the full label set in the row's title and under the table
+  for the row that has focus or was tapped; the text digest and the JSON carry full names.
+- Colour (`src/lib/assign.ts`, a pure `assignSeries(series, previous, policy)`): a series that
+  already has a slot keeps it; the others take free slots in palette order (`series-1`
+  first) in the order they appear; when more want a slot than are free, they are ranked by a
+  size measure (default: mean over the result's window, ties by name) and the rest fold into
+  ONE Other group. By default Other is listed under one legend row ("Other, 28 series", which
+  opens to list its members 50 at a time) and its members are not drawn until selected; the
+  policy can instead carry their sum for drawing, which is right only for values that add up.
+  The assignment is kept in `sessionStorage`, so a filter does not repaint the survivors and
+  a reload reproduces the colours. Never more than eight coloured series.
+- Units (`src/lib/units.ts`): the formatter returns the number and the unit apart. The unit
+  is stated once per legend column head ("Last, /s"), table column head, axis (in the panel
+  head: "bytes, in MiB") and readout value; cells and ticks are numbers in one scale. A
+  column whose values need different scales (2 ms beside 3 h) keeps the unit on every value
+  instead. CPU cores carry their unit ("1.42 cores", "357 millicores"). Byte axes tick on
+  powers of two.
 - Gaps and downsampling as before; when columns are reduced to min/max the caption under
   the chart says so with the point counts.
 - Forms of the result, one segmented control: chart, table (latest value per series, one
-  column per label, sortable), text digest, raw JSON.
+  column per distinguishing label, most distinguishing first, sortable; the shared timestamp
+  and the labels every series has are said once in the caption; 50 rows, then "Show 50
+  more"), text digest, raw JSON (with the response time, moved here from the panel). The
+  chart stays mounted while another form is shown; the digest and the JSON text are computed
+  the first time their form is shown for a result and kept for that result. The URL's `view`
+  follows 300 ms after the last switch (on `pagehide` at once), so the router's work does
+  not land in the frames right after the press.
 - States: start (examples are links), empty and error as `vz-empty` (the error offers "Go to
   character N" when the API gives a position), warnings as a banner.
 
@@ -195,8 +249,11 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 - No auto-refresh, query history, multiple queries per view, exemplars or annotations.
 - The table is derived from the range result (last sample per series), not from a separate
   instant query. Scalar and string instant results have no dedicated rendering.
-- The legend is not virtualized (fine at the mock's 128 series); the table renders the first
-  500 rows.
+- Neither the legend nor the table is virtualised; both are capped instead. The legend has at
+  most eight coloured rows and one Other row whose members are listed 50 at a time; the table
+  shows 50 rows at a time.
+- The JSON body is parsed on the main thread (no worker, no Arrow): about 32 ms unthrottled for
+  the 3.6 MB of a 200-series, 3-hour result, so about 125 ms at 4x CPU.
 - No Arrow transport, no coarse-then-refine loading.
 - No login flow; the token is a pasted bearer token.
 

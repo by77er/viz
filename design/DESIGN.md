@@ -445,6 +445,11 @@ Even at the top of these ranges the team figure is more than ten times below the
 prices of hosted alternatives in the research. The main levers are rollups for long
 retention, batching WAL writes, seal age, and keeping rules in the tail class.
 
+## 11a. Monitoring viz itself
+
+Proposed, not built: `design/SELF-MONITORING.md`. viz on viz in a separate meta cell,
+a watcher outside the data path, and an off-platform heartbeat (decision D18).
+
 ## 12. Launch scope
 
 | Phase | Contents |
