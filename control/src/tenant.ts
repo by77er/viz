@@ -78,13 +78,26 @@ export class Tenant extends DurableObject<TenantEnv> {
   tenant = ''
   private draining: Promise<boolean> = Promise.resolve(true)
 
+  /** What opening storage found (contracts/schema.ts). Anything but `ok` and the object serves nothing and writes nothing. */
+  schema: SchemaState = { status: 'schema_too_new', component: TENANT_SCHEMA.component, found: 0, compat: 0, known: 0, retryAfterMs: 0 }
+
   constructor(ctx: DurableObjectState, env: TenantEnv) {
     super(ctx, env)
     this.kv = env.CONFIG
     this.caps = capsFrom(env.CONTROL_CAPS)
-    ctx.storage.sql.exec(SCHEMA)
-    const bound = ctx.storage.sql.exec("SELECT tenant FROM tenant_meta WHERE k = 'bound'").toArray()[0]
-    if (bound) this.tenant = bound.tenant as string
+    // Versioned storage: migrate, or refuse storage a newer release wrote (contracts/COMPATIBILITY.md §2).
+    // Local SQLite only, so holding off other events for it is allowed (AGENTS.md).
+    void ctx.blockConcurrencyWhile(async () => {
+      this.schema = openSchema(ctx.storage, TENANT_SCHEMA)
+      if (this.schema.status !== 'ok') return
+      const bound = ctx.storage.sql.exec("SELECT tenant FROM tenant_meta WHERE k = 'bound'").toArray()[0]
+      if (bound) this.tenant = bound.tenant as string
+    })
+  }
+
+  /** Non-null when this code may not touch the storage: every entry point answers with it and writes nothing. */
+  refusal(): SchemaTooNew | null {
+    return refusalOf(this.schema)
   }
 
   // ---- SQL helpers ----
@@ -216,6 +229,12 @@ export class Tenant extends DurableObject<TenantEnv> {
 
   /** Idempotent and safe to run at any time: expire proposals, purge old deleted dashboards, republish. */
   override async alarm(): Promise<void> {
+    const refused = this.refusal()
+    if (refused) {
+      // Keep the alarm for the release that owns this storage; touch nothing else.
+      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)
+      return
+    }
     if (this.tenant === '') return
     const now = Date.now()
     this.ctx.storage.transactionSync(() => {

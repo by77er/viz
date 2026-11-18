@@ -138,7 +138,7 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
   const graceMs = opts.graceMs ?? DEFAULT_ORPHAN_GRACE_MS
   // A compaction output is protected only by its age: a step gives up before `replace`
   // once it has run `maxStepMs`, so an output at least twice that old cannot be in flight.
-  const compactGraceMs = Math.max(graceMs, 2 * (opts.maxCompactStepMs ?? DEFAULT_POLICY.maxStepMs))
+  const compactGraceMs = graceMs
   const out: OrphanResult = { listed: 0, deleted: [], kept: [] }
 
   // 1. List first. Whatever is written after this is not a candidate in this run.
@@ -160,6 +160,7 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
     const known = new Set([...check.live, ...check.tombstoned]) // tombstoned keys go through purgeTenant
     const doomed: string[] = []
     for (const o of chunk) {
+      if (known.has(o.key)) continue
       const age = now - o.uploaded
       const flush = FLUSH_FILE.exec(o.key)
       if (flush) {
