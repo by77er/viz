@@ -1,6 +1,6 @@
 //! The C ABI exercised natively: the same functions the WASM module exports, called with
 //! real pointers. (The TypeScript binding is tested in workerd, in `test/`.)
-use viz_engine::{viz_abi_version, viz_alloc, viz_encode_segment, viz_free, viz_merge_files, viz_select};
+use viz_engine::{viz_abi_version, viz_alloc, viz_encode_segment, viz_free, viz_free_file, viz_merge_files, viz_select};
 use viz_storage::batch::{encode, Row, SeriesDef, STALE_NAN_BITS};
 
 const T: i64 = 1_700_000_000_000;
@@ -147,9 +147,15 @@ fn merge_req(table: u8, inputs: &[&[u8]]) -> Vec<u8> {
     r
 }
 
-/// Parse one file of an encode or merge payload: (table, rows, min_ts, max_ts, day, index, bytes).
+/// Parse a merge payload and take the file out of the module's memory, releasing it:
+/// (table, rows, min_ts, max_ts, day, index, bytes).
 fn file(r: &mut Rd<'_>) -> (u32, u64, u64, u64, Vec<u8>, Vec<u8>, Vec<u8>) {
-    (r.u32(), r.u64(), r.u64(), r.u64(), r.bytes().to_vec(), r.bytes().to_vec(), r.bytes().to_vec())
+    let (table, rows, min_ts, max_ts, day, index) = (r.u32(), r.u64(), r.u64(), r.u64(), r.bytes().to_vec(), r.bytes().to_vec());
+    // Natively a pointer does not fit the payload's u32: the test reads it back as usize.
+    let (ptr, len, cap) = (r.usize(), r.usize(), r.usize());
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len).to_vec() };
+    unsafe { viz_free_file(ptr as *mut u8, cap) };
+    (table, rows, min_ts, max_ts, day, index, bytes)
 }
 
 #[test]
