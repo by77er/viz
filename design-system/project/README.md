@@ -21,13 +21,13 @@
 
 ## Type
 
-- Set interface and reading text in the `sans` family (Schibsted Grotesk), and every number a person compares or identifier they copy in `mono` (JetBrains Mono). Both are served from this system's own files, never from a third party; the sans is preloaded and has a metric-matched fallback so text does not move when it arrives. The files cover Latin and extended Latin; the mono also covers Greek and Cyrillic. Other scripts fall back to the system font.
+- Set interface and reading text in the `sans` family (Schibsted Grotesk), and every number a person compares or identifier they copy in `mono` (JetBrains Mono). Both are served from this system's own files, never from a third party. Preload the sans file in the page head (`<link rel="preload" as="font" type="font/woff2" crossorigin>`); it has a metric-matched fallback so text does not move when it arrives. The files cover Latin and extended Latin; the mono also covers Greek and Cyrillic. Other scripts fall back to the system font.
 - Any number that is compared in a column or updates in place is set in `mono`, which is fixed-width, so it does not shift as it changes. The sans is not set to tabular figures: this face widens full stops, commas and colons to digit width when asked, which breaks prose.
 - Component code uses the type styles as `var(--text-<name>)` and never writes a size. `micro` (mono, 11px) is the smallest text, for keyboard hints and chart axes.
 - Use `ui` for interface text and `ui-strong` for button labels and selected items. Use `body` for prose, at a measure of 60 to 72 characters (`measure`).
 - Use `display` at most once per page, for the name of the thing being looked at. Use `title` for page and dialog titles, `heading` for sections.
 - Column heads and field labels use `label`: sentence case, weight 500, `ink-secondary`. Do not set text in capitals anywhere, and do not letter-space anything; the negative tracking in `display`, `title` and `heading` is part of those styles.
-- Numbers in tables use `mono` with tabular figures and align right. Put the unit in the column head or after the number in `ink-secondary`, once. A single large figure (`vz-stat`) uses the sans at `display` size.
+- Numbers in tables use `mono` with tabular figures and align right. Put the unit in the column head or after the number in `ink-secondary`, once. A single large figure (`vz-stat`) is the one exception: it uses the sans at `display` size, and its container reserves the width of its longest expected value so a changing figure does not move what is beside it.
 - Weights are 400, 500 and 600 for the sans (500 only for `label`), 400 and 500 for the mono. No italics for emphasis.
 
 ## Space and shape
@@ -84,7 +84,7 @@ The shell loads in at most 200 KB of compressed script. Layout shift stays under
 
 - Lay out by the space a region has, not by device: panels reflow with container queries. Twelve columns from 1200px, six from 640px, one below.
 - Nothing scrolls the page sideways. A wide table scrolls inside its own container with its first column fixed.
-- With a coarse pointer every control has a `control-touch` hit area. Drawn sizes do not change, with one exception: text inputs and selects become `control-touch` tall with `body`-size text, because smaller text makes mobile browsers zoom the page on focus. Small controls are not stacked in adjacent rows, where their hit areas would overlap.
+- With a coarse pointer every control has a `control-touch` hit area. Drawn sizes do not change, with two exceptions. Text inputs and selects become `control-touch` tall with `body`-size text, because smaller text makes mobile browsers zoom the page on focus. Tabs and navigation links gain `space-3` of vertical padding, because a scrolling strip clips any hit area larger than itself. Small controls are not stacked in adjacent rows, where their hit areas would overlap.
 - Nothing depends on hover. Anything revealed on hover is also reachable by focus and by tap.
 - Charts read by touch: drag for the crosshair, pinch or the range control to zoom. Charts are drawn at the size of their region; they are never scaled like images.
 - The interface works at 200% zoom and with enlarged text.

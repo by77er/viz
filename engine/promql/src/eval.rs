@@ -111,8 +111,8 @@ pub(crate) enum Val {
 pub(crate) fn offset_ms(o: &Option<Offset>) -> i64 {
     match o {
         None => 0,
-        Some(Offset::Pos(d)) => d.as_millis() as i64,
-        Some(Offset::Neg(d)) => -(d.as_millis() as i64),
+        Some(Offset::Pos(d)) => -(d.as_millis() as i64),
+        Some(Offset::Neg(d)) => d.as_millis() as i64,
     }
 }
 

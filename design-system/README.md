@@ -78,6 +78,12 @@ pull request description by commit, so it stays valid after merge:
 - `reviews/system-v1/review.md`: an independent review rejected the first sans version on
   four blockers (overflow at 400px, literal values in the component CSS, clipped touch
   targets, two contrast failures the check missed) and eight majors. All were applied.
+- `reviews/system-v2/review.md`: rejected again on one remaining blocker (tab hit areas
+  clipped by the scrolling strip) and three new majors (tabular figures widening
+  punctuation, the sticky column's layering, a checkbox that resembled a status mark).
+- `reviews/system-v3/review.md`: **approved**, no blockers or majors. Three minor wording
+  points were then corrected. No speed budget has been verified, because nothing uses the
+  system yet.
 
 ## Not done yet
 
@@ -86,6 +92,8 @@ pull request description by commit, so it stays valid after merge:
 - The web app (`app/`) was started before this system existed and does not use it yet.
   Applying it is the first change to go through design review.
 - Log line, trace waterfall, heatmap and flame graph are not specified; they arrive with
-  the traces and logs phases.
+  the traces and logs phases. There is no dialog scrim token and no failure-notice
+  component yet.
+- The fixture dashboard that the speed budgets are measured on does not exist yet.
 - No speed budget has been measured: nothing that uses the system exists yet.
 - Fonts cover Latin, extended Latin and (mono) Greek and Cyrillic only.
