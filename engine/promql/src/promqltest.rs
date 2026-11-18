@@ -9,8 +9,11 @@
 //!
 //! Differences from upstream: `expect warn|info|no_warn|no_info` lines are
 //! parsed and ignored (this engine does not produce annotations), and cases
-//! that touch native histograms or `Unsupported` features are reported as
-//! skipped instead of failing.
+//! whose result depends on native histograms or on `Unsupported` features
+//! are reported as skipped instead of failing. Native histogram samples in
+//! `load` blocks are not stored; a case that selects such a series still
+//! runs, and counts as passed only if the float-only result is exactly the
+//! expected one (reported separately, see `Report::passed_touching_histograms`).
 
 use std::cell::Cell;
 use std::time::{Duration, UNIX_EPOCH};
@@ -47,6 +50,11 @@ pub struct CaseResult {
     pub line: usize,
     pub expr: String,
     pub outcome: Outcome,
+    /// The query selected a series that holds native histograms upstream.
+    /// This engine stores none, so such a case passes only when the expected
+    /// result does not depend on the histogram samples (for example
+    /// `sort()` ignores them); otherwise it is reported as skipped.
+    pub touched_native_histogram: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -60,6 +68,10 @@ impl Report {
     }
     pub fn failed(&self) -> usize {
         self.cases.iter().filter(|c| matches!(c.outcome, Outcome::Failed(_))).count()
+    }
+    /// Passed cases whose query also selected a native-histogram series.
+    pub fn passed_touching_histograms(&self) -> usize {
+        self.cases.iter().filter(|c| c.outcome == Outcome::Passed && c.touched_native_histogram).count()
     }
     pub fn skipped(&self) -> usize {
         self.cases.iter().filter(|c| matches!(c.outcome, Outcome::Skipped(..))).count()
@@ -719,12 +731,14 @@ fn run_eval(cmd: &EvalCmd, src: &TestSource, opts: &EvalOptions) -> Outcome {
         }
     };
     let r = if cmd.is_range { run_range(cmd, &expr, src, opts) } else { run_instant(cmd, &expr, src, opts) };
-    if src.hit.get() {
-        return Outcome::Skipped(SkipReason::NativeHistogram, "query selects a native histogram series".into());
-    }
     match r {
         Step::Skip(r, m) => Outcome::Skipped(r, m),
         Step::Done(Ok(())) => Outcome::Passed,
+        // The result differs and histogram samples were involved: the
+        // difference cannot be attributed to the float semantics.
+        Step::Done(Err(m)) if src.hit.get() => {
+            Outcome::Skipped(SkipReason::NativeHistogram, format!("query selects a native histogram series ({m})"))
+        }
         Step::Done(Err(m)) => Outcome::Failed(m),
     }
 }
@@ -869,7 +883,12 @@ pub fn run_script(input: &str, opts: &EvalOptions) -> Result<Report, String> {
         } else if head.starts_with("eval") {
             let cmd = parse_eval(&lines, &mut i)?;
             let outcome = run_eval(&cmd, &src, opts);
-            report.cases.push(CaseResult { line: cmd.line, expr: cmd.expr.clone(), outcome });
+            report.cases.push(CaseResult {
+                line: cmd.line,
+                expr: cmd.expr.clone(),
+                outcome,
+                touched_native_histogram: src.hit.get(),
+            });
         } else {
             return Err(format!("line {}: invalid command {l:?}", i + 1));
         }

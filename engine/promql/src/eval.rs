@@ -872,7 +872,7 @@ impl<'a> Evaluator<'a> {
                 let e = rv.window_end(ts);
                 let start = e.saturating_sub(rv.range);
                 // Left-open, right-closed: (start, e].
-                let lo = s.ts.partition_point(|&t| t <= start);
+                let lo = s.ts.partition_point(|&t| t < start);
                 let hi = s.ts.partition_point(|&t| t <= e);
                 if hi <= lo {
                     continue;

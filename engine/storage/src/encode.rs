@@ -77,7 +77,7 @@ pub fn encode_segment_with(batches: &[&[u8]], opts: &WriteOptions) -> Result<Vec
         }
     }
     // ts order implies day order, so (rank, ts) inside a day is also (day, rank, ts) overall.
-    rows.sort_by(|a, b| (day_number(a.ts), a.rank, a.ts).cmp(&(day_number(b.ts), b.rank, b.ts)));
+    rows.sort_by_key(|r| (day_number(r.ts), r.rank, r.ts));
     let mut kept = 0;
     for i in 0..rows.len() {
         if i + 1 < rows.len() && rows[i + 1].rank == rows[i].rank && rows[i + 1].ts == rows[i].ts {

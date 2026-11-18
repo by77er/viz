@@ -202,7 +202,7 @@ pub fn select_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
                 let text = std::str::from_utf8(labels[i].data()).map_err(|_| Error::Json("labels is not UTF-8".into()))?;
                 let l = parse_labels(text)?;
                 let hit = matches(&ms, &l);
-                known.insert(sids[i], hit.then(|| accs.len() as u32));
+                known.insert(sids[i], hit.then_some(accs.len() as u32));
                 if hit {
                     accs.push(Acc { labels: l, ts: Vec::new(), values: Vec::new() });
                 }

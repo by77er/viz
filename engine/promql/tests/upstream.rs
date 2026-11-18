@@ -49,21 +49,23 @@ fn run(opts: viz_promql::EvalOptions, known_file: &str) {
 
     let mut failures: BTreeSet<String> = BTreeSet::new();
     let mut detail = String::new();
-    let (mut tp, mut tf, mut ts) = (0, 0, 0);
+    let (mut tp, mut tf, mut ts, mut tph) = (0, 0, 0, 0);
     println!("{:<28} {:>6} {:>6} {:>7}   (skipped: native-histogram / unsupported / parser)", "file", "passed", "failed", "skipped");
     for p in &files {
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         let text = fs::read_to_string(p).unwrap();
         let rep = run_script(&text, &opts).unwrap_or_else(|e| panic!("{name}: script error: {e}"));
+        tph += rep.passed_touching_histograms();
         println!(
-            "{:<28} {:>6} {:>6} {:>7}   ({} / {} / {})",
+            "{:<28} {:>6} {:>6} {:>7}   ({} / {} / {})   passed-with-histogram-series-absent: {}",
             name,
             rep.passed(),
             rep.failed(),
             rep.skipped(),
             rep.skipped_for(SkipReason::NativeHistogram),
             rep.skipped_for(SkipReason::Unsupported),
-            rep.skipped_for(SkipReason::Parser)
+            rep.skipped_for(SkipReason::Parser),
+            rep.passed_touching_histograms()
         );
         tp += rep.passed();
         tf += rep.failed();
@@ -81,7 +83,7 @@ fn run(opts: viz_promql::EvalOptions, known_file: &str) {
             }
         }
     }
-    println!("{:<28} {:>6} {:>6} {:>7}", "TOTAL", tp, tf, ts);
+    println!("{:<28} {:>6} {:>6} {:>7}   passed-with-histogram-series-absent: {}", "TOTAL", tp, tf, ts, tph);
     if verbose {
         println!("{detail}");
     }
