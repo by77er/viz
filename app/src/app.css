@@ -17,7 +17,7 @@ a { color: inherit; }
 
 .sr-only { position: absolute; width: var(--hairline); height: var(--hairline); overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .grow { flex: 1; }
-.app-num { font-family: var(--font-mono); } /* a number or identifier inside a sentence, at the sentence's size */
+.app-num { font: var(--text-data); line-height: inherit; } /* a number or identifier inside a sentence: the data style, on the sentence's line */
 
 /* Shell */
 .app { min-height: 100vh; display: flex; flex-direction: column; container-type: inline-size; }
@@ -57,14 +57,16 @@ a { color: inherit; }
 /* Result panel. The waiting line and the plot region keep their height whether or not they have content. */
 .result { --plot: calc(var(--row) * 10); }
 .wait-slot { display: flex; flex-direction: column; }
-.region { min-height: var(--plot); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.region { position: relative; min-height: var(--plot); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+/* The chart form stays mounted and laid out while another form is shown, so coming back to it is a style change, not a redraw. */
+.is-parked { position: absolute; left: 0; right: 0; top: 0; visibility: hidden; pointer-events: none; }
 .plot { position: relative; height: var(--plot); width: 100%; font: var(--text-micro); user-select: none; touch-action: pan-y; }
-.region .vz-empty { padding-top: var(--space-2); }
+.region .vz-empty { padding-top: 0; }
 .code-scroll { max-height: calc(var(--row) * 16); overflow: auto; }
 .code-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .caption-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
 .example-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
-.example-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-3); }
+.example-list li { display: grid; grid-template-columns: var(--overlay-min) minmax(0, 1fr); align-items: baseline; gap: 0 var(--space-3); }
 .example-list a { font: var(--text-data); overflow-wrap: anywhere; }
 
 /* Tables: sortable heads and the legend's row toggles are plain buttons that fill their cell. */
@@ -77,9 +79,10 @@ a { color: inherit; }
 .cell-wrap { white-space: normal; }
 .cell-quiet { color: var(--ink-secondary); }
 @media (pointer: coarse) {
-  .legend-table td, .legend-table th:first-child { width: 100%; }
-.series-toggle { height: var(--control-touch); }
-  .th-button { min-height: var(--control-touch); }
+  .legend-table td, .series-toggle { height: var(--control-touch); }
+  .th-button { min-height: var(--control-touch); min-width: var(--control-touch); }
+  .example-list { gap: 0; }
+  .example-list a { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .region-part { gap: var(--space-3); } /* a small button above a table: their touch areas must not overlap */
 }
 
@@ -137,4 +140,10 @@ h3 { margin: 0; font: inherit; }
 @container (max-width: 639px) { /* token-lint-ignore: breakpoint */
   .view-field { margin-left: 0; }
   .range-button { flex: 1 1 100%; }
+  .example-list li { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Workaround for a gap in the design system (see reviews/app-restyle/PR.md, proposed system
+   changes): its coarse-pointer rule gives text inputs body-size text, but the data-mono rule
+   is more specific and keeps monospaced inputs smaller. Delete when the system covers it. */
+@media (pointer: coarse) { .vz-input[data-mono] { font-size: var(--text-body-size); } }

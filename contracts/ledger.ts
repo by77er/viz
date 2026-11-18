@@ -122,7 +122,11 @@ export interface LedgerChange {
 }
 
 export interface LedgerRpc {
-  /** Register a stream (or a new incarnation of one). Idempotent for the same incarnation. */
+  /**
+   * Register a stream (or a new incarnation of one). Idempotent for the same incarnation.
+   * Throws for an incarnation lower than the registered one (see `StreamRef`): the return
+   * type has no refusal, and a caller must never proceed as if a stale stream were registered.
+   */
   registerStream(ref: StreamRef): Promise<{ version: number; previousIncarnation: number | null }>
   addUnit(unit: FlushUnit): Promise<AddUnitResult>
   plan(req: PlanRequest): Promise<Plan>
@@ -147,6 +151,11 @@ export interface LedgerAdminRpc {
 export const ledgerLogKey = (tenant: string, ledgerIncarnation: number, version: number): string =>
   `ledger/tenant=${tenant}/${ledgerIncarnation}/${String(version).padStart(12, '0')}.json`
 
-/** The `base` entry of an incarnation sorts before its first version. */
+/**
+ * The `base` entry of an incarnation. It is LOGICALLY first: its `version` is the version the
+ * incarnation starts from, and the incarnation's first change is `version + 1`. In a
+ * lexicographic key listing it comes AFTER the version objects (`base.json` sorts after
+ * digits), so a reader fetches it by this key and does not rely on list order.
+ */
 export const ledgerBaseKey = (tenant: string, ledgerIncarnation: number): string =>
   `ledger/tenant=${tenant}/${ledgerIncarnation}/base.json`

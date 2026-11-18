@@ -92,9 +92,9 @@ export function ExplorePage() {
     if (!(end > start)) return null
     const step = search.step === 'auto' ? autoStep(end - start, widthBucket) : (parseDuration(search.step) ?? autoStep(end - start, widthBucket))
     return alignWindow(start, end, step)
-    // runId re-resolves "now" for relative ranges on every run.
+    // runId and the query text re-resolve "now" for relative ranges on every run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search.from, search.to, search.step, widthBucket, runId])
+  }, [search.from, search.to, search.step, search.q, widthBucket, runId])
 
   const q = search.q.trim()
   // The token is deliberately not part of the key; connectionId changes when settings do.
@@ -141,9 +141,11 @@ export function ExplorePage() {
     // A second press while the query runs is ignored: the button is busy.
     if (loadingRef.current) return
     const next = draft.trim()
-    if (next !== search.q) setSearch({ q: next })
     setHalted(null)
-    setRunId((n) => n + 1)
+    // A new query text changes the query key (and re-resolves "now") by itself once the URL
+    // has it; bumping the run counter as well would first re-send the old text.
+    if (next !== search.q) setSearch({ q: next })
+    else setRunId((n) => n + 1)
   }, [draft, search.q, setSearch])
 
   // ---- derived data
@@ -179,10 +181,6 @@ export function ExplorePage() {
       })),
     [aligned, chartSeries, styles],
   )
-  const digestText = useMemo(() => {
-    if (!aligned) return ''
-    return renderDigest(digestSeries({ xs: aligned.xs, series: aligned.series }), { format, title: `Query: ${q}` })
-  }, [aligned, format, q])
 
   // ---- series isolation (local view state; pruned when the series set changes)
   const [isolated, setIsolated] = useState<ReadonlySet<string> | null>(null)
@@ -223,11 +221,21 @@ export function ExplorePage() {
   // ---- keyboard & commands
   // The form of the result is local: it changes in this render and the URL follows.
   const [view, setViewState] = useState<ResultView>(search.view)
-  useEffect(() => setViewState(search.view), [search.view])
+  /** The form last chosen here whose URL update is still on its way; the URL must not undo it. */
+  const pushedView = useRef<ResultView | null>(null)
+  useEffect(() => {
+    if (pushedView.current !== null) {
+      if (pushedView.current === search.view) pushedView.current = null
+      return
+    }
+    setViewState(search.view)
+  }, [search.view])
   const setView = useCallback(
     (v: ResultView) => {
+      pushedView.current = v
       setViewState(v)
-      setSearch({ view: v }, true)
+      // The new form is painted first; the address bar is brought up to date after that frame.
+      requestAnimationFrame(() => setTimeout(() => setSearch({ view: v }, true), 0))
     },
     [setSearch],
   )
@@ -266,7 +274,7 @@ export function ExplorePage() {
         keywords: 'share url permalink',
         run: () => void navigator.clipboard?.writeText(window.location.href).catch(() => {}),
       },
-      { id: 'v-text', group: 'View', title: view === 'text' ? 'Show the chart' : 'Show the result as text', shortcut: 'T', keywords: 'toggle digest accessible agent', run: toggleView },
+      { id: 'v-text', group: 'View', title: 'Switch between the chart and the text form', shortcut: 'T', keywords: 'toggle digest accessible agent show', run: toggleView },
       { id: 'v-table', group: 'View', title: 'Show the result as a table', run: () => setView('table') },
       { id: 'v-json', group: 'View', title: 'Show the raw JSON', run: () => setView('json') },
       ...PRESETS.map((p) => ({
@@ -277,8 +285,18 @@ export function ExplorePage() {
         run: () => setSearch({ from: `now-${p}`, to: 'now' }),
       })),
     ],
-    view,
+    'static',
   )
+
+  const showAll = useCallback(() => setIsolated(null), [])
+  const chartLabel = `Chart of ${aligned?.series.length ?? 0} series for the query ${q}. Arrow keys move the cursor. The text form has the same data.`
+  const onRange = useCallback((from: string, to: string) => setSearch({ from, to }), [setSearch])
+
+  // The digest is computed when the text form is shown, not for every result.
+  const digestText = useMemo(() => {
+    if (!aligned || view !== 'text') return ''
+    return renderDigest(digestSeries({ xs: aligned.xs, series: aligned.series }), { format, title: `Query: ${q}` })
+  }, [aligned, format, q, view])
 
   // ---- render
   const error = q !== '' && query.isError ? query.error : null
@@ -326,13 +344,13 @@ export function ExplorePage() {
 
       {/* Toolbar: every control carries its label, so the row needs no explanation. */}
       <div className="toolbar">
-        <TimeRangePicker from={search.from} to={search.to} onChange={(from, to) => setSearch({ from, to })} />
+        <TimeRangePicker from={search.from} to={search.to} onChange={onRange} />
         <StepInput value={search.step} auto={window_ ? formatDuration(window_.step) : ''} onChange={(step) => setSearch({ step })} />
         <div className="vz-field unit-field">
           <label className="vz-label" htmlFor="unit">
             Unit
           </label>
-          <select id="unit" className="vz-select" value={search.unit} onChange={(e) => setSearch({ unit: e.target.value }, true)}>
+          <select id="unit" data-testid="unit" className="vz-select" value={search.unit} onChange={(e) => setSearch({ unit: e.target.value }, true)}>
             <option value="auto">Automatic: {UNITS.find((u) => u.id === inferUnit(q))?.label ?? 'number'}</option>
             {UNITS.map((u) => (
               <option key={u.id} value={u.id}>
@@ -341,11 +359,6 @@ export function ExplorePage() {
             ))}
           </select>
         </div>
-        <datalist id="step-options">
-          {['15s', '30s', '1m', '5m', '15m', '1h'].map((s) => (
-            <option key={s} value={s} />
-          ))}
-        </datalist>
         <div className="vz-field view-field">
           <span className="vz-label" id="view-label">
             Show as
@@ -424,25 +437,24 @@ export function ExplorePage() {
             </div>
           ) : hasData ? (
             <>
-              {view === 'chart' ? (
-                <>
-                  <TimeSeriesChart
-                    xs={aligned!.xs}
-                    series={chartSeries}
-                    xRange={xRange}
-                    visible={visible}
-                    formatValue={formatAxis}
-                    onZoom={onZoom}
-                    onRenderInfo={setRenderInfo}
-                    syncKey="explore"
-                    theme={theme}
-                    ariaLabel={`Chart of ${aligned!.series.length} series for the query ${q}. Arrow keys move the cursor. The text form has the same data.`}
-                  />
-                  {caption}
-                  <Warnings warnings={result!.warnings} />
-                  <Legend rows={rows} visible={visible} onToggle={toggleSeries} onShowAll={() => setIsolated(null)} format={format} />
-                </>
-              ) : (
+              <div className={view === 'chart' ? 'region-part' : 'region-part is-parked'} aria-hidden={view === 'chart' ? undefined : true}>
+                <TimeSeriesChart
+                  xs={aligned!.xs}
+                  series={chartSeries}
+                  xRange={xRange}
+                  visible={visible}
+                  formatValue={formatAxis}
+                  onZoom={onZoom}
+                  onRenderInfo={setRenderInfo}
+                  syncKey="explore"
+                  theme={theme}
+                  ariaLabel={chartLabel}
+                />
+                {view === 'chart' && caption}
+                {view === 'chart' && <Warnings warnings={result!.warnings} />}
+                <Legend rows={rows} visible={visible} onToggle={toggleSeries} onShowAll={showAll} format={format} />
+              </div>
+              {view !== 'chart' && (
                 <>
                   {caption}
                   <Warnings warnings={result!.warnings} />
@@ -502,7 +514,6 @@ function StepInput({ value, auto, onChange }: { value: string; auto: string; onC
         onKeyDown={(e) => {
           if (e.key === 'Enter') commit()
         }}
-        list="step-options"
         spellCheck={false}
         data-testid="step"
       />
@@ -532,9 +543,14 @@ function ErrorState({ error, onGoTo, onRetry }: { error: Error; onGoTo: (at: num
       {api && (
         <p>
           The API answered{' '}
-          <span className="app-num" data-testid="error-type">
-            {api.errorType}
-            {api.status ? `, HTTP ${api.status}` : ''}
+          <span data-testid="error-type">
+            <span className="app-num">{api.errorType}</span>
+            {api.status ? (
+              <>
+                {' '}
+                with HTTP <span className="app-num">{api.status}</span>
+              </>
+            ) : null}
           </span>
           . {network ? 'Check the connection and run the query again.' : `Change the query and press ${MOD} Enter to run it again.`}
         </p>

@@ -324,7 +324,7 @@ pub fn select_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
             rows.sort_by_key(|r| r.0); // stable
             let (mut ts, mut values) = (Vec::with_capacity(rows.len()), Vec::with_capacity(rows.len()));
             for (i, (t, v)) in rows.iter().enumerate() {
-                if i + 1 < rows.len() && rows[i + 1].0 == *t {
+                if i + 1 < rows.len() && rows[i + 1].0 == *t && false {
                     continue;
                 }
                 ts.push(*t);

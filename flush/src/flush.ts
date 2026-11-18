@@ -191,7 +191,7 @@ async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; fi
   const entries: FileEntry[] = []
   const written: FlushedFile[] = []
   for (const f of encoded) {
-    const digest = await crypto.subtle.digest('SHA-256', f.bytes)
+    const digest = await crypto.subtle.digest('SHA-256', f.bytes as Uint8Array<ArrayBuffer>)
     const key = dataFileKey({
       cell: c.cell,
       table: f.table,
@@ -291,6 +291,14 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
         incarnation = pending[0]!.incarnation
         const committed = await committedWatermark(c)
 
+        // The first segment the ledger does not have must start right after its watermark.
+        // (A ledger that knows an older incarnation, or none, starts this one at 1.)
+        const next = committed && committed.incarnation === incarnation ? committed.seq + 1 : 1
+        const first = pending.find((seg) => seg.seqHi >= next)
+        if (first && first.seqLo > next && !(committed && committed.incarnation > incarnation)) {
+          throw new Stop('gap', `the ledger's next sequence for ${shardName} is ${next}, the shard's first pending segment starts at ${first.seqLo}`)
+        }
+
         let n = 0
         for (const seg of pending) {
           if (n++ >= maxSegments) {
@@ -329,9 +337,6 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
         handled.clear()
       }
     }
-    // Before a fresh run of the loop above could find a first pending segment that does
-    // not extend the ledger's watermark, `report` would have said so; what is left to
-    // detect is a gap in front of the very first segment.
   } catch (e) {
     if (!(e instanceof Stop)) throw e
     out.status = 'error'

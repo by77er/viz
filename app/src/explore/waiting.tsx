@@ -33,22 +33,27 @@ export function useWaiting(active: boolean): { shown: boolean; elapsedMs: number
     if (!active) return
     startedAt.current = performance.now()
     const show = setTimeout(() => {
-      shownAt.current = performance.now()
-      setElapsedMs(shownAt.current - startedAt.current)
+      setElapsedMs(performance.now() - startedAt.current)
       setShown(true)
     }, WAIT.showAfter)
     return () => clearTimeout(show)
   }, [active])
 
+  // The minimum is counted from the moment the line is in the document, not from the timer.
+  useEffect(() => {
+    if (shown) shownAt.current = performance.now()
+  }, [shown])
+
   // Hide when the wait is over, but not before the line has been up for minShown.
   useEffect(() => {
     if (active || !shown) return
-    const left = WAIT.minShown - (performance.now() - shownAt.current)
-    if (left <= 0) {
-      setShown(false)
-      return
+    let hide: ReturnType<typeof setTimeout>
+    const tryHide = () => {
+      const left = WAIT.minShown - (performance.now() - shownAt.current)
+      if (left <= 0) setShown(false)
+      else hide = setTimeout(tryHide, left + 1) // timers may fire a little early; check again
     }
-    const hide = setTimeout(() => setShown(false), left)
+    tryHide()
     return () => clearTimeout(hide)
   }, [active, shown])
 

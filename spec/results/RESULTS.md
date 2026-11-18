@@ -41,6 +41,21 @@
 | `F5_restart_without_timing` F5: untimed, a query attempt is refused once per discard | L2_RestartsBelow3 | violated in 30 steps | 185978 / 755342 | 31 | 21.9s |
 | `literal_all` DESIGN 3.1 as written, all actions, all safety invariants | Safety | violated in 5 steps | 243 / 387 | 6 | 10s |
 
+## witness
+
+| experiment | checked | result | states (distinct / generated) | depth | time |
+|---|---|---|---|---|---|
+| `W_stale` reachable in the amended protocol: stale | W_stale | violated in 12 steps | 71761 / 211741 | 13 | 15s |
+| `W_mismatch` reachable in the amended protocol: mismatch | W_mismatch | violated in 4 steps | 37 / 37 | 5 | 10.8s |
+| `W_fileMissing` reachable in the amended protocol: fileMissing | W_fileMissing | violated in 16 steps | 1149834 / 4436268 | 17 | 61.2s |
+| `W_sweep` reachable in the amended protocol: sweep | W_sweep | violated in 11 steps | 27923 / 74795 | 12 | 11.9s |
+| `W_deleteRetired` reachable in the amended protocol: deleteRetired | W_deleteRetired | violated in 19 steps | 4375744 / 19556896 | 20 | 244.4s |
+| `W_replaceConflict` reachable in the amended protocol: replaceConflict | W_replaceConflict | violated in 16 steps | 1100630 / 4229851 | 17 | 68.3s |
+| `W_reRegister` reachable in the amended protocol: reRegister | W_reRegister | violated in 3 steps | 17 / 17 | 4 | 12.2s |
+| `W_addUnitReplay` reachable in the amended protocol: addUnitReplay | W_addUnitReplay | violated in 9 steps | 3376 / 6878 | 10 | 12.9s |
+| `W_fullQuery` reachable in the amended protocol: fullQuery | W_fullQuery | violated in 23 steps | 2468241 / 11206685 | 24 | 159.3s |
+| `W_queryAfterShardLoss` reachable in the amended protocol: queryAfterShardLoss | W_queryAfterShardLoss | violated in 10 steps | 5996 / 13721 | 11 | 12.2s |
+
 ## fixed
 
 | experiment | checked | result | states (distinct / generated) | depth | time |

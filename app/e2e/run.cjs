@@ -129,10 +129,12 @@ async function main() {
 
     // Table + JSON.
     await page.click('[data-testid=view-table]')
+    await page.waitForFunction((v) => (new URL(location.href).searchParams.get('view') || 'chart') === v, 'table') // the URL follows the paint
     const tableText = await page.textContent('[data-testid=result-table]')
     check('table lists an instant value per series', ['auth', 'catalog', 'checkout', 'orders'].every((s) => tableText.includes(s)) && /\d\/s/.test(tableText) && new URL(page.url()).searchParams.get('view') === 'table')
     await page.screenshot({ path: path.join(SHOTS, 'explore-table-light.png') })
     await page.click('[data-testid=view-json]')
+    await page.waitForFunction((v) => (new URL(location.href).searchParams.get('view') || 'chart') === v, 'json') // the URL follows the paint
     const json = await page.textContent('[data-testid=result-json] pre')
     check('raw JSON view shows the API response', json.includes('"resultType": "matrix"') && json.includes('"service":"auth"') && new URL(page.url()).searchParams.get('view') === 'json')
     await page.click('[data-testid=view-chart]')
@@ -192,6 +194,7 @@ async function main() {
     await page.waitForSelector('[data-testid=legend] tbody tr')
     await page.click('[data-testid=view-text]')
     await page.waitForSelector('[data-testid=text-view]')
+    await page.waitForFunction((v) => (new URL(location.href).searchParams.get('view') || 'chart') === v, 'text') // the URL follows the paint
     const digest = await page.textContent('[data-testid=text-view] pre')
     check('text view shows a digest (last/min/max/mean/trend per series)', /4 series/.test(digest) && /\{service="catalog"\}: last [\d.]+\/s, min [\d.]+\/s, max [\d.]+\/s, mean [\d.]+\/s, (rising|falling|flat)/.test(digest) && new URL(page.url()).searchParams.get('view') === 'text', digest.split('\n')[2])
     await page.screenshot({ path: path.join(SHOTS, 'explore-text-light.png') })
@@ -200,6 +203,7 @@ async function main() {
     await page.locator('body').click({ position: { x: 700, y: 880 } })
     await page.keyboard.press('t')
     await page.waitForSelector('[data-testid=chart] canvas')
+    await page.waitForFunction((v) => (new URL(location.href).searchParams.get('view') || 'chart') === v, 'chart') // the URL follows the paint
     check('T toggles back to the chart', !new URL(page.url()).searchParams.has('view'))
 
     // Loading state keeps the previous data visible.
@@ -213,7 +217,7 @@ async function main() {
     check('while loading, the previous result stays visible', during.canvas && during.names.length === 4 && /Waiting for the query/.test(during.status), during.status.replace(/\s+/g, ' ').slice(-50))
     await page.waitForSelector('[data-testid=progress]', { state: 'detached' })
     await page.unroute('**/api/v1/query_range')
-    await page.waitForFunction(() => /ms$|ms\s/.test(document.querySelector('[data-testid=status]')?.textContent || ''))
+    await page.waitForFunction(() => /\d ms/.test(document.querySelector('[data-testid=legend] tbody')?.textContent || ''))
     const p95 = await page.textContent('[data-testid=legend]')
     check('latency query is formatted in time units', /\d ms/.test(p95), p95.replace(/\s+/g, ' ').slice(60, 130))
 

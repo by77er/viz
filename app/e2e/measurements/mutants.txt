@@ -1,0 +1,22 @@
+KILLED    a second blue button (Save settings)
+            caught by: one blue button per view, in every state (light); one blue button per view, in every state (dark)
+KILLED    a literal colour in app CSS
+            caught by: axe (table, light): no serious/critical violations; no computed colour outside the token set, in every state (light); no computed colour outside the token set, in every state (dark)
+KILLED    the second press is not ignored
+            caught by: a second press while the query runs is ignored (pointer, shortcut, script, keyboard); Cancel aborts the request and says so, with Retry
+KILLED    progress shown after 100 ms
+            caught by: 150 ms wait: no progress line, only the busy button; 800 ms wait: the progress line appears after 400 ms, not before
+KILLED    progress not held for 300 ms
+            caught by: 450 ms wait: a line that was shown is kept 300 ms, so it never flashes
+KILLED    Cancel offered after 500 ms
+            caught by: 800 ms wait: the line says what is happening and offers no Cancel yet; 3 s wait: Cancel appears at 2 s, not before
+KILLED    Cancel does not abort the request
+            caught by: Cancel aborts the request and says so, with Retry
+KILLED    rows of controls 4 px apart
+            caught by: coarse pointer: no two hit areas overlap, in every state
+KILLED    no focus ring on the query editor
+            caught by: keyboard: the focus ring (2 px, focus token) is drawn at every stop
+SURVIVED  the toolbar does not wrap
+KILLED    the popover does not take focus
+            caught by: keyboard: the time picker opens, its first item takes the ring, Escape returns focus
+NOT APPLIED  legend rows stay 32 px with a coarse pointer: source text not found

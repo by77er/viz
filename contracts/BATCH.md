@@ -32,7 +32,8 @@ Rules:
 
 - **Size.** An encoded batch is at most 1 MiB (1,048,576 bytes), because a shard stores it
   as one value. `edge` splits a slot's rows into as many batches as that takes, in arrival
-  order. `Shard.append` answers `too_large` for anything bigger.
+  order. `Shard.append` answers `too_large` for anything bigger. The number exists once in
+  code, as `MAX_BATCH_BYTES` in `shard/src/shard.ts`; `edge` imports it.
 - **Labels.** Names and values are valid UTF-8 with no NUL byte. Names are non-empty and at
   most 1,024 bytes; values at most 8,192 bytes; a series has at most 128 labels.
   Empty-valued labels are dropped before encoding. An entry's labels are sorted by name in

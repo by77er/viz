@@ -109,3 +109,19 @@ export function bigBatch(nSeries: number, targetBytes: number, t0: number, stepM
   const bytes = encodeBatch(series, rows)
   return { bytes, rows: nRows, lastTs: rows[nRows - 1]!.ts }
 }
+
+/**
+ * `scrapes` consecutive scrapes of `nSeries` series, `stepMs` apart, starting at `t0`:
+ * row order is scrape by scrape, as a Prometheus sender would deliver them.
+ */
+export function scrapeBatch(nSeries: number, t0: number, stepMs: number, scrapes: number, valueBase = 0): Uint8Array<ArrayBuffer> {
+  const series = Array.from({ length: nSeries }, (_, i) => ({
+    __name__: `http_requests_total_${i % 20}`,
+    job: 'api',
+    instance: `10.0.${(i >> 8) & 255}.${i & 255}:9100`,
+    path: `/v1/items/${i}`,
+  }))
+  const rows: Row[] = []
+  for (let s = 0; s < scrapes; s++) for (let i = 0; i < nSeries; i++) rows.push({ series: i, ts: t0 + s * stepMs, bits: bitsOf(valueBase + s * nSeries + i) })
+  return encodeBatch(series, rows)
+}

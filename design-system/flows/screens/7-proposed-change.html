@@ -1,0 +1,19 @@
+<!-- nav: Dashboards -->
+<main class="page">
+  <div class="head"><div><h1>Proposed change to checkout-api</h1><p class="sub">By an agent, 2 h ago, after the investigation into slow checkout. Nothing has been changed yet.</p></div>
+    <div class="row"><button class="vz-button" data-tone="blue">Apply change</button><button class="vz-button">Edit first</button><button class="vz-button" data-quiet>Decline</button></div></div>
+  <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">What changes</h3><span class="vz-panel-meta">revision 14 to 15</span></div>
+    <div class="vz-table-wrap"><table class="vz-table"><thead><tr><th class="vz-label">Change</th><th class="vz-label">Panel</th><th class="vz-label">Why</th></tr></thead><tbody>
+      <tr><td data-key>Add</td><td>Dependency latency, p99</td><td>The incident was a slow dependency, and no panel showed dependencies.</td></tr>
+      <tr><td data-key>Change</td><td>Latency by route, p99</td><td>Adds the 500 ms objective as a dashed line.</td></tr>
+      <tr><td data-key>Remove</td><td>Goroutines</td><td>Not opened in 90 days and returns no data since the runtime upgrade.</td></tr></tbody></table></div></section>
+  <div class="diff">
+    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">New panel, with today's data</h3><span class="vz-panel-meta">ms · last 6 h</span></div>
+      <p class="vz-panel-desc">Time checkout-api waits on each thing it calls. A rise here before a rise in checkout latency points at the dependency.</p>
+      <svg class="c" id="p1"></svg><div class="vz-legend"><span><i style="background:var(--series-1)"></i>payments-db</span><span><i style="background:var(--series-2)"></i>inventory</span><span><i style="background:var(--series-3)"></i>cache</span></div></section>
+    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Checks</h3></div>
+      <div class="stack" style="gap:var(--space-2)"><span class="vz-status" data-state="ok">The new query runs and returns 3 series</span><span class="vz-status" data-state="ok">The dashboard is still valid</span><span class="vz-status" data-state="ok">Units and descriptions are set</span><span class="vz-status" data-state="warn">The removed panel is linked from 1 runbook</span></div>
+      <div class="vz-query">histogram_quantile(0.99, sum by (le, db) (rate(db_client_duration_seconds_bucket{service="checkout-api"}[5m])))</div></section>
+  </div>
+</main>
+<script>line('p1',{seed:9,h:180,ticks:['900','600','300','0'],x:['09:00','11:00','13:00','15:00'],series:[{base:.06,noise:.02,spike:[38,60,.62]},{base:.12,noise:.03},{base:.03,noise:.01}]});</script>

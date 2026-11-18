@@ -1,0 +1,26 @@
+<!-- nav: Monitors -->
+<main class="page">
+  <div class="head"><div><h1>New monitor</h1><p class="sub">From the query you ran in Explore.</p></div></div>
+  <div class="two">
+    <form class="stack" onsubmit="return false">
+      <label class="vz-field"><span class="vz-label">Name</span><input class="vz-input" id="n" value="cart error rate"></label>
+      <div class="vz-field"><span class="vz-label">Query</span><div class="vz-query">sum(rate(http_requests_total{service="cart",status=~"5.."}[5m])) / sum(rate(http_requests_total{service="cart"}[5m]))</div><span class="vz-help">Returns one series. Its value now is <span class="vz-num">0.4%</span>.</span></div>
+      <div class="row" style="align-items:flex-start;gap:var(--space-4)">
+        <label class="vz-field" style="width:calc(var(--overlay-min) - var(--space-8))"><span class="vz-label">Fires when the value is</span><select class="vz-select" id="op"><option>above</option><option>below</option><option>missing</option></select></label>
+        <label class="vz-field" style="width:calc(var(--overlay-min) / 2)"><span class="vz-label">Threshold</span><input class="vz-input" id="t" data-mono value="1%"></label>
+        <label class="vz-field" style="width:calc(var(--overlay-min) / 2)"><span class="vz-label">For at least</span><input class="vz-input" id="f" data-mono value="10m"></label>
+        <label class="vz-field" style="width:calc(var(--overlay-min) / 2)"><span class="vz-label">Check every</span><input class="vz-input" id="e" data-mono value="1m"></label></div>
+      <label class="vz-field"><span class="vz-label">Notify</span><select class="vz-select" id="r"><option>storefront, in #storefront-alerts</option></select><span class="vz-help">A test notification is sent when you save.</span></label>
+      <label class="vz-check"><input type="checkbox" id="inv" checked>Start an investigation when it fires</label>
+      <div class="row"><button class="vz-button" data-tone="blue">Save monitor</button><button class="vz-button" data-quiet>Cancel</button></div>
+    </form>
+    <div class="stack">
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">If this rule had existed</h3><span class="vz-panel-meta">last 7 d</span></div>
+        <svg class="c" id="n1"></svg>
+        <p class="vz-panel-desc">It would have fired <strong>twice</strong> in the last 7 days, for 14 minutes and 31 minutes. Both overlap incidents that paged someone.</p></section>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">What it costs to run</h3></div>
+        <dl class="kv"><dt>Reads</dt><dd>the last 5 minutes, from memory</dd><dt>Cost class</dt><dd>tail: no object reads</dd><dt>Estimate</dt><dd>under <span class="vz-num">$0.01</span> a month. An estimate, not a bill.</dd></dl></section>
+    </div>
+  </div>
+</main>
+<script>line('n1',{seed:3,h:160,ticks:['3','2','1','0'],x:['Thu','Sat','Mon','Wed'],threshold:.33,series:[{base:.12,noise:.04,spike:[20,24,.4]}]});</script>

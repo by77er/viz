@@ -1,0 +1,17 @@
+<!-- nav: Settings -->
+<main class="page">
+  <div class="head"><div><h1>Keys</h1><p class="sub">A key lets a sender write to acme-prod, or a tool read from it. Keys are shown once, when created.</p></div><button class="vz-button" data-tone="blue">New key</button></div>
+  <div class="vz-table-wrap"><table class="vz-table">
+    <thead><tr><th class="vz-label">Name</th><th class="vz-label">Can</th><th class="vz-label">Key</th><th class="vz-label">Last used</th><th class="vz-label vz-right">Samples, 24 h</th><th class="vz-label">Created</th><th class="vz-label"></th></tr></thead>
+    <tbody>
+      <tr><td data-key>prod collectors</td><td>Write</td><td class="vz-num">viz_k7Qm…</td><td><span class="vz-status" data-state="ok"><span class="vz-num">4 s</span> ago</span></td><td class="vz-num vz-right">5.76 B</td><td>12 Mar, by Sam</td><td><a class="vz-link" href="#">Manage</a></td></tr>
+      <tr><td data-key>grafana</td><td>Read</td><td class="vz-num">viz_p2Xa…</td><td><span class="vz-status" data-state="ok"><span class="vz-num">1 m</span> ago</span></td><td class="vz-num vz-right"></td><td>2 Apr, by Dana</td><td><a class="vz-link" href="#">Manage</a></td></tr>
+      <tr><td data-key>staging collectors</td><td>Write</td><td class="vz-num">viz_9fLc…</td><td><span class="vz-status">Never</span></td><td class="vz-num vz-right">0</td><td>Today, by you</td><td><a class="vz-link" href="#">Manage</a></td></tr>
+    </tbody></table></div>
+  <section class="vz-panel" style="max-width:var(--measure)"><div class="vz-panel-head"><h3 class="vz-panel-title">Waiting for staging collectors</h3><span class="vz-panel-meta">checked <span class="vz-num">3 s</span> ago</span></div>
+    <p class="vz-panel-desc">Nothing has arrived with this key yet. Point a Prometheus at it:</p>
+    <div class="vz-query">remote_write:
+  - url: https://vis.bitcru.sh/api/v1/write
+    basic_auth: { username: staging, password_file: /etc/viz/key }</div>
+    <p class="vz-panel-desc">This panel shows the first samples as soon as they arrive, usually within 10 seconds of the first request.</p></section>
+</main>

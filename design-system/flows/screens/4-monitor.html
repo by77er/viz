@@ -1,0 +1,26 @@
+<!-- nav: Monitors -->
+<main class="page">
+  <div class="head"><div><h1>checkout p99 latency</h1><p class="sub"><span class="vz-status" data-state="critical">Firing since 13:02, for 2 h 14 m</span></p></div>
+    <div class="row"><button class="vz-button" data-tone="green">Acknowledge</button><button class="vz-button" data-tone="yellow">Silence for 1 h</button><button class="vz-button">Edit rule</button></div></div>
+  <div class="two">
+    <div class="stack">
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">What the rule sees</h3><span class="vz-panel-meta">ms · last 6 h · updated <span class="vz-num">20 s</span> ago</span></div>
+        <div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{service="checkout-api"}[5m]))) &gt; 0.5</div>
+        <svg class="c" id="m1"></svg>
+        <p class="vz-panel-desc">The dashed line is the threshold. The rule fired at 13:07, after 5 minutes above it.</p></section>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">History</h3></div>
+        <div class="vz-table-wrap"><table class="vz-table"><thead><tr><th class="vz-label">When</th><th class="vz-label">What happened</th><th class="vz-label">Value</th></tr></thead><tbody>
+          <tr><td class="vz-num">13:09</td><td>Investigation finished: <a class="vz-link" href="#">2 likely causes</a></td><td></td></tr>
+          <tr><td class="vz-num">13:07</td><td>Fired. Notified payments on-call by page and in #payments-alerts</td><td class="vz-num">742 ms</td></tr>
+          <tr><td class="vz-num">13:02</td><td>Went above the threshold (pending)</td><td class="vz-num">531 ms</td></tr>
+          <tr><td class="vz-num">Tue 09:14</td><td>Resolved after 12 m</td><td class="vz-num">402 ms</td></tr></tbody></table></div></section>
+    </div>
+    <div class="stack">
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Rule</h3></div>
+        <dl class="kv"><dt>Fires when</dt><dd>above <span class="vz-num">500 ms</span> for <span class="vz-num">5 m</span></dd><dt>Checked every</dt><dd class="vz-num">1 m</dd><dt>Reads</dt><dd>the last 5 minutes, from memory. Cost class: tail</dd><dt>Notifies</dt><dd>payments on-call, #payments-alerts</dd><dt>Repeats</dt><dd>every <span class="vz-num">4 h</span> while firing</dd><dt>Owner</dt><dd>payments</dd></dl></section>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Related</h3></div>
+        <div class="stack" style="gap:var(--space-2)"><a class="vz-link" href="#">checkout-api dashboard</a><a class="vz-link" href="#">Traces slower than 500 ms on POST /v2/orders</a><a class="vz-link" href="#">Error logs from checkout-api since 13:00</a></div></section>
+    </div>
+  </div>
+</main>
+<script>line('m1',{seed:5,h:200,ticks:['1.0k','667','333','0'],x:['09:00','11:00','13:00','15:00'],threshold:.5,series:[{base:.3,noise:.05,spike:[38,60,.6]}]});</script>

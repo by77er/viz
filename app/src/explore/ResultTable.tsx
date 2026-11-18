@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { formatDateTime } from '../lib/time'
 import type { LegendRow } from './Legend'
 import { SortHead } from './Legend'
@@ -10,7 +10,7 @@ interface Row extends LegendRow {
 const MAX_ROWS = 500
 
 /** Instant value per series: the last sample of each series in the window, by label. */
-export function ResultTable({ rows, format }: { rows: Row[]; format: (v: number | null) => string }) {
+export const ResultTable = memo(function ResultTable({ rows, format }: { rows: Row[]; format: (v: number | null) => string }) {
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: '', dir: 1 })
 
   const columns = useMemo(() => {
@@ -94,4 +94,4 @@ export function ResultTable({ rows, format }: { rows: Row[]; format: (v: number 
       </div>
     </div>
   )
-}
+})

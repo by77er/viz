@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import type { SeriesStats } from '../lib/series'
 
 export interface LegendRow {
@@ -51,7 +51,7 @@ export function SortHead({
   )
 }
 
-export function Legend({ rows, visible, onToggle, onShowAll, format }: Props) {
+export const Legend = memo(function Legend({ rows, visible, onToggle, onShowAll, format }: Props) {
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 })
 
   const sorted = useMemo(() => {
@@ -137,4 +137,4 @@ export function Legend({ rows, visible, onToggle, onShowAll, format }: Props) {
       </div>
     </div>
   )
-}
+})

@@ -1,0 +1,12 @@
+{
+  "name": "viz-ruler-test",
+  "main": "test/harness.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "RULER", "class_name": "TestRuler" },
+      { "name": "NOTIFIER", "class_name": "TestNotifier" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestRuler", "TestNotifier"] }]
+}

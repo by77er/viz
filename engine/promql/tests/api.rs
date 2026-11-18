@@ -412,3 +412,49 @@ fn differential_regressions() {
     assert!(query_range(&src, "l + on(a) r", 0, 240_000, 60_000).unwrap().series.is_empty());
     assert!(query_range(&src, "l + on(a) r", 0, 600_000, 60_000).is_err());
 }
+
+#[test]
+fn selectors_report_the_step_count_of_their_subquery() {
+    // Top level: 0 .. 600 s every 60 s is 11 steps.
+    let top = selectors("a + rate(b[1m])", 0, 600_000, 60_000).unwrap();
+    assert_eq!(top.iter().map(|s| s.steps).collect::<Vec<_>>(), [11, 11]);
+    // An instant query is one step.
+    assert_eq!(selectors("a", 5_000, 5_000, 1).unwrap()[0].steps, 1);
+    // Inside a subquery the selector is evaluated on the subquery's own grid: multiples
+    // of 10 s in (0 - 60 s, 600 s], which is 66 steps; the outer selector keeps 11.
+    let sub = selectors("a + max_over_time(b[1m:10s])", 0, 600_000, 60_000).unwrap();
+    assert_eq!(sub.iter().map(|s| s.steps).collect::<Vec<_>>(), [11, 66]);
+    // The count is not part of the serialised form (contracts/engine.ts has no such field).
+    assert!(!serde_json::to_string(&sub).unwrap().contains("steps"));
+}
+
+#[test]
+fn test_scripts_can_run_through_another_source() {
+    use std::cell::Cell;
+    use viz_promql::promqltest::{run_script, run_script_with_source, upstream_options};
+    let script = "load 1m\n  m{a=\"1\"} 1 2 3\n  m{a=\"2\"} 4 5 _\n\neval instant at 2m sum(m)\n  {} 8\n\nclear\n\nload 1m\n  n 7\n\neval instant at 0 n + 1\n  {} 8\n\neval instant at 0 m\n";
+    let plain = run_script(script, &upstream_options()).unwrap();
+    assert_eq!((plain.passed(), plain.failed(), plain.skipped()), (3, 0, 0));
+    // A factory that counts its calls and the series it was given.
+    let (calls, series) = (Cell::new(0), Cell::new(0));
+    let factory = |s: &[Series]| -> Result<Box<dyn SeriesSource>, String> {
+        calls.set(calls.get() + 1);
+        series.set(series.get() + s.len());
+        Ok(Box::new(MemSource::from_series(s.to_vec())))
+    };
+    let through = run_script_with_source(script, &upstream_options(), &factory).unwrap();
+    assert_eq!((through.passed(), through.failed(), through.skipped()), (3, 0, 0));
+    // Built once per load block (2 series, then 1 after `clear`), not once per eval.
+    assert_eq!((calls.get(), series.get()), (2, 3));
+    // The queries really go through the factory's source: one that returns nothing fails them.
+    struct Empty;
+    impl SeriesSource for Empty {
+        fn select(&self, _: &[Matcher], _: i64, _: i64) -> Result<Vec<Series>, Error> {
+            Ok(vec![])
+        }
+    }
+    let empty = run_script_with_source(script, &upstream_options(), &|_| Ok(Box::new(Empty))).unwrap();
+    assert_eq!((empty.passed(), empty.failed()), (1, 2));
+    // A factory error aborts the script.
+    assert!(run_script_with_source(script, &upstream_options(), &|_| Err("no".into())).is_err());
+}

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { memo, useEffect, useId, useRef, useState } from 'react'
 import {
   absoluteSpec,
   describeRange,
@@ -20,10 +20,11 @@ interface Props {
   onChange: (from: TimeSpec, to: TimeSpec) => void
 }
 
-export function TimeRangePicker({ from, to, onChange }: Props) {
+export const TimeRangePicker = memo(function TimeRangePicker({ from, to, onChange }: Props) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const popId = useId()
   const now = Date.now() / 1000
   const start = resolveTimeSpec(from, now)
@@ -37,6 +38,9 @@ export function TimeRangePicker({ from, to, onChange }: Props) {
     setAbsFrom(toDateTimeLocal(start))
     setAbsTo(toDateTimeLocal(end))
     setError('')
+    // Focus moves into the popover: to the current preset, or the first one.
+    const items = menuRef.current?.querySelectorAll<HTMLElement>('[role=menuitem]')
+    ;(menuRef.current?.querySelector<HTMLElement>('[aria-current]') ?? items?.[0])?.focus()
     const onDown = (e: MouseEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
     }
@@ -86,11 +90,11 @@ export function TimeRangePicker({ from, to, onChange }: Props) {
         <span className="sr-only">Time range: </span>
         {current ? `Last ${spacedDuration(current)}` : <span className="vz-num">{describeRange(from, to, now)}</span>}
       </button>
-      <button className="vz-button" onClick={() => shift(-1)} aria-label="Earlier: shift the time range back by half its length">
-        Earlier
+      <button className="vz-button" onClick={() => shift(-1)} aria-label="Show earlier: shift the time range back by half its length">
+        Show earlier
       </button>
-      <button className="vz-button" onClick={() => shift(1)} aria-label="Later: shift the time range forward by half its length">
-        Later
+      <button className="vz-button" onClick={() => shift(1)} aria-label="Show later: shift the time range forward by half its length">
+        Show later
       </button>
       <button className="vz-button" onClick={zoomOut} aria-label="Zoom out: double the time range">
         Zoom out
@@ -98,7 +102,19 @@ export function TimeRangePicker({ from, to, onChange }: Props) {
 
       {open && (
         <div id={popId} role="dialog" aria-label="Time range" className="vz-menu popover">
-          <div role="menu" aria-label="Relative ranges">
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label="Relative ranges"
+            onKeyDown={(e) => {
+              // Arrow keys move through the presets, as in any menu.
+              const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0
+              if (!step) return
+              e.preventDefault()
+              const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role=menuitem]')]
+              items[(items.indexOf(document.activeElement as HTMLElement) + step + items.length) % items.length]?.focus()
+            }}
+          >
             {PRESETS.map((p) => (
               <button
                 key={p}
@@ -166,4 +182,4 @@ export function TimeRangePicker({ from, to, onChange }: Props) {
       </div>
     </div>
   )
-}
+})

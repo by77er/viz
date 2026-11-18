@@ -2,13 +2,14 @@
 
 The tenant ledger: one SQLite Durable Object per tenant (the tenant is the object's name).
 It holds the tenant's live data files and one watermark per shard stream, and is the only
-authority on what is visible. It implements `LedgerRpc` from `contracts/ledger.ts`.
+authority on what is visible. It implements `LedgerRpc` and `LedgerAdminRpc` from `contracts/ledger.ts` (v2).
 
 | File | Contents |
 |---|---|
 | `src/ledger.ts` | `Ledger`: register, add unit, plan, replace, expire, logged watermarks, outbox drain, rebuild |
 | `src/index.ts` | Worker entry; exports the class |
-| `test/ledger.test.ts` | 31 tests, run inside the Workers runtime with a simulated R2 bucket |
+| `scripts/mutants.mjs` | Mutation check for the contracts v2 behaviour |
+| `test/ledger.test.ts` | 38 tests, run inside the Workers runtime with a simulated R2 bucket |
 
 Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`).
 
@@ -21,20 +22,28 @@ Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default 
   validated, and every key checked against the live set, before anything is written.
   - A shard never seen before is registered by its first unit (`seqLo === 1`); any other
     unit from an unknown shard gets `not_contiguous` with watermark 0.
-  - A replay (`seqHi <= watermark`, and every file is live and was admitted with this same
-    stream and range) gets `ok` and changes nothing. Anything else at or below the watermark
-    gets `not_contiguous`.
-  - A key that is already live elsewhere, a malformed file or a key repeated inside the
-    unit makes the call throw; nothing is admitted.
+  - **Replay rule (v2).** Any unit with `seqHi <= watermark` for the registered incarnation
+    gets `ok` and changes nothing, whether or not its files are still live (they may have
+    been compacted or expired) and whatever files it names: the rows through `seqHi` are
+    already in listed files. A unit that straddles the watermark gets `not_contiguous`.
+  - **`invalid` (v2).** A malformed stream reference or sequence range, a malformed file, a
+    key repeated inside the unit, an empty unit, or a key that is already live elsewhere
+    returns `{ status: 'invalid', reason }`. Nothing is admitted and nothing throws. The
+    unit is judged before the stream, so an invalid unit is `invalid` even where a valid
+    one would be a replay.
 - **`registerStream`.** Idempotent for the same incarnation, and a retry gets the same
-  `previousIncarnation` as the first call. A different incarnation replaces the old one,
+  `previousIncarnation` as the first call. A **higher** incarnation replaces the old one,
   resets the watermark and the logged watermark to 0 and returns the old incarnation.
-  Files of the old incarnation stay live.
+  Files of the old incarnation stay live. A **lower** incarnation is refused (v2:
+  incarnations are ordered): `registerStream` throws, `addUnit` answers
+  `incarnation_mismatch` with the registered one, and nothing changes.
 - **`plan`.** Files of one table overlapping the inclusive range, all watermarks, ledger
   incarnation and version, read with no `await` in between.
 - **`replace`.** Swaps iff every key in `remove` is live; otherwise `conflict` with the
-  missing keys. A retry of a swap that already happened (all inputs gone, all outputs live)
-  gets `ok` with the current version. An output key that is already live throws.
+  missing keys. A retry of a swap that already happened (every output live, no input live)
+  gets `ok` with the current version; anything else is judged as a new request. A malformed
+  request, a key in both lists, or an output key that is already live returns
+  `{ status: 'invalid', reason }`.
 - **`expire`.** Removes files of the table with `day < beforeDay`, returns the keys. If
   nothing matches, no version is used and nothing is logged.
 - **Change log.** `drain` writes outbox rows to R2 at
@@ -46,20 +55,31 @@ Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default 
 - **`loggedWatermarks`.** Per stream, the highest watermark whose change is in R2. It is a
   separate column, advanced only by the drain.
 - **Ledger incarnation.** Starts at 1 and is one more than the highest incarnation in R2.
-  Each incarnation first writes `{CELL}/ledger/tenant={t}/{incarnation}/base.json` (the
-  whole state it starts from), so R2 knows every incarnation that ever existed.
+  Each incarnation first writes, at `{CELL}/` + `ledgerBaseKey(tenant, incarnation)`, a
+  **`base` `LedgerChange`** and nothing but that shape: `kind: 'base'`, `added` = the whole
+  live set as `FileEntry` objects, `removed: []`, `watermarks` = every stream, and
+  `version` = the version the incarnation starts from (its first change is `version + 1`).
+  This happens before the object serves anything, for a brand-new tenant too.
+- **`add_unit` changes carry `unit: { seqLo, seqHi }`.** Replay checks it against the
+  watermark and fails on a mismatch instead of inferring `seqLo`.
+- **Tenant ids** must match `TENANT_ID` (`[A-Za-z0-9_-]{1,64}`); an object addressed by any
+  other name refuses every call and writes nothing.
 - **Rebuild.** `rebuildFromLog()` and the automatic path on start, below.
 - **No in-memory state.** Every method reads SQLite. The only non-derived field is a
   promise that serialises drains.
 
-Two extra methods, not in the contract: `outboxDepth()` and `drain()`.
+`LedgerAdminRpc`: `drain()` returns `{ written }`, `outboxDepth()`, `rebuildFromLog()`
+(returns the contract's fields plus `source`, `changesReplayed`, `files`, `streams`).
 
 ## Rebuild: what it does and does not guarantee
 
 When the object starts on storage that has no ledger incarnation (first use, or storage
 loss), it lists R2. With no log it starts incarnation 1, empty. Otherwise it takes the
-highest incarnation in R2, loads its `base.json`, applies its changes in version order,
-writes a `base.json` for a new incarnation, and only then commits SQLite.
+highest incarnation in R2, loads its `base` change (an incarnation with log objects but
+no base is an error), applies its changes in version order, writes a `base` for a new
+incarnation, and only then commits SQLite. The base holds no per-file unit references and
+no `previousIncarnation`: after a rebuild those are only known for changes replayed from
+the log, and nothing depends on them any more (the replay rule is the watermark).
 `rebuildFromLog()` does the same on demand and refuses unless files, streams and outbox are
 all empty.
 
@@ -91,15 +111,19 @@ It does not guarantee:
 
 ```
 npm install
-npm test          # 31 tests in workerd, 1 file
+npm test          # 38 tests in workerd, 1 file
 npm run typecheck
 ```
 
-Last run: 31 passed, 0 failed, three runs in a row; `tsc --noEmit` clean. R2 failure is
+Last run: 38 passed, 0 failed; `tsc --noEmit` clean. R2 failure is
 injected by swapping the object's bucket for one whose `put` throws for chosen keys.
 
 Covered: gap, overlap, off-by-one, replay, a different unit below the watermark, stream
-independence; a unit with one duplicate or malformed key admits nothing; registration,
+independence; a unit with one duplicate or malformed key admits nothing and answers `invalid`;
+the replay rule (any unit at or below the watermark, also after compaction and expiry);
+a lower stream incarnation refused; the `base` change's exact shape and key; tenant ids;
+unit contiguity checked during replay from `unit.seqLo`; a reader rebuilding the live set
+from one incarnation's base and changes; registration,
 auto-registration and the storage-loss handshake; plan range and table filtering, and 50
 plans interleaved with 25 adds each seeing files, watermark and version that agree; replace
 success, conflict, retry and duplicate output; expire; log contents per kind; logged lagging
@@ -111,6 +135,20 @@ ledger, the unlogged tail being lost, a log with a hole.
 ### Mutation checks
 
 Each mutation was applied to `src/ledger.ts` alone, the suite run, and the source restored.
+
+**Contracts v2** (`node scripts/mutants.mjs`, run after the v2 changes): **16 of 16 killed.**
+A lower stream incarnation registered; an empty unit admitted; a live key not answered
+`invalid`; a malformed file throwing instead of `invalid`; a unit below the watermark not a
+replay; a unit straddling the watermark taken as one; the base entry not of kind `base`;
+the base without watermarks; `add_unit` without `unit`; replay not checking the unit range;
+tenant ids not validated; `replace` answering `ok` for a live output; a retried `replace`
+not recognised; `drain` returning a bare number; plus two of the original properties again
+(`loggedWatermarks` returning the committed watermark; the contiguity check dropped).
+
+**The table below is from before the contracts v2 changes and was not re-run after them**
+as a whole (M1 and M3 are the two re-run above). M7 and M14 no longer describe the code: a
+duplicate key now returns `invalid`, and "any unit at or below the watermark counts as a
+replay" is now the contract's rule rather than a mutant.
 
 | # | Mutation | Result | A test that fails |
 |---|---|---|---|
@@ -143,8 +181,9 @@ transaction" is true by reading the code, not by test.
 - **Periodic checkpoints** and any pruning of old log objects or old incarnations.
 - **The alert** the design asks for when a stream changes incarnation. The boundary is
   recorded (`register_stream` change, `previousIncarnation`); nothing is raised.
-- **Callers.** Nothing calls this yet: no flush Worker, no shard handshake, no publisher,
-  no orphan sweeper. No notification is sent to the publisher; the R2 log is the only output.
+- **Callers.** `flush/` calls `addUnit`, `registerStream`, `plan` and `loggedWatermarks`.
+  There is still no publisher and no orphan sweeper. No notification is sent to the
+  publisher; the R2 log is the only output.
 - **Conditional writes** (`If-None-Match`) on log and base objects. One object per tenant
   and identical bytes on rewrite make them unnecessary today.
 - **Load.** Nothing was run under load or on Cloudflare. Plan latency with 300k files and
@@ -156,23 +195,33 @@ transaction" is true by reading the code, not by test.
   failure) before answering. With R2 slow, `addUnit` is slow; it does not fail.
 - **A broken log bricks a lost ledger.** If storage is lost and the log has a hole, the
   object refuses to start until someone repairs R2. That is deliberate, and has no tooling.
-- **Replay after compaction.** A unit re-sent after its files were compacted or expired is
-  not recognised and gets `not_contiguous` with a watermark at or above its `seqHi`. The
-  caller must read that as already recorded.
+- **A replay answers `ok` for files the ledger does not list.** By the v2 replay rule a
+  unit at or below the watermark is `ok` whatever keys it names. A caller that wrote
+  different bytes for an already-admitted range has orphaned those objects; only the
+  orphan sweeper (not built) would remove them.
 - **Keys are unique only among live files.** A key removed by `replace` or `expire` could be
   admitted again. Keys contain a content hash and a sequence range, so this needs a caller bug.
-- **Any different incarnation replaces a stream**, including a lower, stale one, as
-  specified. Shard incarnations are time-based, so the ledger could refuse lower ones; it
-  does not, because the contract does not say incarnations are ordered.
+- **A refused lower incarnation is an exception**, not a status, in `registerStream`
+  (the contract's return type has no refusal).
 - **Size.** `base.json` and each change are single JSON objects built in memory; plans
   return every matching file in one RPC result. No paging anywhere.
-- **Tenant names** are used unescaped in R2 keys. Names containing `/` are refused; other
-  characters are not checked.
 - **Clock.** `LedgerChange.at` is `Date.now()` and is not used for ordering.
 
 ## Contract issues
 
-Found against `contracts/ledger.ts`; the contract was not edited.
+All eight issues below were found against the first contract and are **resolved in
+contracts v2**, which this component now implements: `invalid` statuses (1), the `base`
+kind and `ledgerBaseKey` (2), `unit` on `add_unit` (3), `TENANT_ID` (4), `LedgerAdminRpc`
+(5), the replay rules (6, 7), ordered incarnations (8).
+
+Two things were still wrong in v2 and its comments were corrected during integration
+(details in `stack/README.md`, "Contract changes made during integration"):
+
+- `ledgerBaseKey`'s comment said the base "sorts before its first version". As a key,
+  `base.json` sorts after the digits. A test asserts the real listing order.
+- `registerStream` has no way to refuse a lower incarnation in its return type; it throws.
+
+The original list, for the record:
 
 1. **No way to refuse a unit for a bad or duplicate key.** `AddUnitResult` has `ok`,
    `not_contiguous`, `incarnation_mismatch` only. The ledger throws instead, so the caller

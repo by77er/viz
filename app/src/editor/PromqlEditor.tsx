@@ -87,8 +87,9 @@ export default function PromqlEditor({ value, onChange, onRun, client, handleRef
           autocompletion({ icons: false, maxRenderedOptions: 80 }),
           theme,
           tooltips({ position: 'absolute' }),
-          placeholderExt('Enter a PromQL query, e.g. sum by (service) (rate(http_requests_total[5m]))'),
-          EditorView.contentAttributes.of({ 'aria-label': 'PromQL query', 'aria-multiline': 'true', spellcheck: 'false' }),
+          placeholderExt('rate(http_requests_total[5m])'),
+          // tabindex: the well scrolls sideways, and a scrolling region must hold something focusable.
+          EditorView.contentAttributes.of({ 'aria-label': 'PromQL query', 'aria-multiline': 'true', spellcheck: 'false', tabindex: '0' }),
           Prec.highest(
             keymap.of([
               {

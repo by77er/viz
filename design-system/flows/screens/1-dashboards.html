@@ -1,0 +1,16 @@
+<!-- nav: Dashboards -->
+<main class="page">
+  <div class="head"><div><h1>Dashboards</h1><p class="sub">24 dashboards in acme-prod. 3 have a panel in a critical state.</p></div>
+    <div class="row"><input class="vz-input" id="q" placeholder="Search by name, service or owner" style="width:calc(var(--overlay-min) + var(--space-12))"><button class="vz-button" data-tone="blue">New dashboard</button></div></div>
+  <div class="vz-table-wrap"><table class="vz-table">
+    <thead><tr><th class="vz-label">Name</th><th class="vz-label">State</th><th class="vz-label">What it answers</th><th class="vz-label">Owner</th><th class="vz-label vz-right">Panels</th><th class="vz-label vz-right">Last changed</th></tr></thead>
+    <tbody>
+      <tr><td data-key><a class="vz-link" href="#">checkout-api</a></td><td><span class="vz-status" data-state="critical">Burning budget</span></td><td>Is checkout healthy, and where is it slow?</td><td>payments</td><td class="vz-num vz-right">9</td><td class="vz-right">2 h ago, by an agent</td></tr>
+      <tr><td data-key><a class="vz-link" href="#">cart</a></td><td><span class="vz-status" data-state="warn">Slow</span></td><td>Cart latency and cache hit rate by region</td><td>storefront</td><td class="vz-num vz-right">7</td><td class="vz-right">3 d ago, by Dana</td></tr>
+      <tr><td data-key><a class="vz-link" href="#">ingest pipeline</a></td><td><span class="vz-status" data-state="critical">Lagging</span></td><td>Is telemetry arriving, and how far behind is it?</td><td>platform</td><td class="vz-num vz-right">11</td><td class="vz-right">1 d ago, by Sam</td></tr>
+      <tr><td data-key><a class="vz-link" href="#">catalog</a></td><td><span class="vz-status" data-state="ok">Healthy</span></td><td>Catalog traffic, errors and search latency</td><td>storefront</td><td class="vz-num vz-right">6</td><td class="vz-right">12 d ago, by Dana</td></tr>
+      <tr><td data-key><a class="vz-link" href="#">kubernetes nodes</a></td><td><span class="vz-status" data-state="ok">Healthy</span></td><td>Node pressure, pod restarts and scheduling</td><td>platform</td><td class="vz-num vz-right">12</td><td class="vz-right">20 d ago, by Sam</td></tr>
+      <tr><td data-key><a class="vz-link" href="#">search</a></td><td><span class="vz-status">No data for 3 h</span></td><td>Query volume and index freshness</td><td>discovery</td><td class="vz-num vz-right">5</td><td class="vz-right">41 d ago, by Ari</td></tr>
+    </tbody></table></div>
+  <p class="muted">States are from each dashboard's thresholds, evaluated <span class="vz-num">40 s</span> ago.</p>
+</main>

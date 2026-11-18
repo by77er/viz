@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import type { PromMatrixData } from '../api/types'
 import { CopyButton } from './CopyButton'
 
@@ -12,7 +12,7 @@ export function formatResponse(data: PromMatrixData): string {
   return `{\n  "status": "success",\n  "data": {\n    "resultType": "matrix",\n    "result": [${series.length ? `\n${series.join(',\n')}\n    ` : ''}]\n  }\n}`
 }
 
-export function JsonView({ data }: { data: PromMatrixData }) {
+export const JsonView = memo(function JsonView({ data }: { data: PromMatrixData }) {
   const text = useMemo(() => formatResponse(data), [data])
   const truncated = text.length > MAX_CHARS
   return (
@@ -29,4 +29,4 @@ export function JsonView({ data }: { data: PromMatrixData }) {
       </pre>
     </div>
   )
-}
+})

@@ -1,0 +1,15 @@
+# Replaces `js-sys` through `[patch.crates-io]`. See ../README.md.
+[package]
+name = "js-sys"
+version = "0.3.107"
+edition = "2021"
+publish = false
+description = "The five js_sys::Date functions chrono's `wasmbind` feature names, as traps: the viz engine has no clock"
+
+[lib]
+name = "js_sys"
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+[workspace]

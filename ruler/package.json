@@ -1,0 +1,19 @@
+{
+  "name": "@viz/ruler",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "mutants": "node scripts/mutants.mjs",
+    "bench": "RULER_BENCH=1 vitest run test/bench.test.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.4",
+    "@cloudflare/workers-types": "^5.20261117.1",
+    "fast-check": "^4.3.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.1",
+    "wrangler": "^4.164.0"
+  }
+}

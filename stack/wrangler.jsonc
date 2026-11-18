@@ -1,0 +1,23 @@
+{
+  // The whole write path as ONE script, for testing: edge (the default export), the shard
+  // and ledger Durable Objects, and flush (the `Flush` entrypoint). In production these are
+  // separate Workers; see README.md.
+  "name": "viz-stack",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARD", "class_name": "Shard" },
+      { "name": "LEDGER", "class_name": "Ledger" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger"] }],
+  // Data files and the ledgers' change logs, under the cell prefix.
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  // API keys (`key:<keyId>`) and per-tenant pool maps (`pool:<tenant>`).
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  "vars": {
+    "CELL": "cell-0",
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"
+  }
+}

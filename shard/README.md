@@ -12,7 +12,7 @@ dedicated tenants run the same code.
 |---|---|
 | `src/shard.ts` | `Shard`: append, seal, pending segments, read segment, recorded, tail read, alarm housekeeping |
 | `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to |
-| `test/` | 15 tests, run inside the Workers runtime |
+| `test/` | 18 tests, run inside the Workers runtime |
 
 ## What is implemented
 
@@ -30,7 +30,17 @@ dedicated tenants run the same code.
   asking about rows below the discard mark is refused rather than answered with a gap.
 - **Tail reads scoped to one tenant.**
 - **Map-epoch fencing** per stream.
+- **Batch size cap (contracts v2).** `append` answers `{ status: 'too_large', maxBytes }`
+  for a payload over `maxBatchBytes` (configurable, default `MAX_BATCH_BYTES` = 1,048,576,
+  the one place the number of `contracts/BATCH.md` exists in code; `edge` imports it).
+  Nothing is stored and no stream is created for a tenant whose first payload is too large.
 - **New incarnation after storage loss**, so sequence numbers are never silently reused.
+  **Incarnations are monotonic in time**: `newIncarnation(now, random)` is
+  `now_ms * 1024 + 10 random bits`, so a stream recreated at a later millisecond always
+  gets a larger number (verified by test, with the worst-case random bits), and the value
+  is a safe integer until the year 2248. The only ways to get a non-increasing value are
+  two creations of the same stream in one millisecond or a clock that steps backwards
+  across a storage loss; the ledger refuses a lower incarnation, so that fails closed.
 - **One alarm per shard**, set to the earliest deadline and absent when idle.
 - **Shuffle-shard routing**: each tenant gets a small subset of the pool by rendezvous
   hashing, so tenants rarely share their whole subset.
@@ -39,7 +49,8 @@ dedicated tenants run the same code.
 
 ```
 npm install
-npm test          # 15 tests in workerd
+npm test          # 18 tests in workerd, 2 files
+npx tsc --noEmit  # clean
 npm run typecheck
 ```
 
@@ -51,10 +62,11 @@ tenant cap to the shard total; removing the discard fence; removing the fair-sha
 
 - **Group commit.** Each append is one SQLite row. Batching several requests into one row
   to cut billed row writes is not done.
-- **The flush Worker, the ledger and `edge`.** The shard exposes what they need
-  (`pendingSegments`, `readSegment`, `recorded`, `tailRead`) but nothing calls it yet.
+- **A seal notification.** `flush/` reads `pendingSegments` and calls `recorded`, but the
+  shard tells nobody when it seals; something has to call flush (see `flush/README.md`).
 - **Map-epoch handover**: draining shards and moving fingerprints on a map change.
-- **Incarnation handshake** with the ledger; the shard only reports mismatches.
+- **Incarnation handshake** from the shard's side. The shard only reports mismatches;
+  `flush/` registers a new incarnation with the ledger when `addUnit` reports one.
 - **CPU fairness.** Byte budgets are isolated; a tenant sending many tiny requests still
   shares the object's single thread with its neighbours. Not measured.
 - **Load behaviour.** Nothing here has been run under load or on Cloudflare.

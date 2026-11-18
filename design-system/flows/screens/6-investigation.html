@@ -1,0 +1,24 @@
+<!-- nav: Monitors -->
+<main class="page">
+  <div class="head"><div><h1>Why is checkout slow?</h1><p class="sub">Written by an agent for <a class="vz-link" href="#">checkout p99 latency</a>, which fired at 13:07. Finished at 13:09 after 14 queries.</p></div>
+    <div class="row"><button class="vz-button" data-tone="blue">This was the cause</button><button class="vz-button">It was something else</button></div></div>
+  <div class="vz-banner"><span class="vz-mark" data-state="info"></span><p>This report is a starting point, not a verdict. Each claim links to the query behind it; open the query before acting on the claim.</p></div>
+  <div class="two">
+    <div class="stack">
+      <h2 class="sec">Most likely</h2>
+      <div><div class="claim"><span class="vz-num">1</span><div class="stack" style="gap:var(--space-2)"><p><strong>The payments database is slow to respond, starting 12:58.</strong> Calls from checkout-api to <span class="vz-num">payments-db</span> went from 40 ms to 610 ms at the 99th percentile, four minutes before checkout's own latency crossed the threshold.</p><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(db_client_duration_seconds_bucket{service="checkout-api",db="payments-db"}[5m])))</div><div class="row"><a class="vz-link" href="#">Open in Explore</a><span class="muted">Confidence: high. The timing leads, and no other dependency changed.</span></div></div></div>
+        <div class="claim"><span class="vz-num">2</span><div class="stack" style="gap:var(--space-2)"><p><strong>Only POST /v2/orders is affected.</strong> The other two routes do not call payments-db and stayed under 500 ms.</p><div class="row"><a class="vz-link" href="#">Latency by route</a><a class="vz-link" href="#">12 slow traces</a></div></div></div></div>
+      <h2 class="sec">Checked and ruled out</h2>
+      <div><div class="claim"><span class="vz-mark"></span><p><strong>A deploy.</strong> The last checkout-api deploy was at 09:41, more than three hours earlier. <a class="vz-link" href="#">Deploy markers</a></p></div>
+        <div class="claim"><span class="vz-mark"></span><p><strong>Traffic.</strong> Requests are 4% below last week. <a class="vz-link" href="#">Request rate</a></p></div>
+        <div class="claim"><span class="vz-mark"></span><p><strong>CPU or memory pressure on checkout-api pods.</strong> Both are flat. <a class="vz-link" href="#">Pod resources</a></p></div></div>
+      <h2 class="sec">Could not check</h2>
+      <p class="sub">payments-db does not send metrics to viz, so the report cannot say why the database is slow.</p>
+    </div>
+    <div class="stack">
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Dependency latency, p99</h3><span class="vz-panel-meta">ms · 12:00 to 15:00</span></div><svg class="c" id="i1"></svg><div class="vz-legend"><span><i style="background:var(--series-1)"></i>payments-db</span><span><i style="background:var(--series-2)"></i>inventory</span><span><i style="background:var(--series-3)"></i>cache</span></div></section>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">About this report</h3></div><dl class="kv"><dt>Queries run</dt><dd class="vz-num">14</dd><dt>Time taken</dt><dd class="vz-num">1 m 52 s</dd><dt>Cost</dt><dd class="vz-num">$0.21</dd><dt>Could read</dt><dd>metrics and traces in acme-prod</dd><dt>Could change</dt><dd>nothing</dd></dl></section>
+    </div>
+  </div>
+</main>
+<script>line('i1',{seed:9,h:180,ticks:['900','600','300','0'],x:['12:00','13:00','14:00','15:00'],series:[{base:.06,noise:.02,spike:[19,60,.62]},{base:.12,noise:.03},{base:.03,noise:.01}]});</script>

@@ -8,7 +8,7 @@ it is given, so it runs unchanged in WASM, natively and in a deterministic simul
 Builds for the host and for `wasm32-unknown-unknown`.
 
 ```
-CARGO_TARGET_DIR=$PWD/target cargo test                                    # 35 tests
+CARGO_TARGET_DIR=$PWD/target cargo test                                    # 41 tests
 CARGO_TARGET_DIR=$PWD/target cargo build --release --target wasm32-unknown-unknown
 node tools/hyparquet_check.mjs      # independent reader (after cargo test --test export)
 python3 tools/mutants.py            # mutation check
@@ -41,6 +41,14 @@ Design choices worth knowing:
   slightly below the last figure. The 0.2 MB gzip was judged worth it; it is one line in `Cargo.toml` to change.
 - **Regexes compile as `^(?s:...)$`**, which is what Prometheus does: fully anchored, and
   `.` matches newline.
+- **Strict decoding (contracts v2).** Besides the checks below, `batch::decode` now also
+  rejects a NUL byte in a label name or value, a name over 1,024 bytes, a value over 8,192
+  bytes, more than 128 labels, and any row whose timestamp is outside
+  0..253,402,300,799,999. These were not checked before; `BATCH.md` v2 states them as
+  rules of the format, and because every entry point decodes through this function, no
+  path can now produce a `day` that is not `YYYY-MM-DD`. The 1 MiB size cap is **not**
+  checked here: it is a storage limit that `Shard.append` enforces, and tests and tools in
+  this crate use larger batches.
 - **Strict decoding.** Non-zero flags, reserved or padding bytes, trailing bytes, empty
   label names or values and invalid UTF-8 are errors. A consequence, tested: for every
   input that decodes, re-encoding gives the same bytes.
@@ -56,7 +64,8 @@ Design choices worth knowing:
 
 - `queryRange`, `queryInstant`, `selectors` from `contracts/engine.ts` (PromQL): not this
   component.
-- The WASM/JS binding. `wasm-probe/` is only a size probe and smoke test.
+- The WASM/JS binding lives in `engine/wasm` (a separate crate, with its own README).
+  `wasm-probe/` here is only the earlier size probe and smoke test.
 - zstd (the contract says snappy for now).
 - Page-level pruning. Statistics are per row group; no column index is written and the
   index fragment has no page locations (DESIGN §5.2 mentions them).
@@ -68,8 +77,28 @@ Design choices worth knowing:
 
 ## How it was verified
 
-`cargo test`: **35 tests, all passing** (batch 11, encode 11, select 8, merge 4, export 1).
-Seven are property tests (proptest), 200 to 600 cases each.
+`cargo test`: **41 tests, all passing** (batch 11, contract_v2 6, encode 11, select 8,
+merge 4, export 1). Seven are property tests (proptest), 200 to 600 cases each.
+
+- **Contracts v2** (`tests/contract_v2.rs`), verifying what was reported as "already true"
+  and what was added:
+  - *Strict decoding*: NUL, the three label limits at and one past the boundary, U+FFFF
+    before U+10000 accepted and the reverse rejected as unsorted, timestamps `0` and
+    `253402300799999` accepted and `-1`, the next millisecond, `i64::MIN` and `i64::MAX`
+    rejected, through `decode`, `encode_segment` and `select`. **New code** (see above).
+  - *The empty batch* decodes, contributes nothing to a flush or a select. Already true.
+  - *Later row wins inside one batch*: three rows for one `(series_id, ts)` in one batch;
+    the last value is what flush writes, what a tail read returns, what lake + the same
+    batch still in the tail returns (3 samples in total, not 6), and what a merge and a
+    lake + later-tail read return. Already true; now tested on every path.
+  - *Canonical JSON*: the `labels` cell is compared byte for byte for keys U+E000, U+FFFF
+    and U+10000 (UTF-8 order, where RFC 8785's UTF-16 order would differ), the five short
+    escapes, `\u0001`, `\u001f`, and DEL, U+0080, U+2028, U+2029, an emoji and `<>&`
+    written raw; it parses back and survives merge and select. Already true.
+  - *100,000-row cap everywhere*: 100,001 series × 2 samples flush to row groups of
+    100,000 + 100,000 + 2 (samples) and 100,000 + 1 (series); merging gives
+    100,000 + 100,000 + 50,002 and 100,000 + 2. Already true; the series-file and
+    merge-output cases were untested before.
 
 - **Batch.** Byte-exact layout against a hand-built buffer; FNV-1a checked against the
   published vector, a second naive implementation, and a value computed in Python;
@@ -85,7 +114,9 @@ Seven are property tests (proptest), 200 to 600 cases each.
   row group, and the index fragment against the real footer (rows, offset, length, names,
   timestamps). A property test compares each day's file with a reference (replay into a
   map, last write wins) at row-group sizes 1 to 8. Day splitting is tested at
-  `MID-1`/`MID`, at the epoch (`-1`/`0`) and for dates far outside four-digit years.
+  `MID-1`/`MID`, at both ends of the contract range (`0`, `86399999` and
+  `253402300799999`), and `day_string` on its own for dates outside four-digit years
+  (which a batch can no longer carry).
   Duplicate precedence is tested across and within batches. Nine special bit patterns,
   including the staleness marker and a signalling NaN, come back bit-identical.
 - **Select.** Matcher semantics on a fixture run three ways (all lake, all tail, both).
@@ -133,7 +164,11 @@ counted. A `+simd128,+bulk-memory` build also compiles and passes (2.76 MB).
 
 `tools/mutants.py` applies one source change at a time, runs the suite, and restores the
 file. It first confirms the unmutated suite passes, and distinguishes a failing test from
-a build error. **21 of 21 mutants were killed** by failing tests:
+a build error. **MUTANT_TOTALS** by failing tests. The seven added for
+contracts v2 (decode accepts a NUL / 129 labels / an over-long value / a timestamp after
+year 9999 / a negative timestamp; duplicates inside a batch kept by select; control
+characters escaped in upper-case hex) are each killed by a test in `tests/contract_v2.rs`.
+The original 21:
 
 | # | Mutant | Killed by (examples) |
 |---|---|---|
@@ -191,6 +226,12 @@ No native benchmark was run and nothing here was compared with `bench/`.
   this crate prunes on `value`.
 
 ## Contract issues
+
+Contracts v2 settles the list below: 1 to 3 (`engine.ts` number rules and `select`'s empty
+series), 4 and 5 (`BATCH.md`: later row wins; strict decoders), 6 to 8 (`TABLES.md`:
+canonical JSON, encodings, the cap for every file), 10 (timestamps bounded to years 1970
+to 9999, now enforced by `decode` as well as by `edge`), 11 and 12. Item 9 stands.
+The original list, for the record:
 
 None required deviating from a contract; these are gaps where a choice was made.
 

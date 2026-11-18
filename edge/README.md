@@ -76,10 +76,32 @@ are counted in `partial_success`, with the reasons in `error_message`.
 | `maxDecompressedBytes` | 32 MiB | 413; checked before snappy allocates and while gzip inflates |
 | `maxSeries` per request | 100,000 | 413 |
 | `maxSamples` per request | 500,000 | 413 |
-| `maxLabelsPerSeries` | 64 | that series is rejected |
-| `maxLabelNameBytes` / `maxLabelValueBytes` | 256 / 4096 | that series is rejected |
-| `acceptBackMs` / `acceptAheadMs` | 1 h / 5 min | that sample is rejected |
-| `maxBatchBytes` | 1 MiB | the slot's rows are split into several batches |
+| `maxLabelsPerSeries` | 128 (the contract's ceiling; cannot be raised) | that series is rejected |
+| `maxLabelNameBytes` / `maxLabelValueBytes` | 1,024 / 8,192 (the contract's ceilings; cannot be raised) | that series is rejected |
+| `acceptBackMs` / `acceptAheadMs` | 1 h / 5 min, always clamped to 0..253,402,300,799,999 | that sample is rejected |
+| `maxBatchBytes` | `MAX_BATCH_BYTES` = 1 MiB, imported from `shard/src/shard.ts` (cannot be raised) | the slot's rows are split into several batches |
+
+**Contracts v2** (`contracts/BATCH.md`), all through `src/limits.ts` `CONTRACT`:
+
+- **Batch cap.** The 1 MiB cap is one constant, `MAX_BATCH_BYTES`, exported by the shard
+  and imported here; `INGEST_LIMITS` can lower it, not raise it. A label set that could
+  not fit one batch with a single row is rejected at validation ("label set too large to
+  fit one batch") instead of producing a batch the shard would refuse. If a shard still
+  answers `too_large` (its cap was configured lower), the request is split again at the
+  shard's `maxBytes`, once; if that is refused too the whole request gets 503 and
+  `Retry-After`, never 2xx.
+- **Labels.** Byte limits as above; names non-empty; no NUL byte; valid UTF-8; sorted in
+  **UTF-8 byte order** (the sort always compared bytes; there is now a test with an
+  astral-plane name, where JavaScript string order differs).
+- **Timestamps** outside 0..253,402,300,799,999 are rejected whatever the accept window is
+  configured to, so a UTC day is always `YYYY-MM-DD`.
+- **OTLP routing labels.** `job` and `instance` come only from `service.namespace` /
+  `service.name` and `service.instance.id`. Any other attribute that lands on those names,
+  on a data point or on the resource, becomes `exported_job` / `exported_instance`, so it
+  cannot change which shard a sender's rows go to.
+- **Whole-request retry.** Unchanged and re-verified: any refused or failed append gives
+  429 or 503 for the whole request; `partial_success` and Remote Write's 400 are only for
+  rows rejected by validation.
 
 **Routing and append.** The routing key of a series is `job=<job>\0instance=<instance>`.
 Rows are grouped by `slotFor(map, tenant, key)`, each slot gets its batches in arrival
@@ -119,9 +141,9 @@ A 2xx is sent only after every append has returned `ok`.
 
 ```
 npm install
-npm test            # 41 tests in 5 files, in workerd, against the real Shard
+npm test            # 49 tests in 6 files, in workerd, against the real Shard
 npm run typecheck   # clean
-npm run mutants     # 26 mutants, all killed
+npm run mutants     # 35 mutants, all killed (26 original + 9 for contracts v2)
 npm run bench       # decode throughput, in Node
 npm run fixtures    # regenerate test/fixtures.json with protobufjs + snappyjs
 ```
@@ -161,6 +183,19 @@ What the tests establish:
   says 3, and 204 after exactly one KV read once KV says 5.
 - **Splitting.** A 25,000-series request for one slot is stored as several batches of at
   most 1 MiB, in order.
+- **Contracts v2** (`test/contract.test.ts`, 7 tests, and one rewritten in `codec.test.ts`).
+  A series with labels named U+FFFF and U+10000 is stored with U+FFFF first, has the id of
+  the byte-sorted label set and not the id JavaScript's order would give, and is one series
+  whichever order the sender used. 128 labels, a 1,024-byte name (also 512 two-byte
+  characters) and an 8,192-byte value are accepted; one more of each is rejected, as is a
+  NUL in a name or value, and `INGEST_LIMITS` cannot loosen any of it. A 1,054,112-byte
+  label set is rejected while the rest of the request is stored. Every timestamp in
+  0..253,402,300,799,999 is written exactly; `-1`, the first millisecond of year 10000,
+  ±2^53, `NaN` and ±Infinity are rejected even with an unlimited accept window. With a
+  shard capped at 4,096 bytes the request succeeds in batches of at most 4,096 bytes; with
+  a cap no row fits, it gets 503 and `Retry-After` and nothing is stored. Forty OTLP points
+  with 39 different `job`/`instance` attributes all land in the one slot the resource
+  routes to, carrying `exported_job` / `exported_instance`, in protobuf and in JSON.
 
 Also checked by hand: `wrangler deploy --dry-run` bundles (69 KiB), and under
 `wrangler dev` a 500-series body made by `protobufjs` + `snappyjs` sent with `curl`
@@ -200,6 +235,15 @@ the file. Every one makes at least one test fail.
 | 24 | Batches not split at the size limit |
 | 25 | Snappy decompressed-size limit not enforced |
 | 26 | Snappy copy bounds not checked |
+| 27 | Labels sorted in JavaScript string order instead of UTF-8 bytes |
+| 28 | Timestamps before 1970 accepted |
+| 29 | Timestamps after year 9999 accepted |
+| 30 | `INGEST_LIMITS` may loosen the contract label limits |
+| 31 | `INGEST_LIMITS` may raise the batch cap |
+| 32 | Label set larger than a batch not rejected |
+| 33 | OTLP point attribute `job`/`instance` not renamed |
+| 34 | `too_large` from a shard treated as success |
+| 35 | No re-split after `too_large` |
 
 ### Decode throughput
 
@@ -223,6 +267,10 @@ Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, 
   and limits always do. A sample that leaves the accept window between the first attempt
   and the retry changes the batch, so the rows that had already been appended are stored
   again. The exposure is a retry that straddles the one-hour boundary.
+- **A re-split after `too_large` double-stores.** Batches that had been appended before
+  the refusal are stored again under new fingerprints. Readers and flush de-duplicate on
+  `(series_id, ts)` (tested end to end in `stack/`), so results are unaffected; the cost is
+  storage until the next flush.
 - **Re-routing after `stale_epoch` can double-store.** If some slots accepted a request
   under the old map and the new map sends those series elsewhere, the new shard has no
   fingerprint for them. The design closes this with fingerprint handover on a map change,
@@ -250,6 +298,11 @@ Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, 
   `fnv1a64` and the tests hold the two equal, but the hot path is the integer one.
 
 ## Contract issues
+
+Issues 1 to 5 are **resolved in contracts v2** and implemented here (see "Contracts v2"
+above): a stated batch size and `too_large`; label byte rules and limits; UTF-8 byte order;
+OTLP routing labels with `exported_job` / `exported_instance`; retryable statuses instead
+of `partial_success` for a failed shard. Issues 6 and 7 stand. The original list:
 
 1. **`BATCH.md`: "one batch per shard slot" cannot always hold.** Cloudflare documents a
    2 MB cap on a value in a SQLite-backed Durable Object, and the shard stores a batch as

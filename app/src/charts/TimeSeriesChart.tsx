@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { memo, useLayoutEffect, useRef, useState } from 'react'
 import uPlot from 'uplot'
 import { downsampleMinMax } from '../lib/downsample'
 import type { TimeSeriesChartProps } from './types'
@@ -43,7 +43,7 @@ const deviceFont = (font: string, dpr: number) => font.replace(/([\d.]+)px/, (_m
  * - the crosshair readout moves by transform and reuses its rows, so following the pointer
  *   does not lay out the page.
  */
-export function TimeSeriesChart(props: TimeSeriesChartProps) {
+export const TimeSeriesChart = memo(function TimeSeriesChart(props: TimeSeriesChartProps) {
   const { xs, series, xRange, visible, formatValue, onZoom, onRenderInfo, syncKey, theme, ariaLabel } = props
   const wrapRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
@@ -375,4 +375,4 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       <div ref={liveRef} className="sr-only" aria-live="polite" />
     </div>
   )
-}
+})

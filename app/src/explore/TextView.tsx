@@ -1,7 +1,8 @@
+import { memo } from 'react'
 import { CopyButton } from './CopyButton'
 
 /** The text form of the result: the digest an agent or a screen reader gets. */
-export function TextView({ text }: { text: string }) {
+export const TextView = memo(function TextView({ text }: { text: string }) {
   return (
     <div data-testid="text-view" className="region-part">
       <div className="caption-row">
@@ -13,4 +14,4 @@ export function TextView({ text }: { text: string }) {
       </pre>
     </div>
   )
-}
+})

@@ -1,0 +1,32 @@
+<!-- nav: Dashboards -->
+<main class="page vz-dashboard">
+  <div class="head"><div><h1>checkout-api</h1><p class="sub">Is checkout healthy, and where is it slow? <span class="muted">Updated <span class="vz-num">12 s</span> ago.</span></p></div>
+    <div class="row"><div class="vz-segmented" role="group" aria-label="Time range"><button aria-pressed="false">1 h</button><button aria-pressed="true">6 h</button><button aria-pressed="false">24 h</button><button aria-pressed="false">7 d</button></div>
+      <select class="vz-select" id="env" style="width:auto"><option>environment: prod</option></select>
+      <div class="vz-segmented" role="group" aria-label="Show as"><button aria-pressed="true">Charts</button><button aria-pressed="false">Text</button></div><button class="vz-button">Edit</button></div></div>
+  <div class="vz-banner"><span class="vz-mark" data-state="critical"></span><p><strong>Burning error budget</strong> since 13:02. p99 latency on <span class="vz-num">POST /v2/orders</span> is above 500 ms.</p><a class="vz-link" href="#">Open the monitor</a></div>
+  <div class="vz-grid">
+    <section class="vz-panel" data-span="3"><div class="vz-panel-head"><h3 class="vz-panel-title">Error budget left</h3></div>
+      <div class="vz-stat"><span class="vz-stat-value">61.4<span class="vz-stat-unit">%</span></span><span class="vz-stat-context">30-day window, 99.9% target</span></div></section>
+    <section class="vz-panel" data-span="3"><div class="vz-panel-head"><h3 class="vz-panel-title">p99 latency</h3></div>
+      <div class="vz-stat"><span class="vz-stat-value">912<span class="vz-stat-unit">ms</span></span><span class="vz-stat-context"><span class="vz-status" data-state="critical">Above 500 ms since 13:02</span></span></div></section>
+    <section class="vz-panel" data-span="3"><div class="vz-panel-head"><h3 class="vz-panel-title">Requests</h3></div>
+      <div class="vz-stat"><span class="vz-stat-value">1,284<span class="vz-stat-unit">/s</span></span><span class="vz-stat-context">4% below this time last week</span></div></section>
+    <section class="vz-panel" data-span="3"><div class="vz-panel-head"><h3 class="vz-panel-title">Errors</h3></div>
+      <div class="vz-stat"><span class="vz-stat-value">2.41<span class="vz-stat-unit">%</span></span><span class="vz-stat-context"><span class="vz-status" data-state="warn">Above 1% since 13:05</span></span></div></section>
+    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Latency by route, p99</h3><span class="vz-panel-meta">ms · last 6 h</span></div>
+      <p class="vz-panel-desc">The dashed line is the 500 ms objective. One route above it means a slow dependency; all routes above it means the service itself.</p>
+      <svg class="c" id="c1"></svg><div class="vz-legend"><span><i style="background:var(--series-1)"></i>GET /v2/catalog</span><span><i style="background:var(--series-2)"></i>POST /v2/orders</span><span><i style="background:var(--series-3)"></i>GET /v2/cart/{id}</span></div></section>
+    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Error rate by route</h3><span class="vz-panel-meta">% · last 6 h</span></div>
+      <p class="vz-panel-desc">Server errors as a share of requests. Client errors are excluded.</p>
+      <svg class="c" id="c2"></svg><div class="vz-legend"><span><i style="background:var(--series-1)"></i>GET /v2/catalog</span><span><i style="background:var(--series-2)"></i>POST /v2/orders</span><span><i style="background:var(--series-3)"></i>GET /v2/cart/{id}</span></div></section>
+    <section class="vz-panel" data-span="12"><div class="vz-panel-head"><h3 class="vz-panel-title">Routes</h3><span class="vz-panel-meta">last 5 min</span></div>
+      <div class="vz-table-wrap"><table class="vz-table"><thead><tr><th class="vz-label">Route</th><th class="vz-label">State</th><th class="vz-label vz-right">Requests / s</th><th class="vz-label vz-right">Errors</th><th class="vz-label vz-right">p50</th><th class="vz-label vz-right">p99</th></tr></thead><tbody>
+        <tr><td data-key>POST /v2/orders</td><td><span class="vz-status" data-state="critical">Failing</span></td><td class="vz-num vz-right">212.4</td><td class="vz-num vz-right">9.80%</td><td class="vz-num vz-right">310 ms</td><td class="vz-num vz-right">912 ms</td></tr>
+        <tr><td data-key>GET /v2/cart/{id}</td><td><span class="vz-status" data-state="warn">Slow</span></td><td class="vz-num vz-right">842.6</td><td class="vz-num vz-right">0.08%</td><td class="vz-num vz-right">96 ms</td><td class="vz-num vz-right">488 ms</td></tr>
+        <tr><td data-key>GET /v2/catalog</td><td><span class="vz-status" data-state="ok">Healthy</span></td><td class="vz-num vz-right">229.0</td><td class="vz-num vz-right">0.01%</td><td class="vz-num vz-right">22 ms</td><td class="vz-num vz-right">74 ms</td></tr></tbody></table></div></section>
+  </div>
+</main>
+<script>const X=['09:00','11:00','13:00','15:00'];
+line('c1',{seed:7,ticks:['1.0k','667','333','0'],x:X,threshold:.5,series:[{base:.08,noise:.02},{base:.3,noise:.05,spike:[38,60,.6]},{base:.42,noise:.04}]});
+line('c2',{seed:11,ticks:['12','8','4','0'],x:X,series:[{base:.02,noise:.01},{base:.05,noise:.02,spike:[38,60,.75]},{base:.03,noise:.01}]});</script>

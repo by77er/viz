@@ -1,0 +1,14 @@
+{
+  // Production shape. EVALUATOR (the query engine) and SINK (the ingest path) are service
+  // bindings that do not exist yet; without them every rule reports `health: err`.
+  "name": "viz-ruler",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "RULER", "class_name": "Ruler" },
+      { "name": "NOTIFIER", "class_name": "Notifier" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ruler", "Notifier"] }]
+}
