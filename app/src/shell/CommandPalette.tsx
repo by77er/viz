@@ -32,6 +32,8 @@ export function CommandPalette() {
   const exec = (c: Command | undefined) => {
     if (!c) return
     setPaletteOpen(false)
+    setQuery('')
+    setActive(0)
     // Let the dialog close (and focus return) before the command acts.
     setTimeout(() => c.run(), 0)
   }

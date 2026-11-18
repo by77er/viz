@@ -1,6 +1,6 @@
 //! Not the real WASM binding (a separate crate will wrap the API). This cdylib only links
 //! every public entry point behind a C ABI so that
-//! `cargo build --release --target wasm32-unknown-unknown --example wasm_probe`
+//! `cargo build --release --target wasm32-unknown-unknown` (in `wasm-probe/`)
 //! yields a `.wasm` whose size reflects the whole storage engine, and so a host can smoke
 //! test it. Input framing: a sequence of `u32 length, bytes` items.
 use viz_storage::{encode_segment, merge_files, select, MatchOp, Matcher, ScanInput, Table};

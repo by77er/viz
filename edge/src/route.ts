@@ -85,7 +85,7 @@ async function appendSlot(env: RouteEnv, map: PoolMap, tenant: string, slot: num
   try {
     const stub = env.SHARD.get(env.SHARD.idFromName(shardName(map, slot)))
     for (const b of batches) {
-      const fingerprint = await sha256Hex(b.bytes)
+      const fingerprint = crypto.randomUUID()
       last = await stub.append({ tenant, epoch: map.epoch, fingerprint, payload: b.bytes, rows: b.rows })
       if (last.status !== 'ok') return last
     }

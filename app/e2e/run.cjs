@@ -314,7 +314,7 @@ async function main() {
     await page.keyboard.press('Control+k')
     await page.keyboard.type('explore')
     await page.keyboard.press('Enter')
-    await page.waitForURL('**/explore').catch(async (e) => { console.log('DEBUG', page.url(), await page.evaluate(() => [document.querySelector('dialog[aria-label="Command palette"]').open, document.querySelector('dialog input').value, document.activeElement.outerHTML.slice(0,200)])); throw e })
+    await page.waitForURL('**/explore')
 
     // Settings: token goes to localStorage and the Authorization header, never the URL.
     await page.goto(url(Q_RATE))

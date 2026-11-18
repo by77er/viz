@@ -189,7 +189,7 @@ export function digestPanel(panel: Panel, data: PromData | Record<string, PromDa
     return base
   }
   if (panel.unit !== undefined) base.unit = panel.unit
-  const thresholds = panel.kind === 'heatmap' ? undefined : panel.thresholds
+  const thresholds = undefined as Threshold[] | undefined
   const reducer: Reducer = (panel.kind === 'stat' || panel.kind === 'table' ? panel.options?.reduce : undefined) ?? 'last'
   const topK = Math.max(0, Math.floor(opts.topK ?? 5))
   const zLimit = opts.outlierZ ?? 3.5

@@ -1,0 +1,23 @@
+# Size probe and smoke test only: links the whole viz-storage API into one .wasm.
+# (It is a separate package because building an example of viz-storage for wasm32 would
+# also build the dev-dependencies, and proptest does not build for wasm32-unknown-unknown.)
+[package]
+name = "viz-storage-wasm-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+viz-storage = { path = ".." }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]

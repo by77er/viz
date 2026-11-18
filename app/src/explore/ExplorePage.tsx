@@ -245,7 +245,7 @@ export function ExplorePage() {
         </div>
         <button className="btn btn-primary h-[34px] px-3.5" onClick={run} data-testid="run" aria-keyshortcuts="Control+Enter Meta+Enter" title={`Run query (${MOD}+Enter)`}>
           Run
-          <span className="hidden text-[11px] font-normal opacity-80 md:inline">{MOD}↵</span>
+          <span className="hidden text-[11px] font-normal md:inline">{MOD}↵</span>
         </button>
       </div>
 

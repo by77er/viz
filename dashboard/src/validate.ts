@@ -169,7 +169,7 @@ function checkLayout(
   walkLayout(layout, base, {
     panel(id, path) {
       const at = pointer(path)
-      if (false) {
+      if (!hasOwn(panels, id)) {
         out.push({ path: at, code: 'dangling-panel-ref', message: `Layout references panel "${id}", which does not exist.`, suggestion: `${didYouMean(id, pids, 'panels')} Or add the panel under "panels".` })
         return
       }
