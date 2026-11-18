@@ -19,7 +19,7 @@ fn series_id_matches_known_fnv1a_vectors() {
     // Computed independently (python): fnv1a64(b"__name__\0up\0") and with a second label.
     assert_eq!(series_id(&[("__name__", "up")]) as u64, fnv(b"__name__\0up\0"));
     assert_eq!(series_id(&[("__name__", "up"), ("job", "api")]) as u64, fnv(b"__name__\0up\0job\0api\0"));
-    assert_eq!(series_id(&[("__name__", "up")]) as u64, 0x4f6f_a3b6_27e6_5e0d_u64, "pinned value");
+    assert_eq!(series_id(&[("__name__", "up")]) as u64, 0xafd3_0857_48e6_c5d5_u64, "pinned value (python)");
     // The separator matters: ("ab","c") and ("a","bc") differ.
     assert_ne!(series_id(&[("ab", "c")]), series_id(&[("a", "bc")]));
 }

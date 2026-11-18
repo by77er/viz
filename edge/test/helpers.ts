@@ -333,6 +333,18 @@ export function refSeriesId(labels: [string, string][]): bigint {
   return h >= 1n << 63n ? h - (1n << 64n) : h
 }
 
+// Computed with an independent implementation (Python 3, arbitrary-precision ints):
+//   h = 0xcbf29ce484222325
+//   for n, v in sorted(labels): for b in n.encode()+b'\0'+v.encode()+b'\0': h = ((h ^ b) * 0x100000001b3) & (2**64-1)
+//   signed = h - 2**64 if h >= 2**63 else h
+export const PY_VECTORS: [bigint, [string, string][]][] = [
+  [-2199532733905350708n, [['__name__', 'up'], ['instance', 'localhost:9090'], ['job', 'prometheus']]],
+  [-4610081357688412512n, [['__name__', 'http_requests_total'], ['code', '200'], ['instance', '10.0.0.1:8080'], ['job', 'api'], ['method', 'GET']]],
+  [-1314359688488110787n, [['__name__', 'temp_celsius'], ['city', 'Zürich'], ['emoji', '🌡']]],
+  [3615301709621268755n, [['__name__', 'a']]],
+  [365524587533681101n, [['__name__', 'cpu_seconds_total'], ['instance', 'i-1'], ['job', 'shop/checkout'], ['mode', 'user']]],
+]
+
 // ───────────────────────── environment helpers ─────────────────────────
 
 export async function sha256Hex(s: string): Promise<string> {

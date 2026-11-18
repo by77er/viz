@@ -60,7 +60,7 @@ for (let i = 0; i < 300; i++) {
   ].sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)))
   const samples = [
     { value: i * 1.5, timestamp: T0 + i },
-    { value: -i / 3, timestamp: T0 + 15_000 + i },
+    { value: -(i + 1) / 3, timestamp: T0 + 15_000 + i },
   ]
   series.push({ labels, samples })
   for (const s of samples) expectPrw.push({ labels: Object.fromEntries(labels.map((l) => [l.name, l.value])), ts: s.timestamp, value: s.value })

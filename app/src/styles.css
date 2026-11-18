@@ -1,0 +1,457 @@
+@import 'tailwindcss';
+@import 'uplot/dist/uPlot.min.css';
+
+/*
+ * Design tokens. Both themes are selected values (not an automatic inversion). The DOM and
+ * the canvas chart read the same variables.
+ */
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4;
+  --surface: #fcfcfb;
+  --surface-2: #f1f1ee;
+  --surface-3: #e8e8e4;
+  --line: #e1e0d9;
+  --line-strong: #c9c8c0;
+  --fg: #0b0b0b;
+  --fg-2: #45443f;
+  --fg-3: #65645e;
+  --accent: #1c5cab;
+  --accent-hover: #184f95;
+  --accent-fg: #ffffff;
+  --accent-soft: #e3eefc;
+  --focus: #2a78d6;
+  --danger: #b42626;
+  --danger-soft: #fbeceb;
+  --danger-line: #eec3c0;
+  --warn-fg: #6b4a00;
+  --warn-soft: #fdf3d7;
+  --warn-line: #ecd48f;
+  --chart-grid: #e9e8e2;
+  --chart-axis: #65645e;
+  --chart-cursor: #45443f;
+  --tok-keyword: #7a3e9d;
+  --tok-function: #1c5cab;
+  --tok-string: #a2522d;
+  --tok-number: #0b6e4f;
+  --tok-label: #45443f;
+  --tok-operator: #65645e;
+  --shadow: 0 8px 28px rgba(11, 11, 11, 0.14), 0 0 0 1px rgba(11, 11, 11, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-2: #232322;
+    --surface-3: #2e2e2c;
+    --line: #2c2c2a;
+    --line-strong: #454541;
+    --fg: #f0efec;
+    --fg-2: #c3c2b7;
+    --fg-3: #a3a198;
+    --accent: #3987e5;
+    --accent-hover: #5598e7;
+    --accent-fg: #0b0b0b;
+    --accent-soft: #14273f;
+    --focus: #6da7ec;
+    --danger: #f08a85;
+    --danger-soft: #2e1716;
+    --danger-line: #5c2a28;
+    --warn-fg: #f0cf7a;
+    --warn-soft: #2a2210;
+    --warn-line: #57471c;
+    --chart-grid: #2a2a28;
+    --chart-axis: #a3a198;
+    --chart-cursor: #c3c2b7;
+    --tok-keyword: #c79be8;
+    --tok-function: #7db4f2;
+    --tok-string: #e0a27e;
+    --tok-number: #6fcfa9;
+    --tok-label: #c3c2b7;
+    --tok-operator: #a3a198;
+    --shadow: 0 8px 28px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #232322;
+  --surface-3: #2e2e2c;
+  --line: #2c2c2a;
+  --line-strong: #454541;
+  --fg: #f0efec;
+  --fg-2: #c3c2b7;
+  --fg-3: #a3a198;
+  --accent: #3987e5;
+  --accent-hover: #5598e7;
+  --accent-fg: #0b0b0b;
+  --accent-soft: #14273f;
+  --focus: #6da7ec;
+  --danger: #f08a85;
+  --danger-soft: #2e1716;
+  --danger-line: #5c2a28;
+  --warn-fg: #f0cf7a;
+  --warn-soft: #2a2210;
+  --warn-line: #57471c;
+  --chart-grid: #2a2a28;
+  --chart-axis: #a3a198;
+  --chart-cursor: #c3c2b7;
+  --tok-keyword: #c79be8;
+  --tok-function: #7db4f2;
+  --tok-string: #e0a27e;
+  --tok-number: #6fcfa9;
+  --tok-label: #c3c2b7;
+  --tok-operator: #a3a198;
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-line);
+  --color-warn-fg: var(--warn-fg);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers that must align in columns. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* Controls */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.btn:hover {
+  background: var(--surface-2);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--fg-2);
+}
+.btn-ghost:hover {
+  background: var(--surface-3);
+  color: var(--fg);
+}
+.btn-icon {
+  width: 28px;
+  padding: 0;
+}
+.input {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12.5px;
+  min-width: 0;
+}
+.input::placeholder {
+  color: var(--fg-3);
+}
+select.input {
+  padding-right: 4px;
+}
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--fg-2);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.seg button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.seg button + button {
+  border-left: 1px solid var(--line-strong);
+}
+.seg button:hover {
+  background: var(--surface-2);
+}
+.seg button[aria-pressed='true'],
+.seg button[aria-selected='true'] {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+.seg button:focus-visible {
+  outline-offset: -2px;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+/* Data tables */
+.dt {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.dt th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--line);
+  padding: 0;
+  font-weight: 600;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.dt th > button,
+.dt th > span {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  text-align: inherit;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.dt th > span {
+  cursor: default;
+}
+.dt th > button:hover {
+  color: var(--fg);
+}
+.dt td {
+  padding: 3px 10px;
+  border-top: 1px solid var(--line);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.dt tbody tr:first-child td {
+  border-top: 0;
+}
+.dt tbody tr:hover td {
+  background: var(--surface-2);
+}
+.dt .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Loading bar: kept subtle; previous data stays visible underneath. */
+@keyframes viz-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+.progress {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 6px 6px 0 0;
+}
+.progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: var(--accent);
+  animation: viz-progress 1.1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.6;
+  }
+}
+
+/* Dialogs */
+dialog {
+  color: var(--fg);
+  background: var(--surface);
+  border: 0;
+  padding: 0;
+  box-shadow: var(--shadow);
+  border-radius: 8px;
+  max-width: calc(100vw - 24px);
+}
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* uPlot overrides */
+.uplot {
+  font-family: var(--font-sans);
+}
+.u-select {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-left: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+}
+.u-cursor-x {
+  border-right: 1px dashed var(--chart-cursor);
+}
+.u-cursor-y {
+  display: none;
+}
+.chart-tip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  min-width: 180px;
+  max-width: min(420px, 90%);
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.chart-tip .tip-time {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 2px;
+}
+.chart-tip .tip-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-2);
+}
+.chart-tip .tip-row.focus {
+  color: var(--fg);
+  font-weight: 600;
+}
+.chart-tip .tip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.chart-tip .tip-val {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  padding-left: 8px;
+}
+.chart-tip .tip-more {
+  color: var(--fg-3);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* CodeMirror */
+.cm-editor {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: transparent;
+}
+.cm-editor.cm-focused {
+  outline: none;
+}

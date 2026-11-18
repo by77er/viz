@@ -87,7 +87,7 @@ pub fn arb_batch() -> impl Strategy<Value = GenBatch> {
         .prop_map(|(rows, extra)| {
             let pool = pool();
             let mut series: Vec<SeriesDef> = Vec::new();
-            let mut slot = |p: usize, series: &mut Vec<SeriesDef>| match series.iter().position(|s| *s == pool[p]) {
+            let slot = |p: usize, series: &mut Vec<SeriesDef>| match series.iter().position(|s| *s == pool[p]) {
                 Some(i) => i,
                 None => {
                     series.push(pool[p].clone());

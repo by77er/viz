@@ -101,7 +101,6 @@ function bindVariable(name: string, def: Variable, given: string | string[] | un
     }
     return vals.length ? { values: vals } : undefined
   }
-  values = values
   return (
     pick(values, 'given') ??
     pick(defaults, 'the default') ??
