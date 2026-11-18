@@ -3,5 +3,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "durable_objects": { "bindings": [{ "name": "SHARD", "class_name": "Shard" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard"] }],
+  // The shard keeps one `flush-pending:<shard>` key here while it has unrecorded segments.
+  // `FLUSH_QUEUE` (the seal notification) is bound where a flush consumer exists: stack/.
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }]
 }

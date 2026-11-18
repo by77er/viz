@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 const here = fileURLToPath(new URL('.', import.meta.url))
 const path = process.argv[2] ?? here + '../target/wasm32-unknown-unknown/release/viz_whole_engine.wasm'
 const bytes = readFileSync(path)
-console.log(`module: ${bytes.length} bytes raw, ${gzipSync(bytes, { level: 9 }).length} bytes gzip -9`)
+console.log(`module: ${bytes.length} bytes raw, ${gzipSync(bytes, { level: 9 }).length} bytes gzip (Node zlib, level 9; the gzip CLI gives about 2% less)`)
 
 const module = new WebAssembly.Module(bytes)
 const imports = WebAssembly.Module.imports(module)

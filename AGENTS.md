@@ -97,6 +97,9 @@ for the review rubric.
 - A request can have six outbound connections in flight, and that includes R2 binding
   reads. A Worker called through a service binding spends from its caller's six; a Durable
   Object has its own. To read R2 in parallel beyond six, fan out to Durable Objects.
+- An R2 write takes about 0.4 s whatever its size (a read takes about 0.05 s). Never put a
+  PUT on a request's acknowledgement path, and never issue one PUT per item in a loop:
+  batch into one object, or run them in parallel.
 - An R2 range read costs about one round trip (tens of milliseconds) whatever its size
   below 1 MB: issue few, coalesced reads.
 - Refuse rather than guess: a caller holding a stale watermark, epoch or incarnation gets an

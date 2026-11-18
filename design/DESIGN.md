@@ -180,7 +180,9 @@ the ledger before it accepts writes; the ledger records the boundary and raises 
 because rows between the old watermark and the loss are gone and that must be visible.
 
 **Ledger durability.** The ledger commits its transaction and appends the change to its R2
-log through an outbox. It tells a shard to discard only what has been both committed and
+log through an outbox. (As built, it waits for that R2 write before answering, which a
+measurement on Cloudflare showed limits it to about one unit per second; the write is
+moving to batched background segments.) It tells a shard to discard only what has been both committed and
 logged. A rebuilt ledger starts a new ledger incarnation, so versions are never reused, and
 periodic checkpoints bound rebuild time. The orphan sweeper deletes only files that are
 unreferenced *and* belong to a sequence range below the stream's logged watermark.
@@ -432,6 +434,7 @@ retention, batching WAL writes, seal age, and keeping rules in the tail class.
 | Per-minute wakes bill as continuous duration | Measured not to: a wake bills 20–40 ms (`spikes/s0-do-billing/`, first hour; 24-hour read pending) |
 | First-load query latency on flat rows | Read-slice spike before any PromQL breadth; chunk-blob rows are the fallback |
 | PromQL compliance is a long tail | Port from the reference with the upstream corpus; publish the supported subset |
-| A large tenant's ledger becomes a bottleneck | Ledger per shard group; plan results cached by ledger version |
+| **The ledger admits about one flush unit per second** (measured, `spikes/s4-ledger-scale/`): each change waits on its own R2 write, and an R2 write takes about 0.4 s | Not yet fixed. Answer after the SQLite commit; write the change log in batched segments in the background; shards keep discarding only up to the logged watermark |
+| Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |

@@ -1,38 +1,38 @@
 {
   "label": "before",
   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/app-before",
-  "when": "2026-11-18T20:17:41.719Z",
-  "runs": 5,
+  "when": "2026-11-18T20:20:58.834Z",
+  "runs": 20,
   "setup": "Chromium, CPU 4x, Fast 4G, 1440x900, fresh context per run",
   "summary": {
     "press": {
-      "p75": 16.699999999254942,
-      "median": 13.400000000372529,
-      "max": 18
+      "p75": 17.699999999254942,
+      "median": 12.900000000372529,
+      "max": 37.40000000037253
     },
     "chartToText": {
-      "p75": 74.90000000037253,
-      "median": 61.79999999888241,
-      "max": 84.30000000074506
+      "p75": 68.90000000037253,
+      "median": 62.09999999962747,
+      "max": 87.90000000037253
     },
     "textToChart": {
-      "p75": 140.7999999988824,
-      "median": 129.59999999962747,
-      "max": 151.40000000037253
+      "p75": 132,
+      "median": 108,
+      "max": 155.30000000074506
     },
     "picker": {
-      "p75": 89.19999999925494,
-      "median": 81.89999999850988,
-      "max": 100.5
+      "p75": 81.89999999850988,
+      "median": 66.5,
+      "max": 109.29999999888241
     },
     "response": {
       "p75": 92.69999999925494,
-      "median": 84.30000000074506,
-      "max": 120.59999999962747
+      "median": 82.30000000074506,
+      "max": 133.5
     },
     "inp": {
       "p75": 112,
-      "median": 112,
+      "median": 96,
       "max": 144
     },
     "inputDelay": {
@@ -148,6 +148,216 @@
       "inp": 112,
       "inpEvent": "pointerup",
       "inputDelay": 11.199999999254942
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 10,
+      "busy": null,
+      "response": 93.80000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 53.09999999962747,
+      "textToChart": 99.40000000037253,
+      "picker": 61.899999998509884,
+      "inp": 80,
+      "inpEvent": "pointerup",
+      "inputDelay": 9.099999999627471
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 37.40000000037253,
+      "busy": null,
+      "response": 107.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 62.80000000074506,
+      "textToChart": 150.7000000011176,
+      "picker": 41.90000000037253,
+      "inp": 136,
+      "inpEvent": "pointerup",
+      "inputDelay": 26.90000000037253
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 14.900000000372529,
+      "busy": null,
+      "response": 49.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 50.09999999962747,
+      "textToChart": 155.30000000074506,
+      "picker": 52,
+      "inp": 128,
+      "inpEvent": "pointerup",
+      "inputDelay": 10.5
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 18.40000000037253,
+      "busy": null,
+      "response": 82.30000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 65.90000000037253,
+      "textToChart": 86.79999999888241,
+      "picker": 71,
+      "inp": 80,
+      "inpEvent": "pointerup",
+      "inputDelay": 12.800000000745058
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 11,
+      "busy": null,
+      "response": 74.60000000149012,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 87.90000000037253,
+      "textToChart": 114.40000000037253,
+      "picker": 109.29999999888241,
+      "inp": 104,
+      "inpEvent": "pointerup",
+      "inputDelay": 4.299999998882413
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 10,
+      "busy": null,
+      "response": 84.80000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 49.30000000074506,
+      "textToChart": 132,
+      "picker": 66.80000000074506,
+      "inp": 112,
+      "inpEvent": "pointerup",
+      "inputDelay": 7
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 19.199999999254942,
+      "busy": null,
+      "response": 79.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 65.60000000149012,
+      "textToChart": 82.59999999962747,
+      "picker": 103.40000000037253,
+      "inp": 72,
+      "inpEvent": "pointerup",
+      "inputDelay": 9.900000000372529
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 12.900000000372529,
+      "busy": null,
+      "response": 70,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 54.79999999888241,
+      "textToChart": 90.90000000037253,
+      "picker": 66.5,
+      "inp": 80,
+      "inpEvent": "pointerup",
+      "inputDelay": 4.900000000372529
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 6.5,
+      "busy": null,
+      "response": 56.79999999888241,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 75.89999999850988,
+      "textToChart": 92.29999999888241,
+      "picker": 62.90000000037253,
+      "inp": 88,
+      "inpEvent": "pointerup",
+      "inputDelay": 4.5
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 7.800000000745058,
+      "busy": null,
+      "response": 37.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 68.90000000037253,
+      "textToChart": 106.30000000074506,
+      "picker": 67.40000000037253,
+      "inp": 96,
+      "inpEvent": "pointerup",
+      "inputDelay": 22.199999999254942
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 10.599999999627471,
+      "busy": null,
+      "response": 97.79999999888241,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 52.899999998509884,
+      "textToChart": 138.19999999925494,
+      "picker": 82.09999999962747,
+      "inp": 112,
+      "inpEvent": "pointerup",
+      "inputDelay": 3.800000000745058
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 17.40000000037253,
+      "busy": null,
+      "response": 69.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 45.70000000111759,
+      "textToChart": 109.19999999925494,
+      "picker": 48.59999999962747,
+      "inp": 96,
+      "inpEvent": "pointerup",
+      "inputDelay": 4.600000001490116
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 17.699999999254942,
+      "busy": null,
+      "response": 88,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 63.19999999925494,
+      "textToChart": 101.90000000037253,
+      "picker": 45.80000000074506,
+      "inp": 88,
+      "inpEvent": "pointerup",
+      "inputDelay": 5.400000000372529
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 24.200000001117587,
+      "busy": null,
+      "response": 133.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 82.09999999962747,
+      "textToChart": 106.59999999962747,
+      "picker": 65,
+      "inp": 88,
+      "inpEvent": "pointerup",
+      "inputDelay": 12.400000000372529
+    },
+    {
+      "clsLoad": 0.017512297453703703,
+      "press": 9.5,
+      "busy": null,
+      "response": 92.19999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToText": 62.09999999962747,
+      "textToChart": 130.90000000037253,
+      "picker": 71.09999999962747,
+      "inp": 112,
+      "inpEvent": "pointerup",
+      "inputDelay": 4.700000001117587
     }
   ]
 }

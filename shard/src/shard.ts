@@ -118,6 +118,8 @@ export type AppendResult =
    * without those series is accepted (series already active are never refused).
    */
   | { status: 'series_limit'; limit: number; current: number; refused: BigInt64Array }
+  /** The request contradicts itself (`seriesIds` does not match the batch header). Nothing was stored. A caller bug, not retryable as is. */
+  | { status: 'invalid'; reason: string }
 
 export interface Segment {
   tenant: string
@@ -342,7 +344,9 @@ export class Shard extends DurableObject<ShardEnv> {
     if (req.seriesIds) {
       // The one cheap check the shard can make without parsing the batch: `n_series` at offset 12.
       const header = bytes >= 16 ? new DataView(req.payload.buffer, req.payload.byteOffset, 16).getUint32(12, true) : -1
-      if (header !== req.seriesIds.length) throw new Error(`shard: ${req.seriesIds.length} series ids for a batch whose header says ${header}`)
+      if (header !== req.seriesIds.length) {
+        return { status: 'invalid', reason: `${req.seriesIds.length} series ids for a batch whose header says ${header}` }
+      }
       metered = this.window(req.tenant, now)
       if (req.seriesLimit !== undefined) {
         const { current, fresh } = metered.w.check(req.seriesIds)

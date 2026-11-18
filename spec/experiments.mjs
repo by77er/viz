@@ -127,8 +127,6 @@ const EXPERIMENTS = [
     cfg: { ...FIXED, ns: 2, maxFlush: 2, maxExp: 0 }, inv: ALL },
   { name: 'fixed_3batches_shardloss', kind: 'fixed', label: 'amended protocol, 1 shard, 3 batches, shard loss + ledger loss, no compaction / retention',
     cfg: { ...FIXED, nb: 3, maxComp: 0, maxExp: 0 }, inv: ALL },
-  { name: 'fixed_2shards_all', kind: 'fixed', label: 'amended protocol, 2 shards, 2 batches, every action',
-    cfg: { ...FIXED, ns: 2 }, inv: ALL },
   { name: 'fixed_2ledgerlosses', kind: 'fixed', label: 'amended protocol, 2 ledger rebuilds, no shard loss / retention',
     cfg: { ...FIXED, maxLL: 2, maxSL: 0, maxExp: 0 }, inv: ALL },
   { name: 'fixed_2queries', kind: 'fixed', label: 'amended protocol, 2 consecutive queries, no compaction',

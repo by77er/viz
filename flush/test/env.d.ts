@@ -7,6 +7,7 @@ declare namespace Cloudflare {
     SHARD: DurableObjectNamespace<import('../../shard/src/shard').Shard>
     LEDGER: DurableObjectNamespace<import('../../ledger/src/ledger').Ledger>
     BUCKET: R2Bucket
+    CONFIG: KVNamespace
     CELL: string
   }
 }

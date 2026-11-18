@@ -2,12 +2,15 @@ import { WorkerEntrypoint } from 'cloudflare:workers'
 import { TENANT_ID } from '../../contracts/ledger'
 import { createEngine } from '../../engine/wasm/js/index'
 import wasm from '../../engine/wasm/js/viz_engine.wasm'
+import { consumeDeadLetters, consumeFlushBatch } from './consumer'
 import { type FlushEnv, type FlushResult, flushTenant } from './flush'
 
 // For now the shard and the ledger ship in the same script (see wrangler.jsonc).
 export { Shard } from '../../shard/src/shard'
 export { Ledger } from '../../ledger/src/ledger'
 export * from './flush'
+export * from './consumer'
+export * from './sweep'
 export { dataFileKey } from './keys'
 
 /** One engine per isolate. Its linear memory is reused across segments and requests. */
@@ -18,6 +21,8 @@ export const engine = createEngine(wasm)
  *
  *   RPC    `env.FLUSH.flushTenant(tenant, shardName)` over a service binding
  *   fetch  `POST /flush` with a JSON body `{ "tenant": "...", "shard": "..." }`
+ *   queue  `{tenant, shard}` messages from the flush queue (src/consumer.ts); a queue whose
+ *          name ends in `-dlq` is taken to be its dead-letter queue
  *
  * This Worker has no public route. The tenant here is not a claim made by a sender: the
  * caller is viz itself (the seal notification or the sweep, see the README), naming a
@@ -26,6 +31,11 @@ export const engine = createEngine(wasm)
 export class Flush extends WorkerEntrypoint<FlushEnv> {
   flushTenant(tenant: string, shardName: string): Promise<FlushResult> {
     return flushTenant(this.env, engine, tenant, shardName)
+  }
+
+  async queue(batch: MessageBatch<unknown>): Promise<void> {
+    if (batch.queue.endsWith('-dlq')) await consumeDeadLetters(batch, this.env)
+    else await consumeFlushBatch(batch, this.env, engine)
   }
 
   override async fetch(req: Request): Promise<Response> {

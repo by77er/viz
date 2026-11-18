@@ -64,6 +64,8 @@
 | `fixed_1shard_variants` amended protocol, 2 encoder variants (double flush with different bytes) | Safety | holds (exhaustive) | 1872496 / 13614670 | 38 | 102.1s |
 | `fixed_1shard_3batches` amended protocol, 1 shard, 3 batches, no shard loss / retention | Safety | holds (exhaustive) | 4088964 / 30737756 | 44 | 198.1s |
 | `fixed_2shards` amended protocol, 2 shards, 2 batches | Safety | holds (exhaustive) | 2821410 / 14689338 | 42 | 115.4s |
+| `fixed_3batches_shardloss` amended protocol, 1 shard, 3 batches, shard loss + ledger loss, no compaction / retention | Safety | holds (exhaustive) | 7312626 / 42169510 | 41 | 631.7s |
+| `fixed_2ledgerlosses` amended protocol, 2 ledger rebuilds, no shard loss / retention | Safety | holds (exhaustive) | 367455 / 2398388 | 40 | 40s |
 | `fixed_2queries` amended protocol, 2 consecutive queries, no compaction | Safety | holds (exhaustive) | 715474 / 4814954 | 37 | 33.5s |
 | `fixed_timing_no_restart` liveness proxy L2: with attempt < retainRecordedMs and no storage loss, no attempt is ever refused | L2_NoRestart | holds (exhaustive) | 391137 / 2848430 | 36 | 23.3s |
 
