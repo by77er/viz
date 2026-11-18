@@ -76,7 +76,7 @@ for (const [name, file, from, to] of mutants) {
   let failed = false
   let detail = ''
   try {
-    execSync('npx vitest run', { stdio: 'pipe', env: { ...process.env, NO_COLOR: '1' } })
+    execSync('npx vitest run --maxWorkers=2', { stdio: 'pipe', env: { ...process.env, NO_COLOR: '1' } })
   } catch (e) {
     failed = true
     const out = String(e.stdout) + String(e.stderr)

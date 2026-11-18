@@ -167,7 +167,8 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
 npm install
 npm test            # 55 tests in 7 files, in workerd, against the real Shard
 npm run typecheck   # clean
-npm run mutants     # 35 mutants, all killed (26 original + 9 for contracts v2)
+npm run mutants     # 35 mutants, all killed (26 original + 9 for contracts v2); re-run 2026-11-18 after
+                    # mutant 35's pattern was updated for the series-limit change: 35 of 35
 npm run bench       # decode throughput, in Node
 npm run fixtures    # regenerate test/fixtures.json with protobufjs + snappyjs
 ```

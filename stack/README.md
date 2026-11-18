@@ -211,9 +211,11 @@ pointer field).
 ### Mutation checks (`node scripts/mutants.mjs all`)
 
 Each mutant is one text replacement in the source, run against the suite that should
-notice, and restored. Last run: **57 of 57 killed** (trigger 14, compaction 12, deletion 15,
-limit 16). `flush/scripts/mutants.mjs` (18 of 18) was re-run after flush's PUTs were made
-parallel.
+notice, and restored. Last run, on the final code of this review: **73 of 73 killed**
+(trigger 18, compaction 13, precedence 9, deletion 17, limit 16), each by a named failing
+test (cargo failures are now reported by test name). The previous engineer's 57 were also
+re-run unchanged before this review's changes: 57 of 57. `flush/scripts/mutants.mjs`: 18 of
+18 on the final code; `edge/scripts/mutants.mjs`: 35 of 35.
 
 | Part | Mutant | Killed by |
 |---|---|---|

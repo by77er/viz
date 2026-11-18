@@ -138,7 +138,7 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
   const graceMs = opts.graceMs ?? DEFAULT_ORPHAN_GRACE_MS
   // A compaction output is protected only by its age: a step gives up before `replace`
   // once it has run `maxStepMs`, so an output at least twice that old cannot be in flight.
-  const compactGraceMs = graceMs
+  const compactGraceMs = Math.max(graceMs, 2 * (opts.maxCompactStepMs ?? DEFAULT_POLICY.maxStepMs))
   const out: OrphanResult = { listed: 0, deleted: [], kept: [] }
 
   // 1. List first. Whatever is written after this is not a candidate in this run.

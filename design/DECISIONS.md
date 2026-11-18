@@ -407,7 +407,7 @@ rewrites across flushes and compactions always read back as the latest write
 unmerged (then: hour buckets by admission, or per-row precedence), or two streams can
 write the same series concurrently (then admission order is not write order).
 
-## D18. Monitoring viz with viz: one deployment, for performance (proposed)
+## D23. Monitoring viz with viz: one deployment, for performance (proposed)
 
 **Status.** Proposed 2026-11-18 as a future goal and revised the same day on the owner's
 direction; not built. Details in `design/SELF-MONITORING.md`.
