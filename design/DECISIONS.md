@@ -33,6 +33,8 @@ minutes. viz's own queries never read Iceberg metadata.
 second-level freshness. Decoupling means a slow, costly or broken catalog cannot lose data,
 delay queries or stall ingest, and the publication can be checked against the ledgers.
 
+**Accepted by the project owner on 2026-11-18** as a worthwhile compromise.
+
 **Cost.** Two metadata forms exist. The ledger is authoritative; the scrubber proves the
 Iceberg view equals it.
 

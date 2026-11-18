@@ -82,15 +82,15 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
   <div class="status">
     <span><b>12</b> research tracks</span>
     <span><b>3</b> independent reviews</span>
+    <span><b>1</b> benchmark run</span>
     <span><b>0</b> lines of product code</span>
-    <span><b>0</b> measurements</span>
   </div>
 </header>
 
 <section class="col">
   <div class="notice">
     <h3>Read this first</h3>
-    <p>Nothing here has been built or benchmarked. Every latency and cost figure is a model, printed as a range. My first cost table was wrong: a reviewer recomputed it against the design as drawn and the small-deployment figure went from $5.20 to $5–15, the team figure from $250 to $400–800. The first experiment in the plan decides where in those ranges reality sits.</p>
+    <p>The product has not been built, and nothing has run on Cloudflare. One thing has been measured in a sandbox: the engine-language choice, below. Every other latency and cost figure is a model, printed as a range. My first cost table was wrong: a reviewer recomputed it against the design as drawn and the small-deployment figure went from $5.20 to $5–15, the team figure from $250 to $400–800. The first experiment in the plan decides where in those ranges reality sits.</p>
   </div>
 </section>
 
@@ -219,6 +219,26 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
 </section>
 
 <section>
+  <div class="col"><h2>First measurement: Rust or JavaScript for the engine</h2>
+  <p>The same encode and the same <code>sum(rate(metric[5m]))</code> query were implemented both ways over 1.92 million samples. Each side was tuned separately, each read the other's files, and all variants returned identical results to 12 digits.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>Workload</th><th>JavaScript, tuned</th><th>Rust as WASM, tuned</th><th>Ratio</th></tr></thead>
+    <tbody>
+      <tr><td>Encode 1.92M rows to Parquet</td><td class="n">1,030 ms</td><td class="n">240 ms</td><td class="n">4.3×</td></tr>
+      <tr><td>Query one metric (one row group decoded)</td><td class="n">37 ms</td><td class="n">4.8 ms</td><td class="n">7.7×</td></tr>
+      <tr><td>Query all counters (full scan)</td><td class="n">291 ms</td><td class="n">32 ms</td><td class="n">9.0×</td></tr>
+      <tr><td>Full scan on a file encoded to favour JavaScript</td><td class="n">178 ms</td><td class="n">45 ms</td><td class="n">4.0×</td></tr>
+      <tr><td>Memory during a query</td><td class="n">110–130 MB process RSS over idle</td><td class="n">18–20 MB WASM memory</td><td class="n"></td></tr>
+      <tr><td>Code size, gzip</td><td class="n">0.11 MB</td><td class="n">0.80 MB</td><td class="n"></td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>The gap comes mostly from 64-bit integer decoding, which JavaScript has to route through BigInt. On the Rust side, tuning mattered as much as the language: keeping metric names dictionary-encoded and enabling WASM SIMD took the full scan from 73 ms to 32 ms.</p>
+    <p class="muted">Limits of this result: sandbox wall time, not billed CPU on Cloudflare. The local Workers runtime does not enforce the 128 MB limit. Both sides used snappy; the zstd build for WASM is untested. The Rust module holds one hard-coded query, so a full engine will be larger than 0.8 MB. I did not write a custom JavaScript decoder, which could narrow the integer gap.</p>
+  </div>
+</section>
+
+<section>
   <div class="col"><h2>Cost and targets</h2>
   <p>List prices, recomputed by a reviewer from the research model. Hosted comparators in the research sit at more than ten times the team figure.</p></div>
   <div class="tw"><table>
@@ -287,8 +307,8 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
   <h2>Decisions for you</h2>
   <ol>
     <li><strong>Who is the first user?</strong> I designed for deploying into your own account, with hosting unrelated tenants as an extension. If hosted is the goal, shared shard pools move from later to first.</li>
-    <li><strong>Iceberg a few minutes behind.</strong> External engines see data after the publisher runs; viz itself is current to seconds. If Iceberg must be the live write path, the design goes back toward draft 2 and its problems.</li>
-    <li><strong>Rust core.</strong> It buys one engine in three places and deterministic testing. It costs a harder build and an unproven fit in 128 MB. TypeScript throughout is the alternative.</li>
+    <li><strong>Iceberg a few minutes behind.</strong> Decided: accepted.</li>
+    <li><strong>Rust core.</strong> Decided: Rust, supported by the benchmark above. Still to check on Cloudflare itself: the enforced 128 MB limit, billed CPU, and a zstd build.</li>
     <li><strong>Managed catalog second.</strong> I propose writing Iceberg metadata straight to R2 first and adding Cloudflare's managed catalog once a spike shows a Worker can commit to it reliably.</li>
     <li><strong>Order of signals.</strong> Metrics, then traces and rules, then logs and detection.</li>
   </ol>
@@ -302,6 +322,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
     design/DECISIONS.md <span>— each decision, its alternatives, and what would change it</span><br>
     design/VERIFICATION.md <span>— invariants, test layers, experiments, evidence per milestone</span><br>
     design/REVIEW.md <span>— findings and what changed; raw reports in design/reviews/</span><br>
+    bench/README.md <span>— the engine benchmark, its tuning log and how to rerun it</span><br>
     research/01 … 12 <span>— one file per research track, about 100,000 words in total</span>
   </div>
 </section>
