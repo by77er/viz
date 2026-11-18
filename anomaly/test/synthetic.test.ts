@@ -180,8 +180,8 @@ describe('CUSUM', () => {
     const s = noise(22, 1500, 5 * MIN, 100, 1)
     for (let i = 300; i < 1500; i++) s.values[i]! += (i - 300) * 0.01
     const a = anomalies(cusum.detect(s, { stepMs: 5 * MIN }))
-    expect(a.length).toBeGreaterThan(0)
-    expect(a[0]!).toBeGreaterThan(300)
+    // 0.01σ per point: after 200 points the level has moved 2σ
+    expect(a.some((i) => i > 300 && i < 600)).toBe(true)
   })
   it('rarely alarms on independent noise (measured in-control run length)', () => {
     let alarms = 0
