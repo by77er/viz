@@ -1,0 +1,33 @@
+[package]
+name = "viz-storage"
+version = "0.1.0"
+edition = "2021"
+description = "viz storage engine: VZB1 batches, Parquet flush files, select and compaction merge. No I/O."
+publish = false
+
+[lib]
+name = "viz_storage"
+crate-type = ["rlib"]
+
+[dependencies]
+parquet = { version = "60", default-features = false, features = ["snap"] }
+bytes = "1"
+regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
+
+[dev-dependencies]
+proptest = "1"
+
+# A tiny cdylib that links the whole public API, used only to measure the WASM size:
+#   cargo build --release --target wasm32-unknown-unknown --example wasm_probe
+[[example]]
+name = "wasm_probe"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]

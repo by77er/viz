@@ -1,0 +1,27 @@
+[package]
+name = "viz-promql"
+version = "0.1.0"
+edition = "2021"
+description = "PromQL evaluator for viz: pure, no I/O, runs natively and in WASM"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+promql-parser = "0.11"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ryu = "1"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[workspace]

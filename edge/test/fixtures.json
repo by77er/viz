@@ -1,0 +1,7257 @@
+{
+ "generatedWith": "protobufjs + snappyjs + node:zlib (scripts/gen-fixtures.mjs)",
+ "t0": 1780000000000,
+ "prw": {
+  "snappy": "36sD8FIKoAEKHwoIX19uYW1lX18SE2h0dHBfcmVxdWVzdHNfdG90YWwKGwoHaGFuZGxlchIQL2FwaS92MS90aGluZ3MvMAoZCghpbnN0YW5jZRINMTAuMAEC8D46ODA4MAoMCgNqb2ISBXN2Yy0wCgYKAW4SATAKFAoEem9uZRIMWsO8cmljaC3wn4yhEgcQgJCSguczEhAJAAAFAjCAEJiFk4LnMwq1AQotHaMAIS6jAFRfZHVyYXRpb25fc2Vjb25kc19zdW0KarEAADFKsQAIMS4xRrEAADENsQgxChINsSwKZXUtd2VzdC0xYRIRpgz4PxCBEbgAVQUBDNW/EJkJuAC3/rgALrgAADJKuAAIMi4yRrgAADINuAAyWmkBEboMCEAQgja6AAzlvxCaCboAp/YVAgAzSqwACDMuM0asAAAzDawAM3JkAQwSQBCDEapFGhAA8L8Qmwmq/mQBMmQBADRKuAAIMC40RrgAADQNuAA0emQBDBhAEIQRukUdEFX1vxCcCbr+1gIy1gIANUq6AAgxLjVGugBxhwA1cnIBDB5AEIURuASrqgEBDPq/EJ0JuACp9hwCADZKqgAIMi42RqoAcYAANnpkAQwiQBCGEaxJHgwAwBCeCaz+ZAEyZAEAN0q6AAQzLkrrBHGCADdyZAEMJUAQhxG4KWQMAsAQnwm4/tYCMtYCADhKuAAAME7yBHGOADh6cgEMKEAQiBG6SdYMBcAQoAm6+joEADlKrAAAMU7mBHGCADlyZAEMK0AQiRGqSRwMCMAQoQmqALnCngUEHAr1BwAROgcHBDEwSrkAADJO8wQIMAoH4QgEAjFeCQexoAwuQBCKEbxJIAwKwBCiCbzGIAJuvABOEwcAM073BAAxEbxyFAcQgDBAEIsRukkgDA3AEKMJugCrij4EbqwATgcHADBO6QQAMhGsfggHDDJAEIwRrkkkDBDAEKQJrv5oATZoAU4XBwAxTvsEADMRvHIYBxCAM0AQjRG6KWgMEcAQpQm6/t4CNt4CThkHADJO+wQANBG6fhoHDDVAEI4RvEneDBLAEKYJvI5iBm4kAk4NBwAzTvEEdYxyDgcQgDZAEI8RrEkiDBTAEKcJrP5oATZoAU4dBwAwTv8EdYp+HgcMOEAQkBG8SSQMFcAQqAm8ALbCAgVqWAtOAQUAMU4BBXWZch8HEIA5QBCREblJIQwWwBCpCbkAqopFBGqrAE7wBAAyTvAEdYh+EgcMO0AQkhGtSSIMGMAQqgmt/mYBMmYBTv8EADNO/wR1iXIhBxCAPEAQkxG5SR8MGcAQqwm5ALj+HwIuHwJO/AQAME78BHGUADJ+IAcMPkAQlBG7SSEMGsAQrAm7AKj2IQJO7wQAMU7vBHGHADJ2EQcMP0AQlRGrSR8MHMAQrQmr/mYBMmYBTvoEADJO+gRxhQAyeh4HEIBAQBCWEbtJIQwdwBCuCbv+2gIy2gJO+wQAM077BHGVADJyHQcQQEFAEJcRuUkfDB7AEK8JufpABE4JDAAwTusEcYUAMn4OBwxCQBCYEa1JIQwgwBCwCa3+ZgEyZgFODAwAMU77BHWHchsHEMBCQBCZEbkpZgwgwBCxCbn+2gIy2gJOGQwAMk75BHWTehoHEIBDQBCaEbtJ2gwhwBCyCbv+gghODQcAM07uBHWIcg0HEEBEQBCbEaxJIAwiwBCzCaz+ggg2gghOHAcAME77BHWHfhwHDEVAEJwRvEkjDCLAELQJvP5gCzZgC04dB1LbE3WYch0HEMBFQBCdEbpJIgwjwBC1Cbr+yAxOEAdSzxNxiQAzehAHEIBGQBCeEa5JJAwkwBC2Ca7+aAE2aAFOHwdS3xNxjAAzch8HEEBHQBCfEbpJIgwkwBC3Cbr+3gI23gJOIAdS4RNxmAAzeiAHEABIQBCgEbxJJAwlwBC4Cbz+RgROEwdS1RNxjAAzchMHEMBIQBChEaxJIgwmwBC5Caz+rQUyrQVO/wRS5BNxiQAzeiEHEIBJQBCiEbtJIwwmwBC6Cbv+IQcyIQcAMUrIEVLlE3WYciEHEEBKQBCjEblJIAwnwBC7Cbn6hwhO7wRS2BN1h3oTBxAAS0AQpBGtSSEMKMAQvAmt/mYBMmYBTv4EUucTdYhyIAcQwEtAEKURuUkfDCjAEL0Juf7aAjLaAk77BFLnE3WTeh8HEIBMQBCmEbtJIQwpwBC+Cbv6xwxO7gQAM07tCXWHchAHEEBNQBCnEatJHwwqwBC/Cav+ZgEyZgFO+QRS5RNxhQA0eh0HEABOQBCoEbtJIQwqwBDACbv+2gIy2gJOHAxS5BNxlQA0chwHEMBOQBCpEblJHwwrwBDBCbn6QARODAxS1RNxhQA0eg0HEIBPQBCqEa1JIQwswBDCCa3+ZgEyZgFODgxS4hNxhwA0choHECBQQBCrEblJHwwswBDDCbn+ggg2gghOGwdS4hNxlAA0fhsHDFBAEKwRvEkiDC3AEMQJvP6CCE4OB1LVE3WJcg4HEOBQQBCtEaxJIQwuwBDFCaz+aAE2aAFOHQdS5BN1iHodBxBAUUAQrhG8SSQMLsAQxgm8/mALNmALTh4HUuUTdZlyHgcQoFFAEK8RukkiDC/AEMcJuv7IDE4RB1LYE3WKehEHEABSQBCwEa5JJAwwwBDICa7+aAE2aAFOIAdS5xN1jHIgBxBgUkAQsRG6KWgMMMAQyQm6/t4CNt4CTiEHUugTcZgENTB21B0QwFJAELIRvEneDDDAEMoJvPqHCE7zBAAzTtoTcYsANXITBxAgU0AQsxGrSSEMMcAQywmr/ocIMocITv4EUugTcYgANX4hBwxTQBC0EbtJIgwxwBDMCbv+IQcyIQdO/wRS6BNxlwA1ciEHEOBTQBC1EblJHwwxwBDNCbn6hwhO7gRS2hNxhgA1ehIHEEBUQBC2Ea1JIQwywBDOCa3+ZgEyZgFO/QRS5xN1h3IfBxCgVEAQtxG5SR8MMsAQzwm5/toCMtoCTvoEUuYTdZN6HgcQAFVAELgRu0khDDLAENAJu/pABE7tBFLXE3WHcg8HEGBVQBC5EatJHwwzwBDRCav+ZgEyZgFODAxS5BN1hXocBxDAVUAQuhG7SSEMM8AQ0gm7/toCMtoCThwMUuMTdZVyGwcQIFZAELsRuUkfDDPAENMJufpABE4MDFLUE3GFADZ6DAcQgFZAELwRrUkhDDTAENQJrf6CCDaCCAAwSm4SUuITcYgANnIbBxDgVkAQvRG6SSAMNMAQ1Qm6/oIINoIIThwHUuMTcZUENjJ2gggQQFdAEL4RvEkjDDTAENYJvP7IDE4PB1LWE3GKADZyDwcQoFdAEL8RrEkiDDXAENcJrP5oATZoAU4eB1LlE3GJADZ6HgcQAFhAEMARvEkkDDXAENgJvP7eAjbeAk4fB1LmE3Wach8HEGBYQBDBEbpJIgw1wBDZCbr+yAxOEgdS2RN1inoSBxDAWEAQwhGuSSQMNsAQ2gmu/mgBNmgBTiEHUugTdYxyIQcQIFlAEMMRukkiDDbAENsJuv4hBzIhB07/BFLoE3WXeiEHEIBZQBDEEbtJIww2wBDcCbv6hwhO8gRS2hN1inITBxDgWUAQxRGrSSAMN8AQ3Qmr/mYBMmYBTv0EUugTcYcAN3ohBxBAWkAQxhG7SSEMN8AQ3gm7/ocIMocITv4EUugTcZYAN3IgBxCgWkAQxxG5SR8MN8AQ3wm5+ocITu0EUtkTcYUAN3oRBxAAW0AQyBGtSSEMOMAQ4Amt/mYBMmYBTvwEUuYTcYcAN3IeBxBgW0AQyRG5SR8MOMAQ4Qm5/toCMtoCTvkEUuUTcZMAN3odBxDAW0AQyhG7SSEMOMAQ4gm7+kAETg4MUtYTdYdyDgcQIFxAEMsRq0kfDDnAEOMJq/5mATJmAU4MDFLjE3WFehsHEIBcQBDMEbtJIQw5wBDkCbv+2gIy2gJOHAxS4hN1lXIaBxDgXEAQzRG5SR8MOcAQ5Qm5/oIITg0HUtQTdYZ6DQcQQF1AEM4RrkkiDDrAEOYJrv6CCDaCCE4cB1LjE3WJchwHEKBdQBDPEbpJIQw6wBDnCbr+YAs2YAtOHQdS5BNxlgA4eh0HEABeQBDQEbxJJAw6wBDoCbz+yAxOEAdS1xNxiwA4chAHEGBeQBDREaxJIgw7wBDpCaz+aAE2aAFOHwdS5hNxigA4eh8HEMBeQBDSEbxJJAw7wBDqCbz+3gI23gJOIAdS5xNxmgA4ciAHECBfQBDTEbpJIgw7wBDrCbr+RgROEwdS2hNxigA4ehMHEIBfQBDUEa5JJAw8wBDsCa7+rQUyrQVOAQVS6BN1i3IhBxDgX0AQ1RG5SSEMPMAQ7Qm5/iEHMiEHTv4EUugTdZZ6IQcQIGBAENYRu0kiDDzAEO4Ju/qHCE7xBFLaE3WJchMHEFBgQBDXEatJHww9wBDvCav+ZgEyZgFO/ARS6BN1hnogBxCAYEAQ2BG7SSEMPcAQ8Am7/toCMtoCTv0EUucTdZVyHwcQsGBAENkRuUkfDD3AEPEJufrHDE7sBFLYE3GFADl6EAcQ4GBAENoRrUkhDD7AEPIJrf5mATJmAU77BFLlE3GHADlyHQcQEGFAENsRuUkfDD7AEPMJuf7aAjLaAk4aDFLkE3GTADl6HAcQQGFAENwRu0khDD7AEPQJu/pABE4ODFLVE3GHADlyDQcQcGFAEN0Rq0kfDD/AEPUJq/5mATJmAU4MDFLiE3GFADl6GgcQoGFAEN4Ru0khDD/AEPYJu/6CCDaCCE4bB1LiE3WWchsHENBhQBDfEbpJIAw/wBD3Cbr+gghODgdS1RN1h3oOBxAAYkAQ4BGuSSMMQMAQ+Amu/mgBNmgBTh0HUuQTdYpyHQcQMGJAEOERuiVoECpAwBD5Cbr+YAs2YAtOHgdS5RN1l3oeBxBgYkAQ4hG8Sd4MQMAQ+gm8/sgMThEHUtgTdYxyEQcQkGJAEOMRrEUiEIBAwBD7CawAusLHOL5cPFLnEwgwCggO6D8IAzEweiEHEMBiQBDkEb1FJRCqQMAQ/Am9xgIFbr0ATiIHUukTADEVvXIjBxDwYkAQ5RG7RSQQ1UDAEP0Ju45IBGqlO07zBFLcEwAyFax6FgcQIGNAEOYRrkUmEABBwBD+Ca7GSARqvABOAwVS6xMAMxW8ciUHEFBjQBDnEbpFIxAqQcAQ/wm6xkgEaroATgEFUuwTADQVunomBxCAY0AQ6BG8RSQUVUHAEICGEtpJjkgEaq4ATvUEUt8TeY1yGAcQsGNAEOkRrEUiEIBBwBCBCaz+aAEyaAFOAQVS7RN5inomBxDgY0AQ6hG8RSQQqkHAEIIJvP7eAjLeAk4jDFLtE3maciYHEBBkQBDrEbpFIhDVQcAQgwm6+kYETvIEUt8TeYp6GAcQQGRAEOwRrkUkEABCwBCECa7+aAEyaAFOFwxS7RN5jHImBxBwZEAQ7RG6RSIQKkLAEIUJuv7eAjLeAk4kDFLtE3WYADF6JQcQoGRAEO4RvEUkEFVCwBCGCbz6RgROGQxS3xN1jHYARxDQZEAQ7xGsRSIQgELAEIcJrP6OCDaOCE4lB1LuE3WLgg9HDGVAEPARvUUlEKpCwBCICb3+jgg2jghOJgdS8BN1nHYQRxAwZUAQ8RG7RSQQ1ULAEIkJuwCsihJCbjsJThkHUuQTdY1+A0cQYGVAEPIRr0UnEABDwBCKCa/+agE2agFOKAdS9BN5kHIoBxCQZUAQ8xG7RSUQKkPAEIsJu/7iAjbiAk4pB1L2E3mdeikHEMBlQBD0Eb1FJxBVQ8AQjAm9jj4TbicCThwHUuoTeZFyHAcQ8GVAEPURrUUlEIBDwBCNCa3+agE2agFOKwdS+hN5j3orBxAgZkAQ9hG9RScQqkPAEI4Jvf4rBzIrB04IBVL7E3mecisHEFBmQBD3EbpFJBDVQ8AQjwm6+pMITvcEUu4TdY1+C0cQgGZAEPgRrkUlEABEwBCQCa7+aAEyaAFOBgVS/RN1jnYaRxCwZkAQ+RG6RSIQKkTAEJEJuv6TCDKTCE4DBVL+E3WZADJ6Tw4Q4GZAEPoRvEUkEFVEwBCSCbz6kwhO9gRS8BN1jHYORxAQZ0AQ+xGsRSIQgETAEJMJrP5oATJoAU4BBVL+E3WKfh1HEEBnQBD8EbxFJBCqRMAQlAm8/t4CMt4CTgIFUv4TeZpyJwcQcGdAEP0RukUiENVEwBCVCbr6RgROHQxS8BN5inoYBxCgZ0AQ/hGuRSQQAEXAEJYJrv5oATJoAU4fDFL+E3mMciUHENBnQBD/EbpFIhAqRcAQlwm6/t4CMt4CTisMUv4TeZh6JAcYAGhAEICRkhb5WkUkEFVFwBCYCbz+jghOFwdS8BN5jXIXBxAwaEAQgRGtRSMQgEXAEJkJrf6OCDaOCE4mB1L/E3WMfiFHEGBoQBCCEb1FJhCqRcAQmgm9/nALNnALTicHUgAUdZ12IkcQkGhAEIMRu0UlENVFwBCbCbv+2gxOGgdS8xN1jn4VRxDAaEAQhBGvRScQAEbAEJwJr/5qATZqAU4pB1ICFHWRdiRHEPBoQBCFEbtFJRAqRsAQnQm7/uICNuICTioHUgMUdZ1+JkcQIGlAEIYRvUUnEFVGwBCeCb3+TAROHQdS9hN5kXIdBxBQaUAQhxGtRSUQgEbAEJ8Jrf61BTK1BU4GBVIEFHmOeisHEIBpQBCIEbxFJhCqRsAQoAm8/isHMisHTgcFUgQUeZ1yKwcQsGlAEIkRukUjENVGwBChCbr6kwhO9gRS9hN5jHodBxDgaUAQihGuRSQQAEfAEKIJrv5oATJoAU4FBVIEFHmNcioHEBBqQBCLEbpFIhAqR8AQowm6/t4CMt4CTgIFUgMUdZh+LUcQQGpAEIwRvEUkEFVHwBCkCbz62QxO9QRS9BN1jAA0coIcEHBqQBCNEaxFIhCAR8AQpQms/mgBMmgBTgAFUgEUdYp+L0cQoGpAEI4RvEUkEKpHwBCmCbz+3gIy3gJOLQxSABR1mnYwRxDQakAQjxG6RSIQ1UfAEKcJuvpGBE4dDFLxE3WKfiJHEABrQBCQEa5FJBAASMAQqAmu/mgBMmgBTh8MUv4TeYxyJAcQMGtAEJERukUiECpIwBCpCbr+jgg2jghOJQdS/hN5mXolBxBga0AQkhG9RSUQVUjAEKoJvf6OCE4YB1LxE3mOchgHEJBrQBCTEa1FJBCASMAQqwmt/moBNmoBTicHUgAUeY16JwcQwGtAEJQRvUUnEKpIwBCsCb3+cAs2cAtOKAdSARR5nnIoBxDwa0AQlRG7RSUQ1UjAEK0Ju/7aDE4bB1L0E3WPfidHECBsQBCWEa9FJxAAScAQrgmv/moBNmoBTioHUgMUdZF2N0cQUGxAEJcRu0UlECpJwBCvCbv+4gI24gJOKwdSBBR1nYI5RwxsQBCYEb1FJxBVScAQsAm9+pMITvoEUvYTdZB2LEcQsGxAEJkRrEUkEIBJwBCxCaz+kwgykwhOBQVSBBR1jX47RxDgbEAQmhG8RSUUqknAELKGEq0j/isHMisHTgYFUgQUeZxyKwcUEG1AEJuRLkgTENVJwBCzCbr6kwhO9QRS9hN5i3ocBxBAbUAQnBGuRSQQAErAELQJrv5oATJoAU4EBVIDFHmMcikHEHBtQBCdEbpFIhAqSsAQtQm6/t4CMt4CTgEFUgIUeZh6KAcQoG1AEJ4RvIlGDErAELYJvPpGBE70BFLzE3mMchkHENBtQBCfEaxFIhCASsAQtwms/mgBMmgBTh0MUgAUdYp+QUcQAG5AEKARvEUkEKpKwBC4Cbz+3gIy3gJOLQxS/xN1mgA2ck8OEDBuQBChEbpFIhDVSsAQuQm6+kYETh0MUvATdYp+M0cQYG5AEKIRrkUkEABLwBC6Ca7+jgg2jghOJQdS/hN1jXZCRxCQbkAQoxG7RSMQKkvAELsJu/6OCDaOCE4mB1L/E3WafkNHEMBuQBCkEb1FJhBVS8AQvAm9/toMThkHUvITeY9yGQcQ8G5AEKURrUUlEIBLwBC9Ca3+agE2agFOKAdSARR5jnooBxAgb0AQphG9RScQqkvAEL4Jvf7iAjbiAk4pB1ICFHmfcikHEFBvQBCnEbtFJRDVS8AQvwm7/toMThwHUvUTeY96HAcQgG9AEKgRr0UnEABMwBDACa/+agE2agFOKwdSBBR5kXIrBxCwb0AQqRG7RSUQKkzAEMEJu/4rBzIrB04GBVIEFHWcfktHEOBvQBCqEbxFJhBVTMAQwgm8+pMITvkEADNOp2h1j3Y+RxAIcEAQqxGsRSMQgEzAEMMJrP5oATJoAU4EBVIEFHWMfk1HECBwQBCsEbxFJBCqTMAQxAm8/pMIMpMITgUFUgQUdZt2TkcQOHBAEK0RukUiENVMwBDFCbr6kwhO9ARS9RN1igA3eu4xEFBwQBCuEa5FJBAATcAQxgmu/mgBMmgBTgMFUgIUeYxyKAcQaHBAEK8RukUiECpNwBDHCbr+3gIy3gJOAAVSARR5mHonBxCAcEAQsBG8RSQQVU3AEMgJvPpGBE4fDFLyE3mMchgHEJhwQBCxEaxFIhCATcAQyQms/mgBMmgBTh0MUv8TeYp6JQcQsHBAELIRvEUkEKpNwBDKCbz+3gIy3gJOLQxS/hN5mnIkBxDIcEAQsxG6RSIQ1U3AEMsJuv6OCE4XB1LwE3WLfkVHEOBwQBC0Ea9FJRAATsAQzAmv/o4INo4ITiYHUv8TdY4AOHJDDhD4cEAQtRG7RSQQKk7AEM0Ju/5wCzZwC04nB1IAFHWbflVHEBBxQBC2Eb1FJxBVTsAQzgm9/toMThoHUvMTdZB2SEcUKHFAELeRGvMTRSUQgE7AEM8Jrf5qATZqAU4pB1ICFHWPfldHEEBxQBC4Eb1FJxCqTsAQ0Am9/uICNuICTioHUgMUeZ9yKgcQWHFAELkRu0UlENVOwBDRCbv+TAROHQdS9hN5j3odBxBwcUAQuhGvRScQAE/AENIJr/61BTK1BU4IBVIEFHmQcisHEIhxQBC7EbpFJBAqT8AQ0wm6/isHMisHTgUFUgQUeZt6KwcQoHFAELwRvEUlEFVPwBDUCbz6kwhO+ARS9hN5jnIdBxC4cUAQvRGsRSIQgE/AENUJrP5oATJoAU4DBQAyTqB3dYt+X0cQ0HFAEL4RvEUkEKpPwBDWCbz+3gIy3gJOBAVSAxR1mnZgRxDocUAQvxG6RSIQ1U/AENcJuvrZDE7zBFL0E3WKflNHEAByQBDAEa5FJBAAUMAQ2Amu/mgBMmgBTgIFUgEUdYx2YkcQGHJAEMERuiVoEBVQwBDZCbr+3gIy3gJOKwwAMk6kd3WYfmNHEDByQBDCEbxF3hAqUMAQ2gm8+kYETh8MUvETeYxyFwcQSHJAEMMRrEUiEEBQwBDbCaz+aAEyaAFOHQwAME6kd3mKeiQHEGByQBDEEbxFJBBVUMAQ3Am8/o4INo4ITiUHUv4TeZtyJQcQeHJAEMURu0UjEGpQwBDdCbv+jghOGAdS8RN5jHoYBxCQckAQxhGvRSYQgFDAEN4Jr/5qATZqAU4nB1IAFHmPcicHEKhyQBDHEbtFJRCVUMAQ3wm7/nALNnALTigHUgEUcZwAMoJmRwxyQBDIEb1FJxCqUMAQ4Am9/toMThsHUvQTcZEAMnZYRxDYckAQyRGtRSUQwFDAEOEJrf5qATZqAU4qB1IDFHGPADJ+Z0cQ8HJAEMoRvUUnENVQwBDiCb3+4gI24gJOKwdSBBRxnwAydmhHEAhzQBDLEbtFJRDqUMAQ4wm7+pMITvgEUvYTcY4AMn5aRxAgc0AQzBGuRSYQAFHAEOQJrv6TCDKTCE4HBVIEFHmPcisHEDhzQBDNEbpFIxAVUcAQ5Qm6/isHMisHTgQFUgQUeZp6KwcQUHNAEM4RvEUkECpRwBDmCbz6kwhO9wRS9hN5jXIcBxBoc0AQzxGsRSIQQFHAEOcJrP5oATJoAU4CBVIDFHmKeikHEIBzQBDQEbxFJBBVUcAQ6Am8/t4CMt4CTgMFUgIUeZpyKAcQmHNAENERukUiEGpRwBDpCbr6RgRO8gRS8xN1in5aRxCwc0AQ0hGuRSQQgFHAEOoJrv5oATJoAU4fDFIAFHWMdmhHFMhzQBDTkRoAFEUiEJVRwBDrCbr+3gIy3gJOKwxS/xN1mH5nRxDgc0AQ1BG8RSQQqlHAEOwJvPpGBE4fDFLwE3WMdlhHEPhzQBDVEaxFIhDAUcAQ7Qms/o4INo4ITiUHUv4TdYsAMXqRHBAQdEAQ1hG9RSUQ1VHAEO4Jvf6OCDaOCE4mB1L/E3mcciYHECh0QBDXEbtFJBDqUcAQ7wm7/toMThkHUvITeY16GQcQQHRAENgRr0UnEABSwBDwCa/+agE2agFOKAdSARR5kHIoBxBYdEAQ2RG7RSUQFVLAEPEJu/7iAjbiAk4pB1ICFHmdeikHEHB0QBDaEb1FJxAqUsAQ8gm9/toMThwHUvUTeZFyHAcQiHRAENsRrUUlEEBSwBDzCa3+agE2agFOKwdSBBR1j35oRxCgdEAQ3BG9RScQVVLAEPQJvQC3wmdWatlSTggFUgQUdZ52aEcQuHRAEN0RukUkEGpSwBD1Cbr6kwhO9wRS9hN1jX5aRxDQdEAQ3hGuRSUQgFLAEPYJrv5oATJoAU4GBVIEFHWOdmhHEOh0QBDfEbpFIhCVUsAQ9wm6/pMIMpMITgMFUgQUdZkAMnoqBxAAdUAQ4BG8RSQQqlLAEPgJvPqTCE72BAAxbvgYADJ2WkcQGHVAEOERrEUiEMBSwBD5Caz+aAEyaAFOAQVSAhR5inooBxAwdUAQ4hG8RSQQ1VLAEPoJvP7eAjLeAk4CBVIBFHmacicHEEh1QBDjEbpFIhDqUsAQ+wm6+kYETh0MUvITeYp6GAcQYHVAEOQRrkUkEABTwBD8Ca7+aAEyaAFOHwxS/xN5jHIlBxB4dUAQ5RG6RSIQFVPAEP0Juv7eAjLeAk4rDFL+E/UkBDMwdsd3EJB1QBDmEbxFJBAqU8AQ/gm8/o4IThcHUvATdY12WEcQqHVAEOcRrUUjEEBTwBD/Ca3+jgg2jghOJgdS/xN1jAQzMnZqARDAdUAQ6BG9RSYUVVPAEICHEqw3/nALNnALTicHUgAUdZ12ZkcQ2HVAEOkRu0UlEGpTwBCBCbv+2gxOGgdS8xN1jgAzehoHEPB1QBDqEa9FJxCAU8AQggmv/moBNmoBTikHUgIUeZFyRA4QCHZAEOsRu0UlEJVTwBCDCbv+4gI24gJOKgdSAxR5nXoqBxAgdkAQ7BG9RScQqlPAEIQJvf5MBE4dB1L2E3mRch0HEDh2QBDtEa1FJRDAU8AQhQmt/rUFMrUFTgYFUgQUeY56KwcQUHZAEO4RvEUmENVTwBCGCbz+KwcyKwdOBwVSBBR5nXIrBxRodkAQ75EaBBRFIxDqU8AQhwm6+pMITvYEUvYTdYx+WkcQgHZAEPARrkUkEABUwBCICa7+aAEyaAFOBQVSBBR1jQA0ctYqEJh2QBDxEbpFIhAVVMAQiQm6/t4CMt4CTgIFUgMUdZh+aEcQsHZAEPIRvEUkECpUwBCKCbz62QxO9QRS9BN1jHZaRxDIdkAQ8xGsRSIQQFTAEIsJrP5oATJoAU4ABVIBFHWKfmhHEOB2QBD0EbxFJBBVVMAQjAm8/t4CMt4CTi0MUgAUeZpyJgcQ+HZAEPURukUiEGpUwBCNCbr6RgROHQxS8RN5inoXBxAQd0AQ9hGuRSQQgFTAEI4Jrv5oATJoAU4fDFL+E3mMciQHECh3QBD3EbpFIhCVVMAQjwm6/o4INo4ITiUHUv4TeZl6JQcQQHdAEPgRvUUlEKpUwBCQCb3+jghOGAdS8RN5jnIYBxBYd0AQ+RGtRSQQwFTAEJEJrf5qATZqAU4nB1IAFHWNfmZHEHB3QBD6Eb1FJxDVVMAQkgm9/nALNnALTigHUgEUdZ52ZkcQiHdAEPsRu0UlEOpUwBCTCbv+2gxOGwdS9BN1j35YRxCgd0AQ/BGvRScQAFXAEJQJr/5qATZqAU4qB1IDFHWRdmdHELh3QBD9EbtFJRAVVcAQlQm7/uICNuICTisHUgQUdZ1+aEcQ0HdAEP4RvUUnECpVwBCWCb36kwhO+gRS9hN5kHIdBxDod0AQ/xGsRSQQQFXAEJcJrP6TCDKTCE4FBVIEFHmNeisHFAB4QBCAkhofDEUlEFVVwBCYCbz+KwcyKwdOBgVSBBR5nHIrBxAYeEAQgRG6RSIQalXAEJkJuvqTCE71BFL2E3mLehwHEDB4QBCCEa5FJBCAVcAQmgmu/mgBMmgBTgQFUgMUeYxyKQcQSHhAEIMRukUiEJVVwBCbCbr+3gIy3gJOAQVSAhR1mH5oRxBgeEAQhBG8RSQQqlXAEJwJvPpGBE70BFLzE3WMADZyQQ4QeHhAEIURrEUiEMBVwBCdCaz+aAEyaAFOHQxSABR1in5oRxCQeEAQhhG8RSQQ1VXAEJ4JvP7eAjLeAk4tDFL/E3WadmdHEKh4QBCHEbpFIhDqVcAQnwm6+kYETh0MUvATdYqCWEcMeEAQiBGuRSQQAFbAEKAJrv6OCDaOCE4lB1L+E3mNciUHENh4QBCJEbtFIxAVVsAQoQm7/o4INo4ITiYHUv8TeZp6JgcQ8HhAEIoRvUUmECpWwBCiCb3+2gxOGQdS8hN5j3IZBxAIeUAQixGtRSUQQFbAEKMJrf5qATZqAU4oB1IBFHmOeigHECB5QBCMEb1FJxBVVsAQpAm9/uICNuICTikHUgIUeZ9yKQcQOHlAEI0Ru0UlEGpWwBClCbv+2gxOHAdS9RN1j35ZRxBQeUAQjhGvRScQgFbAEKYJr/5qATZqAU4rB1IEFHWRdmhHEGh5QBCPEbtFJRCVVsAQpwm7/isHMisHTgYFUgQUdZx+aEcQgHlAEJARvEUmEKpWwBCoCbz6kwhO+QRS9hN1j3ZaRxCYeUAQkRGsRSMQwFbAEKkJrP5oATJoAU4EBVIEFHWMfmhHELB5QBCSEbxFJBDVVsAQqgm8/pMIMpMITgUFUgQUeZtyKgcQyHlAEJMRukUiEOpWwBCrCbr6kwhO9ARS9RN5inobBxDgeUAQlBGuRSQQAFfAEKwJrv5oATJoAU4DBVICFHmMcigHEPh5QBCVEbpFIhAVV8AQrQm6/t4CMt4CTgAFUgEUeZh6JwcQEHpAEJYRvEUkECpXwBCuCbz6RgROHwxS8hN5jHIYBxAoekAQlxGsRSIQQFfAEK8JrP5oATJoAU4dDFL/E3WKfmdHEEB6QBCYEbxFJBBVV8AQsAm8/t4CMt4CTi0MUv4TdZp2ZkcQWHpAEJkRukUiEGpXwBCxCbr+jghOFwdS8BN1i35YRxBwekAQmhGvRSUQgFfAELIJr/6OCDaOCE4mB1L/E3WOdmZHEIh6QBCbEbtFJBCVV8AQswm7/nALNnALTicHUgAUdZt+ZkcQoHpAEJwRvUUnEKpXwBC0Cb3+2gxOGgdS8xN5kHIaBxC4ekAQnRGtRSUQwFfAELUJrf5qATZqAU4pB1ICFHmPeikHENB6QBCeEb1FJxDVV8AQtgm9/uICNuICTioHUgMUeZ9yKgcQ6HpAEJ8Ru0UlEOpXwBC3Cbv+TAROHQdS9hN5j3odBxAAe0AQoBGvRScQAFjAELgJr/61BTK1BU4IBVIEFHmQcisHEBh7QBChEbpFJBAVWMAQuQm6/isHMisHTgUFUgQUdZt+aEcQMHtAEKIRvEUlECpYwBC6Cbz6kwhO+ARS9hN1jnZaRxBIe0AQoxGsRSIQQFjAELsJrP5oATJoAU4DBVIEFHWLfmhHEGB7QBCkEbxFJBBVWMAQvAm8/t4CMt4CTgQFUgMUdZp2aEcQeHtAEKURukUiEGpYwBC9Cbr62QxO8wRS9BN1in5aRxCQe0AQphGuRSQQgFjAEL4Jrv5oATJoAU4CBVIBFHmMcicHEKh7QBCnEbpFIhCVWMAQvwm6/t4CMt4CTisMUgAUeZh6JgcQwHtAEKgRvEUkEKpYwBDACbz6RgROHwxS8RN5jHIXBxDYe0AQqRGsRSIQwFjAEMEJrP5oATJoAU4dDFL+E3mKeiQHEPB7QBCqEbxFJBDVWMAQwgm8/o4INo4ITiUHUv4TeZtyJQcQCHxAEKsRu0UjEOpYwBDDBbsMGjAIAVKi1WAiF2lnbm9yZWQgYnkgdGhlIHJlY2VpdmVy",
+  "rawBytes": 54751,
+  "expect": [
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-0",
+     "n": "0",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000000,
+    "value": 0
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-0",
+     "n": "0",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015000,
+    "value": 0
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-1",
+     "n": "1",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000001,
+    "value": 1.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-1",
+     "n": "1",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015001,
+    "value": -0.3333333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-2",
+     "n": "2",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000002,
+    "value": 3
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-2",
+     "n": "2",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015002,
+    "value": -0.6666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-3",
+     "n": "3",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000003,
+    "value": 4.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-3",
+     "n": "3",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015003,
+    "value": -1
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-4",
+     "n": "4",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000004,
+    "value": 6
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-4",
+     "n": "4",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015004,
+    "value": -1.3333333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-0",
+     "n": "5",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000005,
+    "value": 7.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-0",
+     "n": "5",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015005,
+    "value": -1.6666666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-1",
+     "n": "6",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000006,
+    "value": 9
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-1",
+     "n": "6",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015006,
+    "value": -2
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-2",
+     "n": "7",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000007,
+    "value": 10.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-2",
+     "n": "7",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015007,
+    "value": -2.3333333333333335
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-3",
+     "n": "8",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000008,
+    "value": 12
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-3",
+     "n": "8",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015008,
+    "value": -2.6666666666666665
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-4",
+     "n": "9",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000009,
+    "value": 13.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-4",
+     "n": "9",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015009,
+    "value": -3
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-0",
+     "n": "10",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000010,
+    "value": 15
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-0",
+     "n": "10",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015010,
+    "value": -3.3333333333333335
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-1",
+     "n": "11",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000011,
+    "value": 16.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-1",
+     "n": "11",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015011,
+    "value": -3.6666666666666665
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-2",
+     "n": "12",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000012,
+    "value": 18
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-2",
+     "n": "12",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015012,
+    "value": -4
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-3",
+     "n": "13",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000013,
+    "value": 19.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-3",
+     "n": "13",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015013,
+    "value": -4.333333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-4",
+     "n": "14",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000014,
+    "value": 21
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-4",
+     "n": "14",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015014,
+    "value": -4.666666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-0",
+     "n": "15",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000015,
+    "value": 22.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-0",
+     "n": "15",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015015,
+    "value": -5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-1",
+     "n": "16",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000016,
+    "value": 24
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-1",
+     "n": "16",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015016,
+    "value": -5.333333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-2",
+     "n": "17",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000017,
+    "value": 25.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-2",
+     "n": "17",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015017,
+    "value": -5.666666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-3",
+     "n": "18",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000018,
+    "value": 27
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-3",
+     "n": "18",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015018,
+    "value": -6
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-4",
+     "n": "19",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000019,
+    "value": 28.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-4",
+     "n": "19",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015019,
+    "value": -6.333333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-0",
+     "n": "20",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000020,
+    "value": 30
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-0",
+     "n": "20",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015020,
+    "value": -6.666666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-1",
+     "n": "21",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000021,
+    "value": 31.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-1",
+     "n": "21",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015021,
+    "value": -7
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-2",
+     "n": "22",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000022,
+    "value": 33
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-2",
+     "n": "22",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015022,
+    "value": -7.333333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-3",
+     "n": "23",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000023,
+    "value": 34.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-3",
+     "n": "23",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015023,
+    "value": -7.666666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-4",
+     "n": "24",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000024,
+    "value": 36
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-4",
+     "n": "24",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015024,
+    "value": -8
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-0",
+     "n": "25",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000025,
+    "value": 37.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-0",
+     "n": "25",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015025,
+    "value": -8.333333333333334
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-1",
+     "n": "26",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000026,
+    "value": 39
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-1",
+     "n": "26",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015026,
+    "value": -8.666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-2",
+     "n": "27",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000027,
+    "value": 40.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-2",
+     "n": "27",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015027,
+    "value": -9
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-3",
+     "n": "28",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000028,
+    "value": 42
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-3",
+     "n": "28",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015028,
+    "value": -9.333333333333334
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-4",
+     "n": "29",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000029,
+    "value": 43.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-4",
+     "n": "29",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015029,
+    "value": -9.666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-0",
+     "n": "30",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000030,
+    "value": 45
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-0",
+     "n": "30",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015030,
+    "value": -10
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-1",
+     "n": "31",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000031,
+    "value": 46.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-1",
+     "n": "31",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015031,
+    "value": -10.333333333333334
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-2",
+     "n": "32",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000032,
+    "value": 48
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-2",
+     "n": "32",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015032,
+    "value": -10.666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-3",
+     "n": "33",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000033,
+    "value": 49.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-3",
+     "n": "33",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015033,
+    "value": -11
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-4",
+     "n": "34",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000034,
+    "value": 51
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-4",
+     "n": "34",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015034,
+    "value": -11.333333333333334
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-0",
+     "n": "35",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000035,
+    "value": 52.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-0",
+     "n": "35",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015035,
+    "value": -11.666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-1",
+     "n": "36",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000036,
+    "value": 54
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-1",
+     "n": "36",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015036,
+    "value": -12
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-2",
+     "n": "37",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000037,
+    "value": 55.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-2",
+     "n": "37",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015037,
+    "value": -12.333333333333334
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-3",
+     "n": "38",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000038,
+    "value": 57
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-3",
+     "n": "38",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015038,
+    "value": -12.666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-4",
+     "n": "39",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000039,
+    "value": 58.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-4",
+     "n": "39",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015039,
+    "value": -13
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-0",
+     "n": "40",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000040,
+    "value": 60
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-0",
+     "n": "40",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015040,
+    "value": -13.333333333333334
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-1",
+     "n": "41",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000041,
+    "value": 61.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-1",
+     "n": "41",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015041,
+    "value": -13.666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-2",
+     "n": "42",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000042,
+    "value": 63
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-2",
+     "n": "42",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015042,
+    "value": -14
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-3",
+     "n": "43",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000043,
+    "value": 64.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-3",
+     "n": "43",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015043,
+    "value": -14.333333333333334
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-4",
+     "n": "44",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000044,
+    "value": 66
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-4",
+     "n": "44",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015044,
+    "value": -14.666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-0",
+     "n": "45",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000045,
+    "value": 67.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-0",
+     "n": "45",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015045,
+    "value": -15
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-1",
+     "n": "46",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000046,
+    "value": 69
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-1",
+     "n": "46",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015046,
+    "value": -15.333333333333334
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-2",
+     "n": "47",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000047,
+    "value": 70.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-2",
+     "n": "47",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015047,
+    "value": -15.666666666666666
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-3",
+     "n": "48",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000048,
+    "value": 72
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-3",
+     "n": "48",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015048,
+    "value": -16
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-4",
+     "n": "49",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000049,
+    "value": 73.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-4",
+     "n": "49",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015049,
+    "value": -16.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-0",
+     "n": "50",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000050,
+    "value": 75
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-0",
+     "n": "50",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015050,
+    "value": -16.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-1",
+     "n": "51",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000051,
+    "value": 76.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-1",
+     "n": "51",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015051,
+    "value": -17
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-2",
+     "n": "52",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000052,
+    "value": 78
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-2",
+     "n": "52",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015052,
+    "value": -17.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-3",
+     "n": "53",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000053,
+    "value": 79.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-3",
+     "n": "53",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015053,
+    "value": -17.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-4",
+     "n": "54",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000054,
+    "value": 81
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-4",
+     "n": "54",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015054,
+    "value": -18
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-0",
+     "n": "55",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000055,
+    "value": 82.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-0",
+     "n": "55",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015055,
+    "value": -18.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-1",
+     "n": "56",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000056,
+    "value": 84
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-1",
+     "n": "56",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015056,
+    "value": -18.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-2",
+     "n": "57",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000057,
+    "value": 85.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-2",
+     "n": "57",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015057,
+    "value": -19
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-3",
+     "n": "58",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000058,
+    "value": 87
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-3",
+     "n": "58",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015058,
+    "value": -19.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-4",
+     "n": "59",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000059,
+    "value": 88.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-4",
+     "n": "59",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015059,
+    "value": -19.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-0",
+     "n": "60",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000060,
+    "value": 90
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-0",
+     "n": "60",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015060,
+    "value": -20
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-1",
+     "n": "61",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000061,
+    "value": 91.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-1",
+     "n": "61",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015061,
+    "value": -20.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-2",
+     "n": "62",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000062,
+    "value": 93
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-2",
+     "n": "62",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015062,
+    "value": -20.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-3",
+     "n": "63",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000063,
+    "value": 94.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-3",
+     "n": "63",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015063,
+    "value": -21
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-4",
+     "n": "64",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000064,
+    "value": 96
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-4",
+     "n": "64",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015064,
+    "value": -21.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-0",
+     "n": "65",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000065,
+    "value": 97.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-0",
+     "n": "65",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015065,
+    "value": -21.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-1",
+     "n": "66",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000066,
+    "value": 99
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-1",
+     "n": "66",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015066,
+    "value": -22
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-2",
+     "n": "67",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000067,
+    "value": 100.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-2",
+     "n": "67",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015067,
+    "value": -22.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-3",
+     "n": "68",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000068,
+    "value": 102
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-3",
+     "n": "68",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015068,
+    "value": -22.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-4",
+     "n": "69",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000069,
+    "value": 103.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-4",
+     "n": "69",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015069,
+    "value": -23
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-0",
+     "n": "70",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000070,
+    "value": 105
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-0",
+     "n": "70",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015070,
+    "value": -23.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-1",
+     "n": "71",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000071,
+    "value": 106.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-1",
+     "n": "71",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015071,
+    "value": -23.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-2",
+     "n": "72",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000072,
+    "value": 108
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-2",
+     "n": "72",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015072,
+    "value": -24
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-3",
+     "n": "73",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000073,
+    "value": 109.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-3",
+     "n": "73",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015073,
+    "value": -24.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-4",
+     "n": "74",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000074,
+    "value": 111
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-4",
+     "n": "74",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015074,
+    "value": -24.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-0",
+     "n": "75",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000075,
+    "value": 112.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-0",
+     "n": "75",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015075,
+    "value": -25
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-1",
+     "n": "76",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000076,
+    "value": 114
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-1",
+     "n": "76",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015076,
+    "value": -25.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-2",
+     "n": "77",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000077,
+    "value": 115.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-2",
+     "n": "77",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015077,
+    "value": -25.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-3",
+     "n": "78",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000078,
+    "value": 117
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-3",
+     "n": "78",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015078,
+    "value": -26
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-4",
+     "n": "79",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000079,
+    "value": 118.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-4",
+     "n": "79",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015079,
+    "value": -26.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-0",
+     "n": "80",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000080,
+    "value": 120
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-0",
+     "n": "80",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015080,
+    "value": -26.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-1",
+     "n": "81",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000081,
+    "value": 121.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-1",
+     "n": "81",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015081,
+    "value": -27
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-2",
+     "n": "82",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000082,
+    "value": 123
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-2",
+     "n": "82",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015082,
+    "value": -27.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-3",
+     "n": "83",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000083,
+    "value": 124.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-3",
+     "n": "83",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015083,
+    "value": -27.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-4",
+     "n": "84",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000084,
+    "value": 126
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-4",
+     "n": "84",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015084,
+    "value": -28
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-0",
+     "n": "85",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000085,
+    "value": 127.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-0",
+     "n": "85",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015085,
+    "value": -28.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-1",
+     "n": "86",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000086,
+    "value": 129
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-1",
+     "n": "86",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015086,
+    "value": -28.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-2",
+     "n": "87",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000087,
+    "value": 130.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-2",
+     "n": "87",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015087,
+    "value": -29
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-3",
+     "n": "88",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000088,
+    "value": 132
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-3",
+     "n": "88",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015088,
+    "value": -29.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-4",
+     "n": "89",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000089,
+    "value": 133.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-4",
+     "n": "89",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015089,
+    "value": -29.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-0",
+     "n": "90",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000090,
+    "value": 135
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-0",
+     "n": "90",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015090,
+    "value": -30
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-1",
+     "n": "91",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000091,
+    "value": 136.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-1",
+     "n": "91",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015091,
+    "value": -30.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-2",
+     "n": "92",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000092,
+    "value": 138
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-2",
+     "n": "92",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015092,
+    "value": -30.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-3",
+     "n": "93",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000093,
+    "value": 139.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-3",
+     "n": "93",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015093,
+    "value": -31
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-4",
+     "n": "94",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000094,
+    "value": 141
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-4",
+     "n": "94",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015094,
+    "value": -31.333333333333332
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-0",
+     "n": "95",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000095,
+    "value": 142.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-0",
+     "n": "95",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015095,
+    "value": -31.666666666666668
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-1",
+     "n": "96",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000096,
+    "value": 144
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-1",
+     "n": "96",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015096,
+    "value": -32
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-2",
+     "n": "97",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000097,
+    "value": 145.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-2",
+     "n": "97",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015097,
+    "value": -32.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-3",
+     "n": "98",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000098,
+    "value": 147
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-3",
+     "n": "98",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015098,
+    "value": -32.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-4",
+     "n": "99",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000099,
+    "value": 148.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-4",
+     "n": "99",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015099,
+    "value": -33
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-0",
+     "n": "100",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000100,
+    "value": 150
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-0",
+     "n": "100",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015100,
+    "value": -33.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-1",
+     "n": "101",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000101,
+    "value": 151.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-1",
+     "n": "101",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015101,
+    "value": -33.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-2",
+     "n": "102",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000102,
+    "value": 153
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-2",
+     "n": "102",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015102,
+    "value": -34
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-3",
+     "n": "103",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000103,
+    "value": 154.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-3",
+     "n": "103",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015103,
+    "value": -34.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-4",
+     "n": "104",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000104,
+    "value": 156
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-4",
+     "n": "104",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015104,
+    "value": -34.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-0",
+     "n": "105",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000105,
+    "value": 157.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-0",
+     "n": "105",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015105,
+    "value": -35
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-1",
+     "n": "106",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000106,
+    "value": 159
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-1",
+     "n": "106",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015106,
+    "value": -35.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-2",
+     "n": "107",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000107,
+    "value": 160.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-2",
+     "n": "107",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015107,
+    "value": -35.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-3",
+     "n": "108",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000108,
+    "value": 162
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-3",
+     "n": "108",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015108,
+    "value": -36
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-4",
+     "n": "109",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000109,
+    "value": 163.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-4",
+     "n": "109",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015109,
+    "value": -36.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-0",
+     "n": "110",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000110,
+    "value": 165
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-0",
+     "n": "110",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015110,
+    "value": -36.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-1",
+     "n": "111",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000111,
+    "value": 166.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-1",
+     "n": "111",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015111,
+    "value": -37
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-2",
+     "n": "112",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000112,
+    "value": 168
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-2",
+     "n": "112",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015112,
+    "value": -37.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-3",
+     "n": "113",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000113,
+    "value": 169.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-3",
+     "n": "113",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015113,
+    "value": -37.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-4",
+     "n": "114",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000114,
+    "value": 171
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-4",
+     "n": "114",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015114,
+    "value": -38
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-0",
+     "n": "115",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000115,
+    "value": 172.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-0",
+     "n": "115",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015115,
+    "value": -38.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-1",
+     "n": "116",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000116,
+    "value": 174
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-1",
+     "n": "116",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015116,
+    "value": -38.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-2",
+     "n": "117",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000117,
+    "value": 175.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-2",
+     "n": "117",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015117,
+    "value": -39
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-3",
+     "n": "118",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000118,
+    "value": 177
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-3",
+     "n": "118",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015118,
+    "value": -39.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-4",
+     "n": "119",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000119,
+    "value": 178.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-4",
+     "n": "119",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015119,
+    "value": -39.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-0",
+     "n": "120",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000120,
+    "value": 180
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-0",
+     "n": "120",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015120,
+    "value": -40
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-1",
+     "n": "121",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000121,
+    "value": 181.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-1",
+     "n": "121",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015121,
+    "value": -40.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-2",
+     "n": "122",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000122,
+    "value": 183
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-2",
+     "n": "122",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015122,
+    "value": -40.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-3",
+     "n": "123",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000123,
+    "value": 184.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-3",
+     "n": "123",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015123,
+    "value": -41
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-4",
+     "n": "124",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000124,
+    "value": 186
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-4",
+     "n": "124",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015124,
+    "value": -41.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-0",
+     "n": "125",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000125,
+    "value": 187.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-0",
+     "n": "125",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015125,
+    "value": -41.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-1",
+     "n": "126",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000126,
+    "value": 189
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-1",
+     "n": "126",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015126,
+    "value": -42
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-2",
+     "n": "127",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000127,
+    "value": 190.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-2",
+     "n": "127",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015127,
+    "value": -42.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-3",
+     "n": "128",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000128,
+    "value": 192
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-3",
+     "n": "128",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015128,
+    "value": -42.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-4",
+     "n": "129",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000129,
+    "value": 193.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-4",
+     "n": "129",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015129,
+    "value": -43
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-0",
+     "n": "130",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000130,
+    "value": 195
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-0",
+     "n": "130",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015130,
+    "value": -43.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-1",
+     "n": "131",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000131,
+    "value": 196.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-1",
+     "n": "131",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015131,
+    "value": -43.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-2",
+     "n": "132",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000132,
+    "value": 198
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-2",
+     "n": "132",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015132,
+    "value": -44
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-3",
+     "n": "133",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000133,
+    "value": 199.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-3",
+     "n": "133",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015133,
+    "value": -44.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-4",
+     "n": "134",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000134,
+    "value": 201
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-4",
+     "n": "134",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015134,
+    "value": -44.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-0",
+     "n": "135",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000135,
+    "value": 202.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-0",
+     "n": "135",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015135,
+    "value": -45
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-1",
+     "n": "136",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000136,
+    "value": 204
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-1",
+     "n": "136",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015136,
+    "value": -45.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-2",
+     "n": "137",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000137,
+    "value": 205.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-2",
+     "n": "137",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015137,
+    "value": -45.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-3",
+     "n": "138",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000138,
+    "value": 207
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-3",
+     "n": "138",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015138,
+    "value": -46
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-4",
+     "n": "139",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000139,
+    "value": 208.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-4",
+     "n": "139",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015139,
+    "value": -46.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-0",
+     "n": "140",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000140,
+    "value": 210
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-0",
+     "n": "140",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015140,
+    "value": -46.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-1",
+     "n": "141",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000141,
+    "value": 211.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-1",
+     "n": "141",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015141,
+    "value": -47
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-2",
+     "n": "142",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000142,
+    "value": 213
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-2",
+     "n": "142",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015142,
+    "value": -47.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-3",
+     "n": "143",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000143,
+    "value": 214.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-3",
+     "n": "143",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015143,
+    "value": -47.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-4",
+     "n": "144",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000144,
+    "value": 216
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-4",
+     "n": "144",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015144,
+    "value": -48
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-0",
+     "n": "145",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000145,
+    "value": 217.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-0",
+     "n": "145",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015145,
+    "value": -48.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-1",
+     "n": "146",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000146,
+    "value": 219
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-1",
+     "n": "146",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015146,
+    "value": -48.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-2",
+     "n": "147",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000147,
+    "value": 220.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-2",
+     "n": "147",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015147,
+    "value": -49
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-3",
+     "n": "148",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000148,
+    "value": 222
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-3",
+     "n": "148",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015148,
+    "value": -49.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-4",
+     "n": "149",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000149,
+    "value": 223.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-4",
+     "n": "149",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015149,
+    "value": -49.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-0",
+     "n": "150",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000150,
+    "value": 225
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-0",
+     "n": "150",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015150,
+    "value": -50
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-1",
+     "n": "151",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000151,
+    "value": 226.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-1",
+     "n": "151",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015151,
+    "value": -50.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-2",
+     "n": "152",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000152,
+    "value": 228
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-2",
+     "n": "152",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015152,
+    "value": -50.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-3",
+     "n": "153",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000153,
+    "value": 229.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-3",
+     "n": "153",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015153,
+    "value": -51
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-4",
+     "n": "154",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000154,
+    "value": 231
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-4",
+     "n": "154",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015154,
+    "value": -51.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-0",
+     "n": "155",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000155,
+    "value": 232.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-0",
+     "n": "155",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015155,
+    "value": -51.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-1",
+     "n": "156",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000156,
+    "value": 234
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-1",
+     "n": "156",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015156,
+    "value": -52
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-2",
+     "n": "157",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000157,
+    "value": 235.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-2",
+     "n": "157",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015157,
+    "value": -52.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-3",
+     "n": "158",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000158,
+    "value": 237
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-3",
+     "n": "158",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015158,
+    "value": -52.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-4",
+     "n": "159",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000159,
+    "value": 238.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-4",
+     "n": "159",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015159,
+    "value": -53
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-0",
+     "n": "160",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000160,
+    "value": 240
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-0",
+     "n": "160",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015160,
+    "value": -53.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-1",
+     "n": "161",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000161,
+    "value": 241.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-1",
+     "n": "161",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015161,
+    "value": -53.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-2",
+     "n": "162",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000162,
+    "value": 243
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-2",
+     "n": "162",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015162,
+    "value": -54
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-3",
+     "n": "163",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000163,
+    "value": 244.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-3",
+     "n": "163",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015163,
+    "value": -54.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-4",
+     "n": "164",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000164,
+    "value": 246
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-4",
+     "n": "164",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015164,
+    "value": -54.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-0",
+     "n": "165",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000165,
+    "value": 247.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-0",
+     "n": "165",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015165,
+    "value": -55
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-1",
+     "n": "166",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000166,
+    "value": 249
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-1",
+     "n": "166",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015166,
+    "value": -55.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-2",
+     "n": "167",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000167,
+    "value": 250.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-2",
+     "n": "167",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015167,
+    "value": -55.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-3",
+     "n": "168",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000168,
+    "value": 252
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-3",
+     "n": "168",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015168,
+    "value": -56
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-4",
+     "n": "169",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000169,
+    "value": 253.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-4",
+     "n": "169",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015169,
+    "value": -56.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-0",
+     "n": "170",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000170,
+    "value": 255
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-0",
+     "n": "170",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015170,
+    "value": -56.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-1",
+     "n": "171",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000171,
+    "value": 256.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-1",
+     "n": "171",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015171,
+    "value": -57
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-2",
+     "n": "172",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000172,
+    "value": 258
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-2",
+     "n": "172",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015172,
+    "value": -57.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-3",
+     "n": "173",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000173,
+    "value": 259.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-3",
+     "n": "173",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015173,
+    "value": -57.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-4",
+     "n": "174",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000174,
+    "value": 261
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-4",
+     "n": "174",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015174,
+    "value": -58
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-0",
+     "n": "175",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000175,
+    "value": 262.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-0",
+     "n": "175",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015175,
+    "value": -58.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-1",
+     "n": "176",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000176,
+    "value": 264
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-1",
+     "n": "176",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015176,
+    "value": -58.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-2",
+     "n": "177",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000177,
+    "value": 265.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-2",
+     "n": "177",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015177,
+    "value": -59
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-3",
+     "n": "178",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000178,
+    "value": 267
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-3",
+     "n": "178",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015178,
+    "value": -59.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-4",
+     "n": "179",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000179,
+    "value": 268.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-4",
+     "n": "179",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015179,
+    "value": -59.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-0",
+     "n": "180",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000180,
+    "value": 270
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-0",
+     "n": "180",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015180,
+    "value": -60
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-1",
+     "n": "181",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000181,
+    "value": 271.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-1",
+     "n": "181",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015181,
+    "value": -60.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-2",
+     "n": "182",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000182,
+    "value": 273
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-2",
+     "n": "182",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015182,
+    "value": -60.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-3",
+     "n": "183",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000183,
+    "value": 274.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-3",
+     "n": "183",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015183,
+    "value": -61
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-4",
+     "n": "184",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000184,
+    "value": 276
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-4",
+     "n": "184",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015184,
+    "value": -61.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-0",
+     "n": "185",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000185,
+    "value": 277.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-0",
+     "n": "185",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015185,
+    "value": -61.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-1",
+     "n": "186",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000186,
+    "value": 279
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-1",
+     "n": "186",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015186,
+    "value": -62
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-2",
+     "n": "187",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000187,
+    "value": 280.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-2",
+     "n": "187",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015187,
+    "value": -62.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-3",
+     "n": "188",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000188,
+    "value": 282
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-3",
+     "n": "188",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015188,
+    "value": -62.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-4",
+     "n": "189",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000189,
+    "value": 283.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-4",
+     "n": "189",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015189,
+    "value": -63
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-0",
+     "n": "190",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000190,
+    "value": 285
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-0",
+     "n": "190",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015190,
+    "value": -63.333333333333336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-1",
+     "n": "191",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000191,
+    "value": 286.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-1",
+     "n": "191",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015191,
+    "value": -63.666666666666664
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-2",
+     "n": "192",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000192,
+    "value": 288
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-2",
+     "n": "192",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015192,
+    "value": -64
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-3",
+     "n": "193",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000193,
+    "value": 289.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-3",
+     "n": "193",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015193,
+    "value": -64.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-4",
+     "n": "194",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000194,
+    "value": 291
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-4",
+     "n": "194",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015194,
+    "value": -64.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-0",
+     "n": "195",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000195,
+    "value": 292.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-0",
+     "n": "195",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015195,
+    "value": -65
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-1",
+     "n": "196",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000196,
+    "value": 294
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-1",
+     "n": "196",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015196,
+    "value": -65.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-2",
+     "n": "197",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000197,
+    "value": 295.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-2",
+     "n": "197",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015197,
+    "value": -65.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-3",
+     "n": "198",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000198,
+    "value": 297
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-3",
+     "n": "198",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015198,
+    "value": -66
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-4",
+     "n": "199",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000199,
+    "value": 298.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-4",
+     "n": "199",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015199,
+    "value": -66.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-0",
+     "n": "200",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000200,
+    "value": 300
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-0",
+     "n": "200",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015200,
+    "value": -66.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-1",
+     "n": "201",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000201,
+    "value": 301.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-1",
+     "n": "201",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015201,
+    "value": -67
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-2",
+     "n": "202",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000202,
+    "value": 303
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-2",
+     "n": "202",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015202,
+    "value": -67.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-3",
+     "n": "203",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000203,
+    "value": 304.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-3",
+     "n": "203",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015203,
+    "value": -67.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-4",
+     "n": "204",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000204,
+    "value": 306
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-4",
+     "n": "204",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015204,
+    "value": -68
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-0",
+     "n": "205",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000205,
+    "value": 307.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-0",
+     "n": "205",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015205,
+    "value": -68.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-1",
+     "n": "206",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000206,
+    "value": 309
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-1",
+     "n": "206",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015206,
+    "value": -68.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-2",
+     "n": "207",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000207,
+    "value": 310.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-2",
+     "n": "207",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015207,
+    "value": -69
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-3",
+     "n": "208",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000208,
+    "value": 312
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-3",
+     "n": "208",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015208,
+    "value": -69.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-4",
+     "n": "209",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000209,
+    "value": 313.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-4",
+     "n": "209",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015209,
+    "value": -69.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-0",
+     "n": "210",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000210,
+    "value": 315
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-0",
+     "n": "210",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015210,
+    "value": -70
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-1",
+     "n": "211",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000211,
+    "value": 316.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-1",
+     "n": "211",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015211,
+    "value": -70.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-2",
+     "n": "212",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000212,
+    "value": 318
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-2",
+     "n": "212",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015212,
+    "value": -70.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-3",
+     "n": "213",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000213,
+    "value": 319.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-3",
+     "n": "213",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015213,
+    "value": -71
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-4",
+     "n": "214",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000214,
+    "value": 321
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-4",
+     "n": "214",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015214,
+    "value": -71.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-0",
+     "n": "215",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000215,
+    "value": 322.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-0",
+     "n": "215",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015215,
+    "value": -71.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-1",
+     "n": "216",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000216,
+    "value": 324
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-1",
+     "n": "216",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015216,
+    "value": -72
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-2",
+     "n": "217",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000217,
+    "value": 325.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-2",
+     "n": "217",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015217,
+    "value": -72.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-3",
+     "n": "218",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000218,
+    "value": 327
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-3",
+     "n": "218",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015218,
+    "value": -72.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-4",
+     "n": "219",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000219,
+    "value": 328.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-4",
+     "n": "219",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015219,
+    "value": -73
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-0",
+     "n": "220",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000220,
+    "value": 330
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-0",
+     "n": "220",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015220,
+    "value": -73.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-1",
+     "n": "221",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000221,
+    "value": 331.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-1",
+     "n": "221",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015221,
+    "value": -73.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-2",
+     "n": "222",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000222,
+    "value": 333
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-2",
+     "n": "222",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015222,
+    "value": -74
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-3",
+     "n": "223",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000223,
+    "value": 334.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-3",
+     "n": "223",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015223,
+    "value": -74.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-4",
+     "n": "224",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000224,
+    "value": 336
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-4",
+     "n": "224",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015224,
+    "value": -74.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-0",
+     "n": "225",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000225,
+    "value": 337.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-0",
+     "n": "225",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015225,
+    "value": -75
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-1",
+     "n": "226",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000226,
+    "value": 339
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-1",
+     "n": "226",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015226,
+    "value": -75.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-2",
+     "n": "227",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000227,
+    "value": 340.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-2",
+     "n": "227",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015227,
+    "value": -75.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-3",
+     "n": "228",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000228,
+    "value": 342
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-3",
+     "n": "228",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015228,
+    "value": -76
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-4",
+     "n": "229",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000229,
+    "value": 343.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-4",
+     "n": "229",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015229,
+    "value": -76.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-0",
+     "n": "230",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000230,
+    "value": 345
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-0",
+     "n": "230",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015230,
+    "value": -76.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-1",
+     "n": "231",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000231,
+    "value": 346.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-1",
+     "n": "231",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015231,
+    "value": -77
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-2",
+     "n": "232",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000232,
+    "value": 348
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-2",
+     "n": "232",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015232,
+    "value": -77.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-3",
+     "n": "233",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000233,
+    "value": 349.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-3",
+     "n": "233",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015233,
+    "value": -77.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-4",
+     "n": "234",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000234,
+    "value": 351
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-4",
+     "n": "234",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015234,
+    "value": -78
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-0",
+     "n": "235",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000235,
+    "value": 352.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-0",
+     "n": "235",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015235,
+    "value": -78.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-1",
+     "n": "236",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000236,
+    "value": 354
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-1",
+     "n": "236",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015236,
+    "value": -78.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-2",
+     "n": "237",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000237,
+    "value": 355.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-2",
+     "n": "237",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015237,
+    "value": -79
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-3",
+     "n": "238",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000238,
+    "value": 357
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-3",
+     "n": "238",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015238,
+    "value": -79.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-4",
+     "n": "239",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000239,
+    "value": 358.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-4",
+     "n": "239",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015239,
+    "value": -79.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-0",
+     "n": "240",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000240,
+    "value": 360
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-0",
+     "n": "240",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015240,
+    "value": -80
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-1",
+     "n": "241",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000241,
+    "value": 361.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-1",
+     "n": "241",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015241,
+    "value": -80.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-2",
+     "n": "242",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000242,
+    "value": 363
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-2",
+     "n": "242",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015242,
+    "value": -80.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-3",
+     "n": "243",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000243,
+    "value": 364.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-3",
+     "n": "243",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015243,
+    "value": -81
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-4",
+     "n": "244",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000244,
+    "value": 366
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-4",
+     "n": "244",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015244,
+    "value": -81.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-0",
+     "n": "245",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000245,
+    "value": 367.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-0",
+     "n": "245",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015245,
+    "value": -81.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-1",
+     "n": "246",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000246,
+    "value": 369
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-1",
+     "n": "246",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015246,
+    "value": -82
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-2",
+     "n": "247",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000247,
+    "value": 370.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-2",
+     "n": "247",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015247,
+    "value": -82.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-3",
+     "n": "248",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000248,
+    "value": 372
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-3",
+     "n": "248",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015248,
+    "value": -82.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-4",
+     "n": "249",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000249,
+    "value": 373.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-4",
+     "n": "249",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015249,
+    "value": -83
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-0",
+     "n": "250",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000250,
+    "value": 375
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-0",
+     "n": "250",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015250,
+    "value": -83.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-1",
+     "n": "251",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000251,
+    "value": 376.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-1",
+     "n": "251",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015251,
+    "value": -83.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-2",
+     "n": "252",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000252,
+    "value": 378
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-2",
+     "n": "252",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015252,
+    "value": -84
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-3",
+     "n": "253",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000253,
+    "value": 379.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-3",
+     "n": "253",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015253,
+    "value": -84.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-4",
+     "n": "254",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000254,
+    "value": 381
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-4",
+     "n": "254",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015254,
+    "value": -84.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-0",
+     "n": "255",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000255,
+    "value": 382.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-0",
+     "n": "255",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015255,
+    "value": -85
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-1",
+     "n": "256",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000256,
+    "value": 384
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-1",
+     "n": "256",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015256,
+    "value": -85.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-2",
+     "n": "257",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000257,
+    "value": 385.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-2",
+     "n": "257",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015257,
+    "value": -85.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-3",
+     "n": "258",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000258,
+    "value": 387
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-3",
+     "n": "258",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015258,
+    "value": -86
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-4",
+     "n": "259",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000259,
+    "value": 388.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-4",
+     "n": "259",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015259,
+    "value": -86.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-0",
+     "n": "260",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000260,
+    "value": 390
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-0",
+     "n": "260",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015260,
+    "value": -86.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-1",
+     "n": "261",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000261,
+    "value": 391.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-1",
+     "n": "261",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015261,
+    "value": -87
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-2",
+     "n": "262",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000262,
+    "value": 393
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-2",
+     "n": "262",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015262,
+    "value": -87.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-3",
+     "n": "263",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000263,
+    "value": 394.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-3",
+     "n": "263",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015263,
+    "value": -87.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-4",
+     "n": "264",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000264,
+    "value": 396
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-4",
+     "n": "264",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015264,
+    "value": -88
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-0",
+     "n": "265",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000265,
+    "value": 397.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-0",
+     "n": "265",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015265,
+    "value": -88.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-1",
+     "n": "266",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000266,
+    "value": 399
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-1",
+     "n": "266",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015266,
+    "value": -88.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-2",
+     "n": "267",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000267,
+    "value": 400.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-2",
+     "n": "267",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015267,
+    "value": -89
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-3",
+     "n": "268",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000268,
+    "value": 402
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-3",
+     "n": "268",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015268,
+    "value": -89.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-4",
+     "n": "269",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000269,
+    "value": 403.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-4",
+     "n": "269",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015269,
+    "value": -89.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-0",
+     "n": "270",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000270,
+    "value": 405
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-0",
+     "n": "270",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015270,
+    "value": -90
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-1",
+     "n": "271",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000271,
+    "value": 406.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-1",
+     "n": "271",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015271,
+    "value": -90.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-2",
+     "n": "272",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000272,
+    "value": 408
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.0.6:8080",
+     "job": "svc-2",
+     "n": "272",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015272,
+    "value": -90.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-3",
+     "n": "273",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000273,
+    "value": 409.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.1.0:8080",
+     "job": "svc-3",
+     "n": "273",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015273,
+    "value": -91
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-4",
+     "n": "274",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000274,
+    "value": 411
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.2.1:8080",
+     "job": "svc-4",
+     "n": "274",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015274,
+    "value": -91.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-0",
+     "n": "275",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000275,
+    "value": 412.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.3.2:8080",
+     "job": "svc-0",
+     "n": "275",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015275,
+    "value": -91.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-1",
+     "n": "276",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000276,
+    "value": 414
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.0.3:8080",
+     "job": "svc-1",
+     "n": "276",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015276,
+    "value": -92
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-2",
+     "n": "277",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000277,
+    "value": 415.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.1.4:8080",
+     "job": "svc-2",
+     "n": "277",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015277,
+    "value": -92.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-3",
+     "n": "278",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000278,
+    "value": 417
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.2.5:8080",
+     "job": "svc-3",
+     "n": "278",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015278,
+    "value": -92.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-4",
+     "n": "279",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000279,
+    "value": 418.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.3.6:8080",
+     "job": "svc-4",
+     "n": "279",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015279,
+    "value": -93
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-0",
+     "n": "280",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000280,
+    "value": 420
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.0.0:8080",
+     "job": "svc-0",
+     "n": "280",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015280,
+    "value": -93.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-1",
+     "n": "281",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000281,
+    "value": 421.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.1.1:8080",
+     "job": "svc-1",
+     "n": "281",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015281,
+    "value": -93.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-2",
+     "n": "282",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000282,
+    "value": 423
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.2.2:8080",
+     "job": "svc-2",
+     "n": "282",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015282,
+    "value": -94
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-3",
+     "n": "283",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000283,
+    "value": 424.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/11",
+     "instance": "10.0.3.3:8080",
+     "job": "svc-3",
+     "n": "283",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015283,
+    "value": -94.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-4",
+     "n": "284",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000284,
+    "value": 426
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/12",
+     "instance": "10.0.0.4:8080",
+     "job": "svc-4",
+     "n": "284",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015284,
+    "value": -94.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-0",
+     "n": "285",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000285,
+    "value": 427.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/13",
+     "instance": "10.0.1.5:8080",
+     "job": "svc-0",
+     "n": "285",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015285,
+    "value": -95
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-1",
+     "n": "286",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000286,
+    "value": 429
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/14",
+     "instance": "10.0.2.6:8080",
+     "job": "svc-1",
+     "n": "286",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015286,
+    "value": -95.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-2",
+     "n": "287",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000287,
+    "value": 430.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/15",
+     "instance": "10.0.3.0:8080",
+     "job": "svc-2",
+     "n": "287",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015287,
+    "value": -95.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-3",
+     "n": "288",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000288,
+    "value": 432
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/16",
+     "instance": "10.0.0.1:8080",
+     "job": "svc-3",
+     "n": "288",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015288,
+    "value": -96
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-4",
+     "n": "289",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000289,
+    "value": 433.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/0",
+     "instance": "10.0.1.2:8080",
+     "job": "svc-4",
+     "n": "289",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015289,
+    "value": -96.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-0",
+     "n": "290",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000290,
+    "value": 435
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/1",
+     "instance": "10.0.2.3:8080",
+     "job": "svc-0",
+     "n": "290",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015290,
+    "value": -96.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-1",
+     "n": "291",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000291,
+    "value": 436.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/2",
+     "instance": "10.0.3.4:8080",
+     "job": "svc-1",
+     "n": "291",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015291,
+    "value": -97
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-2",
+     "n": "292",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000292,
+    "value": 438
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/3",
+     "instance": "10.0.0.5:8080",
+     "job": "svc-2",
+     "n": "292",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015292,
+    "value": -97.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-3",
+     "n": "293",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000293,
+    "value": 439.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/4",
+     "instance": "10.0.1.6:8080",
+     "job": "svc-3",
+     "n": "293",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015293,
+    "value": -97.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-4",
+     "n": "294",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000294,
+    "value": 441
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/5",
+     "instance": "10.0.2.0:8080",
+     "job": "svc-4",
+     "n": "294",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015294,
+    "value": -98
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-0",
+     "n": "295",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000295,
+    "value": 442.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/6",
+     "instance": "10.0.3.1:8080",
+     "job": "svc-0",
+     "n": "295",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015295,
+    "value": -98.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-1",
+     "n": "296",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000296,
+    "value": 444
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/7",
+     "instance": "10.0.0.2:8080",
+     "job": "svc-1",
+     "n": "296",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015296,
+    "value": -98.66666666666667
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-2",
+     "n": "297",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000297,
+    "value": 445.5
+   },
+   {
+    "labels": {
+     "__name__": "http_requests_total",
+     "handler": "/api/v1/things/8",
+     "instance": "10.0.1.3:8080",
+     "job": "svc-2",
+     "n": "297",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015297,
+    "value": -99
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-3",
+     "n": "298",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000000298,
+    "value": 447
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/9",
+     "instance": "10.0.2.4:8080",
+     "job": "svc-3",
+     "n": "298",
+     "zone": "Zürich-🌡"
+    },
+    "ts": 1780000015298,
+    "value": -99.33333333333333
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-4",
+     "n": "299",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000000299,
+    "value": 448.5
+   },
+   {
+    "labels": {
+     "__name__": "http_request_duration_seconds_sum",
+     "handler": "/api/v1/things/10",
+     "instance": "10.0.3.5:8080",
+     "job": "svc-4",
+     "n": "299",
+     "zone": "eu-west-1a"
+    },
+    "ts": 1780000015299,
+    "value": -99.66666666666667
+   }
+  ]
+ },
+ "otlp": {
+  "proto": "CugDCowBChoKDHNlcnZpY2UubmFtZRIKCghjaGVja291dAobChFzZXJ2aWNlLm5hbWVzcGFjZRIGCgRzaG9wChwKE3NlcnZpY2UuaW5zdGFuY2UuaWQSBQoDaS0xChEKCWhvc3QubmFtZRIECgJoMQoSCgxrOHMucmVwbGljYXMSAhgDCgwKBmNhbmFyeRICEAES1gIKCAoDbGliEgExEm0KEHByb2Nlc3MuY3B1LnRpbWUaAXM6VgomGT9CQbSR1LMYIQAAAAAAAClAOhIKCGNwdS5tb2RlEgYKBHVzZXIKKBk/QkG0kdSzGDEHAAAAAAAAADoUCghjcHUubW9kZRIICgZzeXN0ZW0QAhgBElUKC3F1ZXVlLmRlcHRoGgd7aXRlbXN9Kj0KOxl/hFC0kdSzGDH8/////////zoSCgVyYXRpbxIJIQAAAAAAANA/OhMKBHRhZ3MSCyoJCgMKAWEKAhgCEoMBCgdsYXRlbmN5GgJtc0p0CjcZP0JBtJHUsxghAwAAAAAAAAApAAAAAAAA+D8yEAEAAAAAAAAAAgAAAAAAAAA6CJqZmZmZmbk/CjcZP0JBtJHUsxghAQAAAAAAAAApAAAAAAAA4D8yEAEAAAAAAAAAAAAAAAAAAAA6CJqZmZmZmbk/EAI=",
+  "gzip": "H4sIAAAAAAAAA2WOvU7DQBCEc+f8OJMUzoUiCTQ0iETCkmlARihASUUD/XE5YSvxD74zUoQQBZQ0lPAa0PAWFIiakkegQAIlTsCIaXa1OzP68G7ghqCDupLJmS+kHfJAMsAUnhTDKNVYRCP/UzEXkpVRVF4UYwnN+dMPlebhZBmwEgx/zUEDVS9SOussgnoOGOrDTWUnMh75gitGWwbqKAse8mTMqEXYK4UJY+QfM+KwAFacREIqZYs4tbUfyA5R7hFW2v293cfbl4fWcmGq7o7LYE5MQTSYAqZKJlj98TmVzFhwF3I+E2U1VloGFm0RdojaaSpTaQ9krL1O5dzXMlAXvW1stS+vD7Kez69MLkMp4dqPWHXG8Nx3myhqfqJYrVeFAcJBW5RdEVRGXMtQjDs0UPsaG7/4xgyrm42P/rpFZic6Jzbv7yZ66ueD5G/wLRcs/Ata9Bs5dS306wEAAA==",
+  "expect": [
+   {
+    "labels": {
+     "job": "shop/checkout",
+     "instance": "i-1",
+     "host_name": "h1",
+     "k8s_replicas": "3",
+     "canary": "true",
+     "__name__": "process_cpu_time_seconds_total",
+     "cpu_mode": "user"
+    },
+    "ts": 1780000000000,
+    "value": 12.5
+   },
+   {
+    "labels": {
+     "job": "shop/checkout",
+     "instance": "i-1",
+     "host_name": "h1",
+     "k8s_replicas": "3",
+     "canary": "true",
+     "__name__": "process_cpu_time_seconds_total",
+     "cpu_mode": "system"
+    },
+    "ts": 1780000000000,
+    "value": 7
+   },
+   {
+    "labels": {
+     "job": "shop/checkout",
+     "instance": "i-1",
+     "host_name": "h1",
+     "k8s_replicas": "3",
+     "canary": "true",
+     "__name__": "queue_depth",
+     "ratio": "0.25",
+     "tags": "[\"a\",2]"
+    },
+    "ts": 1780000000001,
+    "value": -4
+   }
+  ],
+  "rejected": 2
+ }
+}
