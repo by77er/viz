@@ -51,5 +51,31 @@ These were raised and are not resolved by design text alone.
    group) without specifying it.
 6. **Shared shard pools** trade some isolation for cost. The noisy-neighbour behaviour inside
    a pooled shard is unspecified beyond per-tenant quotas.
-7. **Draft 3 itself has not been re-reviewed.** The ledger design answers the findings above
-   but is new text, and the minor findings in both reports were not individually dispositioned.
+7. The minor findings in the two draft-2 reports were not individually dispositioned.
+
+## Re-review of draft 3
+
+A third reviewer attacked only what was new in draft 3
+([`reviews/draft3-correctness.md`](reviews/draft3-correctness.md): 4 critical, 8 major). It
+judged the core sound: the fenced seam, the contiguous watermark, compaction against
+retention, the single publisher chain and catalog independence. The problems were at the
+edges, and draft 3.1 amends the text for each:
+
+| Finding | Amendment in draft 3.1 |
+|---|---|
+| A per-partition index updated outside the ledger transaction could drop a file while its watermark advanced | Index fragments live in the ledger row, admitted in the same transaction; only compaction consolidates |
+| The ledger's R2 log had no ordering or recovery rule | Outbox; shards discard only what is committed and logged; ledger incarnations; checkpoints |
+| Deterministic keys plus the orphan sweeper could describe the wrong bytes or delete a file mid-retry | Content hash in the key; sweeper bound to the logged watermark |
+| In shared shards, sequences and fingerprints were per shard, not per tenant | Everything is per stream `(shard, tenant, incarnation)` |
+| The fence could livelock at high seal rates | Bounded retention after recording; per-split retry |
+| Map change on "sealed" rather than "recorded"; fingerprints did not move | Change takes effect after final units are recorded and fingerprints handed over; draining shards stay in plans |
+| Sender routing does not guarantee one series, one shard | Stated as locality only; evaluation groups by key range across shards |
+| Incarnation change had no handshake | New incarnation registers first; the loss boundary is recorded and alerted |
+| One file per table, but segments span partitions | One file per table-partition |
+| An hour "closed" by clock while rows sat in a tail | Close also requires every stream's watermark past the hour |
+| Publisher queue ordering, loss, deletion against pinned snapshots | Queue is a nudge; apply in ledger-version order from the R2 log; delete after snapshot expiry |
+| `trace_index` physical references die at compaction | Logical references to hour partitions |
+
+These amendments are text. They have not been re-reviewed, and the protocol now has enough
+moving parts (streams, incarnations, epochs, outbox) that the Quint model in
+`VERIFICATION.md` is the next real check, not another reading.

@@ -1,7 +1,8 @@
 # viz — system design
 
-Status: draft 3, 2026-11-18. Draft 2 was reviewed by two independent reviewers (57 findings);
-this draft is the response. `REVIEW.md` lists what changed and what is still open.
+Status: draft 3.1, 2026-11-18. Draft 2 was reviewed by two independent reviewers (57
+findings) and rewritten as draft 3; draft 3 was re-reviewed (12 findings) and amended here.
+`REVIEW.md` lists what changed and what is still open.
 
 Nothing here has been built or measured. Evidence is in `research/`; every number is a model,
 printed as a range, and `VERIFICATION.md` names the experiment that would confirm or kill it.
@@ -110,8 +111,10 @@ Whether the core fits a 128 MB isolate with a 1 s startup limit is the second sp
 
 Rows are routed by a **sender-stable key**: the resource fingerprint (for Prometheus, the
 target labels such as `job` and `instance`; for OTLP, the resource attributes). One request
-from one sender normally lands in one shard. A series, a log stream and a sender's spans
-each live in exactly one shard, which is what later makes per-series functions decomposable.
+from one sender normally lands in one shard. This is a locality property, not a guarantee:
+Remote Write batches can mix targets, resource attributes drift, and map changes move keys.
+The read path therefore never evaluates "per shard"; it groups rows by key range across
+every shard's contribution (§6.2).
 
 Draft 2 hashed by series id, which sent every request to every shard and made every query
 tail-read every shard. Shard count per tenant is bounded to tens; beyond that a tenant is
@@ -119,7 +122,9 @@ split across cells.
 
 The shard map has an **epoch**, owned by the ledger. Every write carries the epoch it was
 routed with; a shard rejects a stale epoch and `edge` refetches. A map change takes effect
-only after the old shards have sealed, so no key is ever owned by two shards.
+only after the old shards' final units are *recorded in the ledger*, their dedup
+fingerprints have been handed to the new owners, and draining shards stay in query plans
+until then. No key is ever accepted by two shards.
 
 ### 4.2 Acknowledgement
 
@@ -143,16 +148,30 @@ only after the old shards have sealed, so no key is ever owned by two shards.
 2. `flush`, a stateless Worker, reads the sealed runs, merges them in sort order, and writes
    one tenant-pure Parquet file per table touched. Keys are deterministic and PUTs use
    `If-None-Match: *`, so a retry can never overwrite a file with different bytes.
-   Encoding happens outside the shard, so it does not block acknowledgements.
+   Encoding happens outside the shard, so it does not block acknowledgements. A segment
+   that spans partitions yields one file per table-partition. File keys include a content
+   hash, so two attempts that produce different bytes produce different keys, and the ledger
+   records exactly the bytes it admitted.
 3. `flush` reports the **unit** (all files from one seal, with their statistics and sequence
-   range) to the ledger. The ledger accepts it only if it extends that shard's watermark
-   contiguously, and adds every file in one transaction. A metric's series rows and samples
-   therefore become visible together.
+   range) to the ledger. The ledger accepts it only if it extends that stream's watermark
+   contiguously, and adds every file, with each file's index fragment, in one transaction.
+   A metric's series rows and samples therefore become visible together, and there is no
+   separately-updated index that could miss a file.
 4. The shard discards a segment once the ledger has acknowledged the unit, and records how
    far it has discarded.
 
-Every step is idempotent and keyed by `(shard incarnation, sequence range)`. A shard that
-loses its storage starts a new incarnation; it cannot silently reuse sequence numbers.
+Every step is idempotent and keyed by a **stream**: `(shard, tenant, incarnation)`.
+Sequence numbers, seals, units, watermarks, discard marks and fingerprints are all per
+stream, so in a shared shard one tenant's ledger being slow never blocks another tenant and
+nothing crosses tenants. A shard that loses its storage registers a new incarnation with
+the ledger before it accepts writes; the ledger records the boundary and raises an alert,
+because rows between the old watermark and the loss are gone and that must be visible.
+
+**Ledger durability.** The ledger commits its transaction and appends the change to its R2
+log through an outbox. It tells a shard to discard only what has been both committed and
+logged. A rebuilt ledger starts a new ledger incarnation, so versions are never reused, and
+periodic checkpoints bound rebuild time. The orphan sweeper deletes only files that are
+unreferenced *and* belong to a sequence range below the stream's logged watermark.
 
 ### 4.4 Pull and adapters
 
@@ -179,7 +198,7 @@ and time.
 | `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` begins with a hash of the promoted labels, so a `namespace` matcher maps to contiguous pages |
 | `metric_rollup_5m`, `_1h` | series per window | same | count, sum, min, max, last, reset-aware increase |
 | `spans` | span | `service_name, span_name, start_time` | hour partitions; promoted attributes + residual maps |
-| `trace_index` | trace per day | `trace_id` | root, start, duration, counts, **and the files and row groups that hold its spans** |
+| `trace_index` | trace per day | `trace_id` | root, start, duration, counts, and the **hour partitions** that hold its spans (logical references survive compaction) |
 | `logs` | record | `service_name, resource_fp, ts` | a small token filter per file, written at flush |
 
 Native histograms share the samples layout and are added after float samples work. Flat
@@ -193,18 +212,23 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   Workers; large ones in a Container. A compaction is a ledger transaction that succeeds
   only if every input is still live, so it cannot resurrect files that retention removed.
 - **Rollups** are written when an hour closes, so the trailing day already has them. An hour
-  closes when the accept window has passed; nothing later can change it.
+  closes when the accept window has passed *and* every stream's watermark is past the end
+  of the hour, so no row for it is still in a tail. Nothing later can change it.
 - **Retention** is per tenant, per signal and per tier (raw, 5-minute, 1-hour). Expiry
   removes whole files from the ledger. Objects are deleted after the removal has been
   published and a grace period has passed.
-- **Each partition has an index object**: every file's row-group offsets, key statistics and
-  page-index locations. It is content-addressed and referenced from the ledger, so planning
-  never issues one footer read per file and never reads a stale index.
+- **Index fragments.** Each file's row-group offsets, key statistics and page-index
+  locations are stored with its ledger row. Compaction consolidates the fragments of a
+  partition into one content-addressed index object. Planning never issues one footer read
+  per file and never reads an index that disagrees with the ledger.
 
 ### 5.3 Iceberg publication
 
-The publisher consumes ledger changes from a queue and commits them to the cell's Iceberg
-tables every few minutes, only when something changed. Each snapshot points at an object
+The publisher applies ledger changes to the cell's Iceberg tables every few minutes, only
+when something changed. The queue is only a nudge: changes are applied strictly in ledger
+version order per tenant, and anything missing is read from the ledger's R2 log. A removed
+file is physically deleted only after the removal is published and every snapshot that
+referenced it has expired. Each snapshot points at an object
 recording which ledger version of each tenant it reflects. A scrubber checks continuously
 that the Iceberg live set equals the union of the ledgers at those versions.
 
@@ -242,10 +266,13 @@ with label-based access rules. A caller cannot omit it.
   It merges them, removes duplicates on `(series, timestamp)`, and only then evaluates. A
   `rate()` window that straddles lake and tail is therefore computed over one ordered stream.
 - Leaves return partial aggregates as Arrow IPC. Sum, count, min and max decompose exactly;
-  `avg` travels as sum and count; `topk` is per shard then merged. Approximate quantiles are
+  `avg` travels as sum and count; `topk` is per split then merged. Splits are key ranges, so
+  all rows of a series reach one leaf whichever shards they came through. Approximate quantiles are
   opt-in and labelled.
 - A tail read is a filtered scan over a shard's unsealed and unflushed segments. Segments
-  are bounded by seal size, so the shard needs no query engine and no second index.
+  are bounded by seal size, so the shard needs no query engine and no second index. Shards
+  keep recorded segments for a short bounded time, and a refused split is retried on its
+  own with a fresh ledger read, so a busy shard cannot make a whole query loop.
 - Fan-out topology depends on how the six-connection rule applies across service bindings,
   which is a spike. If the budget is shared across the tree, leaves are invoked as separate
   top-level requests.
@@ -262,8 +289,9 @@ is pinned near the bucket so that hits concentrate.
 ### 6.4 Traces and logs
 
 - **Trace by ID:** `trace_index` is sorted by trace id, so the row is found by page-index
-  search; the row names the files and row groups to read. Without a time hint, days are
-  searched newest first.
+  search; the row names the hours to read, and inside an hour compaction keeps few files
+  whose bloom filters pick the row groups. Without a time hint, days are searched newest
+  first.
 - **TraceQL search:** conditions are pushed to sorted and promoted columns. Structural
   operators shuffle candidate spans by trace-id hash to leaves that join per trace. Queries
   are bounded by scanned bytes and return partial results with a cursor.

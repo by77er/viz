@@ -76,7 +76,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
 <div class="wrap">
 
 <header class="col">
-  <div class="eyebrow">Design brief · draft 3 · 18 Nov 2026</div>
+  <div class="eyebrow">Design brief · draft 3.1 · 18 Nov 2026</div>
   <h1>viz: an observability store that lives in one Cloudflare account</h1>
   <p class="lede">Metrics, logs and traces in Parquet on R2, published as Iceberg tables. PromQL and TraceQL on top. Dashboards and monitors that agents and people share. This page is the design, what the research found, how the design changed under review, and how it will be proven.</p>
   <div class="status">
@@ -186,12 +186,14 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
       <tr><td>Every ingest request and every query touched every shard of the tenant.</td><td>Rows routed by series hash.</td><td>Rows routed by sender, so one request lands in one shard.</td></tr>
       <tr><td>Sorting and encoding a minute of data inside a 128 MB object blocks acknowledgements.</td><td>The shard encodes Parquet.</td><td>Shards seal small segments. A stateless Worker encodes.</td></tr>
       <tr><td>A <code>rate()</code> window straddling old and new data could be wrong or double counted.</td><td>Recent rows evaluated separately.</td><td>Old and recent rows for a key range are merged before evaluation.</td></tr>
-      <tr><td>Trace lookup by ID read hundreds of filters.</td><td>Index gave only a time window.</td><td>Index rows name the files and row groups.</td></tr>
+      <tr><td>Trace lookup by ID read hundreds of filters.</td><td>Day partitions; index gave only a time window.</td><td>Hour partitions with few files each; index rows name the hours.</td></tr>
       <tr><td>The cost table quoted numbers derived for a different architecture.</td><td>$5.20 / $250 / $18–25k.</td><td>Ranges recomputed for this design; see below.</td></tr>
       <tr><td>The first experiment was the one with a fallback.</td><td>Catalog commit first.</td><td>Billing behaviour, connection limits and a real read slice first.</td></tr>
     </tbody>
   </table></div>
-  <div class="col" id="rereview"></div>
+  <div class="col">
+    <p>A third reviewer then attacked only what was new in draft 3. It judged the core sound: the fenced seam, the contiguous watermark, and catalog independence. It found 12 problems at the edges, four of them critical, such as an index updated outside the ledger transaction and sequence numbers that were per shard when shards can be shared between tenants. Draft 3.1 amends the text for each. Those amendments have not been reviewed again; the next real check is the formal model, not another reading.</p>
+  </div>
 </section>
 
 <section>
@@ -296,7 +298,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
   <h2>Where everything is</h2>
   <p>Branch <code>claude/cloudflare-observability-platform-ibaqya</code> in <code>by77er/viz</code>.</p>
   <div class="files">
-    design/DESIGN.md <span>— the architecture, draft 3</span><br>
+    design/DESIGN.md <span>— the architecture, draft 3.1</span><br>
     design/DECISIONS.md <span>— each decision, its alternatives, and what would change it</span><br>
     design/VERIFICATION.md <span>— invariants, test layers, experiments, evidence per milestone</span><br>
     design/REVIEW.md <span>— findings and what changed; raw reports in design/reviews/</span><br>

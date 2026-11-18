@@ -11,7 +11,7 @@ built. Detail and sources: `research/12-verification-strategy.md`.
 | Every claim tagged verified / secondary / training knowledge | Non-Cloudflare system internals are mostly training knowledge and are not load-bearing in the design |
 | Disagreements listed and resolved explicitly | Six conflicts between researchers; see `research/README.md` and `DECISIONS.md` |
 | Two independent adversarial reviews of draft 2 | 57 findings; the write path, routing, cost table and spike order were rewritten; see `REVIEW.md` |
-| Draft 3 re-review | **Not done.** The revised ledger design has not itself been reviewed |
+| Re-review of draft 3 | Core seam judged sound; 12 edge findings amended in draft 3.1. The amendments are unreviewed text |
 | Every modelled number mapped to an experiment | Section 4 below |
 
 What this pass did **not** do: run any code, measure any latency, or exercise any Cloudflare
