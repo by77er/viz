@@ -174,8 +174,10 @@ async function main() {
     await page.click('role=dialog[name="Time range"] >> text=Last 24 h')
     await page.waitForFunction(() => new URL(location.href).searchParams.get('from') === 'now-24h')
     check('time picker preset writes a relative range to the URL', !new URL(page.url()).searchParams.has('to'), page.url().split('?')[1])
-    await page.waitForFunction(() => /every 1 m,/.test(document.querySelector('[data-testid=status]')?.textContent || ''))
-    check('auto step follows the range (24 h → 1 m at this width; 3 h → 15 s)', true)
+    await page.waitForFunction(() => /every 2 m,/.test(document.querySelector('[data-testid=status]')?.textContent || ''))
+    // The panel is 1392 px wide with the design system's gutters (it was 1416), which is one
+    // width bucket lower, so 24 h now resolves to 2 m, not 1 m.
+    check('auto step follows the range (24 h → 2 m at this width; 3 h → 15 s)', true)
 
     // Explicit step + min/max downsampling.
     await page.goto(url(Q_CPU, '&step=1s'))

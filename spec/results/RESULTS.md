@@ -45,7 +45,12 @@
 
 | experiment | checked | result | states (distinct / generated) | depth | time |
 |---|---|---|---|---|---|
-| `fixed_1shard` amended protocol, 1 shard, 2 batches, every action | Safety | holds (exhaustive) | 9120748 / 53621014 | 44 | 374.9s |
+| `fixed_1shard` amended protocol, 1 shard, 2 batches, every action | Safety | holds (exhaustive) | 11584656 / 68176316 | 45 | 548.3s |
+| `fixed_1shard_variants` amended protocol, 2 encoder variants (double flush with different bytes) | Safety | holds (exhaustive) | 1872496 / 13614670 | 38 | 102.1s |
+| `fixed_1shard_3batches` amended protocol, 1 shard, 3 batches, no shard loss / retention | Safety | holds (exhaustive) | 4088964 / 30737756 | 44 | 198.1s |
+| `fixed_2shards` amended protocol, 2 shards, 2 batches | Safety | holds (exhaustive) | 2821410 / 14689338 | 42 | 115.4s |
+| `fixed_2queries` amended protocol, 2 consecutive queries, no compaction | Safety | holds (exhaustive) | 715474 / 4814954 | 37 | 33.5s |
+| `fixed_timing_no_restart` liveness proxy L2: with attempt < retainRecordedMs and no storage loss, no attempt is ever refused | L2_NoRestart | holds (exhaustive) | 391137 / 2848430 | 36 | 23.3s |
 
 ## sim
 
