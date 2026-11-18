@@ -568,6 +568,37 @@ export interface TableMetadata {
 /** Summary key that points at the immutable object holding every tenant's ledger cursor. */
 export const CURSORS_KEY = 'viz.ledger-cursors'
 
+/**
+ * Table property naming the version of viz's conventions in this metadata
+ * (contracts/COMPATIBILITY.md §5). Absent means 1: tables committed before the property existed.
+ */
+export const METADATA_FORMAT_PROPERTY = 'viz.format-version'
+export const METADATA_FORMAT_VERSION = 1
+/** Schema and partition-spec ids this code writes. A newer writer's evolution gets other ids. */
+const KNOWN_SCHEMA_IDS = new Set([0])
+const KNOWN_SPEC_IDS = new Set([0])
+
+/**
+ * Why this code must not commit over (or sweep against) `meta`, or null. A newer publisher
+ * may have evolved the table (a column with a new field id, a new spec) or changed viz's
+ * conventions; committing over it with this code's schema could drop what it added, and its
+ * ids could later be handed out twice. Refusing stalls publication only: the publisher is
+ * never upstream of ingest (D15).
+ */
+export function metadataProblem(meta: TableMetadata): string | null {
+  if (meta['format-version'] !== 2) return `Iceberg format-version ${meta['format-version']}; this publisher writes 2`
+  const raw = meta.properties?.[METADATA_FORMAT_PROPERTY]
+  const v = raw === undefined ? 1 : Number(raw)
+  if (!Number.isSafeInteger(v) || v < 1) return `unreadable ${METADATA_FORMAT_PROPERTY} ${JSON.stringify(raw)}`
+  if (v > METADATA_FORMAT_VERSION) return `${METADATA_FORMAT_PROPERTY} ${v}; this publisher knows up to ${METADATA_FORMAT_VERSION}`
+  if (!KNOWN_SCHEMA_IDS.has(meta['current-schema-id'])) return `current schema ${meta['current-schema-id']} was written by a newer publisher`
+  if (!KNOWN_SPEC_IDS.has(meta['default-spec-id'])) return `partition spec ${meta['default-spec-id']} was written by a newer publisher`
+  return null
+}
+
+/** The version of a cursors object (`{ v, table, cell, snapshotId, cursors }`); absent = 1. */
+export const CURSORS_FORMAT_VERSION = 1
+
 export function emptyMetadata(table: Table, location: string, cell: string, uuid: string, now: number): TableMetadata {
   const d = TABLE_DEFS[table]
   return {
@@ -594,6 +625,7 @@ export function emptyMetadata(table: Table, location: string, cell: string, uuid
       'gc.enabled': 'false',
       'viz.cell': cell,
       'viz.table': table,
+      [METADATA_FORMAT_PROPERTY]: String(METADATA_FORMAT_VERSION),
     },
     refs: {},
     snapshots: [],

@@ -1,8 +1,11 @@
 import { DurableObject } from 'cloudflare:workers'
+import { openSchema, refusalOf, type SchemaState, SchemaTooNewError } from '../../contracts/schema'
 import { TENANT_ID, type FileEntry, type Table } from '../../contracts/ledger'
 import { readAvro, writeAvro, type AvroCodec } from './avro'
 import {
+  CURSORS_FORMAT_VERSION,
   CURSORS_KEY,
+  metadataProblem,
   MANIFEST_ENTRY_SCHEMA,
   MANIFEST_LIST_SCHEMA,
   STATUS_ADDED,
@@ -27,6 +30,7 @@ import {
   type Snapshot,
   type TableMetadata,
 } from './iceberg'
+import { PUBLISHER_SCHEMA } from './schema'
 import { cursorCompare, inBatches, listTenants, readTenantLog, replayAt, type Cursor, type LogStatus, type Store, type TenantLog } from './log'
 
 /**
@@ -195,6 +199,20 @@ interface TablePlan {
 /** A conditional write lost, or SQLite was found behind R2. The caller starts over. */
 class Conflict extends Error {}
 
+/**
+ * R2 holds metadata or a cursors object written by a newer publisher than this code
+ * (contracts/COMPATIBILITY.md §5). Nothing is committed, swept or overwritten; the tenants
+ * stay pending and the alarm retries until a release that understands it runs.
+ */
+export class MetadataTooNew extends Error {
+  override name = 'MetadataTooNew'
+}
+
+function checkMetadata(meta: TableMetadata, key: string): void {
+  const problem = metadataProblem(meta)
+  if (problem) throw new MetadataTooNew(`metadata_too_new: ${key}: ${problem}`)
+}
+
 type Row = Record<string, SqlStorageValue>
 type Part = { file: LiveFile; status: number }
 
@@ -243,7 +261,24 @@ export class Publisher extends DurableObject<PublisherEnv> {
     if (!name) throw new Error('publisher: the object must be addressed by name (the cell id)')
     this.cell = this.cellOf(name)
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(this.cell)) throw new Error('publisher: cell id must match [A-Za-z0-9_-]{1,64}')
-    this.schema()
+    // Versioned storage (contracts/COMPATIBILITY.md §2): migrate, or refuse storage a newer
+    // release wrote. Local SQLite only, so holding other events off for it is allowed.
+    void ctx.blockConcurrencyWhile(async () => {
+      this.schemaState = openSchema(ctx.storage, PUBLISHER_SCHEMA)
+    })
+  }
+
+  /** What opening storage found. Anything but `ok`: every method throws `SchemaTooNewError` and nothing is written. */
+  private schemaState: SchemaState = { status: 'schema_too_new', component: PUBLISHER_SCHEMA.component, found: 0, compat: 0, known: 0, retryAfterMs: 0 }
+
+  /**
+   * Storage a newer release wrote: refuse. The publisher's results are reports, not status
+   * unions, and its callers (a queue consumer, a cron) retry on an exception, so it throws
+   * (contracts/COMPATIBILITY.md §2.4).
+   */
+  private guard(): void {
+    const refused = refusalOf(this.schemaState)
+    if (refused) throw new SchemaTooNewError(refused)
   }
 
   // ───────────────────────────── seams for tests ─────────────────────────────
@@ -264,30 +299,6 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   private get sql(): SqlStorage {
     return this.ctx.storage.sql
-  }
-
-  private schema(): void {
-    const sql = this.sql
-    sql.exec(`CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS tbl (name TEXT PRIMARY KEY, version INTEGER NOT NULL, snapshot_id INTEGER, seq INTEGER NOT NULL, uuid TEXT NOT NULL)`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS cursor (tbl TEXT NOT NULL, tenant TEXT NOT NULL, incarnation INTEGER NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (tbl, tenant))`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS live (
-      tbl TEXT NOT NULL, key TEXT NOT NULL, tenant TEXT NOT NULL, day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL,
-      snapshot_id INTEGER NOT NULL, seq INTEGER NOT NULL, file_seq INTEGER NOT NULL, stats TEXT NOT NULL, manifest TEXT NOT NULL,
-      PRIMARY KEY (tbl, key))`)
-    sql.exec(`CREATE INDEX IF NOT EXISTS live_tenant ON live (tbl, tenant)`)
-    sql.exec(`CREATE INDEX IF NOT EXISTS live_manifest ON live (tbl, manifest)`)
-    // The manifests of the current snapshot's manifest list; `info` is a ManifestInfo.
-    sql.exec(`CREATE TABLE IF NOT EXISTS manifest (tbl TEXT NOT NULL, path TEXT NOT NULL, info TEXT NOT NULL, PRIMARY KEY (tbl, path))`)
-    // One row per retained snapshot: every metadata object it references (a JSON array).
-    sql.exec(`CREATE TABLE IF NOT EXISTS snap (tbl TEXT NOT NULL, snapshot_id INTEGER NOT NULL, seq INTEGER NOT NULL, files TEXT NOT NULL, PRIMARY KEY (tbl, snapshot_id))`)
-    // Data files removed from the ledger. `removed_seq` is the sequence number of the
-    // snapshot that dropped the file (0: never published). `free_at` is set once no
-    // retained snapshot references it.
-    sql.exec(`CREATE TABLE IF NOT EXISTS removed (tbl TEXT NOT NULL, tenant TEXT NOT NULL, key TEXT NOT NULL, removed_seq INTEGER NOT NULL, free_at INTEGER, PRIMARY KEY (tbl, key))`)
-    sql.exec(`CREATE INDEX IF NOT EXISTS removed_tenant ON removed (tenant)`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS orphan (path TEXT PRIMARY KEY, since INTEGER NOT NULL)`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS pending (tenant TEXT PRIMARY KEY, since INTEGER NOT NULL)`)
   }
 
   private config(): PublisherConfig {
@@ -349,6 +360,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * absolute URIs, so it can only be set before the first commit.
    */
   async configure(patch: Partial<PublisherConfig>): Promise<PublisherConfig> {
+    this.guard()
     if (patch.locationPrefix !== undefined) {
       if (patch.locationPrefix.endsWith('/')) throw new Error('publisher: locationPrefix must not end with a slash')
       const current = this.config().locationPrefix
@@ -370,11 +382,13 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * new, it writes nothing.
    */
   async publish(tenants?: string[]): Promise<PublishResult> {
+    this.guard()
     return this.serial(() => this.publishNow(tenants))
   }
 
   /** A nudge: these tenants changed. The alarm publishes them after `publishIntervalMs`. */
   async notify(tenants: string[]): Promise<void> {
+    this.guard()
     const now = this.now()
     for (const t of tenants) {
       // `since` is the latest nudge: a publish clears only nudges older than its own start.
@@ -386,6 +400,12 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   async alarm(): Promise<void> {
+    const refused = refusalOf(this.schemaState)
+    if (refused) {
+      // Keep the alarm for the release that owns this storage; touch nothing else.
+      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)
+      return
+    }
     const tenants = this.pendingTenants()
     if (tenants.length > 0) {
       // A failure leaves the tenants pending; `scheduleAlarm` below sets the retry.
@@ -396,10 +416,12 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   /** Tenants with unpublished work that the alarm will retry. */
   async pending(): Promise<string[]> {
+    this.guard()
     return this.pendingTenants()
   }
 
   async cursors(table: Table): Promise<Record<string, Cursor>> {
+    this.guard()
     const out: Record<string, Cursor> = {}
     for (const r of this.sql.exec(`SELECT tenant, incarnation, version FROM cursor WHERE tbl = ? ORDER BY tenant`, table).toArray()) {
       out[r.tenant as string] = { ledgerIncarnation: r.incarnation as number, version: r.version as number }
@@ -409,6 +431,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   /** Where a table is: metadata version, current snapshot, live files and manifests. */
   async status(table: Table): Promise<{ version: number; snapshotId: number | null; seq: number; files: number; manifests: number; metadataKey: string | null }> {
+    this.guard()
     const s = this.state(table)
     const files = this.sql.exec(`SELECT COUNT(*) AS n FROM live WHERE tbl = ?`, table).one().n as number
     const manifests = this.sql.exec(`SELECT COUNT(*) AS n FROM manifest WHERE tbl = ?`, table).one().n as number
@@ -601,6 +624,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         throw new Conflict(`${table}: v${state.version} is not in R2`)
       }
       prev = await o.json<TableMetadata>()
+      checkMetadata(prev, this.metaKey(table, state.version))
     }
     const floor = state.version > 0 ? state.version : await this.hint(store, table)
     if (floor > state.version || (await store.head(this.metaKey(table, state.version + 1)))) {
@@ -746,7 +770,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const cursors = await this.cursors(table)
     for (const [tenant, c] of plan.cursors) cursors[tenant] = c
     const cursorsKey = `${this.metaDir(table)}cursors-${snapshotId}-${tag}.json`
-    const cursorsBody = JSON.stringify({ table, cell: this.cell, snapshotId, cursors })
+    const cursorsBody = JSON.stringify({ v: CURSORS_FORMAT_VERSION, table, cell: this.cell, snapshotId, cursors })
     await store.put(cursorsKey, cursorsBody, { httpMetadata: { contentType: 'application/json' } })
     report.bytes.cursors = cursorsBody.length
     await this.step('cursors-written', table)
@@ -909,6 +933,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const o = await store.get(this.metaKey(table, version))
     if (!o) throw new Error(`publisher: ${this.metaKey(table, version)} vanished`)
     const meta = await o.json<TableMetadata>()
+    // Never rebuild this code's view from a table a newer publisher evolved: the next commit would overwrite it.
+    checkMetadata(meta, this.metaKey(table, version))
     const current = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])
     let manifests: ManifestInfo[] = []
     let files: { file: LiveFile; manifest: string }[] = []
@@ -918,7 +944,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
       files = await this.readSnapshotFiles(store, cfg, manifests)
       const c = await store.get(this.keyOf(cfg, current.summary[CURSORS_KEY] as string))
       if (!c) throw new Error(`publisher: cursor object of snapshot ${current['snapshot-id']} is not in R2`)
-      cursors = (await c.json<{ cursors: Record<string, Cursor> }>()).cursors
+      const body = await c.json<{ v?: number; cursors: Record<string, Cursor> }>()
+      if ((body.v ?? 1) > CURSORS_FORMAT_VERSION) throw new MetadataTooNew(`metadata_too_new: cursors object of snapshot ${current['snapshot-id']} is version ${body.v}`)
+      cursors = body.cursors
     }
     // What each retained snapshot references, for the sweep. Known snapshots are not re-read.
     const known = new Set(this.sql.exec(`SELECT snapshot_id FROM snap WHERE tbl = ?`, table).toArray().map((r) => r.snapshot_id as number))
@@ -963,6 +991,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * expires them as a side effect), then sweep orphans. Meant for a cron.
    */
   async maintain(): Promise<{ expired: Record<Table, number>; swept: Record<Table, { marked: number; deleted: number }>; ops: R2Ops }> {
+    this.guard()
     return this.serial(async () => {
       const cfg = this.config()
       const store = new CountingBucket(this.env.BUCKET)
@@ -1005,6 +1034,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   /** Sweep unreferenced metadata objects of both tables. */
   async sweep(): Promise<Record<Table, { marked: number; deleted: number }>> {
+    this.guard()
     return this.serial(async () => {
       const cfg = this.config()
       const store = new CountingBucket(this.env.BUCKET)
@@ -1036,6 +1066,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const o = await store.get(this.metaKey(table, state.version))
     if (!o) return out
     const meta = await o.json<TableMetadata>()
+    // A newer publisher may reference objects this code does not know about (statistics, delete files): delete nothing.
+    checkMetadata(meta, this.metaKey(table, state.version))
     const referenced = new Set<string>([this.metaKey(table, state.version), this.hintKey(table)])
     for (const m of meta['metadata-log']) referenced.add(this.keyOf(cfg, m['metadata-file']))
     const snaps = new Map(this.sql.exec(`SELECT snapshot_id, files FROM snap WHERE tbl = ?`, table).toArray().map((r) => [r.snapshot_id as number, JSON.parse(r.files as string) as string[]]))
@@ -1086,6 +1118,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * snapshot for at least `deleteGraceMs`, and not live in any table now.
    */
   async safeToDelete(tenant: string): Promise<string[]> {
+    this.guard()
     const limit = this.now() - this.config().deleteGraceMs
     return this.sql
       .exec(
@@ -1099,6 +1132,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   /** The deleter reports what it deleted, so the publisher can forget those keys. */
   async acknowledgeDeleted(tenant: string, keys: string[]): Promise<void> {
+    this.guard()
     for (const k of keys) this.sql.exec(`DELETE FROM removed WHERE tenant = ? AND key = ? AND free_at IS NOT NULL`, tenant, k)
   }
 
@@ -1115,6 +1149,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * needs nothing but R2.
    */
   async verify(table: Table, options: { cursors?: 'state' | 'snapshot'; checkObjects?: boolean } = {}): Promise<VerifyResult> {
+    this.guard()
     // In the queue with publishes: a commit in progress has R2 ahead of SQLite for a moment.
     return this.serial(() => this.verifyNow(table, options))
   }
@@ -1147,6 +1182,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
         return finish()
       }
       const meta = await o.json<TableMetadata>()
+      const tooNew = metadataProblem(meta)
+      if (tooNew) {
+        result.problems.push(`metadata written by a newer publisher, not verified: ${tooNew}`)
+        return finish()
+      }
       const current = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])
       if (current) {
         result.snapshotId = current['snapshot-id']

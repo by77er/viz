@@ -138,6 +138,8 @@ describe('limits', () => {
     expect((await run(w.a.key, q)).status).toBe(200)
     await setLimits(w.a.name, { maxFiles: files - 1 })
     res = await run(w.a.key, q)
+    const PROBE = await res.clone().text()
+    if (res.status !== 422) throw new Error(`PROBE ${PROBE}`)
     expect([res.status, (await res.json<{ error: string }>()).error]).toEqual([422, `query exceeded limit max_files: ${files} data files to read, the limit is ${files - 1}. Narrow the time range.`])
     await setLimits(w.a.name, null)
   })

@@ -122,6 +122,8 @@ export function probationaryLength(n: number, p = PROBATION_PERCENT): number {
  */
 export interface SweepRows {
   window: Int32Array
+  /** Inside a window (probationary or not): decides TP versus FP weighting, as in Python. */
+  inWindow: Uint8Array
   unweighted: Float64Array
   /** Number of windows; window ids are file-local. */
   nWindows: number
@@ -131,6 +133,7 @@ export interface SweepRows {
 export function sweepRows(file: NabFile): SweepRows {
   const n = file.stamps.length
   const window = new Int32Array(n)
+  const inWindow = new Uint8Array(n)
   const unweighted = new Float64Array(n)
   const prob = probationaryLength(n)
   let cur = -1 // current window id
@@ -158,6 +161,7 @@ export function sweepRows(file: NabFile): SweepRows {
       u = scaledSigmoid(Math.abs(prevRight - i) / (prevWidth - 1))
     }
     unweighted[i] = u
+    inWindow[i] = cur >= 0 ? 1 : 0
     window[i] = i >= prob ? cur : -2
     // "If at right-edge of window, exit window" (by timestamp equality, as in Python)
     if (cur >= 0 && file.stamps[i] === file.stamps[curRight]) {
@@ -166,7 +170,7 @@ export function sweepRows(file: NabFile): SweepRows {
       cur = -1
     }
   }
-  return { window, unweighted, nWindows: file.windows.length }
+  return { window, inWindow, unweighted, nWindows: file.windows.length }
 }
 
 const MAX_TP = scaledSigmoid(-1.0)
@@ -175,8 +179,7 @@ const MAX_TP = scaledSigmoid(-1.0)
 export function weighted(rows: SweepRows, cm: CostMatrix): Float64Array {
   const out = new Float64Array(rows.unweighted.length)
   for (let i = 0; i < out.length; i++) {
-    const w = rows.window[i]!
-    out[i] = w >= 0 ? (rows.unweighted[i]! * cm.tpWeight) / MAX_TP : rows.unweighted[i]! * cm.fpWeight
+    out[i] = rows.inWindow[i] ? (rows.unweighted[i]! * cm.tpWeight) / MAX_TP : rows.unweighted[i]! * cm.fpWeight
   }
   return out
 }

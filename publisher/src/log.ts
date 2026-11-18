@@ -43,6 +43,12 @@ export type LogStatus =
   | 'cursor_ahead'
   /** An object does not say what its key says, or is not a change. */
   | 'corrupt'
+  /**
+   * A change of a version (`v`) or kind this code does not know, written by a newer ledger
+   * (contracts/COMPATIBILITY.md §3.2). `changes` stops before it; it is never skipped. The
+   * tenant waits for a publisher that reads it.
+   */
+  | 'unsupported'
 
 export interface TenantLog {
   tenant: string
@@ -61,6 +67,23 @@ export interface TenantLog {
 
 const CHANGE_OBJECT = /\/(\d{12,})\.json$/
 const READ_FANOUT = 6
+
+/** The `LedgerChange` versions this code reads (absent `v` = 1) and the kinds it knows how to apply. */
+export const LEDGER_CHANGE_VERSION = 1
+const KINDS: ReadonlySet<string> = new Set<LedgerChange['kind']>(['base', 'add_unit', 'replace', 'expire', 'register_stream'])
+
+/** Why this code may not apply `c`, or null (contracts/COMPATIBILITY.md §3.2: refuse, never guess). */
+export function unsupported(c: { v?: unknown; kind?: unknown }): string | null {
+  const v = c.v === undefined ? 1 : c.v
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) return `unreadable change version ${JSON.stringify(c.v)}`
+  if (v > LEDGER_CHANGE_VERSION) return `change version ${v}; this publisher reads up to ${LEDGER_CHANGE_VERSION}`
+  if (typeof c.kind !== 'string' || !KINDS.has(c.kind)) return `unknown change kind ${JSON.stringify(c.kind)}`
+  return null
+}
+
+class Unsupported {
+  constructor(readonly why: string) {}
+}
 
 export async function inBatches<T, R>(items: readonly T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = []
@@ -85,10 +108,12 @@ async function latestIncarnation(store: Store, cell: string, tenant: string): Pr
   return latest
 }
 
-async function readBase(store: Store, cell: string, tenant: string, incarnation: number): Promise<LedgerChange | null | 'corrupt'> {
+async function readBase(store: Store, cell: string, tenant: string, incarnation: number): Promise<LedgerChange | null | 'corrupt' | Unsupported> {
   const o = await store.get(`${cell}/${ledgerBaseKey(tenant, incarnation)}`)
   if (!o) return null
   const base = await o.json<LedgerChange>()
+  const why = unsupported(base)
+  if (why) return new Unsupported(why)
   if (base.kind !== 'base' || base.ledgerIncarnation !== incarnation || !Array.isArray(base.added) || !Number.isSafeInteger(base.version)) return 'corrupt'
   return base
 }
@@ -111,10 +136,12 @@ async function listVersions(store: Store, cell: string, tenant: string, incarnat
   return versions.sort((a, b) => a - b)
 }
 
-async function readChange(store: Store, cell: string, tenant: string, incarnation: number, version: number): Promise<LedgerChange | null> {
+async function readChange(store: Store, cell: string, tenant: string, incarnation: number, version: number): Promise<LedgerChange | null | Unsupported> {
   const o = await store.get(`${cell}/${ledgerLogKey(tenant, incarnation, version)}`)
   if (!o) return null
   const c = await o.json<LedgerChange>()
+  const why = unsupported(c)
+  if (why) return new Unsupported(`version ${version}: ${why}`)
   if (c.ledgerIncarnation !== incarnation || c.version !== version || c.kind === 'base' || !Array.isArray(c.added) || !Array.isArray(c.removed)) return null
   return c
 }
@@ -139,6 +166,7 @@ export async function readTenantLog(store: Store, cell: string, tenant: string, 
     const b = await readBase(store, cell, tenant, incarnation)
     if (b === null) return none('no_base', incarnation, `incarnation ${incarnation} has no base.json`)
     if (b === 'corrupt') return none('corrupt', incarnation, `base.json of incarnation ${incarnation} is not a base change`)
+    if (b instanceof Unsupported) return none('unsupported', incarnation, `base.json of incarnation ${incarnation}: ${b.why}`)
     base = b
     start = b.version
   } else {
@@ -160,6 +188,11 @@ export async function readTenantLog(store: Store, cell: string, tenant: string, 
   const read = await inBatches(wanted, READ_FANOUT, (v) => readChange(store, cell, tenant, incarnation, v))
   const changes: LedgerChange[] = []
   for (const [i, c] of read.entries()) {
+    if (c instanceof Unsupported) {
+      // Written by a newer ledger: stop before it, as for a hole, and say why. Never skip it.
+      const log: TenantLog = { tenant, status: 'unsupported', detail: c.why, incarnation, base, start, changes, gapAt: wanted[i] }
+      return log
+    }
     if (!c) {
       // Listed a moment ago, unreadable or wrong now: stop before it, as for a hole.
       return { tenant, status: 'corrupt', detail: `change ${wanted[i]} of incarnation ${incarnation} is missing or not what its key says`, incarnation, base, start, changes }
@@ -198,6 +231,7 @@ export async function listTenants(store: Store, cell: string): Promise<string[]>
 export async function replayAt(store: Store, cell: string, tenant: string, cursor: Cursor): Promise<Map<string, FileEntry>> {
   const inc = cursor.ledgerIncarnation
   const base = await readBase(store, cell, tenant, inc)
+  if (base instanceof Unsupported) throw new Error(`incarnation ${inc} of ${tenant}: base.json is not readable by this publisher: ${base.why}`)
   if (base === null || base === 'corrupt') throw new Error(`incarnation ${inc} of ${tenant} has no usable base.json`)
   if (cursor.version < base.version) throw new Error(`cursor version ${cursor.version} of ${tenant} is before the base of incarnation ${inc} (${base.version})`)
   const files = new Map<string, FileEntry>()
@@ -206,6 +240,7 @@ export async function replayAt(store: Store, cell: string, tenant: string, curso
   for (let v = base.version + 1; v <= cursor.version; v++) versions.push(v)
   const changes = await inBatches(versions, READ_FANOUT, (v) => readChange(store, cell, tenant, inc, v))
   for (const [i, c] of changes.entries()) {
+    if (c instanceof Unsupported) throw new Error(`change ${versions[i]} of incarnation ${inc} of ${tenant} is not readable by this publisher: ${c.why}`)
     if (!c) throw new Error(`change ${versions[i]} of incarnation ${inc} of ${tenant} is missing from the log`)
     for (const k of c.removed) {
       if (!files.delete(k)) throw new Error(`change ${c.version} of ${tenant} removes ${k}, which is not live`)
