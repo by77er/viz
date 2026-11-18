@@ -112,3 +112,27 @@ for q in q1 q2; do node run.mjs rust $q 11 $W; node run.mjs js $q 11; done
 prints cold, median and minimum times, peak RSS, WASM memory and the result checksum.
 `worker/` holds the `workerd` harness; `prof.mjs` and `core/src/bin/prof.rs` give the
 per-column timings; `plainfile.mjs` writes the PLAIN-encoded counterfactual file.
+
+## Addendum: scanning the write-ahead tail vs scanning Parquet
+
+Question: how much less efficient is a query over rows still in a shard's write-ahead log
+than over the same rows in a Parquet file? `tail.mjs` runs both in the Rust/WASM core over
+identical rows: 240,000 samples (2,000 series × 30 minutes).
+
+- **Lake:** one sorted Parquet file, 1.58 MB.
+- **Tail:** 120 uncompressed columnar batches in arrival order, 6.41 MB. No statistics and
+  no pruning: every batch is visited, matching rows are gathered, sorted by series and time,
+  then evaluated by the same function.
+
+| Query | Lake (Parquet) | Tail (log batches) | Same result |
+|---|---|---|---|
+| One metric, 12,000 rows match | 6.1 ms | 2.2 ms | yes |
+| All counters, 120,000 rows match | 5.2 ms | 13.5 ms | yes |
+
+Compute only, median of 21 runs in Node. A selective query is cheaper on the tail because
+filtering raw arrays beats decoding a whole row group. A broad query is about 2.6× dearer
+because the tail has to sort what Parquet stores sorted. The tail takes about 4× the bytes.
+
+Not measured: reading the batches out of Durable Object storage, the call to the shard,
+contention with ingest on the shard's single thread, and on the lake side the R2 range
+reads, which in practice cost more than either compute figure.

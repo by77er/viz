@@ -230,6 +230,43 @@ pub fn query_arrow(file: Bytes, metric: &[u8], t0: i64, steps: usize) -> Vec<f64
     acc
 }
 
+/// Tail scan: unsorted, uncompressed columnar batches as a shard would hold them in its
+/// write-ahead log. Layout per batch: n:u32, pad:u32, name_idx:[u32;n] (padded to 8),
+/// sid:[i64;n], ts:[i64;n], val:[f64;n]. `keep[i]` says whether metric i is selected.
+/// No statistics, no pruning: every batch is visited, matching rows are gathered, sorted
+/// by (series, time), then evaluated with the same function as the Parquet path.
+pub fn tail_query(buf: &[u8], keep: &[u8], t0: i64, steps: usize) -> Vec<f64> {
+    let mut rows: Vec<(i64, i64, f64)> = Vec::new();
+    let mut o = 0usize;
+    let rd64 = |b: &[u8], at: usize| i64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    while o < buf.len() {
+        let n = u32::from_le_bytes(buf[o..o + 4].try_into().unwrap()) as usize;
+        let idx = o + 8;
+        let sid = idx + ((n * 4 + 7) & !7);
+        let ts = sid + n * 8;
+        let val = ts + n * 8;
+        for i in 0..n {
+            let m = u32::from_le_bytes(buf[idx + i * 4..idx + i * 4 + 4].try_into().unwrap()) as usize;
+            if keep[m] != 0 {
+                rows.push((rd64(buf, sid + i * 8), rd64(buf, ts + i * 8), f64::from_bits(rd64(buf, val + i * 8) as u64)));
+            }
+        }
+        o = val + n * 8;
+    }
+    rows.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    let mut acc = vec![0.0f64; steps];
+    let (mut tsv, mut vv, mut cum) = (Vec::new(), Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < rows.len() {
+        let mut j = i;
+        tsv.clear(); vv.clear();
+        while j < rows.len() && rows[j].0 == rows[i].0 { tsv.push(rows[j].1); vv.push(rows[j].2); j += 1; }
+        eval_series(&tsv, &vv, t0, &mut acc, &mut cum);
+        i = j;
+    }
+    acc
+}
+
 // ---- C ABI for the WASM host ----
 #[no_mangle]
 pub extern "C" fn alloc(len: usize) -> *mut u8 {
@@ -273,6 +310,14 @@ pub unsafe extern "C" fn query_c(file: *mut u8, file_len: usize, metric: *const 
     let r = query_arrow(file, std::slice::from_raw_parts(metric, metric_len), t0, steps);
     #[cfg(not(feature = "arrow"))]
     let r = query(file, std::slice::from_raw_parts(metric, metric_len), t0, steps);
+    let mut r = std::mem::ManuallyDrop::new(r);
+    let v = Vec::from_raw_parts(r.as_mut_ptr() as *mut u8, r.len() * 8, r.capacity() * 8);
+    set_out(v);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tail_query_c(buf: *const u8, len: usize, keep: *const u8, keep_len: usize, t0: i64, steps: usize) {
+    let r = tail_query(std::slice::from_raw_parts(buf, len), std::slice::from_raw_parts(keep, keep_len), t0, steps);
     let mut r = std::mem::ManuallyDrop::new(r);
     let v = Vec::from_raw_parts(r.as_mut_ptr() as *mut u8, r.len() * 8, r.capacity() * 8);
     set_out(v);
