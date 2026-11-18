@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { formatDateTime } from '../lib/time'
 import type { LegendRow } from './Legend'
-import { Swatch } from './Legend'
+import { SortHead } from './Legend'
 
 interface Row extends LegendRow {
   labels: Record<string, string>
@@ -39,60 +39,59 @@ export function ResultTable({ rows, format }: { rows: Row[]; format: (v: number 
     return out
   }, [rows, sort])
 
-  const th = (key: string, label: string, numeric = false) => {
+  const head = (key: string, label: string, numeric = false) => {
     const active = sort.key === key
     return (
-      <th key={key} scope="col" className={numeric ? 'num' : ''} aria-sort={active ? (sort.dir === 1 ? 'ascending' : 'descending') : undefined}>
-        <button onClick={() => setSort({ key, dir: active ? (sort.dir === 1 ? -1 : 1) : numeric ? -1 : 1 })}>
-          {label}
-          <span aria-hidden="true" className="inline-block w-3 text-[9px]">
-            {active ? (sort.dir === 1 ? '▲' : '▼') : ''}
-          </span>
-        </button>
-      </th>
+      <SortHead
+        key={key}
+        label={label}
+        active={active}
+        dir={sort.dir}
+        numeric={numeric}
+        onSort={() => setSort({ key, dir: active ? (sort.dir === 1 ? -1 : 1) : numeric ? -1 : 1 })}
+      />
     )
   }
 
   return (
-    <div className="max-h-[420px] overflow-auto" data-testid="result-table">
-      <table className="dt">
-        <caption className="sr-only">Latest value of each series in the selected time range</caption>
-        <thead>
-          <tr>
-            <th scope="col" className="w-[1%]">
-              <span className="sr-only">Colour</span>
-            </th>
-            {columns.map((c) => th(c, c === '__name__' ? 'metric' : c))}
-            {th('#value', 'Value', true)}
-            <th scope="col" className="num">
-              <span>At</span>
-            </th>
-            <th aria-hidden="true" className="w-full" />
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.slice(0, MAX_ROWS).map((r) => (
-            <tr key={r.id}>
-              <td className="!pr-0">
-                <Swatch color={r.color} dash={r.dash} />
-              </td>
-              {columns.map((c) => (
-                <td key={c} className="mono">
-                  {r.labels[c] ?? <span className="text-fg-3">–</span>}
-                </td>
-              ))}
-              <td className="num">{format(r.stats.last)}</td>
-              <td className="num text-fg-3">{r.stats.lastAt == null ? '–' : formatDateTime(r.stats.lastAt)}</td>
-              <td aria-hidden="true" />
+    <div data-testid="result-table" className="region-part">
+      <p className="vz-panel-desc">
+        The latest value of each series in the range.
+        {sorted.length > MAX_ROWS ? ` Showing the first ${MAX_ROWS} of ${sorted.length} series; narrow the query to see the rest.` : ''}
+      </p>
+      <div className="vz-table-wrap">
+        <table className="vz-table">
+          <caption className="sr-only">Latest value of each series in the selected time range</caption>
+          <thead>
+            <tr>
+              {columns.length === 0 && (
+                <th scope="col" className="vz-label">
+                  Series
+                </th>
+              )}
+              {columns.map((c) => head(c, c === '__name__' ? 'Metric' : c))}
+              {head('#value', 'Value', true)}
+              <th scope="col" className="vz-label vz-right">
+                At
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-      {sorted.length > MAX_ROWS && (
-        <div className="border-t border-line px-2.5 py-1.5 text-[12px] text-fg-3">
-          Showing the first {MAX_ROWS} of {sorted.length} series. Narrow the query to see the rest.
-        </div>
-      )}
+          </thead>
+          <tbody>
+            {sorted.slice(0, MAX_ROWS).map((r) => (
+              <tr key={r.id}>
+                {columns.length === 0 && <td className="vz-num">{r.name}</td>}
+                {columns.map((c) => (
+                  <td key={c} className="vz-num">
+                    {r.labels[c] ?? <span className="cell-quiet">none</span>}
+                  </td>
+                ))}
+                <td className="vz-num vz-right">{format(r.stats.last)}</td>
+                <td className="vz-num vz-right cell-quiet">{r.stats.lastAt == null ? 'none' : formatDateTime(r.stats.lastAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

@@ -5,6 +5,12 @@ import { useTheme, type ThemePref } from './theme'
 
 type TestState = { kind: 'idle' } | { kind: 'busy' } | { kind: 'ok'; text: string } | { kind: 'error'; text: string }
 
+const THEMES: [ThemePref, string][] = [
+  ['system', 'System'],
+  ['light', 'Light'],
+  ['dark', 'Dark'],
+]
+
 export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { settings, setSettings } = useSettings()
   const { pref, setPref } = useTheme()
@@ -27,10 +33,11 @@ export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [open, settings])
 
   const runTest = async () => {
+    if (test.kind === 'busy') return
     setTest({ kind: 'busy' })
     try {
       const info = await new PromClient({ baseUrl, token }).buildInfo()
-      setTest({ kind: 'ok', text: `Connected: ${info.version}${info.mock ? ' (mock backend, synthetic data)' : ''}` })
+      setTest({ kind: 'ok', text: `Connected to ${info.version}${info.mock ? ', the mock backend with synthetic data' : ''}` })
     } catch (e) {
       // A backend without buildinfo still answers label queries.
       if (e instanceof PromApiError && e.status === 404) {
@@ -51,7 +58,7 @@ export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () =>
     <dialog
       ref={ref}
       aria-labelledby="settings-title"
-      className="fixed left-1/2 top-[14vh] m-0 w-[480px] -translate-x-1/2"
+      className="vz-dialog"
       onClose={onClose}
       onClick={(e) => {
         if (e.target === ref.current) onClose()
@@ -59,95 +66,91 @@ export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () =>
     >
       <form
         method="dialog"
-        className="flex flex-col"
+        className="dialog-form"
         onSubmit={(e) => {
           e.preventDefault()
           setSettings({ baseUrl: baseUrl.trim(), token: token.trim() })
           onClose()
         }}
       >
-        <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h2 id="settings-title" className="text-[14px] font-semibold">
-            Settings
-          </h2>
-          <button type="button" className="btn btn-ghost btn-icon" aria-label="Close settings" onClick={onClose}>
-            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-              <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-        <div className="flex flex-col gap-4 px-4 py-4">
-          <div className="flex flex-col gap-1">
-            <label htmlFor="set-base" className="label">
-              API base URL
-            </label>
-            <input
-              id="set-base"
-              className="input mono"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="same origin (e.g. https://viz.example.com)"
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <p className="text-[12px] text-fg-3">
-              A Prometheus-compatible API is expected under <span className="mono">/api/v1</span>. Leave empty to use this origin.
-            </p>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label htmlFor="set-token" className="label">
-              Bearer token
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="set-token"
-                className="input mono flex-1"
-                type={showToken ? 'text' : 'password'}
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="none"
-                spellCheck={false}
-                autoComplete="off"
-              />
-              <button type="button" className="btn" aria-pressed={showToken} onClick={() => setShowToken((s) => !s)}>
-                {showToken ? 'Hide' : 'Show'}
-              </button>
-            </div>
-            <p className="text-[12px] text-fg-3">
-              Stored in this browser's localStorage and sent only as an <span className="mono">Authorization</span> header. It is never put
-              in a URL, so shared links do not contain it.
-            </p>
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="label" id="set-theme">
-              Theme
+        <h2 id="settings-title" className="vz-dialog-title">
+          Change settings
+        </h2>
+        <div className="vz-field">
+          <label htmlFor="set-base" className="vz-label">
+            API base URL
+          </label>
+          <input
+            id="set-base"
+            className="vz-input"
+            data-mono=""
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://viz.example.com"
+            aria-describedby="set-base-help"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <span className="vz-help" id="set-base-help">
+            <span>
+              A Prometheus-compatible API is expected under <span className="app-num">/api/v1</span>. Leave empty to use this origin.
             </span>
-            <div className="seg self-start" role="group" aria-labelledby="set-theme">
-              {(['system', 'light', 'dark'] as ThemePref[]).map((p) => (
-                <button key={p} type="button" aria-pressed={pref === p} onClick={() => setPref(p)}>
-                  {p[0]!.toUpperCase() + p.slice(1)}
+          </span>
+        </div>
+        <div className="vz-field">
+          <label htmlFor="set-token" className="vz-label">
+            Bearer token
+          </label>
+          <input
+            id="set-token"
+            className="vz-input"
+            data-mono=""
+            type={showToken ? 'text' : 'password'}
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            aria-describedby="set-token-help"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <span className="vz-help" id="set-token-help">
+            <span>
+              Kept in this browser's local storage and sent only as an <span className="app-num">Authorization</span> header. It is never
+              put in a URL, so shared links do not contain it.
+            </span>
+          </span>
+          <label className="vz-check">
+            <input type="checkbox" checked={showToken} onChange={(e) => setShowToken(e.target.checked)} />
+            Show the token
+          </label>
+        </div>
+        <div className="vz-field">
+          <span className="vz-label" id="set-theme">
+            Theme
+          </span>
+          <div className="field-row">
+            <div className="vz-segmented" role="group" aria-labelledby="set-theme">
+              {THEMES.map(([p, label]) => (
+                <button key={p} type="button" aria-pressed={pref === p} onClick={() => setPref(p)} data-testid={`theme-${p}`}>
+                  {label}
                 </button>
               ))}
             </div>
           </div>
-          <div role="status" className="min-h-[18px] text-[12px]">
-            {test.kind === 'busy' && <span className="text-fg-3">Testing…</span>}
-            {test.kind === 'ok' && <span className="text-fg-2">✓ {test.text}</span>}
-            {test.kind === 'error' && <span className="text-danger">✕ {test.text}</span>}
-          </div>
         </div>
-        <div className="flex items-center justify-between gap-2 border-t border-line px-4 py-3">
-          <button type="button" className="btn" onClick={runTest} disabled={test.kind === 'busy'}>
+        <div role="status" className="status-line" data-testid="test-result">
+          {test.kind === 'ok' && <span className="vz-status" data-state="ok">{test.text}</span>}
+          {test.kind === 'error' && <span className="vz-status" data-state="critical">{test.text}</span>}
+        </div>
+        <div className="vz-dialog-actions">
+          <button type="button" className="vz-button" data-quiet="" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="vz-button" onClick={runTest} aria-busy={test.kind === 'busy'}>
             Test connection
           </button>
-          <div className="flex gap-2">
-            <button type="button" className="btn" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary">
-              Save
-            </button>
-          </div>
+          <button type="submit" className="vz-button">
+            Save settings
+          </button>
         </div>
       </form>
     </dialog>

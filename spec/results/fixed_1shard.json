@@ -40,11 +40,11 @@
   "asExpected": true,
   "violated": false,
   "completed": true,
-  "generated": 53621014,
-  "distinct": 9120748,
+  "generated": 68176316,
+  "distinct": 11584656,
   "queue": 0,
-  "depth": 44,
-  "fpCollisionProb": "2.2E-5",
+  "depth": 45,
+  "fpCollisionProb": "3.6E-5",
   "trace": [],
-  "seconds": 374.9
+  "seconds": 548.3
 }

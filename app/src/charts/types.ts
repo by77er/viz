@@ -11,10 +11,12 @@ export interface ChartSeries {
   label: string
   /** Shorter name for tight spaces (tooltip, announcements); defaults to `label`. */
   shortLabel?: string
-  /** CSS colour for the current theme. */
-  color: string
-  /** Canvas dash pattern; empty for a solid line. */
-  dash: readonly number[]
+  /** Text drawn at the end of the line when the chart labels its series directly; defaults to `shortLabel`. */
+  directLabel?: string
+  /** Name of the CSS custom property that holds the line's colour (`--series-1`..`--series-8`, or a neutral ink for Other). */
+  colorVar: string
+  /** Folded into Other: drawn first, as a hairline, so the coloured series stay on top. */
+  other?: boolean
   /** One value per x; null is a gap and is never bridged. */
   values: (number | null)[]
 }
@@ -35,18 +37,15 @@ export interface TimeSeriesChartProps {
   series: ChartSeries[]
   /** Visible x range in epoch seconds (the query window), so edge gaps are visible. */
   xRange: [number, number]
-  height: number
   /** Ids of series to draw; null draws all. */
   visible: ReadonlySet<string> | null
-  /** Series to emphasise (e.g. hovered in the legend). */
-  highlightId?: string | null
   formatValue: (v: number) => string
   /** Called with the selected range (epoch seconds) after a horizontal drag. */
   onZoom?: (from: number, to: number) => void
   onRenderInfo?: (info: RenderInfo) => void
   /** Charts with the same key share a crosshair. */
   syncKey?: string
-  /** Re-reads theme tokens when it changes. */
+  /** Re-reads the design tokens when it changes. The chart takes its size from its container. */
   theme: 'light' | 'dark'
   ariaLabel: string
 }

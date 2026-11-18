@@ -97,9 +97,7 @@ export function AppShell() {
         Skip to content
       </a>
       <header className="vz-nav app-nav">
-        <Link to="/explore" className="vz-nav-name" aria-label="viz home" activeProps={{ 'aria-current': undefined }}>
-          viz
-        </Link>
+        <span className="vz-nav-name">viz</span>
         <nav aria-label="Primary" className="app-links">
           <Link to="/explore">Explore</Link>
           <Link to="/help">Help</Link>

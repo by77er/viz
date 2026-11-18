@@ -1,0 +1,7 @@
+# Build output stays inside engine/wasm (several builds run at once in this repository).
+[build]
+target-dir = "target"
+
+# engine/AGENTS.md: the settings that measured faster.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128,+bulk-memory"]

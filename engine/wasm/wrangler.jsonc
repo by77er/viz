@@ -1,0 +1,7 @@
+{
+  // A minimal Worker that loads the engine, so the tests (and `wrangler deploy --dry-run`)
+  // prove the module loads in workerd as an imported WebAssembly module.
+  "name": "viz-engine-wasm",
+  "main": "js/worker.ts",
+  "compatibility_date": "2026-10-01"
+}

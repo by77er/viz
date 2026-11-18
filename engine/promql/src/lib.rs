@@ -131,7 +131,7 @@ fn walk_selectors(
     match e {
         Expr::VectorSelector(vs) => {
             let (min, max) = eval::selector_range(vs, None, steps, opts, qs, qe);
-            out.push(SelectorInfo { matchers: eval::convert_matchers(&vs.name, &vs.matchers)?, min_ts_ms: min, max_ts_ms: max });
+            out.push(SelectorInfo { matchers: eval::convert_matchers(&vs.name, &vs.matchers)?, min_ts_ms: min, max_ts_ms: max, steps: steps.n() });
         }
         Expr::MatrixSelector(ms) => {
             let (min, max) = eval::selector_range(&ms.vs, Some(eval::dur_ms(&ms.range)), steps, opts, qs, qe);
@@ -139,6 +139,7 @@ fn walk_selectors(
                 matchers: eval::convert_matchers(&ms.vs.name, &ms.vs.matchers)?,
                 min_ts_ms: min,
                 max_ts_ms: max,
+                steps: steps.n(),
             });
         }
         Expr::Subquery(sq) => {

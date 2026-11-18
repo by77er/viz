@@ -71,7 +71,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Ledger` | Durable Object, one per tenant | Live files, watermarks, shard-map epoch, R2 change log | per seal, per compaction, per uncached query plan |
 | `Publisher` | Durable Object, one per cell | Iceberg commits for every table in the cell | every few minutes, only when ledgers changed |
 | `query` | Worker | Parse, plan, prune, fan out, merge | per query |
-| `leaf` | Worker | Scan row groups and tail rows, evaluate, return partials | per split |
+| `Leaf` | Durable Object, a warm pool per cell | Scan row groups and tail rows, evaluate, return partials. Stateless; an object only because that gives each leaf its own connection budget | per split |
 | `Ruler` | Durable Object, one per tenant rule shard | Rule ticks, alert state, notification outbox | every rule interval |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
 | `Tenant` | Durable Object, one per tenant | Config, keys, dashboards and revisions, rule definitions, retention policy | on edits; reads are cached |
@@ -91,7 +91,7 @@ ruler is at-least-once by design.
 ### 3.2 One engine
 
 A Rust core does parsing, planning, Parquet encode and decode, and evaluation, with no I/O
-of its own. It runs as WASM in `edge`, `flush`, `query` and `leaf`, natively in Containers,
+of its own. It runs as WASM in `edge`, `flush`, `query` and the leaf objects, natively in Containers,
 and inside a seeded simulator in CI. TypeScript owns bindings, HTTP and orchestration.
 Whether the core fits a 128 MB isolate with a 1 s startup limit is the second spike.
 
@@ -285,9 +285,14 @@ with label-based access rules. A caller cannot omit it.
   are bounded by seal size, so the shard needs no query engine and no second index. Shards
   keep recorded segments for a short bounded time, and a refused split is retried on its
   own with a fresh ledger read, so a busy shard cannot make a whole query loop.
-- Fan-out topology depends on how the six-connection rule applies across service bindings,
-  which is a spike. If the budget is shared across the tree, leaves are invoked as separate
-  top-level requests.
+- **Leaves are Durable Objects.** Measured on Cloudflare (`spikes/s1-fanout-r2/`): R2 reads
+  are limited to six at a time per request, and a Worker reached through a service binding
+  spends from its caller's budget, so 96 reads take about 750 ms however they are spread
+  over service-bound leaves. A Durable Object has its own budget: 192 reads across 32 leaf
+  objects finished in under 200 ms. Each cell keeps a pool of warm, stateless leaf objects;
+  the coordinator picks leaves from the pool per split and gives each at most six reads at
+  a time. A single R2 range read costs about 45 ms whatever its size below 1 MB, so the
+  planner coalesces reads instead of minimising bytes.
 - A plan that will not fit an isolate goes to a Container running the identical engine.
 
 ### 6.3 Caching

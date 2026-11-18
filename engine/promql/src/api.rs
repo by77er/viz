@@ -46,6 +46,10 @@ pub struct SelectorInfo {
     pub min_ts_ms: i64,
     /// Inclusive, Unix ms.
     pub max_ts_ms: i64,
+    /// Number of evaluation steps of the (sub)query this selector belongs to. The
+    /// evaluator materialises one cell per returned series per step for the selector, so
+    /// `series x steps` is the memory a caller can bound before evaluating. Not serialised.
+    pub steps: usize,
 }
 
 struct Metric<'a>(&'a [(String, String)]);

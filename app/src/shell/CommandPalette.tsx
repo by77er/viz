@@ -26,7 +26,7 @@ export function CommandPalette() {
   const activeIndex = Math.min(active, Math.max(0, results.length - 1))
 
   useEffect(() => {
-    listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
+    listRef.current?.querySelector('[data-active]')?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex, results])
 
   const exec = (c: Command | undefined) => {
@@ -58,13 +58,14 @@ export function CommandPalette() {
     <dialog
       ref={dialogRef}
       aria-label="Command palette"
-      className="fixed left-1/2 top-[12vh] m-0 w-[560px] -translate-x-1/2"
+      className="palette"
       onClose={() => setPaletteOpen(false)}
       onClick={(e) => {
         if (e.target === dialogRef.current) setPaletteOpen(false)
       }}
     >
-      <div className="flex flex-col">
+      {/* The design system's menu with a field above it. Groups are divided by separators, not headings. */}
+      <div className="vz-menu">
         <input
           ref={inputRef}
           value={query}
@@ -85,20 +86,25 @@ export function CommandPalette() {
             }
           }}
           role="combobox"
+          aria-haspopup="menu"
           aria-expanded="true"
           aria-controls="cmdk-list"
           aria-activedescendant={ordered[activeIndex] ? `cmd-${ordered[activeIndex].id}` : undefined}
           aria-label="Search commands"
-          placeholder="Type a command…"
-          className="h-11 border-b border-line bg-transparent px-4 text-[14px] outline-none placeholder:text-fg-3"
+          placeholder="Run query, Last 24 h, Open settings"
+          className="vz-input"
           autoComplete="off"
           spellCheck={false}
         />
-        <div ref={listRef} id="cmdk-list" role="listbox" aria-label="Commands" className="max-h-[52vh] overflow-y-auto p-1.5">
-          {ordered.length === 0 && <div className="px-3 py-6 text-center text-fg-3">No matching command</div>}
-          {groups.map((g) => (
+        <div ref={listRef} id="cmdk-list" role="menu" aria-label="Commands" className="palette-list">
+          {ordered.length === 0 && (
+            <div className="palette-none" role="presentation">
+              No command matches “{query}”.
+            </div>
+          )}
+          {groups.map((g, gi) => (
             <div key={g.group} role="group" aria-label={g.group}>
-              <div className="label px-2.5 pb-1 pt-2">{g.group}</div>
+              {gi > 0 && <div role="separator" />}
               {g.items.map(({ c }) => {
                 const idx = ordered.indexOf(c)
                 const selected = idx === activeIndex
@@ -106,30 +112,19 @@ export function CommandPalette() {
                   <div
                     key={c.id}
                     id={`cmd-${c.id}`}
-                    role="option"
-                    aria-selected={selected}
-                    onMouseMove={() => setActive(idx)}
+                    role="menuitem"
+                    tabIndex={-1}
+                    data-active={selected ? '' : undefined}
+                    onPointerMove={() => setActive(idx)}
                     onClick={() => exec(c)}
-                    className={`flex h-8 cursor-pointer items-center justify-between rounded px-2.5 ${selected ? 'bg-accent-soft text-fg' : 'text-fg-2'}`}
                   >
                     <span>{c.title}</span>
-                    {c.shortcut && <span className="text-[11px] text-fg-3">{c.shortcut}</span>}
+                    {c.shortcut && <span className="vz-kbd">{c.shortcut}</span>}
                   </div>
                 )
               })}
             </div>
           ))}
-        </div>
-        <div className="flex gap-4 border-t border-line px-4 py-1.5 text-[11px] text-fg-3">
-          <span>
-            <span className="kbd">↑</span> <span className="kbd">↓</span> select
-          </span>
-          <span>
-            <span className="kbd">Enter</span> run
-          </span>
-          <span>
-            <span className="kbd">Esc</span> close
-          </span>
         </div>
       </div>
     </dialog>

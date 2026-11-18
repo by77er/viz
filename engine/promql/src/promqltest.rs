@@ -95,6 +95,9 @@ struct TestSource {
     /// (labels, timestamps of the histogram samples)
     tainted: Vec<(Vec<(String, String)>, Vec<i64>)>,
     hit: Cell<bool>,
+    /// When a script is run through another `SeriesSource` (see
+    /// [`run_script_with_source`]): that source, rebuilt after every `load`.
+    backend: Option<Box<dyn SeriesSource>>,
 }
 
 impl SeriesSource for TestSource {
@@ -105,7 +108,10 @@ impl SeriesSource for TestSource {
                 self.hit.set(true);
             }
         }
-        self.mem.select(matchers, min, max)
+        match &self.backend {
+            Some(b) => b.select(matchers, min, max),
+            None => self.mem.select(matchers, min, max),
+        }
     }
 }
 
@@ -818,8 +824,25 @@ fn run_instant(cmd: &EvalCmd, expr: &Expr, src: &TestSource, opts: &EvalOptions)
     Step::Done(Ok(()))
 }
 
+/// Builds the `SeriesSource` a script is evaluated against from all float series
+/// loaded so far (label sets unique, samples ascending). `Err` aborts the script.
+pub type SourceFactory<'a> = &'a dyn Fn(&[Series]) -> Result<Box<dyn SeriesSource>, String>;
+
 /// Run a whole script. `Err` means the script itself could not be parsed.
 pub fn run_script(input: &str, opts: &EvalOptions) -> Result<Report, String> {
+    run_script_impl(input, opts, None)
+}
+
+/// [`run_script`], but every query reads through the source `factory` builds from the
+/// loaded series instead of the built-in in-memory source. This is how another crate
+/// (for example a Parquet-backed source) is checked against the same corpus. The
+/// factory is called again after each `load` block; native-histogram bookkeeping is
+/// unchanged.
+pub fn run_script_with_source(input: &str, opts: &EvalOptions, factory: SourceFactory<'_>) -> Result<Report, String> {
+    run_script_impl(input, opts, Some(factory))
+}
+
+fn run_script_impl(input: &str, opts: &EvalOptions, factory: Option<SourceFactory<'_>>) -> Result<Report, String> {
     let lines: Vec<String> = input
         .split('\n')
         .map(|l| {
@@ -880,8 +903,12 @@ pub fn run_script(input: &str, opts: &EvalOptions) -> Result<Report, String> {
                 }
                 src.mem.add(Series { labels, ts, values });
             }
+            src.backend = None;
         } else if head.starts_with("eval") {
             let cmd = parse_eval(&lines, &mut i)?;
+            if let (Some(f), None) = (factory, &src.backend) {
+                src.backend = Some(f(src.mem.series()).map_err(|e| format!("line {}: source factory: {e}", cmd.line))?);
+            }
             let outcome = run_eval(&cmd, &src, opts);
             report.cases.push(CaseResult {
                 line: cmd.line,

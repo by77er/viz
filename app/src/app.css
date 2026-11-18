@@ -50,8 +50,9 @@ a { color: inherit; }
 .query-well .cm-content:focus-visible { outline: none; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-2); }
 .toolbar-group { position: relative; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-2); }
+.view-field { margin-left: auto; }
 .step-field { width: calc(var(--control-md) * 4); }
-.unit-field { width: calc(var(--control-md) * 6); }
+.unit-field { flex: 1 1 calc(var(--control-md) * 5); max-width: calc(var(--control-md) * 8); }
 
 /* Result panel. The waiting line and the plot region keep their height whether or not they have content. */
 .result { --plot: calc(var(--row) * 10); }
@@ -69,14 +70,17 @@ a { color: inherit; }
 /* Tables: sortable heads and the legend's row toggles are plain buttons that fill their cell. */
 .th-button { display: block; width: 100%; padding: 0; background: none; border: 0; font: inherit; color: inherit; text-align: inherit; cursor: pointer; white-space: nowrap; }
 .th-button:hover, th[aria-sort] .th-button { color: var(--ink); }
+.legend-table th:first-child { width: 100%; }
 .series-toggle { display: flex; align-items: center; gap: var(--space-2); width: 100%; height: var(--row); padding: 0; background: none; border: 0; text-align: left; cursor: pointer; }
 .series-toggle[aria-pressed="false"] { color: var(--ink-muted); }
 .swatch { display: inline-block; flex: none; width: var(--space-3); height: var(--stroke); }
 .cell-wrap { white-space: normal; }
 .cell-quiet { color: var(--ink-secondary); }
 @media (pointer: coarse) {
-  .legend-table td, .series-toggle { height: var(--control-touch); }
+  .legend-table td, .legend-table th:first-child { width: 100%; }
+.series-toggle { height: var(--control-touch); }
   .th-button { min-height: var(--control-touch); }
+  .region-part { gap: var(--space-3); } /* a small button above a table: their touch areas must not overlap */
 }
 
 /* Overlays */
@@ -86,8 +90,10 @@ a { color: inherit; }
 .vz-menu button[role="menuitem"] { width: 100%; background: none; border: 0; text-align: left; }
 .vz-menu [role="menuitem"][aria-current="true"] { font: var(--text-ui-strong); }
 dialog.vz-dialog, dialog.palette { margin: auto; }
+/* vz-dialog sets display, which would show a closed <dialog>; keep the element's own closed state. */
+dialog:not([open]) { display: none; }
 dialog::backdrop { background: transparent; }
-dialog.palette { top: calc(var(--space-12) * 2); margin-top: 0; width: var(--dialog); max-width: calc(100% - 2 * var(--space-4)); padding: 0; border: 0; background: none; overflow: visible; }
+dialog.palette { color: var(--ink); top: calc(var(--space-12) * 2); margin-top: 0; width: var(--dialog); max-width: calc(100% - 2 * var(--space-4)); padding: 0; border: 0; background: none; overflow: visible; }
 .palette .vz-menu { display: flex; flex-direction: column; gap: var(--space-1); }
 .palette-list { max-height: calc(var(--row) * 12); overflow-y: auto; }
 .palette-none { padding: var(--space-2); color: var(--ink-secondary); }
@@ -119,3 +125,16 @@ dialog.palette { top: calc(var(--space-12) * 2); margin-top: 0; width: var(--dia
 .tip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tip-value { color: var(--ink); }
 .tip-more { color: var(--ink-muted); }
+
+/* Parts of the result region */
+.region-part { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.caption-row { min-height: var(--control-sm); }
+.popover [role="menu"] { display: grid; grid-template-columns: 1fr 1fr; }
+.toolbar .vz-field { max-width: 100%; }
+.toolbar .unit-field { max-width: calc(var(--control-md) * 8); }
+h3 { margin: 0; font: inherit; }
+
+@container (max-width: 639px) { /* token-lint-ignore: breakpoint */
+  .view-field { margin-left: 0; }
+  .range-button { flex: 1 1 100%; }
+}

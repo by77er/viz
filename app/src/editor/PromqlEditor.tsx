@@ -3,62 +3,57 @@ import { Compartment, EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap, placeholder as placeholderExt, tooltips } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete'
-import { bracketMatching, HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { tags } from '@lezer/highlight'
+import { bracketMatching } from '@codemirror/language'
 import { PromQLExtension } from '@prometheus-io/codemirror-promql'
 import type { PromClient } from '../api/client'
 import { completionClient } from './promClient'
 
-// Colours come from CSS variables, so one highlight style serves both themes.
-const highlight = HighlightStyle.define([
-  { tag: [tags.keyword, tags.modifier, tags.operatorKeyword], color: 'var(--tok-keyword)' },
-  { tag: [tags.function(tags.variableName), tags.standard(tags.variableName)], color: 'var(--tok-function)' },
-  { tag: tags.string, color: 'var(--tok-string)' },
-  { tag: [tags.number, tags.bool], color: 'var(--tok-number)' },
-  { tag: [tags.labelName, tags.propertyName], color: 'var(--tok-label)' },
-  { tag: [tags.operator, tags.punctuation, tags.bracket], color: 'var(--tok-operator)' },
-  { tag: tags.comment, color: 'var(--fg-3)', fontStyle: 'italic' },
-  { tag: tags.invalid, color: 'var(--danger)' },
-])
+// The design system's query well does not colour tokens by type: the query is one ink, and
+// only an error is marked. Every value below is a design token.
+const critical = 'var(--status-critical)'
+const underline = (color: string) => ({
+  backgroundImage: 'none',
+  textDecoration: `underline ${color}`,
+  textDecorationThickness: 'var(--stroke)',
+  textDecorationSkipInk: 'none',
+  textUnderlineOffset: 'var(--space-half)',
+})
 
 const theme = EditorView.theme({
-  '&': { color: 'var(--fg)' },
-  '.cm-content': { padding: '7px 0', caretColor: 'var(--fg)', minHeight: '32px' },
-  '.cm-line': { padding: '0 10px' },
-  '.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '18px', overflowX: 'auto' },
-  '.cm-placeholder': { color: 'var(--fg-3)' },
-  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--fg)' },
+  '&': { color: 'var(--ink)', backgroundColor: 'transparent', font: 'var(--text-code)' },
+  '&.cm-focused': { outline: 'none' },
+  '.cm-content': { padding: '0', caretColor: 'var(--ink)', font: 'var(--text-code)' },
+  '.cm-line': { padding: '0' },
+  '.cm-scroller': { font: 'var(--text-code)', overflowX: 'auto' },
+  '.cm-placeholder': { color: 'var(--ink-muted)' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--ink)' },
   '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
-    backgroundColor: 'color-mix(in srgb, var(--focus) 28%, transparent)',
+    backgroundColor: 'var(--rule)',
   },
-  '&.cm-focused .cm-matchingBracket': { backgroundColor: 'var(--surface-3)', outline: '1px solid var(--line-strong)' },
+  '&.cm-focused .cm-matchingBracket, &.cm-focused .cm-nonmatchingBracket': { backgroundColor: 'var(--rule)', color: 'inherit' },
   '.cm-tooltip': {
     border: 'none',
-    borderRadius: '6px',
-    backgroundColor: 'var(--surface)',
-    color: 'var(--fg)',
-    boxShadow: 'var(--shadow)',
+    borderRadius: 'var(--radius-3)',
+    backgroundColor: 'var(--raised)',
+    color: 'var(--ink)',
+    boxShadow: 'var(--shadow-overlay)',
     overflow: 'hidden',
   },
-  '.cm-tooltip.cm-tooltip-autocomplete > ul': { fontFamily: 'var(--font-mono)', fontSize: '12px', maxHeight: '260px' },
-  '.cm-tooltip.cm-tooltip-autocomplete > ul > li': { padding: '3px 8px', lineHeight: '18px' },
-  '.cm-tooltip-autocomplete ul li[aria-selected]': { backgroundColor: 'var(--accent-soft)', color: 'var(--fg)' },
-  '.cm-completionDetail': { color: 'var(--fg-3)', fontStyle: 'normal', marginLeft: '12px' },
-  '.cm-completionMatchedText': { textDecoration: 'none', fontWeight: '700' },
-  '.cm-completionIcon': { opacity: '0.7', width: '1.1em' },
-  '.cm-completionInfo': { padding: '6px 8px', fontFamily: 'var(--font-sans)', fontSize: '12px', maxWidth: '320px' },
-  '.cm-diagnostic': { padding: '4px 8px', fontFamily: 'var(--font-sans)', fontSize: '12px' },
-  '.cm-diagnostic-error': { borderLeft: '3px solid var(--danger)' },
-  '.cm-lintRange-error': {
-    backgroundImage: 'none',
-    textDecoration: 'underline wavy var(--danger)',
-    textDecorationSkipInk: 'none',
-    textUnderlineOffset: '3px',
-  },
+  '.cm-tooltip.cm-tooltip-autocomplete > ul': { font: 'var(--text-data)', maxHeight: 'calc(var(--row) * 8)', padding: 'var(--space-1)' },
+  '.cm-tooltip.cm-tooltip-autocomplete > ul > li': { padding: '0 var(--space-2)', lineHeight: 'var(--row)', borderRadius: 'var(--radius-2)' },
+  '.cm-tooltip-autocomplete ul li[aria-selected]': { backgroundColor: 'var(--hover)', color: 'var(--ink)' },
+  '.cm-completionDetail': { color: 'var(--ink-muted)', fontStyle: 'normal', marginLeft: 'var(--space-3)' },
+  '.cm-completionMatchedText': { textDecoration: 'none', fontWeight: '500' },
+  '.cm-completionInfo': { padding: 'var(--space-1) var(--space-2)', font: 'var(--text-small)', maxWidth: 'calc(var(--overlay-min) * 1.5)' },
+  '.cm-diagnostic': { padding: 'var(--space-1) var(--space-2)', font: 'var(--text-small)', borderLeft: 'none' },
+  '.cm-lintRange-error': underline(critical),
+  '.cm-lintRange-warning, .cm-lintRange-info, .cm-lintRange-hint': underline('var(--ink-muted)'),
+  '.cm-lintPoint:after': { borderBottomColor: critical },
 })
 
 export interface PromqlEditorHandle {
-  focus(): void
+  /** Focus the editor; with a position, put the cursor at that character (0-based). */
+  focus(at?: number): void
 }
 
 interface Props {
@@ -89,10 +84,8 @@ export default function PromqlEditor({ value, onChange, onRun, client, handleRef
           history(),
           closeBrackets(),
           bracketMatching(),
-          autocompletion({ icons: true, maxRenderedOptions: 80 }),
-          syntaxHighlighting(highlight),
+          autocompletion({ icons: false, maxRenderedOptions: 80 }),
           theme,
-          EditorView.lineWrapping,
           tooltips({ position: 'absolute' }),
           placeholderExt('Enter a PromQL query, e.g. sum by (service) (rate(http_requests_total[5m]))'),
           EditorView.contentAttributes.of({ 'aria-label': 'PromQL query', 'aria-multiline': 'true', spellcheck: 'false' }),
@@ -116,7 +109,16 @@ export default function PromqlEditor({ value, onChange, onRun, client, handleRef
       }),
     })
     viewRef.current = view
-    if (handleRef) handleRef.current = { focus: () => view.focus() }
+    if (handleRef)
+      handleRef.current = {
+        focus: (at) => {
+          view.focus()
+          if (at !== undefined) {
+            const anchor = Math.max(0, Math.min(view.state.doc.length, at))
+            view.dispatch({ selection: { anchor }, scrollIntoView: true })
+          }
+        },
+      }
     return () => {
       view.destroy()
       viewRef.current = null
@@ -142,5 +144,5 @@ export default function PromqlEditor({ value, onChange, onRun, client, handleRef
     viewRef.current?.dispatch({ effects: langCompartment.current.reconfigure(promqlExtension(client)) })
   }, [client])
 
-  return <div ref={hostRef} className="min-w-0 flex-1" data-testid="query-editor" />
+  return <div ref={hostRef} data-testid="query-editor" />
 }

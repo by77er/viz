@@ -66,7 +66,7 @@ MUTANTS = [
     ("v2: batch decode accepts over-long label values", "src/batch.rs",
      "if name.len() > MAX_LABEL_NAME_BYTES || value.len() > MAX_LABEL_VALUE_BYTES {", "if name.len() > MAX_LABEL_NAME_BYTES {"),
     ("v2: batch decode accepts timestamps after year 9999", "src/batch.rs",
-     "pub const MAX_TS: i64 = 253_402_300_799_999;", "pub const MAX_TS: i64 = i64::MAX;"),
+     "if !(MIN_TS..=MAX_TS).contains(&t) {", "if t < MIN_TS {"),
     ("v2: batch decode accepts negative timestamps", "src/batch.rs",
      "pub const MIN_TS: i64 = 0;", "pub const MIN_TS: i64 = i64::MIN;"),
     ("v2: earlier row wins inside one batch (select, tail)", "src/select.rs",

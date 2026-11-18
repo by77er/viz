@@ -4,8 +4,10 @@ import type { SeriesStats } from '../lib/series'
 export interface LegendRow {
   id: string
   name: string
-  color: string
-  dash: readonly number[]
+  /** CSS custom property holding the series colour; a neutral ink for series folded into Other. */
+  colorVar: string
+  /** True when the series has no colour of its own (a ninth series and beyond). */
+  other: boolean
   stats: SeriesStats
 }
 
@@ -17,20 +19,39 @@ interface Props {
   visible: ReadonlySet<string> | null
   onToggle: (id: string, additive: boolean) => void
   onShowAll: () => void
-  onHover: (id: string | null) => void
   format: (v: number | null) => string
 }
 
-/** A line sample that shows both the colour and the dash pattern (the secondary encoding). */
-export function Swatch({ color, dash }: { color: string; dash: readonly number[] }) {
+/** A sample of the line: the series colour never appears anywhere else. */
+export function Swatch({ colorVar }: { colorVar: string }) {
+  return <i className="swatch" aria-hidden="true" style={{ background: `var(${colorVar})` }} />
+}
+
+/** Column head that sorts. The arrow is text; the direction is also in aria-sort. */
+export function SortHead({
+  label,
+  active,
+  dir,
+  numeric,
+  onSort,
+}: {
+  label: string
+  active: boolean
+  dir: 1 | -1
+  numeric?: boolean
+  onSort: () => void
+}) {
   return (
-    <svg width="18" height="8" viewBox="0 0 18 8" aria-hidden="true" className="shrink-0">
-      <line x1="1" y1="4" x2="17" y2="4" stroke={color} strokeWidth="2.5" strokeLinecap="butt" strokeDasharray={dash.length ? dash.map((d) => d * 0.7).join(' ') : undefined} />
-    </svg>
+    <th scope="col" className={numeric ? 'vz-label vz-right' : 'vz-label'} aria-sort={active ? (dir === 1 ? 'ascending' : 'descending') : undefined}>
+      <button className="th-button" onClick={onSort}>
+        {label}
+        {active && <span aria-hidden="true"> {dir === 1 ? '↑' : '↓'}</span>}
+      </button>
+    </th>
   )
 }
 
-export function Legend({ rows, visible, onToggle, onShowAll, onHover, format }: Props) {
+export function Legend({ rows, visible, onToggle, onShowAll, format }: Props) {
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 })
 
   const sorted = useMemo(() => {
@@ -48,74 +69,66 @@ export function Legend({ rows, visible, onToggle, onShowAll, onHover, format }: 
     return out
   }, [rows, sort])
 
-  const header = (key: SortKey, label: string, numeric: boolean) => {
+  const head = (key: SortKey, label: string, numeric: boolean) => {
     const active = sort.key === key
     return (
-      <th scope="col" className={numeric ? 'num w-[1%]' : ''} aria-sort={active ? (sort.dir === 1 ? 'ascending' : 'descending') : undefined}>
-        <button
-          onClick={() => setSort({ key, dir: active ? (sort.dir === 1 ? -1 : 1) : numeric ? -1 : 1 })}
-          title={`Sort by ${label}`}
-        >
-          {label}
-          <span aria-hidden="true" className="inline-block w-3 text-[9px]">
-            {active ? (sort.dir === 1 ? '▲' : '▼') : ''}
-          </span>
-        </button>
-      </th>
+      <SortHead
+        label={label}
+        active={active}
+        dir={sort.dir}
+        numeric={numeric}
+        onSort={() => setSort({ key, dir: active ? (sort.dir === 1 ? -1 : 1) : numeric ? -1 : 1 })}
+      />
     )
   }
 
-  const hiddenCount = visible ? rows.length - rows.filter((r) => visible.has(r.id)).length : 0
+  const shownCount = visible ? rows.filter((r) => visible.has(r.id)).length : rows.length
+  const otherCount = rows.filter((r) => r.other).length
 
   return (
-    <div data-testid="legend">
-      <div className="flex items-center justify-between gap-2 border-y border-line px-2.5 py-1 text-[11.5px] text-fg-3">
-        <span>
-          <span className="tnum">{rows.length}</span> series
-          {hiddenCount > 0 && (
-            <>
-              {' · '}
-              <span className="tnum">{rows.length - hiddenCount}</span> shown
-            </>
-          )}
-          <span className="hidden sm:inline"> · click to isolate, Ctrl/⌘-click to toggle</span>
-        </span>
-        {hiddenCount > 0 && (
-          <button className="font-medium text-fg-2 underline hover:text-fg" onClick={onShowAll}>
-            Show all
+    <div data-testid="legend" className="region-part">
+      <div className="caption-row">
+        <p className="vz-panel-desc">
+          {shownCount < rows.length ? `Showing ${shownCount} of ${rows.length} series. ` : ''}
+          {otherCount > 0 ? `${rows.length - otherCount} series have a colour; the other ${otherCount} are drawn in grey. ` : ''}
+          Select a series to show it alone, or with Shift to add or remove it.
+        </p>
+        {shownCount < rows.length && (
+          <button className="vz-button" data-size="sm" onClick={onShowAll}>
+            Show all series
           </button>
         )}
       </div>
-      <div className="max-h-[236px] overflow-auto" onMouseLeave={() => onHover(null)}>
-        <table className="dt">
+      <div className="vz-table-wrap">
+        <table className="vz-table legend-table">
           <thead>
             <tr>
-              {header('name', 'Series', false)}
-              {header('last', 'Last', true)}
-              {header('min', 'Min', true)}
-              {header('max', 'Max', true)}
+              {head('name', 'Series', false)}
+              {head('last', 'Last', true)}
+              {head('min', 'Min', true)}
+              {head('max', 'Max', true)}
             </tr>
           </thead>
           <tbody>
             {sorted.map((r) => {
               const on = !visible || visible.has(r.id)
               return (
-                <tr key={r.id} onMouseEnter={() => onHover(on ? r.id : null)} className={on ? '' : 'opacity-45'}>
-                  <td className="!p-0">
+                <tr key={r.id}>
+                  <td>
                     <button
-                      className="flex min-h-[25px] w-full items-center gap-2 px-2.5 py-[3px] text-left"
+                      className="series-toggle"
                       aria-pressed={on}
-                      title={`${r.name}\nClick to isolate; Ctrl/⌘-click to toggle`}
                       onClick={(e) => onToggle(r.id, e.metaKey || e.ctrlKey || e.shiftKey)}
                       data-series={r.name}
                     >
-                      <Swatch color={r.color} dash={r.dash} />
-                      <span className="mono">{r.name}</span>
+                      <Swatch colorVar={r.colorVar} />
+                      <span className="vz-num">{r.name}</span>
+                      {r.other && <span className="cell-quiet">Other</span>}
                     </button>
                   </td>
-                  <td className="num">{format(r.stats.last)}</td>
-                  <td className="num">{format(r.stats.min)}</td>
-                  <td className="num">{format(r.stats.max)}</td>
+                  <td className="vz-num vz-right">{format(r.stats.last)}</td>
+                  <td className="vz-num vz-right">{format(r.stats.min)}</td>
+                  <td className="vz-num vz-right">{format(r.stats.max)}</td>
                 </tr>
               )
             })}

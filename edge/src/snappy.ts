@@ -61,7 +61,7 @@ export function snappyDecompress(src: Uint8Array, maxLen: number): Uint8Array {
       offset = (src[ip]! | (src[ip + 1]! << 8) | (src[ip + 2]! << 16) | (src[ip + 3]! << 24)) >>> 0
       ip += 4
     }
-    if (false) throw badRequest('malformed snappy: copy out of range')
+    if (offset === 0 || offset > op || op + l > len) throw badRequest('malformed snappy: copy out of range')
     if (offset >= l) {
       dst.copyWithin(op, op - offset, op - offset + l)
       op += l

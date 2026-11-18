@@ -9,6 +9,9 @@ import {
   type TimeSpec,
 } from '../lib/time'
 
+/** "15m" as it is typed, "15 m" as it is read: numbers carry their unit after a space. */
+export const spacedDuration = (d: string) => d.replace(/(\d+)([a-z]+)/g, '$1 $2 ').trim()
+
 export const PRESETS = ['5m', '15m', '30m', '1h', '3h', '6h', '12h', '24h', '2d', '7d'] as const
 
 interface Props {
@@ -66,109 +69,101 @@ export function TimeRangePicker({ from, to, onChange }: Props) {
   const current = to === 'now' && from.startsWith('now-') ? from.slice(4) : null
 
   return (
-    <div ref={rootRef} className="relative flex items-center">
-      <button className="btn btn-icon rounded-r-none" onClick={() => shift(-1)} aria-label="Shift time range back" title="Shift back by half the range">
-        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-          <path d="M7.5 2.5 4 6l3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
+    <div className="vz-field">
+      <span className="vz-label" id={`${popId}-label`}>
+        Time range
+      </span>
+      <div ref={rootRef} className="toolbar-group" role="group" aria-labelledby={`${popId}-label`}>
       <button
         ref={buttonRef}
-        className="btn tnum -ml-px rounded-none"
+        className="vz-button range-button"
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? popId : undefined}
         onClick={() => setOpen((o) => !o)}
         data-testid="time-range"
       >
-        <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true" className="text-fg-3">
-          <circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-          <path d="M7 4v3.2l2 1.3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
         <span className="sr-only">Time range: </span>
-        {describeRange(from, to, now)}
+        {current ? `Last ${spacedDuration(current)}` : <span className="vz-num">{describeRange(from, to, now)}</span>}
       </button>
-      <button className="btn btn-icon -ml-px rounded-none" onClick={() => shift(1)} aria-label="Shift time range forward" title="Shift forward by half the range">
-        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-          <path d="M4.5 2.5 8 6 4.5 9.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+      <button className="vz-button" onClick={() => shift(-1)} aria-label="Earlier: shift the time range back by half its length">
+        Earlier
       </button>
-      <button className="btn btn-icon -ml-px rounded-l-none" onClick={zoomOut} aria-label="Zoom out time range" title="Zoom out (2×)">
-        <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
-          <circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-          <path d="M9.2 9.2 12.5 12.5M4 6h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-        </svg>
+      <button className="vz-button" onClick={() => shift(1)} aria-label="Later: shift the time range forward by half its length">
+        Later
+      </button>
+      <button className="vz-button" onClick={zoomOut} aria-label="Zoom out: double the time range">
+        Zoom out
       </button>
 
       {open && (
-        <div
-          id={popId}
-          role="dialog"
-          aria-label="Time range"
-          className="absolute left-0 top-[calc(100%+4px)] z-30 flex w-[min(440px,calc(100vw-24px))] flex-col rounded-md bg-surface sm:flex-row"
-          style={{ boxShadow: 'var(--shadow)' }}
-        >
-          <div className="flex flex-col gap-0.5 border-b border-line p-2 sm:w-[150px] sm:border-b-0 sm:border-r">
-            <div className="label px-2 pb-1">Relative</div>
-            <div className="grid grid-cols-5 gap-0.5 sm:grid-cols-1">
-              {PRESETS.map((p) => (
-                <button
-                  key={p}
-                  className={`flex h-7 items-center justify-between rounded px-2 text-left hover:bg-surface-2 ${current === p ? 'bg-accent-soft font-semibold' : ''}`}
-                  aria-current={current === p ? 'true' : undefined}
-                  onClick={() => {
-                    onChange(`now-${p}`, 'now')
-                    setOpen(false)
-                  }}
-                >
-                  <span>
-                    <span className="hidden sm:inline">Last </span>
-                    {p}
-                  </span>
-                  {current === p && (
-                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="hidden sm:block">
-                      <path d="M2.5 6.5 5 9l4.5-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
-                </button>
-              ))}
-            </div>
+        <div id={popId} role="dialog" aria-label="Time range" className="vz-menu popover">
+          <div role="menu" aria-label="Relative ranges">
+            {PRESETS.map((p) => (
+              <button
+                key={p}
+                role="menuitem"
+                aria-current={current === p ? 'true' : undefined}
+                onClick={() => {
+                  onChange(`now-${p}`, 'now')
+                  setOpen(false)
+                }}
+              >
+                Last {spacedDuration(p)}
+              </button>
+            ))}
           </div>
+          <div role="separator" />
           <form
-            className="flex flex-1 flex-col gap-2 p-3"
+            className="popover-form"
             onSubmit={(e) => {
               e.preventDefault()
               const a = fromDateTimeLocal(absFrom)
               const b = fromDateTimeLocal(absTo)
               if (a === null || b === null) return setError('Enter both a start and an end time.')
-              if (b <= a) return setError('The end must be after the start.')
+              if (b <= a) return setError('Set the end after the start.')
               onChange(absoluteSpec(a), absoluteSpec(b))
               setOpen(false)
             }}
           >
-            <div className="label">Absolute (local time)</div>
-            <label className="flex flex-col gap-1 text-[12px] text-fg-2">
-              From
-              <input className="input tnum" type="datetime-local" step="1" value={absFrom} onChange={(e) => setAbsFrom(e.target.value)} />
-            </label>
-            <label className="flex flex-col gap-1 text-[12px] text-fg-2">
-              To
-              <input className="input tnum" type="datetime-local" step="1" value={absTo} onChange={(e) => setAbsTo(e.target.value)} />
-            </label>
-            {error && (
-              <div role="alert" className="text-[12px] text-danger">
-                {error}
-              </div>
-            )}
-            <div className="mt-1 flex items-center justify-between gap-2">
-              <span className="text-[11.5px] text-fg-3">{isRelative(from) || isRelative(to) ? 'Currently relative to now' : 'Currently absolute'}</span>
-              <button type="submit" className="btn btn-primary">
-                Apply
+            <div className="vz-field">
+              <label className="vz-label" htmlFor={`${popId}-from`}>
+                From (local time)
+              </label>
+              <input id={`${popId}-from`} className="vz-input" data-mono="" type="datetime-local" step="1" value={absFrom} onChange={(e) => setAbsFrom(e.target.value)} />
+            </div>
+            <div className="vz-field">
+              <label className="vz-label" htmlFor={`${popId}-to`}>
+                To (local time)
+              </label>
+              <input
+                id={`${popId}-to`}
+                className="vz-input"
+                data-mono=""
+                type="datetime-local"
+                step="1"
+                value={absTo}
+                onChange={(e) => setAbsTo(e.target.value)}
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? `${popId}-error` : undefined}
+              />
+              {error && (
+                <span className="vz-help" data-error="" id={`${popId}-error`} role="alert">
+                  <span className="vz-mark" data-state="critical" />
+                  {error}
+                </span>
+              )}
+            </div>
+            <div className="popover-actions">
+              <span className="vz-help">{isRelative(from) || isRelative(to) ? 'The range now follows the clock.' : 'The range now is fixed.'}</span>
+              <button type="submit" className="vz-button">
+                Apply range
               </button>
             </div>
           </form>
         </div>
       )}
+      </div>
     </div>
   )
 }

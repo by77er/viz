@@ -219,3 +219,22 @@ text and control pairing is checked for contrast in both themes by
 `design-system/tools/check.mjs`, and the chart palette by a colour-vision validator.
 
 **Open.** No icon set; no React component package; the app does not use the system yet.
+
+## D17. Query leaves are Durable Objects
+
+**Decision.** The leaves that read R2 during a query are stateless Durable Objects taken
+from a warm pool per cell, not Workers reached through service bindings.
+
+**Evidence (measured on Cloudflare, 2026-11-18, `spikes/s1-fanout-r2/`).** R2 reads are
+limited to six at a time per request, and a service-bound callee spends from its caller's
+budget: 96 reads took 727–958 ms however they were divided. Across Durable Object leaves
+the same 96 reads took 312 ms, and 192 reads took 173 ms. Waiting on 96 callees at once is
+not limited in either case. One range read costs about 45 ms regardless of size below 1 MB.
+
+**Cost.** A leaf object bills requests and duration like any Durable Object, and first use
+of an object adds a few hundred milliseconds, so the pool must stay warm under load and
+empty when idle.
+
+**Would change if.** A different Worker script reached by service binding turns out to have
+its own budget (not tested), or contention on shared warm leaves is worse than the cold
+start it avoids.
