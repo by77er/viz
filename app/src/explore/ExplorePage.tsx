@@ -171,8 +171,8 @@ export function ExplorePage() {
   }, [search.from, search.to, search.step, search.q, widthBucket, runId])
 
   // Autocomplete looks up names and values in the window being queried (editor/promClient.ts).
-  const rangeRef = useRef<{ start: number; end: number } | null>(null)
-  rangeRef.current = window_ ? { start: window_.start, end: window_.end } : null
+  const lookupRange = useRef<{ start: number; end: number } | null>(null)
+  lookupRange.current = window_ ? { start: window_.start, end: window_.end } : null
 
   const q = search.q.trim()
   /** What the page now wants answered. A result is compared with it, never described by it. */
@@ -535,7 +535,7 @@ export function ExplorePage() {
       <h1 className="sr-only">Explore metrics</h1>
 
       {/* Query row: the one blue button of the view. */}
-      <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={rangeRef} />
+      <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={lookupRange} />
 
       {/* Toolbar: every control carries its label, so the row needs no explanation. */}
       <div className="toolbar">
