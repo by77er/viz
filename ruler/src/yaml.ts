@@ -153,7 +153,6 @@ class Parser {
 
   private refuseIndicators(text: string, n: number): void {
     const c = text[0]
-    if (c === '&') throw new YamlError('anchors (&name) are not supported', n, 'Write the value out where it is used.')
     if (c === '*') throw new YamlError('aliases (*name) are not supported', n, 'Write the value out instead of referring to an anchor.')
     if (c === '!') throw new YamlError('tags (!tag) are not supported', n, 'Remove the tag; quote the value if it must be a string.')
     if (text === '?' || text.startsWith('? ')) throw new YamlError('complex keys (? key) are not supported', n, 'Use a plain "key: value" pair.')
@@ -411,7 +410,6 @@ class Flow {
     this.ws()
     const c = this.s[this.i]
     if (c === undefined) throw new YamlError('a flow collection is not closed on its line', this.n, 'Close it on the same line, or use block style (one item per line).')
-    if (c === '&') throw new YamlError('anchors (&name) are not supported', this.n, 'Write the value out where it is used.')
     if (c === '*') throw new YamlError('aliases (*name) are not supported', this.n, 'Write the value out instead of referring to an anchor.')
     if (c === '!') throw new YamlError('tags (!tag) are not supported', this.n, 'Remove the tag.')
     if (c === '[') {
