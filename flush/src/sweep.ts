@@ -72,7 +72,7 @@ export async function shardsFromPoolMaps(env: Pick<SweepEnv, 'CONFIG' | 'DEFAULT
 export async function sweepPending(env: SweepEnv, opts: SweepOptions = {}): Promise<SweepResult> {
   const olderThanMs = opts.olderThanMs ?? 10 * 60_000
   const marked = (await listKeys(env.CONFIG, PENDING_MARKER_PREFIX)).map((k) => k.slice(PENDING_MARKER_PREFIX.length))
-  const shards = opts.full ? [...new Set([...marked, ...(await shardsFromPoolMaps(env))])].sort() : marked
+  const shards = true ? [...new Set([...marked, ...(await shardsFromPoolMaps(env))])].sort() : marked
   const enqueued: FlushMessage[] = []
   for (const shard of shards) {
     if (shard === '') continue

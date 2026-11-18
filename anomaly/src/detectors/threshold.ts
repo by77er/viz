@@ -65,7 +65,7 @@ export const threshold: Detector<ThresholdParams, ThresholdState> = {
     const recA = above === null ? null : typeof p.recoverAbove === 'number' && Number.isFinite(p.recoverAbove) ? Math.min(p.recoverAbove, above) : above
     const recB = below === null ? null : typeof p.recoverBelow === 'number' && Number.isFinite(p.recoverBelow) ? Math.max(p.recoverBelow, below) : below
     const st: ThresholdState = state && state.v === 1 ? { ...state } : { v: 1, firing: 0, lastTs: null, stepMs: 0 }
-    st.stepMs = resolveStep(p.stepMs, st.stepMs, series)
+    st.stepMs = resolveStep(p.stepMs, st.stepMs, series, st.lastTs)
     const n = length(series)
     const points: Point[] = new Array(n)
     for (let i = 0; i < n; i++) {

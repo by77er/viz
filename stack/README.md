@@ -156,14 +156,21 @@ below its stream's logged watermark. At the end, after flushing, compacting, exp
 deleting everything: the objects in R2 are exactly the ledger's live set, all level 2, no
 tombstone and no pending segment left.
 
-**Result.** Three runs of 3,000 steps (`npm run soak`), the last on the final code: all
-invariants held at every step. The last run: 1,130 acknowledged requests, 230 segments
-admitted through 1,063 delivered flush messages (125 retried after injected failures),
-418 merges (25 conflicts, 20 crashed steps), 1,420 files expired, 3,976 objects purged, 28
-orphans deleted, 96 evictions, 50 ledger-log outages, 67 old-plan readers verified, 0
-dead letters; 125 s. `npm test` runs 400 steps (about 20 s).
+**Result.** Last run (`npm run soak`, seed 20261118, on the final code with the stricter
+per-step check of the live set): 3,000 steps, **every invariant held at every step**;
+289 s. 907 acknowledged requests (and 194 repeats of samples already sent), 234 segments
+admitted through 1,205 delivered flush messages (150 retried after injected failures), 425
+merges (329 in maintenance runs, 96 in direct steps), 16 conflicts, 25 crashed steps,
+1,420 files expired, 3,896 objects purged, 34 orphans deleted, 124 evictions, 57 ledger-log
+outages, 57 old-plan readers verified, 0 dead letters; at the end each tenant's R2 prefix
+is exactly its ledger's live set, all level 2. The previous engineer's three runs of 3,000
+steps on earlier code also held. `npm test` runs 400 steps (about 20 s).
 
-**What failed during development.** One soak run stopped at step 1,441: "deleted inside
+**What failed during development.** In this review, one 3,000-step run passed every
+step and then failed its final sanity check that every tenant still has rows: a maintenance
+run with a policy clock three days ahead had expired all of one tenant's data after its
+last request. That is allowed; the end phase now sends one request per tenant first, so
+the end-state checks always run on data. Earlier, one soak run stopped at step 1,441: "deleted inside
 the grace: 1499 ms, expected ≥ 1500". That was the test's clock, not the janitor: the
 test took its timestamp before calling `purgeTenant`, the ledger judged the age a
 millisecond later. The check now uses the time after the call. No invariant failure

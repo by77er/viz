@@ -168,7 +168,7 @@ if (!window.vzChart) (function () {
       for (const s of [...visible].reverse()) o += line(s, s.slot)
       for (const s of picked) o += line(s, 'picked')
       // markers (deploys, changes): a hairline with its word above the plot; words that would collide are dropped, the line stays
-      let lastEnd = -1e9; for (const k of [...(spec.markers || [])].sort((a, b) => a.t - b.t)) { const px = xt(k.t); if (px < L || px > L + plotW) continue; const w = measure(k.label, micro), left = Math.min(px + 3, L + plotW - w)
+      let lastEnd = -1e9; for (const k of [...(spec.markers || [])].sort((a, b) => a.t - b.t)) { const px = xt(k.t); if (px < L || px > L + plotW) continue; const w = measure(k.label, micro), left = px + 3 + w <= L + plotW ? px + 3 : Math.max(L, px - 3 - w) // beside its own line: to the right, or to the left near the plot's end
         o += `<line class="vz-marker" x1="${px}" x2="${px}" y1="${T - sp(1)}" y2="${T + plotH}"/>`; if (left > lastEnd + sp(2)) { o += `<text x="${left}" y="${T - sp(2) - 2}">${esc(k.label)}</text>`; lastEnd = left + w } }
       // threshold: a dashed line that says its value and what it is
       if (spec.threshold) { const ty2 = y(spec.threshold.value); o += `<line class="vz-threshold" x1="${L}" x2="${L + plotW}" y1="${ty2}" y2="${ty2}"/><text class="vz-on-plot" x="${L + sp(1)}" y="${ty2 - sp(1)}">${esc(spec.threshold.label)}</text>` }

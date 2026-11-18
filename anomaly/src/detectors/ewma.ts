@@ -69,7 +69,7 @@ export const ewma: Detector<EwmaParams, EwmaState> = {
   detect(series: Series, params?: Partial<EwmaParams>, state?: EwmaState | null): DetectResult<EwmaState> {
     const p = merge(ewmaDefaults, params)
     const st: EwmaState = state && state.v === 1 ? { ...state } : fresh(0)
-    st.stepMs = resolveStep(p.stepMs, st.stepMs, series)
+    st.stepMs = resolveStep(p.stepMs, st.stepMs, series, st.lastTs)
     const hl = Math.max(p.halfLifePoints, 1e-9)
     const n = length(series)
     const points: Point[] = new Array(n)

@@ -8,3 +8,5 @@ target/
 target-*/
 .DS_Store
 _apalache-out/
+.gomodcache/
+gocache/

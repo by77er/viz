@@ -50,11 +50,25 @@ export function warmingPoint(ts: number, value: number, expected: number | null 
   return { ts, value, expected, lower: null, upper: null, score: 0, anomalous: false, status: 'warming' }
 }
 
-/** Step: explicit param, else the state's, else inferred from this batch (0 if unknown). */
-export function resolveStep(paramStep: number, stateStep: number | undefined, series: Series): number {
+/**
+ * Step: explicit param, else the state's, else inferred from this batch (median spacing), else
+ * the gap from the state's last point to this batch's first (0 if still unknown).
+ * Pass `stepMs` explicitly for reproducible incremental runs: an inferred step depends on
+ * which points the first call happened to see.
+ */
+export function resolveStep(paramStep: number, stateStep: number | undefined, series: Series, lastTs?: number | null): number {
   if (paramStep > 0 && Number.isFinite(paramStep)) return paramStep
   if (stateStep && stateStep > 0) return stateStep
-  return inferStep(series.ts.subarray(0, length(series)))
+  const n = length(series)
+  const inferred = inferStep(series.ts.subarray(0, n))
+  if (inferred > 0) return inferred
+  if (lastTs !== null && lastTs !== undefined) {
+    for (let i = 0; i < n; i++) {
+      const t = series.ts[i]!
+      if (Number.isFinite(t) && t > lastTs) return t - lastTs
+    }
+  }
+  return 0
 }
 
 /** UTF-8 bytes of the JSON form of a state (what a Durable Object row would hold). */

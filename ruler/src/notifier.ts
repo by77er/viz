@@ -1023,7 +1023,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const now = this.now()
-    const alerts: NotifierAlert[] = [...this.alerts.values()].map((a) => ({
+    const alerts: NotifierAlert[] = [...this.alerts.values()].filter((a) => !a.ack).map((a) => ({
       fingerprint: a.fingerprint,
       labels: a.labels,
       annotations: a.annotations,

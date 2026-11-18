@@ -396,6 +396,11 @@ async function main() {
       await page.focus('[data-testid=legend] tbody button[data-series]')
       const fullLine = await page.textContent('[data-testid=legend-full]').catch(() => null)
       check('M5: a long label set is shown by what distinguishes it, and the full name appears when the row has focus', cpu.every((n) => n.shown.length < n.full.length && !n.shown.includes('pod_cpu_usage_cores')) && new Set(cpu.map((n) => n.shown)).size === cpu.length && !!fullLine && fullLine.includes(cpu[0].full), `${cpu[0].shown} ← ${cpu[0].full}`)
+      // The text form carries every label of every series, not the short names.
+      await page.click('[data-testid=view-text]'); await page.waitForSelector('[data-testid=text-view] pre')
+      const digestLines = (await page.textContent('[data-testid=text-view] pre')).split('\n').filter((l) => l.startsWith('- '))
+      check('M5: the text view names each series by its full label set', digestLines.length === cpu.length && cpu.every((n) => digestLines.some((l) => l.startsWith(`- ${n.full}: last `))), digestLines[0])
+      await page.click('[data-testid=view-chart]'); await page.waitForSelector('[data-testid=chart] canvas')
 
       // M7: CPU cores carry a unit, once per column; no cell repeats it.
       const cores = await chrome(page)
@@ -425,6 +430,8 @@ async function main() {
       await page.tap(row)
       const on = await pressed()
       check('M4: on a coarse pointer a tap on a legend row toggles that series, with no modifier key', off.length === 3 && !off.includes('{service="checkout"}') && on.length === 4, `after one tap ${off.length} shown, after two ${on.length}`)
+      const tappedFull = await page.textContent('[data-testid=legend-full]').catch(() => null)
+      check('M5: a tap on a legend row shows that series\' full name (a tap does not focus a button in every browser)', !!tappedFull && tappedFull.includes('{service="checkout"}'), tappedFull)
       const hint = await page.textContent('[data-testid=legend-caption]')
       check('M4: the hint on touch does not mention Shift', /Tap a series to hide or show it/.test(hint) && !/Shift/.test(hint), hint.trim())
       const range = () => page.evaluate(() => { const p = new URL(location.href).searchParams; return [Number(p.get('from')), Number(p.get('to'))] })

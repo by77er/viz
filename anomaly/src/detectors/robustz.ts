@@ -129,7 +129,7 @@ export const robustZ: Detector<RobustZParams, RobustZState> = {
   },
   detect(series: Series, params?: Partial<RobustZParams>, state?: RobustZState | null): DetectResult<RobustZState> {
     const p = merge(robustZDefaults, params)
-    const stepMs = resolveStep(p.stepMs, state?.stepMs, series)
+    const stepMs = resolveStep(p.stepMs, state?.stepMs, series, state?.lastTs)
     const windowMs = p.windowMs > 0 ? p.windowMs : p.windowPoints * stepMs
     let lastTs = state && state.v === 1 ? state.lastTs : null
     const win = new Window(p.windowPoints + 8)
