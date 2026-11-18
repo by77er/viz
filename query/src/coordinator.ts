@@ -18,7 +18,7 @@
  * shard and file read below is addressed by it.
  */
 import type { ScanInput } from '../../contracts/engine'
-import type { LiveFile, Plan, Watermark } from '../../contracts/ledger'
+import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
 import { type FetchRange, type Grid, type QueryEngine, type QueryLimits, type QueryStats, leafSummary } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
@@ -121,6 +121,8 @@ export const hooks: {
   sequentialLeaves?: boolean
   /** Before each call to a split leaf; may throw to simulate a failure. */
   beforeSplitLeaf?: (part: number, attempt: number) => Promise<void>
+  /** The sample files' keys in the order they go to the engine (one place) or to the readers (split). */
+  sampleOrder?: (keys: string[]) => void
 } = {}
 
 export interface Context {
@@ -561,6 +563,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       c.cost.tailBytes = tailBytes
       checkDeadline(c)
 
+      if (hooks.sampleOrder) hooks.sampleOrder(samples.map((f) => f.key))
       const all = got.ok ? got.bytes : []
       const input: ScanInput = { seriesFiles: all.slice(0, series.length), sampleFiles: all.slice(series.length), tailBatches }
       return timed(c, evaluate, input)
@@ -628,6 +631,7 @@ async function runSplit<T>(
   const qSamples = Math.min(c.limits.maxQuerySamples, L * c.limits.maxSamples)
   const qSeries = Math.min(c.limits.maxQuerySeries, L * c.limits.maxSeries)
   const groups = readerGroups(series, samples)
+  if (hooks.sampleOrder) hooks.sampleOrder(groups.flatMap((g) => g.samples.map((f) => f.key)))
   const parts = c.engine.splitTails(tails, spec.without, L, ranges)
   const ttl = fileCacheTtl(c.env)
   const base = hash32(c.queryId)

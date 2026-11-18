@@ -13,13 +13,13 @@
  * approximation gives 469). Estimating μ₀ and σ₀ from a short warm-up shortens it, and
  * autocorrelated metrics shorten it further: the README reports the measured value.
  *
- * At an alarm the change time is estimated as the first point of the current excursion (the
- * last time the statistic was 0), the new mean as the mean since then; the point is flagged
- * with "mean shifted from μ₀ to μ₁ at T". The reference level is then re-learned from the
+ * At an alarm the change time is estimated within the current excursion (the points since the
+ * statistic was last 0) by the likelihood-ratio split, and the new mean is the mean from there;
+ * the point is flagged with "mean shifted from μ₀ to μ₁ at T". The reference level is then re-learned from the
  * next `relearnPoints` points (median, σ kept), so a lasting shift alarms once, not forever.
  * Only alarm points are anomalous.
- * Score: max(S⁺, S⁻) / h (≥ 1 at an alarm). State: about a dozen numbers plus the warm-up
- * buffer while warming. A gap longer than `staleAfterMs` restarts the warm-up.
+ * Score: max(S⁺, S⁻) / h (≥ 1 at an alarm). State: about a dozen numbers, the warm-up
+ * buffer while warming, and the current excursion (at most 256 points; usually a handful). A gap longer than `staleAfterMs` restarts the warm-up.
  */
 import type { Detector, DetectResult, Point, Series } from '../types.ts'
 import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, resolveStep, sideOk, summarize, warmingPoint, val, tsv } from '../base.ts'
@@ -49,18 +49,19 @@ export interface CusumState {
   sigma: number
   hi: number
   lo: number
-  /** Excursion start time and running sum/count since it began, per side. */
-  hiStart: number | null
-  hiSum: number
-  hiN: number
-  loStart: number | null
-  loSum: number
-  loN: number
+  /** The current excursion of each side (since its statistic was last 0): times and values, at most MAX_EXCURSION kept. */
+  hiT: number[]
+  hiX: number[]
+  loT: number[]
+  loX: number[]
 }
+
+/** Longest excursion kept for locating the change; older points of a very long excursion are dropped. */
+export const MAX_EXCURSION = 256
 
 export const cusumDefaults: CusumParams = { ...COMMON_DEFAULTS, k: 0.5, h: 5, warmupPoints: 60, relearnPoints: 30, staleAfterMs: Number.MAX_VALUE }
 
-const fresh = (stepMs: number): CusumState => ({ v: 1, lastTs: null, stepMs, warm: [], ready: false, relearning: false, mu: 0, sigma: 0, hi: 0, lo: 0, hiStart: null, hiSum: 0, hiN: 0, loStart: null, loSum: 0, loN: 0 })
+const fresh = (stepMs: number): CusumState => ({ v: 1, lastTs: null, stepMs, warm: [], ready: false, relearning: false, mu: 0, sigma: 0, hi: 0, lo: 0, hiT: [], hiX: [], loT: [], loX: [] })
 
 /** σ from first differences: 1.4826 · MAD(Δx) / √2. Robust to level shifts and slow drift. */
 export function diffSigma(x: number[]): number {
@@ -83,7 +84,9 @@ export const cusum: Detector<CusumParams, CusumState> = {
   },
   detect(series: Series, params?: Partial<CusumParams>, state?: CusumState | null): DetectResult<CusumState> {
     const p = merge(cusumDefaults, params)
-    const st: CusumState = state && state.v === 1 ? { ...state, warm: state.warm.slice() } : fresh(0)
+    const st: CusumState = state && state.v === 1 && Array.isArray(state.hiT)
+      ? { ...state, warm: state.warm.slice(), hiT: state.hiT.slice(), hiX: state.hiX.slice(), loT: state.loT.slice(), loX: state.loX.slice() }
+      : fresh(0)
     st.stepMs = resolveStep(p.stepMs, st.stepMs, series, st.lastTs)
     const warmupPoints = Math.max(3, Math.floor(p.warmupPoints))
     const n = length(series)
@@ -113,35 +116,52 @@ export const cusum: Detector<CusumParams, CusumState> = {
       const z = Math.max(-1e12, Math.min(1e12, (x - st.mu) / sd))
       st.hi = Math.max(0, st.hi + z - p.k)
       st.lo = Math.max(0, st.lo - z - p.k)
-      if (st.hi > 0) { if (st.hiStart === null) { st.hiStart = ts; st.hiSum = 0; st.hiN = 0 } st.hiSum += x; st.hiN++ } else { st.hiStart = null; st.hiSum = 0; st.hiN = 0 }
-      if (st.lo > 0) { if (st.loStart === null) { st.loStart = ts; st.loSum = 0; st.loN = 0 } st.loSum += x; st.loN++ } else { st.loStart = null; st.loSum = 0; st.loN = 0 }
+      const track = (on: boolean, T: number[], X: number[]) => {
+        if (!on) { T.length = 0; X.length = 0; return }
+        T.push(ts); X.push(x)
+        if (T.length > MAX_EXCURSION) { T.shift(); X.shift() }
+      }
+      track(st.hi > 0, st.hiT, st.hiX)
+      track(st.lo > 0, st.loT, st.loX)
       const stat = Math.max(st.hi, st.lo)
       const score = finiteScore(stat / p.h)
       let anomalous = false
       const pt: Point = { ts, value: x, expected: st.mu, lower: null, upper: null, score, anomalous, status: 'ok' }
       if (stat > p.h) {
         const up = st.hi >= st.lo
-        const newMu = up ? st.hiSum / st.hiN : st.loSum / st.loN
-        const at = (up ? st.hiStart : st.loStart) ?? ts
+        // Where in the excursion did the mean change? The split that maximises the likelihood
+        // ratio of a shift, (Σ_{j≥τ}(x_j − μ₀))² / (t − τ + 1); the new mean is the mean from τ.
+        // (The first point of the excursion is the textbook estimate, but the excursion often
+        // starts with a few pre-change points and the mean from there understates the shift.)
+        const T = up ? st.hiT : st.loT, X = up ? st.hiX : st.loX
+        let bestTau = 0, best = -1, acc = 0
+        for (let j = X.length - 1; j >= 0; j--) {
+          acc += X[j]! - st.mu
+          const glr = (acc * acc) / (X.length - j)
+          if (glr >= best) { best = glr; bestTau = j }
+        }
+        let sum = 0
+        for (let j = bestTau; j < X.length; j++) sum += X[j]!
+        const newMu = X.length ? sum / (X.length - bestTau) : x
+        const at = T[bestTau] ?? ts
         const diff = newMu - st.mu
         anomalous = Math.abs(diff) >= p.minDeviation && sideOk(p.direction, diff)
         if (anomalous) {
           pt.anomalous = true
           pt.explanation = levelShift({
             detector: 'cusum', from: st.mu, to: newMu, changeAt: at, sigma: sd, unit: p.unit,
-            facts: { statistic: stat, h: p.h, k: p.k, pointsSinceChange: up ? st.hiN : st.loN },
+            facts: { statistic: stat, h: p.h, k: p.k, pointsSinceChange: X.length - bestTau },
           })
         }
         // re-learn the level either way, so a lasting shift alarms once
         st.mu = newMu
         st.relearning = p.relearnPoints > 0
         st.hi = 0; st.lo = 0
-        st.hiStart = null; st.hiSum = 0; st.hiN = 0
-        st.loStart = null; st.loSum = 0; st.loN = 0
+        st.hiT = []; st.hiX = []; st.loT = []; st.loX = []
       }
       points[i] = pt
     }
-    const out: CusumState = { ...st, warm: st.warm.slice() }
+    const out: CusumState = { ...st, warm: st.warm.slice(), hiT: st.hiT.slice(), hiX: st.hiX.slice(), loT: st.loT.slice(), loX: st.loX.slice() }
     return { points, state: out, summary: summarize('cusum', points, out, undefined, `needs ${warmupPoints} points to learn the reference level`) }
   },
 }

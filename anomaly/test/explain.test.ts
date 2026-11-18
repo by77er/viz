@@ -68,7 +68,8 @@ describe('the sentences in the brief', () => {
       const p = flagged(out).find((q) => q.ts >= s.ts[300]!)! // CUSUM may also raise a false alarm earlier (in-control ARL ≈ 195)
       const e = p.explanation!
       expect(e.kind).toBe('level_shift')
-      expect(e.text).toMatch(/^mean shifted from 1[12]\d ms to 3[01]\d ms at 2026-01-05 1[23]:\d\d UTC \([\d.]+ standard deviations\)$/)
+      // CUSUM alarms one point after a 19σ shift, so its new mean rests on that point: 3xx
+      expect(e.text).toMatch(/^mean shifted from 1[12]\d ms to 3\d\d ms at 2026-01-05 13:0[0-2] UTC \([\d.]+ standard deviations\)$/)
       expect(e.text).toContain(`from ${fmt(e.reference)} ms to ${fmt(e.value)} ms at ${time(e.at)}`)
     }
     // PELT: the numbers are exactly the segment means and the first point of the new segment

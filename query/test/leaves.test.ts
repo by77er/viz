@@ -4,8 +4,8 @@
  */
 import { env } from 'cloudflare:workers'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { FileEntry } from '../../contracts/ledger'
-import { MAX_PART_BYTES, type Piece, assign, byPrecedence, hooks, pieces } from '../src/coordinator'
+import type { LiveFile } from '../../contracts/ledger'
+import { MAX_PART_BYTES, type Piece, assign, hooks, inPrecedenceOrder, pieces, readerGroups } from '../src/coordinator'
 import { MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, cacheUrl, fileCache } from '../src/leaf'
 import { QUERIES, type Tenant, type WSeries, type World, api, cost, discardAll, expected, flushAll, ledgerOf, run, sealAll, workload, world, write } from './world'
 
@@ -120,29 +120,52 @@ describe('the order of sample files', () => {
     expect(await value()).toBe('3')
   })
 
-  it('byPrecedence: compaction outputs first (higher level first), then flush files by shard, incarnation and sequence as numbers', () => {
-    const f = (key: string, level = 0): FileEntry => ({ table: 'metric_samples', day: '2026-11-18', key: `c/data/metric_samples/tenant=t/day=2026-11-18/${key}`, bytes: 1, rows: 1, minTs: 0, maxTs: 0, level, index: '' })
-    const files = [
-      f('L0-pool_0-900-10-12-aaaaaaaa.parquet'),
-      f('L0-pool_0-900-2-9-bbbbbbbb.parquet'),
-      f('L0-pool_0-1000-1-1-cccccccc.parquet'),
-      f('L0-pool_0-900-1-1-dddddddd.parquet'),
-      f('L1-h05-0123456789abcdef-eeeeeeee.parquet', 1),
-      f('L2-d-0123456789abcdef-ffffffff.parquet', 2),
-      f('L0-pool_1-5-100-100-99999999.parquet'),
-      f('L0-my-odd-shard-name-7-3-4-11111111.parquet'),
-    ]
-    expect(byPrecedence(files).map((x) => x.key.split('/').pop())).toEqual([
-      'L2-d-0123456789abcdef-ffffffff.parquet',
-      'L1-h05-0123456789abcdef-eeeeeeee.parquet',
-      'L0-my-odd-shard-name-7-3-4-11111111.parquet',
-      'L0-pool_0-900-1-1-dddddddd.parquet',
-      'L0-pool_0-900-2-9-bbbbbbbb.parquet',
-      'L0-pool_0-900-10-12-aaaaaaaa.parquet',
-      'L0-pool_0-1000-1-1-cccccccc.parquet',
-      'L0-pool_1-5-100-100-99999999.parquet',
-    ])
-    expect(byPrecedence([])).toEqual([])
+  it('files go to the engine and to the readers in the ledger\'s precedence order, whatever their keys say', async () => {
+    // Unit: the order comes from the precedence the ledger assigned, never from key text.
+    const f = (key: string, precedence: number): LiveFile => ({
+      table: 'metric_samples', day: '2026-11-18', key: `c/data/metric_samples/tenant=t/day=2026-11-18/${key}`, bytes: 1, rows: 1, minTs: 0, maxTs: 0, level: 0, index: '', precedence, precedenceLow: precedence,
+    })
+    const files = [f('L0-s-9-10-12-aaaaaaaa.parquet', 12 * 4096), f('L0-s-9-2-9-bbbbbbbb.parquet', 3 * 4096), f('L2-d-0123456789abcdef-cccccccc.parquet', 2 * 4096), f('L0-s-9-1-1-dddddddd.parquet', 4096)]
+    expect(inPrecedenceOrder(files).map((x) => x.precedence)).toEqual([4096, 2 * 4096, 3 * 4096, 12 * 4096])
+    expect(inPrecedenceOrder([])).toEqual([])
+    // An already ordered plan is left as it is (equal precedence: key, then position).
+    const sorted = inPrecedenceOrder(files)
+    expect(inPrecedenceOrder(sorted)).toEqual(sorted)
+    // Reader groups keep that order, each samples file with its series file.
+    const series = sorted.map((x) => ({ ...x, table: 'metric_series' as const, key: x.key.replace('/metric_samples/', '/metric_series/').replace(/-[0-9a-f]{8}\.parquet$/, '-eeeeeeee.parquet') }))
+    const groups = readerGroups(series, sorted)
+    expect(groups.flatMap((g) => g.samples.map((x) => x.key))).toEqual(sorted.map((x) => x.key))
+    expect(groups.every((g) => g.series.length === g.samples.length && g.series.length + g.samples.length <= 6)).toBe(true)
+    groups.forEach((g) => g.samples.forEach((s, i) => expect(g.series[i]!.key.replace('/metric_series/', '/metric_samples/').slice(0, -17)).toBe(s.key.slice(0, -17))))
+
+    // End to end: the order the engine and the readers receive is the plan's order, which
+    // is ascending precedence even where key order is not.
+    const w = await world(1)
+    const T = END - 60_000
+    for (let seq = 1; seq <= 11; seq++) {
+      await write(w.a, [{ labels: { __name__: 'ordered', job: 'j', instance: 'i' }, samples: [[T, seq]] }])
+      await sealAll(w, [w.a])
+      await flushAll(w, [w.a])
+    }
+    const plan = (await ledgerOf(w.a).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files
+    expect(plan.map((x) => x.precedence)).toEqual([...plan.map((x) => x.precedence)].sort((a, b) => a - b))
+    expect([...plan.map((x) => x.key)].sort()).not.toEqual(plan.map((x) => x.key)) // key order differs from the plan's (…-10-10-… sorts before …-2-2-…)
+    let seen: string[] = []
+    hooks.sampleOrder = (keys) => {
+      seen = keys
+    }
+    try {
+      const read = async () => (await (await api(w.a.key, '/api/v1/query', { query: 'max(ordered)', time: sec(T) })).json<{ data: { result: { value: [number, string] }[] } }>()).data.result[0]!.value[1]
+      expect(await read()).toBe('11') // the latest write
+      expect(seen).toEqual(plan.map((x) => x.key))
+      hooks.forceLeaves = 2
+      seen = []
+      expect(await read()).toBe('11')
+      expect(seen).toEqual(plan.map((x) => x.key))
+    } finally {
+      delete hooks.sampleOrder
+      delete hooks.forceLeaves
+    }
   })
 })
 
