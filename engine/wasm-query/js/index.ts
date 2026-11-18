@@ -1,0 +1,368 @@
+/**
+ * The JavaScript binding of the viz QUERY engine: the query half of `contracts/engine.ts`
+ * (`selectors`/`plan`, `queryRange`, `queryInstant`, `select`), the metadata calls and
+ * file pruning, over the C ABI documented in `../src/lib.rs`.
+ *
+ * Number rules (contracts/engine.ts):
+ *  - Times going in must be integers (Unix milliseconds). A fractional or NaN time is
+ *    refused, never rounded. They cross as i64, written into the request buffer.
+ *  - Sample values never pass through JavaScript arithmetic. Query results are JSON
+ *    produced inside the engine, with values as Prometheus-formatted strings; `select`
+ *    copies raw bytes from WASM memory into a `Float64Array`'s backing buffer.
+ *  - Limits are passed with every call. Nothing is configured on the instance.
+ *
+ * Memory: a request (files and batches included) is written straight into WASM linear
+ * memory, one copy per input buffer; results are copied out once and the WASM side is
+ * freed before returning. Linear memory never shrinks, so `memoryBytes()` is the
+ * instance's high-water mark; `reset()` drops the instance so the memory can be reclaimed.
+ *
+ * A trap (the Rust side is built with panic=abort) leaves an instance in an unknown state.
+ * The binding then drops the instance and creates a fresh one for the next call.
+ */
+import type { Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData } from '../../../contracts/engine'
+
+export const ABI_VERSION = 1
+
+/** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
+export interface QueryLimits {
+  /** Samples loaded from storage, summed over every selector of the query. */
+  maxSamples: number
+  /** Series loaded from storage, summed over every selector. */
+  maxSeries: number
+  /** Points in the result. */
+  maxOutputPoints: number
+  /** For any one selector: series times evaluation steps (the evaluator's grid). */
+  maxStepPoints: number
+  /** Length of the query text in bytes. */
+  maxQueryBytes: number
+  /** Nesting depth of the expression. */
+  maxDepth: number
+  /** Steps of a range query (Prometheus: 11,000). Exceeding it is `bad_data`. */
+  maxSteps: number
+}
+
+/** The engine's own defaults (`engine/query/src/limits.rs`), sized for a 128 MB isolate. */
+export const DEFAULT_LIMITS: QueryLimits = {
+  maxSamples: 2_000_000,
+  maxSeries: 20_000,
+  maxOutputPoints: 500_000,
+  maxStepPoints: 1_000_000,
+  maxQueryBytes: 16 * 1024,
+  maxDepth: 100,
+  maxSteps: 11_000,
+}
+
+export type ErrorType = 'bad_data' | 'execution' | 'unsupported' | 'internal'
+
+/** An error the engine reported, with the Prometheus `errorType`. */
+export class QueryError extends Error {
+  override name = 'QueryError'
+  readonly errorType: ErrorType
+  /** Set when a limit was exceeded: its name (`max_samples`, …), its value and the number reached. */
+  readonly limit?: { name: string; max: number; reached: number }
+  constructor(errorType: ErrorType, message: string, limit?: { name: string; max: number; reached: number }) {
+    super(message)
+    this.errorType = errorType
+    this.limit = limit
+  }
+}
+
+/** What a query read (design §6.5). */
+export interface QueryStats {
+  /** Calls the evaluator made to storage. */
+  selects: number
+  series: number
+  samples: number
+  outputPoints: number
+}
+
+/** One thing to fetch: every sample of every series matching `matchers` in `[minTs, maxTs]`. */
+export interface FetchRange {
+  matchers: Matcher[]
+  minTs: number
+  maxTs: number
+}
+
+export type InstantData = PromVector | PromScalar | PromMatrix | PromString
+
+export interface QueryEngine {
+  /** What to fetch before evaluating: merged, clamped ranges. `startMs === endMs` plans an instant query. */
+  plan(promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): FetchRange[]
+  /** `contracts/engine.ts` `selectors`: one entry per selector, unmerged. */
+  selectors(promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): FetchRange[]
+  /** `contracts/engine.ts` `queryRange`: the parsed `data` object. */
+  queryRange(input: ScanInput, promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): PromMatrix
+  /** The same as the engine wrote it (JSON text of `data`), with what it read. An HTTP layer passes the text through unparsed. */
+  queryRangeJson(input: ScanInput, promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): { json: string; stats: QueryStats }
+  queryInstant(input: ScanInput, promql: string, timeMs: number, limits?: QueryLimits): InstantData
+  queryInstantJson(input: ScanInput, promql: string, timeMs: number, limits?: QueryLimits): { json: string; stats: QueryStats }
+  /** `contracts/engine.ts` `select`. */
+  select(input: ScanInput, matchers: Matcher[], minTs: number, maxTs: number): SeriesData[]
+  /** `match[]` strings to matchers. Anything but a bare, selective series selector is `bad_data`. */
+  parseSelectors(selectors: string[]): Matcher[][]
+  /** `/api/v1/labels`. `match` empty: every series. */
+  labelNames(input: ScanInput, match: string[], minTs: number, maxTs: number, limits?: QueryLimits): string[]
+  /** `/api/v1/label/<name>/values`. */
+  labelValues(input: ScanInput, name: string, match: string[], minTs: number, maxTs: number, limits?: QueryLimits): string[]
+  /** `/api/v1/series`. At least one `match`. */
+  series(input: ScanInput, match: string[], minTs: number, maxTs: number, limits?: QueryLimits): Record<string, string>[]
+  /**
+   * For each index fragment (`FileEntry.index`): false if the file provably holds nothing
+   * the ranges read and need not be fetched. Sound by `engine/query` `files_needed`.
+   */
+  filesNeeded(indexes: string[], ranges: FetchRange[]): boolean[]
+  /** Size of the instance's linear memory now, which is also its peak: it only grows. */
+  memoryBytes(): number
+  /** How many times a WASM instance has been created (1, plus one per trap or reset). */
+  instances(): number
+  /** Drop the instance so its memory can be reclaimed; the next call creates a new one. */
+  reset(): void
+}
+
+interface Exports {
+  memory: WebAssembly.Memory
+  viz_q_abi_version(): number
+  viz_alloc(len: number): number
+  viz_free(ptr: number, len: number): void
+}
+type Op =
+  | 'viz_q_plan'
+  | 'viz_q_selectors'
+  | 'viz_q_query_range'
+  | 'viz_q_query_instant'
+  | 'viz_q_select'
+  | 'viz_q_parse_selectors'
+  | 'viz_q_label_names'
+  | 'viz_q_label_values'
+  | 'viz_q_series'
+  | 'viz_q_files_needed'
+type Module = Exports & Record<Op, (ptr: number, len: number) => number>
+
+const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
+const ERROR_TYPES: Record<number, ErrorType> = { 1: 'bad_data', 2: 'execution', 3: 'unsupported', 4: 'internal' }
+const I64_MIN = -(2n ** 63n)
+const I64_MAX = 2n ** 63n - 1n
+const U64_MAX = 2n ** 64n - 1n
+const utf8 = new TextEncoder()
+const text = new TextDecoder('utf-8', { fatal: true })
+
+function time(name: string, v: number): bigint {
+  if (v === Infinity) return I64_MAX
+  if (v === -Infinity) return I64_MIN
+  if (typeof v !== 'number' || !Number.isInteger(v)) throw new RangeError(`engine: ${name} must be an integer number of milliseconds, got ${v}`)
+  return BigInt(v)
+}
+
+function limit(name: string, v: number): bigint {
+  if (v === Infinity) return U64_MAX
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) throw new RangeError(`engine: limit ${name} must be a non-negative integer, got ${v}`)
+  return BigInt(v)
+}
+
+/** A request under construction: parts are sized first, then written once into WASM memory. */
+class Request {
+  private readonly parts: ((mem: Uint8Array, dv: DataView, at: number) => void)[] = []
+  size = 0
+  private push(n: number, write: (mem: Uint8Array, dv: DataView, at: number) => void): this {
+    const at = this.size
+    this.parts.push((mem, dv, base) => write(mem, dv, base + at))
+    this.size += n
+    return this
+  }
+  u8(v: number): this {
+    return this.push(1, (mem, _dv, at) => {
+      mem[at] = v
+    })
+  }
+  u32(v: number): this {
+    return this.push(4, (_m, dv, at) => dv.setUint32(at, v, true))
+  }
+  i64(v: bigint): this {
+    return this.push(8, (_m, dv, at) => dv.setBigInt64(at, v, true))
+  }
+  u64(v: bigint): this {
+    return this.push(8, (_m, dv, at) => dv.setBigUint64(at, v, true))
+  }
+  bytes(b: Uint8Array): this {
+    this.u32(b.byteLength)
+    return this.push(b.byteLength, (mem, _dv, at) => mem.set(b, at))
+  }
+  str(s: string): this {
+    return this.bytes(utf8.encode(s))
+  }
+  strs(list: string[]): this {
+    this.u32(list.length)
+    for (const s of list) this.str(s)
+    return this
+  }
+  limits(l: QueryLimits): this {
+    this.u64(limit('maxSamples', l.maxSamples)).u64(limit('maxSeries', l.maxSeries)).u64(limit('maxOutputPoints', l.maxOutputPoints))
+    this.u64(limit('maxStepPoints', l.maxStepPoints)).u64(limit('maxQueryBytes', l.maxQueryBytes)).u64(limit('maxDepth', l.maxDepth))
+    return this.u64(limit('maxSteps', l.maxSteps))
+  }
+  scan(input: ScanInput): this {
+    this.u32(input.seriesFiles.length).u32(input.sampleFiles.length).u32(input.tailBatches.length)
+    for (const list of [input.seriesFiles, input.sampleFiles, input.tailBatches]) for (const b of list) this.bytes(b)
+    return this
+  }
+  matchers(ms: Matcher[]): this {
+    this.u32(ms.length)
+    for (const m of ms) {
+      const op = OPS[m.op]
+      if (op === undefined) throw new RangeError(`engine: unknown matcher operator ${String(m.op)}`)
+      this.u8(op).str(m.name).str(m.value)
+    }
+    return this
+  }
+  write(mem: Uint8Array, at: number): void {
+    const dv = new DataView(mem.buffer)
+    for (const p of this.parts) p(mem, dv, at)
+  }
+}
+
+/**
+ * Create a query engine from the compiled module (`import wasm from './viz_query.wasm'`
+ * in a Worker). Instantiation is synchronous and lazy, with an EMPTY import object.
+ */
+export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
+  let x: Module | null = null
+  let created = 0
+
+  const instance = (): Module => {
+    if (x) return x
+    const made = new WebAssembly.Instance(module, {}).exports as unknown as Module
+    if (made.viz_q_abi_version() !== ABI_VERSION) throw new Error(`engine: module ABI ${made.viz_q_abi_version()}, binding expects ${ABI_VERSION}`)
+    created++
+    x = made
+    return made
+  }
+
+  /** Run one operation. Views over WASM memory are taken after every call that can grow it, never kept. */
+  function call<T>(op: Op, req: Request, read: (payload: Uint8Array) => T): T {
+    if (req.size > 0xffff_ffff) throw new RangeError('engine: request larger than 4 GiB')
+    const w = instance()
+    let at = 0
+    let res = 0
+    let total = 0
+    let own = false
+    try {
+      at = w.viz_alloc(req.size)
+      req.write(new Uint8Array(w.memory.buffer), at)
+      res = w[op](at, req.size)
+      w.viz_free(at, req.size)
+      at = 0
+      const head = new DataView(w.memory.buffer, res, 8)
+      total = head.getUint32(0, true)
+      const status = head.getUint32(4, true)
+      const payload = new Uint8Array(w.memory.buffer, res + 8, total - 8)
+      if (status !== 0) {
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        const n = dv.getUint32(0, true)
+        const name = new TextDecoder().decode(payload.subarray(4, 4 + n))
+        // u64 as BigInt, then to Number: informational, and limits are far below 2^53 in practice.
+        const max = Number(dv.getBigUint64(4 + n, true))
+        const reached = Number(dv.getBigUint64(12 + n, true))
+        const message = new TextDecoder().decode(payload.subarray(20 + n))
+        own = true
+        const type = ERROR_TYPES[status]
+        if (!type) throw new QueryError('internal', `engine: malformed request (binding bug): ${message}`)
+        throw new QueryError(type, message, n > 0 ? { name, max, reached } : undefined)
+      }
+      return read(payload)
+    } catch (e) {
+      // Anything that is not the engine's own error means the instance may be corrupt
+      // (a trap, out of memory): never reuse it.
+      if (!own) x = null
+      throw e
+    } finally {
+      if (x === w) {
+        if (at !== 0) w.viz_free(at, req.size)
+        if (res !== 0) w.viz_free(res, total)
+      }
+    }
+  }
+
+  const json = <T>(payload: Uint8Array): T => JSON.parse(text.decode(payload)) as T
+
+  const withStats = (payload: Uint8Array): { json: string; stats: QueryStats } => {
+    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+    const n = (i: number): number => Number(dv.getBigUint64(8 * i, true))
+    return { stats: { selects: n(0), series: n(1), samples: n(2), outputPoints: n(3) }, json: text.decode(payload.subarray(32)) }
+  }
+
+  const planReq = (promql: string, startMs: number, endMs: number, stepMs: number, limits: QueryLimits): Request =>
+    new Request().limits(limits).i64(time('startMs', startMs)).i64(time('endMs', endMs)).i64(time('stepMs', stepMs)).str(promql)
+
+  function queryRangeJson(input: ScanInput, promql: string, startMs: number, endMs: number, stepMs: number, limits = DEFAULT_LIMITS) {
+    return call('viz_q_query_range', planReq(promql, startMs, endMs, stepMs, limits).scan(input), withStats)
+  }
+
+  function queryInstantJson(input: ScanInput, promql: string, timeMs: number, limits = DEFAULT_LIMITS) {
+    return call('viz_q_query_instant', new Request().limits(limits).i64(time('timeMs', timeMs)).str(promql).scan(input), withStats)
+  }
+
+  function select(input: ScanInput, matchers: Matcher[], minTs: number, maxTs: number): SeriesData[] {
+    const req = new Request().i64(time('minTs', minTs)).i64(time('maxTs', maxTs)).matchers(matchers).scan(input)
+    return call('viz_q_select', req, (payload) => {
+      const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+      let p = 0
+      const str = (): string => {
+        const n = dv.getUint32(p, true)
+        p += 4 + n
+        return text.decode(payload.subarray(p - n, p))
+      }
+      const n = dv.getUint32(p, true)
+      p += 4
+      const out: SeriesData[] = new Array(n)
+      for (let i = 0; i < n; i++) {
+        const nLabels = dv.getUint32(p, true)
+        p += 4
+        const labels: Record<string, string> = {}
+        for (let l = 0; l < nLabels; l++) {
+          const name = str()
+          // defineProperty, so a label called `__proto__` is an ordinary own property.
+          Object.defineProperty(labels, name, { value: str(), enumerable: true, writable: true, configurable: true })
+        }
+        const rows = dv.getUint32(p, true)
+        p = (p + 4 + 7) & ~7
+        // Raw byte copies into the arrays' buffers: no f64 is read and written back.
+        const ts = new Float64Array(rows)
+        new Uint8Array(ts.buffer).set(payload.subarray(p, p + 8 * rows))
+        p += 8 * rows
+        const values = new Float64Array(rows)
+        new Uint8Array(values.buffer).set(payload.subarray(p, p + 8 * rows))
+        p += 8 * rows
+        out[i] = { labels, ts, values }
+      }
+      return out
+    })
+  }
+
+  const metaReq = (limits: QueryLimits, minTs: number, maxTs: number): Request => new Request().limits(limits).i64(time('minTs', minTs)).i64(time('maxTs', maxTs))
+
+  function filesNeeded(indexes: string[], ranges: FetchRange[]): boolean[] {
+    const req = new Request().strs(indexes).u32(ranges.length)
+    for (const r of ranges) req.i64(time('minTs', r.minTs)).i64(time('maxTs', r.maxTs)).matchers(r.matchers)
+    return call('viz_q_files_needed', req, (payload) => Array.from(payload, (b) => b !== 0))
+  }
+
+  return {
+    plan: (promql, startMs, endMs, stepMs, limits = DEFAULT_LIMITS) => call('viz_q_plan', planReq(promql, startMs, endMs, stepMs, limits), json<FetchRange[]>),
+    selectors: (promql, startMs, endMs, stepMs, limits = DEFAULT_LIMITS) => call('viz_q_selectors', planReq(promql, startMs, endMs, stepMs, limits), json<FetchRange[]>),
+    queryRangeJson,
+    queryRange: (input, promql, startMs, endMs, stepMs, limits) => JSON.parse(queryRangeJson(input, promql, startMs, endMs, stepMs, limits).json) as PromMatrix,
+    queryInstantJson,
+    queryInstant: (input, promql, timeMs, limits) => JSON.parse(queryInstantJson(input, promql, timeMs, limits).json) as InstantData,
+    select,
+    parseSelectors: (selectors) => call('viz_q_parse_selectors', new Request().strs(selectors), json<Matcher[][]>),
+    labelNames: (input, match, minTs, maxTs, limits = DEFAULT_LIMITS) => call('viz_q_label_names', metaReq(limits, minTs, maxTs).strs(match).scan(input), json<string[]>),
+    labelValues: (input, name, match, minTs, maxTs, limits = DEFAULT_LIMITS) => call('viz_q_label_values', metaReq(limits, minTs, maxTs).str(name).strs(match).scan(input), json<string[]>),
+    series: (input, match, minTs, maxTs, limits = DEFAULT_LIMITS) => call('viz_q_series', metaReq(limits, minTs, maxTs).strs(match).scan(input), json<Record<string, string>[]>),
+    filesNeeded,
+    memoryBytes: () => (x ? x.memory.buffer.byteLength : 0),
+    instances: () => created,
+    reset: () => {
+      x = null
+    },
+  }
+}

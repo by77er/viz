@@ -107,10 +107,10 @@ describe('authentication', () => {
     const counting = { get: (...args: unknown[]) => (gets++, (env.CONFIG.get as (...a: unknown[]) => unknown)(...args)) } as unknown as KVNamespace
     const s = sample()
     for (let i = 0; i < 5; i++) expect((await postWrite(key, s, { env: { CONFIG: counting } })).status).toBe(204)
-    expect(gets).toBe(2) // one key record + one pool map, for five requests
+    expect(gets).toBe(3) // one key record + one pool map + one limits record, for five requests
     // A wrong secret for a cached key id is still refused.
     expect((await postWrite(`${key}x`, s, { env: { CONFIG: counting } })).status).toBe(401)
-    expect(gets).toBe(2)
+    expect(gets).toBe(3)
     // Stored hash is of the secret only, never the secret itself.
     const [, keyId, secret] = /^viz_([^_]+)_(.+)$/.exec(key)!
     const record = (await env.CONFIG.get(`key:${keyId}`, 'json')) as { secretSha256: string }

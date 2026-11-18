@@ -4,7 +4,7 @@ import { HttpError, badRequest, tooLarge } from './errors'
 import { type Limits, limitsFrom } from './limits'
 import { decodeOtlpJson, decodeOtlpProto, exportResponse, statusBody } from './otlp'
 import { decodeRemoteWrite } from './prw'
-import { type Outcome, type RouteEnv, appendAll, clearMapCache } from './route'
+import { type Limited, type Outcome, type RouteEnv, appendAll, clearMapCache } from './route'
 import { snappyDecompress } from './snappy'
 
 // For now the shard is deployed in the same script as the edge Worker.
@@ -69,6 +69,11 @@ async function gunzip(body: Uint8Array, max: number): Promise<Uint8Array> {
 
 const retryAfter = (ms: number): string => String(Math.max(1, Math.ceil(ms / 1000)))
 
+/** What the sender is told when new series were refused: which limit, how full, how much was dropped. */
+export const limitMessage = (l: Limited): string =>
+  `active series limit reached: the limit is ${l.limit} active series per tenant (${l.share} on each of its shards, ${l.current} active on the fullest); ` +
+  `${l.series} new series with ${l.rows} samples refused; samples of series that are already active were accepted`
+
 // ───────────────────────── Prometheus Remote Write ─────────────────────────
 
 async function remoteWrite(req: Request, env: Env, limits: Limits): Promise<Response> {
@@ -94,11 +99,17 @@ async function remoteWrite(req: Request, env: Env, limits: Limits): Promise<Resp
 
   const outcome = await appendAll(env, tenant, c)
   if (outcome.status !== 'ok') return refusal(outcome, (status, message, headers) => text(status, message, headers))
-  const written = { 'X-Prometheus-Remote-Write-Samples-Written': String(c.nRows) }
+  const written = { 'X-Prometheus-Remote-Write-Samples-Written': String(outcome.rows) }
+  // New series over the tenant's limit: 429, naming the limit. Everything else in the
+  // request is durably written; a sender that retries re-sends it and nothing is stored twice.
+  if (outcome.limited) {
+    const also = c.rejectedTotal > 0 ? `; also rejected ${c.rejectedTotal} samples (${c.rejectionSummary()})` : ''
+    return text(429, `${limitMessage(outcome.limited)}; ${outcome.rows} samples written${also}`, { ...written, 'Retry-After': '60' })
+  }
   // Remote Write has no partial success: if anything was rejected the answer is 400
   // (not retried by the sender), saying what was wrong and how much was still written.
   if (c.rejectedTotal > 0) {
-    return text(400, `rejected ${c.rejectedTotal} of ${c.received} samples (${c.rejectionSummary()}); ${c.nRows} written`, written)
+    return text(400, `rejected ${c.rejectedTotal} of ${c.received} samples (${c.rejectionSummary()}); ${outcome.rows} written`, written)
   }
   return new Response(null, { status: 204, headers: written })
 }
@@ -131,7 +142,10 @@ async function otlpMetrics(req: Request, env: Env, limits: Limits): Promise<Resp
     const outcome = await appendAll(env, tenant, c)
     if (outcome.status !== 'ok') return refusal(outcome, fail)
     // 200 means: every point not listed as rejected is durably appended.
-    return new Response(exportResponse(json, c.rejectedTotal, c.rejectionSummary()), { status: 200, headers: { 'Content-Type': type } })
+    // Series refused for the active-series limit are a partial success too: a retry would not fix them.
+    const l = outcome.limited
+    const message = [c.rejectionSummary(), l ? limitMessage(l) : ''].filter((x) => x !== '').join('; ')
+    return new Response(exportResponse(json, c.rejectedTotal + (l?.rows ?? 0), message), { status: 200, headers: { 'Content-Type': type } })
   } catch (e) {
     if (e instanceof HttpError) return fail(e.status, e.message, e.headers)
     throw e

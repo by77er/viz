@@ -16,6 +16,22 @@
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
   // API keys (`key:<keyId>`) and per-tenant pool maps (`pool:<tenant>`).
   "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  // A shard's seal puts {tenant, shard} on the flush queue; a successful flush and the cron
+  // put {tenant} on the maintenance queue. This script consumes both, and their dead letters.
+  "queues": {
+    "producers": [
+      { "binding": "FLUSH_QUEUE", "queue": "viz-flush" },
+      { "binding": "MAINT_QUEUE", "queue": "viz-maint" }
+    ],
+    "consumers": [
+      { "queue": "viz-flush", "max_batch_size": 50, "max_batch_timeout": 1, "max_retries": 8, "dead_letter_queue": "viz-flush-dlq" },
+      { "queue": "viz-maint", "max_batch_size": 20, "max_batch_timeout": 1, "max_retries": 5, "dead_letter_queue": "viz-maint-dlq" },
+      { "queue": "viz-flush-dlq", "max_batch_size": 50, "max_batch_timeout": 5 },
+      { "queue": "viz-maint-dlq", "max_batch_size": 50, "max_batch_timeout": 5 }
+    ]
+  },
+  // Hourly: the flush sweep and the maintenance sweep (src/index.ts, `scheduled`).
+  "triggers": { "crons": ["7 * * * *"] },
   "vars": {
     "CELL": "cell-0",
     "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"

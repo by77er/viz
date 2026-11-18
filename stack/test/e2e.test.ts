@@ -1,14 +1,21 @@
 import { evictDurableObject } from 'cloudflare:test'
 import { env, exports } from 'cloudflare:workers'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { parquetMetadata, parquetReadObjects } from '../../bench/node_modules/hyparquet/src/index.js'
 import type { FileEntry, LedgerChange } from '../../contracts/ledger'
 import { bitsOf, seriesId } from '../../engine/wasm/test/vzb1'
 import { breakLedgerLog, dataKeys, discardRecorded, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex } from '../../flush/test/helpers'
 import { StaleTail } from '../../flush/test/read'
-import type { Segment } from '../../shard/src/shard'
+import { type Segment, Shard } from '../../shard/src/shard'
 import { engine, flushTenant } from '../src/index'
 import { type Tenant, type World, flushAll, ledgerOf, prwWorkload, sealAll, sendAll, sendPrw, sendPrwWithLimits, shardOf, world } from './world'
+
+// These tests drive flush by hand, step by step. The stack's real flush queue would flush
+// behind their backs as soon as a shard seals, so seal notifications are dropped here;
+// test/auto.test.ts is where nothing is called by hand.
+beforeAll(() => {
+  ;(Shard.prototype as unknown as { announce(): Promise<void> }).announce = async () => undefined
+})
 
 const KEY = (tenant: string) =>
   new RegExp(`^${env.CELL}/data/(metric_samples|metric_series)/tenant=${tenant}/day=(\\d{4}-\\d{2}-\\d{2})/L0-(e2e-[a-z0-9]+_[01])-(\\d+)-(\\d+)-(\\d+)-([0-9a-f]{8})\\.parquet$`)

@@ -11,5 +11,8 @@ declare namespace Cloudflare {
     CELL: string
     DEFAULT_POOL?: string
     INGEST_LIMITS?: string
+    MAINTENANCE?: string
+    FLUSH_QUEUE: Queue<import('../../shard/src/shard').FlushMessage>
+    MAINT_QUEUE: Queue<import('../src/maintain').MaintMessage>
   }
 }

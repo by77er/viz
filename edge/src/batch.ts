@@ -139,6 +139,11 @@ export class Collector {
     return this.arena.subarray(this.entryOff[i]!, this.entryOff[i]! + this.entryLen[i]!)
   }
 
+  /** The `series_id` of series `i`: the first eight bytes of its table entry. */
+  seriesId(i: number): bigint {
+    return new DataView(this.arena.buffer, this.arena.byteOffset + this.entryOff[i]!, 8).getBigInt64(0, true)
+  }
+
   reject(reason: number | string, count: number): void {
     if (count <= 0) return
     const r = typeof reason === 'string' ? reason : REASONS[reason]!
@@ -411,6 +416,8 @@ export class Collector {
 export interface Batch {
   bytes: Uint8Array<ArrayBuffer>
   rows: number
+  /** The `series_id` of each series table entry, in table order: what the shard meters (contracts/BATCH.md). */
+  seriesIds: BigInt64Array
 }
 
 const pad8 = (n: number): number => (n + 7) & ~7
@@ -418,18 +425,21 @@ const pad8 = (n: number): number => (n + 7) & ~7
 /**
  * Split the collected rows into `VZB1` batches: rows are grouped by `slotOf(series)`,
  * and each slot's rows are cut into batches of at most `maxBatchBytes` (a batch always
- * holds at least one row). Row order within a slot is arrival order.
+ * holds at least one row). Row order within a slot is arrival order. Rows of a series
+ * marked in `skip` are left out (series a shard refused for the active-series limit).
  */
-export function buildBatches(c: Collector, slotOfSeries: ArrayLike<number>, maxBatchBytes: number): Map<number, Batch[]> {
+export function buildBatches(c: Collector, slotOfSeries: ArrayLike<number>, maxBatchBytes: number, skip?: Uint8Array): Map<number, Batch[]> {
   const nSeries = c.nSeries
   const counts = new Map<number, number>()
   for (let r = 0; r < c.nRows; r++) {
+    if (skip && skip[c.rowSeries[r]!]) continue
     const slot = slotOfSeries[c.rowSeries[r]!]!
     counts.set(slot, (counts.get(slot) ?? 0) + 1)
   }
   const rowsOf = new Map<number, { rows: Uint32Array; n: number }>()
   for (const [slot, n] of counts) rowsOf.set(slot, { rows: new Uint32Array(n), n: 0 })
   for (let r = 0; r < c.nRows; r++) {
+    if (skip && skip[c.rowSeries[r]!]) continue
     const s = rowsOf.get(slotOfSeries[c.rowSeries[r]!]!)!
     s.rows[s.n++] = r
   }
@@ -510,5 +520,5 @@ function encodeBatch(c: Collector, series: number[], rows: Uint32Array, from: nu
     const src = rows[from + i]! * 8
     bytes.set(c.rowVal.subarray(src, src + 8), valAt + 8 * i)
   }
-  return { bytes, rows: n }
+  return { bytes, rows: n, seriesIds: BigInt64Array.from(series, (s) => c.seriesId(s)) }
 }

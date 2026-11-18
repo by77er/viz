@@ -1,2 +1,2 @@
 target/
-node_modules/
+js/viz_query.wasm

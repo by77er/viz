@@ -1,0 +1,35 @@
+{
+  // The query Worker and its pool of Leaf Durable Objects.
+  //
+  // SHARD and LEDGER are the write path's Durable Objects. In production they live in
+  // their own Workers and are bound here by `script_name`; that wiring has never been
+  // deployed (README, "Not implemented"). The tests use test/wrangler.jsonc, which puts
+  // every class in one script.
+  "name": "viz-query",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "LEAF", "class_name": "Leaf" },
+      { "name": "SHARD", "class_name": "Shard", "script_name": "viz-edge" },
+      { "name": "LEDGER", "class_name": "Ledger", "script_name": "viz-flush" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Leaf"] }],
+  // Data files. Only leaves read it; the coordinator never touches R2.
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  // API keys (`key:<keyId>`), pool maps (`pool:<tenant>`), query limits (`limits:<tenant>`).
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  // Pin near the bucket so that Cache API hits concentrate (design §6.3).
+  "placement": { "mode": "smart" },
+  "vars": {
+    "CELL": "cell-0",
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
+    // Leaf objects per cell: leaf/<cell>/0 … leaf/<cell>/31.
+    "LEAF_POOL_SIZE": "32",
+    // Origins allowed to call the API from a browser, comma separated. Never `*`.
+    "CORS_ORIGINS": "https://vis.bitcru.sh",
+    // Seconds an immutable Parquet file stays in the Cache API.
+    "FILE_CACHE_TTL_S": "3600"
+  }
+}
