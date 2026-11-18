@@ -1,7 +1,8 @@
 import { DurableObject } from 'cloudflare:workers'
 import { TENANT_ID } from '../../contracts/ledger'
+import { openSchema, refusalOf, type SchemaState, type SchemaTooNew, SchemaTooNewError } from '../../contracts/schema'
 import { type Caps, capsFrom } from './caps'
-import { Problem } from './errors'
+import { Problem, schemaProblem } from './errors'
 import type { Actor, Identity } from './identity'
 import { auditOps } from './ops-audit'
 import { dashboardOps } from './ops-dashboards'
@@ -10,6 +11,7 @@ import { keyOps, newKey, purgeStaleSecrets } from './ops-keys'
 import { purgeDashboards } from './ops-dashboards'
 import { settingsOps } from './ops-settings'
 import { type OpInput, type OpName, type OpResult, routeOf } from './routes'
+import { TENANT_SCHEMA } from './schema'
 import { randomId } from './util'
 
 export interface TenantEnv {
@@ -45,52 +47,6 @@ class Rollback extends Error {
 /** A mutation that turned out to change nothing: no revision, no audit row. */
 export class NoChange extends Rollback {}
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS tenant_meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k));
-CREATE TABLE IF NOT EXISTS keys (
-  tenant TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, scopes TEXT NOT NULL,
-  key_id TEXT NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, expires_at INTEGER,
-  disabled INTEGER NOT NULL DEFAULT 0, rotated_at INTEGER, last_used_at INTEGER,
-  PRIMARY KEY (tenant, id));
-CREATE UNIQUE INDEX IF NOT EXISTS keys_name ON keys (tenant, name);
-CREATE TABLE IF NOT EXISTS key_secrets (
-  tenant TEXT NOT NULL, key_id TEXT NOT NULL, key TEXT NOT NULL, secret_sha256 TEXT NOT NULL, valid_until INTEGER,
-  PRIMARY KEY (tenant, key_id));
-CREATE TABLE IF NOT EXISTS key_usage (
-  tenant TEXT NOT NULL, key TEXT NOT NULL, hour INTEGER NOT NULL, samples INTEGER NOT NULL,
-  PRIMARY KEY (tenant, key, hour));
-CREATE TABLE IF NOT EXISTS dashboards (
-  tenant TEXT NOT NULL, id TEXT NOT NULL, head INTEGER NOT NULL, revision TEXT NOT NULL,
-  title TEXT NOT NULL, intent TEXT NOT NULL, tags TEXT NOT NULL, owner TEXT, panel_count INTEGER NOT NULL,
-  created_at INTEGER NOT NULL, created_by TEXT NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL,
-  deleted_at INTEGER, deleted_by TEXT, purge_at INTEGER,
-  PRIMARY KEY (tenant, id));
-CREATE TABLE IF NOT EXISTS revisions (
-  tenant TEXT NOT NULL, dashboard TEXT NOT NULL, number INTEGER NOT NULL, revision TEXT NOT NULL,
-  spec TEXT NOT NULL, bytes INTEGER NOT NULL, at INTEGER NOT NULL, by TEXT NOT NULL, message TEXT NOT NULL,
-  kind TEXT NOT NULL, summary TEXT NOT NULL, proposal TEXT, proposed_by TEXT, reverted_to INTEGER,
-  PRIMARY KEY (tenant, dashboard, number));
-CREATE TABLE IF NOT EXISTS proposals (
-  tenant TEXT NOT NULL, id TEXT NOT NULL, dashboard TEXT NOT NULL, base_revision TEXT NOT NULL, base_number INTEGER NOT NULL,
-  message TEXT NOT NULL, changes TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, by TEXT NOT NULL,
-  editors TEXT NOT NULL, expires_at INTEGER NOT NULL, resolved_at INTEGER, resolved_by TEXT, reason TEXT,
-  applied_number INTEGER, applied_changes TEXT, bytes INTEGER NOT NULL,
-  PRIMARY KEY (tenant, id));
-CREATE INDEX IF NOT EXISTS proposals_open ON proposals (tenant, status, expires_at);
-CREATE TABLE IF NOT EXISTS settings (
-  tenant TEXT NOT NULL, section TEXT NOT NULL, version INTEGER NOT NULL, value TEXT NOT NULL,
-  updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL,
-  PRIMARY KEY (tenant, section));
-CREATE TABLE IF NOT EXISTS audit (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, id TEXT NOT NULL UNIQUE, at INTEGER NOT NULL,
-  subject TEXT NOT NULL, kind TEXT NOT NULL, name TEXT, action TEXT NOT NULL,
-  target_type TEXT NOT NULL, target_id TEXT NOT NULL, before TEXT, after TEXT);
-CREATE TABLE IF NOT EXISTS outbox (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, kv_key TEXT NOT NULL, value TEXT, expiration INTEGER,
-  created_at INTEGER NOT NULL);
-CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
-`
 
 const OPS: Record<OpName, Op> = {
   whoami: (_t, c) => ({ status: 200, body: { tenant: c.id.tenant, subject: c.id.subject, kind: c.id.kind, name: c.id.name ?? null, scopes: c.id.scopes } }),
