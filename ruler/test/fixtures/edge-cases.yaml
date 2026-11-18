@@ -1,0 +1,26 @@
+# Quoting and typing corners: values a YAML reader would take for numbers, booleans or
+# nulls must arrive as the strings a rule file means.
+groups:
+  - name: "edge: cases"
+    rules:
+      - alert: 'It''s quoted'
+        expr: "1"
+        labels:
+          severity: "1"
+          enabled: true
+          zero: 0
+          tilde: "~"
+          empty_like: 'null'
+          colon: "a: b"
+          hash: "a #b"
+        annotations:
+          summary: "tab\tand \"quotes\" and unicode é"
+          dash: '- not a list'
+          brace: '{{ $labels.instance }}'
+          url: http://example.test/path?x=1#frag
+      - record: up:count
+        expr: 1 + 1
+      - alert: Watchdog
+        expr: vector(1)
+        for: 0s
+        labels: {}

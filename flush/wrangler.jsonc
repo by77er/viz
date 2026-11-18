@@ -1,0 +1,21 @@
+{
+  "name": "viz-flush",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // For now the shard and the ledger ship in the same script as the flush Worker, so its
+  // tests run against the real Durable Objects. In production these become bindings to the
+  // scripts that own the classes (`script_name`).
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARD", "class_name": "Shard" },
+      { "name": "LEDGER", "class_name": "Ledger" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  // Shards keep their `flush-pending:<shard>` marker here; the sweep lists it.
+  // The queue itself (`FLUSH_QUEUE`, with this Worker as its consumer) is bound in stack/:
+  // here a real consumer would flush behind the back of tests that drive flush by hand.
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  "vars": { "CELL": "cell-0" }
+}

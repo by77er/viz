@@ -1,0 +1,20 @@
+# Contracts
+
+The interfaces every component builds against. If a component needs something different,
+change it here first; nothing else may redefine these.
+
+| File | Contract |
+|---|---|
+| `BATCH.md` | The columnar batch: what `edge` produces, a shard stores opaquely, and the engine decodes |
+| `TABLES.md` | Parquet schemas, sort orders, partitioning and object keys for the metrics tables |
+| `ledger.ts` | The tenant ledger's RPC surface: file precedence (`LiveFile`, which file wins a duplicate sample), and the proposed tombstone surface used for physical deletion |
+| `LEDGER-LOG.md` | The ledger's change log as batched segments written in the background: format, drain, checkpoints, truncation, readers. Built; replaced one object per change (whose keys `ledger.ts` keeps for readers) |
+| `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |
+| `engine.ts` | The JavaScript face of the Rust/WASM engine |
+| `COMPATIBILITY.md` | What every component does so that release N and N±1 can run side by side: versioned storage, versioned formats, readers before writers, expand then contract, rollback rules |
+| `schema.ts` | The migration runner every Durable Object opens its storage with (`openSchema`), and the rollback test (`canOpen`, `schemaRelease`) |
+| `../shard/src/shard.ts` | The shard's RPC surface (already implemented) |
+| `../shard/src/pool.ts` | Pool maps and routing (already implemented) |
+
+Scope of this first build: **metrics only** (float samples). Traces and logs follow the
+same shapes later.

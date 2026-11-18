@@ -1,0 +1,170 @@
+{
+  "annotations": { "list": [
+    { "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true, "hide": true, "name": "Annotations & Alerts", "type": "dashboard" },
+    { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "enable": true, "expr": "changes(deploy_timestamp[1m]) > 0", "name": "Deploys" }
+  ] },
+  "description": "Host health for the API fleet: CPU, memory, disk and network per node. For on-call engineers deciding whether a host is the cause of an incident.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": 42,
+  "links": [{ "title": "Runbook", "type": "link", "url": "https://wiki.example.com/runbooks/hosts" }],
+  "panels": [
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 1, "panels": [], "title": "Overview", "type": "row" },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Share of CPU time not idle across the selected nodes. Above 85% the fleet is saturated.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" }, "mappings": [], "max": 1, "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.7 }, { "color": "red", "value": 0.85 }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "editorMode": "code", "expr": "1 - avg(rate(node_cpu_seconds_total{job=\"$job\", instance=~\"$Node\", mode=\"idle\"}[$__rate_interval]))", "legendFormat": "__auto", "range": true, "refId": "A" }],
+      "title": "CPU Busy",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "max": 100, "min": 0, "thresholds": { "mode": "percentage", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 80 }] }, "unit": "percent" }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "targets": [{ "expr": "100 * (1 - sum(node_memory_MemAvailable_bytes{job=\"$job\", instance=~\"${Node:regex}\"}) / sum(node_memory_MemTotal_bytes{job=\"$job\", instance=~\"${Node:regex}\"}))", "refId": "A" }],
+      "title": "RAM Used",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
+      "id": 4,
+      "options": { "legend": { "displayMode": "list" }, "pieType": "pie", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum by (mode) (rate(node_cpu_seconds_total{job=\"$job\"}[5m]))", "legendFormat": "{{mode}}", "refId": "A" }],
+      "title": "CPU by mode",
+      "type": "piechart"
+    },
+    {
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
+      "id": 5,
+      "options": { "code": { "language": "plaintext" }, "content": "## Host health\nStart with **CPU Busy**. If a single node is hot, check `kubectl top pods` on it.\n\n[Runbook](https://wiki.example.com/runbooks/hosts)", "mode": "markdown" },
+      "title": "Notes",
+      "type": "text"
+    },
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }, "id": 6, "panels": [], "title": "CPU and memory", "type": "row" },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "CPU time by mode, stacked. Growing iowait points at disk, growing steal at a noisy neighbour.",
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 40, "lineWidth": 1, "stacking": { "group": "A", "mode": "normal" } }, "min": 0, "unit": "percentunit" },
+        "overrides": [{ "matcher": { "id": "byName", "options": "iowait" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "id": 7,
+      "interval": "$resolution",
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sum by (mode) (rate(node_cpu_seconds_total{job=\"$job\", instance=~\"$Node\", mode!=\"idle\"}[$__rate_interval])) / scalar(count(node_cpu_seconds_total{job=\"$job\", instance=~\"$Node\", mode=\"idle\"}))", "legendFormat": "{{mode}}", "refId": "A" },
+        { "expr": "node_load1{job=\"$job\", instance=~\"$Node\"}", "hide": true, "legendFormat": "load1", "refId": "B" }
+      ],
+      "title": "CPU Basic",
+      "type": "timeseries"
+    },
+    {
+      "aliasColors": {}, "bars": false, "dashLength": 10, "dashes": false,
+      "datasource": "Prometheus",
+      "fill": 4, "fillGradient": 0,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "id": 8,
+      "legend": { "avg": false, "current": true, "max": false, "min": false, "show": true, "total": false, "values": true },
+      "lines": true, "linewidth": 1, "nullPointMode": "null", "stack": true,
+      "targets": [
+        { "expr": "node_memory_MemTotal_bytes{job=\"[[job]]\", instance=~\"$Node\"} - node_memory_MemAvailable_bytes{job=\"[[job]]\", instance=~\"$Node\"}", "format": "time_series", "intervalFactor": 2, "legendFormat": "used {{instance}}", "refId": "A" },
+        { "expr": "node_memory_Cached_bytes{job=\"[[job]]\", instance=~\"$Node\"}", "format": "time_series", "legendFormat": "cached {{instance}}", "refId": "B" }
+      ],
+      "title": "Memory Basic",
+      "type": "graph",
+      "xaxis": { "mode": "time", "show": true },
+      "yaxes": [{ "format": "bytes", "logBase": 1, "min": "0", "show": true }, { "format": "short", "show": false }]
+    },
+    {
+      "collapsed": true,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "id": 9,
+      "panels": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "description": "Per-node root filesystem usage and network errors right now. Sort by usage to find the node about to fill up.",
+          "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "id": 10,
+          "targets": [
+            { "expr": "1 - node_filesystem_avail_bytes{job=\"$job\", instance=~\"$Node\", mountpoint=\"$mount\"} / node_filesystem_size_bytes{job=\"$job\", instance=~\"$Node\", mountpoint=\"$mount\"}", "format": "table", "instant": true, "refId": "A" },
+            { "expr": "sum by (instance) (rate(node_network_receive_errs_total{job=\"$job\", instance=~\"$Node\"}[$__range]))", "format": "table", "instant": true, "refId": "B" },
+            { "datasource": { "type": "cloudwatch", "uid": "cw" }, "dimensions": { "InstanceId": "*" }, "metricName": "StatusCheckFailed", "namespace": "AWS/EC2", "refId": "C" }
+          ],
+          "title": "Disk Space Used",
+          "transformations": [{ "id": "merge", "options": {} }],
+          "type": "table"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "dtdurations" }, "overrides": [] },
+          "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+          "id": 11,
+          "targets": [{ "expr": "sum by (le) (rate(node_disk_io_time_seconds_bucket{job=\"$job\", instance=~\"$Node\"}[$resolution]))", "format": "heatmap", "refId": "A" }],
+          "title": "Disk IO latency",
+          "type": "heatmap"
+        },
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+          "id": 12,
+          "options": { "showTime": true, "sortOrder": "Descending" },
+          "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "expr": "{job=\"$job\", instance=~\"$Node\"} |= \"error\"", "refId": "A" }],
+          "title": "Kernel errors",
+          "type": "logs"
+        },
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "description": "Kernel and systemd error lines per interval. OOM kills show up here before they show up anywhere else.",
+          "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars" }, "unit": "furlongs" }, "overrides": [] },
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 24 },
+          "id": 13,
+          "targets": [
+            { "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (instance) (count_over_time({job=\"$job\", instance=~\"$Node\"} |~ \"(?i)error|oom\" [$__interval]))", "legendFormat": "{{instance}}", "refId": "A" },
+            { "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum(count_over_time({job=\"$job\"} |= \"panic\" [${__interval_ms}ms]))", "refId": "B" }
+          ],
+          "title": "Error log rate",
+          "type": "timeseries"
+        }
+      ],
+      "title": "Disk, network and logs",
+      "type": "row"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["linux", "Node Exporter", "SRE team"],
+  "templating": {
+    "list": [
+      { "current": { "selected": false, "text": "Prometheus", "value": "prometheus-main" }, "hide": 0, "label": "Datasource", "name": "DS_PROMETHEUS", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource" },
+      { "current": { "selected": false, "text": "node", "value": "node" }, "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "definition": "label_values(node_uname_info, job)", "hide": 0, "includeAll": false, "label": "Job", "multi": false, "name": "job", "options": [], "query": { "query": "label_values(node_uname_info, job)", "refId": "StandardVariableQuery" }, "refresh": 1, "regex": "", "sort": 1, "type": "query" },
+      { "current": { "selected": true, "text": ["All"], "value": ["$__all"] }, "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "definition": "label_values(node_uname_info{job=\"$job\"}, instance)", "hide": 0, "includeAll": true, "label": "Host", "multi": true, "name": "Node", "options": [], "query": "label_values(node_uname_info{job=\"$job\"}, instance)", "refresh": 2, "regex": "/(.*):9100/", "sort": 1, "type": "query" },
+      { "current": { "selected": false, "text": "/", "value": "/" }, "hide": 0, "includeAll": false, "label": "Mount", "multi": true, "name": "mount", "options": [{ "selected": true, "text": "/", "value": "/" }, { "selected": false, "text": "/var", "value": "/var" }, { "selected": false, "text": "/data", "value": "/data" }], "query": "/,/var,/data", "type": "custom" },
+      { "auto": true, "auto_count": 30, "auto_min": "10s", "current": { "selected": false, "text": "5m", "value": "5m" }, "hide": 0, "label": "Resolution", "name": "resolution", "options": [{ "text": "auto", "value": "$__auto_interval_resolution" }, { "text": "1m", "value": "1m" }, { "text": "5m", "value": "5m" }, { "text": "1h", "value": "1h" }], "query": "1m,5m,1h", "type": "interval" },
+      { "current": { "text": "", "value": "" }, "hide": 0, "label": "Filter", "name": "filter", "options": [], "query": "", "type": "textbox" },
+      { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "filters": [], "hide": 0, "name": "Filters", "type": "adhoc" }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Node Exporter / Hosts",
+  "uid": "rYdddlPWk",
+  "version": 17
+}

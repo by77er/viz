@@ -1,0 +1,19 @@
+{
+  "name": "@viz/stack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "soak": "SOAK_STEPS=3000 vitest run test/soak.test.ts --reporter=verbose",
+    "hyparquet": "node tools/hyparquet_check.mjs",
+    "mutants": "node scripts/mutants.mjs all"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.4",
+    "@cloudflare/workers-types": "^5.20261117.1",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.1",
+    "wrangler": "^4.164.0"
+  }
+}

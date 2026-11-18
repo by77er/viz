@@ -1,0 +1,20 @@
+{
+ "version": 1,
+ "schema": [
+  {
+   "type": "table",
+   "name": "ruler",
+   "sql": "CREATE TABLE ruler (tenant TEXT NOT NULL, shard TEXT NOT NULL, registered_at INTEGER NOT NULL, PRIMARY KEY (tenant, shard)) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "tenant_shards",
+   "sql": "CREATE TABLE tenant_shards (tenant TEXT NOT NULL PRIMARY KEY, shards INTEGER NOT NULL) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "viz_schema",
+   "sql": "CREATE TABLE viz_schema (one INTEGER PRIMARY KEY CHECK (one = 1), component TEXT NOT NULL, version INTEGER NOT NULL, compat INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+  }
+ ]
+}

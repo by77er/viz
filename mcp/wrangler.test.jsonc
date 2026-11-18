@@ -1,0 +1,15 @@
+{
+  // Tests only. The main module re-exports the REAL control plane's Tenant object, so the
+  // agent surface is tested against control/ itself; the query service and the ruler are fakes
+  // (test/fake/), reached in-process.
+  "name": "viz-mcp-test",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tenant"] }],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-mcp-test-config" }],
+  "vars": {
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
+    "APP_URL": "https://vis.bitcru.sh"
+  }
+}

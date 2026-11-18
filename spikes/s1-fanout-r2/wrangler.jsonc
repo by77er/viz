@@ -1,0 +1,11 @@
+{
+  "name": "viz-spike-s1-fanout-r2",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-spike-s1" }],
+  "services": [{ "binding": "SELF", "service": "viz-spike-s1-fanout-r2" }],
+  "durable_objects": { "bindings": [{ "name": "WAITER", "class_name": "Waiter" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Waiter"] }]
+}

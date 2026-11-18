@@ -1,0 +1,252 @@
+{
+  "apiVersion": "viz.dashboard/v1",
+  "metadata": {
+    "id": "viz_ingest_pipeline",
+    "title": "viz ingest pipeline",
+    "intent": "Self-monitoring for viz operators. Answers: is telemetry being accepted, acknowledged and made durable on time, and if not, which stage (edge, shard, flush to object storage, ledger) is behind?",
+    "tags": ["viz", "ingest", "self-monitoring"]
+  },
+  "time": { "from": "now-1h", "to": "now", "refresh": "15s" },
+  "variables": {
+    "cell": {
+      "kind": "query",
+      "label": "Cell",
+      "description": "Deployment cell; a cell owns a pool of shards.",
+      "query": { "lang": "promql", "expr": "label_values(viz_ingest_requests_total, cell)" },
+      "multi": true,
+      "includeAll": true,
+      "default": "*"
+    },
+    "signal": { "kind": "enum", "label": "Signal", "values": ["metrics", "traces", "logs"], "multi": true, "includeAll": true, "default": "*" },
+    "quantile": { "kind": "enum", "label": "Latency quantile", "values": ["0.5", "0.9", "0.99"], "default": "0.99" }
+  },
+  "queries": {
+    "accepted": {
+      "lang": "promql",
+      "expr": "sum by (signal) (rate(viz_ingest_samples_total{cell=~\"$cell\",signal=~\"$signal\",outcome=\"accepted\"}[$__rate]))",
+      "legend": "{{signal}}"
+    },
+    "rejected": {
+      "lang": "promql",
+      "expr": "sum by (reason) (rate(viz_ingest_samples_total{cell=~\"$cell\",signal=~\"$signal\",outcome=\"rejected\"}[$__rate]))",
+      "legend": "{{reason}}"
+    },
+    "reject_ratio": {
+      "lang": "promql",
+      "expr": "sum(rate(viz_ingest_samples_total{cell=~\"$cell\",signal=~\"$signal\",outcome=\"rejected\"}[$__rate])) / sum(rate(viz_ingest_samples_total{cell=~\"$cell\",signal=~\"$signal\"}[$__rate]))"
+    },
+    "http_5xx_ratio": {
+      "lang": "promql",
+      "expr": "sum(rate(viz_ingest_requests_total{cell=~\"$cell\",signal=~\"$signal\",status=~\"5..\"}[$__rate])) / sum(rate(viz_ingest_requests_total{cell=~\"$cell\",signal=~\"$signal\"}[$__rate]))"
+    },
+    "ack_latency": {
+      "lang": "promql",
+      "expr": "histogram_quantile($quantile, sum by (cell, le) (rate(viz_ingest_ack_duration_seconds_bucket{cell=~\"$cell\",signal=~\"$signal\"}[$__rate])))",
+      "legend": "{{cell}}"
+    },
+    "ack_buckets": {
+      "lang": "promql",
+      "expr": "sum by (le) (rate(viz_ingest_ack_duration_seconds_bucket{cell=~\"$cell\",signal=~\"$signal\"}[$__rate]))"
+    },
+    "unflushed_age": {
+      "lang": "promql",
+      "expr": "max by (cell) (viz_shard_oldest_unflushed_seconds{cell=~\"$cell\"})",
+      "legend": "{{cell}}"
+    },
+    "unflushed_age_max": {
+      "lang": "promql",
+      "expr": "max(viz_shard_oldest_unflushed_seconds{cell=~\"$cell\"})"
+    },
+    "flush_duration": {
+      "lang": "promql",
+      "expr": "histogram_quantile($quantile, sum by (cell, le) (rate(viz_shard_flush_duration_seconds_bucket{cell=~\"$cell\"}[$__rate])))",
+      "legend": "{{cell}}"
+    },
+    "flush_failures": {
+      "lang": "promql",
+      "expr": "sum by (cell, stage) (rate(viz_shard_flush_failures_total{cell=~\"$cell\"}[$__rate]))",
+      "legend": "{{cell}} {{stage}}"
+    },
+    "flushed_bytes": {
+      "lang": "promql",
+      "expr": "sum by (signal) (rate(viz_shard_flushed_bytes_total{cell=~\"$cell\",signal=~\"$signal\"}[$__rate]))",
+      "legend": "{{signal}}"
+    },
+    "ledger_lag": {
+      "lang": "promql",
+      "expr": "max by (cell) (viz_ledger_commit_lag_seconds{cell=~\"$cell\"})",
+      "legend": "{{cell}}"
+    },
+    "shard_buffer": {
+      "lang": "promql",
+      "expr": "viz_shard_buffer_bytes{cell=~\"$cell\"} / viz_shard_buffer_limit_bytes{cell=~\"$cell\"}",
+      "instant": true
+    },
+    "shard_series": {
+      "lang": "promql",
+      "expr": "viz_shard_active_series{cell=~\"$cell\"}",
+      "instant": true
+    },
+    "shard_ack_p99": {
+      "lang": "promql",
+      "expr": "histogram_quantile(0.99, sum by (cell, shard, le) (rate(viz_ingest_ack_duration_seconds_bucket{cell=~\"$cell\"}[$__rate])))",
+      "instant": true
+    },
+    "compaction_backlog": {
+      "lang": "promql",
+      "expr": "sum by (cell) (viz_compaction_pending_files{cell=~\"$cell\"})",
+      "legend": "{{cell}}"
+    },
+    "ingest_errors": {
+      "lang": "logql",
+      "expr": "sum by (component) (count_over_time({app=\"viz\", component=~\"ingest|shard|ledger\"} |= \"level=error\" [$__interval]))",
+      "legend": "{{component}}"
+    }
+  },
+  "panels": {
+    "server_errors": {
+      "kind": "stat",
+      "title": "Ingest 5xx ratio",
+      "description": "Share of ingest requests answered with 5xx. Clients retry these, so a short spike is tolerable; above 1% data is at risk of being dropped by client buffers.",
+      "unit": "ratio",
+      "queries": ["http_5xx_ratio"],
+      "options": { "sparkline": true },
+      "thresholds": [{ "above": 0.001, "level": "warn" }, { "above": 0.01, "level": "crit" }]
+    },
+    "reject_share": {
+      "kind": "stat",
+      "title": "Rejected samples",
+      "description": "Share of samples refused (limits, validation, out-of-order). Rejections are deliberate, but a jump means a tenant hit a limit or a client is misbehaving.",
+      "unit": "ratio",
+      "queries": ["reject_ratio"],
+      "thresholds": [{ "above": 0.02, "level": "warn" }, { "above": 0.2, "level": "crit" }]
+    },
+    "durability_window": {
+      "kind": "stat",
+      "title": "Oldest unflushed data",
+      "description": "Age of the oldest acknowledged data not yet in object storage, worst shard. This is the durability exposure; it should stay under the flush interval.",
+      "unit": "s",
+      "queries": ["unflushed_age_max"],
+      "options": { "reduce": "max", "sparkline": true },
+      "thresholds": [{ "above": 30, "level": "warn" }, { "above": 120, "level": "crit" }]
+    },
+    "accepted_rate": {
+      "kind": "timeseries",
+      "title": "Accepted samples by signal",
+      "description": "Samples, spans and log lines accepted per second. A drop with no rise in rejections means senders stopped or the edge is unreachable.",
+      "unit": "events/s",
+      "queries": ["accepted"],
+      "options": { "stack": true, "style": "area" }
+    },
+    "rejections": {
+      "kind": "timeseries",
+      "title": "Rejected samples by reason",
+      "description": "Refused samples per second by reason. rate_limited and series_limit are tenant limits; invalid and out_of_order point at a client bug.",
+      "unit": "events/s",
+      "queries": ["rejected"],
+      "options": { "style": "bars", "stack": true }
+    },
+    "ack_latency_by_cell": {
+      "kind": "timeseries",
+      "title": "Acknowledgement latency by cell",
+      "description": "Time from request arrival to acknowledgement at the selected quantile, per cell. One cell above the others means a hot or unhealthy shard pool.",
+      "unit": "s",
+      "queries": ["ack_latency"],
+      "options": { "yScale": "log" },
+      "thresholds": [{ "above": 0.25, "level": "warn" }, { "above": 1, "level": "crit" }]
+    },
+    "ack_distribution": {
+      "kind": "heatmap",
+      "title": "Acknowledgement latency distribution",
+      "description": "Histogram of acknowledgement time. A second band forming near the client timeout means requests are queueing behind a slow shard.",
+      "unit": "s",
+      "queries": ["ack_buckets"],
+      "options": { "yScale": "log", "colorScale": "sqrt" }
+    },
+    "unflushed_by_cell": {
+      "kind": "timeseries",
+      "title": "Oldest unflushed data by cell",
+      "description": "Durability exposure per cell. A sawtooth under the flush interval is healthy; a ramp means flushes are failing or slow.",
+      "unit": "s",
+      "queries": ["unflushed_age"],
+      "thresholds": [{ "above": 30, "level": "warn" }, { "above": 120, "level": "crit" }]
+    },
+    "flush_time": {
+      "kind": "timeseries",
+      "title": "Flush duration",
+      "description": "Time to seal a batch and write it to object storage, at the selected quantile. Rising flush time with flat volume points at object storage.",
+      "unit": "s",
+      "queries": ["flush_duration"],
+      "thresholds": [{ "above": 5, "level": "warn" }]
+    },
+    "flush_errors": {
+      "kind": "timeseries",
+      "title": "Flush failures by stage",
+      "description": "Failed flush attempts per second by stage (seal, put, record). Should be zero; failures are retried but each one widens the durability window.",
+      "unit": "errors/s",
+      "queries": ["flush_failures"],
+      "options": { "style": "bars" },
+      "thresholds": [{ "above": 0, "level": "warn" }]
+    },
+    "flushed_volume": {
+      "kind": "timeseries",
+      "title": "Bytes written to object storage",
+      "description": "Compressed bytes flushed per second by signal. Use with accepted samples to watch the compression ratio and storage cost.",
+      "unit": "bytes/s",
+      "queries": ["flushed_bytes"],
+      "options": { "stack": true, "style": "area" }
+    },
+    "ledger_commit_lag": {
+      "kind": "timeseries",
+      "title": "Ledger commit lag",
+      "description": "Delay between a file landing in object storage and its record being committed to the ledger. Until committed, the data is durable but not queryable.",
+      "unit": "s",
+      "queries": ["ledger_lag"],
+      "thresholds": [{ "above": 10, "level": "warn" }, { "above": 60, "level": "crit" }]
+    },
+    "compaction": {
+      "kind": "timeseries",
+      "title": "Compaction backlog",
+      "description": "Small files waiting to be compacted, per cell. A growing backlog does not lose data but makes queries slower and more expensive.",
+      "unit": "count",
+      "queries": ["compaction_backlog"],
+      "thresholds": [{ "above": 5000, "level": "warn" }]
+    },
+    "shards": {
+      "kind": "table",
+      "title": "Shards under pressure",
+      "description": "Per shard: buffer fill, active series and p99 acknowledgement time, fullest first. A shard near 1.0 buffer fill will start rejecting writes.",
+      "queries": ["shard_buffer", "shard_series", "shard_ack_p99"],
+      "options": {
+        "columns": [
+          { "query": "shard_buffer", "title": "Buffer fill", "unit": "ratio" },
+          { "query": "shard_series", "title": "Active series", "unit": "count" },
+          { "query": "shard_ack_p99", "title": "Ack p99", "unit": "s" }
+        ],
+        "sortBy": "shard_buffer",
+        "sortDir": "desc",
+        "limit": 20
+      },
+      "thresholds": [{ "above": 0.8, "level": "warn" }]
+    },
+    "error_logs": {
+      "kind": "timeseries",
+      "title": "Error log lines by component",
+      "description": "Error-level log lines per step from the ingest, shard and ledger components. Use it to see which component started complaining first.",
+      "unit": "count",
+      "queries": ["ingest_errors"],
+      "options": { "style": "bars", "stack": true }
+    }
+  },
+  "layout": {
+    "kind": "rows",
+    "rows": [
+      { "title": "Is ingest healthy?", "height": 140, "items": ["server_errors", "reject_share", "durability_window"] },
+      { "title": "Edge: accept and acknowledge", "items": ["accepted_rate", "rejections"] },
+      { "items": ["ack_latency_by_cell", "ack_distribution"] },
+      { "title": "Shards: seal and flush", "items": ["unflushed_by_cell", "flush_time", "flush_errors"] },
+      { "items": [{ "panel": "shards", "span": 8 }, { "panel": "flushed_volume", "span": 4 }] },
+      { "title": "After the flush", "items": ["ledger_commit_lag", "compaction", "error_logs"] }
+    ]
+  }
+}

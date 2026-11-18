@@ -1,0 +1,18 @@
+{
+  "name": "viz-ruler-test",
+  "main": "test/harness.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "RULER", "class_name": "TestRuler" },
+      { "name": "NOTIFIER", "class_name": "TestNotifier" },
+      { "name": "RULER_INDEX", "class_name": "TestRulerIndex" }
+    ]
+  },
+  // Local only (miniflare): the key store edge's `authenticate` reads.
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-ruler-test-config" }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TestRuler", "TestNotifier"] },
+    { "tag": "v2", "new_sqlite_classes": ["TestRulerIndex"] }
+  ]
+}

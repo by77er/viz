@@ -1,0 +1,4 @@
+{
+  "$comment": "Ids of the KV namespaces deploy/resources.mjs created, by title. Ids are not secret. resources.mjs looks every namespace up by title on each run and rewrites this file, so the account, not this file, is the source of truth.",
+  "kv_namespaces": {}
+}

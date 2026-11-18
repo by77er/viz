@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "es2022", "module": "es2022", "moduleResolution": "bundler", "strict": true,
+    "noUncheckedIndexedAccess": true, "skipLibCheck": true, "noEmit": true, "resolveJsonModule": true,
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
+  },
+  "include": ["src", "test"],
+  // Runs in Node, not in workerd; it needs Node's types, which the rest must not see.
+  "exclude": ["test/global-setup.ts"]
+}

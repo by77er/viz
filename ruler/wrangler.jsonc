@@ -1,0 +1,25 @@
+{
+  // Production shape. Not deployed.
+  // EVALUATOR (the query engine: `evaluate`, or `instant` as a fallback, plus `range` and
+  // `check`) and SINK (the ingest path) are service bindings that do not exist yet; without
+  // them every rule reports `health: err`.
+  // CONFIG is edge's API-key store: the SAME namespace edge binds, by id. The id below is
+  // edge's placeholder; never bind the unrelated account namespace that is also called CONFIG.
+  "name": "viz-ruler",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "RULER", "class_name": "Ruler" },
+      { "name": "NOTIFIER", "class_name": "Notifier" },
+      { "name": "RULER_INDEX", "class_name": "RulerIndex" }
+    ]
+  },
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  // The sweeper. Each run costs 16 index-object requests plus one per registered ruler shard.
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Ruler", "Notifier"] },
+    { "tag": "v2", "new_sqlite_classes": ["RulerIndex"] }
+  ]
+}

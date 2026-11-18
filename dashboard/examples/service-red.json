@@ -1,0 +1,245 @@
+{
+  "apiVersion": "viz.dashboard/v1",
+  "metadata": {
+    "id": "service_red",
+    "title": "Service RED overview",
+    "intent": "On-call view for one HTTP service. Answers: is the service healthy right now, and if not, is the cause traffic, errors, latency, or a downstream dependency?",
+    "tags": ["red", "service", "on-call"]
+  },
+  "time": { "from": "now-3h", "to": "now", "refresh": "30s" },
+  "variables": {
+    "env": { "kind": "enum", "label": "Environment", "values": ["prod", "staging", "dev"], "default": "prod" },
+    "service": {
+      "kind": "query",
+      "label": "Service",
+      "query": { "lang": "promql", "expr": "label_values(http_server_requests_total{env=\"$env\"}, service)" },
+      "default": "checkout"
+    },
+    "route": {
+      "kind": "query",
+      "label": "Route",
+      "description": "HTTP route template; pick several to compare, or all.",
+      "query": { "lang": "promql", "expr": "label_values(http_server_requests_total{env=\"$env\",service=\"$service\"}, route)" },
+      "multi": true,
+      "includeAll": true,
+      "default": "*"
+    }
+  },
+  "queries": {
+    "req_rate": {
+      "lang": "promql",
+      "expr": "sum by (route) (rate(http_server_requests_total{env=\"$env\",service=\"$service\",route=~\"$route\"}[$__rate]))",
+      "legend": "{{route}}"
+    },
+    "req_rate_total": {
+      "lang": "promql",
+      "expr": "sum(rate(http_server_requests_total{env=\"$env\",service=\"$service\",route=~\"$route\"}[$__rate]))"
+    },
+    "err_ratio": {
+      "lang": "promql",
+      "expr": "sum(rate(http_server_requests_total{env=\"$env\",service=\"$service\",route=~\"$route\",status=~\"5..\"}[$__rate])) / sum(rate(http_server_requests_total{env=\"$env\",service=\"$service\",route=~\"$route\"}[$__rate]))"
+    },
+    "err_by_status": {
+      "lang": "promql",
+      "expr": "sum by (status) (rate(http_server_requests_total{env=\"$env\",service=\"$service\",route=~\"$route\",status=~\"[45]..\"}[$__rate]))",
+      "legend": "{{status}}"
+    },
+    "latency_p50": {
+      "lang": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\"$env\",service=\"$service\",route=~\"$route\"}[$__rate])))",
+      "legend": "p50"
+    },
+    "latency_p95": {
+      "lang": "promql",
+      "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\"$env\",service=\"$service\",route=~\"$route\"}[$__rate])))",
+      "legend": "p95"
+    },
+    "latency_p99": {
+      "lang": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\"$env\",service=\"$service\",route=~\"$route\"}[$__rate])))",
+      "legend": "p99"
+    },
+    "latency_buckets": {
+      "lang": "promql",
+      "expr": "sum by (le) (rate(http_server_request_duration_seconds_bucket{env=\"$env\",service=\"$service\",route=~\"$route\"}[$__rate]))"
+    },
+    "route_p99": {
+      "lang": "promql",
+      "expr": "histogram_quantile(0.99, sum by (route, le) (rate(http_server_request_duration_seconds_bucket{env=\"$env\",service=\"$service\"}[$__rate])))",
+      "instant": true
+    },
+    "route_err_ratio": {
+      "lang": "promql",
+      "expr": "sum by (route) (rate(http_server_requests_total{env=\"$env\",service=\"$service\",status=~\"5..\"}[$__rate])) / sum by (route) (rate(http_server_requests_total{env=\"$env\",service=\"$service\"}[$__rate]))",
+      "instant": true
+    },
+    "slow_traces": {
+      "lang": "traceql",
+      "expr": "{ resource.service.name = \"$service\" && resource.deployment.environment = \"$env\" && duration > 2s } | count() by (name)"
+    }
+  },
+  "panels": {
+    "error_ratio": {
+      "kind": "stat",
+      "title": "Error ratio",
+      "description": "Share of requests answered with 5xx. The SLO is 0.1%; above 1% is an incident and pages.",
+      "unit": "ratio",
+      "queries": ["err_ratio"],
+      "options": { "sparkline": true },
+      "thresholds": [
+        { "above": 0.001, "level": "warn", "label": "SLO" },
+        { "above": 0.01, "level": "crit", "label": "incident" }
+      ]
+    },
+    "throughput": {
+      "kind": "stat",
+      "title": "Requests per second",
+      "description": "Total request rate for the selected routes. Near zero in prod means traffic is not reaching the service.",
+      "unit": "req/s",
+      "queries": ["req_rate_total"],
+      "options": { "sparkline": true },
+      "thresholds": [{ "below": 1, "level": "warn", "label": "no traffic" }]
+    },
+    "p99_latency": {
+      "kind": "stat",
+      "title": "p99 latency",
+      "description": "99th percentile request duration. The latency objective is 500 ms; above 2 s users see timeouts.",
+      "unit": "s",
+      "queries": ["latency_p99"],
+      "options": { "sparkline": true, "decimals": 3 },
+      "thresholds": [
+        { "above": 0.5, "level": "warn" },
+        { "above": 2, "level": "crit" }
+      ]
+    },
+    "requests_by_route": {
+      "kind": "timeseries",
+      "title": "Requests by route",
+      "description": "Request throughput per route. A sudden drop on one route matters more than a peak; compare against deploys.",
+      "unit": "req/s",
+      "queries": ["req_rate"],
+      "options": { "stack": true, "style": "area", "maxSeries": 20 }
+    },
+    "errors_by_status": {
+      "kind": "timeseries",
+      "title": "Errors by status code",
+      "description": "4xx and 5xx responses per second by status. 5xx is ours to fix; a 4xx spike usually means a bad client release.",
+      "unit": "errors/s",
+      "queries": ["err_by_status"],
+      "options": { "style": "bars", "stack": true }
+    },
+    "latency_quantiles": {
+      "kind": "timeseries",
+      "title": "Latency quantiles",
+      "description": "p50, p95 and p99 request duration. p99 pulling away from p50 points at one slow dependency or route, not general load.",
+      "unit": "s",
+      "queries": ["latency_p50", "latency_p95", "latency_p99"],
+      "options": { "yScale": "log" },
+      "thresholds": [{ "above": 0.5, "level": "warn" }, { "above": 2, "level": "crit" }]
+    },
+    "latency_heatmap": {
+      "kind": "heatmap",
+      "title": "Latency distribution",
+      "description": "Request duration histogram over time. A second band appearing above 1 s usually means a dependency is slow for some requests.",
+      "unit": "s",
+      "queries": ["latency_buckets"],
+      "options": { "yScale": "log", "exemplars": true }
+    },
+    "routes": {
+      "kind": "table",
+      "title": "Routes by p99 latency",
+      "description": "Per-route p99 latency and error ratio, slowest first. Use it to find which route drags the service numbers.",
+      "queries": ["route_p99", "route_err_ratio"],
+      "options": {
+        "columns": [
+          { "query": "route_p99", "title": "p99", "unit": "s" },
+          { "query": "route_err_ratio", "title": "Errors", "unit": "ratio" }
+        ],
+        "sortBy": "route_p99",
+        "sortDir": "desc",
+        "limit": 15
+      }
+    },
+    "slow_spans": {
+      "kind": "table",
+      "title": "Slow traces by operation",
+      "description": "Number of traces slower than 2 s per root operation in the selected range. Click through to the traces.",
+      "unit": "count",
+      "queries": ["slow_traces"],
+      "options": { "limit": 10 }
+    },
+    "notes": {
+      "kind": "text",
+      "title": "How to read this",
+      "content": "Read left to right: **errors**, **traffic**, **latency**. If error ratio is red and a dependency row below is red too, start with the dependency. Runbook: `runbooks/service-red.md`."
+    }
+  },
+  "layout": {
+    "kind": "rows",
+    "rows": [
+      { "title": "Now", "height": 140, "items": [{ "panel": "error_ratio", "span": 3 }, { "panel": "throughput", "span": 3 }, { "panel": "p99_latency", "span": 3 }, { "panel": "notes", "span": 3 }] },
+      { "title": "Traffic and errors", "items": ["requests_by_route", "errors_by_status"] },
+      { "title": "Latency", "items": ["latency_quantiles", "latency_heatmap"] },
+      { "title": "Where", "items": [{ "panel": "routes", "span": 7 }, { "panel": "slow_spans", "span": 5 }] },
+      {
+        "title": "Dependencies",
+        "items": [
+          { "fragment": "dependency_red", "as": "db", "with": { "caller": "$service", "env": "$env", "peer": "postgres" } },
+          { "fragment": "dependency_red", "as": "payments", "with": { "caller": "$service", "env": "$env", "peer": "payments-api" } }
+        ]
+      }
+    ]
+  },
+  "fragments": {
+    "dependency_red": {
+      "description": "RED summary of the calls one service makes to one downstream dependency. Instantiate once per dependency.",
+      "params": {
+        "caller": { "description": "Calling service name" },
+        "peer": { "description": "Downstream service or database name" },
+        "env": { "description": "Environment", "default": "prod" }
+      },
+      "queries": {
+        "calls": {
+          "lang": "promql",
+          "expr": "sum(rate(http_client_requests_total{env=\"$env\",service=\"$caller\",peer_service=\"$peer\"}[$__rate]))",
+          "legend": "calls"
+        },
+        "call_err_ratio": {
+          "lang": "promql",
+          "expr": "sum(rate(http_client_requests_total{env=\"$env\",service=\"$caller\",peer_service=\"$peer\",outcome=\"error\"}[$__rate])) / sum(rate(http_client_requests_total{env=\"$env\",service=\"$caller\",peer_service=\"$peer\"}[$__rate]))"
+        },
+        "call_p99": {
+          "lang": "promql",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_client_request_duration_seconds_bucket{env=\"$env\",service=\"$caller\",peer_service=\"$peer\"}[$__rate])))",
+          "legend": "p99"
+        }
+      },
+      "panels": {
+        "errors": {
+          "kind": "stat",
+          "title": "Dependency error ratio",
+          "description": "Share of calls to the dependency that fail. Above 1% the dependency is the likely cause of our own errors.",
+          "unit": "ratio",
+          "queries": ["call_err_ratio"],
+          "thresholds": [{ "above": 0.01, "level": "warn" }, { "above": 0.05, "level": "crit" }]
+        },
+        "calls": {
+          "kind": "timeseries",
+          "title": "Dependency call rate",
+          "description": "Outbound calls per second to the dependency. A drop to zero means we stopped calling it; a spike means retries.",
+          "unit": "req/s",
+          "queries": ["calls"]
+        },
+        "latency": {
+          "kind": "timeseries",
+          "title": "Dependency p99 latency",
+          "description": "p99 duration of calls to the dependency as seen by the caller, including network time and retries.",
+          "unit": "s",
+          "queries": ["call_p99"],
+          "thresholds": [{ "above": 1, "level": "warn" }]
+        }
+      },
+      "layout": { "kind": "rows", "rows": [{ "items": [{ "panel": "errors", "span": 2 }, "calls", "latency"] }] }
+    }
+  }
+}

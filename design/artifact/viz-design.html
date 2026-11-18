@@ -1,0 +1,331 @@
+<title>viz System Design</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column (68ch) with figures and tables allowed to run wider; summary first, mechanism diagram second, evidence after. */
+:root{
+  --bg:#f5f7f9; --panel:#ffffff; --fg:#16202a; --muted:#5a6876; --rule:#d5dce3;
+  --lake:#0d6a8c; --tail:#a85d12; --ok:#2f7a4d; --warn:#a2470f;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0f141a; --panel:#161d25; --fg:#e2e8ee; --muted:#93a1ae; --rule:#2a3541;
+  --lake:#62bfdc; --tail:#e2a45c; --ok:#6cc391; --warn:#eb9a63; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#0f141a; --panel:#161d25; --fg:#e2e8ee; --muted:#93a1ae; --rule:#2a3541;
+  --lake:#62bfdc; --tail:#e2a45c; --ok:#6cc391; --warn:#eb9a63; color-scheme:dark }
+
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:16px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:40px 72px}
+.wrap{max-width:1040px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+.col{max-width:68ch}
+header .eyebrow,.label{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font-size:clamp(30px,5vw,44px);line-height:1.1;font-weight:600;margin:10px 0 14px;text-wrap:balance;letter-spacing:-.01em}
+h2{font-size:24px;line-height:1.25;font-weight:600;margin:0 0 14px;text-wrap:balance}
+h3{font-size:16px;font-weight:600;margin:0 0 6px}
+p{margin:0 0 12px} p:last-child{margin-bottom:0}
+.lede{font-size:18px;color:var(--fg)}
+.muted{color:var(--muted)}
+code{font-family:var(--mono);font-size:.88em;background:color-mix(in srgb,var(--rule) 45%,transparent);padding:1px 5px;border-radius:3px}
+section{display:flex;flex-direction:column;gap:18px}
+ul,ol{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:8px}
+
+.status{display:flex;flex-wrap:wrap;gap:8px 20px;font-family:var(--mono);font-size:13px;color:var(--muted);border-top:1px solid var(--rule);padding-top:14px}
+.status b{color:var(--fg);font-weight:500}
+
+.notice{border:1px solid var(--warn);border-radius:6px;padding:14px 16px;background:color-mix(in srgb,var(--warn) 7%,var(--panel))}
+.notice h3{color:var(--warn)}
+
+.shape{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:6px;overflow:hidden}
+.shape div{background:var(--panel);padding:16px;min-width:0}
+.shape .label{display:block;margin-bottom:6px}
+.shape .t{color:var(--tail)} .shape .l{color:var(--lake)}
+
+figure{margin:0;display:flex;flex-direction:column;gap:10px}
+.scroll{overflow-x:auto;border:1px solid var(--rule);border-radius:6px;background:var(--panel)}
+figure svg{display:block;min-width:760px;width:100%;height:auto;color:var(--fg);font-family:var(--sans)}
+figcaption{font-size:14px;color:var(--muted);max-width:76ch}
+svg .bx{fill:var(--bg);stroke:currentColor;stroke-width:1.2}
+svg .tailb{fill:color-mix(in srgb,var(--tail) 12%,var(--panel));stroke:var(--tail);stroke-width:1.6}
+svg .lakeb{fill:color-mix(in srgb,var(--lake) 12%,var(--panel));stroke:var(--lake);stroke-width:1.6}
+svg .pubb{fill:var(--bg);stroke:currentColor;stroke-width:1.2;stroke-dasharray:5 4}
+svg .ti{font-size:13px;font-weight:600;fill:currentColor;text-anchor:middle}
+svg .su{font-size:11px;fill:var(--muted);text-anchor:middle}
+svg .al{font-size:11.5px;fill:currentColor}
+svg .grp{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-anchor:middle}
+svg .ln{stroke:currentColor;stroke-width:1.3;fill:none}
+svg .lnd{stroke:currentColor;stroke-width:1.3;fill:none;stroke-dasharray:5 4}
+
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14.5px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;vertical-align:top;padding:9px 12px 9px 0;border-bottom:1px solid var(--rule)}
+th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500;white-space:nowrap}
+td:first-child{font-weight:500}
+td.n{white-space:nowrap;font-family:var(--mono);font-size:13.5px}
+.tag{font-family:var(--mono);font-size:11.5px;padding:1px 7px;border-radius:10px;border:1px solid var(--rule);color:var(--muted);white-space:nowrap}
+.tag.v{border-color:var(--ok);color:var(--ok)} .tag.m{border-color:var(--warn);color:var(--warn)}
+
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:28px 40px}
+.two>div{min-width:0;display:flex;flex-direction:column;gap:8px}
+.files{font-family:var(--mono);font-size:13.5px;line-height:1.9}
+.files span{color:var(--muted);font-family:var(--sans)}
+a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offset:2px}
+</style>
+
+<div class="wrap">
+
+<header class="col">
+  <div class="eyebrow">Design brief · draft 3.1 · 18 Nov 2026</div>
+  <h1>viz: an observability store that lives in one Cloudflare account</h1>
+  <p class="lede">Metrics, logs and traces in Parquet on R2, published as Iceberg tables. PromQL and TraceQL on top. Dashboards and monitors that agents and people share. This page is the design, what the research found, how the design changed under review, and how it will be proven.</p>
+  <div class="status">
+    <span><b>12</b> research tracks</span>
+    <span><b>3</b> independent reviews</span>
+    <span><b>1</b> benchmark run</span>
+    <span><b>1</b> component built</span>
+  </div>
+</header>
+
+<section class="col">
+  <div class="notice">
+    <h3>Read this first</h3>
+    <p>One component exists, the pooled shard, tested locally. Nothing has run on Cloudflare. One thing has been measured in a sandbox: the engine-language choice, below. Every other latency and cost figure is a model, printed as a range. My first cost table was wrong: a reviewer recomputed it against the design as drawn and the small-deployment figure went from $5.20 to $5–15, the team figure from $250 to $400–800. The first experiment in the plan decides where in those ranges reality sits.</p>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>The shape</h2>
+    <p>For each tenant, one small ledger says which files exist. Everything else follows it.</p>
+  </div>
+  <div class="shape">
+    <div><span class="label l">Ledger</span>One Durable Object per tenant lists the live files of all that tenant's tables, plus a watermark per shard. It is the only authority on what is visible, and it can be rebuilt from a log on R2.</div>
+    <div><span class="label t">Tail</span>Rows that were acknowledged but are not yet in a listed file are held by exactly one shard, in a write-ahead log.</div>
+    <div><span class="label">Seam</span>A query reads one ledger version, then asks each shard only for rows above its watermark. A shard that has already discarded those rows refuses, and the query re-reads the ledger. No silent gaps.</div>
+    <div><span class="label">Publication</span>Iceberg snapshots are produced from ledger changes every few minutes, for external engines. viz's own queries never wait on the catalog.</div>
+  </div>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1040 450" role="img" aria-label="Write path: senders to edge Worker to shard to flush Worker to Parquet files on R2 to the tenant ledger, then asynchronously to a publisher and Iceberg tables. Read path: clients to app Worker to query Worker, which reads the file list and watermarks from the ledger and sends splits to leaf Workers; leaves read file ranges from R2 and rows above the watermark from shards.">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+
+      <text class="grp" x="328" y="50" fill="var(--tail)">TAIL</text>
+      <text class="grp" x="648" y="50" fill="var(--lake)">LAKE</text>
+      <text class="grp" x="904" y="50" fill="var(--muted)">PUBLISHED · MINUTES BEHIND</text>
+
+      <rect class="bx" x="20" y="70" width="104" height="56" rx="4"/><text class="ti" x="72" y="94">senders</text><text class="su" x="72" y="112">push · scrape</text>
+      <rect class="bx" x="148" y="70" width="104" height="56" rx="4"/><text class="ti" x="200" y="94">edge</text><text class="su" x="200" y="112">auth · decode</text>
+      <rect class="tailb" x="276" y="70" width="104" height="56" rx="4"/><text class="ti" x="328" y="94">Shard</text><text class="su" x="328" y="112">WAL · tail</text>
+      <rect class="bx" x="404" y="70" width="104" height="56" rx="4"/><text class="ti" x="456" y="94">flush</text><text class="su" x="456" y="112">sort · encode</text>
+      <rect class="lakeb" x="532" y="70" width="104" height="56" rx="4"/><text class="ti" x="584" y="94">R2 files</text><text class="su" x="584" y="112">Parquet</text>
+      <rect class="lakeb" x="660" y="70" width="104" height="56" rx="4"/><text class="ti" x="712" y="94">Ledger</text><text class="su" x="712" y="112">one per tenant</text>
+      <rect class="pubb" x="788" y="70" width="104" height="56" rx="4"/><text class="ti" x="840" y="94">Publisher</text><text class="su" x="840" y="112">one per cell</text>
+      <rect class="pubb" x="916" y="70" width="104" height="56" rx="4"/><text class="ti" x="968" y="94">Iceberg</text><text class="su" x="968" y="112">tables</text>
+
+      <line class="ln" x1="124" y1="98" x2="146" y2="98" marker-end="url(#ah)"/>
+      <line class="ln" x1="252" y1="98" x2="274" y2="98" marker-end="url(#ah)"/>
+      <line class="ln" x1="380" y1="98" x2="402" y2="98" marker-end="url(#ah)"/>
+      <line class="ln" x1="508" y1="98" x2="530" y2="98" marker-end="url(#ah)"/>
+      <line class="ln" x1="636" y1="98" x2="658" y2="98" marker-end="url(#ah)"/>
+      <line class="lnd" x1="764" y1="98" x2="786" y2="98" marker-end="url(#ah)"/>
+      <line class="lnd" x1="892" y1="98" x2="914" y2="98" marker-end="url(#ah)"/>
+
+      <rect class="bx" x="276" y="230" width="360" height="56" rx="4"/><text class="ti" x="456" y="254">leaf Workers</text><text class="su" x="456" y="272">merge lake and tail rows, remove duplicates, evaluate</text>
+      <line class="ln" x1="328" y1="230" x2="328" y2="129" marker-end="url(#ah)"/><text class="al" x="337" y="184">rows above watermark</text>
+      <line class="ln" x1="584" y1="230" x2="584" y2="129" marker-end="url(#ah)"/><text class="al" x="593" y="184">range reads</text>
+
+      <rect class="bx" x="20" y="370" width="104" height="56" rx="4"/><text class="ti" x="72" y="394">clients</text><text class="su" x="72" y="412">people · agents</text>
+      <rect class="bx" x="148" y="370" width="104" height="56" rx="4"/><text class="ti" x="200" y="394">app</text><text class="su" x="200" y="412">UI · API · MCP</text>
+      <rect class="bx" x="660" y="370" width="104" height="56" rx="4"/><text class="ti" x="712" y="394">query</text><text class="su" x="712" y="412">plan · merge</text>
+      <rect class="bx" x="916" y="370" width="104" height="56" rx="4"/><text class="ti" x="968" y="394">Ruler</text><text class="su" x="968" y="412">rule ticks</text>
+
+      <line class="ln" x1="124" y1="398" x2="146" y2="398" marker-end="url(#ah)"/>
+      <line class="ln" x1="252" y1="398" x2="657" y2="398" marker-end="url(#ah)"/><text class="al" x="454" y="389" text-anchor="middle">PromQL · TraceQL · LogQL</text>
+      <line class="ln" x1="916" y1="398" x2="767" y2="398" marker-end="url(#ah)"/><text class="al" x="841" y="389" text-anchor="middle">rules</text>
+      <path class="ln" d="M684 370V258H639" marker-end="url(#ah)"/><text class="al" x="676" y="322" text-anchor="end">splits</text>
+      <line class="ln" x1="736" y1="370" x2="736" y2="129" marker-end="url(#ah)"/><text class="al" x="745" y="254">file list +</text><text class="al" x="745" y="270">watermarks</text>
+    </svg>
+    </div>
+    <figcaption>Solid arrows are the path that data and queries depend on. Dashed arrows are the Iceberg publication, which can lag or fail without affecting ingest, freshness or query results.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="col">
+    <h2>What the research established</h2>
+    <p>Twelve researchers each took one domain and fetched primary sources. A shared search budget ran out part-way, so Cloudflare facts are mostly verified from vendor pages and many non-Cloudflare internals rest on training knowledge. The files say which is which.</p>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>Finding</th><th>Consequence for the design</th><th>Basis</th></tr></thead>
+    <tbody>
+      <tr><td>Cloudflare's catalog, SQL engine and streaming ingest went GA on 1 Oct 2026 under the name Basin. Catalog operations cost $9 per million.</td><td>One table per tenant is ruled out on commit cost alone. Commits must be batched and skipped when nothing changed.</td><td><span class="tag v">verified ×6</span></td></tr>
+      <tr><td>The managed streaming ingest allows 20 streams per account, has a 60 s minimum roll, no sort control, and drops invalid events silently.</td><td>viz writes its own Parquet. The managed pipeline is not on the path.</td><td><span class="tag v">verified ×4</span></td></tr>
+      <tr><td>The managed SQL engine caps results at 10,000 rows and has no Workers binding.</td><td>PromQL and TraceQL need their own engine.</td><td><span class="tag v">verified</span></td></tr>
+      <tr><td>A Worker isolate has 128 MB including WASM, and only six connections may wait for headers at once.</td><td>Small row groups, streaming evaluation, and a fan-out topology that has to be tested before it is fixed.</td><td><span class="tag v">verified</span></td></tr>
+      <tr><td>There is an open, unexplained corruption report against the managed catalog in which two writers disagreed.</td><td>viz is the only writer to its tables, and the catalog is not the source of truth.</td><td><span class="tag v">verified</span></td></tr>
+      <tr><td>From 1 Dec 2026 Cloudflare sells its own logs and traces product at $0.25 per GB, without PromQL or TraceQL.</td><td>viz differentiates on open formats, standard query languages, external sources and the agent surface.</td><td><span class="tag v">verified ×3</span></td></tr>
+      <tr><td>Tempo 3.0 and Loki 4.0 both moved to a durable log, one copy on object storage and stateless queriers.</td><td>The overall shape matches where the incumbents ended up.</td><td><span class="tag">mixed</span></td></tr>
+      <tr><td>AI investigation agents score 25–60% on published root-cause benchmarks, and prompt injection through log lines is demonstrated.</td><td>Agentic monitors are advisory, read-only and never in the paging path.</td><td><span class="tag">secondary</span></td></tr>
+      <tr><td>How rules are scheduled changes their cost by three orders of magnitude.</td><td>Many rules per object, one tick, shared scans. No Workflow per rule.</td><td><span class="tag m">modelled</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>How the design changed under review</h2>
+    <p>I gave the second draft to two reviewers who had not seen my reasoning and asked them to break it. They returned 57 findings, 11 of them critical. The third draft is a structural response.</p>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>What the review found</th><th>Draft 2</th><th>Draft 3</th></tr></thead>
+    <tbody>
+      <tr><td>A catalog outage would stall ingest within minutes, and table metadata grew with tenants × days.</td><td>Visibility state stored inside Iceberg snapshots; one committer per table.</td><td>Per-tenant ledger is the authority. Iceberg is published from it.</td></tr>
+      <tr><td>A slow query or a stale cached pointer could read a silent hole.</td><td>Write-ahead log trimmed after a grace period.</td><td>A fence: shards refuse watermarks they have already passed.</td></tr>
+      <tr><td>Every ingest request and every query touched every shard of the tenant.</td><td>Rows routed by series hash.</td><td>Rows routed by sender, so one request lands in one shard.</td></tr>
+      <tr><td>Sorting and encoding a minute of data inside a 128 MB object blocks acknowledgements.</td><td>The shard encodes Parquet.</td><td>Shards seal small segments. A stateless Worker encodes.</td></tr>
+      <tr><td>A <code>rate()</code> window straddling old and new data could be wrong or double counted.</td><td>Recent rows evaluated separately.</td><td>Old and recent rows for a key range are merged before evaluation.</td></tr>
+      <tr><td>Trace lookup by ID read hundreds of filters.</td><td>Day partitions; index gave only a time window.</td><td>Hour partitions with few files each; index rows name the hours.</td></tr>
+      <tr><td>The cost table quoted numbers derived for a different architecture.</td><td>$5.20 / $250 / $18–25k.</td><td>Ranges recomputed for this design; see below.</td></tr>
+      <tr><td>The first experiment was the one with a fallback.</td><td>Catalog commit first.</td><td>Billing behaviour, connection limits and a real read slice first.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>A third reviewer then attacked only what was new in draft 3. It judged the core sound: the fenced seam, the contiguous watermark, and catalog independence. It found 12 problems at the edges, four of them critical, such as an index updated outside the ledger transaction and sequence numbers that were per shard when shards can be shared between tenants. Draft 3.1 amends the text for each. Those amendments have not been reviewed again; the next real check is the formal model, not another reading.</p>
+  </div>
+</section>
+
+<section>
+  <h2>The parts</h2>
+  <div class="two">
+    <div><h3>Write path</h3>
+      <p>The edge Worker checks the API key and decodes OTLP or Remote Write into a columnar batch. The shard appends it to its log and answers only once that is durable. When full it answers 429; it never accepts and drops. Shards seal small segments; a stateless Worker turns each into one sorted Parquet file per table, and the ledger admits all of them in one transaction.</p></div>
+    <div><h3>Storage</h3>
+      <p>Seven tables: series, samples and rollups for metrics; spans and a trace index; logs. Every file holds one tenant, so retention and erasure are file drops. Compaction is time-ordered and keeps sort order. Rollups are written when an hour closes. viz is the only writer; managed compaction stays off.</p></div>
+    <div><h3>Read path</h3>
+      <p>Each language parses to its own tree and lowers to one plan. The tenant filter comes from the session and cannot be omitted. Leaves stream one row group at a time and return partial aggregates. Work that will not fit an isolate runs the identical engine in a Container.</p></div>
+    <div><h3>One engine</h3>
+      <p>A Rust core with no I/O does parsing, planning, Parquet and evaluation. It runs as WASM in Workers, natively in Containers, and inside a seeded simulator in CI. That last use is why it has no I/O.</p></div>
+    <div><h3>Monitors</h3>
+      <p>Prometheus rule semantics, extended to logs and traces. Each rule is classified when saved by what it has to read, and its cost is shown. Anomaly detection is statistics first. Agentic monitors run when a rule or anomaly fires, use read-only tools, and link every claim to the query behind it.</p></div>
+    <div><h3>Dashboards</h3>
+      <p>A small typed spec with stable panel ids. Edits are patches, dry-run against real data before saving. Every dashboard has a visual form, a text digest and a structured form from the same data; agents read the digest. About a dozen MCP tools, shared with the REST API. Prometheus and Tempo HTTP APIs are served, so Grafana works on day one.</p></div>
+    <div><h3>Tenancy and auth</h3>
+      <p>Tenant id comes only from the credential. Hashed, scoped API keys for machines; OAuth and single sign-on for people and agents. Each tenant has its own ledger and its own stream inside pooled shards. Small tenants share tables; a tenant needing direct Iceberg access, residency or scale gets a dedicated cell.</p></div>
+    <div><h3>Pull and adapters</h3>
+      <p>Scrapers run on alarms and feed the same write path. Adapters share one contract in both directions with Arrow as the currency: poll an external system on ingest, or scan it at query time. First-party adapters ship first.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="col"><h2>First measurement: Rust or JavaScript for the engine</h2>
+  <p>The same encode and the same <code>sum(rate(metric[5m]))</code> query were implemented both ways over 1.92 million samples. Each side was tuned separately, each read the other's files, and all variants returned identical results to 12 digits.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>Workload</th><th>JavaScript, tuned</th><th>Rust as WASM, tuned</th><th>Ratio</th></tr></thead>
+    <tbody>
+      <tr><td>Encode 1.92M rows to Parquet</td><td class="n">1,030 ms</td><td class="n">240 ms</td><td class="n">4.3×</td></tr>
+      <tr><td>Query one metric (one row group decoded)</td><td class="n">37 ms</td><td class="n">4.8 ms</td><td class="n">7.7×</td></tr>
+      <tr><td>Query all counters (full scan)</td><td class="n">291 ms</td><td class="n">32 ms</td><td class="n">9.0×</td></tr>
+      <tr><td>Full scan on a file encoded to favour JavaScript</td><td class="n">178 ms</td><td class="n">45 ms</td><td class="n">4.0×</td></tr>
+      <tr><td>Memory during a query</td><td class="n">110–130 MB process RSS over idle</td><td class="n">18–20 MB WASM memory</td><td class="n"></td></tr>
+      <tr><td>Code size, gzip</td><td class="n">0.11 MB</td><td class="n">0.80 MB</td><td class="n"></td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>The gap comes mostly from 64-bit integer decoding, which JavaScript has to route through BigInt. On the Rust side, tuning mattered as much as the language: keeping metric names dictionary-encoded and enabling WASM SIMD took the full scan from 73 ms to 32 ms.</p>
+    <p class="muted">Limits of this result: sandbox wall time, not billed CPU on Cloudflare. The local Workers runtime does not enforce the 128 MB limit. Both sides used snappy; the zstd build for WASM is untested. The Rust module holds one hard-coded query, so a full engine will be larger than 0.8 MB. I did not write a custom JavaScript decoder, which could narrow the integer gap.</p>
+  </div>
+</section>
+
+<section>
+  <div class="col"><h2>Cost and targets</h2>
+  <p>List prices, recomputed by a reviewer from the research model. Hosted comparators in the research sit at more than ten times the team figure.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>Case</th><th>Per month</th><th>What decides it</th></tr></thead>
+    <tbody>
+      <tr><td>Small deployment: 10k series, 1 GB logs/day, 1M spans/day, 20 rules</td><td class="n">$5–15</td><td>How Cloudflare bills an object that wakes once a minute</td></tr>
+      <tr><td>One more small active tenant</td><td class="n">&lt; $1 pooled · ~$6 dedicated</td><td>Pool assignment</td></tr>
+      <tr><td>Team: 1M series, 100 GB logs/day, 500M spans/day, 2k rules</td><td class="n">$400–800</td><td>Compaction CPU, commit window, rule classes, first-load reads</td></tr>
+      <tr><td>Scale: 100M series, 10 TB logs/day, 50B spans/day</td><td class="n">tens of thousands</td><td>Long-retention storage, shard duration</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tw"><table>
+    <thead><tr><th>Path</th><th>Target (hypothesis)</th></tr></thead>
+    <tbody>
+      <tr><td>Ingest acknowledgement, 1 MB batch</td><td class="n">p99 &lt; 500 ms</td></tr>
+      <tr><td>Time until a row is queryable</td><td class="n">p99 &lt; 10 s</td></tr>
+      <tr><td>Dashboard refresh with warm partial results</td><td class="n">p50 &lt; 300 ms</td></tr>
+      <tr><td>First load, 24 hours including today</td><td class="n">p95 &lt; 3 s</td></tr>
+      <tr><td>Trace by ID with a time hint</td><td class="n">p95 &lt; 1 s</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="col"><h2>How this gets verified</h2>
+  <p>Two layers. The first is what I did to check this document. The second is what the system has to pass as it is built.</p></div>
+  <div class="two">
+    <div><h3>This pass</h3>
+      <ul>
+        <li>Independent researchers; facts several reached separately are treated as established.</li>
+        <li>Every claim tagged verified, secondary or training knowledge.</li>
+        <li>Six disagreements between researchers listed and resolved in writing.</li>
+        <li>Adversarial review of the draft, then a rewrite, then a re-review of the rewrite.</li>
+        <li>Every modelled number tied to an experiment with a kill criterion.</li>
+      </ul></div>
+    <div><h3>The system</h3>
+      <ul>
+        <li>Numbered invariants: an acknowledged row is durable, never lost, never doubled; no tenant reads another's data; results do not depend on where rows are stored.</li>
+        <li>A formal model of the seal, flush, ledger and publish protocol, with traces replayed against the code.</li>
+        <li>Deterministic simulation of the Rust core with injected faults.</li>
+        <li>The upstream PromQL test corpus, plus differential runs against real Prometheus and Tempo.</li>
+        <li>Every published snapshot read back by DuckDB and PyIceberg.</li>
+        <li>Cost as a test: CI fails when a change adds object reads or subrequests to a reference query.</li>
+        <li>In production, a canary tenant writes known data and reads it back continuously.</li>
+      </ul></div>
+  </div>
+  <div class="col"><h3>Experiments, in order</h3>
+  <p class="muted">Ordered so the ones that decide topology and the cost floor come first.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>#</th><th>Experiment</th><th>Decides</th></tr></thead>
+    <tbody>
+      <tr><td class="n">S0</td><td>Durable Object duration billing for objects woken every 1–60 s</td><td>The cost floor</td></tr>
+      <tr><td class="n">S1</td><td>Connection limits across service bindings, and R2 range-read latency</td><td>Query fan-out topology</td></tr>
+      <tr><td class="n">S2</td><td>The Rust core in an isolate: size, startup, peak memory during encode and decode</td><td>Whether the engine choice stands</td></tr>
+      <tr><td class="n">S3</td><td>Real ingest bodies end to end: object requests per request, rows written, acknowledgement latency</td><td>Routing key, commit window, ingest cost</td></tr>
+      <tr><td class="n">S4</td><td>Ledger at 1,000 flush units a minute and 300k live files; rebuild from the R2 log</td><td>When a ledger has to be split</td></tr>
+      <tr><td class="n">S5</td><td>One real PromQL query over 1 h, 24 h and 30 d on team-scale synthetic data</td><td>Row shape, sort key, latency targets</td></tr>
+      <tr><td class="n">S6</td><td>Trace by ID, one structural TraceQL query, and a log needle search at volume</td><td>Span partitioning and log indexing</td></tr>
+      <tr><td class="n">S7</td><td>Tail reads under ingest and rule load</td><td>Whether rules can read the tail</td></tr>
+      <tr><td class="n">S8</td><td>Iceberg publication read back by two engines; then managed-catalog commits</td><td>Whether managed-catalog publication ships</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="col">
+  <h2>Decisions for you</h2>
+  <ol>
+    <li><strong>Who is the first user?</strong> Decided: your own account. Shards are pooled from the start, with a dedicated pool for any tenant that needs full isolation. The pooled shard is implemented and tested in <code>shard/</code>.</li>
+    <li><strong>Iceberg a few minutes behind.</strong> Decided: accepted.</li>
+    <li><strong>Rust core.</strong> Decided: Rust, supported by the benchmark above. Still to check on Cloudflare itself: the enforced 128 MB limit, billed CPU, and a zstd build.</li>
+    <li><strong>Managed catalog.</strong> Its use is analytics and export through external SQL engines. Iceberg metadata is written straight to R2 first; the managed catalog waits until someone needs it. Not yet confirmed by you.</li>
+    <li><strong>Order of signals.</strong> Decided: metrics, then traces and rules, then logs and detection.</li>
+  </ol>
+</section>
+
+<section class="col">
+  <h2>Where everything is</h2>
+  <p>Branch <code>claude/cloudflare-observability-platform-ibaqya</code> in <code>by77er/viz</code>.</p>
+  <div class="files">
+    design/DESIGN.md <span>— the architecture, draft 3.1</span><br>
+    design/DECISIONS.md <span>— each decision, its alternatives, and what would change it</span><br>
+    design/VERIFICATION.md <span>— invariants, test layers, experiments, evidence per milestone</span><br>
+    design/REVIEW.md <span>— findings and what changed; raw reports in design/reviews/</span><br>
+    shard/ <span>— the pooled shard Durable Object, its routing and 15 tests</span><br>
+    bench/README.md <span>— the engine benchmark, its tuning log and how to rerun it</span><br>
+    research/01 … 12 <span>— one file per research track, about 100,000 words in total</span>
+  </div>
+</section>
+
+</div>

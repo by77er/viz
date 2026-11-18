@@ -1,0 +1,17 @@
+# Replaces `wasm-bindgen` through `[patch.crates-io]`. See ../README.md.
+[package]
+name = "wasm-bindgen"
+version = "0.2.130"
+edition = "2021"
+publish = false
+description = "The one wasm_bindgen item chrono's `wasmbind` feature names; no bindings, no imports"
+
+[lib]
+name = "wasm_bindgen"
+
+[features]
+# Features dependents may ask for; they change nothing here.
+default = ["std"]
+std = []
+
+[workspace]

@@ -1,0 +1,57 @@
+import type { SchemaSpec } from '../../contracts/schema'
+
+/**
+ * The publisher's storage, versioned (contracts/COMPATIBILITY.md §2). SQLite here is a cache
+ * of what R2 holds plus the publisher's own bookkeeping; a release that cannot read it must
+ * still not write it. Append a migration to change it; never edit a released one. Version 1
+ * is the schema exactly as the pre-versioning code created it (`test/fixtures/storage/v0.json`).
+ */
+export const PUBLISHER_SCHEMA: SchemaSpec = {
+  component: 'publisher.Publisher',
+  migrations: [
+    {
+      version: 1,
+      name: 'the schema as it stood when versioning began',
+      readableFrom: 1,
+      up: (sql) =>
+        void sql.exec(`
+CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tbl (name TEXT PRIMARY KEY, version INTEGER NOT NULL, snapshot_id INTEGER, seq INTEGER NOT NULL, uuid TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS cursor (tbl TEXT NOT NULL, tenant TEXT NOT NULL, incarnation INTEGER NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (tbl, tenant));
+CREATE TABLE IF NOT EXISTS live (
+      tbl TEXT NOT NULL, key TEXT NOT NULL, tenant TEXT NOT NULL, day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL,
+      snapshot_id INTEGER NOT NULL, seq INTEGER NOT NULL, file_seq INTEGER NOT NULL, stats TEXT NOT NULL, manifest TEXT NOT NULL,
+      PRIMARY KEY (tbl, key));
+CREATE INDEX IF NOT EXISTS live_tenant ON live (tbl, tenant);
+CREATE INDEX IF NOT EXISTS live_manifest ON live (tbl, manifest);
+CREATE TABLE IF NOT EXISTS manifest (tbl TEXT NOT NULL, path TEXT NOT NULL, info TEXT NOT NULL, PRIMARY KEY (tbl, path));
+CREATE TABLE IF NOT EXISTS snap (tbl TEXT NOT NULL, snapshot_id INTEGER NOT NULL, seq INTEGER NOT NULL, files TEXT NOT NULL, PRIMARY KEY (tbl, snapshot_id));
+CREATE TABLE IF NOT EXISTS removed (tbl TEXT NOT NULL, tenant TEXT NOT NULL, key TEXT NOT NULL, removed_seq INTEGER NOT NULL, free_at INTEGER, PRIMARY KEY (tbl, key));
+CREATE INDEX IF NOT EXISTS removed_tenant ON removed (tenant);
+CREATE TABLE IF NOT EXISTS orphan (path TEXT PRIMARY KEY, since INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pending (tenant TEXT PRIMARY KEY, since INTEGER NOT NULL);
+`),
+    },
+  ],
+}
+
+/**
+ * Versions of what the publisher writes that another release (or another engine) reads, and
+ * of what it reads from others (contracts/COMPATIBILITY.md §3, §5). Bump one only together
+ * with a new file in `test/golden/formats/`.
+ */
+export const FORMATS = {
+  /**
+   * viz's conventions inside Iceberg `metadata.json` (table property `viz.format-version`;
+   * absent = 1): the schemas and field ids of `TABLE_DEFS`, the partition spec, sort order,
+   * name mapping and the `viz.ledger-cursors` summary key. A publisher refuses to commit
+   * over metadata with a higher number, or with a schema or spec id it does not know.
+   */
+  'iceberg.metadata': 1,
+  /** The Avro schemas of manifests and manifest lists (Iceberg v2, with their field ids). */
+  'iceberg.manifest': 1,
+  /** `cursors-<snapshot>-<tag>.json`: `{ v, table, cell, snapshotId, cursors }` (absent `v` = 1). */
+  'r2.cursors': 1,
+  /** The ledger change log as the publisher READS it (`LedgerChange`, absent `v` = 1, the known kinds). */
+  'read.ledger-change': 1,
+} as const

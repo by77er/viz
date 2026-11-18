@@ -1,0 +1,2 @@
+# Cases of the upstream corpus that are known to fail. One `file:line` per line, reason after it.
+functions.test:523 label_replace with destination label "\xff": promql-parser decodes \xff to U+00FF, so the invalid-UTF-8 name cannot be detected

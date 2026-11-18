@@ -1,0 +1,20 @@
+{
+  "name": "@viz/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "viz.dashboard/v1 model: schema, validation, lint, JSON Patch, fragments, digests, Grafana import. Pure TypeScript, zero runtime dependencies.",
+  "exports": { ".": "./src/index.ts", "./schema.json": "./schema/viz.dashboard.v1.schema.json" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "gen:schema": "node scripts/gen-schema.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ajv": "^8.17.1",
+    "fast-check": "^4.3.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.1"
+  }
+}
