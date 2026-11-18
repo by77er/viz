@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { PromApiError, PromClient } from './client'
+import { parseRetryAfter, PromApiError, PromClient } from './client'
 import { createMockApi } from '../../mock/handler'
 
 function fakeFetch(status: number, body: string, statusText = '') {
@@ -11,7 +11,7 @@ describe('PromClient', () => {
     const f = fakeFetch(200, JSON.stringify({ status: 'success', data: { resultType: 'matrix', result: [] }, warnings: ['w'] }))
     const c = new PromClient({ baseUrl: 'https://viz.example.com/', token: 's3cret', fetch: f })
     const r = await c.queryRange('up{a="b"}', 100, 200, 15)
-    expect(r).toEqual({ data: { resultType: 'matrix', result: [] }, warnings: ['w'] })
+    expect(r).toEqual({ data: { resultType: 'matrix', result: [] }, warnings: ['w'], infos: [], cost: {} })
     const [url, init] = f.mock.calls[0]!
     expect(url).toBe('https://viz.example.com/api/v1/query_range')
     expect(String(url)).not.toContain('s3cret')
@@ -88,12 +88,55 @@ describe('PromClient', () => {
     const api = createMockApi({ requireToken: 'tok' })
     const c = new PromClient({ baseUrl: 'http://mock', token: 'tok', fetch: api.fetch })
     expect((await c.buildInfo()).mock).toBe(true)
-    expect(await c.labelValues('service')).toEqual(['auth', 'catalog', 'checkout', 'orders'])
+    expect(await c.labelValues('service', { match: ['up'] })).toEqual(['auth', 'catalog', 'checkout', 'orders'])
     expect((await c.series(['up{service="auth"}'])).length).toBe(3)
     const r = await c.queryRange('sum by (service) (rate(http_requests_total[5m]))', 1795000000, 1795000600, 60)
     expect(r.data.result.length).toBe(4)
     expect(r.data.result[0]!.values.length).toBe(11)
     await expect(c.queryRange('sum by (', 1795000000, 1795000600, 60)).rejects.toMatchObject({ errorType: 'bad_data', status: 400 })
     await expect(new PromClient({ baseUrl: 'http://mock', token: 'wrong', fetch: api.fetch }).labels()).rejects.toMatchObject({ status: 401 })
+    // The cost headers come back with the result, as the real API sends them.
+    expect(r.cost['x-viz-execution']).toBe('single')
+    expect(Object.keys(r.cost)).toHaveLength(28)
+  })
+
+  it('keeps Retry-After, as seconds or as a date, on errors with and without an envelope', async () => {
+    const busy = new Response(JSON.stringify({ status: 'error', errorType: 'unavailable', error: 'a storage component did not answer; retry' }), {
+      status: 503,
+      headers: { 'Retry-After': '1' },
+    })
+    const e1 = await new PromClient({ fetch: vi.fn(async () => busy) }).query('up').catch((x) => x)
+    expect(e1).toMatchObject({ errorType: 'unavailable', status: 503, retryAfterMs: 1000 })
+    const limited = new Response('error code: 1015', { status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '10' } })
+    const e2 = await new PromClient({ fetch: vi.fn(async () => limited) }).query('up').catch((x) => x)
+    expect(e2).toMatchObject({ errorType: 'http', status: 429, retryAfterMs: 10_000, message: 'HTTP 429 Too Many Requests' })
+    const timeout = new Response(JSON.stringify({ status: 'error', errorType: 'timeout', error: 'query timed out' }), { status: 503 })
+    expect(await new PromClient({ fetch: vi.fn(async () => timeout) }).query('up').catch((x) => x)).toMatchObject({ retryAfterMs: null })
+  })
+
+  it('reads infos and the cost headers of a success', async () => {
+    const res = new Response(JSON.stringify({ status: 'success', data: [], infos: ['PromQL info: metric might not be a counter'] }), {
+      headers: { 'X-Viz-Engine-Ms': '12', 'X-Viz-Route': 'query', 'Content-Type': 'application/json' },
+    })
+    const r = await new PromClient({ fetch: vi.fn(async () => res) }).labels()
+    expect(r).toEqual([])
+    const full = await new PromClient({
+      fetch: vi.fn(async () => new Response(JSON.stringify({ status: 'success', data: { resultType: 'matrix', result: [] }, infos: ['i'] }), { headers: { 'X-Viz-Engine-Ms': '12', 'x-viz-route': 'query' } })),
+    }).queryRange('up', 0, 1, 1)
+    expect(full.infos).toEqual(['i'])
+    expect(full.cost).toEqual({ 'x-viz-engine-ms': '12' })
+  })
+})
+
+describe('parseRetryAfter', () => {
+  it('reads seconds and HTTP dates, and nothing else', () => {
+    expect(parseRetryAfter('30')).toBe(30_000)
+    expect(parseRetryAfter(' 0 ')).toBe(0)
+    expect(parseRetryAfter(null)).toBeNull()
+    expect(parseRetryAfter('soon')).toBeNull()
+    expect(parseRetryAfter('-5')).toBeNull()
+    const now = Date.UTC(2026, 10, 18, 12, 0, 0)
+    expect(parseRetryAfter('Wed, 18 Nov 2026 12:00:07 GMT', now)).toBe(7000)
+    expect(parseRetryAfter('Wed, 18 Nov 2026 11:00:00 GMT', now)).toBe(0)
   })
 })

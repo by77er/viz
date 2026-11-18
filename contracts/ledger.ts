@@ -11,7 +11,12 @@ export interface FileEntry {
   table: Table
   /** UTC day, `YYYY-MM-DD`. */
   day: string
-  /** R2 object key (contracts/TABLES.md). Unique. */
+  /**
+   * R2 object key (contracts/TABLES.md). Unique. It must lie under
+   * `{cell}/data/{table}/tenant={tenant}/day={day}/` for this entry's table and day and the
+   * ledger's own tenant and cell: the ledger answers `invalid` otherwise, so the janitor can
+   * never be told to delete another tenant's object (design/reviews/write-path-completion.md R-8).
+   */
   key: string
   bytes: number
   rows: number
@@ -139,11 +144,20 @@ export type ReplaceResult =
   | { status: 'conflict'; missing: string[]; blocking?: string[] }
   | { status: 'invalid'; reason: string }
 
-export interface ExpireRequest {
-  table: Table
-  /** Remove files whose `day` is strictly before this `YYYY-MM-DD`. */
-  beforeDay: string
-}
+/**
+ * Retention: remove whole days. Name one `table`, or several in `tables`: then every file of
+ * every named table before `beforeDay` leaves the ledger in ONE change, so a samples file and
+ * its series file leave together (contracts/TABLES.md, "Pairing"). `tables` was added after
+ * `table` (an additive request field, COMPATIBILITY.md §4); a ledger that predates it refuses
+ * a request without `table` (unknown table), so a caller never loses an expiry silently.
+ */
+export type ExpireRequest =
+  | {
+      table: Table
+      /** Remove files whose `day` is strictly before this `YYYY-MM-DD`. */
+      beforeDay: string
+    }
+  | { tables: Table[]; beforeDay: string }
 
 /** A change, as appended to the ledger's R2 log and consumed by the publisher. */
 export interface LedgerChange {

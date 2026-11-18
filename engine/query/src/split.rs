@@ -466,7 +466,7 @@ pub fn extract(series_files: &[&[u8]], sample_files: &[&[u8]], key: &SplitKey, p
                 return Ok(());
             }
             let labels = catalog::parse_labels(row.labels_json)?;
-            let keep = key.part(&labels, parts) == part && !filter.intervals(&labels).is_empty();
+            let keep = !filter.intervals(&labels).is_empty();
             seen.insert(row.series_id, keep);
             if keep {
                 mine.insert(row.series_id, labels);

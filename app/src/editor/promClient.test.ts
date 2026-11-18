@@ -80,3 +80,39 @@ describe('autocomplete lookups are debounced and cancelled (B3)', () => {
     expect(calls.map((x) => x.kind).sort()).toEqual(['labels', 'values'])
   })
 })
+
+describe('autocomplete lookups are bounded by the page\'s time range', () => {
+  beforeEach(() => void vi.useFakeTimers())
+  afterEach(() => void vi.useRealTimers())
+
+  it('sends the window widened to whole hours, and caches per window', async () => {
+    const seen: Record<string, unknown>[] = []
+    const client = {
+      labels: async (p: Record<string, unknown>) => (seen.push({ kind: 'labels', ...p }), ['a']),
+      labelValues: async (name: string, p: Record<string, unknown>) => (seen.push({ kind: `values:${name}`, ...p }), ['x']),
+      series: async (m: string[], p: Record<string, unknown>) => (seen.push({ kind: 'series', match: m, ...p }), []),
+      metadata: async () => ({}),
+    } as unknown as PromClient
+    let range: { start: number; end: number } | null = { start: 1794994200, end: 1795005000 }
+    const c = completionClient(client, { debounceMs: 0, range: () => range })
+    await c.metricNames()
+    await c.metricNames()
+    const l = c.labelNames('up')
+    await vi.advanceTimersByTimeAsync(0)
+    await l
+    const s = c.series('up', [])
+    await vi.advanceTimersByTimeAsync(0)
+    await s
+    expect(seen).toEqual([
+      { kind: 'values:__name__', start: 1794992400, end: 1795006800 },
+      { kind: 'labels', match: ['up'], start: 1794992400, end: 1795006800 },
+      { kind: 'series', match: ['up'], start: 1794992400, end: 1795006800 },
+    ])
+    // Another window: asked again; no window yet: nothing to bound it with.
+    range = { start: 1795080000, end: 1795083600 }
+    await c.metricNames()
+    range = null
+    await c.metricNames()
+    expect(seen.slice(3)).toEqual([{ kind: 'values:__name__', start: 1795078800, end: 1795086000 }, { kind: 'values:__name__' }])
+  })
+})

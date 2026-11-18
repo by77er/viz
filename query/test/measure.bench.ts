@@ -111,14 +111,17 @@ function estimate(r: Run, engineMs = cost(r.res, 'Engine-Ms'), label = r.label):
 }
 
 interface LeafRun {
+  run: Run
   body: string
   leaves: { part: number; stats: EvaluateStats; summary: LeafSummary }[]
 }
 
 /**
- * The same query with the leaves run one after another, each starting from a fresh engine
- * instance, so that each leaf's memory figure is its own peak (locally every object shares
- * one isolate; concurrently, the figures would add up).
+ * A split query with its leaves run one after another, each starting from a fresh engine
+ * instance, so that each leaf's memory figure is its own peak. Locally every object
+ * shares one process: run at once, eight leaves of a day at 15 s held 1.6 GB of RSS
+ * together (sessions, readers' file buffers and extracts in flight), more than this shared
+ * machine allows one process, and their figures would add up.
  */
 async function perLeaf(label: string, t: Tenant, params: Record<string, string>): Promise<LeafRun> {
   const leaves: LeafRun['leaves'] = []
@@ -127,6 +130,7 @@ async function perLeaf(label: string, t: Tenant, params: Record<string, string>)
   hooks.leafStats = (part, stats, summary) => leaves.push({ part, stats, summary })
   try {
     const r = await measure(`${label}, leaves one at a time`, t, params)
+    report(r)
     for (const l of leaves) {
       console.log(
         `MEASURE   leaf ${l.part}: ${l.summary.gatheredSamples} samples of ${l.summary.gatheredSeries} series held, ${l.summary.loadedSamples} loaded | ` +
@@ -136,7 +140,7 @@ async function perLeaf(label: string, t: Tenant, params: Record<string, string>)
     }
     const peak = Math.max(...leaves.map((l) => l.stats.wasmMemoryBytes))
     console.log(`MEASURE   -> ${leaves.length} leaves; largest per-leaf peak WASM memory ${mib(peak)} MiB; total ${mib(leaves.reduce((a, l) => a + l.stats.extractBytes, 0))} MiB of extracts over RPC`)
-    return { body: r.body, leaves }
+    return { run: r, body: r.body, leaves }
   } finally {
     delete hooks.sequentialLeaves
     delete leafHooks.resetBeforeEvaluate
@@ -199,28 +203,25 @@ describe('measurements (local)', () => {
     // 24 h at a 15 s scrape is 11.5 M samples, more than one isolate holds: split over
     // leaves by series, with the default limits.
     const day = { query: Q, start: sec(END - 24 * HOUR), end: sec(END), step: '300' }
-    const d15 = await measure('24 h, 15 s scrape, step 5 m, default limits, split, files from R2', w.a, day)
-    report(d15)
+    const per = await perLeaf('24 h, 15 s scrape, step 5 m, default limits, split, files from R2', w.a, day)
+    const d15 = per.run
     expect(d15.status).toBe(200)
     expect(d15.res.headers.get('X-Viz-Execution')).toBe('split')
     checkBulkRates(JSON.parse(d15.body).data, 289, 15_000)
-    const d15b = await measure('24 h, 15 s scrape, step 5 m, split, files from the Cache API', w.a, day)
-    report(d15b)
-    expect(d15b.body).toBe(d15.body)
-    const per = await perLeaf('24 h, 15 s scrape, step 5 m, split', w.a, day)
-    expect(per.body).toBe(d15.body)
+    const perb = await perLeaf('24 h, 15 s scrape, step 5 m, split, files from the Cache API', w.a, day)
+    expect(perb.body).toBe(d15.body)
+    expect(cost(perb.run.res, 'R2-Gets')).toBe(0)
     splitEstimate(d15, per)
 
     // ── Dataset B: scraped every 60 s (2.9 M samples in 24 h). ──
     const b = await load(w, w.b, 60_000)
     console.log(`MEASURE dataset B (60 s scrape): ${b.samples} samples of ${N_SERIES} series through edge, ${b.segments} flushed 10-minute segments (x 2 shards), last 10 minutes in the tail; loading took ${(b.ms / 1000).toFixed(0)} s`)
     // With the default limits it is split (2.9 M samples is over what one place may hold) ...
-    const d60s = await measure('24 h, 60 s scrape, step 5 m, default limits, split, files from R2', w.b, day)
-    report(d60s)
+    const per60 = await perLeaf('24 h, 60 s scrape, step 5 m, default limits, split, files from R2', w.b, day)
+    const d60s = per60.run
     expect(d60s.status).toBe(200)
     expect(d60s.res.headers.get('X-Viz-Execution')).toBe('split')
     checkBulkRates(JSON.parse(d60s.body).data, 289, 60_000)
-    const per60 = await perLeaf('24 h, 60 s scrape, step 5 m, split', w.b, day)
     splitEstimate(d60s, per60)
     // ... and, at 2.9 M samples, it can still be evaluated in one place with the sample
     // limit raised: the SAME BYTES, 2,000 series over 24 hours, at 2 and at 8 leaves.
@@ -234,9 +235,8 @@ describe('measurements (local)', () => {
     await env.CONFIG.delete(`limits:${w.b.name}`)
     clearLimitsCache()
     hooks.forceLeaves = 8
-    const d60s8 = await measure('24 h, 60 s scrape, step 5 m, split over 8 leaves', w.b, day)
+    const d60s8 = await perLeaf('24 h, 60 s scrape, step 5 m, split over 8 leaves', w.b, day)
     delete hooks.forceLeaves
-    report(d60s8)
     expect(d60s8.body).toBe(d60.body)
     console.log('MEASURE   -> 24 h at a 60 s scrape: split over 2 and 8 leaves and one place give byte-identical responses')
     estimate(d60)
@@ -253,13 +253,11 @@ describe('measurements (local)', () => {
     const c = await load(w, w.a, 60_000, n)
     console.log(`MEASURE dataset C (60 s scrape, ${n} series): ${c.samples} samples through edge, ${c.segments} flushed 10-minute segments (x 2 shards); loading took ${(c.ms / 1000).toFixed(0)} s`)
     const day = { query: Q, start: sec(END - 24 * HOUR), end: sec(END), step: '1800' }
-    const r = await measure('1 day of the 7-day query (5,000 series, 60 s scrape, step 30 m), default limits, split, files from R2', w.a, day)
-    report(r)
+    const per = await perLeaf('1 day of the 7-day query (5,000 series, 60 s scrape, step 30 m), default limits, split, files from R2', w.a, day)
+    const r = per.run
     expect(r.status).toBe(200)
     expect(r.res.headers.get('X-Viz-Execution')).toBe('split')
     checkBulkRates(JSON.parse(r.body).data, 49, 60_000, n / JOBS)
-    const per = await perLeaf('1 day of the 7-day query', w.a, day)
-    expect(per.body).toBe(r.body)
     splitEstimate(r, per)
     const leaves = cost(r.res, 'Split-Leaves')
     const held = Math.max(...per.leaves.map((l) => l.summary.gatheredSamples))

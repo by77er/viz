@@ -171,6 +171,13 @@ peaked at 21.6 MiB (`query/README.md`, "Measurements").
 | filesNeeded and scanRows | against fragments written by the flush engine: skipped by time and by name, not by a regex; row counts; an unparsable fragment is kept |
 | memory | the table above, with every value of the result checked against the workload's mean rate |
 
+The operations added for split execution and the cardinality report are exercised through
+the binding in workerd by `query/test/split.test.ts` (8 tests: every query of the table and
+32 aggregation-heavy ones at 1, 2, 7 and 32 leaves in three placements, budgets, failures)
+and `query/test/cardinality.test.ts` (5 tests), and natively, below the ABI, by
+`engine/query/tests/split.rs`. `engine.test.ts` asserts the 24 exports and ABI version 2.
+`wrangler deploy --dry-run` was **not** re-run for the larger module.
+
 `node tools/check.mjs`: **12 of 12 checks pass**: no imports, the export list, an empty import
 object, a query whose every point is checked, the marker's bits, eight kinds of bad query
 with no trap.

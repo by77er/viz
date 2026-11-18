@@ -32,7 +32,8 @@ export function parseRetryAfter(value: string | null, now = Date.now()): number 
   if (value === null) return null
   const v = value.trim()
   if (/^\d+$/.test(v)) return Number(v) * 1000
-  const at = Date.parse(v)
+  // An HTTP date names its day and month ("Wed, 18 Nov 2026 12:00:07 GMT"); "-5" is not one.
+  const at = /[A-Za-z]/.test(v) ? Date.parse(v) : NaN
   return Number.isFinite(at) ? Math.max(0, at - now) : null
 }
 
