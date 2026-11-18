@@ -94,6 +94,8 @@ export const hooks: {
   afterPlan?: (tenant: string, attempt: number) => Promise<void>
   /** Before each leaf call. */
   beforeLeafCall?: (leaf: number, items: ReadItem[]) => Promise<void>
+  /** Overrides `MAX_PART_BYTES`, so that small files are read in ranges too. */
+  maxPartBytes?: number
 } = {}
 
 export interface Context {
@@ -142,7 +144,7 @@ async function snapshot(c: Context, minTs: number, maxTs: number): Promise<Snaps
 
 // ───────────────────────────────── leaves ─────────────────────────────────
 
-interface Piece extends ReadItem {
+export interface Piece extends ReadItem {
   /** Index of the file this piece belongs to, and its position among the file's pieces. */
   file: number
   part: number
@@ -183,15 +185,15 @@ export function assign(pieces: Piece[], pool: number, queryId: string): Map<numb
 }
 
 /** Whole-object reads, except that an object above `MAX_PART_BYTES` is cut into ranges. */
-function pieces(files: FileEntry[]): Piece[] {
+export function pieces(files: Pick<FileEntry, 'key' | 'bytes'>[], max = MAX_PART_BYTES): Piece[] {
   const out: Piece[] = []
   files.forEach((f, file) => {
-    if (f.bytes <= MAX_PART_BYTES) {
+    if (f.bytes <= max) {
       out.push({ key: f.key, file, part: 0, bytes: f.bytes })
       return
     }
-    for (let offset = 0, part = 0; offset < f.bytes; offset += MAX_PART_BYTES, part++) {
-      const length = Math.min(MAX_PART_BYTES, f.bytes - offset)
+    for (let offset = 0, part = 0; offset < f.bytes; offset += max, part++) {
+      const length = Math.min(max, f.bytes - offset)
       out.push({ key: f.key, offset, length, file, part, bytes: length })
     }
   })
@@ -217,7 +219,7 @@ async function fetchFiles(c: Context, files: FileEntry[], have: Map<string, Uint
   const used = new Set<number>()
   const stub = (leaf: number) => c.env.LEAF.get(c.env.LEAF.idFromName(`leaf/${c.env.CELL}/${leaf}`))
 
-  const rounds = assign(pieces(todo), pool, c.queryId)
+  const rounds = assign(pieces(todo, hooks.maxPartBytes), pool, c.queryId)
   for (const round of rounds) {
     checkDeadline(c)
     c.cost.leafRounds++
