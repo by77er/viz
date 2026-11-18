@@ -14,8 +14,8 @@ import { sha256Hex } from '../../dashboard/src/index.ts'
  * 1. Newlines become a visible ` ⏎ `, tabs a space; C0/C1 control characters, bidi
  *    overrides, zero-width and other invisible format characters, Unicode tag characters
  *    (used to smuggle invisible ASCII) and variation selectors become U+FFFD.
- * 2. Anything that imitates a delimiter is broken: tag-like `<…` (`<system>`,
- *    `</tool_result>`, `<|im_start|>`, `<<SYS>>`), `|im_start|`-style special tokens,
+ * 2. Anything that imitates a delimiter is broken: tag-like `<…` and `…>` (`<system>`,
+ *    `</tool_result>`, `<|im_start|>`, `<<SYS>>`, `-->`), `|im_start|`-style special tokens,
  *    `[INST]`-style role tags, role prefixes (`Human:`, `Assistant:`), and runs of three or
  *    more backticks or tildes (which could close the fence this text is rendered in).
  * 3. URLs are defanged so no client renders or follows them: `https://x` becomes
@@ -68,13 +68,12 @@ export function clean(value: unknown, opts: CleanOptions = {}): string {
   // Bound the work before the regular expressions run over a pathological input.
   if (s.length > max * 4 + 64) s = s.slice(0, max * 4 + 64)
   s = s.replace(NEWLINES, ' ⏎ ').replace(/\t/g, ' ').replace(INVISIBLE, '�').replace(LONE_SURROGATE, '�')
-  // Delimiters.
-  if (opts.kind === 'expr') {
-    // `a < b` and `x>0` are PromQL; `<tag`, `</x`, `<!`, `<?`, `<|`, `<<` are not.
-    s = s.replace(/<(?=[A-Za-z_/!?|<\[])/g, '‹').replace(/(?<=[|>\]])>/g, '›')
-  } else {
-    s = s.replace(/</g, '‹').replace(/>/g, '›')
-  }
+  // Delimiters. A `<` that could open markup or a special token (`<tag`, `</x`, `<!--`, `<?`,
+  // `<|`, `<<SYS>>`, `<[CDATA`, `<%`) and a `>` that could close one (`-->`, `/>`, `|>`, `?>`,
+  // `%>`, `]>`, `>>`) are replaced; `x < 5` and "> 1% for 5m" are left alone, since a lone
+  // angle bracket opens nothing. (`kind` is kept for callers; both kinds follow this rule.)
+  void opts.kind
+  s = s.replace(/<(?=[A-Za-z_/!?|<\[%:])/g, '‹').replace(/(?<=[-/|?%\]>])>/g, '›')
   s = s
     .replace(ROLE_TAG, (_m, tag: string) => `(${tag})`)
     .replace(SPECIAL_TOKEN, (_m, tok: string) => `¦${tok}¦`)

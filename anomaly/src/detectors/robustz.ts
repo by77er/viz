@@ -139,7 +139,7 @@ export const robustZ: Detector<RobustZParams, RobustZState> = {
     const label = `the median of the last ${duration(windowMs)}`
     for (let i = 0; i < n; i++) {
       const ts = series.ts[i]!
-      const x = series.values[i]!
+      const x = series.values[i]! + 0 // + 0 turns -0 into 0, so state and JSON agree
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (lastTs !== null && ts <= lastTs)) {
         points[i] = missingPoint(ts, x)
         continue

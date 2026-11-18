@@ -76,7 +76,9 @@ export const query: ToolDef = {
     const timeout = Math.max(0.05, Math.min(s.limits.queryTimeoutMs, s.deadline - performance.now()) / 1000)
     s.usage.queries++
     s.usage.upstreamCalls++
-    const res = instant ? await s.query.instant(expr, r.end, { timeout }) : await s.query.range(expr, r.start, r.end, r.step, { timeout })
+    // The query service gets the timeout; this call also stops waiting at its own deadline.
+    const signal = AbortSignal.timeout(Math.max(1, Math.round(s.deadline - performance.now())))
+    const res = instant ? await s.query.instant(expr, r.end, { timeout, signal }) : await s.query.range(expr, r.start, r.end, r.step, { timeout, signal })
     if (!res.ok) {
       let detail = `error (${clean(res.errorType, { max: 40 })}): ${clean(res.error, { max: MAX.error })}\n`
       if (res.errorType === 'bad_data') {

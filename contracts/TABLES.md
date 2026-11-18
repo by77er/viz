@@ -69,11 +69,18 @@ Compaction outputs have no stream, so their names carry what they were made from
   once the table name and `hash8` are removed. This holds for flush files (same segment)
   and compaction outputs (same `inputs16`), and a pair enters and leaves the ledger in one
   change.
-- When files disagree about a `(series_id, ts)`, the one later in key order wins, in a
-  read and in a merge alike. Flush keys do not sort by sequence, and a merge changes key
-  order, so which value survives a disagreement between FILES is not defined across a
-  compaction. Within one stream's segment the latest row wins as stated above; senders
-  that never send two values for one `(series, ts)` are unaffected.
+- **Precedence.** When files of one table and day hold the same `(series_id, ts)`, the
+  file with the higher **precedence** wins, in a read and in a merge alike; within one
+  file the latest row already won. Precedence is assigned by the ledger
+  (`contracts/ledger.ts`, `LiveFile`): a flush file ranks by the version of the `add_unit`
+  that admitted it, a compaction output covers the range of its inputs, and the ledger
+  admits an output only if it jumps over no live file that overlaps it in time. Readers
+  pass files to the engine in `Plan.files` order (ascending precedence) and compaction
+  passes its inputs in ascending precedence, so a sample rewritten by a later write has
+  the later value whether it is in the tail, in flush files or in compaction outputs.
+  Key order means nothing here: keys sort as text (`…-10-12-…` before `…-2-9-…`). (This
+  replaces an earlier rule, "the one later in key order wins", which let an older write
+  win from a stream's tenth sequence number on and was not defined across a compaction.)
 
 ## Per-file statistics reported to the ledger
 

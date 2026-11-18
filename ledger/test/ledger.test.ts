@@ -268,10 +268,11 @@ describe('plan', () => {
     const q = async (minTs: number, maxTs: number, table: Table = 'metric_samples') => keys(await l.plan({ table, minTs, maxTs }))
     expect(await q(2100, 2200)).toEqual(['s-mid', 's-wide'])
     expect(await q(1999, 2000)).toEqual(['s-early', 's-mid', 's-wide']) // both ends inclusive
-    expect(await q(2999, 3000)).toEqual(['s-late', 's-mid', 's-wide'])
+    // In precedence order (the files' order in the unit here), not key order.
+    expect(await q(2999, 3000)).toEqual(['s-mid', 's-late', 's-wide'])
     expect(await q(0, 499)).toEqual([])
     expect(await q(9001, 10_000)).toEqual([])
-    expect(await q(0, 10_000)).toEqual(['s-early', 's-late', 's-mid', 's-wide'])
+    expect(await q(0, 10_000)).toEqual(['s-early', 's-mid', 's-late', 's-wide'])
     expect(await q(0, 10_000, 'metric_series')).toEqual(['series-mid'])
   })
 

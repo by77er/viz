@@ -88,7 +88,7 @@ describe('robust z-score', () => {
     expect(anomalies(robustZ.detect(s, { stepMs: 5 * MIN }))).toEqual([400])
   })
   it('MAD = 0 falls back to the mean absolute deviation', () => {
-    const v = Array.from({ length: 40 }, (_, i) => (i % 10 === 0 ? 101 : 100))
+    const v: number[] = Array.from({ length: 40 }, (_, i) => (i % 10 === 0 ? 101 : 100))
     v.push(103)
     const r = robustZ.detect(make(v.length, MIN, (i) => v[i]!), { windowPoints: 40, minPoints: 30, stepMs: MIN })
     const p = r.points[40]!

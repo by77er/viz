@@ -61,6 +61,9 @@ export interface SeasonalState {
   res: (number | null)[]
 }
 
+/** Largest state the detector will hold, in slots (values + residuals). */
+export const MAX_SLOTS = 200_000
+
 export const seasonalDefaults: SeasonalParams = {
   ...COMMON_DEFAULTS,
   periodMs: 0,
@@ -107,10 +110,11 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
     const stepMs = resolveStep(p.stepMs, state?.stepMs, series, state?.lastTs)
     const n = length(series)
     const g = geometry(p, stepMs)
-    if (!(p.periodMs > 0) || g.P < 2) {
+    if (!(p.periodMs > 0) || g.P < 2 || g.R + g.Rr > MAX_SLOTS) {
       const points = Array.from({ length: n }, (_, i) =>
         Number.isFinite(series.values[i]!) && Number.isFinite(series.ts[i]!) ? warmingPoint(series.ts[i]!, series.values[i]!) : missingPoint(series.ts[i]!, series.values[i]!))
-      return { points, state: null, summary: summarize('seasonal', points, null, undefined, 'a season length (periodMs) of at least two steps is required; see detectSeasonality') }
+      const why = g.R + g.Rr > MAX_SLOTS ? `${g.R + g.Rr} slots of state at this step; use coarser rollups (at most ${MAX_SLOTS})` : 'a season length (periodMs) of at least two steps is required; see detectSeasonality'
+      return { points, state: null, summary: summarize('seasonal', points, null, undefined, why) }
     }
     const minSeasons = Math.min(g.seasons, Math.max(1, Math.floor(p.minSeasons)))
     const compatible = state && state.v === 1 && state.periodMs === p.periodMs && state.stepMs === stepMs && state.seasons === g.seasons && state.vals.length === g.R && state.res.length === g.Rr
@@ -128,7 +132,7 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
     const resBuf: number[] = []
     for (let i = 0; i < n; i++) {
       const ts = series.ts[i]!
-      const x = series.values[i]!
+      const x = series.values[i]! + 0 // + 0 turns -0 into 0, so state and JSON agree
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (st.lastTs !== null && ts <= st.lastTs)) {
         points[i] = missingPoint(ts, x)
         continue

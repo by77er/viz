@@ -129,7 +129,7 @@ export const peltDetector: Detector<PeltParams, null> = {
     const xs: number[] = []
     let lastTs: number | null = null
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!, x = series.values[i]!
+      const ts = series.ts[i]!, x = series.values[i]! + 0
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (lastTs !== null && ts <= lastTs)) { points[i] = missingPoint(ts, x); continue }
       lastTs = ts
       idx.push(i)

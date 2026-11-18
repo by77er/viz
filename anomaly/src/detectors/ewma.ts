@@ -75,7 +75,7 @@ export const ewma: Detector<EwmaParams, EwmaState> = {
     const points: Point[] = new Array(n)
     for (let i = 0; i < n; i++) {
       const ts = series.ts[i]!
-      const x = series.values[i]!
+      const x = series.values[i]! + 0 // + 0 turns -0 into 0, so state and JSON agree
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (st.lastTs !== null && ts <= st.lastTs)) {
         points[i] = missingPoint(ts, x)
         continue

@@ -1,5 +1,5 @@
 import type { EncodedFile, Engine } from '../../contracts/engine'
-import { TENANT_ID, type FileEntry, type Plan, type Table } from '../../contracts/ledger'
+import { TENANT_ID, type FileEntry, type LiveFile, type Plan, type Table } from '../../contracts/ledger'
 import { putFile } from '../../flush/src/flush'
 import { hex } from '../../flush/src/keys'
 import type { Ledger } from '../../ledger/src/ledger'
@@ -50,6 +50,15 @@ import type { Ledger } from '../../ledger/src/ledger'
  *
  * The level-1 files are clustered by hour, not hour-pure: a pair's bucket is the hour of its
  * newest row, and late rows travel with it. Time pruning uses each file's own range.
+ *
+ * Precedence (contracts/ledger.ts `LiveFile`): when two files hold the same (series, ts),
+ * the one with the higher precedence wins. Inputs are merged in ascending precedence, so the
+ * output keeps every row's latest write, and the output covers its inputs' range. A group is
+ * chosen only if no other live file of the day that overlaps it in time ranks inside that
+ * range ("jumping over" it would let an older row in the output beat that file's newer
+ * one); the ledger refuses such a swap anyway (`conflict` with `blocking`). Within an open
+ * hour that can leave files unmerged until their day closes; a closed day's merges are
+ * runs in precedence order, which never jump over anything that overlaps them.
  */
 
 export interface CompactEnv {
@@ -90,13 +99,43 @@ const HOUR_MS = 3_600_000
 
 /** A samples file and the series file written with it. They enter and leave the ledger together. */
 export interface Pair {
-  samples: FileEntry
-  series: FileEntry
+  samples: LiveFile
+  series: LiveFile
   day: string
   level: number
   bytes: number
   minTs: number
   maxTs: number
+  /** The samples file's precedence range (the series file's is the same version range: contracts/ledger.ts `LiveFile`). */
+  precedenceLow: number
+  precedence: number
+}
+
+/** A live file a merge must not jump over in precedence, if it overlaps the merge in time. */
+export interface Span {
+  key: string
+  day: string
+  minTs: number
+  maxTs: number
+  precedenceLow: number
+  precedence: number
+}
+
+const spanOf = (f: LiveFile): Span => ({ key: f.key, day: f.day, minTs: f.minTs, maxTs: f.maxTs, precedenceLow: f.precedenceLow, precedence: f.precedence })
+export const byPrecedence = (a: Pair, b: Pair): number => a.precedence - b.precedence || (a.samples.key < b.samples.key ? -1 : a.samples.key > b.samples.key ? 1 : 0)
+
+/**
+ * Would merging `group` put its precedence range across a file outside it that could hold
+ * the same rows (same day, overlapping time range)? Then an older row of the group would
+ * beat that file's newer one. `universe` is every live file of the day.
+ */
+export function jumpsOver(group: Pair[], universe: Span[]): string[] {
+  const lo = Math.min(...group.map((p) => p.minTs))
+  const hi = Math.max(...group.map((p) => p.maxTs))
+  const plo = Math.min(...group.map((p) => p.precedenceLow))
+  const phi = Math.max(...group.map((p) => p.precedence))
+  const inside = new Set(group.flatMap((p) => [p.samples.key, p.series.key]))
+  return universe.filter((o) => !inside.has(o.key) && o.maxTs >= lo && o.minTs <= hi && o.precedence >= plo && o.precedenceLow <= phi).map((o) => o.key)
 }
 
 export interface Job {
@@ -116,8 +155,8 @@ export interface Job {
  */
 export const pairStem = (key: string): string => key.replace(/\/metric_(samples|series)\//, '/T/').replace(/-[0-9a-f]{8}\.parquet$/, '')
 
-export function pairFiles(samples: FileEntry[], series: FileEntry[]): { pairs: Pair[]; unpaired: string[] } {
-  const byStem = new Map<string, FileEntry>()
+export function pairFiles(samples: LiveFile[], series: LiveFile[]): { pairs: Pair[]; unpaired: string[] } {
+  const byStem = new Map<string, LiveFile>()
   for (const f of series) byStem.set(pairStem(f.key), f)
   const pairs: Pair[] = []
   const unpaired: string[] = []
@@ -129,33 +168,42 @@ export function pairFiles(samples: FileEntry[], series: FileEntry[]): { pairs: P
       continue
     }
     byStem.delete(stem)
-    pairs.push({ samples: s, series: r, day: s.day, level: s.level, bytes: s.bytes + r.bytes, minTs: s.minTs, maxTs: s.maxTs })
+    pairs.push({ samples: s, series: r, day: s.day, level: s.level, bytes: s.bytes + r.bytes, minTs: s.minTs, maxTs: s.maxTs, precedenceLow: s.precedenceLow, precedence: s.precedence })
   }
   for (const r of byStem.values()) unpaired.push(r.key)
   return { pairs, unpaired: unpaired.sort() }
 }
 
 const dayStart = (day: string): number => Date.parse(`${day}T00:00:00Z`)
-const byTime = (a: Pair, b: Pair): number => a.minTs - b.minTs || (a.samples.key < b.samples.key ? -1 : 1)
 
-/** Take pairs in the order given while they fit the budget. */
-function fill(candidates: Pair[], policy: CompactPolicy, into: Pair[] = []): Pair[] {
-  let bytes = into.reduce((a, p) => a + p.bytes, 0)
-  for (const p of candidates) {
-    if (into.length >= policy.maxInputPairs) break
+/**
+ * The group a merge starting at `candidates[start]` takes: candidates in ascending
+ * precedence, each added only if the group still fits the budget and still jumps over no
+ * live file that overlaps it in time (`jumpsOver`). Empty if the first pair alone is over
+ * the budget.
+ */
+function grow(candidates: Pair[], start: number, universe: Span[], policy: CompactPolicy): Pair[] {
+  const first = candidates[start]!
+  if (first.bytes > policy.maxInputBytes) return []
+  const group = [first]
+  let bytes = first.bytes
+  for (let j = start + 1; j < candidates.length && group.length < policy.maxInputPairs; j++) {
+    const p = candidates[j]!
     if (bytes + p.bytes > policy.maxInputBytes) continue
-    into.push(p)
+    if (jumpsOver([...group, p], universe).length > 0) continue
+    group.push(p)
     bytes += p.bytes
   }
-  return into
+  return group
 }
 
 /**
  * The next merge to run, or null, and when to look again if nothing changes (`nextDueAt`:
  * the earliest moment a bucket goes quiet or a day closes; null if time alone will never
- * make a job).
+ * make a job). `strays` are live files that are not in a pair: a merge must not jump over
+ * them either.
  */
-export function chooseJob(pairs: Pair[], now: number, policy: CompactPolicy = DEFAULT_POLICY): { job: Job | null; nextDueAt: number | null } {
+export function chooseJob(pairs: Pair[], now: number, policy: CompactPolicy = DEFAULT_POLICY, strays: Span[] = []): { job: Job | null; nextDueAt: number | null } {
   const days = new Map<string, Pair[]>()
   for (const p of pairs) days.set(p.day, [...(days.get(p.day) ?? []), p])
   let nextDueAt: number | null = null
@@ -164,20 +212,16 @@ export function chooseJob(pairs: Pair[], now: number, policy: CompactPolicy = DE
   }
 
   for (const day of [...days.keys()].sort()) {
-    const list = days.get(day)!.sort(byTime)
+    const list = days.get(day)!.sort(byPrecedence)
+    const universe = [...list.flatMap((p) => [spanOf(p.samples), spanOf(p.series)]), ...strays.filter((x) => x.day === day)]
     const closesAt = dayStart(day) + DAY_MS + policy.closeAfterMs
     if (now >= closesAt) {
-      // Closed day: everything below level 2, and small level-2 pairs, in time order.
+      // Closed day: everything below level 2, and small level-2 pairs, in precedence order.
       const candidates = list.filter((p) => p.level < 2 || p.bytes < policy.smallL2Bytes)
-      for (let i = 0; i < candidates.length; ) {
-        const group = fill(candidates.slice(i), policy)
-        if (group.length === 0) {
-          i++ // this pair alone is over the budget: it stays as it is
-          continue
-        }
+      for (let i = 0; i < candidates.length; i++) {
+        const group = grow(candidates, i, universe, policy)
         // Worth doing if it merges something, or lifts a lower-level pair to level 2.
-        if (group.length >= 2 || group[0]!.level < 2) return { job: { day, level: 2, inputs: group, why: 'closed_day' }, nextDueAt: null }
-        i++
+        if (group.length >= 2 || (group.length === 1 && group[0]!.level < 2)) return { job: { day, level: 2, inputs: group, why: 'closed_day' }, nextDueAt: null }
       }
       continue
     }
@@ -200,9 +244,11 @@ export function chooseJob(pairs: Pair[], now: number, policy: CompactPolicy = DE
         due(quietAt)
         continue
       }
-      // Level 0 first, then the hour's level-1 pairs, smallest first.
-      const inputs = fill(bucket.filter((p) => p.level === 1).sort((a, b) => a.bytes - b.bytes || byTime(a, b)), policy, fill(l0, policy))
-      if (inputs.length >= 2) return { job: { day, level: 1, hour, inputs: inputs.sort(byTime), why }, nextDueAt: null }
+      // The hour's pairs in precedence order; a group must merge at least one level-0 pair.
+      for (let i = 0; i < bucket.length; i++) {
+        const inputs = grow(bucket, i, universe, policy)
+        if (inputs.length >= 2 && inputs.some((p) => p.level === 0)) return { job: { day, level: 1, hour, inputs, why }, nextDueAt: null }
+      }
     }
   }
   return { job: null, nextDueAt }
@@ -212,8 +258,12 @@ export type StepResult =
   /** Nothing to merge now. */
   | { status: 'idle'; nextDueAt: number | null; unpaired: string[] }
   | { status: 'merged'; job: JobSummary; version: number; outputs: FileEntry[]; put: ('created' | 'exists')[] }
-  /** An input was no longer live at `replace`. The outputs were deleted. Plan again. */
-  | { status: 'conflict'; job: JobSummary; missing: string[]; discarded: string[] }
+  /**
+   * The live set changed since the plan: an input was no longer live (`missing`), or another
+   * merge made a file the outputs would jump over in precedence (`blocking`). The outputs
+   * were deleted unless the ledger knows them. Plan again.
+   */
+  | { status: 'conflict'; job: JobSummary; missing: string[]; blocking: string[]; discarded: string[] }
   /** The ledger refused the swap as malformed, the merge lost rows, or the step ran too long. Nothing changed. */
   | { status: 'error'; job: JobSummary; reason: 'invalid' | 'row_count' | 'too_slow'; detail: string }
 
@@ -289,21 +339,25 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
 
   const plans = await consistentPlans(ledger)
   const { pairs, unpaired } = pairFiles(plans.samples.files, plans.series.files)
-  const { job, nextDueAt } = chooseJob(pairs, opts.now ?? started, policy)
+  const stray = new Set(unpaired)
+  const strays = [...plans.samples.files, ...plans.series.files].filter((f) => stray.has(f.key)).map(spanOf)
+  const { job, nextDueAt } = chooseJob(pairs, opts.now ?? started, policy, strays)
   if (!job) return { status: 'idle', nextDueAt, unpaired }
   await opts.hooks?.afterPlan?.(job)
 
-  // Inputs in key order, which is the order a query reads them in (flush/test/read.ts,
-  // the ledger's plan): on a duplicate (series, ts) the same file wins in the merge as in a read.
-  const byKey = (a: FileEntry, b: FileEntry): number => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
-  const inSamples = job.inputs.map((p) => p.samples).sort(byKey)
-  const inSeries = job.inputs.map((p) => p.series).sort(byKey)
+  // Inputs in ascending precedence, the order a query reads them in (the ledger's plan): the
+  // engine lets the later file win, so every row of the output is its latest write.
+  const ordered = [...job.inputs].sort(byPrecedence)
+  const inSamples = ordered.map((p) => p.samples)
+  const inSeries = ordered.map((p) => p.series)
+  // The key lists (for `remove` and the output name) are sorted by key, per contracts/TABLES.md.
+  const byKey = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
   const summary: JobSummary = {
     day: job.day,
     level: job.level,
     ...(job.hour !== undefined ? { hour: job.hour } : {}),
     why: job.why,
-    inputs: [...inSamples, ...inSeries].map((f) => f.key),
+    inputs: [...inSamples.map((f) => f.key).sort(byKey), ...inSeries.map((f) => f.key).sort(byKey)],
     inputBytes: job.inputs.reduce((a, p) => a + p.bytes, 0),
     inputRows: inSamples.reduce((a, f) => a + f.rows, 0),
   }
@@ -311,7 +365,8 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   // One table at a time, so only one table's inputs are in memory with the engine's copy.
   const merged: EncodedFile[] = []
   for (const [table, files] of [['metric_samples', inSamples], ['metric_series', inSeries]] as const) {
-    const out = engine.mergeFiles(table, await fetchAll(env.BUCKET, files.map((f) => f.key)))
+    const all = await fetchAll(env.BUCKET, files.map((f) => f.key))
+    const out = engine.mergeFiles(table, table === 'metric_series' ? all.slice(0, 1) : all)
     // A merge only removes duplicates: it cannot have more rows than its inputs together,
     // nor fewer than its largest input. Anything else is a bug; publish nothing.
     const total = files.reduce((a, f) => a + f.rows, 0)
@@ -352,7 +407,7 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   const check = await ledger.orphanCheck(keys)
   const discarded = check.live.length === 0 && check.tombstoned.length === 0 ? keys : []
   if (discarded.length > 0) await env.BUCKET.delete(discarded)
-  return { status: 'conflict', job: summary, missing: r.missing, discarded }
+  return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [], discarded }
 }
 
 export interface CompactRun {

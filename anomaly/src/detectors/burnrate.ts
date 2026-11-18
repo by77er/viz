@@ -27,7 +27,9 @@
  * - `evaluateWindows` — stateless, from window aggregates the ruler already has (recording
  *   rules, as Sloth and Pyrra generate). This is the cheap path.
  * - `burnRate.detect` — incremental over a bucket series; state is a ring of the longest
- *   window's buckets plus running sums.
+ *   window's buckets. Window sums are recomputed from the ring for each point, backwards in a
+ *   fixed order (O(longest window) per point): running sums drift with non-integer increments
+ *   and would make the result depend on how buckets arrived.
  */
 import type { Detector, DetectResult, Explanation, Point, Series } from '../types.ts'
 import { length, merge, missingPoint, mod, resolveStep, slotOf, summarize, stateBytes } from '../base.ts'
@@ -115,6 +117,9 @@ export interface BurnParams {
   minCoverage: number
 }
 
+/** Largest ring the detector will hold (buckets in the longest window). */
+export const MAX_RING = 100_000
+
 export const burnDefaults: BurnParams = { objective: 0.999, periodMs: 30 * DAY, rules: SRE_WORKBOOK_RULES, minEvents: 0, stepMs: 0, minCoverage: 0 }
 
 const burnOf = (w: WindowAggregate | undefined, objective: number) =>
@@ -176,11 +181,9 @@ export interface BurnState {
   origin: number
   lastTs: number | null
   lastSlot: number | null
-  /** Ring of the longest window's buckets; null = missing. */
+  /** Ring of the longest window's buckets (slot s at index s mod R); null = missing. */
   bad: (number | null)[]
   tot: (number | null)[]
-  /** Window lengths in buckets, with running sums over the last w buckets (bad, total, present). */
-  win: { w: number; bad: number; tot: number; present: number }[]
 }
 
 function windowsOf(rules: BurnRule[], stepMs: number): number[] {
@@ -217,60 +220,58 @@ export const burnRate: Detector<BurnParams, BurnState> & {
     const totals = (series as BurnSeries).total
     const stepMs = resolveStep(p.stepMs, state?.stepMs, series, state?.lastTs)
     const n = Math.min(length(series), totals?.length ?? 0)
-    const ws = stepMs > 0 ? windowsOf(p.rules, stepMs) : []
+    const ws0 = stepMs > 0 ? windowsOf(p.rules, stepMs) : []
+    const tooBig = ws0.length > 0 && ws0[ws0.length - 1]! > MAX_RING
+    const ws = tooBig ? [] : ws0
     const R = ws.length ? ws[ws.length - 1]! : 1
-    const compatible = state && state.v === 1 && state.stepMs === stepMs && state.bad.length === R && state.win.length === ws.length && state.win.every((w, i) => w.w === ws[i])
+    const compatible = state && state.v === 1 && state.stepMs === stepMs && Array.isArray(state.bad) && state.bad.length === R && Array.isArray(state.tot) && state.tot.length === R
     let firstTs = NaN
     for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = series.ts[i]!; break }
     const st: BurnState = compatible
-      ? { ...state, bad: state.bad.slice(), tot: state.tot.slice(), win: state.win.map((w) => ({ ...w })) }
-      : { v: 1, stepMs, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, bad: new Array(R).fill(null), tot: new Array(R).fill(null), win: ws.map((w) => ({ w, bad: 0, tot: 0, present: 0 })) }
+      ? { ...state, bad: state.bad.slice(), tot: state.tot.slice() }
+      : { v: 1, stepMs, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, bad: new Array(R).fill(null), tot: new Array(R).fill(null) }
     const points: Point[] = new Array(n)
     const budget = 1 - p.objective
-    // Move the ring forward to slot s. Before the write the ring holds slots s−R … s−1, so the
-    // bucket leaving a window of w buckets is slot s−w (for w = R, the one being overwritten).
-    const put = (s: number, b: number | null, t: number | null) => {
-      for (const w of st.win) {
-        const k = mod(s - w.w, R)
-        const lb = st.bad[k], lt = st.tot[k]
-        if (lb !== null && lb !== undefined && lt !== null && lt !== undefined) { w.bad -= lb; w.tot -= lt; w.present-- }
+    // window sums for every window length, summed backwards from slot s in a fixed order, so
+    // the result is exact and independent of how the buckets arrived (no running-sum drift)
+    const sums = ws.map(() => ({ bad: 0, tot: 0, present: 0 }))
+    const windowSums = (s: number) => {
+      let bad = 0, tot = 0, present = 0, wi = 0
+      for (let q = 0; q < R && wi < ws.length; q++) {
+        const k = mod(s - q, R)
+        const b = st.bad[k], t = st.tot[k]
+        if (b !== null && b !== undefined && t !== null && t !== undefined) { bad += b; tot += t; present++ }
+        while (wi < ws.length && ws[wi] === q + 1) { sums[wi] = { bad, tot, present }; wi++ }
       }
-      st.bad[mod(s, R)] = b
-      st.tot[mod(s, R)] = t
-      if (b !== null && t !== null) for (const w of st.win) { w.bad += b; w.tot += t; w.present++ }
     }
     for (let i = 0; i < n; i++) {
       const ts = series.ts[i]!
-      const b = series.values[i]!
-      const t = totals[i]!
-      if (!Number.isFinite(ts) || (st.lastTs !== null && ts <= st.lastTs) || stepMs <= 0) {
+      const b = series.values[i]! + 0
+      const t = totals[i]! + 0
+      if (!Number.isFinite(ts) || (st.lastTs !== null && ts <= st.lastTs) || stepMs <= 0 || tooBig) {
         points[i] = missingPoint(ts, b)
         continue
       }
       const s = slotOf(ts, st.origin, stepMs)
       if (st.lastSlot !== null && s <= st.lastSlot) { points[i] = missingPoint(ts, b); continue }
-      // empty buckets between the last slot and this one
+      // buckets skipped since the last one are missing, not zero
       if (st.lastSlot !== null) {
-        const from = Math.max(st.lastSlot + 1, s - R)
-        if (s - st.lastSlot - 1 >= R) { // everything left every window
-          st.bad.fill(null); st.tot.fill(null)
-          for (const w of st.win) { w.bad = 0; w.tot = 0; w.present = 0 }
-        } else for (let q = from; q < s; q++) put(q, null, null)
+        if (s - st.lastSlot - 1 >= R) { st.bad.fill(null); st.tot.fill(null) }
+        else for (let q = st.lastSlot + 1; q < s; q++) { st.bad[mod(q, R)] = null; st.tot[mod(q, R)] = null }
       }
       const valid = Number.isFinite(b) && Number.isFinite(t) && b >= 0 && t >= 0
-      put(s, valid ? b : null, valid ? t : null)
+      st.bad[mod(s, R)] = valid ? b : null
+      st.tot[mod(s, R)] = valid ? t : null
       st.lastSlot = s
       st.lastTs = ts
-      // clean float drift
-      for (const w of st.win) { if (w.bad < 0) w.bad = 0; if (w.tot < 0) w.tot = 0 }
       if (!valid) { points[i] = missingPoint(ts, b); continue }
+      windowSums(s)
       const agg = new Map<number, WindowAggregate>()
       for (const r of p.rules) {
         for (const ms of [r.longMs, r.shortMs]) {
           const wb = Math.max(1, Math.round(ms / stepMs))
-          const w = st.win.find((x) => x.w === wb)!
-          const coverage = w.present / wb
-          agg.set(ms, coverage >= p.minCoverage ? { bad: w.bad, total: w.tot } : { bad: 0, total: 0 })
+          const w = sums[ws.indexOf(wb)]!
+          agg.set(ms, w.present / wb >= p.minCoverage ? { bad: w.bad, total: w.tot } : { bad: 0, total: 0 })
         }
       }
       const results = evaluateWindows(p, agg)
@@ -294,6 +295,6 @@ export const burnRate: Detector<BurnParams, BurnState> & {
       points[i] = pt
     }
     const out: BurnState = { ...st }
-    return { points, state: out, summary: { ...summarize('burn_rate', points, out), stateBytes: stateBytes(out) } }
+    return { points, state: out, summary: { ...summarize('burn_rate', points, out, undefined, tooBig ? `the longest window is more than ${MAX_RING} buckets at this step; use coarser buckets or evaluateWindows` : stepMs <= 0 ? 'bucket width unknown: pass stepMs' : undefined), stateBytes: stateBytes(out) } }
   },
 }

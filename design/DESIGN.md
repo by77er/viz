@@ -240,7 +240,10 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   several, not the one 128 MB file a Container merge will produce; the Container is not
   built. A compaction is a ledger transaction that succeeds only if every input is still
   live, so it cannot resurrect files that retention removed, and it swaps the samples and
-  series files together.
+  series files together. When files hold the same sample, the one with the higher
+  precedence wins: the ledger ranks a flush file by when it admitted it and gives a merge's
+  output its inputs' range, refusing a merge that would jump over an overlapping file
+  (D22).
 - **When it runs (as built).** Compaction, retention, deletion and the orphan sweep are one
   per-tenant maintenance run, consumed from a queue. A successful flush asks for one; so
   does the hourly cron, for tenants whose KV marker says time alone has made work (an hour

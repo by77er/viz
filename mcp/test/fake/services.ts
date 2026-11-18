@@ -64,7 +64,7 @@ export function fakeProm(kv: () => KVNamespace, nowSec: number, options: PromOpt
       async fetch(req: Request): Promise<Response> {
         const url = new URL(req.url)
         const params = new URLSearchParams(url.search)
-        if (req.method === 'POST') for (const [k, v] of new URLSearchParams(await req.text())) params.append(k, v)
+        if (req.method === 'POST') for (const [k, v] of new URLSearchParams(new TextDecoder().decode(await req.arrayBuffer()))) params.append(k, v)
         let tenant: string | null = null
         try {
           tenant = (await authenticate(req, kv(), 'read')).tenant
@@ -80,7 +80,15 @@ export function fakeProm(kv: () => KVNamespace, nowSec: number, options: PromOpt
         state.maxInFlight = Math.max(state.maxInFlight, state.inFlight)
         try {
           const delay = typeof state.options.delayMs === 'number' ? state.options.delayMs : Object.entries(state.options.delayMs ?? {}).find(([k]) => expr?.includes(k))?.[1] ?? 0
-          if (delay > 0) await new Promise((r) => setTimeout(r, delay))
+          if (delay > 0) {
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(resolve, delay)
+              req.signal?.addEventListener('abort', () => {
+                clearTimeout(timer)
+                reject(new DOMException('aborted', 'AbortError'))
+              })
+            })
+          }
           const res = answer(url.pathname, params, storage, nowSec, state.options)
           return Response.json(res.body, { status: res.status })
         } finally {

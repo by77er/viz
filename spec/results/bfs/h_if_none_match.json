@@ -53,7 +53,7 @@
   "states": 7243,
   "transitions": 23028,
   "depth": 12,
-  "seconds": 0.1,
+  "seconds": 0.2,
   "collisionProb": 1.4e-12,
   "violated": "I11_LiveFilesReadable",
   "trace": [

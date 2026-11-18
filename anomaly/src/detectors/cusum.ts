@@ -89,7 +89,7 @@ export const cusum: Detector<CusumParams, CusumState> = {
     const n = length(series)
     const points: Point[] = new Array(n)
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!, x = series.values[i]!
+      const ts = series.ts[i]!, x = series.values[i]! + 0
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (st.lastTs !== null && ts <= st.lastTs)) { points[i] = missingPoint(ts, x); continue }
       if (st.lastTs !== null && ts - st.lastTs > p.staleAfterMs) Object.assign(st, fresh(st.stepMs))
       st.lastTs = ts
@@ -126,7 +126,7 @@ export const cusum: Detector<CusumParams, CusumState> = {
           pt.anomalous = true
           pt.explanation = levelShift({
             detector: 'cusum', from: st.mu, to: newMu, changeAt: at, sigma: sd, unit: p.unit,
-            facts: { statistic: stat, h: p.h, k: p.k, pointsSinceChange: up ? st.hiN : st.loN, detectedAt: ts },
+            facts: { statistic: stat, h: p.h, k: p.k, pointsSinceChange: up ? st.hiN : st.loN },
           })
         }
         // re-learn the level either way, so a lasting shift alarms once

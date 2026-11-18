@@ -45,7 +45,7 @@ export interface SeriesData {
 export interface ScanInput {
   /** Whole `metric_series` files for the range. Must include the series file that was written with each sample file. */
   seriesFiles: Uint8Array[]
-  /** Whole `metric_samples` files for the range. */
+  /** Whole `metric_samples` files for the range, in ascending precedence (`Plan.files` order; contracts/ledger.ts `LiveFile`): a later file wins a duplicate. */
   sampleFiles: Uint8Array[]
   /** `VZB1` batches from shard tails, in sequence order. */
   tailBatches: Uint8Array[]
@@ -71,7 +71,8 @@ export interface Engine {
    * same schema, sort order and row-group cap, and a fresh index fragment.
    *
    * `metric_samples`: rows with the same `(metric_name, series_id, ts)` collapse to one; the
-   * row of the LATER file in `files` wins. `metric_series`: rows with the same
+   * row of the LATER file in `files` wins, so callers pass inputs in ascending precedence
+   * (contracts/ledger.ts `LiveFile`). `metric_series`: rows with the same
    * `(metric_name, series_id)` collapse to one, with the labels of the later file, the
    * smallest `min_ts` and the largest `max_ts`. The output therefore holds exactly the
    * de-duplicated rows of its inputs: a `select` over the output (with the series file

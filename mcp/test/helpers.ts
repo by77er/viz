@@ -164,14 +164,18 @@ export async function mcp(h: Harness, key: string, tool: string, args: Record<st
 /** A raw JSON-RPC POST to /mcp (for protocol edge cases the SDK client would not send). */
 export async function rpc(h: Harness, key: string | null, body: unknown, headers: Record<string, string> = {}): Promise<{ status: number; body: any; headers: Headers }> {
   const res = await h.fetch(new Request(`${BASE}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...(key ? { Authorization: `Bearer ${key}` } : {}), ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) }))
-  const text = await res.text()
+  const raw = await res.text()
+  // Streamable HTTP may answer with JSON or with an SSE stream; take the JSON-RPC message either way.
+  const text = /^(event|data|id|retry):/m.test(raw) && (res.headers.get('Content-Type') ?? '').includes('text/event-stream')
+    ? raw.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('')
+    : raw
   let parsed: any = null
   try {
     parsed = text ? JSON.parse(text) : null
   } catch {
     parsed = text
   }
-  return { status: res.status, body: parsed, headers: res.headers }
+  return { status: res.status, body: parsed, headers: res.headers, sse: text !== raw } as { status: number; body: any; headers: Headers }
 }
 
 export function reset(): void {

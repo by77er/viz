@@ -1,7 +1,7 @@
 // Mutation check for the automatic write path: break one property at a time in the source,
 // run the tests that should notice, expect them to FAIL, restore the source.
 //   node scripts/mutants.mjs [part] [substring of a mutant name]      (from stack/)
-// Parts: trigger, compaction, deletion, limit. Paths are relative to the repository root.
+// Parts: trigger, compaction, precedence, deletion, limit. Paths are relative to the repository root.
 import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -17,6 +17,8 @@ const T = {
   ledger: ['ledger', 'npx vitest run test/tombstone.test.ts'],
   janitor: ['janitor', 'npx vitest run'],
   edge: ['edge', 'npx vitest run test/limit.test.ts'],
+  ledgerPrec: ['ledger', 'npx vitest run test/precedence.test.ts'],
+  precedence: ['stack', 'npx vitest run test/precedence.property.test.ts'],
 }
 
 const mutants = [
@@ -83,11 +85,32 @@ const mutants = [
   ['compaction', 'a day is treated as closed before it ends', 'compact/src/compact.ts', T.compact,
     "    const closesAt = dayStart(day) + DAY_MS + policy.closeAfterMs", "    const closesAt = dayStart(day)"],
   ['compaction', 'the budget on pairs per merge is ignored', 'compact/src/compact.ts', T.compact,
-    "    if (into.length >= policy.maxInputPairs) break\n", ''],
+    "j < candidates.length && group.length < policy.maxInputPairs; j++)", "j < candidates.length; j++)"],
   ['compaction', 'output keys do not carry the content hash', 'compact/src/compact.ts', T.compact,
     "inputs16, sha256Hex: hex(digest) })", "inputs16, sha256Hex: '0'.repeat(64) })"],
   ['compaction', 'the engine keeps the earlier input on a duplicate (series, ts)', 'engine/storage/src/merge.rs', ['engine/storage', 'CARGO_TARGET_DIR=$PWD/target cargo test --test merge'],
     "        (self.name.data(), self.sid, self.ts, self.input, self.row)", "        (self.name.data(), self.sid, self.ts, usize::MAX - self.input, self.row)"],
+
+  // ── Compaction: which file wins a duplicate (series, ts) (contracts/ledger.ts `LiveFile`) ──
+  ['precedence', 'plan lists files in key (text) order again', 'ledger/src/ledger.ts', T.precedence,
+    "ORDER BY prec, key`, req.table, req.minTs, req.maxTs)", "ORDER BY key`, req.table, req.minTs, req.maxTs)"],
+  ['precedence', 'plan lists files in key (text) order again (seen by the ledger)', 'ledger/src/ledger.ts', T.ledgerPrec,
+    "ORDER BY prec, key`, req.table, req.minTs, req.maxTs)", "ORDER BY key`, req.table, req.minTs, req.maxTs)"],
+  ['precedence', 'compaction merges its inputs in key order', 'compact/src/compact.ts', T.precedence,
+    "  const ordered = [...job.inputs].sort(byPrecedence)", "  const ordered = [...job.inputs].sort((a, b) => (a.samples.key < b.samples.key ? -1 : 1))"],
+  ['precedence', 'a compaction output ranks as new instead of covering its inputs', 'ledger/src/ledger.ts', T.precedence,
+    "        : asListed(f, Math.min(...from.map((i) => i.precedenceLow)), Math.max(...from.map((i) => i.precedence)))\n    })\n    const removing",
+    "        : asListed(f, next + n, next + n)\n    })\n    const removing"],
+  ['precedence', 'flush files of one unit version all rank the same (no position)', 'ledger/src/ledger.ts', T.ledgerPrec,
+    "asListed(f, v * PRECEDENCE_PER_VERSION + i, v * PRECEDENCE_PER_VERSION + i)", "asListed(f, v * PRECEDENCE_PER_VERSION, v * PRECEDENCE_PER_VERSION)"],
+  ['precedence', 'the ledger admits a merge that jumps over a file overlapping it', 'ledger/src/ledger.ts', T.ledgerPrec,
+    "    if (blocking.size > 0) return { status: 'conflict', missing: [], blocking: [...blocking].sort() }\n", ''],
+  ['precedence', 'the policy picks groups that jump over a file overlapping them', 'compact/src/compact.ts', T.compact,
+    "    if (jumpsOver([...group, p], universe).length > 0) continue\n", ''],
+  ['precedence', 'the policy ignores live files without a partner', 'compact/src/compact.ts', T.compact,
+    "...strays.filter((x) => x.day === day)]", "]"],
+  ['precedence', 'a rebuilt ledger forgets precedence (everything ranks by key)', 'ledger/src/ledger.ts', T.ledgerPrec,
+    "      files.set(f.key, { ...listed, unit })", "      files.set(f.key, { ...listed, precedence: 0, precedenceLow: 0, unit })"],
 
   // ── Part 3: retention and physical deletion ──
   ['deletion', 'deletable before the removal is logged', 'ledger/src/ledger.ts', T.ledger,
@@ -103,7 +126,7 @@ const mutants = [
   ['deletion', 'expire records no tombstone', 'ledger/src/ledger.ts', T.janitor,
     "      this.bury(removed.map((key) => ({ key, table: req.table })))\n", ''],
   ['deletion', 'replace records no tombstone', 'ledger/src/ledger.ts', T.janitor,
-    "      this.bury(remove.map((key) => ({ key, table: this.liveFile(key)!.table })))\n", ''],
+    "      this.bury(inputs.map((f) => ({ key: f.key, table: f.table })))\n", ''],
   ['deletion', 'the orphan sweep ignores pending units', 'janitor/src/janitor.ts', T.janitor,
     "  return w.incarnation === Number(inc) && w.seq >= Number(seqHi) ? 'dead' : 'pending_unit'", "  return 'dead'"],
   ['deletion', 'the orphan sweep takes an unknown stream for a dead one', 'janitor/src/janitor.ts', T.janitor,

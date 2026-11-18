@@ -88,7 +88,7 @@ if (!SET) throw new Error(`MUTANTS: no set ${process.env.MUTANTS} (design or fix
 function runSuite(suite) {
   if (suite === 'unit') {
     const report = path.join(os.tmpdir(), `viz-app-mutant-${process.pid}.json`)
-    spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--reporter=json', `--outputFile=${report}`], { cwd: ROOT, encoding: 'utf8' })
+    spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--maxWorkers=2', '--reporter=json', `--outputFile=${report}`], { cwd: ROOT, encoding: 'utf8' })
     let fails = []
     try {
       const r = JSON.parse(fs.readFileSync(report, 'utf8'))

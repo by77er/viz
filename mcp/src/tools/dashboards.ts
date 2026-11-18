@@ -351,10 +351,13 @@ export const readDashboard: ToolDef = {
     if (text.length > budget) text = text.slice(0, budget)
 
     const ordered = panels.map((p, i) => ({ p, i })).sort((a, b) => importance(a.p) - importance(b.p) || a.i - b.i)
-    const shown = ordered.slice(offset, offset + rendered.panelsShown).map(({ p, i }) => {
+    // Panels this page consumed: the cursor moves past a panel shown cut to fit, so it is listed (marked cut).
+    const consumed = (nextOffset ?? runs.length) - Math.min(offset, runs.length)
+    const shown = ordered.slice(offset, offset + consumed).map(({ p, i }, j) => {
       const run = runs[i]!
       return {
         ...p,
+        ...(j >= rendered.panelsShown ? { cut: true } : {}),
         badge: badgeOf(run.digest, run.problem),
         ...(run.problem ? { problem: { kind: run.problem.kind, text: clean(run.problem.text, { max: MAX.error }) } } : {}),
         ...(run.expr ? { link: exploreLink(s.appUrl, run.expr, r, 'unit' in p ? p.unit : undefined) } : {}),
@@ -375,6 +378,7 @@ export const readDashboard: ToolDef = {
         range: { start: r.start, end: r.end, step: r.step },
         panelsTotal: runs.length,
         panelsShown: rendered.panelsShown,
+        panelsOnPage: consumed,
         offset,
         counts,
         complete,

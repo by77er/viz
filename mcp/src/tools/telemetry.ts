@@ -89,8 +89,9 @@ export const searchTelemetry: ToolDef = {
       if (score > 0) scored.push({ name, score })
     }
     scored.sort((a, b) => b.score - a.score || a.name.length - b.name.length || a.name.localeCompare(b.name))
-    // Nothing matched: offer near spellings from this tenant's own names.
-    const near = scored.length === 0 ? didYouMean(q.replace(/\s+/g, '_'), names, 5) : []
+    // A name that is not one of this tenant's, or nothing matched: offer near spellings from its own names.
+    const identifier = /^[a-zA-Z_:][a-zA-Z0-9_:]*$/.test(q)
+    const near = (identifier && !names.includes(q)) || scored.length === 0 ? didYouMean(q.replace(/\s+/g, '_'), names, 5) : []
 
     // Entity values: "checkout" is a service, not a metric.
     const entityLabels = labelNames.filter((l) => ENTITY_LABELS.includes(l))
@@ -145,7 +146,8 @@ export const searchTelemetry: ToolDef = {
     }
     const header =
       `search_telemetry: ${scored.length} matching metric(s)${scored.length > limit ? `, the best ${limit} listed` : ''}; ${entityHits.length} matching entity value(s).` +
-      (scored.length === 0 ? ` No metric name contains these words${near.length ? '; near spellings are listed' : ''}.` : '') +
+      (scored.length === 0 ? ' No metric name contains these words.' : '') +
+      (near.length ? ` ${near.length} near spelling(s) of the words as one name are listed.` : '') +
       '\nColumns: name | type | unit | series in the last hour | labels (distinct values) | help\n'
     const prelude = (entityText ? `Entities:\n${entityText}` : '') + (near.length ? `Did you mean: ${near.map((n) => cell(n, MAX.name)).join(', ')}\n` : '') + (items.length && entityText ? 'Metrics:\n' : '')
     return pagedResult({

@@ -1,10 +1,10 @@
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { Engine } from '../../contracts/engine'
-import type { FileEntry, LedgerChange } from '../../contracts/ledger'
+import type { FileEntry, LedgerChange, LiveFile } from '../../contracts/ledger'
 import { flushTenant } from '../../flush/src/flush'
 import { DAY_MS, Sent, T0, append, dataKeys, listKeys, liveKeys, read, sha256Hex, someSamples, stream } from '../../flush/test/helpers'
-import { DEFAULT_POLICY, type Pair, type StepResult, chooseJob, compactStep, compactTenant, compactedKey, engine, pairFiles, pairStem } from '../src/index'
+import { DEFAULT_POLICY, type Pair, type StepResult, chooseJob, compactStep, compactTenant, compactedKey, engine, jumpsOver, pairFiles, pairStem } from '../src/index'
 
 const HOUR = 3_600_000
 /** `n` flushed segments of one tenant, segment `i` holding samples around `at(i)`. */
@@ -28,8 +28,11 @@ const lastChange = async (tenant: string): Promise<LedgerChange> => {
 const QUIET = T0 + 30 * 60_000
 const CLOSED = T0 + 2 * DAY_MS
 
-const fe = (key: string, over: Partial<FileEntry>): FileEntry => ({ table: 'metric_samples', day: '2026-11-18', key, bytes: 1000, rows: 10, minTs: T0, maxTs: T0, level: 0, index: '', ...over })
-const mk = (name: string, over: Partial<FileEntry> = {}): Pair => {
+/** Fixture files rank in the order they are made, as admitted files do (contracts/ledger.ts `LiveFile`), unless told otherwise. */
+let rank = 0
+const fe = (key: string, over: Partial<LiveFile>): LiveFile => ({ table: 'metric_samples', day: '2026-11-18', key, bytes: 1000, rows: 10, minTs: T0, maxTs: T0, level: 0, index: '', precedence: rank, precedenceLow: rank, ...over })
+const mk = (name: string, over: Partial<LiveFile> = {}): Pair => {
+  rank++
   const samples = fe(`c/data/metric_samples/tenant=t/day=${over.day ?? '2026-11-18'}/${name}-aaaaaaaa.parquet`, over)
   const series = fe(`c/data/metric_series/tenant=t/day=${over.day ?? '2026-11-18'}/${name}-bbbbbbbb.parquet`, { ...over, table: 'metric_series' })
   return pairFiles([samples], [series]).pairs[0]!
@@ -91,6 +94,29 @@ describe('policy', () => {
     // The oldest closed day goes first.
     const older = mk('L0-old', { day: '2026-11-17', minTs: T0 - DAY_MS, maxTs: T0 - DAY_MS })
     expect(chooseJob([...day, older], closesAt).job!.day).toBe('2026-11-17')
+  })
+
+  it('precedence: inputs are a run in precedence order that jumps over no file overlapping them in time', () => {
+    // a and c are hour 12; b, admitted between them, ends in hour 13 but starts inside hour 12.
+    const a = mk('L0-a', { minTs: T0, maxTs: T0 + 10 * 60_000 })
+    const b = mk('L0-b', { minTs: T0 + 30 * 60_000, maxTs: T0 + HOUR + 10 * 60_000 })
+    const c = mk('L0-c', { minTs: T0 + 40 * 60_000, maxTs: T0 + 50 * 60_000 })
+    expect(jumpsOver([a, c], [a, b, c].flatMap((p) => [p.samples, p.series]))).toEqual([b.samples.key, b.series.key])
+    // Hour 12 alone would put a's rows above b's newer ones: no merge until the day closes.
+    const quiet = T0 + 3 * HOUR
+    expect(chooseJob([a, b, c], quiet).job).toBeNull()
+    // If b does not overlap them, merging over it is harmless.
+    const b2 = mk('L0-b2', { minTs: T0 + HOUR + 5 * 60_000, maxTs: T0 + HOUR + 10 * 60_000, precedence: b.precedence, precedenceLow: b.precedence })
+    expect(chooseJob([a, b2, c], quiet).job!.inputs.map((p) => p.samples.key)).toEqual([a.samples.key, c.samples.key])
+    // A closed day merges a, b and c as one run, in precedence order (not key order, not time order).
+    const closed = Date.UTC(2026, 10, 19) + DEFAULT_POLICY.closeAfterMs
+    expect(chooseJob([c, b, a], closed).job!.inputs.map((p) => p.samples.key)).toEqual([a, b, c].map((p) => p.samples.key))
+    // A big level-2 file in the middle is not a candidate, and the run may not jump over it.
+    const big = mk('L2-d-big', { level: 2, bytes: DEFAULT_POLICY.smallL2Bytes, minTs: T0, maxTs: T0 + HOUR, precedence: b.precedence, precedenceLow: b.precedence })
+    const job = chooseJob([a, big, c], closed).job!
+    expect(job.inputs.map((p) => p.samples.key)).toEqual([a.samples.key])
+    // A live file without a partner blocks too.
+    expect(chooseJob([a, c], quiet, DEFAULT_POLICY, [b.samples]).job).toBeNull()
   })
 })
 

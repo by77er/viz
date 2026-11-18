@@ -39,5 +39,6 @@ export default defineConfig({
   server: { port: 8820, strictPort: true, proxy, fs: { allow: ['.', designSystem] } },
   preview: { port: 8820, strictPort: true, proxy },
   build: { target: 'es2022', sourcemap: false },
-  test: { environment: 'node', include: ['src/**/*.test.ts', 'mock/**/*.test.ts'] },
+  // At most two workers: the machine is shared (AGENTS.md, "Shared machine").
+  test: { environment: 'node', include: ['src/**/*.test.ts', 'mock/**/*.test.ts'], maxWorkers: 2 },
 })

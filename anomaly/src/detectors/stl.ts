@@ -291,11 +291,12 @@ export function fitStl(series: Series, params?: Partial<StlParams>): StlFit | nu
     periodMs: p.periodMs,
     stepMs,
     endTs: start + last * stepMs,
-    level: d.trend[last]!,
-    slope: n > P ? (d.trend[last]! - d.trend[last - P]!) / P : 0,
-    season: Array.from(d.seasonal.subarray(n - P)),
-    residualMedian: rb.median,
-    sigma: rb.sigma,
+    // + 0: no -0 in state, so it survives JSON unchanged
+    level: d.trend[last]! + 0,
+    slope: n > P ? (d.trend[last]! - d.trend[last - P]!) / P + 0 : 0,
+    season: Array.from(d.seasonal.subarray(n - P), (v) => v + 0),
+    residualMedian: Number.isFinite(rb.median) ? rb.median + 0 : 0,
+    sigma: Number.isFinite(rb.sigma) ? rb.sigma + 0 : 0,
     fittedSlots: n,
   }
   return { model, start, decomposition: d, interpolated }
@@ -330,7 +331,7 @@ export const stl: Detector<StlParams, StlModel> = {
       const sd = spreadFloor(m.sigma, m.level, p.minSpread)
       let lastTs: number | null = null
       for (let i = 0; i < n; i++) {
-        const ts = series.ts[i]!, x = series.values[i]!
+        const ts = series.ts[i]!, x = series.values[i]! + 0
         if (!Number.isFinite(ts) || !Number.isFinite(x) || (lastTs !== null && ts <= lastTs)) { points[i] = missingPoint(ts, x); continue }
         lastTs = ts
         const h = Math.round((ts - m.endTs) / m.stepMs)
@@ -342,7 +343,7 @@ export const stl: Detector<StlParams, StlModel> = {
     const fit = fitStl(series, p)
     if (!fit) {
       for (let i = 0; i < n; i++) {
-        const ts = series.ts[i]!, x = series.values[i]!
+        const ts = series.ts[i]!, x = series.values[i]! + 0
         points[i] = Number.isFinite(ts) && Number.isFinite(x) ? warmingPoint(ts, x) : missingPoint(ts, x)
       }
       return { points, state: null, summary: summarize('stl', points, null, undefined, `needs ${Math.max(2, p.minPeriods)} full periods (${duration(Math.max(2, p.minPeriods) * p.periodMs)}) on a regular grid, at least half of it present`) }
@@ -351,7 +352,7 @@ export const stl: Detector<StlParams, StlModel> = {
     const sd = spreadFloor(model.sigma, model.level, p.minSpread)
     let lastTs: number | null = null
     for (let i = 0; i < n; i++) {
-      const ts = series.ts[i]!, x = series.values[i]!
+      const ts = series.ts[i]!, x = series.values[i]! + 0
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (lastTs !== null && ts <= lastTs)) { points[i] = missingPoint(ts, x); continue }
       lastTs = ts
       const s = Math.round((ts - start) / model.stepMs)
