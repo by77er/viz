@@ -75,8 +75,8 @@ export function formatAge(seconds: number, atEpochSec: number): { n: string; res
   return { n: formatDateTime(atEpochSec), rest: '' }
 }
 
-/** How old the shown data is, kept current once a second. Only this element re-renders. */
-export function Age({ at }: { at: number }) {
+/** The panel head's meta: the unit of the values, then how old the shown data is, kept current once a second. Only this element re-renders. */
+export function Age({ at, unit }: { at: number; unit?: string }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     setNow(Date.now())
@@ -87,7 +87,7 @@ export function Age({ at }: { at: number }) {
   // Only the digits are monospaced, so the figure keeps its width as it counts.
   return (
     <span className="vz-panel-meta" data-testid="age">
-      updated <span className="app-num">{age.n}</span>
+      {unit ? `${unit} · ` : ''}updated <span className="app-num">{age.n}</span>
       {age.rest}
     </span>
   )

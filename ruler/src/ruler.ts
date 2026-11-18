@@ -23,7 +23,7 @@ import type {
 import { classify } from './classify'
 import { compileAlertRule, DEADMAN_ALERT, DEADMAN_GROUP, deadmanGroup, parseRuleFile, type CompiledAlertRule } from './rules'
 import { evalAlertingRule, evalRecordingRule, toSeries, type AlertEvalResult } from './statemachine'
-import { alignedTick, backoffMs, byteLength, hash64, mapLimit } from './util'
+import { alignedTick, backoffMs, byteLength, hash64, mapLimit, resolveObjectName } from './util'
 
 /**
  * The ruler: Prometheus rule evaluation for one tenant rule shard.
@@ -131,6 +131,7 @@ function errorText(e: unknown): string {
 export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   protected readonly tenant: string
   protected readonly shard: string
+  private readonly objectName: string
   private cfg: RulerConfig = DEFAULT_RULER_CONFIG
   /** Set once anything has been configured or saved. An untouched object has no rows and no alarm. */
   private activatedAt: number | null = null
@@ -152,12 +153,14 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     super(ctx, env)
     // `<tenant>/<n>`. The name is the only source of the tenant; an object reached by an
     // id that has no name serves nobody.
-    const name = ctx.id.name ?? ''
-    const cut = name.lastIndexOf('/')
-    this.tenant = cut > 0 ? name.slice(0, cut) : ''
-    this.shard = cut > 0 ? name.slice(cut + 1) : ''
-
     const sql = ctx.storage.sql
+    // The object's own identity, not tenant data: one row, written when the object is first used.
+    sql.exec(`CREATE TABLE IF NOT EXISTS self (one INTEGER PRIMARY KEY CHECK (one = 1), name TEXT NOT NULL)`)
+    this.objectName = resolveObjectName(ctx.id.name, sql.exec<{ name: string }>(`SELECT name FROM self`).toArray()[0]?.name)
+    const cut = this.objectName.lastIndexOf('/')
+    this.tenant = cut > 0 ? this.objectName.slice(0, cut) : ''
+    this.shard = cut > 0 ? this.objectName.slice(cut + 1) : ''
+
     sql.exec(`CREATE TABLE IF NOT EXISTS meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k)) WITHOUT ROWID`)
     sql.exec(`CREATE TABLE IF NOT EXISTS rule_group (tenant TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, not_before INTEGER NOT NULL,
       PRIMARY KEY (tenant, name)) WITHOUT ROWID`)
@@ -291,6 +294,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   private activate(now: number): void {
     if (this.activatedAt !== null) return
     this.activatedAt = now
+    this.exec(`INSERT OR IGNORE INTO self (one, name) VALUES (1, ?)`, this.objectName)
     this.putMeta('activated_at', now)
     this.putMeta('config', this.cfg)
   }

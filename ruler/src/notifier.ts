@@ -26,7 +26,7 @@ import {
   type Route,
 } from './amconfig'
 import { slackPayload, webhookPayload, type PayloadAlert } from './payload'
-import { backoffMs, hash64, type Labels } from './util'
+import { backoffMs, hash64, resolveObjectName, type Labels } from './util'
 
 /**
  * The notifier: Alertmanager's model for one tenant, owned by a single object.
@@ -147,8 +147,10 @@ export class Notifier extends DurableObject implements NotifierRpc {
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never)
     // The object's name IS the tenant.
-    this.tenant = ctx.id.name ?? ''
     const sql = ctx.storage.sql
+    // The object's own identity, not tenant data: one row, written with the first config.
+    sql.exec(`CREATE TABLE IF NOT EXISTS self (one INTEGER PRIMARY KEY CHECK (one = 1), name TEXT NOT NULL)`)
+    this.tenant = resolveObjectName(ctx.id.name, sql.exec<{ name: string }>(`SELECT name FROM self`).toArray()[0]?.name)
     sql.exec(`CREATE TABLE IF NOT EXISTS meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k)) WITHOUT ROWID`)
     sql.exec(`CREATE TABLE IF NOT EXISTS alert (tenant TEXT NOT NULL, fp TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, fp)) WITHOUT ROWID`)
     sql.exec(`CREATE TABLE IF NOT EXISTS silence (tenant TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, id)) WITHOUT ROWID`)
@@ -555,6 +557,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     const bodies = new Map([...this.groups.values()].map((g) => [g.key, g.body]))
     try {
       this.ctx.storage.transactionSync(() => {
+      this.exec(`INSERT OR IGNORE INTO self (one, name) VALUES (1, ?)`, this.tenant)
       this.exec(`INSERT INTO meta (tenant, k, v) VALUES (?, 'config', ?) ON CONFLICT (tenant, k) DO UPDATE SET v = excluded.v`, this.tenant, JSON.stringify(config))
       this.cfg = compiled.config
       this.rebuildGroups(bodies)
@@ -583,7 +586,6 @@ export class Notifier extends DurableObject implements NotifierRpc {
     for (const u of updates) {
       const cur = staged.get(u.fingerprint) ?? this.alerts.get(u.fingerprint)
       if (cur) {
-        if (u.at < cur.at) continue
         // At the same evaluation time a resolution outranks a firing, so a redelivered
         // "firing" can never undo the "resolved" that followed it.
         if (u.at === cur.at && (cur.status === 'resolved' || (u.status === 'firing' && u.expiresAt === cur.expiresAt))) continue
@@ -608,6 +610,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     if (changes.length === 0) return { status: 'ok', applied: 0 }
     try {
       this.ctx.storage.transactionSync(() => {
+        this.exec(`INSERT OR IGNORE INTO self (one, name) VALUES (1, ?)`, this.tenant)
         for (const a of changes) {
           this.putAlert(a)
           if (a.status === 'firing') this.joinGroups(a, now)

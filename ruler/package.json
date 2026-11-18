@@ -6,7 +6,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "mutants": "node scripts/mutants.mjs",
-    "bench": "RULER_BENCH=1 vitest run test/bench.test.ts"
+    "bench": "vitest run test/bench.test.ts --reporter=verbose"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.4",

@@ -379,7 +379,7 @@ export function ExplorePage() {
           <h2 className="vz-panel-title" id="result-title">
             Query result
           </h2>
-          {shownResult && <Age at={shownResult.receivedAt} />}
+          {shownResult && <Age at={shownResult.receivedAt} unit={unit === 'none' ? undefined : UNITS.find((u) => u.id === unit)?.label} />}
         </div>
 
         <div className="wait-slot">

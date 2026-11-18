@@ -271,7 +271,7 @@ async function main() {
       check('3 s wait: Cancel appears at 2 s, not before', cancelAfter >= 2000 && cancelAfter < 2400 && !cancelEarly, `Cancel ${cancelAfter.toFixed(0)} ms after the press`)
       check('3 s wait: the previous result is usable while waiting (a legend row isolates)', usable === 1, `${usable} series shown after selecting one`)
       const age = await page.textContent('[data-testid=age]')
-      check('the panel head states the age of the data shown', /updated \d+ (s|min) ago/.test(age), age)
+      check('the panel head states the unit and the age of the data shown', /per second \(\/s\) · updated \d+ (s|min) ago/.test(age), age)
       await page.click('[data-testid=cancel]')
       await page.waitForSelector('[data-testid=halted]')
       const halted = await page.textContent('[data-testid=halted]')

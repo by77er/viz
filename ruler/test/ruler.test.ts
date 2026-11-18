@@ -2,6 +2,7 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'c
 import { describe, expect, it } from 'vitest'
 import notifierSource from '../src/notifier.ts?raw'
 import rulerSource from '../src/ruler.ts?raw'
+import { resolveObjectName } from '../src/util'
 import { T0, tenantWorld, world } from './harness'
 import { alarmAt, alertsOf, MIN, newTenant, nextTick, notifierStub, ok, rulerStub, runNotifierUntil, setup, sqlWrites, vec } from './helpers'
 
@@ -533,9 +534,22 @@ describe('tenant isolation', () => {
     expect(await stub.health('')).toEqual({ status: 'wrong_tenant' })
   })
 
+  it('an object woken without a name falls back to the name it stored; a conflicting name serves nobody', async () => {
+    expect(resolveObjectName('acme/0', undefined)).toBe('acme/0')
+    expect(resolveObjectName('acme/0', 'acme/0')).toBe('acme/0')
+    expect(resolveObjectName(undefined, 'acme/0')).toBe('acme/0')
+    expect(resolveObjectName(undefined, undefined)).toBe('')
+    expect(resolveObjectName('evil/0', 'acme/0')).toBe('')
+    const { tenant, stub } = await setup()
+    const stored = await runInDurableObject(stub, (_i, state) => state.storage.sql.exec<{ name: string }>(`SELECT name FROM self`).toArray())
+    expect(stored).toEqual([{ name: `${tenant}/0` }])
+  })
+
   it('every SQL statement that touches tenant data names the tenant (AGENTS.md, Durable Objects)', () => {
     for (const [name, source] of [['ruler.ts', rulerSource], ['notifier.ts', notifierSource]] as const) {
       const statements = [...source.matchAll(/`((?:SELECT|INSERT|UPDATE|DELETE)\b[^`]*)`/g)].map((m) => m[1]!)
+        // `self` holds the object's own name (one row), not tenant data.
+        .filter((sql) => !/\b(FROM|INTO) self\b/.test(sql))
       expect(statements.length, name).toBeGreaterThan(8)
       for (const sql of statements) {
         if (sql.startsWith('INSERT')) expect(sql, name).toMatch(/\(tenant,/)

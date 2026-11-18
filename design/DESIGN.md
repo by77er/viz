@@ -124,6 +124,11 @@ Draft 2 hashed by series id, which sent every request to every shard and made ev
 tail-read every shard. Shard count per tenant is bounded to tens; beyond that a tenant is
 split across cells.
 
+Measured on Cloudflare (`spikes/s3-ingest-throughput/`): one shard saturates at roughly
+230–290 requests per second whatever the batch size, and took 133,000 samples per second
+when requests carried 2,000 series. Plan for 200 requests per second per shard, and expect
+senders to batch.
+
 The shard map has an **epoch**, owned by the ledger. Every write carries the epoch it was
 routed with; a shard rejects a stale epoch and `edge` refetches. A map change takes effect
 only after the old shards' final units are *recorded in the ledger*, their dedup
@@ -385,7 +390,7 @@ Hypotheses until the read-slice spike measures them.
 
 | Path | Target |
 |---|---|
-| Ingest acknowledgement, 1 MB batch | p99 < 500 ms; the median depends on the commit window chosen |
+| Ingest acknowledgement | p50 < 80 ms, p99 < 500 ms. Measured on Cloudflare: 60 ms and 113–340 ms below shard saturation |
 | Time to queryable | p99 < 10 s |
 | Dashboard refresh, warm partials | p50 < 300 ms |
 | First load, 24 h on compacted days | p95 < 1.5 s |

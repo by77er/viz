@@ -137,3 +137,15 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker))
   return out
 }
+
+/**
+ * The name a Durable Object answers to. Normally `ctx.id.name`. The name is also stored on
+ * first write, so an object woken without a name (an alarm on a runtime that does not carry
+ * it) still knows whose data it holds instead of finding nothing and going idle. A stored
+ * name that disagrees with the one presented means the object must serve nobody.
+ */
+export function resolveObjectName(presented: string | undefined, stored: string | undefined): string {
+  if (presented === undefined || presented === '') return stored ?? ''
+  if (stored !== undefined && stored !== presented) return ''
+  return presented
+}
