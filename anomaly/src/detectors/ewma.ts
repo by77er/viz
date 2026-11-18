@@ -136,7 +136,7 @@ export const ewma: Detector<EwmaParams, EwmaState> = {
       st.var = (1 - alpha) * (st.var + diff * incr)
       st.n++
     }
-    const out: EwmaState = { v: 1, n: st.n, mean: st.mean, var: st.var, run: st.run, lastTs: st.lastTs, stepMs: st.stepMs }
+    const out: EwmaState = { v: 1, n: st.n, mean: state?.mean ?? st.mean, var: st.var, run: st.run, lastTs: st.lastTs, stepMs: st.stepMs }
     return { points, state: out, summary: summarize('ewma', points, out, undefined, `needs ${p.minPoints} points before scoring`) }
   },
 }

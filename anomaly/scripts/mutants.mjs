@@ -133,6 +133,11 @@ export const MUTANTS = [
     tests: ['test/properties.test.ts'],
   },
   {
+    name: 'quantile spread uses the median deviation instead of the requested quantile',
+    edits: one('src/detectors/robustz.ts', 'const qd = quantileInPlace(this.scratch, n, quantile)', 'const qd = quantileInPlace(this.scratch, n, 0.5)'),
+    tests: ['test/synthetic.test.ts'],
+  },
+  {
     name: 'NAB scorer: probationary period 10% instead of 15%',
     edits: one('bench/nab.ts', 'export const PROBATION_PERCENT = 0.15', 'export const PROBATION_PERCENT = 0.1'),
     tests: ['test/nab-scorer.test.ts'],

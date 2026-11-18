@@ -33,6 +33,8 @@ const INCREMENTAL: Record<string, Run> = {
   robust_z: (s, st) => robustZ.detect(s, { stepMs: STEP, windowPoints: 20, minPoints: 5, k: 2 }, st as never),
   seasonal: (s, st) => seasonal.detect(s, { stepMs: STEP, periodMs: 10 * MIN, seasons: 3, minSeasons: 1, minResiduals: 3, k: 2, residualWindowMs: 15 * MIN }, st as never),
   seasonal_agile: (s, st) => seasonal.detect(s, { stepMs: STEP, periodMs: 10 * MIN, seasons: 2, minSeasons: 1, minResiduals: 3, k: 2, adapt: 'agile', agileWindowMs: 3 * MIN, decay: 0.5 }, st as never),
+  robust_z_quantile: (s, st) => robustZ.detect(s, { stepMs: STEP, windowPoints: 20, minPoints: 5, k: 1.5, spread: 'quantile', spreadQuantile: 0.9 }, st as never),
+  seasonal_quantile: (s, st) => seasonal.detect(s, { stepMs: STEP, periodMs: 10 * MIN, seasons: 3, minSeasons: 1, minResiduals: 3, k: 1.5, spread: 'quantile', spreadQuantile: 0.9 }, st as never),
   cusum: (s, st) => cusum.detect(s, { stepMs: STEP, warmupPoints: 8, relearnPoints: 4, h: 3, staleAfterMs: 10 * MIN }, st as never),
   burn_rate: (s, st) => burnRate.detect(burnInput(s) as never, { stepMs: STEP, rules: burnRules, objective: 0.9 }, st as never),
 }
@@ -126,7 +128,7 @@ describe('invariant to a constant time shift', () => {
 })
 
 describe('scale-invariant where claimed (values × 2^k)', () => {
-  const claimed = ['ewma', 'robust_z', 'seasonal', 'seasonal_agile', 'cusum', 'stl', 'pelt']
+  const claimed = ['ewma', 'robust_z', 'robust_z_quantile', 'seasonal', 'seasonal_agile', 'seasonal_quantile', 'cusum', 'stl', 'pelt']
   for (const name of claimed) {
     it(name, () => {
       fc.assert(

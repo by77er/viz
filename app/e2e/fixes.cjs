@@ -172,7 +172,7 @@ async function main() {
       if (!SKIP_STOP) {
         await page.goto(url(Q_RATE)); await ready(page)
         const base2 = { ...(await chrome(page)), unitInHead: 'per second (/s)' }
-        await setMockDelay(70000)
+        await setMockDelay(70000, { stall: true })
         await setQuery(page, Q_MEM)
         await page.keyboard.press('Control+Enter')
         await page.waitForSelector('[data-testid=halted]', { timeout: 70000 })

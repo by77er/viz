@@ -16,8 +16,8 @@
  */
 import type { Detector, DetectResult, Point, Series } from '../types.ts'
 import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, resolveStep, sideOk, summarize, warmingPoint, val, tsv } from '../base.ts'
-import { deviation, duration } from '../explain.ts'
-import { finiteScore, MAD_TO_SIGMA, MEANAD_TO_SIGMA, medianInPlace, spreadFloor } from '../stats.ts'
+import { deviation, duration, fmt } from '../explain.ts'
+import { finiteScore, MAD_TO_SIGMA, MEANAD_TO_SIGMA, medianInPlace, quantileInPlace, spreadFloor } from '../stats.ts'
 
 export interface RobustZParams extends CommonParams {
   /** Trailing window. 0 = windowPoints × step. */
@@ -26,6 +26,13 @@ export interface RobustZParams extends CommonParams {
   /** Cut-off in robust standard deviations. */
   k: number
   minPoints: number
+  /**
+   * 'mad': σ̂ = 1.4826·MAD (k in robust standard deviations). 'quantile': the `spreadQuantile`
+   * quantile of |x − median| over the window (k in multiples of it) — Datadog's "basic"
+   * rolling-quantile idea; for heavy-tailed series, where routine spikes are normal.
+   */
+  spread: 'mad' | 'quantile'
+  spreadQuantile: number
 }
 
 export interface RobustZState {
@@ -37,7 +44,7 @@ export interface RobustZState {
   x: number[]
 }
 
-export const robustZDefaults: RobustZParams = { ...COMMON_DEFAULTS, windowMs: 0, windowPoints: 288, k: 3.5, minPoints: 20 }
+export const robustZDefaults: RobustZParams = { ...COMMON_DEFAULTS, windowMs: 0, windowPoints: 288, k: 3.5, minPoints: 20, spread: 'mad', spreadQuantile: 0.99 }
 
 /** A time window with a sorted copy of its values, for median and MAD. */
 class Window {
@@ -94,14 +101,19 @@ class Window {
     const h = n >>> 1
     return n % 2 ? this.sorted[h]! : (this.sorted[h - 1]! + this.sorted[h]!) / 2
   }
-  /** σ̂ and the raw MAD, with the mean-absolute-deviation fallback. */
-  sigma(med: number): { sigma: number; mad: number; from: 'mad' | 'meanad' | 'none' } {
+  /** σ̂ and the raw MAD, with the mean-absolute-deviation fallback; or the q-quantile deviation. */
+  sigma(med: number, quantile = 0): { sigma: number; mad: number; from: 'mad' | 'meanad' | 'quantile' | 'max' | 'none' } {
     const n = this.size
-    let sum = 0
+    let sum = 0, max = 0
     for (let i = 0; i < n; i++) {
       const d = Math.abs(this.sorted[i]! - med)
       this.scratch[i] = d
       sum += d
+      if (d > max) max = d
+    }
+    if (quantile > 0) {
+      const qd = quantileInPlace(this.scratch, n, quantile)
+      return qd > 0 ? { sigma: qd, mad: NaN, from: 'quantile' } : max > 0 ? { sigma: max, mad: NaN, from: 'max' } : { sigma: 0, mad: 0, from: 'none' }
     }
     const mad = medianInPlace(this.scratch, n)
     if (mad > 0) return { sigma: MAD_TO_SIGMA * mad, mad, from: 'mad' }
@@ -150,7 +162,8 @@ export const robustZ: Detector<RobustZParams, RobustZState> = {
         points[i] = warmingPoint(ts, x, win.size > 0 ? win.median() : null)
       } else {
         const med = win.median()
-        const s = win.sigma(med)
+        const q = p.spread === 'quantile' ? Math.min(1, Math.max(0.5, p.spreadQuantile)) : 0
+        const s = win.sigma(med, q)
         const sd = spreadFloor(s.sigma, med, p.minSpread)
         const diff = x - med
         const score = finiteScore(Math.abs(diff) / sd)
@@ -165,11 +178,11 @@ export const robustZ: Detector<RobustZParams, RobustZState> = {
             referenceLabel: label,
             deviations: score,
             spread: sd,
-            spreadLabel: s.from === 'mad' ? '1.4826 × median absolute deviation' : '1.2533 × mean absolute deviation (MAD was 0)',
-            spreadWord: 'robust standard deviations',
+            spreadLabel: s.from === 'mad' ? '1.4826 × median absolute deviation' : s.from === 'meanad' ? '1.2533 × mean absolute deviation (MAD was 0)' : s.from === 'quantile' ? `${fmt(100 * q)}th percentile of |value − median| in the window` : 'largest |value − median| in the window',
+            spreadWord: q > 0 ? `times the ${fmt(100 * q)}th-percentile deviation,` : 'robust standard deviations',
             at: ts,
             unit: p.unit,
-            facts: { windowPoints: win.size, mad: s.mad, k: p.k },
+            facts: q > 0 ? { windowPoints: win.size, quantile: q, k: p.k } : { windowPoints: win.size, mad: s.mad, k: p.k },
           })
         }
         points[i] = pt

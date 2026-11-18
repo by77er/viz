@@ -51,7 +51,8 @@ const api = createMockApi({ requireToken, readlessToken })
 const FAILURES: Record<string, () => MockResponse & { text?: string }> = {
   busy: () => fail('unavailable', 'the query service is busy; retry', costHeaders(0)),
   storage: () => fail('unavailable', 'a storage component did not answer; retry', { ...costHeaders(0), 'Retry-After': '1' }),
-  config: () => fail('unavailable', "the tenant's query limits: maxSamples must be a non-negative integer", { ...costHeaders(0), 'Retry-After': '30' }),
+  // Refused before any work: the real API sends no cost headers with it.
+  config: () => fail('unavailable', "the tenant's query limits: maxSamples must be a non-negative integer", { 'Retry-After': '30' }),
   gateway: () => ({ status: 502, body: { status: 'error', errorType: 'unavailable', error: 'query did not answer; retry' }, headers: { 'Retry-After': '1', 'x-viz-route': 'query' } }),
   timeout: () => fail('timeout', 'query timed out', costHeaders(TIME_LIMIT_MS)),
   ratelimit: () => ({ status: 429, body: null, text: 'error code: 1015', headers: { 'Retry-After': '10', 'Content-Type': 'text/plain; charset=UTF-8' } }),

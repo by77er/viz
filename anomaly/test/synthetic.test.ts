@@ -96,6 +96,17 @@ describe('robust z-score', () => {
     expect(p.explanation!.spreadLabel).toContain('mean absolute deviation')
     expect(Number.isFinite(p.score)).toBe(true)
   })
+  it('heavy tails: MAD flags every routine spike; the quantile spread flags only the unusual one', () => {
+    // around 32 with a routine spike to ~46 every 12 points (NAB cpu_utilization_asg_misconfiguration-like), then one to 90
+    const r = rng(8)
+    const s = make(1200, 5 * MIN, (i) => (i % 12 === 0 ? 46 : 32) + 0.5 * gauss(r))
+    s.values[1000] = 90
+    const mad = anomalies(robustZ.detect(s, { stepMs: 5 * MIN, k: 10 }))
+    expect(mad.length).toBeGreaterThan(50) // ~20 robust σ each
+    const q = robustZ.detect(s, { stepMs: 5 * MIN, k: 2, spread: 'quantile', spreadQuantile: 0.99 })
+    expect(anomalies(q)).toEqual([1000])
+    expect(q.points[1000]!.explanation!.text).toMatch(/^90 is [\d.]+ times the 99th-percentile deviation, above the median of the last 1 day \(3\d\.?\d*\)$/)
+  })
   it('missing points are not zeros', () => {
     // every other point missing; if NaN were read as 0 the median would collapse
     const s = noise(7, 800, MIN, 100, 1)

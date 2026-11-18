@@ -30,6 +30,13 @@ const T0 = lib.T0 / 1000
 const T1 = lib.T1 / 1000
 
 const enc = (o) => new URLSearchParams(o).toString()
+/** The environment for local wrangler commands: without the Cloudflare credentials (nothing here may reach Cloudflare). */
+function localEnv() {
+  const env = { ...process.env }
+  delete env.CLOUDFLARE_API_TOKEN
+  delete env.CLOUDFLARE_ACCOUNT_ID
+  return env
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 async function up(u) {
   try {
@@ -49,7 +56,8 @@ const CASES = [
   ['labels, all time', 'GET', '/api/v1/labels'],
   ['labels of a selector in the window', 'GET', `/api/v1/labels?${enc({ 'match[]': 'up', start: T0, end: T1 })}`],
   ['metric names in the window', 'GET', `/api/v1/label/__name__/values?${enc({ start: T0, end: T1 })}`],
-  ['metric names before any data', 'GET', `/api/v1/label/__name__/values?${enc({ start: T0 - 86400, end: T0 - 80000 })}`],
+  // Before 2026-01-01, where neither holds data (the mock's series start then; the real stack holds 08:00 to 14:00 of the e2e day).
+  ['metric names before any data', 'GET', `/api/v1/label/__name__/values?${enc({ start: Date.UTC(2025, 11, 1) / 1000, end: Date.UTC(2025, 11, 2) / 1000 })}`],
   ['label values of a selector', 'GET', `/api/v1/label/service/values?${enc({ 'match[]': 'up', start: T0, end: T1 })}`],
   ['series', 'GET', `/api/v1/series?${enc({ 'match[]': 'up{service="auth"}', start: T0, end: T1 })}`],
   ['series without match[]', 'GET', '/api/v1/series'],
@@ -141,7 +149,7 @@ function shape(v) {
 function metricShape(json) {
   // Label sets: names in sorted order, and series in label order (the real API's).
   const r = json && json.data && Array.isArray(json.data.result) ? json.data.result : Array.isArray(json && json.data) && json.data.length && typeof json.data[0] === 'object' ? json.data.map((m) => ({ metric: m })) : null
-  if (!r) return 'n/a'
+  if (!r || !r.every((s) => s && typeof s === 'object' && s.metric)) return 'n/a'
   const sortedNames = r.every((s) => { const k = Object.keys(s.metric); return k.join() === [...k].sort().join() })
   const key = (m) => Object.keys(m).sort().map((k) => `${k}\u0000${m[k]}`).join('\u0001')
   const keys = r.map((s) => key(s.metric))
@@ -224,6 +232,35 @@ async function main() {
       if (opts.values && r.status === 200 && m.status === 200) {
         const v = compareValues(r, m)
         check(`same data, same answer: ${name}`, /^equal/.test(v), v)
+      }
+    }
+    // A refusal with Retry-After, from the real API itself: an unreadable limits record makes
+    // it refuse every query with 503 and Retry-After: 30 (query/src/config.ts). The record is
+    // put in the stack's local KV, and the mock is told to fail the same way.
+    if (!process.env.VIZ_CONTRACT_SKIP_KV) {
+      const wrangler = (args) => spawnSync(process.execPath, [path.resolve(ROOT, '../query/node_modules/wrangler/bin/wrangler.js'), 'kv', 'key', ...args, '--local', '-c', 'wrangler.jsonc', '--persist-to', '.wrangler/state', '--binding', 'CONFIG'], { cwd: path.join(ROOT, 'real'), env: localEnv(), stdio: 'ignore' })
+      wrangler(['put', `limits:${keys.tenant}`, '{"maxSamples":-1}'])
+      try {
+        // The query Worker keeps a tenant's limits for 30 s.
+        const c = ['an unreadable limits record (real), /__mock/fail?kind=config (mock)', 'POST', '/api/v1/query_range', { query: 'up', start: T0, end: T0 + 60, step: 15 }]
+        let r
+        for (let i = 0; i < 40; i++) {
+          r = await call(REAL, 'real', c, keys, mockKeys)
+          if (r.status === 503) break
+          await sleep(1000)
+        }
+        await fetch(`${MOCK}/__mock/fail?kind=config&count=1`).then((x) => x.arrayBuffer())
+        const m = await call(MOCK, 'mock', c, keys, mockKeys)
+        record.push({ name: c[0], request: { method: 'POST', path: c[2], body: enc(c[3]), credential: 'read', headers: {} }, status: r.status, headers: Object.fromEntries(Object.entries(r.headers).filter(([k]) => !/^(date|content-length|transfer-encoding|connection|keep-alive)$/.test(k))), body: r.text })
+        const diffs = []
+        if (r.status !== m.status) diffs.push(`status ${r.status} vs mock ${m.status}`)
+        if ((r.json && r.json.errorType) !== (m.json && m.json.errorType)) diffs.push(`errorType ${r.json && r.json.errorType} vs mock ${m.json && m.json.errorType}`)
+        if ((r.headers['retry-after'] ?? null) !== (m.headers['retry-after'] ?? null)) diffs.push(`retry-after ${r.headers['retry-after']} vs mock ${m.headers['retry-after']}`)
+        if (costNames(r.headers) !== costNames(m.headers)) diffs.push('cost headers differ')
+        if ((r.json && r.json.error) !== (m.json && m.json.error)) diffs.push(`error "${r.json && r.json.error}" vs mock "${m.json && m.json.error}"`)
+        check(`contract: ${c[0]}`, diffs.length === 0, diffs.join('; ') || `${r.status} ${r.json.errorType}, Retry-After ${r.headers['retry-after']}`)
+      } finally {
+        wrangler(['delete', `limits:${keys.tenant}`])
       }
     }
   } finally {

@@ -324,6 +324,12 @@ const chosen = MUTANTS.map((m, i) => ({ ...m, n: i + 1 })).filter((m) => only.le
 // Every mutant must apply to the source as it is, before anything runs.
 for (const m of chosen) apply(readFileSync(rel(m.file), 'utf8'), m)
 
+// Type errors that are there before any mutant (another component mid-edit) are not the
+// mutant's: a mutant is invalid only if it adds one.
+const tscErrors = () => new Set(run('npx', ['tsc', '--noEmit']).stdout.split('\n').filter((l) => /error TS\d+/.test(l)))
+const baseline = tscErrors()
+if (baseline.size > 0) console.log(`tsc reports ${baseline.size} error(s) before any mutant (not counted against mutants):\n  ${[...baseline].slice(0, 3).join('\n  ')}`)
+
 console.log('unmutated suite …')
 const clean = suite()
 if (!clean.ok) {
@@ -348,8 +354,8 @@ for (const m of chosen) {
     writeFileSync(rel(m.file), apply(original, m))
     if (m.rust) buildWasm()
     // A mutant that does not type-check is a build error, not a kill.
-    const tsc = m.rust ? { status: 0 } : run('npx', ['tsc', '--noEmit'])
-    if (tsc.status !== 0) result = { ok: false, failed: [`BUILD ERROR: ${tsc.stdout.split('\n')[0]}`], broken: true }
+    const added = m.rust ? [] : [...tscErrors()].filter((l) => !baseline.has(l))
+    if (added.length > 0) result = { ok: false, failed: [`BUILD ERROR: ${added[0]}`], broken: true }
     else {
       result = suite(whole ? [] : m.tests)
       if (result.ok && !whole) result = suite() // not caught where expected: is it caught anywhere?

@@ -93,10 +93,78 @@ async function startServers(root = ROOT) {
   return stop
 }
 
-/** Artificial latency of the mock's query endpoints, in ms (0 = off). */
-const setMockDelay = (ms) => new Promise((resolve, reject) => {
-  http.get(`${MOCK}/__mock/delay?ms=${ms}`, (res) => { res.resume(); res.on('end', resolve) }).on('error', reject)
+/**
+ * Artificial latency of the mock's query endpoints, in ms (0 = off). Like the real API, the
+ * mock answers 503 `timeout` at 30 s; `stall` makes the delay a stalled connection instead,
+ * to which no API time limit applies (the app's own 60 s stop is then what ends the wait).
+ */
+const setMockDelay = (ms, { stall = false } = {}) => new Promise((resolve, reject) => {
+  http.get(`${MOCK}/__mock/delay?ms=${ms}${stall ? '&stall=1' : ''}`, (res) => { res.resume(); res.on('end', resolve) }).on('error', reject)
 })
+
+/** The next `count` query requests to the mock fail as the real API fails (mock/server.ts, `/__mock/fail`). */
+const setMockFailure = (kind, count = 1, base = MOCK) => new Promise((resolve, reject) => {
+  http.get(`${base}/__mock/fail?kind=${kind}&count=${count}`, (res) => { res.resume(); res.on('end', resolve) }).on('error', reject)
+})
+
+// ---- the real viz API, locally (real/stack.mjs)
+const REAL_PORT = Number(process.env.VIZ_REAL_PORT || 8851)
+const REAL = `http://127.0.0.1:${REAL_PORT}`
+const REAL_KEYS = path.join(ROOT, 'real/.wrangler/keys.json')
+
+/** Make sure the real stack is up and seeded; returns a function that stops it if this call started it. */
+async function ensureRealStack() {
+  if ((await ping(`${REAL}/healthz`)) === 200 && fs.existsSync(REAL_KEYS)) return () => {}
+  const { spawnSync } = require('node:child_process')
+  const run = (...args) => {
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'real/stack.mjs'), ...args, '--port', String(REAL_PORT)], { stdio: 'inherit' })
+    if (r.status !== 0) throw new Error(`real/stack.mjs ${args.join(' ')} failed`)
+  }
+  run('start')
+  run('seed')
+  return () => run('stop')
+}
+const realKeys = () => JSON.parse(fs.readFileSync(REAL_KEYS, 'utf8'))
+
+/** A local KV record of the real stack (put, or delete with value null): how the e2e makes the real API refuse. */
+function realKv(key, value) {
+  const { spawnSync } = require('node:child_process')
+  const env = { ...process.env }
+  delete env.CLOUDFLARE_API_TOKEN
+  delete env.CLOUDFLARE_ACCOUNT_ID
+  const args = value === null ? ['delete', key] : ['put', key, value]
+  const r = spawnSync(process.execPath, [path.resolve(ROOT, '../query/node_modules/wrangler/bin/wrangler.js'), 'kv', 'key', ...args, '--local', '-c', 'wrangler.jsonc', '--persist-to', '.wrangler/state', '--binding', 'CONFIG'], { cwd: path.join(ROOT, 'real'), env, stdio: 'ignore' })
+  if (r.status !== 0) throw new Error(`wrangler kv key ${args[0]} ${key} failed`)
+}
+
+/** `vite preview` of the built app on `port`, its /api proxied to `target`; returns a stop function. */
+async function startPreview(port, target, root = ROOT) {
+  if (await ping(`http://127.0.0.1:${port}`)) throw new Error(`port ${port} is already in use`)
+  const p = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', String(port), '--host', '127.0.0.1'], { cwd: root, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, VIZ_API_TARGET: target } })
+  p.stderr.on('data', (d) => process.stderr.write(`[preview ${port}] ${d}`))
+  const stop = () => { try { p.kill('SIGTERM') } catch {} }
+  process.on('exit', stop)
+  if (!(await waitFor(`http://127.0.0.1:${port}`))) { stop(); throw new Error('vite preview did not start') }
+  return stop
+}
+
+/** The mock server on `port` with extra arguments; returns a stop function. */
+async function startMock(port, args = []) {
+  if (await ping(`http://127.0.0.1:${port}/__mock/delay`)) throw new Error(`port ${port} is already in use`)
+  const p = spawn(process.execPath, ['--import', 'tsx', 'mock/server.ts', '--port', String(port), ...args], { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'] })
+  p.stderr.on('data', (d) => process.stderr.write(`[mock ${port}] ${d}`))
+  const stop = () => { try { p.kill('SIGTERM') } catch {} }
+  process.on('exit', stop)
+  if (!(await waitFor(`http://127.0.0.1:${port}/__mock/delay`))) { stop(); throw new Error('mock did not start') }
+  return stop
+}
+
+/** A browser context whose app sends `key` (Settings, in localStorage), as a person who pasted it would. */
+async function contextWithKey(browser, key, options = {}) {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light', ...options })
+  await ctx.addInitScript((k) => { if (!sessionStorage.getItem('viz.e2e.keyed')) { localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: k })); sessionStorage.setItem('viz.e2e.keyed', '1') } }, key)
+  return ctx
+}
 
 const overflow = (page) => page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }))
 
@@ -114,5 +182,6 @@ async function axe(page, label, check) {
 
 module.exports = {
   chromium, ROOT, APP, MOCK, T0, T1, Q_RATE, Q_CPU, Q_P95, Q_MANY, Q_BAD, url, TOKENS, tokenValue, tokenRgb, seriesHex, allowedColours,
-  makeChecker, startServers, setMockDelay, overflow, axe,
+  makeChecker, startServers, setMockDelay, setMockFailure, overflow, axe, ping, waitFor,
+  REAL, ensureRealStack, realKeys, realKv, startPreview, startMock, contextWithKey,
 }

@@ -64,6 +64,12 @@ export function runSeasonal(f: NabFile, c: Ctx, params: Record<string, number | 
   return fromPoints(seasonal.detect(series(f), { ...params, periodMs, stepMs: c.stepMs } as never).points)
 }
 
+/** Seasonal with the quantile spread where a period was detected, else robust z with the same spread. */
+export function runSeasonalQ(f: NabFile, c: Ctx, params: Record<string, number | string>): Run {
+  if (c.periodMs === null) return fromPoints(robustZ.detect(series(f), { k: Number(params.k), stepMs: c.stepMs, spread: 'quantile', windowPoints: 1000 }).points)
+  return fromPoints(seasonal.detect(series(f), { ...params, periodMs: c.periodMs, stepMs: c.stepMs } as never).points)
+}
+
 /** STL refit every period on the trailing `fitPeriods` periods; points scored against the latest model. */
 export function runStl(f: NabFile, c: Ctx, k: number, fitPeriods: number): Run {
   const n = f.values.length
@@ -149,6 +155,9 @@ export const GRIDS: Record<string, Config[]> = {
   // Added after the first run showed robust z and seasonal far below zero (routine spikes on
   // heavy-tailed series score 20+ robust σ). Post hoc: reported separately, not as the result.
   robust_z_posthoc: grid('robust_z_posthoc', { windowPoints: [50, 288, 1000], k: [15, 25, 40] }, (p) => (f, c) => fromPoints(robustZ.detect(series(f), { ...p, stepMs: c.stepMs } as never).points)),
+  // Also added after the first run: the tail-aware spread (99th-percentile deviation) instead of the MAD.
+  robust_z_quantile: grid('robust_z_quantile', { windowPoints: [288, 1000, 4000], k: [1, 1.5, 2, 3], spread: ['quantile'] }, (p) => (f, c) => fromPoints(robustZ.detect(series(f), { ...p, stepMs: c.stepMs } as never).points)),
+  seasonal_quantile: grid('seasonal_quantile', { seasons: [1, 3], k: [1, 1.5, 2, 3], adapt: ['robust', 'agile'], spread: ['quantile'] }, (p) => (f, c) => runSeasonalQ(f, c, p)),
   seasonal_posthoc: grid('seasonal_posthoc', { seasons: [1, 3], k: [15, 25, 40], adapt: ['robust', 'agile'] }, (p) => (f, c) => runSeasonal(f, c, p, 'robust_z')),
 }
 

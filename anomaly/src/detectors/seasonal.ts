@@ -26,7 +26,7 @@
 import type { Detector, DetectResult, Point, Series } from '../types.ts'
 import { COMMON_DEFAULTS, type CommonParams, length, merge, missingPoint, mod, resolveStep, sideOk, slotOf, summarize, warmingPoint, val, tsv } from '../base.ts'
 import { deviation, duration, fmt, phaseName, withUnit } from '../explain.ts'
-import { finiteScore, median, robust, spreadFloor, weightedMedian } from '../stats.ts'
+import { finiteScore, median, quantileSpread, robust, spreadFloor, weightedMedian } from '../stats.ts'
 
 export interface SeasonalParams extends CommonParams {
   /** Season length. Required (see `detectSeasonality`); must be a multiple of the step. */
@@ -49,6 +49,9 @@ export interface SeasonalParams extends CommonParams {
   contamination: 'clip' | 'keep'
   /** Consecutive anomalous points after which values are stored unclipped. 0 = max(3, period/24 in steps). */
   acceptAfter: number
+  /** 'mad': 1.4826·MAD of the residuals. 'quantile': the `spreadQuantile` quantile of |residual − median residual| (see robust_z). */
+  spread: 'mad' | 'quantile'
+  spreadQuantile: number
 }
 
 export interface SeasonalState {
@@ -85,6 +88,8 @@ export const seasonalDefaults: SeasonalParams = {
   agileWindowMs: 0,
   contamination: 'clip',
   acceptAfter: 0,
+  spread: 'mad',
+  spreadQuantile: 0.99,
 }
 
 function geometry(p: SeasonalParams, stepMs: number) {
@@ -203,7 +208,8 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
           }
           const expected = base + level
           const rb = robust(resBuf)
-          const sd = spreadFloor(rb.sigma, expected, p.minSpread)
+          const q = p.spread === 'quantile' ? Math.min(1, Math.max(0.5, p.spreadQuantile)) : 0
+          const sd = spreadFloor(q > 0 ? quantileSpread(resBuf, rb.median, q) : rb.sigma, expected, p.minSpread)
           const diff = x - expected
           const score = finiteScore(Math.abs(diff) / sd)
           const anomalous = score > p.k && Math.abs(diff) >= p.minDeviation && sideOk(p.direction, diff)
@@ -222,8 +228,8 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
               referenceLabel: `the ${blendWord} of the ${phase} ${span}${levelText}`,
               deviations: score,
               spread: sd,
-              spreadLabel: `1.4826 × MAD of the residuals over the last ${duration(Math.max(1, g.Rr - 1) * stepMs)}`,
-              spreadWord: 'robust standard deviations',
+              spreadLabel: q > 0 ? `${fmt(100 * q)}th percentile of |residual − median residual| over the last ${duration(Math.max(1, g.Rr - 1) * stepMs)}` : `1.4826 × MAD of the residuals over the last ${duration(Math.max(1, g.Rr - 1) * stepMs)}`,
+              spreadWord: q > 0 ? `times the ${fmt(100 * q)}th-percentile residual,` : 'robust standard deviations',
               at: ts,
               unit: p.unit,
               facts: { seasonsUsed: vj.length, seasons: g.seasons, periodMs: p.periodMs, seasonalBaseline: base, levelCorrection: level, residuals: resBuf.length },

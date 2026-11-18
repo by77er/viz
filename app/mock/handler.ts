@@ -129,7 +129,7 @@ function queryText(params: URLSearchParams): string {
   return q
 }
 
-/** Brackets open at once, outside quoted strings: the part of the real engine's depth count a parser reaches first. */
+/** Brackets open at once, outside quoted strings, up to one past the limit: the part of the real engine's depth count a parser reaches first. */
 function nestingDepth(q: string): number {
   let depth = 0
   let max = 0
@@ -140,7 +140,11 @@ function nestingDepth(q: string): number {
       if (c === '\\') i++
       else if (c === quote) quote = ''
     } else if (c === '"' || c === "'" || c === '`') quote = c
-    else if (c === '(' || c === '[' || c === '{') max = Math.max(max, ++depth)
+    // The real engine stops counting at the first level past the limit.
+    else if (c === '(' || c === '[' || c === '{') {
+      max = Math.max(max, ++depth)
+      if (max > MAX_DEPTH) return max
+    }
     else if (c === ')' || c === ']' || c === '}') depth--
   }
   return max

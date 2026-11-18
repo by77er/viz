@@ -35,12 +35,6 @@
 5-new-monitor-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 25 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
 5-new-monitor-error-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 5-new-monitor-many-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
-6-investigation-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
-6-investigation-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
-6-investigation-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 32 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-6-investigation-confirmed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 31 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-6-investigation-running-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
-6-investigation-failed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 34 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
 7-proposed-change-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 7-proposed-change-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
 7-proposed-change-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 16 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
@@ -65,12 +59,18 @@
 10-logs-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
 10-logs-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 20 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
 10-logs-error-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
-11-notification-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
-11-notification-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
-11-notification-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 6 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-11-notification-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 7 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-11-notification-ack-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 12-routes-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 12-routes-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
 12-routes-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 13 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
 12-routes-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 14 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+6-investigation-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+6-investigation-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+6-investigation-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 32 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+6-investigation-confirmed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 31 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+6-investigation-running-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+6-investigation-failed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 34 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+11-notification-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+11-notification-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
+11-notification-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 7 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+11-notification-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 8 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+11-notification-ack-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0

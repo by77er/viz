@@ -61,6 +61,32 @@ export function median(values: ArrayLike<number>, from = 0, to = values.length):
   return medianInPlace(a, n)
 }
 
+/** The q-quantile (lower order statistic, index floor(q·(n−1))) of a[0..n), reordering a. */
+export function quantileInPlace(a: Float64Array, n: number, q: number): number {
+  if (n === 0) return NaN
+  const k = Math.min(n - 1, Math.max(0, Math.floor(q * (n - 1))))
+  return select(a, n, k)
+}
+
+/**
+ * Tail-aware spread: the q-quantile of |x − median|, with the largest deviation as fallback when
+ * that is 0. Unlike 1.4826·MAD it describes the tail, so on heavy-tailed series routine spikes
+ * set the scale instead of scoring 20+ robust σ each (measured on NAB; README).
+ */
+export function quantileSpread(values: ArrayLike<number>, median: number, q: number): number {
+  const a = buf(values.length)
+  let n = 0, max = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]!
+    if (!Number.isFinite(v)) continue
+    const d = Math.abs(v - median)
+    a[n++] = d
+    if (d > max) max = d
+  }
+  const s = quantileInPlace(a, n, q)
+  return s > 0 ? s : max
+}
+
 /** Median of a[0..n), reordering a. */
 export function medianInPlace(a: Float64Array, n: number): number {
   if (n === 0) return NaN

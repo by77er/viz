@@ -170,8 +170,11 @@ impl Cell {
         match (self, o) {
             (Cell::Sum(a), Cell::Sum(b)) => a.merge(b),
             (Cell::Avg(n, a), Cell::Avg(m, b)) => {
-                *n += m;
-                a.merge(b)
+                let (x, y) = (a.mean(*n), b.mean(*m));
+                *a = ExactSum::default();
+                a.add(x);
+                a.add(y);
+                *n = 2;
             }
             (Cell::Count(n), Cell::Count(m)) => *n += m,
             (Cell::Extreme(a), Cell::Extreme(b)) => *a = if op == AggOp::Min { canon_min(*a, *b) } else { canon_max(*a, *b) },
