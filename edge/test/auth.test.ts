@@ -36,6 +36,11 @@ describe('authentication', () => {
       expect(text).not.toContain(secret!)
       expect(text).not.toContain(keyId!)
     }
+    // Unreadable or incomplete key records authenticate nobody (and are not a 500).
+    for (const [id, stored] of [['corrupt1', '{oops'], ['corrupt2', JSON.stringify({ tenant, scopes: ['write'] })], ['corrupt3', JSON.stringify({ tenant: '', secretSha256: await sha256Hex(secret!), scopes: ['write'] })]] as const) {
+      await env.CONFIG.put(`key:${id}${keyId}`, stored)
+      expect((await raw(`Bearer viz_${id}${keyId}_${secret}`)).status).toBe(401)
+    }
     // OTLP gets the same answers.
     expect((await call('/v1/metrics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(401)
     expect((await postOtlp(`${key}x`, '{}', 'application/json')).status).toBe(401)

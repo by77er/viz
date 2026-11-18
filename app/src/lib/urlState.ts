@@ -47,6 +47,15 @@ export function parseExploreSearch(raw: Record<string, unknown>): ExploreSearch 
   }
 }
 
+/** Only the fields that differ from the defaults. */
+export function withoutDefaults(s: ExploreSearch): Partial<ExploreSearch> {
+  const out: Record<string, string> = {}
+  for (const key of Object.keys(DEFAULT_SEARCH) as (keyof ExploreSearch)[]) {
+    if (s[key] !== DEFAULT_SEARCH[key]) out[key] = s[key]
+  }
+  return out as Partial<ExploreSearch>
+}
+
 /** Plain `URLSearchParams` form; defaults are omitted to keep links short. */
 export function exploreSearchToParams(s: ExploreSearch): URLSearchParams {
   const p = new URLSearchParams()

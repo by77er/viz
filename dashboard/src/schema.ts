@@ -19,6 +19,25 @@ export const DURATION_PATTERN = '^([0-9]+(ms|s|m|h|d|w|y))+$'
 export const TIME_PATTERN =
   '^(now(-([0-9]+(ms|s|m|h|d|w|y))+)?|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2}))$'
 
+/**
+ * Common wrong spellings of enum values → the valid value. Used only to
+ * write better "did you mean" suggestions; never to accept the value.
+ */
+export const ENUM_ALIASES: Record<string, string> = {
+  seconds: 's', second: 's', sec: 's', secs: 's', milliseconds: 'ms', millis: 'ms', millisecond: 'ms',
+  microseconds: 'us', micros: 'us', 'µs': 'us', nanoseconds: 'ns', nanos: 'ns',
+  '%': 'percent', percentage: 'percent', pct: 'percent', percentunit: 'ratio', fraction: 'ratio',
+  byte: 'bytes', b: 'bytes', decbytes: 'bytes', bit: 'bits', 'b/s': 'bytes/s', bps: 'bits/s', 'bytes/sec': 'bytes/s', 'bits/sec': 'bits/s',
+  rps: 'req/s', reqps: 'req/s', qps: 'req/s', 'requests/s': 'req/s', 'req/sec': 'req/s', ops: 'ops/s', eps: 'events/s', 'err/s': 'errors/s',
+  short: 'none', '1': 'none', dimensionless: 'none', unitless: 'none', number: 'none',
+  cpu: 'cores', core: 'cores', vcpu: 'cores', '°c': 'celsius', c: 'celsius', '$': 'usd', dollars: 'usd', currencyusd: 'usd',
+  prometheus: 'promql', prom: 'promql', loki: 'logql', logs: 'logql', tempo: 'traceql', traces: 'traceql',
+  graph: 'timeseries', line: 'timeseries', lines: 'timeseries', chart: 'timeseries', singlestat: 'stat', gauge: 'stat', number_panel: 'stat',
+  markdown: 'text', note: 'text', histogram: 'heatmap',
+  warning: 'warn', critical: 'crit', error: 'crit', avg: 'mean', average: 'mean', latest: 'last', current: 'last', total: 'sum',
+  row: 'rows', auto: 'rows', sections: 'rows',
+}
+
 export type JsonSchema = { readonly [k: string]: unknown }
 
 const str = (min: number, max: number, description?: string) => ({

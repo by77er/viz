@@ -16,7 +16,7 @@ interface CommandsContextValue {
   register: (owner: string, commands: Command[]) => void
   unregister: (owner: string) => void
   paletteOpen: boolean
-  setPaletteOpen: (open: boolean) => void
+  setPaletteOpen: (open: boolean | ((prev: boolean) => boolean)) => void
 }
 
 const CommandsContext = createContext<CommandsContextValue | null>(null)

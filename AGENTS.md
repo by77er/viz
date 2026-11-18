@@ -45,6 +45,32 @@ finished) belong in each component's README and in `design/`, not here.
   who has not seen the reasoning; findings and dispositions go in `design/REVIEW.md`.
 - Report what failed and what was skipped as plainly as what passed.
 
+## Design changes
+
+Anything that alters what a person sees or how they operate the interface is a design
+change. The ground truth is `design-system/`: `project/tokens.json` for values,
+`project/README.md` for rules, `project/method.md` for how to design, `project/review.md`
+for the review rubric.
+
+1. **Design against the system.** Token values only; component classes before new
+   components; follow the build order in `method.md` (content, then type and space, then
+   structure, then colour last, then states, then the second theme, then the text form).
+2. **Run the checks.** `node design-system/tools/check.mjs <changed paths>` must pass: no
+   literal colours, and contrast holds if tokens changed.
+3. **Capture before and after images** with `design-system/tools/shots.mjs`: every changed
+   view, both themes, 1440 and 400 px wide, same data and state. Commit the composed images
+   under `design-system/reviews/<change>/compare/` and reference them by commit in the pull
+   request description. A design pull request without before/after images is not ready.
+4. **Get an expert design review before merging.** The reviewer did not write the change
+   and is not given the author's reasoning: they get the images, the running view and the
+   design system, and return approve, approve with changes, or reject, with findings tied
+   to the rubric. Record the verdict in the pull request.
+5. **Merge.** Once the verdict is approve and checks pass, the change may be merged
+   without waiting for the owner. Blockers and majors are fixed and re-imaged first.
+6. **Change the system in the same pull request** when a change needs a new token or
+   component. `tokens.json` is the single source; `dist/` is generated and never edited.
+   Republish the reference after the system changes.
+
 ## Durable Objects
 
 - Storage is the only source of truth. Any in-memory state must be rebuilt from SQLite in
@@ -74,4 +100,5 @@ finished) belong in each component's README and in `design/`, not here.
 
 - `node_modules/`, build output, `target*/` and generated benchmark data are ignored; do not
   commit them. Lockfiles are committed.
+- Changes reach `main` through pull requests. Use `.github/pull_request_template.md`.
 - One logical change per commit, with a message that says what changed and why.

@@ -2,7 +2,7 @@ import { createRootRoute, createRoute, createRouter, redirect } from '@tanstack/
 import { AppShell } from './shell/AppShell'
 import { HelpPage } from './shell/HelpPage'
 import { ExplorePage } from './explore/ExplorePage'
-import { parseExploreSearch, parseSearchString, stringifySearch, type ExploreSearch } from './lib/urlState'
+import { parseExploreSearch, parseSearchString, stringifySearch, withoutDefaults, type ExploreSearch } from './lib/urlState'
 
 const rootRoute = createRootRoute({ component: AppShell })
 
@@ -17,7 +17,8 @@ const indexRoute = createRoute({
 export const exploreRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/explore',
-  validateSearch: (raw: Record<string, unknown>): ExploreSearch => parseExploreSearch(raw),
+  // Validated, with defaults dropped, so links elsewhere need not spell out every field.
+  validateSearch: (raw: Record<string, unknown>): Partial<ExploreSearch> => withoutDefaults(parseExploreSearch(raw)),
   component: ExplorePage,
 })
 

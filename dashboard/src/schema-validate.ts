@@ -11,7 +11,7 @@
  * implementation accept and reject the same documents.
  */
 import { canonicalJson, closest, hasOwn, isObject, listOf, pointer, slugId } from './json.ts'
-import { ID_PATTERN, type JsonSchema } from './schema.ts'
+import { ENUM_ALIASES, ID_PATTERN, type JsonSchema } from './schema.ts'
 import type { Issue } from './types.ts'
 
 type S = Record<string, unknown>
@@ -50,6 +50,14 @@ export function derefSchema(root: JsonSchema, s: S): S {
     cur = next
   }
   return cur
+}
+
+/** The valid option a wrong value most plausibly meant: a known alias, else the nearest spelling. */
+function nearest(value: unknown, options: string[]): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const alias = ENUM_ALIASES[value.toLowerCase()]
+  if (alias !== undefined && Object.prototype.hasOwnProperty.call(ENUM_ALIASES, value.toLowerCase()) && options.includes(alias)) return alias
+  return closest(value, options)
 }
 
 /** What a schema accepts, in a few words; used in "expected …" messages. */
@@ -92,7 +100,7 @@ export function validateAgainst(root: JsonSchema, schema: S, value: unknown, pat
   }
   if (Array.isArray(s.enum) && !s.enum.includes(value)) {
     const options = s.enum.map(String)
-    const near = typeof value === 'string' ? closest(value, options) : undefined
+    const near = nearest(value, options)
     out.push({
       path: at,
       code: 'enum',
@@ -208,7 +216,7 @@ function oneOf(root: JsonSchema, branches: S[], value: unknown, path: (string | 
       return
     }
     const options = disc.values.map(String)
-    const near = typeof value.kind === 'string' ? closest(value.kind, options) : undefined
+    const near = nearest(value.kind, options)
     out.push({
       path: pointer([...path, 'kind']),
       code: 'enum',

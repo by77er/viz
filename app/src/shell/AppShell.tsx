@@ -46,7 +46,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const { pref, cycle, setPref } = useTheme()
   const { settings } = useSettings()
-  const { setPaletteOpen, paletteOpen } = useCommandsContext()
+  const { setPaletteOpen } = useCommandsContext()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const info = useBackendInfo()
 
@@ -54,12 +54,13 @@ export function AppShell() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        setPaletteOpen(!paletteOpen)
+        // Functional update: the listener must not depend on a possibly stale closure.
+        setPaletteOpen((open) => !open)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [paletteOpen, setPaletteOpen])
+  }, [setPaletteOpen])
 
   useCommands(
     'shell',
@@ -104,8 +105,8 @@ export function AppShell() {
         <button
           className="btn btn-ghost hidden gap-2 text-fg-3 sm:inline-flex"
           onClick={() => setPaletteOpen(true)}
-          aria-label="Open command palette"
           aria-keyshortcuts="Control+K Meta+K"
+          title="Open the command palette"
         >
           <span>Commands</span>
           <span className="kbd">{MOD}</span>

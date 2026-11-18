@@ -71,7 +71,15 @@ function parseRecord(v: unknown): KeyRecord | null {
 async function lookup(kv: KVNamespace, keyId: string, now: number): Promise<KeyRecord | null> {
   const hit = cache.get(keyId)
   if (hit && hit.expires > now) return hit.record
-  const record = parseRecord(await kv.get(`key:${keyId}`, 'json'))
+  let record: KeyRecord | null = null
+  const stored = await kv.get(`key:${keyId}`)
+  if (stored !== null) {
+    try {
+      record = parseRecord(JSON.parse(stored))
+    } catch {
+      record = null // an unreadable record authenticates nobody
+    }
+  }
   if (cache.size >= MAX_CACHE) cache.clear()
   cache.set(keyId, { record, expires: now + (record ? HIT_TTL_MS : MISS_TTL_MS) })
   return record

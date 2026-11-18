@@ -98,9 +98,11 @@ export function parsePointer(p: unknown): string[] | null {
 
 // ---- suggestions ----
 
+/** Edit distance where an adjacent transposition ("evn" → "env") costs 1 (optimal string alignment). */
 export function levenshtein(a: string, b: string): number {
   if (a === b) return 0
   const n = b.length
+  let prev2: number[] = []
   let prev = new Array<number>(n + 1)
   for (let j = 0; j <= n; j++) prev[j] = j
   for (let i = 1; i <= a.length; i++) {
@@ -108,8 +110,13 @@ export function levenshtein(a: string, b: string): number {
     cur[0] = i
     for (let j = 1; j <= n; j++) {
       const sub = prev[j - 1]! + (a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1)
-      cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, sub)
+      let best = Math.min(prev[j]! + 1, cur[j - 1]! + 1, sub)
+      if (i > 1 && j > 1 && a.charCodeAt(i - 1) === b.charCodeAt(j - 2) && a.charCodeAt(i - 2) === b.charCodeAt(j - 1)) {
+        best = Math.min(best, prev2[j - 2]! + 1)
+      }
+      cur[j] = best
     }
+    prev2 = prev
     prev = cur
   }
   return prev[n]!

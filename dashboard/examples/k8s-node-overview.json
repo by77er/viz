@@ -1,0 +1,185 @@
+{
+  "apiVersion": "viz.dashboard/v1",
+  "metadata": {
+    "id": "k8s_node_overview",
+    "title": "Kubernetes node overview",
+    "intent": "For platform engineers. Answers: which nodes are under pressure (CPU, memory, disk, network), and is any node unschedulable or running out of pod capacity?",
+    "tags": ["kubernetes", "nodes", "capacity"]
+  },
+  "time": { "from": "now-6h", "to": "now", "refresh": "1m" },
+  "variables": {
+    "cluster": {
+      "kind": "query",
+      "label": "Cluster",
+      "query": { "lang": "promql", "expr": "label_values(kube_node_info, cluster)" }
+    },
+    "node": {
+      "kind": "query",
+      "label": "Node",
+      "query": { "lang": "promql", "expr": "label_values(kube_node_info{cluster=~\"$cluster\"}, node)" },
+      "multi": true,
+      "includeAll": true,
+      "default": "*"
+    }
+  },
+  "queries": {
+    "nodes_ready": {
+      "lang": "promql",
+      "expr": "sum(kube_node_status_condition{cluster=~\"$cluster\",condition=\"Ready\",status=\"true\"})"
+    },
+    "nodes_not_ready": {
+      "lang": "promql",
+      "expr": "sum(kube_node_status_condition{cluster=~\"$cluster\",condition=\"Ready\",status=\"true\"} == 0) or vector(0)"
+    },
+    "cpu_used": {
+      "lang": "promql",
+      "expr": "1 - avg by (node) (rate(node_cpu_seconds_total{cluster=~\"$cluster\",node=~\"$node\",mode=\"idle\"}[$__rate]))",
+      "legend": "{{node}}"
+    },
+    "mem_used": {
+      "lang": "promql",
+      "expr": "1 - (node_memory_MemAvailable_bytes{cluster=~\"$cluster\",node=~\"$node\"} / node_memory_MemTotal_bytes{cluster=~\"$cluster\",node=~\"$node\"})",
+      "legend": "{{node}}"
+    },
+    "disk_used": {
+      "lang": "promql",
+      "expr": "1 - (node_filesystem_avail_bytes{cluster=~\"$cluster\",node=~\"$node\",mountpoint=\"/\"} / node_filesystem_size_bytes{cluster=~\"$cluster\",node=~\"$node\",mountpoint=\"/\"})",
+      "legend": "{{node}}"
+    },
+    "load_per_core": {
+      "lang": "promql",
+      "expr": "node_load5{cluster=~\"$cluster\",node=~\"$node\"} / on (node) count by (node) (node_cpu_seconds_total{cluster=~\"$cluster\",node=~\"$node\",mode=\"idle\"})",
+      "legend": "{{node}}"
+    },
+    "net_rx": {
+      "lang": "promql",
+      "expr": "sum by (node) (rate(node_network_receive_bytes_total{cluster=~\"$cluster\",node=~\"$node\",device!~\"lo|veth.*\"}[$__rate]))",
+      "legend": "{{node}} rx"
+    },
+    "net_tx": {
+      "lang": "promql",
+      "expr": "sum by (node) (rate(node_network_transmit_bytes_total{cluster=~\"$cluster\",node=~\"$node\",device!~\"lo|veth.*\"}[$__rate]))",
+      "legend": "{{node}} tx"
+    },
+    "pods_ratio": {
+      "lang": "promql",
+      "expr": "sum by (node) (kube_pod_info{cluster=~\"$cluster\",node=~\"$node\"}) / sum by (node) (kube_node_status_allocatable{cluster=~\"$cluster\",node=~\"$node\",resource=\"pods\"})",
+      "legend": "{{node}}"
+    },
+    "pod_restarts": {
+      "lang": "promql",
+      "expr": "sum by (node) (increase(kube_pod_container_status_restarts_total{cluster=~\"$cluster\"}[$__range]) * on (pod, namespace) group_left(node) kube_pod_info{cluster=~\"$cluster\",node=~\"$node\"})",
+      "instant": true
+    },
+    "cpu_used_now": {
+      "lang": "promql",
+      "expr": "1 - avg by (node) (rate(node_cpu_seconds_total{cluster=~\"$cluster\",node=~\"$node\",mode=\"idle\"}[$__rate]))",
+      "instant": true
+    },
+    "mem_used_now": {
+      "lang": "promql",
+      "expr": "1 - (node_memory_MemAvailable_bytes{cluster=~\"$cluster\",node=~\"$node\"} / node_memory_MemTotal_bytes{cluster=~\"$cluster\",node=~\"$node\"})",
+      "instant": true
+    }
+  },
+  "panels": {
+    "ready_nodes": {
+      "kind": "stat",
+      "title": "Ready nodes",
+      "description": "Nodes reporting the Ready condition. Compare with the expected node count for the cluster; a drop means lost capacity.",
+      "unit": "count",
+      "queries": ["nodes_ready"],
+      "thresholds": [{ "below": 3, "level": "warn", "label": "below minimum pool size" }]
+    },
+    "not_ready_nodes": {
+      "kind": "stat",
+      "title": "Nodes not ready",
+      "description": "Nodes whose Ready condition is false or unknown. Any value above zero needs a look; pods there will be evicted.",
+      "unit": "count",
+      "queries": ["nodes_not_ready"],
+      "thresholds": [{ "above": 0, "level": "warn" }, { "above": 2, "level": "crit" }]
+    },
+    "cpu": {
+      "kind": "timeseries",
+      "title": "CPU utilisation by node",
+      "description": "Fraction of CPU time not idle, per node. Sustained values above 0.85 mean the node is saturated and pods are throttled.",
+      "unit": "ratio",
+      "queries": ["cpu_used"],
+      "options": { "yMin": 0, "yMax": 1, "maxSeries": 50 },
+      "thresholds": [{ "above": 0.85, "level": "warn" }, { "above": 0.95, "level": "crit" }]
+    },
+    "memory": {
+      "kind": "timeseries",
+      "title": "Memory utilisation by node",
+      "description": "Fraction of memory not available, per node. Above 0.9 the kubelet starts evicting pods.",
+      "unit": "ratio",
+      "queries": ["mem_used"],
+      "options": { "yMin": 0, "yMax": 1, "maxSeries": 50 },
+      "thresholds": [{ "above": 0.8, "level": "warn" }, { "above": 0.9, "level": "crit" }]
+    },
+    "disk": {
+      "kind": "timeseries",
+      "title": "Root disk utilisation by node",
+      "description": "Fraction of the root filesystem in use. Above 0.85 the kubelet reports DiskPressure and stops scheduling pods.",
+      "unit": "ratio",
+      "queries": ["disk_used"],
+      "options": { "yMin": 0, "yMax": 1 },
+      "thresholds": [{ "above": 0.75, "level": "warn" }, { "above": 0.85, "level": "crit" }]
+    },
+    "load": {
+      "kind": "timeseries",
+      "title": "Load per core",
+      "description": "5-minute load average divided by core count. Above 1 means runnable work is queueing; it usually precedes CPU saturation.",
+      "unit": "none",
+      "queries": ["load_per_core"],
+      "thresholds": [{ "above": 1, "level": "warn" }, { "above": 2, "level": "crit" }]
+    },
+    "network": {
+      "kind": "timeseries",
+      "title": "Network throughput by node",
+      "description": "Bytes received and sent per second on physical interfaces. One node far above its peers usually hosts a noisy pod.",
+      "unit": "bytes/s",
+      "queries": ["net_rx", "net_tx"]
+    },
+    "pod_capacity": {
+      "kind": "timeseries",
+      "title": "Pod slots used by node",
+      "description": "Running pods as a fraction of the node's allocatable pod count. At 1 the scheduler can place nothing more on the node.",
+      "unit": "ratio",
+      "queries": ["pods_ratio"],
+      "options": { "yMin": 0, "yMax": 1 },
+      "thresholds": [{ "above": 0.9, "level": "warn" }]
+    },
+    "node_table": {
+      "kind": "table",
+      "title": "Nodes at a glance",
+      "description": "Current CPU and memory utilisation and container restarts over the range, per node. Sort by restarts to find unhealthy nodes.",
+      "queries": ["cpu_used_now", "mem_used_now", "pod_restarts"],
+      "options": {
+        "columns": [
+          { "query": "cpu_used_now", "title": "CPU", "unit": "ratio" },
+          { "query": "mem_used_now", "title": "Memory", "unit": "ratio" },
+          { "query": "pod_restarts", "title": "Restarts", "unit": "count" }
+        ],
+        "sortBy": "pod_restarts",
+        "sortDir": "desc",
+        "limit": 50
+      }
+    }
+  },
+  "layout": {
+    "kind": "grid",
+    "columns": 24,
+    "items": [
+      { "panel": "ready_nodes", "x": 0, "y": 0, "w": 4, "h": 4 },
+      { "panel": "not_ready_nodes", "x": 4, "y": 0, "w": 4, "h": 4 },
+      { "panel": "node_table", "x": 8, "y": 0, "w": 16, "h": 8 },
+      { "panel": "load", "x": 0, "y": 4, "w": 8, "h": 4 },
+      { "panel": "cpu", "x": 0, "y": 8, "w": 12, "h": 8 },
+      { "panel": "memory", "x": 12, "y": 8, "w": 12, "h": 8 },
+      { "panel": "disk", "x": 0, "y": 16, "w": 8, "h": 8 },
+      { "panel": "network", "x": 8, "y": 16, "w": 8, "h": 8 },
+      { "panel": "pod_capacity", "x": 16, "y": 16, "w": 8, "h": 8 }
+    ]
+  }
+}

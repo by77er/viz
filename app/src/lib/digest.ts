@@ -121,6 +121,7 @@ const ARROW: Record<Trend, string> = { rising: 'rising', falling: 'falling', fla
 function pct(change: number | null): string {
   if (change == null) return ''
   const p = change * 100
+  if (Math.abs(p) < 0.05) return ''
   const abs = Math.abs(p)
   return ` ${p >= 0 ? '+' : '-'}${abs >= 10 ? abs.toFixed(0) : abs.toFixed(1)}%`
 }
@@ -148,7 +149,7 @@ export function renderDigest(d: Digest, opts: RenderOptions): string {
   )
   const max = opts.maxSeries ?? 50
   // Most significant first: by largest absolute last value.
-  const ordered = [...d.series].sort((a, b) => Math.abs(b.last ?? -Infinity) - Math.abs(a.last ?? -Infinity))
+  const ordered = [...d.series].sort((a, b) => (b.last == null ? -1 : Math.abs(b.last)) - (a.last == null ? -1 : Math.abs(a.last)))
   for (const s of ordered.slice(0, max)) lines.push(`- ${renderSeriesLine(s, opts.format)}`)
   if (ordered.length > max) lines.push(`- … ${ordered.length - max} more series not shown`)
   return lines.join('\n')

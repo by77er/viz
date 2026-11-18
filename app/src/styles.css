@@ -157,6 +157,7 @@ body {
   outline-offset: 1px;
 }
 
+@layer components {
 /* Controls */
 .btn {
   display: inline-flex;
@@ -290,6 +291,7 @@ select.input {
   background: var(--surface);
   box-shadow: inset 0 -1px 0 var(--line);
   padding: 0;
+  text-align: left;
   font-weight: 600;
   color: var(--fg-3);
   white-space: nowrap;
@@ -329,6 +331,8 @@ select.input {
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
 }
 
 /* Loading bar: kept subtle; previous data stays visible underneath. */

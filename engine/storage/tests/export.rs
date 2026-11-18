@@ -16,7 +16,7 @@ fn export_files_for_independent_reader() {
             series.push(labels(&[("__name__", m), ("instance", &format!("host-{i}:9100")), ("job", if i % 2 == 0 { "api" } else { "db" })]));
         }
     }
-    // 130,000 arrivals in two batches, shuffled by a fixed LCG, with duplicates and NaNs.
+    // 320,000 arrivals in four batches, shuffled by a fixed LCG, with duplicates and NaNs.
     let mut state = 0x9e3779b97f4a7c15u64;
     let mut next = || {
         state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -24,11 +24,11 @@ fn export_files_for_independent_reader() {
     };
     let mut batches = Vec::new();
     let mut truth: BTreeMap<(String, i64, i64), u64> = BTreeMap::new();
-    for _ in 0..2 {
-        let rows: Vec<Row> = (0..65_000)
+    for _ in 0..4 {
+        let rows: Vec<Row> = (0..80_000)
             .map(|_| {
                 let s = (next() % 40) as u32;
-                let ts = MID + (next() % 4000) as i64 * 15_000 % 86_400_000;
+                let ts = MID + (next() % 5760) as i64 * 15_000;
                 let bits = match next() % 50 {
                     0 => STALE_NAN_BITS,
                     1 => 0x7ff8_0000_0000_0001,
@@ -43,7 +43,7 @@ fn export_files_for_independent_reader() {
         }
         batches.push(viz_storage::batch::encode(&series, &rows).unwrap());
     }
-    let files = encode_segment(&[&batches[0], &batches[1]]).unwrap();
+    let files = encode_segment(&batches.iter().map(|b| b.as_slice()).collect::<Vec<_>>()).unwrap();
     assert_eq!(files.len(), 2);
     assert_eq!((files[0].table, files[1].table), (Table::MetricSamples, Table::MetricSeries));
     assert_eq!(files[0].rows as usize, truth.len());

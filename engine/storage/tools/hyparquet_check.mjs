@@ -36,7 +36,7 @@ const check = (what, got, want) => {
   const file = load('metric_samples.parquet')
   const md = parquetMetadata(file)
   const rows = await parquetReadObjects({ file })
-  let sid = 0n, ts = 0n, xor = 0n, nans = 0, stale = 0, nameBytes = 0, sorted = true
+  let sid = 0n, ts = 0n, xor = 0n, nans = 0, stale = 0, quieted = 0, nameBytes = 0, sorted = true
   let prev = null
   for (const r of rows) {
     sid = (sid + BigInt.asUintN(64, r.series_id)) & M
@@ -46,6 +46,7 @@ const check = (what, got, want) => {
     if (Number.isNaN(r.value)) {
       nans++
       if (u64[0] === 0x7ff0000000000002n) stale++
+      if (u64[0] === 0x7ff8000000000002n) quieted++
     } else {
       xor ^= u64[0]
     }
@@ -69,7 +70,7 @@ const check = (what, got, want) => {
   check('samples first ts', rows[0].ts, e.first_ts)
   check('samples sorted by (metric_name, series_id, ts), unique', sorted, true)
   // JavaScript numbers may canonicalise NaN payloads, so this one is reported, not enforced.
-  console.log(`info staleness-marker payloads seen through JS numbers: ${stale} of ${e.stale_count}`)
+  console.log(`info staleness markers (0x7ff0000000000002) of ${e.stale_count} written: ${stale} seen bit-exact through JS numbers, ${quieted} seen quieted to 0x7ff8000000000002`)
   const encodings = md.row_groups[0].columns.map((c) => `${c.meta_data.path_in_schema.join('.')}=${c.meta_data.encodings.join('+')}/${c.meta_data.codec}`)
   console.log(`info encodings: ${encodings.join(' ')}`)
 }

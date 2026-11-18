@@ -374,7 +374,8 @@ class Parser {
     const args: Node[] = []
     while (!this.isOp(')')) {
       args.push(this.expr())
-      if (!this.isOp(')')) this.expect(',')
+      if (!this.isOp(')') && !this.isOp(',')) this.fail(this.peek(), `unexpected ${this.describe(this.peek())}, expected ")"`)
+      if (this.isOp(',')) this.next()
     }
     this.expect(')')
     if (!by && !without) grouping()
@@ -393,7 +394,8 @@ class Parser {
     const args: Node[] = []
     while (!this.isOp(')')) {
       args.push(this.expr())
-      if (!this.isOp(')')) this.expect(',')
+      if (!this.isOp(')') && !this.isOp(',')) this.fail(this.peek(), `unexpected ${this.describe(this.peek())}, expected ")"`)
+      if (this.isOp(',')) this.next()
     }
     this.expect(')')
     const [min, max] = isRange ? [1, 1] : arity!

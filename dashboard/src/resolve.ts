@@ -8,11 +8,11 @@
  * unsubstituted reference so it cannot run (fail closed).
  */
 import { BUILTIN_VARIABLES, substitute, type Binding, type BuiltinVariable } from './expr.ts'
-import { hasOwn, isObject, pointer } from './json.ts'
+import { hasOwn, pointer } from './json.ts'
 import { revisionOf } from './revision.ts'
 import { DURATION_PATTERN } from './schema.ts'
 import type { Dashboard, Fragment, Issue, Layout, Metadata, Panel, Query, QueryLang, TimeRange, Variable } from './types.ts'
-import { argumentRef } from './validate.ts'
+import { argumentRef, classifyRowItem } from './validate.ts'
 
 export interface ResolveOptions {
   /** Selected values by variable name. Omitted variables take their default. `"*"` means all. */
@@ -177,21 +177,17 @@ export function resolve(spec: Dashboard, opts: ResolveOptions = {}): ResolvedDas
     }
     const rows = layout.rows.map((row, r) => {
       const items: ResolvedRowItem[] = []
-      row.items.forEach((item, i) => {
+      row.items.forEach((raw, i) => {
         const at = [...base, 'rows', r, 'items', i]
-        if (typeof item === 'string') {
-          if (hasOwn(known, item)) {
-            items.push({ panel: prefix + item })
-            order.push(prefix + item)
+        const c = classifyRowItem(raw)
+        if (!c) return
+        if (c.type === 'panel') {
+          if (hasOwn(known, c.panel)) {
+            items.push({ panel: prefix + c.panel, ...(c.span !== undefined ? { span: c.span } : {}) })
+            order.push(prefix + c.panel)
           }
-        } else if (!isObject(item)) {
-          return
-        } else if ('panel' in item) {
-          if (hasOwn(known, item.panel)) {
-            items.push({ panel: prefix + item.panel, ...(item.span !== undefined ? { span: item.span } : {}) })
-            order.push(prefix + item.panel)
-          }
-        } else if ('fragment' in item) {
+        } else if (c.type === 'use') {
+          const item = c.use
           const frag: Fragment | undefined = hasOwn(fragments, item.fragment) ? fragments[item.fragment] : undefined
           if (!frag || stack.includes(item.fragment) || stack.length >= 16) {
             issues.push({ path: pointer(at), code: 'fragment-not-expanded', message: `Fragment "${item.fragment}" ${frag ? 'is part of a reference cycle' : 'does not exist'}; the instance "${item.as}" was skipped.`, suggestion: 'Run validate() on the spec.' })
@@ -219,7 +215,7 @@ export function resolve(spec: Dashboard, opts: ResolveOptions = {}): ResolvedDas
           const sub = expandLayout(frag.layout, p, frag.panels, inner, [...fbase, 'layout'], [...stack, item.fragment])
           items.push({ layout: sub, instance: p.slice(0, -1), ...(item.span !== undefined ? { span: item.span } : {}) })
         } else {
-          items.push({ layout: expandLayout(item, prefix, known, scope, at, stack) })
+          items.push({ layout: expandLayout(c.layout, prefix, known, scope, at, stack) })
         }
       })
       return { ...(row.title !== undefined ? { title: row.title } : {}), ...(row.height !== undefined ? { height: row.height } : {}), items }

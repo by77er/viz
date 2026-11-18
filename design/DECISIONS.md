@@ -194,3 +194,21 @@ publisher's backlog is the ledgers' R2 change logs; it applies net changes, so f
 and compacted away before publication are never published. A stalled publisher delays
 external readers and physical deletes, nothing else. Publication lag has its own alert.
 Managed-catalog publication is deferred until there is a concrete analytics or export need.
+
+## D16. A design system is the ground truth for the interface
+
+**Decision (project owner, 2026-11-18).** Design changes are reviewed against
+`design-system/` by an expert reviewer before merging, and pull requests show before and
+after images. Merging after an approving review does not need the owner, for now.
+
+**The system.** Neutral greys with no hue; four full-strength action colours (blue, red,
+green, yellow) that are the same in both themes and double as status marks beside a word;
+one serif family for interface and reading text and its monospace sibling for data; small
+radii, hairlines and a single shadow.
+
+**Why these choices.** A hue-free interface means colour on screen is always data, state
+or an action. A serif with an optical-size axis gives one voice from 12 to 44 px. Every
+text and control pairing is checked for contrast in both themes by
+`design-system/tools/check.mjs`, and the chart palette by a colour-vision validator.
+
+**Open.** No icon set; no React component package; the app does not use the system yet.

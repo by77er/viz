@@ -72,7 +72,7 @@ function lintPanels(panels: Record<string, Panel>, queries: Record<string, Query
     }
     if (panel.kind !== 'heatmap' && panel.thresholds && panel.thresholds.length > 1) {
       for (const dir of ['above', 'below'] as const) {
-        const ts = panel.thresholds.filter((t) => dir in t).map((t) => ({ v: (t as Record<string, number>)[dir]!, s: SEVERITY[t.level] }))
+        const ts = panel.thresholds.filter((t) => dir in t).map((t) => ({ v: (t as unknown as Record<string, number>)[dir]!, s: SEVERITY[t.level] }))
         const bad = ts.some((a) => ts.some((b) => a.s < b.s && (dir === 'above' ? a.v > b.v : a.v < b.v)))
         if (bad) out.push({ path: pointer([...p, 'thresholds']), code: 'threshold-order', message: `In "${pid}", a less severe "${dir}" threshold is harder to reach than a more severe one, so it can never be the reported state.`, suggestion: `Order levels so that warn is reached before crit.` })
       }

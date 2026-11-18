@@ -25,8 +25,10 @@ export interface PatchError {
 export type ApplyOpsResult = { ok: true; doc: unknown } | { ok: false; error: PatchError }
 
 class Fail extends Error {
-  constructor(message: string, readonly suggestion?: string) {
+  readonly suggestion?: string
+  constructor(message: string, suggestion?: string) {
     super(message)
+    if (suggestion !== undefined) this.suggestion = suggestion
   }
 }
 

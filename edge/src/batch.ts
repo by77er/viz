@@ -12,8 +12,8 @@ const FNV_PRIME = 0x100000001b3n
 
 /**
  * FNV-1a 64 exactly as the contract states it, with BigInt. This is the reference: the
- * hot path below computes the same function on two 32-bit halves (BigInt costs ~20x more
- * per byte) and the tests hold the two equal on random input.
+ * hot path below computes the same function on two 32-bit halves with integer arithmetic,
+ * inline with the copy of the label bytes, and the tests hold the two equal on random input.
  */
 export function fnv1a64(bytes: Uint8Array): bigint {
   let h = FNV_OFFSET
@@ -92,12 +92,15 @@ function validUtf8(buf: Uint8Array, s: number, e: number): boolean {
 /** Accumulates the validated series and rows of one request. */
 export class Collector {
   // Series table: encoded entries back to back in one arena.
-  private arena = new Uint8Array(1 << 16)
+  private arena: Uint8Array
   private arenaLen = 0
   readonly entryOff: number[] = []
   readonly entryLen: number[] = []
-  /** Routing key of each series (contracts/BATCH.md). */
-  readonly routeKey: string[] = []
+  /** Distinct routing keys of this request (contracts/BATCH.md), and which one each series has. */
+  readonly routes: string[] = []
+  readonly routeOf: number[] = []
+  private readonly routeBytes: Uint8Array[] = []
+  private readonly routeByHash = new Map<number, number>()
   private readonly byHash = new Map<number, number>()
   private readonly nextSameHash: number[] = []
   private order = new Int32Array(64)
@@ -117,7 +120,9 @@ export class Collector {
   private readonly minTs: number
   private readonly maxTs: number
 
-  constructor(readonly limits: Limits, now: number) {
+  /** `bodyBytes`: size of the decoded request, a good first guess for the series table. */
+  constructor(readonly limits: Limits, now: number, bodyBytes = 1 << 16) {
+    this.arena = new Uint8Array(Math.min(Math.max(bodyBytes, 1 << 12), 64 << 20))
     // Clamped to safe integers, so every accepted timestamp is an exact i64.
     this.minTs = Math.max(now - limits.acceptBackMs, Number.MIN_SAFE_INTEGER)
     this.maxTs = Math.min(now + limits.acceptAheadMs, Number.MAX_SAFE_INTEGER)
@@ -150,7 +155,7 @@ export class Collector {
    * `offs` holds four offsets into `buf` per label: name start, name end, value start,
    * value end. Returns the series index, or `-Reject` if the series is invalid.
    */
-  addSeries(buf: Uint8Array, offs: ArrayLike<number>, n: number): number {
+  addSeries(buf: Uint8Array, offs: Int32Array, n: number): number {
     const L = this.limits
     if (this.order.length < n) this.order = new Int32Array(Math.max(n, this.order.length * 2))
     const order = this.order
@@ -191,13 +196,18 @@ export class Collector {
     const start = this.arenaLen
     let p = start + 12
 
-    // FNV-1a 64 on two 32-bit halves, over `name 0 value 0`, while copying the entry.
-    let lo = 0x84222325
-    let hi = 0xcbf29ce4
+    // FNV-1a 64 over `name 0 value 0`, while copying the entry. The hash is kept as two
+    // 32-bit halves and multiplied by the prime 2^40 + 435 with integer operations only:
+    //   lo' = lo * 435 (low 32 bits);  hi' = hi * 435 + (lo << 8) + carry(lo * 435)
+    // where the carry out of the low half is computed from 16-bit limbs.
+    let lo = 0x84222325 | 0
+    let hi = 0xcbf29ce4 | 0
     let any = 0
     let hasName = false
-    let job = ''
-    let instance = ''
+    let jobS = 0
+    let jobE = 0
+    let instS = 0
+    let instE = 0
     for (let k = 0; k < m; k++) {
       const o = 4 * order[k]!
       const ns = offs[o]!
@@ -213,15 +223,13 @@ export class Collector {
         any |= c
         out[p++] = c
         lo ^= c
-        const t = (lo >>> 0) * 435
-        hi = (Math.imul(hi, 435) + (lo << 8) + ((t / 4294967296) | 0)) | 0
-        lo = t >>> 0
+        hi = (Math.imul(hi, 435) + (lo << 8) + (((lo >>> 16) * 435 + (((lo & 0xffff) * 435) >>> 16)) >>> 16)) | 0
+        lo = Math.imul(lo, 435)
       }
       {
         // The 0x00 after the name: xor with zero changes nothing, only multiply.
-        const t = (lo >>> 0) * 435
-        hi = (Math.imul(hi, 435) + (lo << 8) + ((t / 4294967296) | 0)) | 0
-        lo = t >>> 0
+        hi = (Math.imul(hi, 435) + (lo << 8) + (((lo >>> 16) * 435 + (((lo & 0xffff) * 435) >>> 16)) >>> 16)) | 0
+        lo = Math.imul(lo, 435)
       }
       out[p] = (ve - vs) & 255
       out[p + 1] = (ve - vs) >>> 8
@@ -232,21 +240,23 @@ export class Collector {
         any |= c
         out[p++] = c
         lo ^= c
-        const t = (lo >>> 0) * 435
-        hi = (Math.imul(hi, 435) + (lo << 8) + ((t / 4294967296) | 0)) | 0
-        lo = t >>> 0
+        hi = (Math.imul(hi, 435) + (lo << 8) + (((lo >>> 16) * 435 + (((lo & 0xffff) * 435) >>> 16)) >>> 16)) | 0
+        lo = Math.imul(lo, 435)
       }
       {
-        const t = (lo >>> 0) * 435
-        hi = (Math.imul(hi, 435) + (lo << 8) + ((t / 4294967296) | 0)) | 0
-        lo = t >>> 0
+        hi = (Math.imul(hi, 435) + (lo << 8) + (((lo >>> 16) * 435 + (((lo & 0xffff) * 435) >>> 16)) >>> 16)) | 0
+        lo = Math.imul(lo, 435)
       }
       const nameLen = ne - ns
       if (nameLen === 8) {
         if (isAscii(buf, ns, ne, '__name__')) hasName = true
-        else if (isAscii(buf, ns, ne, 'instance')) instance = utf8.decode(buf.subarray(vs, ve))
+        else if (isAscii(buf, ns, ne, 'instance')) {
+          instS = vs
+          instE = ve
+        }
       } else if (nameLen === 3 && isAscii(buf, ns, ne, 'job')) {
-        job = utf8.decode(buf.subarray(vs, ve))
+        jobS = vs
+        jobE = ve
       }
     }
     if (!hasName) return -Reject.MissingName
@@ -256,8 +266,6 @@ export class Collector {
         if (!validUtf8(buf, offs[o]!, offs[o + 1]!) || !validUtf8(buf, offs[o + 2]!, offs[o + 3]!)) return -Reject.InvalidLabel
       }
     }
-    lo >>>= 0
-    hi >>>= 0
     // series_id i64 little-endian, then n_labels u32.
     out[start] = lo & 255
     out[start + 1] = (lo >>> 8) & 255
@@ -273,7 +281,8 @@ export class Collector {
     out[start + 11] = m >>> 24
 
     // Same series seen earlier in this request? Compare the whole entry, not just the id.
-    const key = lo ^ hi
+    // 30 bits, so the Map key stays a small integer.
+    const key = (lo ^ hi) & 0x3fffffff
     const first = this.byHash.get(key)
     for (let s = first; s !== undefined && s >= 0; s = this.nextSameHash[s]) {
       if (this.entryLen[s] !== bytes) continue
@@ -291,10 +300,44 @@ export class Collector {
     const idx = this.entryOff.length
     this.entryOff.push(start)
     this.entryLen.push(bytes)
-    this.routeKey.push(`job=${job}\u0000instance=${instance}`)
+    this.routeOf.push(this.route(buf, jobS, jobE, instS, instE))
     this.nextSameHash.push(first ?? -1)
     this.byHash.set(key, idx)
     this.arenaLen = start + bytes
+    return idx
+  }
+
+  /**
+   * The routing key `job=<job>\u0000instance=<instance>` of a series, interned: a sender
+   * repeats a handful of job/instance pairs across thousands of series, so the string is
+   * built once per distinct pair and found again by comparing bytes.
+   */
+  private route(buf: Uint8Array, js: number, je: number, is: number, ie: number): number {
+    let h = 0x811c9dc5
+    for (let i = js; i < je; i++) h = Math.imul(h ^ buf[i]!, 0x01000193)
+    h = Math.imul(h ^ 0x100, 0x01000193)
+    for (let i = is; i < ie; i++) h = Math.imul(h ^ buf[i]!, 0x01000193)
+    h &= 0x3fffffff
+    const jl = je - js
+    const il = ie - is
+    const hit = this.routeByHash.get(h)
+    if (hit !== undefined) {
+      const b = this.routeBytes[hit]!
+      if (b.length === jl + il + 1 && b[jl] === 0) {
+        let same = true
+        for (let i = 0; same && i < jl; i++) same = b[i] === buf[js + i]
+        for (let i = 0; same && i < il; i++) same = b[jl + 1 + i] === buf[is + i]
+        if (same) return hit
+      }
+    }
+    // New pair (or a hash collision, which just costs a second entry for the same string).
+    const bytes = new Uint8Array(jl + il + 1)
+    bytes.set(buf.subarray(js, je), 0)
+    bytes.set(buf.subarray(is, ie), jl + 1)
+    const idx = this.routes.length
+    this.routes.push(`job=${utf8.decode(buf.subarray(js, je))}\u0000instance=${utf8.decode(buf.subarray(is, ie))}`)
+    this.routeBytes.push(bytes)
+    this.routeByHash.set(h, idx)
     return idx
   }
 

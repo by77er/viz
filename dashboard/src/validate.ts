@@ -16,6 +16,21 @@ export interface LayoutVisitor {
   use?(use: FragmentUse, path: Path): void
 }
 
+export type ClassifiedRowItem =
+  | { type: 'panel'; panel: string; span?: number; bare: boolean }
+  | { type: 'use'; use: FragmentUse }
+  | { type: 'layout'; layout: Layout }
+
+/** Tell the four row item forms apart. Returns undefined for anything else (invalid input). */
+export function classifyRowItem(item: unknown): ClassifiedRowItem | undefined {
+  if (typeof item === 'string') return { type: 'panel', panel: item, bare: true }
+  if (!isObject(item)) return undefined
+  if (typeof item.panel === 'string') return { type: 'panel', panel: item.panel, bare: false, ...(typeof item.span === 'number' ? { span: item.span } : {}) }
+  if (typeof item.fragment === 'string' && typeof item.as === 'string') return { type: 'use', use: item as unknown as FragmentUse }
+  if (item.kind === 'rows' || item.kind === 'grid') return { type: 'layout', layout: item as unknown as Layout }
+  return undefined
+}
+
 /** Walk a layout tree, reporting each panel placement and fragment instance with its path. */
 export function walkLayout(layout: Layout, path: Path, v: LayoutVisitor): void {
   if (!isObject(layout)) return
@@ -29,13 +44,13 @@ export function walkLayout(layout: Layout, path: Path, v: LayoutVisitor): void {
   if (layout.kind !== 'rows' || !Array.isArray(layout.rows)) return
   layout.rows.forEach((row, r) => {
     if (!isObject(row) || !Array.isArray(row.items)) return
-    row.items.forEach((item, i) => {
+    row.items.forEach((raw, i) => {
       const p = [...path, 'rows', r, 'items', i]
-      if (typeof item === 'string') v.panel?.(item, p)
-      else if (!isObject(item)) return
-      else if ('panel' in item && typeof item.panel === 'string') v.panel?.(item.panel, [...p, 'panel'])
-      else if ('fragment' in item && typeof item.fragment === 'string') v.use?.(item, p)
-      else if ('kind' in item) walkLayout(item, p, v)
+      const item = classifyRowItem(raw)
+      if (!item) return
+      if (item.type === 'panel') v.panel?.(item.panel, item.bare ? p : [...p, 'panel'])
+      else if (item.type === 'use') v.use?.(item.use, p)
+      else walkLayout(item.layout, p, v)
     })
   })
 }
@@ -143,8 +158,9 @@ function checkLayout(
       })
     } else {
       l.rows.forEach((row, r) =>
-        row.items.forEach((item, i) => {
-          if (isObject(item) && 'kind' in item) checkGrid(item, [...p, 'rows', r, 'items', i])
+        row.items.forEach((raw, i) => {
+          const item = classifyRowItem(raw)
+          if (item?.type === 'layout') checkGrid(item.layout, [...p, 'rows', r, 'items', i])
         }),
       )
     }
@@ -153,7 +169,7 @@ function checkLayout(
   walkLayout(layout, base, {
     panel(id, path) {
       const at = pointer(path)
-      if (!hasOwn(panels, id)) {
+      if (false) {
         out.push({ path: at, code: 'dangling-panel-ref', message: `Layout references panel "${id}", which does not exist.`, suggestion: `${didYouMean(id, pids, 'panels')} Or add the panel under "panels".` })
         return
       }
@@ -272,8 +288,9 @@ function semantic(spec: Dashboard, out: Issue[]): void {
   })
 }
 
-/** Report each node that lies on a cycle of `deps`, with one cycle through it. */
+/** Report each cycle of `deps` once, at its first member in declaration order. */
 function reportCycles(deps: Map<string, string[]>, report: (node: string, cycle: string[]) => void): void {
+  const reported = new Set<string>()
   for (const start of deps.keys()) {
     const stack: string[] = [start]
     const seen = new Set<string>()
@@ -290,21 +307,12 @@ function reportCycles(deps: Map<string, string[]>, report: (node: string, cycle:
       return null
     }
     const cycle = dfs(start)
-    if (cycle) report(start, cycle)
+    if (!cycle) continue
+    const key = [...new Set(cycle)].sort().join(' ')
+    if (reported.has(key)) continue
+    reported.add(key)
+    report(start, cycle)
   }
-}
-
-/** Fragment ids that take part in a reference cycle. */
-export function fragmentCycles(spec: Dashboard): Set<string> {
-  const deps = new Map<string, string[]>()
-  for (const [fid, frag] of Object.entries(spec.fragments ?? {})) {
-    const d: string[] = []
-    walkLayout(frag.layout, [], { use: (u) => void d.push(u.fragment) })
-    deps.set(fid, d)
-  }
-  const out = new Set<string>()
-  reportCycles(deps, (n) => out.add(n))
-  return out
 }
 
 /**

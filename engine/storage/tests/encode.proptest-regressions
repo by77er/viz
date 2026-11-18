@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 08a073b93dd098749ee53b16baf40693d4af6ae470e296f8503bddb44fd51321 # shrinks to batches = [GenBatch { series: [SeriesDef { series_id: -1918960407073795285, labels: [("__name__", "p"), ("instance", "i1")] }], rows: [Row { series_idx: 0, ts: 1700006401000, value_bits: 0 }] }, GenBatch { series: [SeriesDef { series_id: -1918960407073795285, labels: [("__name__", "p"), ("instance", "i1")] }], rows: [Row { series_idx: 0, ts: 1700006401000, value_bits: 1 }] }], cap = 1

@@ -89,7 +89,7 @@ async function remoteWrite(req: Request, env: Env, limits: Limits): Promise<Resp
 
   const compressed = await readBody(req, limits.maxBodyBytes)
   const body = snappyDecompress(compressed, limits.maxDecompressedBytes)
-  const c = new Collector(limits, Date.now())
+  const c = new Collector(limits, Date.now(), body.byteLength)
   decodeRemoteWrite(body, c)
 
   const outcome = await appendAll(env, tenant, c)
@@ -124,7 +124,7 @@ async function otlpMetrics(req: Request, env: Env, limits: Limits): Promise<Resp
     if (encoding === 'gzip') body = await gunzip(body, limits.maxDecompressedBytes)
     else if (body.byteLength > limits.maxDecompressedBytes) throw tooLarge(`body exceeds the limit of ${limits.maxDecompressedBytes} bytes`)
 
-    const c = new Collector(limits, Date.now())
+    const c = new Collector(limits, Date.now(), body.byteLength)
     if (json) decodeOtlpJson(body, c)
     else decodeOtlpProto(body, c)
 

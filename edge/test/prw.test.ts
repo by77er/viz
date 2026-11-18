@@ -250,6 +250,13 @@ describe('routing', () => {
     expect(res.headers.get('Retry-After')).toBeTruthy()
     expect((await postWrite(key, s, { env: { DEFAULT_POOL: JSON.stringify({ pool: `alt/${tenant}`, slots: 2, spread: 2, epoch: 1 }) } })).status).toBe(204)
     expect((await tail({ pool: `alt/${tenant}`, slots: 2, spread: 2, epoch: 1 }, tenant)).length).toBe(1)
-    void env
+    // A tenant whose own map is unreadable is refused, not silently moved to the shared pool.
+    for (const bad of ['{not json', JSON.stringify({ pool: 'x', slots: 0, spread: 1, epoch: 1 }), JSON.stringify({ pool: 'x', slots: 2 })]) {
+      const t = newTenant()
+      const k = await makeKey(t)
+      await env.CONFIG.put(`pool:${t}`, bad)
+      expect((await postWrite(k, s)).status).toBe(503)
+      expect(await tail(DEFAULT_MAP, t)).toEqual([])
+    }
   })
 })

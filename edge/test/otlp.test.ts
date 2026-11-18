@@ -37,7 +37,7 @@ function request(now: number) {
     resourceMetrics: [
       {
         resource: {
-          attributes: [str('service.name', 'checkout'), str('service.namespace', 'shop'), str('service.instance.id', 'i-1'), str('host.name', 'h1'), { key: 'k8s.pod.count', value: { intValue: '3' } }, str('empty.one', '')],
+          attributes: [str('service.name', 'checkout'), str('service.namespace', 'shop'), str('service.instance.id', 'i-1'), str('host.name', 'h1'), { key: 'k8s.pod.count', value: { intValue: '3' } }, str('empty.one', ''), str('dup.key', '1'), str('dup_key', '2')],
         },
         scopeMetrics: [
           {
@@ -57,7 +57,7 @@ function request(now: number) {
               },
               { name: 'queue.depth', unit: '{items}', gauge: { dataPoints: [{ attributes: [{ key: 'on', value: { boolValue: true } }, { key: 'tags', value: { arrayValue: { values: [{ stringValue: 'a' }, { intValue: '2' }] } } }], timeUnixNano: nanos(now - 1000), asInt: '-4' }] } },
               { name: 'active.sessions', unit: '1', sum: { aggregationTemporality: 2, isMonotonic: false, dataPoints: [{ timeUnixNano: nanos(now), asDouble: 3 }] } },
-              { name: 'memory.usage', unit: 'By', gauge: { dataPoints: [{ attributes: [str('host.name', 'override')], timeUnixNano: nanos(now), asDouble: 1024 }] } },
+              { name: 'memory.usage', unit: 'By', gauge: { dataPoints: [{ attributes: [str('a.b', 'x'), str('host.name', 'override'), str('a/b', 'y'), str('z', 'last')], timeUnixNano: nanos(now), asDouble: 1024 }, { timeUnixNano: nanos(now - 5), asDouble: 2048 }] } },
               { name: 'gone', gauge: { dataPoints: [{ timeUnixNano: nanos(now), flags: 1 }] } },
             ],
           },
@@ -72,13 +72,15 @@ function request(now: number) {
 }
 
 function expected(now: number) {
-  const res = { job: 'shop/checkout', instance: 'i-1', host_name: 'h1', k8s_pod_count: '3' }
+  const res = { job: 'shop/checkout', instance: 'i-1', host_name: 'h1', k8s_pod_count: '3', dup_key: '1;2' }
   return canon([
     { labels: { ...res, __name__: 'process_cpu_time_seconds_total', cpu_mode: 'user' }, ts: now, bits: bitsOf(12.5) },
     { labels: { ...res, __name__: 'process_cpu_time_seconds_total', cpu_mode: 'system' }, ts: now, bits: bitsOf(7) },
     { labels: { ...res, __name__: 'queue_depth', on: 'true', tags: '["a",2]' }, ts: now - 1000, bits: bitsOf(-4) },
     { labels: { ...res, __name__: 'active_sessions_ratio' }, ts: now, bits: bitsOf(3) },
-    { labels: { ...res, __name__: 'memory_usage_bytes', host_name: 'override' }, ts: now, bits: bitsOf(1024) },
+    { labels: { ...res, __name__: 'memory_usage_bytes', host_name: 'override', a_b: 'x;y', z: 'last' }, ts: now, bits: bitsOf(1024) },
+    // The override was for that one point; the next point sees the resource's value again.
+    { labels: { ...res, __name__: 'memory_usage_bytes' }, ts: now - 5, bits: bitsOf(2048) },
     { labels: { ...res, __name__: 'gone' }, ts: now, bits: STALE_NAN },
     { labels: { job: 'other', __name__: 'http_server_requests_per_second' }, ts: now, bits: bitsOf(0.5) },
   ])
@@ -123,7 +125,7 @@ describe('OTLP/HTTP metrics', () => {
       const partial = parseResponse(new Uint8Array(await res.arrayBuffer()))
       expect(partial).toEqual({ rejected: fixtures.otlp.rejected, message: '2 histograms are not supported' })
       // …and timestamps with a 999999 ns remainder are floored to the millisecond exactly.
-      expect(canon(await tail(DEFAULT_MAP, tenant))).toEqual(canon(fixtures.otlp.expect.map((e) => ({ labels: e.labels, ts: e.ts, bits: bitsOf(e.value) }))))
+      expect(canon(await tail(DEFAULT_MAP, tenant))).toEqual(canon(fixtures.otlp.expect.map((e) => ({ labels: e.labels as unknown as Record<string, string>, ts: e.ts, bits: bitsOf(e.value) }))))
     }
   })
 

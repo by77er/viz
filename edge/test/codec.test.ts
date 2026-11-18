@@ -46,7 +46,7 @@ function addSeries(c: Collector, labels: [string, string][]): number {
     buf.set(part, q)
     q += part.length
   }
-  return c.addSeries(buf, offs, labels.length)
+  return c.addSeries(buf, Int32Array.from(offs), labels.length)
 }
 
 const entryId = (c: Collector, i: number): bigint => {
@@ -119,7 +119,7 @@ describe('label validation', () => {
 
   it('rejects invalid UTF-8', () => {
     const buf = new Uint8Array([...te.encode('__name__'), 0xff, 0xfe])
-    expect(c().addSeries(buf, [0, 8, 8, 10], 1)).toBeLessThan(0)
+    expect(c().addSeries(buf, Int32Array.of(0, 8, 8, 10), 1)).toBeLessThan(0)
   })
 })
 
@@ -194,8 +194,10 @@ describe('snappy block decompressor', () => {
     expect(status(() => snappyDecompress(new Uint8Array([0x80]), max))).toBe(400) // truncated preamble
     expect(status(() => snappyDecompress(new Uint8Array([5, 0x04, 0x61]), max))).toBe(400) // literal runs past input
     expect(status(() => snappyDecompress(new Uint8Array([2, 0x08, 0x61, 0x62, 0x63]), max))).toBe(400) // literal longer than declared
-    expect(status(() => snappyDecompress(new Uint8Array([8, 0x00, 0x61, 0x01, 0x05]), max))).toBe(400) // copy offset before start
-    expect(status(() => snappyDecompress(new Uint8Array([8, 0x00, 0x61, 0x01, 0x00]), max))).toBe(400) // copy offset 0
+    // The declared length (5) is consistent in these three, so only the copy's own bounds can refuse them.
+    expect(status(() => snappyDecompress(new Uint8Array([5, 0x00, 0x61, 0x01, 0x05]), max))).toBe(400) // copy offset before start
+    expect(status(() => snappyDecompress(new Uint8Array([5, 0x00, 0x61, 0x01, 0x00]), max))).toBe(400) // copy offset 0
+    expect(status(() => snappyDecompress(new Uint8Array([5, 0x00, 0x61, 0x02 | (3 << 2), 0x02, 0x00]), max))).toBe(400) // 2-byte offset before start
     expect(status(() => snappyDecompress(new Uint8Array([3, 0x00, 0x61]), max))).toBe(400) // shorter than declared
     expect(status(() => snappyDecompress(new Uint8Array([2, 0x00, 0x61, 0x05, 0x01]), max))).toBe(400) // copy past declared length
     // A 4 GiB declaration is refused before anything is allocated.

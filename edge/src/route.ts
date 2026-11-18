@@ -46,8 +46,18 @@ export async function poolMap(env: RouteEnv, tenant: string, refresh = false): P
   const now = Date.now()
   const hit = maps.get(tenant)
   if (!refresh && hit && hit.expires > now) return hit.map
-  let map = parseMap(await env.CONFIG.get(`pool:${tenant}`, 'json'))
-  if (!map && env.DEFAULT_POOL) {
+  const stored = await env.CONFIG.get(`pool:${tenant}`)
+  let map: PoolMap | null = null
+  if (stored !== null) {
+    // A tenant with a map of its own must never fall through to the shared pool: that
+    // would send its rows to shards its readers do not look at.
+    try {
+      map = parseMap(JSON.parse(stored))
+    } catch {
+      map = null
+    }
+    if (!map) throw new HttpError(503, 'shard pool map is invalid', { 'Retry-After': '30' })
+  } else if (env.DEFAULT_POOL) {
     try {
       map = parseMap(JSON.parse(env.DEFAULT_POOL))
     } catch {
@@ -87,18 +97,10 @@ async function appendSlot(env: RouteEnv, map: PoolMap, tenant: string, slot: num
 }
 
 async function attempt(env: RouteEnv, map: PoolMap, tenant: string, c: Collector, maxBatchBytes: number): Promise<{ results: SlotResult[]; batches: number }> {
-  // Senders repeat few routing keys, so the slot of each is computed once.
-  const slotOfKey = new Map<string, number>()
+  // Senders repeat few routing keys, so the slot is computed once per distinct key.
+  const slotOfRoute = c.routes.map((key) => slotFor(map, tenant, key))
   const slotOfSeries = new Int32Array(c.nSeries)
-  for (let i = 0; i < c.nSeries; i++) {
-    const key = c.routeKey[i]!
-    let slot = slotOfKey.get(key)
-    if (slot === undefined) {
-      slot = slotFor(map, tenant, key)
-      slotOfKey.set(key, slot)
-    }
-    slotOfSeries[i] = slot
-  }
+  for (let i = 0; i < c.nSeries; i++) slotOfSeries[i] = slotOfRoute[c.routeOf[i]!]!
   const bySlot = buildBatches(c, slotOfSeries, maxBatchBytes)
   let batches = 0
   const pending: Promise<SlotResult>[] = []

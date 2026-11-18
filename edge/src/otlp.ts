@@ -49,9 +49,18 @@ function sanitise(s: string, allowColon: boolean): string {
   return out
 }
 
+const labelNames = new Map<string, string>()
+
+/** Attribute key → label name. Keys repeat on every point, so the result is remembered. */
 export function labelName(key: string): string {
-  const s = sanitise(key, false)
-  return s.length > 0 && s.charCodeAt(0) >= 48 && s.charCodeAt(0) <= 57 ? `key_${s}` : s
+  let name = labelNames.get(key)
+  if (name === undefined) {
+    const s = sanitise(key, false)
+    name = s.length > 0 && s.charCodeAt(0) >= 48 && s.charCodeAt(0) <= 57 ? `key_${s}` : s
+    if (labelNames.size >= 4096) labelNames.clear()
+    labelNames.set(key, name)
+  }
+  return name
 }
 
 function unitSuffix(unit: string, counter: boolean): string {
@@ -72,6 +81,7 @@ export function metricName(name: string, unit: string, counter: boolean): string
   let n = sanitise(name, true)
   if (n.length > 0 && n.charCodeAt(0) >= 48 && n.charCodeAt(0) <= 57) n = `_${n}`
   if (counter && n.endsWith('_total')) n = n.slice(0, -6)
+  n = n.replace(/(?<=.)_+$/, '')
   const suffix = unitSuffix(unit, counter).replace(/^_+|_+$/g, '')
   if (suffix !== '' && !n.endsWith(`_${suffix}`)) n = `${n}_${suffix}`
   if (counter) n = `${n}_total`
@@ -83,13 +93,61 @@ const FLAG_NO_RECORDED_VALUE = 1
 
 const enc = new TextEncoder()
 
+/**
+ * Label bytes are laid out in one scratch buffer, so that a point costs only its own
+ * attributes:   [ resource labels … ][ __name__ = metric ][ this point's attributes … ]
+ * The first part is written once per resource, the second once per metric.
+ */
 export class OtlpMapper {
-  private resource = new Map<string, string>()
-  private name = ''
-  private scratch = new Uint8Array(1 << 14)
-  private offs: number[] = []
+  private buf = new Uint8Array(1 << 14)
+  private offs = new Int32Array(4 * 64)
+  private p = 0
+  /** Resource labels: how many, where their bytes end, and which slot each name is in. */
+  private nResource = 0
+  private resourceEnd = 0
+  private resourceSlot = new Map<string, number>()
+  private metricEnd = 0
+  // Scratch for one point.
+  private ownNames: string[] = []
+  private ownValues: string[] = []
+  private saved: number[] = []
 
   constructor(private readonly c: Collector) {}
+
+  /** Append a string's UTF-8 bytes at `p`; ASCII is written directly. */
+  private write(s: string): void {
+    const need = this.p + 3 * s.length
+    if (need > this.buf.length) {
+      const grown = new Uint8Array(need * 2)
+      grown.set(this.buf.subarray(0, this.p))
+      this.buf = grown
+    }
+    const buf = this.buf
+    let p = this.p
+    for (let i = 0; i < s.length; i++) {
+      const ch = s.charCodeAt(i)
+      if (ch >= 128) {
+        p = this.p + enc.encodeInto(s, buf.subarray(this.p)).written
+        break
+      }
+      buf[p++] = ch
+    }
+    this.p = p
+  }
+
+  private label(slot: number, name: string, value: string): void {
+    if (4 * slot + 4 > this.offs.length) {
+      const grown = new Int32Array(this.offs.length * 2)
+      grown.set(this.offs)
+      this.offs = grown
+    }
+    const o = 4 * slot
+    this.offs[o] = this.p
+    this.write(name)
+    this.offs[o + 1] = this.offs[o + 2] = this.p
+    this.write(value)
+    this.offs[o + 3] = this.p
+  }
 
   resourceAttrs(attrs: Attr[]): void {
     const m = new Map<string, string>()
@@ -99,16 +157,18 @@ export class OtlpMapper {
       if (k === 'service.name') service = v
       else if (k === 'service.namespace') namespace = v
       else if (k === 'service.instance.id') m.set('instance', v)
-      else this.put(m, labelName(k), v)
+      else m.set(labelName(k), join(m.get(labelName(k)), v))
     }
     if (service !== '') m.set('job', namespace !== '' ? `${namespace}/${service}` : service)
-    this.resource = m
-  }
-
-  /** Two attributes that sanitise to the same label name are joined with `;`. */
-  private put(m: Map<string, string>, name: string, value: string): void {
-    const prev = m.get(name)
-    m.set(name, prev === undefined || prev === '' ? value : value === '' ? prev : `${prev};${value}`)
+    this.p = 0
+    this.resourceSlot.clear()
+    let n = 0
+    for (const [k, v] of m) {
+      this.resourceSlot.set(k, n)
+      this.label(n++, k, v)
+    }
+    this.nResource = n
+    this.resourceEnd = this.metricEnd = this.p
   }
 
   /** Start a gauge or sum. Returns a rejection reason if its points cannot be stored. */
@@ -116,7 +176,9 @@ export class OtlpMapper {
     if (sum && temporality !== CUMULATIVE) {
       return temporality === 1 ? 'delta temporality sums are not supported' : 'sum without an aggregation temporality'
     }
-    this.name = metricName(name, unit, sum && monotonic)
+    this.p = this.resourceEnd
+    this.label(this.nResource, '__name__', metricName(name, unit, sum && monotonic))
+    this.metricEnd = this.p
     return null
   }
 
@@ -124,34 +186,46 @@ export class OtlpMapper {
     this.c.reject(reason, n)
   }
 
-  /** `value` is a number, a byte offset of 8 IEEE bytes in `src`, or absent. */
+  /** `value` is a number, or 8 IEEE bytes at `src[off..]`, or absent. */
   point(attrs: Attr[], tsMs: number, flags: number, value: number | undefined, src?: Uint8Array, off?: number): void {
-    const labels = new Map(this.resource)
-    if (attrs.length > 0) {
-      const own = new Map<string, string>()
-      for (const [k, v] of attrs) this.put(own, labelName(k), v)
-      for (const [k, v] of own) labels.set(k, v)
+    this.p = this.metricEnd
+    const names = this.ownNames
+    const values = this.ownValues
+    const saved = this.saved
+    names.length = values.length = saved.length = 0
+    const first = this.nResource + 1
+    for (let a = 0; a < attrs.length; a++) {
+      const name = labelName(attrs[a]![0])
+      let v = attrs[a]![1]
+      const rs = this.resourceSlot.get(name)
+      let k = names.indexOf(name)
+      if (k < 0) {
+        k = names.length
+        names.push(name)
+        values.push(v)
+        if (rs !== undefined) saved.push(rs, this.offs[4 * rs + 2]!, this.offs[4 * rs + 3]!)
+      } else {
+        // Two attributes of this point that sanitise to one name are joined with `;`.
+        v = values[k] = join(values[k], v)
+      }
+      if (rs !== undefined) {
+        // A point attribute replaces the resource attribute of the same name, for this
+        // point only: its value goes into the resource label's slot (restored below), and
+        // its own slot stays empty, which the collector drops.
+        const o = 4 * rs
+        this.offs[o + 2] = this.p
+        this.write(v)
+        this.offs[o + 3] = this.p
+        this.label(first + k, '', '')
+      } else this.label(first + k, name, v)
     }
-    labels.set('__name__', this.name)
-
-    // Encode the label strings into scratch and hand offsets to the collector.
-    let need = 0
-    for (const [k, v] of labels) need += 3 * (k.length + v.length)
-    if (need > this.scratch.length) this.scratch = new Uint8Array(need * 2)
-    const buf = this.scratch
-    const offs = this.offs
-    let p = 0
-    let n = 0
-    for (const [k, v] of labels) {
-      const o = 4 * n++
-      offs[o] = p
-      p += enc.encodeInto(k, buf.subarray(p)).written
-      offs[o + 1] = p
-      offs[o + 2] = p
-      p += enc.encodeInto(v, buf.subarray(p)).written
-      offs[o + 3] = p
+    const n = first + names.length
+    const series = this.c.addSeries(this.buf, this.offs, n)
+    for (let i = 0; i < saved.length; i += 3) {
+      const o = 4 * saved[i]!
+      this.offs[o + 2] = saved[i + 1]!
+      this.offs[o + 3] = saved[i + 2]!
     }
-    const series = this.c.addSeries(buf, offs, n)
     if (series < 0) return this.c.reject(-series, 1)
     if (flags & FLAG_NO_RECORDED_VALUE) this.c.addStale(series, tsMs)
     else if (src !== undefined) this.c.addSampleBytes(series, tsMs, src, off!)
@@ -159,6 +233,8 @@ export class OtlpMapper {
     else this.c.reject('data point without a value', 1)
   }
 }
+
+const join = (prev: string | undefined, value: string): string => (prev === undefined || prev === '' ? value : value === '' ? prev : `${prev};${value}`)
 
 function attrString(v: unknown): string {
   return typeof v === 'string' ? v : v === undefined ? '' : JSON.stringify(v)
