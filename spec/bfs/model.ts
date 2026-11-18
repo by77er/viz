@@ -19,6 +19,7 @@ export interface Cfg {
   variants: number // distinct encoder outputs for one segment (double flush with different bytes)
   maxJobs: number // flush Workers in flight at once (no bound on attempts in total)
   maxCJobs: number // compaction steps in flight at once
+  maxCSteps: number // with compKey 'unique': compaction steps started in total (each gets a never-reused id)
   maxComp: number // successful compactions (replace commits) per ledger
   maxExp: number // retention removals per ledger
   maxLL: number // ledger storage losses per ledger
@@ -39,6 +40,7 @@ export interface Cfg {
   missingErr: boolean // a planned file that is missing / has other bytes is an error -> re-plan (else read as empty)
   keying: 'content' | 'inm' | 'overwrite' // (h) flush keys: content hash; deterministic + If-None-Match; deterministic + overwrite
   sweep: 'off' | 'spec' | 'impl' | 'any' // orphan sweeper rule (see sweep())
+  sweepIncLogged: boolean // with 'impl': "the ledger has a newer incarnation" counts only once that registration is logged
   reg: 'design' | 'logged' | 'impl' // stream registration: before writes (committed) / before writes (logged) + repeat / lazily by flush (as built)
   query: 'design' | 'impl' // ask only streams in the plan / also every pool shard, unregistered streams from 0 (coordinator.ts)
   unknownStream: 'empty' | 'refuse' // tailRead for a stream the shard does not hold: ok+empty (shard.ts) / incarnation_mismatch
@@ -200,6 +202,7 @@ export interface St {
   q: Q
   nSL: number
   nQ: number
+  cN: number // compaction steps started (ids for compKey 'unique'; never reused)
 }
 
 // ------------------------------------------------------------------ helpers
@@ -239,6 +242,7 @@ export function init(c: Cfg): St {
     q: idleQ(),
     nSL: 0,
     nQ: 0,
+    cN: 0,
   }
 }
 
@@ -256,7 +260,7 @@ function cp(s: St): St {
       dr: L.dr, pl: L.pl, b: L.b, tb: L.tb, nC: L.nC, nE: L.nE, nL: L.nL, ru: L.ru,
     })),
     q: { st: s.q.st, t: s.q.t, fi: s.q.fi, wm: s.q.wm, nd: s.q.nd, tl: s.q.tl, mu: s.q.mu, ex: s.q.ex, ln: s.q.ln.slice(), rs: s.q.rs, dup: s.q.dup, miss: s.q.miss, leak: s.q.leak },
-    nSL: s.nSL, nQ: s.nQ,
+    nSL: s.nSL, nQ: s.nQ, cN: s.cN,
   }
 }
 
@@ -366,7 +370,7 @@ function flushFile(c: Cfg, t: number, rows: number[], v: number, sh: number, inc
 function compFile(c: Cfg, t: number, ins: number[], jobId: number): number {
   const rows = sortU(ins.flatMap((f) => FILES[f]!.rows))
   const key = `C${ins.join('.')}${c.compKey === 'unique' ? `@${jobId}` : ''}`
-  return fileId(t, rows, true, 1, key, `L1(${ins.map((f) => FILES[f]!.name).join('+')}${c.compKey === 'unique' ? ` step${jobId}` : ''})`)
+  return fileId(t, rows, true, 1, key, `L1(${ins.map((f) => FILES[f]!.name).join('+')}${c.compKey === 'unique' ? ` step${jobId - 100}` : ''})`)
 }
 
 function inFlightPlan(s: St, t: number, key: number): boolean {
@@ -694,13 +698,14 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       emit(`LEDGER${tt} STORAGE LOSS -> rebuild from R2${r.refused && inR2 ? ' REFUSED (log not contiguous)' : ''}${inR2 ? '' : ' (nothing of this incarnation in R2: incarnation number reused)'}`, ns)
     }
     // compaction step: plan, GET two live inputs, merge
-    if (s.cj.length < c.maxCJobs && L.nC < c.maxComp) {
+    if (s.cj.length < c.maxCJobs && L.nC < c.maxComp && (c.compKey !== 'unique' || s.cN < c.maxCSteps)) {
       for (let a = 0; a < L.fi.length; a++) {
         for (let b = a + 1; b < L.fi.length; b++) {
           const ins = [L.fi[a]!, L.fi[b]!]
           if (!ins.every((f) => readable(s, f))) continue
           const ns = cp(s)
-          const id = freeId(s)
+          // a step-unique key takes a fresh id that no earlier step had; otherwise ids are reused
+          const id = c.compKey === 'unique' ? 100 + ns.cN++ : freeId(s)
           const out = compFile(c, t, ins, id)
           ns.cj.push({ id, t, ins, out, ph: 0 })
           ns.cj.sort((x, y) => x.id - y.id)
@@ -800,8 +805,10 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
         else {
           const [sh, , inc] = ROWS[F.rows[0]!]!
           const hi = Math.max(...F.rows.map((r) => ROWS[r]![3]!))
-          const w = L.wm[sh!]!
-          ok = w[0]! > inc! || (w[0] === inc && L.lg[sh!]! >= hi)
+          // janitor.ts flushFileState: dead if the ledger has a newer incarnation of the stream
+          // (orphanCheck reports the COMMITTED incarnation), or the same one logged past the range
+          const newer = (c.sweepIncLogged ? durableWm(L)[sh!]![0]! : L.wm[sh!]![0]!) > inc!
+          ok = newer || (L.wm[sh!]![0] === inc && L.lg[sh!]! >= hi)
         }
       }
       if (!ok) continue

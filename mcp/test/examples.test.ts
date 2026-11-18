@@ -80,7 +80,10 @@ describe('read_dashboard on the examples', () => {
   it('the deadline marks what was not evaluated and the result as partial', async () => {
     const slow = harness({ prom: { delayMs: { viz_shard_flush: 3000 } }, deps: { limits: { deadlineMs: 300 } } })
     telemetry(slow, t.tenant)
+    const t0 = Date.now()
     const r = await rest(slow, agent.key, 'read_dashboard', { id: 'viz_ingest_pipeline', max_tokens: 8000 })
+    // The call returns near its 300 ms deadline, not after the 3 s the slow queries would take.
+    expect(Date.now() - t0).toBeLessThan(2000)
     expect(r.status).toBe(200)
     expect(r.structured.complete).toBe(false)
     expect(r.structured.counts.notEvaluated).toBeGreaterThan(0)

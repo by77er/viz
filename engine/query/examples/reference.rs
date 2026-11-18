@@ -63,6 +63,9 @@ fn envelope(r: Result<J, Error>) -> J {
 fn main() {
     let path = std::env::args().nth(1).expect("usage: reference <workload.json>");
     let w: J = serde_json::from_str(&std::fs::read_to_string(path).expect("read workload")).expect("workload is JSON");
+    // The query service's aggregations are order-independent (`viz_query::agg`): exact
+    // sums, groups in label order. The reference uses the same.
+    let opts = viz_promql::EvalOptions::default();
     let mut out = Map::new();
     for (tenant, series) in w["tenants"].as_object().expect("tenants") {
         let mem = source(series);
@@ -71,9 +74,9 @@ fn main() {
             let text = q["query"].as_str().expect("query");
             let int = |k: &str| q[k].as_i64().unwrap_or_else(|| panic!("{k} must be an integer"));
             let r = if q["kind"] == "range" {
-                viz_promql::query_range(&mem, text, int("start"), int("end"), int("step")).map(|m| serde_json::to_value(&m).expect("json"))
+                viz_query::reference_range(&mem, text, int("start"), int("end"), int("step"), &opts).map(|m| serde_json::to_value(&m).expect("json"))
             } else {
-                viz_promql::query_instant(&mem, text, int("time")).map(|v| serde_json::to_value(&v).expect("json"))
+                viz_query::reference_instant(&mem, text, int("time"), &opts).map(|v| serde_json::to_value(&v).expect("json"))
             };
             results.insert(q["id"].as_str().expect("id").to_string(), envelope(r));
         }

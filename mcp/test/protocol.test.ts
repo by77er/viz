@@ -162,6 +162,11 @@ describe('2025-era (stateless legacy) over raw JSON-RPC', () => {
   it('a browser origin that is not allowed is refused (DNS-rebinding protection)', async () => {
     const r = await rpc(h, key, init(), { Origin: 'https://evil.example' })
     expect(r.status).toBe(403)
+    // A localhost Origin is not accepted by a deployed server either.
+    expect((await rpc(h, key, init(), { Origin: 'http://localhost:3000' })).status).toBe(403)
+    // A listed origin is.
+    const listed = harness({ env: { ALLOWED_ORIGINS: 'https://app.example' } })
+    expect((await rpc(listed, key, init(), { Origin: 'https://app.example' })).status).toBe(200)
   })
 })
 

@@ -49,12 +49,27 @@
 //! | `viz_q_label_values` | `limits, i64 min_ts, i64 max_ts, str label, u32 n, str*, scan` | JSON `["value",…]` |
 //! | `viz_q_series` | `limits, i64 min_ts, i64 max_ts, u32 n, str*, scan` | JSON `[{"label":"value",…},…]` |
 //! | `viz_q_scan_rows` | `u32 n_files, str index*, u32 n_ranges, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*` | `u64[n_files]`: an upper bound on the rows the ranges decode from each file. 0 = the file provably holds nothing the ranges read (skip it); `u64::MAX` = the fragment does not parse (unknown: read the file) |
-//! | `viz_q_abi_version` | (no request) | returns 1 |
+//! | `viz_q_split_plan` | `limits, str query` | JSON `{"split":true,"fragments":n,"without":[…]}` or `{"split":false,"reason":"…"}` (`viz_query::split_plan`) |
+//! | `viz_q_extract` | `key, u32 part, u32 parts, ranges, u32 n, str* (series files), u32 m, str* (sample files, precedence order)` | `u64 rows, u64 series`, then a `VZB1` batch (empty: no rows) |
+//! | `viz_q_split_tails` | `key, u32 parts, ranges, u32 n, str* (tail batches, in order)` | per part: `u32 n`, then `str*` (its batches, in order) |
+//! | `viz_q_gather_new` | `u64 samples, u64 series, u64 step_points (the leaf's budget), ranges` | `u32 handle` of a gathering session kept in the module |
+//! | `viz_q_gather_add` | `u32 handle, u32 rank, str batch` | `u8 aborted, u64 samples, u64 series` held so far |
+//! | `viz_q_gather_eval` | `u32 handle, limits, u8 kind (0 range, 1 instant), i64 start, i64 end, i64 step, u32 fragments, str query` | the leaf's answer (`viz_query::split::LeafOutput`); the session is freed |
+//! | `viz_q_gather_free` | `u32 handle` | empty; frees an abandoned session (no error if it is gone) |
+//! | `viz_q_merge` | `limits, u8 kind, i64 start, i64 end, i64 step, str query, u32 n, str* (leaf answers)` | as `viz_q_query_range` |
+//! | `viz_q_card_part` | `i64 start, i64 end, u32 part, u32 parts, u64 max_series, u64 max_pairs, u32 n, str* (series files), u32 m, str* (tail batches)` | a cardinality summary (`viz_query::cardinality::Summary`) |
+//! | `viz_q_card_report` | `u64 max_series, u64 max_pairs, u32 limit, i64 start, i64 end, i64 lookback_start, u32 n, str* (summaries)` | `u32 n`, the `/status/tsdb` JSON (n bytes), then the `/status/cardinality` JSON |
+//! | `viz_q_abi_version` | (no request) | returns 2 |
+//!
+//! `key` is `u32 n, str*`: the labels left out of the split key (`viz_query::SplitKey`).
+//! `ranges` is `u32 n, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*`.
 
-use std::collections::BTreeSet;
-use viz_query::{EvalOptions, FetchRange, Limits, MatchOp, Matcher, Options, QueryError, ScanInput, Stats};
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
+use viz_query::split::{self, Gathered, Grid, LeafBudget, LeafOutput};
+use viz_query::{EvalOptions, FetchRange, Limits, MatchOp, Matcher, Options, QueryError, ScanInput, SplitKey, SplitPlan, Stats};
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 const OK: u32 = 0;
 const MALFORMED: u32 = 5;
 
@@ -189,6 +204,34 @@ impl<'a> Req<'a> {
             v.push(Matcher::new(self.str("matcher name")?, op, self.str("matcher value")?));
         }
         Ok(v)
+    }
+    fn ranges(&mut self) -> Res<Vec<FetchRange>> {
+        let n = self.u32("n_ranges")?;
+        let mut out = Vec::with_capacity((n as usize).min(self.b.len() / 20));
+        for _ in 0..n {
+            let (min_ts, max_ts) = (self.i64("min_ts")?, self.i64("max_ts")?);
+            out.push(FetchRange { matchers: self.matchers()?, min_ts, max_ts });
+        }
+        Ok(out)
+    }
+    fn key(&mut self) -> Res<SplitKey> {
+        let mut without: Vec<String> = self.strs("split key label")?.into_iter().map(String::from).collect();
+        without.sort();
+        without.dedup();
+        Ok(SplitKey { without })
+    }
+    fn files(&mut self, what: &str) -> Res<Vec<&'a [u8]>> {
+        let n = self.u32(what)?;
+        self.items(n, what)
+    }
+    fn grid(&mut self) -> Res<Grid> {
+        let kind = self.u8("kind")?;
+        let (start, end, step) = (self.i64("start")?, self.i64("end")?, self.i64("step")?);
+        match kind {
+            0 => Ok(Grid::Range { start, end, step }),
+            1 => Ok(Grid::Instant { time: start }),
+            k => Err(Fail::Malformed(format!("unknown query kind {k}"))),
+        }
     }
     fn end(&self) -> Res<()> {
         if self.at == self.b.len() {
@@ -390,6 +433,169 @@ fn do_scan_rows(mut r: Req<'_>) -> Res<Vec<u8>> {
     Ok(viz_query::scan_rows(&indexes, &ranges).into_iter().flat_map(|r| r.unwrap_or(u64::MAX).to_le_bytes()).collect())
 }
 
+fn do_split_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let q = r.str("query")?;
+    r.end()?;
+    let v = match viz_query::split_plan(q, &opts) {
+        SplitPlan::Split { fragments, key } => serde_json::json!({"split": true, "fragments": fragments, "without": key.without}),
+        SplitPlan::Single { reason } => serde_json::json!({"split": false, "reason": reason}),
+    };
+    Ok(v.to_string().into_bytes())
+}
+
+fn do_extract(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let key = r.key()?;
+    let (part, parts) = (r.u32("part")?, r.u32("parts")?);
+    let ranges = r.ranges()?;
+    let series = r.files("series file")?;
+    let samples = r.files("sample file")?;
+    r.end()?;
+    if parts == 0 || part >= parts {
+        return Err(Fail::Malformed(format!("part {part} of {parts}")));
+    }
+    let ex = split::extract(&series, &samples, &key, part, parts, &ranges)?;
+    let mut out = Vec::with_capacity(16 + ex.batch.len());
+    out.extend_from_slice(&ex.rows.to_le_bytes());
+    out.extend_from_slice(&ex.series.to_le_bytes());
+    out.extend_from_slice(&ex.batch);
+    Ok(out)
+}
+
+fn do_split_tails(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let key = r.key()?;
+    let parts = r.u32("parts")?;
+    let ranges = r.ranges()?;
+    let batches = r.files("tail batch")?;
+    r.end()?;
+    if parts == 0 {
+        return Err(Fail::Malformed("zero parts".into()));
+    }
+    let cut = split::split_tails(&batches, &key, parts, &ranges)?;
+    let mut out = Vec::new();
+    for list in cut {
+        out.extend_from_slice(&(list.len() as u32).to_le_bytes());
+        for b in list {
+            out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            out.extend_from_slice(&b);
+        }
+    }
+    Ok(out)
+}
+
+thread_local! {
+    /// Gathering sessions of leaves in flight in this instance: a leaf adds batches as
+    /// they arrive and evaluates once all are in. Dropping the instance drops them.
+    static SESSIONS: RefCell<(u32, HashMap<u32, Gathered>)> = RefCell::new((0, HashMap::new()));
+}
+
+fn do_gather_new(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let budget = LeafBudget { samples: r.u64("samples")?, series: r.u64("series")?, step_points: r.u64("step_points")? };
+    let ranges = r.ranges()?;
+    r.end()?;
+    let g = Gathered::new(&ranges, budget)?;
+    let h = SESSIONS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.0 = s.0.wrapping_add(1).max(1);
+        let h = s.0;
+        s.1.insert(h, g);
+        h
+    });
+    Ok(h.to_le_bytes().to_vec())
+}
+
+fn do_gather_add(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let h = r.u32("handle")?;
+    let rank = r.u32("rank")?;
+    let b = r.item("batch")?;
+    r.end()?;
+    SESSIONS.with(|s| {
+        let mut s = s.borrow_mut();
+        let g = s.1.get_mut(&h).ok_or_else(|| Fail::Malformed(format!("no gathering session {h}")))?;
+        g.add(b, rank)?;
+        let (samples, series) = g.counts();
+        let mut out = vec![g.aborted.is_some() as u8];
+        out.extend_from_slice(&samples.to_le_bytes());
+        out.extend_from_slice(&series.to_le_bytes());
+        Ok(out)
+    })
+}
+
+fn do_gather_eval(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let h = r.u32("handle")?;
+    let opts = r.limits()?;
+    let grid = r.grid()?;
+    let fragments = r.u32("fragments")? as usize;
+    let q = r.str("query")?;
+    r.end()?;
+    let g = SESSIONS.with(|s| s.borrow_mut().1.remove(&h)).ok_or_else(|| Fail::Malformed(format!("no gathering session {h}")))?;
+    Ok(split::leaf_evaluate(&g, q, grid, &opts, fragments).encode())
+}
+
+fn do_gather_free(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let h = r.u32("handle")?;
+    r.end()?;
+    SESSIONS.with(|s| s.borrow_mut().1.remove(&h));
+    Ok(Vec::new())
+}
+
+fn do_merge(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let grid = r.grid()?;
+    let q = r.str("query")?;
+    let raw = r.files("leaf answer")?;
+    r.end()?;
+    let outputs = raw.iter().map(|b| LeafOutput::decode(b)).collect::<Result<Vec<_>, _>>()?;
+    match grid {
+        Grid::Range { start, end, step } => {
+            let out = split::merge_range(q, start, end, step, &opts, &outputs)?;
+            Ok(with_stats(out.stats, viz_query::to_json(&out.matrix)?))
+        }
+        Grid::Instant { time } => {
+            let out = split::merge_instant(q, time, &opts, &outputs)?;
+            Ok(with_stats(out.stats, viz_query::to_json(&out.value)?))
+        }
+    }
+}
+
+fn do_card_part(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let (start, end) = (r.i64("start")?, r.i64("end")?);
+    let (part, parts) = (r.u32("part")?, r.u32("parts")?);
+    let caps = viz_query::cardinality::Caps { max_series: r.u64("max_series")?, max_pairs: r.u64("max_pairs")? };
+    let series = r.files("series file")?;
+    let tails = r.files("tail batch")?;
+    r.end()?;
+    if parts == 0 || part >= parts {
+        return Err(Fail::Malformed(format!("part {part} of {parts}")));
+    }
+    let mut st = viz_query::cardinality::State::new(start, end, part, parts, caps);
+    for (i, f) in series.iter().enumerate() {
+        st.add_series_file(f, i)?;
+    }
+    for (i, b) in tails.iter().enumerate() {
+        st.add_tail_batch(b, i)?;
+    }
+    Ok(st.summary().encode())
+}
+
+fn do_card_report(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let caps = viz_query::cardinality::Caps { max_series: r.u64("max_series")?, max_pairs: r.u64("max_pairs")? };
+    let limit = r.u32("limit")? as usize;
+    let (start, end, lookback) = (r.i64("start")?, r.i64("end")?, r.i64("lookback_start")?);
+    let parts = r.files("summary")?;
+    r.end()?;
+    let mut all = viz_query::cardinality::Summary::default();
+    for p in parts {
+        all.merge(&viz_query::cardinality::Summary::decode(p)?, caps)?;
+    }
+    let (tsdb, viz) = all.report(limit, start, end, lookback, caps);
+    let mut out = Vec::with_capacity(4 + tsdb.len() + viz.len());
+    out.extend_from_slice(&(tsdb.len() as u32).to_le_bytes());
+    out.extend_from_slice(tsdb.as_bytes());
+    out.extend_from_slice(viz.as_bytes());
+    Ok(out)
+}
+
 macro_rules! export {
     ($name:ident, $body:expr) => {
         /// # Safety
@@ -412,3 +618,13 @@ export!(viz_q_label_names, do_label_names);
 export!(viz_q_label_values, do_label_values);
 export!(viz_q_series, do_series);
 export!(viz_q_scan_rows, do_scan_rows);
+export!(viz_q_split_plan, do_split_plan);
+export!(viz_q_extract, do_extract);
+export!(viz_q_split_tails, do_split_tails);
+export!(viz_q_gather_new, do_gather_new);
+export!(viz_q_gather_add, do_gather_add);
+export!(viz_q_gather_eval, do_gather_eval);
+export!(viz_q_gather_free, do_gather_free);
+export!(viz_q_merge, do_merge);
+export!(viz_q_card_part, do_card_part);
+export!(viz_q_card_report, do_card_report);

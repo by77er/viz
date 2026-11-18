@@ -1,0 +1,45 @@
+{
+ "version": 1,
+ "schema": [
+  {
+   "type": "table",
+   "name": "agg_group",
+   "sql": "CREATE TABLE agg_group (tenant TEXT NOT NULL, gkey TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, gkey)) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "alert",
+   "sql": "CREATE TABLE alert (tenant TEXT NOT NULL, fp TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, fp)) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "meta",
+   "sql": "CREATE TABLE meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k)) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "notify_log",
+   "sql": "CREATE TABLE notify_log (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, monitor)) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "outbox",
+   "sql": "CREATE TABLE outbox (tenant TEXT NOT NULL, id INTEGER NOT NULL, gkey TEXT NOT NULL, receiver TEXT NOT NULL, integration TEXT NOT NULL, url TEXT NOT NULL, idem_key TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL, last_error TEXT, subjects TEXT, PRIMARY KEY (tenant, id)) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "self",
+   "sql": "CREATE TABLE self (one INTEGER PRIMARY KEY CHECK (one = 1), name TEXT NOT NULL)"
+  },
+  {
+   "type": "table",
+   "name": "silence",
+   "sql": "CREATE TABLE silence (tenant TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, id)) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "viz_schema",
+   "sql": "CREATE TABLE viz_schema (one INTEGER PRIMARY KEY CHECK (one = 1), component TEXT NOT NULL, version INTEGER NOT NULL, compat INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+  }
+ ]
+}

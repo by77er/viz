@@ -20,10 +20,10 @@
 import type { ScanInput } from '../../contracts/engine'
 import type { FileEntry, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
-import type { FetchRange, QueryEngine, QueryStats } from '../../engine/wasm-query/js/index'
+import { type FetchRange, type Grid, type QueryEngine, type QueryLimits, type QueryStats, leafSummary } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
-import { MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult } from './leaf'
+import { type EvaluateAnswer, type EvaluateRequest, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult } from './leaf'
 
 /** Largest and smallest timestamps storage can hold (contracts/BATCH.md). */
 export const MIN_TS = 0
@@ -76,11 +76,28 @@ export interface Cost {
   samplesLoaded: number
   engineMs: number
   wasmMemoryBytes: number
+  /** `single` or `split` (empty for calls that do not evaluate PromQL). */
+  execution: string
+  /** Why a query was evaluated in one place. */
+  splitReason: string
+  /** Leaves a split query was evaluated on (parts of its series). */
+  splitLeaves: number
+  /** Reader calls the split leaves made (one per group of at most six files, per leaf). */
+  readerCalls: number
+  /** Bytes that crossed RPC for a split query: extracts, tail parts, leaf answers. */
+  rpcBytes: number
+  /** The largest engine memory a split leaf reported. */
+  leafPeakWasmBytes: number
+  /** The most samples one split leaf held. */
+  leafMaxSamples: number
+  /** Split leaves run again after stopping at their share of the budget. */
+  leafReruns: number
 }
 
 export const newCost = (): Cost => ({
   ledgerVersion: 0, planAttempts: 0, filesListed: 0, filesSkipped: 0, filesRead: 0, scanSamples: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, leafCalls: 0,
   leavesUsed: 0, leafRounds: 0, shardsAsked: 0, shardCalls: 0, tailBatches: 0, tailBytes: 0, seriesLoaded: 0, samplesLoaded: 0, engineMs: 0, wasmMemoryBytes: 0,
+  execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0,
 })
 
 /**
@@ -98,6 +115,12 @@ export const hooks: {
   maxPartBytes?: number
   /** Overrides `ISOLATE_BUDGET_BYTES`. */
   isolateBudgetBytes?: number
+  /** Split every query that decomposes, over exactly this many leaves. */
+  forceLeaves?: number
+  /** Run split leaves one after another instead of at once (so each memory figure is its own). */
+  sequentialLeaves?: boolean
+  /** Before each call to a split leaf; may throw to simulate a failure. */
+  beforeSplitLeaf?: (part: number, attempt: number) => Promise<void>
 } = {}
 
 export interface Context {
@@ -405,7 +428,17 @@ const tooMuch = (c: Context, what: string, bytes: number): ApiError =>
  * Calls `evaluate` with it and returns its result. `reads` are the reads evaluation will
  * make (one per selector, unmerged): they size the scan before anything is fetched.
  */
-export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRange[], evaluate: (input: ScanInput) => T): Promise<T> {
+/** A query that decomposes, with what the split path needs. */
+export interface SplitSpec<T> {
+  query: string
+  grid: Grid
+  fragments: number
+  without: string[]
+  /** The answer from the merged result. */
+  done: (out: { json: string; stats: QueryStats }) => T
+}
+
+export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRange[], evaluate: (input: ScanInput) => T, split?: SplitSpec<T>): Promise<T> {
   // No selector (`1 + 1`, `time()`): nothing to read, and no reason to wake anything.
   if (ranges.length === 0) return timed(c, evaluate, { seriesFiles: [], sampleFiles: [], tailBatches: [] })
   const minTs = Math.min(...ranges.map((r) => r.minTs))
@@ -445,6 +478,50 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       c.cost.scanSamples = scan
       c.cost.filesListed = listed.length
       c.cost.filesSkipped = listed.length - wanted.length
+      const lakeBytesAll = wanted.reduce((a, f) => a + f.bytes, 0)
+      if (split && (hooks.forceLeaves !== undefined || scan > c.limits.splitAboveSamples || lakeBytesAll > c.limits.maxFetchBytes || wanted.length > c.limits.maxFiles)) {
+        // ── Split execution: leaves read and evaluate parts of the series; only the tail is held here. ──
+        c.cost.execution = 'split'
+        c.cost.splitReason = ''
+        if (scan > c.limits.maxQueryScanSamples) {
+          throw new ApiError('execution', `query exceeded limit max_query_scan_samples: the data files in range hold ${scan} samples the query would decode, the limit is ${c.limits.maxQueryScanSamples}. Narrow the time range, or select fewer metrics by name.`)
+        }
+        if (wanted.length > c.limits.maxQueryFiles) throw new ApiError('execution', `query exceeded limit max_query_files: ${wanted.length} data files to read, the limit is ${c.limits.maxQueryFiles}. Narrow the time range.`)
+        if (lakeBytesAll > c.limits.maxQueryFetchBytes) {
+          throw new ApiError('execution', `query exceeded limit max_query_fetch_bytes: the ${wanted.length} data files in range are ${lakeBytesAll} bytes, the limit is ${c.limits.maxQueryFetchBytes}. Narrow the time range, or select fewer metrics by name.`)
+        }
+        const shards = await shardsOf(c, snap.watermarks)
+        c.cost.shardsAsked = shards.length
+        const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))
+        let again = false
+        shards.forEach((s, i) => {
+          const t = tails[i]!
+          if (t.status === 'refused') {
+            refused(`shard ${s}`, t.why)
+            again = true
+          }
+        })
+        if (again) continue
+        const tailBatches = tails.flatMap((t) => (t.status === 'ok' ? t.batches : []))
+        const tailBytes = tails.reduce((a, t) => a + (t.status === 'ok' ? t.bytes : 0), 0)
+        // The coordinator holds the tail while it cuts it by part.
+        if (tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the unflushed tail', tailBytes)
+        c.cost.filesRead = wanted.length
+        c.cost.bytesRead = lakeBytesAll
+        c.cost.tailBatches = tailBatches.length
+        c.cost.tailBytes = tailBytes
+        checkDeadline(c)
+        const r = await runSplit(c, split, ranges, series, samples, tailBatches, scan + Math.ceil(tailBytes / 20))
+        if (r.status === 'missing') {
+          refused(`file ${r.key}`, `data file ${r.key} is listed by the ledger but is not in R2`)
+          continue
+        }
+        return split.done(r.out)
+      }
+      if (split) {
+        c.cost.execution = 'single'
+        c.cost.splitReason = 'the query fits in one place'
+      }
       if (scan > c.limits.maxScanSamples) {
         throw new ApiError(
           'execution',
@@ -505,6 +582,272 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
     }
   } finally {
     inFlightBytes -= reserved
+  }
+}
+
+// ──────────────────────────────── split ────────────────────────────────
+
+/**
+ * A samples file and the series file written with it have the same key once the table
+ * name and the content hash are removed (contracts/TABLES.md, "Pairing").
+ */
+export const pairKey = (key: string): string => key.replace(/\/metric_(samples|series)\//, '/*/').replace(/-[0-9a-f]{8}\.parquet$/, '')
+
+/**
+ * Reader groups: sample files in precedence order, each with its series file, packed
+ * into calls of at most six reads and 24 MiB. A group never reorders files, so the
+ * leaves can rank groups by position.
+ */
+export function readerGroups(series: FileEntry[], samples: FileEntry[]): { series: FileRef[]; samples: FileRef[] }[] {
+  const byPair = new Map(series.map((f) => [pairKey(f.key), f]))
+  const groups: { series: FileRef[]; samples: FileRef[] }[] = []
+  let cur: { series: FileRef[]; samples: FileRef[] } | null = null
+  let bytes = 0
+  for (const f of samples) {
+    const s = byPair.get(pairKey(f.key))
+    if (!s) throw new ApiError('internal', `the plan has no series file for ${f.key}`)
+    const add = f.bytes + s.bytes
+    if (!cur || cur.series.length + cur.samples.length + 2 > MAX_READS_PER_CALL || bytes + add > MAX_BYTES_PER_CALL) {
+      cur = { series: [], samples: [] }
+      groups.push(cur)
+      bytes = 0
+    }
+    cur.series.push({ key: s.key, bytes: s.bytes })
+    cur.samples.push({ key: f.key, bytes: f.bytes })
+    bytes += add
+  }
+  return groups
+}
+
+/** `total` cut into `n` shares that add up to it. */
+const share = (total: number, n: number, j: number): number => Math.floor(total / n) + (j < total % n ? 1 : 0)
+
+/**
+ * Evaluate a split query: `L` leaves, each owning a range of series keys, each pulling
+ * its rows from readers and evaluating the query's fragments; then merge here. Leaves
+ * that stop at their share of the budget are run again with what the others left, once.
+ */
+async function runSplit<T>(
+  c: Context,
+  spec: SplitSpec<T>,
+  ranges: FetchRange[],
+  series: FileEntry[],
+  samples: FileEntry[],
+  tails: Uint8Array[],
+  estimate: number,
+): Promise<{ status: 'ok'; out: { json: string; stats: QueryStats } } | { status: 'missing'; key: string }> {
+  const pool = leafPoolSize(c.env)
+  const L = hooks.forceLeaves ?? Math.min(Math.max(2, Math.ceil(estimate / (0.75 * c.limits.maxSamples))), Math.max(1, Math.min(c.limits.maxLeaves, pool)))
+  c.cost.splitLeaves = L
+  // The query's budget, and each leaf's share of it (never more than one isolate may hold).
+  const qSamples = Math.min(c.limits.maxQuerySamples, L * c.limits.maxSamples)
+  const qSeries = Math.min(c.limits.maxQuerySeries, L * c.limits.maxSeries)
+  const groups = readerGroups(series, samples)
+  const parts = c.engine.splitTails(tails, spec.without, L, ranges)
+  const ttl = fileCacheTtl(c.env)
+  const base = hash32(c.queryId)
+  const used = new Set<number>()
+  const leaf = (n: number) => c.env.LEAF.get(c.env.LEAF.idFromName(`leaf/${c.env.CELL}/${n % pool}`))
+
+  const run = async (j: number, budget: { samples: number; series: number }): Promise<EvaluateAnswer> => {
+    const req: EvaluateRequest = {
+      query: spec.query, grid: spec.grid, fragments: spec.fragments, without: spec.without, part: j, parts: L, ranges, groups, tails: parts[j]!,
+      budget: { samples: budget.samples, series: budget.series, stepPoints: c.limits.maxStepPoints }, limits: c.limits, cacheTtlS: ttl, pool, queryId: c.queryId,
+    }
+    const call = async (attempt: number): Promise<EvaluateAnswer> => {
+      if (hooks.beforeSplitLeaf) await hooks.beforeSplitLeaf(j, attempt)
+      used.add((base + j + attempt) % pool)
+      c.cost.leafCalls++
+      c.cost.rpcBytes += parts[j]!.reduce((a, b) => a + b.byteLength, 0)
+      return leaf(base + j + attempt).evaluate(req)
+    }
+    let a: EvaluateAnswer
+    try {
+      a = await call(0)
+    } catch {
+      // One retry on the next leaf; the first attempt's answer, if any, was lost with it.
+      try {
+        a = await call(1)
+      } catch (e) {
+        throw new ApiError('unavailable', `a split leaf failed twice: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    if (a.status === 'refused') throw new ApiError('unavailable', `a leaf refused to read data files: ${a.reason}`)
+    if (a.status === 'ok') {
+      const st = a.stats
+      c.cost.readerCalls += st.readerCalls
+      c.cost.cacheHits += st.cacheHits
+      c.cost.r2Gets += st.r2Gets
+      c.cost.rpcBytes += st.extractBytes + a.answer.byteLength
+      c.cost.leafPeakWasmBytes = Math.max(c.cost.leafPeakWasmBytes, st.wasmMemoryBytes)
+      c.cost.leafMaxSamples = Math.max(c.cost.leafMaxSamples, leafSummary(a.answer).gatheredSamples)
+    }
+    return a
+  }
+
+  const runAll = async (jobs: [number, { samples: number; series: number }][]): Promise<EvaluateAnswer[]> => {
+    if (!hooks.sequentialLeaves) return Promise.all(jobs.map(([j, b]) => run(j, b)))
+    const out: EvaluateAnswer[] = []
+    for (const [j, b] of jobs) out.push(await run(j, b))
+    return out
+  }
+
+  checkDeadline(c)
+  const first = await runAll(Array.from({ length: L }, (_, j) => [j, { samples: share(qSamples, L, j), series: share(qSeries, L, j) }] as [number, { samples: number; series: number }]))
+  c.cost.leavesUsed = Math.max(c.cost.leavesUsed, used.size)
+  const missing = first.find((a) => a.status === 'missing')
+  if (missing && missing.status === 'missing') return { status: 'missing', key: missing.key }
+  const answers = first.map((a) => (a.status === 'ok' ? a.answer : new Uint8Array()))
+
+  // Leaves that stopped at their share: what they held is a lower bound of what they
+  // would load, so the query's total is at least the sum of everyone's counts.
+  for (let round = 0; ; round++) {
+    const sums = answers.map(leafSummary)
+    const stopped = sums.map((s, j) => (s.status === 'aborted' ? j : -1)).filter((j) => j >= 0)
+    if (stopped.length === 0) break
+    const low = (s: (typeof sums)[number]) => ({ samples: Math.max(s.gatheredSamples, s.loadedSamples), series: Math.max(s.gatheredSeries, s.loadedSeries) })
+    const total = sums.reduce((a, s) => ({ samples: a.samples + low(s).samples, series: a.series + low(s).series }), { samples: 0, series: 0 })
+    if (total.series > qSeries) throw new ApiError('execution', `query exceeded limit max_series: at least ${total.series} series loaded, the limit is ${qSeries} (over ${L} leaves)`)
+    if (total.samples > qSamples) throw new ApiError('execution', `query exceeded limit max_samples: at least ${total.samples} samples loaded, the limit is ${qSamples} (over ${L} leaves)`)
+    if (round > 0) {
+      throw new ApiError(
+        'execution',
+        `query exceeded limit max_samples: one leaf's part holds more than one isolate may load (${c.limits.maxSamples} samples or ${c.limits.maxSeries} series); the series are unevenly spread over the ${L} leaves`,
+      )
+    }
+    // Run them again with what the others left, never more than one isolate may hold.
+    const rerun = await runAll(
+      stopped.map((j) => {
+        const others = sums.reduce((a, s, k) => (k === j ? a : { samples: a.samples + low(s).samples, series: a.series + low(s).series }), { samples: 0, series: 0 })
+        return [j, { samples: Math.min(c.limits.maxSamples, qSamples - others.samples), series: Math.min(c.limits.maxSeries, qSeries - others.series) }] as [number, { samples: number; series: number }]
+      }),
+    )
+    c.cost.leafReruns += stopped.length
+    for (let k = 0; k < stopped.length; k++) {
+      const a = rerun[k]!
+      if (a.status === 'missing') return { status: 'missing', key: a.key }
+      if (a.status === 'ok') answers[stopped[k]!] = a.answer
+    }
+  }
+  checkDeadline(c)
+  const limits: QueryLimits = { ...c.limits, maxSamples: qSamples, maxSeries: qSeries, maxStepPoints: L * c.limits.maxStepPoints }
+  const t0 = performance.now()
+  try {
+    return { status: 'ok', out: c.engine.mergeJson(answers, spec.query, spec.grid, limits) }
+  } finally {
+    c.cost.engineMs += Math.round(performance.now() - t0)
+    c.cost.wasmMemoryBytes = c.engine.memoryBytes()
+  }
+}
+
+// ───────────────────────────── cardinality ─────────────────────────────
+
+/**
+ * The cardinality report over `[start, end]`: the tenant's `metric_series` files from
+ * `lookbackStart` to `end` (one ledger version) and every shard's tail above the
+ * watermarks, with the same fence as a query. Counted in one place, or, when the series
+ * files do not fit one place (or a test forces it), over leaves that each own a range of
+ * `series_id`s and read every series file.
+ */
+export async function cardinality(c: Context, start: number, end: number, lookbackStart: number, limit: number): Promise<{ tsdb: string; cardinality: string }> {
+  const caps = { maxSeries: c.limits.maxCardinalitySeries, maxPairs: c.limits.maxCardinalityPairs }
+  const have = new Map<string, Uint8Array>()
+  const refusals = new Map<string, number>()
+  const known = new Map<string, number>()
+  const refused = (who: string, why: string): void => {
+    const n = (refusals.get(who) ?? 0) + 1
+    refusals.set(who, n)
+    if (n > MAX_REFUSALS) throw new ApiError('unavailable', `${why}, and the ledger does not catch up; retry later`)
+  }
+  for (;;) {
+    checkDeadline(c)
+    const snap = await snapshot(c, lookbackStart, end)
+    c.cost.ledgerVersion = snap.version
+    // Prune by time only (no matchers): every series file that can hold a series of the window.
+    const keep = c.engine.filesNeeded(snap.series.map((f) => f.index), [{ matchers: [], minTs: lookbackStart, maxTs: end }])
+    const files = snap.series.filter((_, i) => keep[i])
+    c.cost.filesListed = snap.series.length
+    c.cost.filesSkipped = snap.series.length - files.length
+    const bytes = files.reduce((a, f) => a + f.bytes, 0)
+    if (files.length > c.limits.maxQueryFiles) throw new ApiError('execution', `query exceeded limit max_query_files: ${files.length} series files to read, the limit is ${c.limits.maxQueryFiles}. Narrow the time range.`)
+    if (bytes > c.limits.maxQueryFetchBytes) throw tooMuch(c, `the ${files.length} series files in range`, bytes)
+    const shards = await shardsOf(c, snap.watermarks)
+    c.cost.shardsAsked = shards.length
+    const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))
+    let again = false
+    shards.forEach((s, i) => {
+      const t = tails[i]!
+      if (t.status === 'refused') {
+        refused(`shard ${s}`, t.why)
+        again = true
+      }
+    })
+    if (again) continue
+    const tailBatches = tails.flatMap((t) => (t.status === 'ok' ? t.batches : []))
+    const tailBytes = tails.reduce((a, t) => a + (t.status === 'ok' ? t.bytes : 0), 0)
+    if (tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the unflushed tail', tailBytes)
+    c.cost.tailBatches = tailBatches.length
+    c.cost.tailBytes = tailBytes
+    c.cost.filesRead = files.length
+    c.cost.bytesRead = bytes
+    const pool = leafPoolSize(c.env)
+    const rows = files.reduce((a, f) => a + f.rows, 0)
+    const L = hooks.forceLeaves ?? (bytes > c.limits.maxFetchBytes ? Math.min(Math.max(2, Math.ceil(rows / 250_000)), Math.max(1, Math.min(c.limits.maxLeaves, pool))) : 1)
+    let summaries: Uint8Array[]
+    if (L === 1) {
+      c.cost.execution = 'single'
+      let got: Uint8Array[]
+      try {
+        got = await fetchFiles(c, files, have)
+      } catch (e) {
+        if (!(e instanceof MissingFile)) throw e
+        refused(`file ${e.key}`, e.message)
+        continue
+      }
+      const t0 = performance.now()
+      summaries = [c.engine.cardinalityPart(got, tailBatches, start, end, 0, 1, caps)]
+      c.cost.engineMs += Math.round(performance.now() - t0)
+    } else {
+      c.cost.execution = 'split'
+      c.cost.splitLeaves = L
+      const refs = files.map((f) => ({ key: f.key, bytes: f.bytes }))
+      const base = hash32(c.queryId)
+      const answers = await Promise.all(
+        Array.from({ length: L }, async (_, j) => {
+          const req = { files: refs, tails: tailBatches, part: j, parts: L, start, end, caps, cacheTtlS: fileCacheTtl(c.env) }
+          const call = (attempt: number) => {
+            c.cost.leafCalls++
+            c.cost.rpcBytes += tailBytes
+            return c.env.LEAF.get(c.env.LEAF.idFromName(`leaf/${c.env.CELL}/${(base + j + attempt) % pool}`)).cardinality(req)
+          }
+          try {
+            return await call(0)
+          } catch {
+            return await call(1)
+          }
+        }),
+      )
+      const missing = answers.find((a) => a.status === 'missing')
+      if (missing && missing.status === 'missing') {
+        refused(`file ${missing.key}`, `data file ${missing.key} is listed by the ledger but is not in R2`)
+        continue
+      }
+      summaries = answers.map((a) => (a.status === 'ok' ? a.summary : new Uint8Array()))
+      for (const a of answers) {
+        if (a.status === 'ok') {
+          c.cost.rpcBytes += a.summary.byteLength
+          c.cost.cacheHits += a.cacheHits
+          c.cost.r2Gets += a.r2Gets
+        }
+      }
+    }
+    const t0 = performance.now()
+    try {
+      return c.engine.cardinalityReport(summaries, limit, start, end, lookbackStart, caps)
+    } finally {
+      c.cost.engineMs += Math.round(performance.now() - t0)
+      c.cost.wasmMemoryBytes = c.engine.memoryBytes()
+    }
   }
 }
 

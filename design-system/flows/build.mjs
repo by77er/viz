@@ -100,17 +100,21 @@ if (args.includes('--facts')) {
   console.log(`error log lines, 09:16 to 15:16: ${f.logLines}`)
 }
 
-// Palette-encode a PNG in place, keeping every token colour of both themes exact: the palette is the token colours plus the image's own
-// most frequent colours, up to 256, with no dithering.
+// Palette-encode a PNG in place, keeping every token colour of both themes exact: the palette is the token colours plus 256 less that many
+// colours chosen from the image (median cut); each pixel takes its nearest palette colour exactly, with no dithering.
 const tokenHex = [...new Set(readFileSync(join(ds, 'dist/tokens.css'), 'utf8').match(/#[0-9a-f]{6}\b/gi))].map((h) => h.toLowerCase())
 const py = `import sys
+import numpy as np
 from PIL import Image
-toks = [tuple(int(h[i:i+2], 16) for i in (1, 3, 5)) for h in sys.argv[2].split(',')]
-im = Image.open(sys.argv[1]).convert('RGB')
-adaptive = im.quantize(colors=256 - len(toks), method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).getpalette()[: (256 - len(toks)) * 3]
-cols = list(dict.fromkeys(toks + [tuple(adaptive[i:i+3]) for i in range(0, len(adaptive), 3)]))[:256]
-pal = Image.new('P', (1, 1)); pal.putpalette([c for rgb in cols for c in rgb] + [0] * (768 - 3 * len(cols)))
-im.quantize(palette=pal, dither=Image.Dither.NONE).save(sys.argv[1], optimize=True)
+toks = np.array([[int(h[i:i+2], 16) for i in (1, 3, 5)] for h in sys.argv[2].split(',')], dtype=np.int32)
+im = Image.open(sys.argv[1]).convert('RGB'); a = np.asarray(im, dtype=np.int32).reshape(-1, 3)
+cols, inv, counts = np.unique(a, axis=0, return_inverse=True, return_counts=True)
+adaptive = np.array(im.quantize(colors=256 - len(toks), method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).getpalette()[: (256 - len(toks)) * 3], dtype=np.int32).reshape(-1, 3)
+pal = np.unique(np.vstack([toks, adaptive]), axis=0)[:256]
+near = np.empty(len(cols), dtype=np.uint8)
+for i in range(0, len(cols), 4096): near[i:i+4096] = ((cols[i:i+4096, None, :] - pal[None, :, :]) ** 2).sum(-1).argmin(1)
+out = Image.fromarray(near[inv.ravel()].reshape(im.size[1], im.size[0]), 'P'); out.putpalette(pal.astype(np.uint8).ravel().tolist())
+out.save(sys.argv[1], optimize=True)
 `
 const encode = (file) => { const r = spawnSync('python3', ['-c', py, file, tokenHex.join(',')], { stdio: 'inherit' }); if (r.status) throw new Error('encode failed: ' + file) }
 

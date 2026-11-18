@@ -1,3 +1,10 @@
+/**
+ * Library check (README, "Library and protocol revision"): do the candidate MCP server
+ * libraries run in workerd under @cloudflare/vitest-plugin? Run with `npm run spike:libs`.
+ * - @modelcontextprotocol/server 2.4.0 (SDK v2) createMcpHandler, with the SDK v2 client
+ *   (2026-07-28) and the SDK v1 1.32.2 client (2025 revisions, stateless legacy path);
+ * - agents 0.33.0 `agents/mcp/server` createMcpHandler (the Cloudflare wrapper of the same handler).
+ */
 import { describe, expect, it } from 'vitest'
 import { McpServer, createMcpHandler, fromJsonSchema } from '@modelcontextprotocol/server'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'

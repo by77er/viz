@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { openSchema, refusalOf, type SchemaState } from '../../contracts/schema'
 import type { PromMatrix, PromScalar, PromVector } from '../../contracts/engine'
 import type {
   Alert,
@@ -28,13 +29,14 @@ import type {
   TimelineEntry,
   ValidationError,
   Validator,
-  WrongTenant,
+  Refused,
 } from '../contracts-proposal/rules.v2'
 import { MAX_BACKTEST_STEPS, runBacktest } from './backtest'
 import { classify } from './classify'
 import { batchFromSingle, errorText, permissiveValidator } from './evaluator'
 import { indexName } from './registry'
 import { ruleFileDocument } from './rulefile'
+import { RULER_SCHEMA } from './schema'
 import { compileAlertRule, DEADMAN_ALERT, DEADMAN_GROUP, deadmanGroup, parseRuleFile, type CompiledAlertRule } from './rules'
 import { evalAlertingRule, evalRecordingRule, isNoDataAlert, toSeries, type AlertEvalResult, type Series } from './statemachine'
 import { alignedTick, backoffMs, byteLength, formatDuration, hash64, mapLimit, parseDuration, resolveObjectName } from './util'
@@ -164,9 +166,11 @@ type Cursor = { at: number; samplesDropped: number; groups: Record<string, [numb
 const EMPTY: ReadonlyMap<string, Alert> = new Map()
 
 export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
-  protected readonly tenant: string
-  protected readonly shard: string
-  private readonly objectName: string
+  protected tenant = ''
+  protected shard = ''
+  private objectName = ''
+  /** What opening storage found. Anything but `ok`: every RPC answers `schema_too_new` and nothing is written. */
+  private schema: SchemaState = { status: 'schema_too_new', component: RULER_SCHEMA.component, found: 0, compat: 0, known: 0, retryAfterMs: 0 }
   private cfg: RulerConfig = DEFAULT_RULER_CONFIG
   /** Set once anything has been configured or saved. An untouched object has no rows and no alarm. */
   private activatedAt: number | null = null
@@ -192,25 +196,19 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     super(ctx, env)
     // `<tenant>/<n>`. The name is the only source of the tenant; an object reached by an
     // id that has no name serves nobody.
-    const sql = ctx.storage.sql
-    // The object's own identity, not tenant data: one row, written when the object is first used.
-    sql.exec(`CREATE TABLE IF NOT EXISTS self (one INTEGER PRIMARY KEY CHECK (one = 1), name TEXT NOT NULL)`)
-    this.objectName = resolveObjectName(ctx.id.name, sql.exec<{ name: string }>(`SELECT name FROM self`).toArray()[0]?.name)
-    const cut = this.objectName.lastIndexOf('/')
-    this.tenant = cut > 0 ? this.objectName.slice(0, cut) : ''
-    this.shard = cut > 0 ? this.objectName.slice(cut + 1) : ''
-
-    sql.exec(`CREATE TABLE IF NOT EXISTS meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k)) WITHOUT ROWID`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS rule_group (tenant TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, not_before INTEGER NOT NULL,
-      PRIMARY KEY (tenant, name)) WITHOUT ROWID`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS alert (tenant TEXT NOT NULL, grp TEXT NOT NULL, rule_key TEXT NOT NULL, fp TEXT NOT NULL, body TEXT NOT NULL,
-      PRIMARY KEY (tenant, grp, rule_key, fp)) WITHOUT ROWID`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS handoff (tenant TEXT NOT NULL, seq INTEGER NOT NULL, created_at INTEGER NOT NULL, updates TEXT NOT NULL,
-      PRIMARY KEY (tenant, seq)) WITHOUT ROWID`)
-    // One row per monitor: its bounded transition log as one JSON value (AGENTS.md: whole batches as rows).
-    sql.exec(`CREATE TABLE IF NOT EXISTS timeline (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL,
-      PRIMARY KEY (tenant, monitor)) WITHOUT ROWID`)
-    this.load()
+    // Versioned storage (contracts/COMPATIBILITY.md §2): migrate, or refuse storage a newer
+    // release wrote. Local SQLite only, so holding other events off for it is allowed.
+    void ctx.blockConcurrencyWhile(async () => {
+      this.schema = openSchema(ctx.storage, RULER_SCHEMA)
+      if (this.schema.status !== 'ok') return
+      const sql = ctx.storage.sql
+      // The object's own identity, not tenant data: one row, written when the object is first used.
+      this.objectName = resolveObjectName(ctx.id.name, sql.exec<{ name: string }>(`SELECT name FROM self`).toArray()[0]?.name)
+      const cut = this.objectName.lastIndexOf('/')
+      this.tenant = cut > 0 ? this.objectName.slice(0, cut) : ''
+      this.shard = cut > 0 ? this.objectName.slice(cut + 1) : ''
+      this.load()
+    })
   }
 
   // ───────────────────────── injection points ─────────────────────────
@@ -364,7 +362,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     }
   }
 
-  private wrongTenant(tenant: string): WrongTenant | null {
+  /** Every RPC asks this first: storage this code may not touch, or another tenant's object. */
+  private wrongTenant(tenant: string): Refused | null {
+    const refused = refusalOf(this.schema)
+    if (refused) return refused
     return this.tenant !== '' && tenant === this.tenant ? null : { status: 'wrong_tenant' }
   }
 
@@ -412,6 +413,12 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   // ───────────────────────── the tick ─────────────────────────
 
   async alarm(): Promise<void> {
+    const refused = refusalOf(this.schema)
+    if (refused) {
+      // Keep the alarm for the release that owns this storage; touch nothing else.
+      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)
+      return
+    }
     await this.tick()
   }
 
@@ -750,7 +757,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   // ───────────────────────── RPC ─────────────────────────
 
-  async configure(tenant: string, patch: Partial<Omit<RulerConfig, 'limits'>> & { limits?: Partial<RulerLimits> }): Promise<{ status: 'ok'; config: RulerConfig } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant> {
+  async configure(tenant: string, patch: Partial<Omit<RulerConfig, 'limits'>> & { limits?: Partial<RulerLimits> }): Promise<{ status: 'ok'; config: RulerConfig } | { status: 'invalid'; errors: ValidationError[] } | Refused> {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const errors = validateConfigPatch(patch)
@@ -958,7 +965,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 
   /** Remove the rule carrying `monitorId` from `groupName`; a group left without rules is deleted. */
-  async removeRule(tenant: string, groupName: string, monitorId: string, dryRun = false): Promise<{ status: 'ok'; removed: boolean } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant> {
+  async removeRule(tenant: string, groupName: string, monitorId: string, dryRun = false): Promise<{ status: 'ok'; removed: boolean } | { status: 'invalid'; errors: ValidationError[] } | Refused> {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const g = this.groups.get(groupName)
@@ -1219,7 +1226,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     return { status: 'ok' as const, rules }
   }
 
-  async health(tenant: string): Promise<({ status: 'ok' } & RulerHealth) | WrongTenant> {
+  async health(tenant: string): Promise<({ status: 'ok' } & RulerHealth) | Refused> {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const now = this.now()

@@ -43,8 +43,15 @@ describe('house rules, read from the source', () => {
     expect(writes).toHaveLength(2)
     const drain = tenant.slice(tenant.indexOf('private async drainOnce'), tenant.indexOf('override async alarm'))
     expect([...drain.matchAll(/this\.kv\.(put|delete)\(/g)]).toHaveLength(2)
-    // no blockConcurrencyWhile, no eval, and the Worker never reads a tenant from the request
-    for (const src of [...Object.values(sources), index]) expect(src).not.toMatch(/blockConcurrencyWhile|\beval\(|new Function\(/)
+    // blockConcurrencyWhile only once: in the constructor, around opening (migrating) local SQLite,
+    // with no await inside (AGENTS.md: never hold it across R2 or network I/O)
+    for (const src of [...Object.values(sources), index]) expect(src).not.toMatch(/\beval\(|new Function\(/)
+    for (const [file, src] of Object.entries({ ...sources, index })) if (file !== 'tenant') expect(src, file).not.toMatch(/blockConcurrencyWhile/)
+    expect([...tenant.matchAll(/blockConcurrencyWhile/g)]).toHaveLength(1)
+    const block = tenant.slice(tenant.indexOf('blockConcurrencyWhile'), tenant.indexOf('\n    })\n', tenant.indexOf('blockConcurrencyWhile')))
+    expect(tenant.slice(tenant.indexOf('constructor('), tenant.indexOf('refusal(): SchemaTooNew'))).toContain(block)
+    expect(block).toContain('openSchema(ctx.storage, TENANT_SCHEMA)')
+    expect(block).not.toMatch(/\bawait\b|fetch\(|\.kv\.|BUCKET/)
     expect(index).not.toMatch(/searchParams\.get\('tenant'\)|headers\.get\('X-(Scope|Tenant)/i)
     expect([...index.matchAll(/idFromName\(/g)]).toHaveLength(1)
     expect(index).toContain('idFromName(identity.tenant)')

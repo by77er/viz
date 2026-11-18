@@ -97,6 +97,19 @@ describe('series names (M5)', () => {
       { numRuns: 500 },
     )
   })
+  it('property: long values that differ only in the middle still give distinct short names', () => {
+    // The case middle truncation is built to break: one long label whose values share a head
+    // and a tail, and differ only inside.
+    const middles = fc.uniqueArray(fc.string({ minLength: 0, maxLength: 6 }), { minLength: 2, maxLength: 12 })
+    fc.assert(
+      fc.property(middles, fc.integer({ min: 8, max: 60 }), fc.boolean(), (ms, max, withJob) => {
+        const all = ms.map((m) => ({ pod: `checkout-deployment-${m}-production-eu-west-1-x2k4p`, ...(withJob ? { job: 'kubelet' } : {}) }))
+        const n = nameSeries(all, max).names
+        for (const form of ['name', 'short', 'full'] as const) expect(new Set(n.map((x) => x[form])).size).toBe(all.length)
+      }),
+      { numRuns: 300 },
+    )
+  })
   it('property: the names do not depend on the order of the series', () => {
     fc.assert(
       fc.property(result, fc.integer({ min: 0, max: 1000 }), (all, seed) => {

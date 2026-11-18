@@ -32,6 +32,7 @@
     "reg": "logged",
     "query": "impl",
     "unknownStream": "refuse",
+    "f6Register": true,
     "readBound": true,
     "log": "segments",
     "rebuild": "strict",
@@ -53,7 +54,7 @@
   "states": 748957,
   "transitions": 3770844,
   "depth": 25,
-  "seconds": 46.3,
+  "seconds": 50.6,
   "collisionProb": 1.5e-8,
   "violated": "I4_NoGapAtSeam",
   "trace": [

@@ -1,0 +1,30 @@
+{
+ "format": "rpc.alert-update",
+ "version": 1,
+ "stored": "[{\"fingerprint\":\"578a9786a3362fe0\",\"labels\":{\"instance\":\"api-1\",\"job\":\"api\",\"team\":\"pay\",\"severity\":\"page\",\"alertname\":\"HighErrorRate\"},\"annotations\":{\"summary\":\"api-1 errors at 0.75\"},\"status\":\"firing\",\"startsAt\":4102444857632,\"endsAt\":null,\"value\":0.75,\"at\":4102444857632,\"generator\":{\"group\":\"payments\",\"rule\":\"HighErrorRate\"},\"expiresAt\":null}]",
+ "sent": [
+  {
+   "fingerprint": "578a9786a3362fe0",
+   "labels": {
+    "instance": "api-1",
+    "job": "api",
+    "team": "pay",
+    "severity": "page",
+    "alertname": "HighErrorRate"
+   },
+   "annotations": {
+    "summary": "api-1 errors at 0.75"
+   },
+   "status": "firing",
+   "startsAt": 4102444857632,
+   "endsAt": null,
+   "value": 0.75,
+   "at": 4102444857632,
+   "generator": {
+    "group": "payments",
+    "rule": "HighErrorRate"
+   },
+   "expiresAt": null
+  }
+ ]
+}

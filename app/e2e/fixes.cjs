@@ -211,7 +211,9 @@ async function main() {
       const ring = await page.evaluate(() => { const cs = getComputedStyle(document.activeElement); return cs.outlineStyle === 'solid' && cs.outlineWidth === '2px' })
       check('M3: after Cancel by keyboard, focus is on Retry, with the ring', afterCancel === 'retry' && ring, `focus on ${afterCancel}, ring ${ring}`)
       await setMockDelay(0)
-      await page.keyboard.press('Enter') // Retry
+      // Retry by keyboard. Focus is put there explicitly, so that a failure above is recorded
+      // by the checks and does not stop the run here.
+      await page.focus('[data-testid=retry]'); await page.keyboard.press('Enter')
       await page.waitForSelector('[data-testid=halted]', { state: 'detached' })
       await step('Retry (keyboard)', 'run')
       await setMockDelay(5000)

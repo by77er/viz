@@ -674,9 +674,13 @@ impl Gathered {
 /// `SeriesSource` over a leaf's gathered data, with its budget and per-call counts.
 struct GatheredSource<'g> {
     g: &'g Gathered,
-    steps: Vec<u64>,
+    /// The query's selectors, for the step count of a call (as `StorageSource` finds it).
+    plan: Vec<viz_promql::SelectorInfo>,
+    default_steps: u64,
     budget: LeafBudget,
-    calls: RefCell<Vec<(u64, u64)>>,
+    /// Per fragment, each `select` call: (series, samples, steps).
+    calls: RefCell<Vec<Vec<(u64, u64, u64)>>>,
+    current: std::cell::Cell<usize>,
     failure: RefCell<Option<(Limit, u64)>>,
 }
 
@@ -696,12 +700,21 @@ impl SeriesSource for GatheredSource<'_> {
                 out.push(Series { labels: s.labels.clone(), ts: s.ts[lo..hi].to_vec(), values: s.vals[lo..hi].to_vec() });
             }
         }
+        let steps = self
+            .plan
+            .iter()
+            .filter(|s| s.min_ts_ms == min && s.max_ts_ms == max && s.matchers == matchers)
+            .map(|s| s.steps as u64)
+            .max()
+            .unwrap_or(self.default_steps);
         let mut calls = self.calls.borrow_mut();
-        let call = calls.len();
-        calls.push((out.len() as u64, n));
-        let series: u64 = calls.iter().map(|c| c.0).sum();
-        let samples: u64 = calls.iter().map(|c| c.1).sum();
-        let steps = self.steps.get(call).copied().unwrap_or(1);
+        let f = self.current.get();
+        if calls.len() <= f {
+            calls.resize(f + 1, Vec::new());
+        }
+        calls[f].push((out.len() as u64, n, steps));
+        let series: u64 = calls.iter().flatten().map(|c| c.0).sum();
+        let samples: u64 = calls.iter().flatten().map(|c| c.1).sum();
         let fail = if series > self.budget.series {
             Some((Limit::MaxSeries, series))
         } else if samples > self.budget.samples {
@@ -753,8 +766,8 @@ pub struct LeafOutput {
     pub status: u8,
     /// Distinct samples and series the leaf held.
     pub gathered: (u64, u64),
-    /// Series and samples each `select` loaded, in order.
-    pub calls: Vec<(u64, u64)>,
+    /// Per evaluated fragment, each `select` call it made: (series, samples, steps).
+    pub calls: Vec<Vec<(u64, u64, u64)>>,
     /// `LEAF_ERROR`: the evaluation error, and the fragment it occurred in.
     pub error: Option<(QueryError, usize)>,
     /// `LEAF_ABORTED`: the leaf limit exceeded and the count reached.
@@ -784,14 +797,18 @@ impl LeafOutput {
         let mut o = Out(Vec::with_capacity(64));
         o.0.extend_from_slice(MAGIC);
         o.u8(self.status);
-        let loaded = self.calls.iter().fold((0u64, 0u64), |a, c| (a.0 + c.1, a.1 + c.0));
+        let loaded = self.calls.iter().flatten().fold((0u64, 0u64), |a, c| (a.0 + c.1, a.1 + c.0));
         for v in [self.gathered.0, self.gathered.1, loaded.0, loaded.1] {
             o.0.extend_from_slice(&v.to_le_bytes());
         }
         o.var(self.calls.len() as u64);
-        for (s, n) in &self.calls {
-            o.var(*s);
-            o.var(*n);
+        for f in &self.calls {
+            o.var(f.len() as u64);
+            for (s, n, st) in f {
+                o.var(*s);
+                o.var(*n);
+                o.var(*st);
+            }
         }
         match &self.error {
             Some((e, f)) => {
@@ -837,10 +854,15 @@ impl LeafOutput {
         let status = bytes[4];
         let gathered = (u(0), u(1));
         let mut r = In::new(&bytes[37..]);
-        let nc = r.count(2).map_err(bad)?;
-        let mut calls = Vec::with_capacity(nc);
-        for _ in 0..nc {
-            calls.push((r.var().map_err(bad)?, r.var().map_err(bad)?));
+        let nf = r.count(1).map_err(bad)?;
+        let mut calls = Vec::with_capacity(nf);
+        for _ in 0..nf {
+            let nc = r.count(3).map_err(bad)?;
+            let mut f = Vec::with_capacity(nc);
+            for _ in 0..nc {
+                f.push((r.var().map_err(bad)?, r.var().map_err(bad)?, r.var().map_err(bad)?));
+            }
+            calls.push(f);
         }
         let error = if r.u8().map_err(bad)? == 1 {
             let t = match r.u8().map_err(bad)? {
@@ -930,12 +952,18 @@ pub fn leaf_evaluate(g: &Gathered, query: &str, grid: Grid, opts: &Options, expe
     };
     let src = GatheredSource {
         g,
-        steps: sels.iter().map(|s| s.steps as u64).collect(),
+        plan: sels,
+        default_steps: match grid {
+            Grid::Range { start, end, step } => ((end - start) / step.max(1) + 1).max(1) as u64,
+            Grid::Instant { .. } => 1,
+        },
         budget: g.budget,
-        calls: RefCell::new(Vec::new()),
+        calls: RefCell::new(vec![Vec::new(); frags.len()]),
+        current: std::cell::Cell::new(0),
         failure: RefCell::new(None),
     };
     for (fi, node) in frags.iter().enumerate() {
+        src.current.set(fi);
         let Expr::Aggregate(a) = node else { return fail(out, QueryError::internal("split execution: a fragment is not an aggregation"), fi) };
         let cap = Capture { node: a, got: RefCell::new(None) };
         let r = match grid {
@@ -995,13 +1023,11 @@ impl SeriesSource for NoData {
 /// aborted leaves are the caller's to re-run.
 fn merge(query: &str, grid: Grid, opts: &Options, outputs: &[LeafOutput]) -> Result<(Value, Stats), QueryError> {
     opts.limits.check_query(query)?;
-    let (start, end, step) = grid.bounds();
     if let Grid::Range { start, end, step } = grid {
         crate::check_range(start, end, step, opts)?;
     }
     let root = viz_promql::parse_query(query).map_err(QueryError::from_promql)?;
     let (frags, _) = fragments(&root, opts).map_err(|why| QueryError::internal(format!("split execution: the query does not split: {why}")))?;
-    let sels = viz_promql::selectors_with(query, start, end, step, &opts.eval).map_err(QueryError::from_promql)?;
     if outputs.is_empty() {
         return Err(QueryError::internal("split execution: no leaf answered"));
     }
@@ -1011,31 +1037,33 @@ fn merge(query: &str, grid: Grid, opts: &Options, outputs: &[LeafOutput]) -> Res
     }
     let (mut series, mut samples) = (0u64, 0u64);
     let mut merged: Vec<Option<Partial>> = vec![None; frags.len()];
+    let mut selects = 0u64;
     for f in 0..frags.len() {
-        // The select of fragment f, summed over the leaves, checked as one place checks it.
-        let mut call = (0u64, 0u64);
-        for o in outputs {
-            match o.calls.get(f) {
-                Some(c) => {
-                    call.0 += c.0;
-                    call.1 += c.1;
+        // The selects of fragment f (the same calls on every leaf: they depend on the
+        // query, not the data), summed over the leaves, checked as one place checks them.
+        let ncalls = outputs.iter().map(|o| o.calls.get(f).map_or(0, |c| c.len())).max().unwrap_or(0);
+        for c in 0..ncalls {
+            let mut call = (0u64, 0u64, 1u64);
+            for o in outputs {
+                if let Some(x) = o.calls.get(f).and_then(|cs| cs.get(c)) {
+                    call.0 += x.0;
+                    call.1 += x.1;
+                    call.2 = x.2;
                 }
-                None if o.error.as_ref().is_some_and(|(_, ef)| *ef < f) => {}
-                None if o.error.as_ref().is_some_and(|(_, ef)| *ef == f) => {}
-                None => return Err(QueryError::internal(format!("split execution: a leaf did not evaluate fragment {f}"))),
             }
-        }
-        series = series.saturating_add(call.0);
-        if series > opts.limits.max_series {
-            return Err(QueryError::limit(Limit::MaxSeries, opts.limits.max_series, series, "series loaded"));
-        }
-        samples = samples.saturating_add(call.1);
-        if samples > opts.limits.max_samples {
-            return Err(QueryError::limit(Limit::MaxSamples, opts.limits.max_samples, samples, "samples loaded"));
-        }
-        let cells = call.0.saturating_mul(sels.get(f).map_or(1, |s| s.steps as u64));
-        if cells > opts.limits.max_step_points {
-            return Err(QueryError::limit(Limit::MaxStepPoints, opts.limits.max_step_points, cells, "step points (series x steps) for one selector"));
+            selects += 1;
+            series = series.saturating_add(call.0);
+            if series > opts.limits.max_series {
+                return Err(QueryError::limit(Limit::MaxSeries, opts.limits.max_series, series, "series loaded"));
+            }
+            samples = samples.saturating_add(call.1);
+            if samples > opts.limits.max_samples {
+                return Err(QueryError::limit(Limit::MaxSamples, opts.limits.max_samples, samples, "samples loaded"));
+            }
+            let cells = call.0.saturating_mul(call.2);
+            if cells > opts.limits.max_step_points {
+                return Err(QueryError::limit(Limit::MaxStepPoints, opts.limits.max_step_points, cells, "step points (series x steps) for one selector"));
+            }
         }
         if let Some((e, _)) = outputs.iter().filter_map(|o| o.error.as_ref()).find(|(_, ef)| *ef == f) {
             return Err(e.clone());
@@ -1065,7 +1093,7 @@ fn merge(query: &str, grid: Grid, opts: &Options, outputs: &[LeafOutput]) -> Res
     if points > opts.limits.max_output_points {
         return Err(QueryError::limit(Limit::MaxOutputPoints, opts.limits.max_output_points, points, "points in the result"));
     }
-    Ok((value, Stats { selects: frags.len() as u64, series, samples, output_points: points }))
+    Ok((value, Stats { selects, series, samples, output_points: points }))
 }
 
 /// [`merge`] for a range query.

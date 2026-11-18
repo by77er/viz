@@ -14,8 +14,10 @@
  *
  * `adapt: 'agile'` adds a level correction (median residual over the last `agileWindowMs`),
  * so a level shift stops alerting within that window — Datadog's agile/robust trade-off.
- * Contamination: an anomalous value is stored clipped to the band, so one bad day does not
- * become next week's baseline at full strength.
+ * Contamination: an anomalous value is stored clipped to the band, so one bad hour does not
+ * become next week's baseline at full strength — until `acceptAfter` consecutive anomalous
+ * points, after which values are stored as they are (a lasting change is a new normal, and
+ * clipping it forever would leave the baseline unable to learn it).
  *
  * State: (k·P/step + 1) values plus (residual window / step + 1) residuals. For weekly
  * seasonality at 1-hour rollups with k = 4: 673 + 169 numbers (measured size in README).
@@ -45,6 +47,8 @@ export interface SeasonalParams extends CommonParams {
   /** Agile level-correction window. 0 = period / 24. */
   agileWindowMs: number
   contamination: 'clip' | 'keep'
+  /** Consecutive anomalous points after which values are stored unclipped. 0 = max(3, period/24 in steps). */
+  acceptAfter: number
 }
 
 export interface SeasonalState {
@@ -55,6 +59,8 @@ export interface SeasonalState {
   origin: number
   lastTs: number | null
   lastSlot: number | null
+  /** Consecutive anomalous points so far. */
+  run: number
   /** Ring of seasons·P + 1 values (null = missing). */
   vals: (number | null)[]
   /** Ring of R + 1 residuals. */
@@ -77,6 +83,7 @@ export const seasonalDefaults: SeasonalParams = {
   adapt: 'robust',
   agileWindowMs: 0,
   contamination: 'clip',
+  acceptAfter: 0,
 }
 
 function geometry(p: SeasonalParams, stepMs: number) {
@@ -121,9 +128,10 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
     let firstTs = NaN
     for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = tsv(series.ts[i]!); break }
     const st: SeasonalState = compatible
-      ? { ...state, vals: state.vals.slice(), res: state.res.slice() }
-      : { v: 1, periodMs: p.periodMs, stepMs, seasons: g.seasons, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, vals: new Array(g.R).fill(null), res: new Array(g.Rr).fill(null) }
+      ? { ...state, run: state.run ?? 0, vals: state.vals.slice(), res: state.res.slice() }
+      : { v: 1, periodMs: p.periodMs, stepMs, seasons: g.seasons, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, run: 0, vals: new Array(g.R).fill(null), res: new Array(g.Rr).fill(null) }
     const { phase, season } = phaseName(p.periodMs, stepMs)
+    const acceptAfter = p.acceptAfter > 0 ? p.acceptAfter : Math.max(3, Math.round(g.P / 24))
     const weights: number[] = []
     for (let j = 1; j <= g.seasons; j++) weights.push(Math.pow(p.decay > 0 ? p.decay : 1, j - 1))
     const points: Point[] = new Array(n)
@@ -137,8 +145,9 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
         points[i] = missingPoint(ts, x)
         continue
       }
-      st.lastTs = ts
       const s = slotOf(ts, st.origin, stepMs)
+      if (!Number.isFinite(s)) { points[i] = missingPoint(ts, x); continue } // ts − origin overflowed
+      st.lastTs = ts
       // advance: slots skipped since the last point are gaps
       if (st.lastSlot !== null && s > st.lastSlot) {
         const gap = s - st.lastSlot - 1
@@ -199,8 +208,9 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
           const score = finiteScore(Math.abs(diff) / sd)
           const anomalous = score > p.k && Math.abs(diff) >= p.minDeviation && sideOk(p.direction, diff)
           pt = { ts, value: x, expected, lower: expected - p.k * sd, upper: expected + p.k * sd, score, anomalous, status: 'ok' }
+          st.run = anomalous ? st.run + 1 : 0
           if (anomalous) {
-            if (p.contamination === 'clip') stored = base + Math.min(Math.max(x - base, level - p.k * sd), level + p.k * sd)
+            if (p.contamination === 'clip' && st.run <= acceptAfter) stored = base + Math.min(Math.max(x - base, level - p.k * sd), level + p.k * sd)
             const blendWord = p.blend === 'mean' ? 'weighted mean' : p.decay === 1 ? 'median' : 'weighted median'
             const span = vj.length === g.seasons ? `over the last ${vj.length} ${season}s` : `in ${vj.length} of the last ${g.seasons} ${season}s`
             const levelText = p.adapt === 'agile' ? `, shifted by ${withUnit(level, p.unit)} to follow the last ${duration(g.A * stepMs)}` : ''

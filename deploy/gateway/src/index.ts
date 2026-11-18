@@ -38,7 +38,7 @@ export type Route = Backend | 'health' | 'bootstrap'
 
 const INGEST_PATHS = new Set(['/api/v1/write', '/api/v1/push', '/v1/metrics'])
 const QUERY_PATHS = new Set(['/api/v1/query', '/api/v1/query_range', '/api/v1/labels', '/api/v1/series', '/api/v1/metadata'])
-const QUERY_PREFIXES = ['/api/v1/label/', '/api/v1/status/']
+const QUERY_PREFIXES = ['/api/v1/label', '/api/v1/status/']
 const CONTROL_ROOT = '/api/v1/control'
 
 /** Which handler a path goes to, or null for 404. Exact paths, except the three prefixes. */

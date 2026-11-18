@@ -1,0 +1,22 @@
+{
+ "format": "id.hashes",
+ "version": 1,
+ "ruleKeys": [
+  {
+   "name": "HighErrorRate",
+   "key": "326be64460b9942b",
+   "bareId": "r_1b59e9be9a066cd3"
+  },
+  {
+   "name": "job:errors:rate5m",
+   "key": "012ce47d6f22e252",
+   "bareId": "r_ff3f4c5ef2e0ee14"
+  }
+ ],
+ "fingerprint": "578a9786a3362fe0",
+ "hash64": {
+  "": "488bdcb81aee8d83",
+  "a": "1213124eda4555df",
+  "goldenfmt/0/payments": "ef1816ae0800a319"
+ }
+}

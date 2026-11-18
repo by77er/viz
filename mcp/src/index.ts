@@ -49,11 +49,24 @@ const defaults: Required<Pick<Deps, 'query' | 'control' | 'monitors'>> = {
 
 export const MCP_PATH = '/mcp'
 
+const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/
+
+/**
+ * DNS-rebinding protection (MCP transport spec): a browser Origin must be one the operator
+ * listed. A server reached on a localhost Host (local development) also accepts
+ * localhost-class Origins; a deployed one never does.
+ */
 function originAllowed(req: Request, env: Env): boolean {
   const origin = req.headers.get('Origin')
   if (!origin) return true // non-browser MCP clients send none
   const allowed = (env.ALLOWED_ORIGINS ?? '').split(',').map((x) => x.trim()).filter(Boolean)
-  return allowed.includes(origin)
+  if (allowed.includes(origin)) return true
+  try {
+    const host = new URL(req.url).hostname
+    return LOCAL.test(host) && LOCAL.test(new URL(origin).hostname)
+  } catch {
+    return false
+  }
 }
 
 function authFailure(e: AuthError, mcp: boolean): Response {

@@ -12,8 +12,10 @@
  * anomalies themselves from bending the seasonal and trend estimates, and it can be checked
  * against an independent implementation number for number.
  *
- * Missing grid slots are linearly interpolated for the fit only (STL needs a complete grid)
- * and are never scored. Anomaly score: |residual − median(residuals)| / (1.4826 · MAD).
+ * The detector uses R's default LOESS strides (ceil(window/10)) and fits at most the last
+ * `maxPeriods` (8) periods and `maxSlots` (20,000) slots, so one fit costs O(slots × window/10).
+ * The period must be at least 4 steps. Missing grid slots are linearly interpolated for the
+ * fit only (STL needs a complete grid) and are never scored. Anomaly score: |residual − median(residuals)| / (1.4826 · MAD).
  *
  * Use as the design intends (§7: refit on a schedule, score online): `detect` without state
  * fits the series and scores it in-sample, returning the fitted model as state; `detect` with
@@ -63,28 +65,54 @@ function est(y: Float64Array, n: number, len: number, ideg: number, xs: number, 
   return ys
 }
 
-/** stless with njump = 1: LOESS smooth of y[0..n) into ys. */
-function ess(y: Float64Array, n: number, len: number, ideg: number, userw: boolean, rw: Float64Array, ys: Float64Array, w: Float64Array) {
+/** stless: LOESS smooth of y[0..n) into ys, evaluated every `njump` points and linearly interpolated between. */
+function ess(y: Float64Array, n: number, len: number, ideg: number, njump: number, userw: boolean, rw: Float64Array, ys: Float64Array, w: Float64Array) {
   if (n < 2) { ys[0] = y[0]!; return }
-  if (len >= n) {
-    for (let i = 1; i <= n; i++) {
-      const v = est(y, n, len, ideg, i, 1, n, w, userw, rw)
-      ys[i - 1] = Number.isNaN(v) ? y[i - 1]! : v
-    }
-    return
-  }
-  const nsh = Math.floor((len + 1) / 2)
-  let nleft = 1
-  let nright = len
-  for (let i = 1; i <= n; i++) {
-    if (i > nsh && nright !== n) { nleft++; nright++ }
+  const newnj = Math.max(1, Math.min(njump, n - 1))
+  let nleft = 0, nright = 0
+  const at = (i: number) => {
     const v = est(y, n, len, ideg, i, nleft, nright, w, userw, rw)
     ys[i - 1] = Number.isNaN(v) ? y[i - 1]! : v
+  }
+  if (len >= n) {
+    nleft = 1
+    nright = n
+    for (let i = 1; i <= n; i += newnj) at(i)
+  } else if (newnj === 1) {
+    const nsh = Math.floor((len + 1) / 2)
+    nleft = 1
+    nright = len
+    for (let i = 1; i <= n; i++) {
+      if (i > nsh && nright !== n) { nleft++; nright++ }
+      at(i)
+    }
+  } else {
+    const nsh = Math.floor((len + 1) / 2)
+    for (let i = 1; i <= n; i += newnj) {
+      if (i < nsh) { nleft = 1; nright = len }
+      else if (i >= n - nsh + 1) { nleft = n - len + 1; nright = n }
+      else { nleft = i - nsh + 1; nright = len + i - nsh }
+      at(i)
+    }
+  }
+  if (newnj !== 1) {
+    for (let i = 1; i <= n - newnj; i += newnj) {
+      const delta = (ys[i + newnj - 1]! - ys[i - 1]!) / newnj
+      for (let j = i + 1; j <= i + newnj - 1; j++) ys[j - 1] = ys[i - 1]! + delta * (j - i)
+    }
+    const k = Math.floor((n - 1) / newnj) * newnj + 1
+    if (k !== n) {
+      at(n)
+      if (k !== n - 1) {
+        const delta = (ys[n - 1]! - ys[k - 1]!) / (n - k)
+        for (let j = k + 1; j <= n - 1; j++) ys[j - 1] = ys[k - 1]! + delta * (j - k)
+      }
+    }
   }
 }
 
 /** stlss: smooth each cycle-subseries, extrapolating one point at each end → length n + 2np. */
-function ss(y: Float64Array, n: number, np: number, ns: number, isdeg: number, userw: boolean, rw: Float64Array, season: Float64Array) {
+function ss(y: Float64Array, n: number, np: number, ns: number, isdeg: number, nsjump: number, userw: boolean, rw: Float64Array, season: Float64Array) {
   const k0 = Math.floor((n - 1) / np) + 1
   const work1 = new Float64Array(k0)
   const work2 = new Float64Array(k0 + 2)
@@ -95,7 +123,7 @@ function ss(y: Float64Array, n: number, np: number, ns: number, isdeg: number, u
     const k = Math.floor((n - j) / np) + 1
     for (let i = 1; i <= k; i++) work1[i - 1] = y[(i - 1) * np + j - 1]!
     if (userw) for (let i = 1; i <= k; i++) work3[i - 1] = rw[(i - 1) * np + j - 1]!
-    ess(work1, k, ns, isdeg, userw, work3, tmp, work4)
+    ess(work1, k, ns, isdeg, nsjump, userw, work3, tmp, work4)
     for (let i = 0; i < k; i++) work2[i + 1] = tmp[i]!
     const nright = Math.min(ns, k)
     let v = est(work1, k, ns, isdeg, 0, 1, nright, work4, userw, work3)
@@ -137,9 +165,16 @@ export interface StlOptions {
   inner: number
   /** -1 = 15 if robust else 0. */
   outer: number
+  /**
+   * LOESS evaluation strides (stl.f's nsjump, ntjump, nljump); 1 = every point (statsmodels'
+   * default), -1 = ceil(window / 10) (R's stl default), which cuts the cost about tenfold.
+   */
+  seasonalJump: number
+  trendJump: number
+  lowPassJump: number
 }
 
-export const stlOptionDefaults: StlOptions = { seasonal: 7, trend: 0, lowPass: 0, seasonalDeg: 1, trendDeg: 1, lowPassDeg: 1, robust: true, inner: 0, outer: -1 }
+export const stlOptionDefaults: StlOptions = { seasonal: 7, trend: 0, lowPass: 0, seasonalDeg: 1, trendDeg: 1, lowPassDeg: 1, robust: true, inner: 0, outer: -1, seasonalJump: 1, trendJump: 1, lowPassJump: 1 }
 
 export interface Decomposition { seasonal: Float64Array; trend: Float64Array; resid: Float64Array; weights: Float64Array }
 
@@ -154,6 +189,9 @@ export function stlDecompose(y: Float64Array, period: number, options?: Partial<
   const nt = odd(Math.max(3, o.trend > 0 ? Math.round(o.trend) : Math.ceil((1.5 * np) / (1 - 1.5 / ns))))
   const nl = odd(Math.max(3, o.lowPass > 0 ? Math.round(o.lowPass) : np + 1))
   const ni = o.inner > 0 ? o.inner : o.robust ? 2 : 5
+  if (o.seasonalJump < 0) o.seasonalJump = Math.ceil(ns / 10)
+  if (o.trendJump < 0) o.trendJump = Math.ceil(nt / 10)
+  if (o.lowPassJump < 0) o.lowPassJump = Math.ceil(nl / 10)
   const no = o.outer >= 0 ? o.outer : o.robust ? 15 : 0
   const season = new Float64Array(n)
   const trend = new Float64Array(n)
@@ -168,15 +206,15 @@ export function stlDecompose(y: Float64Array, period: number, options?: Partial<
     // stlstp
     for (let j = 0; j < ni; j++) {
       for (let i = 0; i < n; i++) w1[i] = y[i]! - trend[i]!
-      ss(w1, n, np, ns, o.seasonalDeg, userw, rw, c)
+      ss(w1, n, np, ns, o.seasonalDeg, Math.max(1, Math.round(o.seasonalJump)), userw, rw, c)
       // stlfts: three moving averages, then LOESS (nl)
       ma(c, n + 2 * np, np, w3)
       ma(w3, n + np + 1, np, w4)
       ma(w4, n + 2, 3, w3)
-      ess(w3, n, nl, o.lowPassDeg, false, rw, w1, lw)
+      ess(w3, n, nl, o.lowPassDeg, Math.max(1, Math.round(o.lowPassJump)), false, rw, w1, lw)
       for (let i = 0; i < n; i++) season[i] = c[np + i]! - w1[i]!
       for (let i = 0; i < n; i++) w1[i] = y[i]! - season[i]!
-      ess(w1, n, nt, o.trendDeg, userw, rw, trend, lw)
+      ess(w1, n, nt, o.trendDeg, Math.max(1, Math.round(o.trendJump)), userw, rw, trend, lw)
     }
     k++
     if (k > no) break
@@ -219,11 +257,13 @@ export interface StlParams extends CommonParams {
   trendExtrapolation: 'flat' | 'linear'
   /** Fit at most this many grid slots (the most recent). */
   maxSlots: number
+  /** Fit at most this many periods (the most recent). */
+  maxPeriods: number
   /** Periods needed to fit. */
   minPeriods: number
 }
 
-export const stlDefaults: StlParams = { ...COMMON_DEFAULTS, periodMs: 0, seasonalWindow: 0, robust: true, k: 4, trendExtrapolation: 'flat', maxSlots: 20_000, minPeriods: 2 }
+export const stlDefaults: StlParams = { ...COMMON_DEFAULTS, periodMs: 0, seasonalWindow: 0, robust: true, k: 4, trendExtrapolation: 'flat', maxSlots: 20_000, maxPeriods: 8, minPeriods: 2 }
 
 /** A fitted model: enough to score new points without refitting. */
 export interface StlModel {
@@ -251,11 +291,12 @@ export function fitStl(series: Series, params?: Partial<StlParams>): StlFit | nu
   const stepMs = resolveStep(p.stepMs, undefined, series)
   if (!(stepMs > 0) || !(p.periodMs > 0)) return null
   const P = Math.round(p.periodMs / stepMs)
-  if (P < 2) return null
+  if (!(P >= 4) || 2 * P > p.maxSlots) return null
   let grid = toGrid(series, stepMs)
   let start = grid.start
-  if (grid.values.length > p.maxSlots) {
-    const cut = grid.values.length - p.maxSlots
+  const cap = Math.min(p.maxSlots, Math.max(2, p.maxPeriods) * P)
+  if (grid.values.length > cap) {
+    const cut = grid.values.length - cap
     grid = { start: grid.start + cut * stepMs, values: grid.values.subarray(cut) }
     start = grid.start
   }
@@ -280,7 +321,7 @@ export function fitStl(series: Series, params?: Partial<StlParams>): StlFit | nu
     prev = i
   }
   const periodic = !(p.seasonalWindow > 0)
-  const d = stlDecompose(y, P, { seasonal: periodic ? 10 * n + 1 : p.seasonalWindow, seasonalDeg: periodic ? 0 : 1, robust: p.robust })
+  const d = stlDecompose(y, P, { seasonal: periodic ? 10 * n + 1 : p.seasonalWindow, seasonalDeg: periodic ? 0 : 1, robust: p.robust, seasonalJump: -1, trendJump: -1, lowPassJump: -1 })
   const real: number[] = []
   for (let i = 0; i < n; i++) if (!interpolated[i]) real.push(d.resid[i]!)
   const rb = robust(real)

@@ -24,7 +24,11 @@ literal `rem`, colour and opacity values, and what the app used it for (layout) 
 150 lines of token-only CSS.
 
 The change that applied the system, with its before/after images, measurements and the
-presence test, is described in `../design-system/reviews/app-restyle/PR.md`.
+presence test, is described in `../design-system/reviews/app-restyle/PR.md`. The review
+rejected it (`../design-system/reviews/app-restyle/review.md`); the fixes to its logic
+findings, with images, measurements and mutants, are in
+`../design-system/reviews/app-restyle/fixes/FIXES.md`. Its styling and chart-drawing
+findings wait for the design system's revision (see "Known issues").
 
 ## Run
 
@@ -47,8 +51,10 @@ npm run build         # design system, tsc --noEmit, vite build  -> dist/
 npm test              # vitest unit tests
 npx tsc --noEmit      # typecheck
 npm run check:tokens  # no literal colours, lengths, durations or opacity in src/
-npm run e2e           # e2e/run.cjs then e2e/design.cjs (Playwright + axe); needs `npm run build` first
-npm run measure       # the speed budgets on the built app (see "Speed")
+npm run e2e           # e2e/run.cjs, e2e/design.cjs, e2e/fixes.cjs (Playwright + axe); needs `npm run build` first
+npm run measure       # the speed budgets on the built app (see "Speed"); --series 4,36,200
+node e2e/summarise.cjs                      # before/after tables from e2e/measurements
+MUTANTS=fixes node e2e/mutants.cjs          # the review fixes' mutants (unit + e2e/fixes.cjs)
 ```
 
 The end-to-end scripts use the globally installed Playwright (`require('playwright')`), start
@@ -259,22 +265,43 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 
 ## Verification
 
-Run on 2026-11-18, Node 22.23, on a machine shared with other jobs.
+Run on 2026-11-18 after the review fixes, Node 22.23, on a machine shared with other jobs
+(ports 8910 and 8911).
 
 | Check | Result |
 |---|---|
-| `npm test` | 71 tests in 5 files pass |
+| `npm test` | 128 tests in 12 files pass (two workers) |
 | `npx tsc --noEmit` | passes |
-| `npm run build` | passes |
-| `node ../design-system/tools/check.mjs src` | contrast 122/122; 0 literal values in 37 files |
+| `npm run build` | passes (its prebuild regenerates `design-system/dist` and `bundle.css` from the system's sources) |
+| `node ../design-system/tools/check.mjs src` | contrast 240/240; 0 literal values in 50 files |
 | `node e2e/run.cjs` | 54 of 54 checks pass |
 | `node e2e/design.cjs` | 52 of 52 checks pass |
-| axe-core 4.14 | 0 violations of any impact in 13 runs (5 in `run.cjs`, 8 in `design.cjs`) |
-| `node e2e/mutants.cjs` | 12 mutants killed, 1 survived because it does not break the property (below) |
+| `node e2e/fixes.cjs` | 37 of 37 checks pass, including the 60 s stop |
+| axe-core 4.14 | 0 violations of any impact in 16 runs (5 in `run.cjs`, 8 in `design.cjs`, 3 in `fixes.cjs`) |
+| `MUTANTS=fixes node e2e/mutants.cjs` | MUTANT_RESULT |
+| `node e2e/mutants.cjs` (the restyle's set) | not re-run after the review fixes; the results below are the restyle's |
+
+One existing check changed: `e2e/design.cjs` expected the segmented control's pressed fill to
+be the `rule` token. While this work ran, the system added a `pressed` token and moved
+`:active` to it, so the check now expects `pressed` when the system defines one and `rule`
+before. No check was deleted.
 
 Unit tests cover what they did before (downsampling, step selection, URL round-trip, digest,
-API client, the mock's PromQL), with the colour tests rewritten for the eight tokens and the
-fold into Other, and a test for the four result forms and the old `tab=json` links.
+API client, the mock's PromQL), and for the review fixes: what a result says about itself
+(`describe.test.ts`), series names with three properties over random label sets
+(`naming.test.ts`), the colour assignment with two properties (`assign.test.ts`), value and
+unit apart and where a column's unit goes (`units.test.ts`), `alignMatrix` property-tested
+equal to its previous implementation (`series.test.ts`), autocomplete debounce and abort
+(`promClient.test.ts`), and tap toggling, zoom, focus fallbacks, the focus keeper's filter
+and the wording of ages, steps and presets (`interaction.test.ts`).
+
+`e2e/fixes.cjs` (37 checks) covers B1 while waiting, cancelled, after an error, waiting after
+an error and stopped at 60 s; focus after 27 interactions (never the body); typing renders no
+React component and autocomplete is debounced; the URL's form after a quick round trip and
+Back; colours in palette order, kept by survivors of a filter and by a reload, never more
+than eight, one Other row; names, full names on focus, tap and in the text view; units once
+per head; tap toggling, the touch hint and the zoom buttons on an emulated phone; and axe in
+three of those states.
 
 `e2e/run.cjs` is the earlier suite with its selectors updated. Three checks changed meaning,
 none was deleted:
@@ -327,7 +354,117 @@ One weakness found this way: the coarse-pointer version of the sideways-scroll c
 fail on the "toolbar fields" mutant; the fine-pointer 400 px checks did. Why was not
 investigated.
 
-SPEED_FIXES_SECTION
+### Speed after the review fixes (4, 36 and 200 series, with typing)
+
+Measured here with `e2e/measure.cjs` (then `node e2e/summarise.cjs`): Chromium, CPU throttled
+4x, network shaped to DevTools' Fast 4G, 1440x900, a fresh context per run, 75th percentile of
+20 runs (median, maximum). Three cases: 4 series and 36 series from the mock, and 200
+synthetic series answered by the harness through request interception (the mock has 128).
+Each run also types a 60-character query one key at a time (keydown to the end of the next
+frame, each key waited for) and moves the crosshair 30 times. Before is the app as the
+review saw it (a copy kept in the session), after is this change; both were built against
+the same snapshot of `design-system/dist`, because the system was being edited during the
+session, and measured in alternating batches of five runs because the machine was shared:
+load average 3.2 to 13.7 on 4 cores. On an idle machine every figure is lower. The files are
+`e2e/measurements/fixes-{before,after}-{4,36,200}.json`.
+
+"Response to paint" as the harness first defined it starts after the app has parsed the body:
+the harness's copy of the body (`res.clone().text()`) resolves after the app's own `text()`
+and `JSON.parse` (checked in a page). `responseFull` is measured from the last byte (Resource
+Timing `responseEnd`) and includes reading and parsing.
+
+#### 4 series (sum by (service) (rate(http_requests_total[5m])))
+
+Runs: before 20, after 20.
+
+| What | Budget | Before | After | Within budget after? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 25 (22, 97) | 24 (21, 36) | yes |
+| Click on Run query to the busy state painted | 100 ms | 59 (37, 105) | 48 (38, 159) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 40 (33, 75) | 33 (27, 40) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 109 (65, 8003) | 56 (49, 115) |  |
+| Typing: keys over 50 ms, of 60 |  | 7 (5, 27) | 2 (0, 9) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 32 (29, 46) | 29 (25, 34) | yes |
+| Chart to table | 100 ms | 79 (59, 240) | 49 (39, 80) | yes |
+| Table to text | 100 ms | 65 (55, 159) | 44 (36, 64) | yes |
+| Text to chart | 100 ms | 58 (47, 104) | 42 (36, 90) | yes |
+| Open the time picker | 100 ms | 105 (75, 159) | 81 (62, 176) | yes |
+| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 67 (52, 189) | 42 (38, 74) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 77 (65, 199) | 54 (48, 82) | yes |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 96 (72, 152) | 64 (56, 136) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 120 (72, 7944) | 80 (64, 136) | yes |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+#### 36 series (sum by (service, route, status) (rate(http_requests_total[5m])))
+
+Runs: before 20, after 20.
+
+| What | Budget | Before | After | Within budget after? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 22 (20, 34) | 23 (19, 46) | yes |
+| Click on Run query to the busy state painted | 100 ms | 56 (43, 196) | 43 (35, 55) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 42 (38, 47) | 33 (29, 46) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 77 (62, 148) | 64 (53, 122) |  |
+| Typing: keys over 50 ms, of 60 |  | 6 (4, 11) | 2 (1, 10) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 44 (42, 55) | 32 (31, 38) | yes |
+| Chart to table | 100 ms | 98 (89, 133) | 69 (56, 86) | yes |
+| Table to text | 100 ms | 90 (73, 125) | 89 (61, 107) | yes |
+| Text to chart | 100 ms | 66 (55, 91) | 46 (37, 63) | yes |
+| Open the time picker | 100 ms | 76 (59, 141) | 80 (70, 160) | yes |
+| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 116 (105, 134) | 116 (87, 169) | **no**, 116 ms |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 166 (149, 241) | 160 (132, 250) | **no**, 160 ms |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 96 (72, 136) | 96 (80, 112) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 96 (88, 136) | 104 (88, 144) | yes |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+#### 200 series (viz_synthetic_series)
+
+Runs: before 20, after 20.
+
+| What | Budget | Before | After | Within budget after? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 29 (21, 44) | 32 (24, 38) | yes |
+| Click on Run query to the busy state painted | 100 ms | 48 (38, 93) | 51 (43, 142) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 47 (42, 68) | 41 (38, 46) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 143 (108, 237) | 146 (123, 232) |  |
+| Typing: keys over 50 ms, of 60 |  | 13 (8, 29) | 9 (7, 15) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 81 (70, 114) | 35 (31, 42) | yes |
+| Chart to table | 100 ms | 330 (228, 897) | 135 (77, 194) | **no**, 135 ms |
+| Table to text | 100 ms | 124 (106, 289) | 108 (74, 160) | **no**, 108 ms |
+| Text to chart | 100 ms | 129 (114, 178) | 46 (41, 107) | yes |
+| Open the time picker | 100 ms | 77 (67, 153) | 89 (76, 283) | yes |
+| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 424 (349, 966) | 156 (118, 1085) | **no**, 156 ms |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 761 (620, 1226) | 489 (403, 2276) | **no**, 489 ms |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 296 (216, 512) | 160 (112, 264) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 296 (216, 512) | 168 (144, 264) | yes |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+**Still missed, and why.** 36 series, response to paint (116 ms; 160 ms from the last byte),
+not improved: about 30 ms of script at 4x to prepare and draw a new result, then a minor GC
+of 10 to 55 ms because every sample is a boxed number, plus about 45 ms to read and parse the
+body. 200 series, response to paint (156 ms; 489 ms from the last byte): `JSON.parse` of the
+3.6 MB body alone is about 125 ms at 4x, before 144,000 samples are aligned. 200 series,
+chart to table (135 ms) and table to text (108 ms): a 50-row table to render and lay out, and
+the digest of 200 series computed the first time the text form is shown for a result. The
+next steps are typed arrays through the chart interface, a worker or the Arrow transport, and
+coarse data first. Typing meets the budget at the 75th percentile (33, 33, 41 ms) but not
+key by key: 2, 2 and 9 keys of 60 per run are over 50 ms, all in CodeMirror's own work
+(autocomplete list, measure cycle, syntax tree); no React component renders while typing.
+The harness's typing figure before the fixes (40 to 47 ms) is lower than the review's 82 ms
+because the harness waits for each key's frame before the next key and the review did not.
+
+**What made the difference** (found with Chrome traces and the CPU profiler on an
+unminified build): the focus keeper no longer forces a style and layout pass after every DOM
+change; the router's URL update for a change of form runs 300 ms later instead of in the
+task before the next frame; `alignMatrix` is one indexed pass (about 3x faster at 200
+series, property-tested equal to the old one); `nameSeries` skips truncation lengths that cut
+nothing; the digest and the JSON text are kept per result; the coarse-pointer media query is
+one object. From earlier in this change: the draft lives in the editor, at most eight series
+are drawn by default, the legend and table are capped, and the crosshair is drawn outside
+React.
 
 ### Speed of the restyle (four series, no typing)
 
@@ -384,7 +521,9 @@ not preloaded.
 
 ## Known issues
 
-- SPEED_KNOWN_ISSUES
+- Speed: the budgets missed after the review fixes are listed under "Speed after the review
+  fixes" (36 series: response to paint; 200 series: response to paint, chart to table, table
+  to text; single slow keys while typing). The JSON body is parsed on the main thread.
 - Colour memory is per browser tab (`sessionStorage`) and holds the assignment of the last
   result shown. A reload reproduces it, but the same link opened in a fresh tab assigns slots
   afresh by order of appearance, so two tabs with different histories can colour the same

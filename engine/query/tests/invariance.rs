@@ -72,7 +72,9 @@ proptest! {
         let mem = h.mem();
         let stored = layouts(&h, &random, &lake_only);
         for q in QUERIES {
-            let want: Outcome = viz_promql::query_range(&mem, q, start, end, step)
+            // The reference: viz-promql over its in-memory source, with the same
+            // order-independent aggregations one-place evaluation uses.
+            let want: Outcome = viz_query::reference_range(&mem, q, start, end, step, &EvalOptions::default())
                 .map(|m| serde_json_string(&m))
                 .map_err(reference_error);
             let mut first: Option<viz_query::Stats> = None;
@@ -86,7 +88,7 @@ proptest! {
                 first = first.or(stats);
             }
             let at = end;
-            let want: Outcome = viz_promql::query_instant(&mem, q, at).map(|v| serde_json_string(&v)).map_err(reference_error);
+            let want: Outcome = viz_query::reference_instant(&mem, q, at, &EvalOptions::default()).map(|v| serde_json_string(&v)).map_err(reference_error);
             for (name, s) in &stored {
                 let (got, _) = instant_stored(s, q, at);
                 prop_assert_eq!(&got, &want, "instant query {} at {}: {} differs from the in-memory reference", q, at, name);

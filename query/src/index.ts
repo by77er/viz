@@ -16,11 +16,11 @@
  */
 import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
-import { QueryError, createQueryEngine } from '../../engine/wasm-query/js/index'
+import { type Grid, QueryError, type SplitPlan, createQueryEngine } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { ConfigError, type Env, tenantLimits } from './config'
-import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, addStats, gather, newCost } from './coordinator'
-import { parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
+import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type SplitSpec, addStats, cardinality, gather, newCost } from './coordinator'
+import { cardinalityParams, parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
 
 export { Leaf } from './leaf'
 export type { Env } from './config'
@@ -67,6 +67,14 @@ const COST_HEADERS: [string, keyof Cost][] = [
   ['X-Viz-Samples-Loaded', 'samplesLoaded'],
   ['X-Viz-Engine-Ms', 'engineMs'],
   ['X-Viz-Wasm-Memory-Bytes', 'wasmMemoryBytes'],
+  ['X-Viz-Execution', 'execution'],
+  ['X-Viz-Split-Reason', 'splitReason'],
+  ['X-Viz-Split-Leaves', 'splitLeaves'],
+  ['X-Viz-Reader-Calls', 'readerCalls'],
+  ['X-Viz-Rpc-Bytes', 'rpcBytes'],
+  ['X-Viz-Leaf-Peak-Wasm-Bytes', 'leafPeakWasmBytes'],
+  ['X-Viz-Leaf-Max-Samples', 'leafMaxSamples'],
+  ['X-Viz-Leaf-Reruns', 'leafReruns'],
 ]
 
 const allowedOrigins = (env: Env): string[] => (env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '' && s !== '*')
@@ -102,8 +110,28 @@ function failure(errorType: string, error: string, headers: Record<string, strin
 
 function costHeaders(cost: Cost): Record<string, string> {
   const h: Record<string, string> = {}
-  for (const [name, field] of COST_HEADERS) h[name] = String(cost[field])
+  // Header values are printable ASCII: a reason may quote a query.
+  for (const [name, field] of COST_HEADERS) h[name] = String(cost[field]).replace(/[^\x20-\x7e]/g, '?').slice(0, 300)
   return h
+}
+
+/** The split spec of a query that decomposes; for one that does not, the reason is recorded. */
+function splitSpec(c: Context, plan: SplitPlan, query: string, grid: Grid): SplitSpec<string> | undefined {
+  if (!plan.split) {
+    c.cost.execution = 'single'
+    c.cost.splitReason = plan.reason
+    return undefined
+  }
+  return {
+    query,
+    grid,
+    fragments: plan.fragments,
+    without: plan.without,
+    done: (out) => {
+      addStats(c, out.stats)
+      return out.json
+    },
+  }
 }
 
 type Handler = (c: Context, params: URLSearchParams, label: string) => Promise<string>
@@ -113,22 +141,36 @@ const instant: Handler = async (c, params) => {
   const t = params.get('time')
   const time = t === null || t === '' ? Math.min(Math.max(Date.now(), MIN_TS), MAX_TS) : parseTime('time', t)
   const ranges = c.engine.plan(query, time, time, 1, c.limits)
-  return gather(c, ranges, c.engine.selectors(query, time, time, 1, c.limits), (input) => {
-    const out = c.engine.queryInstantJson(input, query, time, c.limits)
-    addStats(c, out.stats)
-    return out.json
-  })
+  const split = splitSpec(c, c.engine.splitPlan(query, c.limits), query, { time })
+  return gather(
+    c,
+    ranges,
+    c.engine.selectors(query, time, time, 1, c.limits),
+    (input) => {
+      const out = c.engine.queryInstantJson(input, query, time, c.limits)
+      addStats(c, out.stats)
+      return out.json
+    },
+    split,
+  )
 }
 
 const range: Handler = async (c, params) => {
   const query = required(params, 'query')
   const { start, end, step } = rangeParams(params)
   const ranges = c.engine.plan(query, start, end, step, c.limits)
-  return gather(c, ranges, c.engine.selectors(query, start, end, step, c.limits), (input) => {
-    const out = c.engine.queryRangeJson(input, query, start, end, step, c.limits)
-    addStats(c, out.stats)
-    return out.json
-  })
+  const split = splitSpec(c, c.engine.splitPlan(query, c.limits), query, { start, end, step })
+  return gather(
+    c,
+    ranges,
+    c.engine.selectors(query, start, end, step, c.limits),
+    (input) => {
+      const out = c.engine.queryRangeJson(input, query, start, end, step, c.limits)
+      addStats(c, out.stats)
+      return out.json
+    },
+    split,
+  )
 }
 
 /** Fetch ranges of a metadata call: one per `match[]` set, or one for every series. */
@@ -159,6 +201,22 @@ const series: Handler = async (c, params) => {
   return gather(c, ranges, ranges, (input) => JSON.stringify(c.engine.series(input, match, start, end, c.limits)))
 }
 
+/**
+ * Prometheus' `/api/v1/status/tsdb`: cardinality of the tenant over a window (default the
+ * last day; `start`, `end` or `range` move it), `limit` items per list (default 10).
+ * `chunkCount` is null: viz has no chunks.
+ */
+const tsdbStatus: Handler = async (c, params) => {
+  const w = cardinalityParams(params, Date.now())
+  return (await cardinality(c, w.start, w.end, w.lookbackStart, w.limit)).tsdb
+}
+
+/** viz's `/api/v1/status/cardinality?range=&limit=`: the same counts, plus churn and per-metric label cardinality. */
+const cardinalityStatus: Handler = async (c, params) => {
+  const w = cardinalityParams(params, Date.now())
+  return (await cardinality(c, w.start, w.end, w.lookbackStart, w.limit)).cardinality
+}
+
 /** Nothing here reads storage; both still require a key, like every other API path. */
 const metadata: Handler = async () => '{}'
 const buildinfo: Handler = async () => JSON.stringify({ version: '0.1.0-viz', revision: '', branch: '', buildUser: '', buildDate: '', goVersion: '' })
@@ -177,6 +235,10 @@ function route(path: string): { handler: Handler; methods: string[]; label: stri
       return { handler: metadata, methods: ['GET'], label: '' }
     case '/api/v1/status/buildinfo':
       return { handler: buildinfo, methods: ['GET'], label: '' }
+    case '/api/v1/status/tsdb':
+      return { handler: tsdbStatus, methods: ['GET'], label: '' }
+    case '/api/v1/status/cardinality':
+      return { handler: cardinalityStatus, methods: ['GET'], label: '' }
   }
   const m = /^\/api\/v1\/label\/([^/]+)\/values$/.exec(path)
   if (!m) return null

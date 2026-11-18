@@ -32,6 +32,7 @@
     "reg": "logged",
     "query": "impl",
     "unknownStream": "refuse",
+    "f6Register": true,
     "readBound": true,
     "log": "segments",
     "rebuild": "strict",
@@ -53,7 +54,7 @@
   "states": 8452,
   "transitions": 27646,
   "depth": 12,
-  "seconds": 0.5,
+  "seconds": 0.4,
   "collisionProb": 1.9e-12,
   "violated": "AV_RebuildSucceeds",
   "trace": [

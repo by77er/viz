@@ -4,6 +4,8 @@
 
 <!-- Commands run and their results. Say what was not tested. -->
 
+**Durable Object migration?** If this adds a `migrations` tag, the commit that lands on main needs a `Migration: viz-<worker>@<tag>` trailer, or the deploy stops before promoting (deploy/README.md).
+
 ## Design change?
 
 <!-- Delete this section if the change does not alter what a person sees or how they operate the interface. -->

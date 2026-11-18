@@ -25,6 +25,7 @@ get "$BASE/labels/combined_labels.json" "$OUT/labels/combined_labels.json"
 get "$BASE/config/profiles.json" "$OUT/config/profiles.json"
 get "$BASE/config/thresholds.json" "$OUT/config/thresholds.json"
 get "$BASE/results/final_results.json" "$OUT/results/final_results.json"
+get "$BASE/nab/sweeper.py" "$OUT/src/sweeper.py"   # NAB's own scorer, for scripts/nab-sweeper-fixture.py
 
 # The file list is the keys of the windows file (58 files in 7 categories).
 FILES=$(node -e 'for (const k of Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")))) console.log(k)' "$OUT/labels/combined_windows.json")

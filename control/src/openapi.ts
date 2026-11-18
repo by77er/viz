@@ -336,6 +336,7 @@ const ERRORS: Record<number, string> = {
   413: 'Too large',
   422: 'Not valid: the body, the dashboard or the setting',
   428: 'baseRevision or If-Match is required',
+  503: 'The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds',
 }
 
 export function buildOpenApi(): Json {
@@ -347,7 +348,7 @@ export function buildOpenApi(): Json {
     for (const [name, description] of Object.entries(doc.query ?? {})) parameters.push({ name, in: 'query', required: false, description, schema: { type: 'string' } })
     if (doc.ifMatch) parameters.push({ name: 'If-Match', in: 'header', required: false, description: 'The revision (ETag) this write is based on; an alternative to baseRevision.', schema: { type: 'string' } })
     const responses: Record<string, Json> = { [String(doc.ok[0])]: { description: doc.ok[1], content: { 'application/json': { schema: doc.ok[2] } } } }
-    for (const status of [...new Set([400, 401, 403, ...(doc.errors ?? [])])].sort()) responses[String(status)] = problem(ERRORS[status]!)
+    for (const status of [...new Set([400, 401, 403, 503, ...(doc.errors ?? [])])].sort()) responses[String(status)] = problem(ERRORS[status]!)
     ;(paths[`/api/v1/control${path}`] ??= {})[method.toLowerCase()] = {
       operationId: key.replace(/[^A-Za-z0-9]+/g, '_').replace(/_$/, ''),
       summary: doc.summary,

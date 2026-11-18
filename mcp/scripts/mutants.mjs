@@ -74,6 +74,9 @@ const MUTANTS = [
     changes: [
       ['src/session.ts', 'if (remaining() <= 0) {', 'if (false) {'],
       ['src/session.ts', 'await Promise.race([all, stop])', 'await all'],
+      // The deadline is enforced twice: nothing starts after it, and what is in flight is aborted.
+      // The first version of this mutant removed only the first and survived (README, "Mutation checks").
+      ['src/session.ts', "ctrl.abort(new DOMException('deadline', 'TimeoutError'))", 'void ctrl'],
     ],
   },
   {

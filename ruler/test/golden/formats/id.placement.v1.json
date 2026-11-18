@@ -1,0 +1,39 @@
+{
+ "format": "id.placement",
+ "version": 1,
+ "indexPartition": {
+  "acme": 7,
+  "globex": 4,
+  "initech": 3,
+  "t-1": 5
+ },
+ "shardOf": {
+  "payments": [
+   0,
+   0,
+   0,
+   7,
+   32
+  ],
+  "checkout": [
+   0,
+   1,
+   2,
+   7,
+   27
+  ],
+  "monitors/60s": [
+   0,
+   0,
+   2,
+   4,
+   58
+  ]
+ },
+ "jumpHash": [
+  9,
+  2,
+  8,
+  0
+ ]
+}

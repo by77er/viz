@@ -67,7 +67,7 @@ export function installFocusKeeper(doc: Document = document): () => void {
         continue // a selector that does not parse is skipped, not fatal
       }
       if (!target) continue
-      target.focus({ preventScroll: true })
+      void target
       if (doc.activeElement === target) return
     }
   }

@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { openSchema, refusalOf, type SchemaState } from '../../contracts/schema'
 import {
   IDEMPOTENCY_HEADER,
   SIGNATURE_HEADER,
@@ -19,7 +20,7 @@ import {
   type SilenceInput,
   type Timeline,
   type TimelineEntry,
-  type WrongTenant,
+  type Refused,
 } from '../contracts-proposal/rules.v2'
 import {
   compileConfig,
@@ -39,6 +40,7 @@ import {
   type Route,
 } from './amconfig'
 import { slackPayload, webhookPayload, type PayloadAlert } from './payload'
+import { NOTIFIER_SCHEMA } from './schema'
 import { signatureHeader } from './signature'
 import { backoffMs, hash64, LABEL_NAME_RE, resolveObjectName, type Labels } from './util'
 
@@ -177,7 +179,9 @@ function errorText(e: unknown): string {
 }
 
 export class Notifier extends DurableObject implements NotifierRpc {
-  protected readonly tenant: string
+  protected tenant = ''
+  /** What opening storage found. Anything but `ok`: every RPC answers `schema_too_new` and nothing is written. */
+  private schema: SchemaState = { status: 'schema_too_new', component: NOTIFIER_SCHEMA.component, found: 0, compat: 0, known: 0, retryAfterMs: 0 }
   private cfg: CompiledConfig | null = null
   private alerts = new Map<string, StoredAlert>()
   private silences = new Map<string, StoredSilence & { compiled: CompiledSilence }>()
@@ -189,20 +193,15 @@ export class Notifier extends DurableObject implements NotifierRpc {
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never)
     // The object's name IS the tenant.
-    const sql = ctx.storage.sql
-    // The object's own identity, not tenant data: one row, written with the first config.
-    sql.exec(`CREATE TABLE IF NOT EXISTS self (one INTEGER PRIMARY KEY CHECK (one = 1), name TEXT NOT NULL)`)
-    this.tenant = resolveObjectName(ctx.id.name, sql.exec<{ name: string }>(`SELECT name FROM self`).toArray()[0]?.name)
-    sql.exec(`CREATE TABLE IF NOT EXISTS meta (tenant TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (tenant, k)) WITHOUT ROWID`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS alert (tenant TEXT NOT NULL, fp TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, fp)) WITHOUT ROWID`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS silence (tenant TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, id)) WITHOUT ROWID`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS agg_group (tenant TEXT NOT NULL, gkey TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, gkey)) WITHOUT ROWID`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS outbox (tenant TEXT NOT NULL, id INTEGER NOT NULL, gkey TEXT NOT NULL, receiver TEXT NOT NULL,
-      integration TEXT NOT NULL, url TEXT NOT NULL, idem_key TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL,
-      created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL, last_error TEXT, subjects TEXT, PRIMARY KEY (tenant, id)) WITHOUT ROWID`)
-    // One row per monitor: what was sent about it and what people did, bounded (see `appendLog`).
-    sql.exec(`CREATE TABLE IF NOT EXISTS notify_log (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, monitor)) WITHOUT ROWID`)
-    this.load()
+    // Versioned storage (contracts/COMPATIBILITY.md §2): migrate, or refuse storage a newer
+    // release wrote. Local SQLite only, so holding other events off for it is allowed.
+    void ctx.blockConcurrencyWhile(async () => {
+      this.schema = openSchema(ctx.storage, NOTIFIER_SCHEMA)
+      if (this.schema.status !== 'ok') return
+      // The object's own identity, not tenant data: one row, written with the first config.
+      this.tenant = resolveObjectName(ctx.id.name, ctx.storage.sql.exec<{ name: string }>(`SELECT name FROM self`).toArray()[0]?.name)
+      this.load()
+    })
   }
 
   // ───────────────────────── injection points ─────────────────────────
@@ -327,7 +326,10 @@ export class Notifier extends DurableObject implements NotifierRpc {
     return out
   }
 
-  private wrongTenant(tenant: string): WrongTenant | null {
+  /** Every RPC asks this first: storage this code may not touch, or another tenant's object. */
+  private wrongTenant(tenant: string): Refused | null {
+    const refused = refusalOf(this.schema)
+    if (refused) return refused
     return this.tenant !== '' && tenant === this.tenant ? null : { status: 'wrong_tenant' }
   }
 
@@ -627,6 +629,12 @@ export class Notifier extends DurableObject implements NotifierRpc {
   // ───────────────────────── the alarm ─────────────────────────
 
   async alarm(): Promise<void> {
+    const refused = refusalOf(this.schema)
+    if (refused) {
+      // Keep the alarm for the release that owns this storage; touch nothing else.
+      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)
+      return
+    }
     const now = this.now()
     try {
       this.expire(now)
@@ -1066,7 +1074,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     return rows.length === 0 ? { status: 'not_found' as const } : { status: 'ok' as const }
   }
 
-  async health(tenant: string): Promise<({ status: 'ok' } & NotifierHealth) | WrongTenant> {
+  async health(tenant: string): Promise<({ status: 'ok' } & NotifierHealth) | Refused> {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const now = this.now()

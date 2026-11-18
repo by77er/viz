@@ -38,7 +38,7 @@ async function ready() {
 let code = 0
 try {
   await ready()
-  const out = join(state, 'results')
+  const out = process.env.CONFORMANCE_OUT ?? join(state, 'results')
   try {
     const text = execFileSync('npx', ['conformance', 'server', '--url', `http://127.0.0.1:${PORT}/mcp`, '--suite', 'all', '-o', out], { cwd: root, env, encoding: 'utf8', timeout: 600_000, stdio: ['ignore', 'pipe', 'pipe'] })
     console.log(text)
@@ -46,6 +46,18 @@ try {
     console.log(e.stdout ?? '')
     console.log(e.stderr ?? '')
     code = 1
+  }
+  // Every failed check with its reason, so expected failures (fixtures this server does not
+  // have) can be told from real ones.
+  const { readdirSync, readFileSync, existsSync } = await import('node:fs')
+  if (existsSync(out)) {
+    for (const dir of readdirSync(out).sort()) {
+      const f = join(out, dir, 'checks.json')
+      if (!existsSync(f)) continue
+      for (const c of JSON.parse(readFileSync(f, 'utf8'))) {
+        if (c.status !== 'SUCCESS' && c.status !== 'INFO') console.log(`${dir.replace(/^server-/, '').replace(/-\d{4}-.*$/, '')}\t${c.status}\t${c.name ?? c.id}\t${String(c.errorMessage ?? c.description ?? '').slice(0, 220)}`)
+      }
+    }
   }
 } finally {
   dev.kill('SIGTERM')

@@ -10,16 +10,13 @@
  * stack/src/index.ts directly. Recorded under "Needed changes" in deploy/README.md.
  */
 import stack, { type StackEnv } from '../../stack/src/index'
+import { productionQueueName } from './queue-names'
 
 export * from '../../stack/src/index'
 
 interface StageEnv extends StackEnv {
   /** `viz-<stage>-`, set by configure.mjs. */
   VIZ_STAGE_PREFIX?: string
-}
-
-export function productionQueueName(queue: string, prefix: string | undefined): string {
-  return prefix && queue.startsWith(prefix) ? `viz-${queue.slice(prefix.length)}` : queue
 }
 
 function asProduction(batch: MessageBatch<unknown>, env: StageEnv): MessageBatch<unknown> {

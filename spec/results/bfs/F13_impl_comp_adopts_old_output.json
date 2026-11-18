@@ -32,6 +32,7 @@
     "reg": "impl",
     "query": "impl",
     "unknownStream": "empty",
+    "f6Register": true,
     "readBound": false,
     "log": "perChange",
     "rebuild": "strict",
@@ -53,7 +54,7 @@
   "states": 126732,
   "transitions": 632727,
   "depth": 19,
-  "seconds": 8.6,
+  "seconds": 7.7,
   "collisionProb": 4.4e-10,
   "violated": "I11_LiveFilesReadable",
   "trace": [

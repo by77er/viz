@@ -157,7 +157,7 @@ export async function leftovers(stage) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const args = parseArgs(process.argv.slice(2), { options: ['stage'] })
     checkStage(args.stage)

@@ -75,6 +75,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -170,6 +180,16 @@
           },
           "403": {
             "description": "The credential lacks the scope, or the action is not allowed for this identity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -294,6 +314,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -370,6 +400,16 @@
           },
           "404": {
             "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -519,6 +559,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -632,6 +682,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -727,6 +787,16 @@
           },
           "404": {
             "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -836,6 +906,16 @@
           },
           "422": {
             "description": "Not valid: the body, the dashboard or the setting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -989,6 +1069,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       },
@@ -1102,6 +1192,16 @@
           },
           "422": {
             "description": "Not valid: the body, the dashboard or the setting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1240,6 +1340,16 @@
           },
           "404": {
             "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1418,6 +1528,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       },
@@ -1552,6 +1672,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -1656,6 +1786,16 @@
           },
           "409": {
             "description": "Conflict: stale revision or version, needs rebase, closed proposal, or a limit reached",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1783,6 +1923,16 @@
           },
           "422": {
             "description": "Not valid: the body, the dashboard or the setting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1918,6 +2068,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -2003,6 +2163,16 @@
           },
           "404": {
             "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2153,6 +2323,16 @@
           },
           "428": {
             "description": "baseRevision or If-Match is required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2332,6 +2512,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -2457,6 +2647,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -2557,6 +2757,16 @@
           },
           "404": {
             "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2692,6 +2902,16 @@
           },
           "422": {
             "description": "Not valid: the body, the dashboard or the setting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2838,6 +3058,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -2971,6 +3201,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -3030,6 +3270,16 @@
           },
           "403": {
             "description": "The credential lacks the scope, or the action is not allowed for this identity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3108,6 +3358,16 @@
           },
           "404": {
             "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3249,6 +3509,16 @@
           },
           "422": {
             "description": "Not valid: the body, the dashboard or the setting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3421,6 +3691,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -3492,6 +3772,16 @@
           },
           "404": {
             "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {

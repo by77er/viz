@@ -228,20 +228,25 @@ export const burnRate: Detector<BurnParams, BurnState> & {
     let firstTs = NaN
     for (let i = 0; i < n; i++) if (Number.isFinite(series.ts[i]!)) { firstTs = tsv(series.ts[i]!); break }
     const st: BurnState = compatible
-      ? { ...state, bad: state.bad.slice(), tot: state.tot.slice() }
-      : { v: 1, stepMs, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, bad: new Array(R).fill(null), tot: new Array(R).fill(null) }
+      ? { ...state, bad: [], tot: [] }
+      : { v: 1, stepMs, origin: Number.isFinite(firstTs) ? firstTs : 0, lastTs: null, lastSlot: null, bad: [], tot: [] }
+    // working copy of the ring as typed arrays, NaN = missing (converted back to null in state)
+    const bad = new Float64Array(R).fill(NaN)
+    const tot = new Float64Array(R).fill(NaN)
+    if (compatible) for (let q = 0; q < R; q++) { const b = state.bad[q], t = state.tot[q]; if (b !== null && b !== undefined && t !== null && t !== undefined) { bad[q] = b; tot[q] = t } }
     const points: Point[] = new Array(n)
     const budget = 1 - p.objective
     // window sums for every window length, summed backwards from slot s in a fixed order, so
     // the result is exact and independent of how the buckets arrived (no running-sum drift)
     const sums = ws.map(() => ({ bad: 0, tot: 0, present: 0 }))
     const windowSums = (s: number) => {
-      let bad = 0, tot = 0, present = 0, wi = 0
+      let sb = 0, stt = 0, present = 0, wi = 0
+      let k = mod(s, R)
       for (let q = 0; q < R && wi < ws.length; q++) {
-        const k = mod(s - q, R)
-        const b = st.bad[k], t = st.tot[k]
-        if (b !== null && b !== undefined && t !== null && t !== undefined) { bad += b; tot += t; present++ }
-        while (wi < ws.length && ws[wi] === q + 1) { sums[wi] = { bad, tot, present }; wi++ }
+        const b = bad[k]!
+        if (b === b) { sb += b; stt += tot[k]!; present++ }
+        while (wi < ws.length && ws[wi] === q + 1) { const w = sums[wi]!; w.bad = sb; w.tot = stt; w.present = present; wi++ }
+        k = k === 0 ? R - 1 : k - 1
       }
     }
     for (let i = 0; i < n; i++) {
@@ -253,15 +258,15 @@ export const burnRate: Detector<BurnParams, BurnState> & {
         continue
       }
       const s = slotOf(ts, st.origin, stepMs)
-      if (st.lastSlot !== null && s <= st.lastSlot) { points[i] = missingPoint(ts, b); continue }
+      if (!Number.isFinite(s) || (st.lastSlot !== null && s <= st.lastSlot)) { points[i] = missingPoint(ts, b); continue }
       // buckets skipped since the last one are missing, not zero
       if (st.lastSlot !== null) {
-        if (s - st.lastSlot - 1 >= R) { st.bad.fill(null); st.tot.fill(null) }
-        else for (let q = st.lastSlot + 1; q < s; q++) { st.bad[mod(q, R)] = null; st.tot[mod(q, R)] = null }
+        if (s - st.lastSlot - 1 >= R) { bad.fill(NaN); tot.fill(NaN) }
+        else for (let q = st.lastSlot + 1; q < s; q++) { bad[mod(q, R)] = NaN; tot[mod(q, R)] = NaN }
       }
       const valid = Number.isFinite(b) && Number.isFinite(t) && b >= 0 && t >= 0
-      st.bad[mod(s, R)] = valid ? b : null
-      st.tot[mod(s, R)] = valid ? t : null
+      bad[mod(s, R)] = valid ? b : NaN
+      tot[mod(s, R)] = valid ? t : NaN
       st.lastSlot = s
       st.lastTs = ts
       if (!valid) { points[i] = missingPoint(ts, b); continue }
@@ -294,7 +299,7 @@ export const burnRate: Detector<BurnParams, BurnState> & {
       if (best) pt.explanation = explainRule(best, p.objective, p.periodMs, ts)
       points[i] = pt
     }
-    const out: BurnState = { ...st }
+    const out: BurnState = { ...st, bad: Array.from(bad, (v) => (v === v ? v : null)), tot: Array.from(tot, (v) => (v === v ? v : null)) }
     return { points, state: out, summary: { ...summarize('burn_rate', points, out, undefined, tooBig ? `the longest window is more than ${MAX_RING} buckets at this step; use coarser buckets or evaluateWindows` : stepMs <= 0 ? 'bucket width unknown: pass stepMs' : undefined), stateBytes: stateBytes(out) } }
   },
 }

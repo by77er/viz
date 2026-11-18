@@ -32,6 +32,7 @@
     "reg": "design",
     "query": "design",
     "unknownStream": "refuse",
+    "f6Register": true,
     "readBound": true,
     "log": "segments",
     "rebuild": "strict",

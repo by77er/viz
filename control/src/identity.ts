@@ -1,7 +1,7 @@
 import { TENANT_ID } from '../../contracts/ledger'
 import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
-import { Problem } from './errors'
+import { Problem, schemaProblem } from './errors'
 import { SCOPES } from './routes'
 import type { Tenant } from './tenant'
 
@@ -58,6 +58,8 @@ export async function identify(req: Request, env: IdentityEnv): Promise<Identity
   const tenant = env.TENANT.get(env.TENANT.idFromName(principal.tenant))
   const live = await tenant.resolveKey(principal.tenant, principal.keyId)
   if (!live) throw unauthenticated('The API key is missing, malformed, unknown, disabled or expired.')
+  // The tenant's object is held by a newer release (contracts/COMPATIBILITY.md §2.4): not a "no", a "later".
+  if ('status' in live) throw schemaProblem(live)
   return { tenant: principal.tenant, subject: live.subject, kind: live.kind, scopes: live.scopes, name: live.name, keyId: principal.keyId }
 }
 

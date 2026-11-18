@@ -7,8 +7,12 @@ import { type ToolDef, ToolError, pagedResult } from '../tool'
 import { cell, clean, cleanDeep, cleanLabels, MAX } from '../untrusted'
 import { cursorOf } from './common'
 
-/** JSON split into line groups of at most `size` characters: pages concatenate back to the exact text. */
-export function jsonItems(prefix: string, value: unknown, size = 1200): Item[] {
+/**
+ * JSON split into line groups of at most `size` characters: pages concatenate back to the
+ * exact text. 360 characters is small enough that a part always fits the smallest page
+ * (200 tokens), so no part is ever cut.
+ */
+export function jsonItems(prefix: string, value: unknown, size = 360): Item[] {
   const lines = JSON.stringify(value, null, 1).split('\n')
   const items: Item[] = []
   let buf = ''

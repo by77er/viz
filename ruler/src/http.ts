@@ -11,6 +11,7 @@
  * body field is read for it. Every route names the scope it needs in `ROUTES`, which is
  * also what `openapi.json` is checked against.
  */
+import { SCHEMA_RETRY_AFTER_MS, type SchemaTooNew } from '../../contracts/schema'
 import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
 import type {
@@ -69,18 +70,27 @@ class ApiError extends Error {
     readonly code: string,
     message: string,
     readonly problems?: ValidationError[],
+    readonly headers: Record<string, string> = {},
   ) {
     super(message)
   }
 }
 
+/**
+ * An object's storage was written by a newer release than this code (contracts/COMPATIBILITY.md
+ * §2.4): nothing was read or changed, and the same request works once that release serves it.
+ */
+const schemaTooNew = (retryAfterMs: number): ApiError =>
+  new ApiError(503, 'schema_too_new', 'this data was last written by a newer release of the service, which a deployment or rollback is moving between; nothing was changed', undefined, { 'Retry-After': String(Math.ceil(retryAfterMs / 1000)) })
+
 const invalid = (problems: ValidationError[]): ApiError => new ApiError(422, 'invalid', `${problems.length} problem${problems.length === 1 ? '' : 's'} found; nothing was saved`, problems)
 const notFound = (what: string): ApiError => new ApiError(404, 'not_found', `${what} not found`)
 
 /** Unwrap an object's answer. `wrong_tenant` here would mean this layer addressed another tenant's object: a bug, never the caller's fault. */
-function ok<T extends { status: string }>(r: T): Exclude<T, { status: 'wrong_tenant' }> {
+function ok<T extends { status: string }>(r: T): Exclude<T, { status: 'wrong_tenant' } | { status: 'schema_too_new' }> {
   if (r.status === 'wrong_tenant') throw new ApiError(500, 'internal', 'an object refused its own tenant')
-  return r as Exclude<T, { status: 'wrong_tenant' }>
+  if (r.status === 'schema_too_new') throw schemaTooNew((r as unknown as SchemaTooNew).retryAfterMs)
+  return r as Exclude<T, { status: 'wrong_tenant' } | { status: 'schema_too_new' }>
 }
 
 /** One authenticated request: the tenant and actor from the credential, and the tenant's objects. */
@@ -764,10 +774,13 @@ function errorResponse(e: unknown, prometheus: boolean): Response {
     message = e.message
     headers = e.headers
   } else if (e instanceof ApiError) {
-    ;({ status, code, message, problems } = e)
+    ;({ status, code, message, problems, headers } = e)
+  } else if (e instanceof Error && e.message.startsWith('schema_too_new')) {
+    // Thrown by an object whose results have no status union (the registry), across RPC.
+    ;({ status, code, message, headers } = schemaTooNew(SCHEMA_RETRY_AFTER_MS))
   }
   if (prometheus) {
-    const errorType = status === 400 || status === 422 ? 'bad_data' : status === 404 ? 'not_found' : status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : 'internal'
+    const errorType = status === 400 || status === 422 ? 'bad_data' : status === 404 ? 'not_found' : status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : status === 503 ? 'unavailable' : 'internal'
     return json(status, { status: 'error', errorType, error: message }, headers)
   }
   return json(status, problems ? { error: { code, message }, problems } : { error: { code, message } }, headers)

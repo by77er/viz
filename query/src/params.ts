@@ -114,3 +114,37 @@ export function timeoutParam(params: URLSearchParams, maxMs: number): number {
   if (ms <= 0) throw bad('timeout', 'the timeout must be positive')
   return Math.min(ms, maxMs)
 }
+
+const DAY_MS = 86_400_000
+
+/**
+ * The window of a cardinality report: `end` (default now), and either `start` or `range`
+ * (a duration before `end`; default one day); `lookback` (default the range's length)
+ * is how far before `start` the report looks to tell new series from old ones.
+ */
+export function cardinalityParams(params: URLSearchParams, now: number): { start: number; end: number; lookbackStart: number; limit: number } {
+  const e = params.get('end')
+  const end = e === null || e === '' ? Math.min(Math.max(now, MIN_TS), MAX_TS) : parseTime('end', e)
+  const s = params.get('start')
+  const r = params.get('range')
+  let start: number
+  if (s !== null && s !== '') start = parseTime('start', s)
+  else {
+    const ms = r === null || r === '' ? DAY_MS : parseDuration('range', r)
+    if (!(ms > 0)) throw bad('range', 'the range must be positive')
+    start = Math.max(MIN_TS, end - Math.floor(ms))
+  }
+  if (end < start) throw bad('end', 'end timestamp must not be before start time')
+  const lb = params.get('lookback')
+  const lookback = lb === null || lb === '' ? end - start : Math.floor(parseDuration('lookback', lb))
+  if (lookback < 0) throw bad('lookback', 'the lookback must not be negative')
+  const l = params.get('limit')
+  let limit = 10
+  if (l !== null && l !== '') {
+    if (!/^\d+$/.test(l)) throw bad('limit', `cannot parse ${JSON.stringify(l)} to a valid limit`)
+    limit = Number(l)
+    // Prometheus: at most 10,000 items per list.
+    if (limit < 1 || limit > 10_000) throw bad('limit', 'limit must be between 1 and 10000')
+  }
+  return { start, end, lookbackStart: Math.max(MIN_TS, start - lookback), limit }
+}

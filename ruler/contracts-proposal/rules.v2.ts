@@ -42,7 +42,7 @@ import type {
   Silence,
   ValidationError,
   WebhookConfig,
-  WrongTenant,
+  Refused,
 } from './rules'
 
 export * from './rules'
@@ -286,24 +286,24 @@ export type BacktestResponse =
   | ({ status: 'ok' } & BacktestResult)
   | { status: 'invalid'; errors: ValidationError[] }
   | { status: 'failed'; error: string }
-  | WrongTenant
+  | Refused
 
 /** EXTENDED (`RulerRpc`). */
 export interface RulerRpcV2 extends RulerRpc {
   /** Every group with its rules, health and alerts: the source of `/api/v1/rules`, `/api/v1/alerts` and the monitor views. */
-  snapshot(tenant: string): Promise<{ status: 'ok'; shard: string; groups: GroupSnapshot[] } | WrongTenant>
-  timeline(tenant: string, monitorId: string): Promise<({ status: 'ok' } & Timeline) | WrongTenant>
+  snapshot(tenant: string): Promise<{ status: 'ok'; shard: string; groups: GroupSnapshot[] } | Refused>
+  timeline(tenant: string, monitorId: string): Promise<({ status: 'ok' } & Timeline) | Refused>
   /** Run `rule` (an alerting rule input) over history with the live state machine. */
   backtest(tenant: string, rule: unknown, fromMs: number, toMs: number, stepMs: number, liveIntervalMs?: number): Promise<BacktestResponse>
-  exportGroup(tenant: string, name: string): Promise<{ status: 'ok'; bundle: GroupBundle } | { status: 'not_found' } | WrongTenant>
+  exportGroup(tenant: string, name: string): Promise<{ status: 'ok'; bundle: GroupBundle } | { status: 'not_found' } | Refused>
   /** Idempotent. The group starts on this shard's schedule with its alert state intact. */
-  importGroup(tenant: string, bundle: GroupBundle): Promise<{ status: 'ok' } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant>
+  importGroup(tenant: string, bundle: GroupBundle): Promise<{ status: 'ok' } | { status: 'invalid'; errors: ValidationError[] } | Refused>
   /** Drop a group that now lives on another shard: nothing is resolved, nothing is notified. */
-  releaseGroup(tenant: string, name: string): Promise<{ status: 'ok'; existed: boolean } | WrongTenant>
+  releaseGroup(tenant: string, name: string): Promise<{ status: 'ok'; existed: boolean } | Refused>
   /** Add one rule to a group, or replace the one with the same monitor id, atomically. */
   saveRule(tenant: string, group: { name: string; interval?: string }, rule: unknown, dryRun?: boolean): Promise<SaveGroupsResult & { ruleIndex?: number }>
-  removeRule(tenant: string, group: string, monitorId: string, dryRun?: boolean): Promise<{ status: 'ok'; removed: boolean } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant>
-  dropTimelines(tenant: string, monitorIds: string[]): Promise<{ status: 'ok' } | WrongTenant>
+  removeRule(tenant: string, group: string, monitorId: string, dryRun?: boolean): Promise<{ status: 'ok'; removed: boolean } | { status: 'invalid'; errors: ValidationError[] } | Refused>
+  dropTimelines(tenant: string, monitorIds: string[]): Promise<{ status: 'ok' } | Refused>
 }
 
 export type RulerConfigPatchV2 = Partial<Omit<RulerConfigV2, 'limits'>> & { limits?: Partial<RulerLimits> }
@@ -374,12 +374,12 @@ export type AlertActionResult =
       /** Fingerprints the notifier does not hold as firing: nothing was done for them. */
       skipped: string[]
     }
-  | WrongTenant
+  | Refused
 
 export type SilenceAlertsResult =
   | { status: 'ok'; silences: Silence[]; applied: string[]; skipped: string[]; undoToken: string; undoUntil: number }
   | { status: 'invalid'; errors: ValidationError[] }
-  | WrongTenant
+  | Refused
 
 /** EXTENDED (`WebhookConfig`). */
 export interface WebhookConfigV2 extends WebhookConfig {
@@ -400,19 +400,19 @@ export const SIGNATURE_HEADER = 'X-Viz-Signature'
 /** EXTENDED (`NotifierRpc`). `dryRun` reports what would happen and changes nothing. */
 export interface NotifierRpcV2 extends NotifierRpc {
   /** CHANGED: who ended the silence (for the monitors' history), and a dry run. */
-  expireSilence(tenant: string, id: string, by?: string, dryRun?: boolean): Promise<{ status: 'ok' } | { status: 'not_found' } | WrongTenant>
+  expireSilence(tenant: string, id: string, by?: string, dryRun?: boolean): Promise<{ status: 'ok' } | { status: 'not_found' } | Refused>
   /** Record who took the alerts. Stops repeat notifications until each alert resolves; hides nothing. */
   acknowledge(tenant: string, fingerprints: string[], by: string, dryRun?: boolean): Promise<AlertActionResult>
   unacknowledge(tenant: string, fingerprints: string[], by: string, dryRun?: boolean): Promise<AlertActionResult>
   /** One silence per alert, matching exactly that alert's labels, for `durationMs` from now. */
   silenceAlerts(tenant: string, fingerprints: string[], durationMs: number, by: string, comment: string, dryRun?: boolean): Promise<SilenceAlertsResult>
   /** Remove the silences a `silenceAlerts` call made, while its undo window is open. */
-  undoSilence(tenant: string, undoToken: string, by: string, dryRun?: boolean): Promise<{ status: 'ok'; removed: string[] } | { status: 'not_found' } | { status: 'expired'; undoUntil: number } | WrongTenant>
-  describe(tenant: string, items: DescribeItem[]): Promise<{ status: 'ok'; results: DescribeResult[]; configured: boolean } | WrongTenant>
-  notificationLog(tenant: string, monitorId: string): Promise<({ status: 'ok' } & Timeline) | WrongTenant>
+  undoSilence(tenant: string, undoToken: string, by: string, dryRun?: boolean): Promise<{ status: 'ok'; removed: string[] } | { status: 'not_found' } | { status: 'expired'; undoUntil: number } | Refused>
+  describe(tenant: string, items: DescribeItem[]): Promise<{ status: 'ok'; results: DescribeResult[]; configured: boolean } | Refused>
+  notificationLog(tenant: string, monitorId: string): Promise<({ status: 'ok' } & Timeline) | Refused>
   /** The stored config with every secret and secret-bearing URL redacted. */
-  getConfig(tenant: string): Promise<{ status: 'ok'; config: unknown | null; receivers: ReceiverSummary[] } | WrongTenant>
-  dropLogs(tenant: string, monitorIds: string[]): Promise<{ status: 'ok' } | WrongTenant>
+  getConfig(tenant: string): Promise<{ status: 'ok'; config: unknown | null; receivers: ReceiverSummary[] } | Refused>
+  dropLogs(tenant: string, monitorIds: string[]): Promise<{ status: 'ok' } | Refused>
 }
 
 // ───────────────────────────── 8. the registry of ruler objects ─────────────────────────────

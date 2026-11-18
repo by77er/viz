@@ -12,7 +12,7 @@
   / sum(rate(http_requests_total{service="cart"}[5m]))</div>
         <div class="vz-query" data-when="many">sum by (pod) (rate(http_requests_total{service="cart",status=~"5.."}[5m]))
   / sum by (pod) (rate(http_requests_total{service="cart"}[5m]))</div>
-        <p class="vz-help" data-unless="many">Returns 1 series, a ratio. Its value now is 0.0040, which is <span class="vz-qty">0.40%</span>.</p>
+        <p class="vz-help" data-unless="many"><span>Returns 1 series, a ratio. Its value now is 0.0040, which is <span class="vz-qty">0.40%</span>.</span></p>
         <p class="vz-help" data-error data-when="many"><span class="vz-mark" data-state="warn"></span><span>Returns 36 series, one per pod. The rule fires for each pod separately: up to 36 pages at once. To watch cart as a whole, remove "by (pod)".</span></p>
         <div class="vz-controls"><a class="vz-link" href="#">Edit the query in Explore</a></div></div>
       <div class="vz-controls" style="align-items:flex-start">
@@ -27,7 +27,7 @@
       <div class="vz-field"><span class="vz-label">Notify</span>
         <div class="vz-controls"><select class="vz-select" id="route" aria-label="Who" style="width:auto"><option>storefront on-call, and #storefront-alerts</option><option>payments on-call, and #payments-alerts</option><option>platform on-call, and #platform-alerts</option><option>data platform, #data-alerts only</option></select>
           <div class="vz-segmented" role="group" aria-label="How"><button type="button" aria-pressed="true">Page and message</button><button type="button" aria-pressed="false">Message only</button></div></div>
-        <p class="vz-help">Lee is storefront on-call until Thu 19 Nov, 09:00. <a class="vz-link" href="12-routes.html">Who is notified</a></p></div>
+        <p class="vz-help"><span>Lee is storefront on-call until Thu 19 Nov, 09:00. <a class="vz-link" href="12-routes.html">Who is notified</a></span></p></div>
       <label class="vz-field"><span class="vz-label">Message</span><input class="vz-input" id="message" value="More than 1% of cart requests are failing. Check the last cart deploy and the session cache first." placeholder="What is wrong and what to check first"><span class="vz-help">Sent in the page and the message, under the name and the value.</span></label>
       <label class="vz-field"><span class="vz-label">Runbook link</span><input class="vz-input" id="runbook" data-mono value="https://wiki.acme.example/runbooks/cart-errors"></label>
       <label class="vz-check"><input type="checkbox" checked>Start an agent's investigation when it fires</label>

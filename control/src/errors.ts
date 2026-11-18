@@ -1,3 +1,5 @@
+import type { SchemaTooNew } from '../../contracts/schema'
+
 /**
  * Problem details (RFC 9457) with two additions every viz error carries: a stable `code`
  * and a `fix` that says what the caller should do next. Agents read `fix`.
@@ -42,6 +44,20 @@ export class Problem extends Error {
     }
   }
 }
+
+/**
+ * The object's storage was written by a newer release than this code (contracts/COMPATIBILITY.md
+ * §2.4). Nothing was read or changed; the same request will work once that release serves it.
+ */
+export const schemaProblem = (r: SchemaTooNew): Problem =>
+  new Problem(
+    503,
+    'schema-too-new',
+    `This tenant's data was last written by a newer release of the service (storage version ${r.found}; this release knows up to ${r.known}). Nothing was changed.`,
+    'Retry after the number of seconds in Retry-After. A deployment is in progress or was rolled back.',
+    {},
+    { 'Retry-After': String(Math.ceil(r.retryAfterMs / 1000)) },
+  )
 
 export const notFound = (what: string): Problem =>
   new Problem(404, 'not-found', `No such ${what}.`, `List the ${what}s you can see and use an id from that list. Ids from another tenant never resolve.`)

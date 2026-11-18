@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 viz-query = { path = "../query" }
 viz-storage = { path = "../storage" }
+serde_json = "1"
 
 # engine/AGENTS.md: the settings that measured faster.
 [profile.release]

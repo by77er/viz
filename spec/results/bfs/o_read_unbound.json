@@ -1,12 +1,12 @@
 {
   "name": "o_read_unbound",
   "kind": "teeth",
-  "label": "(o) flush reads readSegment(tenant, seqLo) unbound to the incarnation",
+  "label": "(o) flush reads readSegment(tenant, seqLo) unbound to the incarnation. NO counterexample: with registration before writes (F1 fix) the stale unit is refused as incarnation_mismatch; it bites only with lazy registration (F12)",
   "cfg": {
     "nt": 1,
     "ns": 1,
     "nb": 2,
-    "maxSend": 2,
+    "maxSend": 1,
     "variants": 1,
     "maxJobs": 2,
     "maxCJobs": 1,
@@ -32,6 +32,7 @@
     "reg": "logged",
     "query": "impl",
     "unknownStream": "refuse",
+    "f6Register": true,
     "readBound": false,
     "log": "segments",
     "rebuild": "strict",
@@ -47,12 +48,12 @@
   "props": [
     "I3_NoDuplicates"
   ],
-  "expect": "violated",
-  "asExpected": false,
+  "expect": "holds",
+  "asExpected": true,
   "verdict": "holds",
-  "states": 10968139,
-  "transitions": 69712074,
-  "depth": 49,
-  "seconds": 526.7,
-  "collisionProb": 0.0000033
+  "states": 2497381,
+  "transitions": 14551550,
+  "depth": 47,
+  "seconds": 209.5,
+  "collisionProb": 1.7e-7
 }

@@ -5,5 +5,5 @@ import { defineConfig } from 'vitest/config'
 // scripts' own tests are plain Node (`node --test test/`).
 export default defineConfig({
   plugins: [cloudflareTest({ wrangler: { configPath: './gateway/wrangler.test.jsonc' } })],
-  test: { include: ['gateway/test/**/*.test.ts'], testTimeout: 60_000, maxWorkers: 2 },
+  test: { include: ['gateway/test/**/*.test.ts', 'stage/*.test.ts'], testTimeout: 60_000, maxWorkers: 2 },
 })

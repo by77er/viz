@@ -98,7 +98,9 @@ export const cusum: Detector<CusumParams, CusumState> = {
         const need = st.relearning ? Math.max(1, Math.floor(p.relearnPoints)) : warmupPoints
         if (st.warm.length >= need) {
           st.mu = median(st.warm)
-          if (!st.ready) st.sigma = diffSigma(st.warm)
+          // σ from the warm-up; after an alarm it may only grow (a flat warm-up gives σ ≈ 0,
+          // which would make every later wiggle an alarm)
+          st.sigma = st.ready ? Math.max(st.sigma, diffSigma(st.warm)) : diffSigma(st.warm)
           st.warm = []
           st.ready = true
           st.relearning = false

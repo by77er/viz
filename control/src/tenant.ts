@@ -254,6 +254,8 @@ export class Tenant extends DurableObject<TenantEnv> {
    * an HTTP route would have to take a tenant from the request.
    */
   async provision(tenant: string, keyName = 'first admin key'): Promise<{ key: string; id: string }> {
+    const refused = this.refusal()
+    if (refused) throw new SchemaTooNewError(refused)
     if (!TENANT_ID.test(tenant)) throw new Error('tenant id must match [A-Za-z0-9_-]{1,64}')
     if (this.tenant !== '' && this.tenant !== tenant) throw new Error('this object belongs to another tenant')
     const now = Date.now()
@@ -273,8 +275,10 @@ export class Tenant extends DurableObject<TenantEnv> {
     return { key: out.secret, id: out.view.id as string }
   }
 
-  /** The authoritative answer for an API key that KV says is good. Null: not live. */
-  async resolveKey(tenant: string, keyId: string): Promise<{ subject: string; kind: 'agent' | 'key'; name: string; scopes: string[] } | null> {
+  /** The authoritative answer for an API key that KV says is good. Null: not live. `schema_too_new`: ask again later, it is not a "no". */
+  async resolveKey(tenant: string, keyId: string): Promise<{ subject: string; kind: 'agent' | 'key'; name: string; scopes: string[] } | null | SchemaTooNew> {
+    const refused = this.refusal()
+    if (refused) return refused
     if (this.tenant === '' || tenant !== this.tenant) return null
     const now = Date.now()
     const row = this.one<{ id: string; name: string; kind: 'agent' | 'key'; scopes: string }>(
@@ -291,7 +295,9 @@ export class Tenant extends DurableObject<TenantEnv> {
    * not per request). Until something calls this, "last used" and "samples, 24 h" are null.
    * Usage is telemetry about a key, not a change to it: it is not in the audit log.
    */
-  async recordUsage(tenant: string, batch: { keyId: string; at: number; samples: number }[]): Promise<{ accepted: number; unknown: number }> {
+  async recordUsage(tenant: string, batch: { keyId: string; at: number; samples: number }[]): Promise<{ accepted: number; unknown: number } | SchemaTooNew> {
+    const refused = this.refusal()
+    if (refused) return refused
     if (this.tenant === '' || tenant !== this.tenant) return { accepted: 0, unknown: batch.length }
     let accepted = 0
     let unknown = 0
@@ -319,6 +325,8 @@ export class Tenant extends DurableObject<TenantEnv> {
   /** Run one operation of the HTTP API for an identity the Worker has established. */
   async invoke(id: Identity, op: OpName, input: OpInput): Promise<OpResult> {
     try {
+      const refused = this.refusal()
+      if (refused) throw schemaProblem(refused)
       const now = Date.now()
       if (this.tenant === '' || id.tenant !== this.tenant) throw new Problem(401, 'unauthenticated', 'The credential is not usable.', 'Use a key of a provisioned tenant.')
       let identity = id
@@ -326,6 +334,7 @@ export class Tenant extends DurableObject<TenantEnv> {
         // The key must still be live here, whatever KV or a cache said a moment ago.
         const live = await this.resolveKey(id.tenant, id.keyId)
         if (!live) throw new Problem(401, 'unauthenticated', 'The API key is disabled, expired or deleted.', 'Use a key that is enabled and not expired.')
+        if ('status' in live) throw schemaProblem(live)
         identity = { ...id, ...live }
       }
       const route = routeOf(op)

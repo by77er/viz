@@ -6,8 +6,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "mutants": "node scripts/mutants.mjs",
-    "measure": "vitest run test/measure.test.ts --reporter=verbose",
-    "conformance": "node scripts/conformance.mjs"
+    "measure": "vitest run test/examples.test.ts -t measurements --reporter=verbose",
+    "conformance": "node scripts/conformance.mjs",
+    "spike:libs": "vitest run --config test/spike/vitest.config.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0"

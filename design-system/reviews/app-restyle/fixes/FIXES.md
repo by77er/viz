@@ -89,9 +89,13 @@ Fast 4G, 1440x900, a fresh context per run, 75th percentile of 20 runs (median, 
 Before is the app as it was when the review was written (the session's copy of it), after is
 this change; both built against the same snapshot of `design-system/dist` (the system was
 being edited during the session), measured here in alternating batches of five runs because
-the machine was shared: load average LOAD_RANGE on 4 cores during the runs. Numbers measured
+the machine was shared: load average 3.2 to 13.7 on 4 cores during the runs. Numbers measured
 on an idle machine would be lower. `node e2e/summarise.cjs` prints these tables from
 `e2e/measurements/fixes-{before,after}-{4,36,200}.json`.
+
+The measured "after" build is this change's source except for three later edits that do not
+touch the measured paths: "min" in the time presets, the guard fix for a quick round trip
+between forms (below the URL debounce), and `maxWorkers: 2` for vitest.
 
 A correction to the harness: its "response" figure starts when the harness's copy of the body
 (`res.clone().text()`) resolves, and that happens after the app has read and parsed its own
@@ -99,7 +103,74 @@ copy (checked in a page: the app's `text()` resolves first and its `JSON.parse` 
 the clone's callback). So "response" leaves out parsing the body. `responseFull` is measured
 from the last byte (Resource Timing `responseEnd`) and includes it.
 
-SPEED_TABLES
+#### 4 series (sum by (service) (rate(http_requests_total[5m])))
+
+Runs: before 20, after 20.
+
+| What | Budget | Before | After | Within budget after? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 25 (22, 97) | 24 (21, 36) | yes |
+| Click on Run query to the busy state painted | 100 ms | 59 (37, 105) | 48 (38, 159) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 40 (33, 75) | 33 (27, 40) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 109 (65, 8003) | 56 (49, 115) |  |
+| Typing: keys over 50 ms, of 60 |  | 7 (5, 27) | 2 (0, 9) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 32 (29, 46) | 29 (25, 34) | yes |
+| Chart to table | 100 ms | 79 (59, 240) | 49 (39, 80) | yes |
+| Table to text | 100 ms | 65 (55, 159) | 44 (36, 64) | yes |
+| Text to chart | 100 ms | 58 (47, 104) | 42 (36, 90) | yes |
+| Open the time picker | 100 ms | 105 (75, 159) | 81 (62, 176) | yes |
+| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 67 (52, 189) | 42 (38, 74) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 77 (65, 199) | 54 (48, 82) | yes |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 96 (72, 152) | 64 (56, 136) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 120 (72, 7944) | 80 (64, 136) | yes |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+#### 36 series (sum by (service, route, status) (rate(http_requests_total[5m])))
+
+Runs: before 20, after 20.
+
+| What | Budget | Before | After | Within budget after? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 22 (20, 34) | 23 (19, 46) | yes |
+| Click on Run query to the busy state painted | 100 ms | 56 (43, 196) | 43 (35, 55) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 42 (38, 47) | 33 (29, 46) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 77 (62, 148) | 64 (53, 122) |  |
+| Typing: keys over 50 ms, of 60 |  | 6 (4, 11) | 2 (1, 10) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 44 (42, 55) | 32 (31, 38) | yes |
+| Chart to table | 100 ms | 98 (89, 133) | 69 (56, 86) | yes |
+| Table to text | 100 ms | 90 (73, 125) | 89 (61, 107) | yes |
+| Text to chart | 100 ms | 66 (55, 91) | 46 (37, 63) | yes |
+| Open the time picker | 100 ms | 76 (59, 141) | 80 (70, 160) | yes |
+| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 116 (105, 134) | 116 (87, 169) | **no**, 116 ms |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 166 (149, 241) | 160 (132, 250) | **no**, 160 ms |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 96 (72, 136) | 96 (80, 112) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 96 (88, 136) | 104 (88, 144) | yes |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+#### 200 series (viz_synthetic_series)
+
+Runs: before 20, after 20.
+
+| What | Budget | Before | After | Within budget after? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 29 (21, 44) | 32 (24, 38) | yes |
+| Click on Run query to the busy state painted | 100 ms | 48 (38, 93) | 51 (43, 142) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 47 (42, 68) | 41 (38, 46) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 143 (108, 237) | 146 (123, 232) |  |
+| Typing: keys over 50 ms, of 60 |  | 13 (8, 29) | 9 (7, 15) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 81 (70, 114) | 35 (31, 42) | yes |
+| Chart to table | 100 ms | 330 (228, 897) | 135 (77, 194) | **no**, 135 ms |
+| Table to text | 100 ms | 124 (106, 289) | 108 (74, 160) | **no**, 108 ms |
+| Text to chart | 100 ms | 129 (114, 178) | 46 (41, 107) | yes |
+| Open the time picker | 100 ms | 77 (67, 153) | 89 (76, 283) | yes |
+| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 424 (349, 966) | 156 (118, 1085) | **no**, 156 ms |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 761 (620, 1226) | 489 (403, 2276) | **no**, 489 ms |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 296 (216, 512) | 160 (112, 264) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 296 (216, 512) | 168 (144, 264) | yes |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
 
 ## M3: focus dropped to the body
 
@@ -127,7 +198,19 @@ button and an example link.
 viewport). Where focus is on the body there is no ring to see, so the focused element in
 each case is also written to `focus-before.json` and `focus-after.json`:
 
-FOCUS_TABLE
+| Case | Before | After |
+|---|---|---|
+| after Cancel by keyboard | body | retry |
+| after Retry by keyboard | body | run |
+| after choosing a time preset by keyboard | body | time-range |
+| after "Run the query again" by keyboard | body | run |
+| after closing the command palette with Escape | open-commands | open-commands |
+| after closing settings with Escape | open-settings | open-settings |
+| after T (table to text) with focus on a table column head | body | view-text |
+| after isolating a series by keyboard | {service="auth"} | auth |
+| after "Show all series" by keyboard (the button goes away) | body | auth |
+
+"body" means `document.activeElement` was the body: the next Tab starts from the top of the page.
 
 ## M5: names that hide what distinguishes the series
 
@@ -257,4 +340,35 @@ Styling and chart-drawing findings, and anything that needs a new token or compo
 - Units in charts (review, system item 10): this change puts the axis unit once in the panel
   head; the system may place it elsewhere.
 
-BUDGETS_MISSED
+## Budgets still missed, and why
+
+Measured above (75th percentile of 20 runs, 4x CPU). Every 4-series budget is met. Missed:
+
+- **36 series, response to paint: 116 ms** (160 ms from the last byte). Not improved (before
+  116 and 166). Profiled: the render of a new result is about 30 ms of script at 4x
+  (aligning 26,000 samples, naming, keys, the legend, the chart's redraw), followed in the
+  same task by a minor GC of 10 to 55 ms, because every value is a boxed number in a
+  `(number | null)[]`; reading and parsing the body adds about 45 ms (the gap between the
+  two response figures). The next step is typed arrays
+  (`Float64Array` with NaN for gaps) through the chart interface, or parsing in a worker;
+  neither was done here.
+- **200 series, response to paint: 156 ms** (489 ms from the last byte; before 424 and 761).
+  The body is 3.6 MB of JSON: `JSON.parse` alone takes about 32 ms unthrottled, about 125 ms
+  at 4x, and the 144,000 samples are then aligned and boxed. A JSON transport cannot meet
+  100 ms here at 4x; this needs the binary (Arrow) transport or a worker, and coarse data
+  first, as the budget's own wording ("coarse data first, refined in place") expects.
+- **200 series, chart to table: 135 ms** (before 330) and **table to text: 108 ms** (before
+  124). The table renders 50 rows and the page lays out a 50-row table; the text form
+  computes the digest of 200 series the first time it is shown for a result (it is cached
+  after that, but each measured run shows it once).
+- Single runs over budget remain on the shared machine at every size (for example the time
+  picker at 176 to 283 ms and the busy state at 142 to 159 ms in one run each), with load
+  averages up to 13.7 on 4 cores.
+
+Typing meets its budget at the 75th percentile for all three sizes (33, 33 and 41 ms), but
+not key by key: the slowest key of a run is 56, 64 and 146 ms at the 75th percentile, and 2,
+2 and 9 keys of 60 are over 50 ms. These are CodeMirror's own work (rebuilding the
+autocomplete list, its measure cycle, the syntax tree); no React component renders while
+typing. Note that the harness's "before" typing figure (40 to 47 ms) is lower than the
+review's 82 ms: the harness waits for each key's frame before sending the next, and the
+reviewer's measurement of character echo did not, so keys queued.

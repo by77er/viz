@@ -3,8 +3,8 @@
 <main class="vz-page" id="main">
   <header class="vz-page-head">
     <div><h1 class="vz-page-title">Proposed change to checkout-api</h1>
-      <p class="vz-page-state" data-unless="applied"><span class="vz-mark"></span>Not applied. Proposed by an agent at 13:16</p>
-      <p class="vz-page-state" data-when="applied"><span class="vz-mark" data-state="ack"></span>Applied by you at 15:16, as revision 15</p>
+      <p class="vz-page-state" data-unless="applied"><span><span class="vz-mark" style="vertical-align:middle"></span>&nbsp; Not applied. Proposed by an agent at 13:16</span></p>
+      <p class="vz-page-state" data-when="applied"><span><span class="vz-mark" data-state="ack" style="vertical-align:middle"></span>&nbsp; Applied by you at 15:16, as revision 15</span></p>
       <p class="vz-page-sub">Written by an agent after its <a class="vz-link" href="6-investigation.html">investigation into slow checkout</a>, finished at 13:09. <span data-unless="applied">The dashboard is at revision 14; nothing has been changed yet.</span><span data-when="applied">2 of the 3 changes were applied; the Goroutines panel was kept.</span></p></div>
   </header>
 
@@ -62,5 +62,5 @@
   <div class="vz-controls" data-when="applied"><button class="vz-button" data-go="">Restore revision 14</button><a class="vz-link" href="2-dashboard.html">Open the dashboard</a></div>
 </main>
 <script>
-(function () { const el = document.getElementById('newpanel'); el.vz = vzChart(el, { ...flows.deps(), markers: [flows.markers.slow] }) })()
+(function () { const el = document.getElementById('newpanel'); el.vz = vzChart(el, { ...flows.deps(), markers: [flows.markers.deploy] }) })()
 </script>

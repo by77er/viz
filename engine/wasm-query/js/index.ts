@@ -21,7 +21,7 @@
  */
 import type { Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData } from '../../../contracts/engine'
 
-export const ABI_VERSION = 1
+export const ABI_VERSION = 2
 
 /** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
 export interface QueryLimits {
@@ -85,6 +85,52 @@ export interface FetchRange {
 
 export type InstantData = PromVector | PromScalar | PromMatrix | PromString
 
+/** How a query is executed (`engine/query` `split_plan`). */
+export type SplitPlan = { split: true; fragments: number; without: string[] } | { split: false; reason: string }
+
+/** Where a split query is evaluated: a range query, or an instant query at `time`. */
+export type Grid = { start: number; end: number; step: number } | { time: number }
+
+/** What one leaf may hold and load: its share of the query's budget. */
+export interface LeafBudget {
+  samples: number
+  series: number
+  stepPoints: number
+}
+
+/** A reader's rows of one part, as one `VZB1` batch (empty: no rows). */
+export interface Extract {
+  batch: Uint8Array
+  rows: number
+  series: number
+}
+
+/** The fixed header of a leaf's answer (`engine/query` `LeafOutput`). */
+export interface LeafSummary {
+  status: 'ok' | 'error' | 'aborted'
+  /** Distinct samples and series the leaf held. */
+  gatheredSamples: number
+  gatheredSeries: number
+  /** Samples and series its selects loaded. */
+  loadedSamples: number
+  loadedSeries: number
+}
+
+/** Bounds on a cardinality report (exact counting; above a cap the report is refused). */
+export interface CardinalityCaps {
+  maxSeries: number
+  maxPairs: number
+}
+
+/** Read the fixed header of a leaf's answer without a call into the module. */
+export function leafSummary(answer: Uint8Array): LeafSummary {
+  if (answer.byteLength < 37 || answer[0] !== 0x56 || answer[1] !== 0x5a || answer[2] !== 0x4c || answer[3] !== 0x31) throw new RangeError('engine: not a leaf answer')
+  const dv = new DataView(answer.buffer, answer.byteOffset, answer.byteLength)
+  const n = (i: number): number => Number(dv.getBigUint64(5 + 8 * i, true))
+  const status = answer[4] === 0 ? 'ok' : answer[4] === 1 ? 'error' : 'aborted'
+  return { status, gatheredSamples: n(0), gatheredSeries: n(1), loadedSamples: n(2), loadedSeries: n(3) }
+}
+
 export interface QueryEngine {
   /** What to fetch before evaluating: merged, clamped ranges. `startMs === endMs` plans an instant query. */
   plan(promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): FetchRange[]
@@ -117,6 +163,26 @@ export interface QueryEngine {
    * the fragment does not parse, so the bound is unknown and the file must be read.
    */
   scanRows(indexes: string[], ranges: FetchRange[]): (number | null)[]
+  /** How a query is executed: split over leaves, or in one place and why. */
+  splitPlan(promql: string, limits?: QueryLimits): SplitPlan
+  /** Reader: the rows of `part` of `parts` in the sample files (precedence order) for `ranges`. */
+  extract(seriesFiles: Uint8Array[], sampleFiles: Uint8Array[], without: string[], part: number, parts: number, ranges: FetchRange[]): Extract
+  /** Coordinator: the tail batches cut by part, each part's in the input order. */
+  splitTails(batches: Uint8Array[], without: string[], parts: number, ranges: FetchRange[]): Uint8Array[][]
+  /** Leaf: start gathering a split's data. Returns a session handle kept in this instance. */
+  gatherNew(ranges: FetchRange[], budget: LeafBudget): number
+  /** Leaf: add an extract or a tail batch with its precedence (higher wins on equal timestamps). */
+  gatherAdd(handle: number, rank: number, batch: Uint8Array): { aborted: boolean; samples: number; series: number }
+  /** Leaf: evaluate the split's fragments; frees the session. The answer goes to the coordinator as bytes. */
+  gatherEval(handle: number, promql: string, grid: Grid, fragments: number, limits?: QueryLimits): Uint8Array
+  /** Leaf: drop a session that will not be evaluated. */
+  gatherFree(handle: number): void
+  /** Coordinator: merge the leaves' answers and finish the query; the result as the engine wrote it. */
+  mergeJson(answers: Uint8Array[], promql: string, grid: Grid, limits?: QueryLimits): { json: string; stats: QueryStats }
+  /** Cardinality: one part's summary of `metric_series` files and tail batches over `[startMs, endMs]`. */
+  cardinalityPart(seriesFiles: Uint8Array[], tailBatches: Uint8Array[], startMs: number, endMs: number, part: number, parts: number, caps: CardinalityCaps): Uint8Array
+  /** Cardinality: merge the parts and render `/api/v1/status/tsdb` and `/api/v1/status/cardinality` (`data` objects, JSON text). */
+  cardinalityReport(summaries: Uint8Array[], limit: number, startMs: number, endMs: number, lookbackStartMs: number, caps: CardinalityCaps): { tsdb: string; cardinality: string }
   /** Size of the instance's linear memory now, which is also its peak: it only grows. */
   memoryBytes(): number
   /** How many times a WASM instance has been created (1, plus one per trap or reset). */
@@ -142,6 +208,16 @@ type Op =
   | 'viz_q_label_values'
   | 'viz_q_series'
   | 'viz_q_scan_rows'
+  | 'viz_q_split_plan'
+  | 'viz_q_extract'
+  | 'viz_q_split_tails'
+  | 'viz_q_gather_new'
+  | 'viz_q_gather_add'
+  | 'viz_q_gather_eval'
+  | 'viz_q_gather_free'
+  | 'viz_q_merge'
+  | 'viz_q_card_part'
+  | 'viz_q_card_report'
 type Module = Exports & Record<Op, (ptr: number, len: number) => number>
 
 const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
@@ -210,6 +286,24 @@ class Request {
     this.u32(input.seriesFiles.length).u32(input.sampleFiles.length).u32(input.tailBatches.length)
     for (const list of [input.seriesFiles, input.sampleFiles, input.tailBatches]) for (const b of list) this.bytes(b)
     return this
+  }
+  ranges(rs: FetchRange[]): this {
+    this.u32(rs.length)
+    for (const r of rs) this.i64(time('minTs', r.minTs)).i64(time('maxTs', r.maxTs)).matchers(r.matchers)
+    return this
+  }
+  files(list: Uint8Array[]): this {
+    this.u32(list.length)
+    for (const b of list) this.bytes(b)
+    return this
+  }
+  count(name: string, v: number): this {
+    if (!Number.isInteger(v) || v < 0 || v > 0xffff_ffff) throw new RangeError(`engine: ${name} must be a 32-bit count, got ${v}`)
+    return this.u32(v)
+  }
+  grid(g: Grid): this {
+    if ('time' in g) return this.u8(1).i64(time('timeMs', g.time)).i64(time('timeMs', g.time)).i64(1n)
+    return this.u8(0).i64(time('startMs', g.start)).i64(time('endMs', g.end)).i64(time('stepMs', g.step))
   }
   matchers(ms: Matcher[]): this {
     this.u32(ms.length)
@@ -359,7 +453,68 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     })
   }
 
+  const u64At = (dv: DataView, at: number): number => Number(dv.getBigUint64(at, true))
+
+  function splitTails(batches: Uint8Array[], without: string[], parts: number, ranges: FetchRange[]): Uint8Array[][] {
+    const req = new Request().strs(without).count('parts', parts).ranges(ranges).files(batches)
+    return call('viz_q_split_tails', req, (payload) => {
+      const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+      const out: Uint8Array[][] = []
+      let p = 0
+      for (let j = 0; j < parts; j++) {
+        const n = dv.getUint32(p, true)
+        p += 4
+        const list: Uint8Array[] = []
+        for (let i = 0; i < n; i++) {
+          const len = dv.getUint32(p, true)
+          list.push(payload.slice(p + 4, p + 4 + len))
+          p += 4 + len
+        }
+        out.push(list)
+      }
+      return out
+    })
+  }
+
   return {
+    splitPlan: (promql, limits = DEFAULT_LIMITS) => call('viz_q_split_plan', new Request().limits(limits).str(promql), json<SplitPlan>),
+    extract: (seriesFiles, sampleFiles, without, part, parts, ranges) => {
+      const req = new Request().strs(without).count('part', part).count('parts', parts).ranges(ranges).files(seriesFiles).files(sampleFiles)
+      return call('viz_q_extract', req, (payload) => {
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        return { rows: u64At(dv, 0), series: u64At(dv, 8), batch: payload.slice(16) }
+      })
+    },
+    splitTails,
+    gatherNew: (ranges, budget) => {
+      const req = new Request().u64(limit('samples', budget.samples)).u64(limit('series', budget.series)).u64(limit('stepPoints', budget.stepPoints)).ranges(ranges)
+      return call('viz_q_gather_new', req, (payload) => new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true))
+    },
+    gatherAdd: (handle, rank, batch) =>
+      call('viz_q_gather_add', new Request().count('handle', handle).count('rank', rank).bytes(batch), (payload) => {
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        return { aborted: payload[0] === 1, samples: u64At(dv, 1), series: u64At(dv, 9) }
+      }),
+    gatherEval: (handle, promql, grid, fragments, limits = DEFAULT_LIMITS) =>
+      call('viz_q_gather_eval', new Request().count('handle', handle).limits(limits).grid(grid).count('fragments', fragments).str(promql), (payload) => payload.slice()),
+    gatherFree: (handle) => {
+      // Only if the instance is alive: a dropped instance has dropped its sessions.
+      if (x) call('viz_q_gather_free', new Request().count('handle', handle), () => undefined)
+    },
+    mergeJson: (answers, promql, grid, limits = DEFAULT_LIMITS) => call('viz_q_merge', new Request().limits(limits).grid(grid).str(promql).files(answers), withStats),
+    cardinalityPart: (seriesFiles, tailBatches, startMs, endMs, part, parts, caps) => {
+      const req = new Request().i64(time('startMs', startMs)).i64(time('endMs', endMs)).count('part', part).count('parts', parts)
+      req.u64(limit('maxSeries', caps.maxSeries)).u64(limit('maxPairs', caps.maxPairs)).files(seriesFiles).files(tailBatches)
+      return call('viz_q_card_part', req, (payload) => payload.slice())
+    },
+    cardinalityReport: (summaries, n, startMs, endMs, lookbackStartMs, caps) => {
+      const req = new Request().u64(limit('maxSeries', caps.maxSeries)).u64(limit('maxPairs', caps.maxPairs)).count('limit', n)
+      req.i64(time('startMs', startMs)).i64(time('endMs', endMs)).i64(time('lookbackStartMs', lookbackStartMs)).files(summaries)
+      return call('viz_q_card_report', req, (payload) => {
+        const len = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true)
+        return { tsdb: text.decode(payload.subarray(4, 4 + len)), cardinality: text.decode(payload.subarray(4 + len)) }
+      })
+    },
     plan: (promql, startMs, endMs, stepMs, limits = DEFAULT_LIMITS) => call('viz_q_plan', planReq(promql, startMs, endMs, stepMs, limits), json<FetchRange[]>),
     selectors: (promql, startMs, endMs, stepMs, limits = DEFAULT_LIMITS) => call('viz_q_selectors', planReq(promql, startMs, endMs, stepMs, limits), json<FetchRange[]>),
     queryRangeJson,

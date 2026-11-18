@@ -130,7 +130,7 @@ export const getDashboard: ToolDef = {
   name: 'get_dashboard',
   title: 'Get a dashboard',
   description:
-    'Read a dashboard\'s definition. view "outline" (default, cheapest): title, intent, variables, and per panel id, kind, title, unit and query ids. view "spec": the viz.dashboard/v1 JSON, one JSON Pointer per line (/metadata, /panels/<id>, /layout, ...), with the revision to send as base_revision to write_dashboard. view "resolved": fragments expanded and variables substituted, per panel with its final queries. Strings are shown cleaned (control characters, markup and URLs neutralised); "altered" lists values that differ from what is stored, so do not copy those into a change. No data: use read_dashboard for that.',
+    'Read a dashboard\'s definition. view "outline" (default, cheapest): title, intent, variables, and per panel id, kind, title, unit and query ids. view "spec": the viz.dashboard/v1 JSON, one JSON Pointer per line (/metadata, /panels/<id>, /layout, ...), with the revision to send as base_revision to write_dashboard. view "resolved": fragments expanded and variables substituted, per panel with its final queries. Strings are shown cleaned (control characters, markup and URLs neutralised); "altered" lists values that differ from what is stored, so do not copy those into a change. A value larger than a whole page is shown cut ("cut": true); read the spec with max_tokens of 2,000 or more. No data: use read_dashboard for that.',
   scopes: ['dashboards:read'],
   defaultTokens: 2000,
   readOnly: true,

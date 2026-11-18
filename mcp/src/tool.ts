@@ -121,6 +121,8 @@ export function pagedResult(p: PagedSpec): ToolResult {
       tokens: tokensOf(pg.text),
       usage: { ...p.s.usage },
       shown: pg.shown.length,
+      /** An item larger than the whole page was shown cut; raise max_tokens to see it whole. */
+      cut: pg.cut,
       total: p.items.length,
       offset: Math.min(p.offset, p.items.length),
       ...(p.meta ?? {}),

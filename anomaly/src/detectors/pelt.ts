@@ -77,22 +77,30 @@ export function pelt(x: ArrayLike<number>, opts: { penalty?: number; minSegment?
   const F = new Float64Array(m + 1).fill(Infinity)
   const last = new Int32Array(m + 1).fill(-1)
   F[0] = -beta
-  let R: number[] = [0]
+  // Candidates for the last changepoint, each usable until iteration `until` (exclusive).
+  // Pruning (K = 0 for this cost): if F[τ] + C(τ, t) > F[t], a split at t beats τ for every
+  // horizon T ≥ t + minSeg — but not for t < T < t + minSeg, where a split at t is not allowed.
+  // So a pruned τ stays usable for minSeg − 1 more iterations. (Pruning at once is the classic
+  // PELT step; with a minimum segment length it loses the optimum — found by the brute-force
+  // property test.)
+  let R: { tau: number; until: number }[] = [{ tau: 0, until: Infinity }]
   for (let t = minSeg; t <= m; t++) {
     let best = Infinity
     let arg = -1
-    for (const tau of R) {
-      if (t - tau < minSeg) continue
-      const v = F[tau]! + cost(tau, t) + beta
-      if (v < best) { best = v; arg = tau }
+    for (const c of R) {
+      if (t - c.tau < minSeg || t >= c.until) continue
+      const v = F[c.tau]! + cost(c.tau, t) + beta
+      if (v < best) { best = v; arg = c.tau }
     }
     F[t] = best
     last[t] = arg
-    // prune: τ can never be optimal again once F[τ] + C(τ, t) > F[t]   (K = 0 for this cost)
-    const keep: number[] = []
-    for (const tau of R) if (t - tau < minSeg || F[tau]! + cost(tau, t) <= F[t]!) keep.push(tau)
+    const keep: { tau: number; until: number }[] = []
+    for (const c of R) {
+      if (t - c.tau >= minSeg && F[c.tau]! + cost(c.tau, t) > F[t]!) c.until = Math.min(c.until, t + minSeg)
+      if (c.until > t + 1) keep.push(c)
+    }
     const cand = t + 1 - minSeg
-    if (cand >= minSeg && Number.isFinite(F[cand]!)) keep.push(cand)
+    if (cand >= minSeg && Number.isFinite(F[cand]!)) keep.push({ tau: cand, until: Infinity })
     R = keep
   }
   const cps: number[] = []

@@ -3,9 +3,9 @@
 <main class="vz-page" id="main">
   <header class="vz-page-head">
     <div><h1 class="vz-page-title">checkout p99 latency</h1>
-      <p class="vz-page-state" data-unless="ack silenced"><span class="vz-mark" data-state="critical"></span>Firing since 13:07 (2 h 9 min)</p>
-      <p class="vz-page-state" data-when="ack"><span class="vz-mark" data-state="ack"></span>Acknowledged by you, firing since 13:07 (2 h 9 min)</p>
-      <p class="vz-page-state" data-when="silenced"><span class="vz-mark" data-state="silenced"></span>Silenced until 16:16, firing since 13:07 (2 h 9 min)</p>
+      <p class="vz-page-state" data-unless="ack silenced"><span><span class="vz-mark" data-state="critical" style="vertical-align:middle"></span>&nbsp; Firing since 13:07 (2 h 9 min)</span></p>
+      <p class="vz-page-state" data-when="ack"><span><span class="vz-mark" data-state="ack" style="vertical-align:middle"></span>&nbsp; Acknowledged by you, firing since 13:07 (2 h 9 min)</span></p>
+      <p class="vz-page-state" data-when="silenced"><span><span class="vz-mark" data-state="silenced" style="vertical-align:middle"></span>&nbsp; Silenced until 16:16, firing since 13:07 (2 h 9 min)</span></p>
       <p class="vz-page-sub" data-unless="ack silenced">POST /v2/orders is at <span class="vz-qty">912 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02. Nobody has acknowledged: Dana was paged at 13:07 and Kim at 13:37 (payments on-call); next page at 17:07.</p>
       <p class="vz-page-sub" data-when="ack">POST /v2/orders is at <span class="vz-qty">912 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02. You have it: pages have stopped, and Kim and #payments-alerts were told at 15:16.</p>
       <p class="vz-page-sub" data-when="silenced">POST /v2/orders is at <span class="vz-qty">912 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02. Nobody has acknowledged; no pages or messages until 16:16, and the rule keeps evaluating.</p></div>

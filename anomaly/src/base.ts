@@ -121,6 +121,6 @@ export function summarize(detector: string, points: Point[], state: unknown, ext
 export const jsonNum = (x: number): number | null => (Number.isFinite(x) ? x : null)
 
 /** Round a slot index; the ring buffers are indexed by slot = round((ts - origin) / step). */
-export const slotOf = (ts: number, origin: number, step: number) => Math.round((ts - origin) / step)
+export const slotOf = (ts: number, origin: number, step: number) => Math.round((ts - origin) / step) + 0 // + 0: never -0
 
 export const mod = (a: number, n: number) => ((a % n) + n) % n

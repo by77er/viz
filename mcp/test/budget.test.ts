@@ -132,6 +132,18 @@ describe('every pageable tool, end to end', () => {
     )
   })
 
+  it('get_schema parts concatenate to the exact document at the smallest budget, and nothing is cut', async () => {
+    let cursor: string | null = null
+    let text = ''
+    do {
+      const r = await rest(h, k.key, 'get_schema', { kind: 'dashboard', max_tokens: 200, ...(cursor ? { cursor } : {}) })
+      expect(r.structured.cut).toBe(false)
+      for (const it of r.structured.data.items) text += it.text
+      cursor = r.structured.cursor
+    } while (cursor)
+    expect(() => JSON.parse(text)).not.toThrow()
+  })
+
   it('a cursor is bound to its tool and arguments', async () => {
     const first = await rest(h, k.key, 'get_schema', { kind: 'dashboard', max_tokens: 300 })
     const other = await rest(h, k.key, 'get_schema', { kind: 'stat', max_tokens: 300, cursor: first.structured.cursor })

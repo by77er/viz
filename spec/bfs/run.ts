@@ -20,7 +20,7 @@ mkdirSync(out, { recursive: true })
 
 /** Small bounds: 1 tenant, 1 shard, 2 batches, 2 sends each, 2 flush Workers at once; no faults or maintenance. */
 const SMALL = {
-  nt: 1, ns: 1, nb: 2, maxSend: 2, variants: 1, maxJobs: 2, maxCJobs: 1, maxComp: 0, maxExp: 0, maxLL: 0, maxSL: 0,
+  nt: 1, ns: 1, nb: 2, maxSend: 2, variants: 1, maxJobs: 2, maxCJobs: 1, maxCSteps: 3, maxComp: 0, maxExp: 0, maxLL: 0, maxSL: 0,
   maxQ: 1, maxRestarts: 2, sameContent: false, liveness: false,
 } as const
 
@@ -28,7 +28,7 @@ const SMALL = {
 export const AMENDED: Cfg = {
   ...SMALL,
   fence: true, contiguous: true, recAt: 'logged', dedup: true, fpHorizon: true, replaceLive: true, delGrace: true,
-  delLogged: true, missingErr: true, keying: 'content', sweep: 'impl', reg: 'logged', query: 'impl', unknownStream: 'refuse',
+  delLogged: true, missingErr: true, keying: 'content', sweep: 'impl', sweepIncLogged: true, reg: 'logged', query: 'impl', unknownStream: 'refuse',
   f6Register: true, readBound: true, log: 'segments', rebuild: 'strict', drainRetrySame: true, baseFirst: true, compKey: 'unique',
   compConflictDelete: true, fpScope: 'stream', tailScope: 'stream', noRetryAcrossLoss: true, retain: false,
 }
@@ -41,14 +41,14 @@ export const AMENDED: Cfg = {
  */
 export const DESIGN: Cfg = {
   ...AMENDED,
-  reg: 'design', query: 'design', sweep: 'spec', drainRetrySame: false, baseFirst: false, compConflictDelete: false,
+  reg: 'design', query: 'design', sweep: 'spec', sweepIncLogged: false, drainRetrySame: false, baseFirst: false, compConflictDelete: false,
   noRetryAcrossLoss: false,
 }
 
 /** As built: shard.ts, ledger.ts (one R2 object per change), flush.ts, compact.ts, janitor.ts, query coordinator.ts. */
 export const IMPL: Cfg = {
   ...AMENDED,
-  reg: 'impl', query: 'impl', unknownStream: 'empty', readBound: false, log: 'perChange', baseFirst: true,
+  reg: 'impl', query: 'impl', unknownStream: 'empty', readBound: false, log: 'perChange', baseFirst: true, sweepIncLogged: false,
   sweep: 'impl', compKey: 'inputs', compConflictDelete: true, noRetryAcrossLoss: false,
 }
 
@@ -107,10 +107,11 @@ const DESIGN_PEEL: [string, Partial<Cfg>][] = [
   ['DESIGN_4_fix_F10', { baseFirst: true, reg: 'logged', drainRetrySame: true }],
   ['DESIGN_5_assume_F3', { baseFirst: true, reg: 'logged', drainRetrySame: true, noRetryAcrossLoss: true }],
   ['DESIGN_6_fix_F2', { baseFirst: true, reg: 'logged', drainRetrySame: true, noRetryAcrossLoss: true, sweep: 'impl' }],
+  ['DESIGN_7_fix_F15', { baseFirst: true, reg: 'logged', drainRetrySame: true, noRetryAcrossLoss: true, sweep: 'impl', sweepIncLogged: true }],
 ]
 for (const [name, over] of DESIGN_PEEL) {
   E.push({ name, kind: 'finding', label: `DESIGN.md 3.1 + LEDGER-LOG.md${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ' as written'}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
-    cfg: { ...DESIGN, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'DESIGN_6_fix_F2' ? 'holds' : 'violated' })
+    cfg: { ...DESIGN, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'DESIGN_7_fix_F15' ? 'holds' : 'violated' })
 }
 finding('F1_registration_rolled_back', 'F1: registration committed, not logged; ledger rebuild forgets the stream (design reg, others fixed)', { ...AMENDED, reg: 'design', query: 'design', maxLL: 1 }, ['I4_NoGapAtSeam'])
 finding('F2_sweeper_spec_I1', 'F2: orphan sweeper as DESIGN §4.3 states it; ledger rebuild', { ...AMENDED, sweep: 'spec', maxComp: 1, maxLL: 1 }, ['I1_AckedIsDurable'])
@@ -121,20 +122,22 @@ finding('F10_rebuild_refuses', 'F10: same, then the ledger loses its storage: a 
 finding('F11_incarnation_reused', 'F11 (LEDGER-LOG.md): base is an ordinary first change; two ledger losses before it is drained', { ...AMENDED, baseFirst: false, maxLL: 2 }, ['V_IncarnationNotReused'])
 const IMPL_PEEL: [string, Partial<Cfg>][] = [
   ['IMPL_1_as_built', {}],
-  ['IMPL_2_fix_F6', { unknownStream: 'refuse' }],
-  ['IMPL_3_assume_F3', { unknownStream: 'refuse', noRetryAcrossLoss: true }],
-  ['IMPL_4_fix_F12', { unknownStream: 'refuse', noRetryAcrossLoss: true, readBound: true }],
-  ['IMPL_5_fix_F13_F14', { unknownStream: 'refuse', noRetryAcrossLoss: true, readBound: true, compKey: 'unique' }],
+  ['IMPL_2_assume_F3', { noRetryAcrossLoss: true }],
+  ['IMPL_3_fix_F12', { noRetryAcrossLoss: true, readBound: true }],
+  ['IMPL_4_fix_F6', { noRetryAcrossLoss: true, readBound: true, unknownStream: 'refuse', reg: 'logged' }],
+  ['IMPL_5_fix_F15', { noRetryAcrossLoss: true, readBound: true, unknownStream: 'refuse', reg: 'logged', sweepIncLogged: true }],
+  ['IMPL_6_fix_F13_F14', { noRetryAcrossLoss: true, readBound: true, unknownStream: 'refuse', reg: 'logged', sweepIncLogged: true, compKey: 'unique' }],
 ]
 for (const [name, over] of IMPL_PEEL) {
   E.push({ name, kind: 'finding', label: `as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts)${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ''}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
-    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_5_fix_F13_F14' ? 'holds' : 'violated' })
+    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_6_fix_F13_F14' ? 'holds' : 'violated' })
 }
 finding('F6_impl_unknown_stream', 'F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss)', { ...IMPL, maxSL: 1, noRetryAcrossLoss: true }, ['I4_NoGapAtSeam'])
 finding('F12_impl_read_unbound', 'F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)', { ...IMPL, maxSL: 1, unknownStream: 'refuse', noRetryAcrossLoss: true }, ['I3_NoDuplicates'])
 finding('F13_impl_comp_adopts_old_output', 'F13: compaction adopts an earlier step\'s output ("exists"); the sweeper judges it by the earlier upload', { ...IMPL, maxComp: 1 }, ['I11_LiveFilesReadable'])
 finding('F14_impl_comp_conflict_delete', 'F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild', { ...IMPL, sweep: 'off', maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
-finding('IMPL_PLANNED_fixed', 'As built with the fixes above (F6, F12, F13/F14, F3 assumed), and the ledger log replaced by the PLANNED segments of LEDGER-LOG.md; ledger loss, compaction', { ...IMPL_PLANNED, unknownStream: 'refuse', noRetryAcrossLoss: true, readBound: true, compKey: 'unique', maxLL: 1, maxComp: 1 }, ALLSAFE)
+finding('F15_sweeper_trusts_unlogged_registration', 'F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild', { ...AMENDED, sweepIncLogged: false, maxSL: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
+finding('IMPL_PLANNED_fixed', 'As built with the fixes above (F6, F12, F13/F14, F3 assumed), and the ledger log replaced by the PLANNED segments of LEDGER-LOG.md; ledger loss, compaction', { ...IMPL_PLANNED, unknownStream: 'refuse', noRetryAcrossLoss: true, readBound: true, compKey: 'unique', sweepIncLogged: true, maxLL: 1, maxComp: 1 }, ALLSAFE)
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation
 const amended = (name: string, label: string, over: Partial<Cfg>, maxStates?: number) =>
@@ -153,8 +156,8 @@ const live = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated
 live('LIVE_amended', 'amended protocol, ledger loss + shard loss + compaction (1 send per batch)', { ...AMENDED, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1 }, 'holds')
 live('LIVE_design', 'DESIGN as written, ledger loss + shard loss (1 send per batch)', { ...DESIGN, maxSend: 1, maxLL: 1, maxSL: 1 }, 'violated')
 live('LIVE_impl', 'as built, ledger loss + shard loss, no compaction (1 send per batch)', { ...IMPL, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
-live('LIVE_impl_F6_refuse_only', 'as built + F6 fixed by refusing only (no re-registration), shard loss (1 send per batch)', { ...IMPL, unknownStream: 'refuse', f6Register: false, maxSend: 1, maxSL: 1 }, 'violated')
-live('LIVE_impl_F6_fixed', 'as built + F6 fixed by refusing AND recreating + registering the stream, ledger loss + shard loss (1 send per batch)', { ...IMPL, unknownStream: 'refuse', maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
+live('LIVE_impl_F6_refuse_only', 'as built + tailRead refuses an unknown stream but nothing re-registers it; shard loss (1 send per batch)', { ...IMPL, unknownStream: 'refuse', f6Register: false, maxSend: 1, maxSL: 1 }, 'violated')
+live('LIVE_impl_F6_fixed', 'as built + F6 fixed completely (refuse, and register before writes, so the refusing shard re-registers), + F15 fix; ledger loss + shard loss (1 send per batch)', { ...IMPL, unknownStream: 'refuse', reg: 'logged', sweepIncLogged: true, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
 
 // ------------------------------------------------------------------ main
 

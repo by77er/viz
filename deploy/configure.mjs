@@ -71,7 +71,8 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   if (!existsSync(mainAbs)) throw new Error(`${where}: main ${cfg.main} does not exist`)
   out.main = relative(outDir, mainAbs)
 
-  out.workers_dev = Boolean(stage)
+  // Only the public entry point gets a workers.dev URL, and only in a stage.
+  out.workers_dev = Boolean(stage && worker.public)
   out.preview_urls = false
   delete out.route
   delete out.routes
@@ -206,7 +207,7 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   return manifest
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const args = parseArgs(process.argv.slice(2), { flags: ['ids-optional', 'quiet'], options: ['stage', 'release'] })
     const m = configure({ stage: args.stage, release: args.release, idsOptional: args['ids-optional'], quiet: args.quiet })

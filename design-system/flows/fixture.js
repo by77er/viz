@@ -45,7 +45,7 @@
   const depsAgent = () => ({ unit: 'ms', agg: 'max', ...agent, series: [{ labels: dep('payments-db'), values: paymentsA }, { labels: dep('inventory'), values: inventoryA }, { labels: dep('cache'), values: cacheA }] })
   // Error log lines per minute from checkout-api, 6 min mean. 1,300 now: 212.4 req/s x 9.8% + 842.6 req/s x 0.1%, in lines a minute.
   const logRate = walk(six.t0, six.step, six.n, [[T(9, 16), 2], [T(13, 4), 3], [T(13, 10), 330], [T(13, 40), 960], [T(14, 30), 1240], [T(15, 16), 1290]], { noise: 0.08, seed: 41, pins: [[T(15, 16), 1300]] })
-  const logs = () => ({ unit: 'lines/min', agg: 'mean', ...six, series: [{ labels: { service: 'checkout-api', level: 'error' }, values: logRate }] })
+  const logs = () => ({ unit: '/min', agg: 'mean', ...six, series: [{ labels: { service: 'checkout-api', level: 'error' }, values: logRate }] })
   const logLines = Math.round(logRate.reduce((a, b) => a + b, 0) * 6) // lines in the range: the rate times the 6 min step
   // The backtest is the system's own fixture (vzChartDemos.backtest: cart error ratio, 7 d at 5 min max). The spans here are when the
   // rule as set (above 1% for at least 10 min) would have been firing: 10 min after each crossing until the value fell back.
@@ -62,6 +62,6 @@
   }
   const T0 = { T, MIN, NOW }
   root.flows = { ...T0, latency, errors, traceDurations, deps, depsAgent, logs, logLines, backtest, backtestByPod,
-    markers: { deploy: { t: T(9, 41), label: 'Deploy 09:41' }, above: { t: T(13, 2), label: 'Above 13:02' }, fired: { t: T(13, 7), label: 'Fired 13:07' }, slow: { t: T(12, 58), label: 'Slow since 12:58' }, trace: { t: T(15, 14), label: 'This trace 15:14' } },
+    markers: { deploy: { t: T(9, 41), label: 'Deploy 09:41' }, above: { t: T(13, 2), label: 'Above 13:02' }, fired: { t: T(13, 7), label: 'Fired 13:07' }, slow: { t: T(12, 58), label: 'Agent: slow since 12:58' }, trace: { t: T(15, 14), label: 'This trace 15:14' } },
     firing: (label = 'Firing since 13:07') => ({ from: T(13, 7), to: NOW, label }) }
 })(typeof window !== 'undefined' ? window : globalThis)

@@ -18,7 +18,9 @@
  * is reachable from the cron entry point, never from a tenant's request.
  */
 import { DurableObject } from 'cloudflare:workers'
+import { openSchema, refusalOf, type SchemaState, SchemaTooNewError } from '../../contracts/schema'
 import { INDEX_PARTITIONS, type RulerIndexRpc } from '../contracts-proposal/rules.v2'
+import { INDEX_SCHEMA } from './schema'
 import { hash64, mapLimit } from './util'
 
 export function indexPartition(tenant: string): number {
@@ -34,11 +36,25 @@ export interface IndexEnv {
 type RulerStub = { ensureArmed(tenant: string): Promise<{ status: string; rearmed?: boolean }> }
 
 export class RulerIndex extends DurableObject<IndexEnv> implements RulerIndexRpc {
+  /** What opening storage found. Anything but `ok`: every method throws `SchemaTooNewError` and nothing is written. */
+  private schema: SchemaState = { status: 'schema_too_new', component: INDEX_SCHEMA.component, found: 0, compat: 0, known: 0, retryAfterMs: 0 }
+
   constructor(ctx: DurableObjectState, env: IndexEnv) {
     super(ctx, env)
-    const sql = ctx.storage.sql
-    sql.exec(`CREATE TABLE IF NOT EXISTS ruler (tenant TEXT NOT NULL, shard TEXT NOT NULL, registered_at INTEGER NOT NULL, PRIMARY KEY (tenant, shard)) WITHOUT ROWID`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS tenant_shards (tenant TEXT NOT NULL PRIMARY KEY, shards INTEGER NOT NULL) WITHOUT ROWID`)
+    // Versioned storage (contracts/COMPATIBILITY.md §2). Local SQLite only.
+    void ctx.blockConcurrencyWhile(async () => {
+      this.schema = openSchema(ctx.storage, INDEX_SCHEMA)
+    })
+  }
+
+  /**
+   * Storage a newer release wrote: refuse. These results have one shape (`ok`), so a caller
+   * that did not expect another would misread one; an exception is what every caller here
+   * already handles (contracts/COMPATIBILITY.md §2.4, "not a union").
+   */
+  private guard(): void {
+    const refused = refusalOf(this.schema)
+    if (refused) throw new SchemaTooNewError(refused)
   }
 
   protected now(): number {
@@ -53,22 +69,26 @@ export class RulerIndex extends DurableObject<IndexEnv> implements RulerIndexRpc
   }
 
   async register(tenant: string, shard: string) {
+    this.guard()
     if (tenant === '' || shard === '') return { status: 'ok' as const, added: false }
     const c = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO ruler (tenant, shard, registered_at) VALUES (?, ?, ?)`, tenant, shard, this.now())
     return { status: 'ok' as const, added: c.rowsWritten > 0 }
   }
 
   async unregister(tenant: string, shard: string) {
+    this.guard()
     const c = this.ctx.storage.sql.exec(`DELETE FROM ruler WHERE tenant = ? AND shard = ?`, tenant, shard)
     return { status: 'ok' as const, removed: c.rowsWritten > 0 }
   }
 
   async shardCount(tenant: string) {
+    this.guard()
     const row = this.ctx.storage.sql.exec<{ shards: number }>(`SELECT shards FROM tenant_shards WHERE tenant = ?`, tenant).toArray()[0]
     return { status: 'ok' as const, shards: row?.shards ?? 1 }
   }
 
   async growShards(tenant: string, shards: number) {
+    this.guard()
     if (!Number.isInteger(shards) || shards < 1) return this.shardCount(tenant)
     this.ctx.storage.sql.exec(
       `INSERT INTO tenant_shards (tenant, shards) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET shards = MAX(shards, excluded.shards) WHERE tenant = excluded.tenant`, tenant, shards)
@@ -76,6 +96,7 @@ export class RulerIndex extends DurableObject<IndexEnv> implements RulerIndexRpc
   }
 
   async registered(tenant: string) {
+    this.guard()
     const shards = this.ctx.storage.sql.exec<{ shard: string }>(`SELECT shard FROM ruler WHERE tenant = ? ORDER BY shard`, tenant).toArray().map((r) => r.shard)
     return { status: 'ok' as const, shards }
   }
@@ -86,6 +107,7 @@ export class RulerIndex extends DurableObject<IndexEnv> implements RulerIndexRpc
    * A ruler that cannot be reached is counted and left for the next sweep.
    */
   async sweepPage(cursor: string | null, limit: number) {
+    this.guard()
     const [afterTenant, afterShard] = cursor === null ? ['', ''] : (JSON.parse(cursor) as [string, string])
     const rows = this.ctx.storage.sql
       .exec<{ tenant: string; shard: string }>(

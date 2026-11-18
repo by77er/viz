@@ -43,6 +43,28 @@ export interface TenantLimits extends QueryLimits {
   maxFiles: number
   /** Longest a query may run; the `timeout` parameter can only lower it. */
   timeoutMs: number
+  /**
+   * Split execution (README, "Split execution"). A query that decomposes is split over
+   * leaves when its scan bound is above this (or its files do not fit `maxFetchBytes` or
+   * `maxFiles`); below it, one place is cheaper (every leaf of a split reads every file).
+   */
+  splitAboveSamples: number
+  /** A split query: samples loaded over all leaves. Each leaf's share is at most `maxSamples`. */
+  maxQuerySamples: number
+  /** A split query: series loaded over all leaves. Each leaf's share is at most `maxSeries`. */
+  maxQuerySeries: number
+  /** A split query: the scan bound of the files it reads. */
+  maxQueryScanSamples: number
+  /** A split query: bytes of the data files it reads, each file counted once. */
+  maxQueryFetchBytes: number
+  /** A split query: data files of both tables. */
+  maxQueryFiles: number
+  /** Leaves one split query may use (also bounded by the pool). */
+  maxLeaves: number
+  /** Cardinality report: distinct series counted (exact counting; above it the report is refused). */
+  maxCardinalitySeries: number
+  /** Cardinality report: distinct label pairs plus (metric, label, value) triples. */
+  maxCardinalityPairs: number
 }
 
 /**
@@ -64,6 +86,15 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxScanSamples: 3_000_000,
   maxFiles: 2_000,
   timeoutMs: 30_000,
+  splitAboveSamples: 1_500_000,
+  maxQuerySamples: 64_000_000,
+  maxQuerySeries: 640_000,
+  maxQueryScanSamples: 100_000_000,
+  maxQueryFetchBytes: 512 << 20,
+  maxQueryFiles: 20_000,
+  maxLeaves: 32,
+  maxCardinalitySeries: 1_000_000,
+  maxCardinalityPairs: 2_000_000,
 }
 
 /** A configuration that cannot be trusted: the query is refused (503), never run on a guess. */

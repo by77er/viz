@@ -17,9 +17,12 @@
  *   whose name does not belong to that tenant answers `{ status: 'wrong_tenant' }` and
  *   touches nothing.
  * - Nothing here throws for bad input: results are discriminated on `status`.
+ * - Every RPC may answer `Refused` (`wrong_tenant`, or `schema_too_new` during a deploy or a
+ *   rollback: contracts/COMPATIBILITY.md).
  */
 
 import type { PromScalar, PromVector } from '../../contracts/engine'
+import type { SchemaTooNew } from '../../contracts/schema'
 
 // ───────────────────────────── injected dependencies ─────────────────────────────
 
@@ -221,6 +224,14 @@ export interface RulerConfig {
 
 export type WrongTenant = { status: 'wrong_tenant' }
 
+/**
+ * What any Ruler or Notifier RPC may answer instead of its result. `wrong_tenant`: the object
+ * does not belong to that tenant. `schema_too_new`: the object's storage was written by a newer
+ * release than the code answering (contracts/COMPATIBILITY.md §2.4); retry after
+ * `retryAfterMs`. Nothing was changed either way.
+ */
+export type Refused = WrongTenant | SchemaTooNew
+
 export interface SavedRule {
   name: string
   kind: 'alert' | 'record'
@@ -237,7 +248,7 @@ export type SaveGroupsResult =
     }
   /** Nothing was saved. */
   | { status: 'invalid'; errors: ValidationError[] }
-  | WrongTenant
+  | Refused
 
 export interface GroupHealth {
   name: string
@@ -277,18 +288,18 @@ export interface RulerHealth {
 }
 
 export interface RulerRpc {
-  configure(tenant: string, patch: Partial<Omit<RulerConfig, 'limits'>> & { limits?: Partial<RulerLimits> }): Promise<{ status: 'ok'; config: RulerConfig } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant>
+  configure(tenant: string, patch: Partial<Omit<RulerConfig, 'limits'>> & { limits?: Partial<RulerLimits> }): Promise<{ status: 'ok'; config: RulerConfig } | { status: 'invalid'; errors: ValidationError[] } | Refused>
   /** Create or replace the groups in `file` by name. All or nothing. Alert state follows rules whose key is unchanged. */
   saveGroups(tenant: string, file: unknown): Promise<SaveGroupsResult>
   /** Validate and classify without saving. */
   checkGroups(tenant: string, file: unknown): Promise<SaveGroupsResult>
-  deleteGroup(tenant: string, name: string): Promise<{ status: 'ok'; existed: boolean } | WrongTenant>
-  listGroups(tenant: string): Promise<{ status: 'ok'; groups: RuleGroup[] } | WrongTenant>
+  deleteGroup(tenant: string, name: string): Promise<{ status: 'ok'; existed: boolean } | Refused>
+  listGroups(tenant: string): Promise<{ status: 'ok'; groups: RuleGroup[] } | Refused>
   /** Prometheus' `/api/v1/rules` content: every rule with health and its alerts. */
-  rules(tenant: string): Promise<{ status: 'ok'; rules: RuleStatus[] } | WrongTenant>
-  health(tenant: string): Promise<({ status: 'ok' } & RulerHealth) | WrongTenant>
+  rules(tenant: string): Promise<{ status: 'ok'; rules: RuleStatus[] } | Refused>
+  health(tenant: string): Promise<({ status: 'ok' } & RulerHealth) | Refused>
   /** For the platform sweeper: re-arm the alarm if there is work and no alarm. */
-  ensureArmed(tenant: string): Promise<{ status: 'ok'; rearmed: boolean } | WrongTenant>
+  ensureArmed(tenant: string): Promise<{ status: 'ok'; rearmed: boolean } | Refused>
 }
 
 // ───────────────────────────── ruler → notifier ─────────────────────────────
@@ -324,7 +335,7 @@ export type IngestResult =
   | { status: 'ok'; applied: number }
   /** The notifier is over its limits; nothing was applied; retry later. */
   | { status: 'overloaded'; retryAfterMs: number }
-  | WrongTenant
+  | Refused
 
 // ───────────────────────────── notifier config (Alertmanager shape) ─────────────────────────────
 
@@ -493,18 +504,18 @@ export interface NotifierAlert {
 }
 
 export interface NotifierRpc {
-  setConfig(tenant: string, config: unknown): Promise<{ status: 'ok' } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant>
+  setConfig(tenant: string, config: unknown): Promise<{ status: 'ok' } | { status: 'invalid'; errors: ValidationError[] } | Refused>
   /** Apply a batch of transitions from one ruler shard (`source` = the shard's object name). Idempotent. */
   ingest(tenant: string, source: string, updates: AlertUpdate[]): Promise<IngestResult>
-  createSilence(tenant: string, silence: SilenceInput): Promise<{ status: 'ok'; id: string } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant>
+  createSilence(tenant: string, silence: SilenceInput): Promise<{ status: 'ok'; id: string } | { status: 'invalid'; errors: ValidationError[] } | Refused>
   /** End a silence now. */
-  expireSilence(tenant: string, id: string): Promise<{ status: 'ok' } | { status: 'not_found' } | WrongTenant>
-  listSilences(tenant: string): Promise<{ status: 'ok'; silences: Silence[] } | WrongTenant>
-  listAlerts(tenant: string): Promise<{ status: 'ok'; alerts: NotifierAlert[] } | WrongTenant>
+  expireSilence(tenant: string, id: string): Promise<{ status: 'ok' } | { status: 'not_found' } | Refused>
+  listSilences(tenant: string): Promise<{ status: 'ok'; silences: Silence[] } | Refused>
+  listAlerts(tenant: string): Promise<{ status: 'ok'; alerts: NotifierAlert[] } | Refused>
   /** Undelivered and dead-lettered notifications. */
-  outbox(tenant: string): Promise<{ status: 'ok'; entries: OutboxEntry[] } | WrongTenant>
+  outbox(tenant: string): Promise<{ status: 'ok'; entries: OutboxEntry[] } | Refused>
   /** Put a dead-lettered notification back in the queue with its original idempotency key. */
-  retryDeadLetter(tenant: string, id: number): Promise<{ status: 'ok' } | { status: 'not_found' } | WrongTenant>
-  discardDeadLetter(tenant: string, id: number): Promise<{ status: 'ok' } | { status: 'not_found' } | WrongTenant>
-  health(tenant: string): Promise<({ status: 'ok' } & NotifierHealth) | WrongTenant>
+  retryDeadLetter(tenant: string, id: number): Promise<{ status: 'ok' } | { status: 'not_found' } | Refused>
+  discardDeadLetter(tenant: string, id: number): Promise<{ status: 'ok' } | { status: 'not_found' } | Refused>
+  health(tenant: string): Promise<({ status: 'ok' } & NotifierHealth) | Refused>
 }

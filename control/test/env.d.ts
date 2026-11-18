@@ -17,3 +17,8 @@ declare module '*?raw' {
   const text: string
   export default text
 }
+
+/** Vite's `import.meta.glob`, used to load golden files that may not exist yet. */
+interface ImportMeta {
+  glob(pattern: string, options: { eager: true; import: 'default' }): Record<string, unknown>
+}

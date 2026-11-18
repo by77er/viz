@@ -51,3 +51,15 @@ for name, segs, sigma, min_size, pen_sigma2 in [
     pcases.append(dict(name=name, x=x.tolist(), sigma=sigma, minSegment=min_size, penalty=pen, breakpoints=bkps))
 json.dump(dict(source=f'ruptures {rpt.__version__} Pelt(model=l2, jump=1)', cases=pcases), open(f'{out}/pelt.json', 'w'))
 print('ok', len(cases), len(pcases))
+
+# STL with LOESS strides (stl.f's jumps), as the detector runs it
+y = series(24 * 12, 24, 0.01, 0.5, [(100, 10.0)])
+cases.append(dict(name='p24_robust_jumps', period=24, options=dict(robust=True, seasonal=7, seasonal_jump=1, trend_jump=4, low_pass_jump=3), y=y.tolist()))
+r = STL(y, period=24, robust=True, seasonal=7, seasonal_jump=1, trend_jump=4, low_pass_jump=3).fit()
+cases[-1].update(seasonal=np.asarray(r.seasonal).tolist(), trend=np.asarray(r.trend).tolist(), resid=np.asarray(r.resid).tolist(), weights=np.asarray(r.weights).tolist())
+y = series(12 * 9, 12, 0.0, 0.3, [])
+r = STL(y, period=12, robust=False, seasonal=11, seasonal_deg=0, seasonal_jump=2, trend_jump=3, low_pass_jump=2).fit()
+cases.append(dict(name='p12_plain_deg0_jumps', period=12, options=dict(robust=False, seasonal=11, seasonal_deg=0, seasonal_jump=2, trend_jump=3, low_pass_jump=2), y=y.tolist(),
+                  seasonal=np.asarray(r.seasonal).tolist(), trend=np.asarray(r.trend).tolist(), resid=np.asarray(r.resid).tolist(), weights=np.asarray(r.weights).tolist()))
+json.dump(dict(source=f'statsmodels {statsmodels.__version__} STL', cases=cases), open(f'{out}/stl.json', 'w'))
+print('stl cases', len(cases))

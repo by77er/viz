@@ -7,9 +7,12 @@
  * Variance update is West's incremental EW form: diff = x − μ; μ += α·diff;
  * var = (1 − α)(var + α·diff²).
  *
- * Contamination control (research 08 §4.2): with `clip` (default) the value folded in is first
- * clipped to the band, so one spike cannot drag the mean and inflate σ, while a lasting level
- * shift is still absorbed within a few half-lives.
+ * Contamination control (research 08 §4.2): with `clip` (default) an anomalous value is
+ * clipped to the band before it is folded in, so one spike cannot drag the mean or inflate σ.
+ * After `acceptAfter` consecutive anomalous points the values are folded in unclipped: the
+ * level has changed, and clipping forever would pin the mean (on flat data σ → 0 and the band
+ * closes, so without this a single level change scores at the cap for ever after — measured
+ * on NAB before this rule existed: 8,432 points at the score cap).
  *
  * Staleness: a gap longer than `staleAfterMs` restarts the warm-up.
  * State: five numbers. Scale-invariant (score is in σ units).
@@ -26,6 +29,8 @@ export interface EwmaParams extends CommonParams {
   /** Valid points before scoring starts. */
   minPoints: number
   clip: boolean
+  /** Consecutive anomalous points after which a new level is accepted (folded in unclipped). */
+  acceptAfter: number
   staleAfterMs: number
 }
 
@@ -34,6 +39,8 @@ export interface EwmaState {
   n: number
   mean: number
   var: number
+  /** Consecutive anomalous points so far. */
+  run: number
   lastTs: number | null
   stepMs: number
 }
@@ -44,10 +51,11 @@ export const ewmaDefaults: EwmaParams = {
   k: 4,
   minPoints: 30,
   clip: true,
+  acceptAfter: 5,
   staleAfterMs: Number.MAX_VALUE,
 }
 
-const fresh = (stepMs: number): EwmaState => ({ v: 1, n: 0, mean: 0, var: 0, lastTs: null, stepMs })
+const fresh = (stepMs: number): EwmaState => ({ v: 1, n: 0, mean: 0, var: 0, run: 0, lastTs: null, stepMs })
 
 export const ewma: Detector<EwmaParams, EwmaState> = {
   name: 'ewma',
@@ -68,7 +76,7 @@ export const ewma: Detector<EwmaParams, EwmaState> = {
   },
   detect(series: Series, params?: Partial<EwmaParams>, state?: EwmaState | null): DetectResult<EwmaState> {
     const p = merge(ewmaDefaults, params)
-    const st: EwmaState = state && state.v === 1 ? { ...state } : fresh(0)
+    const st: EwmaState = state && state.v === 1 ? { ...fresh(0), ...state } : fresh(0)
     st.stepMs = resolveStep(p.stepMs, st.stepMs, series, st.lastTs)
     const hl = Math.max(p.halfLifePoints, 1e-9)
     const n = length(series)
@@ -119,7 +127,8 @@ export const ewma: Detector<EwmaParams, EwmaState> = {
       }
       points[i] = pt
       // fold in (clipped to the band once warm)
-      const xu = p.clip && !warm ? Math.min(Math.max(x, st.mean - p.k * sd), st.mean + p.k * sd) : x
+      st.run = pt.anomalous ? st.run + 1 : 0
+      const xu = p.clip && !warm && st.run > 0 && st.run <= p.acceptAfter ? Math.min(Math.max(x, st.mean - p.k * sd), st.mean + p.k * sd) : x
       const alpha = 1 - Math.pow(2, -Math.max(steps, 1e-9) / hl)
       const diff = xu - st.mean
       const incr = alpha * diff
@@ -127,7 +136,7 @@ export const ewma: Detector<EwmaParams, EwmaState> = {
       st.var = (1 - alpha) * (st.var + diff * incr)
       st.n++
     }
-    const out: EwmaState = { v: 1, n: st.n, mean: st.mean, var: st.var, lastTs: st.lastTs, stepMs: st.stepMs }
+    const out: EwmaState = { v: 1, n: st.n, mean: st.mean, var: st.var, run: st.run, lastTs: st.lastTs, stepMs: st.stepMs }
     return { points, state: out, summary: summarize('ewma', points, out, undefined, `needs ${p.minPoints} points before scoring`) }
   },
 }
