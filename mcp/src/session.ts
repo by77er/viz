@@ -172,7 +172,7 @@ export async function mapBounded<I, T>(items: I[], limit: number, deadline: numb
       resolve()
     }, Math.max(0, remaining()))
   })
-  const all = Promise.all(Array.from({ length: Math.max(1, items.length) }, worker))
+  const all = Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker))
   await Promise.race([all, stop])
   finished = true
   clearTimeout(timer)

@@ -534,7 +534,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const live = keys.filter((k) => this.liveFile(k) !== null)
     const tombstoned = keys.filter((k) => sql.exec(`SELECT 1 AS x FROM tombstone WHERE key = ?`, k).toArray().length > 0)
     const logged = sql
-      .exec(`SELECT shard, incarnation, watermark AS logged FROM stream ORDER BY shard`)
+      .exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)
       .toArray()
       .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))
     return { live, tombstoned, logged }

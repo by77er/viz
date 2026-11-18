@@ -160,7 +160,6 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
     const known = new Set([...check.live, ...check.tombstoned]) // tombstoned keys go through purgeTenant
     const doomed: string[] = []
     for (const o of chunk) {
-      if (known.has(o.key)) continue
       const age = now - o.uploaded
       const flush = FLUSH_FILE.exec(o.key)
       if (flush) {
