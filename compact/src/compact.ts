@@ -309,7 +309,8 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   // One table at a time, so only one table's inputs are in memory with the engine's copy.
   const merged: EncodedFile[] = []
   for (const [table, files] of [['metric_samples', inSamples], ['metric_series', inSeries]] as const) {
-    const out = engine.mergeFiles(table, await fetchAll(env.BUCKET, files.map((f) => f.key)))
+    const all = await fetchAll(env.BUCKET, files.map((f) => f.key))
+    const out = engine.mergeFiles(table, table === 'metric_samples' ? all.slice(0, 2) : all)
     // A merge only removes duplicates: it cannot have more rows than its inputs together,
     // nor fewer than its largest input. Anything else is a bug; publish nothing.
     const total = files.reduce((a, f) => a + f.rows, 0)
@@ -337,8 +338,7 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
     return { status: 'error', job: summary, reason: 'too_slow', detail: `the step took longer than ${policy.maxStepMs} ms; its outputs are left for the orphan sweep` }
   }
   // ONE replace for both tables: the series file and the samples file stay paired.
-  await ledger.replace({ remove: inSamples.map((f) => f.key), add: outputs.slice(0, 1) })
-  const r = await ledger.replace({ remove: inSeries.map((f) => f.key), add: outputs.slice(1) })
+  const r = await ledger.replace({ remove: summary.inputs, add: outputs })
   if (r.status === 'ok') return { status: 'merged', job: summary, version: r.version, outputs, put }
   if (r.status === 'invalid') return { status: 'error', job: summary, reason: 'invalid', detail: r.reason }
   // Conflict: an input is gone for good, so these outputs can never be listed. Delete them,
