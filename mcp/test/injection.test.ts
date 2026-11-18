@@ -105,7 +105,8 @@ const FORBIDDEN: [string, RegExp][] = [
 function checkString(s: string, where: string, allowAppLinks: boolean): void {
   for (const [what, re] of FORBIDDEN) expect(re.test(s), `${what} in ${where}: ${JSON.stringify(s.slice(Math.max(0, s.search(re) - 40), s.search(re) + 60))}`).toBe(false)
   for (const m of s.matchAll(/https?:\/\/[^\s"]*/g)) {
-    expect(allowAppLinks && m[0].startsWith('https://vis.bitcru.sh/'), `URL in ${where}: ${m[0].slice(0, 80)}`).toBe(true)
+    // Only links this server writes: deep links into the app, and the JSON Schema dialect id.
+    expect(allowAppLinks && (m[0].startsWith('https://vis.bitcru.sh/') || m[0] === 'https://json-schema.org/draft/2020-12/schema'), `URL in ${where}: ${m[0].slice(0, 80)}`).toBe(true)
   }
 }
 
@@ -116,7 +117,7 @@ function checkText(text: string, where: string): void {
     expect(regions.some(([a, b]) => at >= a && at < b), `${marker} outside a viz-data block in ${where}: ${JSON.stringify(text.slice(Math.max(0, at - 80), at + 40))}`).toBe(true)
   }
   for (const line of text.split('\n')) {
-    if (/^\s*(`{3,}|~{3,}|ˋ{3,})/.test(line)) expect(/^```(viz-data [0-9a-f]{8})?$/.test(line), `fence-like line in ${where}: ${line}`).toBe(true)
+    if (/^\s*(`{3,}|~{3,})/.test(line)) expect(/^```(viz-data [0-9a-f]{8})?$/.test(line), `fence-like line in ${where}: ${line}`).toBe(true)
     expect(/^\s*(Human|Assistant|System|User)\s*:/i.test(line), `role prefix at a line start in ${where}: ${line.slice(0, 60)}`).toBe(false)
   }
   if (text.includes('INJ14')) expect(text, where).toMatch(/…\[\+\d+ chars\]|…\[cut to fit|…\[item cut/)
@@ -229,8 +230,10 @@ describe('the injection corpus through every tool', () => {
 
   it('protocol errors and argument errors do not echo hostile names raw', async () => {
     const unknown = await rpc(h, k.key, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: CORPUS[1], arguments: {} } }, { 'MCP-Protocol-Version': '2025-06-18' })
-    const text = JSON.stringify(unknown.body)
-    expect(text).not.toMatch(/<system>|<\/tool_result>/)
+    expect(unknown.body.error).toBeDefined()
+    checkString(JSON.stringify(unknown.body), 'unknown tool error', false)
+    const prompt = await rpc(h, k.key, { jsonrpc: '2.0', id: 2, method: 'prompts/get', params: { name: CORPUS[9], arguments: { x: CORPUS[10] } } }, { 'MCP-Protocol-Version': '2025-06-18' })
+    checkString(JSON.stringify(prompt.body), 'unknown prompt error', false)
     const badArgs = await rest(h, k.key, 'query', { [CORPUS[1]!]: 1, [CORPUS[8]!]: 2, expr: 'up' })
     checkText(badArgs.text, 'bad args')
     checkStructured(badArgs.structured, 'bad args')

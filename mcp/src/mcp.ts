@@ -3,6 +3,7 @@ import { callTool } from './dispatch'
 import { DASHBOARD_TEMPLATE, PROMPTS, RESOURCES, readResource, renderPrompt, toolsFor } from './registry'
 import type { BudgetHook, Session } from './session'
 import { ToolError } from './tool'
+import { clean, MAX } from './untrusted'
 
 /**
  * The MCP surface: `@modelcontextprotocol/server` 2.4.0 (SDK v2), `createMcpHandler`.
@@ -113,7 +114,35 @@ export function mcpHandler(): McpHttpHandler {
 
 export async function serveMcp(req: Request, state: McpState): Promise<Response> {
   const id = state.session.id
-  return mcpHandler().fetch(req, {
+  const res = await mcpHandler().fetch(req, {
     authInfo: { token: 'redacted', clientId: id.subject, scopes: [...id.scopes], extra: { state } },
   })
+  return cleanProtocolErrors(res)
+}
+
+/**
+ * The SDK's own JSON-RPC errors quote what the caller sent (an unknown tool's name, a bad
+ * prompt argument). That is the caller's input, not telemetry, but it is cleaned like
+ * telemetry all the same, so no error message carries markup, a link or an invisible
+ * character. Tool results are already clean and pass through unchanged.
+ */
+async function cleanProtocolErrors(res: Response): Promise<Response> {
+  const type = res.headers.get('Content-Type') ?? ''
+  if (!res.body || !(type.includes('application/json') || type.includes('text/event-stream'))) return res
+  const text = await res.text()
+  const fix = (json: string): string => {
+    try {
+      const msg = JSON.parse(json) as { error?: { message?: unknown; data?: unknown } }
+      if (!msg || typeof msg !== 'object' || !msg.error || typeof msg.error.message !== 'string') return json
+      msg.error.message = clean(msg.error.message, { max: MAX.long })
+      if (msg.error.data !== undefined) msg.error.data = JSON.parse(JSON.stringify(msg.error.data, (_k, v) => (typeof v === 'string' ? clean(v, { max: MAX.long }) : v)))
+      return JSON.stringify(msg)
+    } catch {
+      return json
+    }
+  }
+  const body = type.includes('text/event-stream') ? text.split('\n').map((l) => (l.startsWith('data:') ? `data: ${fix(l.slice(5).trim())}` : l)).join('\n') : fix(text)
+  const headers = new Headers(res.headers)
+  headers.delete('Content-Length')
+  return new Response(body, { status: res.status, statusText: res.statusText, headers })
 }
