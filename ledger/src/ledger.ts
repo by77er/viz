@@ -415,11 +415,33 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       if (this.liveFile(f.key)) return invalid(`file key already live: ${f.key}`)
     }
 
+    // Precedence (contracts/ledger.ts `LiveFile`): an output covers the range of the inputs
+    // of its table and day, and is admitted only if no other live file that could share a
+    // row with it (same table and day, overlapping time range) has a range inside that.
+    const inputs = remove.map((k) => this.liveFile(k)!)
+    const next = this.version() + 1
+    const outputs = req.add.map((f) => {
+      const from = inputs.filter((i) => i.table === f.table && i.day === f.day)
+      return from.length === 0
+        ? asListed(f, next, next)
+        : asListed(f, Math.min(...from.map((i) => i.precedenceLow)), Math.max(...from.map((i) => i.precedence)))
+    })
+    const removing = new Set(remove)
+    const blocking = new Set<string>()
+    for (const o of outputs) {
+      const rows = this.ctx.storage.sql
+        .exec(`SELECT key FROM file WHERE tbl = ? AND day = ? AND max_ts >= ? AND min_ts <= ? AND prec >= ? AND prec_lo <= ?`,
+          o.table, o.day, o.minTs, o.maxTs, o.precedenceLow, o.precedence)
+        .toArray()
+      for (const r of rows) if (!removing.has(r.key as string)) blocking.add(r.key as string)
+    }
+    if (blocking.size > 0) return { status: 'conflict', missing: [], blocking: [...blocking].sort() }
+
     const version = this.ctx.storage.transactionSync(() => {
-      this.bury(remove.map((key) => ({ key, table: this.liveFile(key)!.table })))
+      this.bury(inputs.map((f) => ({ key: f.key, table: f.table })))
       for (const k of remove) this.ctx.storage.sql.exec(`DELETE FROM file WHERE key = ?`, k)
-      for (const f of req.add) this.insertFile(f, null)
-      return this.record('replace', req.add, remove)
+      for (const f of outputs) this.insertFile(f, null)
+      return this.record('replace', outputs, remove)
     })
     await this.afterCommit()
     return { status: 'ok', version }
@@ -693,7 +715,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       throw new Error(`ledger: base of incarnation ${source} is not a base change`)
     }
     version = base.version
-    for (const f of base.added) files.set(f.key, { ...f, unit: null })
+    // A base written before precedence existed has none: those files rank below everything later.
+    for (const f of base.added) files.set(f.key, { ...f, precedence: f.precedence ?? 0, precedenceLow: f.precedenceLow ?? f.precedence ?? 0, unit: null })
     for (const w of base.watermarks) streams.set(w.shard, { shard: w.shard, incarnation: w.incarnation, watermark: w.seq, previousIncarnation: null })
 
     const pending: { version: number; key: string }[] = []
@@ -732,10 +755,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
 
   private apply(c: LedgerChange, files: Map<string, StoredFile>, streams: Map<string, StoredStream>, buried: Map<string, Tombstone>): void {
     const bad = (why: string) => new Error(`ledger: cannot replay version ${c.version}: ${why}`)
+    const inputs: StoredFile[] = []
     for (const k of c.removed) {
       const f = files.get(k)
       if (!f) throw bad(`removes ${k}, which is not live`)
       files.delete(k)
+      inputs.push(f)
       buried.set(k, { key: k, table: f.table, version: c.version, at: c.at })
     }
     let unit: UnitRef | null = null
@@ -756,7 +781,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     }
     for (const f of c.added) {
       if (files.has(f.key)) throw bad(`adds ${f.key}, which is already live`)
-      files.set(f.key, { ...f, unit })
+      // The precedence as assigned when the change was made; a change logged before
+      // precedence existed gets what the ledger would have assigned (contracts `LiveFile`).
+      let listed: LiveFile = f
+      if (typeof f.precedence !== 'number' || typeof f.precedenceLow !== 'number') {
+        const from = inputs.filter((i) => i.table === f.table && i.day === f.day)
+        listed = from.length === 0
+          ? asListed(f, c.version, c.version)
+          : asListed(f, Math.min(...from.map((i) => i.precedenceLow)), Math.max(...from.map((i) => i.precedence)))
+      }
+      files.set(f.key, { ...listed, unit })
     }
   }
 }

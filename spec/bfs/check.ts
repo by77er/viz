@@ -11,7 +11,58 @@
 //   AG EF done plus strong fairness of every transition implies that every run completes the
 //   query; a reachable state from which `done` is unreachable is a run that refuses (or
 //   waits) for ever under every schedule.
+import { closeSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
+import { join } from 'node:path'
 import { type Cfg, type St, PROPS, init, successors, queryDone } from './model.ts'
+
+/**
+ * The breadth-first frontier lives on disk (one file per level), so memory holds only the
+ * fingerprint table, the parent array and one read chunk: a run stays well under 1 GB.
+ */
+class LevelWriter {
+  fd: number
+  buf: string[] = []
+  size = 0
+  count = 0
+  path: string
+  constructor(path: string) {
+    this.path = path
+    this.fd = openSync(path, 'w')
+  }
+  add(id: number, str: string): void {
+    this.buf.push(`${id}\t${str}`)
+    this.size += str.length
+    this.count++
+    if (this.size > 1 << 22) this.flush()
+  }
+  flush(): void {
+    if (this.buf.length) writeSync(this.fd, this.buf.join('\n') + '\n')
+    this.buf = []
+    this.size = 0
+  }
+  close(): void {
+    this.flush()
+    closeSync(this.fd)
+  }
+}
+
+function* readLevel(path: string): Generator<[number, string]> {
+  const fd = openSync(path, 'r')
+  const chunk = Buffer.alloc(1 << 23)
+  let rest = ''
+  for (;;) {
+    const n = readSync(fd, chunk, 0, chunk.length, null)
+    if (n === 0) break
+    const text = rest + chunk.toString('latin1', 0, n)
+    const lines = text.split('\n')
+    rest = lines.pop()!
+    for (const l of lines) {
+      const tab = l.indexOf('\t')
+      yield [Number(l.slice(0, tab)), l.slice(tab + 1)]
+    }
+  }
+  closeSync(fd)
+}
 
 export interface Result {
   name: string
@@ -63,7 +114,7 @@ class Table {
     }
   }
   add(h1: number, h2: number): number {
-    if (this.n * 2 >= this.cap) this.grow()
+    if (this.n * 5 >= this.cap * 3) this.grow()
     const r = this.get(h1, h2)
     if (r >= 0) return r
     const i = -1 - r
@@ -130,11 +181,15 @@ export function check(c: Cfg, o: Opts): Result {
   const [a0, b0] = fp(str0)
   tab.add(a0, b0)
   parent.push(-1)
-  let frontier: string[] = [str0]
-  let frontierIds: number[] = [0]
+  const dir = join(process.env.BFS_TMP ?? join(import.meta.dirname, '..', 'build'), `bfs-${process.pid}-${o.name}`)
+  mkdirSync(dir, { recursive: true })
+  let level = new LevelWriter(join(dir, 'level-0'))
+  level.add(0, str0)
+  level.close()
   let depth = 0
   let transitions = 0
   const fail = (prop: string, id: number): Result => {
+    rmSync(dir, { recursive: true, force: true })
     const r = finish('violated')
     r.violated = prop
     r.trace = rebuild(c, tab, parent, id)
@@ -146,12 +201,11 @@ export function check(c: Cfg, o: Opts): Result {
     collisionProb: Number(((tab.n * tab.n) / 2 ** 65).toPrecision(2)),
   })
   for (const p of props) if (!p.holds(c, s0)) return fail(p.name, 0)
-  while (frontier.length > 0) {
-    const next: string[] = []
-    const nextIds: number[] = []
-    for (let k = 0; k < frontier.length; k++) {
-      const s = JSON.parse(frontier[k]!) as St
-      const from = frontierIds[k]!
+  for (;;) {
+    const cur = level.path
+    const next = new LevelWriter(join(dir, `level-${depth + 1}`))
+    for (const [from, line] of readLevel(cur)) {
+      const s = JSON.parse(line) as St
       if (keepGraph) {
         while (edgeStart.n < from) edgeStart.push(edges.n) // ids are expanded in order
         edgeStart.push(edges.n)
@@ -169,22 +223,28 @@ export function check(c: Cfg, o: Opts): Result {
         if (id === before) {
           parent.push(from)
           for (const p of props) if (!p.holds(c, ns)) { bad = { prop: p.name, id }; return }
-          next.push(str)
-          nextIds.push(id)
+          next.add(id, str)
         }
       })
       if (bad) {
+        next.close()
         depth++
         return fail((bad as { prop: string }).prop, (bad as { id: number }).id)
       }
-      if (o.maxStates && tab.n > o.maxStates) return { ...finish('stopped'), note: `stopped at ${tab.n} states, depth ${depth}` }
+      if (o.maxStates && tab.n > o.maxStates) {
+        next.close()
+        rmSync(dir, { recursive: true, force: true })
+        return { ...finish('stopped'), note: `stopped at ${tab.n} states, depth ${depth}` }
+      }
     }
-    if (next.length === 0) break
+    next.close()
+    rmSync(cur, { force: true })
+    if (next.count === 0) break
     depth++
-    o.log?.(`  depth ${depth}: ${next.length} new, ${tab.n} total, ${Math.round((Date.now() - t0) / 1000)}s`)
-    frontier = next
-    frontierIds = nextIds
+    o.log?.(`  depth ${depth}: ${next.count} new, ${tab.n} total, ${Math.round((Date.now() - t0) / 1000)}s, rss ${Math.round(process.memoryUsage().rss / 2 ** 20)} MB`)
+    level = next
   }
+  rmSync(dir, { recursive: true, force: true })
   if (!keepGraph) return finish('holds')
 
   // ---------------------------------------------------------------- AG EF done
