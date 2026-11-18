@@ -24,6 +24,7 @@ python3 tools/mutants.py            # mutation check
 | `FileIndex` | The index fragment: `{"v":1,"rg":[{"rows","off","len","min_name","max_name","min_ts","max_ts"}]}`, one entry per row group. `FileIndex::from_json` parses it back. |
 | `select(input, matchers, min_ts, max_ts)` | Resolves `=`, `!=`, `=~`, `!~` against series from the `metric_series` files and the tail batches' series tables, reads matching samples from the `metric_samples` files and the tail, and returns one time-ordered, de-duplicated stream per series, sorted by label set. Tail beats lake; later file / later batch beats earlier. Row groups are pruned by statistics. |
 | `merge_files(table, inputs)` | Compaction of one tenant-day. Samples: streaming k-way merge (binary heap, one row group per input in memory). Series: union with `min_ts`/`max_ts` combined. Later inputs win. Rejects unsorted inputs and inputs spanning two days. |
+| `merge_files_shared(table, &[Bytes], opts)` | The same merge over inputs the caller already holds as `Bytes`: no copy of the inputs, and the output buffer is pre-sized to the inputs' total so it does not double. Added for the WASM binding, where the copies were most of the memory (`engine/wasm/README.md`). |
 | `*_with` variants | Same functions with `WriteOptions { max_row_group_rows }` or `SelectOptions { prune_row_groups }`, used by tests and available to callers. |
 
 Design choices worth knowing:
@@ -213,6 +214,16 @@ were running; single machine, median of 5, not a benchmark:
 - The SIMD build was not measurably different in this noisy setting.
 
 No native benchmark was run and nothing here was compared with `bench/`.
+
+## The `series_id` locality experiment
+
+`examples/locality.rs` (run: `CARGO_TARGET_DIR=$PWD/target cargo run --release --example
+locality -- 200000 120`) encodes one generated dataset twice, with the plain id of
+`contracts/BATCH.md` and with an id whose top 24 bits are hashes of `namespace` and `job`,
+checks that `select` returns identical results for six queries on both, and prints row
+groups, pages and bytes each query would read, and select time. The numbers and the
+decision (the contract was left as it is, because 40 remaining bits collide) are in
+`design/DECISIONS.md` D19. Nothing in the crate uses it.
 
 ## Known risks
 

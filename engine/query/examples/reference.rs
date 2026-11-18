@@ -10,7 +10,8 @@
 //!
 //! Workload: `{"tenants":{"<name>":[{"labels":{..},"samples":[[ts_ms, value],..]}]},
 //! "queries":[{"id","kind":"range"|"instant","query","start","end","step","time"}]}`.
-//! A value is a JSON number, or one of the strings "stale", "NaN", "+Inf", "-Inf". A
+//! A value is a decimal number as a JSON string ("12.5"), a JSON number, or one of the
+//! strings "stale", "NaN", "+Inf", "-Inf". A
 //! later sample of the same series and timestamp replaces an earlier one.
 use serde_json::{json, Map, Value as J};
 use viz_promql::{Error, MemSource, Series, STALE_NAN_BITS};
@@ -22,7 +23,10 @@ fn value(v: &J) -> f64 {
             "NaN" => f64::NAN,
             "+Inf" => f64::INFINITY,
             "-Inf" => f64::NEG_INFINITY,
-            other => panic!("unknown value {other:?}"),
+            // A decimal number as text: parsed by Rust's correctly rounded parser. (JSON
+            // numbers go through serde_json's fast path, which can be one ULP off for
+            // 17-digit values; the generator therefore sends every number as text.)
+            other => other.parse::<f64>().unwrap_or_else(|_| panic!("unknown value {other:?}")),
         },
         other => other.as_f64().expect("a sample value is a number"),
     }

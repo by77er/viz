@@ -48,7 +48,7 @@
 //! | `viz_q_label_names` | `limits, i64 min_ts, i64 max_ts, u32 n, str* (match[]; none = every series), scan` | JSON `["name",…]`, sorted, unique |
 //! | `viz_q_label_values` | `limits, i64 min_ts, i64 max_ts, str label, u32 n, str*, scan` | JSON `["value",…]` |
 //! | `viz_q_series` | `limits, i64 min_ts, i64 max_ts, u32 n, str*, scan` | JSON `[{"label":"value",…},…]` |
-//! | `viz_q_files_needed` | `u32 n_files, str index*, u32 n_ranges, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*` | `u8[n_files]`: 1 = fetch, 0 = provably holds nothing the ranges read |
+//! | `viz_q_scan_rows` | `u32 n_files, str index*, u32 n_ranges, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*` | `u64[n_files]`: an upper bound on the rows the ranges decode from each file. 0 = the file provably holds nothing the ranges read (skip it); `u64::MAX` = the fragment does not parse (unknown: read the file) |
 //! | `viz_q_abi_version` | (no request) | returns 1 |
 
 use std::collections::BTreeSet;
@@ -375,7 +375,7 @@ fn do_series(mut r: Req<'_>) -> Res<Vec<u8>> {
     Ok(viz_query::labels_to_json(&viz_query::series_with(&input, &sets, min_ts, max_ts, &opts.limits)?).into_bytes())
 }
 
-fn do_files_needed(mut r: Req<'_>) -> Res<Vec<u8>> {
+fn do_scan_rows(mut r: Req<'_>) -> Res<Vec<u8>> {
     let n = r.u32("n_files")?;
     let raw = r.items(n, "index fragment")?;
     // A fragment that is not UTF-8 cannot be parsed either: "" keeps the file.
@@ -387,7 +387,7 @@ fn do_files_needed(mut r: Req<'_>) -> Res<Vec<u8>> {
         ranges.push(FetchRange { matchers: r.matchers()?, min_ts, max_ts });
     }
     r.end()?;
-    Ok(viz_query::files_needed(&indexes, &ranges).into_iter().map(u8::from).collect())
+    Ok(viz_query::scan_rows(&indexes, &ranges).into_iter().flat_map(|r| r.unwrap_or(u64::MAX).to_le_bytes()).collect())
 }
 
 macro_rules! export {
@@ -411,4 +411,4 @@ export!(viz_q_parse_selectors, do_parse_selectors);
 export!(viz_q_label_names, do_label_names);
 export!(viz_q_label_values, do_label_values);
 export!(viz_q_series, do_series);
-export!(viz_q_files_needed, do_files_needed);
+export!(viz_q_scan_rows, do_scan_rows);

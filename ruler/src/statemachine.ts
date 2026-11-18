@@ -8,7 +8,7 @@
  * yields the same state and no second transition.
  */
 import type { PromScalar, PromVector } from '../../contracts/engine'
-import type { Alert, AlertingRule, RecordedSample, RecordingRule } from '../contracts-proposal/rules'
+import { NO_DATA_LABEL, type Alert, type AlertingRuleV2, type RecordedSample, type RecordingRule } from '../contracts-proposal/rules.v2'
 import type { CompiledAlertRule } from './rules'
 import { expandTemplate } from './template'
 import { byteLength, fingerprint, labelsKey, parseSampleValue, type Labels } from './util'
@@ -52,6 +52,8 @@ export type AlertEvalResult =
       dirty: Set<string>
       /** Transitions the notifier must hear about. */
       notify: Notification[]
+      /** The rule's no-data policy applied at this evaluation (the data was missing). */
+      noData: boolean
     }
   | { ok: false; error: string }
 
@@ -69,14 +71,45 @@ function sameMap(a: Labels, b: Labels): boolean {
   return true
 }
 
+/** True for the synthetic alert a rule with `no_data: alerting` raises while its data is missing. */
+export function isNoDataAlert(a: { labels: Labels }): boolean {
+  return a.labels[NO_DATA_LABEL] === 'true'
+}
+
+/**
+ * `presence` is the result of the rule's no-data expression at the same evaluation time,
+ * when it has one; otherwise the rule's own result decides whether data is missing.
+ * This one function is the state machine for live evaluation AND for backtests.
+ */
 export function evalAlertingRule(
-  rule: AlertingRule,
+  rule: AlertingRuleV2,
   compiled: CompiledAlertRule,
   prev: ReadonlyMap<string, Alert>,
   series: Series[],
   ts: number,
   opts: AlertEvalOptions,
+  presence?: Series[] | null,
 ): AlertEvalResult {
+  const policy = rule.noData
+  const noData = policy !== undefined && policy.mode !== 'ok' && (presence ?? series).length === 0
+  if (noData && policy.mode === 'keep') {
+    // Keep the last state: nothing is known, so nothing changes. A pending alert is not
+    // promoted (no evidence that the condition still holds) and a firing one is not
+    // resolved. Only resolved alerts that are merely being retained still age out.
+    const next = new Map(prev)
+    const dirty = new Set<string>()
+    for (const [fp, a] of prev) {
+      if (a.state === 'inactive' && a.resolvedAt !== null && ts - a.resolvedAt > opts.resolvedRetentionMs) {
+        next.delete(fp)
+        dirty.add(fp)
+      }
+    }
+    return { ok: true, alerts: next, dirty, notify: [], noData: true }
+  }
+  // Alerting on no data: the missing data is itself a series, which then goes through the
+  // ordinary pending -> firing path with the policy's own hold time.
+  if (noData) series = [...series, { metric: { [NO_DATA_LABEL]: 'true' }, value: NaN, text: 'NaN' }]
+  const holdMs = (a: Alert): number => (policy !== undefined && isNoDataAlert(a) ? policy.forMs : rule.forMs)
   // "Create pending alerts for any new vector elements in the alert expression."
   const result = new Map<string, Alert>()
   for (const s of series) {
@@ -153,14 +186,14 @@ export function evalAlertingRule(
     }
     numActivePending++
 
-    if (a.state === 'pending' && ts - a.activeAt >= rule.forMs) {
+    if (a.state === 'pending' && ts - a.activeAt >= holdMs(a)) {
       a = { ...a, state: 'firing', firedAt: ts }
       next.set(fp, a)
       dirty.add(fp)
     }
     // "If the alert is firing and the active time is less than the new hold duration, set
     // the state to pending." (the rule was saved with a longer `for`)
-    if (a.state === 'firing' && ts - a.activeAt < rule.forMs) {
+    if (a.state === 'firing' && ts - a.activeAt < holdMs(a)) {
       a = { ...a, state: 'pending', firedAt: null, keepFiringSince: null }
       next.set(fp, a)
       dirty.add(fp)
@@ -178,7 +211,7 @@ export function evalAlertingRule(
     if (isFiring && !wasFiring) notify.push({ fingerprint: fp, status: 'firing' })
     else if (wasFiring && !isFiring) notify.push({ fingerprint: fp, status: 'resolved' })
   }
-  return { ok: true, alerts: next, dirty, notify }
+  return { ok: true, alerts: next, dirty, notify, noData }
 }
 
 /**

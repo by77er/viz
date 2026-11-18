@@ -1,53 +1,144 @@
 # Stack
 
-The write path as **one script**, for testing: `edge` (the default export), the `Shard` and
-`Ledger` Durable Objects, and `flush` (the `Flush` entrypoint), behind one wrangler config
-that binds `SHARD`, `LEDGER`, an R2 bucket (`BUCKET`) and KV (`CONFIG`).
+The write path as **one script**: `edge` (the default export's `fetch`), the `Shard` and
+`Ledger` Durable Objects, `flush` (the `Flush` entrypoint and the flush queue's consumer),
+and the maintenance of each tenant's files (compaction, retention, deletion), behind one
+wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two queues
+(`FLUSH_QUEUE`, `MAINT_QUEUE`) with their dead-letter queues, and an hourly cron.
 
 ```
- senders ─► edge ─► Shard ──seal──► flush ──► R2 Parquet ──► Ledger
-                      ▲                                         │
- test read path ──────┴──── rows above watermark ◄── files + watermarks
+ senders ─► edge ─► Shard ──seal──► [flush queue] ─► flush ─► R2 Parquet ─► Ledger
+                      ▲  │                              │                      ▲ │
+                      │  └─ pending marker (KV) ◄─ cron │                      │ │
+ test read path ──────┴── rows above watermark          └─► [maintenance queue]│ │
+                                         cron (due markers) ─►   compact ──────┘ │
+                                                                 janitor ◄───────┘
 ```
 
 | File | Contents |
 |---|---|
-| `src/index.ts` | Re-exports only: `default` = edge, `Flush`, `Shard`, `Ledger`. No behaviour of its own |
-| `wrangler.jsonc` | The single config |
-| `test/e2e.test.ts` | 6 end-to-end tests in workerd |
-| `test/world.ts` | Two tenants sharing one pool of two shards; real Remote Write and OTLP requests |
+| `src/index.ts` | `default`: `fetch` = edge, `queue` = flush / maintenance / dead letters by queue name, `scheduled` = both sweeps. Re-exports `Flush`, `Shard`, `Ledger` |
+| `src/maintain.ts` | `maintainTenant` (expire → compact → purge → orphan sweep), its KV marker, `noteFlushed`, `enqueueDue`, `consumeMaintBatch` |
+| `wrangler.jsonc` | The single config: queues, consumers, dead-letter queues, cron |
+| `test/e2e.test.ts` | 6 end-to-end tests that drive flush by hand |
+| `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
+| `test/triggers.test.ts` | 7 tests of the triggers, the maintenance marker and the idle deployment |
+| `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
+| `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
+| `test/sim.ts`, `test/world.ts` | Simulated deployments: tenants, real requests, queues under test control, the model, the invariants |
+| `scripts/mutants.mjs` | Mutation check for the four new parts |
 | `tools/hyparquet_check.mjs` | Reads one produced Parquet file with hyparquet, in Node |
 
-## What is implemented
+## What now happens without anyone calling it
 
-Nothing new: this directory connects `edge/`, `shard/`, `ledger/`, `flush/` and
-`engine/wasm/` and tests them together. A request goes in through the stack's default
-export (`exports.default.fetch`), flush runs through the `Flush` entrypoint over RPC
-(`exports.Flush.flushTenant`), and results are read by `flush/test/read.ts`: one ledger
-version, each shard asked only for rows above its watermark, a refusal when a shard has
-discarded past the watermark it is asked about, and the WASM engine's `select` over lake
-files and tail batches.
+| Event | What follows | Where |
+|---|---|---|
+| A shard seals a segment (size, or age in its alarm) | `{tenant, shard}` on the flush queue, written with the seal | `shard/` |
+| A flush message is delivered | `flushTenant` for that stream; acknowledged only when everything sealed is recorded; otherwise retried with backoff, then dead-lettered to R2 | `flush/src/consumer.ts` |
+| A flush run ends ok | `{tenant}` on the maintenance queue, and the tenant's maintenance marker exists | `noteFlushed` |
+| A maintenance message is delivered | `maintainTenant`: retention expire, up to 8 compaction merges, deletion of what the ledger calls deletable, and (at most daily) the orphan sweep; then the marker is rewritten with the next time anything can be due, or deleted if the tenant has nothing left | `src/maintain.ts` |
+| The cron fires (hourly) | (1) streams of shards with a pending marker whose segments have waited 10 minutes are re-enqueued; (2) tenants whose maintenance marker is due are enqueued | `sweepPending`, `enqueueDue` |
+| A message exhausts its retries | written to `{cell}/dead-letters/{queue}/…json` and logged; the next sweep re-enqueues the work | `consumeDeadLetters` |
+
+**Idle means free.** Both sweeps read KV only. A shard has a `flush-pending:` key only
+while it has unrecorded segments; a tenant's `maint:` key carries the time it is next due
+(a quiet hour, a day closing, the next UTC midnight for retention, a grace ending, the
+next orphan sweep) in its metadata, so the cron needs one KV list and no read. Nothing
+due: no Durable Object is woken and no message is sent. No object keeps an alarm when it
+has nothing to do. `test/triggers.test.ts` counts this.
+
+**The two graces and the step deadline** (defaults; `MAINTENANCE` JSON overrides):
+a removed file's object is deleted 1 h after its removal is logged; an unreferenced flush
+file after 24 h and only below its stream's logged watermark; a compaction step gives up
+after 5 min, and an unreferenced compaction output is deleted after 24 h.
 
 ## Not implemented
 
 - **A query Worker.** The read path here is test code; nothing serves queries.
-- **A trigger for flush.** Tests seal with `shard.seal` and call `flushTenant` themselves.
-- **Separate deployment.** In production these are four Workers bound to each other; that
-  wiring (service bindings, `script_name` on the Durable Object bindings) is not written.
-  Flush has no HTTP route in this script.
-- **The ledger ↔ shard-map epoch**, compaction, the publisher, retention: not in the path yet.
-- Nothing was deployed to Cloudflare. Under `wrangler dev --port 8830` the script booted,
-  `GET /healthz` answered 200 and an unauthenticated write 401; no data was sent that way.
+- **Separate deployment.** In production these are several Workers bound to each other;
+  that wiring (service bindings, `script_name` on the Durable Object bindings, the queue
+  consumers in their own scripts) is not written.
+- **The ledger ↔ shard-map epoch**, the publisher, rollups.
+- **The compaction Workflow is not started from here**; the maintenance consumer calls the
+  step function (see `compact/README.md`).
+- **Alerting** on dead letters; they are written to R2 and to the error log only.
+- **Concurrency limits** on maintenance (two messages for one tenant in different batches
+  run two maintenance runs; each step is safe to run twice, it is only wasted work).
+- Nothing was deployed to Cloudflare. Queue delivery, cron and KV metadata are miniflare's.
 
 ## How it was verified
 
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npm test                         # 6 tests in workerd, 1 file
+npm test                         # 23 tests in workerd, 5 files (soak: 400 steps)
+npm run soak                     # the soak with 3,000 steps
 npx tsc --noEmit                 # clean
+node scripts/mutants.mjs all     # mutation check, four parts
 node tools/hyparquet_check.mjs   # 4 checks agree
 ```
+
+### Triggers (`test/auto.test.ts`, `test/triggers.test.ts`)
+
+- **Nobody calls flush**: with small `sealBytes`, two tenants' Remote Write and OTLP
+  requests seal inside `append`; the test then only waits. The simulated Queue delivers to
+  the script's `queue` handler, files appear in each ledger, every sealed segment is
+  recorded, the rows read back exactly, and each tenant has a maintenance marker.
+- A seal → flush → maintenance chain through the script's own queue handler: files merged,
+  query result unchanged, the merged inputs waiting for their grace, the marker's `due`
+  equal to the run's `nextDueAt` and in the future; the cron does not enqueue the tenant
+  before that time and does at it.
+- A failing maintenance run is retried by one message of its group; a run that stopped at
+  its step limit sends a follow-up; junk is dead-lettered; dead letters of a `-dlq` queue
+  are written where `listDeadLetters` finds them.
+- A tenant whose data has all expired and been deleted loses its marker.
+- **Idle**: after three tenants' work is consumed and housekeeping alarms have run, the
+  first cron asks each of the two shards once (they remove their markers); the next five
+  crons make **0 Durable Object calls and send 0 messages** (namespaces and queues wrapped
+  in counters), no shard or ledger has an alarm, and no pending marker is left.
+- `noteFlushed` still asks for a run when KV refuses the marker.
+
+### Compaction preserves the rows, I8 (`test/compaction.property.test.ts`)
+
+Eight seeded runs of 40 operations on a tenant whose data spans four UTC days: ingest
+(with repeats of samples already sent), seal and flush, one or two concurrent compaction
+steps under random policies and policy clocks (so open hours, closed days and budgets are
+taken in every order), and a retention expire injected between a step's plan and its
+`replace` or between its PUTs and its `replace`. After every step the query result must
+be unchanged: the same lines, the same row count, and the same checksum (wrapping sum of
+timestamps, XOR of value bits); a merge's output never has more rows than its inputs.
+With an expire in the middle the result must be the model minus the expired days and no
+file of an expired day may be live. Last run: 8 of 8 pass; per seed 10–16 merges, 1–3
+conflicts, 2–5 expires, 149–383 rows.
+
+### Soak (`test/soak.test.ts`)
+
+Three tenants sharing two shards; data over four UTC days (retention two days). Each step
+is one random operation: ingest through the edge; seal by hand; the shard's alarm (age
+seal, discard, fingerprint expiry); delivery of a random batch from the flush queue, one
+message sometimes twice, with crashes injected after PUT, after `addUnit` or after
+`recorded` in 30% of some deliveries; the flush sweep; delivery from the maintenance queue
+(15% of runs fail); a compaction step alone, sometimes two at once, sometimes crashing
+after its PUTs; retention with a compaction step running across it; purge; orphan sweep;
+eviction of a shard or a ledger; the ledger's log broken, then healed; a reader that
+takes a plan, lets four compaction steps, a purge and an orphan sweep run, and then reads
+the files of its old plan.
+
+Checked after every step for the tenants it touched, and for all tenants every 20 steps
+(`checkTenant`): a query returns exactly the model (no acknowledged row lost, none twice,
+none invented); every row belongs to the tenant; every live file is in R2; every samples
+file is listed with its series file; every tombstone younger than the grace still has
+its object. Checked at each deletion: a purged key had a tombstone, older than the grace
+and with a logged removal; an orphan was unreferenced, old enough, and (a flush file)
+below its stream's logged watermark. At the end, after flushing, compacting, expiring and
+deleting everything: the objects in R2 are exactly the ledger's live set, all level 2, no
+tombstone and no pending segment left.
+
+SOAK_RESULTS
+
+MUTANT_RESULTS
+
+### End to end, driven by hand (`test/e2e.test.ts`)
 
 Each test builds its own world: two tenants (`tenant-a-…`, `tenant-b-…`) with API keys in
 KV and the **same** pool map of two shards, so both tenants have a stream in both shard

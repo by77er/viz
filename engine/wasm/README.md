@@ -5,18 +5,19 @@ and a TypeScript binding (`js/`) that implements the storage half of `contracts/
 
 | Path | Contents |
 |---|---|
-| `src/lib.rs` | The C ABI: `viz_alloc`, `viz_free`, `viz_encode_segment`, `viz_select`, `viz_abi_version`. The calling convention and both wire layouts are documented at the top of the file. |
-| `js/index.ts` | `createEngine(module)`: `encodeSegment`, `select`; `queryRange`, `queryInstant`, `selectors` throw "not built yet" |
+| `src/lib.rs` | The C ABI: `viz_alloc`, `viz_free`, `viz_encode_segment`, `viz_select`, `viz_merge_files`, `viz_free_file`, `viz_abi_version` (2). The calling convention and both wire layouts are documented at the top of the file. |
+| `js/index.ts` | `createEngine(module)`: `encodeSegment`, `select`, `mergeFiles`; `queryRange`, `queryInstant`, `selectors` throw "not built yet" |
 | `js/worker.ts` | A minimal Worker that imports the `.wasm` as a module (proof that it loads in workerd) |
 | `js/viz_engine.wasm` | Build output of `./build.sh`. Ignored by git: **build it before running any test in `engine/wasm`, `flush/` or `stack/`.** |
 | `tests/abi.rs` | The C ABI called natively with real pointers |
 | `test/` | The binding, tested inside workerd; `test/vzb1.ts` is an independent `VZB1` encoder used by these tests and by `flush/` and `stack/` |
 | `tools/measure.mjs` | Size, instantiate time, time and memory, in Node |
+| `tools/measure_merge.mjs` | Peak memory and time of `mergeFiles` for flush-shaped inputs, in Node |
 
 ```
 ./build.sh                 # release, fat LTO, +simd128,+bulk-memory → js/viz_engine.wasm
-CARGO_TARGET_DIR=$PWD/target cargo test      # 2 native ABI tests
-npm install && npm test    # 10 tests in workerd
+CARGO_TARGET_DIR=$PWD/target cargo test      # 4 native ABI tests
+npm install && npm test    # 14 tests in workerd
 npx tsc --noEmit
 node tools/measure.mjs     # Node figures
 npx vitest run test/measure.test.ts --reporter=verbose    # workerd figures (printed as MEASURE …)
@@ -28,6 +29,15 @@ npx vitest run test/measure.test.ts --reporter=verbose    # workerd figures (pri
   is a copy that does not alias WASM memory.
 - **`select(input, matchers, minTs, maxTs)`** → `SeriesData[]`, `ts` and `values` as
   `Float64Array`s with their own buffers.
+- **`mergeFiles(table, files)`** → one `EncodedFile` (`contracts/engine.ts`): compaction of
+  the files of one table and one tenant-day; the later file wins a duplicate key. Built to
+  hold as little as possible: the inputs are read in place from the request buffer (no
+  copy inside the module), the writer's buffer is pre-sized to the inputs' total, and the
+  finished file is handed to JavaScript where it lies (`file_ptr`, released with
+  `viz_free_file`) instead of being copied into a result buffer. Linear memory peaks at
+  about inputs + output + 4 MB per input: 39 MB for 4 files of 7.7 MB, **70 MB for 8 files
+  of 15.4 MB**, 150 MB for 2 files of 67 MB (Node 22, incompressible values;
+  `tools/measure_merge.mjs`). Before those three changes: 67, 113 and 404 MB.
 - **The contract's number rules.**
   - Times in: `select` refuses a fractional, `NaN` or non-number bound with a `RangeError`
     rather than rounding it. `±Infinity` are accepted as open bounds. Integers cross as `i64`.
@@ -72,7 +82,6 @@ of a wasm-bindgen build of the same thing.
 - **`queryRange`, `queryInstant`, `selectors`.** They throw
   `engine: <name> is not built yet (the PromQL crate is not linked into this module)`.
   `engine/promql` is being built separately and is not linked in.
-- **`merge_files`** (compaction) is not exported: `contracts/engine.ts` has no entry for it.
 - **Streaming.** A request holds every input buffer in WASM memory at once, and a result is
   built whole before it is copied out. Fine for a few-MB segment; a large `select` needs
   the planner to bound what it passes in.
@@ -82,10 +91,10 @@ of a wasm-bindgen build of the same thing.
 
 ## How it was verified
 
-- `cargo test`: **2 passed** (`tests/abi.rs`): encode then select through the ABI equals
+- `cargo test`: **4 passed** (`tests/abi.rs`; two are for `viz_merge_files`: equal to the library for both tables, and every malformed request an error): encode then select through the ABI equals
   `viz-storage` called directly; every proper prefix of a request, trailing bytes, a huge
   count in a tiny request, an unknown matcher op, a bad regex and a bad batch are errors.
-- `npm test`: **10 passed** in workerd (`test/engine.test.ts` 9, `test/measure.test.ts` 1):
+- `npm test`: **14 passed** in workerd (`test/engine.test.ts` 9, `test/merge.test.ts` 4, `test/measure.test.ts` 1; the merge tests: a merged pair selects identically to its inputs, the later input wins, errors keep the instance and 200 merges do not grow memory, a measured merge of 8 files):
   module loads as an import and has no imports; file fields per the contract and `PAR1`
   magic; deterministic bytes across instances; tail-only, lake-only and lake + tail give
   the same samples with no double count; matchers and inclusive ranges; tail beats lake;

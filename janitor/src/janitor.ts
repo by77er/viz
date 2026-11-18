@@ -124,7 +124,7 @@ export interface OrphanResult {
 function flushFileState(m: RegExpExecArray, logged: Watermark[]): 'dead' | 'pending_unit' | 'unknown_stream' {
   const [, shard, inc, , seqHi] = m
   const w = logged.find((x) => x.shard.replaceAll('/', '_') === shard)
-  if (!w) return 'unknown_stream'
+  if (!w) return 'dead'
   if (w.incarnation > Number(inc)) return 'dead'
   return w.incarnation === Number(inc) && w.seq >= Number(seqHi) ? 'dead' : 'pending_unit'
 }

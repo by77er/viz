@@ -15,7 +15,7 @@
 //! | [`query_range_with`], [`query_instant_with`] | the same, typed, with [`Options`] and [`Stats`] |
 //! | [`label_names`], [`label_values`], [`series`] | metadata endpoints |
 //! | [`parse_selector`] | a `match[]` string to matchers |
-//! | [`files_needed`] | which files a plan can skip, from the ledger's index fragments |
+//! | [`files_needed`], [`scan_rows`] | which files a plan can skip, and how many rows it decodes from the others, from the ledger's index fragments |
 //! | [`StorageSource`] | the `viz_promql::SeriesSource` over a `viz_storage::ScanInput` |
 //!
 //! Division of labour between the three crates is documented on [`source`].
@@ -35,7 +35,7 @@ pub use error::{ErrorType, Limit, QueryError};
 pub use limits::{estimate_depth, Limits};
 pub use meta::{label_names, label_names_with, label_values, label_values_with, series, series_with, Labels};
 pub use plan::{plan, plan_with, FetchRange};
-pub use prune::files_needed;
+pub use prune::{files_needed, scan_rows};
 pub use source::{to_storage_matcher, Stats, StorageSource};
 pub use viz_promql::{EvalOptions, MatchOp, Matcher, Matrix, SelectorInfo, Value};
 pub use viz_storage::ScanInput;

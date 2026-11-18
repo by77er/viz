@@ -124,6 +124,30 @@ shared pool.
 
 A 2xx is sent only after every append has returned `ok`.
 
+## Active-series limit
+
+Every batch `edge` appends carries `seriesIds`, the `series_id` of each series table entry
+(read back from the entries it already built), and `seriesLimit`, the shard's share of
+the tenant's limit: `limits:<tenant>` in KV = `{ "active_series": N }`, default
+1,000,000, cached 30 s like the pool map; a record that cannot be read means the default,
+not "no limit". The share is the limit divided evenly over the tenant's slots, rounded up.
+
+When a shard answers `series_limit` it has stored nothing of that batch and names the new
+series that do not fit. `edge` marks those series, rebuilds its batches without them and
+appends again (at most three rounds, then the request is answered 429 for a retry). So a
+tenant at its limit keeps writing the series it has; only new series are dropped. Batches
+that come out byte-identical are recognised by their fingerprint; the rest are stored
+again and de-duplicated on read, as with any retry. The sender is told:
+
+| Protocol | Answer |
+|---|---|
+| Remote Write | **429**, `Retry-After: 60`, `X-Prometheus-Remote-Write-Samples-Written`, and a body naming the limit, the shard's share, the active count, how many new series and samples were refused and how many were written |
+| OTLP | **200** with `partial_success`: `rejected_data_points` includes the refused points and `error_message` carries the same text |
+
+Why the shard returns ids and `edge` filters, rather than `edge` splitting batches per
+series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
+`stack/scripts/mutants.mjs limit`.
+
 ## Not implemented
 
 - Remote Write 2.0 (415), native histograms, exemplars, metadata.
@@ -141,7 +165,7 @@ A 2xx is sent only after every append has returned `ok`.
 
 ```
 npm install
-npm test            # 49 tests in 6 files, in workerd, against the real Shard
+npm test            # 55 tests in 7 files, in workerd, against the real Shard
 npm run typecheck   # clean
 npm run mutants     # 35 mutants, all killed (26 original + 9 for contracts v2)
 npm run bench       # decode throughput, in Node

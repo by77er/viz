@@ -189,7 +189,7 @@ async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; fi
 
   const encoded: EncodedFile[] = c.engine.encodeSegment(batches.map((b) => b.payload))
   const entries: FileEntry[] = []
-  const written: FlushedFile[] = []
+  const puts: Promise<'created' | 'exists'>[] = []
   for (const f of encoded) {
     const digest = await crypto.subtle.digest('SHA-256', f.bytes as Uint8Array<ArrayBuffer>)
     const key = dataFileKey({
@@ -204,10 +204,14 @@ async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; fi
       seqHi: seg.seqHi,
       sha256Hex: hex(digest),
     })
-    const put = await putFile(c.env.BUCKET, key, f.bytes, digest)
+    // The files of a segment are independent objects: their PUTs go out together (a PUT
+    // costs about the same whatever its size), at most six at a time.
+    if (puts.length % 6 === 0) await Promise.all(puts)
+    puts.push(putFile(c.env.BUCKET, key, f.bytes, digest))
     entries.push({ table: f.table, day: f.day, key, bytes: f.bytes.byteLength, rows: f.rows, minTs: f.minTs, maxTs: f.maxTs, level: 0, index: f.index })
-    written.push({ key, table: f.table, day: f.day, bytes: f.bytes.byteLength, rows: f.rows, put })
   }
+  const how = await Promise.all(puts)
+  const written: FlushedFile[] = entries.map((e, i) => ({ key: e.key, table: e.table, day: e.day, bytes: e.bytes, rows: e.rows, put: how[i]! }))
   // One unit per segment, holding every file of it: samples and series become visible together.
   const unit: FlushUnit = { shard: c.shardName, incarnation: seg.incarnation, seqLo: seg.seqLo, seqHi: seg.seqHi, files: entries }
   return { unit, files: written }

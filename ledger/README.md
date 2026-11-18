@@ -10,6 +10,7 @@ authority on what is visible. It implements `LedgerRpc` and `LedgerAdminRpc` fro
 | `src/index.ts` | Worker entry; exports the class |
 | `scripts/mutants.mjs` | Mutation check for the contracts v2 behaviour |
 | `test/ledger.test.ts` | 38 tests, run inside the Workers runtime with a simulated R2 bucket |
+| `test/tombstone.test.ts` | 7 tests of the tombstone surface |
 
 Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`).
 
@@ -111,11 +112,11 @@ It does not guarantee:
 
 ```
 npm install
-npm test          # 38 tests in workerd, 1 file
+npm test          # 45 tests in workerd, 2 files
 npm run typecheck
 ```
 
-Last run: 38 passed, 0 failed; `tsc --noEmit` clean. R2 failure is
+Last run: 45 passed, 0 failed; `tsc --noEmit` clean. R2 failure is
 injected by swapping the object's bucket for one whose `put` throws for chosen keys.
 
 Covered: gap, overlap, off-by-one, replay, a different unit below the watermark, stream
@@ -176,13 +177,34 @@ the tests cannot crash the object between two synchronous statements; with no `a
 between them the runtime commits both together anyway. So "the outbox row is in the same
 transaction" is true by reading the code, not by test.
 
+## Tombstones (physical deletion)
+
+Proposed contract addition, implemented here (`contracts/ledger.ts`, the marked block;
+`design/DECISIONS.md` D20). `replace` and `expire` record every key they remove in a
+`tombstone` table **in the same transaction**, with the table, the ledger version of the
+change and its time (the same `at` as the logged change).
+
+| Method | Answer |
+|---|---|
+| `deletable({ minAgeMs, limit })` | tombstones whose removing version is below everything in the outbox (so the removal is in R2), that are at least `minAgeMs` old by this object's clock, and whose key is not live. One synchronous read. `waiting` counts the others |
+| `forget(keys)` | drops the tombstones of keys whose objects were deleted; live keys and unknown keys are ignored |
+| `removedSince(version)` | every tombstone above a version, deletable or not |
+| `orphanCheck(keys)` | which of the keys are live, which are tombstoned, and every stream's **logged** watermark, as one read |
+
+Keyed by version, "logged" does not depend on the shape of the log, so the rule holds
+when the log becomes segments (`contracts/LEDGER-LOG.md`). A rebuild from the log restores
+the tombstones of every removal in that log (their objects may already be gone; deleting
+again is harmless), and a removal that was committed but never logged is not restored,
+because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 tests).
+
 ## Not implemented
 
 - **Periodic checkpoints** and any pruning of old log objects or old incarnations.
 - **The alert** the design asks for when a stream changes incarnation. The boundary is
   recorded (`register_stream` change, `previousIncarnation`); nothing is raised.
 - **Callers.** `flush/` calls `addUnit`, `registerStream`, `plan` and `loggedWatermarks`.
-  There is still no publisher and no orphan sweeper. No notification is sent to the
+  `compact/` calls `replace`; `janitor/` calls `expire` and the tombstone methods.
+  There is still no publisher. No notification is sent to the
   publisher; the R2 log is the only output.
 - **Conditional writes** (`If-None-Match`) on log and base objects. One object per tenant
   and identical bytes on rewrite make them unnecessary today.

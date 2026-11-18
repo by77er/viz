@@ -7,8 +7,11 @@ that the tenant's ledger lists (`design/DESIGN.md` §4.3). It keeps no state.
 |---|---|
 | `src/flush.ts` | `flushTenant(env, engine, tenant, shardName, opts?)`: the whole procedure, with every answer of the shard, the ledger and R2 handled |
 | `src/keys.ts` | `dataFileKey`: object keys exactly per `contracts/TABLES.md` |
-| `src/index.ts` | The Worker: `Flush` entrypoint (RPC `flushTenant(tenant, shardName)`; `POST /flush`), one engine per isolate |
+| `src/index.ts` | The Worker: `Flush` entrypoint (RPC `flushTenant(tenant, shardName)`; `POST /flush`; `queue`), one engine per isolate |
+| `src/consumer.ts` | `consumeFlushBatch`: the flush queue's consumer; `consumeDeadLetters`, `listDeadLetters` |
+| `src/sweep.ts` | `sweepPending`: re-enqueue streams whose segments are still pending, found through KV markers; `shardsFromPoolMaps` |
 | `test/flush.test.ts` | 20 tests in workerd against the real `Shard` and `Ledger` objects and a simulated R2 |
+| `test/consumer.test.ts` | 11 tests of the consumer, the dead-letter path and the sweep |
 | `test/read.ts` | A reference read path ("what would a query see now?") used by these tests and by `stack/` |
 | `test/measure.test.ts` | Local timings (1 test) |
 | `scripts/mutants.mjs` | Mutation check |
@@ -74,31 +77,60 @@ never acknowledges the shard for the segment it stopped on.
   watermark, so a ledger that loses its storage and rebuilds from R2 never comes back
   below what a shard has discarded.
 
-## What will trigger it in production
+## What triggers it
 
-Nothing triggers it here: the caller decides (tests call it directly). The intended wiring:
+Nobody calls `flushTenant` by hand any more (tests still may).
 
-1. **A seal notification.** When a shard seals a segment (on size in `append`, on age in its
-   alarm), it sends `{ tenant, shard }` to a Queue; a consumer in this Worker calls
-   `flushTenant`. The message is only a nudge: flush reads the pending list from the shard,
-   so a duplicated or late message does no harm.
-2. **A sweep.** A Cron Trigger (or the shard's own alarm) re-issues the nudge for streams
-   with pending or `awaitingLog` segments, so a lost message delays a flush and loses nothing.
+1. **The seal notification.** A shard that seals a segment puts `{ tenant, shard }` on the
+   flush queue (`shard/README.md`, "Flush triggering"; why a Queue: `DECISIONS.md` D18).
+2. **The consumer** (`consumeFlushBatch`, the `queue` handler of this Worker and of
+   `stack/`). Messages of one batch that name the same (tenant, shard) are **one** run.
+   A group is acknowledged only when its run ended `ok` with nothing left to do. Otherwise
+   (an exception, an `error` status, `awaitingLog`, or `remaining > 0`) ONE message of the
+   group is retried, with a delay of 5 s doubling per attempt up to 5 min, and the others
+   are acknowledged, so a group never multiplies. Delivery is at-least-once and flush is
+   idempotent: a redelivery after success finds no pending segment and writes nothing.
+   `awaitingLog` is the case `contracts/LEDGER-LOG.md` makes normal: the unit is admitted,
+   the ledger's log has not caught up, the shard was told nothing new; the retry (or the
+   sweep) finishes it.
+3. **Dead letters, visibly.** After `max_retries` the queue moves a message to the
+   dead-letter queue, whose consumer (`consumeDeadLetters`) writes each one to R2 as
+   `{cell}/dead-letters/{queue}/{time}-{id}.json` and logs an error; `listDeadLetters`
+   reads them back. A message that is not a `{tenant, shard}` at all is written there at
+   once. A dead letter loses nothing: the segments are still pending in the shard.
+4. **The sweep** (`sweepPending`, called by the hourly cron in `stack/`). It lists the
+   `flush-pending:<shard>` keys in KV, asks only those shards for
+   `pendingTenants(olderThanMs)` (default 10 minutes) and sends a message per stream
+   found. No marker means no Durable Object is woken and no message is sent; a shard
+   that is asked and has nothing pending removes its marker. `{ full: true }` is the
+   operator's variant for when a marker itself may be lost: it also asks every shard
+   named by a pool map in KV (`pool:<tenant>`) and by `DEFAULT_POOL`. **Limitation:** a
+   shard that only an older version of a map named (a renamed pool, a reduced slot
+   count) is found by neither, and `full` wakes idle shards, so the cron does not use it.
 
-Neither exists yet. The shard does not emit anything on seal, and nothing enumerates
-`(tenant, shard)` pairs with pending segments.
+## R2 operations and time per flush
+
+Per sealed segment: one PUT per file (two per UTC day the segment covers), no GET unless a
+PUT is refused as existing (then one HEAD each), and on the ledger's side one change
+(`addUnit`; today one more PUT, which the caller waits for). Measured locally: see below.
+On Cloudflare a PUT costs about 0.4 s whatever its size (`contracts/LEDGER-LOG.md`), so a
+one-day segment is about 0.4 s for its two files, which are sent together (up to six in
+flight), plus 0.4 s for the ledger's change until its log is batched: **about 0.8 s per
+segment as built, 0.4 s after** (modelled, not measured); the segments of one run go in
+sequence, because each unit must extend the watermark.
 
 ## Not implemented
 
-- The Queue consumer, the sweep, and any retry policy around a failed run.
+- Flushing several streams of one queue batch concurrently.
+- The queue wiring in THIS package's `wrangler.jsonc`: the queue and its consumer are bound in `stack/`. The `queue` method here is the same code, not exercised by a real queue from this directory.
 - Bindings to separately deployed shard and ledger scripts (`script_name`).
 - Authentication of the `POST /flush` route. It must not be given a public route; the tenant
   in its body is trusted because the caller is viz itself.
 - Cleaning up orphans: objects written by a run that stopped before `addUnit` and whose
   segment was then admitted with different bytes (cannot happen while encoding is
   deterministic), or objects of a unit the ledger lost (they are found and reused).
-  The orphan sweeper of the design does not exist.
-- Compaction, rollups, retention.
+  `janitor/` now sweeps these.
+- Rollups. (Compaction is `compact/`, retention `janitor/`.)
 - Splitting a segment that is too large to encode in one isolate (segments are ~4 MB by
   the shard's `sealBytes`; nothing here enforces an upper bound).
 - Metrics about flush itself. Nothing has been run on Cloudflare or under load.
@@ -108,7 +140,7 @@ Neither exists yet. The shard does not emit anything on seal, and nothing enumer
 ```
 (cd ../engine/wasm && ./build.sh)       # the tests import ../engine/wasm/js/viz_engine.wasm
 npm install
-npm test            # 21 tests in workerd, 2 files: flush.test.ts 20, measure.test.ts 1
+npm test            # 32 tests in workerd, 3 files: flush.test.ts 20, consumer.test.ts 11, measure.test.ts 1
 npx tsc --noEmit    # clean
 node scripts/mutants.mjs            # 18 mutants against test/flush.test.ts
 node scripts/mutants.mjs --stack    # the same mutants against ../stack's end-to-end suite

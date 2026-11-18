@@ -42,7 +42,9 @@ Rules:
 - **`series_id`** is FNV-1a 64-bit (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`)
   over the bytes `name 0x00 value 0x00` for each label in sorted order, reinterpreted as a
   signed 64-bit integer. Only `edge` computes it; everything downstream trusts it. Because
-  `__name__` is one of the labels, a `series_id` has exactly one metric name.
+  `__name__` is one of the labels, a `series_id` has exactly one metric name. It is a
+  function of the label set alone, and uses all 64 bits to tell series apart (no bits are
+  spent on locality; `design/DECISIONS.md` D19).
 - **Timestamps** are Unix milliseconds from 0 to 253,402,300,799,999 (years 1970 to 9999),
   so a UTC day is always `YYYY-MM-DD`. `edge` rejects anything else, and anything outside
   the accept window.
@@ -55,6 +57,34 @@ Rules:
   padding bytes, trailing bytes, an index out of range, unsorted or duplicate label names,
   a missing `__name__`, an empty label value and invalid UTF-8. A batch with
   `n_rows = n_series = 0` is valid and contributes nothing, but is not sent.
+
+## Active series
+
+`Shard.append` takes, next to the batch, `seriesIds`: the `series_id` of every entry of
+the batch's series table, in table order, as a `BigInt64Array`. `edge` already has them.
+The shard does not parse batches; it checks only that the array's length equals the
+header's `n_series` (answering `invalid` if not) and uses the ids to count the stream's
+**active series**: distinct ids seen in a sliding window of one hour, kept as two
+half-hour buckets (so a series stays active for 30 to 60 minutes after its last sample).
+
+With `seriesLimit` (this shard's share of the tenant's limit, from KV `limits:<tenant>` =
+`{ "active_series": N }`, default 1,000,000, divided evenly over the tenant's slots and
+rounded up), a batch whose new series would take the stream past the limit is refused:
+
+```
+{ status: 'series_limit', limit, current, refused: BigInt64Array }
+```
+
+Nothing of the batch is stored. `refused` holds the ids that are new to the window and do
+not fit; ids already active are never in it. `edge` rebuilds its batches without those
+series and appends again, so samples of existing series are accepted at the limit. The
+sender is told: Remote Write gets 429 naming the limit and how many samples were written;
+OTLP gets `partial_success` with the refused points counted and the same message.
+
+The count is exact up to 4,096 ids per bucket and an estimate above (HyperLogLog, standard
+error 1.6%); membership above that threshold is a Bloom filter, so about 1% of new series
+can pass as existing while a stream is at its limit. A batch sent without `seriesIds` is
+not metered. `Shard.seriesCount(tenant)` reports the current count.
 
 ## Fingerprint and idempotency
 

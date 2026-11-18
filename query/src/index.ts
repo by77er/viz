@@ -1,0 +1,257 @@
+/**
+ * The query Worker: the Prometheus HTTP API over one tenant's lake files and shard tails.
+ *
+ *   GET|POST /api/v1/query                 instant query
+ *   GET|POST /api/v1/query_range           range query
+ *   GET|POST /api/v1/labels                label names
+ *   GET      /api/v1/label/<name>/values   label values
+ *   GET|POST /api/v1/series                series by `match[]`
+ *   GET      /api/v1/metadata              always empty (no metadata is stored)
+ *   GET      /api/v1/status/buildinfo      minimal
+ *   GET      /healthz                      no authentication
+ *
+ * The tenant is the one the API key belongs to (`edge/src/auth.ts`, scope `read`). No
+ * header, path segment, parameter or body field is read for it: a request cannot name a
+ * tenant.
+ */
+import { authenticate } from '../../edge/src/auth'
+import { HttpError } from '../../edge/src/errors'
+import { QueryError, createQueryEngine } from '../../engine/wasm-query/js/index'
+import wasm from '../../engine/wasm-query/js/viz_query.wasm'
+import { ConfigError, type Env, tenantLimits } from './config'
+import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, addStats, gather, newCost } from './coordinator'
+import { parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
+
+export { Leaf } from './leaf'
+export type { Env } from './config'
+
+/** One engine per isolate. Calls are synchronous, so concurrent requests never interleave inside it. */
+export const engine = createQueryEngine(wasm)
+
+/** WASM memory never shrinks. After a query that grew it past this, drop the instance. */
+const RESET_WASM_ABOVE = 48 << 20
+
+const STATUS: Record<string, number> = {
+  bad_data: 400,
+  unauthorized: 401,
+  forbidden: 403,
+  not_found: 404,
+  method_not_allowed: 405,
+  // Prometheus: errorExec → 422. `unsupported` is not a Prometheus error type; valid
+  // PromQL this engine does not implement is "cannot be executed" too.
+  execution: 422,
+  unsupported: 422,
+  internal: 500,
+  unavailable: 503,
+  timeout: 503,
+}
+
+const COST_HEADERS: [string, keyof Cost][] = [
+  ['X-Viz-Ledger-Version', 'ledgerVersion'],
+  ['X-Viz-Plan-Attempts', 'planAttempts'],
+  ['X-Viz-Files-Listed', 'filesListed'],
+  ['X-Viz-Files-Skipped', 'filesSkipped'],
+  ['X-Viz-Files-Read', 'filesRead'],
+  ['X-Viz-Scan-Samples', 'scanSamples'],
+  ['X-Viz-Bytes-Read', 'bytesRead'],
+  ['X-Viz-Cache-Hits', 'cacheHits'],
+  ['X-Viz-R2-Gets', 'r2Gets'],
+  ['X-Viz-Leaf-Calls', 'leafCalls'],
+  ['X-Viz-Leaves-Used', 'leavesUsed'],
+  ['X-Viz-Leaf-Rounds', 'leafRounds'],
+  ['X-Viz-Shards-Asked', 'shardsAsked'],
+  ['X-Viz-Shard-Calls', 'shardCalls'],
+  ['X-Viz-Tail-Batches', 'tailBatches'],
+  ['X-Viz-Tail-Bytes', 'tailBytes'],
+  ['X-Viz-Series-Loaded', 'seriesLoaded'],
+  ['X-Viz-Samples-Loaded', 'samplesLoaded'],
+  ['X-Viz-Engine-Ms', 'engineMs'],
+  ['X-Viz-Wasm-Memory-Bytes', 'wasmMemoryBytes'],
+]
+
+const allowedOrigins = (env: Env): string[] => (env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '' && s !== '*')
+
+/**
+ * CORS for the app's origin: the request's origin is echoed only if it is on the
+ * allow-list. Never `*`. The API is authenticated by a bearer key, not by cookies, so
+ * `Access-Control-Allow-Credentials` is never sent.
+ */
+function cors(req: Request, env: Env): Record<string, string> {
+  const origin = req.headers.get('Origin')
+  const h: Record<string, string> = { Vary: 'Origin' }
+  if (origin && allowedOrigins(env).includes(origin)) {
+    h['Access-Control-Allow-Origin'] = origin
+    h['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    h['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Accept'
+    h['Access-Control-Expose-Headers'] = COST_HEADERS.map(([n]) => n).join(', ')
+    h['Access-Control-Max-Age'] = '600'
+  }
+  return h
+}
+
+const JSON_TYPE = { 'Content-Type': 'application/json' }
+
+/** `data` is JSON text: the engine's results go out exactly as the engine wrote them. */
+function success(data: string, headers: Record<string, string>): Response {
+  return new Response(`{"status":"success","data":${data}}`, { status: 200, headers: { ...JSON_TYPE, ...headers } })
+}
+
+function failure(errorType: string, error: string, headers: Record<string, string>): Response {
+  return new Response(JSON.stringify({ status: 'error', errorType, error }), { status: STATUS[errorType] ?? 500, headers: { ...JSON_TYPE, ...headers } })
+}
+
+function costHeaders(cost: Cost): Record<string, string> {
+  const h: Record<string, string> = {}
+  for (const [name, field] of COST_HEADERS) h[name] = String(cost[field])
+  return h
+}
+
+type Handler = (c: Context, params: URLSearchParams, label: string) => Promise<string>
+
+const instant: Handler = async (c, params) => {
+  const query = required(params, 'query')
+  const t = params.get('time')
+  const time = t === null || t === '' ? Math.min(Math.max(Date.now(), MIN_TS), MAX_TS) : parseTime('time', t)
+  const ranges = c.engine.plan(query, time, time, 1, c.limits)
+  return gather(c, ranges, c.engine.selectors(query, time, time, 1, c.limits), (input) => {
+    const out = c.engine.queryInstantJson(input, query, time, c.limits)
+    addStats(c, out.stats)
+    return out.json
+  })
+}
+
+const range: Handler = async (c, params) => {
+  const query = required(params, 'query')
+  const { start, end, step } = rangeParams(params)
+  const ranges = c.engine.plan(query, start, end, step, c.limits)
+  return gather(c, ranges, c.engine.selectors(query, start, end, step, c.limits), (input) => {
+    const out = c.engine.queryRangeJson(input, query, start, end, step, c.limits)
+    addStats(c, out.stats)
+    return out.json
+  })
+}
+
+/** Fetch ranges of a metadata call: one per `match[]` set, or one for every series. */
+function metaRanges(c: Context, match: string[], start: number, end: number) {
+  const sets = match.length === 0 ? [[]] : c.engine.parseSelectors(match)
+  return sets.map((matchers) => ({ matchers, minTs: start, maxTs: end }))
+}
+
+const labels: Handler = async (c, params) => {
+  const { start, end } = windowParams(params)
+  const match = params.getAll('match[]')
+  const ranges = metaRanges(c, match, start, end)
+  return gather(c, ranges, ranges, (input) => JSON.stringify(c.engine.labelNames(input, match, start, end, c.limits)))
+}
+
+const labelValues: Handler = async (c, params, label) => {
+  const { start, end } = windowParams(params)
+  const match = params.getAll('match[]')
+  const ranges = metaRanges(c, match, start, end)
+  return gather(c, ranges, ranges, (input) => JSON.stringify(c.engine.labelValues(input, label, match, start, end, c.limits)))
+}
+
+const series: Handler = async (c, params) => {
+  const { start, end } = windowParams(params)
+  const match = params.getAll('match[]')
+  if (match.length === 0) throw new ApiError('bad_data', 'no match[] parameter provided')
+  const ranges = metaRanges(c, match, start, end)
+  return gather(c, ranges, ranges, (input) => JSON.stringify(c.engine.series(input, match, start, end, c.limits)))
+}
+
+/** Nothing here reads storage; both still require a key, like every other API path. */
+const metadata: Handler = async () => '{}'
+const buildinfo: Handler = async () => JSON.stringify({ version: '0.1.0-viz', revision: '', branch: '', buildUser: '', buildDate: '', goVersion: '' })
+
+function route(path: string): { handler: Handler; methods: string[]; label: string } | null {
+  switch (path) {
+    case '/api/v1/query':
+      return { handler: instant, methods: ['GET', 'POST'], label: '' }
+    case '/api/v1/query_range':
+      return { handler: range, methods: ['GET', 'POST'], label: '' }
+    case '/api/v1/labels':
+      return { handler: labels, methods: ['GET', 'POST'], label: '' }
+    case '/api/v1/series':
+      return { handler: series, methods: ['GET', 'POST'], label: '' }
+    case '/api/v1/metadata':
+      return { handler: metadata, methods: ['GET'], label: '' }
+    case '/api/v1/status/buildinfo':
+      return { handler: buildinfo, methods: ['GET'], label: '' }
+  }
+  const m = /^\/api\/v1\/label\/([^/]+)\/values$/.exec(path)
+  if (!m) return null
+  let label: string
+  try {
+    label = decodeURIComponent(m[1]!)
+  } catch {
+    return null
+  }
+  return { handler: labelValues, methods: ['GET'], label }
+}
+
+function timeout(ms: number): { promise: Promise<never>; cancel: () => void } {
+  let id: ReturnType<typeof setTimeout> | undefined
+  const promise = new Promise<never>((_, reject) => {
+    id = setTimeout(() => reject(new ApiError('timeout', 'query timed out')), ms)
+  })
+  return { promise, cancel: () => clearTimeout(id) }
+}
+
+async function api(req: Request, env: Env, path: string, corsHeaders: Record<string, string>): Promise<Response> {
+  const r = route(path)
+  if (!r) return failure('not_found', 'not found', corsHeaders)
+  if (!r.methods.includes(req.method)) return failure('method_not_allowed', 'method not allowed', { ...corsHeaders, Allow: r.methods.join(', ') })
+
+  const cost = newCost()
+  let headers = corsHeaders
+  try {
+    // The ONLY source of the tenant.
+    const { tenant } = await authenticate(req, env.CONFIG, 'read')
+    const limits = await tenantLimits(env, tenant)
+    const params = await readParams(req)
+    const ms = timeoutParam(params, limits.timeoutMs)
+    const c: Context = { env, engine, tenant, limits, cost, deadline: Date.now() + ms, queryId: crypto.randomUUID() }
+    const t = timeout(ms)
+    let data: string
+    try {
+      data = await Promise.race([r.handler(c, params, r.label), t.promise])
+    } finally {
+      t.cancel()
+      headers = { ...corsHeaders, ...costHeaders(cost) }
+      if (engine.memoryBytes() > RESET_WASM_ABOVE) engine.reset()
+    }
+    return success(data, headers)
+  } catch (e) {
+    if (e instanceof ApiError) return failure(e.errorType, e.message, headers)
+    if (e instanceof QueryError) return failure(e.errorType, e.message, headers)
+    if (e instanceof ConfigError) return failure('unavailable', e.message, { ...headers, 'Retry-After': '30' })
+    if (e instanceof HttpError) {
+      // From edge's key check (401, 403) and pool-map lookup (503).
+      const type = e.status === 401 ? 'unauthorized' : e.status === 403 ? 'forbidden' : e.status === 503 ? 'unavailable' : 'internal'
+      return failure(type, e.message, { ...headers, ...e.headers })
+    }
+    // Nothing of the failure or of the request is echoed.
+    if (e instanceof RangeError || e instanceof TypeError) {
+      console.error('query: internal error', e.stack)
+      return failure('internal', 'internal error', headers)
+    }
+    // A shard, the ledger or a leaf threw (overloaded, reset): retryable.
+    console.error('query: unhandled error', e instanceof Error ? e.stack : String(e))
+    return failure('unavailable', 'a storage component did not answer; retry', { ...headers, 'Retry-After': '1' })
+  }
+}
+
+export default {
+  async fetch(req: Request, env: Env): Promise<Response> {
+    const path = new URL(req.url).pathname
+    if (path === '/healthz') {
+      return req.method === 'GET' || req.method === 'HEAD'
+        ? new Response('ok\n', { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+        : new Response('method not allowed', { status: 405, headers: { Allow: 'GET' } })
+    }
+    const corsHeaders = cors(req, env)
+    // A preflight carries no credentials; it is answered from the allow-list alone.
+    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders })
+    return api(req, env, path, corsHeaders)
+  },
+} satisfies ExportedHandler<Env>

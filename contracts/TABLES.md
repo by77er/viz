@@ -53,6 +53,28 @@ One row per series present in the file's day.
 - `hash8` is the first 8 hex characters of the SHA-256 of the file bytes.
 - Files are written with `If-None-Match: *`.
 
+Compaction outputs have no stream, so their names carry what they were made from instead:
+
+```
+{cell}/data/{table}/tenant={tenant}/day={YYYY-MM-DD}/L{level}-{span}-{inputs16}-{hash8}.parquet
+```
+
+- `level` is 1 for a file merged from one UTC hour's flush files, 2 for a file of a closed
+  day. `span` is `h{HH}` (the hour, 00–23) at level 1 and `d` at level 2. A level-1 file is
+  clustered by hour, not hour-pure: its hour is that of its newest row.
+- `inputs16` is the first 16 hex characters of the SHA-256 of the keys of ALL inputs of the
+  merge, both tables, samples keys first, each list sorted, joined by newlines. The samples
+  output and the series output of one merge share it.
+- **Pairing.** A samples file and the series file it must be read with have the same key
+  once the table name and `hash8` are removed. This holds for flush files (same segment)
+  and compaction outputs (same `inputs16`), and a pair enters and leaves the ledger in one
+  change.
+- When files disagree about a `(series_id, ts)`, the one later in key order wins, in a
+  read and in a merge alike. Flush keys do not sort by sequence, and a merge changes key
+  order, so which value survives a disagreement between FILES is not defined across a
+  compaction. Within one stream's segment the latest row wins as stated above; senders
+  that never send two values for one `(series, ts)` are unaffected.
+
 ## Per-file statistics reported to the ledger
 
 See `FileEntry` in `ledger.ts`.

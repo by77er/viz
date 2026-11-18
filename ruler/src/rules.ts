@@ -3,14 +3,17 @@
  * Every problem is reported with the path of the offending field and what to change;
  * nothing is saved unless the whole document is valid.
  */
-import type {
-  AlertingRule,
-  RecordingRule,
-  Rule,
-  RuleGroup,
-  RulerConfig,
-  ValidationError,
-} from '../contracts-proposal/rules'
+import {
+  NO_DATA_LABEL,
+  type AlertingRuleV2 as AlertingRule,
+  type MonitorMeta,
+  type NoDataMode,
+  type RecordingRule,
+  type Rule,
+  type RuleGroup,
+  type RulerConfig,
+  type ValidationError,
+} from '../contracts-proposal/rules.v2'
 import { classify, PromqlTextError } from './classify'
 import { parseTemplate, type Template } from './template'
 import { byteLength, formatDuration, hash64, LABEL_NAME_RE, labelsKey, METRIC_NAME_RE, parseDuration } from './util'
@@ -19,7 +22,9 @@ export const DEADMAN_GROUP = 'viz:deadman'
 export const DEADMAN_ALERT = 'DeadMansSwitch'
 
 const GROUP_FIELDS = new Set(['name', 'interval', 'query_offset', 'limit', 'labels', 'rules'])
-const ALERT_FIELDS = new Set(['alert', 'expr', 'for', 'keep_firing_for', 'labels', 'annotations'])
+const ALERT_FIELDS = new Set(['alert', 'expr', 'for', 'keep_firing_for', 'labels', 'annotations', 'no_data', 'no_data_for', 'no_data_expr', 'monitor'])
+const NO_DATA_MODES: NoDataMode[] = ['ok', 'alerting', 'keep']
+export const MONITOR_ID_RE = /^mon_[0-9a-f]{16}$/
 const RECORD_FIELDS = new Set(['record', 'expr', 'labels'])
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -101,6 +106,82 @@ function expr(c: Ctx, v: unknown, path: string, cfg: RulerConfig) {
   }
 }
 
+/** viz's no-data fields on an alerting rule. Absent or `ok` is Prometheus' behaviour and stores nothing. */
+function noDataPolicy(c: Ctx, r: Record<string, unknown>, rp: string, cfg: RulerConfig): AlertingRule['noData'] | null {
+  const mode = r.no_data === undefined ? 'ok' : r.no_data
+  if (typeof mode !== 'string' || !NO_DATA_MODES.includes(mode as NoDataMode)) {
+    c.err(`${rp}.no_data`, `no_data must be one of ${NO_DATA_MODES.join(', ')}`, 'Use "ok" (no data means no alert), "alerting" (fire after no_data_for) or "keep" (leave the state as it is).')
+    return null
+  }
+  const forMs = duration(c, r.no_data_for, `${rp}.no_data_for`, 'no_data_for')
+  let exprText: string | null = null
+  if (r.no_data_expr !== undefined) {
+    if (expr(c, r.no_data_expr, `${rp}.no_data_expr`, cfg) === null) return null
+    exprText = r.no_data_expr as string
+  }
+  if (mode === 'ok') {
+    if (forMs !== null || exprText !== null) c.warn(`${rp}.no_data`, 'no_data_for and no_data_expr have no effect while no_data is "ok"', 'Set no_data to "alerting" or "keep", or remove the two fields.')
+    return null
+  }
+  if (mode === 'keep' && forMs !== null) c.warn(`${rp}.no_data_for`, 'no_data_for has no effect with no_data "keep"', 'Remove it.')
+  if (exprText === null) {
+    c.warn(`${rp}.no_data`, 'without no_data_expr, "no data" means the rule expression itself returned nothing; for a comparison that is also what a healthy system returns', 'Give the bare query (without the comparison) as no_data_expr.')
+  }
+  return { mode: mode as NoDataMode, forMs: mode === 'alerting' ? (forMs ?? 0) : 0, expr: exprText }
+}
+
+const MONITOR_FIELDS = ['id', 'owner', 'startInvestigation', 'condition', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']
+const CONDITION_OPS = ['>', '>=', '<', '<=', '==', '!=']
+
+/** The presentation block of a monitor. Written by the HTTP API; checked here because rule files can carry it too. */
+function monitorMeta(c: Ctx, v: unknown, path: string): MonitorMeta | null {
+  if (v === undefined) return null
+  if (!isObject(v)) {
+    c.err(path, 'monitor must be an object', 'Remove the field; it is written by the monitors API.')
+    return null
+  }
+  const before = c.errors.length
+  for (const k of Object.keys(v)) if (!MONITOR_FIELDS.includes(k)) c.err(`${path}.${k}`, `unknown field "${k}"`, `A monitor block has: ${MONITOR_FIELDS.join(', ')}.`)
+  if (typeof v.id !== 'string' || !MONITOR_ID_RE.test(v.id)) c.err(`${path}.id`, 'monitor id must be "mon_" and 16 hex digits', 'Let the monitors API assign the id.')
+  const text = (k: string, max: number): string => {
+    const x = v[k] === undefined ? '' : v[k]
+    if (typeof x !== 'string' || byteLength(x) > max) {
+      c.err(`${path}.${k}`, `${k} must be a string of at most ${max} bytes`, 'Shorten it.')
+      return ''
+    }
+    return x
+  }
+  const time = (k: string): number => {
+    const x = v[k]
+    if (typeof x !== 'number' || !Number.isFinite(x)) {
+      c.err(`${path}.${k}`, `${k} must be a time in Unix milliseconds`, 'Let the monitors API set it.')
+      return 0
+    }
+    return x
+  }
+  let condition: MonitorMeta['condition'] = null
+  if (v.condition !== undefined && v.condition !== null) {
+    const k = v.condition
+    if (!isObject(k) || typeof k.query !== 'string' || typeof k.op !== 'string' || !CONDITION_OPS.includes(k.op) || typeof k.threshold !== 'number' || !Number.isFinite(k.threshold) || (k.unit !== undefined && typeof k.unit !== 'string')) {
+      c.err(`${path}.condition`, 'condition must be { query, op, threshold, unit }', `Use one of ${CONDITION_OPS.join(' ')} and a finite number.`)
+    } else {
+      condition = { query: k.query, op: k.op as NonNullable<MonitorMeta['condition']>['op'], threshold: k.threshold, unit: typeof k.unit === 'string' ? k.unit : '' }
+    }
+  }
+  if (v.startInvestigation !== undefined && typeof v.startInvestigation !== 'boolean') c.err(`${path}.startInvestigation`, 'startInvestigation must be true or false', 'Use a boolean.')
+  const meta: MonitorMeta = {
+    id: v.id as string,
+    owner: text('owner', 256),
+    startInvestigation: v.startInvestigation === true,
+    condition,
+    createdAt: time('createdAt'),
+    createdBy: text('createdBy', 256),
+    updatedAt: time('updatedAt'),
+    updatedBy: text('updatedBy', 256),
+  }
+  return c.errors.length === before ? meta : null
+}
+
 /** Key of a rule inside its group: what must stay the same for alert state to carry over a save. */
 export function ruleKey(kind: 'alert' | 'record', name: string, exprText: string, labels: Record<string, string>): string {
   return hash64(`${kind}\u0000${name}\u0000${exprText}\u0000${labelsKey(labels)}`)
@@ -120,6 +201,7 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
   }
   for (const k of Object.keys(doc)) if (k !== 'groups') c.err(k, `unknown field "${k}"`, 'Only "groups" is allowed at the top level.')
   const seen = new Set<string>()
+  const monitorIds = new Set<string>()
   doc.groups.forEach((g: unknown, gi: number) => {
     const gp = `groups[${gi}]`
     if (!isObject(g)) {
@@ -182,6 +264,7 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
       for (const [k, v] of Object.entries(labels)) {
         if (k === '__name__') c.err(`${rp}.labels.${k}`, 'a rule cannot set __name__', 'Remove the label; the name comes from "alert" or "record".')
         if (isAlert && k === 'alertname') c.err(`${rp}.labels.${k}`, 'a rule cannot set alertname', 'Remove the label; it is always the rule\'s "alert" name.')
+        if (k === NO_DATA_LABEL) c.err(`${rp}.labels.${k}`, `${NO_DATA_LABEL} is reserved for the no-data alert`, 'Remove the label.')
         if (byteLength(v) > 1024) c.err(`${rp}.labels.${k}`, 'label value template is longer than 1024 bytes', 'Shorten the value; put long text in an annotation.')
         if (isAlert) template(c, v, `${rp}.labels.${k}`)
       }
@@ -206,8 +289,16 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
         if (forMs > 0 && forMs < intervalMs) {
           c.warn(`${rp}.for`, `for (${formatDuration(forMs)}) is shorter than the group interval (${formatDuration(intervalMs)}); the alert fires on the second matching evaluation, ${formatDuration(intervalMs)} after the first`, 'Raise "for" to at least the interval, or shorten the interval.')
         }
+        const noData = noDataPolicy(c, r, rp, cfg)
+        const monitor = monitorMeta(c, r.monitor, `${rp}.monitor`)
         if (!cost) return
         const rule: AlertingRule = { kind: 'alert', name, expr: r.expr as string, forMs, keepFiringForMs, labels, annotations, key: ruleKey('alert', name, r.expr as string, labels), cost }
+        if (noData) rule.noData = noData
+        if (monitor) {
+          if (monitorIds.has(monitor.id)) c.err(`${rp}.monitor.id`, `monitor id ${monitor.id} is used twice in this file`, 'Give each monitor its own id.')
+          monitorIds.add(monitor.id)
+          rule.monitor = monitor
+        }
         if (keys.has(rule.key)) {
           c.err(rp, `alerting rule "${name}" is repeated with the same expression and labels`, 'Remove the duplicate.')
           return

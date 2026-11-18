@@ -29,7 +29,7 @@ Requirements: Node 22 and Java (17 was used). The first `quint verify` downloads
   proofs for unbounded systems. TLC stores 64-bit state fingerprints, so "exhaustive" is up to
   a hash-collision probability that TLC reports (below 1e-3 for the largest run here, far
   lower for the others).
-- Guard-off and design-as-written experiments run TLC with one worker, which is strict
+- Guard-off, design-as-written and witness experiments run TLC with one worker, which is strict
   breadth-first search, so **the counterexamples are shortest possible** in the model.
 - Apalache (symbolic, `quint verify` default backend) was not used: TLC already gives an
   exhaustive result and shortest traces for this kind of model.
@@ -154,12 +154,13 @@ are in `results/RESULTS.md` under the experiment name.
   stream → `qPlan` returns no watermark for shard 0, so the query never asks it → the query
   completes without batch 0. Violates I4.
 - **Impact.** Silent and unbounded: every acknowledged row of that stream is invisible to
-  every query, with no refusal anywhere. It does not heal: `addUnit` for the stream is
-  `incarnation_mismatch`, nothing repeats the registration (`F1_registration_not_logged_L1`,
-  the same after a shard loss: the rebuilt ledger still names the old incarnation, tail reads
-  and `addUnit` are refused for ever), the WAL fills and the sender gets 429.
+  every query, with no refusal anywhere. It does not heal: the rebuilt ledger does not know the
+  stream (`F1_registration_not_logged_L1`: `register`, ledger loss, 2 steps), so `addUnit` for
+  it is refused, nothing in the design repeats the registration, the WAL fills and the sender
+  gets 429. After a *shard* loss the same rollback leaves the ledger naming the old incarnation:
+  every tail read and `addUnit` is then `incarnation_mismatch` for ever (loud, but permanent).
   The text also only requires registration after a storage loss; first use needs it too
-  (experiment (j): 2 steps to a gap).
+  (experiment (j): 3 steps to a gap).
 - **Fix.** A stream (first use or new incarnation) accepts writes only after its registration
   is **in the logged prefix** of the ledger's change log: `registerStream` answers only then,
   or the shard polls `loggedWatermarks()` until its incarnation appears. The shard repeats

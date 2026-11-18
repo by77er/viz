@@ -1,29 +1,43 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { PromScalar, PromVector } from '../../contracts/engine'
+import type { PromMatrix, PromScalar, PromVector } from '../../contracts/engine'
 import type {
   Alert,
-  AlertingRule,
-  AlertUpdate,
+  AlertingRuleV2 as AlertingRule,
+  AlertUpdateV2 as AlertUpdate,
+  BacktestResponse,
+  BatchEvaluator,
+  EvalRequest,
+  EvalResult,
   Evaluator,
+  GroupBundle,
   GroupHealth,
+  GroupSnapshot,
   IngestResult,
-  Rule,
+  RangeEvaluator,
+  RuleV2 as Rule,
   RuleGroup,
-  RulerConfig,
+  RulerConfigV2 as RulerConfig,
   RulerHealth,
   RulerLimits,
-  RulerRpc,
+  RulerRpcV2 as RulerRpc,
   RuleStatus,
   SampleBatch,
   SaveGroupsResult,
   Sink,
+  Timeline,
+  TimelineEntry,
   ValidationError,
+  Validator,
   WrongTenant,
-} from '../contracts-proposal/rules'
+} from '../contracts-proposal/rules.v2'
+import { MAX_BACKTEST_STEPS, runBacktest } from './backtest'
 import { classify } from './classify'
+import { batchFromSingle, errorText, permissiveValidator } from './evaluator'
+import { indexName } from './registry'
+import { ruleFileDocument } from './rulefile'
 import { compileAlertRule, DEADMAN_ALERT, DEADMAN_GROUP, deadmanGroup, parseRuleFile, type CompiledAlertRule } from './rules'
-import { evalAlertingRule, evalRecordingRule, toSeries, type AlertEvalResult } from './statemachine'
-import { alignedTick, backoffMs, byteLength, hash64, mapLimit, resolveObjectName } from './util'
+import { evalAlertingRule, evalRecordingRule, isNoDataAlert, toSeries, type AlertEvalResult, type Series } from './statemachine'
+import { alignedTick, backoffMs, byteLength, formatDuration, hash64, mapLimit, parseDuration, resolveObjectName } from './util'
 
 /**
  * The ruler: Prometheus rule evaluation for one tenant rule shard.
@@ -52,12 +66,25 @@ import { alignedTick, backoffMs, byteLength, hash64, mapLimit, resolveObjectName
 /** Production bindings. The evaluator and sink take the tenant explicitly; the ruler binds it. */
 export interface RulerEnv {
   NOTIFIER?: DurableObjectNamespace
-  EVALUATOR?: { instant(tenant: string, promql: string, timeMs: number): Promise<PromVector | PromScalar> }
+  /** The query engine. `evaluate` is the batch form; `instant` alone is adapted to it. */
+  EVALUATOR?: {
+    instant?(tenant: string, promql: string, timeMs: number): Promise<PromVector | PromScalar>
+    evaluate?(tenant: string, requests: EvalRequest[]): Promise<EvalResult[]>
+    range?(tenant: string, promql: string, startMs: number, endMs: number, stepMs: number): Promise<PromMatrix>
+    check?(tenant: string, promql: string): ReturnType<Validator['check']>
+  }
   SINK?: { write(tenant: string, batches: SampleBatch[]): Promise<void> }
+  /** The registry the cron sweeper walks (`registry.ts`). */
+  RULER_INDEX?: DurableObjectNamespace
 }
 
 export interface NotifierPort {
   ingest(source: string, updates: AlertUpdate[]): Promise<IngestResult>
+}
+
+export interface IndexPort {
+  register(shard: string): Promise<unknown>
+  unregister(shard: string): Promise<unknown>
 }
 
 export const DEFAULT_RULER_CONFIG: RulerConfig = {
@@ -80,7 +107,11 @@ export const DEFAULT_RULER_CONFIG: RulerConfig = {
   lookbackMs: 5 * 60_000,
   deadman: true,
   deadmanIntervalMs: 60_000,
+  timelineLimit: 200,
 }
+
+/** After the group's time budget is spent the evaluator gets this long to hand back what it has. */
+const ABORT_GRACE_MS = 25
 
 /** Alert updates per hand-off row. Keeps a row far below the 2 MB value cap. */
 const HANDOFF_CHUNK = 200
@@ -92,6 +123,14 @@ interface RuleRt {
   health: 'ok' | 'err' | 'unknown'
   lastError: string | null
   lastEvaluationMs: number | null
+  lastDurationMs: number | null
+  /** The last successful evaluation found the rule's data missing (its no-data policy applied). */
+  noData: boolean
+}
+
+/** The id a rule without monitor metadata is addressed by in the monitors API. */
+export function bareRuleId(group: string, key: string): string {
+  return `r_${hash64(`${group}\n${key}`)}`
 }
 
 interface GroupRt {
@@ -124,10 +163,6 @@ type Cursor = { at: number; samplesDropped: number; groups: Record<string, [numb
 
 const EMPTY: ReadonlyMap<string, Alert> = new Map()
 
-function errorText(e: unknown): string {
-  return (e instanceof Error ? e.message : String(e)).slice(0, 500)
-}
-
 export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   protected readonly tenant: string
   protected readonly shard: string
@@ -147,6 +182,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   private ticking = false
   private tickFailures = 0
   private genCounter = 0
+  /** Whether the registry lists this object (`registry.ts`); persisted, so it is asked once. */
+  private registered = false
+  /** Set at each heartbeat: the next tick re-checks the registration if it is not as wanted. */
+  private registrationDue = false
   private counters = { sqlRowsWritten: 0, alarmsSet: 0, ticks: 0 }
 
   constructor(ctx: DurableObjectState, env: RulerEnv) {
@@ -168,6 +207,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       PRIMARY KEY (tenant, grp, rule_key, fp)) WITHOUT ROWID`)
     sql.exec(`CREATE TABLE IF NOT EXISTS handoff (tenant TEXT NOT NULL, seq INTEGER NOT NULL, created_at INTEGER NOT NULL, updates TEXT NOT NULL,
       PRIMARY KEY (tenant, seq)) WITHOUT ROWID`)
+    // One row per monitor: its bounded transition log as one JSON value (AGENTS.md: whole batches as rows).
+    sql.exec(`CREATE TABLE IF NOT EXISTS timeline (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (tenant, monitor)) WITHOUT ROWID`)
     this.load()
   }
 
@@ -178,10 +220,44 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     return Date.now()
   }
 
+  /** The single-call form. Kept as the input of the adapter; nothing else calls it. */
   protected evaluator(): Evaluator {
     const binding = this.env.EVALUATOR
-    if (!binding) throw new Error('no EVALUATOR binding')
-    return { instant: (promql, timeMs) => binding.instant(this.tenant, promql, timeMs) }
+    if (!binding?.instant) throw new Error('no EVALUATOR binding')
+    const instant = binding.instant.bind(binding)
+    return { instant: (promql, timeMs) => instant(this.tenant, promql, timeMs) }
+  }
+
+  /** What a tick uses: the engine's batch call when it has one, else the adapter over `evaluator()`. */
+  protected batchEvaluator(): BatchEvaluator {
+    const binding = this.env.EVALUATOR
+    if (binding?.evaluate) {
+      const evaluate = binding.evaluate.bind(binding)
+      return { evaluate: (requests) => evaluate(this.tenant, requests) }
+    }
+    return batchFromSingle(this.evaluator())
+  }
+
+  protected rangeEvaluator(): RangeEvaluator {
+    const binding = this.env.EVALUATOR
+    if (!binding?.range) throw new Error('no range evaluator binding')
+    const range = binding.range.bind(binding)
+    return { range: (promql, startMs, endMs, stepMs) => range(this.tenant, promql, startMs, endMs, stepMs) }
+  }
+
+  /** Save-time PromQL validation. Permissive until the engine binding offers `check`. */
+  protected validator(): Validator {
+    const binding = this.env.EVALUATOR
+    if (!binding?.check) return permissiveValidator
+    const check = binding.check.bind(binding)
+    return { check: (promql) => check(this.tenant, promql) }
+  }
+
+  protected index(): IndexPort | null {
+    const ns = this.env.RULER_INDEX
+    if (!ns) return null
+    const stub = ns.get(ns.idFromName(indexName(this.tenant))) as unknown as { register(t: string, s: string): Promise<unknown>; unregister(t: string, s: string): Promise<unknown> }
+    return { register: (shard) => stub.register(this.tenant, shard), unregister: (shard) => stub.unregister(this.tenant, shard) }
   }
 
   protected sink(): Sink {
@@ -222,6 +298,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (cfg) this.cfg = mergeConfig(DEFAULT_RULER_CONFIG, JSON.parse(cfg) as Partial<RulerConfig>)
     const activated = meta.get('activated_at')
     this.activatedAt = activated ? (JSON.parse(activated) as number) : null
+    this.registered = meta.get('registered') === 'true'
     const cursor = meta.has('cursor') ? (JSON.parse(meta.get('cursor') as string) as Cursor) : null
     this.lastHeartbeatMs = cursor?.at ?? 0
     this.samplesDropped = cursor?.samplesDropped ?? 0
@@ -235,7 +312,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       if (!g) continue
       let m = g.alerts.get(row.rule_key)
       if (!m) g.alerts.set(row.rule_key, (m = new Map()))
-      m.set(row.fp, JSON.parse(row.body) as Alert)
+      m.set(row.fp, reviveAlert(row.body))
     }
     if (cursor) {
       for (const [name, c] of Object.entries(cursor.groups)) {
@@ -263,7 +340,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       notBefore,
       compiled: spec.rules.map((r) => (r.kind === 'alert' ? compileAlertRule(r) : null)),
       alerts: new Map(),
-      rules: new Map(spec.rules.map((r) => [r.key, { health: 'unknown', lastError: null, lastEvaluationMs: null }])),
+      rules: new Map(spec.rules.map((r) => [r.key, { health: 'unknown', lastError: null, lastEvaluationMs: null, lastDurationMs: null, noData: false }])),
       lastEvalMs: null,
       cursorApprox: false,
       lastDurationMs: null,
@@ -359,6 +436,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       await mapLimit(due, this.cfg.maxConcurrentGroups, ({ g, ts }) => this.evalGroup(g, ts))
       this.heartbeat(now)
       await this.drainHandoff(now)
+      if (this.registrationDue) {
+        this.registrationDue = false
+        await this.syncRegistration()
+      }
       this.tickFailures = 0
     } catch (e) {
       // The tick died part-way (a storage error, say). Whatever committed is durable and
@@ -374,26 +455,46 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     await this.reschedule(now)
   }
 
+  /**
+   * One tick of one group. All of the group's expressions go to the evaluator in ONE batch
+   * call, with one exception: a rule whose text mentions a series recorded earlier in the
+   * same group starts a new batch, after the recorded samples have been handed to the sink
+   * (README, "Recording rules read in the same tick").
+   */
   private async evalGroup(g: GroupRt, ts: number): Promise<void> {
     const gen = g.gen
     const started = Date.now() // real clock on purpose: this is a duration, not a schedule
     const current = () => this.groups.get(g.spec.name) === g && g.gen === gen
-    let evaluator: Evaluator | null = null
+    let evaluator: BatchEvaluator | null = null
     const queryTime = ts - g.spec.queryOffsetMs
     const hardCap = this.cfg.limits.maxAlertsPerRule
     const limit = g.spec.limit > 0 ? Math.min(g.spec.limit, hardCap) : hardCap
     const staged: Staged[] = []
     let pending: { rule: Rule; batch: SampleBatch }[] = []
+    const rules = g.spec.rules as Rule[]
 
+    // The time budget. At the deadline the evaluator is told to stop (`abort`) and the sink
+    // is given up on (`timeout`); an evaluator that ignores the signal is abandoned a
+    // moment later (`hard`).
+    const abort = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
+    let grace: ReturnType<typeof setTimeout> | undefined
     let timedOut: Error | null = null
+    let rejectHard!: (e: Error) => void
+    const hard = new Promise<never>((_, reject) => (rejectHard = reject))
+    hard.catch(() => {})
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject((timedOut = new Error(`group evaluation exceeded ${this.cfg.groupTimeoutMs} ms`))), this.cfg.groupTimeoutMs)
+      timer = setTimeout(() => {
+        timedOut = new Error(`group evaluation exceeded ${this.cfg.groupTimeoutMs} ms`)
+        reject(timedOut)
+        abort.abort(timedOut)
+        grace = setTimeout(() => rejectHard(timedOut as Error), ABORT_GRACE_MS)
+      }, this.cfg.groupTimeoutMs)
     })
     timeout.catch(() => {})
 
-    const setHealth = (rule: Rule, error: string | null) => {
-      g.rules.set(rule.key, { health: error === null ? 'ok' : 'err', lastError: error, lastEvaluationMs: ts })
+    const setHealth = (rule: Rule, error: string | null, durationMs: number | null = g.rules.get(rule.key)?.lastDurationMs ?? null, noData = g.rules.get(rule.key)?.noData ?? false) => {
+      g.rules.set(rule.key, { health: error === null ? 'ok' : 'err', lastError: error, lastEvaluationMs: ts, lastDurationMs: durationMs, noData })
     }
     const flushSink = async () => {
       if (pending.length === 0) return
@@ -412,44 +513,90 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       for (const p of batch) setHealth(p.rule, `sink: ${lastError}`)
     }
 
+    // Split the rules into batches. A new batch starts before a rule that reads a name
+    // recorded since the last batch boundary.
+    const stages: number[][] = []
+    let stage: number[] = []
+    let recordedHere: string[] = []
+    rules.forEach((rule, i) => {
+      const reads = (name: string) => rule.expr.includes(name) || (rule.kind === 'alert' && rule.noData?.expr?.includes(name) === true)
+      if (stage.length > 0 && recordedHere.some(reads)) {
+        stages.push(stage)
+        stage = []
+        recordedHere = []
+      }
+      stage.push(i)
+      if (rule.kind === 'record') recordedHere.push(rule.name)
+    })
+    if (stage.length > 0) stages.push(stage)
+
     try {
-      for (let i = 0; i < g.spec.rules.length; i++) {
+      for (const indexes of stages) {
         if (!current()) return
-        const rule = g.spec.rules[i] as Rule
-        // A later rule that reads a series recorded earlier in this tick must see it: write
-        // what is pending first. Otherwise recorded samples go out once, after the last rule.
-        if (pending.length > 0 && pending.some((p) => rule.expr.includes(p.rule.name))) await flushSink()
-        let series
+        const requests: EvalRequest[] = []
+        for (const i of indexes) {
+          const rule = rules[i] as Rule
+          requests.push({ id: rule.key, promql: rule.expr, timeMs: queryTime })
+          if (rule.kind === 'alert' && rule.noData?.expr) requests.push({ id: `${rule.key}#presence`, promql: rule.noData.expr, timeMs: queryTime })
+        }
+        const results = new Map<string, EvalResult>()
+        // The whole call failing (the engine is unreachable) fails every rule of the batch;
+        // a failure inside the batch belongs to its own rule only.
+        let batchError: string | null = null
         try {
           if (timedOut) throw timedOut
-          evaluator ??= this.evaluator()
-          series = toSeries(await Promise.race([evaluator.instant(rule.expr, queryTime), timeout]))
+          evaluator ??= this.batchEvaluator()
+          for (const r of await Promise.race([evaluator.evaluate(requests, { signal: abort.signal }), hard])) results.set(r.id, r)
         } catch (e) {
-          // The query failed: say so, and leave the rule's alerts exactly as they were.
-          g.evaluatorErrors++
-          setHealth(rule, errorText(e))
-          continue
+          batchError = errorText(e)
         }
-        if (rule.kind === 'alert') {
-          const result = evalAlertingRule(rule, g.compiled[i] as CompiledAlertRule, g.alerts.get(rule.key) ?? EMPTY, series, ts, {
-            resolvedRetentionMs: this.cfg.resolvedRetentionMs,
-            limit,
-            maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes,
-            externalLabels: this.cfg.externalLabels,
-          })
-          if (result.ok) staged.push({ rule, result })
-          setHealth(rule, result.ok ? null : result.error)
-        } else {
-          const result = evalRecordingRule(rule, series, queryTime, limit)
-          if (result.ok && result.samples.length > 0) {
-            pending.push({ rule, batch: { id: `${this.tenant}/${this.shard}/${g.spec.name}/${rule.key}@${ts}`, samples: result.samples } })
+        if (!current()) return
+        for (const i of indexes) {
+          const rule = rules[i] as Rule
+          const res = results.get(rule.key)
+          const wantsPresence = rule.kind === 'alert' && Boolean(rule.noData?.expr)
+          const pres = wantsPresence ? results.get(`${rule.key}#presence`) : undefined
+          let error = batchError ?? (res === undefined ? 'the evaluator returned no result for this rule' : res.ok ? null : res.error)
+          if (error === null && wantsPresence) error = pres === undefined ? 'the evaluator returned no result for the no-data check' : pres.ok ? null : `no-data check: ${pres.error}`
+          let series: Series[] = []
+          let presence: Series[] | null = null
+          if (error === null) {
+            try {
+              series = toSeries((res as Extract<EvalResult, { ok: true }>).result)
+              if (pres?.ok) presence = toSeries(pres.result)
+            } catch (e) {
+              error = errorText(e)
+            }
           }
-          setHealth(rule, result.ok ? null : result.error)
+          if (error !== null) {
+            // The query failed: say so, and leave the rule's alerts exactly as they were.
+            g.evaluatorErrors++
+            setHealth(rule, error, res?.durationMs ?? null)
+            continue
+          }
+          if (rule.kind === 'alert') {
+            const result = evalAlertingRule(rule, g.compiled[i] as CompiledAlertRule, g.alerts.get(rule.key) ?? EMPTY, series, ts, {
+              resolvedRetentionMs: this.cfg.resolvedRetentionMs,
+              limit,
+              maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes,
+              externalLabels: this.cfg.externalLabels,
+            }, presence)
+            if (result.ok) staged.push({ rule, result })
+            setHealth(rule, result.ok ? null : result.error, res?.durationMs ?? null, result.ok ? result.noData : undefined)
+          } else {
+            const result = evalRecordingRule(rule, series, queryTime, limit)
+            if (result.ok && result.samples.length > 0) {
+              pending.push({ rule, batch: { id: `${this.tenant}/${this.shard}/${g.spec.name}/${rule.key}@${ts}`, samples: result.samples } })
+            }
+            setHealth(rule, result.ok ? null : result.error, res?.durationMs ?? null)
+          }
         }
+        // Recorded samples leave before the next batch is evaluated, and once at the end.
+        await flushSink()
       }
-      await flushSink()
     } finally {
       clearTimeout(timer)
+      clearTimeout(grace)
     }
     if (!current()) return
     // From here to the end there is no await: commit, then swap memory, then move the cursor.
@@ -481,6 +628,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             const a = (n.status === 'firing' ? result.alerts.get(n.fingerprint) : before.get(n.fingerprint)) as Alert
             updates.push(this.toUpdate(g, rule, a, n.status, ts))
           }
+          // A monitor's history: the state changes of this tick, in the same transaction.
+          if (rule.monitor) this.appendTimeline(rule.monitor.id, transitions(before, result.alerts, result.dirty, ts))
         }
         this.enqueueHandoff(updates, ts)
         this.fault('commit')
@@ -503,9 +652,30 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       endsAt: status === 'resolved' ? at : null,
       value: a.value,
       at,
-      generator: { group: g.spec.name, rule: rule.name },
+      generator: rule.monitor ? { group: g.spec.name, rule: rule.name, monitor: rule.monitor.id } : { group: g.spec.name, rule: rule.name },
       expiresAt: heartbeat && status === 'firing' ? at + 2 * Math.max(this.cfg.heartbeatMs, g.spec.intervalMs) + g.spec.intervalMs : null,
     }
+  }
+
+  /**
+   * Inside a transaction: add entries to a monitor's transition log. The log is one row,
+   * read and rewritten here, holding at most `timelineLimit` entries; what falls off the
+   * front is counted in `dropped`, so a reader can tell a complete history from a cut one.
+   */
+  private appendTimeline(monitor: string, entries: TimelineEntry[]): void {
+    if (entries.length === 0) return
+    const row = this.exec<{ body: string }>(`SELECT body FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, monitor)[0]
+    const log: Timeline = row ? (JSON.parse(row.body) as Timeline) : { entries: [], dropped: 0 }
+    for (const e of entries) {
+      // Replays and re-imports must not write an entry twice.
+      if (!log.entries.some((x) => sameEntry(x, e))) log.entries.push(e)
+    }
+    const over = log.entries.length - this.cfg.timelineLimit
+    if (over > 0) {
+      log.entries.splice(0, over)
+      log.dropped += over
+    }
+    this.exec(`INSERT INTO timeline (tenant, monitor, body) VALUES (?, ?, ?) ON CONFLICT (tenant, monitor) DO UPDATE SET body = excluded.body`, this.tenant, monitor, JSON.stringify(log))
   }
 
   /** Inside a transaction: store alert updates for the notifier. */
@@ -547,6 +717,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     })
     this.noteHandoff(updates, now)
     this.lastHeartbeatMs = now
+    this.registrationDue = true
   }
 
   /** Deliver committed transitions to the notifier, oldest first; a row is deleted only once accepted. */
@@ -579,7 +750,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   // ───────────────────────── RPC ─────────────────────────
 
-  async configure(tenant: string, patch: Partial<Omit<RulerConfig, 'limits'>> & { limits?: Partial<RulerLimits> }) {
+  async configure(tenant: string, patch: Partial<Omit<RulerConfig, 'limits'>> & { limits?: Partial<RulerLimits> }): Promise<{ status: 'ok'; config: RulerConfig } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant> {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const errors = validateConfigPatch(patch)
@@ -606,12 +777,56 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 
   async checkGroups(tenant: string, file: unknown): Promise<SaveGroupsResult> {
-    return this.wrongTenant(tenant) ?? this.validate(file, this.now()).result
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const promql = await this.checkPromql(file)
+    return this.validate(file, this.now(), promql).result
   }
 
-  private validate(file: unknown, now: number): { result: SaveGroupsResult; groups: RuleGroup[] } {
+  /**
+   * Ask the validator about every expression in the document. This is the only await of a
+   * save and it comes first, so that validation against the object's state and the
+   * transaction that follows see the same state.
+   */
+  private async checkPromql(file: unknown): Promise<ValidationError[]> {
+    const exprs: { path: string; text: string }[] = []
+    const groups = (file as { groups?: unknown } | null)?.groups
+    if (Array.isArray(groups)) {
+      groups.forEach((g: unknown, gi: number) => {
+        const rules = (g as { rules?: unknown } | null)?.rules
+        if (!Array.isArray(rules)) return
+        rules.forEach((r: unknown, ri: number) => {
+          for (const field of ['expr', 'no_data_expr']) {
+            const text = (r as Record<string, unknown> | null)?.[field]
+            if (typeof text === 'string' && text.trim() !== '') exprs.push({ path: `groups[${gi}].rules[${ri}].${field}`, text })
+          }
+        })
+      })
+    }
+    if (exprs.length === 0) return []
+    const validator = this.validator()
+    const errors: ValidationError[] = []
+    const checked = await mapLimit(exprs, 4, async (e) => {
+      try {
+        return await validator.check(e.text)
+      } catch (err) {
+        // A validator that cannot be reached must not block saving: the first evaluation will report the rule.
+        return { ok: true, errors: [], selectors: [], unavailable: errorText(err) }
+      }
+    })
+    checked.forEach((r, i) => {
+      if (r.ok) return
+      const at = exprs[i] as { path: string; text: string }
+      for (const e of r.errors.length > 0 ? r.errors : [{ message: 'the expression is not valid PromQL' }]) {
+        errors.push({ path: at.path, message: e.offset === undefined ? e.message : `${e.message} (at character ${e.offset})`, fix: e.fix ?? 'Correct the expression; try it in Explore first.' })
+      }
+    })
+    return errors
+  }
+
+  private validate(file: unknown, now: number, promqlErrors: ValidationError[] = []): { result: SaveGroupsResult; groups: RuleGroup[] } {
     const parsed = parseRuleFile(file, this.cfg)
-    const errors = parsed.errors
+    const errors = [...parsed.errors, ...promqlErrors]
     const names = new Set([...this.groups.keys()].filter((n) => n !== DEADMAN_GROUP))
     for (const g of parsed.groups) names.add(g.name)
     if (names.size > this.cfg.limits.maxGroups) {
@@ -646,9 +861,17 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   async saveGroups(tenant: string, file: unknown): Promise<SaveGroupsResult> {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
+    const promqlErrors = await this.checkPromql(file)
     const now = this.now()
-    const { result, groups } = this.validate(file, now)
-    if (result.status !== 'ok') return result
+    const result = this.commitGroups(file, now, promqlErrors, false)
+    if (result.status === 'ok') await this.afterMutation(now)
+    return result
+  }
+
+  /** Validate and, unless `dryRun`, store. No await in here: what was validated is what is committed. */
+  private commitGroups(file: unknown, now: number, promqlErrors: ValidationError[], dryRun: boolean): SaveGroupsResult {
+    const { result, groups } = this.validate(file, now, promqlErrors)
+    if (result.status !== 'ok' || dryRun) return result
     const t = this.tenant
     const built: GroupRt[] = []
     const updates: AlertUpdate[] = []
@@ -682,6 +905,12 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         }
         this.exec(`INSERT INTO rule_group (tenant, name, spec, not_before) VALUES (?, ?, ?, ?)
           ON CONFLICT (tenant, name) DO UPDATE SET spec = excluded.spec, not_before = excluded.not_before`, t, spec.name, JSON.stringify(spec), g.notBefore)
+        // History: who created or last edited each monitor (once per `updatedAt`).
+        for (const r of spec.rules as Rule[]) {
+          if (r.kind !== 'alert' || !r.monitor) continue
+          const m = r.monitor
+          this.appendTimeline(m.id, [{ at: m.updatedAt, source: 'ruler', kind: m.updatedAt === m.createdAt ? 'created' : 'edited', by: m.updatedBy }])
+        }
         built.push(g)
       }
       this.enqueueHandoff(updates, now)
@@ -689,16 +918,72 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     this.noteHandoff(updates, now)
     for (const g of built) this.groups.set(g.spec.name, g)
     this.syncDeadman()
-    await this.afterMutation(now)
     return result
+  }
+
+  /**
+   * Add one rule to a group, or replace the rule that carries the same monitor id, as one
+   * step inside this object: two callers adding monitors to the same group cannot lose
+   * each other's rule. The group is created with `interval` if it does not exist.
+   * `ruleIndex` is the rule's position, so a caller can map `groups[0].rules[<n>]` paths.
+   */
+  async saveRule(tenant: string, group: { name: string; interval?: string }, rule: unknown, dryRun = false): Promise<SaveGroupsResult & { ruleIndex?: number }> {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const promql = await this.checkPromql({ groups: [{ rules: [rule] }] })
+    const now = this.now()
+    const existing = this.groups.get(group.name)
+    const id = (rule as { monitor?: { id?: unknown } } | null)?.monitor?.id
+    let doc: Record<string, unknown>
+    let ruleIndex: number
+    if (existing && group.name !== DEADMAN_GROUP) {
+      doc = ruleFileDocument([existing.spec], { extensions: true }).file.groups[0] as Record<string, unknown>
+      const rules = doc.rules as unknown[]
+      const at = typeof id === 'string' ? (existing.spec.rules as Rule[]).findIndex((r) => r.kind === 'alert' && r.monitor?.id === id) : -1
+      ruleIndex = at >= 0 ? at : rules.length
+      rules[ruleIndex] = rule
+      if (group.interval !== undefined && parseDuration(group.interval) !== existing.spec.intervalMs) {
+        return { status: 'invalid', errors: [{ path: 'interval', message: `group "${group.name}" is evaluated every ${formatDuration(existing.spec.intervalMs)}`, fix: 'Use that interval, or put the monitor in another group.' }] }
+      }
+    } else {
+      doc = { name: group.name, rules: [rule] }
+      if (group.interval !== undefined) doc.interval = group.interval
+      ruleIndex = 0
+    }
+    const errors = promql.map((e) => ({ ...e, path: e.path.replace('groups[0].rules[0]', `groups[0].rules[${ruleIndex}]`) }))
+    const result = this.commitGroups({ groups: [doc] }, now, errors, dryRun)
+    if (result.status === 'ok' && !dryRun) await this.afterMutation(now)
+    return { ...result, ruleIndex }
+  }
+
+  /** Remove the rule carrying `monitorId` from `groupName`; a group left without rules is deleted. */
+  async removeRule(tenant: string, groupName: string, monitorId: string, dryRun = false): Promise<{ status: 'ok'; removed: boolean } | { status: 'invalid'; errors: ValidationError[] } | WrongTenant> {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const g = this.groups.get(groupName)
+    const at = g && groupName !== DEADMAN_GROUP ? (g.spec.rules as Rule[]).findIndex((r) => (r.kind === 'alert' && r.monitor?.id === monitorId) || bareRuleId(groupName, r.key) === monitorId) : -1
+    if (!g || at < 0) return { status: 'ok', removed: false }
+    if (dryRun) return { status: 'ok', removed: true }
+    if (g.spec.rules.length === 1) {
+      await this.deleteGroup(tenant, groupName)
+      return { status: 'ok', removed: true }
+    }
+    const doc = ruleFileDocument([g.spec], { extensions: true }).file.groups[0] as Record<string, unknown>
+    ;(doc.rules as unknown[]).splice(at, 1)
+    const now = this.now()
+    const result = this.commitGroups({ groups: [doc] }, now, [], false)
+    if (result.status === 'invalid') return result
+    await this.afterMutation(now)
+    return { status: 'ok', removed: true }
   }
 
   /** Inside a transaction: a rule went away. Delete its alerts and tell the notifier the firing ones are over. */
   private dropRuleAlerts(g: GroupRt, key: string, alerts: Map<string, Alert>, now: number, updates: AlertUpdate[]): void {
-    const rule = g.spec.rules.find((r) => r.key === key)
+    const rule = (g.spec.rules as Rule[]).find((r) => r.key === key)
     if (alerts.size > 0) this.exec(`DELETE FROM alert WHERE tenant = ? AND grp = ? AND rule_key = ?`, this.tenant, g.spec.name, key)
     if (!rule || rule.kind !== 'alert') return
     for (const a of alerts.values()) if (a.state === 'firing') updates.push(this.toUpdate(g, rule, a, 'resolved', now))
+    if (rule.monitor) this.appendTimeline(rule.monitor.id, transitions(alerts, EMPTY, new Set(alerts.keys()), now))
   }
 
   async deleteGroup(tenant: string, name: string) {
@@ -726,6 +1011,182 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (this.handoffDepth > 0) at = Math.min(at, this.handoffRetryAt ?? now)
     if (at !== Infinity) await this.armAtMost(at)
     else if (this.groups.size === 0) await this.ctx.storage.deleteAlarm()
+    await this.syncRegistration()
+  }
+
+  /**
+   * Keep the registry in step with whether this object has work. Best effort: a failed
+   * call leaves the flag as it was and is tried again after the next change or heartbeat.
+   */
+  private async syncRegistration(): Promise<void> {
+    const want = this.groups.size > 0 || this.handoffDepth > 0
+    if (want === this.registered) return
+    try {
+      const index = this.index()
+      if (!index) return
+      await (want ? index.register(this.shard) : index.unregister(this.shard))
+    } catch {
+      return
+    }
+    this.registered = want
+    this.putMeta('registered', want)
+  }
+
+  // ───────────────────────── views for the HTTP API ─────────────────────────
+
+  async snapshot(tenant: string) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const groups: GroupSnapshot[] = [...this.groups.values()].map((g) => ({
+      name: g.spec.name,
+      intervalMs: g.spec.intervalMs,
+      limit: g.spec.limit,
+      lastEvaluationMs: g.lastEvalMs,
+      lastDurationMs: g.lastDurationMs,
+      rules: (g.spec.rules as Rule[]).map((rule) => {
+        const rt = g.rules.get(rule.key)
+        return {
+          rule,
+          health: rt?.health ?? 'unknown',
+          lastError: rt?.lastError ?? null,
+          lastEvaluationMs: rt?.lastEvaluationMs ?? null,
+          lastDurationMs: rt?.lastDurationMs ?? null,
+          noData: rt?.noData ?? false,
+          alerts: [...(g.alerts.get(rule.key)?.values() ?? [])],
+        }
+      }),
+    }))
+    return { status: 'ok' as const, shard: this.shard, groups }
+  }
+
+  async timeline(tenant: string, monitorId: string) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const row = this.exec<{ body: string }>(`SELECT body FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, monitorId)[0]
+    const log: Timeline = row ? (JSON.parse(row.body) as Timeline) : { entries: [], dropped: 0 }
+    return { status: 'ok' as const, entries: log.entries, dropped: log.dropped }
+  }
+
+  /** Forget the history of monitors that were deleted. */
+  async dropTimelines(tenant: string, monitorIds: string[]) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    for (const id of monitorIds) this.exec(`DELETE FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, id)
+    return { status: 'ok' as const }
+  }
+
+  /**
+   * "If this rule had existed": evaluate `rule` over [fromMs, toMs] with the engine's range
+   * query and run the result through the live state machine (`backtest.ts`).
+   */
+  async backtest(tenant: string, rule: unknown, fromMs: number, toMs: number, stepMs: number, intervalMs?: number): Promise<BacktestResponse> {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const errors: ValidationError[] = []
+    const whole = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v)
+    if (!whole(fromMs) || !whole(toMs) || toMs < fromMs) errors.push({ path: 'toMs', message: 'fromMs and toMs must be Unix milliseconds with fromMs <= toMs', fix: 'Give the range to test, e.g. the last 7 days.' })
+    if (!whole(stepMs) || stepMs < 1000) errors.push({ path: 'stepMs', message: 'stepMs must be at least 1000', fix: 'Use a step of one second or more; the rule interval is a good choice.' })
+    else if (errors.length === 0 && Math.floor((toMs - fromMs) / stepMs) + 1 > MAX_BACKTEST_STEPS) {
+      const min = Math.ceil((toMs - fromMs) / (MAX_BACKTEST_STEPS - 1) / 1000) * 1000
+      errors.push({ path: 'stepMs', message: `the range needs more than ${MAX_BACKTEST_STEPS} steps`, fix: `Use a step of at least ${min} ms, or a shorter range.` })
+    }
+    const live = intervalMs ?? this.cfg.defaultIntervalMs
+    const parsed = parseRuleFile({ groups: [{ name: 'backtest', interval: `${live}ms`, rules: [rule] }] }, this.cfg)
+    for (const e of parsed.errors) errors.push({ ...e, path: e.path.replace(/^groups\[0\]\.rules\[0\]\.?/, 'rule.').replace(/\.$/, '') })
+    const parsedRule = parsed.groups[0]?.rules[0] as Rule | undefined
+    if (errors.length === 0 && parsedRule?.kind !== 'alert') errors.push({ path: 'rule', message: 'only an alerting rule can be backtested', fix: 'Give "alert" and "expr".' })
+    if (errors.length > 0 || !parsedRule || parsedRule.kind !== 'alert') return { status: 'invalid', errors }
+    let matrix: PromMatrix
+    let presence: PromMatrix | null = null
+    try {
+      const range = this.rangeEvaluator()
+      matrix = await range.range(parsedRule.expr, fromMs, toMs, stepMs)
+      if (parsedRule.noData?.expr) presence = await range.range(parsedRule.noData.expr, fromMs, toMs, stepMs)
+      if (matrix.resultType !== 'matrix') throw new Error('the range evaluation did not return a matrix')
+    } catch (e) {
+      return { status: 'failed', error: errorText(e) }
+    }
+    const r = runBacktest({
+      rule: parsedRule, compiled: compileAlertRule(parsedRule), matrix, presence, fromMs, toMs, stepMs, liveIntervalMs: live,
+      opts: { resolvedRetentionMs: this.cfg.resolvedRetentionMs, limit: this.cfg.limits.maxAlertsPerRule, maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes, externalLabels: this.cfg.externalLabels },
+    })
+    return r.ok ? { status: 'ok', ...r.result } : { status: 'failed', error: r.error }
+  }
+
+  // ───────────────────────── moving a group between shards ─────────────────────────
+
+  async exportGroup(tenant: string, name: string) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const g = this.groups.get(name)
+    if (!g || name === DEADMAN_GROUP) return { status: 'not_found' as const }
+    const bundle: GroupBundle = { spec: g.spec as GroupBundle['spec'], alerts: {}, timelines: {} }
+    for (const [key, alerts] of g.alerts) if (alerts.size > 0) bundle.alerts[key] = [...alerts.values()]
+    for (const r of g.spec.rules as Rule[]) {
+      if (r.kind !== 'alert' || !r.monitor) continue
+      const row = this.exec<{ body: string }>(`SELECT body FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, r.monitor.id)[0]
+      if (row) bundle.timelines[r.monitor.id] = JSON.parse(row.body) as Timeline
+    }
+    return { status: 'ok' as const, bundle }
+  }
+
+  /**
+   * Take over a group from another shard: its rules, every alert (so `for` timers,
+   * `firedAt` and retention continue) and its monitors' history. Idempotent. The group
+   * starts on this shard's own tick grid at the next aligned time.
+   */
+  async importGroup(tenant: string, bundle: GroupBundle) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const spec = bundle?.spec
+    if (!spec || typeof spec.name !== 'string' || !Array.isArray(spec.rules) || spec.name === DEADMAN_GROUP) {
+      return { status: 'invalid' as const, errors: [{ path: 'spec', message: 'not a group bundle', fix: 'Pass what exportGroup returned.' }] }
+    }
+    const names = new Set([...this.groups.keys()].filter((n) => n !== DEADMAN_GROUP))
+    names.add(spec.name)
+    if (names.size > this.cfg.limits.maxGroups) {
+      return { status: 'invalid' as const, errors: [{ path: 'spec', message: `this ruler would hold ${names.size} groups; the limit is ${this.cfg.limits.maxGroups}`, fix: 'Place the group in another rule shard.' }] }
+    }
+    const now = this.now()
+    const t = this.tenant
+    const g = this.newGroup(spec as RuleGroup, now)
+    const keys = new Set(spec.rules.map((r) => r.key))
+    this.ctx.storage.transactionSync(() => {
+      this.activate(now)
+      this.exec(`INSERT INTO rule_group (tenant, name, spec, not_before) VALUES (?, ?, ?, ?)
+        ON CONFLICT (tenant, name) DO UPDATE SET spec = excluded.spec, not_before = excluded.not_before`, t, spec.name, JSON.stringify(spec), now)
+      this.exec(`DELETE FROM alert WHERE tenant = ? AND grp = ?`, t, spec.name)
+      for (const [key, alerts] of Object.entries(bundle.alerts ?? {})) {
+        if (!keys.has(key)) continue
+        const m = new Map<string, Alert>()
+        for (const a of alerts) {
+          m.set(a.fingerprint, a)
+          this.exec(`INSERT INTO alert (tenant, grp, rule_key, fp, body) VALUES (?, ?, ?, ?, ?)`, t, spec.name, key, a.fingerprint, JSON.stringify(a))
+        }
+        g.alerts.set(key, m)
+      }
+      for (const [monitor, log] of Object.entries(bundle.timelines ?? {})) this.appendTimeline(monitor, log.entries)
+    })
+    this.groups.set(spec.name, g)
+    this.syncDeadman()
+    await this.afterMutation(now)
+    return { status: 'ok' as const }
+  }
+
+  /** The group now lives on another shard: forget it here without resolving or notifying anything. */
+  async releaseGroup(tenant: string, name: string) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const g = this.groups.get(name)
+    if (!g || name === DEADMAN_GROUP) return { status: 'ok' as const, existed: false }
+    this.ctx.storage.transactionSync(() => {
+      this.exec(`DELETE FROM rule_group WHERE tenant = ? AND name = ?`, this.tenant, name)
+      this.exec(`DELETE FROM alert WHERE tenant = ? AND grp = ?`, this.tenant, name)
+      for (const r of g.spec.rules as Rule[]) if (r.kind === 'alert' && r.monitor) this.exec(`DELETE FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, r.monitor.id)
+    })
+    this.groups.delete(name)
+    await this.afterMutation(this.now())
+    return { status: 'ok' as const, existed: true }
   }
 
   async listGroups(tenant: string) {
@@ -800,6 +1261,35 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 }
 
+/** A stored alert. JSON has no NaN (the value of a no-data alert), so it comes back as null. */
+function reviveAlert(body: string): Alert {
+  const a = JSON.parse(body) as Alert
+  if (a.value === null) a.value = NaN
+  return a
+}
+
+const active = (a: Alert | undefined): 'pending' | 'firing' | null => (a && a.state !== 'inactive' ? a.state : null)
+
+/** The state changes between two alert maps, as history entries. */
+function transitions(before: ReadonlyMap<string, Alert>, after: ReadonlyMap<string, Alert>, dirty: Iterable<string>, at: number): TimelineEntry[] {
+  const out: TimelineEntry[] = []
+  for (const fp of dirty) {
+    const b = before.get(fp)
+    const a = after.get(fp)
+    const was = active(b)
+    const is = active(a)
+    if (was === is) continue
+    const ref = (a ?? b) as Alert
+    out.push({ at, source: 'ruler', kind: is ?? (was === 'firing' ? 'resolved' : 'cleared'), fingerprint: fp, labels: ref.labels, value: ref.value, noData: isNoDataAlert(ref) })
+  }
+  return out
+}
+
+function sameEntry(a: TimelineEntry, b: TimelineEntry): boolean {
+  if (a.at !== b.at || a.kind !== b.kind || a.source !== b.source) return false
+  return 'fingerprint' in a && 'fingerprint' in b ? a.fingerprint === b.fingerprint : true
+}
+
 function mergeConfig(base: RulerConfig, patch: Partial<Omit<RulerConfig, 'limits'>> & { limits?: Partial<RulerLimits> }): RulerConfig {
   return { ...base, ...patch, limits: { ...base.limits, ...(patch.limits ?? {}) }, externalLabels: patch.externalLabels ?? base.externalLabels }
 }
@@ -824,6 +1314,7 @@ function validateConfigPatch(patch: unknown): ValidationError[] {
   positive('recentWindowMs', p.recentWindowMs, 0)
   positive('lookbackMs', p.lookbackMs, 0)
   positive('deadmanIntervalMs', p.deadmanIntervalMs, 1000)
+  positive('timelineLimit', p.timelineLimit, 1)
   if (p.deadman !== undefined && typeof p.deadman !== 'boolean') errors.push({ path: 'deadman', message: 'deadman must be true or false', fix: 'Use a boolean.' })
   if (p.limits !== undefined) {
     if (typeof p.limits !== 'object' || p.limits === null) errors.push({ path: 'limits', message: 'limits must be an object', fix: 'Send the limits to change.' })

@@ -111,6 +111,12 @@ export interface QueryEngine {
    * the ranges read and need not be fetched. Sound by `engine/query` `files_needed`.
    */
   filesNeeded(indexes: string[], ranges: FetchRange[]): boolean[]
+  /**
+   * For each index fragment: an upper bound on the rows the ranges decode from the file
+   * (each row group once per range that may read it). 0 means skip the file; `null` that
+   * the fragment does not parse, so the bound is unknown and the file must be read.
+   */
+  scanRows(indexes: string[], ranges: FetchRange[]): (number | null)[]
   /** Size of the instance's linear memory now, which is also its peak: it only grows. */
   memoryBytes(): number
   /** How many times a WASM instance has been created (1, plus one per trap or reset). */
@@ -135,7 +141,7 @@ type Op =
   | 'viz_q_label_names'
   | 'viz_q_label_values'
   | 'viz_q_series'
-  | 'viz_q_files_needed'
+  | 'viz_q_scan_rows'
 type Module = Exports & Record<Op, (ptr: number, len: number) => number>
 
 const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
@@ -340,10 +346,17 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
 
   const metaReq = (limits: QueryLimits, minTs: number, maxTs: number): Request => new Request().limits(limits).i64(time('minTs', minTs)).i64(time('maxTs', maxTs))
 
-  function filesNeeded(indexes: string[], ranges: FetchRange[]): boolean[] {
+  function scanRows(indexes: string[], ranges: FetchRange[]): (number | null)[] {
     const req = new Request().strs(indexes).u32(ranges.length)
     for (const r of ranges) req.i64(time('minTs', r.minTs)).i64(time('maxTs', r.maxTs)).matchers(r.matchers)
-    return call('viz_q_files_needed', req, (payload) => Array.from(payload, (b) => b !== 0))
+    return call('viz_q_scan_rows', req, (payload) => {
+      const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+      return indexes.map((_, i) => {
+        const rows = dv.getBigUint64(8 * i, true)
+        // A count, far below 2^53 unless it saturated; saturation is reported as Infinity.
+        return rows === U64_MAX ? null : rows > BigInt(Number.MAX_SAFE_INTEGER) ? Infinity : Number(rows)
+      })
+    })
   }
 
   return {
@@ -358,7 +371,8 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     labelNames: (input, match, minTs, maxTs, limits = DEFAULT_LIMITS) => call('viz_q_label_names', metaReq(limits, minTs, maxTs).strs(match).scan(input), json<string[]>),
     labelValues: (input, name, match, minTs, maxTs, limits = DEFAULT_LIMITS) => call('viz_q_label_values', metaReq(limits, minTs, maxTs).str(name).strs(match).scan(input), json<string[]>),
     series: (input, match, minTs, maxTs, limits = DEFAULT_LIMITS) => call('viz_q_series', metaReq(limits, minTs, maxTs).strs(match).scan(input), json<Record<string, string>[]>),
-    filesNeeded,
+    filesNeeded: (indexes, ranges) => scanRows(indexes, ranges).map((rows) => rows !== 0),
+    scanRows,
     memoryBytes: () => (x ? x.memory.buffer.byteLength : 0),
     instances: () => created,
     reset: () => {

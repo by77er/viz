@@ -2,7 +2,7 @@
  * Alertmanager's configuration model: validation of the notifier config document, the
  * routing tree, matchers, inhibition rules and silence matching. Pure; no storage.
  */
-import type { InhibitRuleInput, NotifierConfigInput, RouteInput, SilenceInput, SilenceMatcher, ValidationError } from '../contracts-proposal/rules'
+import { RECEIVER_LABEL, type InhibitRuleInput, type NotifierConfigInput, type ReceiverSummary, type RouteInput, type SilenceInput, type SilenceMatcher, type ValidationError } from '../contracts-proposal/rules.v2'
 import { LABEL_NAME_RE, labelValue, parseDuration, type Labels } from './util'
 
 export interface Matcher {
@@ -36,6 +36,8 @@ export interface Integration {
   sendResolved: boolean
   maxAlerts: number
   channel: string | null
+  /** Signs outbound requests (`signature.ts`). Never returned by any RPC. */
+  secret: string | null
 }
 
 export interface InhibitRule {
@@ -244,10 +246,12 @@ export function compileConfig(input: unknown): { ok: true; config: CompiledConfi
       each(r.webhook_configs, 'webhook_configs', (cfg, path, j) => {
         const max = cfg.max_alerts === undefined ? 0 : cfg.max_alerts
         if (typeof max !== 'number' || !Number.isInteger(max) || max < 0) c.err(`${path}.max_alerts`, 'max_alerts must be a non-negative integer', 'Use 0 for no limit.')
-        list.push({ key: `webhook[${j}]`, kind: 'webhook', url: httpUrl(c, cfg.url, `${path}.url`), sendResolved: cfg.send_resolved !== false, maxAlerts: typeof max === 'number' ? max : 0, channel: null })
+        if (cfg.secret !== undefined && (typeof cfg.secret !== 'string' || cfg.secret.length > 512)) c.err(`${path}.secret`, 'secret must be a string of at most 512 characters', 'Give the shared secret the receiver verifies the signature with.')
+        else if (typeof cfg.secret === 'string' && cfg.secret !== '' && cfg.secret.length < 16) c.err(`${path}.secret`, 'secret is shorter than 16 characters', 'Use a random secret of at least 16 characters.')
+        list.push({ key: `webhook[${j}]`, kind: 'webhook', url: httpUrl(c, cfg.url, `${path}.url`), sendResolved: cfg.send_resolved !== false, maxAlerts: typeof max === 'number' ? max : 0, channel: null, secret: typeof cfg.secret === 'string' && cfg.secret !== '' ? cfg.secret : null })
       })
       each(r.slack_configs, 'slack_configs', (cfg, path, j) => {
-        list.push({ key: `slack[${j}]`, kind: 'slack', url: httpUrl(c, cfg.api_url, `${path}.api_url`), sendResolved: cfg.send_resolved === true, maxAlerts: 0, channel: typeof cfg.channel === 'string' ? cfg.channel : null })
+        list.push({ key: `slack[${j}]`, kind: 'slack', url: httpUrl(c, cfg.api_url, `${path}.api_url`), sendResolved: cfg.send_resolved === true, maxAlerts: 0, channel: typeof cfg.channel === 'string' ? cfg.channel : null, secret: null })
       })
       receivers.set(r.name, list)
     })
@@ -288,6 +292,21 @@ export function compileConfig(input: unknown): { ok: true; config: CompiledConfi
     r.routes.forEach(visit)
   }
   visit(root)
+  // A rule can name its receiver directly with the `viz_receiver` label (a monitor's
+  // "notify"). Those alerts are routed here, ahead of the tree, with the root's grouping
+  // and timing. Alerts without the label never match, so the tree behaves as written.
+  const direct: Route[] = [...receivers.keys()].map((name) => ({
+    key: `{}/{${RECEIVER_LABEL}=${JSON.stringify(name)}}/viz`,
+    receiver: name,
+    groupBy: root.groupBy,
+    matchers: [{ name: RECEIVER_LABEL, value: name, re: null, equal: true }],
+    continue: false,
+    groupWaitMs: root.groupWaitMs,
+    groupIntervalMs: root.groupIntervalMs,
+    repeatIntervalMs: root.repeatIntervalMs,
+    routes: [],
+  }))
+  root.routes = [...direct, ...root.routes]
   return { ok: true, config: { root, receivers, inhibit, externalUrl: typeof doc.external_url === 'string' ? doc.external_url : '', delivery, maxGroupIntervalMs } }
 }
 
@@ -401,5 +420,76 @@ export function validateSilence(input: unknown, now: number): ValidationError[] 
 export function silencedBy(silences: Iterable<CompiledSilence>, labels: Labels, at: number): string[] {
   const out: string[] = []
   for (const s of silences) if (s.startsAt <= at && at < s.endsAt && matchesAll(s.matchers, labels)) out.push(s.id)
+  return out
+}
+
+/** Who a receiver is and how it notifies, with nothing secret in it. */
+export function receiverSummary(config: CompiledConfig, name: string): ReceiverSummary {
+  return { name, integrations: (config.receivers.get(name) ?? []).map((i) => ({ kind: i.kind, channel: i.channel, signed: i.secret !== null })) }
+}
+
+const REDACTED = '\u2026'
+
+function redactUrl(v: unknown, whole: boolean): unknown {
+  if (typeof v !== 'string') return v
+  try {
+    const u = new URL(v)
+    if (whole) return `${u.origin}/${REDACTED}`
+    if (u.username === '' && u.password === '' && u.search === '') return v
+    return `${u.origin}${u.pathname}${u.search === '' ? '' : `?${REDACTED}`}`
+  } catch {
+    return REDACTED
+  }
+}
+
+const isRedacted = (v: unknown): boolean => typeof v === 'string' && v.endsWith(REDACTED)
+
+type RawReceiver = { name?: unknown; webhook_configs?: unknown; slack_configs?: unknown }
+const configs = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v.filter(isObject) : [])
+
+/**
+ * The stored config as it may be shown: webhook secrets become `has_secret`, credentials
+ * in a webhook URL and the whole path of a Slack URL (it IS the credential) are cut.
+ */
+export function redactConfig(stored: unknown): unknown {
+  if (!isObject(stored)) return stored
+  const out = JSON.parse(JSON.stringify(stored)) as Record<string, unknown>
+  for (const r of Array.isArray(out.receivers) ? (out.receivers as RawReceiver[]) : []) {
+    for (const w of configs(r?.webhook_configs)) {
+      const had = typeof w.secret === 'string' && w.secret !== ''
+      delete w.secret
+      w.has_secret = had
+      w.url = redactUrl(w.url, false)
+    }
+    for (const sl of configs(r?.slack_configs)) sl.api_url = redactUrl(sl.api_url, true)
+  }
+  return out
+}
+
+/**
+ * A config about to be saved, completed from the stored one: a webhook with no `secret`
+ * field keeps the secret stored for the same receiver and position, and a URL sent back in
+ * its redacted form keeps the stored URL. `secret: ""` removes a secret.
+ */
+export function keepSecrets(incoming: unknown, stored: unknown): unknown {
+  if (!isObject(incoming)) return incoming
+  const out = JSON.parse(JSON.stringify(incoming)) as Record<string, unknown>
+  const old = new Map<string, RawReceiver>()
+  if (isObject(stored) && Array.isArray(stored.receivers)) for (const r of stored.receivers as RawReceiver[]) if (isObject(r) && typeof r.name === 'string') old.set(r.name, r)
+  for (const r of Array.isArray(out.receivers) ? (out.receivers as RawReceiver[]) : []) {
+    if (!isObject(r)) continue
+    const before = typeof r.name === 'string' ? old.get(r.name) : undefined
+    configs(r.webhook_configs).forEach((w, i) => {
+      const was = configs(before?.webhook_configs)[i]
+      delete w.has_secret
+      if (isRedacted(w.url) && was) w.url = was.url
+      if (w.secret === undefined && was && typeof was.secret === 'string' && was.url === w.url) w.secret = was.secret
+      if (w.secret === '') delete w.secret
+    })
+    configs(r.slack_configs).forEach((sl, i) => {
+      const was = configs(before?.slack_configs)[i]
+      if (isRedacted(sl.api_url) && was) sl.api_url = was.api_url
+    })
+  }
   return out
 }

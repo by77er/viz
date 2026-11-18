@@ -29,7 +29,7 @@ const D_READ: readonly Scope[] = ['admin', 'dashboards:read', 'dashboards:write'
 const D_WRITE: readonly Scope[] = ['admin', 'dashboards:write', 'dashboards:apply']
 const D_APPLY: readonly Scope[] = ['admin', 'dashboards:apply']
 
-const r = (method: Method, path: string, op: string, scopes: readonly Scope[], mutation = method !== 'GET'): Route => ({ method, path, op, scopes, mutation })
+const r = <O extends string>(method: Method, path: string, op: O, scopes: readonly Scope[], mutation = method !== 'GET'): Route & { op: O } => ({ method, path, op, scopes, mutation })
 
 export const ROUTES = [
   r('GET', '/whoami', 'whoami', ANY),
@@ -43,7 +43,7 @@ export const ROUTES = [
   r('DELETE', '/keys/{key}', 'keys.delete', ADMIN),
 
   r('GET', '/dashboards', 'dashboards.list', D_READ),
-  r('POST', '/dashboards', 'dashboards.create', D_APPLY),
+  r('POST', '/dashboards', 'dashboards.create', D_WRITE),
   r('GET', '/dashboards/{dashboard}', 'dashboards.get', D_READ),
   r('PATCH', '/dashboards/{dashboard}', 'dashboards.patch', D_WRITE),
   r('DELETE', '/dashboards/{dashboard}', 'dashboards.delete', D_APPLY),

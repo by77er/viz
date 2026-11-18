@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use proptest::prelude::*;
 use viz_promql::{MatchOp, Matcher};
-use viz_query::{files_needed, plan, FetchRange, Limits, Options};
+use viz_query::{files_needed, plan, scan_rows, FetchRange, Limits, Options};
 use viz_storage::{encode_segment_with, EncodedFile, ScanInput, Table, WriteOptions};
 
 /// Every batch flushed as its own segment (many small files), the last `tail` batches
@@ -58,6 +58,16 @@ proptest! {
             if let Ok(ranges) = plan(q, start, end, step) {
                 let keep = needed(&files, &ranges);
                 prop_assert_eq!(range(&input(&files, Some(&keep), tail), q, start, end, step), range(&all, q, start, end, step), "range query {}", q);
+                // The row bound really bounds what one read of each range loads from the lake.
+                let idx: Vec<&str> = files.iter().filter(|f| f.table == Table::MetricSamples).map(|f| f.index.as_str()).collect();
+                let bound: u64 = scan_rows(&idx, &ranges).into_iter().map(|r| r.unwrap()).sum();
+                let lake = input(&files, None, &[]);
+                let mut loaded = 0u64;
+                for r in &ranges {
+                    let ms: Vec<viz_storage::Matcher> = r.matchers.iter().map(viz_query::to_storage_matcher).collect();
+                    loaded += viz_storage::select(&lake, &ms, r.min_ts, r.max_ts).unwrap().iter().map(|s| s.ts.len() as u64).sum::<u64>();
+                }
+                prop_assert!(loaded <= bound, "query {}: loaded {} samples, bound {}", q, loaded, bound);
             }
             if let Ok(ranges) = plan(q, end, end, 1) {
                 let keep = needed(&files, &ranges);
@@ -120,6 +130,11 @@ fn files_are_skipped_by_time_and_by_name_and_only_then() {
     // Several ranges: a file is needed if any range needs it.
     let two = vec![FetchRange { matchers: name("a"), min_ts: 0, max_ts: i64::MAX }, FetchRange { matchers: name("e"), min_ts: 0, max_ts: i64::MAX }];
     assert_eq!(needed(&files, &two), all);
+    // Rows: each row group once per range that may read it.
+    let idx: Vec<&str> = files.iter().map(|f| f.index.as_str()).collect();
+    let rows: Vec<u64> = files.iter().map(|f| f.rows).collect();
+    assert_eq!(scan_rows(&idx, &r(vec![], 0, i64::MAX)), rows.iter().map(|n| Some(*n)).collect::<Vec<_>>());
+    assert_eq!(scan_rows(&idx, &[r(name("a"), 0, i64::MAX), r(vec![], 0, i64::MAX)].concat()), rows.iter().zip(&early).map(|(n, e)| Some(if *e { 2 * n } else { *n })).collect::<Vec<_>>());
     // No ranges (a query with no selector): nothing to fetch.
     assert_eq!(needed(&files, &[]), none);
 }
@@ -128,6 +143,7 @@ fn files_are_skipped_by_time_and_by_name_and_only_then() {
 fn a_fragment_that_does_not_parse_keeps_its_file() {
     let r = [FetchRange { matchers: name("zzz"), min_ts: 0, max_ts: 0 }];
     assert_eq!(files_needed(&["", "{", "{\"v\":2,\"rg\":[]}", "not json"], &r), [true, true, true, true]);
+    assert_eq!(scan_rows(&["", "{\"v\":1,\"rg\":[]}"], &r), [None, Some(0)]);
     // A file with no row groups holds no rows.
     assert_eq!(files_needed(&["{\"v\":1,\"rg\":[]}"], &r), [false]);
 }

@@ -1,23 +1,36 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
   IDEMPOTENCY_HEADER,
-  type AlertUpdate,
+  SIGNATURE_HEADER,
+  type Acknowledgement,
+  type AlertActionResult,
+  type AlertGeneratorV2,
+  type AlertNotifyState,
+  type AlertUpdateV2 as AlertUpdate,
+  type DescribeItem,
+  type DescribeResult,
   type IngestResult,
-  type NotifierAlert,
+  type NotifierAlertV2 as NotifierAlert,
   type NotifierHealth,
-  type NotifierRpc,
+  type NotifierRpcV2 as NotifierRpc,
   type OutboxEntry,
   type Silence,
+  type SilenceAlertsResult,
   type SilenceInput,
+  type Timeline,
+  type TimelineEntry,
   type WrongTenant,
-} from '../contracts-proposal/rules'
+} from '../contracts-proposal/rules.v2'
 import {
   compileConfig,
   compileSilenceMatchers,
   groupKey,
   groupLabels,
   inhibitedBy,
+  keepSecrets,
   matchRoutes,
+  receiverSummary,
+  redactConfig,
   silencedBy,
   validateSilence,
   type CompiledConfig,
@@ -26,7 +39,8 @@ import {
   type Route,
 } from './amconfig'
 import { slackPayload, webhookPayload, type PayloadAlert } from './payload'
-import { backoffMs, hash64, resolveObjectName, type Labels } from './util'
+import { signatureHeader } from './signature'
+import { backoffMs, hash64, LABEL_NAME_RE, resolveObjectName, type Labels } from './util'
 
 /**
  * The notifier: Alertmanager's model for one tenant, owned by a single object.
@@ -50,7 +64,19 @@ import { backoffMs, hash64, resolveObjectName, type Labels } from './util'
  * 2xx. Every attempt of one notification carries the same `Idempotency-Key`.
  */
 
-export const DEFAULT_NOTIFIER_LIMITS = { maxAlerts: 5000, maxSilences: 1000, maxPayloadAlerts: 500, drainBatch: 25 }
+export const DEFAULT_NOTIFIER_LIMITS = {
+  maxAlerts: 5000,
+  maxSilences: 1000,
+  maxPayloadAlerts: 500,
+  drainBatch: 25,
+  /** Entries kept per monitor in the notification log; older ones are dropped and counted. */
+  logLimit: 200,
+  /** Monitors one notification is logged under; a group notification rarely spans more than one. */
+  maxLogSubjects: 50,
+  /** How long a silence made from an alert can be undone as if it had never been made. */
+  undoWindowMs: 60_000,
+  maxSilenceMs: 30 * 86_400_000,
+}
 
 interface StoredAlert {
   fingerprint: string
@@ -68,7 +94,18 @@ interface StoredAlert {
   resolvedReceivedAt: number | null
   expiresAt: number | null
   source: string
-  generator: { group: string; rule: string }
+  generator: AlertGeneratorV2
+  /** Who acknowledged the alert and when. Gone when the alert resolves. */
+  ack?: Acknowledgement | null
+}
+
+interface StoredSilence {
+  input: SilenceInput
+  updatedAt: number
+  /** Present on silences made from an alert: the token that removes them while the window is open. */
+  undo?: { token: string; until: number }
+  /** Monitor ids whose history mentions this silence. */
+  subjects?: string[]
 }
 
 interface LogEntry {
@@ -106,6 +143,10 @@ interface Decision {
   update: boolean
   /** ...and a request must actually be sent. */
   send: boolean
+  /** Nothing changed; `repeat_interval` passed. Acknowledged alerts are left out of a repeat. */
+  repeat: boolean
+  /** The firing alerts the request lists. */
+  payloadFiring: string[]
 }
 
 type OutboxRow = {
@@ -121,6 +162,7 @@ type OutboxRow = {
   created_at: number
   next_attempt_at: number
   last_error: string | null
+  subjects: string | null
 }
 
 function isSubset(a: string[], b: string[]): boolean {
@@ -138,7 +180,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
   protected readonly tenant: string
   private cfg: CompiledConfig | null = null
   private alerts = new Map<string, StoredAlert>()
-  private silences = new Map<string, { input: SilenceInput; updatedAt: number; compiled: CompiledSilence }>()
+  private silences = new Map<string, StoredSilence & { compiled: CompiledSilence }>()
   private groups = new Map<string, GroupRt>()
   private nextOutboxId = 1
   private silenceCounter = 0
@@ -157,7 +199,9 @@ export class Notifier extends DurableObject implements NotifierRpc {
     sql.exec(`CREATE TABLE IF NOT EXISTS agg_group (tenant TEXT NOT NULL, gkey TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, gkey)) WITHOUT ROWID`)
     sql.exec(`CREATE TABLE IF NOT EXISTS outbox (tenant TEXT NOT NULL, id INTEGER NOT NULL, gkey TEXT NOT NULL, receiver TEXT NOT NULL,
       integration TEXT NOT NULL, url TEXT NOT NULL, idem_key TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL,
-      created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL, last_error TEXT, PRIMARY KEY (tenant, id)) WITHOUT ROWID`)
+      created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL, last_error TEXT, subjects TEXT, PRIMARY KEY (tenant, id)) WITHOUT ROWID`)
+    // One row per monitor: what was sent about it and what people did, bounded (see `appendLog`).
+    sql.exec(`CREATE TABLE IF NOT EXISTS notify_log (tenant TEXT NOT NULL, monitor TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (tenant, monitor)) WITHOUT ROWID`)
     this.load()
   }
 
@@ -173,7 +217,12 @@ export class Notifier extends DurableObject implements NotifierRpc {
   }
 
   /** Fault-injection point for crash tests. Does nothing in production. */
-  protected fault(_point: 'flush-commit' | 'flush-committed' | 'sent'): void {}
+  protected fault(_point: 'flush-commit' | 'flush-committed' | 'sent' | 'ack-commit'): void {}
+
+  /** An unguessable token. Not derived from the clock or from data: it must not be predictable. */
+  protected token(): string {
+    return [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('')
+  }
 
   // ───────────────────────── storage ─────────────────────────
 
@@ -204,7 +253,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
       this.alerts.set(a.fingerprint, a)
     }
     for (const r of this.exec<{ id: string; body: string }>(`SELECT id, body FROM silence WHERE tenant = ?`, t)) {
-      const s = JSON.parse(r.body) as { input: SilenceInput; updatedAt: number }
+      const s = JSON.parse(r.body) as StoredSilence
       this.silences.set(r.id, { ...s, compiled: { id: r.id, matchers: compileSilenceMatchers(s.input.matchers), startsAt: s.input.startsAt, endsAt: s.input.endsAt } })
     }
     const bodies = new Map(this.exec<{ gkey: string; body: string }>(`SELECT gkey, body FROM agg_group WHERE tenant = ?`, t).map((r) => [r.gkey, JSON.parse(r.body) as GroupBody]))
@@ -238,6 +287,44 @@ export class Notifier extends DurableObject implements NotifierRpc {
     this.silences.clear()
     this.groups.clear()
     this.load()
+  }
+
+  /**
+   * Inside a transaction: add entries to a monitor's notification log. One row per monitor,
+   * at most `logLimit` entries; what falls off the front is counted in `dropped`.
+   */
+  private appendLog(monitor: string, entries: TimelineEntry[]): void {
+    if (entries.length === 0) return
+    const log = this.readLog(monitor)
+    log.entries.push(...entries)
+    const over = log.entries.length - DEFAULT_NOTIFIER_LIMITS.logLimit
+    if (over > 0) {
+      log.entries.splice(0, over)
+      log.dropped += over
+    }
+    this.writeLog(monitor, log)
+  }
+
+  private readLog(monitor: string): Timeline {
+    const row = this.exec<{ body: string }>(`SELECT body FROM notify_log WHERE tenant = ? AND monitor = ?`, this.tenant, monitor)[0]
+    return row ? (JSON.parse(row.body) as Timeline) : { entries: [], dropped: 0 }
+  }
+
+  private writeLog(monitor: string, log: Timeline): void {
+    this.exec(`INSERT INTO notify_log (tenant, monitor, body) VALUES (?, ?, ?) ON CONFLICT (tenant, monitor) DO UPDATE SET body = excluded.body`, this.tenant, monitor, JSON.stringify(log))
+  }
+
+  /** Fingerprints by the monitor that generated them (alerts of plain rules have none). */
+  private bySubject(fps: Iterable<string>): Map<string, string[]> {
+    const out = new Map<string, string[]>()
+    for (const fp of fps) {
+      const m = this.alerts.get(fp)?.generator.monitor
+      if (m === undefined) continue
+      const list = out.get(m)
+      if (list) list.push(fp)
+      else if (out.size < DEFAULT_NOTIFIER_LIMITS.maxLogSubjects) out.set(m, [fp])
+    }
+    return out
   }
 
   private wrongTenant(tenant: string): WrongTenant | null {
@@ -317,17 +404,25 @@ export class Notifier extends DurableObject implements NotifierRpc {
     for (const integration of this.cfg?.receivers.get(g.route.receiver) ?? []) {
       const entry = g.body.log[integration.key]
       let update: boolean
+      let repeat = false
+      let payloadFiring = firing
       if (!entry) update = firing.length > 0
       else if (!isSubset(firing, entry.firing)) update = true
       // No firing alerts now: notify only if the last notification had some (the resolve).
       else if (firing.length === 0) update = entry.firing.length > 0
       else if (integration.sendResolved && !isSubset(resolved, entry.resolved)) update = true
-      // Nothing changed: repeat once `repeat_interval` has passed since the last notification.
-      else update = entry.ts + g.route.repeatIntervalMs <= tick
+      else {
+        // Nothing changed: repeat once `repeat_interval` has passed since the last
+        // notification, but only for alerts nobody has acknowledged. An acknowledgement
+        // counts from the moment it is stored, whatever tick is being decided: once a
+        // person has taken the alert, no repeat for it may leave, not even a late one.
+        payloadFiring = firing.filter((fp) => !this.alerts.get(fp)?.ack)
+        update = repeat = entry.ts + g.route.repeatIntervalMs <= tick && payloadFiring.length > 0
+      }
       // A receiver that does not want resolved notifications gets nothing when no alert is
       // firing, but the log still moves on, as in Alertmanager.
       const send = update && (integration.sendResolved || firing.length > 0)
-      out.push({ integration, firing, resolved: integration.sendResolved ? resolved : [], update, send })
+      out.push({ integration, firing, resolved: integration.sendResolved ? resolved : [], update, send, repeat, payloadFiring: repeat ? payloadFiring : firing })
     }
     return out
   }
@@ -365,6 +460,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     const emptied: GroupRt[] = []
     const newLogs: { g: GroupRt; log: Record<string, LogEntry> }[] = []
     let nextId = this.nextOutboxId
+    const history = new Map<string, TimelineEntry[]>()
     this.ctx.storage.transactionSync(() => {
       for (const { g, tick, decisions } of plans) {
         let newLog: Record<string, LogEntry> | null = null
@@ -374,7 +470,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
             const n = (log[d.integration.key]?.n ?? 0) + 1
             log[d.integration.key] = { firing: d.firing, resolved: d.resolved, ts: tick, n }
             if (!d.send) continue
-            const alerts: PayloadAlert[] = [...d.firing, ...d.resolved].map((fp) => {
+            const alerts: PayloadAlert[] = [...d.payloadFiring, ...d.resolved].map((fp) => {
               const a = this.alerts.get(fp) as StoredAlert
               const isFiring = this.firingAsOf(a, tick)
               return { fingerprint: fp, labels: a.labels, annotations: a.annotations, status: isFiring ? 'firing' : 'resolved', startsAt: a.startsAt, endsAt: isFiring ? null : a.endsAt }
@@ -388,9 +484,19 @@ export class Notifier extends DurableObject implements NotifierRpc {
             // `n`, starts again when a group empties and is later recreated.
             const seed = `${t}\n${g.route.receiver}\n${d.integration.key}\n${g.key}\n${g.body.createdAt}\n${state}\n${n}`
             const idem = hash64(seed) + hash64(`viz-notification\n${seed}`)
-            this.exec(`INSERT INTO outbox (tenant, id, gkey, receiver, integration, url, idem_key, body, status, attempts, created_at, next_attempt_at, last_error)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, NULL)`,
-              t, nextId++, g.key, g.route.receiver, d.integration.key, d.integration.url, idem, JSON.stringify(body), now, now)
+            // History, per monitor: who was told what, by which channel, under which key.
+            const subjects = this.bySubject([...d.payloadFiring, ...d.resolved])
+            for (const [monitor, fps] of subjects) {
+              const list = history.get(monitor) ?? []
+              history.set(monitor, list)
+              list.push({
+                at: tick, source: 'notifier', kind: 'notified', receiver: g.route.receiver, integration: d.integration.key, channel: d.integration.channel,
+                status: d.payloadFiring.length > 0 ? 'firing' : 'resolved', repeat: d.repeat, fingerprints: fps, idempotencyKey: idem, deliveredAt: null, failed: null,
+              })
+            }
+            this.exec(`INSERT INTO outbox (tenant, id, gkey, receiver, integration, url, idem_key, body, status, attempts, created_at, next_attempt_at, last_error, subjects)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, NULL, ?)`,
+              t, nextId++, g.key, g.route.receiver, d.integration.key, d.integration.url, idem, JSON.stringify(body), now, now, subjects.size > 0 ? JSON.stringify([...subjects.keys()]) : null)
           }
           newLogs.push({ g, log })
         }
@@ -404,6 +510,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
         }
       }
       for (const fp of gone) this.exec(`DELETE FROM alert WHERE tenant = ? AND fp = ?`, t, fp)
+      for (const [monitor, entries] of history) this.appendLog(monitor, entries)
       this.fault('flush-commit')
     })
     // Committed: adopt in memory.
@@ -425,7 +532,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
   private expire(now: number): void {
     const due = [...this.alerts.values()].filter((a) => a.status === 'firing' && a.expiresAt !== null && a.expiresAt <= now)
     if (due.length === 0) return
-    const next = due.map((a): StoredAlert => ({ ...a, status: 'resolved', endsAt: a.expiresAt, at: a.expiresAt as number, resolvedReceivedAt: now, expiresAt: null }))
+    const next = due.map((a): StoredAlert => ({ ...a, status: 'resolved', endsAt: a.expiresAt, at: a.expiresAt as number, resolvedReceivedAt: now, expiresAt: null, ack: null }))
     this.ctx.storage.transactionSync(() => {
       for (const a of next) this.putAlert(a)
     })
@@ -451,9 +558,13 @@ export class Notifier extends DurableObject implements NotifierRpc {
       const abort = new AbortController()
       const timer = setTimeout(() => abort.abort(new DOMException('receiver did not answer in time', 'TimeoutError')), delivery.timeoutMs)
       try {
+        const headers: Record<string, string> = { 'content-type': 'application/json', 'user-agent': 'viz-notifier', [IDEMPOTENCY_HEADER]: row.idem_key }
+        // The secret is read from the config at send time; it is never copied into the outbox row.
+        const secret = this.cfg.receivers.get(row.receiver)?.find((i) => i.key === row.integration)?.secret
+        if (secret) headers[SIGNATURE_HEADER] = await signatureHeader(secret, now, row.idem_key, row.body)
         const res = await this.fetcher()(row.url, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'user-agent': 'viz-notifier', [IDEMPOTENCY_HEADER]: row.idem_key },
+          headers,
           body: row.body,
           signal: abort.signal,
         })
@@ -472,14 +583,42 @@ export class Notifier extends DurableObject implements NotifierRpc {
       this.fault('sent')
       const attempts = row.attempts + 1
       if (ok) {
-        this.exec(`DELETE FROM outbox WHERE tenant = ? AND id = ?`, t, row.id)
+        this.ctx.storage.transactionSync(() => {
+          this.exec(`DELETE FROM outbox WHERE tenant = ? AND id = ?`, t, row.id)
+          this.markLog(row, { deliveredAt: now })
+        })
         this.counters.delivered++
       } else if (permanent || attempts >= delivery.maxAttempts) {
-        this.exec(`UPDATE outbox SET status = 'dead', attempts = ?, last_error = ? WHERE tenant = ? AND id = ?`, attempts, error, t, row.id)
+        this.ctx.storage.transactionSync(() => {
+          this.exec(`UPDATE outbox SET status = 'dead', attempts = ?, last_error = ? WHERE tenant = ? AND id = ?`, attempts, error, t, row.id)
+          this.markLog(row, { failed: error })
+        })
       } else {
         const next = now + backoffMs(attempts, delivery.baseBackoffMs, delivery.maxBackoffMs, row.idem_key)
         this.exec(`UPDATE outbox SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE tenant = ? AND id = ?`, attempts, next, error, t, row.id)
       }
+    }
+  }
+
+  /** Inside a transaction: record on the monitors' history that a notification was delivered, or given up on. */
+  private markLog(row: OutboxRow, patch: { deliveredAt?: number; failed?: string }): void {
+    if (!row.subjects) return
+    for (const monitor of JSON.parse(row.subjects) as string[]) {
+      const log = this.readLog(monitor)
+      let changed = false
+      for (const e of log.entries) {
+        if (e.kind !== 'notified' || e.idempotencyKey !== row.idem_key) continue
+        if (patch.deliveredAt !== undefined && e.deliveredAt === null) {
+          e.deliveredAt = patch.deliveredAt
+          e.failed = null
+          changed = true
+        }
+        if (patch.failed !== undefined && e.deliveredAt === null) {
+          e.failed = patch.failed
+          changed = true
+        }
+      }
+      if (changed) this.writeLog(monitor, log)
     }
   }
 
@@ -551,6 +690,8 @@ export class Notifier extends DurableObject implements NotifierRpc {
   async setConfig(tenant: string, config: unknown) {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
+    const stored = this.exec<{ v: string }>(`SELECT v FROM meta WHERE tenant = ? AND k = 'config'`, this.tenant)[0]
+    config = keepSecrets(config, stored ? JSON.parse(stored.v) : null)
     const compiled = compileConfig(config)
     if (!compiled.ok) return { status: 'invalid' as const, errors: compiled.errors }
     const now = this.now()
@@ -602,7 +743,8 @@ export class Notifier extends DurableObject implements NotifierRpc {
           })
         }
       } else if (cur && cur.status === 'firing') {
-        staged.set(u.fingerprint, { ...cur, status: 'resolved', endsAt: u.endsAt ?? u.at, at: u.at, resolvedReceivedAt: now, expiresAt: null })
+        // The acknowledgement ends with the alert: if it fires again, it pages again.
+        staged.set(u.fingerprint, { ...cur, status: 'resolved', endsAt: u.endsAt ?? u.at, at: u.at, resolvedReceivedAt: now, expiresAt: null, ack: null })
       }
       // A resolution for an alert this notifier never saw firing has nothing to resolve.
     }
@@ -650,19 +792,210 @@ export class Notifier extends DurableObject implements NotifierRpc {
     return { status: 'ok' as const, id }
   }
 
-  async expireSilence(tenant: string, id: string) {
+  async expireSilence(tenant: string, id: string, by = '', dryRun = false) {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const s = this.silences.get(id)
     if (!s) return { status: 'not_found' as const }
     const now = this.now()
-    if (s.compiled.endsAt > now) {
+    if (s.compiled.endsAt > now && !dryRun) {
       const input = { ...s.input, endsAt: now, startsAt: Math.min(s.input.startsAt, now) }
-      this.exec(`UPDATE silence SET body = ? WHERE tenant = ? AND id = ?`, JSON.stringify({ input, updatedAt: now }), this.tenant, id)
-      this.silences.set(id, { input, updatedAt: now, compiled: { ...s.compiled, startsAt: input.startsAt, endsAt: now } })
+      const stored: StoredSilence = { input, updatedAt: now, subjects: s.subjects }
+      this.ctx.storage.transactionSync(() => {
+        this.exec(`UPDATE silence SET body = ? WHERE tenant = ? AND id = ?`, JSON.stringify(stored), this.tenant, id)
+        for (const monitor of s.subjects ?? []) this.appendLog(monitor, [{ at: now, source: 'notifier', kind: 'silence_expired', by, silenceIds: [id] }])
+      })
+      this.silences.set(id, { ...stored, compiled: { ...s.compiled, startsAt: input.startsAt, endsAt: now } })
       await this.rearm(now)
     }
     return { status: 'ok' as const }
+  }
+
+  // ───────────────────────── acknowledge and silence from an alert ─────────────────────────
+
+  private split(fingerprints: string[]): { hit: StoredAlert[]; skipped: string[] } {
+    const hit: StoredAlert[] = []
+    const skipped: string[] = []
+    for (const fp of new Set(fingerprints)) {
+      const a = this.alerts.get(fp)
+      if (a && a.status === 'firing') hit.push(a)
+      else skipped.push(fp)
+    }
+    return { hit, skipped }
+  }
+
+  /**
+   * Somebody has taken these alerts. Recorded on each alert with who and when; from the
+   * moment the row is written no repeat notification is decided for an acknowledged alert,
+   * until it resolves. Nothing is hidden: the alert stays listed, and a change in its group
+   * (a new alert, a resolution) still notifies.
+   */
+  async acknowledge(tenant: string, fingerprints: string[], by: string, dryRun = false): Promise<AlertActionResult> {
+    return this.setAck(tenant, fingerprints, by, true, dryRun)
+  }
+
+  /** Give the alerts back: repeats resume, at once if one is overdue. */
+  async unacknowledge(tenant: string, fingerprints: string[], by: string, dryRun = false): Promise<AlertActionResult> {
+    return this.setAck(tenant, fingerprints, by, false, dryRun)
+  }
+
+  private async setAck(tenant: string, fingerprints: string[], by: string, on: boolean, dryRun: boolean): Promise<AlertActionResult> {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const now = this.now()
+    const { hit, skipped } = this.split(fingerprints)
+    // The first acknowledgement stands: a second person acknowledging does not rewrite who took it.
+    const changes = hit.filter((a) => Boolean(a.ack) !== on).map((a): StoredAlert => ({ ...a, ack: on ? { by, at: now } : null }))
+    const result: AlertActionResult = { status: 'ok', applied: hit.map((a) => a.fingerprint), skipped }
+    if (dryRun || changes.length === 0) return result
+    this.ctx.storage.transactionSync(() => {
+      for (const a of changes) this.putAlert(a)
+      for (const [monitor, fps] of this.bySubject(changes.map((a) => a.fingerprint))) {
+        this.appendLog(monitor, [{ at: now, source: 'notifier', kind: on ? 'acknowledged' : 'unacknowledged', by, fingerprints: fps }])
+      }
+      this.fault('ack-commit')
+    })
+    for (const a of changes) this.alerts.set(a.fingerprint, a)
+    await this.rearm(now)
+    return result
+  }
+
+  /**
+   * Silence exactly these alerts for `durationMs`: one Alertmanager-style silence per
+   * alert, with an equality matcher for every label the alert carries. The silences start
+   * at the current flush tick of the alert's groups, so a notification that is due but not
+   * yet decided is already muted. All of them share one undo token.
+   */
+  async silenceAlerts(tenant: string, fingerprints: string[], durationMs: number, by: string, comment: string, dryRun = false): Promise<SilenceAlertsResult> {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const now = this.now()
+    if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 1000 || durationMs > DEFAULT_NOTIFIER_LIMITS.maxSilenceMs) {
+      return { status: 'invalid', errors: [{ path: 'duration', message: 'duration must be between 1s and 30d', fix: 'Choose e.g. "15m", "1h" or "4h".' }] }
+    }
+    const { hit, skipped } = this.split(fingerprints)
+    const usable = hit.filter((a) => Object.keys(a.labels).some((k) => LABEL_NAME_RE.test(k) && a.labels[k] !== ''))
+    if (this.silences.size + usable.length > DEFAULT_NOTIFIER_LIMITS.maxSilences) {
+      return { status: 'invalid', errors: [{ path: '', message: `this tenant already has ${this.silences.size} silences`, fix: 'Expire silences that are no longer needed.' }] }
+    }
+    const undo = { token: this.token(), until: now + DEFAULT_NOTIFIER_LIMITS.undoWindowMs }
+    const made: { id: string; stored: StoredSilence }[] = []
+    for (const a of usable) {
+      let startsAt = now
+      for (const g of this.groups.values()) if (g.members.has(a.fingerprint)) startsAt = Math.min(startsAt, this.tickAt(g, now) ?? now)
+      const input: SilenceInput = {
+        matchers: Object.keys(a.labels).sort().map((name) => ({ name, value: a.labels[name] as string, isRegex: false, isEqual: true })),
+        startsAt, endsAt: now + durationMs, createdBy: by, comment,
+      }
+      const id = hash64(`${this.tenant}\n${now}\n${this.silenceCounter++}\n${JSON.stringify(input)}`)
+      made.push({ id, stored: { input, updatedAt: now, undo, subjects: a.generator.monitor ? [a.generator.monitor] : [] } })
+    }
+    const view = (id: string, s: StoredSilence): Silence => ({ id, ...s.input, updatedAt: s.updatedAt, state: 'active' })
+    const result: SilenceAlertsResult = {
+      status: 'ok', silences: made.map((m) => view(m.id, m.stored)), applied: usable.map((a) => a.fingerprint),
+      skipped: [...skipped, ...hit.filter((a) => !usable.includes(a)).map((a) => a.fingerprint)], undoToken: dryRun ? '' : undo.token, undoUntil: undo.until,
+    }
+    if (dryRun || made.length === 0) return made.length === 0 ? { ...result, undoToken: '' } : result
+    this.ctx.storage.transactionSync(() => {
+      made.forEach((m, i) => {
+        this.exec(`INSERT INTO silence (tenant, id, body) VALUES (?, ?, ?)`, this.tenant, m.id, JSON.stringify(m.stored))
+        const fp = (usable[i] as StoredAlert).fingerprint
+        for (const monitor of m.stored.subjects ?? []) {
+          this.appendLog(monitor, [{ at: now, source: 'notifier', kind: 'silenced', by, until: m.stored.input.endsAt, silenceIds: [m.id], fingerprints: [fp] }])
+        }
+      })
+    })
+    for (const m of made) {
+      this.silences.set(m.id, { ...m.stored, compiled: { id: m.id, matchers: compileSilenceMatchers(m.stored.input.matchers), startsAt: m.stored.input.startsAt, endsAt: m.stored.input.endsAt } })
+    }
+    await this.rearm(now)
+    return result
+  }
+
+  /**
+   * Take back a `silenceAlerts` call while its window is open: the silences are deleted, not
+   * ended, so the alerts notify as if the silence had never existed. After the window a
+   * silence can only be expired.
+   */
+  async undoSilence(tenant: string, undoToken: string, by: string, dryRun = false) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const now = this.now()
+    const ids = typeof undoToken === 'string' && undoToken !== '' ? [...this.silences.entries()].filter(([, s]) => s.undo?.token === undoToken).map(([id]) => id) : []
+    if (ids.length === 0) return { status: 'not_found' as const }
+    const until = (this.silences.get(ids[0] as string) as StoredSilence).undo?.until ?? 0
+    if (now > until) return { status: 'expired' as const, undoUntil: until }
+    if (dryRun) return { status: 'ok' as const, removed: ids }
+    this.ctx.storage.transactionSync(() => {
+      for (const id of ids) {
+        this.exec(`DELETE FROM silence WHERE tenant = ? AND id = ?`, this.tenant, id)
+        for (const monitor of this.silences.get(id)?.subjects ?? []) this.appendLog(monitor, [{ at: now, source: 'notifier', kind: 'silence_undone', by, silenceIds: [id] }])
+      }
+    })
+    for (const id of ids) this.silences.delete(id)
+    await this.rearm(now)
+    return { status: 'ok' as const, removed: ids }
+  }
+
+  /** For the monitor views: where a rule's alerts go, and what has happened to each alert. */
+  async describe(tenant: string, items: DescribeItem[]) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const now = this.now()
+    const cfg = this.cfg
+    const results: DescribeResult[] = items.map((item) => {
+      const receivers = cfg ? [...new Set(matchRoutes(cfg.root, item.labels).map((r) => r.receiver))].map((name) => receiverSummary(cfg, name)) : []
+      const alerts = item.fingerprints.map((fp): AlertNotifyState => {
+        const a = this.alerts.get(fp)
+        if (!a || a.status !== 'firing') {
+          return { fingerprint: fp, known: false, acknowledged: null, silencedUntil: null, silencedBy: [], inhibited: false, lastNotifiedAt: null, nextRepeatAt: null }
+        }
+        const by = silencedBy(this.compiledSilences(), a.labels, now)
+        const inhibited = cfg !== null && inhibitedBy(cfg.inhibit, a.labels, this.sourcesAsOf(now)) !== null
+        let last: number | null = null
+        let next: number | null = null
+        for (const g of this.groups.values()) {
+          if (!g.members.has(fp)) continue
+          for (const e of Object.values(g.body.log)) {
+            if (!e.firing.includes(fp)) continue
+            last = Math.max(last ?? 0, e.ts)
+            next = Math.min(next ?? Infinity, this.tickAtOrAfter(g, e.ts + g.route.repeatIntervalMs))
+          }
+        }
+        const quiet = Boolean(a.ack) || by.length > 0 || inhibited
+        return {
+          fingerprint: fp, known: true, acknowledged: a.ack ?? null,
+          silencedUntil: by.length > 0 ? Math.max(...by.map((id) => this.silences.get(id)?.compiled.endsAt ?? 0)) : null,
+          silencedBy: by, inhibited, lastNotifiedAt: last, nextRepeatAt: quiet ? null : next,
+        }
+      })
+      return { ref: item.ref, receivers, alerts }
+    })
+    return { status: 'ok' as const, results, configured: cfg !== null }
+  }
+
+  async notificationLog(tenant: string, monitorId: string) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const log = this.readLog(monitorId)
+    return { status: 'ok' as const, entries: log.entries, dropped: log.dropped }
+  }
+
+  /** Forget the notification history of monitors that were deleted. */
+  async dropLogs(tenant: string, monitorIds: string[]) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    for (const id of monitorIds) this.exec(`DELETE FROM notify_log WHERE tenant = ? AND monitor = ?`, this.tenant, id)
+    return { status: 'ok' as const }
+  }
+
+  /** The stored config, safe to show: no secret and no secret-bearing URL leaves this object. */
+  async getConfig(tenant: string) {
+    const bad = this.wrongTenant(tenant)
+    if (bad) return bad
+    const stored = this.exec<{ v: string }>(`SELECT v FROM meta WHERE tenant = ? AND k = 'config'`, this.tenant)[0]
+    const cfg = this.cfg
+    return { status: 'ok' as const, config: stored ? redactConfig(JSON.parse(stored.v)) : null, receivers: cfg ? [...cfg.receivers.keys()].map((name) => receiverSummary(cfg, name)) : [] }
   }
 
   async listSilences(tenant: string) {
@@ -688,6 +1021,8 @@ export class Notifier extends DurableObject implements NotifierRpc {
       startsAt: a.startsAt,
       endsAt: a.endsAt,
       silencedBy: silencedBy(this.compiledSilences(), a.labels, now),
+      acknowledged: a.ack ?? null,
+      silencedUntil: silencedBy(this.compiledSilences(), a.labels, now).reduce<number | null>((m, id) => Math.max(m ?? 0, this.silences.get(id)?.compiled.endsAt ?? 0), null),
       inhibited: this.cfg !== null && inhibitedBy(this.cfg.inhibit, a.labels, this.sourcesAsOf(now)) !== null,
       receivers: this.cfg ? [...new Set(matchRoutes(this.cfg.root, a.labels).map((r) => r.receiver))] : [],
     }))

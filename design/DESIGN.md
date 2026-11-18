@@ -173,6 +173,13 @@ until then. No key is ever accepted by two shards.
 4. The shard discards a segment once the ledger has acknowledged the unit, and records how
    far it has discarded.
 
+Nothing in this chain is called by hand. A seal writes a `{tenant, shard}` message to a
+queue in the same transaction as the segment boundary; the queue's consumer runs `flush`
+for that stream and retries it until every sealed segment is recorded (D18). A message
+that is lost or dead-lettered does not lose the flush: the shard keeps a marker in KV while
+it has unrecorded segments, and an hourly sweep re-enqueues the streams of marked shards.
+An idle deployment has no marker, so the sweep wakes no object and sends nothing.
+
 Every step is idempotent and keyed by a **stream**: `(shard, tenant, incarnation)`.
 Sequence numbers, seals, units, watermarks, discard marks and fingerprints are all per
 stream, so one tenant's ledger being slow never blocks another tenant in the same shard
@@ -210,7 +217,7 @@ and time.
 | Table | Grain | Sort order | Notes |
 |---|---|---|---|
 | `metric_series` | series per day | `metric_name, series_id` | promoted label columns + full label map |
-| `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` begins with a hash of the promoted labels, so a `namespace` matcher maps to contiguous pages |
+| `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` is a plain 64-bit hash of all labels (`contracts/BATCH.md`). Putting a hash of `namespace`/`job` in its top bits was measured and would cut the bytes a `namespace` matcher reads by 3–9× per row group, but leaves 40 bits to tell series apart, which is not enough (D19). Locality is to come from the sort key instead: a promoted-label column before `series_id` |
 | `metric_rollup_5m`, `_1h` | series per window | same | count, sum, min, max, last, reset-aware increase |
 | `spans` | span | `service_name, span_name, start_time` | hour partitions; promoted attributes + residual maps |
 | `trace_index` | trace per day | `trace_id` | root, start, duration, counts, and the **hour partitions** that hold its spans (logical references survive compaction) |
@@ -221,17 +228,24 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
 
 ### 5.2 Compaction, rollups, retention
 
-- **Compaction** is time-clustered and sort-preserving. The open hour is minor-compacted
-  every 5–10 minutes so that a tenant-table-hour never has more than a small fixed number of
-  files. Hours merge into days once the accept window has passed. Small merges run in
-  Workers; large ones in a Container. A compaction is a ledger transaction that succeeds
-  only if every input is still live, so it cannot resurrect files that retention removed.
+- **Compaction** is time-clustered and sort-preserving. An open hour is minor-compacted
+  when it holds four flush files or has been quiet for ten minutes, so that a
+  tenant-table-hour never has more than a small fixed number of files. Hours merge into
+  days once the accept window has passed. Small merges run in Workers; large ones in a
+  Container. As built, a merge in a Worker reads at most 16 MB in at most eight file pairs
+  (measured: 70 MB of WASM memory), so day files are tens of megabytes, not the 128 MB a
+  Container merge will produce; the Container is not built. A compaction is a ledger
+  transaction that succeeds only if every input is still live, so it cannot resurrect
+  files that retention removed, and it swaps the samples and series files together.
 - **Rollups** are written when an hour closes, so the trailing day already has them. An hour
   closes when the accept window has passed *and* every stream's watermark is past the end
   of the hour, so no row for it is still in a tail. Nothing later can change it.
 - **Retention** is per tenant, per signal and per tier (raw, 5-minute, 1-hour). Expiry
   removes whole files from the ledger. Objects are deleted after the removal has been
-  published and a grace period has passed.
+  published and a grace period has passed. As built (raw tier only, one policy per tenant):
+  the ledger keeps a tombstone per removed key and releases it for deletion once the
+  removal is in its R2 log and a grace period has passed by its own clock; the wait for
+  publication is added with the publisher (tombstones carry the ledger version for that).
 - **Index fragments.** Each file's row-group offsets, key statistics and page-index
   locations are stored with its ledger row. Compaction consolidates the fragments of a
   partition into one content-addressed index object. Planning never issues one footer read

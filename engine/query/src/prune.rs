@@ -25,6 +25,19 @@ use viz_storage::FileIndex;
 /// Guarantee (tested as `skipping_files_never_changes_a_result`): evaluating over only
 /// the files marked `true` gives the same result as evaluating over all of them.
 pub fn files_needed(indexes: &[&str], ranges: &[FetchRange]) -> Vec<bool> {
+    scan_rows(indexes, ranges).into_iter().map(|rows| rows != Some(0)).collect()
+}
+
+/// For each index fragment: an upper bound on the rows a read of `ranges` decodes from
+/// the file, or `None` if the fragment does not parse (the bound is then unknown and the
+/// file must be read). `Some(0)` is exactly the "skip" of [`files_needed`].
+///
+/// The bound is the row count of every row group that may contribute to a range, summed
+/// over the ranges (a row group two ranges touch is decoded once for each). For a
+/// `metric_samples` file this bounds the samples a query can load from it, so a caller
+/// can refuse a query that would decode too much BEFORE fetching anything: the limits on
+/// loaded samples only fire once a selector's samples are in memory.
+pub fn scan_rows(indexes: &[&str], ranges: &[FetchRange]) -> Vec<Option<u64>> {
     // The name each range is pinned to, if any. Two different equalities match nothing,
     // but that is the evaluator's business; here either may be used.
     let names: Vec<Option<&str>> = ranges
@@ -34,14 +47,19 @@ pub fn files_needed(indexes: &[&str], ranges: &[FetchRange]) -> Vec<bool> {
     indexes
         .iter()
         .map(|text| {
-            let Ok(index) = FileIndex::from_json(text) else { return true };
-            index.row_groups.iter().any(|g| {
-                ranges.iter().zip(&names).any(|(r, name)| {
-                    g.min_ts <= r.max_ts
+            let index = FileIndex::from_json(text).ok()?;
+            let mut rows = 0u64;
+            for g in &index.row_groups {
+                for (r, name) in ranges.iter().zip(&names) {
+                    if g.min_ts <= r.max_ts
                         && g.max_ts >= r.min_ts
                         && name.is_none_or(|n| n.as_bytes() >= g.min_name.as_bytes() && n.as_bytes() <= g.max_name.as_bytes())
-                })
-            })
+                    {
+                        rows = rows.saturating_add(g.rows);
+                    }
+                }
+            }
+            Some(rows)
         })
         .collect()
 }

@@ -50,6 +50,9 @@ export function cacheUrl(item: ReadItem): string {
   return `https://viz-file-cache.invalid/${item.key.split('/').map(encodeURIComponent).join('/')}${range}`
 }
 
+/** The Workers default cache. (Typed here because the DOM library's `CacheStorage` has no `default`.) */
+export const fileCache = (): Cache => (caches as unknown as { default: Cache }).default
+
 export class Leaf extends DurableObject<LeafEnv> {
   /**
    * Read up to six items in parallel. Results are in the order of `items`.
@@ -68,7 +71,7 @@ export class Leaf extends DurableObject<LeafEnv> {
   private async one(item: ReadItem, cacheTtlS: number): Promise<ReadResult> {
     const url = cacheUrl(item)
     if (cacheTtlS > 0) {
-      const hit = await caches.default.match(url)
+      const hit = await fileCache().match(url)
       if (hit) return { status: 'ok', bytes: new Uint8Array(await hit.arrayBuffer()), cached: true }
     }
     const ranged = item.offset !== undefined || item.length !== undefined
@@ -77,9 +80,9 @@ export class Leaf extends DurableObject<LeafEnv> {
     const bytes = new Uint8Array(await object.arrayBuffer())
     if (cacheTtlS > 0) {
       // Bounded lifetime, so that erased data ages out of the cache (design §6.3).
-      this.ctx.waitUntil(
-        caches.default.put(url, new Response(bytes, { headers: { 'Cache-Control': `public, max-age=${cacheTtlS}`, 'Content-Type': 'application/octet-stream' } })).catch(() => {}),
-      )
+      await fileCache()
+        .put(url, new Response(bytes, { headers: { 'Cache-Control': `public, max-age=${cacheTtlS}`, 'Content-Type': 'application/octet-stream' } }))
+        .catch(() => {}) // the cache is an accelerator: failing to fill it is not an error
     }
     return { status: 'ok', bytes, cached: false }
   }

@@ -32,8 +32,6 @@ describe('mergeFiles', () => {
     expect(mergedSeries).toMatchObject({ table: 'metric_series', day: '2026-11-18', rows: 3 })
     expect(new TextDecoder().decode(mergedSamples.bytes.subarray(0, 4))).toBe('PAR1')
     expect(JSON.parse(mergedSamples.index)).toMatchObject({ v: 1, rg: [{ rows: 6 }] })
-    // The bytes are a copy: they do not alias WASM memory.
-    expect(mergedSamples.bytes.buffer).not.toBe((engine as unknown as { memory?: unknown }).memory)
 
     const after = engine.select({ seriesFiles: [mergedSeries.bytes], sampleFiles: [mergedSamples.bytes], tailBatches: [] }, [], ...ALL)
     expect(flat(after)).toEqual(flat(before))

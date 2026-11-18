@@ -243,3 +243,102 @@ empty when idle.
 **Would change if.** A different Worker script reached by service binding turns out to have
 its own budget (not tested), or contention on shared warm leaves is worse than the cold
 start it avoids.
+
+## D18. Seals reach flush through a Queue, with a marker-driven sweep under it
+
+**Decision.** A shard that seals a segment writes a `{tenant, shard}` message to an outbox
+table in the same transaction and hands it to a Cloudflare Queue; the flush Worker is the
+queue's consumer. The hourly sweep is the safety net, and it finds work by listing KV
+markers that shards maintain, never by asking shards.
+
+**Alternatives.** (a) The shard calls the flush entrypoint directly (`ctx.waitUntil` plus a
+sweep). (b) A sweep only. (c) The shard's own alarm re-notifies while segments are pending.
+
+**Why.** (a) ties a flush run, which can take seconds and several R2 writes, to the
+lifetime and the connection budget of the object that must stay free to acknowledge
+writes, and gives no retry: every failure would wait for the sweep. The Queue supplies
+at-least-once delivery, backoff, batching and a dead-letter queue. What it adds is a send
+that can fail (covered by the outbox: the alarm retries it), duplicates (flush is
+idempotent) and dead letters (written to R2 and logged; the sweep re-enqueues the stream).
+(b) alone delays every flush by up to the sweep period. (c) would also work and needs no
+KV, but a cron that asks every shard would wake idle objects, and the owner asked for a
+sweep that is cheap when idle; the marker gives that.
+
+**Easy to revisit.** The transport is one method, `Shard.announce`. Replacing the Queue
+with a direct call changes that method and the consumer's entry point; the outbox, the
+marker and the sweep stay.
+
+**Would change if.** Queue delivery latency on Cloudflare makes freshly sealed data wait
+noticeably (unmeasured; the tail keeps it queryable meanwhile), or the per-message cost
+matters at high seal rates.
+
+## D19. `series_id` stays a plain hash; locality is not bought with id bits
+
+**Decision.** `contracts/BATCH.md` is unchanged: `series_id` is FNV-1a 64 of all labels.
+`DESIGN.md` §5.1 no longer says the id begins with a hash of promoted labels.
+
+**Evidence (measured here, `engine/storage/examples/locality.rs`; 200,000 series, 50
+metrics, skewed namespace/job/pod/route/status labels; both encodings return identical
+results).** With the top 24 bits taken from hashes of `namespace` and `job` and the low 40
+from the full hash, at 120 samples per series (24 M rows, 240 row groups): the namespace
+query on one metric reads 0.32 MB instead of 2.97 MB by row-group statistics (9.3×) and
+0.09 MB instead of 2.76 MB if page statistics existed (32×); `{job=…}` 10.3 MB instead of
+27.6 MB (2.7×; 13× by pages); a whole-metric scan is unchanged (2.77 against 2.97 MB); the
+samples file is 6% smaller and the series file 30% smaller. At 30 samples per series
+(flush-sized row groups) the namespace gain is 2.6× by row groups and 17× by pages.
+Select time on whole files in memory: 50 ms against 121 ms for the namespace query.
+
+**Why not, then.** The read side is clearly better. The id is not: with 40 bits left to
+distinguish series that share a namespace and job, the expected number of colliding pairs
+among n such series is n²/2⁴¹: 0.005 at 100,000, 0.45 at 1,000,000 (the default
+active-series limit), against 3·10⁻⁸ for 64 bits. Nothing downstream detects a collision:
+two series with one id are merged silently in every file and every query. Trading that for
+read bytes is the wrong way round, and the same locality is available without it by
+sorting on a promoted-label column ahead of `series_id` (`contracts/TABLES.md` already
+plans promoted columns), which costs a schema change instead of collision resistance.
+
+**Would change if.** Ids become wider than 64 bits, or `edge` or the shard gains a
+collision check that makes a narrower hash safe.
+
+## D20. Tombstones live in the ledger
+
+**Decision.** The keys removed by `replace` and `expire` are recorded by the ledger, in the
+transaction that removes them, with the ledger version and time of the removal. The
+janitor is stateless and deletes only what the ledger's `deletable` returns.
+
+**Alternative.** A per-tenant janitor Durable Object that is told about removals, or reads
+them from the ledger's R2 log.
+
+**Why.** "Removed", "logged" and "live" are all facts the ledger already holds, and it can
+answer them in one synchronous read; a second object would learn of a removal in a
+separate step that can be lost or reordered, and would have to ask the ledger whether the
+removal is logged anyway. Keyed by version, the rule survives the planned change of the
+log to segments (`contracts/LEDGER-LOG.md`) and gives the publisher's gate a place to go.
+
+**Cost.** One more row write per removed key in the ledger, and a table that grows until
+the janitor runs.
+
+## D21. The active-series limit refuses new series by id; the shard meters, `edge` filters
+
+**Decision.** `edge` sends each batch's series ids with it. The shard keeps, per stream, a
+two-bucket sliding window of ids: an exact set while small, above that a HyperLogLog for
+the count and a Bloom filter for membership. A batch that would take the stream over its
+share of the tenant's limit is refused whole with the ids that are new and do not fit;
+`edge` leaves those series out, sends the rest again, and tells the sender (429 for Remote
+Write, `partial_success` for OTLP).
+
+**Alternatives.** (a) `edge` splits a batch into one per series. (b) A HyperLogLog alone.
+(c) Refuse the whole request at the limit.
+
+**Why.** (a) multiplies appends and row writes by the series count. (b) cannot say whether
+an id has been seen: only about m/n of new ids move a register (0.4% at a million), so a
+tenant at its limit could keep adding series. (c) stops the series a tenant already has,
+which punishes it for someone's cardinality mistake. Returning the refused ids keeps the
+shard ignorant of the batch format and costs one extra round trip only when a limit is hit.
+
+**Share.** The tenant's limit is divided evenly over the slots it may use; a tenant whose
+senders are unevenly spread hits one shard's share early.
+
+**Would change if.** Limits need to be exact across shards (then the count moves to a
+per-tenant object), or the Bloom filter's 1 MB ceiling (about 800,000 ids per bucket at 1%)
+is reached by real tenants.
