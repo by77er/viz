@@ -11,3 +11,4 @@ _apalache-out/
 .gomodcache/
 gocache/
 deploy/generated/
+engine/traceql/tools/godiff/.work/
