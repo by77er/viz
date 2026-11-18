@@ -516,7 +516,7 @@ files. All 20 make at least one test fail.
 | 4 | Preview digests skipped: changed panels are not run | e2e, write (4) |
 | 5 | Injection outside the data field: the dashboard title in `read_dashboard`'s header | injection (2) |
 | 6 | Budget ignored: pages laid out for 32,000 tokens whatever `max_tokens` says | budget, protocol, tools (6) |
-| 7 | Cursor repeats: the next page starts at the last item shown | budget, tools (2) |
+| 7 | Cursor repeats: the next page starts at the last item shown | budget, tools (3) |
 | 8 | Telemetry URL rendered as a link: URLs not defanged | injection (5) |
 | 9 | Did-you-mean leaks another tenant's names: names cache not keyed by tenant | isolation (1) |
 | 10 | Raw series by default: `query` defaults to format `series` | e2e, tools (3) |
@@ -534,7 +534,10 @@ files. All 20 make at least one test fail.
 Mutant 14 **survived** its first version, which only stopped new queries from starting:
 the deadline is also enforced by aborting what is in flight, so the panels were still
 marked not evaluated. The mutant was widened to remove both, and the test now also bounds
-the call's wall time; it is killed.
+the call's wall time; it is killed. Mutant 7 once **hung** the suite instead of failing it:
+a paging loop in a test had no page bound, so a repeating cursor looped forever. Every
+paging loop in the tests is now bounded, and the script reports a suite that does not
+finish as not killed rather than crashing.
 
 ### Conformance suite
 

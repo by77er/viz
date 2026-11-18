@@ -199,7 +199,7 @@ export async function runPanels(s: Session, resolved: ResolvedDashboard, ids: st
         expr ??= rq.expr
         if (names) {
           try {
-            for (const sel of [] as ReturnType<typeof selectorsOf>) {
+            for (const sel of selectorsOf(parsePromQL(rq.expr).ast)) {
               const n = sel.node.name
               if (n !== undefined && !names.has(n) && !unknownMetrics.some((u) => u.name === n)) unknownMetrics.push({ name: n, suggestions: didYouMean(n, names) })
             }
