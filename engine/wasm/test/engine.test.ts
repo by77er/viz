@@ -19,7 +19,7 @@ describe('the module in workerd', () => {
     expect(wasm).toBeInstanceOf(WebAssembly.Module)
     // Plain C ABI: the module imports nothing from the host.
     expect(WebAssembly.Module.imports(wasm)).toEqual([])
-    expect(WebAssembly.Module.exports(wasm).map((e) => e.name).sort()).toEqual(['memory', 'viz_abi_version', 'viz_alloc', 'viz_encode_segment', 'viz_free', 'viz_select'])
+    expect(WebAssembly.Module.exports(wasm).map((e) => e.name).sort()).toEqual(['memory', 'viz_abi_version', 'viz_alloc', 'viz_encode_segment', 'viz_free', 'viz_merge_files', 'viz_select'])
     const engine = createEngine(wasm)
     expect(engine.instances()).toBe(0)
     expect(engine.memoryBytes()).toBe(0)

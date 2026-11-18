@@ -1,6 +1,6 @@
 /**
  * The JavaScript binding of the viz engine: the storage half of `contracts/engine.ts`
- * (`encodeSegment`, `select`) over the C ABI documented in `../src/lib.rs`.
+ * (`encodeSegment`, `select`, `mergeFiles`) over the C ABI documented in `../src/lib.rs`.
  *
  * Number rules (contracts/engine.ts):
  *  - Times going in must be integers. `select` refuses a fractional or NaN bound instead of
@@ -19,7 +19,7 @@
 import type { EncodedFile, Engine, Matcher, ScanInput, SeriesData } from '../../../contracts/engine'
 import type { Table } from '../../../contracts/ledger'
 
-export const ABI_VERSION = 1
+export const ABI_VERSION = 2
 
 interface Exports {
   memory: WebAssembly.Memory
@@ -28,6 +28,7 @@ interface Exports {
   viz_free(ptr: number, len: number): void
   viz_encode_segment(ptr: number, len: number): number
   viz_select(ptr: number, len: number): number
+  viz_merge_files(ptr: number, len: number): number
 }
 
 /** An error the engine reported (malformed batch, bad matcher, corrupt file). */
@@ -83,7 +84,7 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
    * Run one operation: `size` bytes of request written by `write`, result read by `read`.
    * Views over WASM memory are taken after every call that can grow it, never kept.
    */
-  function call<T>(op: 'viz_encode_segment' | 'viz_select', size: number, write: (mem: Uint8Array, at: number) => void, read: (payload: Uint8Array) => T): T {
+  function call<T>(op: 'viz_encode_segment' | 'viz_select' | 'viz_merge_files', size: number, write: (mem: Uint8Array, at: number) => void, read: (payload: Uint8Array) => T): T {
     if (size > 0xffff_ffff) throw new RangeError('engine: request larger than 4 GiB')
     const w = instance()
     let req = 0
@@ -115,6 +116,31 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
     }
   }
 
+  /** Read `n` files (the layout shared by `viz_encode_segment` and `viz_merge_files`) starting at `p`. */
+  function readFiles(payload: Uint8Array, p: number, n: number): EncodedFile[] {
+    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+    const chunk = (): Uint8Array => {
+      const len = dv.getUint32(p, true)
+      p += 4 + len
+      return payload.subarray(p - len, p)
+    }
+    const files: EncodedFile[] = []
+    for (let i = 0; i < n; i++) {
+      const table = TABLES[payload[p]!]
+      if (!table) throw new Error('engine: unknown table in result')
+      // u64/i64 as BigInt, then to Number: row counts and timestamps are far below 2^53.
+      const rows = Number(dv.getBigUint64(p + 4, true))
+      const minTs = Number(dv.getBigInt64(p + 12, true))
+      const maxTs = Number(dv.getBigInt64(p + 20, true))
+      p += 28
+      const day = text.decode(chunk())
+      const index = text.decode(chunk())
+      const bytes = chunk().slice() // copy out of WASM memory before it is freed
+      files.push({ table, day, bytes, rows, minTs, maxTs, index })
+    }
+    return files
+  }
+
   function encodeSegment(batches: Uint8Array[]): EncodedFile[] {
     let size = 4
     for (const b of batches) size += 4 + b.byteLength
@@ -131,32 +157,30 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
           p += 4 + b.byteLength
         }
       },
-      (payload) => {
-        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
-        let p = 0
-        const chunk = (): Uint8Array => {
-          const n = dv.getUint32(p, true)
-          p += 4 + n
-          return payload.subarray(p - n, p)
+      (payload) => readFiles(payload, 4, new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true)),
+    )
+  }
+
+  function mergeFiles(table: Table, files: Uint8Array[]): EncodedFile {
+    const t = TABLES.indexOf(table)
+    if (t < 0) throw new RangeError(`engine: unknown table ${String(table)}`)
+    let size = 8
+    for (const f of files) size += 4 + f.byteLength
+    return call(
+      'viz_merge_files',
+      size,
+      (mem, at) => {
+        const dv = new DataView(mem.buffer)
+        dv.setUint32(at, t, true) // u8 table, u8[3] zero
+        dv.setUint32(at + 4, files.length, true)
+        let p = at + 8
+        for (const f of files) {
+          dv.setUint32(p, f.byteLength, true)
+          mem.set(f, p + 4)
+          p += 4 + f.byteLength
         }
-        const n = dv.getUint32(p, true)
-        p += 4
-        const files: EncodedFile[] = []
-        for (let i = 0; i < n; i++) {
-          const table = TABLES[payload[p]!]
-          if (!table) throw new Error('engine: unknown table in result')
-          // u64/i64 as BigInt, then to Number: row counts and timestamps are far below 2^53.
-          const rows = Number(dv.getBigUint64(p + 4, true))
-          const minTs = Number(dv.getBigInt64(p + 12, true))
-          const maxTs = Number(dv.getBigInt64(p + 20, true))
-          p += 28
-          const day = text.decode(chunk())
-          const index = text.decode(chunk())
-          const bytes = chunk().slice() // copy out of WASM memory before it is freed
-          files.push({ table, day, bytes, rows, minTs, maxTs, index })
-        }
-        return files
       },
+      (payload) => readFiles(payload, 0, 1)[0]!,
     )
   }
 
@@ -240,6 +264,7 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
   return {
     encodeSegment,
     select,
+    mergeFiles,
     queryRange: () => notBuilt('queryRange'),
     queryInstant: () => notBuilt('queryInstant'),
     selectors: () => notBuilt('selectors'),

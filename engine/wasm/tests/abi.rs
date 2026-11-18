@@ -1,6 +1,6 @@
 //! The C ABI exercised natively: the same functions the WASM module exports, called with
 //! real pointers. (The TypeScript binding is tested in workerd, in `test/`.)
-use viz_engine::{viz_abi_version, viz_alloc, viz_encode_segment, viz_free, viz_select};
+use viz_engine::{viz_abi_version, viz_alloc, viz_encode_segment, viz_free, viz_merge_files, viz_select};
 use viz_storage::batch::{encode, Row, SeriesDef, STALE_NAN_BITS};
 
 const T: i64 = 1_700_000_000_000;
@@ -53,7 +53,7 @@ fn encode_req(batches: &[&[u8]]) -> Vec<u8> {
 
 #[test]
 fn encode_then_select_through_the_abi() {
-    assert_eq!(viz_abi_version(), 1);
+    assert_eq!(viz_abi_version(), 2);
     let b = batch();
     let out = call(viz_encode_segment, &encode_req(&[&b])).unwrap();
     let native = viz_storage::encode_segment(&[&b]).unwrap();
@@ -135,4 +135,73 @@ fn malformed_requests_are_errors_not_traps() {
     assert!(call(viz_encode_segment, &encode_req(&[b"nope"])).unwrap_err().contains("batch 0"));
     // An empty request list is fine.
     assert_eq!(call(viz_encode_segment, &encode_req(&[])).unwrap(), 0u32.to_le_bytes());
+}
+
+fn merge_req(table: u8, inputs: &[&[u8]]) -> Vec<u8> {
+    let mut r = vec![table, 0, 0, 0];
+    r.extend_from_slice(&(inputs.len() as u32).to_le_bytes());
+    for b in inputs {
+        r.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        r.extend_from_slice(b);
+    }
+    r
+}
+
+/// Parse one file of an encode or merge payload: (table, rows, min_ts, max_ts, day, index, bytes).
+fn file(r: &mut Rd<'_>) -> (u32, u64, u64, u64, Vec<u8>, Vec<u8>, Vec<u8>) {
+    (r.u32(), r.u64(), r.u64(), r.u64(), r.bytes().to_vec(), r.bytes().to_vec(), r.bytes().to_vec())
+}
+
+#[test]
+fn merge_through_the_abi_equals_the_library() {
+    // Two segments that overlap: the second repeats (series 0, T) with another value.
+    let a = batch();
+    let s = vec![SeriesDef::new([("__name__", "up"), ("job", "a")]), SeriesDef::new([("__name__", "zz"), ("job", "c")])];
+    let b = encode(&s, &[Row::new(0, T, 9.0), Row::new(1, T + 5, 4.0)]).unwrap();
+    let fa = viz_storage::encode_segment(&[&a]).unwrap();
+    let fb = viz_storage::encode_segment(&[&b]).unwrap();
+    for (t, table) in [(0usize, viz_storage::Table::MetricSamples), (1, viz_storage::Table::MetricSeries)] {
+        let inputs: [&[u8]; 2] = [&fa[t].bytes, &fb[t].bytes];
+        let native = viz_storage::merge_files(table, &inputs).unwrap();
+        let out = call(viz_merge_files, &merge_req(t as u8, &inputs)).unwrap();
+        let mut r = Rd(&out, 0);
+        let (tb, rows, min_ts, max_ts, day, index, bytes) = file(&mut r);
+        assert_eq!(r.1, out.len(), "nothing after the one file");
+        assert_eq!(tb, t as u32);
+        assert_eq!(rows, native.rows);
+        assert_eq!((min_ts as i64, max_ts as i64), (native.min_ts, native.max_ts));
+        assert_eq!(day, native.day.as_bytes());
+        assert_eq!(index, native.index.as_bytes());
+        assert_eq!(bytes, native.bytes);
+    }
+    // 3 + 2 rows with one duplicate key: 4 samples; 2 + 2 series with one shared: 3 series.
+    let merged = call(viz_merge_files, &merge_req(0, &[&fa[0].bytes, &fb[0].bytes])).unwrap();
+    assert_eq!(file(&mut Rd(&merged, 0)).1, 4);
+    let merged = call(viz_merge_files, &merge_req(1, &[&fa[1].bytes, &fb[1].bytes])).unwrap();
+    assert_eq!(file(&mut Rd(&merged, 0)).1, 3);
+}
+
+#[test]
+fn merge_refuses_malformed_requests_without_trapping() {
+    let a = batch();
+    let fa = viz_storage::encode_segment(&[&a]).unwrap();
+    let good = merge_req(0, &[&fa[0].bytes, &fa[0].bytes]);
+    assert!(call(viz_merge_files, &good).is_ok());
+    for cut in 0..good.len() {
+        assert!(call(viz_merge_files, &good[..cut]).is_err(), "prefix of {cut} bytes");
+    }
+    let mut trailing = good.clone();
+    trailing.push(0);
+    assert!(call(viz_merge_files, &trailing).unwrap_err().contains("trailing"));
+    // An unknown table, non-zero padding, a series file passed as samples, no inputs, a huge count.
+    assert!(call(viz_merge_files, &merge_req(2, &[&fa[0].bytes])).unwrap_err().contains("unknown table"));
+    let mut pad = good.clone();
+    pad[2] = 1;
+    assert!(call(viz_merge_files, &pad).unwrap_err().contains("unknown table"));
+    assert!(call(viz_merge_files, &merge_req(0, &[&fa[1].bytes])).is_err());
+    assert!(call(viz_merge_files, &merge_req(0, &[])).is_err());
+    assert!(call(viz_merge_files, &merge_req(0, &[b"not parquet"])).is_err());
+    let mut huge = vec![0u8, 0, 0, 0];
+    huge.extend_from_slice(&u32::MAX.to_le_bytes());
+    assert!(call(viz_merge_files, &huge).is_err());
 }

@@ -39,13 +39,28 @@
 //! stored timestamp is far below 2^53), `f64 value[n_samples]` (raw bits, never passed
 //! through arithmetic).
 //!
+//! ### `viz_merge_files`
+//!
+//! Compaction: several files of ONE table and one tenant-day become one file
+//! (`viz_storage::merge_files`). Inputs are given lowest precedence first: on a duplicate
+//! key the row of the later input wins.
+//!
+//! Request: `u8 table (0 = metric_samples, 1 = metric_series), u8[3] zero, u32 n_inputs`,
+//! then each input file as `u32 len, bytes`.
+//!
+//! Ok payload: one file, laid out exactly as one file of `viz_encode_segment`'s payload
+//! (`u8 table, u8[3] zero, u64 rows, i64 min_ts, i64 max_ts, u32 day_len, day,
+//! u32 index_len, index, u32 bytes_len, bytes`). The payload is written straight into the
+//! result allocation, so the output file exists twice in linear memory, not three times.
+//!
 //! ### `viz_abi_version`
 //!
-//! Returns 1. The binding refuses a module that answers anything else.
+//! Returns 2 (1 had no `viz_merge_files`). The binding refuses a module that answers
+//! anything else.
 
-use viz_storage::{encode_segment, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData, Table};
+use viz_storage::{encode_segment, merge_files, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData, Table};
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 const OK: u32 = 0;
 const ERR: u32 = 1;
 
@@ -202,6 +217,56 @@ pub unsafe extern "C" fn viz_encode_segment(ptr: *const u8, len: usize) -> *mut 
             }
         }),
     }
+}
+
+fn do_merge(req: &[u8]) -> Result<EncodedFile, String> {
+    let mut r = Req { b: req, at: 0 };
+    let table = match r.take(4, "table")? {
+        [0, 0, 0, 0] => Table::MetricSamples,
+        [1, 0, 0, 0] => Table::MetricSeries,
+        other => return Err(format!("unknown table {:?}", other)),
+    };
+    let n = r.u32("n_inputs")?;
+    let inputs = r.items(n, "input file")?;
+    r.end()?;
+    merge_files(table, &inputs).map_err(|e| e.to_string())
+}
+
+/// See the crate documentation.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable.
+#[no_mangle]
+pub unsafe extern "C" fn viz_merge_files(ptr: *const u8, len: usize) -> *mut u8 {
+    let f = match do_merge(request(ptr, len)) {
+        Err(m) => return error(m),
+        Ok(f) => f,
+    };
+    let parts: [&[u8]; 3] = [f.day.as_bytes(), f.index.as_bytes(), f.bytes.as_slice()];
+    let total = 8 + 28 + parts.iter().map(|p| 4 + p.len()).sum::<usize>();
+    if total > u32::MAX as usize {
+        return error("merged file is larger than 4 GiB".to_string());
+    }
+    // Written in place: `result` would build the payload in a Vec first, a third copy of the file.
+    let p = viz_alloc(total);
+    let mut at = 0usize;
+    let mut put = |bytes: &[u8]| {
+        // SAFETY: `p` is a fresh allocation of `total` bytes and the pieces below sum to `total`.
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.add(at), bytes.len());
+        at += bytes.len();
+    };
+    put(&(total as u32).to_le_bytes());
+    put(&OK.to_le_bytes());
+    put(&[matches!(f.table, Table::MetricSeries) as u8, 0, 0, 0]);
+    put(&f.rows.to_le_bytes());
+    put(&f.min_ts.to_le_bytes());
+    put(&f.max_ts.to_le_bytes());
+    for part in parts {
+        put(&(part.len() as u32).to_le_bytes());
+        put(part);
+    }
+    debug_assert_eq!(at, total);
+    p
 }
 
 fn do_select(req: &[u8]) -> Result<Vec<SeriesData>, String> {

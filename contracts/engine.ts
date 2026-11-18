@@ -66,6 +66,22 @@ export interface Engine {
    */
   select(input: ScanInput, matchers: Matcher[], minTs: number, maxTs: number): SeriesData[]
 
+  /**
+   * Compaction: merge whole files of ONE table and one tenant-day into one file with the
+   * same schema, sort order and row-group cap, and a fresh index fragment.
+   *
+   * `metric_samples`: rows with the same `(metric_name, series_id, ts)` collapse to one; the
+   * row of the LATER file in `files` wins. `metric_series`: rows with the same
+   * `(metric_name, series_id)` collapse to one, with the labels of the later file, the
+   * smallest `min_ts` and the largest `max_ts`. The output therefore holds exactly the
+   * de-duplicated rows of its inputs: a `select` over the output (with the series file
+   * merged from the matching series inputs) returns what it returned over the inputs.
+   *
+   * Throws for no rows, for inputs that are not sorted, and for rows of more than one UTC
+   * day. The caller bounds the bytes it passes in: inputs and output are held in memory.
+   */
+  mergeFiles(table: Table, files: Uint8Array[]): EncodedFile
+
   /** Prometheus `query_range`. Returns the `data` object of the HTTP API response. */
   queryRange(input: ScanInput, promql: string, startMs: number, endMs: number, stepMs: number): PromMatrix
 
