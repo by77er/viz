@@ -44,6 +44,21 @@ const mutants = [
     edits: [["    if (put === null) {\n      // Another writer committed this version. Take its state and start over.", "    if (put === null && false) {\n      // Another writer committed this version. Take its state and start over."]] },
   { id: 'M15', what: 're-base ignores the new base (an older incarnation cursor continues as if nothing happened)', file: P,
     edits: [['const rebase = !cursor || cursor.ledgerIncarnation < log.incarnation', 'const rebase = !cursor']] },
+  // ── versioned storage and formats (contracts/COMPATIBILITY.md): run against compat and golden tests ──
+  { id: 'M16', what: 'the publisher serves storage a newer release wrote (guard removed)', file: P, tests: ['test/compat.test.ts'],
+    edits: [['    if (refused) throw new SchemaTooNewError(refused)\n', '']] },
+  { id: 'M17', what: 'a refusing publisher publishes from its alarm (and writes)', file: P, tests: ['test/compat.test.ts'],
+    edits: [["    if (refused) {\n      // Keep the alarm for the release that owns this storage; touch nothing else.\n      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)\n      return\n    }\n    const tenants", '    const tenants']] },
+  { id: 'M18', what: 'commits over metadata a newer publisher wrote (no check when rebuilding from R2)', file: P, tests: ['test/compat.test.ts'],
+    edits: [['    checkMetadata(meta, this.metaKey(table, version))\n    const current', '    const current']] },
+  { id: 'M19', what: 'a ledger change of an unknown version is applied as if it were known', file: L, tests: ['test/compat.test.ts'],
+    edits: [['  if (why) return new Unsupported(`version ${version}: ${why}`)\n', '']] },
+  { id: 'M20', what: 'a released migration edited in place (version 1 loses an index)', file: 'src/schema.ts', tests: ['test/compat.test.ts'],
+    edits: [['CREATE INDEX IF NOT EXISTS removed_tenant ON removed (tenant);\n', '']] },
+  { id: 'M21', what: 'a field id reassigned (tenant of metric_samples takes the next id)', file: I, tests: ['test/golden.test.ts'],
+    edits: [["    tenant: { id: 5, name: 'tenant', type: 'string' },\n    day: { id: 6, name: 'day', type: 'date' },", "    tenant: { id: 7, name: 'tenant', type: 'string' },\n    day: { id: 6, name: 'day', type: 'date' },"]] },
+  { id: 'M22', what: 'the cursors object changes shape without a format version', file: P, tests: ['test/golden.test.ts'],
+    edits: [['JSON.stringify({ v: CURSORS_FORMAT_VERSION, table, cell: this.cell, snapshotId, cursors })', 'JSON.stringify({ table, cell: this.cell, snapshotId, cursors })']] },
 ]
 
 const only = process.argv.slice(2)
@@ -62,7 +77,7 @@ for (const m of mutants) {
   try {
     writeFileSync(path, text)
     try {
-      out = execFileSync('npx', ['vitest', 'run', 'test/publisher.test.ts'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 })
+      out = execFileSync('npx', ['vitest', 'run', '--maxWorkers=2', ...(m.tests ?? ['test/publisher.test.ts'])], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 })
     } catch (e) {
       failed = true
       out = `${e.stdout ?? ''}${e.stderr ?? ''}`

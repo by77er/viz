@@ -148,7 +148,7 @@ pub fn query_range_with(
     let src = StorageSource::with_plan(input, opts.limits, sels, steps);
     let expr = viz_promql::parse_query(query).map_err(QueryError::from_promql)?;
     let matrix = viz_promql::query_range_expr(&src, &expr, start_ms, end_ms, step_ms, &opts.eval, Some(&agg::Canonical))
-        .map_err(|e| src.take_failure().unwrap_or_else(|| QueryError::from_promql(e)))?;
+        .map_err(QueryError::from_promql)?;
     let points: u64 = matrix.series.iter().map(|s| s.points.len() as u64).sum();
     let stats = finish(&src, points, opts)?;
     Ok(RangeResult { matrix, stats })

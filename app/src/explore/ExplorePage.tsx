@@ -2,7 +2,8 @@ import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo,
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { PromApiError } from '../api/client'
-import type { PromMatrixData } from '../api/types'
+import { busyLine, errorAdvice, errorKind, retryDelayMs, shouldRetry } from '../api/errors'
+import type { ApiCost, PromMatrixData } from '../api/types'
 import { TimeSeriesChart, type ChartSeries, type RenderInfo } from '../charts'
 import type { PromqlEditorHandle } from '../editor/PromqlEditor'
 import { assignSeries, DEFAULT_POLICY, loadAssignment, saveAssignment } from '../lib/assign'
@@ -18,7 +19,7 @@ import { absoluteSpec, formatDateTime, parseDuration, resolveTimeSpec, stepWords
 import { axisUnitLabel, BINARY_INCREMENTS, formatInScale, formatValue, inferUnit, scaleFor, UNITS } from '../lib/units'
 import { DEFAULT_SEARCH, parseExploreSearch, type ExploreSearch, type ResultView } from '../lib/urlState'
 import { useBackendInfo } from '../shell/AppShell'
-import { MOD, useCommands } from '../shell/commands'
+import { MOD, useCommands, useCommandsContext } from '../shell/commands'
 import { useSettings } from '../shell/settings'
 import { useTheme } from '../shell/theme'
 import { Age, shorterRange, useWaiting, WAIT } from './waiting'
@@ -74,6 +75,8 @@ function cachedDigest(aligned: ReturnType<typeof alignMatrix>, title: string, un
 interface RangeResult extends ResultIdentity {
   data: PromMatrixData
   warnings: string[]
+  /** What the API said the query cost (`X-Viz-*`); kept with the result, not shown yet. */
+  cost: ApiCost
   elapsedMs: number
 }
 
@@ -170,6 +173,8 @@ export function ExplorePage() {
   const current = useMemo<ResultRequest>(() => ({ q, from: search.from, to: search.to, step: search.step }), [q, search.from, search.to, search.step])
   // The token is deliberately not part of the key; connectionId changes when settings do.
   const queryKey = ['query_range', connectionId, q, window_?.start, window_?.end, window_?.step, runId]
+  /** When the current wait began: retries count against the waiting table's 60 s stop. */
+  const waitStartedAt = useRef(0)
   const query = useQuery<RangeResult, Error>({
     queryKey,
     enabled: q !== '' && window_ !== null,
@@ -182,12 +187,27 @@ export function ExplorePage() {
       const t0 = performance.now()
       const res = await client.queryRange(request.q, w.start, w.end, w.step, { signal })
       // The result takes its own description with it: the request, the window, the unit, the time.
-      return { ...identify(request, w, Date.now()), data: res.data, warnings: res.warnings, elapsedMs: performance.now() - t0 }
+      return { ...identify(request, w, Date.now()), data: res.data, warnings: res.warnings, cost: res.cost, elapsedMs: performance.now() - t0 }
     },
+    // A busy API (429, 502, 503 other than its time limit) is asked again after its Retry-After,
+    // or 1, 2 and 4 s, at most three times and never past the 60 s stop (api/errors.ts).
+    retry: (failures, error) => shouldRetry(error, failures, performance.now() - waitStartedAt.current, WAIT.stopAfter),
+    retryDelay: (failures, error) => retryDelayMs(error, failures),
   })
 
   // ---- waiting: the button is busy at once; the progress line follows the waiting table.
   const loading = q !== '' && query.isFetching
+  // When this wait began, and how long the last one lasted (an error reports it).
+  const wasLoading = useRef(false)
+  const lastWaitMs = useRef(0)
+  if (loading && !wasLoading.current) waitStartedAt.current = performance.now()
+  if (!loading && wasLoading.current) lastWaitMs.current = performance.now() - waitStartedAt.current
+  wasLoading.current = loading
+  /** Tries that failed busy in the current wait, and when the next one goes. */
+  const failures = loading ? query.failureCount : 0
+  const retryClock = useRef({ failures: 0, at: 0 })
+  if (failures !== retryClock.current.failures)
+    retryClock.current = { failures, at: failures > 0 ? performance.now() + retryDelayMs(query.failureReason, failures - 1) : 0 }
   const loadingRef = useRef(loading)
   loadingRef.current = loading
   const wait = useWaiting(loading)
@@ -460,6 +480,9 @@ export function ExplorePage() {
   )
 
   const showAll = useCallback(() => setIsolated(null), [])
+  // The shell owns the settings dialog; its command opens it.
+  const { commands } = useCommandsContext()
+  const openSettings = useCallback(() => commands.find((c) => c.id === 'settings-open')?.run(), [commands])
 
   // The digest is computed when the text form is first shown for a result, and kept for that
   // result: switching away and back does not compute it again. Its title is the result's query.
@@ -578,7 +601,13 @@ export function ExplorePage() {
           ) : wait.shown ? (
             <div className="vz-progress" data-unmeasured="" data-testid="progress">
               <div className="vz-progress-text">
-                <span role="status">{wait.elapsedMs >= WAIT.alternativeAfter ? 'Still waiting.' : 'Waiting for the query'}</span>
+                <span role="status" data-testid="progress-text">
+                  {failures > 0 && query.failureReason
+                    ? busyLine(query.failureReason, retryClock.current.at > performance.now() ? retryClock.current.at - performance.now() : null)
+                    : wait.elapsedMs >= WAIT.alternativeAfter
+                      ? 'Still waiting.'
+                      : 'Waiting for the query'}
+                </span>
                 <span aria-hidden="true" data-testid="progress-elapsed">
                   <span className="app-num">{(wait.elapsedMs / 1000).toFixed(1)}</span> s
                 </span>
@@ -604,7 +633,15 @@ export function ExplorePage() {
 
         <div className="region" data-view={view}>
           {error ? (
-            <ErrorState error={error} onGoTo={(at) => editorRef.current?.focus(at)} onRetry={run} />
+            <ErrorState
+              error={error}
+              tries={query.failureCount}
+              elapsedMs={lastWaitMs.current}
+              syntaxErrorAt={() => editorRef.current?.syntaxErrorAt(q) ?? null}
+              onGoTo={(at) => editorRef.current?.focus(at)}
+              onRetry={run}
+              onOpenSettings={openSettings}
+            />
           ) : q === '' ? (
             <StartState mock={!!backend.data?.mock} />
           ) : isEmpty && shown ? (
@@ -666,12 +703,20 @@ export function ExplorePage() {
 /** "Last 1h" as it is read: "Last 1 h". Absolute spans are already spaced. */
 const spacedRange = (range: string) => (range.startsWith('Last ') ? `Last ${spacedDuration(range.slice(5))}` : range)
 
+/**
+ * Prometheus' `warnings`: the API answered, but says the result may not be whole (a partial
+ * response from a store that did not answer, an approximation). The banner says so before the
+ * API's own words. The viz API sends none today (README, "Needed changes in query/").
+ */
 function Warnings({ warnings }: { warnings: string[] }) {
   if (warnings.length === 0) return null
   return (
-    <div role="status" className="vz-banner">
+    <div role="status" className="vz-banner" data-testid="warnings">
       <span className="vz-mark" data-state="warn" />
-      <p>{warnings.join(' ')}</p>
+      <p>
+        {warnings.length === 1 ? 'The API sent a warning with this result' : `The API sent ${warnings.length} warnings with this result`}, so it may be
+        incomplete: {warnings.join(' ')}
+      </p>
     </div>
   )
 }
@@ -724,21 +769,43 @@ function StepInput({ value, auto, onChange }: { value: string; auto: string; onC
   )
 }
 
-function ErrorState({ error, onGoTo, onRetry }: { error: Error; onGoTo: (at: number) => void; onRetry: () => void }) {
+function ErrorState({
+  error,
+  tries,
+  elapsedMs,
+  syntaxErrorAt,
+  onGoTo,
+  onRetry,
+  onOpenSettings,
+}: {
+  error: Error
+  /** How many times the query was sent before this error (busy answers are retried). */
+  tries: number
+  /** How long those tries took, in ms. */
+  elapsedMs: number
+  /** Where the editor's own parser finds the first syntax error in the query, when the API gives no position. */
+  syntaxErrorAt: () => number | null
+  onGoTo: (at: number) => void
+  onRetry: () => void
+  onOpenSettings: () => void
+}) {
   const api = error instanceof PromApiError ? error : null
-  // Parse errors carry "line:column"; queries are one line, so the column is the character.
+  const kind = errorKind(error)
+  // Parse errors carry "line:column" from Prometheus; queries are one line, so the column is
+  // the character. The viz API gives no position (README, "Needed changes in query/"): the
+  // editor's parser, which underlines the same error, says where it is.
   const at = /\b1:(\d+): parse error/.exec(error.message)
-  const character = at ? Number(at[1]) : null
-  const network = api?.errorType === 'network'
+  const fromEditor = !at && kind === 'query' && /parse error/.test(error.message) ? syntaxErrorAt() : null
+  const character = at ? Number(at[1]) : fromEditor !== null ? fromEditor + 1 : null
   return (
-    <div className="vz-empty" role="alert" data-testid="error-state">
+    <div className="vz-empty" role="alert" data-testid="error-state" data-kind={kind}>
       <h3 className="vz-empty-title">
         <span className="vz-mark" data-state="critical" />
         The query could not run
       </h3>
       <p data-testid="error-message">{error.message}</p>
       {api && (
-        <p>
+        <p data-testid="error-advice">
           The API answered{' '}
           <span data-testid="error-type">
             <span className="app-num">{api.errorType}</span>
@@ -749,12 +816,16 @@ function ErrorState({ error, onGoTo, onRetry }: { error: Error; onGoTo: (at: num
               </>
             ) : null}
           </span>
-          . {network ? 'Check the connection and run the query again.' : `Change the query and press ${MOD} Enter to run it again.`}
+          . {errorAdvice(error, Math.max(1, tries), elapsedMs, MOD)}
         </p>
       )}
       {character !== null ? (
         <button className="vz-button" data-size="sm" onClick={() => onGoTo(character - 1)} data-testid="error-fix">
           Go to character {character}
+        </button>
+      ) : kind === 'auth' || kind === 'scope' ? (
+        <button className="vz-button" data-size="sm" onClick={onOpenSettings} data-testid="error-fix">
+          Open settings
         </button>
       ) : (
         <button className="vz-button" data-size="sm" onClick={onRetry} data-testid="error-fix" data-focus-after="[data-testid=run]">

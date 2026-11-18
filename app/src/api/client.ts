@@ -1,4 +1,5 @@
 import type {
+  ApiCost,
   ApiResult,
   BuildInfo,
   Metric,
@@ -14,13 +15,34 @@ export class PromApiError extends Error {
   readonly errorType: string
   /** HTTP status, or 0 when no response was received. */
   readonly status: number
+  /** How long the API asked the client to wait before trying again (`Retry-After`), or null when it did not say. */
+  readonly retryAfterMs: number | null
 
-  constructor(errorType: string, message: string, status: number) {
+  constructor(errorType: string, message: string, status: number, retryAfterMs: number | null = null) {
     super(message)
     this.name = 'PromApiError'
     this.errorType = errorType
     this.status = status
+    this.retryAfterMs = retryAfterMs
   }
+}
+
+/** `Retry-After` as milliseconds: a number of seconds, or an HTTP date (RFC 9110 §10.2.3). Null when absent or unreadable. */
+export function parseRetryAfter(value: string | null, now = Date.now()): number | null {
+  if (value === null) return null
+  const v = value.trim()
+  if (/^\d+$/.test(v)) return Number(v) * 1000
+  const at = Date.parse(v)
+  return Number.isFinite(at) ? Math.max(0, at - now) : null
+}
+
+/** The `X-Viz-*` headers of a response (names in lower case). */
+export function costOf(headers: Headers): ApiCost {
+  const cost: ApiCost = {}
+  headers.forEach((value, name) => {
+    if (name.startsWith('x-viz-') && name !== 'x-viz-route' && name !== 'x-viz-mock') cost[name] = value
+  })
+  return cost
 }
 
 export interface PromClientOptions {
@@ -132,18 +154,20 @@ export class PromClient {
       body = undefined
     }
 
+    const retryAfter = parseRetryAfter(res.headers.get('Retry-After'))
     // Prometheus sends the error envelope with 4xx/5xx statuses; prefer its message.
     if (body && typeof body === 'object' && body.status === 'error') {
-      throw new PromApiError(body.errorType || 'error', body.error || `HTTP ${res.status}`, res.status)
+      throw new PromApiError(body.errorType || 'error', body.error || `HTTP ${res.status}`, res.status, retryAfter)
     }
     if (!res.ok) {
+      // No envelope: a proxy, a rate limit or the platform answered (HTML, plain text or nothing).
       const hint = res.status === 401 || res.status === 403 ? ' (check the API token in Settings)' : ''
-      throw new PromApiError('http', `HTTP ${res.status} ${res.statusText}${hint}`.trim(), res.status)
+      throw new PromApiError('http', `HTTP ${res.status} ${res.statusText}${hint}`.replace(/\s+/g, ' ').trim(), res.status, retryAfter)
     }
     if (!body || typeof body !== 'object' || body.status !== 'success') {
       throw new PromApiError('parse', 'The response is not a Prometheus API envelope', res.status)
     }
-    return { data: body.data, warnings: body.warnings ?? [] }
+    return { data: body.data, warnings: body.warnings ?? [], infos: body.infos ?? [], cost: costOf(res.headers) }
   }
 }
 

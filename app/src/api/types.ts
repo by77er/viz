@@ -46,7 +46,18 @@ export interface MetricMetadata {
   unit?: string
 }
 
+/**
+ * What the viz API says a request cost, as it says it: its `X-Viz-*` response headers
+ * (query/README.md, "What the query cost"), names in lower case. Empty from a backend that
+ * sends none (Prometheus), and when a browser is not allowed to read them (CORS).
+ */
+export type ApiCost = Record<string, string>
+
 export interface ApiResult<T> {
   data: T
+  /** Prometheus `warnings`: the result may be incomplete or approximate. */
   warnings: string[]
+  /** Prometheus `infos` (Prometheus 3): notes about the query that do not put the result in doubt. */
+  infos: string[]
+  cost: ApiCost
 }

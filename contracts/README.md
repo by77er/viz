@@ -8,7 +8,7 @@ change it here first; nothing else may redefine these.
 | `BATCH.md` | The columnar batch: what `edge` produces, a shard stores opaquely, and the engine decodes |
 | `TABLES.md` | Parquet schemas, sort orders, partitioning and object keys for the metrics tables |
 | `ledger.ts` | The tenant ledger's RPC surface: file precedence (`LiveFile`, which file wins a duplicate sample), and the proposed tombstone surface used for physical deletion |
-| `LEDGER-LOG.md` | The ledger's change log as batched segments. Planned; replaces one object per change |
+| `LEDGER-LOG.md` | The ledger's change log as batched segments written in the background: format, drain, checkpoints, truncation, readers. Built; replaced one object per change (whose keys `ledger.ts` keeps for readers) |
 | `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |
 | `engine.ts` | The JavaScript face of the Rust/WASM engine |
 | `../shard/src/shard.ts` | The shard's RPC surface (already implemented) |

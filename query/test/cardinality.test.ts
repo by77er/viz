@@ -180,6 +180,16 @@ describe('cardinality', () => {
       expect(b.body.headStats.numSeries).toBe(2)
       expect(JSON.stringify(b.body)).not.toContain('pod_metric')
     }
+    // The tenant cannot be named by the request: a parameter or a header naming the other
+    // tenant changes nothing.
+    delete hooks.forceLeaves
+    for (const path of ['/api/v1/status/tsdb', '/api/v1/status/cardinality']) {
+      const forged = await api(w.a.key, path, { ...window, limit: '10000', tenant: w.b.name, org: w.b.name }, { headers: { 'X-Scope-OrgID': w.b.name, 'X-Tenant': w.b.name } })
+      expect(forged.status).toBe(200)
+      const text = await forged.text()
+      expect(text).toContain('pod_metric')
+      for (const mark of ['b_secret', 'j9']) expect(text, `${path} ${mark}`).not.toContain(mark)
+    }
     // A tenant with nothing: zeros, not an error.
     const empty = await world()
     const e = await get<Tsdb>(empty.a, '/api/v1/status/tsdb', window)

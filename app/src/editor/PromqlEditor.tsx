@@ -3,7 +3,7 @@ import { Compartment, EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap, placeholder as placeholderExt, tooltips } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete'
-import { bracketMatching } from '@codemirror/language'
+import { bracketMatching, ensureSyntaxTree } from '@codemirror/language'
 import { PromQLExtension } from '@prometheus-io/codemirror-promql'
 import type { PromClient } from '../api/client'
 import { countRender } from '../lib/renders'
@@ -57,6 +57,29 @@ export interface PromqlEditorHandle {
   focus(at?: number): void
   /** The text in the editor now. */
   getValue(): string
+  /**
+   * Where the editor's PromQL parser finds the first syntax error (0-based), when the text in
+   * the editor is still `query`; null when it finds none, or the text has changed since.
+   */
+  syntaxErrorAt(query: string): number | null
+}
+
+/** The first error node of the parse tree, or null. */
+export function firstSyntaxError(state: EditorState): number | null {
+  const tree = ensureSyntaxTree(state, state.doc.length, 200)
+  if (!tree) return null
+  let at: number | null = null
+  tree.iterate({
+    enter: (node) => {
+      if (at !== null) return false
+      if (node.type.isError) {
+        at = node.from
+        return false
+      }
+      return undefined
+    },
+  })
+  return at
 }
 
 interface Props {
@@ -133,6 +156,7 @@ export default memo(function PromqlEditor({ value, onRun, client, handleRef }: P
           }
         },
         getValue: () => view.state.doc.toString(),
+        syntaxErrorAt: (query) => (view.state.doc.toString().trim() === query.trim() ? firstSyntaxError(view.state) : null),
       }
     return () => {
       view.destroy()

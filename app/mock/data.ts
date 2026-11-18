@@ -264,6 +264,29 @@ const METADATA: Record<string, { type: string; help: string; unit: string }[]> =
   pod_cpu_usage_cores: [{ type: 'gauge', help: 'CPU cores in use per pod. (synthetic)', unit: 'cores' }],
   pod_memory_working_set_bytes: [{ type: 'gauge', help: 'Working-set memory per pod in bytes. (synthetic)', unit: 'bytes' }],
   up: [{ type: 'gauge', help: '1 if the last scrape of the target succeeded. (synthetic)', unit: '' }],
+  viz_synthetic_series: [{ type: 'gauge', help: 'Two hundred slow sine waves: the speed harness\'s 200-series case. (synthetic)', unit: '' }],
+}
+
+/** Series in the 200-series speed case (e2e/measure.cjs); real/seed.ts writes the same series to the real API. */
+export const SYNTHETIC_COUNT = 200
+
+/** The labels of synthetic series i: ten services, five routes, four statuses. */
+export function syntheticLabels(i: number): Labels {
+  return {
+    __name__: 'viz_synthetic_series',
+    service: `svc-${String(i % 10).padStart(2, '0')}`,
+    route: `/r/${Math.floor(i / 10) % 5}`,
+    status: String(200 + 100 * (Math.floor(i / 50) % 4)),
+  }
+}
+
+/** Its value at time t (epoch seconds), to four decimals: a slow sine around 3 (i + 1). */
+export const syntheticValue = (i: number, t: number): number => Number((3 * (i + 1) + 2 * Math.sin(t / 600 + i)).toFixed(4))
+
+function buildSynthetic(): SeriesSource[] {
+  return Array.from({ length: SYNTHETIC_COUNT }, (_, i) =>
+    gridSeries(syntheticLabels(i), (k) => (k < K0 ? null : syntheticValue(i, k * SCRAPE_INTERVAL))),
+  )
 }
 
 let cached: SeriesSource[] | undefined
@@ -271,7 +294,7 @@ let cached: SeriesSource[] | undefined
 /** The synthetic data set (built once, lazily). */
 export function syntheticStorage(): Storage {
   return {
-    all: () => (cached ??= buildSeries()),
+    all: () => (cached ??= [...buildSeries(), ...buildSynthetic()]),
     metadata: () => METADATA,
   }
 }

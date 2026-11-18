@@ -7,7 +7,7 @@
 //   node build.mjs --compare <before>  before/after images into compare/: <before> holds the v1 images (<screen>-<theme>-<width>.png)
 // A screen file starts with <!-- nav: Section --> and <!-- title: ... -->. States are URL fragments: an element with
 // data-when="a b" is shown only in states a and b ("default" is no fragment); data-unless="a" hides it in state a.
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, rmSync, renameSync, existsSync, copyFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, rmSync, renameSync, existsSync, copyFileSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import vm from 'node:vm'
@@ -145,5 +145,5 @@ if (args.includes('--compare')) {
     copyFileSync(join(before, f), join(b, `${screen}-${w}-${theme}.png`)); copyFileSync(after, join(a, `${screen}-${w}-${theme}.png`))
   }
   const r = spawnSync('node', ['tools/shots.mjs', 'compare', b, a, c], { cwd: ds, stdio: 'inherit' }); if (r.status) process.exit(r.status)
-  for (const png of readdirSync(c).filter((x) => x.endsWith('.png'))) encode(join(c, png), 128) // side-by-side views, not for measuring: a smaller palette keeps each under about 500 KB
+  for (const png of readdirSync(c).filter((x) => x.endsWith('.png'))) { encode(join(c, png), 128); if (statSync(join(c, png)).size > 480000) encode(join(c, png), 64) } // side-by-side views, not for measuring: a smaller palette keeps each under about 500 KB
 }

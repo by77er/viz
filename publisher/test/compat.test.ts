@@ -158,6 +158,9 @@ describe('Iceberg metadata written by a newer publisher', () => {
     await env.BUCKET.put(`${metaDir(cell, table)}v${n + 1}.metadata.json`, JSON.stringify(evolved))
     await env.BUCKET.put(`${metaDir(cell, table)}version-hint.text`, String(n + 1))
     const before = await listKeys(`${cell}/iceberg/`)
+    // Its own view of the table is not rebuilt from metadata it does not understand either (only `pending` may change).
+    const cache = (d: Dump) => ({ ...d, rows: Object.fromEntries(Object.entries(d.rows).filter(([k]) => k !== 'pending')) })
+    const cacheBefore = await runInDurableObject(p, (_i, s) => cache(dumpOf(s)))
 
     await addUnit(t, pairUnit(cell, t, 10, 12, T0 + DAY_MS))
     await mirror(t, cell)
@@ -165,6 +168,7 @@ describe('Iceberg metadata written by a newer publisher', () => {
     expect(await p.pending(), 'the tenant waits for a publisher that understands the table').toEqual([t])
     expect(await p.sweep().then(() => 'swept', (e: Error) => e.message)).toMatch(/^metadata_too_new/)
     expect(await listKeys(`${cell}/iceberg/`)).toEqual(before)
+    expect(await runInDurableObject(p, (_i, s) => cache(dumpOf(s)))).toEqual(cacheBefore)
     const verify = await p.verify(table)
     expect(verify.ok).toBe(false)
     expect(verify.problems.join('\n')).toMatch(/newer publisher/)

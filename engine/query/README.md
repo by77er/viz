@@ -222,7 +222,7 @@ counts are lower bounds of what evaluation would load, because every sample held
 some selector's range. During evaluation each `select` is checked against the share too.
 So a leaf never materialises much more than its share: the overshoot is one extract (one
 group of at most six files' worth of its part) while gathering, or one selector's part in
-evaluation. The coordinator weighs the stopped leaves (query `query/` README, "Split
+evaluation. The coordinator weighs the stopped leaves (see `query/` README, "Split
 execution"). What remains, inside `viz_storage::select`, is in "Not implemented".
 
 ### Cardinality
@@ -280,8 +280,48 @@ own report.
 All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 1.97.0, Node 22.23), not on Cloudflare.
 
-`cargo test`: **37 tests, all passing** (api 10, corpus 1, invariance 3, limits 10,
-plan 5, prune 3, staleness 5). Five are property tests.
+`cargo test`: **45 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
+plan 5, prune 3, split 6, staleness 5), run on 2026-11-18 with `-j 2` and two test threads
+on a machine with a load average of 6 to 20 (6 min). Seven are property tests. The
+references of the invariance tests (and of `query/`'s fixtures) are `viz-promql` over its
+in-memory source **with this crate's aggregations** (`reference_range`), since every
+evaluation here uses them; with that change all 37 earlier tests pass unchanged.
+
+### 0. Split execution equals one place
+
+`tests/split.rs` (new):
+
+- `split_equals_one_place` (property, 24 cases): random write histories (the generator
+  of section 1) in random lake/tail placements; every query of the 106-query pool and of
+  46 aggregation-heavy queries (`sum`, `avg`, `count`, `min`, `max`, `group`, `stddev`,
+  `stdvar`, `topk`, `bottomk`, `count_values` with and without `by`/`without`, over
+  selectors, `rate`, `increase`, `*_over_time`, arithmetic, `label_replace`/`label_join`
+  (with collisions), unpinned `__name__` (with collisions), `@`, `offset`, a subquery
+  inside the argument, and above them ratios, `histogram_quantile`, `quantile`, `scalar`,
+  `sort_desc`, `absent`, `topk` of a sum, a time-varying `k`), as range and instant
+  query, at 1, 2, 7, 32 or a random 3 to 11 parts, with the lake read by readers in 1 to 4
+  groups whose extracts arrive in reverse order and the answers sent through their
+  encoding: **every split result equals one place byte for byte (or the same error), and
+  so do the statistics.** About 180 split evaluations per case; 24 cases (soak runs are
+  in "How it was verified" of `query/`).
+- `partials_merge_exactly` (property, 256 cases): for 14 aggregations and random vectors
+  with signed zeros, NaN, infinities, `1e±300`, subnormals and arbitrary bit patterns,
+  three disjoint parts merged in two orders (one through the encoding) finish to the same
+  bits as the partial of the whole.
+- `which_queries_split_and_why_not`: 46 queries split, 13 do not and give their reason;
+  the split key of six queries; delayed name removal is not split; key ranges.
+- `a_leaf_stops_at_its_budget_and_a_rerun_with_the_rest_is_identical`: a budget of 10
+  samples stops every leaf while gathering (no `select` made, no partial); the merge
+  refuses an aborted leaf; a series budget stops it too; a re-run with the rest is
+  identical to one place.
+- `the_query_limits_are_replayed_exactly_on_the_summed_counts`: each of four limits at
+  what the query loads and one below (and two far below), over 3 parts: the same answer
+  or the same error message as one place (6 errors, 4 answers).
+- `results_do_not_depend_on_the_order_extracts_arrive_in`: a sample rewritten in a later
+  file and again in the tail reads back as the last write whatever order a leaf receives
+  its batches in.
+- `exact::tests` (unit): correct rounding on cancellation, ties to even, sticky bits,
+  subnormals, overflow, infinities; variance of small integers equals the rational value.
 
 ### 1. Storage-location invariance
 
@@ -588,8 +628,8 @@ Cloudflare.
 ## Changes in the other crates
 
 No bug was found in `viz-storage` or `viz-promql`. Nothing was changed in
-`engine/storage`. Two additive hooks in `engine/promql`, both tested there, all of its
-tests green (26, was 24):
+`engine/storage`. Three additive hooks in `engine/promql`, each tested there, all of its
+tests green (27, was 26; it was 24 before the first two):
 
 1. `SelectorInfo` gained `pub steps: usize`, the number of evaluation steps of the
    (sub)query the selector belongs to (`src/api.rs`, set in `src/lib.rs`
@@ -600,6 +640,11 @@ tests green (26, was 24):
    built from the loaded series. `run_script` is unchanged in behaviour (it calls the
    same code with no factory). Needed to run the corpus through storage.
    Test: `test_scripts_can_run_through_another_source`.
+3. `EvalHooks` (`replace` a node's value, supply an aggregation's result), `SeriesV` made
+   public, `parse_query`, `query_range_expr`, `query_instant_expr`
+   (`src/eval.rs`, `src/lib.rs`). With no hooks the evaluator is unchanged. Needed for the
+   order-independent aggregations and for finishing a split query at the coordinator.
+   Test: `evaluation_hooks_replace_nodes_and_aggregations`.
 
 `engine/promql/README.md` was updated for both and for the WASM import finding.
 
@@ -658,6 +703,13 @@ the module; `internal` is a fourth error type.
 
 ## Known risks
 
+- **Split execution reads whole files per part** (see "Split execution": `L`-fold reads and
+  `series_id` decodes). Fine for a few parts; the fix is row-group reads by key range.
+- **`catalog.rs` reads a format storage owns.** If `metric_series` changes, both readers
+  must; `split_equals_one_place` would catch a divergence for queries.
+- **Exact sums are wider than floats.** A partial's sum of values spread over many powers
+  of two holds more words (at most 34; sums of squares 67); measured sizes are in
+  `query/` README.
 - **`max_samples` is enforced after the fact, per selector.** `viz_storage::select`
   returns a whole selector's series before the adapter can count them, so a single
   selector matching far more than the budget is materialised (16 bytes a sample plus
@@ -706,6 +758,12 @@ src/plan.rs       FetchRange, plan
 src/meta.rs       label_names, label_values, series
 src/prune.rs      files_needed, scan_rows: file pruning from the ledger's index fragments
 src/error.rs      QueryError, ErrorType, Limit
+src/agg.rs        order-independent aggregations: partial, merge, finish, Canonical, binary encoding
+src/exact.rs      exact sums and variances of f64 (big integers, rounded once)
+src/split.rs      split execution: split_plan, extract, split_tails, Gathered, leaf_evaluate, merge
+src/catalog.rs    series-only read of metric_series files
+src/cardinality.rs  the cardinality report (exact counting with caps)
+tests/split.rs       split equals one place (property), partial merge (property), rules, budgets, limit replay
 tests/common/     write histories, storage layouts, generators, the query pool
 tests/invariance.rs  storage-location invariance (property), source equality, pool liveness
 tests/staleness.rs   markers in the tail and in Parquet

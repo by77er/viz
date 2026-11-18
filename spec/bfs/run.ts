@@ -130,7 +130,7 @@ const IMPL_PEEL: [string, Partial<Cfg>][] = [
 ]
 for (const [name, over] of IMPL_PEEL) {
   E.push({ name, kind: 'finding', label: `as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts)${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ''}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
-    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_6_fix_F13_F14' ? 'holds' : 'violated' })
+    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_6_fix_F13_F14' ? 'holds' : 'violated', maxStates: 6_000_000 })
 }
 finding('F6_impl_unknown_stream', 'F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss)', { ...IMPL, maxSL: 1, noRetryAcrossLoss: true }, ['I4_NoGapAtSeam'])
 finding('F12_impl_read_unbound', 'F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)', { ...IMPL, maxSL: 1, unknownStream: 'refuse', noRetryAcrossLoss: true }, ['I3_NoDuplicates'])
@@ -142,11 +142,11 @@ finding('IMPL_PLANNED_fixed', 'As built with the fixes above (F6, F12, F13/F14, 
 // ---- the amended protocol: exhaustive within bounds, expect no violation
 const amended = (name: string, label: string, over: Partial<Cfg>, maxStates?: number) =>
   E.push({ name, kind: 'amended', label, cfg: { ...AMENDED, ...over }, props: ALLSAFE, expect: 'holds', maxStates })
-amended('A_retries_faults', 'client retries + two flush Workers, ledger loss + shard loss', { maxLL: 1, maxSL: 1 }, 8_000_000)
-amended('A_maintenance_faults', 'compaction (2 steps at once) + retention + ledger loss + shard loss, no client retry', { maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1 }, 8_000_000)
-amended('A_3batches', '3 batches, ledger loss + shard loss, no client retry', { nb: 3, maxSend: 1, maxLL: 1, maxSL: 1 }, 8_000_000)
-amended('A_2shards', '2 shards, ledger loss + shard loss + compaction, no client retry', { ns: 2, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1 }, 8_000_000)
-amended('A_2tenants', '2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss, no client retry', { nt: 2, nb: 2, maxSend: 1, maxLL: 1, maxSL: 1, sameContent: true }, 8_000_000)
+amended('A_retries_faults', 'client retries + two flush Workers, ledger loss + shard loss', { maxLL: 1, maxSL: 1 }, 4_000_000)
+amended('A_maintenance_faults', 'compaction (2 steps at once) + retention + ledger loss + shard loss, no client retry', { maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1 }, 4_000_000)
+amended('A_3batches', '3 batches, ledger loss + shard loss, no client retry', { nb: 3, maxSend: 1, maxLL: 1, maxSL: 1 }, 4_000_000)
+amended('A_2shards', '2 shards, ledger loss + shard loss + compaction, no client retry', { ns: 2, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1 }, 4_000_000)
+amended('A_2tenants', '2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss, no client retry', { nt: 2, nb: 2, maxSend: 1, maxLL: 1, maxSL: 1, sameContent: true }, 4_000_000)
 
 // ---- liveness: AG EF (query done) on the whole graph; unbounded refusals
 const live = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>

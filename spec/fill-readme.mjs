@@ -5,20 +5,23 @@
 //
 //   node fill-readme.mjs          print the tables
 //   node fill-readme.mjs --write  replace them in README.md
-import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const load = (dir, orderFile) => {
   if (!existsSync(dir)) return []
-  const rs = readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')))
+  const rs = readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => ({ ...JSON.parse(readFileSync(join(dir, f), 'utf8')), mtime: statSync(join(dir, f)).mtimeMs }))
   const order = readFileSync(orderFile, 'utf8')
   return rs.sort((a, b) => order.indexOf(`'${a.name}'`) - order.indexOf(`'${b.name}'`))
 }
 const tlc = load(join(here, 'results'), join(here, 'experiments.mjs'))
 const bfs = load(join(here, 'results', 'bfs'), join(here, 'bfs', 'run.ts'))
 const n = (x) => (x == null ? '' : Number(x).toLocaleString('en'))
+/** Results written before this pass started (2026-11-18 22:08 UTC) are the earlier pass's, not re-run. */
+const PASS2 = Date.parse('2026-11-18T22:08:00Z')
+const when = (r) => (r.mtime >= PASS2 ? 're-run' : 'earlier pass only')
 
 // ---------------------------------------------------------------- TLC (viz.qnt) tables
 const shortT = (s0) => {
@@ -43,26 +46,26 @@ const shortT = (s0) => {
     .replace('ledgerLossRebuild', 'LEDGER-LOSS+REBUILD').replace('qPlan', 'plan').replace('qDone', 'done')
     .replace('qFileMissingReplan', 'file missing → re-plan') + (m ? `@s${m[1]}` : '')
 }
-const tlcTable = (kind) => ['| Experiment | Property | Result | Steps | Distinct states | Shortest counterexample |', '|---|---|---|---|---|---|',
-  ...tlc.filter((r) => r.kind === kind).map((r) => `| \`${r.name}\` ${r.label} | ${r.invariant} | ${r.error ? 'ERROR' : r.violated ? 'violated' : '**none found**'} | ${r.violated ? r.trace.length : ''} | ${n(r.distinct)} | ${r.violated ? r.trace.map(shortT).join(' → ') : ''} |`)].join('\n')
+const tlcTable = (kind) => ['| Experiment | Property | Result | Steps | Distinct states | Run | Shortest counterexample |', '|---|---|---|---|---|---|---|',
+  ...tlc.filter((r) => r.kind === kind).map((r) => `| \`${r.name}\` ${r.label} | ${r.invariant} | ${r.error ? 'ERROR' : r.violated ? 'violated' : '**none found**'} | ${r.violated ? r.trace.length : ''} | ${n(r.distinct)} | ${when(r)} | ${r.violated ? r.trace.map(shortT).join(' → ') : ''} |`)].join('\n')
 
 const out = {}
 out.TLC_TEETH = tlcTable('teeth')
 out.TLC_LITERAL = tlcTable('literal')
-out.TLC_WITNESS = ['| Witness (reachable in the amended protocol) | Steps to reach | Distinct states | Time |', '|---|---|---|---|',
-  ...tlc.filter((r) => r.kind === 'witness').map((r) => `| \`${r.name}\` | ${r.violated ? r.trace.length : r.error ? 'ERROR' : '**not reached**'} | ${n(r.distinct)} | ${r.seconds} s |`)].join('\n')
-out.TLC_FIXED = ['| Run | Bounds that differ from the common ones | Checked | Result | Distinct states | States generated | Depth | Wall time | Workers | P(fingerprint collision) |', '|---|---|---|---|---|---|---|---|---|---|',
+out.TLC_WITNESS = ['| Witness (reachable in the amended protocol) | Steps to reach | Distinct states | Time | Run |', '|---|---|---|---|---|',
+  ...tlc.filter((r) => r.kind === 'witness').map((r) => `| \`${r.name}\` | ${r.violated ? r.trace.length : r.error ? 'ERROR' : '**not reached**'} | ${n(r.distinct)} | ${r.seconds} s | ${when(r)} |`)].join('\n')
+out.TLC_FIXED = ['| Run | Bounds that differ from the common ones | Checked | Result | Distinct states | States generated | Depth | Wall time | Workers | P(fingerprint collision) | Run |', '|---|---|---|---|---|---|---|---|---|---|---|',
   ...tlc.filter((r) => r.kind === 'fixed').map((r) => {
     const c = r.cfg
     const d = [c.ns !== 1 && `${c.ns} shards`, c.nb !== 2 && `${c.nb} batches`, c.variants !== 1 && `${c.variants} encoder variants`, c.maxLL !== 1 && `${c.maxLL} ledger losses`,
       c.maxSL !== 1 && `${c.maxSL} shard losses`, c.maxExp !== 1 && `${c.maxExp} retention removals`, c.maxComp !== 1 && `${c.maxComp} compactions`, c.maxQ !== 1 && `${c.maxQ} queries`,
       c.maxFlush !== 3 && `${c.maxFlush} flush attempts`, c.retain && 'timing assumption `retain`'].filter(Boolean).join(', ') || '—'
-    return `| \`${r.name}\` | ${d} | ${r.invariant} | ${r.error ? 'ERROR' : r.violated ? `**VIOLATED** in ${r.trace.length} steps` : 'holds, exhaustive'} | ${n(r.distinct)} | ${n(r.generated)} | ${r.depth} | ${r.seconds} s | ${r.workers ?? 'auto (4)'} | ${r.fpCollisionProb ?? ''} |`
+    return `| \`${r.name}\` | ${d} | ${r.invariant} | ${r.error ? 'ERROR' : r.violated ? `**VIOLATED** in ${r.trace.length} steps` : 'holds, exhaustive'} | ${n(r.distinct)} | ${n(r.generated)} | ${r.depth} | ${r.seconds} s | ${r.workers ?? 'auto (4)'} | ${r.fpCollisionProb ?? ''} | ${when(r)} |`
   })].join('\n')
-out.TLC_SIM = ['| Run | Bounds | Checked | Runs | Trace length | Result | Wall time | Runs that reached … |', '|---|---|---|---|---|---|---|---|',
+out.TLC_SIM = ['| Run | Bounds | Checked | Runs | Trace length | Result | Wall time | Runs that reached … | Run |', '|---|---|---|---|---|---|---|---|---|',
   ...tlc.filter((r) => r.kind === 'sim').map((r) => {
     const c = r.cfg
-    return `| \`${r.name}\` | ${c.ns} shards, ${c.nb} batches, ≤ ${c.maxSend} sends, ${c.variants} variants, ≤ ${c.maxFlush} flushes, ${c.maxComp} compactions, ${c.maxExp} retention removals, ${c.maxLL} ledger losses, ${c.maxSL} shard losses, ${c.maxQ} queries | ${r.invariant} | ${n(r.samples)} | ≤ ${r.maxSteps} ${r.traceLen ? `(longest ${r.traceLen.max}, mean ${r.traceLen.avg})` : ''} | ${r.violated ? `violated (random, unminimised ${r.trace.length}-step trace)` : 'no violation found (simulation, not exhaustive)'} | ${r.seconds} s | ${Object.entries(r.coverage ?? {}).map(([k, v]) => `${k.slice(2)}: ${v}`).join(', ')} |`
+    return `| \`${r.name}\` | ${c.ns} shards, ${c.nb} batches, ≤ ${c.maxSend} sends, ${c.variants} variants, ≤ ${c.maxFlush} flushes, ${c.maxComp} compactions, ${c.maxExp} retention removals, ${c.maxLL} ledger losses, ${c.maxSL} shard losses, ${c.maxQ} queries | ${r.invariant} | ${n(r.samples)} | ≤ ${r.maxSteps} ${r.traceLen ? `(longest ${r.traceLen.max}, mean ${r.traceLen.avg})` : ''} | ${r.violated ? `violated (random, unminimised ${r.trace.length}-step trace)` : 'no violation found (simulation, not exhaustive)'} | ${r.seconds} s | ${Object.entries(r.coverage ?? {}).map(([k, v]) => `${k.slice(2)}: ${v}`).join(', ')} | ${when(r)} |`
   })].join('\n')
 
 // ---------------------------------------------------------------- explicit-state (bfs/) tables

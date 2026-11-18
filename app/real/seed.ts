@@ -1,11 +1,10 @@
 /**
  * Writes known data into the real viz API with real Remote Write requests:
  *
- *   - every series of the development mock (mock/data.ts: 128 series of counters, a classic
- *     histogram, gauges with a 12-minute gap, `up`), sample for sample, so the same query
- *     can be asked of the mock and of the real API and the answers compared;
- *   - 200 `viz_synthetic_series` gauges, the 200-series case of e2e/measure.cjs, with the
- *     values that harness synthesises (so the real API answers what the harness fakes).
+ *   every series of the development mock (mock/data.ts), sample for sample, so the same query
+ *   can be asked of the mock and of the real API and the answers compared: 128 series of
+ *   counters, a classic histogram, gauges with a 12-minute gap and `up`, and the 200
+ *   `viz_synthetic_series` gauges of e2e/measure.cjs's 200-series case.
  *
  * The window is 2026-11-18 08:00 to 14:00 UTC, which holds the e2e suites' fixed window
  * (09:30 to 12:30, lib.cjs) with room for `rate(...[5m])`, zooming out and the picker.
@@ -16,7 +15,7 @@
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { syntheticStorage } from '../mock/data'
+import { SCRAPE_INTERVAL as SCRAPE, syntheticStorage } from '../mock/data'
 import { remoteWriteBody, remoteWriteHeaders, type WriteSeries } from './remoteWrite'
 
 const arg = (name: string, fallback: string) => {
@@ -30,19 +29,6 @@ const KEYS = arg('keys', path.join(HERE, '.wrangler', 'keys.json'))
 export const SEED_FROM = Date.UTC(2026, 10, 18, 8, 0) / 1000
 export const SEED_TO = Date.UTC(2026, 10, 18, 14, 0) / 1000
 const SLICE = 30 * 60
-const SCRAPE = 15
-const N_SYNTH = 200
-
-/** e2e/measure.cjs `synthetic()`: the same labels and the same value at every timestamp. */
-export function syntheticSeries(i: number): Record<string, string> {
-  return {
-    __name__: 'viz_synthetic_series',
-    service: `svc-${String(i % 10).padStart(2, '0')}`,
-    route: `/r/${Math.floor(i / 10) % 5}`,
-    status: String(200 + 100 * (Math.floor(i / 50) % 4)),
-  }
-}
-export const syntheticValue = (i: number, t: number) => Number((3 * (i + 1) + 2 * Math.sin(t / 600 + i)).toFixed(4))
 
 async function main() {
   const keys = JSON.parse(readFileSync(KEYS, 'utf8')) as { write: string }
@@ -55,11 +41,6 @@ async function main() {
     for (const s of mock) {
       const got = s.samples(from, to)
       if (got.length) series.push({ labels: s.labels, samples: got.map((x) => [x.t * 1000, x.v]) })
-    }
-    for (let i = 0; i < N_SYNTH; i++) {
-      const out: [number, number][] = []
-      for (let t = Math.floor(from / SCRAPE) * SCRAPE + SCRAPE; t <= to; t += SCRAPE) out.push([t * 1000, syntheticValue(i, t)])
-      series.push({ labels: syntheticSeries(i), samples: out })
     }
     const body = remoteWriteBody(series)
     let res: Response | null = null

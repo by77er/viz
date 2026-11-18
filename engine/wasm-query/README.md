@@ -39,6 +39,13 @@ node tools/check.mjs          # load proof and size report, in Node
 | `series(input, match, minTs, maxTs, limits?)` | `viz_q_series` | `/api/v1/series` |
 | `scanRows(indexes, ranges)` | `viz_q_scan_rows` | For each ledger index fragment (`FileEntry.index`): an upper bound on the rows the ranges decode from that file; 0 = the file provably holds nothing the ranges read; `null` = the fragment does not parse (unknown, so read the file) |
 | `filesNeeded(indexes, ranges)` | the same | `scanRows(…) !== 0` per file |
+| `splitPlan(promql, limits?)` | `viz_q_split_plan` | Split over leaves (`fragments`, the labels left out of the split key) or one place, and why (`engine/query` `split_plan`) |
+| `extract(seriesFiles, sampleFiles, without, part, parts, ranges)` | `viz_q_extract` | A reader: the rows of one part of a split query in a group of files, as one `VZB1` batch, with row and series counts |
+| `splitTails(batches, without, parts, ranges)` | `viz_q_split_tails` | The coordinator: the tail batches cut by part (order kept; rows outside the ranges dropped) |
+| `gatherNew(ranges, budget)`, `gatherAdd(handle, rank, batch)`, `gatherEval(handle, promql, grid, fragments, limits?)`, `gatherFree(handle)` | `viz_q_gather_*` | A split leaf: a gathering session kept in the instance (by handle) that takes extracts and tail batches in any order with their precedence, stops at the leaf's budget, and evaluates the fragments into the leaf's answer (bytes); `gatherEval` frees the session |
+| `leafSummary(answer)` | (JavaScript only) | The fixed header of a leaf's answer: status, samples and series held and loaded |
+| `mergeJson(answers, promql, grid, limits?)` | `viz_q_merge` | The coordinator: merge the leaves' answers, replay the limits, finish the query; `{ json, stats }` as `queryRangeJson` |
+| `cardinalityPart(seriesFiles, tailBatches, startMs, endMs, part, parts, caps)`, `cardinalityReport(summaries, limit, startMs, endMs, lookbackStartMs, caps)` | `viz_q_card_part`, `viz_q_card_report` | The cardinality report: one part's summary, and the merged report as the `data` of `/api/v1/status/tsdb` and `/api/v1/status/cardinality` |
 | `memoryBytes()`, `instances()`, `reset()` | | The instance's linear memory (its high-water mark), how many instances were created, and dropping the instance so the memory can be reclaimed |
 
 - **No imports.** The crate applies the three `[patch.crates-io]` stand-ins of
@@ -65,6 +72,11 @@ node tools/check.mjs          # load proof and size report, in Node
 
 `scanRows` and `filesNeeded` are thin: the rule lives in `engine/query`
 (`src/prune.rs`, `scan_rows` and `files_needed`), next to the format it reads.
+
+- **ABI version 2** (was 1: the operations above were added; none changed). A gathering
+  session lives in the instance: if the instance is dropped (a trap, or `reset()`), its
+  sessions are gone and the next `gatherAdd` fails (`internal`), so the query Worker's
+  leaves never reset their engine while a session is open.
 
 ## What is not implemented
 
@@ -99,10 +111,10 @@ its 3,672 functions declare `v128` locals (a module built without `+simd128` has
 
 | | bytes |
 |---|---:|
-| `js/viz_query.wasm` | **2,639,443** |
-| `gzip -9` | **809,660** |
+| `js/viz_query.wasm` | **3,078,525** (was 2,639,443 before split execution and the cardinality report) |
+| `gzip -9` | **958,971** (was 809,660) |
 | imports | **0** |
-| exports | 14: `memory`, `viz_alloc`, `viz_free`, `viz_q_abi_version` and the ten operations |
+| exports | 24: `memory`, `viz_alloc`, `viz_free`, `viz_q_abi_version` and the twenty operations |
 
 For comparison: `engine/query/wasm` (the whole engine, write half included) is
 3,618,108 bytes, 1,034,617 gzip. Leaving out the Parquet writer and the merge saves about

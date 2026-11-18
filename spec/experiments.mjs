@@ -231,7 +231,7 @@ function runTlc(e) {
     { cwd: build, stdio: ['ignore', fd, fd], timeout: 6 * 3600_000, env })
   closeSync(fd)
   const out = readFileSync(log, 'utf8')
-  const res = { ...parseTlc(out), seconds: Math.round((Date.now() - t0) / 100) / 10 }
+  const res = { ...parseTlc(out), seconds: Math.round((Date.now() - t0) / 100) / 10, workers, maxHeap: '900m', ranAt: new Date().toISOString() }
   if (!res.violated && !res.completed) res.error = out.split('\n').filter((l) => /rror/.test(l)).slice(0, 5).join(' | ') || 'no verdict'
   return res
 }

@@ -156,16 +156,18 @@ describe('mock PromQL: range queries and errors', () => {
   })
   it('reports parse errors with a position', () => {
     expect(() => parse('sum by (')).toThrow(PromQLError)
-    expect(() => parse('sum(rate(c_total[5m]')).toThrow('1:21: parse error: unexpected end of input, expected ")"')
+    expect(() => parse('sum(rate(c_total[5m]')).toThrow('1:21: parse error: unclosed left parenthesis')
     expect(() => parse('c_total{a=}')).toThrow(/1:11: parse error: unexpected "}" in label matching, expected string/)
     expect(() => parse('')).toThrow('no expression found in input')
-    expect(() => parse('foo(c_total)')).toThrow(/unknown function with name "foo"/)
+    expect(() => parse('foo(c_total)')).toThrow(/unknown function with name 'foo'/)
+    // Valid PromQL the mock does not implement is `unsupported` (422), as the real API answers it.
+    expect(() => parse('sort(c_total)')).toThrow(expect.objectContaining({ errorType: 'unsupported', message: 'function "sort" (not implemented by the viz mock backend)' }))
     expect(() => parse('rate(c_total)')).toThrow(/expected type range vector/)
-    expect(() => parse('c_total and g')).toThrow(/not supported by the viz mock/)
+    expect(() => parse('c_total and g')).toThrow(expect.objectContaining({ errorType: 'unsupported', message: 'set operator "and" (not implemented by the viz mock backend)' }))
     expect(() => parse('{}')).toThrow(/at least one non-empty matcher/)
   })
-  it('enforces the 11,000 point limit', () => {
-    expect(() => queryRange(store, 'g', 0, 11001, 1)).toThrow(/exceeded maximum resolution of 11,000 points/)
+  it('enforces the 11,000 point limit, in the real API\'s words', () => {
+    expect(() => queryRange(store, 'g', 0, 11001, 1)).toThrow('exceeded maximum resolution of 11000 points per timeseries. Try decreasing the query resolution (?step=XX)')
   })
 })
 
@@ -174,10 +176,10 @@ describe('mock API over synthetic data', () => {
   const get = (url: string) => api.handle('GET', url).body as { status: string; data: any; error?: string; errorType?: string }
   const t = SERIES_START + 86400 * 30
 
-  it('has 20-200 deterministic series', () => {
-    const n = syntheticStorage().all().length
-    expect(n).toBeGreaterThanOrEqual(20)
-    expect(n).toBeLessThanOrEqual(200)
+  it('has 128 deterministic series of services and 200 synthetic ones', () => {
+    const all = syntheticStorage().all()
+    expect(all.length).toBe(328)
+    expect(all.filter((s) => s.labels.__name__ === 'viz_synthetic_series')).toHaveLength(200)
     const a = get(`/api/v1/query?query=${encodeURIComponent('pod_cpu_usage_cores')}&time=${t}`)
     const b = get(`/api/v1/query?query=${encodeURIComponent('pod_cpu_usage_cores')}&time=${t}`)
     expect(a).toEqual(b)
@@ -190,8 +192,9 @@ describe('mock API over synthetic data', () => {
     expect(get('/api/v1/label/route/values?match[]=' + encodeURIComponent('http_requests_total{service="auth"}')).data).toEqual(['/login', '/logout', '/token'])
     expect(get('/api/v1/series?match[]=' + encodeURIComponent('http_requests_total{service="auth",status="500"}')).data).toHaveLength(3)
     expect(get('/api/v1/series').errorType).toBe('bad_data')
-    expect(get('/api/v1/metadata').data.http_requests_total[0].type).toBe('counter')
-    expect(get('/api/v1/status/buildinfo').data.mock).toBe(true)
+    // The real API stores no metadata and always answers {}.
+    expect(get('/api/v1/metadata').data).toEqual({})
+    expect(get('/api/v1/status/buildinfo').data).toEqual({ version: 'viz-mock-0.1.0', revision: 'synthetic', branch: '', buildUser: '', buildDate: '', goVersion: '', mock: true })
   })
   it('counters are monotonic and histogram buckets are cumulative', () => {
     const r = get(`/api/v1/query_range?query=${encodeURIComponent('http_requests_total{service="checkout",route="/pay",status="200"}')}&start=${t - 3 * 86400}&end=${t}&step=3600`)
@@ -224,8 +227,59 @@ describe('mock API over synthetic data', () => {
   it('returns Prometheus-style errors', () => {
     const r = api.handle('POST', '/api/v1/query_range', `query=${encodeURIComponent('sum by (')}&start=${t - 60}&end=${t}&step=15`)
     expect(r.status).toBe(400)
-    expect(r.body).toEqual({ status: 'error', errorType: 'bad_data', error: 'invalid parameter "query": 1:9: parse error: unexpected end of input in grouping opts, expected label' })
+    // No position: the real API gives none (README, "Needed changes in query/").
+    expect(r.body).toEqual({ status: 'error', errorType: 'bad_data', error: 'parse error: unexpected end of input in grouping opts, expected label' })
     expect(api.handle('GET', `/api/v1/query_range?query=up&start=x&end=1&step=1`).status).toBe(400)
-    expect(api.handle('GET', '/nope').status).toBe(404)
+    expect(api.handle('GET', '/nope')).toMatchObject({ status: 404, body: { status: 'error', errorType: 'not_found', error: 'not found' } })
+  })
+})
+
+describe('mock API: the real API\'s HTTP surface (e2e/contract.cjs checks it against the real one)', () => {
+  const t = SERIES_START + 86400 * 30
+  const api = createMockApi({ now: () => t, requireToken: 'good', readlessToken: 'readless' })
+  const auth = { authorization: 'Bearer good' }
+  const form = { 'content-type': 'application/x-www-form-urlencoded' }
+  const range = (q: string) => `query=${encodeURIComponent(q)}&start=${t - 60}&end=${t}&step=15`
+
+  it('takes the methods each endpoint takes, and says which with Allow', () => {
+    expect(api.handle('DELETE', '/api/v1/query', '', auth)).toMatchObject({ status: 405, body: { errorType: 'method_not_allowed', error: 'method not allowed' }, headers: { Allow: 'GET, POST' } })
+    expect(api.handle('POST', '/api/v1/metadata', '', auth)).toMatchObject({ status: 405, headers: { Allow: 'GET' } })
+    expect(api.handle('POST', '/api/v1/label/job/values', '', auth)).toMatchObject({ status: 405, headers: { Allow: 'GET' } })
+    expect(api.handle('GET', '/api/v1/status/flags', '', auth)).toMatchObject({ status: 404 })
+  })
+  it('refuses a missing or wrong key with 401 and a challenge, and a key without the read scope with 403', () => {
+    expect(api.handle('GET', '/api/v1/status/buildinfo')).toMatchObject({ status: 401, body: { errorType: 'unauthorized', error: 'missing API key' }, headers: { 'WWW-Authenticate': 'Bearer realm="viz"' } })
+    expect(api.handle('GET', '/api/v1/labels', '', { authorization: 'Bearer nope' })).toMatchObject({ status: 401, body: { error: 'invalid API key' } })
+    expect(api.handle('GET', '/api/v1/labels', '', { authorization: 'Bearer readless' })).toMatchObject({ status: 403, body: { errorType: 'forbidden', error: 'API key lacks the read scope' } })
+    // No cost headers on a refusal: nothing was asked of storage.
+    expect(api.handle('GET', '/api/v1/labels').headers?.['X-Viz-Engine-Ms']).toBeUndefined()
+  })
+  it('sends the 28 cost headers on answers and on query errors', () => {
+    const okRes = api.handle('POST', '/api/v1/query_range', range('up'), { ...auth, ...form })
+    const bad = api.handle('POST', '/api/v1/query_range', range('up{'), { ...auth, ...form })
+    for (const r of [okRes, bad]) {
+      expect(Object.keys(r.headers ?? {}).filter((k) => k.startsWith('X-Viz-'))).toHaveLength(28)
+      expect(r.headers?.['X-Viz-Execution']).toBe('single')
+    }
+  })
+  it('answers 422 for the query-size and nesting limits and for PromQL it does not implement', () => {
+    const big = api.handle('POST', '/api/v1/query_range', range('up' + ' + up'.repeat(5000)), { ...auth, ...form })
+    expect(big).toMatchObject({ status: 422, body: { errorType: 'execution', error: 'query exceeded limit max_query_bytes: 25002 bytes of query text, the limit is 16384' } })
+    const deep = api.handle('POST', '/api/v1/query_range', range('('.repeat(120) + 'up' + ')'.repeat(120)), { ...auth, ...form })
+    expect(deep).toMatchObject({ status: 422, body: { errorType: 'execution' } })
+    expect(api.handle('POST', '/api/v1/query_range', range('up and up'), { ...auth, ...form })).toMatchObject({ status: 422, body: { errorType: 'unsupported' } })
+    expect(api.handle('POST', '/api/v1/query_range', range('no_such_fn(up)'), { ...auth, ...form })).toMatchObject({ status: 400, body: { error: "parse error: unknown function with name 'no_such_fn'" } })
+    expect(api.handle('POST', '/api/v1/query_range', '', { ...auth, ...form })).toMatchObject({ status: 400, body: { error: 'invalid parameter "query": the query is empty' } })
+    expect(api.handle('POST', '/api/v1/query', '{"query":"1"}', { ...auth, 'content-type': 'application/json' })).toMatchObject({ status: 400 })
+  })
+  it('writes every label set with sorted names, lists series in label order, and bounds label endpoints by start and end', () => {
+    const r = api.handle('POST', '/api/v1/query', `query=${encodeURIComponent('up{service="auth"}')}&time=${t}`, { ...auth, ...form }).body as any
+    for (const s of r.data.result) expect(Object.keys(s.metric)).toEqual([...Object.keys(s.metric)].sort())
+    const instances = r.data.result.map((s: any) => s.metric.instance)
+    expect(instances).toEqual([...instances].sort())
+    const before = api.handle('GET', `/api/v1/label/__name__/values?start=${SERIES_START - 86400}&end=${SERIES_START - 3600}`, '', auth).body as any
+    expect(before.data).toEqual([])
+    const during = api.handle('GET', `/api/v1/label/__name__/values?start=${t - 60}&end=${t}`, '', auth).body as any
+    expect(during.data).toContain('up')
   })
 })

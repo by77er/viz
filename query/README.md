@@ -5,24 +5,28 @@ tenant from that tenant's Parquet files on R2 and the rows still held by its sha
 the `Leaf` Durable Object it reads files through.
 
 ```
- client ─► query Worker ──plan──► engine (WASM)            which matchers, which time ranges
- (Grafana,     │ ──plan x2──────► Ledger (the tenant's)    ONE version: live files + watermarks
+ client ─► query Worker ──plan──► engine (WASM)            which matchers, which time ranges; split or one place
+ (Grafana,     │ ──plan x2──────► Ledger (the tenant's)    ONE version: live files (in precedence order) + watermarks
   the app)     │ ──scanRows─────► engine                   which files to skip, how much would be decoded
-               │ ──read (≤6)────► Leaf pool ──GET──► R2    whole objects, through the Cache API
                │ ──tailRead─────► Shards                   rows above each stream's watermark
-               └─ evaluate ─────► engine                   PromQL over (lake files, tail batches)
+   one place:  │ ──read (≤6)────► Leaf pool ──GET──► R2    whole objects, through the Cache API
+               │ └ evaluate ────► engine                   PromQL over (lake files, tail batches)
+   split:      │ ──evaluate ────► L split leaves           each owns a range of series keys, gets its part of the tail
+               │                   └─extract (≤6 files)──► reader leaves ──GET──► R2: the part's rows, as one batch
+               │                   └ gather + evaluate ──► partial aggregates
+               └─ merge ────────► engine                   partials merged, the rest of the query finished
 ```
 
 | File | Contents |
 |---|---|
 | `src/index.ts` | The Worker: routing, authentication, CORS, envelopes, cost headers |
 | `src/params.ts` | Prometheus parameter parsing: timestamps, durations, `match[]`, form bodies |
-| `src/coordinator.ts` | Plan, one ledger version, pruning, leaf fan-out, tail reads with the fence, evaluation |
-| `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2 |
+| `src/coordinator.ts` | Plan, one ledger version, pruning, leaf fan-out, tail reads with the fence, evaluation; split execution (`runSplit`); the cardinality report |
+| `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2, extracts one part's rows from them (a reader), evaluates one part of a split query (a split leaf), and summarises one part's series for the cardinality report |
 | `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults |
 | `wrangler.jsonc` | The production shape (never deployed) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
-| `test/*.test.ts` | 62 tests in workerd, 8 files |
+| `test/*.test.ts` | 75 tests in workerd, 10 files (`split.test.ts` and `cardinality.test.ts` are new) |
 | `test/measure.bench.ts` | The local measurement (`npm run measure`) |
 | `test/fixtures/` | The workload two tenants write, the query table, and the expected results |
 | `tools/gen-fixtures.mjs` | Regenerates the fixtures (expected results come from a native reference tool) |
@@ -32,7 +36,7 @@ the `Leaf` Durable Object it reads files through.
 (cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it; owned by engine/wasm)
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
-npm test                                   # 62 tests in workerd, 8 files, 25 to 45 s
+npx vitest run --maxWorkers=2              # 75 tests in workerd, 10 files, about 5 minutes on a loaded machine (`npm test` uses every core)
 npx tsc --noEmit                           # clean
 npm run measure                            # the local measurement, about 2 minutes
 node tools/mutants.mjs                     # the mutation check, about 7 minutes
@@ -54,6 +58,8 @@ password of Basic auth.
 | `/api/v1/series` | GET, POST | `match[]` (at least one), `start`, `end` |
 | `/api/v1/metadata` | GET | always `{}`: no metric metadata is stored. Present because the app's client calls it |
 | `/api/v1/status/buildinfo` | GET | minimal: `version` is `0.1.0-viz`, the other fields empty |
+| `/api/v1/status/tsdb` | GET | Prometheus' cardinality statistics, over a window of the tenant's data (default the last day; `start`, `end` or `range`, viz extensions), `limit` items per list (default 10, at most 10,000). "Cardinality report" below |
+| `/api/v1/status/cardinality` | GET | viz's report: `range` (default `1d`) before `end` (default now), `lookback` (default the range), `limit`: top metrics with the labels behind their cardinality, top label names and pairs, series created in the range |
 | `/healthz` | GET, HEAD | no key |
 
 - **Parameters as Prometheus parses them.** Times are Unix seconds (`1795003200`,
@@ -95,6 +101,13 @@ password of Basic auth.
 | `X-Viz-Plan-Attempts` | ledger reads: 1, plus one per refusal by a shard, missing file or version mismatch |
 | `X-Viz-Ledger-Version` | the ledger version the answer reflects |
 | `X-Viz-Wasm-Memory-Bytes` | the engine instance's linear memory after the query |
+| `X-Viz-Execution` | `single` (one place) or `split` (over leaves) |
+| `X-Viz-Split-Reason` | why a query was evaluated in one place (`… does not decompose`, `a selector outside any aggregation`, `the query fits in one place`, …) |
+| `X-Viz-Split-Leaves` | parts the series were split into (one split leaf each) |
+| `X-Viz-Reader-Calls` | calls split leaves made to readers (one per group of at most six files, per leaf) |
+| `X-Viz-Rpc-Bytes` | bytes of a split query that crossed RPC: extracts, tail parts, leaf answers |
+| `X-Viz-Leaf-Peak-Wasm-Bytes`, `X-Viz-Leaf-Max-Samples` | the largest engine memory a split leaf reported, and the most samples one held |
+| `X-Viz-Leaf-Reruns` | split leaves run again after stopping at their share of the budget |
 
 ## What is implemented
 
@@ -134,12 +147,15 @@ key, not by cookies. A preflight (`OPTIONS`) is answered from the list without a
    upper bound on the lake samples the engine decodes, known before anything is fetched.
    It is checked against `maxScanSamples`. The reason is in "Limits".
 5. **File order.** Sample files go to the engine lowest precedence first (a later file
-   wins on a duplicate `(series, timestamp)`): compaction outputs by level, then flush
-   files by shard, incarnation and sequence range **as numbers**. The ledger's order is
-   key order, which is text order, where `…-10-12-…` sorts before `…-2-9-…`. Left as it
-   was, a sample rewritten in a stream's 11th flush lost to its 2nd: this was a real
-   wrong answer, found by a test here that failed three runs out of four (see "Needed
-   changes", 1).
+   wins on a duplicate `(series, timestamp)`), in the order of the **precedence the ledger
+   assigns** (`contracts/ledger.ts` `LiveFile`, design D22): `plan` lists files in
+   ascending precedence, and `inPrecedenceOrder` re-states that order from the
+   `precedence` field (a stable sort that leaves a correct plan untouched). Split
+   execution hands the readers the files in the same order and ranks their extracts by it.
+   (This replaces `byPrecedence`, which derived an order from the keys: key order is
+   text order, where `…-10-12-…` sorts before `…-2-9-…`, and a sample rewritten in a
+   stream's 11th flush lost to its 2nd. That wrong answer, found by a test here, is what
+   made the ledger assign precedence.)
 
 ### Fetching through leaves
 
@@ -221,6 +237,12 @@ could loosen a limit. Unknown fields are ignored. Records are cached for 30 s pe
 | `maxScanSamples` | 3,000,000 | 422 `query exceeded limit max_scan_samples: the data files in range hold N samples the query would decode, the limit is M. Narrow the time range, or select fewer metrics by name.` |
 | `maxFiles` | 2,000 | 422 `query exceeded limit max_files: N data files to read, the limit is M. Narrow the time range.` |
 | `timeoutMs` | 30,000 | 503 `timeout`. A `timeout` parameter can lower it, not raise it |
+| `splitAboveSamples` | 1,500,000 | (not an error) a query that decomposes is split above this scan bound |
+| `maxQuerySamples`, `maxQuerySeries` | 64,000,000, 640,000 | a split query, over all leaves: 422 `… max_samples: [at least] N samples loaded, the limit is M …` (`M` is `min(this, leaves x maxSamples)`) |
+| `maxQueryScanSamples` | 100,000,000 | a split query: 422 `query exceeded limit max_query_scan_samples: …` |
+| `maxQueryFetchBytes`, `maxQueryFiles` | 512 MiB, 20,000 | a split query: 422 `… max_query_fetch_bytes …`, `… max_query_files …` |
+| `maxLeaves` | 32 | (not an error) the most parts a query is split into |
+| `maxCardinalitySeries`, `maxCardinalityPairs` | 1,000,000, 2,000,000 | the cardinality report: 422 `cardinality report exceeded limit max_series` / `max_pairs` |
 
 **Why the byte cap is 16 MiB and why there is a scan cap.** A cap near 64 MiB of Parquet
 was considered first. Measured here, that is not safe, for two reasons.
@@ -251,29 +273,99 @@ refused with 503 before it fetches anything; a query alone always runs. After a 
 that grew WASM memory past 48 MiB the engine instance is dropped, so the memory can be
 reclaimed.
 
+### Split execution
+
+A query that decomposes (`engine/query` README, "Split execution": every selector inside an
+aggregation such as `sum`, `avg`, `count`, `min`, `max`, `group`, `stddev`, `stdvar`,
+`topk`, `bottomk`, `count_values` over a series-local argument) is **split over leaves by
+series** when one place is not enough: its scan bound is above `splitAboveSamples`
+(1,500,000, three quarters of `maxSamples`), or its files are over `maxFetchBytes` or
+`maxFiles`. Otherwise it runs in one place, which is cheaper (every part of a split reads
+every file). A query that does not decompose always runs in one place under the
+one-place limits. `X-Viz-Execution` and `X-Viz-Split-Reason` say which and why.
+
+1. **Leaves.** `L = ceil((scan bound + tail bytes / 20) / (0.75 x maxSamples))`, at least
+   2, at most `maxLeaves` (32) and the pool. Part `j` owns series keys in
+   `[j·2^64/L, (j+1)·2^64/L)` (the key is the `series_id` unless the query can change
+   labels); every sample of a series reaches one leaf.
+2. **The tail** is read by the coordinator with the usual fence (refusals re-read the
+   ledger), cut by part in the engine (`splitTails`), and each part goes to its leaf.
+   So every series' lake rows and tail rows meet in one leaf (I17: a `rate` window that
+   straddles them sees one stream). Only the tail is held at the coordinator.
+3. **Split leaves** (`Leaf.evaluate`, `leaf/<cell>/<n>` objects chosen from the query id)
+   call **readers** (`Leaf.extract`, other objects of the same pool) for every group of at
+   most six files (sample files in precedence order, each with its series file), all at
+   once. A reader reads its files (Cache API, then R2) and returns its part's rows as one
+   batch. The leaf gathers extracts as they arrive (each ranked by its group's position)
+   and its tail batches, then evaluates the query's aggregations into partials.
+4. **The coordinator** merges the answers (`mergeJson`) and finishes the query. Limits are
+   replayed on the summed counts in the order one place checks them.
+
+**Budgets.** The query may load `min(maxQuerySamples, L x maxSamples)` samples and
+`min(maxQuerySeries, L x maxSeries)` series; each leaf gets a share, and the shares add up
+to the query's budget (so no leaf may hold more than one isolate's `maxSamples`). A leaf
+stops **while gathering** as soon as it holds more than its share (what it holds is a
+lower bound of what it would load), or at a `select` over its share, and says so. Then:
+if the leaves' counts already prove the query over its budget, it is refused (422
+`query exceeded limit max_samples: at least N samples loaded, the limit is M (over L
+leaves)`); otherwise a leaf the uneven spread pushed over its share is run again once with
+what the others left (`X-Viz-Leaf-Reruns`), and if it stops again the query is refused.
+When no leaf stopped, a query over its budget gets one place's exact message.
+
+**Failures.** A reader or a split leaf that throws is retried once on the next object of
+the pool; a second failure fails the query (503). A file a reader cannot find sends the
+query back to the ledger, as for one place, three times at most. A leaf's answer is used
+once whatever happened to a retried call.
+
+**Cost.** Each file is read once per part (from the Cache API after the first) and its
+`series_id` column decoded once per part; a part's samples are decoded by its own readers
+only. Extracts cross RPC at 20 bytes a row (`X-Viz-Rpc-Bytes`). See "Measurements".
+
+### Cardinality report
+
+`/api/v1/status/tsdb` and `/api/v1/status/cardinality`: one ledger version of the tenant's
+`metric_series` files over `[start − lookback, end]` (pruned by time) and every shard's
+tail, with the same fence as a query, read by the tenant of the key and nothing else.
+Counted in one place, or over leaves (each owning a range of `series_id`s and reading
+every series file) when the series files are over `maxFetchBytes`. No sample is read.
+
+- **Counting is exact, with caps** (`maxCardinalitySeries` 1,000,000 series seen;
+  `maxCardinalityPairs` 2,000,000 label pairs plus (metric, label, value) triples). Above a
+  cap the report is refused with 422 `cardinality report exceeded limit max_series: …`;
+  below them the error is zero. Over leaves each part has the whole cap.
+- **`/status/tsdb`** answers Prometheus' `TSDBStatus` shape, in its field order, checked
+  against the Prometheus HTTP API documentation (read 2026-11-18): `headStats`
+  (`numSeries`: series in the window; `numLabelPairs`: distinct pairs, a field of
+  Prometheus' struct that the documentation's example omits; **`chunkCount` is `null`**:
+  viz has no chunks; `minTime`/`maxTime`: first and last sample seen in the window,
+  `null` when there is none), `seriesCountByMetricName`, `labelValueCountByLabelName`,
+  `memoryInBytesByLabelName` (the documented definition: the lengths of a label's
+  distinct values added up; viz's real memory use is not that), and
+  `seriesCountByLabelValuePair` (`"name=value"`), each largest first, ties by name. These
+  describe the window, not a head block.
+- **`/status/cardinality`** adds `seriesCreated` (series whose first sample seen, reading
+  from `start − lookback`, is in the range: churn), per metric its series, created series
+  and its labels by distinct values (the labels that make its cardinality), label names
+  with values and bytes, label pairs, and created series by metric.
+- "In the window" is decided from a series file's first and last sample per file: a
+  series that has samples in a file on both sides of the window but none inside counts as
+  in it (at most one file's span at each edge: ten minutes for flush files).
+
 ## Not implemented
 
-- **Distributed partial aggregation** (design §6.2): leaves that scan row groups and tail
-  rows for a key range, evaluate, and return partial aggregates as Arrow IPC, with `sum`,
-  `count`, `min`, `max` decomposed, `avg` as sum and count, and `topk` per split and
-  merged. This version evaluates in **one place**, the coordinator, so a query is bounded
-  by one isolate: 24 hours of 2,000 series scraped every 15 s (11.5 M samples) is refused.
-  What it would take: (a) a logical plan in the engine with a split point below the
-  aggregation and a serialisable partial state; (b) splits by series-key range, so that
-  all rows of a series reach one leaf whichever shard they came through, which needs
-  tail reads filtered by key range; (c) the engine in the leaf (it already runs there:
-  same module); (d) the invariance tests extended to "any split gives the same result".
-  Exactness needs care: a float `sum` over splits adds in a different order than one
-  `sum` over all series, so results can differ in the last bits from the reference, and
-  the invariance tests compare exact strings. A smaller step that keeps exact results is
-  **evaluation in time slices** (a range query cut into step-aligned windows, each
-  planned, fetched and evaluated on its own, results concatenated per series); it bounds
-  memory by the window, not by the query, but changes the meaning of `@ start()` /
-  `@ end()` and of the per-query limits, and needs a decision before it is built.
+- **Split execution, what is left.** Queries that do not decompose (`quantile` or
+  `absent` over raw series, binary operators between vectors below an aggregation,
+  aggregations inside subqueries, a selector outside every aggregation) still run in one
+  place and are bounded by one isolate. Partials travel in the engine's binary form, not
+  Arrow IPC. Readers read whole files, so every part reads every file of the range
+  (`L`-fold reads and `series_id` decodes; "Needed changes", 2). The tail is cut by part
+  at the coordinator, not filtered at the shards. Leaf partials are not cached. Evaluation
+  in time slices (which would split queries that do not decompose by series) is not built.
 - **Range reads by row group** (the seam is described above).
 - **Result caching, and caching leaf partials** (design §6.3). Only immutable files are
   cached.
-- **A Container fallback** for plans that do not fit an isolate.
+- **A Container fallback** for plans that do not fit an isolate (split execution covers
+  the ones that decompose).
 - **Label-matcher access policies, OAuth and OIDC** (design §9): keys with the `read`
   scope see their whole tenant.
 - **Revocation.** A deleted or disabled key keeps working for up to 60 s (edge's key
@@ -388,6 +480,19 @@ both tenants. Plus 10 label-endpoint calls per tenant.
 | Authentication: 5 kinds of bad key and 2 keys without `read` on 7 endpoints; Basic auth; a read-only key cannot write | `http.test.ts` | 401 with `WWW-Authenticate`, 403, 200; the secret is never echoed |
 | CORS: an allowed origin, 5 others, no origin, preflight, a refused request | `http.test.ts` | echoed only for the allow-list; never `*`; never credentials |
 | The engine binding | `engine.test.ts` | see `engine/wasm-query/README.md` |
+| **Split equals one place.** The 69 queries of the table and 32 aggregation-heavy queries (as range and instant: 64 more), tenant a at 1, 2, 7 and 32 leaves and tenant b at 7, at the three moments of the invariance test (all tail; lake + an overlapping tail that rewrites samples; all lake) | `split.test.ts` | **every response byte-identical to one place** (the table's also equal to the reference); split answers report the same samples and series loaded; at least 296 split answers per moment (the rest fall back and say why). 133 queries x 5 evaluations x 2 tenants x 3 moments, about 100 s |
+| Fallback: 8 queries that do not decompose, with splitting forced | `split.test.ts` | evaluated in one place, `X-Viz-Split-Reason` names why, results equal the reference; a small query that decomposes stays in one place ("fits in one place") |
+| Splitting by itself above `splitAboveSamples` | `split.test.ts` | split over 2 leaves, the same bytes; reader calls, RPC bytes and leaf memory reported |
+| **Per-leaf budgets.** Shares of exactly the query's size (2 leaves; and 7 leaves, one at a time); one sample less; shares of 20 samples; a series budget of 1 | `split.test.ts` | the same bytes, with leaves run again (`X-Viz-Leaf-Reruns` > 0 at 7); 422 naming `max_samples` with no data; with tiny shares every leaf stops while gathering, holding far fewer samples than the query (`X-Viz-Leaf-Max-Samples`), 422 `… at least N samples loaded, the limit is 40 (over 2 leaves)`; 422 `max_series` |
+| Failures: a reader that fails once, a split leaf that fails once, a split leaf that keeps failing | `split.test.ts` | retried: the same bytes and the same samples loaded (not counted twice), 4 leaf calls for 3 parts; 503 |
+| A listed file missing from R2 and the cache, with splitting forced | `split.test.ts` | 503 after 4 ledger reads, no partial answer; the same query answers again once the object is back |
+| Lake + overlapping tail at 1, 2, 7 leaves, explicitly (I17) | `split.test.ts` | equal to the reference; a `max` over the rewritten series equals one place |
+| **File order follows the ledger's precedence.** Unit: `inPrecedenceOrder` and reader groups over files whose precedence order is not their key order; end to end: 11 flushes of one sample | `leaves.test.ts` | the engine (one place) and the readers (split over 2) receive the files in exactly `Plan.files` order, which is not key order; the latest write is read back |
+| **Cardinality, known data.** 75 series in the window (5 that existed before it), 66 label pairs, lake + tail | `cardinality.test.ts` | `/status/tsdb` equal to the expected object, in Prometheus' field order; the same bytes over 2, 3 and 7 leaves; `limit` cuts every list (default 10); bad limits are 400 |
+| Churn and per-metric label cardinality | `cardinality.test.ts` | 70 created (not the 5 seen 90 minutes before the window); without the look-back all 75 count as created; a window holding only an old series; per metric the labels by distinct values; the same over 4 leaves |
+| Caps | `cardinality.test.ts` | at 76 series seen and 135 pairs + triples it answers; one below, 422 naming the cap |
+| **Cardinality isolation.** Two tenants on the same shards, lake and tail; a parameter and headers naming the other tenant | `cardinality.test.ts` | the other tenant's metric, label and values never appear, one place and over leaves; a tenant with no data gets zeros and nulls |
+| The lake alone after the shards discard | `cardinality.test.ts` | the same report |
 
 The shapes were checked against the Prometheus HTTP API documentation
 (`prometheus.io/docs/prometheus/latest/querying/api/`, read on 2026-11-18): the envelope
@@ -538,44 +643,50 @@ cold and warm.
 
 ## Needed changes in other components
 
-Nothing outside `query/`, `engine/wasm-query/`, `engine/query` and `engine/promql` was
-edited. These are for their owners.
+Nothing outside `query/`, `engine/wasm-query/`, `engine/query` and `engine/promql` (an
+additive, tested hook: `EvalHooks`) was edited. These are for their owners.
 
-1. **`ledger/`, `compact/`, `flush/test/read.ts`: the order of files is text order, and
-   it decides which duplicate wins.** `plan` returns files `ORDER BY key`; compaction
-   merges its inputs in key order "which is the order a query reads them in"; the engine
-   lets the later file win. `L0-<shard>-<inc>-10-12-…` sorts before `L0-<shard>-<inc>-2-9-…`,
-   so from a stream's tenth batch on, an older flush can win over a newer one: a
-   rewritten sample reverts. This Worker now orders flush files numerically
-   (`byPrecedence`), but **compaction still bakes the wrong winner into its output**, and
-   two compaction outputs holding the same sample have no defined order at all. Fix:
-   give `FileEntry` an explicit precedence (for example the highest sequence, or the
-   ledger version, of the newest input), have `plan` return files in that order, and
-   have compaction merge in it. `leaves.test.ts`, "a sample rewritten by a later flush
-   wins", reproduces the hazard at the ledger (it asserts the 11th file is listed before
-   the 2nd).
-2. **`engine/storage`: a sample budget inside `select`**, so that a selector is abandoned
-   while rows are gathered and not after (the materialise-then-refuse case measured
-   above), and **a series-only read** for the label endpoints. With the first, the
-   Worker's `maxScanSamples` could be dropped.
+1. **Done by `ledger/` (was: "the order of files is text order").** The ledger now assigns
+   every file a precedence and `plan` lists files in it (contracts/ledger.ts `LiveFile`,
+   design D22). This Worker follows it (`inPrecedenceOrder`) and no longer derives an order
+   from keys (`byPrecedence` is gone). Nothing left here.
+2. **`engine/storage`: a sample budget inside `select`, row-group reads by key range, and a
+   series-only read.**
+   - A budget inside `select`, so that a selector is abandoned while rows are gathered and
+     not after (today one selector's matching samples, one part's under split execution,
+     are materialised before any limit can fire). With it, `maxScanSamples` could go, and
+     a split leaf would stop inside a reader's `select` instead of after its extract.
+   - `select` over a file given as footer plus the row groups a key range needs, and
+     flush/compaction files whose row groups are cut by `series_id` within a metric (the
+     sort order already is `metric_name, series_id`). Then a split part would read and
+     decode only its key range of each file instead of every file whole (today each file
+     is read and its `series_id` column decoded `L` times; "Measurements"). The split key
+     is already a `series_id` range for every query whose argument cannot change labels.
+   - A series-only read for the label endpoints and the cardinality report.
+     `engine/query/src/catalog.rs` reads `metric_series` files as `contracts/TABLES.md`
+     defines them in the meantime; a format change there must be made in both places.
 3. **`shard/`: `tailRead` needs paging and a filter.** A tenant may hold up to 64 MiB in
    a shard (`tenantMaxBytes`), and one RPC message is limited to 32 MiB: a tail above
    that cannot be read at all (the query fails with 503). It needs a `maxBytes` and a
-   continuation, and, for design §6.2, a time-range and key-range filter. Today the
-   whole tail is returned and counted against `maxFetchBytes` whatever the query's range.
+   continuation, and a time-range and series-key-range filter: split execution now cuts
+   the tail by key range at the coordinator (`splitTails`), which a shard could do for
+   each leaf directly. Today the whole tail is returned and counted against
+   `maxFetchBytes` whatever the query's range.
 4. **`shard/`: a way to read "the current stream from sequence 0"** without first asking
    for the incarnation. The coordinator calls `tailRead(tenant, 0, 0)` and uses the
    `incarnation_mismatch` answer to learn it, which costs a second call for every stream
    the ledger has not registered. (`describe` returns more than a reader should see.)
 5. **`ledger/`: one `plan` call for both tables** (one version by construction, half the
    calls), accepting several ranges, and paged or index-free above a size (spike S4: a
-   plan is 0.8 KB per file because each entry carries its index fragment).
+   plan is 0.8 KB per file because each entry carries its index fragment). A 7-day split
+   query lists about 4,000 files.
 6. **`edge/`: move `auth.ts` and `poolMap` to a shared place.** The query Worker imports
    them from `../edge/src` as instructed; `route.ts` pulls `batch.ts` into the query
    bundle's dependency graph, and edge's in-memory caches (60 s for keys) become the
    query Worker's revocation delay without edge knowing it has a second user.
-7. **`engine/wasm`**: none. (`flush` loads its module; the query Worker never does.)
-8. **`app/`**: none needed. Its client calls `/api/v1/metadata`, which answers `{}`.
+7. **`design/`**: the decisions listed below, and DESIGN §6.2 updated to what is built
+   (leaves pull their rows from readers; partials are not Arrow IPC; exact aggregations).
+8. **`engine/wasm`**, **`app/`**: none.
 
 ## Contract issues
 
@@ -584,19 +695,9 @@ edited. These are for their owners.
 1. **`contracts/engine.ts` has no place for the read path's needs**: errors with a type,
    limits, statistics, `plan`, the metadata calls, `parseSelectors`, `scanRows`. The list
    is in `engine/wasm-query/README.md`. `Engine` is now implemented by two modules.
-2. **File precedence: this Worker departs from `contracts/TABLES.md` on purpose.**
-   `TABLES.md` ("Object keys") now says that when files disagree about a
-   `(series_id, ts)`, "the one later in key order wins, in a read and in a merge alike",
-   and that across a compaction the survivor is not defined. For flush files of one
-   stream that rule lets an older write win from the stream's tenth batch on, so a
-   rewritten sample would change value when its rows move from the tail to the lake:
-   results would depend on where rows live, which `engine/AGENTS.md` forbids. The Worker
-   orders flush files by sequence number instead (`byPrecedence`); compaction outputs
-   still go by level and key. `contracts/ledger.ts` `Plan.files` states no order and
-   `FileEntry` has no precedence. Proposed contract change: a precedence on `FileEntry`
-   (for example the highest sequence, or the ledger version, of the newest input),
-   files listed in that order, and the read and merge rule stated in terms of it
-   ("Needed changes", 1).
+2. **File precedence: resolved.** The contract now gives every live file a precedence
+   and `Plan.files` comes in that order (contracts/ledger.ts, TABLES.md, D22); this Worker
+   follows it. (It used to depart from "the later key wins" on purpose.)
 3. **`contracts/TABLES.md`, object keys**: the read path now parses flush-file keys for
    the sequence range. Compaction keys have another shape (`L{level}-{span}-{inputs16}-
    {hash8}`), which is only described in `compact/`; `TABLES.md` gives one format.
@@ -614,15 +715,50 @@ edited. These are for their owners.
    standard ones; a client that switches on `errorType` sees three values it may not
    know.
 
+9. **`contracts/engine.ts` has no split execution**: `splitPlan`, `extract`,
+   `splitTails`, the gathering session, `mergeJson` and the cardinality calls are in
+   `engine/wasm-query/js/index.ts` only.
+10. **The cardinality report reads `metric_series` directly** (`engine/query`
+    `catalog.rs`), as `contracts/TABLES.md` defines the table; storage has no
+    series-only read.
+
 Decisions made here that belong in `design/DECISIONS.md` (not written there: `design/`
 was out of bounds): a second WASM module for the read path; the fetch cap of 16 MiB and
-the scan cap; leaves return bytes and the coordinator evaluates; the cache key is the
-object key; 503 after three refusals per shard; file order by numeric sequence in the
-reader.
+the scan cap; leaves return bytes and the coordinator evaluates (for queries that do not
+decompose); the cache key is the object key; 503 after three refusals per shard.
+New with split execution, each with its alternative:
+- **Aggregations are exact and order-independent everywhere** (one place included), so
+  that a split result is byte-identical to one place; the alternative, shipping every
+  series' values to the coordinator, is not compact, and keeping Neumaier sums cannot be
+  exact under a different order. Would change if Prometheus-identical last bits matter
+  more than split-invariance.
+- **Split by series key, readers pull for leaves** (each part's leaf asks readers for its
+  rows of every file group); alternatives: each leaf reading every file itself (six
+  reads in flight per object: about 100 sequential waves for a day of flush files), or
+  readers shuffling through the coordinator (all rows through one isolate). Would change
+  with row-group reads by key range.
+- **Split only above `splitAboveSamples`**: one place is cheaper below it.
+- **The tail is cut by part at the coordinator** and sent to the owning leaf (exact for
+  I17); the alternative, the coordinator evaluating the tail's contribution itself, is
+  wrong for windows that straddle lake and tail.
+- **Per-leaf budgets are shares of the query's, each at most one isolate's
+  `maxSamples`**; a leaf over its share stops while gathering and is run again once with
+  what the others left; refused when the counts prove the query over.
+- **Cardinality counting is exact with caps**, not HyperLogLog: zero error below the
+  caps, a refusal above.
 
 ## Known risks
 
-- **One isolate evaluates.** Everything a query reads is in the coordinator's memory
+- **Split execution reads every file once per part.** With whole-file reads of
+  ten-minute flush files, `L` parts mean `L` reads of each file (Cache API hits after the
+  first) and `L` decodes of its `series_id` column; whether calls to one leaf object
+  share its six connections (which would serialise reader calls per object) was not
+  measured. See "Measurements" and "Needed changes", 2.
+- **Leaves share an engine instance per isolate** (`leafEngine`, separate from the
+  coordinator's): a split leaf's gathering session lives in it, so it is never reset
+  while a session is open, and a trap in one call (it drops the instance) fails every
+  open session in that isolate, which their coordinators retry once.
+- **One isolate evaluates a query that does not decompose.** Everything such a query reads is in the coordinator's memory
   twice. The limits keep one query within about 86 MiB in the worst case and the isolate
   budget keeps a burst from adding up, but those are arguments from two measurements,
   not a soak test, and an isolate over 128 MB can end other requests in it (spike S2).

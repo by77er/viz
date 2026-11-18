@@ -159,12 +159,28 @@ export interface LedgerChange {
   /** With the precedence the ledger assigned. (A log written before precedence existed has none; a reader derives `[version, version]` for `add_unit`, the inputs' range for `replace`.) */
   added: LiveFile[]
   removed: string[]
+  /**
+   * The same keys as `removed`, in the same order, each with its table, so a reader need not
+   * remember which table a removed key belonged to. Written with every non-empty `removed` by
+   * the segment log (contracts/LEDGER-LOG.md); absent in logs written before it. Additive:
+   * `removed` keeps its meaning (contracts/COMPATIBILITY.md §4, never repurpose).
+   */
+  removedFiles?: { key: string; table: Table }[]
   /** For `add_unit` and `register_stream`: the stream's watermark after the change. */
   watermark?: Watermark
   /** For `add_unit`: the sequence range admitted, so a reader can check contiguity. */
   unit?: { seqLo: number; seqHi: number }
   /** For `base`: every stream's watermark. */
   watermarks?: Watermark[]
+  /**
+   * For `base` (segment log only; optional, ignored by readers that do not need them): what
+   * a rebuild needs besides the live set to come back EXACTLY as the ledger was. A stream's
+   * previous incarnation (what a retried `registerStream` answers), the tombstones of removed
+   * files whose objects may still exist, and the flush unit each file came from.
+   */
+  previousIncarnations?: { shard: string; previousIncarnation: number }[]
+  tombstones?: Tombstone[]
+  units?: { key: string; shard: string; incarnation: number; seqLo: number; seqHi: number }[]
 }
 
 export interface LedgerRpc {
@@ -180,13 +196,18 @@ export interface LedgerRpc {
   replace(req: ReplaceRequest): Promise<ReplaceResult>
   /** Retention: drop whole days. Returns removed keys (to delete after publication). */
   expire(req: ExpireRequest): Promise<{ version: number; removed: string[] }>
-  /** Highest sequence per stream that is both committed and durably logged to R2. */
+  /**
+   * Highest sequence per stream that is both committed and durably logged to R2, as of the
+   * highest version ALL of whose predecessors are in R2 (the contiguous prefix of the log).
+   * With the segment log it lags the committed watermark by up to one drain cycle
+   * (contracts/LEDGER-LOG.md). The only legitimate source of `Shard.recorded`.
+   */
   loggedWatermarks(): Promise<Watermark[]>
 }
 
 /** Operator and test surface. Not called on the data path. */
 export interface LedgerAdminRpc {
-  /** Write pending changes to R2 now. Idempotent. */
+  /** Write pending changes to R2 now (what the alarm does). Idempotent. `written` counts changes. */
   drain(): Promise<{ written: number }>
   outboxDepth(): Promise<number>
   /** Rebuild from the R2 log into empty storage, then start a new ledger incarnation. */
@@ -202,7 +223,7 @@ export interface LedgerAdminRpc {
  * transaction: the key, its table, the ledger VERSION of the change that removed it, and
  * the ledger's clock at that moment. Tombstones are keyed by version, so "is the removal
  * logged?" is "is that version in R2?", whatever the shape of the log (one object per
- * change today, segments in LEDGER-LOG.md).
+ * change at first, segments since contracts/LEDGER-LOG.md was built).
  *
  * An object may be deleted from R2 only when the ledger says so through `deletable`:
  *   1. the change that removed it is durably logged (a ledger rebuilt from its log would
@@ -248,15 +269,198 @@ export interface LedgerJanitorRpc {
 }
 /* ───────────────────────────── end of proposed addition ───────────────────────────── */
 
-/** R2 keys for the ledger's own log, relative to the cell prefix. */
+/*
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * R2 keys and formats of the ledger's own log, relative to the cell prefix. Two layouts
+ * exist; each ledger incarnation uses exactly one (contracts/LEDGER-LOG.md):
+ *
+ *   per-change objects (first layout; read, no longer written)
+ *     {incarnation}/base.json                 the `base` change
+ *     {incarnation}/{version:012}.json        one change
+ *
+ *   segments (current; written by the ledger since LEDGER-LOG.md was built)
+ *     {incarnation}/seg-{first:012}-{last:012}.jsonl   a header line, then the changes
+ *                                                      first..last, one per line; the
+ *                                                      incarnation's first segment begins
+ *                                                      with its `base`
+ *     {incarnation}/ckpt-{version:012}.jsonl           a checkpoint: the whole state at
+ *                                                      `version`, for a bounded rebuild
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+
+/** First layout: one change. Read by a rebuild and by log readers; not written any more. */
 export const ledgerLogKey = (tenant: string, ledgerIncarnation: number, version: number): string =>
   `ledger/tenant=${tenant}/${ledgerIncarnation}/${String(version).padStart(12, '0')}.json`
 
 /**
- * The `base` entry of an incarnation. It is LOGICALLY first: its `version` is the version the
- * incarnation starts from, and the incarnation's first change is `version + 1`. In a
- * lexicographic key listing it comes AFTER the version objects (`base.json` sorts after
- * digits), so a reader fetches it by this key and does not rely on list order.
+ * First layout: the `base` entry of an incarnation. It is LOGICALLY first: its `version` is
+ * the version the incarnation starts from, and the incarnation's first change is
+ * `version + 1`. In a lexicographic key listing it comes AFTER the version objects
+ * (`base.json` sorts after digits), so a reader fetches it by this key and does not rely on
+ * list order. Read, no longer written.
  */
 export const ledgerBaseKey = (tenant: string, ledgerIncarnation: number): string =>
   `ledger/tenant=${tenant}/${ledgerIncarnation}/base.json`
+
+/** Format version of a segment or checkpoint object written by this release (its header's `v`). */
+export const LEDGER_SEGMENT_VERSION = 1
+/** `LedgerChange` versions a reader of this release applies. A change without `v` is version 1. */
+export const LEDGER_CHANGE_VERSION = 1
+/** Every `LedgerChange.kind` this release writes and applies. A reader refuses any other. */
+export const LEDGER_CHANGE_KINDS: readonly LedgerChange['kind'][] = ['base', 'add_unit', 'replace', 'expire', 'register_stream']
+/** A segment holds changes up to this many bytes; a single larger change goes alone. */
+export const LEDGER_SEGMENT_MAX_BYTES = 4 * 1024 * 1024
+
+export const LEDGER_SEGMENT_KIND = 'viz.ledger.segment'
+export const LEDGER_CHECKPOINT_KIND = 'viz.ledger.checkpoint'
+
+/** The first line of a segment or checkpoint object. Readers ignore fields they do not know. */
+export interface LedgerSegmentHeader {
+  /** Format version (contracts/COMPATIBILITY.md §3.1). A reader refuses a `v` it does not know. */
+  v: number
+  kind: typeof LEDGER_SEGMENT_KIND | typeof LEDGER_CHECKPOINT_KIND
+  tenant: string
+  ledgerIncarnation: number
+  /** Versions of the lines that follow, inclusive. For a checkpoint both are its version. */
+  firstVersion: number
+  lastVersion: number
+  /** Number of change lines: `lastVersion - firstVersion + 1`. */
+  changes: number
+}
+
+const pad12 = (n: number): string => String(n).padStart(12, '0')
+
+/** Everything one ledger incarnation logs is under this prefix. */
+export const ledgerIncarnationPrefix = (tenant: string, ledgerIncarnation: number): string => `ledger/tenant=${tenant}/${ledgerIncarnation}/`
+
+export const ledgerSegmentKey = (tenant: string, ledgerIncarnation: number, firstVersion: number, lastVersion: number): string =>
+  `${ledgerIncarnationPrefix(tenant, ledgerIncarnation)}seg-${pad12(firstVersion)}-${pad12(lastVersion)}.jsonl`
+
+export const ledgerCheckpointKey = (tenant: string, ledgerIncarnation: number, version: number): string =>
+  `${ledgerIncarnationPrefix(tenant, ledgerIncarnation)}ckpt-${pad12(version)}.jsonl`
+
+/**
+ * `startAfter` for an R2 listing of an incarnation's segments that START after `version`:
+ * every `seg-{first}-…` with `first > version`, and nothing before. (`~` sorts after the
+ * digits.) A reader whose cursor sits inside a segment does not find that segment this way;
+ * see contracts/LEDGER-LOG.md, "Readers".
+ */
+export const ledgerSegmentsStartingAfter = (tenant: string, ledgerIncarnation: number, version: number): string =>
+  `${ledgerIncarnationPrefix(tenant, ledgerIncarnation)}seg-${pad12(version)}-~`
+
+export type LedgerLogObject =
+  | { type: 'segment'; ledgerIncarnation: number; firstVersion: number; lastVersion: number }
+  | { type: 'checkpoint'; ledgerIncarnation: number; version: number }
+  | { type: 'base'; ledgerIncarnation: number }
+  | { type: 'change'; ledgerIncarnation: number; version: number }
+
+/** What an object of a ledger log is, from its key (full or cell-relative), or null if it is none. */
+export function parseLedgerLogKey(key: string): LedgerLogObject | null {
+  let m = /\/(\d+)\/seg-(\d{12,})-(\d{12,})\.jsonl$/.exec(key)
+  if (m) return { type: 'segment', ledgerIncarnation: Number(m[1]), firstVersion: Number(m[2]), lastVersion: Number(m[3]) }
+  m = /\/(\d+)\/ckpt-(\d{12,})\.jsonl$/.exec(key)
+  if (m) return { type: 'checkpoint', ledgerIncarnation: Number(m[1]), version: Number(m[2]) }
+  m = /\/(\d+)\/base\.json$/.exec(key)
+  if (m) return { type: 'base', ledgerIncarnation: Number(m[1]) }
+  m = /\/(\d+)\/(\d{12,})\.json$/.exec(key)
+  if (m) return { type: 'change', ledgerIncarnation: Number(m[1]), version: Number(m[2]) }
+  return null
+}
+
+/**
+ * The body of a segment (or, with `kind` = checkpoint, a checkpoint): a header line, then
+ * each change's JSON on its own line, each line ending in `\n`. Changes are given as the
+ * exact JSON the ledger committed, so the same changes always give the same bytes (a retried
+ * write must be byte-identical; contracts/LEDGER-LOG.md, "Drain").
+ */
+export function encodeLedgerSegment(
+  tenant: string,
+  ledgerIncarnation: number,
+  lines: readonly { version: number; json: string }[],
+  kind: LedgerSegmentHeader['kind'] = LEDGER_SEGMENT_KIND,
+): string {
+  if (lines.length === 0) throw new Error('ledger segment: no changes')
+  const firstVersion = lines[0]!.version
+  lines.forEach((l, i) => {
+    if (l.version !== firstVersion + i) throw new Error(`ledger segment: versions are not contiguous at ${firstVersion + i}`)
+    if (l.json.includes('\n')) throw new Error('ledger segment: a change spans lines')
+  })
+  if (kind === LEDGER_CHECKPOINT_KIND && lines.length !== 1) throw new Error('ledger checkpoint: exactly one line')
+  // Field order is fixed by this literal: the header is part of the bytes a retry must repeat.
+  const header: LedgerSegmentHeader = {
+    v: LEDGER_SEGMENT_VERSION,
+    kind,
+    tenant,
+    ledgerIncarnation,
+    firstVersion,
+    lastVersion: firstVersion + lines.length - 1,
+    changes: lines.length,
+  }
+  return `${JSON.stringify(header)}\n${lines.map((l) => `${l.json}\n`).join('')}`
+}
+
+export type DecodedLedgerSegment =
+  | { status: 'ok'; header: LedgerSegmentHeader; changes: LedgerChange[] }
+  /** Written by a newer release (a segment `v`, change `v` or change kind this code does not know). Stop before it; never skip it. */
+  | { status: 'unsupported'; reason: string }
+  /** Not what its key or header says, or not a segment at all. Stop and report. */
+  | { status: 'corrupt'; reason: string }
+
+/** Why this code may not apply a change (contracts/COMPATIBILITY.md §3.2), or null. */
+export function unsupportedLedgerChange(c: { v?: unknown; kind?: unknown }): string | null {
+  const v = c.v === undefined ? 1 : c.v
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) return `unreadable change version ${JSON.stringify(c.v)}`
+  if (v > LEDGER_CHANGE_VERSION) return `change version ${v}; this code reads up to ${LEDGER_CHANGE_VERSION}`
+  if (typeof c.kind !== 'string' || !(LEDGER_CHANGE_KINDS as readonly string[]).includes(c.kind)) return `unknown change kind ${JSON.stringify(c.kind)}`
+  return null
+}
+
+/**
+ * Parse and check a segment or checkpoint object. `expected` is what its key says (from
+ * `parseLedgerLogKey`) and, optionally, whose log it is; any disagreement is `corrupt`.
+ * Strict on structure, tolerant of unknown fields, and refusing (`unsupported`) on unknown
+ * versions and kinds.
+ */
+export function decodeLedgerSegment(
+  body: string,
+  expected: { ledgerIncarnation: number; firstVersion: number; lastVersion: number; kind?: LedgerSegmentHeader['kind']; tenant?: string },
+): DecodedLedgerSegment {
+  const corrupt = (reason: string): DecodedLedgerSegment => ({ status: 'corrupt', reason })
+  const lines = body.split('\n')
+  if (lines.length < 3 || lines[lines.length - 1] !== '') return corrupt('not a header line followed by change lines, each ending in a newline')
+  let header: LedgerSegmentHeader
+  try {
+    header = JSON.parse(lines[0]!) as LedgerSegmentHeader
+  } catch {
+    return corrupt('the header line is not JSON')
+  }
+  if (typeof header !== 'object' || header === null) return corrupt('the header line is not an object')
+  if (typeof header.v !== 'number' || !Number.isSafeInteger(header.v) || header.v < 1) return corrupt(`unreadable segment version ${JSON.stringify(header.v)}`)
+  if (header.v > LEDGER_SEGMENT_VERSION) return { status: 'unsupported', reason: `segment version ${header.v}; this code reads up to ${LEDGER_SEGMENT_VERSION}` }
+  if (header.kind !== LEDGER_SEGMENT_KIND && header.kind !== LEDGER_CHECKPOINT_KIND) return { status: 'unsupported', reason: `unknown log object kind ${JSON.stringify(header.kind)}` }
+  const kind = expected.kind ?? LEDGER_SEGMENT_KIND
+  if (header.kind !== kind) return corrupt(`a ${header.kind} where a ${kind} was expected`)
+  if (expected.tenant !== undefined && header.tenant !== expected.tenant) return corrupt(`tenant ${JSON.stringify(header.tenant)}, expected ${expected.tenant}`)
+  if (header.ledgerIncarnation !== expected.ledgerIncarnation || header.firstVersion !== expected.firstVersion || header.lastVersion !== expected.lastVersion) {
+    return corrupt(`header says ${header.ledgerIncarnation}/${header.firstVersion}-${header.lastVersion}, the key ${expected.ledgerIncarnation}/${expected.firstVersion}-${expected.lastVersion}`)
+  }
+  const n = header.lastVersion - header.firstVersion + 1
+  if (!(n >= 1) || header.changes !== n || lines.length - 2 !== n) return corrupt(`${lines.length - 2} change lines; the header says ${header.changes} for ${n} versions`)
+  const changes: LedgerChange[] = []
+  for (let i = 0; i < n; i++) {
+    let c: LedgerChange & { v?: unknown }
+    try {
+      c = JSON.parse(lines[i + 1]!) as LedgerChange
+    } catch {
+      return corrupt(`line ${i + 2} is not JSON`)
+    }
+    if (typeof c !== 'object' || c === null) return corrupt(`line ${i + 2} is not an object`)
+    const why = unsupportedLedgerChange(c)
+    if (why) return { status: 'unsupported', reason: `version ${header.firstVersion + i}: ${why}` }
+    if (c.ledgerIncarnation !== header.ledgerIncarnation || c.version !== header.firstVersion + i) return corrupt(`line ${i + 2} is ${c.ledgerIncarnation}/${c.version}, expected ${header.ledgerIncarnation}/${header.firstVersion + i}`)
+    if (!Array.isArray(c.added) || !Array.isArray(c.removed)) return corrupt(`change ${c.version} has no added/removed lists`)
+    if (header.kind === LEDGER_CHECKPOINT_KIND && c.kind !== 'base') return corrupt('a checkpoint holds one base change')
+    changes.push(c)
+  }
+  return { status: 'ok', header, changes }
+}
