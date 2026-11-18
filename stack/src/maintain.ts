@@ -128,7 +128,7 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
     marker.orphansAt = Date.now()
     // Still needed only for what it had to leave for later: young objects, units that may
     // yet be admitted, streams the ledger has not seen. (A name it cannot judge never changes.)
-    sweep = orphans.kept.some((k) => k.why !== 'unknown_name')
+    sweep = true
   }
 
   // When could time alone make work again?

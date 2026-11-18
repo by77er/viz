@@ -104,6 +104,17 @@ function runSuite(suite) {
   return fails
 }
 
+// DRY=1: only check that every mutant's source text is there, exactly once.
+if (process.env.DRY) {
+  let bad = 0
+  for (const [name, edits] of SET.list) for (const [file, from] of edits) {
+    const n = fs.readFileSync(path.join(ROOT, file), 'utf8').split(from).length - 1
+    if (n !== 1) { bad++; console.log(`${n === 0 ? 'MISSING' : `${n} TIMES`}  ${name}  (${file})`) }
+  }
+  console.log(`${SET.list.length} mutants, ${bad} with a problem`)
+  process.exit(bad ? 1 : 0)
+}
+
 const out = []
 const only = process.env.ONLY // a substring of a mutant's name, to run just that one
 for (const [name, edits] of SET.list) {

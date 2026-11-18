@@ -930,11 +930,9 @@ export class Notifier extends DurableObject implements NotifierRpc {
     if (dryRun) return { status: 'ok' as const, removed: ids }
     this.ctx.storage.transactionSync(() => {
       for (const id of ids) {
-        this.exec(`DELETE FROM silence WHERE tenant = ? AND id = ?`, this.tenant, id)
         for (const monitor of this.silences.get(id)?.subjects ?? []) this.appendLog(monitor, [{ at: now, source: 'notifier', kind: 'silence_undone', by, silenceIds: [id] }])
       }
     })
-    for (const id of ids) this.silences.delete(id)
     await this.rearm(now)
     return { status: 'ok' as const, removed: ids }
   }
@@ -1023,7 +1021,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const now = this.now()
-    const alerts: NotifierAlert[] = [...this.alerts.values()].filter((a) => !a.ack).map((a) => ({
+    const alerts: NotifierAlert[] = [...this.alerts.values()].map((a) => ({
       fingerprint: a.fingerprint,
       labels: a.labels,
       annotations: a.annotations,
