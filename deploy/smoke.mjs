@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // The post-deploy smoke test, through the public URL.
 //
-//   node deploy/smoke.mjs [--stage S] [--url https://…] [--health-timeout 180]
+//   node deploy/smoke.mjs [--stage S] [--url https://…] [--health-timeout 180] [--expect-release SHA]
 //
-// 1. GET /healthz until it says healthy (the gateway asks every backend).
+// 1. GET /healthz until it says healthy (the gateway asks every backend) and, with
+//    --expect-release, until the gateway answering is the release just promoted: right after a
+//    promotion some locations still run the previous version for a while.
 // 2. With SMOKE_KEY (an API key with the write and read scopes) in the environment: a real
 //    Remote Write of 9 samples (3 series × 3 timestamps) under a fresh run label, then a
 //    query that must return exactly those samples within 60 s.
@@ -23,15 +25,18 @@ export async function publicUrl(stage) {
   return `https://${gw.name}.${await workersSubdomain()}.workers.dev`
 }
 
-export async function waitHealthy(base, timeoutMs) {
+export async function waitHealthy(base, timeoutMs, expectRelease) {
   const deadline = Date.now() + timeoutMs
   let last = 'no answer'
   for (let i = 0; ; i++) {
     try {
       const res = await fetch(`${base}/healthz`, { headers: { 'User-Agent': 'viz-deploy-smoke/1' } })
       const body = await res.text()
-      if (res.status === 200 && /"status":"healthy"/.test(body)) return { ok: true, attempts: i + 1, body: JSON.parse(body) }
-      last = `${res.status} ${body.slice(0, 300)}`
+      if (res.status === 200 && /"status":"healthy"/.test(body)) {
+        const parsed = JSON.parse(body)
+        if (!expectRelease || parsed.release === expectRelease) return { ok: true, attempts: i + 1, body: parsed, waitedMs: timeoutMs - (deadline - Date.now()) }
+        last = `healthy, but release ${parsed.release} is answering, not ${expectRelease}`
+      } else last = `${res.status} ${body.slice(0, 300)}`
     } catch (e) {
       last = e.cause?.code ?? e.message
     }
@@ -73,15 +78,15 @@ export async function writeAndRead(base, key, { visibleWithinMs = 60_000, authRe
   }
 }
 
-export async function smoke({ stage, url, healthTimeoutMs = 180_000 }) {
+export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelease }) {
   const base = url ?? (await publicUrl(stage))
-  log(`smoke: ${base}`)
-  const h = await waitHealthy(base, healthTimeoutMs)
+  log(`smoke: ${base}${expectRelease ? ` (expecting release ${expectRelease})` : ''}`)
+  const h = await waitHealthy(base, healthTimeoutMs, expectRelease)
   if (!h.ok) {
     log(`smoke: /healthz did not report healthy within ${healthTimeoutMs / 1000} s (last: ${h.last})`)
     return { ok: false, health: h }
   }
-  log(`smoke: /healthz healthy (release ${h.body.release}; ${Object.entries(h.body.backends).map(([k, v]) => `${k} ${v.status} ${v.ms} ms`).join(', ')})`)
+  log(`smoke: /healthz healthy after ${h.attempts} attempt(s) (release ${h.body.release}; ${Object.entries(h.body.backends).map(([k, v]) => `${k} ${v.status} ${v.ms} ms`).join(', ')})`)
   const key = process.env.SMOKE_KEY
   if (!key) {
     log('smoke: SMOKE_KEY not set; the write-and-read check was skipped')
@@ -95,9 +100,9 @@ export async function smoke({ stage, url, healthTimeoutMs = 180_000 }) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'url', 'health-timeout'] })
+    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'url', 'health-timeout', 'expect-release'] })
     checkStage(args.stage)
-    const r = await smoke({ stage: args.stage, url: args.url, healthTimeoutMs: Number(args['health-timeout'] ?? 180) * 1000 })
+    const r = await smoke({ stage: args.stage, url: args.url, healthTimeoutMs: Number(args['health-timeout'] ?? 180) * 1000, expectRelease: args['expect-release'] })
     process.exit(r.ok ? 0 : 1)
   } catch (e) {
     log(`smoke: ${e.message}`)

@@ -315,7 +315,50 @@ All measured here unless it says Cloudflare.
 
 None of these were made here.
 
-@@NEEDED@@
+1. **`stack/src/index.ts`: queue names are hard-coded.** `handleQueue` compares
+   `batch.queue` with the literals `viz-flush` and `viz-maint` (`FLUSH_QUEUE_NAME`,
+   `MAINT_QUEUE_NAME`) and treats every other queue as a dead-letter queue. Any deployment
+   whose queues are named otherwise (every stage: `viz-trial-flush`) would write each flush
+   message off as a dead letter, and nothing would ever reach the lake. Wanted: route by a
+   configured name (a var such as `FLUSH_QUEUE_NAME`) or by the binding the consumer was
+   declared for. Workaround, stage only: `deploy/stage/ingest.ts` hands the stack the batch
+   under its production name and changes nothing else; production deploys
+   `stack/src/index.ts` directly.
+2. **One shared pool map, three values.** `stack/wrangler.jsonc` has `DEFAULT_POOL` with
+   `slots: 2`; `edge/`, `query/` and `control/` have `slots: 8`. Split into Workers, ingest
+   would route a tenant without a `pool:<tenant>` record to 2 slots while the query Worker
+   asked 8-slot shards for its tail: recent samples would be invisible until flushed.
+   Workaround: `workers.json` `shared_vars` pins one value (edge's, 8 slots) for every
+   Worker that declares the var, and `configure.mjs` prints the disagreement on every run.
+   Wanted: one source for the shared pool (a contract constant or a KV record), and a test
+   config for stack/ separate from the one production is generated from.
+3. **`query/test/http.test.ts` imports `app/src/api/client.ts`.** On a checkout without
+   `app/` (main, until the UI lands) query's typecheck and tests fail. CI excludes that one
+   file when `app/` is absent and says so in a warning. Wanted: the client as a contract,
+   or a copy owned by query's tests.
+4. **`control/`: no health route.** The gateway's `/healthz` uses
+   `GET /api/v1/control/openapi.json`, the one route that needs no credential; it proves the
+   Worker runs, not that its Durable Object or KV answer. Wanted: `GET /healthz` (or
+   `/api/v1/control/healthz`).
+5. **`query/wrangler.jsonc` names the write path `viz-edge` and `viz-flush`**, Workers that
+   no longer exist as such; the deploy maps both (and `viz-stack`) to viz-ingest through
+   `script_aliases`. Wanted: `viz-ingest` in the component config.
+6. **`stack/test/e2e.test.ts` imports hyparquet from `bench/node_modules`**, so stack's CI
+   job has to `npm ci` in bench/. Wanted: hyparquet as a dev dependency of stack.
+7. **Schema versions the deploy can read.** `contracts/COMPATIBILITY.md` §6 wants each
+   release to record `schemaRelease(spec)` per Durable Object class and the rollback to
+   refuse across a forward-only release. The deploy can only do that if each component
+   publishes its `SchemaSpec` in a form readable without importing its TypeScript (for
+   example a generated `schema.json` next to `wrangler.jsonc`, or `/healthz` reporting it).
+8. **`query/`: an engine that cannot start is reported as a storage outage.** In release N0
+   of the trial (below) the query module and its binding disagreed (`engine: module ABI 1,
+   binding expects 2`); every query answered **503 `unavailable`, "a storage component did
+   not answer; retry"** with `Retry-After: 1`. The binding's refusal is right; the
+   classification is not: a client is told to retry something that cannot succeed. Wanted:
+   engine initialisation errors as `internal` (500).
+9. **`edge/`: `/api/v1/push` is not served.** The gateway routes it to viz-ingest as asked;
+   edge answers 404 until it exists.
+@@NEEDED_TRIAL@@
 
 ## Not deployed yet, and why
 

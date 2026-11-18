@@ -100,7 +100,7 @@ MIGRATED=$(node -e 'const r=require(process.argv[1]);console.log((r.migrations||
 
 if [ $SMOKE -eq 0 ]; then note "smoke: skipped (--skip-smoke)"; exit 0; fi
 step "smoke test"
-if node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}; then
+if node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --expect-release "$VIZ_RELEASE_SHA"; then
   note "smoke: passed$([ -z "${SMOKE_KEY:-}" ] && echo ' (health only: SMOKE_KEY not set)')"
   exit 0
 fi
@@ -114,8 +114,9 @@ if [ -n "$MIGRATED" ]; then
 fi
 step "automatic rollback to the previous release"
 if node deploy/release.mjs rollback ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --record "$OUT/previous.json" --reason "smoke test of $VIZ_RELEASE_SHA failed"; then
-  note "rollback: previous release restored ($(node -e 'console.log(require(process.argv[1]).release??"unknown")' "$OUT/previous.json"))"
-  if SMOKE_KEY="" node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --health-timeout 120; then note "after rollback: healthy"; else note "after rollback: NOT healthy"; fi
+  note "rollback: previous release restored"
+  PREVIOUS=$(node -e 'console.log(require(process.argv[1]).release??"")' "$OUT/previous.json")
+  if SMOKE_KEY="" node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --health-timeout 180 ${PREVIOUS:+--expect-release "$PREVIOUS"}; then note "after rollback: healthy"; else note "after rollback: NOT healthy"; fi
 else
   note "rollback: FAILED or refused (see above)"
 fi
