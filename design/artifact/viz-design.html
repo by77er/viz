@@ -83,14 +83,14 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
     <span><b>12</b> research tracks</span>
     <span><b>3</b> independent reviews</span>
     <span><b>1</b> benchmark run</span>
-    <span><b>0</b> lines of product code</span>
+    <span><b>1</b> component built</span>
   </div>
 </header>
 
 <section class="col">
   <div class="notice">
     <h3>Read this first</h3>
-    <p>The product has not been built, and nothing has run on Cloudflare. One thing has been measured in a sandbox: the engine-language choice, below. Every other latency and cost figure is a model, printed as a range. My first cost table was wrong: a reviewer recomputed it against the design as drawn and the small-deployment figure went from $5.20 to $5–15, the team figure from $250 to $400–800. The first experiment in the plan decides where in those ranges reality sits.</p>
+    <p>One component exists, the pooled shard, tested locally. Nothing has run on Cloudflare. One thing has been measured in a sandbox: the engine-language choice, below. Every other latency and cost figure is a model, printed as a range. My first cost table was wrong: a reviewer recomputed it against the design as drawn and the small-deployment figure went from $5.20 to $5–15, the team figure from $250 to $400–800. The first experiment in the plan decides where in those ranges reality sits.</p>
   </div>
 </section>
 
@@ -212,7 +212,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
     <div><h3>Dashboards</h3>
       <p>A small typed spec with stable panel ids. Edits are patches, dry-run against real data before saving. Every dashboard has a visual form, a text digest and a structured form from the same data; agents read the digest. About a dozen MCP tools, shared with the REST API. Prometheus and Tempo HTTP APIs are served, so Grafana works on day one.</p></div>
     <div><h3>Tenancy and auth</h3>
-      <p>Tenant id comes only from the credential. Hashed, scoped API keys for machines; OAuth and single sign-on for people and agents. Each tenant has its own shards and ledger. Small tenants share tables; a tenant needing direct Iceberg access, residency or scale gets a dedicated cell.</p></div>
+      <p>Tenant id comes only from the credential. Hashed, scoped API keys for machines; OAuth and single sign-on for people and agents. Each tenant has its own ledger and its own stream inside pooled shards. Small tenants share tables; a tenant needing direct Iceberg access, residency or scale gets a dedicated cell.</p></div>
     <div><h3>Pull and adapters</h3>
       <p>Scrapers run on alarms and feed the same write path. Adapters share one contract in both directions with Arrow as the currency: poll an external system on ingest, or scan it at query time. First-party adapters ship first.</p></div>
   </div>
@@ -245,7 +245,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
     <thead><tr><th>Case</th><th>Per month</th><th>What decides it</th></tr></thead>
     <tbody>
       <tr><td>Small deployment: 10k series, 1 GB logs/day, 1M spans/day, 20 rules</td><td class="n">$5–15</td><td>How Cloudflare bills an object that wakes once a minute</td></tr>
-      <tr><td>One more small active tenant</td><td class="n">~$6</td><td>Dedicated shard duration</td></tr>
+      <tr><td>One more small active tenant</td><td class="n">&lt; $1 pooled · ~$6 dedicated</td><td>Pool assignment</td></tr>
       <tr><td>Team: 1M series, 100 GB logs/day, 500M spans/day, 2k rules</td><td class="n">$400–800</td><td>Compaction CPU, commit window, rule classes, first-load reads</td></tr>
       <tr><td>Scale: 100M series, 10 TB logs/day, 50B spans/day</td><td class="n">tens of thousands</td><td>Long-retention storage, shard duration</td></tr>
     </tbody>
@@ -306,7 +306,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
 <section class="col">
   <h2>Decisions for you</h2>
   <ol>
-    <li><strong>Who is the first user?</strong> Decided: your own account, with dedicated shards per tenant for isolation. Sharing shards between small tenants is deferred.</li>
+    <li><strong>Who is the first user?</strong> Decided: your own account. Shards are pooled from the start, with a dedicated pool for any tenant that needs full isolation. The pooled shard is implemented and tested in <code>shard/</code>.</li>
     <li><strong>Iceberg a few minutes behind.</strong> Decided: accepted.</li>
     <li><strong>Rust core.</strong> Decided: Rust, supported by the benchmark above. Still to check on Cloudflare itself: the enforced 128 MB limit, billed CPU, and a zstd build.</li>
     <li><strong>Managed catalog.</strong> Its use is analytics and export through external SQL engines. Iceberg metadata is written straight to R2 first; the managed catalog waits until someone needs it. Not yet confirmed by you.</li>
@@ -322,6 +322,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
     design/DECISIONS.md <span>— each decision, its alternatives, and what would change it</span><br>
     design/VERIFICATION.md <span>— invariants, test layers, experiments, evidence per milestone</span><br>
     design/REVIEW.md <span>— findings and what changed; raw reports in design/reviews/</span><br>
+    shard/ <span>— the pooled shard Durable Object, its routing and 15 tests</span><br>
     bench/README.md <span>— the engine benchmark, its tuning log and how to rerun it</span><br>
     research/01 … 12 <span>— one file per research track, about 100,000 words in total</span>
   </div>
