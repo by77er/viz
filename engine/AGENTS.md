@@ -29,4 +29,6 @@ The Rust core. See the root `AGENTS.md` for rules that apply everywhere.
 - **Query semantics follow the reference implementation.** PromQL behaviour is checked
   against the upstream Prometheus test corpus; a failing upstream case is a bug to fix or
   to list, never to delete.
-- When several builds run at once, give each its own `CARGO_TARGET_DIR`.
+- When several builds run at once, give each its own `CARGO_TARGET_DIR`. A crate's `target/` runs to
+  gigabytes: delete it when the work is finished. Disk is finite, and a full disk shows up as
+  unrelated failures (a crashed `git add`, a stale `.git/index.lock`).

@@ -129,6 +129,11 @@ also holds unrelated Workers, buckets and KV namespaces.
   what it costs, how to read the result, and how to delete it. Anything that runs on a
   timer must stop by itself at a deadline.
 - Before deploying, state the worst-case cost. After deploying, record what was created.
+- To load-test from inside Cloudflare, make each client its own Durable Object. A client
+  outside Cloudflare, or one Worker fanning out through a service binding, measures the
+  client and not the system.
+- Delete dev and load-test deployments when the measurement is done, and say so in the
+  spike's README. Do not put a secret on a command line where a process listing shows it.
 - Usage and billing figures come from Cloudflare's analytics API, not from estimates; a
   number read from there is "measured on Cloudflare", and says for which window.
 

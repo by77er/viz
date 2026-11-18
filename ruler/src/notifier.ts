@@ -304,9 +304,9 @@ export class Notifier extends DurableObject implements NotifierRpc {
     const resolved: string[] = []
     for (const fp of g.members) {
       const a = this.alerts.get(fp)
-      if (!a || a.receivedAt > tick) continue
+      if (!a) continue
       if (this.muted(a, tick)) continue
-      if (this.firingAsOf(a, tick)) firing.push(fp)
+      if (a.status === 'firing') firing.push(fp)
       else resolved.push(fp)
     }
     firing.sort()
@@ -586,6 +586,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     for (const u of updates) {
       const cur = staged.get(u.fingerprint) ?? this.alerts.get(u.fingerprint)
       if (cur) {
+        if (u.at < cur.at) continue
         // At the same evaluation time a resolution outranks a firing, so a redelivered
         // "firing" can never undo the "resolved" that followed it.
         if (u.at === cur.at && (cur.status === 'resolved' || (u.status === 'firing' && u.expiresAt === cur.expiresAt))) continue
