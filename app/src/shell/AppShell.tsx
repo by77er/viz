@@ -20,31 +20,33 @@ export function useBackendInfo() {
   })
 }
 
-function ThemeIcon({ pref }: { pref: string }) {
-  if (pref === 'dark')
-    return (
-      <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-      </svg>
-    )
-  if (pref === 'light')
-    return (
-      <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-        <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.4" />
-        <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-    )
+const MOCK_KEY = 'viz.backend.mock'
+
+/**
+ * Whether the last backend this browser talked to was the mock. The mock banner is known
+ * only after a request, so its space is reserved while that request is pending unless the
+ * last answer was "not the mock"; otherwise everything below would move when it arrives.
+ */
+function lastKnownMock(): boolean {
+  try {
+    return localStorage.getItem(MOCK_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+function MockSentence({ version }: { version: string }) {
   return (
-    <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-      <path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor" />
-    </svg>
+    <p>
+      Connected to the development mock backend (<span className="app-num">{version}</span>): synthetic data and a subset of PromQL. Not a
+      real viz deployment.
+    </p>
   )
 }
 
 export function AppShell() {
   const navigate = useNavigate()
-  const { pref, cycle, setPref } = useTheme()
+  const { setPref } = useTheme()
   const { settings } = useSettings()
   const { setPaletteOpen } = useCommandsContext()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -66,11 +68,11 @@ export function AppShell() {
     'shell',
     [
       { id: 'nav-explore', group: 'Navigation', title: 'Go to Explore', keywords: 'metrics query promql', run: () => void navigate({ to: '/explore' }) },
-      { id: 'nav-help', group: 'Navigation', title: 'Go to Keyboard shortcuts & help', keywords: 'about docs', run: () => void navigate({ to: '/help' }) },
-      { id: 'settings-open', group: 'Settings', title: 'Open settings (API URL, token)', keywords: 'connection backend bearer', run: () => setSettingsOpen(true) },
-      { id: 'theme-light', group: 'Settings', title: 'Theme: light', run: () => setPref('light') },
-      { id: 'theme-dark', group: 'Settings', title: 'Theme: dark', run: () => setPref('dark') },
-      { id: 'theme-system', group: 'Settings', title: 'Theme: follow system', run: () => setPref('system') },
+      { id: 'nav-help', group: 'Navigation', title: 'Go to keyboard shortcuts and help', keywords: 'about docs', run: () => void navigate({ to: '/help' }) },
+      { id: 'settings-open', group: 'Settings', title: 'Open settings', keywords: 'connection backend bearer api url token theme', run: () => setSettingsOpen(true) },
+      { id: 'theme-light', group: 'Settings', title: 'Use the light theme', run: () => setPref('light') },
+      { id: 'theme-dark', group: 'Settings', title: 'Use the dark theme', run: () => setPref('dark') },
+      { id: 'theme-system', group: 'Settings', title: 'Follow the system theme', run: () => setPref('system') },
     ],
     'static',
   )
@@ -78,80 +80,74 @@ export function AppShell() {
   const unreachable = info.error instanceof PromApiError && info.error.errorType === 'network'
   const unauthorized = info.error instanceof PromApiError && (info.error.status === 401 || info.error.status === 403)
 
-  const navClass =
-    'flex h-full items-center border-b-2 border-transparent px-2.5 text-fg-2 hover:text-fg data-[status=active]:border-accent data-[status=active]:text-fg data-[status=active]:font-semibold'
+  const mock = info.data?.mock
+  useEffect(() => {
+    if (mock === undefined) return
+    try {
+      localStorage.setItem(MOCK_KEY, mock ? '1' : '0')
+    } catch {
+      // The reservation falls back to its default.
+    }
+  }, [mock])
+  const reserveBanner = info.isPending && lastKnownMock()
 
   return (
-    <div className="flex min-h-full flex-col">
-      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-surface focus:px-3 focus:py-1.5">
+    <div className="app">
+      <a href="#main" className="vz-button app-skip">
         Skip to content
       </a>
-      <header className="sticky top-0 z-20 flex h-10 shrink-0 items-center gap-1 border-b border-line bg-surface px-3">
-        <Link to="/explore" className="mr-2 flex items-center gap-1.5 text-[14px] font-semibold tracking-tight" aria-label="viz home">
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M1.5 12 5 5l3 4 3-6 3.5 9" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-          </svg>
+      <header className="vz-nav app-nav">
+        <Link to="/explore" className="vz-nav-name" aria-label="viz home" activeProps={{ 'aria-current': undefined }}>
           viz
         </Link>
-        <nav aria-label="Primary" className="flex h-full items-stretch">
-          <Link to="/explore" className={navClass}>
-            Explore
-          </Link>
-          <Link to="/help" className={navClass}>
-            Help
-          </Link>
+        <nav aria-label="Primary" className="app-links">
+          <Link to="/explore">Explore</Link>
+          <Link to="/help">Help</Link>
         </nav>
-        <div className="flex-1" />
-        <button
-          className="btn btn-ghost hidden gap-2 text-fg-3 sm:inline-flex"
-          onClick={() => setPaletteOpen(true)}
-          aria-keyshortcuts="Control+K Meta+K"
-          title="Open the command palette"
-        >
-          <span>Commands</span>
-          <span className="kbd">{MOD}</span>
-          <span className="kbd -ml-1">K</span>
+        <span className="grow" />
+        <button className="vz-button" data-quiet="" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K" data-testid="open-commands">
+          Commands
+          <span className="vz-kbd wide-only">{MOD} K</span>
         </button>
-        <button className="btn btn-ghost btn-icon sm:hidden" onClick={() => setPaletteOpen(true)} aria-label="Open command palette">
-          <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-            <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-            <path d="M10.5 10.5 14 14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          </svg>
-        </button>
-        <button className="btn btn-ghost btn-icon" onClick={cycle} aria-label={`Theme: ${pref}. Switch theme`} title={`Theme: ${pref}`}>
-          <ThemeIcon pref={pref} />
-        </button>
-        <button className="btn btn-ghost btn-icon" onClick={() => setSettingsOpen(true)} aria-label="Settings" title="Settings">
-          <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M2 4.5h7M12 4.5h2M2 11.5h2M7 11.5h7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-            <circle cx="10.5" cy="4.5" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.4" />
-            <circle cx="5.5" cy="11.5" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.4" />
-          </svg>
+        <button className="vz-button" data-quiet="" onClick={() => setSettingsOpen(true)} data-testid="open-settings">
+          Settings
         </button>
       </header>
 
-      {info.data?.mock && (
-        <div role="status" data-testid="mock-banner" className="flex flex-wrap items-center gap-x-2 border-b border-warn-line bg-warn-soft px-3 py-1 text-[12px] text-warn-fg">
-          <span className="rounded-sm border border-warn-line px-1 text-[10.5px] font-bold tracking-wider">MOCK</span>
-          <span>
-            Connected to the development mock backend ({info.data.version}): synthetic data and a subset of PromQL. Not a real viz deployment.
-          </span>
-        </div>
-      )}
-      {(unreachable || unauthorized) && (
-        <div role="alert" className="flex flex-wrap items-center gap-x-3 border-b border-danger-line bg-danger-soft px-3 py-1 text-[12px] text-danger">
-          <span>
-            {unreachable
-              ? `Cannot reach the API at ${settings.baseUrl || window.location.origin}.`
-              : 'The API rejected the credentials.'}
-          </span>
-          <button className="underline" onClick={() => setSettingsOpen(true)}>
-            Open settings
-          </button>
-        </div>
-      )}
+      <div className="app-notices">
+        {mock && (
+          <div role="status" data-testid="mock-banner" className="vz-banner">
+            <span className="vz-mark" data-state="warn" />
+            <MockSentence version={info.data!.version} />
+          </div>
+        )}
+        {reserveBanner && (
+          <div className="vz-banner is-reserved" aria-hidden="true">
+            <span className="vz-mark" data-state="warn" />
+            <MockSentence version="viz-mock-0.0.0" />
+          </div>
+        )}
+        {(unreachable || unauthorized) && (
+          <div role="alert" className="vz-banner">
+            <span className="vz-mark" data-state="critical" />
+            <p>
+              {unreachable ? (
+                <>
+                  Cannot reach the API at <span className="app-num">{settings.baseUrl || window.location.origin}</span>. Check the address in
+                  settings.
+                </>
+              ) : (
+                'The API rejected the credentials. Enter a valid bearer token in settings.'
+              )}
+            </p>
+            <button className="vz-button" data-size="sm" onClick={() => setSettingsOpen(true)}>
+              Open settings
+            </button>
+          </div>
+        )}
+      </div>
 
-      <main id="main" className="flex min-w-0 flex-1 flex-col">
+      <main id="main" className="app-main">
         <Outlet />
       </main>
 

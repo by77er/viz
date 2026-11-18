@@ -6,7 +6,9 @@ import { router } from './router'
 import { CommandsProvider } from './shell/commands'
 import { SettingsProvider } from './shell/settings'
 import { ThemeProvider } from './shell/theme'
-import './styles.css'
+// The design system first (tokens, components, fonts), then the app's own layout.
+import '../../design-system/dist/viz.css'
+import './app.css'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },

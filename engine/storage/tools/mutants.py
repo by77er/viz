@@ -58,6 +58,21 @@ MUTANTS = [
      "std::cmp::Ordering::Greater => {}"),
     ("series_id omits the 0x00 separators", "src/batch.rs",
      "        h ^= 0;\n        h = h.wrapping_mul(FNV_PRIME);\n", ""),
+    # contracts v2
+    ("v2: batch decode accepts a NUL byte in a label", "src/batch.rs",
+     "if name.contains(&0) || value.contains(&0) {", "if false {"),
+    ("v2: batch decode accepts 129 labels", "src/batch.rs",
+     "if n_labels > MAX_LABELS {", "if n_labels > MAX_LABELS + 1 {"),
+    ("v2: batch decode accepts over-long label values", "src/batch.rs",
+     "if name.len() > MAX_LABEL_NAME_BYTES || value.len() > MAX_LABEL_VALUE_BYTES {", "if name.len() > MAX_LABEL_NAME_BYTES {"),
+    ("v2: batch decode accepts timestamps after year 9999", "src/batch.rs",
+     "pub const MAX_TS: i64 = 253_402_300_799_999;", "pub const MAX_TS: i64 = i64::MAX;"),
+    ("v2: batch decode accepts negative timestamps", "src/batch.rs",
+     "pub const MIN_TS: i64 = 0;", "pub const MIN_TS: i64 = i64::MIN;"),
+    ("v2: earlier row wins inside one batch (select, tail)", "src/select.rs",
+     "if i + 1 < rows.len() && rows[i + 1].0 == *t {", "if i + 1 < rows.len() && rows[i + 1].0 == *t && false {"),
+    ("v2: canonical JSON escapes control characters in upper-case hex", "src/json.rs",
+     "out.push(char::from_digit((c as u32) & 15, 16).unwrap());", "out.push(char::from_digit((c as u32) & 15, 16).unwrap().to_ascii_uppercase());"),
 ]
 
 def tests_fail():
