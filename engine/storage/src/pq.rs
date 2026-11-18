@@ -235,7 +235,14 @@ pub(crate) struct FileWriter {
 
 impl FileWriter {
     pub fn new(table: Table) -> Result<FileWriter> {
-        let w = SerializedFileWriter::new(Vec::new(), schema(table), props(table)).map_err(perr(None))?;
+        FileWriter::with_capacity(table, 0)
+    }
+
+    /// A writer whose output buffer starts with room for `capacity` bytes, so a caller
+    /// that knows roughly how large the file will be avoids the buffer doubling (and
+    /// existing twice while it does).
+    pub fn with_capacity(table: Table, capacity: usize) -> Result<FileWriter> {
+        let w = SerializedFileWriter::new(Vec::with_capacity(capacity), schema(table), props(table)).map_err(perr(None))?;
         Ok(FileWriter { table, w, index: FileIndex::default(), rows: 0, min_ts: i64::MAX, max_ts: i64::MIN })
     }
 
@@ -323,7 +330,12 @@ pub(crate) type Reader = SerializedFileReader<Bytes>;
 
 /// Open a whole file held in memory and check it has `table`'s schema.
 pub(crate) fn open(bytes: &[u8], table: Table, index: usize) -> Result<Reader> {
-    let r = SerializedFileReader::new(Bytes::copy_from_slice(bytes)).map_err(perr(Some(index)))?;
+    open_shared(Bytes::copy_from_slice(bytes), table, index)
+}
+
+/// [`open`] without the copy, for a caller that already holds the file as `Bytes`.
+pub(crate) fn open_shared(bytes: Bytes, table: Table, index: usize) -> Result<Reader> {
+    let r = SerializedFileReader::new(bytes).map_err(perr(Some(index)))?;
     let descr = r.metadata().file_metadata().schema_descr();
     let want = table.columns();
     if descr.num_columns() != want.len() {

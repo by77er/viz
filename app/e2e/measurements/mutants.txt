@@ -16,7 +16,12 @@ KILLED    rows of controls 4 px apart
             caught by: coarse pointer: no two hit areas overlap, in every state
 KILLED    no focus ring on the query editor
             caught by: keyboard: the focus ring (2 px, focus token) is drawn at every stop
-SURVIVED  the toolbar does not wrap
+KILLED    toolbar fields do not shrink or wrap (sideways scroll at 400 px)
+            caught by: 400 px: nothing scrolls the page sideways, in every state (light); 400 px: a wide table scrolls inside its wrap, not the page (light); 400 px: nothing scrolls the page sideways, in every state (dark); 400 px: a wide table scrolls inside its wrap, not the page (dark)
+            not caught by: coarse pointer, 400 px: nothing scrolls the page sideways (that check did not fail on this mutant; why was not investigated, so the fine-pointer 400 px checks are the ones that guard this)
 KILLED    the popover does not take focus
             caught by: keyboard: the time picker opens, its first item takes the ring, Escape returns focus
-NOT APPLIED  legend rows stay 32 px with a coarse pointer: source text not found
+KILLED    legend rows stay 32 px with a coarse pointer
+            caught by: coarse pointer: every control has a 44 px hit area, in every state
+SURVIVED  the toolbar does not wrap (flex-wrap: nowrap on .toolbar)
+            no check failed, and none should: the fields shrink and the time-range group wraps inside itself, so nothing scrolls sideways. The mutant does not break the property; it was replaced by "toolbar fields do not shrink or wrap" above.

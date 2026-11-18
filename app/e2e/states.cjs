@@ -44,14 +44,16 @@ async function main() {
     for (const theme of ['light', 'dark']) {
       for (const width of [1440, 400]) {
         // ---- waiting
-        for (const [name, delay, at] of [['waiting-150ms', 150, 90], ['waiting-800ms', 800, 620], ['waiting-3s', 3000, 2500]]) {
+        // The third wait is pictured 2.5 s in; the mock is given 6 s so that Cancel is still there to
+        // press after a slow screenshot.
+        for (const [name, delay, at] of [['waiting-150ms', 150, 90], ['waiting-800ms', 800, 620], ['waiting-3s', 6000, 2500]]) {
           const { ctx, page } = await open(browser, theme, width)
           await setMockDelay(delay)
           await page.click('[data-testid=run]')
           await page.mouse.move(0, 0)
           await page.waitForTimeout(at)
           await shot(page, name, theme, width)
-          if (delay === 3000) {
+          if (delay === 6000) {
             await page.click('[data-testid=cancel]')
             await page.waitForSelector('[data-testid=halted]')
             await page.mouse.move(0, 0)

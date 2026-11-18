@@ -48,17 +48,20 @@
 //! Request: `u8 table (0 = metric_samples, 1 = metric_series), u8[3] zero, u32 n_inputs`,
 //! then each input file as `u32 len, bytes`.
 //!
-//! Ok payload: one file, laid out exactly as one file of `viz_encode_segment`'s payload
-//! (`u8 table, u8[3] zero, u64 rows, i64 min_ts, i64 max_ts, u32 day_len, day,
-//! u32 index_len, index, u32 bytes_len, bytes`). The payload is written straight into the
-//! result allocation, so the output file exists twice in linear memory, not three times.
+//! Ok payload: `u8 table, u8[3] zero, u64 rows, i64 min_ts, i64 max_ts, u32 day_len, day,
+//! u32 index_len, index, u32 file_ptr, u32 file_len, u32 file_cap`. The file itself is NOT
+//! in the payload: it stays in the buffer the writer filled, at `file_ptr`. The caller
+//! copies `file_len` bytes from there and releases it with `viz_free_file(file_ptr,
+//! file_cap)`. So the output exists once in linear memory, and the inputs once (they are
+//! read in place from the request). Peak is about inputs + output + one decoded row group
+//! per input; see the README for measurements.
 //!
 //! ### `viz_abi_version`
 //!
 //! Returns 2 (1 had no `viz_merge_files`). The binding refuses a module that answers
 //! anything else.
 
-use viz_storage::{encode_segment, merge_files, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData, Table};
+use viz_storage::{encode_segment, merge_files_shared, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData, Table, WriteOptions};
 
 pub const ABI_VERSION: u32 = 2;
 const OK: u32 = 0;
@@ -229,7 +232,12 @@ fn do_merge(req: &[u8]) -> Result<EncodedFile, String> {
     let n = r.u32("n_inputs")?;
     let inputs = r.items(n, "input file")?;
     r.end()?;
-    merge_files(table, &inputs).map_err(|e| e.to_string())
+    // SAFETY: the request buffer outlives this call (the caller frees it afterwards), and
+    // nothing that borrows from these `Bytes` survives it: the readers and every value
+    // read from them are dropped inside `merge_files_shared`, whose result owns its bytes.
+    let shared: Vec<bytes::Bytes> =
+        inputs.iter().map(|f| bytes::Bytes::from_static(unsafe { std::mem::transmute::<&[u8], &'static [u8]>(*f) })).collect();
+    merge_files_shared(table, &shared, &WriteOptions::default()).map_err(|e| e.to_string())
 }
 
 /// See the crate documentation.
@@ -242,31 +250,34 @@ pub unsafe extern "C" fn viz_merge_files(ptr: *const u8, len: usize) -> *mut u8 
         Err(m) => return error(m),
         Ok(f) => f,
     };
-    let parts: [&[u8]; 3] = [f.day.as_bytes(), f.index.as_bytes(), f.bytes.as_slice()];
-    let total = 8 + 28 + parts.iter().map(|p| 4 + p.len()).sum::<usize>();
-    if total > u32::MAX as usize {
-        return error("merged file is larger than 4 GiB".to_string());
+    let EncodedFile { table, day, bytes, rows, min_ts, max_ts, index } = f;
+    // Leak the file buffer to the caller; `viz_free_file` takes it back.
+    let mut file = std::mem::ManuallyDrop::new(bytes);
+    let (file_ptr, file_len, file_cap) = (file.as_mut_ptr() as usize, file.len(), file.capacity());
+    result(OK, 28 + 4 + day.len() + 4 + index.len() + 12, |out| {
+        out.extend_from_slice(&[matches!(table, Table::MetricSeries) as u8, 0, 0, 0]);
+        out.extend_from_slice(&rows.to_le_bytes());
+        out.extend_from_slice(&min_ts.to_le_bytes());
+        out.extend_from_slice(&max_ts.to_le_bytes());
+        for part in [day.as_bytes(), index.as_bytes()] {
+            out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+            out.extend_from_slice(part);
+        }
+        for v in [file_ptr, file_len, file_cap] {
+            out.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+    })
+}
+
+/// Release the file buffer of a `viz_merge_files` result.
+///
+/// # Safety
+/// `ptr` and `cap` must be the `file_ptr` and `file_cap` of one such result, passed once.
+#[no_mangle]
+pub unsafe extern "C" fn viz_free_file(ptr: *mut u8, cap: usize) {
+    if !ptr.is_null() && cap > 0 {
+        drop(Vec::from_raw_parts(ptr, 0, cap));
     }
-    // Written in place: `result` would build the payload in a Vec first, a third copy of the file.
-    let p = viz_alloc(total);
-    let mut at = 0usize;
-    let mut put = |bytes: &[u8]| {
-        // SAFETY: `p` is a fresh allocation of `total` bytes and the pieces below sum to `total`.
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.add(at), bytes.len());
-        at += bytes.len();
-    };
-    put(&(total as u32).to_le_bytes());
-    put(&OK.to_le_bytes());
-    put(&[matches!(f.table, Table::MetricSeries) as u8, 0, 0, 0]);
-    put(&f.rows.to_le_bytes());
-    put(&f.min_ts.to_le_bytes());
-    put(&f.max_ts.to_le_bytes());
-    for part in parts {
-        put(&(part.len() as u32).to_le_bytes());
-        put(part);
-    }
-    debug_assert_eq!(at, total);
-    p
 }
 
 fn do_select(req: &[u8]) -> Result<Vec<SeriesData>, String> {

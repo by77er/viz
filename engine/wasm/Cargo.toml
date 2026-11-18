@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 viz-storage = { path = "../storage" }
+bytes = "1"
 
 [profile.release]
 opt-level = 3

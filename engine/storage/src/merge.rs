@@ -2,6 +2,7 @@
 use crate::day::{day_number, format_day};
 use crate::error::{Error, Result};
 use crate::pq::{self, EncodedFile, FileWriter, Group, Reader, Table, WriteOptions};
+use bytes::Bytes;
 use parquet::data_type::{ByteArray, ByteArrayType, DoubleType, Int64Type};
 use parquet::file::reader::FileReader;
 use std::cmp::Ordering;
@@ -26,6 +27,13 @@ pub fn merge_files(table: Table, inputs: &[&[u8]]) -> Result<EncodedFile> {
 
 /// [`merge_files`] with explicit writer settings.
 pub fn merge_files_with(table: Table, inputs: &[&[u8]], opts: &WriteOptions) -> Result<EncodedFile> {
+    let shared: Vec<Bytes> = inputs.iter().map(|f| Bytes::copy_from_slice(f)).collect();
+    merge_files_shared(table, &shared, opts)
+}
+
+/// [`merge_files_with`] over inputs the caller already holds as `Bytes`: nothing is
+/// copied, which matters when the inputs are a large share of the memory there is (WASM).
+pub fn merge_files_shared(table: Table, inputs: &[Bytes], opts: &WriteOptions) -> Result<EncodedFile> {
     let cap = opts.max_row_group_rows.max(1);
     match table {
         Table::MetricSamples => merge_samples(inputs, cap),
@@ -137,11 +145,11 @@ impl Ord for Head {
     }
 }
 
-fn merge_samples(inputs: &[&[u8]], cap: usize) -> Result<EncodedFile> {
+fn merge_samples(inputs: &[Bytes], cap: usize) -> Result<EncodedFile> {
     let mut cursors = Vec::with_capacity(inputs.len());
     let mut heap = BinaryHeap::with_capacity(inputs.len());
     for (index, f) in inputs.iter().enumerate() {
-        let reader = pq::open(f, Table::MetricSamples, index)?;
+        let reader = pq::open_shared(f.clone(), Table::MetricSamples, index)?;
         let mut c = Cursor { index, reader, next_group: 0, names: vec![], sid: vec![], ts: vec![], val: vec![], pos: 0, row: 0, prev: None };
         if c.fill()? {
             heap.push(c.take()?);
@@ -149,7 +157,8 @@ fn merge_samples(inputs: &[&[u8]], cap: usize) -> Result<EncodedFile> {
         cursors.push(c);
     }
 
-    let mut w = FileWriter::new(Table::MetricSamples)?;
+    // The merged file is about as large as its inputs together (smaller if rows repeat).
+    let mut w = FileWriter::with_capacity(Table::MetricSamples, inputs.iter().map(|f| f.len()).sum::<usize>() + (64 << 10))?;
     let mut days = DayCheck(None);
     let (mut names, mut sid, mut ts, mut val) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut pending: Option<Head> = None;
@@ -190,7 +199,7 @@ fn merge_samples(inputs: &[&[u8]], cap: usize) -> Result<EncodedFile> {
     w.finish(days.day()?)
 }
 
-fn merge_series(inputs: &[&[u8]], cap: usize) -> Result<EncodedFile> {
+fn merge_series(inputs: &[Bytes], cap: usize) -> Result<EncodedFile> {
     struct Row {
         name: ByteArray,
         sid: i64,
@@ -203,7 +212,7 @@ fn merge_series(inputs: &[&[u8]], cap: usize) -> Result<EncodedFile> {
     let mut rows: Vec<Row> = Vec::new();
     let (mut names, mut sids, mut labels, mut mins, mut maxs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (index, f) in inputs.iter().enumerate() {
-        let r = pq::open(f, Table::MetricSeries, index)?;
+        let r = pq::open_shared(f.clone(), Table::MetricSeries, index)?;
         let mut row = 0u64;
         let first = rows.len();
         for g in 0..r.num_row_groups() {
