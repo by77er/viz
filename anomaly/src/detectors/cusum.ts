@@ -8,14 +8,16 @@
  *
  * μ₀ and σ₀ come from the first `warmupPoints` valid points (median and 1.4826 × MAD of the
  * first differences / √2, which is not inflated by a slow drift during warm-up). Defaults
- * k = 0.5, h = 5 (in σ units) target a 1σ shift; Montgomery tabulates an in-control average
- * run length of about 465 points for them, for independent normal data. Autocorrelated
- * metrics alarm more often than that.
+ * k = 0.5, h = 5 (in σ units) target a 1σ shift; for known μ₀ and σ₀ and independent normal
+ * data the two-sided in-control average run length is about 465 points (Montgomery; Siegmund's
+ * approximation gives 469). Estimating μ₀ and σ₀ from a short warm-up shortens it, and
+ * autocorrelated metrics shorten it further: the README reports the measured value.
  *
  * At an alarm the change time is estimated as the first point of the current excursion (the
  * last time the statistic was 0), the new mean as the mean since then; the point is flagged
- * with "mean shifted from μ₀ to μ₁ at T", and the reference moves to μ₁ (so a lasting
- * shift alarms once, not forever). Only alarm points are anomalous.
+ * with "mean shifted from μ₀ to μ₁ at T". The reference level is then re-learned from the
+ * next `relearnPoints` points (median, σ kept), so a lasting shift alarms once, not forever.
+ * Only alarm points are anomalous.
  * Score: max(S⁺, S⁻) / h (≥ 1 at an alarm). State: about a dozen numbers plus the warm-up
  * buffer while warming. A gap longer than `staleAfterMs` restarts the warm-up.
  */
@@ -30,6 +32,8 @@ export interface CusumParams extends CommonParams {
   /** Decision interval, in σ. */
   h: number
   warmupPoints: number
+  /** Points used to re-learn the reference level after an alarm. */
+  relearnPoints: number
   staleAfterMs: number
 }
 
@@ -40,6 +44,7 @@ export interface CusumState {
   /** Warm-up buffer; emptied once the reference is learned. */
   warm: number[]
   ready: boolean
+  relearning: boolean
   mu: number
   sigma: number
   hi: number
@@ -53,9 +58,9 @@ export interface CusumState {
   loN: number
 }
 
-export const cusumDefaults: CusumParams = { ...COMMON_DEFAULTS, k: 0.5, h: 5, warmupPoints: 30, staleAfterMs: Number.MAX_VALUE }
+export const cusumDefaults: CusumParams = { ...COMMON_DEFAULTS, k: 0.5, h: 5, warmupPoints: 60, relearnPoints: 30, staleAfterMs: Number.MAX_VALUE }
 
-const fresh = (stepMs: number): CusumState => ({ v: 1, lastTs: null, stepMs, warm: [], ready: false, mu: 0, sigma: 0, hi: 0, lo: 0, hiStart: null, hiSum: 0, hiN: 0, loStart: null, loSum: 0, loN: 0 })
+const fresh = (stepMs: number): CusumState => ({ v: 1, lastTs: null, stepMs, warm: [], ready: false, relearning: false, mu: 0, sigma: 0, hi: 0, lo: 0, hiStart: null, hiSum: 0, hiN: 0, loStart: null, loSum: 0, loN: 0 })
 
 /** σ from first differences: 1.4826 · MAD(Δx) / √2. Robust to level shifts and slow drift. */
 export function diffSigma(x: number[]): number {
@@ -88,15 +93,17 @@ export const cusum: Detector<CusumParams, CusumState> = {
       if (!Number.isFinite(ts) || !Number.isFinite(x) || (st.lastTs !== null && ts <= st.lastTs)) { points[i] = missingPoint(ts, x); continue }
       if (st.lastTs !== null && ts - st.lastTs > p.staleAfterMs) Object.assign(st, fresh(st.stepMs))
       st.lastTs = ts
-      if (!st.ready) {
+      if (!st.ready || st.relearning) {
         st.warm.push(x)
-        if (st.warm.length >= warmupPoints) {
+        const need = st.relearning ? Math.max(1, Math.floor(p.relearnPoints)) : warmupPoints
+        if (st.warm.length >= need) {
           st.mu = median(st.warm)
-          st.sigma = diffSigma(st.warm)
+          if (!st.ready) st.sigma = diffSigma(st.warm)
           st.warm = []
           st.ready = true
+          st.relearning = false
         }
-        points[i] = warmingPoint(ts, x, st.ready ? st.mu : null)
+        points[i] = warmingPoint(ts, x, st.ready && !st.relearning ? st.mu : null)
         continue
       }
       const sd = spreadFloor(st.sigma, st.mu, p.minSpread)
@@ -122,8 +129,9 @@ export const cusum: Detector<CusumParams, CusumState> = {
             facts: { statistic: stat, h: p.h, k: p.k, pointsSinceChange: up ? st.hiN : st.loN, detectedAt: ts },
           })
         }
-        // adopt the new level either way, so a lasting shift alarms once
+        // re-learn the level either way, so a lasting shift alarms once
         st.mu = newMu
+        st.relearning = p.relearnPoints > 0
         st.hi = 0; st.lo = 0
         st.hiStart = null; st.hiSum = 0; st.hiN = 0
         st.loStart = null; st.loSum = 0; st.loN = 0

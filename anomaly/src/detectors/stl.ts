@@ -205,6 +205,12 @@ export function stlDecompose(y: Float64Array, period: number, options?: Partial<
 export interface StlParams extends CommonParams {
   /** Season length; required; a multiple of the step. */
   periodMs: number
+  /**
+   * ns, odd ≥ 7. 0 = "periodic" as in R's stl(s.window = "periodic"): ns = 10·n + 1 with
+   * seasonal degree 0, i.e. the same seasonal shape every cycle. Default 0: a small window
+   * lets the seasonal component follow the noise (measured: residual σ 0.57 for noise σ 1 at
+   * ns = 7 on 10 daily cycles), which makes in-sample residuals look too good and inflates scores.
+   */
   seasonalWindow: number
   robust: boolean
   /** Band half-width in robust standard deviations of the residuals. */
@@ -217,7 +223,7 @@ export interface StlParams extends CommonParams {
   minPeriods: number
 }
 
-export const stlDefaults: StlParams = { ...COMMON_DEFAULTS, periodMs: 0, seasonalWindow: 7, robust: true, k: 4, trendExtrapolation: 'flat', maxSlots: 20_000, minPeriods: 2 }
+export const stlDefaults: StlParams = { ...COMMON_DEFAULTS, periodMs: 0, seasonalWindow: 0, robust: true, k: 4, trendExtrapolation: 'flat', maxSlots: 20_000, minPeriods: 2 }
 
 /** A fitted model: enough to score new points without refitting. */
 export interface StlModel {
@@ -273,7 +279,8 @@ export function fitStl(series: Series, params?: Partial<StlParams>): StlFit | nu
     }
     prev = i
   }
-  const d = stlDecompose(y, P, { seasonal: p.seasonalWindow, robust: p.robust })
+  const periodic = !(p.seasonalWindow > 0)
+  const d = stlDecompose(y, P, { seasonal: periodic ? 10 * n + 1 : p.seasonalWindow, seasonalDeg: periodic ? 0 : 1, robust: p.robust })
   const real: number[] = []
   for (let i = 0; i < n; i++) if (!interpolated[i]) real.push(d.resid[i]!)
   const rb = robust(real)

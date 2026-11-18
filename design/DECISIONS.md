@@ -244,140 +244,20 @@ empty when idle.
 its own budget (not tested), or contention on shared warm leaves is worse than the cold
 start it avoids.
 
-## D18. Seals reach flush through a Queue, with a marker-driven sweep under it
+## D18. Monitoring viz with viz: one deployment, for performance (proposed)
 
-**Decision.** A shard that seals a segment writes a `{tenant, shard}` message to an outbox
-table in the same transaction and hands it to a Cloudflare Queue; the flush Worker is the
-queue's consumer. The hourly sweep is the safety net, and it finds work by listing KV
-markers that shards maintain, never by asking shards.
+**Status.** Proposed 2026-11-18 as a future goal and revised the same day on the owner's
+direction; not built. Details in `design/SELF-MONITORING.md`.
 
-**Alternatives.** (a) The shard calls the flush entrypoint directly (`ctx.waitUntil` plus a
-sweep). (b) A sweep only. (c) The shard's own alarm re-notifies while segments are pending.
+**Proposal.** viz's own telemetry goes to a `viz-internal` tenant in the same deployment:
+component metrics aggregated in memory and sent every 15 s, fire-and-forget; Cloudflare's
+analytics pulled every minute for billed CPU, duration and R2 operations; one freshness
+prober. The aim is understanding scaling and nominal performance, with cost per unit of
+work measured rather than modelled.
 
-**Why.** (a) ties a flush run, which can take seconds and several R2 writes, to the
-lifetime and the connection budget of the object that must stay free to acknowledge
-writes, and gives no retry: every failure would wait for the sweep. The Queue supplies
-at-least-once delivery, backoff, batching and a dead-letter queue. What it adds is a send
-that can fail (covered by the outbox: the alarm retries it), duplicates (flush is
-idempotent) and dead letters (written to R2 and logged; the sweep re-enqueues the stream).
-(b) alone delays every flush by up to the sweep period. (c) would also work and needs no
-KV, but a cron that asks every shard would wake idle objects, and the owner asked for a
-sweep that is cheap when idle; the marker gives that.
+**Owner's direction.** Keep it simple and avoid a second deployment. The first version
+proposed a separate meta cell, an outside watcher and an off-platform heartbeat to survive
+viz's own outages; those are deferred until viz carries traffic someone depends on.
 
-**Easy to revisit.** The transport is one method, `Shard.announce`. Replacing the Queue
-with a direct call changes that method and the consumer's entry point; the outbox, the
-marker and the sweep stay.
-
-**Would change if.** Queue delivery latency on Cloudflare makes freshly sealed data wait
-noticeably (unmeasured; the tail keeps it queryable meanwhile), or the per-message cost
-matters at high seal rates.
-
-## D19. `series_id` stays a plain hash; locality is not bought with id bits
-
-**Decision.** `contracts/BATCH.md` is unchanged: `series_id` is FNV-1a 64 of all labels.
-`DESIGN.md` §5.1 no longer says the id begins with a hash of promoted labels.
-
-**Evidence (measured here, `engine/storage/examples/locality.rs`, re-run 2026-11-18;
-200,000 series, 50 metrics, skewed namespace/job/pod/route/status labels; both encodings
-return identical results for every query).** Id (b): top 12 bits from a hash of
-`namespace`, next 12 from a hash of `job`, low 40 from the full hash. One samples file of
-all series, at three file shapes: 30, 60 and 120 samples per series (60, 120 and 240 row
-groups of 100,000 rows; at 60 the file is 16–17 MB, the size of an as-built compaction
-output for such a tenant). Bytes are the compressed row groups that row-group statistics
-cannot exclude, which is how the engine prunes; "pages" is what a reader with page-level
-statistics would fetch, which the engine does not have. Select is whole files in memory,
-median of 5.
-
-| Query | 30 / sample | 60 / sample | 120 / sample |
-|---|---|---|---|
-| `{namespace="ns-15"}` (2% of series), row-group bytes, (a) → (b) | 12.1 → 9.4 MB (1.3×) | 17.2 → 10.5 MB (1.6×) | 27.6 → 10.8 MB (2.6×) |
-| same, page bytes | 12.1 → 2.1 MB (5.8×) | 17.2 → 1.6 MB (10.7×) | 26.7 → 1.6 MB (16.5×) |
-| same, select | 344 → 280 ms | 462 → 328 ms | 654 → 312 ms |
-| `{job="job-040"}`, row-group bytes | 12.1 → 9.2 MB (1.3×) | 17.2 → 10.3 MB (1.7×) | 27.6 → 10.3 MB (2.7×) |
-| `{__name__="metric_01_total"}` (full-metric scan), row groups | 7 = 7 | 13 = 13 | 26 = 26 |
-| same, bytes / select | 1.39 → 1.27 MB, 113 → 127 ms | 1.84 → 1.66 MB, 123 → 149 ms | 2.97 → 2.77 MB, 147 → 159 ms |
-| `namespace` on that one metric, row-group bytes | 1.39 → 0.54 MB (2.6×) | 1.84 → 0.38 MB (4.8×) | 2.97 → 0.32 MB (9.3×) |
-
-The samples file is 6–10% smaller with (b) and the series file 30% smaller.
-
-**Why not.** The bar set for changing the id was at least 3× fewer bytes for
-`{namespace="x"}` without hurting the other queries. As the engine reads (row groups), it
-is 1.3–2.6×, below the bar at every shape; it passes only with page-level pruning, which
-does not exist, or for a namespace matcher combined with a metric name in larger files.
-The full-metric scan reads the same row groups and its select was 8–21% slower (single
-runs on a noisy machine). And the id itself gets worse: with 40 bits left to distinguish
-series that share a namespace and job, the expected number of colliding pairs among n such
-series is n²/2⁴¹: 0.005 at 100,000, 0.45 at 1,000,000 (the default active-series limit),
-against 3·10⁻⁸ for 64 bits. Nothing downstream detects a collision: two series with one id
-are merged silently in every file and every query. The same locality is available without
-that by sorting on a promoted-label column ahead of `series_id` (`contracts/TABLES.md`
-already plans promoted columns), which costs a schema change instead of collision
-resistance.
-
-(An earlier version of this entry quoted only the one-metric row, 9.3×, as "the namespace
-query". The decision did not change; its first reason did.)
-
-**Would change if.** The engine gains page-level pruning (a page index), so that the 6–17×
-by pages becomes bytes actually not read, AND ids become wider than 64 bits or `edge` or the
-shard gains a collision check that makes a narrower hash safe.
-
-## D20. Tombstones live in the ledger
-
-**Decision.** The keys removed by `replace` and `expire` are recorded by the ledger, in the
-transaction that removes them, with the ledger version and time of the removal. The
-janitor is stateless and deletes only what the ledger's `deletable` returns.
-
-**Alternative.** A per-tenant janitor Durable Object that is told about removals, or reads
-them from the ledger's R2 log.
-
-**Why.** "Removed", "logged" and "live" are all facts the ledger already holds, and it can
-answer them in one synchronous read; a second object would learn of a removal in a
-separate step that can be lost or reordered, and would have to ask the ledger whether the
-removal is logged anyway. Keyed by version, the rule survives the planned change of the
-log to segments (`contracts/LEDGER-LOG.md`) and gives the publisher's gate a place to go.
-
-**Cost.** One more row write per removed key in the ledger, and a table that grows until
-the janitor runs.
-
-## D21. The active-series limit refuses new series by id; the shard meters, `edge` filters
-
-**Decision.** `edge` sends each batch's series ids with it. The shard keeps, per stream, a
-two-bucket sliding window of ids: an exact set while small, above that a HyperLogLog for
-the count and a Bloom filter for membership. A batch that would take the stream over its
-share of the tenant's limit is refused whole with the ids that are new and do not fit;
-`edge` leaves those series out, sends the rest again, and tells the sender (429 for Remote
-Write, `partial_success` for OTLP).
-
-**Alternatives.** (a) `edge` splits a batch into one per series. (b) A HyperLogLog alone.
-(c) Refuse the whole request at the limit.
-
-**Why.** (a) multiplies appends and row writes by the series count. (b) cannot say whether
-an id has been seen: only about m/n of new ids move a register (0.4% at a million), so a
-tenant at its limit could keep adding series. (c) stops the series a tenant already has,
-which punishes it for someone's cardinality mistake. Returning the refused ids keeps the
-shard ignorant of the batch format and costs one extra round trip only when a limit is hit.
-
-**Share.** The tenant's limit is divided evenly over the slots it may use; a tenant whose
-senders are unevenly spread hits one shard's share early.
-
-**Would change if.** Limits need to be exact across shards (then the count moves to a
-per-tenant object), or the Bloom filter's 1 MB ceiling (about 800,000 ids per bucket at 1%)
-is reached by real tenants.
-
-## D18. Monitoring viz with viz, in three lines (proposed)
-
-**Status.** Proposed 2026-11-18 as a future goal; not built. Full proposal in
-`design/SELF-MONITORING.md`.
-
-**Proposal.** (1) viz's own telemetry goes to a `viz-internal` tenant in a separate meta
-cell, emitted by components as aggregated Remote Write every 15 s, fire-and-forget, plus
-Cloudflare's GraphQL analytics pulled through the adapter path, plus Workers OTel export
-for logs and traces. (2) A small watcher Worker outside viz's data path checks every cell,
-including the meta cell, from Cloudflare analytics and an end-to-end probe, and pages
-directly. (3) An off-platform heartbeat and synthetic check catch Cloudflare-wide failures.
-
-**Why.** Shared fate: a system can only report failures that leave its own monitoring path
-working, so each line depends on less of viz than the one above it.
-
-**Asks of the owner.** A separate meta cell; one off-platform dependency as the deliberate
-exception to "purely Cloudflare".
+**Accepted cost.** Shared fate: when viz is down, its view of itself is down too.
+Cloudflare's own dashboard remains available for diagnosis.

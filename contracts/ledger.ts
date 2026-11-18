@@ -34,13 +34,16 @@ export interface FileEntry {
  * its inputs in ascending precedence (the engine lets the later file win). Key order means
  * nothing: keys sort as text, so `…-10-12-…` sorts before `…-2-9-…`.
  *
- *   - A flush file has `[v, v]`, `v` being the ledger version of the `add_unit` that
- *     admitted it. A stream's units are admitted in sequence order, so a later write always
- *     has a higher precedence than an earlier one of the same stream. Across streams the
- *     order is admission order, which the shard-map handover makes the write order
- *     (design/DESIGN.md §4.1: a map change waits for the old shards' units to be recorded).
+ *   - A flush file has `[p, p]` with `p = v × PRECEDENCE_PER_VERSION + i`: `v` is the ledger
+ *     version of the `add_unit` that admitted it and `i` its position in the unit (a flush
+ *     unit has one file per table and day, so only `v` matters for it; `i` only makes the
+ *     order total for any unit the ledger accepts). A stream's units are admitted in
+ *     sequence order, so a later write always ranks above an earlier one of the same
+ *     stream. Across streams the order is admission order, which the shard-map handover
+ *     makes the write order (design/DESIGN.md §4.1: a map change waits for the old shards'
+ *     units to be recorded).
  *   - A `replace` output has `[min precedenceLow, max precedence]` over the removed files of
- *     its table and day (`[v, v]` if there are none). The ledger admits it only if no other
+ *     its table and day (`[p, p]` as for a unit if there are none). The ledger admits it only if no other
  *     live file of that table and day whose time range overlaps the output's has a range
  *     that intersects it; otherwise the swap is a `conflict` naming the `blocking` files.
  *
@@ -49,6 +52,9 @@ export interface FileEntry {
  * every row read or merged has the value of its latest write. (Within one file, the latest
  * row wins: contracts/BATCH.md, contracts/TABLES.md.)
  */
+/** Precedence values per ledger version: a unit or a `replace` has at most this many files. */
+export const PRECEDENCE_PER_VERSION = 4096
+
 export interface LiveFile extends FileEntry {
   /** High end of the file's precedence range; the order of `Plan.files`. */
   precedence: number

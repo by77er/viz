@@ -93,7 +93,8 @@ pull request description by commit, so it stays valid after merge:
   the first application review (`reviews/app-restyle/`) and the flow screens' review
   (`reviews/flows-v1/`): a Chart component and series-colour rule with a re-stepped light
   palette, touch and narrow-table rules, a pressed fill and a scrim, the waiting line's
-  place, inline numbers, nine new components, the fixture dashboard and speed harness, and
+  place, inline numbers, new components (page header, key-value list, timeline, agent claim,
+  change list, secret, notice, first run), the fixture dashboard and speed harness, and
   rubric rows for typing, many series, touch parity, consistency, agent text and stale
   labels. It lists migration notes for `app/src` and for the flow screens. It needs an
   independent review before anything is built on it.

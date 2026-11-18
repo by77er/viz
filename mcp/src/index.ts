@@ -86,15 +86,15 @@ export function createWorker(deps: Deps = {}): ExportedHandler<Env> {
       let session: Session
       try {
         const authorization = req.headers.get('Authorization') ?? ''
-        const control = (a: string) => make.control(env, a)
-        const id = await identify(req, env, make.control(env, authorization) ? control : null)
+        const control = make.control(env, authorization)
+        const id = await identify(req, env, control ? (a: string) => make.control(env, a)! : null)
         const limits = { ...limitsFrom(env.MCP_LIMITS), ...(deps.limits ?? {}) }
         const now = deps.now?.() ?? Date.now()
         const usage = newUsage()
         const partial = { id, query: make.query(env, authorization), limits, now, usage }
         session = {
           ...partial,
-          control: make.control(env, authorization),
+          control,
           monitors: make.monitors(env, authorization),
           deadline: performance.now() + limits.deadlineMs,
           appUrl: env.APP_URL ?? 'https://vis.bitcru.sh',

@@ -1,7 +1,7 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { TENANT_ID, ledgerBaseKey, ledgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type Plan, type Table } from '../../contracts/ledger'
+import { PRECEDENCE_PER_VERSION, TENANT_ID, ledgerBaseKey, ledgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type Plan, type Table } from '../../contracts/ledger'
 import type { Ledger, LedgerBase } from '../src/ledger'
 
 type Stub = DurableObjectStub<Ledger>
@@ -278,8 +278,10 @@ describe('plan', () => {
   it('returns entries exactly as they were admitted', async () => {
     const { l } = open()
     const f = file('exact', { bytes: 12345, rows: 678, level: 0, index: '{"rowGroups":[1,2,3]}' })
-    await l.addUnit(unit(1, 3, [f]))
-    expect((await everything(l)).files).toEqual([f])
+    const r = await l.addUnit(unit(1, 3, [f]))
+    // Exactly as admitted, plus the precedence the ledger assigned (contracts/ledger.ts `LiveFile`).
+    const p = (r as { version: number }).version * PRECEDENCE_PER_VERSION
+    expect((await everything(l)).files).toEqual([{ ...f, precedence: p, precedenceLow: p }])
   })
 
   it('reads files, watermarks and version from one state while units are being added', async () => {
@@ -525,7 +527,9 @@ describe('rebuild from the R2 log', () => {
     await l.registerStream({ shard: S, incarnation: INC })
     await l.addUnit(pair(1, 10, T0 - 3 * DAY_MS))
     await l.addUnit(pair(11, 20, T0))
-    await l.addUnit(pair(1, 7, T0, 'pool/1', 42))
+    // pool/1's unit is admitted between pool/0's two units; at another time, so that merging
+    // those two does not jump over a file that could hold the same samples (`LiveFile`).
+    await l.addUnit(pair(1, 7, T0 + 2000, 'pool/1', 42))
     await l.addUnit(pair(21, 30, T0 + 1))
     await l.replace({ remove: [pair(11, 20).files[0]!.key, pair(21, 30, T0 + 1).files[0]!.key], add: [file('L1-merged', { level: 1, rows: 20 })] })
     await l.expire({ table: 'metric_samples', beforeDay: dayOf(T0 - DAY_MS) })

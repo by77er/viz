@@ -7,12 +7,12 @@ import { durationSeconds } from './promql'
  * are the same, each with a path and, where one can be computed, a suggestion.
  */
 export interface JsonSchema {
-  type?: 'object' | 'string' | 'integer' | 'number' | 'boolean' | 'array' | ('string' | 'number' | 'integer' | 'boolean' | 'object' | 'array' | 'null')[]
+  type?: 'object' | 'string' | 'integer' | 'number' | 'boolean' | 'array' | readonly ('string' | 'number' | 'integer' | 'boolean' | 'object' | 'array' | 'null')[]
   description?: string
   properties?: Record<string, JsonSchema>
-  required?: string[]
+  required?: readonly string[]
   additionalProperties?: boolean | JsonSchema
-  enum?: unknown[]
+  enum?: readonly unknown[]
   minimum?: number
   maximum?: number
   minLength?: number
@@ -22,7 +22,7 @@ export interface JsonSchema {
   minItems?: number
   maxItems?: number
   default?: unknown
-  examples?: unknown[]
+  examples?: readonly unknown[]
 }
 
 export interface ArgIssue {
@@ -52,7 +52,7 @@ export function checkArgs(schema: JsonSchema, value: unknown, path = ''): ArgIss
   const issues: ArgIssue[] = []
   const at = path || '(arguments)'
   if (schema.type !== undefined) {
-    const types = Array.isArray(schema.type) ? schema.type : [schema.type]
+    const types: readonly string[] = typeof schema.type === 'string' ? [schema.type] : schema.type
     if (!types.some((t) => typeMatches(t, value))) {
       issues.push({ path: at, message: `must be ${types.join(' or ')}`, suggestion: schema.examples ? `e.g. ${JSON.stringify(schema.examples[0])}` : undefined })
       return issues

@@ -38,10 +38,10 @@ export const MAX = { name: 200, label: 200, title: 200, text: 300, long: 2000, s
 
 // Invisible or layout-changing code points. Each becomes U+FFFD so the reader sees that something was there.
 const INVISIBLE =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F­͏؜ᅟᅠ឴឵᠋-᠏​-‏‪-‮⁠-⁯ㅤ︀-️﻿ﾠ￹-￻]|\uDB40[\uDC00-\uDDEF]/g
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFB]|\uDB40[\uDC00-\uDDEF]/g
 // Lone surrogates are not valid text either.
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
-const NEWLINES = /\r\n|\r|\n| | |\u0085/g
+const NEWLINES = /\r\n|\r|\n|\u2028|\u2029|\u0085/g
 
 const ROLE_TAG = /\[\s*\/?\s*(INST|SYS|SYSTEM|SYSTEM_PROMPT|TOOL|TOOL_CALLS?|TOOL_RESULTS?|AVAILABLE_TOOLS|ASSISTANT|USER|HUMAN|DEVELOPER)\s*\]/gi
 const SPECIAL_TOKEN = /\|\s*(im_start|im_end|im_sep|endoftext|eot_id|eom_id|start_header_id|end_header_id|begin_of_text|end_of_text|system|user|assistant|tool)\s*\|/gi

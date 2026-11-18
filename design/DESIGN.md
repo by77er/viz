@@ -447,8 +447,9 @@ retention, batching WAL writes, seal age, and keeping rules in the tail class.
 
 ## 11a. Monitoring viz itself
 
-Proposed, not built: `design/SELF-MONITORING.md`. viz on viz in a separate meta cell,
-a watcher outside the data path, and an off-platform heartbeat (decision D18).
+Proposed, not built: `design/SELF-MONITORING.md` (decision D18). viz's own metrics, Cloudflare's
+analytics for its Workers, and a freshness prober go to a `viz-internal` tenant in the same
+deployment, to understand scaling, nominal performance and cost per unit of work.
 
 ## 12. Launch scope
 

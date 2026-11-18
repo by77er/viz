@@ -38,7 +38,7 @@ export interface SeasonalParams extends CommonParams {
   k: number
   /** Seasons that must be present before a point is scored. */
   minSeasons: number
-  /** Residuals used for the spread. 0 = one period. */
+  /** Residuals used for the spread. 0 = one period or 100 steps, whichever is longer. */
   residualWindowMs: number
   minResiduals: number
   adapt: 'robust' | 'agile'
@@ -79,7 +79,7 @@ export const seasonalDefaults: SeasonalParams = {
 function geometry(p: SeasonalParams, stepMs: number) {
   const P = stepMs > 0 ? Math.round(p.periodMs / stepMs) : 0
   const seasons = Math.max(1, Math.floor(p.seasons))
-  const Rr = Math.max(1, Math.round((p.residualWindowMs > 0 ? p.residualWindowMs : p.periodMs) / Math.max(stepMs, 1)))
+  const Rr = Math.max(1, Math.round((p.residualWindowMs > 0 ? p.residualWindowMs : Math.max(p.periodMs, 100 * stepMs)) / Math.max(stepMs, 1)))
   const A = Math.max(1, Math.round((p.agileWindowMs > 0 ? p.agileWindowMs : p.periodMs / 24) / Math.max(stepMs, 1)))
   return { P, seasons, R: seasons * P + 1, Rr: Rr + 1, A }
 }
@@ -92,7 +92,7 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
   history(params, stepMs) {
     const p = merge(seasonalDefaults, params)
     const g = geometry(p, stepMs)
-    const resid = p.residualWindowMs > 0 ? p.residualWindowMs : p.periodMs
+    const resid = p.residualWindowMs > 0 ? p.residualWindowMs : Math.max(p.periodMs, 100 * stepMs)
     return {
       lookbackMs: g.seasons * p.periodMs + resid,
       resolutionMs: stepMs,
@@ -176,7 +176,7 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
           const r = st.res[q]
           if (r !== null && r !== undefined) resBuf.push(r)
         }
-        if (resBuf.length < p.minResiduals) {
+        if (resBuf.length < Math.max(2, p.minResiduals)) {
           pt = warmingPoint(ts, x, base)
         } else {
           let level = 0

@@ -35,7 +35,7 @@ const pairs = [
   ['ink-secondary', ['rule'], 4.5, 'second part of a chosen or pressed legend row (muted text is not allowed on rule: 4.19:1)'],
   ['ink', ['ground', 'raised'], 3, 'crosshair, edges of a range being selected, a picked member of Other'],
   ['rule-control', ['sunken'], 3, 'edges of a shaded interval'],
-  // v4: a press has its own fill. Only ink and ink-secondary are set on it (ink-muted is 3.66:1 light, 3.90:1 dark).
+  // v4: a press has its own fill. Only ink and ink-secondary are set on it (ink-muted is 3.67:1 light, 3.91:1 dark).
   ['ink', ['pressed'], 4.5, 'label of a pressed button, segment, menu row, legend row'],
   ['ink-secondary', ['pressed'], 4.5, 'second part of a pressed legend row, a pressed menu row\'s shortcut'],
   ['focus', ['pressed'], 3, 'focus ring on a pressed control'],

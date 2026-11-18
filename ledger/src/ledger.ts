@@ -11,6 +11,7 @@ import {
   type LedgerChange,
   type LedgerJanitorRpc,
   type LiveFile,
+  PRECEDENCE_PER_VERSION,
   type OrphanCheck,
   type Tombstone,
   type LedgerRpc,
@@ -335,6 +336,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const bad = filesProblem(unit.files)
     if (bad) return invalid(bad)
     if (unit.files.length === 0) return invalid('a unit must have at least one file')
+    if (unit.files.length > PRECEDENCE_PER_VERSION) return invalid(`a unit has at most ${PRECEDENCE_PER_VERSION} files`)
     const ref: UnitRef = { shard: unit.shard, incarnation: unit.incarnation, seqLo: unit.seqLo, seqHi: unit.seqHi }
 
     const known = this.stream(unit.shard)
@@ -363,7 +365,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       // Precedence (contracts/ledger.ts `LiveFile`): the version this change is about to get.
       // Units of a stream are admitted in sequence order, so a later write ranks higher.
       const v = this.version() + 1
-      const listed = unit.files.map((f) => asListed(f, v, v))
+      const listed = unit.files.map((f, i) => asListed(f, v * PRECEDENCE_PER_VERSION + i, v * PRECEDENCE_PER_VERSION + i))
       for (const f of listed) this.insertFile(f, ref)
       this.ctx.storage.sql.exec(`UPDATE stream SET watermark = ? WHERE shard = ?`, unit.seqHi, unit.shard)
       const recorded = this.record('add_unit', listed, [], { shard: unit.shard, incarnation: unit.incarnation, seq: unit.seqHi }, { seqLo: unit.seqLo, seqHi: unit.seqHi })
@@ -419,11 +421,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     // of its table and day, and is admitted only if no other live file that could share a
     // row with it (same table and day, overlapping time range) has a range inside that.
     const inputs = remove.map((k) => this.liveFile(k)!)
-    const next = this.version() + 1
-    const outputs = req.add.map((f) => {
+    if (req.add.length > PRECEDENCE_PER_VERSION) return invalid(`a replace adds at most ${PRECEDENCE_PER_VERSION} files`)
+    const next = (this.version() + 1) * PRECEDENCE_PER_VERSION
+    const outputs = req.add.map((f, n) => {
       const from = inputs.filter((i) => i.table === f.table && i.day === f.day)
       return from.length === 0
-        ? asListed(f, next, next)
+        ? asListed(f, next + n, next + n)
         : asListed(f, Math.min(...from.map((i) => i.precedenceLow)), Math.max(...from.map((i) => i.precedence)))
     })
     const removing = new Set(remove)
@@ -779,15 +782,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       unit = { shard: w.shard, incarnation: w.incarnation, seqLo: c.unit.seqLo, seqHi: c.unit.seqHi }
       s.watermark = w.seq
     }
-    for (const f of c.added) {
+    for (const [n, f] of c.added.entries()) {
       if (files.has(f.key)) throw bad(`adds ${f.key}, which is already live`)
       // The precedence as assigned when the change was made; a change logged before
       // precedence existed gets what the ledger would have assigned (contracts `LiveFile`).
       let listed: LiveFile = f
       if (typeof f.precedence !== 'number' || typeof f.precedenceLow !== 'number') {
         const from = inputs.filter((i) => i.table === f.table && i.day === f.day)
+        const p = c.version * PRECEDENCE_PER_VERSION + n
         listed = from.length === 0
-          ? asListed(f, c.version, c.version)
+          ? asListed(f, p, p)
           : asListed(f, Math.min(...from.map((i) => i.precedenceLow)), Math.max(...from.map((i) => i.precedence)))
       }
       files.set(f.key, { ...listed, unit })
