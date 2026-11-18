@@ -136,7 +136,73 @@ tombstone and no pending segment left.
 
 SOAK_RESULTS
 
-MUTANT_RESULTS
+### Mutation checks (`node scripts/mutants.mjs all`)
+
+Each mutant is one text replacement in the source, run against the suite that should
+notice, and restored. Last run: **57 of 57 killed** (trigger 14, compaction 12, deletion 15,
+limit 16). `flush/scripts/mutants.mjs` (18 of 18) was re-run after flush's PUTs were made
+parallel.
+
+| Part | Mutant | Killed by |
+|---|---|---|
+| trigger | a seal writes no notification | shard: announces once on size |
+| trigger | a notification that could not be sent is dropped | shard: unsent notification kept and retried across eviction |
+| trigger | a seal on age (alarm) is not announced | shard: announces on age |
+| trigger | the shard never removes its pending marker | shard: marker life |
+| trigger | the pending marker is not written at a seal | shard: marker life |
+| trigger | `pendingTenants` lists recorded segments too | shard: pending tenants |
+| trigger | **the sweep enqueues when idle** (asks every shard of every pool map) | stack: idle deployment, zero wakes |
+| trigger | the sweep ignores how long a segment has been pending | flush: sweep, "and only those" |
+| trigger | a failed flush is acknowledged | flush: retries one message when the run throws |
+| trigger | admitted-but-unlogged is acknowledged as done | flush: retries while not logged |
+| trigger | every message of a failed group is retried | flush: retries ONE message |
+| trigger | junk is acknowledged without a dead letter | flush: dead letters |
+| trigger | the cron enqueues tenants that are not due | stack: seal → flush → maintenance |
+| trigger | a flush does not ask for maintenance | stack: seal → flush → maintenance |
+| compaction | **samples and series swapped in two replaces (not paired)** | compact: one replace for both tables |
+| compaction | series inputs left live after the merge | compact: ledger lists exactly the pair |
+| compaction | the series file is not merged (first input reused) | stack: I8 property, all seeds |
+| compaction | only the first two sample inputs are merged (rows lost) | stack: I8 property, all seeds |
+| compaction | outputs of a conflicted merge are left behind | compact: conflict |
+| compaction | conflict reported as merged | compact: conflict |
+| compaction | the step deadline is not checked before replace | compact: guards |
+| compaction | the row-count check is dropped | compact: guards |
+| compaction | a day is treated as closed before it ends | compact: policy |
+| compaction | the budget on pairs per merge is ignored | compact: policy |
+| compaction | output keys do not carry the content hash | compact: keys per the contract |
+| compaction | the engine keeps the earlier input on a duplicate | engine/storage: `cargo test --test merge` |
+| deletion | **deletable before the removal is logged** | ledger: committed but not logged; janitor: same |
+| deletion | deletable inside the grace | janitor: reader holding the old plan |
+| deletion | a live key is deletable | ledger: a key that is live again |
+| deletion | the janitor deletes every tombstone without asking | janitor: grace; not logged |
+| deletion | expire / replace record no tombstone (2 mutants) | janitor: purge finds nothing to delete |
+| deletion | **the orphan sweep ignores pending units** | janitor: pending unit (the race) |
+| deletion | the orphan sweep takes an unknown stream for a dead one | janitor: first unit of a stream |
+| deletion | the orphan sweep judges by the committed watermark | janitor: logged, not committed |
+| deletion | the orphan sweep deletes live and tombstoned objects | janitor: several |
+| deletion | a compaction output is an orphan as soon as a flush file would be | janitor: merge in flight; true orphans |
+| deletion | series files are not expired | janitor: expires both tables |
+| deletion | retention keeps one day too few | janitor: policy, expire |
+| deletion | an unreadable retention record means one day | janitor: policy |
+| limit | **the limit refuses existing series** | shard: window; edge: Remote Write at the limit |
+| limit | the limit is not enforced | shard: refuses the new ones that do not fit |
+| limit | a refused batch is counted anyway | shard: same |
+| limit | every new series is refused, not only those that do not fit | shard: same |
+| limit | series ids are not checked against the batch header | shard: inconsistent request |
+| limit | the window never forgets | shard: forgets after a whole window |
+| limit | above the threshold nothing is known | shard: sketch mode, existing accepted |
+| limit | the sketch estimate uses the wrong constant | shard: accuracy within 5% |
+| limit | the series window is saved on every append | shard: saved from the alarm only |
+| limit | edge does not leave the refused series out | edge: 7 samples written |
+| limit | edge answers 204 although series were refused | edge: 429 |
+| limit | edge sends the whole limit to every shard | edge: share |
+| limit | an unreadable limits record means no limit | edge: default |
+| limit | OTLP partial_success does not count the refused points | edge: OTLP |
+| limit | edge sends no series ids | edge: nothing is metered |
+
+Part 5 (series-id locality) changed no code, so it has no mutants of its own; the three
+existing series-id mutants in `edge/scripts/mutants.mjs` still guard the contract's
+definition.
 
 ### End to end, driven by hand (`test/e2e.test.ts`)
 
@@ -186,7 +252,31 @@ Also seen, not changed by this work: `contracts/engine.ts` was edited by someone
 this was in progress (`selectors` gained `stepMs`; `queryInstant` may return a matrix or a
 string). The binding in `engine/wasm/js` compiles against the new text.
 
+## Contract changes made for the automatic write path
+
+| File | Change |
+|---|---|
+| `contracts/BATCH.md` | New section "Active series": `seriesIds` and `seriesLimit` on `Shard.append`, the `series_limit` and `invalid` answers, the window, the KV record. One sentence added to the `series_id` rule: all 64 bits distinguish series (D19). No change to the batch bytes or to `series_id` |
+| `contracts/TABLES.md` | Object keys of compaction outputs (`L{level}-{span}-{inputs16}-{hash8}`), the pairing rule, and the statement that precedence between FILES that disagree on a value is by key order and is not preserved by compaction |
+| `contracts/engine.ts` | `mergeFiles(table, files)` |
+| `contracts/ledger.ts` | A marked "PROPOSED ADDITION" block: `Tombstone`, `OrphanCheck`, `LedgerJanitorRpc` (`deletable`, `forget`, `removedSince`, `orphanCheck`) |
+| `shard/src/shard.ts` (the shard's surface) | `AppendRequest.seriesIds`/`seriesLimit`; `AppendResult` gains `series_limit` and `invalid`; `pendingTenants`, `seriesCount`; `FlushMessage`, `ShardEnv`, the pending-marker key |
+
+`design/DESIGN.md` was corrected in three places (§4.3 the trigger, §5.1 the `series_id`
+sentence, §5.2 compaction and deletion as built) and `design/DECISIONS.md` gained D18–D21.
+The published design page (`design/artifact/`) was not regenerated, and none of this has
+had the adversarial review `AGENTS.md` asks for protocol changes.
+
 ## Known risks
+
+- **Graces are real time in the soak**, scaled to 1–1.5 s; a deletion is checked against
+  its rule when it happens, but a machine that stalls for seconds changes which
+  operations a run exercises. Two runs with one seed are not identical.
+- **Files that disagree.** The model sends one value per `(series, ts)`. Which value
+  survives when two files hold different ones is not defined across a compaction
+  (`contracts/TABLES.md`).
+- **The cron is the only clock.** A tenant's time-driven work (a day closing, retention, a
+  grace ending) happens at the first cron after it is due: up to an hour late.
 
 - **One script hides binding mistakes.** Everything shares one `env`; a production wiring
   error (a missing binding, the wrong bucket) cannot show up here.

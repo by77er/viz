@@ -226,21 +226,27 @@ async function fetchFiles(c: Context, files: FileEntry[], have: Map<string, Uint
     await Promise.all(
       [...round].map(async ([leaf, list]) => {
         const items: ReadItem[] = list.map(({ key, offset, length }) => (offset === undefined ? { key } : { key, offset, length }))
+        const call = async (to: number): Promise<ReadResult[]> => {
+          used.add(to)
+          c.cost.leafCalls++
+          const answer = await stub(to).read(items, ttl)
+          // The leaf will not do what it was asked (too many reads, too many bytes): a
+          // bug in the packing above, and no other leaf would answer differently.
+          if (answer.status !== 'ok') throw new ApiError('unavailable', `a leaf refused to read data files: ${answer.reason}`)
+          return answer.results
+        }
         let results: ReadResult[]
         try {
           if (hooks.beforeLeafCall) await hooks.beforeLeafCall(leaf, items)
-          used.add(leaf)
-          c.cost.leafCalls++
-          results = await stub(leaf).read(items, ttl)
-        } catch {
+          results = await call(leaf)
+        } catch (first) {
+          if (first instanceof ApiError) throw first
           // One retry, on the next leaf of the pool: a leaf that was evicted or reset
           // mid-call is not a reason to fail the query. A second failure is.
-          const other = (leaf + 1) % pool
           try {
-            used.add(other)
-            c.cost.leafCalls++
-            results = await stub(other).read(items, ttl)
+            results = await call((leaf + 1) % pool)
           } catch (e) {
+            if (e instanceof ApiError) throw e
             throw new ApiError('unavailable', `could not read data files: ${e instanceof Error ? e.message : String(e)}`)
           }
         }

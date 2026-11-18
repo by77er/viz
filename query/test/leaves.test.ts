@@ -96,33 +96,37 @@ describe('a leaf', () => {
     const bytes = crypto.getRandomValues(new Uint8Array(5000))
     await env.BUCKET.put(key, bytes)
     const l = leaf(0)
-    const out = await l.read([{ key }, { key, offset: 100, length: 50 }, { key: `${key}.nope` }, { key, offset: 4990 }], 0)
+    const answer = await l.read([{ key }, { key, offset: 100, length: 50 }, { key: `${key}.nope` }, { key, offset: 4990 }], 0)
+    const out = answer.status === 'ok' ? answer.results : []
     expect(out.map((r) => r.status)).toEqual(['ok', 'ok', 'missing', 'ok'])
     const got = out.map((r) => (r.status === 'ok' ? Array.from(r.bytes) : null))
     expect(got[0]).toEqual(Array.from(bytes))
     expect(got[1]).toEqual(Array.from(bytes.subarray(100, 150)))
     expect(got[3]).toEqual(Array.from(bytes.subarray(4990)))
     const seven: ReadItem[] = Array.from({ length: MAX_READS_PER_CALL + 1 }, () => ({ key }))
-    await expect(l.read(seven, 0)).rejects.toThrow(/7 reads in one call; the limit is 6/)
-    expect(await l.read(seven.slice(0, 6), 0)).toHaveLength(6)
-    expect(await l.read([], 0)).toEqual([])
+    expect(await l.read(seven, 0)).toEqual({ status: 'refused', reason: '7 reads in one call; the limit is 6' })
+    expect(await l.read(seven.slice(0, 6), 0)).toMatchObject({ status: 'ok', results: { length: 6 } })
+    expect(await l.read([], 0)).toEqual({ status: 'ok', results: [] })
   })
 
   it('caches by object key with a bounded lifetime; a ttl of 0 neither reads nor fills the cache', async () => {
     const key = `leaf-test/${crypto.randomUUID()}-11111111.parquet`
     await env.BUCKET.put(key, new Uint8Array([1, 2, 3, 4]))
-    const l = leaf(1)
-    expect(await l.read([{ key }], 0)).toMatchObject([{ cached: false }])
+    const read = async (n: number, items: ReadItem[], ttl: number) => {
+      const a = await leaf(n).read(items, ttl)
+      return a.status === 'ok' ? a.results : []
+    }
+    expect(await read(1, [{ key }], 0)).toMatchObject([{ cached: false }])
     expect(await fileCache().match(cacheUrl({ key }))).toBeUndefined()
-    expect(await l.read([{ key }], 600)).toMatchObject([{ cached: false }])
+    expect(await read(1, [{ key }], 600)).toMatchObject([{ cached: false }])
     const hit = await fileCache().match(cacheUrl({ key }))
     expect(hit?.headers.get('Cache-Control')).toBe('public, max-age=600')
     // Another leaf gets the hit: the cache belongs to the location, not to the object.
-    const again = await leaf(2).read([{ key }, { key, offset: 1, length: 2 }], 600)
+    const again = await read(2, [{ key }, { key, offset: 1, length: 2 }], 600)
     expect(again.map((r) => r.status === 'ok' && [r.cached, Array.from(r.bytes)])).toEqual([[true, [1, 2, 3, 4]], [false, [2, 3]]])
     // A range is cached under its own key, never under the whole object's.
     expect(cacheUrl({ key, offset: 1, length: 2 })).not.toBe(cacheUrl({ key }))
-    expect(await leaf(3).read([{ key, offset: 1, length: 2 }], 600)).toMatchObject([{ cached: true }])
+    expect(await read(3, [{ key, offset: 1, length: 2 }], 600)).toMatchObject([{ cached: true }])
     // The cache key is the whole object key: tenant, day and content hash included.
     const k = 'cell-0/data/metric_samples/tenant=t1/day=2026-11-18/L0-s_0-5-1-2-abcdef12.parquet'
     for (const part of ['tenant%3Dt1', 'day%3D2026-11-18', 'L0-s_0-5-1-2-abcdef12.parquet']) expect(cacheUrl({ key: k })).toContain(part)
@@ -148,7 +152,7 @@ describe('many files', () => {
     hooks.beforeLeafCall = async (_leaf, items) => {
       calls.push(items.length)
     }
-    const everything = await api(w.a.key, '/api/v1/query', { query: 'count({__name__=~".+"})', time: sec(END) })
+    const everything = await api(w.a.key, '/api/v1/query_range', { query: 'count({__name__=~".+"})', start: sec(workload.t0), end: sec(END), step: '60' })
     expect(everything.status).toBe(200)
     const files = cost(everything, 'Files-Read')
     expect(files).toBeGreaterThan(POOL * MAX_READS_PER_CALL / 2)
@@ -171,15 +175,25 @@ describe('many files', () => {
     const re = await api(w.a.key, '/api/v1/query_range', { query: '{__name__=~"up"}', start: sec(END - 1_200_000), end: sec(END), step: '30' })
     expect(await re.text()).toBe(await (await run(w.a.key, QUERIES.find((q) => q.id === 'sel-name')!)).text())
     expect(cost(re, 'Files-Read')).toBeGreaterThan(cost(up, 'Files-Read'))
-    // By time: an instant query at the end reads only the last slices.
+    // By time. The ledger lists only files that overlap the hull of the query's ranges; a
+    // query with two ranges far apart lists the files in between, and the index skips them.
     const late = await api(w.a.key, '/api/v1/query', { query: 'count({__name__=~".+"})', time: sec(END) })
-    const early = await api(w.a.key, '/api/v1/query', { query: 'count({__name__=~".+"})', time: sec(workload.t0 + 60_000) })
-    expect(cost(late, 'Files-Skipped')).toBeGreaterThan(0)
-    expect(cost(early, 'Files-Skipped')).toBeGreaterThan(cost(late, 'Files-Skipped') / 2)
+    const two = await api(w.a.key, '/api/v1/query', { query: 'count({__name__=~".+"}) + count({__name__=~".+"} offset 24m)', time: sec(END) })
+    const count = async (time: number): Promise<number> => Number((await (await api(w.a.key, '/api/v1/query', { query: 'count({__name__=~".+"})', time: sec(time) })).json<{ data: { result: { value: [number, string] }[] } }>()).data.result[0]!.value[1])
+    expect(await two.json()).toMatchObject({ data: { result: [{ value: [END / 1000, String((await count(END)) + (await count(END - 24 * 60_000)))] }] } })
+    expect(cost(late, 'Files-Listed')).toBeLessThan(cost(two, 'Files-Listed'))
+    expect(cost(two, 'Files-Skipped')).toBeGreaterThan(0)
+    expect(cost(two, 'Files-Read')).toBeLessThan(cost(two, 'Files-Listed'))
     // A name no file can hold: nothing is read at all, and the answer is still right (empty).
-    const none = await run(w.a.key, QUERIES.find((q) => q.id === 'sel-none')!)
-    expect(await none.json()).toEqual(expected.a['sel-none'])
+    const none = await api(w.a.key, '/api/v1/query_range', { query: 'zzz_no_such_metric', start: sec(workload.t0), end: sec(END), step: '30' })
+    expect(await none.json()).toEqual({ status: 'success', data: { resultType: 'matrix', result: [] } })
+    expect(cost(none, 'Files-Listed')).toBeGreaterThan(30)
     expect([cost(none, 'Files-Read'), cost(none, 'Leaf-Calls')]).toEqual([0, 0])
+    // A name inside some files' [min, max] that no file holds: those files are read (statistics are a range).
+    const inside = await run(w.a.key, QUERIES.find((q) => q.id === 'sel-none')!)
+    expect(await inside.json()).toEqual(expected.a['sel-none'])
+    expect(cost(inside, 'Files-Read')).toBeGreaterThan(0)
+    expect(cost(inside, 'Files-Skipped')).toBeGreaterThan(10)
     // The whole table with pruning in force was checked against the reference above; the
     // samples a query scans are bounded by what the index said.
     for (const q of QUERIES.filter((x) => expected.a[x.id]!.status === 'success').slice(0, 20)) {

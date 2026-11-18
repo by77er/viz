@@ -35,6 +35,9 @@ export type ReadResult =
   /** The object is not in R2. The caller's plan is stale (or the lake is damaged): never a silent gap. */
   | { status: 'missing' }
 
+/** A call the leaf will not make is refused with a reason: an explicit status, not an exception. */
+export type LeafAnswer = { status: 'ok'; results: ReadResult[] } | { status: 'refused'; reason: string }
+
 export interface LeafEnv {
   BUCKET: R2Bucket
 }
@@ -58,14 +61,14 @@ export class Leaf extends DurableObject<LeafEnv> {
    * Read up to six items in parallel. Results are in the order of `items`.
    * `cacheTtlS` > 0: look in the Cache API first and store what was read from R2 there.
    */
-  async read(items: ReadItem[], cacheTtlS: number): Promise<ReadResult[]> {
-    if (items.length > MAX_READS_PER_CALL) throw new Error(`leaf: ${items.length} reads in one call; the limit is ${MAX_READS_PER_CALL}`)
-    const out = await Promise.all(items.map((item) => this.one(item, cacheTtlS)))
+  async read(items: ReadItem[], cacheTtlS: number): Promise<LeafAnswer> {
+    if (items.length > MAX_READS_PER_CALL) return { status: 'refused', reason: `${items.length} reads in one call; the limit is ${MAX_READS_PER_CALL}` }
+    const results = await Promise.all(items.map((item) => this.one(item, cacheTtlS)))
     let total = 0
-    for (const r of out) if (r.status === 'ok') total += r.bytes.byteLength
+    for (const r of results) if (r.status === 'ok') total += r.bytes.byteLength
     // Refuse rather than fail somewhere inside the RPC layer with an opaque error.
-    if (total > MAX_BYTES_PER_CALL) throw new Error(`leaf: ${total} bytes in one call; the limit is ${MAX_BYTES_PER_CALL}`)
-    return out
+    if (total > MAX_BYTES_PER_CALL) return { status: 'refused', reason: `${total} bytes in one call; the limit is ${MAX_BYTES_PER_CALL}` }
+    return { status: 'ok', results }
   }
 
   private async one(item: ReadItem, cacheTtlS: number): Promise<ReadResult> {

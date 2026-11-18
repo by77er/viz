@@ -220,7 +220,7 @@ describe('files', () => {
     const ok = await run(w.a.key, q)
     expect(await ok.json()).toEqual(expected.a[q.id])
     expect(calls).toBeGreaterThanOrEqual(1)
-    // Every leaf call fails, including the retry (which bypasses the hook): break the bucket instead.
+    // A call the leaf refuses (more than six reads) is not retried anywhere: 503.
     const q2 = QUERIES.find((x) => x.id === 'avg-without')!
     hooks.beforeLeafCall = async (_leaf, items) => {
       items.push({ key: 'x' }, { key: 'x' }, { key: 'x' }, { key: 'x' }, { key: 'x' }, { key: 'x' }, { key: 'x' }) // more than six reads: the leaf refuses the call
