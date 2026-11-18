@@ -50,6 +50,7 @@ export interface Cfg {
   rebuild: 'strict' | 'skip' // replay refuses anything but version+1 (ledger.ts replay) / skips versions it already has
   drainRetrySame: boolean // a drain retried after a failure writes exactly the segment of the failed attempt first
   baseFirst: boolean // a new ledger incarnation is in R2 before it commits anything (as built: base.json first)
+  baseTombstones: boolean // a base carries the tombstones, so a rebuild keeps removals made before it (ledger.ts since 2026-11-18 evening)
   compKey: 'inputs' | 'unique' // compaction output key: hash(inputs)+hash(bytes) (compact.ts) / also a fresh step id
   compConflictDelete: boolean // on `conflict` the step deletes its outputs unless one is live (compact.ts)
   fpScope: 'stream' | 'shard' // fingerprints per (shard, tenant) stream / per shard
@@ -129,6 +130,7 @@ export interface Snap {
   fi: number[]
   wm: number[][] // per shard [inc, seq]; inc 0 = unknown stream
   ex: number[]
+  tb: number[] // tombstoned files carried by the base (baseTombstones)
 }
 
 /** ledger.ts state for one tenant, plus its R2 change log. */
@@ -220,7 +222,7 @@ const cmpArr = (a: number[], b: number[]) => {
 }
 
 const freshStrm = (): Strm => ({ i: 0, w: [], se: 0, re: 0, di: 0, fg: 0, bo: [], rg: 0 })
-const freshSnap = (ns: number): Snap => ({ fi: [], wm: range(ns).map(() => [0, 0]), ex: [] })
+const freshSnap = (ns: number): Snap => ({ fi: [], wm: range(ns).map(() => [0, 0]), ex: [], tb: [] })
 const idleQ = (): Q => ({ st: 0, t: 0, fi: [], wm: [], nd: [], tl: [], mu: [], ex: [], ln: [], rs: 0, dup: 0, miss: 0, leak: 0 })
 
 export function init(c: Cfg): St {
@@ -281,7 +283,7 @@ function applyEntry(sn: Snap, e: Entry): Snap {
   const fi = sortU([...sn.fi.filter((f) => !has(rem, f)), ...add])
   const w = sn.wm.map((x) => [...x])
   if (wm) w[wm[0]!] = [wm[1]!, wm[2]!]
-  return { fi, wm: w, ex: exp.length ? sortU([...sn.ex, ...exp]) : sn.ex }
+  return { fi, wm: w, ex: exp.length ? sortU([...sn.ex, ...exp]) : sn.ex, tb: sn.tb }
 }
 
 /** The R2 log of the current incarnation in key order. */
@@ -300,7 +302,7 @@ function baseInR2(c: Cfg, L: Led): boolean {
  * always refused. Returns the state replayed so far and whether the replay refused.
  */
 function replay(L: Led, strict: boolean): { sn: Snap; upTo: number; refused: boolean; removed: number[] } {
-  let sn: Snap = { fi: [...L.b.fi], wm: L.b.wm.map((x) => [...x]), ex: [...L.b.ex] }
+  let sn: Snap = { fi: [...L.b.fi], wm: L.b.wm.map((x) => [...x]), ex: [...L.b.ex], tb: L.b.tb }
   let next = 0
   const removed: number[] = []
   for (const [lo, hi] of segsInKeyOrder(L)) {
@@ -687,12 +689,12 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       const nL = ns.L[t]!
       const r = replay(nL, c.rebuild === 'strict')
       const inR2 = baseInR2(c, nL)
-      const sn = inR2 ? r.sn : { fi: [...nL.b.fi], wm: nL.b.wm.map((x) => [...x]), ex: [...nL.b.ex] }
+      const sn = inR2 ? r.sn : { fi: [...nL.b.fi], wm: nL.b.wm.map((x) => [...x]), ex: [...nL.b.ex], tb: nL.b.tb }
       const newLi = inR2 ? nL.li + 1 : nL.li // planned log without base-first: R2's newest incarnation is the previous one
-      const tomb = inR2 ? sortU(r.removed.filter((f) => !has(sn.fi, f))) : []
+      const tomb = sortU([...(c.baseTombstones ? nL.b.tb : []), ...(inR2 ? r.removed : [])]).filter((f) => !has(sn.fi, f))
       Object.assign(nL, {
         li: newLi, dn: r.refused && inR2 ? 1 : 0, fi: sn.fi, wm: sn.wm, lg: sn.wm.map((w) => w[1]), ex: sn.ex,
-        h: [], o0: 0, sg: [], dr: null, pl: null, b: { fi: [...sn.fi], wm: sn.wm.map((x) => [...x]), ex: [...sn.ex] },
+        h: [], o0: 0, sg: [], dr: null, pl: null, b: { fi: [...sn.fi], wm: sn.wm.map((x) => [...x]), ex: [...sn.ex], tb: c.baseTombstones ? tomb : [] },
         tb: tomb.map((f) => [f, -1]), nL: nL.nL + 1, ru: nL.ru || (!inR2 && nL.h.length > 0 ? 1 : 0),
       })
       emit(`LEDGER${tt} STORAGE LOSS -> rebuild from R2${r.refused && inR2 ? ' REFUSED (log not contiguous)' : ''}${inR2 ? '' : ' (nothing of this incarnation in R2: incarnation number reused)'}`, ns)

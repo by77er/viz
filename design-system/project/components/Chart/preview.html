@@ -32,7 +32,7 @@
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta"><span class="vz-panel-note">Showing the previous query</span><span>· <span data-range>09:16 to 15:16</span></span><span>· updated <span class="vz-qty">48 s</span> ago</span></span></div>
     <p class="vz-panel-desc">An error after the chart was drawn: the message takes the plot's place at the plot's height, and the legend keeps the previous result's height.</p>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="s8" data-view="demo-error" data-error="The query could not run: unexpected ) at character 41." data-error-action="Go to character 41" style="--legend-rows:8;--legend-notes:1"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s8" data-view="demo-error" data-error-title="The query could not run" data-error-text="Unexpected ) at character 41. A range such as [5m] is missing after the selector." data-error-action="Go to character 41" style="--legend-rows:8;--legend-notes:1"></div></div>
   </section>
 </div>
 <script>
@@ -155,7 +155,7 @@ if (!window.vzChart) (function () {
     const st = { t0: 0, t1: 0, filter: null, filterId: 0, picked: new Set(), pickOrder: [], cursor: null, py: null, sort: { col: 'rank', dir: -1 }, open: 0, brush: null, focusRow: 0, emph: null, error: null }
     const ctx = document.createElement('canvas').getContext('2d')
     const widths = new Map(), measure = (text, font) => { const k = font + '\u0000' + text; let w = widths.get(k); if (w == null) { ctx.font = font; w = ctx.measureText(text).width; widths.set(k, w) } return w }
-    let g = null, cache = null, lastW = 0, lastH = 0, tok = null, liveTimer = 0
+    let g = null, cache = null, lastW = 0, lastH = 0, tok = null, liveTimer = 0, cursorWas = null; const sizes = { legendW: 0, readW: 0 }
     const tokens = () => { if (tok) return tok; const cs = getComputedStyle(root), n = (p) => parseFloat(cs.getPropertyValue(p)) || 0, s = (p) => cs.getPropertyValue(p).trim()
       return (tok = { axis: n('--axis'), gutter: n('--label-gutter'), stroke: n('--stroke'), sp: (k) => n('--space-' + k), micro: s('--text-micro'), small: s('--text-small'), data: s('--text-data'), label: s('--text-label'), microLh: n('--text-micro-lh'), smallLh: n('--text-small-lh') }) }
     function setSpec(next) { spec = next; all = spec.series.map((s) => ({ ...s, key: key(s.labels) })); full = { t0: spec.t0, t1: spec.t0 + (all[0].values.length - 1) * spec.step }; st.t0 = full.t0; st.t1 = full.t1; st.cursor = null; version++ }
@@ -197,7 +197,7 @@ if (!window.vzChart) (function () {
         }
       }
       const R = labels ? t.gutter : t.sp(2), plotW = W - L - R, x = (i) => L + plotW * i / Math.max(1, m.n - 1), xt = (tm) => L + plotW * (tm - st.t0) / (st.t1 - st.t0)
-      return { m, vis, L, T, B, R, plotW, plotH, x, xt, y, ax, labels, fmt: numberFormat(ax.step, m.unit.suffix), long: st.t1 - st.t0 > D, sig: ax.top + '|' + ax.step + '|' + !!labels }
+      return { m, vis, L, T, B, R, plotW, plotH, x, xt, y, ax, labels, fmt: numberFormat(ax.step, m.unit.suffix, div), long: st.t1 - st.t0 > D, sig: ax.top + '|' + ax.step + '|' + !!labels }
     }
     const path = (v, x, y) => { let d = '', pen = false, dots = ''; v.forEach((p, i) => { if (p == null) { pen = false; return } if (v[i - 1] == null && v[i + 1] == null) dots += `<circle cx="${x(i).toFixed(1)}" cy="${y(p).toFixed(1)}" r="2"/>`; d += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p).toFixed(1); pen = true }); return { d, dots } }
     const lineMarkup = (s, ds, pattern, x, y, hidden) => { const p = path(s.v, x, y); return `<g class="vz-series-g" data-key="${esc(s.key)}"${hidden ? ' display="none"' : ''}><path class="vz-line" data-series="${ds}"${pattern ? ` data-pattern="${pattern}"` : ''} d="${p.d}"/>${p.dots ? `<g class="vz-dot" data-series="${ds}">${p.dots}</g>` : ''}</g>` }
@@ -239,7 +239,7 @@ if (!window.vzChart) (function () {
 
     /* Full draw: geometry, data, range or filter changed. */
     function draw() {
-      const W = svg.clientWidth, HT = svg.clientHeight; if (!W) return; lastW = W; lastH = HT; tok = null
+      const W = svg.clientWidth, HT = svg.clientHeight; if (!W) return; lastW = W; lastH = HT; tok = null; sizes.legendW = tbody.parentElement.clientWidth || W; sizes.readW = readout.clientWidth || W // every size is read before anything is written
       root.querySelector(':scope > .vz-empty')?.remove(); svg.hidden = false
       if (st.error) return showError()
       const m = model(); g = layout(m, visibleSet(m)); drawPlot(g); legend(); legendState(); cursor(); describe()
@@ -258,8 +258,9 @@ if (!window.vzChart) (function () {
       const vis = visibleSet(m), next = layout(m, vis)
       if (next.sig !== g.sig || vis.picked.length || g.vis.picked.length) { g = next; drawPlot(g) }
       else { g = next
-        for (const el of svg.querySelectorAll('[data-layer="lines"] > g')) { const s = m.byKey.get(el.dataset.key); if (s && s.slot) el.toggleAttribute('display', !vis.lines.includes(s)), vis.lines.includes(s) || el.setAttribute('display', 'none') }
-        svg.querySelector('[data-layer="band"]').toggleAttribute('display', !vis.band); if (!vis.band) svg.querySelector('[data-layer="band"]').setAttribute('display', 'none')
+        const show = (el, on) => (on ? el.removeAttribute('display') : el.setAttribute('display', 'none'))
+        for (const el of svg.querySelectorAll('[data-layer="lines"] > g')) { const s = m.byKey.get(el.dataset.key); if (s && s.slot) show(el, vis.lines.includes(s)) }
+        show(svg.querySelector('[data-layer="band"]'), vis.band)
         svg.querySelector('[data-layer="labels"]').innerHTML = labelMarkup(g) }
       legendState(); cursor(); describe(); return true
     }
@@ -276,10 +277,10 @@ if (!window.vzChart) (function () {
 
     function legend() {
       const t = tokens(), m = g.m, fmt = g.fmt, unit = m.unit.unit
-      const legendW = tbody.parentElement.clientWidth || lastW, narrow = legendW < 640
+      const legendW = sizes.legendW, narrow = legendW < 640
       const cols = [['name', 'Series', 0], ['last', 'Last', 1], ['min', 'Min', 2], ['max', 'Max', 2]].filter((c) => !(narrow && c[2] === 2))
       // Column widths are fixed from the widest value each column can show, so moving the crosshair changes text and never moves a column.
-      const widest = (c) => Math.max(...m.coloured.map((s) => measure(fmt.value((c === 'last' ? s.max : s[c]) / m.unit.div), t.data)), m.other.length ? measure(fmt.value(g.ax.top) + ' to ' + fmt.value(g.ax.top), t.data) : 0, measure(fmt.value(g.ax.top), t.data))
+      const topRaw = g.ax.top * m.unit.div, widest = (c) => Math.max(...m.coloured.map((s) => measure(fmt.value(c === 'last' ? s.max : s[c]), t.data)), m.other.length ? measure(fmt.value(topRaw) + ' to ' + fmt.value(topRaw), t.data) : 0, measure(fmt.value(topRaw), t.data))
       const headW = (c, label) => measure(c === 'last' ? 'At ' + stamp(st.t1, g.long) + ', ' + unit : label, t.label) + t.sp(4)
       tbody.parentElement.querySelector('colgroup')?.remove()
       thead.insertAdjacentHTML('beforebegin', '<colgroup>' + cols.map(([c, label]) => (c === 'name' ? '<col>' : `<col style="width:${Math.ceil(Math.max(widest(c), headW(c, label)) + t.sp(4))}px">`)).join('') + '</colgroup>')
@@ -290,11 +291,11 @@ if (!window.vzChart) (function () {
       g.nameKeys = m.names.order.slice(0, shownKeys); g.nameW = nameW
       const name = (s) => `<span class="vz-series-name">${esc(fit(g.nameKeys.map((k) => s.labels[k] ?? ''), nameW, (q) => measure(q, t.small)))}</span>`
       const title = (s) => esc(Object.entries(s.labels).map(([k, v]) => k + '="' + v + '"').join(', '))
-      const cells = (s) => `<td role="cell" class="vz-num vz-right" data-c="last">${fmt.value(s.last / m.unit.div)}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.min / m.unit.div)}</td><td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.max / m.unit.div)}</td>`}`
+      const cells = (s) => `<td role="cell" class="vz-num vz-right" data-c="last">${fmt.value(s.last)}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.min)}</td><td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.max)}</td>`}`
       const row = (s, ds) => `<tr role="row" data-key="${esc(s.key)}" title="${title(s)}"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="${title(s)}"><span class="vz-swatch" data-series="${ds}"></span>${name(s)}</button></td>${cells(s)}</tr>`
       const by = st.sort.col, cmp = (a, b) => (by === 'name' ? (a.key < b.key ? -1 : 1) * st.sort.dir : by === 'rank' ? a.slot - b.slot : ((a[by] ?? -1) - (b[by] ?? -1)) * st.sort.dir)
       let h = [...m.coloured].sort(cmp).map((s) => row(s, s.slot)).join('')
-      if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? fmt.value(Math.min(...v) / m.unit.div) + ' to ' + fmt.value(Math.max(...v) / m.unit.div) : '' }
+      if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? fmt.value(Math.min(...v)) + ' to ' + fmt.value(Math.max(...v)) : '' }
         h += `<tr role="row" data-key="other" title="${m.other.length} series drawn as one band, lowest to highest"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="Other: ${m.other.length} series as one band"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`}</tr>`
         h += [...m.other].sort(by === 'rank' ? (a, b) => b.rank - a.rank : cmp).slice(0, st.open).map((s) => row(s, 'other')).join('')
         // the legend's last row: what can be done with Other. Its height is a legend row's, so the reserved height holds.
@@ -329,9 +330,9 @@ if (!window.vzChart) (function () {
       const c = svg.querySelector('.vz-cursor'); if (!c || !g) return
       const m = g.m, fmt = g.fmt, div = m.unit.div, t = tokens(), unit = m.unit.unit
       const th = thead.querySelector('[data-col="last"] .vz-sort'); if (th) th.textContent = (st.cursor == null ? 'Last' : 'At ' + stamp(spec.t0 + (m.i0 + st.cursor) * spec.step, g.long)) + ', ' + unit
-      for (const tr of tbody.rows) { const s = m.byKey.get(tr.dataset.key), td = tr.querySelector('[data-c="last"]'); if (s && td) td.textContent = fmt.value((st.cursor == null ? s.last : s.v[st.cursor]) / div)
-        else if (tr.dataset.key === 'other' && td) { const v = m.other.map((q) => (st.cursor == null ? q.last : q.v[st.cursor])).filter((p) => p != null); td.textContent = v.length ? fmt.value(Math.min(...v) / div) + ' to ' + fmt.value(Math.max(...v) / div) : '' } }
-      legendState()
+      for (const tr of tbody.rows) { const s = m.byKey.get(tr.dataset.key), td = tr.querySelector('[data-c="last"]'); if (s && td) td.textContent = fmt.value(st.cursor == null ? s.last : s.v[st.cursor])
+        else if (tr.dataset.key === 'other' && td) { const v = m.other.map((q) => (st.cursor == null ? q.last : q.v[st.cursor])).filter((p) => p != null); td.textContent = v.length ? fmt.value(Math.min(...v)) + ' to ' + fmt.value(Math.max(...v)) : '' } }
+      if ((st.cursor == null) !== cursorWas) { cursorWas = st.cursor == null; legendState() }
       if (st.cursor == null) { c.innerHTML = ''; readout.innerHTML = ''; return }
       const i = st.cursor, px = g.x(i), drawn = [...g.vis.lines, ...g.vis.picked, ...(g.vis.band ? m.other : [])].filter((s) => s.v[i] != null)
       const top = drawn.reduce((a, s) => (!a || s.v[i] > a.v[i] ? s : a), null)
@@ -343,18 +344,18 @@ if (!window.vzChart) (function () {
       const when = stamp(spec.t0 + (m.i0 + i) * spec.step, g.long), mk = (spec.markers || []).find((k) => Math.abs(k.t - (spec.t0 + (m.i0 + i) * spec.step)) <= spec.step / 2)
       const who = (s) => (s.slot || g.vis.picked.includes(s) ? '' : 'Other, ') + (s.labels[g.m.names.order[0]] ?? '')
       const parts = []; if (near) parts.push(['nearest', near]); if (top && (!near || top !== near) && (lastW >= 640 || !near)) parts.push(['highest', top])
-      const fixed = measure(when + (mk ? '  ' + mk.label : '') + parts.map(([w, s]) => '  ' + w + ': ' + fmt.value(s.v[i] / div) + ' ' + unit).join(''), t.small), room = Math.max(t.sp(12), (readout.clientWidth || lastW) - fixed - t.sp(3) * (parts.length + 1)) / Math.max(1, parts.length)
-      readout.innerHTML = `<b class="vz-qty">${when}</b>` + (mk ? `<span>${esc(mk.label)}</span>` : '') + parts.map(([w, s]) => `<span>${w}: ${esc(fit([who(s)], room, (q) => measure(q, t.small)))} <span class="vz-qty">${esc(fmt.value(s.v[i] / div) + ' ' + unit)}</span></span>`).join('')
+      const fixed = measure(when + (mk ? '  ' + mk.label : '') + parts.map(([w, s]) => '  ' + w + ': ' + fmt.value(s.v[i]) + ' ' + unit).join(''), t.small), room = Math.max(t.sp(12), sizes.readW - fixed - t.sp(3) * (parts.length + 1)) / Math.max(1, parts.length)
+      readout.innerHTML = `<b class="vz-qty">${when}</b>` + (mk ? `<span>${esc(mk.label)}</span>` : '') + parts.map(([w, s]) => `<span>${w}: ${esc(fit([who(s)], room, (q) => measure(q, t.small)))} <span class="vz-qty">${esc(fmt.value(s.v[i]) + ' ' + unit)}</span></span>`).join('')
       // announced from the keyboard at once, from a pointer only after it rests 500 ms
-      const say = () => { live.textContent = when + (mk ? ', ' + mk.label : '') + parts.map(([w, s]) => `, ${w} ${who(s)} ${fmt.value(s.v[i] / div)} ${unit}`).join('') }
+      const say = () => { live.textContent = when + (mk ? ', ' + mk.label : '') + parts.map(([w, s]) => `, ${w} ${who(s)} ${fmt.value(s.v[i])} ${unit}`).join('') }
       clearTimeout(liveTimer); if (fromKey) say(); else liveTimer = setTimeout(say, 500)
     }
     function textForm() {
       const id = root.dataset.textForm, el = id && document.getElementById(id); if (!el) return
       const m = g.m, fmt = g.fmt, div = m.unit.div, unit = m.unit.unit, title = root.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? 'Chart', when = (tm) => stamp(tm, g.long)
       const lines = [`${title}, ${unit}, ${when(st.t0)} to ${when(st.t1)}, every ${spec.step / MIN} min, ${spec.agg}. ${m.series.length} series${m.other.length ? `, ${m.coloured.length} drawn separately and ${m.other.length} as one band` : ''}.`]
-      for (const s of m.coloured) lines.push(`${g.m.names.order.map((k) => s.labels[k]).filter(Boolean).join(' · ')}: last ${fmt.value(s.last / div)}, lowest ${fmt.value(s.min / div)}, highest ${fmt.value(s.max / div)}${s.v.some((p) => p == null) ? '; no data for part of the range' : ''}.`)
-      if (m.other.length) lines.push(`Other, ${m.other.length} series: last ${fmt.value(Math.min(...m.other.map((s) => s.last ?? 0)) / div)} to ${fmt.value(Math.max(...m.other.map((s) => s.last ?? 0)) / div)}.`)
+      for (const s of m.coloured) lines.push(`${g.m.names.order.map((k) => s.labels[k]).filter(Boolean).join(' · ')}: last ${fmt.value(s.last)}, lowest ${fmt.value(s.min)}, highest ${fmt.value(s.max)}${s.v.some((p) => p == null) ? '; no data for part of the range' : ''}.`)
+      if (m.other.length) lines.push(`Other, ${m.other.length} series: last ${fmt.value(Math.min(...m.other.map((s) => s.last ?? 0)))} to ${fmt.value(Math.max(...m.other.map((s) => s.last ?? 0)))}.`)
       if (spec.threshold) { const over = m.coloured.filter((s) => (s.max ?? 0) > spec.threshold.value); lines.push(`${spec.threshold.label}: ${over.length ? over.map((s) => s.labels[m.names.order[0]]).join(', ') + ' above it' : 'no series above it'}.`) }
       for (const s of spec.spans || []) lines.push(`${s.label}: ${when(s.from)} to ${when(s.to)}.`)
       for (const k of spec.markers || []) lines.push(`${k.label}.`)
@@ -397,7 +398,7 @@ if (!window.vzChart) (function () {
     // the legend is one tab stop; up and down move between rows, space or enter toggles the row
     tbody.addEventListener('keydown', (e) => { const rows = [...tbody.querySelectorAll('.vz-series')], i = rows.indexOf(document.activeElement); if (i < 0) return; const to = e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : e.key === 'ArrowUp' ? Math.max(0, i - 1) : -1; if (to < 0) return; e.preventDefault(); rows[i].tabIndex = -1; rows[to].tabIndex = 0; rows[to].focus(); st.focusRow = to })
     new ResizeObserver(() => { const w = svg.clientWidth; if (w && (w !== lastW || svg.clientHeight !== lastH)) draw() }).observe(svg) // a hidden chart is not redrawn, and showing it again at the same size costs nothing
-    if (root.dataset.error) st.error = { title: root.dataset.error.split(':')[0], text: root.dataset.error.split(':').slice(1).join(':').trim(), action: root.dataset.errorAction }
+    if (root.dataset.errorTitle) st.error = { title: root.dataset.errorTitle, text: root.dataset.errorText, action: root.dataset.errorAction }
     draw(); document.fonts?.addEventListener?.('loadingdone', () => { widths.clear(); draw() }) // text is fitted by measuring it; a font that arrives later changes every width
     return { draw, state: st, toggle,
       setFilter(f) { st.filter = f; st.filterId++; draw() },
@@ -417,8 +418,7 @@ if (!window.vzChart) (function () {
       el.vz.setFilter(b.dataset.filter === 'top3' ? (s) => !top3.has(s.key) : null) }) })
     // a new pod, larger than every pod in the view: a series new to the view when all eight slots are held joins Other, and the legend says it is larger
     document.querySelectorAll('[data-add-pod]:not([data-ready])').forEach((btn) => { btn.dataset.ready = '1'; btn.addEventListener('click', () => { const el = document.querySelector(`.vz-chart[data-view="${btn.dataset.addPod}"]`); if (!el?.vz || btn.disabled) return
-      const spec = demos[el.dataset.demo](), r = lcg(99); spec.series.push({ labels: { __name__: 'pod_cpu_usage_cores', namespace: 'prod', service: 'checkout-api', pod: 'checkout-api-7d9f8c6b5-new01', node: 'node-b' }, values: walk(r, 61, 3.4, 0.3) }); el.vz.setData(spec); btn.disabled = true }) })
-    document.querySelectorAll('.vz-chart[data-error]:not([data-errored])').forEach((el) => { el.dataset.errored = '1' }) }
+      const spec = demos[el.dataset.demo](), r = lcg(99); spec.series.push({ labels: { __name__: 'pod_cpu_usage_cores', namespace: 'prod', service: 'checkout-api', pod: 'checkout-api-7d9f8c6b5-new01', node: 'node-b' }, values: walk(r, 61, 3.4, 0.3) }); el.vz.setData(spec); btn.disabled = true }) }) }
   window.vzChartInit = init
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init()
 })()

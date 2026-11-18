@@ -29,7 +29,7 @@ export const AMENDED: Cfg = {
   ...SMALL,
   fence: true, contiguous: true, recAt: 'logged', dedup: true, fpHorizon: true, replaceLive: true, delGrace: true,
   delLogged: true, missingErr: true, keying: 'content', sweep: 'impl', sweepIncLogged: true, reg: 'logged', query: 'impl', unknownStream: 'refuse',
-  f6Register: true, readBound: true, log: 'segments', rebuild: 'strict', drainRetrySame: true, baseFirst: true, compKey: 'unique',
+  f6Register: true, readBound: true, log: 'segments', rebuild: 'strict', drainRetrySame: true, baseFirst: true, baseTombstones: false, compKey: 'unique',
   compConflictDelete: true, fpScope: 'stream', tailScope: 'stream', noRetryAcrossLoss: true, retain: false,
 }
 
@@ -45,15 +45,20 @@ export const DESIGN: Cfg = {
   noRetryAcrossLoss: false,
 }
 
-/** As built: shard.ts, ledger.ts (one R2 object per change), flush.ts, compact.ts, janitor.ts, query coordinator.ts. */
+/**
+ * As built: shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, query coordinator.ts. ledger.ts
+ * switched from one R2 object per change to the segment log (with the F10 and F11 fixes, and
+ * tombstones in the base) while this work ran; IMPL follows the newer code.
+ */
 export const IMPL: Cfg = {
   ...AMENDED,
-  reg: 'impl', query: 'impl', unknownStream: 'empty', readBound: false, log: 'perChange', baseFirst: true, sweepIncLogged: false,
+  reg: 'impl', query: 'impl', unknownStream: 'empty', readBound: false, log: 'segments', drainRetrySame: true, baseFirst: true,
+  baseTombstones: true, sweepIncLogged: false,
   sweep: 'impl', compKey: 'inputs', compConflictDelete: true, noRetryAcrossLoss: false,
 }
 
-/** As built, with the ledger's log replaced by the PLANNED segments of LEDGER-LOG.md. */
-export const IMPL_PLANNED: Cfg = { ...IMPL, log: 'segments', drainRetrySame: false, baseFirst: false }
+/** As built, with the segment log as LEDGER-LOG.md stated it at the start of this work (before F10 and F11 were fixed). */
+export const IMPL_PLANNED: Cfg = { ...IMPL, log: 'segments', drainRetrySame: false, baseFirst: false, baseTombstones: false }
 
 const ALLSAFE = SAFETY
 
@@ -137,7 +142,7 @@ finding('F12_impl_read_unbound', 'F12: shard.ts readSegment(tenant, seqLo) ignor
 finding('F13_impl_comp_adopts_old_output', 'F13: compaction adopts an earlier step\'s output ("exists"); the sweeper judges it by the earlier upload', { ...IMPL, maxComp: 1 }, ['I11_LiveFilesReadable'])
 finding('F14_impl_comp_conflict_delete', 'F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild', { ...IMPL, sweep: 'off', maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
 finding('F15_sweeper_trusts_unlogged_registration', 'F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild', { ...AMENDED, sweepIncLogged: false, maxSL: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
-finding('IMPL_PLANNED_fixed', 'As built with the fixes above (F6, F12, F13/F14, F3 assumed), and the ledger log replaced by the PLANNED segments of LEDGER-LOG.md; ledger loss, compaction', { ...IMPL_PLANNED, unknownStream: 'refuse', noRetryAcrossLoss: true, readBound: true, compKey: 'unique', sweepIncLogged: true, maxLL: 1, maxComp: 1 }, ALLSAFE)
+finding('IMPL_PLANNED_fixed', 'As built with the fixes above (F6, F12, F13/F14, F15, F3 assumed), but the segment log as LEDGER-LOG.md stated it at the start of this work; ledger loss, compaction', { ...IMPL_PLANNED, unknownStream: 'refuse', noRetryAcrossLoss: true, readBound: true, compKey: 'unique', sweepIncLogged: true, maxLL: 1, maxComp: 1 }, ALLSAFE)
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation
 const amended = (name: string, label: string, over: Partial<Cfg>, maxStates?: number) =>

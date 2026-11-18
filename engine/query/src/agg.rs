@@ -112,10 +112,8 @@ fn canon_min(a: f64, b: f64) -> f64 {
         a
     } else if b < a {
         b
-    } else if a.is_sign_negative() {
-        a
     } else {
-        b
+        a
     }
 }
 
@@ -170,11 +168,8 @@ impl Cell {
         match (self, o) {
             (Cell::Sum(a), Cell::Sum(b)) => a.merge(b),
             (Cell::Avg(n, a), Cell::Avg(m, b)) => {
-                let (x, y) = (a.mean(*n), b.mean(*m));
-                *a = ExactSum::default();
-                a.add(x);
-                a.add(y);
-                *n = 2;
+                *n += m;
+                a.merge(b)
             }
             (Cell::Count(n), Cell::Count(m)) => *n += m,
             (Cell::Extreme(a), Cell::Extreme(b)) => *a = if op == AggOp::Min { canon_min(*a, *b) } else { canon_max(*a, *b) },

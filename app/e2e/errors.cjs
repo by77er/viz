@@ -27,6 +27,11 @@ async function ready(page) {
 }
 const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '')
 const queryRanges = (requests) => requests.filter((r) => r.url().includes('/api/v1/query_range')).length
+/** Until the run button is no longer busy: the wait (and its retries) is over. */
+async function settled(page, timeout = 15000) {
+  await page.waitForFunction(() => document.querySelector('[data-testid=run]')?.getAttribute('aria-busy') === 'true', null, { timeout: 2000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelector('[data-testid=run]')?.getAttribute('aria-busy') === 'false', null, { timeout })
+}
 
 async function main() {
   const stop = await startServers()
@@ -61,8 +66,8 @@ async function main() {
     await setMockFailure('storage', 1)
     n0 = queryRanges(requests)
     await page.click('[data-testid=error-fix]')
+    await settled(page)
     await page.waitForSelector('[data-testid=legend] tbody tr', { timeout: 10000 })
-    await page.waitForTimeout(300)
     check('busy once (503, Retry-After: 1), then an answer: the result is shown and no error', queryRanges(requests) - n0 === 2 && !(await page.$('[data-testid=error-state]')), `${queryRanges(requests) - n0} tries`)
 
     // ---- 429 with Retry-After: 10: the line says so; Cancel stops the wait and keeps the result.
@@ -76,13 +81,14 @@ async function main() {
     await page.waitForSelector('[data-testid=halted]')
     check('Cancel during a retry stops it; the previous result stays', /Cancelled\. The previous result is shown\./.test(await text(page, '[data-testid=halted]')) && (await page.$$('[data-testid=legend] tbody tr')).length === 4)
     await setMockFailure('busy', 0)
+    await settled(page)
 
     // ---- 502 from the gateway: retried like a 503.
     await setMockFailure('gateway', 1)
     n0 = queryRanges(requests)
     await page.click('[data-testid=run]')
     await page.waitForFunction(() => /HTTP 502/.test(document.querySelector('[data-testid=progress-text]')?.textContent || ''))
-    await page.waitForSelector('[data-testid=progress]', { state: 'detached', timeout: 10000 })
+    await settled(page)
     check('502 from the gateway (Retry-After: 1): retried, then the answer', queryRanges(requests) - n0 === 2 && !(await page.$('[data-testid=error-state]')))
 
     // ---- 503 timeout: the API's time limit. Not retried; the advice says what to change.
