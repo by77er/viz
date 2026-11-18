@@ -136,3 +136,28 @@ describe('Prometheus-shaped results from the engine', () => {
     expect(m).toEqual([{ id: 'a', value: 3, labels: { pod: 'a' } }])
   })
 })
+
+describe('runs without Node: the bundled library in a bare JavaScript context', () => {
+  it('bundles with no Node built-ins and detects inside node:vm with no process, require or Date.now', async () => {
+    const { rolldown } = await import('rolldown')
+    const vm = await import('node:vm')
+    const bundle = await rolldown({ input: new URL('../src/index.ts', import.meta.url).pathname, platform: 'neutral' })
+    const { output } = await bundle.generate({ format: 'iife', name: 'anomaly' })
+    const code = output[0].code
+    expect(code).not.toMatch(/require\(|from "node:|process\./)
+    // a context with only the ECMAScript globals (+ TextEncoder, which Workers have); Date.now and Math.random poisoned
+    const ctx = vm.createContext({ TextEncoder })
+    vm.runInContext('Date.now = () => { throw new Error("clock") }; Math.random = () => { throw new Error("random") }', ctx)
+    vm.runInContext(code, ctx)
+    const out = vm.runInContext(`(() => {
+      const n = 600, ts = new Float64Array(n), v = new Float64Array(n)
+      for (let i = 0; i < n; i++) { ts[i] = 1.7e12 + i * 60000; v[i] = 100 + Math.sin(i) }
+      v[500] = 200
+      const r = anomaly.robustZ.detect({ ts, values: v })
+      const s = anomaly.seasonal.detect({ ts, values: v }, { periodMs: 3600000 })
+      const b = anomaly.burnRate.detect({ ts, values: new Float64Array(n), total: new Float64Array(n).fill(10) }, { stepMs: 60000 })
+      return [r.points[500].anomalous, r.points[500].explanation.text.length > 0, s.summary.status, b.summary.points]
+    })()`, ctx)
+    expect(out).toEqual([true, true, 'ok', 600])
+  })
+})

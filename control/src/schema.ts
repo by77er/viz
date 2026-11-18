@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, kv_key TEXT NOT NULL, value TEXT, expiration INTEGER,
   created_at INTEGER NOT NULL);
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
 `
 
 export const TENANT_SCHEMA: SchemaSpec = {

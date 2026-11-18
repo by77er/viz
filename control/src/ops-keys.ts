@@ -85,7 +85,7 @@ function publishKey(t: Tenant, id: string, now: number): void {
       t.publish(`key:${s.key_id}`, null, now)
       continue
     }
-    const record = { tenant: t.tenant, secretSha256: s.secret_sha256, scopes: JSON.parse(row.scopes) as string[], disabled: row.disabled === 1 }
+    const record = { v: 1, tenant: t.tenant, secretSha256: s.secret_sha256, scopes: JSON.parse(row.scopes) as string[], disabled: row.disabled === 1 }
     t.publish(`key:${s.key_id}`, record, now, end === null ? null : Math.ceil(end / 1000))
   }
 }
