@@ -10,7 +10,8 @@ built. Detail and sources: `research/12-verification-strategy.md`.
 | Twelve independent researchers, each fetching primary sources | Facts reached independently by several (platform rename and GA, catalog pricing, Pipelines limits, isolate memory, six-connection rule) are treated as established |
 | Every claim tagged verified / secondary / training knowledge | Non-Cloudflare system internals are mostly training knowledge and are not load-bearing in the design |
 | Disagreements listed and resolved explicitly | Six conflicts between researchers; see `research/README.md` and `DECISIONS.md` |
-| Two independent adversarial reviews of the draft | Findings and dispositions in `REVIEW.md` |
+| Two independent adversarial reviews of draft 2 | 57 findings; the write path, routing, cost table and spike order were rewritten; see `REVIEW.md` |
+| Draft 3 re-review | **Not done.** The revised ledger design has not itself been reviewed |
 | Every modelled number mapped to an experiment | Section 4 below |
 
 What this pass did **not** do: run any code, measure any latency, or exercise any Cloudflare
@@ -23,15 +24,15 @@ The system is correct when these hold. Full, precise statements are in `research
 
 | # | Invariant | Enforced by |
 |---|---|---|
-| I1 | An acknowledged row is in durable shard storage or a committed snapshot | Ack after WAL transaction |
+| I1 | An acknowledged row is in durable shard storage or in a file listed in the ledger | Ack after WAL transaction |
 | I2 | No acknowledged row is lost | WAL replay; truncate only after confirmed commit |
 | I3 | No row is visible more often than it was accepted | Batch fingerprints; `(shard, seq range)` keys; watermarks |
-| I4 | Visibility is monotonic; no gap or double count at the tail/lake seam | One snapshot + its watermarks per query; truncation grace |
-| I5 | A WAL segment is deleted only after its snapshot is confirmed by re-reading the catalog | Committer confirm step |
+| I4 | Visibility is monotonic; no gap or double count at the tail/lake seam | One ledger version + its watermarks per query; shards refuse stale watermarks |
+| I5 | A WAL segment is discarded only after the ledger has acknowledged its flush unit | Contiguous-prefix watermark; ledger transaction |
 | I7 | Overload produces a retryable error, never acknowledge-and-drop | Bounded shard buffers |
 | I8 | Compaction preserves the multiset of rows, sort order and field ids | Content checksums before and after |
 | I9 | Retention deletes exactly what policy says, and only that tenant's files | Tenant-pure files, partition-aligned deletes |
-| I10 | Snapshot history is a single chain | One committer per table; managed maintenance off |
+| I10 | Published Iceberg history is a single chain and equals the ledgers it claims to reflect | One publisher per cell; managed maintenance off; scrubber |
 | I11 | No dangling references, no leaked files | Ledger, scrubber, orphan sweeper |
 | I12 | Every snapshot is readable by two independent engines with identical content hashes | DuckDB and PyIceberg per PR |
 | I14 | Results with pruning on equal results with pruning off | Differential test |
@@ -46,7 +47,7 @@ The system is correct when these hold. Full, precise statements are in `research
 
 | Layer | Tooling | Runs |
 |---|---|---|
-| Protocol model | Quint specification of flush / commit / truncate / compact / retain with crash, duplicate, commit-unknown and stale-head actions; traces replayed against the code | per change to the protocol |
+| Protocol model | Quint specification of seal / flush / ledger-add / discard / compact / retain / publish with crash, duplicate, stale-watermark and map-epoch actions; traces replayed against the code | per change to the protocol |
 | Deterministic simulation | The Rust core has no I/O; a seeded single-threaded simulator supplies storage, R2, catalog and clock, injects faults, checks invariants after every step, and includes queries with an oracle | every PR (minutes), long runs nightly |
 | Workers integration | `@cloudflare/vitest-plugin`: `evictDurableObject`, `abortAllDurableObjects`, `runDurableObjectAlarm`, compiled-in failpoints; Docker Iceberg REST catalog (Lakekeeper or `iceberg-rest-fixture`) | every PR |
 | Query conformance | Upstream `promqltest` corpus in process; `prometheus/compliance` differential against a real Prometheus; Tempo differential; PromQL fuzzing with metamorphic checks; split/shard equivalence | every PR; full suite nightly |
@@ -57,31 +58,30 @@ The system is correct when these hold. Full, precise statements are in `research
 | Security | Tenant-id fuzzing on every API; authorisation matrix; prompt-injection corpus for agentic monitors; adapter sandbox tests | every PR |
 | Frontend | Playwright end-to-end and visual regression; data-to-geometry golden tests for charts; axe; dashboard-spec round-trip and schema tests | every PR |
 | Agents | Golden tasks for dashboard authoring; replay of seeded incidents (OpenTelemetry Demo fault flags) for agentic monitors; rubric scoring; token and cost budgets | nightly |
-| Production | A canary tenant writes known data and reads it back continuously; a row-count ledger reconciles ingest → snapshot; viz monitors itself from a separate tenant | always |
+| Production | A canary tenant writes known data and reads it back continuously; a row-count audit reconciles ingest → ledger → published snapshot; viz monitors itself from a separate tenant | always |
 
 ## 4. Assumptions to falsify first
 
-Each is a spike with a pass/fail threshold. They are ordered so that the cheapest experiment
-that could invalidate the most design comes first.
+Ordered so that the experiments that decide topology and the cost floor come first; the
+catalog, which has a fallback, comes last. The order follows the platform review.
 
-| # | Assumption | Experiment | If it fails |
+| # | Experiment | Decides | Kill criterion and consequence |
 |---|---|---|---|
-| S1 | A Worker / Durable Object can commit to the managed Iceberg catalog over REST, and DuckDB + PyIceberg read the result | Write one Parquet file, commit, read back; repeat under 409s and injected "commit unknown" | Use the R2-native catalog as primary |
-| S2 | The Rust core fits: WASM size, < 1 s startup, < 128 MB while encoding a 32 MB segment or decoding a 32 MB row group | Build a minimal encode/decode/aggregate core; measure in `workerd` | Smaller segments and row groups; pure-JS Parquet; more Container use |
-| S3 | A shard sustains ≥ 300 durable acknowledgements/s and ≥ 5 MB/s with group commit | Load test one object; measure p99 ack and row-write billing | Smaller shards, more of them; revisit cost model |
-| S4 | Fan-out to 50–200 leaves works within the six-connection rule | Tree vs early-header streaming via service bindings; measure wall time | Deeper tree; fewer, larger leaves |
-| S5 | R2 range reads from a Worker are fast enough: p50 and p99 TTFB, with and without hedging | Measure in-region and cross-region, cached and uncached | Larger coalesced reads; more caching; Smart Placement |
-| S6 | Flat samples compress to ≤ 3 bytes each and scan fast enough | Real Prometheus data → flat rows vs chunk-blob rows; size and decode time | Chunk-blob rows per series-window |
-| S7 | Decode cost ≤ 20–40 CPU-ms per uncompressed MB for OTLP and Remote Write | Benchmark the WASM decoders | Defer validation to the shard; revise cost model |
-| S8 | Tail reads do not starve ingest on a busy shard | Mixed load on one object | Read replicas of the open segment; shorter segments |
-| S9 | Planning stays at 3–5 subrequests with footer bundles, at 1k and 100k files | Synthetic table at both sizes | Coarser bundles; planner-side index object |
-| S10 | Time-clustered compaction keeps ≤ ~30 files per day-partition query and fits a Workflow + leaf budget | Run on a week of synthetic data | Container compaction by default |
+| S0 | Durable Object duration billing: one object woken every 1, 5, 15 and 60 s, by alarm and by request; read billed GB-s after 24 h | The cost floor; whether per-minute ruler and publisher ticks are affordable | A 60 s wake bills above ~25% duty → fold ticks into fewer objects, lengthen intervals for small tenants |
+| S1 | Connection semantics and R2 latency: range-read parallelism from one invocation, through service bindings and through object stubs; p50/p99 TTFB in and out of region, with hedging | Leaf topology; where `query` runs | Six-slot budget shared across the tree → leaves become separate top-level requests |
+| S2 | Engine in an isolate: WASM size, startup under 1 s, peak memory while merging and encoding a sealed segment and while decoding a row group; acknowledgement latency while a flush runs | Whether the Rust core is viable; segment and row-group sizes | Does not fit → smaller segments, pure-JS Parquet, more Container use |
+| S3 | Ingest path: real Remote Write and OTLP bodies through `edge` to shards; object requests per ingest request, rows written per month at 50 / 250 / 1,000 ms commit windows, acknowledgement latency, decode CPU per MB | Routing key, commit window, ingest cost | More than ~2 object requests per ingest request → change routing key |
+| S4 | Ledger at scale: 1,000 flush units/min into one ledger; plan-call latency with 300k live files; rebuild from the R2 log | Ledger sizing; when to split a ledger | Plan call over ~50 ms or adds over ~10 ms p99 → ledger per shard group |
+| S5 | One vertical read slice on synthetic team-scale data before any PromQL breadth: `sum by (pod) (rate(http_requests_total{namespace="x"}[5m]))` over 1 h, 24 h (today and yesterday) and 30 d; count reads, bytes, CPU, wall time; flat rows vs chunk-blob rows; hashed vs locality-prefixed series ids | Row shape, sort key, compaction cadence, rollup placement, latency targets | First-load 24 h p95 over 3 s after tuning → chunk-blob rows or a different sort |
+| S6 | Trace by ID and one structural TraceQL query at 500M spans/day; a log needle search at 100 GB/day over 1 h, 24 h and 7 d | Span partitioning; whether the flush-time token filter suffices | Trace-by-ID p95 over 1 s → bucket by trace id |
+| S7 | Tail reads under ingest and rule load on one shard | Whether tail-class rules and 10 s freshness hold | Ingest p99 degrades more than 2× → rules read flush files only |
+| S8 | Iceberg publication: R2-native metadata read back by DuckDB and PyIceberg; then commits to the managed catalog from a Worker under 409s and unknown outcomes | Whether managed-catalog publication ships | Unreliable → stay R2-native |
 
 ## 5. Evidence required per milestone
 
 | Milestone | Required evidence |
 |---|---|
-| Design accepted | Invariants agreed; Quint model checks and catches a seeded bug; S1–S5 run and recorded |
+| Design accepted | Invariants agreed; Quint model checks and catches a seeded bug; S0–S5 run and recorded |
 | Prototype (metrics only) | I1–I5 hold under simulated faults; upstream PromQL corpus pass rate published; cost golden files in CI; hobby tier measured ≤ modelled +25% |
 | Alpha (three signals, dashboards, rules) | I1–I22 in CI; drift suite green for two weeks; canary tenant and ledger live; storage-location invariance holds across compaction |
-| GA | Soak at team scale for 30 days with zero ledger discrepancy; published supported-subset documents; injection corpus and tenant fuzz clean; SLO targets met or restated |
+| GA | Soak at team scale for 30 days with zero audit discrepancy; published supported-subset documents; injection corpus and tenant fuzz clean; SLO targets met or restated |

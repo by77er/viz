@@ -19,6 +19,6 @@ and consumed through composable, agent-first dashboards.
 | Path        | Contents                                              |
 | ----------- | ----------------------------------------------------- |
 | `research/` | State-of-the-art research notes that inform the design |
-| `design/`   | Architecture and design documents                      |
+| `design/`   | `DESIGN.md` (architecture), `DECISIONS.md`, `VERIFICATION.md`, `REVIEW.md` and the raw reviews |
 
 Status: research and design phase.

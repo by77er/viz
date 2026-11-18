@@ -3,57 +3,62 @@
 Each entry: the decision, the alternatives, why, and what would change it. Evidence lives in
 `research/NN`.
 
-## D1. Two places for data, joined by a watermark
+## D1. A per-tenant ledger is the authority; the tail is joined to it by a fenced watermark
 
-**Decision.** An acknowledged row is either in one shard's write-ahead log (the tail) or in
-the current Iceberg snapshot (the lake). Each snapshot records a watermark per shard; a query
-reads one snapshot and asks shards only for rows above it.
+**Decision.** One Durable Object per tenant lists the live files of all that tenant's tables
+and a watermark per shard. Rows not yet in a listed file are in exactly one shard. A query
+reads one ledger version and asks shards for rows above the watermark; a shard that has
+discarded past that watermark refuses and the query retries.
 
-**Alternatives.** (a) A third tier of flushed-but-uncommitted files tracked in a separate
-manifest that queries union in (research 05). (b) Commit to Iceberg every few seconds and
-have no tail. (c) Cloudflare's managed streaming ingest.
+**Alternatives.** (a) Draft 2: visibility state inside Iceberg snapshots, one committer per
+table. (b) Commit to Iceberg every few seconds and have no tail. (c) Cloudflare's managed
+streaming ingest.
 
-**Why.** (a) adds a second manifest format and a second visibility rule. (b) collides with a
-60-second practical commit floor and per-operation catalog billing. (c) has a 20-stream cap,
-no sort or partition control, silent drops and minutes of latency (research 01, 07). The
-watermark gives one rule for visibility and makes the hand-off testable as a single invariant.
+**Why.** Review showed (a) stalls ingest during a catalog outage, grows metadata with
+tenants × days, cannot commit across tables atomically, and guarded truncation with a timer
+rather than a fence (`REVIEW.md`). (b) collides with a 60-second practical commit floor and
+per-operation billing. (c) has a 20-stream cap, no sort control and silent drops. The ledger
+is one tenant's worth of state in one transactional store, which is the smallest thing that
+can be proven correct.
 
-**Would change if.** Tail reads starve ingest on busy shards (spike S8).
+**Would change if.** A single tenant's ledger cannot keep up (then: one ledger per shard
+group).
 
-## D2. Shared tables, tenant-pure files, tenant in the partition spec
+## D2. Iceberg is a publication, not the write path
 
-**Decision.** One table per signal per cell, partitioned `identity(tenant_id), day(ts)`; every
-data file holds one tenant.
+**Decision.** A per-cell publisher turns ledger changes into Iceberg snapshots every few
+minutes. viz's own queries never read Iceberg metadata.
+
+**Why.** External interoperability is the reason to have Iceberg; it does not need
+second-level freshness. Decoupling means a slow, costly or broken catalog cannot lose data,
+delay queries or stall ingest, and the publication can be checked against the ledgers.
+
+**Cost.** Two metadata forms exist. The ledger is authoritative; the scrubber proves the
+Iceberg view equals it.
+
+## D3. Tenant-pure files in shared tables; dedicated cells for direct access
+
+**Decision.** Every data file holds one tenant. Small tenants share a cell's tables; a
+tenant that needs direct Iceberg access, residency or scale gets a dedicated cell.
 
 **Alternatives.** Table or namespace per tenant (research 04); shared files sorted by tenant
 (research 05).
 
-**Why.** Catalog operations are billed, so per-tenant tables cost roughly $1–3 per tenant per
-month in commits alone (research 01, 05, 07, 10). Tenant-pure files make retention and
-erasure metadata-only, make isolation checkable per file, and let a large tenant move to its
-own cell by moving files. The cost is more, smaller files for small tenants, which compaction
-absorbs.
+**Why.** Catalog operations are billed, so per-tenant tables cost dollars per tenant per
+month in commits alone. Tenant-pure files make retention and erasure file drops and make
+isolation checkable per file. Shared tables cannot be handed to a tenant's own engine
+without exposing other tenants, hence dedicated cells for that.
 
-**Would change if.** File counts for many small tenants make commits or manifests too large;
-then small tenants share files within a `bucket(N, tenant_id)` partition and erasure becomes
-a rewrite.
+## D3a. viz is the only writer; managed compaction off
 
-## D3. One committer per table; managed compaction off
-
-**Decision.** A single Durable Object serialises every mutation of a table: appends,
-compaction replaces, retention deletes. Cloudflare's managed compaction is disabled.
-
-**Why.** The one documented corruption incident on the managed stack involved two mutators
-disagreeing (research 11). Managed compaction is not documented to preserve sort order,
-bloom filters or sidecars, all of which the read path depends on (research 03, 04, 05).
-
-**Would change if.** Sort-aware managed compaction ships and passes the content-preservation
-invariant.
+**Why.** The one documented corruption incident on the managed stack involved two writers
+disagreeing (research 11), and managed compaction is not documented to preserve sort order
+or indexes.
 
 ## D4. Catalog behind an interface, with an R2-native implementation
 
-**Decision.** Use the managed Iceberg REST catalog by default for interoperability; keep a
-second implementation that stores Iceberg metadata on R2 with conditional writes.
+**Decision.** Publish Iceberg metadata directly to R2 with conditional writes first; add
+commits to the managed Iceberg REST catalog as a second implementation of the same interface.
 
 **Why.** Interoperability with DuckDB, Spark, Trino and Snowflake is a product feature. The
 managed catalog has no published limits, does not support jurisdiction buckets, and has an
@@ -92,13 +97,16 @@ a trace index plus bloom filters covers lookups (research 04).
 
 **Would change if.** Spike S6 shows flat samples above ~3 bytes each or too slow to decode.
 
-## D7. Rules evaluated in packed ruler objects against the tail
+## D7. Rules in packed ruler objects, classified by what they read
 
-**Decision.** About 1,000 rules per ruler object, one alarm tick, state written on
-transitions only.
+**Decision.** Many rules per ruler object, one tick, shared scans, state written on
+transitions only. Each rule is classified at save time as tail, recent or rollup, and its
+cost is shown.
 
-**Why.** Scheduling shape dominates cost: roughly $0.35–0.50 per 1,000 rules per month this
-way, about $60 with an object per rule, about $690 with a Workflow per rule (research 08).
+**Why.** Scheduling shape dominates cost: an object per rule is about $60 per 1,000 rules
+per month and a Workflow per rule about $690 (research 08). The often-quoted $0.35–0.50
+applies only to rules answered from shard tails; review showed rules that read objects cost
+dollars per thousand, so the design says which is which.
 
 ## D8. Agents are advisory, read-only and guard-triggered
 
@@ -125,3 +133,28 @@ close enough that import and export are mechanical.
 **Why.** Every production system examined stores signals separately, including those that
 market a unified model (research 11). Profiles are deferred until the OpenTelemetry signal
 is stable.
+
+## D11. Route by sender, not by series
+
+**Decision.** The shard key is the resource fingerprint (target labels or OTLP resource).
+
+**Why.** Hashing by series sends one request to every shard and makes every query tail-read
+every shard (review, platform C1). A sender-stable key keeps one request in one shard while
+still giving each series exactly one home.
+
+## D12. Encode outside the shard
+
+**Decision.** Shards seal small segments; a stateless Worker sorts and encodes them.
+
+**Why.** Sorting and encoding tens of MB inside a single-threaded 128 MB object blocks
+acknowledgements and risks out-of-memory loops (review, platform C2, correctness 15).
+
+## D13. Shared shard pools for small tenants
+
+**Decision.** In hosted deployments small tenants share shard objects, with separate WAL
+streams, tenant-pure files and per-tenant quotas.
+
+**Why.** A dedicated always-warm shard per small tenant costs about $4 per month in duration
+alone. Pools trade some isolation for a marginal cost near zero.
+
+**Open.** Noisy-neighbour behaviour inside a pooled shard.

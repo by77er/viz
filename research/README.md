@@ -42,5 +42,5 @@ The design resolves each of these; the reasoning is in `design/DECISIONS.md`.
 | Engine language | Pure JS Parquet stack (05) vs Rust compiled to WASM (06, 12) | Rust core for encode, decode and evaluation; TypeScript for I/O and Iceberg metadata |
 | Span clustering | Sort by service and time plus a trace index (04) vs trace-grouped storage (06) | Service and time, plus `trace_index` and bloom filters |
 | Metric value layout | Flat row per sample (03) vs chunk blobs (Cortex/Thanos precedent) | Flat rows, pending a benchmark |
-| Compaction | Managed first (05) vs own it (04, 11) | viz-owned; managed compaction off, so each table has one mutator |
-| Freshness tier | Uncommitted-file manifest (05) vs reading buffer objects (10, 11) | One seam: snapshot plus per-shard watermark; the shard answers for everything newer |
+| Compaction | Managed first (05) vs own it (04, 11) | viz-owned; managed compaction off, so viz is the only writer |
+| Freshness tier | Uncommitted-file manifest (05) vs reading buffer objects (10, 11) | A per-tenant ledger of live files plus per-shard watermarks; the shard answers for everything newer; Iceberg is published from the ledger |
