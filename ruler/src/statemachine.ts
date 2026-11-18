@@ -144,6 +144,7 @@ export function evalAlertingRule(
       if (!Object.is(existing.value, a.value) || !sameMap(existing.annotations, a.annotations)) {
         next.set(fp, { ...existing, value: a.value, annotations: a.annotations })
       }
+      dirty.add(fp)
       continue
     }
     next.set(fp, a)

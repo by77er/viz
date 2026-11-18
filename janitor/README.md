@@ -18,7 +18,9 @@ from KV (default 30; a record that cannot be read or is not a positive integer g
 default, never a shorter retention) and calls `ledger.expire` for both tables with
 `beforeDay` = the UTC day N days before `now`: today and the N days before it are kept.
 Samples first, then series, so a day never has samples without the series that describe
-them. No object is touched.
+them. No object is touched. It returns the cutoff and the policy (`keepDays`): day D
+expires at 00:00 UTC on day D + keepDays + 1, which is how `stack/` knows when an idle
+tenant next has anything to expire.
 
 **`purgeTenant(env, tenant, { graceMs })`** deletes the objects of keys the ledger removed,
 whether by `expire` or by compaction's `replace`. It deletes exactly what
@@ -53,10 +55,15 @@ seen), and age alone never deletes a flush file.
 ## R2 operations per retention run
 
 `expireTenant`: none by the janitor; the ledger logs at most two changes (one per table).
-`purgeTenant`: one DELETE request per 1,000 keys. `sweepOrphans`: one LIST page per 1,000
-objects per table and one DELETE request per 1,000 orphans. No PUT anywhere. Locally a run
-takes a few milliseconds; on Cloudflare (modelled) it is the two ledger changes, about
-0.8 s today and a few milliseconds once the ledger's log is batched.
+`purgeTenant`: one DELETE request per 1,000 keys, one at a time. `sweepOrphans`: one LIST
+page per 1,000 objects per table and one DELETE request per 1,000 orphans. No PUT anywhere.
+Locally a run takes a few milliseconds. On Cloudflare (modelled from
+`spikes/s5-r2-writes/`: a write 0.17–0.26 s at the median, one `delete()` of 1,000 keys
+5.5 s): expire is the ledger's two log writes, about 0.35–0.5 s today and a few
+milliseconds once its log is batched; deletion is about **5.5 s per 1,000 keys**, so a
+purge at its default cap of 10,000 keys is about a minute of one maintenance run. That is
+background work, never on a write or query path, and the cap keeps one run well inside a
+queue consumer's time limit.
 
 ## Not implemented
 

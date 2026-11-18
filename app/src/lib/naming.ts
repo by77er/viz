@@ -121,9 +121,13 @@ export function nameSeries(input: readonly Labels[], maxLength = NAME_LENGTH): R
   }
   let short = name
   if (name.some((n) => n.length > maxLength)) {
+    // A length no value reaches cuts nothing: it would give `name` again, so it is not tried.
+    let longest = 0
+    for (const labels of all) for (const k of distinguishing) if (has(labels, k) && labels[k]!.length > longest) longest = labels[k]!.length
     let fallback: string[] | null = null
     let fits: string[] | null = null
     for (const v of VALUE_LENGTHS) {
+      if (v >= longest) continue
       const cut = at(v)
       const candidate = name.map((n, i) => (n.length > maxLength ? cut[i]! : n))
       if (!unique(candidate)) continue

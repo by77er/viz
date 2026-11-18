@@ -27,7 +27,14 @@
 //               in the document and visible (for the chart: its canvas, drawn before that frame)
 //   picker      pointerup on the time range button -> the popover is in a painted frame
 //   response    the query_range body has arrived in the page -> end of the last frame of the
-//               burst of changes to the result panel that follows (see instrument())
+//               burst of changes to the result panel that follows (see instrument()). "Arrived"
+//               is when this script's copy of the body (res.clone().text()) resolves, and that
+//               is AFTER the app has read and parsed its own copy (checked: the app's text()
+//               resolves first and its JSON.parse runs before the clone's callback), so this
+//               figure leaves out reading and parsing the body. Kept for comparison with earlier files.
+//   responseFull  the last byte of the response (Resource Timing responseEnd of the
+//               query_range request) -> the same paint. This one includes decoding and parsing
+//               the body: 3.6 MB of JSON for 200 series.
 //   inp         the longest Event Timing duration of any interaction in the run, before the
 //               typing and crosshair steps (comparable with earlier files); inpAll includes them
 //   crosshair   30 pointer moves across the plot, one at a time: mousemove -> end of the next
@@ -82,7 +89,7 @@ const median = (xs) => { const s = xs.filter((x) => x != null && Number.isFinite
 
 // Runs in the page before any of its scripts.
 function instrument() {
-  const m = (window.__m = { shifts: [], events: [], resp: null, respPaint: null, rec: null })
+  const m = (window.__m = { shifts: [], events: [], resp: null, respPaint: null, respFull: null, rec: null })
   try {
     new PerformanceObserver((l) => { for (const e of l.getEntries()) m.shifts.push({ value: e.value, recent: e.hadRecentInput, t: e.startTime }) }).observe({ type: 'layout-shift', buffered: true })
     new PerformanceObserver((l) => { for (const e of l.getEntries()) if (e.interactionId) m.events.push({ name: e.name, duration: e.duration, delay: e.processingStart - e.startTime, t: e.startTime }) }).observe({ type: 'event', durationThreshold: 16, buffered: true })
@@ -106,9 +113,15 @@ function instrument() {
     const panel = document.querySelector('section[aria-label="Query result"], [data-testid=result]')
     if (!panel || !records.some((r) => panel.contains(r.target))) return
     const resp = m.resp
-    afterFrame((t) => { m.lastChange = t - resp })
+    afterFrame((t) => { m.lastChange = t - resp; m.lastPaintAt = t })
     clearTimeout(quiet)
-    quiet = setTimeout(() => { m.respPaint = m.lastChange; if (m.rec) m.rec.resultAt = performance.now() }, 250)
+    quiet = setTimeout(() => {
+      m.respPaint = m.lastChange
+      const entries = performance.getEntriesByType('resource').filter((e) => e.name.includes('query_range'))
+      const last = entries[entries.length - 1]
+      m.respFull = last && last.responseEnd > 0 ? m.lastPaintAt - last.responseEnd : null
+      if (m.rec) m.rec.resultAt = performance.now()
+    }, 250)
   }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true })
   /** Record every mousemove (crosshair) or keydown (typing) until the frame that follows it. */
   m.moves = []; m.keys = []
@@ -120,7 +133,7 @@ function instrument() {
   /** Arm a one-shot measurement of the next pointerdown. `done` is a selector, or 'result'. */
   m.arm = (done) => {
     const rec = (m.rec = { t0: null, tUp: null, press: null, busy: null, done: null, resultAt: null, shiftFrom: performance.now() })
-    m.resp = null; m.respPaint = null
+    m.resp = null; m.respPaint = null; m.respFull = null
     window.addEventListener('pointerdown', (e) => {
       rec.t0 = e.timeStamp
       afterFrame((t) => { rec.press = t - rec.t0 })
@@ -150,7 +163,7 @@ async function click(page, selector, done) {
   await Promise.all([page.waitForFunction(() => window.__m.rec.press !== null), page.waitForTimeout(60)])
   await page.mouse.up()
   await page.waitForFunction(() => window.__m.rec.done !== null, null, { timeout: 30000 })
-  return page.evaluate(() => ({ ...window.__m.rec, respPaint: window.__m.respPaint }))
+  return page.evaluate(() => ({ ...window.__m.rec, respPaint: window.__m.respPaint, respFull: window.__m.respFull }))
 }
 
 function bytes(root) {
@@ -200,6 +213,7 @@ async function measureCase(browser, SERIES) {
       r.press = run.press
       r.busy = run.busy
       r.response = run.respPaint
+      r.responseFull = run.respFull
       const shifts = await page.evaluate((from) => window.__m.shifts.filter((s) => s.t >= from), run.shiftFrom)
       r.clsRun = shifts.filter((s) => !s.recent).reduce((a, s) => a + s.value, 0)
       r.clsRunAll = shifts.reduce((a, s) => a + s.value, 0)
@@ -265,7 +279,7 @@ async function measureCase(browser, SERIES) {
   const file = path.join(lib.ROOT, 'e2e', 'measurements', `${name}.json`)
   if (process.argv.includes('--append') && fs.existsSync(file)) runs.unshift(...JSON.parse(fs.readFileSync(file, 'utf8')).raw)
 
-  const keys = ['press', 'busy', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
+  const keys = ['press', 'busy', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'responseFull', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
   const summary = {}
   for (const k of keys) {
     const xs = runs.map((r) => r[k])

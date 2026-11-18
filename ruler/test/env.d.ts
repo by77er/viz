@@ -4,6 +4,8 @@ declare namespace Cloudflare {
     NOTIFIER: DurableObjectNamespace<import('./harness').TestNotifier>
     RULER_INDEX: DurableObjectNamespace<import('./harness').TestRulerIndex>
     CONFIG: KVNamespace
+    /** Node-side sink for files the independent readers check (vitest.config.ts). */
+    CAPTURE: Fetcher
   }
 }
 

@@ -49,5 +49,5 @@
     "register(shard 0, incarnation 1)",
     "ledgerLossRebuild"
   ],
-  "seconds": 9.9
+  "seconds": 15.3
 }

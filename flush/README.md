@@ -113,11 +113,15 @@ Nobody calls `flushTenant` by hand any more (tests still may).
 Per sealed segment: one PUT per file (two per UTC day the segment covers), no GET unless a
 PUT is refused as existing (then one HEAD each), and on the ledger's side one change
 (`addUnit`; today one more PUT, which the caller waits for). Measured locally: see below.
-On Cloudflare a PUT costs about 0.4 s whatever its size (`contracts/LEDGER-LOG.md`), so a
-one-day segment is about 0.4 s for its two files, which are sent together (up to six in
-flight), plus 0.4 s for the ledger's change until its log is batched: **about 0.8 s per
-segment as built, 0.4 s after** (modelled, not measured); the segments of one run go in
-sequence, because each unit must extend the watermark.
+
+On Cloudflare (`spikes/s5-r2-writes/`, measured 2026-11-18): a write of up to 1 MB costs
+0.17–0.26 s at the median and up to 0.6 s at the tail, conditional or not, and writes share
+the six-in-flight limit with reads. A one-day segment's two files (about 0.3 MB together
+here) go out together, at most six PUTs in flight per run (`writeSegment` waits for each
+group of six): about 0.25 s; the ledger's change is one more write from its Durable Object
+(0.17–0.21 s median) until its log is batched. **Modelled: about 0.4–0.5 s per segment as
+built (up to about 1.2 s at the tail), about 0.25 s once the ledger's log is batched.** The
+segments of one run go in sequence, because each unit must extend the watermark.
 
 ## Not implemented
 

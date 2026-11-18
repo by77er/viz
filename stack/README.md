@@ -22,7 +22,7 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 | `wrangler.jsonc` | The single config: queues, consumers, dead-letter queues, cron |
 | `test/e2e.test.ts` | 6 end-to-end tests that drive flush by hand |
 | `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
-| `test/triggers.test.ts` | 7 tests of the triggers, the maintenance marker and the idle deployment |
+| `test/triggers.test.ts` | 8 tests of the triggers, the maintenance marker, the orphan-sweep flag and the idle deployment |
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
 | `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
 | `test/sim.ts`, `test/world.ts` | Simulated deployments: tenants, real requests, queues under test control, the model, the invariants |
@@ -36,16 +36,26 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 | A shard seals a segment (size, or age in its alarm) | `{tenant, shard}` on the flush queue, written with the seal | `shard/` |
 | A flush message is delivered | `flushTenant` for that stream; acknowledged only when everything sealed is recorded; otherwise retried with backoff, then dead-lettered to R2 | `flush/src/consumer.ts` |
 | A flush run ends ok | `{tenant}` on the maintenance queue, and the tenant's maintenance marker exists | `noteFlushed` |
-| A maintenance message is delivered | `maintainTenant`: retention expire, up to 8 compaction merges, deletion of what the ledger calls deletable, and (at most daily) the orphan sweep; then the marker is rewritten with the next time anything can be due, or deleted if the tenant has nothing left | `src/maintain.ts` |
+| A maintenance message is delivered | `maintainTenant`: retention expire, up to 8 compaction merges, deletion of what the ledger calls deletable, and (at most daily, and only while objects may have been written since the last sweep that found nothing to wait for) the orphan sweep; then the marker is rewritten with the next time anything can be due, or deleted if the tenant has nothing left | `src/maintain.ts` |
 | The cron fires (hourly) | (1) streams of shards with a pending marker whose segments have waited 10 minutes are re-enqueued; (2) tenants whose maintenance marker is due are enqueued | `sweepPending`, `enqueueDue` |
 | A message exhausts its retries | written to `{cell}/dead-letters/{queue}/…json` and logged; the next sweep re-enqueues the work | `consumeDeadLetters` |
 
 **Idle means free.** Both sweeps read KV only. A shard has a `flush-pending:` key only
 while it has unrecorded segments; a tenant's `maint:` key carries the time it is next due
-(a quiet hour, a day closing, the next UTC midnight for retention, a grace ending, the
-next orphan sweep) in its metadata, so the cron needs one KV list and no read. Nothing
-due: no Durable Object is woken and no message is sent. No object keeps an alarm when it
-has nothing to do. `test/triggers.test.ts` counts this.
+in its metadata, so the cron needs one KV list and no read. That time is the earliest of:
+an hour going quiet, a day closing, a grace ending, the moment the tenant's **oldest** live
+day passes its retention (not every midnight), and the next orphan sweep **only while one
+is needed** (a flush wrote objects, a merge ran or crashed, or the last sweep left young or
+pending objects to look at again; the flush's maintenance message says `wrote`, and the
+marker keeps it). Nothing due: no Durable Object is woken and no message is sent. No
+object keeps an alarm when it has nothing to do. `test/triggers.test.ts` counts this over
+a simulated week of hourly crons after the work has settled: 168 crons, 0 Durable Object
+calls, 0 messages; the cron at the first expiry date then enqueues exactly the tenants due.
+
+Limitation: a retention policy changed in KV is applied by the tenant's next maintenance
+run, which for an idle tenant is the expiry date computed with the old policy (a shortened
+policy takes effect then, or at the tenant's next flush). The `Tenant` object that will own
+policies should enqueue `{tenant}` on the maintenance queue when it changes one.
 
 **The two graces and the step deadline** (defaults; `MAINTENANCE` JSON overrides):
 a removed file's object is deleted 1 h after its removal is logged; an unreferenced flush
@@ -71,7 +81,7 @@ after 5 min, and an unreferenced compaction output is deleted after 24 h.
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npm test                         # 23 tests in workerd, 5 files (soak: 400 steps)
+npm test                         # 24 tests in workerd, 5 files (soak: 400 steps)
 npm run soak                     # the soak with 3,000 steps
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
@@ -93,10 +103,20 @@ node tools/hyparquet_check.mjs   # 4 checks agree
   are written where `listDeadLetters` finds them.
 - A tenant whose data has all expired and been deleted loses its marker.
 - **Idle**: after three tenants' work is consumed and housekeeping alarms have run, the
-  first cron asks each of the two shards once (they remove their markers); the next five
-  crons make **0 Durable Object calls and send 0 messages** (namespaces and queues wrapped
-  in counters), no shard or ledger has an alarm, and no pending marker is left.
-- `noteFlushed` still asks for a run when KV refuses the marker.
+  first cron asks each of the two shards once (they remove their markers). Each tenant's
+  remaining time-driven work then runs once (a policy clock two days ahead: hours quiet,
+  the day closed and merged to level 2, the inputs past their grace, one orphan sweep), and
+  its marker then says exactly "the day your oldest data expires" (31 days after it, at the
+  default policy) with no sweep needed. **168 hourly crons (a simulated week) make 0
+  Durable Object calls and send 0 messages** (namespaces and queues wrapped in counters),
+  no shard or ledger has an alarm, no pending marker is left, and the cron at the first
+  expiry date enqueues exactly the tenants due then.
+- **The orphan sweep's flag**: a flush's maintenance message says `wrote` and the run sweeps;
+  the next run, with nothing written, does not list the prefix; a run whose merge crashes
+  marks the sweep as needed before it fails, and the next run sweeps; a flush whose message
+  is lost leaves the flag in the marker.
+- `noteFlushed` still asks for a run when KV refuses the marker, and that run still sweeps
+  (the message carries `wrote`).
 
 ### Compaction preserves the rows, I8 (`test/compaction.property.test.ts`)
 
@@ -126,9 +146,11 @@ the files of its old plan.
 
 Checked after every step for the tenants it touched, and for all tenants every 20 steps
 (`checkTenant`): a query returns exactly the model (no acknowledged row lost, none twice,
-none invented); every row belongs to the tenant; every live file is in R2; every samples
-file is listed with its series file; every tombstone younger than the grace still has
-its object. Checked at each deletion: a purged key had a tombstone, older than the grace
+none invented); every row belongs to the tenant; every samples file is listed with its
+series file; every tombstone younger than the grace still has its object; and the ledger's
+live set is exactly what it references: every live key is an object of the listed size, no
+key is both live and tombstoned, and every other object under the tenant's prefix is
+tombstoned (the janitor's) or has a name the orphan sweep can judge (nothing leaked). Checked at each deletion: a purged key had a tombstone, older than the grace
 and with a logged removal; an orphan was unreferenced, old enough, and (a flush file)
 below its stream's logged watermark. At the end, after flushing, compacting, expiring and
 deleting everything: the objects in R2 are exactly the ledger's live set, all level 2, no

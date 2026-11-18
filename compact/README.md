@@ -7,7 +7,7 @@ larger, sorted files (`design/DESIGN.md` §5.2). Stateless; the ledger is the on
 |---|---|
 | `src/compact.ts` | `chooseJob` (the policy, a pure function), `compactStep` (one merge), `compactTenant` (steps until idle), `pairFiles`, `compactedKey` |
 | `src/index.ts` | `Compact` entrypoint (RPC `compactTenant`), `CompactWorkflow` (the same step function as a Workflow), one engine per isolate |
-| `test/compact.test.ts` | 11 tests in workerd against the real `Shard`, `Ledger`, flush and a simulated R2 |
+| `test/compact.test.ts` | 12 tests in workerd against the real `Shard`, `Ledger`, flush and a simulated R2 |
 | `test/workflow.test.ts` | 1 test: the Workflow run under `introspectWorkflowInstance` |
 
 Bindings: `LEDGER`, `BUCKET`, `CELL`; `COMPACT` (the Workflow). `SHARD` only for tests.
@@ -30,7 +30,7 @@ Bindings: `LEDGER`, `BUCKET`, `CELL`; `COMPACT` (the Workflow). `SHARD` only for
 | `replace` answers | The step |
 |---|---|
 | `ok` (also as a replay: outputs live, inputs not) | `merged` |
-| `conflict` (an input is no longer live: retention or another merge took it) | deletes its two outputs (after the ledger confirms in one read that neither is live) and returns `conflict`; the caller plans again |
+| `conflict` (an input is no longer live: retention or another merge took it) | deletes its two outputs, after the ledger confirms in one read that it knows neither (not live, not tombstoned), and returns `conflict`; the caller plans again. Outputs the ledger knows were made by an identical step that won (keys are a function of the inputs); if they have been removed since, they are tombstoned, a reader holding an older plan may still read them, and only the janitor deletes them after the grace |
 | `invalid` | returns `error: invalid`; nothing changed |
 
 Two more refusals happen before `replace`: `row_count` (the merged file has more rows than
@@ -81,12 +81,20 @@ without a streaming merge.
 
 ## R2 operations and time per merge
 
-For n input pairs: 2n GETs (six in flight), **2 PUTs in parallel**, and one ledger change
-(`replace`; today one more PUT on the ledger's side). A conflict adds one DELETE request
-for both outputs. Locally a step takes 20–150 ms. Estimated on Cloudflare (modelled from
-0.05 s per read and 0.4 s per PUT, `contracts/LEDGER-LOG.md`): reads ⌈2n/6⌉ × 0.05 s, PUTs
-0.4 s, `replace` 0.4 s until the ledger's log is batched, plus about 1 s of merge at the
-budget: **1.5–2.5 s per merge**. The experiment that settles it: `design/VERIFICATION.md` §4.
+For n input pairs: 2n GETs (six in flight), **2 PUTs in parallel** (never more than six
+requests in flight from one step), and one ledger change (`replace`; today one more PUT on
+the ledger's side). A conflict adds one DELETE request for both outputs. Locally a step
+takes 20–150 ms for test-sized inputs and 0.8–1.2 s of merge at the budget.
+
+Estimated on Cloudflare, modelled from measured parts: reads 0.05 s each (`spikes/s1-fanout-r2/`),
+writes 0.17–0.26 s at the median up to 1 MB and 0.56 s for 8 MB, 0.6 s and 1 s at the tail
+(`spikes/s5-r2-writes/`), and production CPU about twice this sandbox's wall time for the
+engine (`DECISIONS.md` D5). A merge at the budget (8 pairs, 16 MB): reads ⌈16/6⌉ × 0.05 =
+0.15 s, merge 1.6–2.4 s, two PUTs in parallel 0.3–0.6 s (outputs up to about 15 MB, more
+at the tail), `replace` 0.17–0.26 s until the ledger's log is batched: **about 2–3.5 s per
+merge at the budget; about 0.5–0.8 s for a small hourly merge** (two small PUTs and the
+ledger's write). Not measured on Cloudflare; the experiment that settles it is a merge run
+in a deployed Worker (`design/VERIFICATION.md` §4).
 
 ## Not implemented
 
@@ -101,7 +109,7 @@ budget: **1.5–2.5 s per merge**. The experiment that settles it: `design/VERIF
 
 ```
 (cd ../engine/wasm && ./build.sh)
-npm ci && npm test       # 12 tests in workerd, 2 files
+npm ci && npm test       # 13 tests in workerd, 2 files
 npx tsc --noEmit         # clean
 ```
 
@@ -112,6 +120,7 @@ npx tsc --noEmit         # clean
 | removes duplicate rows two flush files share | 96 rows in, the distinct rows out, result unchanged |
 | a step that stops after its PUTs | repeated with the same keys, `exists`, no second object |
 | conflict | retention expires an input between PUT and `replace`: nothing swapped, both outputs deleted, the expired day does not return |
+| conflict after an identical step won | a slow step's twin finishes, a reader takes a plan listing the twin's outputs, retention removes them; the slow step's `replace` conflicts and it deletes nothing (the objects are tombstoned and the reader can read every file). Found in this review: the step used to delete them, because it asked only whether they were live |
 | two (three) steps at once | one pair, one `replace` in the log, no stray object |
 | closed day | several budgeted merges take every file to level 2; result never changes |
 | guards | `row_count` and `too_slow` leave the ledger untouched |

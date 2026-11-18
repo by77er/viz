@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { focusFallbacks, PAGE_FALLBACKS, REGION_FALLBACK } from './focusKeeper'
+import { focusFallbacks, mayLoseFocus, PAGE_FALLBACKS, REGION_FALLBACK } from './focusKeeper'
 import { additiveToggle } from './pointer'
 import { formatAge, shorterRange } from '../explore/waiting'
 import { zoomedIn, zoomedOut } from '../explore/TimeRangePicker'
@@ -30,6 +30,25 @@ describe('touch parity (M4)', () => {
 })
 
 describe('focus after a control goes away (M3)', () => {
+  it('looks only at changes that can take the focus away, so ordinary changes read no layout (B3)', () => {
+    // A tiny tree: region > legend row (focused); the readout row is elsewhere.
+    const node = (parent: Node | null) => {
+      const n: Node = { isConnected: true, contains: (o: unknown) => o === n || (o as Node).parent === n || ((o as Node).parent?.parent ?? null) === n, parent }
+      return n
+    }
+    interface Node { isConnected: boolean; contains(o: unknown): boolean; parent: Node | null }
+    const page = node(null)
+    const region = node(page)
+    const row = node(region)
+    const readout = node(page)
+    const attr = (target: Node) => ({ type: 'attributes', target })
+    const child = (target: Node) => ({ type: 'childList', target })
+    expect(mayLoseFocus([attr(readout), attr(readout), child(readout)], row)).toBe(false) // the crosshair readout
+    expect(mayLoseFocus([child(region), child(page)], row)).toBe(false) // something added beside it
+    expect(mayLoseFocus([attr(region)], row)).toBe(true) // the region is parked (class) or hidden
+    expect(mayLoseFocus([attr(row)], row)).toBe(true) // the control itself is disabled or hidden
+    expect(mayLoseFocus([child(page)], { ...row, isConnected: false })).toBe(true) // the control was removed
+  })
   it('tries the control’s own stand-in first, then the region’s, then the page’s', () => {
     expect(focusFallbacks({ after: '[data-testid=retry]', inRegion: false })).toEqual(['[data-testid=retry]', ...PAGE_FALLBACKS])
     expect(focusFallbacks({ inRegion: true })).toEqual([REGION_FALLBACK, ...PAGE_FALLBACKS])

@@ -237,6 +237,9 @@ describe('soak', () => {
     }
 
     // ── The end: everything flushed, compacted, expired and deleted; nothing left over. ──
+    // A maintenance run with a clock days ahead may have expired all of a tenant's data, so
+    // each tenant first sends one more request of today's samples: the end state has rows.
+    for (const t of sim.tenants) expect(await ingest(sim, t, r, 5, 3, 0)).toBe(204)
     for (const t of sim.tenants) {
       await quiesce(t)
       t.model.expire((await expireTenant(sim.env, t.name)).beforeDay)

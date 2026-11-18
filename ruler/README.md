@@ -1,437 +1,516 @@
 # Ruler
 
-Prometheus-style rule evaluation and Alertmanager-style notification for one tenant
-(design §7, decision D7). Two Durable Object classes:
+Prometheus-style rule evaluation, Alertmanager-style notification and the monitors API for
+viz (design §7, decision D7). Three Durable Object classes and one Worker:
 
 - **`Ruler`**, one per tenant rule shard, named `<tenant>/<n>`. Holds rule groups, evaluates
-  them on one alarm, owns alert state, hands alert transitions to the notifier.
+  each group with one batch call to the engine per tick, owns alert state, hands alert
+  transitions to the notifier, keeps each monitor's transition history.
 - **`Notifier`**, one per tenant, named `<tenant>`. Routing tree, grouping timers,
-  inhibition, silences, and a transactional outbox to webhook and Slack receivers.
+  inhibition, silences, acknowledgements, a transactional outbox to webhook and Slack
+  receivers with HMAC-signed requests, and each monitor's notification history.
+- **`RulerIndex`**, 16 objects named `index/<k>`: the registry of ruler shards the cron
+  sweeper walks, and each tenant's shard count.
+- **The Worker** (`src/index.ts`): the HTTP API (`src/http.ts`) and the Cron Trigger
+  `scheduled()` that runs `sweep()`.
 
-The query engine is not available yet. The ruler takes it as an injected `Evaluator`
-(`instant(promql, timeMs)`); every number below was produced against a scripted fake, so it
-is **ruler overhead only**. Nothing here has been deployed to Cloudflare.
+The query engine is not available yet. The ruler takes it as injected interfaces
+(`BatchEvaluator`, `RangeEvaluator`, `Validator`); every number below was produced against
+scripted fakes, so it is **ruler overhead only**. Nothing here has been deployed to
+Cloudflare; nothing touched the Cloudflare account.
 
 | File | Contents |
 |---|---|
-| `contracts-proposal/rules.ts` | Proposed contract (rule file, normalized rules, alert state, both RPC surfaces, `Evaluator`, `Sink`, notifier config, webhook payload). Meant to move to `contracts/` |
-| `src/statemachine.ts` | The alert state machine as a pure function; recording-rule samples; the `ALERTS` / `ALERTS_FOR_STATE` definition |
-| `src/ruler.ts` | `Ruler`: storage, scheduling, tick, hand-off outbox, health, dead-man's switch |
-| `src/notifier.ts` | `Notifier`: grouping, flush decisions, outbox, delivery, silences RPC |
-| `src/amconfig.ts` | Notifier config validation, routing, matchers, inhibition, silence matching (pure) |
-| `src/rules.ts` | Rule-file validation with paths and fixes |
-| `src/template.ts` | The template subset: parser, interpreter, Go-compatible number formatting |
-| `src/classify.ts` | Duration extractor over PromQL text; `tail` / `recent` / `rollup` |
-| `src/payload.ts` | Alertmanager webhook body (version "4"); Slack incoming-webhook message |
-| `test/harness.ts` | The test worker: both classes with clock, evaluator, sink, receiver and crash points overridden |
+| `contracts-proposal/rules.ts` | Copy of the adopted `contracts/rules.ts` (identical, checked with `diff`) |
+| `contracts-proposal/rules.v2.ts` | **The proposed contract changes**, as a typed diff over the copy (see "Contract issues") |
+| `src/statemachine.ts` | The alert state machine as one pure function, used by live ticks and by backtests; no-data policies; recording-rule samples; `ALERTS` definition |
+| `src/ruler.ts` | `Ruler`: storage, scheduling, batched tick, hand-off outbox, timelines, backtest, group export/import/release, health, dead-man's switch |
+| `src/evaluator.ts` | The single-call → batch adapter; the permissive `Validator` stand-in |
+| `src/backtest.ts` | Backtest over a range matrix through `evalAlertingRule`; intervals, summary, resolution note |
+| `src/notifier.ts` | `Notifier`: grouping, flush decisions, acknowledge, silences with undo, outbox, signing, delivery, notification log |
+| `src/amconfig.ts` | Notifier config validation, routing, matchers, inhibition, silence matching, secret redaction (pure) |
+| `src/http.ts` | The HTTP API: routes, auth through edge's verifier, Prometheus-compatible reads, monitors, groups, rule files, backtest, placement and shard moves |
+| `src/monitors.ts` | Monitor document → alerting rule, error paths in the monitor's own field names, views, history merge (pure) |
+| `src/registry.ts` | `RulerIndex` and `sweep()` |
+| `src/placement.ts` | Jump-hash assignment of groups to shards (pure) |
+| `src/signature.ts` | `X-Viz-Signature` HMAC-SHA256 signing and a reference verifier |
+| `src/yaml.ts`, `src/rulefile.ts` | Subset YAML parser and emitter; rule-file import/export |
+| `src/rules.ts`, `src/template.ts`, `src/classify.ts`, `src/payload.ts` | Rule-file validation; template subset; cost classification; webhook and Slack bodies |
+| `openapi.json` | OpenAPI 3.1 description of every route (checked against `ROUTES` by `test/http.test.ts`) |
+| `tools/promcheck/` | Go: Prometheus' own code reading what the ruler writes (see "Independent readers") |
+| `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden |
 | `scripts/mutants.mjs` | Mutation checks |
 
-`wrangler.jsonc` is the production shape; tests run against `wrangler.test.jsonc`, which
-binds the subclasses in `test/harness.ts`.
+`wrangler.jsonc` is the production shape (not deployed): bindings `RULER`, `NOTIFIER`,
+`RULER_INDEX`, `CONFIG` (edge's API-key KV namespace, by edge's placeholder id; never the
+unrelated account namespace also called `CONFIG`), and the cron `*/15 * * * *`. Tests run
+against `wrangler.test.jsonc`, which binds the subclasses in `test/harness.ts`.
 
 ## What is implemented
 
-**Rule model.** The Prometheus rule-file shape as JSON: groups (`name`, `interval`,
-`query_offset`, `limit`, group `labels`), alerting rules (`alert`, `expr`, `for`,
-`keep_firing_for`, `labels`, `annotations`), recording rules (`record`, `expr`, `labels`).
-Unknown fields are rejected, as Prometheus does. Every error has a path
-(`groups[0].rules[2].annotations.summary`), a message and a fix; nothing is saved unless
-the whole file is valid. `checkGroups` validates without saving.
+The seven parts of this task, in order, then what was there before.
 
-**Templates.** `{{ $labels.x }}`, `{{ $value }}`, `{{ $externalLabels.x }}` and the dotted
-forms, string and number literals, pipelines, and `humanize`, `humanize1024`,
-`humanizeDuration`, `humanizePercentage`, `humanizeTimestamp`, `printf` (`%v %s %d %f %e
-%g %q`), `toUpper`, `toLower`, `title`, `{{-` / `-}}` trimming. Anything else is rejected at
-save time with the character offset and a fix. Templates are parsed to a small tree and
-interpreted; there is no `eval` or `new Function`. `$value` prints as Go prints a float64
-(`1e+06`, not `1000000`).
+### 1. Batch evaluation
 
-**Ruler object.** SQLite storage; one alarm at the earliest group deadline, deleted when
-there are no groups (an untouched object has no rows and no alarm). On a tick every due
-group is evaluated once: rules in order, all at the group's aligned evaluation time
-(`offset + k * interval`, offset = hash of tenant, shard and group name modulo the
-interval). Groups due together run concurrently, at most `maxConcurrentGroups` (default 4).
-A late alarm evaluates only the latest due time and counts the gap; it never loops.
+`BatchEvaluator.evaluate(requests[]) → results[]` (proposed contract). A group tick sends
+**all of the group's expressions in one call**, each request with the rule key as `id` and
+the group's evaluation time (minus `query_offset`). A rule with a no-data expression adds a
+second request (`<key>#presence`) to the same call. Results may come in any order.
 
-**Alert state machine.** A transcription of `AlertingRule.Eval` (prometheus/rules/
-alerting.go, fetched 2026-11-18): inactive → pending from `activeAt` → firing after `for`;
-`keep_firing_for`; resolved alerts kept 15 minutes; identity is the fingerprint of the label
-set (series labels without `__name__`, rule labels over them, an empty expanded label
-removes the label, `alertname` last); duplicate label sets are an error; lengthening `for`
-puts a too-young firing alert back to pending.
+- **One failing expression does not fail the batch.** A result `{ ok: false }`, or a
+  missing result, marks only its rule `health: err` with the engine's message and leaves
+  that rule's alerts exactly as they were; every other rule of the call is evaluated and
+  may transition in the same tick. Only a rejected call (engine unreachable) or the group
+  time budget (`groupTimeoutMs`, with an `AbortSignal` to the engine and a 25 ms grace)
+  fails every rule of the call, again without touching alert state.
+- **The single-call form is kept** as `batchFromSingle(Evaluator)`: requests run one after
+  another in order, each failure stays on its own request, an abort returns what finished.
+  A ruler whose `EVALUATOR` binding has only `instant` uses it; one with `evaluate` uses the
+  batch form directly.
+- **Recording rules read in the same tick.** In Prometheus (v0.308.0 `rules/group.go`,
+  read from the module cache) rules of a group run one after another by default, and each
+  rule's samples are committed (`app.Commit()` in a deferred call inside `eval`) before
+  the next rule runs, so a later rule queries the series an earlier rule recorded at the
+  same timestamp. With `--enable-feature=concurrent-rule-eval`, `buildDependencyMap`
+  parses each expression and treats a selector whose metric-name matcher (equality *or*
+  regex) matches an earlier rule's name as a dependency; a selector with no name matcher
+  makes the whole group sequential. Viz keeps one batch per group except where a rule's
+  text (or its no-data expression) **contains the name of a series recorded earlier in the
+  same batch**: there a new batch starts, after the recorded samples were handed to the
+  sink. So the visible dependency behaves as in Prometheus (`batch.test.ts`: two calls,
+  `[x, sum(up)]` then `[job:up:sum > 5, y]`, the second sees the value). **Difference:** the
+  check is a substring search, not a parse. It over-splits harmlessly (a name inside a
+  longer name), and it misses a dependency the text does not show, such as
+  `{__name__=~"job:up:.+"}`: that rule reads the previous tick's value, one interval late,
+  where Prometheus' sequential default would see this tick's (`batch.test.ts`, "THE
+  LIMITATION"). Whether the engine can see a sample the sink just accepted is the engine's
+  read-your-writes, which this component cannot check (contract issue 4).
 
-**Write discipline.** An alert row is written when the alert changes state. The hand-off
-row for the notifier is written in the same transaction. Group cursors and counters are
-written as one row at the heartbeat (default 5 minutes). Sample values and annotations of
-a steady alert are refreshed in memory only. In-memory state is swapped only after the
-transaction commits and is rebuilt from SQLite in the constructor.
+### 2. HTTP API
 
-**Recording rules.** Samples `(labels, timeMs, value)` go to the injected `Sink` in
-batches with the id `<tenant>/<shard>/<group>/<rule key>@<evaluation time>`. A replayed tick
-sends the same id again. Pending samples are written before a later rule whose expression
-mentions the recorded name, otherwise once at the end of the group. The value is passed as
-the evaluator's text, never parsed and re-printed.
+Every route, its scope and whether it takes `dryRun` are in `ROUTES` (`src/http.ts`) and in
+`openapi.json` (OpenAPI 3.1). Authentication imports `authenticate` from
+`edge/src/auth.ts` (no copy): `Authorization: Bearer viz_<id>_<secret>` or Basic, checked
+against edge's key store `CONFIG`; scopes `monitors:read`, `monitors:write`,
+`monitors:ack`. **The tenant comes only from the key record**: no path segment, query
+parameter, header or body field is read for it, and every object call passes it on, so a
+Durable Object reached for another tenant answers `wrong_tenant`.
 
-**Notifications** live in a sibling `Notifier` object per tenant, not in the ruler.
-Reason: routing, grouping and inhibition are defined over all of a tenant's alerts, and a
-tenant's rules are spread over several ruler shards; one owner of group state per tenant
-also removes the need for Alertmanager's gossip. The cost is a hop, made safe by an outbox
-in the ruler and an idempotent `ingest` in the notifier (an update is applied only if its
-evaluation time is not older than what is held; at equal times a resolve outranks a
-firing). Implemented: routing tree with `match`, `match_re`, `matchers` and `continue`;
-`group_by` (including `['...']`); `group_wait`, `group_interval`, `repeat_interval`;
-inhibition with `equal` and the no-self-inhibition rule; silences created and expired
-through RPC; resolved notifications; `send_resolved`; webhook (Alertmanager JSON, version
-"4") and Slack-compatible receivers.
+**Prometheus-compatible, read-only.** `GET /api/v1/rules` (with `type`, `rule_name[]`,
+`rule_group[]`, `file[]`, `exclude_alerts`, `group_limit`, `group_next_token`) and
+`GET /api/v1/alerts`, in Prometheus' envelope `{status, data}` and error form
+`{status: "error", errorType, error}`. Groups from every shard; `file` is `shard-<n>`.
+Values print as `strconv.FormatFloat(v, 'e', -1, 64)`, times as Go prints a `time.Time`.
+*How it was checked:* by Prometheus' own code, not by transcription alone. The test
+`test/independent.test.ts` captures the real responses in 22 situations (before the first
+evaluation; pending; firing; `health: err` with `lastError`; `keep_firing_for` with
+`keepFiringSince`; a no-data alert whose value is `NaN`; the watchdog; every filter;
+both pages of a paged answer; five error answers; times with trailing zeros), and
+`tools/promcheck` (Go) then (a) reads the field names, `omitempty` and Go types of
+`Response`, `RuleDiscovery`, `RuleGroup`, `AlertingRule`, `RecordingRule`, `Alert`,
+`AlertDiscovery` **from the source of `web/api/v1/api.go`** in the prometheus v0.308.0
+module and requires every object to have exactly those fields with those JSON kinds;
+(b) decodes every response with client_golang v1.23.2's `api/prometheus/v1` (whose
+`RuleGroup` decoder dispatches on `type`); (c) re-prints every value with
+`strconv.FormatFloat` and every time with Go's JSON encoding and compares bytes; (d) reads
+the `errorType` table and `getDefaultErrorCode` from the same source and requires each
+error to carry an upstream type with its upstream HTTP status, or one of viz's two
+additions `unauthorized` (401) and `forbidden` (403), which exist because Prometheus has
+no authentication. The vitest tests (`http.test.ts`) also hold the field lists and query
+behaviour. **Deviation:** `match[]` on `/api/v1/rules` is refused with `bad_data` rather
+than ignored (Prometheus filters rules by their labels with it).
 
-**Outbox.** The decision to notify, the notification-log update and the outbox row are one
-SQLite transaction. The drain step POSTs with `fetch`; a row is deleted only after a 2xx.
-Retries use exponential backoff with jitter derived from the idempotency key (no
-`Math.random`). The `Idempotency-Key` header is
-`hash(tenant, receiver, integration, group key, group creation time, state hash, notification number)`:
-the same for every attempt, different for a repeat. After `max_attempts` (default 8), or at
-once on a 4xx other than 408/429, the row becomes a dead letter, listed by `outbox()`,
-re-queued by `retryDeadLetter()` with its original key, or dropped by `discardDeadLetter()`.
+**Viz's monitors API** (`/api/v1/monitors…`). A monitor *is* one alerting rule: its
+message, description and runbook are the `summary`, `description` and `runbook_url`
+annotations, its receiver is the `viz_receiver` label (routed ahead of the tree), the rest
+(id `mon_<16 hex>`, owner, `startInvestigation`, the threshold as written, who created and
+last changed it) is the rule's `monitor` block.
 
-**Dead-man's switch and health.** Shard 0 of every activated tenant carries a built-in
-group `viz:deadman` with the rule `DeadMansSwitch` (`vector(1)`). It goes through the
-evaluator, the hand-off, routing and delivery like any rule. The ruler refreshes it at each
-heartbeat with an expiry; if the refresh stops, the notifier resolves the alert by itself.
-`Ruler.health()` reports per group: last evaluation time, last duration, next evaluation,
-evaluations, skipped ticks, evaluator errors and rules in error; plus hand-off outbox depth,
-oldest undelivered age, dropped sample batches and billed-write counters.
-`Notifier.health()` reports outbox depth, oldest undelivered age and dead letters. A failed
-evaluation marks the rule `err` with the message and leaves its alerts untouched. A group
-tick gives up on its remaining rules after `groupTimeoutMs` (default 120 s).
+| Route | Scope | What |
+|---|---|---|
+| `GET /monitors?filter=all\|attention\|silenced` | read | Every alerting rule as a monitor: state (`firing`, `pending`, `no_data`, `error`, `ok`, `unknown`), **firing since** (`for` satisfied) and **activeAt** ("above threshold since"), current value, threshold text (`> 500 ms for 5m`), who would be notified (receivers and integrations, never a URL), per alert `lastNotifiedAt` / `nextRepeatAt` / `firesAt` / `handedOff`, **acknowledged by and at**, **silenced until**; counts; last evaluation; watchdog state |
+| `POST /monitors`, `PUT /monitors/{id}` | write | Name, description, message template, runbook URL, owner, notify (receiver), `noData` `ok\|alerting\|keep` with `noDataFor`, `startInvestigation`, `for`, `keepFiringFor`, interval, labels, annotations; either `expr` or `query` + `condition {op, threshold, unit}`. Answers the **cost class** and **warnings**; problems come back `422` with a **path in the monitor's own field names and a fix**. Monitors with the same interval share the group `monitors/<interval>` (so one batch) |
+| `DELETE /monitors/{id}` | write | Resolves its firing alerts (the receivers are told), drops its history |
+| `GET /monitors/{id}` | read | The monitor and its **history**: the ruler's transitions (created/edited, pending, firing, resolved, cleared) merged with the notifier's log (notified: receiver, integration, channel, repeat or not, idempotency key, delivered at or failed; acknowledged/unacknowledged by; silenced by until; silence undone/expired). **Bounded**: 200 transitions per monitor in the ruler, 200 entries in the notifier, the oldest dropped and counted in `dropped` |
+| `POST /monitors/{id}/acknowledge`, `…/unacknowledge` | ack | All firing alerts of the monitor, or one by `fingerprint`. Acknowledging records who and when, **stops repeat notifications until the alert resolves, and hides nothing** (the alert stays listed and firing; a change in its notification group still notifies). The first acknowledgement stands. Un-acknowledging resumes repeats, at once if one is overdue |
+| `POST /monitors/{id}/silence` | ack | One silence per alert matching exactly its labels, for `duration`; returns an **undo token** valid 60 s, shown once |
+| `POST /monitors/silences/undo` | ack | Deletes the silences of that call (as if never made); after the window `410` |
+| `GET /monitors/silences`, `DELETE /monitors/silences/{id}` | read / ack | List; expire now |
+| `GET /monitors/groups`, `PUT\|DELETE /monitors/groups/{name}` | read / write | Rule groups as rule-file JSON, placed on shards |
+| `GET\|POST /monitors/rulefile` | read / write | Prometheus rule-file YAML (or JSON) import; YAML export, `?extensions=false` for a file Prometheus loads |
+| `POST /monitors/backtest` | read | Part 4, for the monitor about to be saved |
+| `GET\|PUT /monitors/notifier` | read / write | Alertmanager-shaped config; secrets and secret-bearing URLs redacted on the way out |
 
-**Classification.** At save time each rule gets `{ class, windowMs, reason }`, returned
-with the save result. The window is the largest, over the expression's selectors, of (range
-or 5-minute lookback) + enclosing subquery ranges + offsets, found by a tokenizer and a
-bracket-aware walk over the PromQL text. `tail` if the window fits `hotWindowMs` (default
-10 minutes, the shard's `sealAgeMs`), `recent` up to `recentWindowMs` (default 24 h), else
-`rollup`. An `@ <timestamp>` modifier forces `rollup`. Where the walk cannot be sure it
-over-estimates. Changing the thresholds re-classifies stored rules.
+**`dryRun` on every write** (query parameter or body field): the answer says what would
+happen (`dryRun: true`) and nothing changes; tested route by route against everything the
+API can show.
 
-**Limits and isolation.** Max groups (64), rules per group (1,000), alerts per rule
-(1,000, also the cap on a group `limit`), annotation bytes (4,096, enforced on the template
-and on the expanded text), stored group bytes, minimum interval (10 s); in the notifier,
-alerts (5,000; over it `ingest` answers `overloaded` with a retry delay) and silences
-(1,000). Every RPC takes the tenant and answers `wrong_tenant` unless it is the tenant in
-the object's name. Every SQL statement on tenant data names the tenant.
+### 3. No data and absent series
+
+Default (`no_data: ok`) is Prometheus: a pending alert whose series disappears is dropped
+at once and `for` starts again when it returns; a firing alert resolves at that evaluation
+unless `keep_firing_for` holds it (`keepFiringSince` set, resolution once the hold has
+passed). `keep` leaves pending and firing alerts exactly as they are while data is missing
+(a pending one is neither dropped nor promoted; nothing is resolved or notified; retained
+resolved alerts still age out). `alerting` turns missing data into a synthetic series
+`{viz_no_data="true"}` that goes through the same pending → firing path with `no_data_for`
+as its hold, while the real alerts follow Prometheus. "Missing" is decided by
+`no_data_expr` when given: a comparison (`x > 1`) is empty whenever the system is healthy,
+so a monitor written as query + condition sends its bare query, in the same batch; without
+it a warning says so. A failing no-data check fails the rule instead of guessing. Changing
+the policy does not change the rule key, so alert state survives the edit.
+
+### 4. Backtest
+
+`Ruler.backtest(rule, from, to, step)` gets the range matrix from the injected
+`RangeEvaluator` (and the presence matrix for a no-data expression), then feeds each step,
+in time order, through **`evalAlertingRule`, the function a live tick calls**. One list of
+intervals (`fingerprint`, labels, `pending|firing`, start, end, `open`, `noData`) is
+produced; the summary (firing count, pending count, firing time, longest firing, pending
+spans that cleared, firing at the end, series) is computed **from that list only**
+(`summarize`), so a chart that shades the intervals and a sentence quoting the numbers
+cannot disagree (review finding B4). **Resolution limits, stated in every result:** each
+edge is within `max(step, live interval)` of where live evaluation would put it; a breach
+shorter than the step can be missed and firings closer than a step are joined; `for`
+shorter than the step counts as one step, otherwise it is rounded up to a whole number of
+steps; a step finer than the live interval can show firings live evaluation would not
+have seen; history is read as stored now, not as it was. At most 11,000 steps (Prometheus'
+range limit); a too-long range is refused with the smallest step that would work.
+
+### 5. Rule files
+
+`src/yaml.ts` is a subset YAML parser and emitter (no dependency, no `eval`): block maps and
+sequences, plain / single / double-quoted scalars incl. multi-line, `|` and `>` with
+chomping and indentation indicators, comments, one-line flow collections. **Refused with
+the line and a fix:** anchors, aliases, merge keys, tags, directives, several documents,
+complex keys, tabs in indentation, duplicate keys, multi-line flow collections. The rule-file
+schema is applied as Prometheus' typed decoder does (`expr: 1` is the string "1"). Export
+writes stable YAML; with `?extensions=false` viz's own fields (`no_data*`, `monitor`) are
+left out and listed in a header comment and `x-viz-dropped-fields`. Round trips:
+`yaml.test.ts` against the `yaml` npm package as reference parser (property test on the
+emitter, kube-prometheus-style fixtures), and `tools/promcheck` through **Prometheus'
+`rulefmt.Parse`** with unknown fields refused: for each of the four fixtures, the rules
+Prometheus reads from viz's export equal the rules Prometheus reads from the file viz
+imported (group labels applied, default interval made explicit); the extended export is
+refused by strict `rulefmt` and accepted with unknown fields ignored.
+
+### 6. Sweeper, shards, signed webhooks
+
+**Where the sweeper's registry lives, and why.** A Durable Object whose alarm was lost never
+runs again and cannot notice; something outside must know it exists. A cron invocation
+starts with no tenant in hand, so the list must be reachable without one: a per-tenant
+object (the Notifier) cannot hold it, and sweeping through Notifiers would wake every
+tenant's Notifier every 15 minutes. So the list lives in `RulerIndex` objects
+`index/<hash(tenant) mod 16>`: a fixed fan-out for the cron, no single object every tenant
+writes to, and a row written only when a shard gains or loses all of its work (a ruler
+remembers its registration; re-checked at heartbeats). `sweep()` pages each partition and
+calls `ensureArmed`, which arms an alarm only on a ruler that has work and no alarm; a
+second sweep changes nothing; an unreachable ruler is counted and left for the next run.
+The one cross-tenant statement (`sweepPage`) is reachable from the cron only. Cost per run:
+16 index requests plus one per registered shard.
+
+**Shards.** `shard(group) = jump_consistent_hash(hash(group), N)`; `N` is the smallest count
+not below the stored one at which no shard exceeds 1,000 rules or 64 groups. Pure and
+order-independent, so every caller computes the same placement; `N` is stored in the index
+and only grows; a group is never split (a group larger than a shard is refused with "Split
+the group."). Growing from N to N+1 moves only groups that land on the new shard. A move is
+`exportGroup` (rules, every alert with its times, the monitors' histories) → `importGroup`
+on the target → `releaseGroup` at the source (forgets without resolving or notifying):
+alert state, `for` timers and history continue, the notifier hears nothing. A move cut
+between copy and release is finished by the next write; reads meanwhile use the assigned
+shard.
+
+**Signed webhooks.** A webhook config may carry `secret` (≥ 16 characters). Each attempt is
+sent with `X-Viz-Signature: t=<unix s>,v1=hex(HMAC-SHA256(secret, "<t>.<Idempotency-Key>.<body>"))`;
+`t` is the attempt's time, so a retry is re-signed under the same key. The secret is read
+from the config at send time, never copied into the outbox, and never returned: the config
+comes back with `has_secret`, URLs with their query or token path cut; sending the shown
+config back keeps the stored secret and URLs; `secret: ""` removes it.
+`verifySignature` (exported) is the receiver's side.
+
+### 7. Validator
+
+`Validator.check(promql) → { ok, errors[{message, offset?, fix?}], selectors[] }` is called
+at save for every `expr` and `no_data_expr`, before the transaction; errors come back with
+the expression's path. `permissiveValidator` (used until the engine binding has `check`)
+accepts every non-empty expression and reports no selectors; a validator that cannot be
+reached does not block saving. So a wrong expression is still found at its first
+evaluation: re-verified that it becomes `health: err` with the engine's message (in
+`/api/v1/rules` as `lastError`), keeps its state, stays `err` across eviction, and
+recovers when the query works.
+
+### Kept from before (unchanged in behaviour)
+
+**Rule model and templates.** The Prometheus rule-file shape; unknown fields rejected; every
+error with a path and a fix; nothing saved unless the whole file is valid. The template
+subset (`$labels`, `$value`, `$externalLabels`, `humanize*`, `printf`, `toUpper`,
+`toLower`, `title`, trimming) parsed to a tree and interpreted; no `eval`.
+
+**Scheduling and state.** One alarm at the earliest group deadline; aligned evaluation times
+(`offset + k·interval`); groups due together run concurrently (at most 4); a late alarm
+evaluates the latest due time once and counts the gap. The alert state machine transcribes
+`AlertingRule.Eval` (prometheus/rules/alerting.go). Alert rows are written only on
+transitions, in the same transaction as the hand-off row and the monitor's history entry;
+memory is swapped after commit and rebuilt from SQLite in the constructor.
+
+**Notifier.** Routing (`match`, `match_re`, `matchers`, `continue`), `group_by`,
+`group_wait` / `group_interval` / `repeat_interval`, inhibition with `equal`, silences,
+resolved notifications, `send_resolved`, webhook (Alertmanager v4 body) and Slack. Decision,
+notification log and outbox row in one transaction; `Idempotency-Key` =
+hash(tenant, receiver, integration, group key, group creation time, state hash,
+notification number); seeded backoff; dead letters.
+
+**Dead-man's switch, health, classification, limits** as before: shard 0 carries
+`DeadMansSwitch`; `health()` per group; cost class `tail` / `recent` / `rollup` at save;
+limits on groups, rules, alerts, annotations, silences; every SQL statement on tenant
+data names the tenant.
 
 ## Not implemented
 
-- **YAML.** Rule files and notifier config are accepted as JSON only.
-- **PromQL validation.** Save-time checks are balanced brackets, strings and durations. A
-  syntactically wrong expression is accepted and reports `health: err` at its first
-  evaluation.
-- **One plan per group with shared scans** (design §7). The `Evaluator` interface is one
-  call per rule; see "Contract issues".
-- **`ALERTS` and `ALERTS_FOR_STATE`** are defined and tested (`syntheticSeries`) but not
-  written anywhere.
-- **Staleness markers** for a recorded series that disappears.
-- **Template features** outside the subset: `if`, `range`, `with`, variables, `query`,
-  `$externalURL`, `args`, `reReplaceAll` and the rest of Prometheus' function list.
-- **Annotation refresh at the notifier.** A notification carries the annotations from the
-  moment the alert fired (see "Deviations").
-- **Notifier:** mute and active time intervals; notification templates; receivers other
-  than webhook and Slack; authentication or custom headers on outbound requests;
-  Alertmanager's `/api/v2/alerts` HTTP ingestion; updating a Slack message in place;
-  expiry of alerts whose ruler shard went silent (only the dead-man's switch has an expiry).
-- **Shard management:** placing rules into shards, splitting a shard, the tenant control
-  object, and the cron sweeper. `ensureArmed()` is the RPC a sweeper would call.
-- **HTTP API and authentication.** Both objects are RPC only.
-- **Metrics about itself** (`viz_rule_evaluations_total` and so on). `health()` only.
-- **Persisted rule health.** After a restart a rule is `unknown` until its next tick.
-- **LogQL / TraceQL rules, SLO rules, anomaly detection, no-data policies.**
+- **The engine side of the contract.** No `EVALUATOR` (batch `evaluate`, `range`, `check`)
+  or `SINK` binding exists; without them every rule reports `health: err`. Every number
+  here is against fakes.
+- **Real PromQL validation.** Only the interface and the permissive stand-in.
+- **Same-tick dependencies the text does not show** (regex or wildcard name matchers), see
+  part 1. A parse-based analysis needs `Validator.selectors` from the engine.
+- **`match[]` on `/api/v1/rules`** (refused, not ignored).
+- **`startInvestigation`** is stored and shown; nothing starts an investigation (the
+  Workflow does not exist).
+- **From review M11:** a "test notification on save" option and a page / message-only
+  severity field. Severity can be a label today; neither is a monitor field.
+- **Escalation, on-call schedules, notifying people by name.** "Who was notified" is the
+  receiver and integration (and channel), not a person.
+- **Authentication other than API keys** (OAuth/OIDC for people, design §9), rate limits
+  per key, and pagination of `GET /monitors`.
+- **A background reconciler for interrupted shard moves**: the next write finishes them.
+  Shard count never shrinks; there is no merge of under-used shards.
+- **`ALERTS` / `ALERTS_FOR_STATE`** are defined (`syntheticSeries`) but not written;
+  **staleness markers**; **LogQL / TraceQL rules**, SLO and anomaly rules.
+- **Notifier:** mute / active time intervals, notification templates, receivers other than
+  webhook and Slack, `/api/v2/alerts` ingestion, editing a silence, updating a Slack message.
+- **Metrics about itself** (`viz_rule_evaluations_total`…): `health()` only.
+- **`DESIGN.md` / `DECISIONS.md`** were not edited (this task was limited to `ruler/`);
+  what they should gain is listed under "Contract issues".
 - **Deployment.** Nothing was deployed; there is no number "measured on Cloudflare".
 
 ## Verification
 
 ```
-npm test             # 123 tests in 7 files, in workerd: all pass (about 30 s)
-npx tsc --noEmit     # clean
-npm run mutants      # 18 mutants, 18 killed
-npm run bench        # prints the measurements below
+npm test                # 276 tests in 16 files, in workerd: all pass (about 25 s)
+npx tsc --noEmit        # clean
+npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass
+npm run mutants         # 50 mutants, 50 killed (45 in vitest, 5 through the Go readers)
+npm run bench           # the measurements below
 ```
+
+`npm run independent` needs Go 1.24 and the modules in `tools/promcheck/go.sum` (they were
+in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 
 | File | Tests | What |
 |---|---|---|
-| `test/unit.test.ts` | 22 | durations, tick alignment, backoff, templates, classification, rule-file and notifier-config validation, routing, inhibition, silences, payloads |
-| `test/prometheus.test.ts` | 27 | Prometheus semantics, each test names the upstream test it encodes |
-| `test/ruler.test.ts` | 32 | scheduling, replays, write counts, evaluator errors, limits, sink, health, isolation, dead-man's switch |
-| `test/notifier.test.ts` | 25 | Alertmanager behaviour on a fake clock |
-| `test/exactly-once.test.ts` | 12 | crashes, evictions, receiver failures; a de-duplicating receiver |
-| `test/property.test.ts` | 3 | fast-check against an independent reference model |
-| `test/bench.test.ts` | 2 | measurements |
+| `unit.test.ts` | 22 | durations, alignment, backoff, templates, classification, validation, routing, inhibition, silences, payloads |
+| `prometheus.test.ts` | 27 | Prometheus semantics, each test named after the upstream test it encodes |
+| `ruler.test.ts` | 32 | scheduling, replays, write counts, evaluator errors, limits, sink, health, isolation, dead-man's switch |
+| `notifier.test.ts` | 25 | Alertmanager behaviour on a fake clock |
+| `exactly-once.test.ts` | 12 | crashes, evictions, receiver failures; a de-duplicating receiver |
+| `property.test.ts` | 3 | fast-check against an independent reference model |
+| `bench.test.ts` | 4 | measurements, single-call and batch form |
+| `batch.test.ts` | 17 | part 1 and part 7 |
+| `http.test.ts` | 19 | auth and scopes on every route, Prometheus shapes and parameters, OpenAPI agreement (routes, scopes, `dryRun`, `$ref`s, response schemas), `dryRun` on every write, tenant isolation and fuzz |
+| `monitors.test.ts` | 20 | the Monitors / Monitor / New monitor screens end to end, edits, deletes, rule files over HTTP, backtest over HTTP, signing and secrets |
+| `ack.test.ts` | 12 | exactly-once with acknowledge and silence |
+| `nodata.test.ts` | 19 | part 3, in the pure function and in the object |
+| `backtest.test.ts` | 10 | part 4 |
+| `yaml.test.ts` | 37 | part 5 |
+| `robust.test.ts` | 15 | registry, sweeper, placement, shard splits and moves |
+| `independent.test.ts` | 2 | captures for `tools/promcheck` |
 
-**Upstream reference.** `rules/alerting.go`, `rules/alerting_test.go`,
-`rules/manager_test.go`, `rules/group.go`, `template/template.go` and
-`template/template_test.go` from prometheus/prometheus, and `dispatch/dispatch.go`,
-`dispatch/route.go`, `notify/notify.go`, `inhibit/inhibit.go`, `notify/webhook/webhook.go`
-from prometheus/alertmanager, were fetched from raw.githubusercontent.com (main, 2026-11-18)
-and read. They were not vendored. Upstream tests drive a real PromQL engine over loaded
-series; the ports write out by hand the query result those series produce at each step.
+The first seven files are the 123 tests that existed before this task; all still pass
+(per-file counts unchanged, the bench file gained the two batch-form runs). Repeating the
+randomized files (`ack`, `backtest`, `robust`, `monitors`, `exactly-once`) six times gave
+six passes.
 
-Ported, by upstream name: `TestAlertingRule`, `TestAlertingRuleState`,
-`TestAlertingRuleLabelsUpdate` (adapted: upstream templates the label with `if`, which is
-outside the subset; the port uses `{{ $value }}`), `TestAlertingRuleExternalLabelsInTemplate`
-(adapted: no `len`), `TestAlertingRuleEmptyLabelFromTemplate`, `TestAlertingRuleDuplicate`,
-`TestAlertingRuleLimit`, `TestKeepFiringFor`, `TestPendingAndKeepFiringFor`,
-`TestFiringAlertResetToPendingOnHoldDurationIncrease`, `TestQueryForStateSeries`,
-`TestForStateRestore` (with `evictDurableObject`; identical to a run without eviction),
-`TestRuleHealthUpdates`, `TestCopyState` / `TestUpdate`, `TestGroup_QueryOffset`,
-`TestRuleEvalDuplicate`, `TestRecordingRuleLimit`, resolved retention, group evaluation
-order, and missed iterations. The `humanize*` expectations are the strings in
-`template_test.go`. Not ported: histogram templating, `query` in templates,
-`ExternalURL`, dependency analysis and concurrent rule evaluation, staleness on rule
-removal, metadata appends: all concern features listed under "Not implemented".
+### Exactly-once with acknowledge and silence
 
-**Recording rule visible to a later rule.** The test passes with a fake evaluator that
-reads what the sink wrote. That is the limitation: the ruler guarantees the write happens
-before the dependent rule is evaluated; whether the evaluator then sees it depends on the
-ingest path making a sample queryable at once, which this component cannot check.
+Same method as before: the fake receiver records every request, assertions are on what a
+receiver that de-duplicates by `Idempotency-Key` processed (`ack.test.ts`).
 
-**Alertmanager behaviour** (fake clock; the notifier is stepped only at the alarm times it
-armed): `group_wait` batches co-firing alerts and is skipped for an alert already firing
-longer than it; a change waits for the next `group_interval` tick; an unchanged group
-repeats after `repeat_interval` with a new key and arms no alarm and writes no row in
-between; `group_by`; resolved notifications, including the group that is forgotten
-afterwards and the alert that fires and resolves inside `group_wait`; `send_resolved:
-false`; `continue`; first match wins; re-routing on a new config; inhibition with `equal`,
-release when the source resolves, no self-inhibition; silences by RPC, natural start and
-end; retries, backoff bounds, dead letters, 4xx; idempotent `ingest`; and one scenario run
-twice, once with the notifier evicted before every step, producing identical requests at
-identical times.
+| Case | Result |
+|---|---|
+| Acknowledged, then two hours of repeat ticks, every alarm replayed 3×, the notifier evicted before each | 1 request in total (control without the acknowledgement: 13 notifications) |
+| Crash (eviction) right after the acknowledgement, and the next flush crashes too | no repeat, acknowledgement intact |
+| Crash *inside* the acknowledgement transaction | caller gets an error, nothing recorded (no ack, no history entry), the due repeat is sent once; the retried acknowledgement then holds for 90 minutes |
+| Late alarm: the repeat tick passed before the acknowledgement arrived, its alarm had not run | no repeat sent |
+| A repeat already decided and stuck in the outbox (500s) when the acknowledgement arrives | delivered once (decided before the ack, the history says so), nothing after it |
+| Un-acknowledge | the overdue repeat once, at once; then every 10 minutes again |
+| Resolve, then fire again | the acknowledgement ends with the alert; the new firing notifies and repeats |
+| Group of two, one acknowledged | repeats name only the other; a new alert joining still notifies with both |
+| Silenced, with replays and evictions, then resolved under the silence | 1 request in total |
+| Silence undone in the window | deleted, not ended; the muted repeat goes out; one request per notification |
+| 6 seeds × 45 minutes, two monitors, people acknowledging, un-acknowledging, silencing and undoing at random; random crashes at seven points (including inside the acknowledgement), evictions, 20% 500s, 15% timeouts after processing; compared with the same seed without faults | ACK_CHAOS |
 
-**Exactly-once effect.** The fake receiver records every request; the assertions are on
-what a receiver that de-duplicates by `Idempotency-Key` would have processed.
+### Mutants
 
-| Case | Requests seen | Processed |
-|---|---|---|
-| Same alarm tick replayed 3× in memory, 3× after eviction; notifier alarm replayed 6× | 1 | 1 |
-| Crash inside the ruler's transition transaction (no alert row, no hand-off row, memory not ahead) | 1 | 1 |
-| Crash between "transition persisted" and "outbox drained" | 1 | 1 |
-| Crash after the notifier accepted the hand-off, before the ruler recorded it | 1 (hand-off sent twice, second applied nothing) | 1 |
-| Notifier unreachable across fire, resolve, fire | 1 | 1, updates arrived in order |
-| Crash inside the notifier's flush transaction | 0 before the retry, then 1 | 1 |
-| Crash after the decision committed, before the drain | 1 | 1 |
-| Evicted mid-drain after the receiver processed the request | 2, same key, same body | 1 |
-| Receiver answers 500 then 200 | 2, same key | 1 |
-| Receiver times out twice after processing | 3, same key | 1 |
-| Fire, resolve, fire again, two repeats | 5, five keys | 5 |
-| 6 seeds × 30 ticks of flapping alerts, with random crashes at six crash points, random evictions, 20% 500s and 15% timeouts-after-processing, compared with the same seed without faults | 139 crashes injected, 130 extra requests | identical set of 148 notifications, identical alert state, identical recorded batches, empty outboxes |
+`scripts/mutants.mjs` applies each mutant, runs the named test files (or `npm run
+independent`), reads vitest's JSON report, requires a failing test (a file that does not
+load is not a kill), and restores the source. A pattern that no longer matches the source
+is reported as a failure: six of the eighteen earlier patterns had gone stale with the code
+changes of this task and were rewritten (3, 4, 5, 6, 13, 14).
 
-In the last row a crashed alarm is retried at the same clock time, which is how the test
-keeps the faulty and the clean run comparable; real platform retry timing is not exercised.
-
-**Property tests** (fast-check). The reference model in `test/property.test.ts` is a
-per-series transition table written from the documented alert states, not from
-`statemachine.ts`. 1,500 random runs (up to 40 evaluations, 4 series, random `for`,
-`keep_firing_for`, retention and missed ticks): same states, same notifications, and the
-set of alerts marked for persistence equals the set the reference changed. 500 runs:
-re-evaluating the same (state, result, time) changes nothing and never mutates its input.
-40 runs through the real object with random evictions: state equals the reference after
-every tick, and SQL rows written = transitions + 2 per tick that notified (hand-off row
-inserted, then deleted) + 1 per heartbeat, exactly.
-
-**Mutants.** `scripts/mutants.mjs` applies each, runs the named test files, requires a
-failure, and restores the source. All 18 were killed.
-
-| # | Mutant | Killed by (first of) |
-|---|---|---|
-| 1 | Advance `for` on a replayed tick (evaluate at wall-clock time, not the aligned tick) | ruler: "a retry that arrives later in the same interval ... `for` does not advance" |
-| 2 | Drop the replay guard | ruler: "the same (group, evaluation time) is not evaluated twice" |
-| 3 | Resolve on evaluator error | ruler: "a failed evaluation ... resolves nothing" |
-| 4 | Notify before the transaction commits | exactly-once: "crash inside the flush transaction: the receiver has seen nothing" |
-| 5 | Drop the idempotency key | exactly-once: all 12 |
-| 6 | Idempotency key depends on the attempt | exactly-once: "500 then 200", "times out after processing" |
-| 7 | Ignore silences | notifier: both silence tests |
-| 8 | Wrong group key (labels left out) | notifier: "group_by makes one group ... per label value" |
-| 9 | Catch up missed ticks in a loop | prometheus: "iterations missed ... counted, not replayed" |
-| 10 | Persist on every tick | ruler: "100 steadily firing alerts cost zero SQL row writes"; property tests |
-| 11 | Memory ahead of storage | exactly-once: "crash inside the transition transaction" |
-| 12 | Hand-off row outside the transition transaction | exactly-once: "crash between transition persisted and outbox drained" |
-| 13 | Retryable receiver failure treated as delivered | exactly-once: "500 then 200" |
-| 14 | Stored alerts not loaded (`for` timers reset on restore) | prometheus: `TestForStateRestore` |
-| 15 | Inhibit without checking `equal` | unit and notifier inhibition tests |
-| 16 | Serve any tenant | ruler: "every RPC refuses a tenant other than ..." |
-| 17 | Redelivered "firing" re-opens a resolved alert | notifier: "a redelivered batch applies nothing" |
-| 18 | `group_interval` ignored | notifier: "a change ... waits for the next interval tick" |
-
-**Defects the tests found in this code while it was written** (all fixed): template
-function lookup reached `Object.prototype` (`{{ constructor }}` was accepted);
-`AbortSignal.timeout` left a timer that kept the notifier in memory for the full timeout
-after every send; the idempotency key repeated when a group emptied and was recreated;
-a resolved inhibitor was forgotten before every group had flushed past its resolution, so
-an inhibited alert was released one interval early; an overdue but muted repeat re-armed
-the alarm for the present in a loop; a group's first tick was not scheduled when an update
-arrived exactly on it.
+MUTANT_TABLE
 
 ### Measurements
 
-Measured here: workerd 1.20261117.1 under vitest, a 4-core machine with a load average
-near 12 from other builds, four runs. 1,000 rules (950 alerting with two labels and three
-templated annotations, 50 recording), 100 firing alerts, fake evaluator answering from a
-table. Wall time is taken in the test around `runDurableObjectAlarm`, so it includes that
-call; the clock has 1 ms resolution.
+Measured here: workerd 1.20261117.1 under vitest, 4 cores, load average 14–15 from other
+work, three runs; ranges are min–max of the three. 1,000 rules (950 alerting with two
+labels and three templated annotations, 50 recording), 100 firing alerts, **in-process
+fake evaluator** (no network, no query cost). Wall time is taken around
+`runDurableObjectAlarm`; workerd's clock moves only across I/O, so these are coarse.
 
-| Quantity | 1 group × 1,000 | 10 groups × 100 |
-|---|---|---|
-| Tick wall time, steady state, 40 ticks: median | 11–17 ms | 11–13 ms |
-| p95 / max | 22–48 / 33–58 ms | 22–30 / 29–50 ms |
-| Tick in which 100 alerts start firing | 54–94 ms, 102 rows | 57–228 ms, 120 rows |
-| SQL rows written per steady tick | 0 (1 on the 8 heartbeat ticks) | 0 (1 on the 8 heartbeat ticks) |
-| `setAlarm` calls per tick | 1 | 1 |
-| Storage, `databaseSize` | 737,280 bytes | 753,664 bytes |
-| Evict, rebuild from SQLite, first RPC | 38–105 ms | 28–57 ms |
-| Save 1,000 rules (validate, classify, store) | 110–186 ms | 56–94 ms |
+| Quantity | 1 × 1,000, single-call | 10 × 100, single-call | 1 × 1,000, batch | 10 × 100, batch |
+|---|---|---|---|---|
+| Evaluator calls per tick | 1,000 | 1,000 | **1** | **10** |
+| Tick wall time, steady state, median (40 ticks) | 11–14 ms | 5–15 ms | 10 ms | 6–10 ms |
+| p95 / max | 26–37 / 30–65 ms | 16–46 / 22–159 ms | 22–25 / 27–46 ms | 35–48 / 41–72 ms |
+| Tick in which 100 alerts start firing | 53–94 ms, 102 rows | 73–216 ms, 120 rows | 41–58 ms, 102 rows | 93–142 ms, 120 rows |
+| SQL rows per steady tick / `setAlarm` per tick | 0 (1 on 8 heartbeat ticks) / 1 | same | same | same |
+| Storage | 741,376 B | 757,760 B | 741,376 B | 757,760 B |
+| Save 1,000 rules | 160–327 ms | 122–222 ms | 79–89 ms | 73–121 ms |
 
-One fire-and-resolve incident, measured: 8 rows in the ruler, 10 rows and 3 `setAlarm` in
-the notifier, 2 webhook requests.
+**Reading it.** With an in-process fake the two forms cost the same ruler time: the
+difference is not visible at this clock resolution under this load, and the overhead per
+tick is unchanged from before (11–17 ms then). What the batch form changes is the
+**number of calls**: 1,000 → 1 per group per tick. With a remote engine, the single-call
+form waits 1,000 sequential round trips per tick (0.2–10 ms each: 0.2–10 s, **modelled**),
+and if each call is a billed request that is 43.2 M requests a month per 1,000 rules,
+about $6.5 (**modelled**, $0.15/M); the batch form is 43,200 (one group) to 432,000 (ten
+groups) calls a month, $0.006–0.065. What would settle it: the engine's batch binding
+deployed and the bill read from Cloudflare analytics (spike S0, `design/VERIFICATION.md` §4).
 
 ### Cost model
 
-**Modelled**, not measured on Cloudflare. 1,000 rules in one `Ruler` object, 60 s interval,
-30 days = 43,200 ticks; prices from research/10 §1 (requests $0.15/M, duration $12.50/M
-GB-s at 128 MB, rows written $1.00/M, rows read $0.001/M, storage $0.20/GB-month), before
-the plan's included allowances.
+**Modelled**, not measured on Cloudflare; unchanged in method from the previous version.
+1,000 rules in one `Ruler` object, 60 s interval, 30 days = 43,200 ticks; prices from
+research/10 §1.
 
 | Item | Basis | Low | High |
 |---|---|---|---|
 | Alarm invocations | 43,200 requests | $0.006 | $0.006 |
 | `setAlarm` | 43,200 rows (measured: 1 per tick) | $0.043 | $0.043 |
-| Heartbeat | 8,640 rows (measured: 1 per 5 min) | $0.009 | $0.009 |
-| Duration, ruler overhead | 15–50 ms per tick (measured here) | $0.001 | $0.004 |
-| Duration, waiting for the evaluator | 1,000 sequential calls at 0.2–10 ms each (assumed) | $0.014 | $0.69 |
-| Rows read on rebuild | 0 to every tick × about 115 rows | $0 | $0.005 |
-| Alert incidents | 0–10,000 per month × 21 billed rows (measured) | $0 | $0.21 |
-| Storage | 0.74 MB (measured) | $0.0002 | $0.0002 |
-| **Total, ruler and notifier objects** | | **≈ $0.07** | **≈ $1.0** |
+| Heartbeat | 8,640 rows (measured) | $0.009 | $0.009 |
+| Duration, ruler overhead | 5–50 ms per tick (measured here), 128 MB | $0.0003 | $0.003 |
+| Duration, waiting for the evaluator | batch: 1–10 calls of 5–200 ms each, in sequence (assumed): 27–10,800 GB-s | $0.0003 | $0.135 |
+| Evaluator calls, if billed as requests | 43,200 (one group) – 432,000 (ten groups) | $0.006 | $0.065 |
+| Alert incidents | 0–10,000 a month × 21 billed rows (measured before) | $0 | $0.21 |
+| Sweeper, this shard's share | 2,880 `ensureArmed` calls (cron every 15 min) | $0.0004 | $0.0004 |
+| **Total, ruler and notifier objects** | | **≈ $0.07** | **≈ $0.47** |
 
-So **$0.07–$1.0 per 1,000 rules per month**, dominated by how long a tick waits for the
-evaluator. It excludes everything the evaluator itself costs (query CPU, shard reads, R2
-reads), which D7 puts at cents for tail-class rules and dollars for the rest. It also
-assumes a call to the evaluator is not a billed request: if the evaluator is a Durable
-Object and each of the 1,000 calls per tick is its own RPC session, that alone is
-43.2 M requests, about $6.5 a month (see "Contract issues"). What would settle it: spike
-S0 (`design/VERIFICATION.md` §4) for how a 60 s wake is billed, then this ruler deployed
-against the real evaluator for a day with the bill read from Cloudflare analytics.
+Platform-wide, not per 1,000 rules: the sweeper's 16 index requests per run, 46,080 a month,
+about $0.007. The single-call form, for comparison, was $0.07–$1.0 before counting
+evaluator calls as requests and about $6.5 more if they are (previous version of this file).
+
+Excludes everything the engine itself costs (query CPU, shard and R2 reads), which D7 puts
+at cents for tail-class rules and dollars for the rest.
 
 ## Deviations from Prometheus
 
-- **A failing rule keeps its alerts indefinitely.** In Prometheus a rule that errors stops
-  re-sending its alerts, so Alertmanager expires them after a few intervals. Here alerts
-  are resolved only by an evaluation that succeeds. This is what the task asked for; it
-  means a rule broken for good holds its alerts until someone fixes or deletes it.
-- **Over the limit, state is kept.** Prometheus clears the rule's active alerts when the
-  limit is exceeded; here the rule is `err` and its alerts stay.
-- **Explicit transitions, no re-send.** The ruler tells the notifier "firing" and
-  "resolved" once each, through an outbox, instead of re-sending every minute with an
-  `endsAt`. Only the dead-man's switch uses refresh-with-expiry.
-- **Annotations are frozen at the firing transition** as far as notifications go. The
-  ruler's own view (`rules()`) follows the latest sample, in memory.
-- **Restoring `for`.** `activeAt` is stored when the alert is created, so restoration is
-  exact. Prometheus' outage tolerance and grace period do not exist.
-- **Fingerprints** are a 64-bit hash of the sorted label set, not Prometheus' xxhash, so
-  they differ from the ones Prometheus prints. Group offsets likewise use this hash.
-- **Templates** are a subset; a file using anything else is rejected at save time.
-- **Recorded samples** are written before a dependent rule only when that rule's text
-  contains the recorded name; other samples go out at the end of the group. No staleness
-  markers. A sink that fails three times in a tick loses that batch (counted in
-  `samplesDropped`, rule marked `err`); there is no backfill, as in Prometheus.
+- **A failing rule keeps its alerts indefinitely**; Prometheus stops re-sending and
+  Alertmanager expires them. Here alerts resolve only by a successful evaluation.
+- **Over the limit, state is kept** (Prometheus clears the rule's alerts).
+- **Explicit transitions, no re-send**: "firing" and "resolved" once each through an outbox;
+  only the dead-man's switch uses refresh-with-expiry.
+- **Annotations are frozen at the firing transition** for notifications.
+- **Restoring `for`** is exact (`activeAt` is stored); no outage tolerance or grace period.
+- **Fingerprints and group offsets** use a 64-bit hash of their own, not xxhash.
+- **Templates** are a subset; anything else is refused at save.
+- **Recorded samples** go to the sink before a rule whose text names them, else at the end
+  of the group; no staleness markers; a sink failing three times loses the batch (counted).
+- **Same-tick dependencies** are found by text, not by parsing (part 1).
+- **No-data policies** `keep` and `alerting` are viz's; `ok` is Prometheus.
+- **`/api/v1/rules`**: `match[]` refused; `file` is `shard-<n>`; `evaluationTime` of a rule
+  is the engine's reported time for its request (or the adapter's measurement), 0 if unknown.
+  Errors `unauthorized` / `forbidden` are viz's additions.
 - **Rule identity** across saves is the hash of name, expression and labels.
-- **Minimum interval** of 10 s; the alerts-per-rule cap applies even with `limit: 0`.
-- **Missed ticks are skipped and counted**, as Prometheus does. research/08 §3.5 proposed
-  a bounded replay; the task ruled it out.
+- **Minimum interval** 10 s; missed ticks are skipped and counted, as Prometheus does.
 
 ## Deviations from Alertmanager
 
-- **Flush ticks are a fixed grid**, `group creation + group_wait + k * group_interval`, and
-  a flush decides from the state as of its tick. Alertmanager restarts the timer after each
-  flush, so its ticks drift. A change that arrives exactly on a tick is included in it.
-- **Repeat** fires when `repeat_interval` or more has passed since the last notification;
-  Alertmanager requires strictly more.
+- **Flush ticks are a fixed grid** (`creation + group_wait + k·group_interval`).
+- **Repeat** fires when `repeat_interval` *or more* has passed.
 - **The notification log lives in the group** and goes when the group empties.
-  Alertmanager keeps it 120 h.
-- **A resolved alert may appear again** as "resolved" in a later notification of the same
-  group until every group holding it has flushed past the resolution (plus one
-  `group_interval` when inhibition rules exist).
-- **Delivery:** an `Idempotency-Key` header, seeded backoff, dead letters with manual retry.
-  Alertmanager retries within the flush and then drops.
-- **Regular expressions** are JavaScript's, anchored, at most 1,024 characters; not RE2.
-- **Silences** can be created and expired, not edited. Matching an alert with no labels is
-  refused, as in Alertmanager.
-- **Payloads:** `generatorURL` is empty; at most 500 alerts per webhook body (the rest are
-  counted in `truncatedAlerts`); the Slack message has one fixed layout.
-- **No expiry by `endsAt`** except for the dead-man's switch.
+- **Acknowledgement** is viz's: it suppresses repeats of that alert until it resolves.
+  Alertmanager has none (it is usually done in the paging tool).
+- **Silences from an alert** match every label of that alert exactly and can be undone
+  (deleted) for 60 s; other silences can be created and expired, not edited.
+- **Delivery:** `Idempotency-Key`, `X-Viz-Signature`, seeded backoff, dead letters.
+- **Regular expressions** are JavaScript's, anchored, at most 1,024 characters.
+- **Payloads:** `generatorURL` empty; at most 500 alerts per webhook body.
 
 ## Contract issues
 
-Recorded here because this component may not edit `contracts/`.
+Recorded here because this component may not edit `contracts/`. The proposal is
+`contracts-proposal/rules.v2.ts`: it re-exports the adopted contract and marks each
+declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
 
-1. **`Evaluator` is per expression.** `instant(promql, timeMs)` forces one call per rule
-   per tick (1,000 calls a tick here). Design §7 wants one plan per group with shared
-   scans, and research/08 §3 wants one batched RPC per data shard. The contract needs a
-   batch form, for example `instantBatch(queries: string[], timeMs)`, returning a result
-   or an error per query. Without it the ruler cannot share scans and the request count is
-   the largest line in the cost model.
-2. **No tenant in `Evaluator`.** The ruler binds the tenant in an adapter and expects the
-   production binding as `EVALUATOR.instant(tenant, promql, timeMs)` (and
-   `SINK.write(tenant, batches)`). Who authenticates the ruler to the engine is not
-   written anywhere.
-3. **Result shapes.** `Engine.queryInstant` may return a matrix or a string; a rule needs a
-   vector or scalar, so the ruler treats the others as an evaluation error. Result
-   timestamps (Unix seconds) are ignored; the ruler stamps samples with its own evaluation
-   time in milliseconds.
-4. **Read-your-writes for recording rules** is not expressible: `Evaluator` has no way to
-   be handed samples that are not yet queryable.
-5. **`Sink` has no staleness marker.** `RecordedSample.value` is the evaluator's text so
-   nothing is re-encoded in JavaScript (contracts/engine.ts forbids that), but a stale
-   marker for a series that vanished cannot be sent as text.
-6. **No PromQL validation or exact classification without the engine.**
-   `Engine.selectors()` would give exact ranges; the ruler cannot reach it at save time, so
-   it classifies from the text and over-estimates when unsure.
-7. **`hotWindowMs` is a copy.** Its default equals the shard's `sealAgeMs`, but nothing
-   ties them together; the control plane must set it per tenant.
-8. **LogQL and TraceQL rules** (design §7) have no result shape in `contracts/engine.ts`.
-9. **The proposal itself** changed two details of the brief: `Sink.write` takes batches
-   `{ id, samples }` rather than bare samples, so the id travels with them; and the
-   notifier RPC is `listAlerts`, not `alerts`.
+1. **`BatchEvaluator`** (ADDED): `evaluate(requests[{id, promql, timeMs}], {signal}) →
+   [{id, ok, result | error, durationMs?}]`; one failing request does not fail the call; a
+   missing result is a failure; a rejected promise fails every request. `Evaluator` stays as
+   the adapter's input. Production binding expected as
+   `EVALUATOR.evaluate(tenant, requests)`.
+2. **`RangeEvaluator`** and **`Validator`** (ADDED) for backtests and save-time checks;
+   `ValidatedSelector` mirrors `Engine.selectors()` in milliseconds.
+3. **No-data policy and monitor metadata** on alerting rules (EXTENDED; neither is part of
+   the rule key), `NO_DATA_LABEL`, `RECEIVER_LABEL`, `RulerConfig.timelineLimit`.
+4. **Ruler RPC** (EXTENDED): `snapshot`, `timeline`, `backtest`, `saveRule`, `removeRule`,
+   `exportGroup` / `importGroup` / `releaseGroup`, `dropTimelines`.
+5. **Notifier RPC** (EXTENDED): `acknowledge`, `unacknowledge`, `silenceAlerts`,
+   `undoSilence`, `describe`, `notificationLog`, `getConfig` (redacted), `dropLogs`;
+   `expireSilence` gains `by` and `dryRun`; `NotifierAlert` gains `acknowledged` and
+   `silencedUntil`.
+6. **`WebhookConfig.secret`** (EXTENDED, write-only) and `SIGNATURE_HEADER`.
+7. **`AlertUpdate.generator.monitor`** (CHANGED) so the notifier keys its log by monitor.
+8. **`RulerIndexRpc`** and `INDEX_PARTITIONS` (ADDED).
+9. **HTTP types** `MonitorInput`, `MonitorView`, `MonitorAlertView`, `TimelineEntry`,
+   `BacktestResult` (ADDED); `openapi.json` is their wire form.
+10. **edge's `authenticate` takes `scope: 'write' | 'read'`.** The ruler passes its
+    `monitors:*` scopes through a cast; the function only checks membership, so it works,
+    but the signature should take `string` (edge's change, not made here).
+11. **The adopted `contracts/rules.ts` imports `'../../contracts/engine'`**, which is the
+    path from `ruler/contracts-proposal/`, not from `contracts/` (should be `./engine`).
+12. Still open from before: read-your-writes for recording rules is not expressible
+    (`Sink` → engine); `Sink` has no staleness marker; `hotWindowMs` is a copy of the
+    shard's `sealAgeMs`; LogQL / TraceQL results have no shape in `contracts/engine.ts`;
+    who authenticates the ruler to the engine is not written anywhere.
+13. **Design text to update** (not done: outside `ruler/`): DESIGN §7 should say
+    "one batch per group per tick, split only before a rule reading a series recorded
+    earlier in the same tick", name the `RulerIndex` registry as the sweeper's source,
+    and record acknowledge, silence-with-undo, no-data policies and signed webhooks;
+    DECISIONS should get entries for "registry objects for the sweeper (vs. Notifier or a
+    single global object)" and "jump-hash placement of whole groups (vs. a stored map)".
 
 ## Risks
 
-- **Skipped ticks are only known while the object stays in memory.** The cursor is
-  persisted at the heartbeat, as required ("not every tick"). After an eviction the ticks
-  since the last heartbeat are reported as `unobservedTicks`, which may or may not have
-  run. In production an object can be evicted between most ticks, so `skippedTicks` will
-  under-report. `heartbeatMs: 0` writes the cursor every tick and makes the count exact,
-  for 43,200 more rows a month ($0.043) per object. This should be the owner's decision.
-- **Alarm retry behaviour is assumed.** If a tick throws, the ruler arms its own retry
-  (five times, seeded backoff from 1 s) and rethrows. How that combines with the
-  platform's retry was not tested on Cloudflare; a double retry is harmless because of
-  the replay guard and the pure state machine.
-- **`ctx.id.name` on an alarm wake-up.** Measured here: a real alarm waking an evicted
-  object had its name. Both objects also store their name on first write and fall back to
-  it. Not checked on Cloudflare.
-- **Sequential evaluation makes tick time the sum of query latencies.** A 1,000-rule group
-  with a 60 ms evaluator takes the whole interval; ticks are then skipped. The 120 s group
-  timeout bounds a hung evaluator, not a slow one.
-- **Memory.** Everything is loaded in the constructor. The default limits (64 groups of up
-  to 1.5 MB) allow far more than one object should hold; shard splitting, which would keep
-  an object near 1,000 rules, is not implemented.
-- **Notifier cost grows with alerts × (silences + inhibition rules)** at each alarm and
-  each `ingest`. The 5,000-alert cap bounds it; it was not measured.
-- **JavaScript regular expressions can backtrack.** A tenant can write a slow `match_re`
-  or silence; only the length is limited.
-- **Outbound requests go wherever the tenant's config says**, with no authentication and
-  no allowlist.
+- **All performance numbers are against an in-process fake.** The batch form's benefit is
+  the call count; its real latency depends on how the engine plans a batch.
+- **Text-based dependency splitting** can leave a regex-named dependency one interval late.
+- **Shard moves are driven by API writes.** Two concurrent writes compute the same
+  placement, and moves are idempotent, but they are not serialized; a crash mid-move is
+  repaired only by the next write. Reads tolerate a group on two shards (assigned shard
+  wins).
+- **Every monitor read fans out to all shards** (4 at a time) and to the notifier; cost
+  and latency grow with the shard count.
+- **Skipped ticks are only known while the object stays in memory** (cursor at the
+  heartbeat; `unobservedTicks` after eviction). `heartbeatMs: 0` makes it exact for
+  43,200 more rows a month per object.
+- **Alarm retry behaviour on Cloudflare is assumed**, not tested; double retries are
+  harmless (replay guard, pure state machine).
+- **The undo token is a bearer secret** for 60 s, returned once; anyone holding it and an
+  `ack` key of the same tenant can undo.
+- **Outbound requests go wherever the tenant's config says**; signing authenticates viz to
+  the receiver, not the receiver to viz; there is no allowlist.
+- **JavaScript regular expressions can backtrack** (length is limited, time is not).
 - **The dead-man's switch proves the path to the receiver, not the receiver's watchdog.**
-  A notifier that is itself dead sends nothing, including no "resolved"; an external
-  watchdog that alarms on silence is still required, and so is the platform-level monitor
-  of research/08 §3.5.
-- **A permanently broken rule never resolves its alerts** (first deviation above).
-- **Crash tests compress time.** Faults are injected at six named points and the alarm is
-  retried at once; partial failures inside SQLite or the runtime are not simulated.
-- **Write counters count statements that were later rolled back.** They are diagnostics.
-- **Fingerprint collisions** (64 bits) would surface as a spurious "same labelset" error.
+- **Crash tests compress time**: faults at named points, the alarm retried at once.
+- **Fingerprint collisions** (64 bits) would surface as a spurious duplicate-labelset error.
+- **The independent readers pin Prometheus v0.308.0 and client_golang v1.23.2**; a later
+  Prometheus that adds a field to these structs will be reported as a missing field.

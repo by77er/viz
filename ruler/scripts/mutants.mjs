@@ -226,7 +226,7 @@ export const MUTANTS = [
   {
     name: 'dryRun ignored on writes',
     edits: one('src/http.ts', "    const q = this.url.searchParams.get('dryRun')\n", "    return false\n    const q = this.url.searchParams.get('dryRun')\n"),
-    tests: ['test/http.test.ts'],
+    tests: ['test/http.test.ts', 'test/monitors.test.ts'],
   },
   {
     name: 'unbounded timeline (the ruler keeps every transition)',
@@ -297,24 +297,69 @@ export const MUTANTS = [
     edits: one('src/notifier.ts', 'await signatureHeader(secret, now, row.idem_key, row.body)', 'await signatureHeader(secret, row.created_at, row.idem_key, row.body)'),
     tests: ['test/monitors.test.ts'],
   },
+
+  // ───────────── caught by the independent readers (tools/promcheck, needs Go) ─────────────
+  // `independent: true` runs `npm run independent` (the capture test, then Prometheus' own
+  // code reading the captures) instead of vitest files.
+  {
+    name: 'Prometheus API times printed as JavaScript prints them (".000Z"), not as Go prints a time.Time',
+    edits: one('src/http.ts', "  return rfc3339(ms).replace(/\\.?0+Z$/, 'Z')", '  return rfc3339(ms)'),
+    independent: true,
+  },
+  {
+    name: 'a field Prometheus does not have leaks into /api/v1/rules (the rule\'s cost class)',
+    edits: one('src/http.ts', "          alerts: excludeAlerts ? null : promAlerts(snap),\n", "          alerts: excludeAlerts ? null : promAlerts(snap),\n          cost: r.cost.class,\n"),
+    independent: true,
+  },
+  {
+    name: 'a required group field left out of /api/v1/rules (limit)',
+    edits: one('src/http.ts', 'out.push({ name: group.name, file, rules, interval: group.intervalMs / 1000, limit: group.limit, evaluationTime', 'out.push({ name: group.name, file, rules, interval: group.intervalMs / 1000, evaluationTime'),
+    independent: true,
+  },
+  {
+    name: 'an alert value printed as JavaScript prints a number, not as strconv.FormatFloat(v, \'e\', -1, 64)',
+    edits: one('src/http.ts', '      out.value = promFloat(a.value)', '      out.value = String(a.value)'),
+    independent: true,
+  },
+  {
+    name: 'the rule-file export drops keep_firing_for',
+    edits: one('src/rulefile.ts', '        if (r.keepFiringForMs > 0) rule.keep_firing_for = formatDuration(r.keepFiringForMs)\n', ''),
+    independent: true,
+  },
 ]
+
+const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0
+
+/** `npm run independent`: killed when a Go check fails (or the capture itself fails). */
+function runIndependent() {
+  const r = spawnSync('npm', ['run', 'independent'], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, GOTOOLCHAIN: 'local' } })
+  const out = (r.stdout ?? '') + (r.stderr ?? '')
+  const failed = [...new Set([...out.matchAll(/^\s*--- FAIL: (\S+)/gm)].map((m) => `tools/promcheck > ${m[1]}`))]
+  const reasons = [...out.matchAll(/^\s+check_test\.go:\d+: (.*)$/gm)].map((m) => m[1]).filter((x) => !/^(read|checked|upstream|.*identical as read)/.test(x))
+  const broken = r.status !== 0 && failed.length === 0 ? ['the capture or the build failed before any Go check ran'] : []
+  return { code: r.status, failed: failed.map((f, i) => (i === 0 && reasons[0] ? `${f} (${reasons[0].slice(0, 140)})` : f)), broken, out }
+}
 
 function run(tests) {
   const dir = mkdtempSync(join(tmpdir(), 'viz-mutant-'))
   const report = join(dir, 'report.json')
   try {
     const r = spawnSync('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${report}`, ...tests], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 })
+    // Only a failing test counts as a kill. A file that did not even load says the mutant
+    // broke the build, which proves nothing about the tests: it is reported, not counted.
     let failed = []
+    let broken = []
     try {
       const j = JSON.parse(readFileSync(report, 'utf8'))
       for (const f of j.testResults) {
-        if (f.status === 'failed' && f.assertionResults.length === 0) failed.push(`${f.name.slice(root.length + 1)} (did not load: ${(f.message ?? '').split('\n')[0].slice(0, 120)})`)
+        if (f.status === 'failed' && f.assertionResults.length === 0) broken.push(`${f.name.slice(root.length + 1)}: ${(f.message ?? '').split('\n')[0].slice(0, 160)}`)
         for (const a of f.assertionResults) if (a.status === 'failed') failed.push(`${f.name.slice(root.length + 1)} > ${a.fullName}`)
       }
     } catch {
       failed = []
+      broken = ['no JSON report']
     }
-    return { code: r.status, failed, out: (r.stdout ?? '') + (r.stderr ?? '') }
+    return { code: r.status, failed, broken, out: (r.stdout ?? '') + (r.stderr ?? '') }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -333,6 +378,11 @@ for (const [i, m] of MUTANTS.entries()) {
   const originals = new Map()
   for (const e of m.edits) if (!originals.has(e.file)) originals.set(e.file, readFileSync(join(root, e.file), 'utf8'))
   const texts = new Map(originals)
+  if (m.independent && !hasGo) {
+    console.log(`${i + 1}. SKIPPED  ${m.name} (no Go toolchain: the independent readers cannot run)`)
+    bad++
+    continue
+  }
   let stale = null
   for (const e of m.edits) {
     const text = texts.get(e.file)
@@ -351,7 +401,7 @@ for (const [i, m] of MUTANTS.entries()) {
   let r
   try {
     for (const [file, text] of texts) writeFileSync(join(root, file), text)
-    r = run(m.tests)
+    r = m.independent ? runIndependent() : run(m.tests)
   } finally {
     for (const [file, text] of originals) writeFileSync(join(root, file), text)
   }
@@ -361,6 +411,7 @@ for (const [i, m] of MUTANTS.entries()) {
   console.log(`${i + 1}. ${dead ? 'KILLED  ' : 'SURVIVED'} ${m.name}`)
   for (const f of r.failed.slice(0, 3)) console.log(`      by: ${f}`)
   if (r.failed.length > 3) console.log(`      ... and ${r.failed.length - 3} more`)
+  for (const b of r.broken) console.log(`      did not load: ${b}`)
   if (!dead) console.log(r.out.split('\n').slice(-25).join('\n'))
 }
 const total = only.length || MUTANTS.length

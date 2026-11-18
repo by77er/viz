@@ -12,8 +12,16 @@ export function formatResponse(data: PromMatrixData): string {
   return `{\n  "status": "success",\n  "data": {\n    "resultType": "matrix",\n    "result": [${series.length ? `\n${series.join(',\n')}\n    ` : ''}]\n  }\n}`
 }
 
+/** One rendering per response, kept while the response is: the form can be left and shown again without redoing it. */
+const rendered = new WeakMap<PromMatrixData, string>()
+function cachedResponse(data: PromMatrixData): string {
+  let text = rendered.get(data)
+  if (text === undefined) rendered.set(data, (text = formatResponse(data)))
+  return text
+}
+
 export const JsonView = memo(function JsonView({ data, elapsedMs }: { data: PromMatrixData; elapsedMs?: number }) {
-  const text = useMemo(() => formatResponse(data), [data])
+  const text = useMemo(() => cachedResponse(data), [data])
   const truncated = text.length > MAX_CHARS
   return (
     <div data-testid="result-json" className="region-part">

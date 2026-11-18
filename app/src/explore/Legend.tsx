@@ -130,7 +130,11 @@ export const Legend = memo(function Legend({ rows, drawn, isDefault, onToggle, o
           className="series-toggle"
           aria-pressed={drawn.has(r.id)}
           title={r.full}
-          onClick={(e) => onToggle(r.id, additiveToggle({ ...modifiers(e), pointerType: (e.nativeEvent as PointerEvent).pointerType }, coarse))}
+          onClick={(e) => {
+            // A tap does not focus a button in every browser (iOS Safari): the full name follows the press too.
+            setFocused(r.id)
+            onToggle(r.id, additiveToggle({ ...modifiers(e), pointerType: (e.nativeEvent as PointerEvent).pointerType }, coarse))
+          }}
           data-series={r.full}
           data-series-id={r.id}
         >

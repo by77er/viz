@@ -51,43 +51,56 @@ export interface AlignedData {
  * Non-finite values (NaN, ±Inf) cannot be drawn and are treated as gaps.
  */
 export function alignMatrix(data: PromMatrixData, start: number, end: number, step: number): AlignedData {
+  const result = data.result
+  const byName = (a: AlignedSeries, b: AlignedSeries) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
   const n = Math.floor((end - start) / step + 1e-9) + 1
-  let onGrid = n > 0 && n <= 1_000_000
-  if (onGrid) {
-    outer: for (const s of data.result) {
-      for (const [t] of s.values) {
-        const i = (t - start) / step
-        if (i < -1e-6 || i > n - 1 + 1e-6 || Math.abs(i - Math.round(i)) > 1e-6) {
+
+  // The usual case, in one pass: every sample is on the grid, so its index is computed, not
+  // looked up. The first sample off the grid abandons this pass for the general one below.
+  // (Indexed loops and `+v`: this runs once per sample of every result, 144,000 times for 200
+  // series over 3 h, between the response and its paint; design review B3.)
+  if (n > 0 && n <= 1_000_000) {
+    const series: AlignedSeries[] = []
+    let onGrid = true
+    outer: for (let s = 0; s < result.length; s++) {
+      const r = result[s]!
+      const samples = r.values
+      const values: (number | null)[] = new Array<number | null>(n).fill(null)
+      for (let k = 0; k < samples.length; k++) {
+        const sample = samples[k]!
+        const pos = (sample[0] - start) / step
+        const i = Math.round(pos)
+        if (i < 0 || i >= n || Math.abs(pos - i) > 1e-6) {
           onGrid = false
           break outer
         }
+        // "+Inf", "-Inf" and "NaN" read as NaN here; like ±Inf they cannot be drawn and are gaps.
+        const num = +sample[1]
+        values[i] = num - num === 0 ? num : null
       }
+      series.push({ key: seriesKey(r.metric), labels: r.metric, name: seriesName(r.metric), values })
+    }
+    if (onGrid) {
+      series.sort(byName)
+      return { xs: Array.from({ length: n }, (_, i) => start + i * step), series }
     }
   }
 
-  let xs: number[]
-  let indexOf: (t: number) => number
-  if (onGrid) {
-    xs = Array.from({ length: n }, (_, i) => start + i * step)
-    indexOf = (t) => Math.round((t - start) / step)
-  } else {
-    const set = new Set<number>()
-    for (const s of data.result) for (const [t] of s.values) set.add(t)
-    xs = [...set].sort((a, b) => a - b)
-    const map = new Map(xs.map((t, i) => [t, i]))
-    indexOf = (t) => map.get(t) ?? -1
-  }
-
-  const series = data.result.map((s) => {
-    const values: (number | null)[] = new Array(xs.length).fill(null)
+  // Samples off the grid (a backend that ignores `step`): the union of observed timestamps.
+  const set = new Set<number>()
+  for (const s of result) for (const [t] of s.values) set.add(t)
+  const xs = [...set].sort((a, b) => a - b)
+  const map = new Map(xs.map((t, i) => [t, i]))
+  const series = result.map((s) => {
+    const values: (number | null)[] = new Array<number | null>(xs.length).fill(null)
     for (const [t, v] of s.values) {
       const num = parseSampleValue(v)
-      const i = indexOf(t)
+      const i = map.get(t) ?? -1
       if (i >= 0) values[i] = Number.isFinite(num) ? num : null
     }
     return { key: seriesKey(s.metric), labels: s.metric, name: seriesName(s.metric), values }
   })
-  series.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  series.sort(byName)
   return { xs, series }
 }
 

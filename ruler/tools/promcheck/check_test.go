@@ -24,6 +24,7 @@ import (
 	"go/parser"
 	"go/token"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,19 +56,80 @@ type field struct {
 	goType    string
 }
 
-// upstreamStructs parses web/api/v1/api.go of the prometheus module this test builds
-// against and returns, per struct, its JSON fields.
-func upstreamStructs(t *testing.T, names ...string) map[string][]field {
+// upstreamAPI parses web/api/v1/api.go of the prometheus module this test builds against.
+func upstreamAPI(t *testing.T) (*ast.File, string) {
 	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/prometheus/prometheus").Output()
 	if err != nil {
 		t.Fatalf("locating the prometheus module: %v", err)
 	}
 	src := filepath.Join(strings.TrimSpace(string(out)), "web", "api", "v1", "api.go")
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, src, nil, 0)
+	file, err := parser.ParseFile(token.NewFileSet(), src, nil, 0)
 	if err != nil {
 		t.Fatalf("parsing %s: %v", src, err)
 	}
+	return file, src
+}
+
+// upstreamErrors reads, from the same source, every `errorType{..., "<name>"}` value and
+// the HTTP status `getDefaultErrorCode` gives it.
+func upstreamErrors(t *testing.T) map[string]int {
+	file, src := upstreamAPI(t)
+	byVar := map[string]string{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		vs, ok := n.(*ast.ValueSpec)
+		if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
+			return true
+		}
+		if cl, ok := vs.Values[0].(*ast.CompositeLit); ok && exprString(cl.Type) == "errorType" && len(cl.Elts) == 2 {
+			if lit, ok := cl.Elts[1].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				name, _ := strconv.Unquote(lit.Value)
+				if name != "" {
+					byVar[vs.Names[0].Name] = name
+				}
+			}
+		}
+		return true
+	})
+	codes := map[string]int{
+		"StatusBadRequest": http.StatusBadRequest, "StatusUnprocessableEntity": http.StatusUnprocessableEntity, "StatusServiceUnavailable": http.StatusServiceUnavailable,
+		"StatusInternalServerError": http.StatusInternalServerError, "StatusNotFound": http.StatusNotFound, "StatusNotAcceptable": http.StatusNotAcceptable,
+	}
+	out := map[string]int{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		fd, ok := n.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "getDefaultErrorCode" {
+			return true
+		}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			cc, ok := n.(*ast.CaseClause)
+			if !ok || len(cc.List) != 1 || len(cc.Body) != 1 {
+				return true
+			}
+			ret, ok := cc.Body[0].(*ast.ReturnStmt)
+			if !ok || len(ret.Results) != 1 {
+				return true
+			}
+			v, ok := cc.List[0].(*ast.Ident)
+			sel, ok2 := ret.Results[0].(*ast.SelectorExpr)
+			if ok && ok2 && byVar[v.Name] != "" {
+				if code, known := codes[sel.Sel.Name]; known {
+					out[byVar[v.Name]] = code
+				}
+			}
+			return true
+		})
+		return false
+	})
+	if out["bad_data"] != http.StatusBadRequest || out["not_found"] != http.StatusNotFound {
+		t.Fatalf("could not read the error table from %s: %v", src, out)
+	}
+	t.Logf("upstream error types and statuses: %v", out)
+	return out
+}
+
+// upstreamStructs returns, per named struct of the API source, its JSON fields.
+func upstreamStructs(t *testing.T, names ...string) map[string][]field {
+	file, src := upstreamAPI(t)
 	want := map[string]bool{}
 	for _, n := range names {
 		want[n] = true
@@ -164,7 +226,7 @@ func (c *checker) object(path string, v any, name string) map[string]any {
 
 func (c *checker) value(path string, v any, goType string) {
 	switch goType {
-	case "string", "rules.RuleHealth":
+	case "string", "rules.RuleHealth", "status":
 		if _, ok := v.(string); !ok {
 			c.fail(path, "want a string (%s), got %T", goType, v)
 		}
@@ -234,6 +296,17 @@ func (c *checker) value(path string, v any, goType string) {
 		for i, g := range arr {
 			c.object(fmt.Sprintf("%s[%d]", path, i), g, "RuleGroup")
 		}
+	case "[]string":
+		arr, ok := v.([]any)
+		if !ok {
+			c.fail(path, "want an array of strings, got %T", v)
+			return
+		}
+		for i, x := range arr {
+			if _, ok := x.(string); !ok {
+				c.fail(fmt.Sprintf("%s[%d]", path, i), "want a string, got %T", x)
+			}
+		}
 	case "any", "interface{}":
 	default:
 		c.fail(path, "no check for Go type %s", goType)
@@ -295,7 +368,8 @@ func readJSON(t *testing.T, path string) map[string]any {
 
 func TestPrometheusAPIShapes(t *testing.T) {
 	dir := filepath.Join(captureDir(t), "api")
-	structs := upstreamStructs(t, "response", "RuleDiscovery", "RuleGroup", "AlertingRule", "RecordingRule", "Alert", "AlertDiscovery")
+	structs := upstreamStructs(t, "Response", "RuleDiscovery", "RuleGroup", "AlertingRule", "RecordingRule", "Alert", "AlertDiscovery")
+	errorCodes := upstreamErrors(t)
 	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	if len(files) == 0 {
 		t.Fatalf("no captured responses in %s", dir)
@@ -305,12 +379,24 @@ func TestPrometheusAPIShapes(t *testing.T) {
 	for _, f := range files {
 		c := &checker{t: t, structs: structs, file: filepath.Base(f)}
 		body := readJSON(t, f)
-		env := c.object("$", body, "response")
+		env := c.object("$", body, "Response")
 		raw, _ := json.Marshal(body["data"])
 		switch {
 		case strings.HasSuffix(f, ".error.json"):
 			if env["status"] != "error" || env["errorType"] == nil || env["error"] == nil || env["data"] != nil {
 				c.fail("$", "an error is {status: error, errorType, error}: %v", env)
+			}
+			// <label>.<HTTP status>.error.json
+			parts := strings.Split(filepath.Base(f), ".")
+			status, _ := strconv.Atoi(parts[len(parts)-3])
+			kind, _ := env["errorType"].(string)
+			if code, upstream := errorCodes[kind]; upstream {
+				if code != status {
+					c.fail("$.errorType", "Prometheus answers %q with HTTP %d, viz answered %d", kind, code, status)
+				}
+			} else if !(kind == "unauthorized" && status == 401) && !(kind == "forbidden" && status == 403) {
+				// Prometheus has no authentication, so these two are viz's; nothing else may be invented.
+				c.fail("$.errorType", "%q (HTTP %d) is neither a Prometheus error type nor one of viz's two auth errors", kind, status)
 			}
 			counts["error"]++
 		case strings.HasSuffix(f, ".rules.json"):

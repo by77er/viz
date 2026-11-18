@@ -10,7 +10,7 @@
 //   - with a coarse pointer, 44 px hit areas that do not overlap
 //   - no sideways page scroll at 400 px; tables scroll inside their wrap
 const lib = require('./lib.cjs')
-const { chromium, APP, Q_RATE, Q_MANY, Q_BAD, url, tokenRgb, allowedColours, startServers, setMockDelay, overflow } = lib
+const { chromium, APP, Q_RATE, Q_MANY, Q_BAD, url, TOKENS, tokenRgb, allowedColours, startServers, setMockDelay, overflow } = lib
 const { check, results, failed } = lib.makeChecker()
 const axe = (page, label) => lib.axe(page, label, check)
 
@@ -197,7 +197,10 @@ async function main() {
       const pressed = await offTokenColours(page, allowed)
       const pressedFill = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid=view-table]')).backgroundColor)
       await page.mouse.up()
-      check(`a press paints the pressed token fill with no transition (${theme})`, pressed.length === 0 && pressedFill === tokenRgb('rule', theme), `${pressedFill} ${pressed.slice(0, 3).join(' | ')}`)
+      // The system's pressed fill: the `pressed` token once the system defines one (added while
+      // the system was being revised, 2026-11-18), `rule` before that.
+      const pressedToken = TOKENS.color.tokens.some((t) => t.name === 'pressed') ? 'pressed' : 'rule'
+      check(`a press paints the pressed token fill with no transition (${theme})`, pressed.length === 0 && pressedFill === tokenRgb(pressedToken, theme), `${pressedFill} (${pressedToken}) ${pressed.slice(0, 3).join(' | ')}`)
       await ctx.close()
     }
 

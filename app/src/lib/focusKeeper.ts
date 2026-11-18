@@ -29,6 +29,22 @@ export function focusFallbacks(origin: FocusOrigin): string[] {
   return [...(origin.after ? [origin.after] : []), ...(origin.inRegion ? [REGION_FALLBACK] : []), ...PAGE_FALLBACKS]
 }
 
+/**
+ * Whether a batch of DOM changes can have taken the focus away from `watched`: it was removed,
+ * or a class, hidden, disabled or aria-hidden attribute changed on it or on an ancestor. Pure
+ * and reads no layout, so the observer can run after every change without forcing a style or
+ * layout pass (design review B3: the editor's keystrokes and the crosshair readout change the
+ * DOM many times a second).
+ */
+export function mayLoseFocus(
+  records: readonly { type: string; target: { contains(other: unknown): boolean } }[],
+  watched: { isConnected: boolean },
+): boolean {
+  if (!watched.isConnected) return true
+  for (const r of records) if (r.type === 'attributes' && r.target.contains(watched)) return true
+  return false
+}
+
 const shown = (el: Element) => el.isConnected && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden'
 
 export function installFocusKeeper(doc: Document = document): () => void {
@@ -71,7 +87,11 @@ export function installFocusKeeper(doc: Document = document): () => void {
       else restore()
     })
   }
-  const observer = new MutationObserver(restore)
+  // Only a change that can take the focused control away is looked at; everything else (the
+  // editor's keystrokes, the crosshair readout, a view mounting) is skipped without reading layout.
+  const observer = new MutationObserver((records) => {
+    if (last && mayLoseFocus(records, last)) restore()
+  })
   doc.addEventListener('focusin', onFocusIn)
   doc.addEventListener('focusout', onFocusOut)
   observer.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'hidden', 'disabled', 'aria-hidden'] })

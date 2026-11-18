@@ -77,5 +77,5 @@
     "discard(shard 0, through seq 3)",
     "tailRead(shard 0, above 2) stale_watermark -> re-plan"
   ],
-  "seconds": 22.6
+  "seconds": 46.4
 }

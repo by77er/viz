@@ -277,28 +277,49 @@ matters at high seal rates.
 **Decision.** `contracts/BATCH.md` is unchanged: `series_id` is FNV-1a 64 of all labels.
 `DESIGN.md` §5.1 no longer says the id begins with a hash of promoted labels.
 
-**Evidence (measured here, `engine/storage/examples/locality.rs`; 200,000 series, 50
-metrics, skewed namespace/job/pod/route/status labels; both encodings return identical
-results).** With the top 24 bits taken from hashes of `namespace` and `job` and the low 40
-from the full hash, at 120 samples per series (24 M rows, 240 row groups): the namespace
-query on one metric reads 0.32 MB instead of 2.97 MB by row-group statistics (9.3×) and
-0.09 MB instead of 2.76 MB if page statistics existed (32×); `{job=…}` 10.3 MB instead of
-27.6 MB (2.7×; 13× by pages); a whole-metric scan is unchanged (2.77 against 2.97 MB); the
-samples file is 6% smaller and the series file 30% smaller. At 30 samples per series
-(flush-sized row groups) the namespace gain is 2.6× by row groups and 17× by pages.
-Select time on whole files in memory: 50 ms against 121 ms for the namespace query.
+**Evidence (measured here, `engine/storage/examples/locality.rs`, re-run 2026-11-18;
+200,000 series, 50 metrics, skewed namespace/job/pod/route/status labels; both encodings
+return identical results for every query).** Id (b): top 12 bits from a hash of
+`namespace`, next 12 from a hash of `job`, low 40 from the full hash. One samples file of
+all series, at three file shapes: 30, 60 and 120 samples per series (60, 120 and 240 row
+groups of 100,000 rows; at 60 the file is 16–17 MB, the size of an as-built compaction
+output for such a tenant). Bytes are the compressed row groups that row-group statistics
+cannot exclude, which is how the engine prunes; "pages" is what a reader with page-level
+statistics would fetch, which the engine does not have. Select is whole files in memory,
+median of 5.
 
-**Why not, then.** The read side is clearly better. The id is not: with 40 bits left to
-distinguish series that share a namespace and job, the expected number of colliding pairs
-among n such series is n²/2⁴¹: 0.005 at 100,000, 0.45 at 1,000,000 (the default
-active-series limit), against 3·10⁻⁸ for 64 bits. Nothing downstream detects a collision:
-two series with one id are merged silently in every file and every query. Trading that for
-read bytes is the wrong way round, and the same locality is available without it by
-sorting on a promoted-label column ahead of `series_id` (`contracts/TABLES.md` already
-plans promoted columns), which costs a schema change instead of collision resistance.
+| Query | 30 / sample | 60 / sample | 120 / sample |
+|---|---|---|---|
+| `{namespace="ns-15"}` (2% of series), row-group bytes, (a) → (b) | 12.1 → 9.4 MB (1.3×) | 17.2 → 10.5 MB (1.6×) | 27.6 → 10.8 MB (2.6×) |
+| same, page bytes | 12.1 → 2.1 MB (5.8×) | 17.2 → 1.6 MB (10.7×) | 26.7 → 1.6 MB (16.5×) |
+| same, select | 344 → 280 ms | 462 → 328 ms | 654 → 312 ms |
+| `{job="job-040"}`, row-group bytes | 12.1 → 9.2 MB (1.3×) | 17.2 → 10.3 MB (1.7×) | 27.6 → 10.3 MB (2.7×) |
+| `{__name__="metric_01_total"}` (full-metric scan), row groups | 7 = 7 | 13 = 13 | 26 = 26 |
+| same, bytes / select | 1.39 → 1.27 MB, 113 → 127 ms | 1.84 → 1.66 MB, 123 → 149 ms | 2.97 → 2.77 MB, 147 → 159 ms |
+| `namespace` on that one metric, row-group bytes | 1.39 → 0.54 MB (2.6×) | 1.84 → 0.38 MB (4.8×) | 2.97 → 0.32 MB (9.3×) |
 
-**Would change if.** Ids become wider than 64 bits, or `edge` or the shard gains a
-collision check that makes a narrower hash safe.
+The samples file is 6–10% smaller with (b) and the series file 30% smaller.
+
+**Why not.** The bar set for changing the id was at least 3× fewer bytes for
+`{namespace="x"}` without hurting the other queries. As the engine reads (row groups), it
+is 1.3–2.6×, below the bar at every shape; it passes only with page-level pruning, which
+does not exist, or for a namespace matcher combined with a metric name in larger files.
+The full-metric scan reads the same row groups and its select was 8–21% slower (single
+runs on a noisy machine). And the id itself gets worse: with 40 bits left to distinguish
+series that share a namespace and job, the expected number of colliding pairs among n such
+series is n²/2⁴¹: 0.005 at 100,000, 0.45 at 1,000,000 (the default active-series limit),
+against 3·10⁻⁸ for 64 bits. Nothing downstream detects a collision: two series with one id
+are merged silently in every file and every query. The same locality is available without
+that by sorting on a promoted-label column ahead of `series_id` (`contracts/TABLES.md`
+already plans promoted columns), which costs a schema change instead of collision
+resistance.
+
+(An earlier version of this entry quoted only the one-metric row, 9.3×, as "the namespace
+query". The decision did not change; its first reason did.)
+
+**Would change if.** The engine gains page-level pruning (a page index), so that the 6–17×
+by pages becomes bytes actually not read, AND ids become wider than 64 bits or `edge` or the
+shard gains a collision check that makes a narrower hash safe.
 
 ## D20. Tombstones live in the ledger
 

@@ -110,7 +110,7 @@ if (!window.vzChart) (function () {
     let full = { t0: spec.t0, t1: spec.t0 + (all[0].values.length - 1) * spec.step }
     const st = { t0: full.t0, t1: full.t1, filter: null, picked: new Set(), cursor: null, sort: { col: 'rank', dir: -1 }, open: 0, brush: null, focusRow: 0 }
     const ctx = document.createElement('canvas').getContext('2d')
-    const measure = (text, font) => { ctx.font = font; return ctx.measureText(text).width }
+    const widths = new Map(), measure = (text, font) => { const k = font + '\u0000' + text; let w = widths.get(k); if (w == null) { ctx.font = font; w = ctx.measureText(text).width; widths.set(k, w) } return w } // a toggle re-fits every name: measure each string once
     let g = null, lastW = 0, lastH = 0, legendW = 600 // geometry of the last draw; sizes are read once, before anything is written
 
     function model() {
@@ -248,7 +248,7 @@ if (!window.vzChart) (function () {
     // the legend is one tab stop; up and down move between rows, space or enter toggles the row
     tbody.addEventListener('keydown', (e) => { const rows = [...tbody.querySelectorAll('.vz-series')], i = rows.indexOf(document.activeElement); if (i < 0) return; const to = e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : e.key === 'ArrowUp' ? Math.max(0, i - 1) : -1; if (to < 0) return; e.preventDefault(); rows[i].tabIndex = -1; rows[to].tabIndex = 0; rows[to].focus(); st.focusRow = to })
     new ResizeObserver(() => { const w = svg.clientWidth; if (w && (w !== lastW || svg.clientHeight !== lastH)) draw() }).observe(svg) // a hidden chart is not redrawn, and showing it again at the same size costs nothing
-    draw(); document.fonts?.addEventListener?.('loadingdone', () => draw()) // text is fitted by measuring it; a font that arrives later changes every width
+    draw(); document.fonts?.addEventListener?.('loadingdone', () => { widths.clear(); draw() }) // text is fitted by measuring it; a font that arrives later changes every width
     return { draw, state: st, setFilter(f) { st.filter = f; draw() },
       /* A new result for the same view: the chart is kept, its data replaced. Colours, chosen rows and sort order survive. */
       setData(next) { spec = next; all = spec.series.map((s) => ({ ...s, key: key(s.labels) })); full = { t0: spec.t0, t1: spec.t0 + (all[0].values.length - 1) * spec.step }; st.t0 = full.t0; st.t1 = full.t1; st.cursor = null; draw() } }

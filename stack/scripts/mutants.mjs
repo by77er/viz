@@ -184,7 +184,9 @@ for (const [p, name, file, [cwd, cmd], from, to] of mutants) {
   } catch (e) {
     failed = true
     const out = String(e.stdout) + String(e.stderr)
-    detail = [...out.matchAll(/^\s+(?:×|FAIL) (.+?)(?: \d+ms)?$/gm)].map((m) => m[1]).slice(0, 2).join(' | ') || (out.match(/test .* FAILED|error.*|Error: .*/)?.[0] ?? '')
+    detail = [...out.matchAll(/^\s+(?:×|FAIL) (.+?)(?: \d+ms)?$/gm)].map((m) => m[1]).slice(0, 2).join(' | ') ||
+      [...out.matchAll(/^test (\S+) \.\.\. FAILED$/gm)].map((m) => `cargo: ${m[1]}`).slice(0, 2).join(' | ') ||
+      (out.match(/error(\[E\d+\])?: .*|Error: .*/)?.[0] ?? '')
   } finally {
     writeFileSync(path, original)
   }

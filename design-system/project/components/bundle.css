@@ -56,7 +56,7 @@
 
 .vz-num { font: var(--text-data); word-spacing: calc(-1 * var(--space-1)); } /* the space before a unit is thin, in cells as in sentences */
 /* A number with its unit inside a sentence: mono figures on the sentence's own line height, and a space that cannot break and is tightened so no gap opens. */
-.vz-qty { font-family: var(--font-mono); font-size: var(--text-data-size); white-space: nowrap; letter-spacing: normal; word-spacing: calc(-1 * var(--space-1)); }
+.vz-qty { font-family: var(--font-mono); font-size: var(--text-data-size); line-height: 1; white-space: nowrap; letter-spacing: normal; word-spacing: calc(-1 * var(--space-1)); } /* line-height 1: the mono's taller metrics would otherwise open the sentence's line by 2px */
 .vz-label { font: var(--text-label); color: var(--ink-secondary); }
 .vz-link { color: inherit; text-decoration: underline; text-underline-offset: var(--space-half); text-decoration-thickness: var(--hairline); }
 .vz-link:hover { text-decoration-thickness: var(--stroke); }
@@ -183,7 +183,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold], .vz-table[data-fold] thead, .vz-table[data-fold] tbody { display: block; }
   .vz-table[data-fold] tr { display: flex; flex-wrap: wrap; align-items: baseline; border-bottom: var(--hairline) solid var(--rule); }
   .vz-table[data-fold] tbody tr { padding-block: var(--space-1); }
-  .vz-table[data-fold] thead tr { align-items: stretch; background: var(--sunken); }
+  .vz-table[data-fold] thead tr { align-items: center; background: var(--sunken); } /* heads share a line whether or not one holds a sort button */
   .vz-table[data-fold] th, .vz-table[data-fold] td { display: block; position: static; height: auto; min-width: 0; border-bottom: 0; box-shadow: none; white-space: normal; }
   .vz-table[data-fold] td { padding-block: var(--space-1); }
   .vz-table[data-fold] th:first-child, .vz-table[data-fold] td[data-key] { flex: 1 1 0; position: relative; }
@@ -365,7 +365,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 .vz-timeline { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: max-content max-content minmax(0, 1fr); column-gap: var(--space-3); }
 .vz-timeline > li { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: start; padding: var(--space-2) 0; border-top: var(--hairline) solid var(--rule); }
 .vz-timeline > li:last-child { border-bottom: var(--hairline) solid var(--rule); }
-.vz-timeline time { color: var(--ink-secondary); }
+.vz-timeline time { color: var(--ink-secondary); line-height: inherit; } /* a grid item, not inline: it keeps the row's line so its baseline meets the sentence's */
 .vz-timeline .vz-mark { margin-top: calc((1lh - var(--mark)) / 2); }
 .vz-timeline .vz-mark:not([data-state]) { margin-top: calc((1lh - var(--stroke)) / 2); }
 .vz-timeline p { margin: 0; max-width: var(--measure); }
@@ -441,7 +441,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
   .vz-table td, .vz-table.vz-legend-table td { height: calc(var(--control-touch) + var(--hairline)); } /* the row's rule is not part of the target */
   .vz-table th:has(.vz-sort) { padding-block: 0; }
   .vz-sort { min-height: var(--control-touch); margin-block: 0; }
-  .vz-chart-foot { min-height: var(--control-touch); } /* the small zoom buttons' hit areas stay inside the foot */
+  .vz-chart-foot, .vz-chart-foot > .vz-controls { min-height: var(--control-touch); } /* the small zoom buttons' hit areas stay inside the foot, also when the readout has its own line above them */
   .vz-table[data-fold] td[data-key] { min-height: var(--control-touch); }
   .vz-tabs button, .vz-nav a { padding-block: var(--space-3); } /* a scrolling strip clips overflow, so the hit area has to be real height */
   .vz-menu [role^="menuitem"] { height: var(--control-touch); }

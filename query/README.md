@@ -22,7 +22,7 @@ the `Leaf` Durable Object it reads files through.
 | `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults |
 | `wrangler.jsonc` | The production shape (never deployed) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
-| `test/*.test.ts` | @@TESTS@@ tests in workerd, 8 files |
+| `test/*.test.ts` | 62 tests in workerd, 8 files |
 | `test/measure.bench.ts` | The local measurement (`npm run measure`) |
 | `test/fixtures/` | The workload two tenants write, the query table, and the expected results |
 | `tools/gen-fixtures.mjs` | Regenerates the fixtures (expected results come from a native reference tool) |
@@ -32,10 +32,10 @@ the `Leaf` Durable Object it reads files through.
 (cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it; owned by engine/wasm)
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
-npm test                                   # @@TESTS@@ tests in workerd, 8 files, about 35 s
+npm test                                   # 62 tests in workerd, 8 files, 25 to 45 s
 npx tsc --noEmit                           # clean
 npm run measure                            # the local measurement, about 2 minutes
-node tools/mutants.mjs                     # the mutation check, about 20 minutes
+node tools/mutants.mjs                     # the mutation check, about 7 minutes
 node tools/gen-fixtures.mjs                # only when the workload or the query table changes
 ```
 
@@ -263,6 +263,13 @@ reclaimed.
   all rows of a series reach one leaf whichever shard they came through, which needs
   tail reads filtered by key range; (c) the engine in the leaf (it already runs there:
   same module); (d) the invariance tests extended to "any split gives the same result".
+  Exactness needs care: a float `sum` over splits adds in a different order than one
+  `sum` over all series, so results can differ in the last bits from the reference, and
+  the invariance tests compare exact strings. A smaller step that keeps exact results is
+  **evaluation in time slices** (a range query cut into step-aligned windows, each
+  planned, fetched and evaluated on its own, results concatenated per series); it bounds
+  memory by the window, not by the query, but changes the meaning of `@ start()` /
+  `@ end()` and of the per-query limits, and needs a decision before it is built.
 - **Range reads by row group** (the seam is described above).
 - **Result caching, and caching leaf partials** (design §6.3). Only immutable files are
   cached.
@@ -302,8 +309,12 @@ All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node
 workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18. Nothing ran on
 Cloudflare.
 
-`npm test`: **@@TESTS@@ tests, all passing**, in 8 files, three consecutive runs.
-`npx tsc --noEmit`: clean. `engine/query`: `cargo test`, @@CARGO@@.
+`npm test`: **62 tests, all passing**, in 8 files, in four runs that day (three of them
+consecutive, after the mutation check: 39 s, 40 s, 45 s while other engineers' suites ran
+on the same cores). `npx tsc --noEmit`: clean. `engine/query`: `cargo test`, 37 passed
+(3 min 9 s). `engine/promql`: `cargo test`, 26 passed, 1 ignored. `node
+../engine/wasm-query/tools/check.mjs`: 12 of 12. `node tools/gen-fixtures.mjs` reproduces
+both fixture files byte for byte.
 
 ### The reference
 
@@ -319,7 +330,10 @@ it evaluates the query table with `viz-promql` over its in-memory source (`MemSo
 holding every write in order with the last one winning. It touches no storage code, no
 Parquet, no batch, no WASM and no HTTP. (Numbers reach it as decimal text: `serde_json`'s
 default float parser can be one unit in the last place off for 17-digit values, which the
-first run of the comparison caught as `115.46` against `115.46000000000001`.)
+first run of the comparison caught as `115.46` against `115.46000000000001`.) It is the same PromQL
+evaluator the Worker runs, so these tests check everything between HTTP and the evaluator
+(fetching, the seam, storage, WASM, the envelope), not PromQL semantics; those are checked
+against the upstream test corpus and the Prometheus Go engine in `engine/promql`.
 
 The label endpoints' expected answers are computed in the test from the workload itself.
 
@@ -358,10 +372,10 @@ both tenants. Plus 10 label-endpoint calls per tenant.
 | A leaf that fails once; leaves that keep failing; a call a leaf refuses | `fence.test.ts` | retried on the next leaf, exact; 503; 503 |
 | Leaves evicted between queries and before calls; their storage | `fence.test.ts` | results unchanged; no key, no alarm |
 | **Limits.** Each of the five counted engine limits at the limit and one below; depth; steps; the label endpoints; the other tenant keeps its own | `limits.test.ts` | exactly at the limit answers with identical bytes; one below is the documented error, with no `data` |
-| `max_fetch_bytes` (lake + tail; lake alone), `max_scan_samples`, `max_files` | `limits.test.ts` | the documented messages; the last three refuse with 0 shard calls and 0 leaf calls |
+| `max_fetch_bytes` (lake + tail; lake alone), `max_scan_samples`, `max_files` | `limits.test.ts` | the documented messages; the last three refuse with 0 shard calls and 0 leaf calls, and the refusal still reports the files listed and the scan bound in its cost headers |
 | The tenant's time limit; an untrustworthy limits record | `limits.test.ts` | 503 `timeout`, not raisable by the parameter; 503 `unavailable` for six kinds of bad record |
 | **Concurrency.** 50 queries at once, two tenants, lake + tail | `concurrency.test.ts` | all 50 equal the reference |
-| 50 at once while everything is sealed, flushed and discarded underneath | `concurrency.test.ts` | all 50 equal the reference; 39 of them re-planned (last run) |
+| 50 at once while everything is sealed, flushed and discarded underneath | `concurrency.test.ts` | all 50 equal the reference; 35 of them re-planned in the last run (39 in an earlier one) |
 | A burst over the isolate's byte budget | `concurrency.test.ts` | two run, two get a retryable 503 with nothing fetched; the budget is returned |
 | **File order.** A sample written in a stream's 2nd flush and rewritten in its 11th and 12th | `leaves.test.ts` | the last write wins, although the ledger lists the 11th file before the 2nd (asserted) |
 | **Pruning.** By name, by time, a regex (prunes nothing), a name outside every file, a name inside a file's range that it does not hold | `leaves.test.ts`, and `engine/query/tests/prune.rs` (a property over 106 queries) | skipped files never change a result; `Samples-Loaded` never exceeds `Scan-Samples` for lake-only data |
@@ -388,7 +402,46 @@ restores the source, and prints the failing tests. It first confirms that every 
 applies and that the unmutated suite passes, and counts a mutant that does not type-check
 as invalid. Mutant 8 changes Rust and rebuilds the WASM module before and after.
 
-@@MUTANTS@@
+Last run 2026-11-18, against the sources and module described here: **26 of 26 mutants
+killed, none survived, none invalid**; the unmutated suite passed first; 6 min 54 s.
+After the run every source was back (each mutant's text found exactly once again) and the
+rebuilt module had the same SHA-256 as before the run.
+
+| # | What the mutant breaks | Killed by (test file › test) |
+|---:|---|---|
+| 1 | **tenant from a header** (`X-Scope-OrgID` overrides the key's tenant) | isolation › fuzz (directed headers) |
+| 2 | tenant from a `tenant` parameter | isolation › fuzz (directed parameters) |
+| 3 | **the `read` scope is skipped** (any key that can write may query) | http › a key without the read scope is 403 on every endpoint |
+| 4 | **the tail is skipped** (lake only) | invariance › 69 queries x 2 tenants identical in the three placements (and the cache test) |
+| 5 | **`stale_watermark` is ignored** (treated as an empty tail) | fence › flush and discard between plan and tail read; the same with a watermark registered; a shard that discarded past the watermark for good |
+| 6 | **series and sample files from different ledger versions** | fence › a flush between the two plan calls; a ledger that never stops changing |
+| 7 | only the first slot of the pool map is asked for its tail | invariance › the three placements |
+| 8 | **unsound name statistics** (Rust, `prune.rs`: `<` instead of `<=` against `max_name`; rebuilds the module) | invariance › the three placements; leaves › later flush wins, many files, skipping never changes a result (6 tests) |
+| 9 | files pruned against the first fetch range only | leaves › many files; skipping by time and name |
+| 10 | sample files read in the ledger's key order | leaves › a sample rewritten by a later flush wins |
+| 11 | **more than six reads per leaf call** (the packer allows twelve) | leaves › packing property; many files in rounds; skipping (4 tests) |
+| 12 | the leaf does not refuse a seventh read | leaves › refuses a seventh read; fence › a call a leaf refuses is 503 |
+| 13 | **non-content cache key** (the `hash8` is dropped from the cache key) | leaves › caches by object key |
+| 14 | cache key is the file name only (no tenant, no day) | leaves › caches by object key |
+| 15 | **partial data**: a missing file is left out | fence › a data file the ledger lists but R2 does not have: 503 |
+| 16 | **partial data on leaf failure**: a leaf that fails twice contributes nothing | fence › leaves that keep failing are 503 |
+| 17 | **mis-parsed step**: a bare number is milliseconds | http › times and steps in every spelling, and 6 more |
+| 18 | mis-parsed step: the `m` unit is milliseconds | http › times and steps in every spelling |
+| 19 | times parsed as milliseconds, not seconds | http (11 tests) |
+| 20 | the tenant's limits are not passed to the engine | limits › each engine limit |
+| 21 | `max_fetch_bytes` not enforced | limits › max_fetch_bytes |
+| 22 | `max_scan_samples` not enforced | limits › max_scan_samples and max_files |
+| 23 | the isolate's byte budget not enforced | concurrency › a burst over the budget is a retryable 503 |
+| 24 | CORS echoes any origin | http › CORS |
+| 25 | the series files are not handed to the engine | invariance › the three placements |
+| 26 | after the refusal bound the query answers from what it has | fence › discarded for good; a shard behind the ledger; a missing file (3 tests) |
+
+The ten kinds of mutant the task names are rows 1, 4, 5, 6, 8, 11 and 12, 3, 13, 16 (and
+15), 17 and 18. Fourteen mutants are caught by exactly one test (1 to 3, 10, 13 to 16, 18,
+20 to 24). In particular the isolation fuzz is the only test that catches the two
+tenant mutants, and the cache-key unit test the only one for the two cache-key mutants: a
+behavioural cache test would need two objects whose keys differ only in their hash, which
+the write path never produces.
 
 ### Measurements
 
@@ -406,22 +459,79 @@ dropped before each measured query, so the WASM memory figure is that query's pe
 process and answer in well under a millisecond. Wall times say how much work the Worker
 and the engine do, not how long a query takes on Cloudflare.
 
-@@MEASURE@@
+Two runs on 2026-11-18, 22:0x and 22:3x UTC, with other engineers' test suites running on
+the same four cores (the second run was the busier one: loading tenant A took 114 s
+against 56 s). Counts are identical in both runs except "leaves used", which depends on
+the random query id; times are given as first run / second run.
+
+| | 1 h, 15 s scrape | 24 h, 15 s scrape | 24 h, 60 s scrape | 1 h, 60 s scrape |
+|---|---:|---:|---:|---:|
+| range, step | 1 h, 15 s (241 steps) | 24 h, 5 min | 24 h, 5 min (289 steps) | 1 h, 60 s |
+| limits | default | default | `maxSamples` raised to 3,000,000 | default |
+| answer | **200** | **422** `max_scan_samples` (11,520,000 > 3,000,000) | **200** | **200** |
+| ledger reads (2 `plan` calls each) | 1 | 1 | 1 | 1 |
+| files listed / skipped / read | 24 / 0 / 24 | 580 / 0 / **0** | 580 / 0 / 580 | 24 / 0 / 24 |
+| bytes of files read | 1.15 MiB | 0 | 10.55 to 10.60 MiB | 0.43 MiB |
+| leaves used / leaf calls / rounds | 16 to 19 / same / 1 | 0 / 0 / 0 | 32 / 99 to 100 / 4 | 14 to 19 / same / 1 |
+| R2 GETs, files from R2 | 24 | 0 | 580 | (not run cold) |
+| R2 GETs, files from the Cache API | 0 (24 cache hits) | | 0 (580 cache hits) | 0 (24 hits) |
+| shards asked / shard calls | 2 / 2 | **0 / 0** | 2 / 2 | 2 / 2 |
+| tail read | 2 batches, 0.96 MiB | none | 2 batches, 0.39 MiB | 2 batches, 0.39 MiB |
+| scan bound (lake samples) / samples loaded | 480,000 / 520,000 of 2,000 series | 11,520,000 / 0 | 2,880,000 / 2,890,000 | 120,000 / 130,000 |
+| engine time, first query in the isolate | 139 / 243 ms | | 255 / 340 ms | |
+| engine time, engine code warm | 81 / 145 ms | | 219 / 280 ms | 33 / 26 ms |
+| **peak WASM memory** | **21.5 to 21.6 MiB** | 0 | **76.4 to 76.7 MiB** | 7.7 MiB |
+| local wall time, files from R2, first query | 348 / 948 ms | 12 / 25 ms | 1,897 / 2,946 ms | |
+| local wall time, files from the Cache API | 138 / 336 ms | | 523 / 923 ms | 89 / 82 ms |
+| response | 162,722 B | 239 B | 172,808 B | 37,312 B |
+
+- **24 hours at a 15 s scrape does not run.** 11.5 M samples are 176 MiB decoded, more
+  than an isolate has; the query is refused from the ledger's row counts before a single
+  file or shard is read, and says what to do. Answering it needs evaluation split over
+  leaves ("Not implemented").
+- **24 hours at a 60 s scrape runs only with `maxSamples` raised** to 3,000,000; with the
+  default limits it is refused by the engine's `max_samples` (2,890,000 > 2,000,000), but
+  only after all 580 files were read and decoded: 76.4 MiB of WASM memory for a refusal
+  ("Known risks", materialise then refuse).
+- The scan bound counts lake rows only; the tail's 40,000 (15 s) or 10,000 (60 s) samples
+  are on top. Every result was checked: 20 jobs, every point within 15% of the expected
+  rate, identical bytes from R2 and from the cache.
 
 **Production estimate (modelled, not measured).** From the operation counts above and
-the figures measured on Cloudflare: a Durable Object call 10 to 40 ms, an R2 read below
-1 MB 45 to 55 ms with six in parallel per leaf (so one wave per leaf call; spike S1), a
-ledger `plan` one such call plus 25 to 40 µs per file listed (spike S4), engine CPU twice
-the local time (spike S2). The ledger is read first, in two sequential calls; shards and
-leaves then run in parallel; leaf rounds are sequential; then the engine.
+figures measured on Cloudflare in spikes S1, S2 and S4. The ledger is read first, in two
+sequential calls; shards and leaves then run in parallel; leaf rounds are sequential;
+then the engine. `npm run measure` prints the same arithmetic (`ESTIMATE` lines).
 
-@@ESTIMATE@@
+Arithmetic, with the engine CPU at twice the local engine time (the two runs give the
+range). "Warm" means leaf objects already created; first use of a leaf object adds 250 to
+700 ms (S1).
+
+| | ledger: 2 `plan` calls x 10 to 70 ms + files x 25 to 40 µs | then, in parallel: shards (1 call deep, 10 to 70 ms) and leaf rounds x 55 to 203 ms | engine CPU, 2 x local | **total** |
+|---|---:|---:|---:|---:|
+| 1 h, 15 s scrape, engine code warm | 20 + 24 x 0.025 = **21** to 140 + 24 x 0.04 = **141** ms | 1 x 55 to 203 = **55 to 203** ms | 2 x 81 to 2 x 145 = **162 to 290** ms | **238 to 634 ms** |
+| the same, first query in an isolate | 21 to 141 ms | 55 to 203 ms | 2 x 139 to 2 x 243 = 278 to 486 ms | **354 to 830 ms** |
+| 24 h, 15 s scrape (refused) | 20 + 580 x 0.025 = **35** to 140 + 580 x 0.04 = **163** ms | nothing | nothing | **35 to 163 ms**, then 422 |
+| 24 h, 60 s scrape, engine code warm | **35 to 163** ms | 4 x 55 to 203 = **220 to 812** ms | 2 x 219 to 2 x 280 = **438 to 560** ms | **693 to 1,535 ms** |
+| the same, first query in an isolate | 35 to 163 ms | 220 to 812 ms | 2 x 255 to 2 x 340 = 510 to 680 ms | **765 to 1,655 ms** |
+
+Where the inputs come from. A **leaf round** costs at least one Durable Object call plus
+one R2 read (45 ms median, S1 section 3), and at most what S1 measured for a whole round
+of six reads on each of 16 warm leaf objects (203 ms; 173 ms on 32 leaves): a leaf never
+gets more than six reads per round, so a round is one wave of reads. A **Durable Object
+call** alone was not measured; 10 to 70 ms is bounded above by S1 (twelve parallel calls
+to warm objects that each waited 300 ms took 368 ms). The **ledger `plan`** adds 25 to
+40 µs per file returned (S4). **Engine CPU** is twice the local wall time (S2). The model
+also uses the platform facts these spikes established: six R2 reads in flight per request,
+the coordinator itself reads no R2 (only leaves, each with its own six), and no R2 write
+is on the query path (a write costs about 0.4 s, S4). In operations, the 24 h query from R2
+costs 580 R2 GETs, 100 leaf calls, 2 shard calls and 2 ledger calls; from the Cache API,
+no GETs and the same calls.
 
 What the estimate leaves out: key, limits and pool-map lookups in KV on a cold isolate;
 first use of a leaf object (250 to 700 ms extra in spike S1, per object, until the pool
 is warm); contention when many queries share leaves; the cost of a Cache API read
 (unmeasured; assumed below an R2 read); transfer of the bytes from leaf to coordinator
-(1 to 11 MiB here); response time to the client. The experiment that would settle it is
+(1.2 to 11 MiB here, through RPC); response time to the client. The experiment that would settle it is
 `design/VERIFICATION.md` S1 extended with this Worker: the same two queries on Cloudflare,
 cold and warm.
 

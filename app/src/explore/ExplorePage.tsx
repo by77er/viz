@@ -49,6 +49,23 @@ const MOCK_EXAMPLES: { title: string; q: string }[] = [
 /** The id of the one series drawn for the Other group when the policy sums its members. */
 const OTHER_ID = '__other__'
 
+/** How long after the last change of form the address bar is brought up to date, in ms. */
+const VIEW_URL_DELAY = 300
+
+/** Text digests by result, then by unit and title: one per result as long as the result is kept. */
+const digests = new WeakMap<object, Map<string, string>>()
+function cachedDigest(aligned: ReturnType<typeof alignMatrix>, title: string, unit: string, format: (v: number | null) => string): string {
+  let byKey = digests.get(aligned)
+  if (!byKey) digests.set(aligned, (byKey = new Map()))
+  const key = `${unit}\n${title}`
+  let text = byKey.get(key)
+  if (text === undefined) {
+    text = renderDigest(digestSeries({ xs: aligned.xs, series: aligned.series }), { format, title })
+    byKey.set(key, text)
+  }
+  return text
+}
+
 /**
  * A result carries what is needed to describe it (lib/describe, design review B1): the
  * request it answers, the window, the unit its query implies and when it arrived. Everything
@@ -357,14 +374,35 @@ export function ExplorePage() {
     }
     setViewState(search.view)
   }, [search.view])
+  // The new form is painted first. The address bar follows VIEW_URL_DELAY ms after the last
+  // switch: a router navigation costs about 25 ms of main thread at 4x CPU, and run in the
+  // next task it delayed the frame after the switch (design review B3). It is not lost on a
+  // reload or a tab close (pagehide), and is dropped if the page is left first.
+  const viewUrlTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingView = useRef<ResultView | null>(null)
+  const flushViewUrl = useCallback(() => {
+    if (viewUrlTimer.current !== null) clearTimeout(viewUrlTimer.current)
+    viewUrlTimer.current = null
+    const v = pendingView.current
+    pendingView.current = null
+    if (v !== null) setSearch({ view: v }, true)
+  }, [setSearch])
+  useEffect(() => {
+    window.addEventListener('pagehide', flushViewUrl)
+    return () => {
+      window.removeEventListener('pagehide', flushViewUrl)
+      if (viewUrlTimer.current !== null) clearTimeout(viewUrlTimer.current)
+    }
+  }, [flushViewUrl])
   const setView = useCallback(
     (v: ResultView) => {
       pushedView.current = v
       setViewState(v)
-      // The new form is painted first; the address bar is brought up to date after that frame.
-      requestAnimationFrame(() => setTimeout(() => setSearch({ view: v }, true), 0))
+      pendingView.current = v
+      if (viewUrlTimer.current !== null) clearTimeout(viewUrlTimer.current)
+      viewUrlTimer.current = setTimeout(flushViewUrl, VIEW_URL_DELAY)
     },
-    [setSearch],
+    [flushViewUrl],
   )
   const toggleView = useCallback(() => setView(view === 'text' ? 'chart' : 'text'), [view, setView])
   useEffect(() => {
@@ -417,11 +455,12 @@ export function ExplorePage() {
 
   const showAll = useCallback(() => setIsolated(null), [])
 
-  // The digest is computed when the text form is shown, not for every result. Its title is the result's query.
+  // The digest is computed when the text form is first shown for a result, and kept for that
+  // result: switching away and back does not compute it again. Its title is the result's query.
   const digestText = useMemo(() => {
     if (!aligned || !description || view !== 'text') return ''
-    return renderDigest(digestSeries({ xs: aligned.xs, series: aligned.series }), { format: formatAlone, title: description.digestTitle })
-  }, [aligned, description, formatAlone, view])
+    return cachedDigest(aligned, description.digestTitle, unit, formatAlone)
+  }, [aligned, description, unit, formatAlone, view])
 
   // ---- render
   const error = q !== '' && query.isError ? query.error : null

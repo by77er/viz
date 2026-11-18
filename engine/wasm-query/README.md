@@ -21,7 +21,7 @@ node tools/check.mjs          # load proof and size report, in Node
 | `js/viz_query.wasm` | Build output (not committed; `./build.sh` writes it) |
 | `js/wasm.d.ts` | Type of a `.wasm` import |
 | `tools/check.mjs` | Loads the module in Node with an empty import object and runs queries through the binding |
-| `build.sh`, `.cargo/config.toml` | Build settings; `CARGO_TARGET_DIR` is `./target` |
+| `build.sh`, `.cargo/config.toml` | Build settings; `CARGO_TARGET_DIR` is `./target` (about 300 MB, kept so rebuilds are incremental; `engine/query/target`, 3.7 GB, was deleted after its tests ran) |
 
 ## What is implemented
 

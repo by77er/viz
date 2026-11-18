@@ -15,8 +15,11 @@ export function additiveToggle(
 }
 
 const QUERY = '(pointer: coarse)'
+/** One list for the page: `matchMedia` builds a new one on every call, and this is read on every render. */
+let list: MediaQueryList | null = null
+const coarseList = () => (list ??= window.matchMedia(QUERY))
 const subscribe = (onChange: () => void) => {
-  const mq = window.matchMedia(QUERY)
+  const mq = coarseList()
   mq.addEventListener('change', onChange)
   return () => mq.removeEventListener('change', onChange)
 }
@@ -25,7 +28,7 @@ const subscribe = (onChange: () => void) => {
 export function useCoarsePointer(): boolean {
   return useSyncExternalStore(
     subscribe,
-    () => window.matchMedia(QUERY).matches,
+    () => coarseList().matches,
     () => false,
   )
 }

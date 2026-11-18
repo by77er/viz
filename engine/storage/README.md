@@ -221,8 +221,12 @@ No native benchmark was run and nothing here was compared with `bench/`.
 locality -- 200000 120`) encodes one generated dataset twice, with the plain id of
 `contracts/BATCH.md` and with an id whose top 24 bits are hashes of `namespace` and `job`,
 checks that `select` returns identical results for six queries on both, and prints row
-groups, pages and bytes each query would read, and select time. The numbers and the
-decision (the contract was left as it is, because 40 remaining bits collide) are in
+groups, pages and bytes each query would read, and select time. Re-run 2026-11-18 at 30,
+60 and 120 samples per series (about 25, 40 and 65 s each, release build): for
+`{namespace="x"}` the locality id reads 1.3×, 1.6× and 2.6× fewer row-group bytes (5.8×,
+10.7×, 16.5× by pages, which the engine cannot prune by), `{job="y"}` 1.3–2.7×, and a
+full-metric scan touches the same row groups. The table and the decision (the contract is
+unchanged: below the 3× bar as the engine reads, and 40 remaining bits collide) are in
 `design/DECISIONS.md` D19. Nothing in the crate uses it.
 
 ## Known risks

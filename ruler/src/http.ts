@@ -570,7 +570,16 @@ export function promFloat(v: number): string {
   return v.toExponential().replace(/e([+-])(\d)$/, 'e$10$2')
 }
 
-const promTime = (ms: number | null): string => (ms === null ? ZERO_TIME : rfc3339(ms))
+/**
+ * A time as Go's encoding/json prints a `time.Time`: RFC 3339 with the fraction's trailing
+ * zeros dropped (`...:05Z`, `...:05.12Z`), in UTC. Prometheus' API structs hold `time.Time`,
+ * so this is the exact text Prometheus would send for the same instant.
+ */
+export function goTime(ms: number): string {
+  return rfc3339(ms).replace(/\.?0+Z$/, 'Z')
+}
+
+const promTime = (ms: number | null): string => (ms === null ? ZERO_TIME : goTime(ms))
 
 class PromError extends Error {
   constructor(
@@ -586,8 +595,8 @@ function promAlerts(snap: RuleSnapshot): Record<string, unknown>[] {
   return snap.alerts
     .filter((a) => a.state !== 'inactive')
     .map((a) => {
-      const out: Record<string, unknown> = { labels: a.labels, annotations: a.annotations, state: a.state, activeAt: rfc3339(a.activeAt) }
-      if (a.keepFiringSince !== null) out.keepFiringSince = rfc3339(a.keepFiringSince)
+      const out: Record<string, unknown> = { labels: a.labels, annotations: a.annotations, state: a.state, activeAt: goTime(a.activeAt) }
+      if (a.keepFiringSince !== null) out.keepFiringSince = goTime(a.keepFiringSince)
       out.value = promFloat(a.value)
       return out
     })

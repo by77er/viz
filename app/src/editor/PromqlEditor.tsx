@@ -97,7 +97,10 @@ export default memo(function PromqlEditor({ value, onRun, client, handleRef }: P
           history(),
           closeBrackets(),
           bracketMatching(),
-          autocompletion({ icons: false, maxRenderedOptions: 80 }),
+          // The list shows eight rows; it is rebuilt on every keystroke while it is open, so it
+          // renders five screens of options rather than ten (design review B3). Arrow keys move
+          // the rendered window, so every option stays reachable.
+          autocompletion({ icons: false, maxRenderedOptions: 40 }),
           theme,
           tooltips({ position: 'absolute' }),
           placeholderExt('rate(http_requests_total[5m])'),

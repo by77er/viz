@@ -5,7 +5,7 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import spec from '../openapi.json'
-import { promFloat, ROUTES } from '../src/http'
+import { goTime, promFloat, ROUTES } from '../src/http'
 import { ALL_SCOPES, apiKey, call } from './api'
 import { tenantWorld, world, T0 } from './harness'
 import { MIN, newTenant, nextTick, notifierStub, ok, rulerStub, runNotifierUntil, vec } from './helpers'
@@ -153,7 +153,7 @@ describe('Prometheus-compatible, read-only: /api/v1/rules and /api/v1/alerts', (
     expect('lastError' in high).toBe(false) // omitempty
     const alert = (high.alerts as Record<string, unknown>[])[0]!
     expect(keys(alert, ['keepFiringSince'])).toEqual([...ALERT].sort())
-    expect(alert).toEqual({ labels: { alertname: 'HighRequestLatency', instance: 'a', severity: 'page' }, annotations: { summary: 'High request latency' }, state: 'pending', activeAt: new Date(t1).toISOString(), value: '7.5e-01' })
+    expect(alert).toEqual({ labels: { alertname: 'HighRequestLatency', instance: 'a', severity: 'page' }, annotations: { summary: 'High request latency' }, state: 'pending', activeAt: goTime(t1), value: '7.5e-01' })
 
     expect(keys(rec, ['lastError'])).toEqual([...RECORDING].sort())
     expect(rec).toMatchObject({ name: 'job:http_inprogress_requests:sum', query: 'rec', labels: {}, health: 'ok', type: 'recording' })
@@ -186,7 +186,7 @@ describe('Prometheus-compatible, read-only: /api/v1/rules and /api/v1/alerts', (
     w.evaluate = () => vec()
     const gone = await tick()
     res = await call(key.auth, 'GET', '/api/v1/alerts')
-    expect(res.json.data.alerts).toEqual([expect.objectContaining({ state: 'firing', keepFiringSince: new Date(gone).toISOString() })])
+    expect(res.json.data.alerts).toEqual([expect.objectContaining({ state: 'firing', keepFiringSince: goTime(gone) })])
     const rules = await call(key.auth, 'GET', '/api/v1/rules')
     // A resolved alert that is only retained is not an active alert, and the rule is inactive.
     expect(rules.json.data.groups[0].rules[3]).toMatchObject({ name: 'Now', state: 'inactive', alerts: [] })
@@ -219,6 +219,12 @@ describe('Prometheus-compatible, read-only: /api/v1/rules and /api/v1/alerts', (
     }
   })
 
+  it('times are printed as Go prints a time.Time: no trailing zeros in the fraction', () => {
+    const t = Date.UTC(2026, 10, 18, 13, 7, 5)
+    expect([t, t + 500, t + 120, t + 7].map(goTime)).toEqual(['2026-11-18T13:07:05Z', '2026-11-18T13:07:05.5Z', '2026-11-18T13:07:05.12Z', '2026-11-18T13:07:05.007Z'])
+    expect(goTime(Date.UTC(2026, 0, 1, 0, 0, 10))).toBe('2026-01-01T00:00:10Z') // a zero in the seconds is not a fraction
+  })
+
   it('the value is formatted as strconv.FormatFloat(v, \'e\', -1, 64)', () => {
     expect([1, 0.5, 123.45, 0, -2, 1e21, 1.5e-7, 100, 1234567.891].map(promFloat)).toEqual(['1e+00', '5e-01', '1.2345e+02', '0e+00', '-2e+00', '1e+21', '1.5e-07', '1e+02', '1.234567891e+06'])
     expect([NaN, Infinity, -Infinity].map(promFloat)).toEqual(['NaN', '+Inf', '-Inf'])
@@ -235,6 +241,34 @@ describe('Prometheus-compatible, read-only: /api/v1/rules and /api/v1/alerts', (
     expect(res.json.data.alerts).toEqual([expect.objectContaining({ labels: { alertname: 'DeadMansSwitch', severity: 'none' }, state: 'firing', value: '1e+00' })])
   })
 })
+
+/** A tenant with monitors, a rule group, firing alerts, a silence and a notifier config, all created through the API. */
+async function populate(marker: string) {
+  const tenant = newTenant(marker)
+  const key = await apiKey(tenant)
+  const w = tenantWorld(tenant)
+  w.evaluate = () => vec([{ instance: `${marker}-host` }, 9])
+  w.range = (_q, from) => ({ resultType: 'matrix', result: [{ metric: { instance: `${marker}-host` }, values: [[from / 1000, '9']] }] })
+  const ruler = rulerStub(tenant)
+  ok(await ruler.configure(tenant, { deadman: false }))
+  expect((await call(key.auth, 'PUT', '/api/v1/monitors/notifier', { ...amConfig, receivers: [{ name: 'hook', webhook_configs: [{ url: `https://receiver.test/${marker}`, secret: `${marker}-secret-0123456789` }] }] })).status).toBe(200)
+  const created = await call(key.auth, 'POST', '/api/v1/monitors', { name: `${marker}-latency`, query: `${marker}_metric`, condition: { op: '>', threshold: 1, unit: 'ms' }, notify: 'hook', message: `${marker} is slow`, owner: `${marker}-team` })
+  expect(created.status).toBe(201)
+  expect((await call(key.auth, 'PUT', `/api/v1/monitors/groups/${marker}-group`, { interval: '1m', rules: [{ alert: `${marker}-alert`, expr: `${marker}_up == 0` }, { record: `${marker}:rec`, expr: `${marker}_x` }] })).status).toBe(200)
+  world.now = T0 + 5 * MIN
+  await nextTick(ruler, tenant)
+  await nextTick(ruler, tenant)
+  await runNotifierUntil(notifierStub(tenant), tenant, world.now)
+  const id = created.json.id as string
+  const silenced = await call(key.auth, 'POST', `/api/v1/monitors/${id}/silence`, { duration: '1h', comment: `${marker} maintenance` })
+  expect(silenced.status).toBe(200)
+  expect(silenced.json.silences.length, JSON.stringify([silenced.json, (await call(key.auth, 'GET', `/api/v1/monitors/${id}`)).json])).toBe(1)
+  const state = async () => {
+    const got = await Promise.all(['/api/v1/monitors', `/api/v1/monitors/${id}`, '/api/v1/monitors/groups', '/api/v1/monitors/silences', '/api/v1/monitors/notifier', '/api/v1/rules', '/api/v1/alerts', '/api/v1/monitors/rulefile'].map((p) => call(key.auth, 'GET', p)))
+    return got.map((r) => r.text.replace(/"nowMs":\d+/g, ''))
+  }
+  return { tenant, key, id, marker, silenceId: silenced.json.silences[0].id as string, undoToken: silenced.json.undoToken as string, fingerprint: silenced.json.silenced[0] as string, state }
+}
 
 describe('routes and documentation agree (openapi.json)', () => {
   type Op = { operationId: string; security: Record<string, string[]>[]; parameters?: ({ $ref?: string; name?: string })[]; responses: Record<string, unknown>; requestBody?: unknown }
@@ -291,37 +325,40 @@ describe('routes and documentation agree (openapi.json)', () => {
     expect(schemas.PromAlertingRule!.required).toEqual(['state', 'name', 'query', 'duration', 'keepFiringFor', 'labels', 'annotations', 'alerts', 'health', 'evaluationTime', 'lastEvaluation', 'type'])
     expect(schemas.PromAlert!.required).toEqual(['labels', 'annotations', 'state', 'activeAt', 'value'])
   })
+
+  it('the documented schemas of viz\'s own responses list every field the handlers return, and the handlers return every required one', async () => {
+    const a = await populate('schema')
+    const schemas = spec.components.schemas as unknown as Record<string, { required?: string[]; properties: Record<string, unknown> }>
+    let checked = 0
+    const agree = (name: string, obj: object) => {
+      const s = schemas[name]!
+      for (const k of Object.keys(obj)) expect(Object.keys(s.properties), `${name}.${k} is returned but not documented`).toContain(k)
+      for (const k of s.required ?? []) expect(Object.keys(obj), `${name}.${k} is documented as required but not returned`).toContain(k)
+      checked++
+    }
+    const list = (await call(a.key.auth, 'GET', '/api/v1/monitors')).json
+    for (const m of list.monitors) {
+      agree('Monitor', m)
+      for (const al of m.alerts) agree('MonitorAlert', al)
+    }
+    const one = (await call(a.key.auth, 'GET', `/api/v1/monitors/${a.id}`)).json
+    agree('Timeline', one.history)
+    for (const e of one.history.entries) agree('TimelineEntry', e)
+    expect(new Set(one.history.entries.map((e: { kind: string }) => e.kind))).toEqual(new Set(['created', 'firing', 'notified', 'silenced'])) // no `for`: it fires at its first tick
+    agree('MonitorSaved', (await call(a.key.auth, 'POST', '/api/v1/monitors?dryRun=true', { name: 'x', query: 'q', condition: { op: '>', threshold: 1 } })).json)
+    for (const sl of (await call(a.key.auth, 'GET', '/api/v1/monitors/silences')).json.silences) agree('Silence', sl)
+    agree('SilenceResult', (await call(a.key.auth, 'POST', `/api/v1/monitors/${a.id}/silence?dryRun=true`, { duration: '1h' })).json)
+    agree('AckResult', (await call(a.key.auth, 'POST', `/api/v1/monitors/${a.id}/acknowledge?dryRun=true`, {})).json)
+    agree('AckResult', (await call(a.key.auth, 'POST', `/api/v1/monitors/${a.id}/unacknowledge?dryRun=true`, {})).json)
+    const bt = (await call(a.key.auth, 'POST', '/api/v1/monitors/backtest', { monitor: { name: 'p', expr: 'schema_metric > 1' }, fromMs: T0, toMs: T0 + 10 * MIN, step: '1m' })).json
+    agree('Backtest', bt)
+    for (const i of bt.intervals) agree('BacktestInterval', i)
+    expect(bt.intervals.length).toBeGreaterThan(0)
+    expect(checked).toBeGreaterThan(15)
+  })
 })
 
 describe('tenant isolation on every route', () => {
-  /** A tenant with monitors, a rule group, firing alerts, a silence and a notifier config, all created through the API. */
-  async function populate(marker: string) {
-    const tenant = newTenant(marker)
-    const key = await apiKey(tenant)
-    const w = tenantWorld(tenant)
-    w.evaluate = () => vec([{ instance: `${marker}-host` }, 9])
-    w.range = (_q, from) => ({ resultType: 'matrix', result: [{ metric: { instance: `${marker}-host` }, values: [[from / 1000, '9']] }] })
-    const ruler = rulerStub(tenant)
-    ok(await ruler.configure(tenant, { deadman: false }))
-    expect((await call(key.auth, 'PUT', '/api/v1/monitors/notifier', { ...amConfig, receivers: [{ name: 'hook', webhook_configs: [{ url: `https://receiver.test/${marker}`, secret: `${marker}-secret-0123456789` }] }] })).status).toBe(200)
-    const created = await call(key.auth, 'POST', '/api/v1/monitors', { name: `${marker}-latency`, query: `${marker}_metric`, condition: { op: '>', threshold: 1, unit: 'ms' }, notify: 'hook', message: `${marker} is slow`, owner: `${marker}-team` })
-    expect(created.status).toBe(201)
-    expect((await call(key.auth, 'PUT', `/api/v1/monitors/groups/${marker}-group`, { interval: '1m', rules: [{ alert: `${marker}-alert`, expr: `${marker}_up == 0` }, { record: `${marker}:rec`, expr: `${marker}_x` }] })).status).toBe(200)
-    world.now = T0 + 5 * MIN
-    await nextTick(ruler, tenant)
-    await nextTick(ruler, tenant)
-    await runNotifierUntil(notifierStub(tenant), tenant, world.now)
-    const id = created.json.id as string
-    const silenced = await call(key.auth, 'POST', `/api/v1/monitors/${id}/silence`, { duration: '1h', comment: `${marker} maintenance` })
-    expect(silenced.status).toBe(200)
-    expect(silenced.json.silences.length, JSON.stringify([silenced.json, (await call(key.auth, 'GET', `/api/v1/monitors/${id}`)).json])).toBe(1)
-    const state = async () => {
-      const got = await Promise.all(['/api/v1/monitors', `/api/v1/monitors/${id}`, '/api/v1/monitors/groups', '/api/v1/monitors/silences', '/api/v1/monitors/notifier', '/api/v1/rules', '/api/v1/alerts', '/api/v1/monitors/rulefile'].map((p) => call(key.auth, 'GET', p)))
-      return got.map((r) => r.text.replace(/"nowMs":\d+/g, ''))
-    }
-    return { tenant, key, id, marker, silenceId: silenced.json.silences[0].id as string, undoToken: silenced.json.undoToken as string, fingerprint: silenced.json.silenced[0] as string, state }
-  }
-
   it('dryRun on every write: a well-formed request answers 2xx, says dryRun, and changes nothing the API can show', async () => {
     const a = await populate('dry')
     // Acknowledged first, for real, so that a dry un-acknowledgement has something it would change.
