@@ -113,12 +113,15 @@ class Bucket {
     return this.exact ? this.exact.has(id) : bloomHas(this.bloom!, h1, h2)
   }
 
-  add(id: bigint, h1: number, h2: number): void {
-    if (this.exact) this.exact.add(id)
-    else {
-      hllAdd(this.hll!, h1, h2)
-      bloomAdd(this.bloom!, h1, h2)
+  /** Returns true if the bucket's count may have changed (a new id, or a raised register). */
+  add(id: bigint, h1: number, h2: number): boolean {
+    if (this.exact) {
+      if (this.exact.has(id)) return false
+      this.exact.add(id)
+      return true
     }
+    bloomAdd(this.bloom!, h1, h2)
+    return hllAdd(this.hll!, h1, h2)
   }
 
   /** Switch from the exact set to the sketch, carrying every id over. */
@@ -248,13 +251,12 @@ export class SeriesWindow {
       const id = ids[i]!
       const [lo, hi] = halves(id)
       const [h1, h2] = hashId(lo, hi)
-      if (this.cur.has(id, h1, h2)) continue
-      const inPrev = this.prev.has(id, h1, h2)
-      this.cur.add(id, h1, h2)
-      if (!inPrev) {
-        this.union++
-        this.estimate = null
-      }
+      // The HyperLogLog is fed every id, also one the Bloom filter (wrongly or rightly)
+      // calls known: the count must not inherit the filter's false positives.
+      const wasExact = this.cur.exact !== null
+      if (!this.cur.add(id, h1, h2)) continue
+      this.estimate = null
+      if (wasExact && !this.prev.has(id, h1, h2)) this.union++
       if (this.cur.exact && this.cur.exact.size > this.exactMax) {
         this.cur.promote(bloomBitsFor(Math.max(expected, 16 * this.exactMax)))
         this.estimate = null

@@ -304,9 +304,9 @@ export class Notifier extends DurableObject implements NotifierRpc {
     const resolved: string[] = []
     for (const fp of g.members) {
       const a = this.alerts.get(fp)
-      if (!a) continue
+      if (!a || a.receivedAt > tick) continue
       if (this.muted(a, tick)) continue
-      if (a.status === 'firing') firing.push(fp)
+      if (this.firingAsOf(a, tick)) firing.push(fp)
       else resolved.push(fp)
     }
     firing.sort()
