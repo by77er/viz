@@ -270,7 +270,7 @@ Run on 2026-11-18 after the review fixes, Node 22.23, on a machine shared with o
 
 | Check | Result |
 |---|---|
-| `npm test` | 128 tests in 12 files pass (two workers) |
+| `npm test` | 129 tests in 12 files pass (two workers) |
 | `npx tsc --noEmit` | passes |
 | `npm run build` | passes (its prebuild regenerates `design-system/dist` and `bundle.css` from the system's sources) |
 | `node ../design-system/tools/check.mjs src` | contrast 240/240; 0 literal values in 50 files |
@@ -278,7 +278,7 @@ Run on 2026-11-18 after the review fixes, Node 22.23, on a machine shared with o
 | `node e2e/design.cjs` | 52 of 52 checks pass |
 | `node e2e/fixes.cjs` | 37 of 37 checks pass, including the 60 s stop |
 | axe-core 4.14 | 0 violations of any impact in 16 runs (5 in `run.cjs`, 8 in `design.cjs`, 3 in `fixes.cjs`) |
-| `MUTANTS=fixes node e2e/mutants.cjs` | MUTANT_RESULT |
+| `MUTANTS=fixes node e2e/mutants.cjs` | 15 of 15 killed (unit tests and `e2e/fixes.cjs`; table below) |
 | `node e2e/mutants.cjs` (the restyle's set) | not re-run after the review fixes; the results below are the restyle's |
 
 One existing check changed: `e2e/design.cjs` expected the segmented control's pressed fill to
@@ -331,8 +331,37 @@ with nothing focusable by axe's rules.
 
 ### Mutants
 
-Each line of `e2e/measurements/mutants.txt` is one property broken in the source, the app
-rebuilt, and `e2e/design.cjs` run:
+**The review fixes** (`MUTANTS=fixes node e2e/mutants.cjs`, results in
+`e2e/measurements/mutants-fixes.txt`): one property broken at a time, the app rebuilt, the
+unit tests and `e2e/fixes.cjs` (without its 60 s case) run. 15 of 15 killed:
+
+| Mutant | Result | Caught by |
+|---|---|---|
+| B1: the unit comes from the pending query (the editor's text), not the result on screen | killed | 3 unit tests, e.g. “a result describes itself (B1) takes the unit from the result on screen, not fro”; 7 e2e checks, e.g. “B1 waiting: unit, legend, chart name, range and the unit select describe the res” |
+| B1: the digest is titled with the pending query | killed | 2 unit tests, e.g. “a result describes itself (B1) titles the digest and names the chart with the re”; 2 e2e checks, e.g. “B1 waiting: the digest title, the table head and the JSON are the result's, not ” |
+| B1: the chart is named after the pending query (in the page, past the derivation) | killed | 3 e2e checks, e.g. “B1 waiting: unit, legend, chart name, range and the unit select describe the res” |
+| B1: the head does not say "Showing the previous query" | killed | 1 unit test, e.g. “a result describes itself (B1) says plainly when the result is not the answer to”; 3 e2e checks, e.g. “B1 waiting: unit, legend, chart name, range and the unit select describe the res” |
+| B3: typing re-renders the page (the draft is page state again) | killed | 1 e2e check, e.g. “B3: typing 60 characters renders no React component (the page, the query row, th” |
+| B3: the deferred URL update leaves its guard set after a quick round trip (Back is then ignored) | killed | 1 e2e check, e.g. “B3: the URL's view follows a change of form, and Back after a quick round trip s” |
+| B3: the focus keeper reads layout after every DOM change | killed | 1 unit test, e.g. “focus after a control goes away (M3) looks only at changes that can take the foc” |
+| M3: focus is left on the body after Cancel (the keeper moves nothing) | killed | 2 e2e checks, e.g. “M3: after Cancel by keyboard, focus is on Retry, with the ring” |
+| M5: duplicate display names (shortening ignores collisions) | killed | 2 unit tests, e.g. “series names (M5) does not shorten when shortening would make two series look th” |
+| M7: every cell repeats the unit | killed | 3 unit tests, e.g. “where the unit goes: once in the head, or on every value (M7) a column with one ”; 4 e2e checks, e.g. “B1 baseline: the request-rate result states its unit once in the head and in eac” |
+| M2: a survivor is repainted (the previous assignment is ignored) | killed | 4 unit tests, e.g. “series assignment (M2) survivors keep their colour when a filter removes other s”; 1 e2e check, e.g. “M2: survivors keep their colour when a filter removes other series” |
+| M2: a ninth coloured series | killed | 5 unit tests, e.g. “series assignment (M2) never colours more than eight series; the rest are ONE Ot”; 3 e2e checks, e.g. “M2: never more than eight coloured series, each on its own series token” |
+| M2: every member of Other is its own legend row | killed | 2 e2e checks, e.g. “M2: never more than eight coloured series, each on its own series token” |
+| M4: a tap on a legend row does nothing on touch | killed | 1 e2e check, e.g. “M4: on a coarse pointer a tap on a legend row toggles that series, with no modif” |
+| M4: a tap isolates instead of toggling (a modifier is needed on touch) | killed | 1 unit test, e.g. “touch parity (M4) a tap toggles the series; a mouse needs a modifier”; 1 e2e check, e.g. “M4: on a coarse pointer a tap on a legend row toggles that series, with no modif” |
+
+This run found two weaknesses, fixed and re-run: after Cancel with focus lost, the e2e run
+stopped at its next step, so the 27-interaction focus check never ran; and the random-label
+property did not find the duplicate names (a property over long values that differ only in
+the middle now does). The focus keeper's layout mutant changes speed, not behaviour, and is
+caught only by the unit test of its filter.
+
+**The restyle** (`node e2e/mutants.cjs`), not re-run after the review fixes. Each line of
+`e2e/measurements/mutants.txt` is one property broken in the source, the app rebuilt, and
+`e2e/design.cjs` run:
 
 | Mutant | Caught by |
 |---|---|

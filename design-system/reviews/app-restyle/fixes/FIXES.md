@@ -226,8 +226,8 @@ the table for the row that has focus or was tapped (a tap does not focus a butto
 browser). The table's columns are the distinguishing labels in that order, with the common
 labels once in its caption. The text digest and the JSON use full names.
 
-**Tests.** `src/lib/naming.test.ts` (13, three of them properties over random label sets,
-500 and 300 cases): two series share a name, in any of the three forms, only when their label
+**Tests.** `src/lib/naming.test.ts` (14, four of them properties: three over random label
+sets, 500 and 300 cases, and one over long values that differ only in the middle, 300 cases): two series share a name, in any of the three forms, only when their label
 sets are equal; names do not depend on order; no name contains a common label. `e2e/fixes.cjs`:
 legend names lead with the most distinguishing label and carry the full set as title; a long
 CPU label set is shown by what distinguishes it and its full name appears on focus; the text
@@ -302,7 +302,35 @@ wording, so they are left for the navigation component.
 
 ## Mutants
 
-MUTANTS_TABLE
+`MUTANTS=fixes node e2e/mutants.cjs` breaks one property at a time, rebuilds, and runs the
+unit tests and `e2e/fixes.cjs` (without its 60 s case); full list in
+`app/e2e/measurements/mutants-fixes.txt`. **15 of 15 killed.**
+
+| Mutant | Result | Caught by |
+|---|---|---|
+| B1: the unit comes from the pending query (the editor's text), not the result on screen | killed | 3 unit tests, e.g. “a result describes itself (B1) takes the unit from the result on screen, not fro”; 7 e2e checks, e.g. “B1 waiting: unit, legend, chart name, range and the unit select describe the res” |
+| B1: the digest is titled with the pending query | killed | 2 unit tests, e.g. “a result describes itself (B1) titles the digest and names the chart with the re”; 2 e2e checks, e.g. “B1 waiting: the digest title, the table head and the JSON are the result's, not ” |
+| B1: the chart is named after the pending query (in the page, past the derivation) | killed | 3 e2e checks, e.g. “B1 waiting: unit, legend, chart name, range and the unit select describe the res” |
+| B1: the head does not say "Showing the previous query" | killed | 1 unit test, e.g. “a result describes itself (B1) says plainly when the result is not the answer to”; 3 e2e checks, e.g. “B1 waiting: unit, legend, chart name, range and the unit select describe the res” |
+| B3: typing re-renders the page (the draft is page state again) | killed | 1 e2e check, e.g. “B3: typing 60 characters renders no React component (the page, the query row, th” |
+| B3: the deferred URL update leaves its guard set after a quick round trip (Back is then ignored) | killed | 1 e2e check, e.g. “B3: the URL's view follows a change of form, and Back after a quick round trip s” |
+| B3: the focus keeper reads layout after every DOM change | killed | 1 unit test, e.g. “focus after a control goes away (M3) looks only at changes that can take the foc” |
+| M3: focus is left on the body after Cancel (the keeper moves nothing) | killed | 2 e2e checks, e.g. “M3: after Cancel by keyboard, focus is on Retry, with the ring” |
+| M5: duplicate display names (shortening ignores collisions) | killed | 2 unit tests, e.g. “series names (M5) does not shorten when shortening would make two series look th” |
+| M7: every cell repeats the unit | killed | 3 unit tests, e.g. “where the unit goes: once in the head, or on every value (M7) a column with one ”; 4 e2e checks, e.g. “B1 baseline: the request-rate result states its unit once in the head and in eac” |
+| M2: a survivor is repainted (the previous assignment is ignored) | killed | 4 unit tests, e.g. “series assignment (M2) survivors keep their colour when a filter removes other s”; 1 e2e check, e.g. “M2: survivors keep their colour when a filter removes other series” |
+| M2: a ninth coloured series | killed | 5 unit tests, e.g. “series assignment (M2) never colours more than eight series; the rest are ONE Ot”; 3 e2e checks, e.g. “M2: never more than eight coloured series, each on its own series token” |
+| M2: every member of Other is its own legend row | killed | 2 e2e checks, e.g. “M2: never more than eight coloured series, each on its own series token” |
+| M4: a tap on a legend row does nothing on touch | killed | 1 e2e check, e.g. “M4: on a coarse pointer a tap on a legend row toggles that series, with no modif” |
+| M4: a tap isolates instead of toggling (a modifier is needed on touch) | killed | 1 unit test, e.g. “touch parity (M4) a tap toggles the series; a mouse needs a modifier”; 1 e2e check, e.g. “M4: on a coarse pointer a tap on a legend row toggles that series, with no modif” |
+
+The run found two weaknesses, both fixed and the two mutants run again: with focus lost
+after Cancel, the e2e run stopped at the next step (Enter on the body cannot press Retry), so
+the 27-interaction check never ran (Retry is now focused explicitly before Enter); and the
+property over random label sets did not find the M5 duplicates in 500 cases, only the
+hand-written example did (a property aimed at long values that differ only in the middle was
+added, and catches it). "The focus keeper reads layout after every DOM change" is caught only
+by the unit test of its filter: it changes speed, not behaviour.
 
 ## Changes to the existing suites
 
@@ -315,7 +343,24 @@ defines it and `rule` before. `e2e/measure.cjs` gained the typing, crosshair, 36
 
 ## Verification
 
-VERIFICATION_TABLE
+Run on 2026-11-18 on a shared machine (load average 3 to 14 on 4 cores), ports 8910 and 8911.
+
+| Check | Result |
+|---|---|
+| `npm test` (two workers) | 129 tests in 12 files pass |
+| `npx tsc --noEmit` | passes |
+| `npm run build` | passes |
+| `node design-system/tools/check.mjs app/src` | contrast 240/240; 0 literal values in 50 files |
+| `node e2e/run.cjs` | 54 of 54 |
+| `node e2e/design.cjs` | 52 of 52 (one expectation follows the system's new `pressed` token, below) |
+| `node e2e/fixes.cjs` | 37 of 37, including the 60 s stop |
+| axe-core 4.14 | 0 violations of any impact in 16 runs |
+| `MUTANTS=fixes node e2e/mutants.cjs` | 15 of 15 killed |
+| `node e2e/mutants.cjs` (the restyle's set) | not re-run |
+| `e2e/measure.cjs`, 4, 36 and 200 series | 20 runs per build per case, tables above |
+
+Images: `node e2e/fix-shots.cjs --label before|after --root <app>`, both builds against the
+same design-system snapshot; modest PNGs, 1440 px wide.
 
 ## Left for the system migration
 
