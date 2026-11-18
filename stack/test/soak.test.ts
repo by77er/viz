@@ -16,14 +16,14 @@ import { DAY_MS, type Sim, type SimTenant, checkTenant, createSim, deliver, inge
  * invariants of `checkTenant` asserted after every step for the tenants the step touched
  * (all tenants every 20 steps), and each deletion checked against the rule that allows it.
  *
- *   VITE_SOAK_STEPS=3000 VITE_SOAK_SEED=1 npx vitest run test/soak.test.ts
+ *   SOAK_STEPS=3000 SOAK_SEED=1 npx vitest run test/soak.test.ts
  *
  * Graces are real time, scaled down: a removed file may be deleted after DELETE_GRACE, an
  * unreferenced flush file after ORPHAN_GRACE, and a compaction step gives up after STEP.
  */
-const vars = (import.meta as unknown as { env: Record<string, string | undefined> }).env
-const STEPS = Number(vars.VITE_SOAK_STEPS ?? 400)
-const SEED = Number(vars.VITE_SOAK_SEED ?? 20261118)
+const vars = env as unknown as { SOAK_STEPS?: string; SOAK_SEED?: string }
+const STEPS = Number(vars.SOAK_STEPS ?? 400)
+const SEED = Number(vars.SOAK_SEED ?? 20261118)
 const DELETE_GRACE = 1500
 const ORPHAN_GRACE = 1000
 const STEP = 1500

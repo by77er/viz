@@ -201,6 +201,7 @@ export class Tenant extends DurableObject<TenantEnv> {
         const written = this.count('audit') - audits
         if (written !== 1) throw new Error(`${written} audit rows for one mutation`)
         queued = this.count('outbox') > outbox
+        if (c.dryRun) throw new Rollback(r)
         return r
       })
       return { result, committed: true, queued }

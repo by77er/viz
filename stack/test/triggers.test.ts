@@ -128,12 +128,12 @@ describe('what happens without anyone calling it', () => {
     expect((await liveKeys(ledger(c!))).length).toBeGreaterThan(0)
     sim.maintQueue.length = 0
     // Retention removes the files; they wait for their grace; the marker stays.
-    const first = await maintainTenant(sim.env, engine, c!.name, { deleteGraceMs: 50, orphanEveryMs: 0, orphanGraceMs: 0, maxCompactStepMs: 0 })
+    const first = await maintainTenant(sim.env, engine, c!.name, { deleteGraceMs: 2000, orphanEveryMs: 0, orphanGraceMs: 0, maxCompactStepMs: 0 })
     expect(first.expired.removed.length).toBeGreaterThan(0)
     expect(await liveKeys(ledger(c!))).toEqual([])
     expect(first.nextDueAt).not.toBeNull()
-    await sleep(80)
-    const second = await maintainTenant(sim.env, engine, c!.name, { deleteGraceMs: 50, orphanEveryMs: 0, orphanGraceMs: 0, maxCompactStepMs: 0 })
+    await sleep(2100)
+    const second = await maintainTenant(sim.env, engine, c!.name, { deleteGraceMs: 2000, orphanEveryMs: 0, orphanGraceMs: 0, maxCompactStepMs: 0 })
     expect(second.purged.deleted.sort()).toEqual(first.expired.removed.sort())
     expect(await dataKeys(c!.name)).toEqual([])
     expect(second.nextDueAt).toBeNull()

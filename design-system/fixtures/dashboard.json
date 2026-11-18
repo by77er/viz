@@ -1,0 +1,27 @@
+{
+  "name": "Fixture dashboard",
+  "purpose": "The dashboard every speed budget in project/README.md is measured on. Change it only together with the budgets.",
+  "clock": "2026-11-18T15:16:00Z",
+  "range": "6 h",
+  "step": "6 min",
+  "tenant": "acme-prod",
+  "panels": [
+    { "id": "stats", "kind": "stats", "span": 12, "title": "Now", "stats": [
+      { "label": "Requests", "value": "1,284", "unit": "req/s", "context": "last 5 min · 4% below last week" },
+      { "label": "Errors", "value": "2.41", "unit": "%", "context": "last 5 min · objective 0.1%" },
+      { "label": "p99 latency", "value": "912", "unit": "ms", "context": "last 5 min · above the 500 ms objective" },
+      { "label": "Error budget left", "value": "61.4", "unit": "%", "context": "30-day window, 99.9% target" } ] },
+    { "id": "routes", "kind": "chart", "span": 6, "title": "Latency by route, p99", "series": 3, "recipe": "s3" },
+    { "id": "services", "kind": "chart", "span": 6, "title": "Request rate by service", "series": 8, "recipe": "s8" },
+    { "id": "pods", "kind": "chart", "span": 6, "title": "CPU by pod", "series": 36, "recipe": "many", "seed": 36 },
+    { "id": "pods-all", "kind": "chart", "span": 6, "title": "CPU by pod, every namespace", "series": 200, "recipe": "many", "seed": 200 },
+    { "id": "errors", "kind": "chart", "span": 6, "title": "Error ratio by service", "series": 8, "recipe": "s8", "scale": 0.0005, "unit": "%" },
+    { "id": "backtest", "kind": "chart", "span": 6, "title": "Error ratio of cart, 7 d", "series": 1, "recipe": "backtest" },
+    { "id": "table", "kind": "table", "span": 12, "title": "Pods", "rows": 30, "recipe": "many", "seed": 36 }
+  ],
+  "cases": {
+    "default": "all eight panels, as listed",
+    "36 series": "the pods panel: the case the first application review found over budget",
+    "200 series": "the pods-all panel: 8 coloured series, 192 in Other"
+  }
+}

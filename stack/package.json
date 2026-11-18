@@ -5,7 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "soak": "VITE_SOAK_STEPS=3000 vitest run test/soak.test.ts --reporter=verbose",
+    "soak": "SOAK_STEPS=3000 vitest run test/soak.test.ts --reporter=verbose",
     "measure": "vitest run test/measure.test.ts --reporter=verbose",
     "hyparquet": "node tools/hyparquet_check.mjs"
   },

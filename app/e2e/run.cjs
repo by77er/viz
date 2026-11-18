@@ -115,7 +115,9 @@ async function main() {
     await page.waitForSelector('[data-testid=legend] tbody tr')
     await page.waitForSelector('[data-testid=chart] canvas')
     const status = await page.textContent('[data-testid=status]')
-    check('status line reports series, step and timing', /4 series/.test(status) && /every 15 s/.test(status) && /ms/.test(status), status.replace(/\s+/g, ' '))
+    // Was "series, step and timing". The query time answered no question there (review m1); it is
+    // now in the JSON form's caption, which the JSON check below reads.
+    check('status line reports series and step (the query time moved to the JSON form)', /4 series/.test(status) && /every 15 s/.test(status) && !/ms/.test(status), status.replace(/\s+/g, ' '))
 
     // Crosshair + tooltip.
     const over = await page.locator('[data-testid=chart] .u-over').boundingBox()
@@ -131,12 +133,15 @@ async function main() {
     await page.click('[data-testid=view-table]')
     await page.waitForFunction((v) => (new URL(location.href).searchParams.get('view') || 'chart') === v, 'table') // the URL follows the paint
     const tableText = await page.textContent('[data-testid=result-table]')
-    check('table lists an instant value per series', ['auth', 'catalog', 'checkout', 'orders'].every((s) => tableText.includes(s)) && /\d\/s/.test(tableText) && new URL(page.url()).searchParams.get('view') === 'table')
+    // The unit is now stated once, in the Value head, not after every value (review M7).
+    const valueCells = await page.$$eval('[data-testid=result-table] tbody td.vz-right', (c) => c.map((x) => x.textContent.trim()))
+    check('table lists an instant value per series', ['auth', 'catalog', 'checkout', 'orders'].every((s) => tableText.includes(s)) && /Value, \/s/.test(tableText) && valueCells.length === 4 && valueCells.every((c) => /^[\d.]+$/.test(c)) && new URL(page.url()).searchParams.get('view') === 'table', valueCells.join(' '))
     await page.screenshot({ path: path.join(SHOTS, 'explore-table-light.png') })
     await page.click('[data-testid=view-json]')
     await page.waitForFunction((v) => (new URL(location.href).searchParams.get('view') || 'chart') === v, 'json') // the URL follows the paint
     const json = await page.textContent('[data-testid=result-json] pre')
-    check('raw JSON view shows the API response', json.includes('"resultType": "matrix"') && json.includes('"service":"auth"') && new URL(page.url()).searchParams.get('view') === 'json')
+    const jsonCaption = await page.textContent('[data-testid=result-json] .vz-panel-desc')
+    check('raw JSON view shows the API response, and how long it took', json.includes('"resultType": "matrix"') && json.includes('"service":"auth"') && /answered in [\d.,]+ ms/.test(jsonCaption) && new URL(page.url()).searchParams.get('view') === 'json', jsonCaption.replace(/\s+/g, ' '))
     await page.click('[data-testid=view-chart]')
     await page.waitForSelector('[data-testid=chart] canvas')
 
@@ -176,7 +181,7 @@ async function main() {
     await page.click('role=dialog[name="Time range"] >> text=Last 24 h')
     await page.waitForFunction(() => new URL(location.href).searchParams.get('from') === 'now-24h')
     check('time picker preset writes a relative range to the URL', !new URL(page.url()).searchParams.has('to'), page.url().split('?')[1])
-    await page.waitForFunction(() => /every 2 m,/.test(document.querySelector('[data-testid=status]')?.textContent || ''))
+    await page.waitForFunction(() => /every 2 min\./.test(document.querySelector('[data-testid=status]')?.textContent || '')) // "2 min", not "2 m" (review m3)
     // The panel is 1392 px wide with the design system's gutters (it was 1416), which is one
     // width bucket lower, so 24 h now resolves to 2 m, not 1 m.
     check('auto step follows the range (24 h → 2 m at this width; 3 h → 15 s)', true)
@@ -217,9 +222,11 @@ async function main() {
     check('while loading, the previous result stays visible', during.canvas && during.names.length === 4 && /Waiting for the query/.test(during.status), during.status.replace(/\s+/g, ' ').slice(-50))
     await page.waitForSelector('[data-testid=progress]', { state: 'detached' })
     await page.unroute('**/api/v1/query_range')
-    await page.waitForFunction(() => /\d ms/.test(document.querySelector('[data-testid=legend] tbody')?.textContent || ''))
-    const p95 = await page.textContent('[data-testid=legend]')
-    check('latency query is formatted in time units', /\d ms/.test(p95), p95.replace(/\s+/g, ' ').slice(60, 130))
+    // The time unit is in the column heads once ("Last, ms"), and on the readout's values.
+    await page.waitForFunction(() => /Last, (ms|s)Min/.test(document.querySelector("[data-testid=legend] thead")?.textContent || ''))
+    const p95 = await page.textContent('[data-testid=legend] thead')
+    const p95Tip = await page.evaluate(() => document.querySelector('[data-testid=age]').textContent)
+    check('latency query is formatted in time units', /Last, (ms|s)Min, \1Max, \1$/.test(p95.replace(/[↑↓\s]/g, '').replace(/,/g, ', ')) && /^seconds/.test(p95Tip), `${p95.replace(/\s+/g, ' ')} — ${p95Tip}`)
 
     // Error state.
     expectHttpError = true
@@ -291,7 +298,8 @@ async function main() {
     await page.keyboard.press('ArrowRight')
     await page.keyboard.press('ArrowRight')
     const live = await page.textContent('[data-testid=chart] [aria-live]')
-    check('arrow keys move the chart cursor and announce values', /2026-11-18 \d\d:\d\d:\d\d\. \{service="auth"\}: [\d.]+\/s/.test(live), live.slice(0, 70))
+    // The announcement uses the distinguishing name ("auth"), as the readout does, and says how many series it left out.
+    check('arrow keys move the chart cursor and announce values', /2026-11-18 \d\d:\d\d:\d\d\. auth: [\d.]+\/s; .*; and 1 more series$/.test(live), live.slice(0, 110))
     await ctx.close()
 
     // ------------------------------------------------------------ desktop, dark
@@ -324,9 +332,15 @@ async function main() {
     await dpage.goto(url(Q_MANY))
     await dpage.waitForSelector('[data-testid=legend] tbody tr')
     await dpage.waitForSelector('[data-testid=chart] canvas')
-    check('36 series render in the legend', (await legendNames(dpage)).length === 36)
-    const folded = await dpage.$$eval('[data-testid=legend] tbody .swatch', (els) => els.map((e) => e.style.background))
-    check('eight series take the eight series tokens; the ninth and beyond fold into Other', new Set(folded.filter((c) => /--series-[1-8]\)/.test(c))).size === 8 && folded.filter((c) => c === 'var(--ink-muted)').length === 28, `${new Set(folded).size} distinct swatches`)
+    // Was "36 series render in the legend" as 36 rows. Other is now ONE row that opens (review M2):
+    // eight rows and the Other row at first, all 36 once it is opened.
+    const closed = (await legendNames(dpage)).length
+    const otherRow = await dpage.textContent('[data-testid=legend-other]')
+    await dpage.click('[data-testid=legend-other]')
+    check('36 series render in the legend', closed === 8 && /Other, 28 series/.test(otherRow) && (await legendNames(dpage)).length === 36, `${closed} rows and "${otherRow.replace(/\s+/g, ' ').trim()}", ${(await legendNames(dpage)).length} once opened`)
+    const folded = await dpage.$$eval('[data-testid=legend] tbody button[data-series] .swatch', (els) => els.map((e) => e.style.background))
+    check('eight series take the eight series tokens; the ninth and beyond fold into Other', new Set(folded.filter((c) => /--series-[1-8]\)/.test(c))).size === 8 && folded.filter((c) => /--series-[1-8]\)/.test(c)).length === 8 && folded.filter((c) => c === 'var(--ink-muted)').length === 28, `${new Set(folded).size} distinct swatches`)
+    await dpage.click('[data-testid=legend-other]')
     await dpage.screenshot({ path: path.join(SHOTS, 'explore-many-series-dark.png') })
     await dpage.goto(`${APP}/explore`)
     await dpage.waitForSelector('[data-testid=start-state] a')

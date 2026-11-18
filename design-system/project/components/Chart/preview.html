@@ -106,12 +106,12 @@ if (!window.vzChart) (function () {
     const view = root.dataset.view || 'view', small = root.dataset.size === 'sm'
     root.innerHTML = '<svg class="vz-plot" tabindex="0" role="group" aria-roledescription="chart"></svg><div class="vz-chart-foot"><div class="vz-readout" role="status" aria-live="polite"></div><div class="vz-controls" data-size="sm"><button class="vz-button" data-size="sm" data-zoom="in">Zoom in</button><button class="vz-button" data-size="sm" data-zoom="out">Zoom out</button></div></div><div class="vz-table-wrap"><table class="vz-table vz-legend-table" role="table"><thead></thead><tbody></tbody></table></div><p class="vz-legend-note"></p>'
     const svg = root.querySelector('svg'), readout = root.querySelector('.vz-readout'), thead = root.querySelector('thead'), tbody = root.querySelector('tbody'), note = root.querySelector('.vz-legend-note')
-    const all = spec.series.map((s) => ({ ...s, key: key(s.labels) }))
-    const full = { t0: spec.t0, t1: spec.t0 + (all[0].values.length - 1) * spec.step }
+    let all = spec.series.map((s) => ({ ...s, key: key(s.labels) }))
+    let full = { t0: spec.t0, t1: spec.t0 + (all[0].values.length - 1) * spec.step }
     const st = { t0: full.t0, t1: full.t1, filter: null, picked: new Set(), cursor: null, sort: { col: 'rank', dir: -1 }, open: 0, brush: null, focusRow: 0 }
     const ctx = document.createElement('canvas').getContext('2d')
     const measure = (text, font) => { ctx.font = font; return ctx.measureText(text).width }
-    let g = null // geometry of the last draw
+    let g = null, lastW = 0, lastH = 0, legendW = 600 // geometry of the last draw; sizes are read once, before anything is written
 
     function model() {
       const i0 = Math.round((st.t0 - spec.t0) / spec.step), i1 = Math.round((st.t1 - spec.t0) / spec.step)
@@ -125,8 +125,10 @@ if (!window.vzChart) (function () {
     const otherShown = (m) => m.other.length && (!st.picked.size || st.picked.has('other'))
 
     function draw() {
-      const m = model(), W = svg.clientWidth, HT = svg.clientHeight; if (!W) return
-      const sp = (n) => css(root, '--space-' + n), micro = getComputedStyle(root).getPropertyValue('--text-micro').trim(), small13 = getComputedStyle(root).getPropertyValue('--text-small').trim(), lineH = 16
+      const W = svg.clientWidth, HT = svg.clientHeight; if (!W) return
+      legendW = tbody.parentElement.clientWidth || legendW; lastW = W; lastH = HT
+      const m = model(), cs = getComputedStyle(root), tokens = {}, css = (el, name) => (tokens[name] ??= parseFloat(cs.getPropertyValue(name)) || 0)
+      const sp = (n) => css(root, '--space-' + n), micro = cs.getPropertyValue('--text-micro').trim(), small13 = cs.getPropertyValue('--text-small').trim(), lineH = 16
       const visible = m.coloured.filter((s) => shown(m, s)), picked = m.other.filter((s) => st.picked.has(s.key))
       const L = css(root, '--axis'), T = sp(4) + sp(1), B = sp(4) + sp(1), plotH = HT - T - B
       // Direct labels: only from 640px of chart width, only when every label can sit within two label heights of its own line end.
@@ -177,23 +179,30 @@ if (!window.vzChart) (function () {
       o += '<g class="vz-cursor"></g>'
       svg.setAttribute('viewBox', `0 0 ${W} ${HT}`); svg.innerHTML = o
       svg.setAttribute('aria-label', `${root.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? 'Chart'}, ${spec.unit}, ${stamp(st.t0, long)} to ${stamp(st.t1, long)}. ${m.series.length} series${m.other.length ? ', ' + m.coloured.length + ' drawn separately and ' + m.other.length + ' as one band' : ''}. Left and right arrows read values; plus and minus zoom.`)
-      g = { m, L, T, plotW, plotH, x, y, ax, long, visible, picked }
+      g = { m, L, T, plotW, plotH, x, y, ax, long, visible, picked, font: small13 }
       legend(); cursor()
       const r = root.closest('.vz-panel')?.querySelector('[data-range]'); if (r) r.textContent = stamp(st.t0, long) + ' to ' + stamp(st.t1, long)
       root.querySelector('[data-zoom="out"]').disabled = st.t0 <= full.t0 && st.t1 >= full.t1; root.querySelector('[data-zoom="in"]').disabled = g.m.n <= 4
     }
 
     function legend() {
+      const cs = getComputedStyle(root), cs0 = (n) => cs.getPropertyValue(n).trim()
       const m = g.m, cols = [['name', 'Series' + (m.names.order.length > 1 ? ' (' + m.names.order.join(' · ') + ')' : ''), 0], ['last', (st.cursor == null ? 'Last' : 'At ' + stamp(st.t0 + st.cursor * spec.step, g.long)) + ', ' + spec.unit, 1], ['min', 'Min', 2], ['max', 'Max', 2]]
-      thead.innerHTML = '<tr role="row">' + cols.map(([c, label, pr]) => `<th role="columnheader" class="vz-label${c === 'name' ? '' : ' vz-right'}"${pr === 2 ? ' data-priority="2"' : ''}${st.sort.col === c ? ` aria-sort="${st.sort.dir > 0 ? 'ascending' : 'descending'}"` : ''}><button class="vz-sort" data-col="${c}">${esc(label)}</button></th>`).join('') + '</tr>'
+      const narrow = legendW < 640, shownCols = cols.filter((c) => !(narrow && c[2] === 2))
+      // Column widths are fixed from the widest value each column can show, so moving the crosshair changes text and never moves a column.
+      const numFont = cs0('--text-data'), headFont = cs0('--text-label'), widest = (c) => Math.max(...m.series.map((s) => measure(num(c === 'last' ? s.max : s[c], g.ax.step / 10), numFont)), m.other.length ? measure(num(g.ax.top, g.ax.step / 10) + ' to ' + num(g.ax.top, g.ax.step / 10), numFont) : 0)
+      const headW = (c, label) => measure(c === 'last' ? 'At ' + stamp(st.t1, g.long) + ', ' + spec.unit : label, headFont) + 14
+      const colgroup = '<colgroup>' + shownCols.map(([c, label]) => (c === 'name' ? '<col>' : `<col style="width:${Math.ceil(Math.max(widest(c), headW(c, label)) + 18)}px">`)).join('') + '</colgroup>'
+      tbody.parentElement.querySelector('colgroup')?.remove(); thead.insertAdjacentHTML('beforebegin', colgroup)
+      thead.innerHTML = '<tr role="row">' + shownCols.map(([c, label, pr]) => `<th role="columnheader" class="vz-label${c === 'name' ? '' : ' vz-right'}"${pr === 2 ? ' data-priority="2"' : ''}${st.sort.col === c ? ` aria-sort="${st.sort.dir > 0 ? 'ascending' : 'descending'}"` : ''}><button class="vz-sort" data-col="${c}">${esc(label)}</button></th>`).join('') + '</tr>'
       const by = st.sort.col, cmp = (a, b) => (by === 'name' ? (a.key < b.key ? -1 : 1) * st.sort.dir : by === 'rank' ? a.slot - b.slot : ((a[by] ?? -1) - (b[by] ?? -1)) * st.sort.dir)
-      const nameW = Math.max(80, (tbody.parentElement.clientWidth || 600) - (tbody.parentElement.clientWidth < 640 ? 110 : 300) - 40), font = getComputedStyle(root).getPropertyValue('--text-small').trim()
+      const numW = [...tbody.parentElement.querySelectorAll('col')].slice(1).reduce((w, c) => w + parseFloat(c.style.width), 0), nameW = Math.max(60, legendW - numW - 44), font = g.font
       const name = (s) => { const vals = m.names.order.map((k) => s.labels[k] ?? ''); return `<span class="vz-series-name" title="${esc(Object.entries(s.labels).map(([k, v]) => k + '="' + v + '"').join(', '))}">${esc(fit(vals, nameW, (t) => measure(t, font)))}</span>` }
       const val = (s, c) => num(c === 'last' && st.cursor != null ? s.v[st.cursor] : s[c], g.ax.step / 10)
-      const row = (s, ds) => `<tr role="row" data-key="${esc(s.key)}"${st.picked.has(s.key) ? ' aria-selected="true"' : st.picked.size ? ' data-off' : ''}><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="${st.picked.has(s.key)}"><span class="vz-swatch" data-series="${ds}"></span>${name(s)}</button></td><td role="cell" class="vz-num vz-right" data-c="last">${val(s, 'last')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${val(s, 'min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${val(s, 'max')}</td></tr>`
+      const row = (s, ds) => `<tr role="row" data-key="${esc(s.key)}"${st.picked.has(s.key) ? ' aria-selected="true"' : st.picked.size ? ' data-off' : ''}><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="${st.picked.has(s.key)}"><span class="vz-swatch" data-series="${ds}"></span>${name(s)}</button></td><td role="cell" class="vz-num vz-right" data-c="last">${val(s, 'last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${val(s, 'min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${val(s, 'max')}</td>`}</tr>`
       let h = [...m.coloured].sort(cmp).map((s) => row(s, s.slot)).join('')
       if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => (c === 'last' && st.cursor != null ? s.v[st.cursor] : s[c])).filter((p) => p != null); return v.length ? num(Math.min(...v), g.ax.step / 10) + ' to ' + num(Math.max(...v), g.ax.step / 10) : '' }
-        h += `<tr role="row" data-key="other"${st.picked.has('other') ? ' aria-selected="true"' : st.picked.size ? ' data-off' : ''}><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="${st.picked.has('other')}"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series, lowest to highest</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td></tr>`
+        h += `<tr role="row" data-key="other"${st.picked.has('other') ? ' aria-selected="true"' : st.picked.size ? ' data-off' : ''}><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="${st.picked.has('other')}"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series, lowest to highest</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`}</tr>`
         h += [...m.other].sort(by === 'rank' ? (a, b) => b.rank - a.rank : cmp).slice(0, st.open).map((s) => row(s, st.picked.has(s.key) ? 'picked' : 'other')).join('') }
       tbody.innerHTML = h
       const rows = [...tbody.querySelectorAll('.vz-series')]; if (rows.length) rows[Math.min(st.focusRow, rows.length - 1)].tabIndex = 0
@@ -211,7 +220,7 @@ if (!window.vzChart) (function () {
         for (const s of g.picked) if (s.v[st.cursor] != null) o += `<circle class="vz-dot" data-series="picked" cx="${px}" cy="${g.y(s.v[st.cursor])}" r="3"/>`
         c.innerHTML = o
         const top = [...g.visible].filter((s) => s.v[st.cursor] != null).sort((a, b) => b.v[st.cursor] - a.v[st.cursor]).slice(0, 1)
-        readout.innerHTML = `<b class="vz-qty">${stamp(spec.t0 + (g.m.i0 + st.cursor) * spec.step, g.long)}</b>` + (top.length ? `<span>highest: ${esc(g.m.names.order.slice(0, 1).map((k) => top[0].labels[k]).join(' '))} <span class="vz-qty">${num(top[0].v[st.cursor], g.ax.step / 10)} ${esc(spec.unit)}</span></span>` : '') + (g.visible.length > 1 ? `<span>${g.visible.length} series in the table below</span>` : '')
+        readout.innerHTML = `<b class="vz-qty">${stamp(spec.t0 + (g.m.i0 + st.cursor) * spec.step, g.long)}</b>` + (top.length ? `<span>highest: ${esc(g.m.names.order.slice(0, 1).map((k) => top[0].labels[k]).join(' '))} <span class="vz-qty">${num(top[0].v[st.cursor], g.ax.step / 10)} ${esc(spec.unit)}</span></span>` : '')
       }
       const th = thead.querySelector('[data-col="last"]'); if (th) th.textContent = (st.cursor == null ? 'Last' : 'At ' + stamp(spec.t0 + (g.m.i0 + st.cursor) * spec.step, g.long)) + ', ' + spec.unit
       tbody.querySelectorAll('tr').forEach((tr) => { const s = g.m.series.find((q) => q.key === tr.dataset.key); const td = tr.querySelector('[data-c="last"]'); if (s && td) td.textContent = num(st.cursor == null ? s.last : s.v[st.cursor], g.ax.step / 10) })
@@ -233,9 +242,11 @@ if (!window.vzChart) (function () {
       const tr = e.target.closest('tbody tr'); if (tr) { const k = tr.dataset.key; st.picked.has(k) ? st.picked.delete(k) : st.picked.add(k); st.focusRow = [...tbody.children].indexOf(tr); const had = document.activeElement?.classList.contains('vz-series'); draw(); if (had) tbody.children[st.focusRow]?.querySelector('.vz-series')?.focus() } })
     // the legend is one tab stop; up and down move between rows, space or enter toggles the row
     tbody.addEventListener('keydown', (e) => { const rows = [...tbody.querySelectorAll('.vz-series')], i = rows.indexOf(document.activeElement); if (i < 0) return; const to = e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : e.key === 'ArrowUp' ? Math.max(0, i - 1) : -1; if (to < 0) return; e.preventDefault(); rows[i].tabIndex = -1; rows[to].tabIndex = 0; rows[to].focus(); st.focusRow = to })
-    new ResizeObserver(() => draw()).observe(svg)
+    new ResizeObserver(() => { const w = svg.clientWidth; if (w && (w !== lastW || svg.clientHeight !== lastH)) draw() }).observe(svg) // a hidden chart is not redrawn, and showing it again at the same size costs nothing
     draw()
-    return { draw, state: st, setFilter(f) { st.filter = f; draw() } }
+    return { draw, state: st, setFilter(f) { st.filter = f; draw() },
+      /* A new result for the same view: the chart is kept, its data replaced. Colours, chosen rows and sort order survive. */
+      setData(next) { spec = next; all = spec.series.map((s) => ({ ...s, key: key(s.labels) })); full = { t0: spec.t0, t1: spec.t0 + (all[0].values.length - 1) * spec.step }; st.t0 = full.t0; st.t1 = full.t1; st.cursor = null; draw() } }
   }
   window.vzChart = vzChart; window.vzChartDemos = demos; window.vzChartRules = { assignSeries, distinguish, fit, valueTicks }
   const init = () => { document.querySelectorAll('.vz-chart[data-demo]:not([data-ready])').forEach((el) => { el.dataset.ready = '1'; el.vz = vzChart(el, demos[el.dataset.demo]()) })

@@ -490,7 +490,9 @@ export class Notifier extends DurableObject implements NotifierRpc {
               const list = history.get(monitor) ?? []
               history.set(monitor, list)
               list.push({
-                at: tick, source: 'notifier', kind: 'notified', receiver: g.route.receiver, integration: d.integration.key, channel: d.integration.channel,
+                // The clock time of the decision, not the tick it was decided for: a repeat
+                // released by an un-acknowledgement must read as coming after it.
+                at: now, source: 'notifier', kind: 'notified', receiver: g.route.receiver, integration: d.integration.key, channel: d.integration.channel,
                 status: d.payloadFiring.length > 0 ? 'firing' : 'resolved', repeat: d.repeat, fingerprints: fps, idempotencyKey: idem, deliveredAt: null, failed: null,
               })
             }

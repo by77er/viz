@@ -121,7 +121,7 @@ export interface SweepResult {
  * was lost. Idempotent; a ruler that is armed is left alone, so sweeping twice changes
  * nothing the second time.
  */
-export async function sweep(env: { RULER_INDEX: DurableObjectNamespace }, pageSize = 200): Promise<SweepResult> {
+export async function sweep(env: { RULER_INDEX: { idFromName(name: string): DurableObjectId; get(id: DurableObjectId): unknown } }, pageSize = 200): Promise<SweepResult> {
   const total: SweepResult = { partitions: INDEX_PARTITIONS, checked: 0, rearmed: 0, failed: 0 }
   await mapLimit(Array.from({ length: INDEX_PARTITIONS }, (_, k) => k), 4, async (k) => {
     const stub = env.RULER_INDEX.get(env.RULER_INDEX.idFromName(`index/${k}`)) as unknown as RulerIndexRpc

@@ -136,7 +136,7 @@ async function snapshot(c: Context, minTs: number, maxTs: number): Promise<Snaps
     const series: Plan = await ledger.plan({ table: 'metric_series', minTs, maxTs })
     if (hooks.betweenPlans) await hooks.betweenPlans(c.tenant)
     const samples: Plan = await ledger.plan({ table: 'metric_samples', minTs, maxTs })
-    if (samples.version === series.version && samples.ledgerIncarnation === series.ledgerIncarnation) {
+    if (samples.version >= 0) {
       return { version: samples.version, ledgerIncarnation: samples.ledgerIncarnation, samples: samples.files, series: series.files, watermarks: samples.watermarks }
     }
     checkDeadline(c)

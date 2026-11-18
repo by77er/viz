@@ -11,7 +11,7 @@ deterministic simulator. Nothing panics on input. Builds for the host and for
 
 ```
 export CARGO_TARGET_DIR=$PWD/target
-cargo test                                                  # 34 tests, about 3 minutes
+cargo test                                                  # 37 tests, about 4 minutes
 cargo test --test corpus -- --nocapture                     # upstream corpus through storage, per file
 cargo build --release --target wasm32-unknown-unknown       # the library
 (cd wasm && cargo build --release --target wasm32-unknown-unknown) && node tools/wasm_check.mjs
@@ -46,6 +46,8 @@ let json = query_range(&input, "sum by (job) (rate(http_requests_total[5m]))", s
 | `label_values(input, name, matchers, min_ts, max_ts)` | `/api/v1/label/<name>/values`. |
 | `series(input, matcher_sets, min_ts, max_ts)` | `/api/v1/series`: sorted, unique label sets matching any set. Refuses, as Prometheus does, no sets and a set whose matchers all match the empty string. |
 | `parse_selector(text)` | A `match[]` string to matchers; anything but a bare series selector is `bad_data`. |
+| `files_needed(indexes, ranges)` | For each ledger index fragment (`viz_storage::FileIndex` JSON): `false` if the file provably holds nothing the fetch ranges read. A row group can contribute to a range only if it overlaps it in time and, when the range has an equality matcher on `__name__`, the name lies in the row group's `[min_name, max_name]`. Nothing else prunes; a fragment that does not parse keeps its file. |
+| `scan_rows(indexes, ranges)` | The same decision with a number: an upper bound on the rows the ranges decode from each file (each row group once per range that may read it), `Some(0)` for "skip", `None` for a fragment that does not parse. Lets a caller refuse a query that would decode too much before fetching anything. |
 | `Limits`, `Limits::check_query`, `estimate_depth` | The limits below. |
 | `QueryError { error_type, message, limit }`, `to_json()` | Errors with a Prometheus `errorType` and the API's error body. |
 | `to_json`, `labels_to_json` | Serialisation of results. |
@@ -112,9 +114,10 @@ storage hands over.
 ## What is not implemented
 
 - **The engine does not fetch.** `plan` says what to fetch; reading the ledger, R2 and
-  the shards is the caller's job. `plan` returns matchers and time ranges, not row
-  groups or byte ranges: pruning to row groups from the ledger's index fragments
-  (DESIGN §6.1) is not done here, and `select` is given whole files.
+  the shards is the caller's job (`query/` does it). `plan` returns matchers and time
+  ranges, not row groups or byte ranges. `files_needed` and `scan_rows` prune whole
+  **files** from the ledger's index fragments; pruning to row groups and pages
+  (DESIGN §6.1) is not done, and `select` is given whole files.
 - **Split execution** (DESIGN §6.2): leaves returning partial aggregates as Arrow IPC,
   key-range splits, merging `topk`. A query is evaluated in one call over one input.
 - **Tenant injection and label-based access rules** (DESIGN §6.1). A `ScanInput` is
@@ -134,7 +137,8 @@ storage hands over.
 - **The result's `stats` object** in JSON. `Stats` is returned typed only.
 - **TraceQL and LogQL.**
 - **The product's JavaScript binding.** `wasm/` is a size probe and load proof with its
-  own small C ABI; `engine/wasm` is the binding.
+  own small C ABI. The bindings are `engine/wasm` (write half) and `engine/wasm-query`
+  (query half: this crate behind a C ABI, used by the `query/` Worker).
 - Everything `viz-promql` lists as not implemented (native histograms, `limitk`,
   `anchored`/`smoothed`, …): those queries return `unsupported` or `bad_data`.
 
@@ -143,8 +147,8 @@ storage hands over.
 All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 1.97.0, Node 22.23), not on Cloudflare.
 
-`cargo test`: **34 tests, all passing** (api 10, corpus 1, invariance 3, limits 10,
-plan 5, staleness 5). Four are property tests.
+`cargo test`: **37 tests, all passing** (api 10, corpus 1, invariance 3, limits 10,
+plan 5, prune 3, staleness 5). Five are property tests.
 
 ### 1. Storage-location invariance
 
@@ -245,6 +249,27 @@ value, no negative timestamp); the test fails loudly if one appears.
 - Exact ranges for the lookback, range windows, the last step (not `end`), `offset`,
   `@`, subquery grids, merging of overlapping and touching ranges, ranges a day apart
   staying apart, clamping at 0 and at the largest storable timestamp.
+
+### 4b. File pruning
+
+`tests/prune.rs` (added with `query/`, the Worker that uses it).
+
+- `skipping_files_never_changes_a_result` (property, 32 cases x 106 queries, range and
+  instant): every batch flushed as its own segment (many small files), 0 to 2 of them
+  also in the tail, row groups of 1 to 6 rows or the default. Evaluating over only the
+  files `files_needed` keeps gives the same result, or the same error, as evaluating
+  over all of them. In the same cases, the samples `viz_storage::select` loads from the
+  lake for the plan's ranges never exceed the sum of `scan_rows`.
+- `files_are_skipped_by_time_and_by_name_and_only_then`: inclusive time bounds on both
+  sides; names outside `[min_name, max_name]` skipped, the two bounds and a name between
+  them kept; `=~`, `!=`, `!~` on the name and equality on another label prune nothing;
+  several ranges; no ranges; row counts, with a row group counted once per range.
+- `a_fragment_that_does_not_parse_keeps_its_file`: empty text, broken JSON, another
+  version: kept, with an unknown row count.
+
+Mutation (run from `query/tools/mutants.mjs`, mutant 8, which rebuilds the WASM module):
+comparing the name with `<` instead of `<=` against `max_name` is caught by the directed
+test here and by the query Worker's end-to-end tests.
 
 ### 5. Limits
 
@@ -546,16 +571,19 @@ src/source.rs     StorageSource (the SeriesSource adapter), Stats, ownership tab
 src/limits.rs     Limits, the complexity guard (estimate_depth)
 src/plan.rs       FetchRange, plan
 src/meta.rs       label_names, label_values, series
+src/prune.rs      files_needed, scan_rows: file pruning from the ledger's index fragments
 src/error.rs      QueryError, ErrorType, Limit
 tests/common/     write histories, storage layouts, generators, the query pool
 tests/invariance.rs  storage-location invariance (property), source equality, pool liveness
 tests/staleness.rs   markers in the tail and in Parquet
 tests/corpus.rs      upstream promqltest corpus through storage
 tests/plan.rs        exact ranges, soundness (property), tightness
+tests/prune.rs       file pruning: soundness (property), exact rules, unparsable fragments
 tests/limits.rs      every limit, pathological nesting, depth estimate (property)
 tests/api.rs         JSON shapes and units, errors, metadata, de-duplication
 examples/bench.rs    the benchmark (timed loop, counting allocator)
 examples/stack_probe.rs  stack needed for a nested query
+examples/reference.rs    expected results for query/'s end-to-end tests: viz-promql over its in-memory source
 wasm/             whole-engine cdylib (size probe, load proof)
 patches/          web-time, js-sys, wasm-bindgen stand-ins for a glue-free module
 tools/wasm_check.mjs   loads the module with an empty import object and runs queries

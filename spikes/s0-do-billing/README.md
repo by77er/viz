@@ -71,6 +71,23 @@ are at 0.04–0.09% duty, far below the 25% decision threshold.
 At this rate an object ticking once a minute bills about 0.19 GB-s an hour, about 140 GB-s
 a month, or roughly $0.002 at $12.50 per million GB-s, before any included allowance.
 
-This is one hour of data from simple wakes that do one SQLite write. The final 24-hour read
+### Second early read: two full hours, 19:00–21:00 UTC (measured on Cloudflare)
+
+| Class | Wakes counted | Billed active time | Per wake | Duty | Billed GB-s |
+|---|---|---|---|---|---|
+| A1 | 9,185 | 159.4 s | 17 ms | 2.2% | 20.40 |
+| A5 | 1,838 | 37.5 s | 20 ms | 0.5% | 4.79 |
+| A15 | 613 | 15.6 s | 25 ms | 0.2% | 2.00 |
+| A60 | 155 | 4.0 s | 26 ms | 0.06% | 0.51 |
+| B1 | 9,172 | 335.6 s | 37 ms | 4.7% | 42.96 |
+| B5 | 1,837 | 86.4 s | 47 ms | 1.2% | 11.06 |
+| B15 | 614 | 27.9 s | 45 ms | 0.4% | 3.58 |
+| B60 | 155 | 5.9 s | 38 ms | 0.08% | 0.76 |
+
+The second hour matches the first: 17–26 ms per alarm wake, 37–47 ms per request wake, and
+duty in proportion to how often the object wakes. The 60-second classes stay at 0.06–0.08%,
+against a decision threshold of 25%.
+
+These are simple wakes that do one SQLite write. The final 24-hour read
 is still to come, and a wake that does real work (a rule evaluation with queries) will bill
 for as long as that work takes.

@@ -2,7 +2,7 @@
 /**
  * Load proof and size report for js/viz_query.wasm, in Node (no workerd, no bundler):
  *
- *   - raw and gzip -9 size;
+ *   - raw size, and compressed size with zlib at level 9;
  *   - the module imports NOTHING and exports only `memory` and the C ABI;
  *   - `new WebAssembly.Instance(module, {})` (an empty import object) succeeds; timing;
  *   - through the TypeScript binding (js/index.ts, loaded by Node's type stripping): a
@@ -23,7 +23,7 @@ const check = (name, ok, detail = '') => {
   if (!ok) failed++
 }
 
-console.log(`js/viz_query.wasm: ${bytes.length} bytes raw, ${gzipSync(bytes, { level: 9 }).length} bytes gzip -9`)
+console.log(`js/viz_query.wasm: ${bytes.length} bytes raw, ${gzipSync(bytes, { level: 9 }).length} bytes with zlib at level 9 (build.sh prints the gzip -9 figure)`)
 const module = new WebAssembly.Module(bytes)
 const imports = WebAssembly.Module.imports(module)
 const exports = WebAssembly.Module.exports(module).map((e) => e.name).sort()

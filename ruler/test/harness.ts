@@ -61,6 +61,8 @@ export const world = {
   tenants: new Map<string, TenantWorld>(),
   /** Shard limits the HTTP API places groups with; tests lower them to force a split. */
   placement: { ...DEFAULT_PLACEMENT } as PlacementLimits,
+  /** `<tenant>/<shard>` names the sweeper cannot reach. */
+  unreachableRulers: new Set<string>(),
 }
 
 export function tenantWorld(tenant: string): TenantWorld {
@@ -199,6 +201,10 @@ export class TestNotifier extends Notifier {
 export class TestRulerIndex extends RulerIndex {
   protected override now(): number {
     return world.now
+  }
+  protected override ruler(tenant: string, shard: string) {
+    if (world.unreachableRulers.has(`${tenant}/${shard}`)) throw new Error('ruler unreachable')
+    return super.ruler(tenant, shard)
   }
 }
 

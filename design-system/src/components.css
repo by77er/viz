@@ -140,6 +140,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold], .vz-table[data-fold] thead, .vz-table[data-fold] tbody { display: block; }
   .vz-table[data-fold] tr { display: flex; flex-wrap: wrap; align-items: baseline; border-bottom: var(--hairline) solid var(--rule); }
   .vz-table[data-fold] tbody tr { padding-block: var(--space-1); }
+  .vz-table[data-fold] thead tr { align-items: stretch; background: var(--sunken); }
   .vz-table[data-fold] th, .vz-table[data-fold] td { display: block; position: static; height: auto; min-width: 0; border-bottom: 0; box-shadow: none; white-space: normal; }
   .vz-table[data-fold] td { padding-block: var(--space-1); }
   .vz-table[data-fold] th:first-child, .vz-table[data-fold] td[data-key] { flex: 1 1 0; position: relative; }
@@ -190,6 +191,9 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 
 /* Chart. Drawn by script at the size of its region; every colour, width and type size comes from these classes. */
 .vz-chart { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+/* A chart that knows how many legend rows it will have (set --legend-rows from the last result) reserves its whole height before its data arrives. */
+.vz-chart[style*="--legend-rows"] { min-height: calc(var(--plot) + var(--control-sm) + 3 * var(--space-2) + (var(--legend-rows) + 1) * (var(--control-sm) + var(--hairline)) + var(--space-8) + var(--space-1)); }
+.vz-chart[data-size="sm"][style*="--legend-rows"] { min-height: calc(var(--plot-sm) + var(--control-sm) + 3 * var(--space-2) + (var(--legend-rows) + 1) * (var(--control-sm) + var(--hairline)) + var(--space-8) + var(--space-1)); }
 .vz-plot { display: block; width: 100%; height: var(--plot); overflow: visible; touch-action: pan-y; user-select: none; -webkit-user-select: none; cursor: crosshair; }
 .vz-chart[data-size="sm"] .vz-plot { height: var(--plot-sm); }
 .vz-plot text { font: var(--text-micro); fill: var(--ink-muted); }
@@ -216,7 +220,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-plot .vz-dot[data-series] { fill: var(--series); stroke: var(--ground); stroke-width: var(--hairline); }
 /* Under the plot: the time under the crosshair at the left, zoom at the right. Its height is reserved. */
 .vz-chart-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: var(--control-sm); font: var(--text-small); color: var(--ink-secondary); }
-.vz-readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-3); min-width: 0; }
+.vz-readout { display: flex; align-items: baseline; gap: var(--space-3); flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; } /* one line, always: reading a value never moves the page */
 .vz-readout b { font-weight: 600; color: var(--ink); }
 /* Legend: a table of series. Each row is a toggle. */
 .vz-swatch { display: inline-block; flex: none; width: var(--space-3); height: var(--space-1); background: var(--series); box-shadow: 0 0 0 var(--stroke) var(--ground); } /* its own ground edge, so a hovered or chosen row never lowers its contrast */
@@ -232,7 +236,8 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-table.vz-legend-table tr[aria-selected="true"] .vz-series { font-weight: 600; }
 .vz-table.vz-legend-table tr[data-off] td { color: var(--ink-muted); }
 .vz-table.vz-legend-table tr[data-off] .vz-swatch { background: transparent; box-shadow: inset 0 0 0 var(--hairline) var(--series-other); border: 0; }
-.vz-table.vz-legend-table td:first-child { max-width: 0; width: 100%; } /* the name takes what the figures leave, and truncates inside it */
+.vz-table.vz-legend-table { table-layout: fixed; } /* the script sets each figure column's width once per draw; the name takes the rest */
+.vz-table.vz-legend-table th, .vz-table.vz-legend-table td { overflow: hidden; }
 .vz-series { position: static; display: flex; align-items: center; gap: var(--space-2); width: 100%; min-width: 0; font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; white-space: nowrap; }
 .vz-series::after { content: ""; position: absolute; inset: 0; }
 .vz-series:focus-visible { outline: 0; }
@@ -384,10 +389,11 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
   /* A link that stands alone is a control. A link inside a sentence (a p) is text and keeps its line. */
   .vz-link:not(p .vz-link, .vz-table td[data-key] .vz-link) { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .vz-links { gap: 0; }
-  .vz-controls, .vz-dialog-actions, .vz-banner, .vz-secret-row, .vz-notice, .vz-chart-foot { row-gap: calc(var(--control-touch) - var(--control-sm)); } /* wrapped rows: even two rows of small buttons keep 44px between centres */
+  .vz-controls, .vz-dialog-actions, .vz-banner, .vz-secret-row, .vz-notice { row-gap: calc(var(--control-touch) - var(--control-sm)); } /* wrapped rows: even two rows of small buttons keep 44px between centres */
   .vz-table td, .vz-table.vz-legend-table td { height: var(--control-touch); }
   .vz-table th:has(.vz-sort) { padding-block: 0; }
-  .vz-sort { min-height: var(--control-touch); }
+  .vz-sort { min-height: var(--control-touch); margin-block: 0; }
+  .vz-chart-foot { min-height: var(--control-touch); } /* the small zoom buttons' hit areas stay inside the foot */
   .vz-table[data-fold] td[data-key] { min-height: var(--control-touch); }
   .vz-tabs button, .vz-nav a { padding-block: var(--space-3); } /* a scrolling strip clips overflow, so the hit area has to be real height */
   .vz-menu [role^="menuitem"] { height: var(--control-touch); }

@@ -1,0 +1,19 @@
+{
+  "url": "dist/fixture/index.html",
+  "ready": "body[data-loaded]",
+  "runs": 20,
+  "measure": [
+    { "name": "Press: Run query", "type": "press", "selector": "#run", "budget": 50 },
+    { "name": "Typing in the query editor", "type": "type", "selector": "#query", "text": " > 0.5", "budget": 50 },
+    { "name": "Crosshair, 3 series", "type": "move", "selector": "#panel-routes .vz-plot", "budget": 50 },
+    { "name": "Crosshair, 36 series", "type": "move", "selector": "#panel-pods .vz-plot", "budget": 50 },
+    { "name": "Crosshair, 200 series", "type": "move", "selector": "#panel-pods-all .vz-plot", "budget": 50 },
+    { "name": "Local toggle: charts to tables", "type": "toggle", "selector": "#view-table", "expect": "#panel-pods-all[data-drawn=\"table\"]", "budget": 100 },
+    { "name": "Local toggle: tables to charts", "type": "toggle", "selector": "#view-chart", "expect": "#panel-pods-all[data-drawn=\"chart\"]", "budget": 100 },
+    { "name": "Local toggle: legend row, 36 series", "type": "toggle", "selector": "#panel-pods tbody tr:nth-child(2) .vz-series", "expect": "#panel-pods tbody tr:nth-child(2)[aria-selected=\"true\"]", "budget": 100 },
+    { "name": "Response to paint, 36 series", "type": "response", "before": "document.querySelector('#panel-pods').removeAttribute('data-drawn')", "selector": "#run", "url": "data/pods.json", "expect": "#panel-pods[data-drawn]", "budget": 100 },
+    { "name": "Response to paint, 200 series", "type": "response", "before": "document.querySelector('#panel-pods-all').removeAttribute('data-drawn')", "selector": "#run", "url": "data/pods-all.json", "expect": "#panel-pods-all[data-drawn]", "budget": 100 },
+    { "name": "Layout shift, load and run", "type": "shift", "budget": 0.05 },
+    { "name": "Worst interaction (Event Timing)", "type": "inp", "budget": 200 }
+  ]
+}

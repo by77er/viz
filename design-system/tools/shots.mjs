@@ -41,11 +41,12 @@ function measurePage(coarse) {
     const r = el.getBoundingClientRect(); if (!r.width || !r.height || r.bottom < 0 || r.top > innerHeight) continue
     const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2)), cy = r.top + r.height / 2; if (owner(cx, cy) !== el) continue // hidden or covered
     let top = cy, bottom = cy, left = cx, right = cx
-    while (top > cy - 60 && owner(cx, top - 1) === el) top--
-    while (bottom < cy + 60 && owner(cx, bottom + 1) === el) bottom++
-    while (left > cx - 60 && owner(left - 1, cy) === el) left--
-    while (right < cx + 60 && owner(right + 1, cy) === el) right++
-    const area = { name: (el.getAttribute('aria-label') || el.textContent || el.value || el.tagName).trim().slice(0, 40), tag: el.tagName.toLowerCase(), w: Math.round(right - left + 1), h: Math.round(bottom - top + 1), x: left, y: top }
+    const q = 0.25 // quarter-pixel steps, so an area of exactly 44px is not reported as 43
+    while (top > cy - 60 && owner(cx, top - q) === el) top -= q
+    while (bottom < cy + 60 && owner(cx, bottom + q) === el) bottom += q
+    while (left > cx - 60 && owner(left - q, cy) === el) left -= q
+    while (right < cx + 60 && owner(right + q, cy) === el) right += q
+    const area = { name: (el.getAttribute('aria-label') || el.textContent || el.value || el.tagName).trim().slice(0, 40), tag: el.tagName.toLowerCase(), w: +(right - left + q).toFixed(1), h: +(bottom - top + q).toFixed(1), x: left, y: top }
     out.areas.push(area); if (area.h < 44 || area.w < 44) out.small.push(area)
   }
   return out

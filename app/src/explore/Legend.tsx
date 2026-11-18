@@ -8,7 +8,7 @@ export interface LegendRow {
   id: string
   /** What tells this series from the others, shortened in the middle where that keeps it unique (lib/naming). */
   name: string
-  /** The full label set; shown for the row that has focus, and it is the row's accessible name. */
+  /** The full label set: the row's title (its accessible description), and shown under the table for the row that has focus. */
   full: string
   /** CSS custom property holding the series colour; a neutral ink for series folded into Other. */
   colorVar: string
@@ -92,15 +92,12 @@ export const Legend = memo(function Legend({ rows, drawn, isDefault, onToggle, o
 
   const coloured = useMemo(() => sortRows(rows.filter((r) => !r.other), sort.key, sort.dir), [rows, sort])
   const others = useMemo(() => sortRows(rows.filter((r) => r.other), sort.key, sort.dir), [rows, sort])
-  // One scale per column, from every value in it; the head carries the unit.
-  const formats = useMemo(
-    () => ({
-      last: columnFormat(rows.map((r) => r.stats.last), unit),
-      min: columnFormat(rows.map((r) => r.stats.min), unit),
-      max: columnFormat(rows.map((r) => r.stats.max), unit),
-    }),
-    [rows, unit],
-  )
+  // One scale for the three value columns, from every value in them: Last, Min and Max are
+  // compared across a row, so they share a scale. Each head carries the unit, once.
+  const formats = useMemo(() => {
+    const all = columnFormat(rows.flatMap((r) => [r.stats.last, r.stats.min, r.stats.max]), unit)
+    return { last: all, min: all, max: all }
+  }, [rows, unit])
   const otherRange = useMemo(() => {
     let min: number | null = null
     let max: number | null = null
@@ -132,7 +129,6 @@ export const Legend = memo(function Legend({ rows, drawn, isDefault, onToggle, o
         <button
           className="series-toggle"
           aria-pressed={drawn.has(r.id)}
-          aria-label={r.full}
           title={r.full}
           onClick={(e) => onToggle(r.id, additiveToggle({ ...modifiers(e), pointerType: (e.nativeEvent as PointerEvent).pointerType }, coarse))}
           data-series={r.full}

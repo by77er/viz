@@ -150,8 +150,8 @@ export interface ColumnFormat {
   cell: (v: number | null | undefined) => string
 }
 
-/** Below this fraction of the column's scale a value would print as a row of zeros; the column is then mixed. */
-export const MIXED_BELOW = 0.01
+/** Below this fraction of the column's scale a value would print as a row of zeros (0.000488); the column is then mixed. */
+export const MIXED_BELOW = 0.001
 
 /**
  * Decide where the unit of a column goes. One scale is chosen from the largest magnitude; if

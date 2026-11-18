@@ -1,0 +1,201 @@
+# viz-engine-wasm-query
+
+The read path's WebAssembly module: `viz-query` (which brings `viz-storage` and
+`viz-promql`) behind a plain C ABI, and the TypeScript binding that implements the query
+half of `contracts/engine.ts`.
+
+It is a separate module from `engine/wasm` on purpose. The write path (`edge`, `flush`,
+compaction) encodes and merges Parquet and must not carry the PromQL parser and its
+tables; the read path evaluates PromQL and does not need the Parquet writer.
+
+```
+./build.sh                    # release, fat LTO, 1 codegen unit, opt-level 3, panic=abort, +simd128,+bulk-memory
+node tools/check.mjs          # load proof and size report, in Node
+(cd ../../query && npm test)  # the binding's tests run in workerd, in query/test/engine.test.ts
+```
+
+| File | Contents |
+|---|---|
+| `src/lib.rs` | The C ABI (documented at the top of the file) |
+| `js/index.ts` | `createQueryEngine(module)`: the binding |
+| `js/viz_query.wasm` | Build output (not committed; `./build.sh` writes it) |
+| `js/wasm.d.ts` | Type of a `.wasm` import |
+| `tools/check.mjs` | Loads the module in Node with an empty import object and runs queries through the binding |
+| `build.sh`, `.cargo/config.toml` | Build settings; `CARGO_TARGET_DIR` is `./target` |
+
+## What is implemented
+
+| Binding call | C ABI operation | What it does |
+|---|---|---|
+| `plan(promql, startMs, endMs, stepMs, limits?)` | `viz_q_plan` | What to fetch: `(matchers, minTs, maxTs)` ranges, merged per matcher set and clamped to storable timestamps. `startMs === endMs` plans an instant query |
+| `selectors(…)` | `viz_q_selectors` | `contracts/engine.ts` `selectors`: one entry per selector, unmerged; exactly the reads evaluation makes |
+| `queryRange(input, promql, startMs, endMs, stepMs, limits?)` | `viz_q_query_range` | `PromMatrix` |
+| `queryRangeJson(…)` | the same | The `data` object as the JSON text the engine wrote, plus `stats {selects, series, samples, outputPoints}`. An HTTP layer passes the text through unparsed |
+| `queryInstant(input, promql, timeMs, limits?)`, `queryInstantJson` | `viz_q_query_instant` | `PromVector`, `PromScalar`, `PromString`, or `PromMatrix` for a top-level range vector |
+| `select(input, matchers, minTs, maxTs)` | `viz_q_select` | `contracts/engine.ts` `select`: series with `Float64Array` timestamps and values |
+| `parseSelectors(strings)` | `viz_q_parse_selectors` | `match[]` strings to matchers; anything but a bare, selective series selector is `bad_data` |
+| `labelNames(input, match, minTs, maxTs, limits?)` | `viz_q_label_names` | `/api/v1/labels`; the union over the `match[]` sets, or every series when there are none |
+| `labelValues(input, name, match, minTs, maxTs, limits?)` | `viz_q_label_values` | `/api/v1/label/<name>/values` |
+| `series(input, match, minTs, maxTs, limits?)` | `viz_q_series` | `/api/v1/series` |
+| `scanRows(indexes, ranges)` | `viz_q_scan_rows` | For each ledger index fragment (`FileEntry.index`): an upper bound on the rows the ranges decode from that file; 0 = the file provably holds nothing the ranges read; `null` = the fragment does not parse (unknown, so read the file) |
+| `filesNeeded(indexes, ranges)` | the same | `scanRows(…) !== 0` per file |
+| `memoryBytes()`, `instances()`, `reset()` | | The instance's linear memory (its high-water mark), how many instances were created, and dropping the instance so the memory can be reclaimed |
+
+- **No imports.** The crate applies the three `[patch.crates-io]` stand-ins of
+  `../query/patches` (`web-time`, `js-sys`, `wasm-bindgen`), so the module has no
+  `wasm-bindgen` imports and instantiates with an **empty import object**. No glue code,
+  no `wasm-bindgen` CLI, no `wasm-opt`.
+- **Number rules of the contract.** Times going in must be integers: a fractional or
+  NaN time (or step, or limit) throws `RangeError` and is never rounded. They cross as
+  `i64` written into the request buffer, so nothing depends on BigInt arguments. Sample
+  values never pass through JavaScript arithmetic: query results are JSON written inside
+  the engine with values as Prometheus-formatted strings, and `select` copies raw bytes
+  from WASM memory into each `Float64Array`'s buffer.
+- **Limits are passed with every call** (`QueryLimits`: samples, series, output points,
+  step points, query bytes, depth, steps; `DEFAULT_LIMITS` are the engine's own). Nothing
+  is stored on the instance. Exceeding one throws `QueryError` with `errorType:
+  'execution'` and `limit: { name, max, reached }`; the step cap is `bad_data`, as in the
+  Prometheus API.
+- **Errors are typed**: `QueryError.errorType` is `bad_data`, `execution`, `unsupported`
+  or `internal` (a corrupt file or batch). An engine error leaves the instance in use. Any
+  other exception from a call (a trap, out of memory) drops the instance; the next call
+  creates a new one.
+- **Memory.** A request, files and batches included, is written straight into linear
+  memory (one copy per input buffer); the result is copied out once and freed.
+
+`scanRows` and `filesNeeded` are thin: the rule lives in `engine/query`
+(`src/prune.rs`, `scan_rows` and `files_needed`), next to the format it reads.
+
+## What is not implemented
+
+- **The write half** (`encodeSegment`, `mergeFiles`): that is `engine/wasm`.
+- **Range reads.** Every file is handed over whole. `scanRows` reads the row groups'
+  offsets and lengths that a range-read plan would need, but returns only row counts.
+- **A lookback, subquery-step or name-removal option**: `EvalOptions` other than
+  `maxSteps` are the defaults of `viz-promql`.
+- **Statistics for the metadata calls.** `queryRangeJson` and `queryInstantJson` return
+  what was read; `labelNames`, `labelValues` and `series` do not.
+- **Limits per `match[]` set.** With several `match[]` the label calls evaluate one set
+  at a time, each under the full limits, where `series` applies them to the sum.
+- **A native test of the C ABI.** The ABI is exercised through the binding only (in
+  workerd and in Node). `engine/wasm` has `tests/abi.rs`; this crate does not.
+- **`wasm-opt`**, a zstd build, streaming a result out of WASM memory.
+- Nothing was run on Cloudflare.
+
+## How it was verified
+
+All figures measured here (Linux x86-64, 4 cores shared with other builds, rustc 1.97.0,
+Node 22.23, workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18. Local, not
+on Cloudflare.
+
+### Size
+
+| | bytes |
+|---|---:|
+| `js/viz_query.wasm` | **@@RAW@@** |
+| `gzip -9` | **@@GZ@@** |
+| imports | **0** |
+| exports | 14: `memory`, `viz_alloc`, `viz_free`, `viz_q_abi_version` and the ten operations |
+
+For comparison: `engine/query/wasm` (the whole engine, write half included) is
+3,618,108 bytes, 1,034,617 gzip. Leaving out the Parquet writer and the merge saves about
+a megabyte raw. What remains is dominated by the Parquet reader and the regex engine
+(`engine/query/README.md`, section 7, has the breakdown by crate).
+
+### Instantiate time
+
+| Where | `new WebAssembly.Instance(module, {})` plus one call into it |
+|---|---|
+| workerd (`query/test/engine.test.ts`, mean of 500) | **@@INST_WORKERD@@ ms** |
+| Node (`tools/check.mjs`, mean of 200) | **@@INST_NODE@@ ms** |
+
+Compiling the module happens once, when the Worker script is loaded, and is not in these
+figures. The first query in a fresh isolate is slower than later ones because the engine's
+code is not yet optimised by V8 (343 ms against 117 ms for the query below, measured
+through the Worker: `query/README.md`).
+
+### Peak WASM memory and time: 1 hour, 2,000 series
+
+`query/test/engine.test.ts`, "memory". `sum by (job)(rate(http_requests_total[5m]))` from
+`end − 1 h` to `end` at a 15 s step (241 steps) over 2,000 series (20 jobs x 100
+instances) scraped every 15 s: 522,000 samples in 18 batches, counters with pseudo-random
+increments. Each run uses a fresh instance, so `memoryBytes()` afterwards is that query's
+peak. The query reads 520,000 samples of 2,000 series and returns 20 series x 241 points
+(163 KB of JSON).
+
+| Where the rows are | Input | First call | Later calls (median of 5) | Peak WASM memory |
+|---|---|---:|---:|---:|
+| five sixths in Parquet, the rest in tail batches | 0.84 MiB in 2 files + 1.84 MiB in 3 batches | @@M1_FIRST@@ ms | @@M1_MED@@ ms | **@@M1_PEAK@@ MiB** |
+| all in Parquet | @@M2_IN@@ | @@M2_FIRST@@ ms | @@M2_MED@@ ms | **@@M2_PEAK@@ MiB** |
+
+Both runs return byte-identical JSON. The peak is the selected samples (520,000 x 16 B =
+7.9 MiB) plus the evaluator's step grid (2,000 x 241 x 24 B = 11.0 MiB) plus the input
+copied into linear memory, which agrees with the native figure in
+`engine/query/README.md` (20.2 MiB of heap above the inputs). Through the Worker, with
+24 small files instead of 2, the same query peaked at 21.5 MiB.
+
+### Tests
+
+`query/test/engine.test.ts`, 10 tests in workerd:
+
+| Test | What it asserts |
+|---|---|
+| imports nothing, exports only the C ABI, instantiates with an empty import object | `WebAssembly.Module.imports(wasm)` is `[]`; the export list is exactly the 14 names; 500 instances are created with `{}`; the engine is lazy |
+| plan merges and clamps; selectors lists each selector | exact ranges for `rate(up[1m]) / up`, a range before 1970, a query with no selector, matcher operators |
+| queryRange and queryInstant return the Prometheus data object | matrix, vector, scalar, string, a top-level range vector; times in seconds, values as strings; a staleness marker ends a series one millisecond after the last sample's lookback would have kept it; lake and tail give the same bytes; `stats` |
+| select copies sample bytes | a staleness marker and a NaN with a payload come back bit for bit, from the tail and from Parquet |
+| refuses times that are not integers | fractional and NaN times, steps and limits throw `RangeError`; the instance stays usable |
+| metadata calls and `match[]` parsing | names, values, series, windows, unions over `match[]`, the three refusals of Prometheus |
+| errors carry the Prometheus error type | parse errors, a bad regex, many-to-many matching, an unsupported function, a corrupt batch, a corrupt file, bad ranges: typed, and no new instance (no trap) |
+| every limit is passed per call | for five limits: exactly at the limit succeeds, one below fails with `execution`, the limit's name, value and the number reached; depth; the step cap as `bad_data`; limits on `plan` and the metadata calls; nothing is remembered between calls |
+| filesNeeded and scanRows | against fragments written by the flush engine: skipped by time and by name, not by a regex; row counts; an unparsable fragment is kept |
+| memory | the table above, with every value of the result checked against the workload's mean rate |
+
+`node tools/check.mjs`: **@@CHECK@@**: no imports, the export list, an empty import
+object, a query whose every point is checked, the marker's bits, eight kinds of bad query
+with no trap.
+
+The rule behind `scanRows` is tested in `engine/query` (`tests/prune.rs`, 3 tests, one a
+property over the 106-query pool: skipping files never changes a result, and the row
+bound really bounds what a read loads).
+
+## Known risks
+
+- **The patches are tied to dependency versions** (see `../query/patches/README.md`). A
+  `chrono` or `lrpar` upgrade that uses more of the replaced crates fails the build; it
+  cannot silently bring imports back.
+- **A panic is a trap.** `panic = "abort"`: an input that panics the engine ends the
+  call, the binding drops the instance, and the request fails. The engine's own tests are
+  what keep that from happening; this crate adds a bounds-checked request reader and
+  nothing else.
+- **`max_samples` fires after the fact** (`engine/query/README.md`, "Known risks"): one
+  selector's matching samples are decoded before the limit is checked. A caller bounds
+  that beforehand with `scanRows` (the query Worker does).
+- **Linear memory never shrinks.** After a large query the instance keeps its memory
+  until `reset()`. The query Worker resets above 48 MiB.
+- **`u64` statistics and limits become JavaScript numbers.** Exact below 2^53.
+- **Workerd's clock** has millisecond resolution and does not advance during pure
+  computation on Cloudflare, so the timings above cannot be reproduced there from inside
+  a Worker; production CPU comes from Cloudflare's analytics (spike S2 used that).
+
+## Contract issues
+
+Against `contracts/engine.ts` (not edited). The first five repeat `engine/query/README.md`
+because this binding is where they become visible to TypeScript.
+
+1. **No error channel.** The contract's calls return results; this binding throws
+   `QueryError { errorType, limit }`.
+2. **No limits, statistics or `plan` in the contract.** `Engine.queryRange` has no
+   `limits` argument and returns no statistics. The binding adds an optional last
+   argument, and the `…Json` variants that return `{ json, stats }`.
+3. **`selectors` vs `plan`.** Both exist; a fetcher wants `plan` (merged, clamped), the
+   scan bound wants `selectors` (one per read).
+4. **The metadata calls, `parseSelectors`, `filesNeeded` and `scanRows` are not in the
+   contract.**
+5. **`Engine` cannot be implemented by one module any more.** The write half lives in
+   `engine/wasm` and the query half here; `QueryEngine` in `js/index.ts` is the interface
+   this binding satisfies. The contract should be split the same way.
+6. **`FileEntry.index` is "opaque to the ledger"**, and now has a second consumer (the
+   query planner, through `scanRows`). Its format is still only `FileIndex` in
+   `engine/storage`; a version bump there must keep `scan_rows` returning "unknown" for
+   what it cannot read, which is what it does for anything but `"v":1`.

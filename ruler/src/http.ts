@@ -155,9 +155,9 @@ class Call {
   }
 
   async text(): Promise<string> {
-    const text = await this.req.text()
-    if (text.length > MAX_BODY_BYTES) throw new ApiError(413, 'too_large', `the request body is larger than ${MAX_BODY_BYTES} bytes`)
-    return text
+    const bytes = await this.req.arrayBuffer()
+    if (bytes.byteLength > MAX_BODY_BYTES) throw new ApiError(413, 'too_large', `the request body is larger than ${MAX_BODY_BYTES} bytes`)
+    return new TextDecoder().decode(bytes)
   }
 }
 

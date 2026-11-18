@@ -271,7 +271,7 @@ async function main() {
       check('3 s wait: Cancel appears at 2 s, not before', cancelAfter >= 2000 && cancelAfter < 2400 && !cancelEarly, `Cancel ${cancelAfter.toFixed(0)} ms after the press`)
       check('3 s wait: the previous result is usable while waiting (a legend row isolates)', usable === 1, `${usable} series shown after selecting one`)
       const age = await page.textContent('[data-testid=age]')
-      check('the panel head states the unit and the age of the data shown', /per second \(\/s\) · updated \d+ (s|min) ago/.test(age), age)
+      check('the panel head states the unit and the age of the data shown', /per second \(\/s\) · updated (now|\d+ (s|min) ago)/.test(age), age)
       await page.click('[data-testid=cancel]')
       await page.waitForSelector('[data-testid=halted]')
       const halted = await page.textContent('[data-testid=halted]')
@@ -282,11 +282,14 @@ async function main() {
       await page.click('[data-testid=halted] button')
       await page.waitForSelector('[data-testid=halted]', { state: 'detached' })
       check('Retry runs the query again', sent.length === n1 + 2, `${sent.length - n1} requests`)
-      await page.waitForFunction(() => /updated 0 s ago/.test(document.querySelector('[data-testid=age]')?.textContent || ''))
+      // "updated 0 s ago" is now "updated now" for the first 5 s (review m3); the count starts after that.
+      await page.waitForFunction(() => /updated now/.test(document.querySelector('[data-testid=age]')?.textContent || ''))
       const age1 = await page.textContent('[data-testid=age]')
-      await page.waitForTimeout(2200)
+      await page.waitForTimeout(5600)
       const age2 = await page.textContent('[data-testid=age]')
-      check('the age keeps counting', age1 !== age2 && /updated [2-9] s ago/.test(age2), `${age1} → ${age2}`)
+      await page.waitForTimeout(1500)
+      const age3 = await page.textContent('[data-testid=age]')
+      check('the age keeps counting', age1 !== age2 && /updated [5-9] s ago/.test(age2) && age3 !== age2 && /updated ([6-9]|1\d) s ago/.test(age3), `${age1} → ${age2} → ${age3}`)
       await ctx.close()
     }
 
@@ -321,7 +324,7 @@ async function main() {
       await page.keyboard.press('Escape')
       const back = await focusStop(page, focusRgb)
       check('keyboard: the time picker opens, its first item takes the ring, Escape returns focus', /Last 5 m/.test(inMenu.name) && inMenu.ring && /Last 15 m/.test(second.name) && second.ring && back.name === 'time-range' && back.ring, `${inMenu.name} → ${back.name}`)
-      for (let i = 0; i < 6; i++) await tab() // Show earlier, Show later, Zoom out, Step, Unit, Chart
+      for (let i = 0; i < 8; i++) await tab() // Show earlier, Show later, Zoom in, Zoom out, Reset zoom, Step, Unit, Chart
       await tab() // Table
       await page.keyboard.press('Enter')
       await page.waitForSelector('[data-testid=result-table] tbody tr')
@@ -340,7 +343,7 @@ async function main() {
       const isolated = await page.$$eval('[data-testid=legend] button[aria-pressed=true]', (b) => b.length)
       check('keyboard: Enter on a legend row isolates the series', isolated === 1)
       const names = stops.map((s) => s.name)
-      const expected = ['Skip to content', 'Explore', 'Help', 'open-commands', 'open-settings', 'query editor', 'run', 'time-range', 'Show earlier', 'Show later', 'Zoom out', 'step', 'unit', 'view-chart', 'view-table', 'view-table', 'view-text', 'view-json', 'chart', 'Series ↑', 'Last', 'Min', 'Max', '{service="auth"}', '{service="catalog"}', '{service="checkout"}', '{service="orders"}']
+      const expected = ['Skip to content', 'Explore', 'Help', 'open-commands', 'open-settings', 'query editor', 'run', 'time-range', 'Show earlier', 'Show later', 'zoom-in', 'zoom-out', 'zoom-reset', 'step', 'unit', 'view-chart', 'view-table', 'view-table', 'view-text', 'view-json', 'chart', 'Series ↑', 'Last, /s', 'Min, /s', 'Max, /s', '{service="auth"}', '{service="catalog"}', '{service="checkout"}', '{service="orders"}']
       check('keyboard: focus order follows reading order', JSON.stringify(names) === JSON.stringify(expected), names.join(' › '))
       const noRing = stops.filter((s) => !s.ring).map((s) => s.name)
       check('keyboard: the focus ring (2 px, focus token) is drawn at every stop', noRing.length === 0, noRing.length ? `no ring on: ${noRing.join(', ')}` : `${stops.length} stops`)

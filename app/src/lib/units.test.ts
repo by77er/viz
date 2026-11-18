@@ -74,9 +74,13 @@ describe('where the unit goes: once in the head, or on every value (M7)', () => 
     expect(columnFormat([0, null, 250], 'rps').unit).toBe('/s')
     expect(columnFormat([], 'bytes').unit).toBe('B')
     expect(columnFormat([null], 'seconds').unit).toBe('s')
+    // Small beside large is still one scale while it prints sensibly: 0.004 and 20.1 per second.
+    const r = columnFormat([0.004, 20.1], 'rps')
+    expect(r.unit).toBe('/s')
+    expect(r.cell(0.004)).toBe('0.004')
   })
   it('an axis is always one scale', () => {
-    const ticks = [0, 0.001, 50, 100]
+    const ticks = [0, 0.0001, 50, 100]
     expect(columnFormat(ticks, 'seconds', 4).unit).toBeNull()
     expect(columnFormat(ticks, 'seconds', 4, false).unit).toBe('s')
   })

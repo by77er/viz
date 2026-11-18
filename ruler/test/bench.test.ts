@@ -16,9 +16,14 @@ const stats = (xs: number[]) => {
 const fmt = (o: Record<string, number>) => Object.entries(o).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(', ')
 
 describe('measurements', () => {
-  for (const shape of [{ groups: 1, perGroup: 1000 }, { groups: 10, perGroup: 100 }]) {
-    it(`1,000 rules as ${shape.groups} group(s) of ${shape.perGroup}, 100 firing alerts`, async () => {
+  for (const { batch, ...shape } of [
+    { groups: 1, perGroup: 1000, batch: false }, { groups: 10, perGroup: 100, batch: false },
+    { groups: 1, perGroup: 1000, batch: true }, { groups: 10, perGroup: 100, batch: true },
+  ]) {
+    it(`1,000 rules as ${shape.groups} group(s) of ${shape.perGroup}, 100 firing alerts${batch ? ', batch evaluator' : ''}`, async () => {
       const { tenant, stub, w } = await setup({ heartbeatMs: 5 * MIN, maxConcurrentGroups: 4 })
+      // false: the single-call form through the adapter (1,000 calls a tick). true: one batch call per group.
+      w.batch = batch
       // 950 alerting rules and 50 recording rules. 100 alerting rules each have one firing
       // alert; the others return three healthy series that match nothing... i.e. an empty vector.
       const firing = vec([{ __name__: 'errors_total', job: 'api', instance: 'web-1:9100', region: 'eu-west-1' }, 12.5])
@@ -75,9 +80,9 @@ describe('measurements', () => {
 
       console.log(
         [
-          `[bench] 1,000 rules = ${shape.groups} x ${shape.perGroup}; 100 firing alerts; fake evaluator`,
+          `[bench] 1,000 rules = ${shape.groups} x ${shape.perGroup}; 100 firing alerts; fake evaluator; ${batch ? `BATCH form (${(w.batchCalls.length / 43).toFixed(0)} evaluator call(s) per tick)` : 'SINGLE-call form through the adapter'}`,
           `[bench]   save 1,000 rules (validate, classify, store): ${saveMs.toFixed(1)} ms`,
-          `[bench]   tick wall time, steady state, 40 ticks: ${fmt(wall)} ms  (${evalCalls.toFixed(0)} evaluator calls per tick)`,
+          `[bench]   tick wall time, steady state, 40 ticks: ${fmt(wall)} ms  (${evalCalls.toFixed(0)} expressions per tick)`,
           `[bench]   tick wall time with transitions (100 pending / none / 100 firing): ${transitions.map((t) => t.ms.toFixed(1)).join(' / ')} ms; rows ${transitions.map((t) => t.rows).join(' / ')}`,
           `[bench]   SQL rows written per steady tick: ${Math.min(...rowsPerTick)} (${heartbeats} of 40 ticks wrote the 1 heartbeat row); setAlarm calls per tick: ${stats(steady.map((s) => s.alarms)).max}`,
           `[bench]   storage: ${size} bytes (${(size / 1024).toFixed(0)} KiB) for 1,000 rules and 100 firing alerts`,
@@ -87,6 +92,7 @@ describe('measurements', () => {
       expect(rowsPerTick.filter((r) => r === 0).length).toBe(40 - heartbeats)
       expect(Math.max(...rowsPerTick)).toBeLessThanOrEqual(1 + 2) // heartbeat row (+ nothing else in steady state)
       expect(heartbeats).toBe(8) // 40 minutes / 5-minute heartbeat
+      if (batch) expect(w.batchCalls.length).toBe(43 * shape.groups) // one call per group per tick, never one per rule
     })
   }
 })

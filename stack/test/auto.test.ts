@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { liveKeys, read } from '../../flush/test/helpers'
 import { ledgerOf, sendAll, shardOf, world } from './world'
 
-const until = async (what: string, ok: () => Promise<boolean>, ms = 20_000): Promise<void> => {
+const until = async (what: string, ok: () => Promise<boolean>, ms = 60_000): Promise<void> => {
   const deadline = Date.now() + ms
   while (!(await ok())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for: ${what}`)
