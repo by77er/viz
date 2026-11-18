@@ -24,6 +24,7 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 | `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
 | `test/triggers.test.ts` | 8 tests of the triggers, the maintenance marker, the orphan-sweep flag and the idle deployment |
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
+| `test/precedence.property.test.ts` | 6 seeded runs: random rewrites of the same samples always read back as the latest write |
 | `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
 | `test/sim.ts`, `test/world.ts` | Simulated deployments: tenants, real requests, queues under test control, the model, the invariants |
 | `scripts/mutants.mjs` | Mutation check for the four new parts |
@@ -81,7 +82,7 @@ after 5 min, and an unreferenced compaction output is deleted after 24 h.
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npm test                         # 24 tests in workerd, 5 files (soak: 400 steps)
+npm test                         # 30 tests in workerd, 6 files (soak: 400 steps)
 npm run soak                     # the soak with 3,000 steps
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
@@ -130,6 +131,32 @@ timestamps, XOR of value bits); a merge's output never has more rows than its in
 With an expire in the middle the result must be the model minus the expired days and no
 file of an expired day may be live. Last run: 8 of 8 pass; per seed 10–16 merges, 1–3
 conflicts, 2–5 expires, 149–383 rows.
+
+### The latest write wins (`test/precedence.property.test.ts`)
+
+Found by the query Worker's engineer and fixed here (`contracts/ledger.ts` `LiveFile`,
+`DECISIONS.md` D22): which file wins a duplicate `(series, ts)` used to be key order, and
+keys sort as text. Six seeded runs of 70 operations on one tenant over two shards: writes
+of 1–4 keys from a pool of 48 `(series, ts)` (six series, eight times over two days) with
+values never used before, mostly each in its own segment; flushes; one or two compaction
+steps at once under random policies, budgets and clocks (open hours, closed days); and
+discards, so a key's rows move between tail, flush files and outputs. After every step a
+query must return each key's LAST acknowledged value, plus every `checkTenant` invariant.
+Last run: 6 of 6 pass; per seed 76–112 writes, 39–69 of them rewrites, streams reaching
+sequence 22–43 (past the tenth, where text order and sequence order part), 28–38 merges,
+0–4 conflicts. Restoring key order in `plan`, merging in key order, or giving an output the
+newest precedence each fails it.
+
+**What `query/` should change now** (not edited here): drop `byPrecedence` and read
+`Plan.files` in the order given, or sort by `LiveFile.precedence`. Its rule "compaction
+outputs first" is wrong under the new contract: a flush file of a neighbouring hour can be
+older than an overlapping output and must lose to it. `query/test/leaves.test.ts` line 113
+asserts that the ledger lists the 11th flush before the 2nd; it now lists them in
+precedence order, so that assertion fails and should be inverted. Of its "needed changes"
+3–5: nothing built here makes tail paging or filtering (3) or reading a stream without its
+incarnation (4) harder; one `plan` call for both tables (5) is no harder, but note that a
+pair's samples and series files differ in precedence by their position in the unit, so a
+combined answer should keep one list per table.
 
 ### Soak (`test/soak.test.ts`)
 

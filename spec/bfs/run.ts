@@ -93,7 +93,7 @@ teeth('k_no_handshake', '(k) no registration before writes, query asks only stre
 teeth('l_sweep_any', '(l) orphan sweeper deletes any unreferenced object', { sweep: 'any' }, 'I11_LiveFilesReadable')
 teeth('m_delete_before_logged', '(m) removed file deleted before its removal is logged; ledger loss + rebuild', { delLogged: false, maxComp: 1, maxLL: 1 }, 'I11_LiveFilesReadable')
 teeth('n_unknown_stream_empty', '(n) tailRead on a stream the shard does not hold answers ok/empty', { unknownStream: 'empty', maxSL: 1 }, 'I4_NoGapAtSeam')
-teeth('o_read_unbound', '(o) flush reads readSegment(tenant, seqLo) unbound to the incarnation', { readBound: false, maxSL: 1 }, 'I3_NoDuplicates')
+E.push({ name: 'o_read_unbound', kind: 'teeth', label: '(o) flush reads readSegment(tenant, seqLo) unbound to the incarnation. NO counterexample: with registration before writes (F1 fix) the stale unit is refused as incarnation_mismatch; it bites only with lazy registration (F12)', cfg: { ...AMENDED, readBound: false, maxSL: 1 }, props: ['I3_NoDuplicates'], expect: 'holds' })
 teeth('p_drain_retry_new_bounds', '(p) a retried drain writes all pending changes (new bounds); strict replay', { drainRetrySame: false, maxLL: 1 }, 'AV_RebuildSucceeds')
 
 // ---- the design as written (DESIGN.md 3.1 + LEDGER-LOG.md) and the implementation as built
@@ -110,7 +110,7 @@ finding('IMPL_all', 'As built (shard.ts, ledger.ts, flush.ts, compact.ts, janito
 finding('F6_impl_unknown_stream', 'F6: shard.ts tailRead answers ok/empty for a stream it lost', { ...IMPL, maxSL: 1 }, ['I4_NoGapAtSeam'])
 finding('F12_impl_read_unbound', 'F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss', { ...IMPL, maxSL: 1, unknownStream: 'refuse' }, ['I3_NoDuplicates'])
 finding('F13_impl_comp_adopts_old_output', 'F13: compaction adopts an earlier step\'s output ("exists"); the sweeper judges it by the earlier upload', { ...IMPL, maxComp: 1 }, ['I11_LiveFilesReadable'])
-finding('F14_impl_comp_conflict_delete', 'F14: compaction deletes its output on conflict although an identical step made it live and it was removed since', { ...IMPL, sweep: 'off', maxComp: 2, maxCJobs: 2, maxLL: 1 }, ['I11_LiveFilesReadable'])
+finding('F14_impl_comp_conflict_delete', 'F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild', { ...IMPL, sweep: 'off', maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
 finding('IMPL_PLANNED_all', 'As built + the planned segment log of LEDGER-LOG.md', { ...IMPL_PLANNED, maxLL: 1 }, ALLSAFE)
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation
@@ -120,6 +120,7 @@ amended('A_1shard_2batches', '1 tenant, 1 shard, 2 batches, 1 of each fault and 
 amended('A_1shard_3batches', '1 tenant, 1 shard, 3 batches (1 send each), ledger loss + shard loss', { nb: 3, maxSend: 1, maxLL: 1, maxSL: 1 })
 amended('A_2shards', '1 tenant, 2 shards, 2 batches, ledger loss + shard loss + compaction', { ns: 2, maxLL: 1, maxSL: 1, maxComp: 1 })
 amended('A_2tenants', '2 tenants in 1 pooled shard, 2 batches, ledger loss + shard loss', { nt: 2, nb: 2, maxLL: 1, maxSL: 1, sameContent: true })
+amended('A_impl_fixed', 'as built + the fixes for F3 (assumed), F6, F12, F13/F14 (step-unique compaction keys); ledger loss, shard loss, compaction, retention', { ...IMPL, unknownStream: 'refuse', readBound: true, compKey: 'unique', noRetryAcrossLoss: true, ...FAULTS })
 amended('A_variants_2LL', '2 encoder outputs per segment, 2 ledger losses, 2 compaction steps at once', { variants: 2, maxLL: 2, maxComp: 1, maxCJobs: 2 })
 
 // ---- liveness: AG EF (query done) on the whole graph; unbounded refusals

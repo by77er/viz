@@ -7,7 +7,7 @@ larger, sorted files (`design/DESIGN.md` §5.2). Stateless; the ledger is the on
 |---|---|
 | `src/compact.ts` | `chooseJob` (the policy, a pure function), `compactStep` (one merge), `compactTenant` (steps until idle), `pairFiles`, `compactedKey` |
 | `src/index.ts` | `Compact` entrypoint (RPC `compactTenant`), `CompactWorkflow` (the same step function as a Workflow), one engine per isolate |
-| `test/compact.test.ts` | 12 tests in workerd against the real `Shard`, `Ledger`, flush and a simulated R2 |
+| `test/compact.test.ts` | 13 tests in workerd against the real `Shard`, `Ledger`, flush and a simulated R2 |
 | `test/workflow.test.ts` | 1 test: the Workflow run under `introspectWorkflowInstance` |
 
 Bindings: `LEDGER`, `BUCKET`, `CELL`; `COMPACT` (the Workflow). `SHARD` only for tests.
@@ -21,8 +21,10 @@ Bindings: `LEDGER`, `BUCKET`, `CELL`; `COMPACT` (the Workflow). `SHARD` only for
 2. `chooseJob` picks the inputs (policy below), or the step is `idle`.
 3. The inputs are read from R2, six at a time, one table at a time.
 4. `engine.mergeFiles` twice: samples inputs → one samples file, series inputs → one series
-   file. Inputs are passed in key order, the order a read uses, so the same file wins a
-   duplicate `(series, ts)` in the merge as in a query.
+   file. Inputs are passed in **ascending precedence** (`contracts/ledger.ts` `LiveFile`),
+   the order a read uses, so every row of the output has its latest write. (Until this
+   review they went in key order; keys sort as text, so a stream's tenth flush sorted before
+   its second and a merge could keep an older value: `DECISIONS.md` D22.)
 5. Both outputs are PUT in parallel under content-hashed keys with `If-None-Match: *`
    (flush's `putFile`: an existing object counts only if its size and SHA-256 match).
 6. **One** `ledger.replace({ remove: every input of both tables, add: both outputs })`.
@@ -45,6 +47,7 @@ its inputs together, fewer than its largest input, another day or another table)
 | Closed day | A UTC day is closed 2 h after it ends (`closeAfterMs`: the one-hour accept window plus time for the last segments to be flushed). Its pairs below level 2, and level-2 pairs under 4 MB (`smallL2Bytes`), are merged in time order into level-2 pairs. The oldest closed day goes first. A late flush file for a closed day is folded in the same way; a single remaining level-0/1 pair is rewritten as level 2 |
 | Open hour | Pairs are bucketed by the UTC hour of their newest sample. A bucket is merged into one level-1 pair when it holds K = 4 level-0 pairs (`minL0Files`), or at least one and its newest sample is M = 10 min old (`maxL0AgeMs`). The bucket's level-1 pairs are merged in too, so an hour converges to one pair |
 | Budget | A merge reads at most 16 MB (`maxInputBytes`, samples + series) in at most 8 pairs (`maxInputPairs`). A larger job is several merges. A pair over the budget on its own is left as it is |
+| Precedence | Candidates are taken in ascending precedence, and a pair joins a group only if the group still jumps over no live file of the day (paired or not) that overlaps it in time and ranks inside its range (`jumpsOver`): the output would otherwise rank above that file with rows older than its. A closed day's groups are runs in precedence order and never jump; an open hour's may be cut short |
 
 "Age" is data time (the newest sample), not write time: `FileEntry` carries no creation
 time. Level-1 files are clustered by hour, not hour-pure: late rows travel with their file.
@@ -109,16 +112,17 @@ in a deployed Worker (`design/VERIFICATION.md` §4).
 
 ```
 (cd ../engine/wasm && ./build.sh)
-npm ci && npm test       # 13 tests in workerd, 2 files
+npm ci && npm test       # 14 tests in workerd, 2 files
 npx tsc --noEmit         # clean
 ```
 
 | Test | What it asserts |
 |---|---|
-| policy (3) | pairing by key and stray files; open hour by count and by quiet time, with `nextDueAt`; closed day, budget in pairs and bytes, small level-2 files, oldest day first |
+| policy (4) | pairing by key and stray files; open hour by count and by quiet time, with `nextDueAt`; closed day, budget in pairs and bytes, small level-2 files, oldest day first; precedence: no group jumps over an overlapping file (paired, a big level-2 file, or unpaired), a non-overlapping one may be jumped, a closed day is merged in precedence order whatever the key or time order |
 | merges an hour into one level-1 pair | identical query result (I8), the ledger lists exactly the pair, the log holds ONE `replace` naming both tables, keys per the contract with the content hash recomputed |
 | removes duplicate rows two flush files share | 96 rows in, the distinct rows out, result unchanged |
 | a step that stops after its PUTs | repeated with the same keys, `exists`, no second object |
+| conflict (`blocking`) | not a test of its own here: the ledger's refusal of a swap that would jump over a file is in `ledger/test/precedence.test.ts`, and `compactStep` handles it as any conflict (concurrent steps with different policies hit it in `stack/test/precedence.property.test.ts`) |
 | conflict | retention expires an input between PUT and `replace`: nothing swapped, both outputs deleted, the expired day does not return |
 | conflict after an identical step won | a slow step's twin finishes, a reader takes a plan listing the twin's outputs, retention removes them; the slow step's `replace` conflicts and it deletes nothing (the objects are tombstoned and the reader can read every file). Found in this review: the step used to delete them, because it asked only whether they were live |
 | two (three) steps at once | one pair, one `replace` in the log, no stray object |
@@ -131,10 +135,10 @@ The property test for I8 and the soak are in `stack/` (`test/compaction.property
 
 ## Known risks
 
-- **Conflicting values across files.** If two FILES hold different values for one
-  `(series_id, ts)`, the later key wins; compaction changes key order, so which value
-  survives is not defined across a merge (`contracts/TABLES.md`). Rows that agree (retries)
-  are unaffected, and that is all the tests send.
+- **Hours left unmerged.** The precedence rule (no merge jumps over an overlapping file)
+  can stop an open hour's merges while a segment of the neighbouring hour that straddles
+  the boundary was admitted in between; such files wait for their day to close. How often
+  that happens on real traffic is not measured (`DECISIONS.md` D22).
 - **The row-count check is a bound**, not a proof: it catches a merge that lost most rows
   or invented some, not one that dropped a few. I8 rests on the engine's tests and the
   property test.

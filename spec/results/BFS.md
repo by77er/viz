@@ -6,26 +6,26 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 
 | experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
 |---|---|---|---|---|---|---|---|
-| `a_no_fence` (a) tail read without the fence | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 17 steps | 57,644 | 272,184 | 17 | 2.3 s | 9e-11 |
-| `b_highest_seq` (b) watermark = highest seq seen, not the contiguous prefix | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 14 steps | 15,605 | 59,322 | 14 | 0.7 s | 6.6e-12 |
-| `b_highest_seq_I1` (b) same, as data loss | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 16 steps | 40,413 | 175,864 | 16 | 1.7 s | 4.4e-11 |
+| `a_no_fence` (a) tail read without the fence | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 17 steps | 57,644 | 272,184 | 17 | 2 s | 9e-11 |
+| `b_highest_seq` (b) watermark = highest seq seen, not the contiguous prefix | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 14 steps | 15,605 | 59,322 | 14 | 0.4 s | 6.6e-12 |
+| `b_highest_seq_I1` (b) same, as data loss | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 16 steps | 40,413 | 175,864 | 16 | 1.2 s | 4.4e-11 |
 | `c_recorded_at_committed` (c) shard told `recorded` at the committed watermark; ledger loss + rebuild | I5_DiscardOnlyLogged | **violated** I5_DiscardOnlyLogged in 10 steps | 2,158 | 5,557 | 10 | 0.1 s | 1.3e-13 |
-| `c_recorded_at_committed_I1` (c) same, carried through to data loss | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 12 steps | 8,506 | 27,732 | 12 | 0.3 s | 2e-12 |
+| `c_recorded_at_committed_I1` (c) same, carried through to data loss | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 12 steps | 8,506 | 27,732 | 12 | 0.2 s | 2e-12 |
 | `d_no_dedup` (d) no dedup fingerprints, client retry | I3_NoDuplicates | **violated** I3_NoDuplicates in 8 steps | 276 | 462 | 8 | 0 s | 2.1e-15 |
-| `e_fp_expiry` (e) fingerprint TTL shorter than the retry horizon | I3_NoDuplicates | **violated** I3_NoDuplicates in 19 steps | 106,504 | 548,876 | 19 | 3.9 s | 3.1e-10 |
-| `f_replace_not_live` (f) replace without the inputs-live check, racing retention | I9_NoResurrection | **violated** I9_NoResurrection in 19 steps | 157,741 | 764,052 | 19 | 4.9 s | 6.7e-10 |
-| `g_delete_no_grace` (g) physical deletion without waiting for queries holding an old plan; missing file read as empty | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 25 steps | 748,493 | 3,806,652 | 25 | 24.5 s | 1.5e-8 |
+| `e_fp_expiry` (e) fingerprint TTL shorter than the retry horizon | I3_NoDuplicates | **violated** I3_NoDuplicates in 19 steps | 106,504 | 548,876 | 19 | 3.4 s | 3.1e-10 |
+| `f_replace_not_live` (f) replace without the inputs-live check, racing retention | I9_NoResurrection | **violated** I9_NoResurrection in 19 steps | 157,741 | 764,052 | 19 | 5.5 s | 6.7e-10 |
+| `g_delete_no_grace` (g) physical deletion without waiting for queries holding an old plan; missing file read as empty | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 25 steps | 748,493 | 3,806,652 | 25 | 26 s | 1.5e-8 |
 | `g_delete_no_grace_loud` (g) same, missing file is an error: the query is refused (with the `retain` timing assumption no other refusal exists) | L2_NoRefusal | **violated** L2_NoRefusal in 25 steps | 734,880 | 3,750,896 | 25 | 25.3 s | 1.5e-8 |
 | `h_overwrite` (h) flush key deterministic and the PUT overwrites; two encoder outputs | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 12 steps | 7,223 | 22,961 | 12 | 0.2 s | 1.4e-12 |
-| `h_if_none_match` (h2) deterministic key + If-None-Match (draft 3): the ledger describes the loser | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 12 steps | 7,243 | 23,028 | 12 | 0.1 s | 1.4e-12 |
+| `h_if_none_match` (h2) deterministic key + If-None-Match (draft 3): the ledger describes the loser | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 12 steps | 7,243 | 23,028 | 12 | 0.2 s | 1.4e-12 |
 | `i_fingerprint_per_shard` (i) fingerprints scoped per shard, not per stream; 2 tenants send identical bytes | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 8 steps | 689 | 1,679 | 8 | 0 s | 1.3e-14 |
 | `j_tail_read_per_shard` (j) tail read not scoped to the tenant; 2 tenants in one pooled shard | I20_TenantIsolation | **violated** I20_TenantIsolation in 8 steps | 703 | 1,723 | 8 | 0 s | 1.3e-14 |
 | `k_no_handshake` (k) no registration before writes, query asks only streams in the plan | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 3 steps | 20 | 23 | 3 | 0 s | 1.1e-17 |
 | `l_sweep_any` (l) orphan sweeper deletes any unreferenced object | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 10 steps | 1,361 | 3,409 | 10 | 0 s | 5e-14 |
-| `m_delete_before_logged` (m) removed file deleted before its removal is logged; ledger loss + rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 22 steps | 556,058 | 3,001,314 | 22 | 18.6 s | 8.4e-9 |
-| `n_unknown_stream_empty` (n) tailRead on a stream the shard does not hold answers ok/empty | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 15 steps | 78,747 | 284,981 | 15 | 2.2 s | 1.7e-10 |
-| `o_read_unbound` (o) flush reads readSegment(tenant, seqLo) unbound to the incarnation | I3_NoDuplicates | **violated** I3_NoDuplicates in 18 steps | 429,288 | 1,734,939 | 18 | 11.1 s | 5e-9 |
-| `p_drain_retry_new_bounds` (p) a retried drain writes all pending changes (new bounds); strict replay | AV_RebuildSucceeds | **violated** AV_RebuildSucceeds in 12 steps | 9,310 | 29,663 | 12 | 0.3 s | 2.3e-12 |
+| `m_delete_before_logged` (m) removed file deleted before its removal is logged; ledger loss + rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 22 steps | 556,058 | 3,001,314 | 22 | 18.8 s | 8.4e-9 |
+| `n_unknown_stream_empty` (n) tailRead on a stream the shard does not hold answers ok/empty | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 15 steps | 78,747 | 284,981 | 15 | 2 s | 1.7e-10 |
+| `o_read_unbound` (o) flush reads readSegment(tenant, seqLo) unbound to the incarnation | I3_NoDuplicates | holds (exhaustive) (unexpected) | 10,968,139 | 69,712,074 | 49 | 526.7 s | 0.0000033 |
+| `p_drain_retry_new_bounds` (p) a retried drain writes all pending changes (new bounds); strict replay | AV_RebuildSucceeds | **violated** AV_RebuildSucceeds in 12 steps | 8,452 | 27,646 | 12 | 0.2 s | 1.9e-12 |
 
 ## Design and implementation as written (a counterexample is a finding)
 
@@ -424,31 +424,6 @@ Violates `I4_NoGapAtSeam`.
 13. SHARD STORAGE LOSS(s0)
 14. query: tailRead(s0, inc 1, above 0) = ok nothing
 15. query: read files, merge -> nothing
-
-### o_read_unbound
-
-(o) flush reads readSegment(tenant, seqLo) unbound to the incarnation
-
-Violates `I3_NoDuplicates`.
-
-1. registerStream(s0, inc 1)
-2. ledger drain: PUT segment v1..v1
-3. registration logged -> s0 accepts writes
-4. append(b0 -> s0) seq 1
-5. seal(s0, ..1)
-6. flush: pendingSegments(s0) -> inc 1 1..1
-7. flush readSegment(s0 inc 1 1..1)
-8. SHARD STORAGE LOSS(s0)
-9. flush PUT L0(s0 inc1 1..1)
-10. addUnit(s0 inc 1 1..1) admitted
-11. registerStream(s0, inc 2)
-12. ledger drain: delete outbox rows v1..v1, advance logged
-13. ledger drain: PUT segment v2..v3
-14. registration logged -> s0 accepts writes
-15. append(b0 -> s0) seq 1 [retry]
-16. query: plan (L0(s0 inc1 1..1); wm s0:inc2@0)
-17. query: tailRead(s0, inc 2, above 0) = ok b0
-18. query: read files, merge -> b0x2
 
 ### p_drain_retry_new_bounds
 

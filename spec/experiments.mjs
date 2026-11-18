@@ -221,11 +221,14 @@ function runTlc(e) {
   const t0 = Date.now()
   const log = join(build, `${e.name}.log`)
   const fd = openSync(log, 'w')
-  // one worker = strict breadth-first search = shortest counterexample; all cores for the big runs
-  const tlcCfg = join(build, `tlc-${e.kind === 'fixed' ? 'auto' : 1}.json`)
-  writeFileSync(tlcCfg, JSON.stringify(e.kind === 'fixed' ? { workers: 'auto' } : { workers: 1 }))
+  // one worker = strict breadth-first search = shortest counterexample; two for the big runs.
+  // Memory is capped (heap 900 MB + 400 MB off-heap fingerprint set): the machine is shared.
+  const workers = e.kind === 'fixed' ? 2 : 1
+  const tlcCfg = join(build, `tlc-${workers}.json`)
+  writeFileSync(tlcCfg, JSON.stringify({ workers, maxHeap: '-Xmx900m' }))
+  const env = { ...process.env, JAVA_TOOL_OPTIONS: `${process.env.JAVA_TOOL_OPTIONS ?? ''} -XX:MaxDirectMemorySize=400m` }
   spawnSync(quint, ['verify', '--backend', 'tlc', '--verbosity', '3', '--tlc-config', tlcCfg, '--invariant', e.inv, file],
-    { cwd: build, stdio: ['ignore', fd, fd], timeout: 6 * 3600_000 })
+    { cwd: build, stdio: ['ignore', fd, fd], timeout: 6 * 3600_000, env })
   closeSync(fd)
   const out = readFileSync(log, 'utf8')
   const res = { ...parseTlc(out), seconds: Math.round((Date.now() - t0) / 100) / 10 }
