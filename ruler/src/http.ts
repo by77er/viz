@@ -33,10 +33,10 @@ import type {
   ValidationError,
 } from '../contracts-proposal/rules.v2'
 import { DEFAULT_DETECTOR, DEFAULT_PAGE_DETECTOR, DETECTOR_GUIDE } from './anomaly'
-import { adoptMonitors, ANOMALY_MONITOR_DEFAULTS, defaultGroup, mergeTimelines, MONITOR_GROUP_CAP, monitorIdOf, monitorPaths, monitorView, planMonitor, routingLabels } from './monitors'
+import { adoptMonitors, ANOMALY_MONITOR_DEFAULTS, defaultGroup, mergeTimelines, MONITOR_GROUP_CAP, monitorIdOf, monitorPaths, monitorView, planMonitor, routingLabels, type GroupPrefix, type MonitorRule } from './monitors'
 import { assign, DEFAULT_PLACEMENT, shardOf, type GroupSize, type PlacementLimits } from './placement'
 import { indexName } from './registry'
-import { exportRuleFile, importRuleFile, ruleFileDocument } from './rulefile'
+import { exportRuleFile, importRuleFile, ruleFileDocument, sloEntry } from './rulefile'
 import { DEADMAN_GROUP } from './rules'
 import { mapLimit, parseDuration, rfc3339 } from './util'
 
@@ -258,8 +258,8 @@ interface Found {
   shard: string
   group: GroupSnapshot
   snap: RuleSnapshot
-  /** A monitor is an alerting rule or an anomaly rule. */
-  rule: AlertingRuleV2 | AnomalyRuleV2
+  /** A monitor is an alerting rule, an anomaly rule or an SLO rule. */
+  rule: MonitorRule
 }
 
 function alertingRules(groups: { shard: string; group: GroupSnapshot }[]): Found[] {
@@ -330,7 +330,7 @@ async function receiverNames(c: Call): Promise<string[] | null> {
 }
 
 /** The default group for an interval: the first `monitors/<interval>[/<n>]` with room, or the one that already holds the monitor. */
-function pickGroup(found: { group: GroupSnapshot }[], interval: string, id: string, prefix: 'monitors' | 'anomalies' = 'monitors'): string {
+function pickGroup(found: { group: GroupSnapshot }[], interval: string, id: string, prefix: GroupPrefix = 'monitors'): string {
   for (let n = 1; ; n++) {
     const name = defaultGroup(interval, n, prefix)
     const g = found.find((f) => f.group.name === name)?.group
@@ -354,10 +354,11 @@ async function writeMonitor(c: Call, existing: Found | null): Promise<Response> 
   // Written with `query` (a condition, or the series an anomaly monitor watches): errors on `expr` belong to `query`.
   const viaCondition = (rule.monitor?.condition !== null && rule.monitor?.condition !== undefined) || planned.plan.anomaly
   const groups = await c.groups()
-  // An anomaly monitor goes in its own default group: a release that predates anomaly rules,
+  // An anomaly or SLO monitor goes in its own default group: a release that predates the kind,
   // during a rollback, then never rewrites a group holding them when a threshold monitor is edited.
-  const prefix = planned.plan.anomaly ? 'anomalies' : 'monitors'
-  const sameInterval = existing !== null && parseDuration(interval) === existing.group.intervalMs && (existing.rule.kind === 'anomaly') === planned.plan.anomaly
+  const prefix: GroupPrefix = planned.plan.slo ? 'slos' : planned.plan.anomaly ? 'anomalies' : 'monitors'
+  const kindOf = (k: MonitorRule['kind']): GroupPrefix => (k === 'slo' ? 'slos' : k === 'anomaly' ? 'anomalies' : 'monitors')
+  const sameInterval = existing !== null && parseDuration(interval) === existing.group.intervalMs && kindOf(existing.rule.kind) === prefix
   const group = planned.plan.group ?? (sameInterval ? (existing as Found).group.name : pickGroup(groups, interval, meta.id, prefix))
   if (group === DEADMAN_GROUP) throw invalid([{ path: 'group', message: 'group names starting with "viz:" are reserved', fix: 'Choose another name.' }])
   const size = groups.find((g) => g.group.name === group)?.group.rules.length ?? 0
@@ -377,11 +378,14 @@ async function writeMonitor(c: Call, existing: Found | null): Promise<Response> 
     group,
     shard: String(shard),
     cost: savedRule?.cost ?? null,
-    expr: rule.expr,
+    // An SLO monitor has no expression of its own: its SLI is in `slo`.
+    expr: 'expr' in rule ? rule.expr : null,
     warnings: monitorPaths(saved.warnings, saved.ruleIndex ?? 0, viaCondition),
   }
   // An anomaly monitor: what its detector reads per tick and to warm up (design §7 classes).
   if (savedRule?.history) out.history = savedRule.history
+  // An SLO monitor: what it reads per tick and to warm up.
+  if (savedRule?.slo) out.sloHistory = savedRule.slo
   return json(existing || dryRun ? 200 : 201, out)
 }
 
@@ -480,8 +484,8 @@ async function listGroups(c: Call): Promise<Response> {
   return json(200, { groups: doc.groups.map((g, i) => ({ ...g, shard: (all[i] as { shard: string }).shard })) })
 }
 
-async function existingMonitors(c: Call): Promise<Map<string, AlertingRuleV2 | AnomalyRuleV2>> {
-  const out = new Map<string, AlertingRuleV2 | AnomalyRuleV2>()
+async function existingMonitors(c: Call): Promise<Map<string, MonitorRule>> {
+  const out = new Map<string, MonitorRule>()
   for (const f of alertingRules(await c.groups())) if (f.rule.monitor) out.set(f.rule.monitor.id, f.rule)
   return out
 }
@@ -550,12 +554,32 @@ async function backtest(c: Call): Promise<Response> {
   }
   const stepMs = typeof body.step === 'string' ? parseDuration(body.step) : null
   const intervalMs = interval === undefined ? undefined : (parseDuration(interval) ?? undefined)
-  if (stepMs === null) throw invalid([{ path: 'step', message: 'step is required', fix: 'Give the resolution as a duration, e.g. "1m"; the monitor\'s interval is the most faithful choice.' }])
-  const r = ok(await c.ruler(0).backtest(c.tenant, rule, body.fromMs as number, body.toMs as number, stepMs, intervalMs))
+  if (stepMs === null) throw invalid([{ path: 'step', message: 'step is required', fix: 'Give the resolution as a duration, e.g. "1m"; the monitor\'s interval is the most faithful choice (and the only one for anomaly and SLO monitors).' }])
+  return backtestAnswer(ok(await c.ruler(0).backtest(c.tenant, rule, body.fromMs as number, body.toMs as number, stepMs, intervalMs)))
+}
+
+function backtestAnswer(r: Exclude<Awaited<ReturnType<RulerStub['backtest']>>, { status: 'wrong_tenant' } | { status: 'schema_too_new' }>): Response {
   if (r.status === 'invalid') throw invalid(r.errors)
   if (r.status === 'failed') throw new ApiError(502, 'evaluation_failed', r.error)
+  // Refused, whole: the read is over the backtest budget (or its cost is unknown), or the CPU model's projection is over its budget.
+  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, plan: r.plan, budget: r.budget, memory: r.memory ?? null, cpu: r.cpu ?? null })
   const { status: _s, ...result } = r
   return json(200, result)
+}
+
+/**
+ * A saved monitor over a past range: its rule as stored, at its group's interval (the step, unless
+ * an alerting rule is given another). The monitor is found among the caller's own groups only.
+ */
+async function backtestMonitor(c: Call): Promise<Response> {
+  const f = await findMonitor(c)
+  const body = (await c.body()) as { fromMs?: unknown; toMs?: unknown; step?: unknown }
+  const stepMs = typeof body.step === 'string' ? parseDuration(body.step) : body.step === undefined ? f.group.intervalMs : null
+  if (stepMs === null) throw invalid([{ path: 'step', message: 'step must be a duration', fix: 'Leave it out for the monitor\'s interval, or give e.g. "5m" (alerting monitors only).' }])
+  const entry = f.rule.kind === 'slo' ? sloEntry(f.rule) : (ruleFileDocument([{ name: f.group.name, intervalMs: f.group.intervalMs, queryOffsetMs: 0, limit: 0, rules: f.rule.kind === 'alert' ? [f.rule] : [], anomalyRules: f.rule.kind === 'anomaly' ? [f.rule] : undefined }], { extensions: true }).file.groups[0]!.rules as Record<string, unknown>[])[0]!
+  // The backtest saves nothing, and a monitor block would only be checked: leave it out.
+  delete entry.monitor
+  return backtestAnswer(ok(await c.ruler(f.shard).backtest(c.tenant, entry, body.fromMs as number, body.toMs as number, stepMs, f.group.intervalMs)))
 }
 
 /**
@@ -759,6 +783,7 @@ export const ROUTES: RouteDef[] = [
   route('POST', '/api/v1/monitors/{id}/acknowledge', 'monitors:ack', (c) => acknowledge(c, true), true),
   route('POST', '/api/v1/monitors/{id}/unacknowledge', 'monitors:ack', (c) => acknowledge(c, false), true),
   route('POST', '/api/v1/monitors/{id}/silence', 'monitors:ack', silence, true),
+  route('POST', '/api/v1/monitors/{id}/backtest', 'monitors:read', backtestMonitor),
 ]
 
 const RESERVED = new Set(['groups', 'rulefile', 'backtest', 'notifier', 'silences', 'detectors'])

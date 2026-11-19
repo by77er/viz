@@ -12,7 +12,8 @@ import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
 import { snappyDecompress } from '../../edge/src/snappy'
 import { batchFromSingle, permissiveValidator } from '../src/evaluator'
-import type { AlertUpdate, BatchEvaluator, EvalRequest, EvalResult, Evaluator, IngestResult, RangeEvaluator, SampleBatch, Sink, Validator } from '../contracts-proposal/rules.v2'
+import type { AlertUpdate, BatchEvaluator, EvalRequest, EvalResult, Evaluator, HistoryPlan, HistoryPlanner, IngestResult, RangeEvaluator, SampleBatch, Sink, Validator } from '../contracts-proposal/rules.v2'
+import { countExpr } from '../src/history'
 import { createApi, type ApiEnv } from '../src/http'
 import { Notifier } from '../src/notifier'
 import { DEFAULT_PLACEMENT, type PlacementLimits } from '../src/placement'
@@ -62,7 +63,15 @@ export interface TenantWorld {
   validate: Validator['check'] | null
   /** The range evaluator backtests use. */
   range: ((promql: string, startMs: number, endMs: number, stepMs: number) => PromMatrix | Promise<PromMatrix>) | null
+  /**
+   * The series a read returns at a step, for the ruler's series counts (`countExpr`); unset = counted
+   * from `range` itself (a bench with many series sets it, so as not to build every window twice).
+   */
+  count: ((promql: string, ts: number) => number) | null
   rangeCalls: [string, number, number, number][]
+  /** The engine's plan of a range read (warm-ups and backtests ask it first); unset = a read that costs nothing. Throwing = the engine is unreachable. */
+  plan: ((promql: string, startMs: number, endMs: number, stepMs: number) => HistoryPlan) | null
+  planCalls: [string, number, number, number][]
   /**
    * True: the ruler uses its PRODUCTION wiring: viz-query's HTTP API (`FakeQuery`, which checks
    * the API key with edge's real `authenticate` and takes the tenant from it), Remote Write to
@@ -123,13 +132,19 @@ export function tenantWorld(tenant: string): TenantWorld {
       batchFail: null,
       validate: null,
       range: null,
+      count: null,
       rangeCalls: [],
+      plan: null,
+      planCalls: [],
       http: false,
     }
     world.tenants.set(tenant, w)
   }
   return w
 }
+
+/** What an unscripted plan answers: a read that costs nothing. */
+export const FREE_PLAN: HistoryPlan = { scanSamples: 0, bytesToRead: 0, seriesEstimate: 0, refusal: null }
 
 export class Crash extends Error {
   constructor(point: string) {
@@ -181,7 +196,23 @@ export class TestRuler extends Ruler {
       range: async (promql, startMs, endMs, stepMs) => {
         w.rangeCalls.push([promql, startMs, endMs, stepMs])
         if (!w.range) throw new Error('no range evaluator scripted')
-        return w.range(promql, startMs, endMs, stepMs)
+        return answerRange(w, promql, startMs, endMs, stepMs)
+      },
+    }
+  }
+  /** A tenant that scripts no range has no history: warm-ups find nothing (backtests still fail, as before). */
+  protected override warmupRange(): RangeEvaluator {
+    const w = tenantWorld(this.tenant)
+    if (w.http || w.range) return super.warmupRange()
+    return { range: async () => ({ resultType: 'matrix', result: [] }) }
+  }
+  protected override historyPlanner(): HistoryPlanner {
+    const w = tenantWorld(this.tenant)
+    if (w.http) return super.historyPlanner()
+    return {
+      plan: async (promql, startMs, endMs, stepMs) => {
+        w.planCalls.push([promql, startMs, endMs, stepMs])
+        return w.plan ? w.plan(promql, startMs, endMs, stepMs) : FREE_PLAN
       },
     }
   }
@@ -292,7 +323,16 @@ export class FakeQuery extends WorkerEntrypoint<{ CONFIG: KVNamespace }> {
       const w = tenantWorld(tenant)
       const query = params.query ?? ''
       if (query.includes('syntax(')) return promEnvelope(400, { status: 'error', errorType: 'bad_data', error: '1:7: parse error: unexpected "("' })
-      if (url.pathname === '/api/v1/plan') return promEnvelope(200, { status: 'success', data: { execution: 'single', refusal: null } })
+      if (url.pathname === '/api/v1/plan') {
+        // A range plan (warm-ups and backtests) answers the cost fields of viz-query's QueryPlan.
+        if (params.start !== undefined) {
+          const [start, end, step] = [params.start, params.end, params.step].map((x) => Math.round(Number(x) * 1000)) as [number, number, number]
+          w.planCalls.push([query, start, end, step])
+          const p = w.plan ? w.plan(query, start, end, step) : FREE_PLAN
+          return promEnvelope(200, { status: 'success', data: { execution: 'single', splitReason: '', leaves: 0, ledgerVersion: 1, filesListed: 0, filesSkipped: 0, filesToRead: 0, bytesToRead: p.bytesToRead, scanSamples: p.scanSamples, seriesEstimate: p.seriesEstimate, refusal: p.refusal } })
+        }
+        return promEnvelope(200, { status: 'success', data: { execution: 'single', refusal: null } })
+      }
       if (url.pathname === '/api/v1/query') {
         const timeMs = Math.round(Number(params.time) * 1000)
         w.evalCalls.push([query, timeMs])
@@ -307,7 +347,7 @@ export class FakeQuery extends WorkerEntrypoint<{ CONFIG: KVNamespace }> {
         const [start, end, step] = [params.start, params.end, params.step].map((x) => Math.round(Number(x) * 1000)) as [number, number, number]
         w.rangeCalls.push([query, start, end, step])
         if (!w.range) return promEnvelope(422, { status: 'error', errorType: 'execution', error: 'no range scripted' })
-        return promEnvelope(200, { status: 'success', data: await w.range(query, start, end, step) })
+        return promEnvelope(200, { status: 'success', data: await answerRange(w, query, start, end, step) })
       }
       return promEnvelope(404, { status: 'error', errorType: 'not_found', error: 'not found' })
     } finally {
@@ -394,3 +434,22 @@ export const api = {
 export default {
   fetch: (req, env) => api.fetch(req, env as unknown as ApiEnv),
 } satisfies ExportedHandler<RulerEnv>
+
+/**
+ * The fake engine's range answer. A series count of a read (`countExpr(read)`, what the ruler asks
+ * before cutting a long read into windows) is answered as the engine would: one series, at each step
+ * the number of series the scripted read has there (none where it has none).
+ */
+async function answerRange(w: TenantWorld, promql: string, startMs: number, endMs: number, stepMs: number): Promise<PromMatrix> {
+  const inner = promql.startsWith('count(') && promql.endsWith(')') ? promql.slice(6, -1) : null
+  if (inner === null || countExpr(inner) !== promql) return w.range!(promql, startMs, endMs, stepMs)
+  const n = new Map<number, number>()
+  if (w.count) {
+    for (let t = startMs; t <= endMs; t += stepMs) n.set(t, w.count(inner, t))
+  } else {
+    const m = await w.range!(inner, startMs, endMs, stepMs)
+    for (const x of m.result) for (const [sec] of x.values) n.set(Math.round(sec * 1000), (n.get(Math.round(sec * 1000)) ?? 0) + 1)
+  }
+  const values: [number, string][] = [...n.entries()].filter(([, c]) => c > 0).sort((a, b) => a[0] - b[0]).map(([t, c]) => [t / 1000, String(c)])
+  return { resultType: 'matrix', result: values.length > 0 ? [{ metric: {}, values }] : [] }
+}

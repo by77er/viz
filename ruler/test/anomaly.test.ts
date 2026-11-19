@@ -454,9 +454,10 @@ describe('the monitors API', () => {
     const madWarn = await post({ anomaly: { detector: 'robust_z', maxSeries: 10 }, dryRun: true })
     expect(madWarn.status).toBe(200)
     expect(madWarn.json.warnings).toMatchObject([{ path: 'anomaly.detector', message: expect.stringMatching(/scored below a static threshold on held-out NAB \(-105.9 vs 21.8\)/) }])
-    // A backtest replays the alert state machine over a range; it does not run detectors yet: refused, not faked.
+    // A backtest of an anomaly monitor runs its detector over history (test/history.test.ts); with no
+    // history to read it fails explicitly, it does not answer an empty result.
     const bt = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { monitor: { name: 'x', query: LAT, anomaly: {} }, fromMs: T0, toMs: T0 + 10 * MIN, step: '1m' })
-    expect([bt.status, bt.json.problems]).toMatchObject([422, [{ path: 'rule', message: 'only an alerting rule can be backtested' }]])
+    expect([bt.status, bt.json.error.code]).toEqual([502, 'evaluation_failed'])
     const quantile = await post({ anomaly: { detector: 'robust_z', maxSeries: 10, params: { spread: 'quantile' } }, dryRun: true })
     // Not given, max_series is what fits the per-rule state limit, and the save says so.
     const fitted = await post({ anomaly: { detector: 'cusum' }, dryRun: true })

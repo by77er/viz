@@ -49,6 +49,27 @@ CREATE TABLE IF NOT EXISTS anomaly_state (tenant TEXT NOT NULL, grp TEXT NOT NUL
   PRIMARY KEY (tenant, grp, rule_key, chunk)) WITHOUT ROWID;
 `),
     },
+    {
+      // SLO burn-rate rules and warming from history (contracts/rules.ts, contract version 4).
+      // Additive: two new tables, which earlier releases neither read nor need, so they stay valid
+      // rollback targets (COMPATIBILITY.md §2.3; `compat` stays 1, as migration 2 left it). The
+      // rules live in `rule_group.spec.sloRules`, a new optional JSON field earlier releases ignore.
+      //   slo_state  one row per (rule, part, block): the head (slot counters, each series' labels and
+      //              last outcome) and blocks of buckets for every series of the rule (`slo.ts`, format
+      //              `store.slo-state`); never a row per series or per bucket
+      //   warmup     one row per anomaly or SLO rule: how warming it from history went (format
+      //              `store.warmup`), so a retried alarm does not read it again
+      version: 3,
+      name: 'SLO rules: per-(rule, part, block) bucket state; warm-up status per rule',
+      readableFrom: 1,
+      up: (sql) =>
+        void sql.exec(`
+CREATE TABLE IF NOT EXISTS slo_state (tenant TEXT NOT NULL, grp TEXT NOT NULL, rule_key TEXT NOT NULL, part TEXT NOT NULL, block INTEGER NOT NULL, body TEXT NOT NULL,
+  PRIMARY KEY (tenant, grp, rule_key, part, block)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS warmup (tenant TEXT NOT NULL, grp TEXT NOT NULL, rule_key TEXT NOT NULL, body TEXT NOT NULL,
+  PRIMARY KEY (tenant, grp, rule_key)) WITHOUT ROWID;
+`),
+    },
   ],
 }
 
@@ -119,4 +140,12 @@ export const FORMATS = {
   'store.anomaly-state': 1,
   /** The `anomaly_detail` annotation an anomaly alert carries to the notifier and receivers (`AnomalyDetail`, `v: 1`). */
   'annotation.anomaly-detail': 1,
+  /** SLO rules (contract version 4): a rule as stored in `rule_group.spec.sloRules` and exported, its key, and its per-tick expression. */
+  'store.slo-rule': 1,
+  /** `slo_state.body`: the head row and the bucket blocks (`{"v":1,...}`). */
+  'store.slo-state': 1,
+  /** The `slo_detail` annotation an SLO alert carries (`SloDetail`, `v: 1`). */
+  'annotation.slo-detail': 1,
+  /** `warmup.body`: a rule's `WarmupStatus` as stored (`{"v":1,...}`). */
+  'store.warmup': 1,
 } as const

@@ -434,10 +434,26 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   series cap and state limits refuse an evaluation rather than drop series. Defaults follow
   held-out evidence (D33): EWMA, or a static threshold for pages; the robust z-score and the
   seasonal baseline are opt-in, since with the MAD spread both scored below a static
-  threshold on held-out data; STL, CUSUM and PELT explain changes and do not page. Burn-rate
-  SLO alerts are to compile to recording rules; seasonal decomposition, changepoint detection
-  and log-template frequency shifts are scheduled jobs (not built). Foundation models in a
-  Container are an opt-in later tier.
+  threshold on held-out data; STL, CUSUM and PELT explain changes and do not page. Seasonal
+  decomposition, changepoint detection and log-template frequency shifts are scheduled jobs
+  (not built). Foundation models in a Container are an opt-in later tier.
+- **SLOs** are a rule kind too (`contracts/rules.ts`, version 4): an objective, a compliance
+  window and an SLI (good or bad, and total events, or an error ratio). The ruler raises the SRE
+  Workbook's multi-window, multi-burn-rate alerts (page 1 h / 5 m at 14.4× and 6 h / 30 m at 6×,
+  ticket 1 d / 2 h at 3× and 3 d / 6 h at 1×) from **one query per rule per tick**, the last
+  interval's events, and keeps each series' buckets for the longest window and coarser ones for
+  the compliance window as state (D42), so every alert says which windows burned, how fast, and
+  how much budget is left. A new anomaly or SLO rule is **warmed from history** before its first
+  evaluation: its look-back is read at its interval, its series counted first when the rule's
+  bound would cut it into windows, every query it fetches planned first (viz-query's
+  `/api/v1/plan`) and the run refused whole over a budget, never fetched in part, then fed through
+  the rule's own evaluation in time windows cut by the points they hold to fit a memory budget,
+  only the rule's state carried between them (D43). **Backtests** of threshold, anomaly and SLO rules run the same
+  evaluation over a past range in time order, under a larger budget, and return when each alert
+  would have fired and resolved with the explanation it would have carried. Both are also priced
+  in CPU (a model calibrated per point read) and refused whole over a budget under the Durable
+  Object's per-invocation limit, rather than cut off by it; warm-ups share a budget per alarm, and
+  one that does not fit what is left waits for the next alarm (D51).
 - **Agentic monitors** are a natural-language objective with a deterministic guard and a
   budget. They run as a Workflow when a rule fires, an anomaly is detected, a schedule
   comes due or a person asks. They use the same read-only, tenant-scoped tools as external

@@ -1,0 +1,10 @@
+{
+ "format": "store.warmup",
+ "version": 1,
+ "rows": [
+  {
+   "rule_key": "872cfda92b6e0660",
+   "body": "{\"v\":1,\"status\":\"done\",\"reads\":[{\"fromMs\":4102441188701,\"toMs\":4102444788701,\"stepMs\":60000},{\"fromMs\":4102358568701,\"toMs\":4102441128701,\"stepMs\":120000}],\"plan\":{\"scanSamples\":0,\"bytesToRead\":0,\"queries\":2},\"budget\":{\"scanSamples\":3000000,\"bytesToRead\":16777216},\"points\":0,\"attempts\":1,\"message\":null,\"finishedAt\":4102444848701}"
+  }
+ ]
+}

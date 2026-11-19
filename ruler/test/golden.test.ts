@@ -154,6 +154,49 @@ describe('golden formats', () => {
     })
   })
 
+  it('SLO rules: the stored rule, its key and per-tick expression, the stored rings, the warm-up status, and the numbers an SLO alert carries', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN }, 'goldenslo')
+    const saved = ok(await stub.saveGroups(tenant, {
+      groups: [{
+        name: 'slos/1m',
+        interval: '1m',
+        rules: [{
+          alert: 'CheckoutAvailability',
+          labels: { team: 'pay' },
+          annotations: { summary: 'checkout is burning its error budget' },
+          slo: { objective: 0.99, window: '1d', sli: { bad: 'sum(increase(errors_total{job="checkout"}[$window]))', total: 'sum(increase(requests_total{job="checkout"}[$window]))' }, alerts: [{ severity: 'page', long_window: '10m', short_window: '2m', burn_rate: 10 }], min_coverage: 0 },
+        }],
+      }],
+    }))
+    // No history (an empty warm-up), then 100 requests a minute; the fourth minute fails entirely.
+    let i = 0
+    w.evaluate = () => vec([{ viz_slo_part: 'total' }, 100], [{ viz_slo_part: 'bad' }, i++ === 3 ? 100 : 1])
+    for (let t = 0; t < 5; t++) {
+      world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+      expect(await runDurableObjectAlarm(stub)).toBe(true)
+    }
+    const stored = await runInDurableObject(stub, (_i, s) => ({
+      spec: s.storage.sql.exec('SELECT spec FROM rule_group WHERE tenant = ?', tenant).toArray()[0]?.spec as string,
+      state: s.storage.sql.exec('SELECT rule_key, part, block, body FROM slo_state WHERE tenant = ? ORDER BY rule_key, part, block', tenant).toArray(),
+      warmup: s.storage.sql.exec('SELECT rule_key, body FROM warmup WHERE tenant = ?', tenant).toArray(),
+    }))
+    const rule = saved.groups[0]!.rules[0]!
+    expectGolden(file('store.slo-rule'), {
+      format: 'store.slo-rule',
+      version: FORMATS['store.slo-rule'],
+      stored: stored.spec,
+      key: rule.key,
+      bareId: bareRuleId('slos/1m', rule.key),
+      history: rule.slo,
+      extended: exportRuleFile(ok(await stub.listGroups(tenant)).groups, { extensions: true }).yaml,
+    })
+    expectGolden(file('store.slo-state'), { format: 'store.slo-state', version: FORMATS['store.slo-state'], rows: stored.state })
+    expectGolden(file('store.warmup'), { format: 'store.warmup', version: FORMATS['store.warmup'], rows: stored.warmup })
+    const firing = w.ingestCalls.flat().find((u) => u.status === 'firing')
+    expect(firing, 'the SLO paged').toBeDefined()
+    expectGolden(file('annotation.slo-detail'), { format: 'annotation.slo-detail', version: FORMATS['annotation.slo-detail'], labels: firing!.labels, annotations: firing!.annotations })
+  })
+
   it('id.placement: the registry partition of a tenant and the shard of a group', () => {
     expectGolden(file('id.placement'), {
       format: 'id.placement',

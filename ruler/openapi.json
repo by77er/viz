@@ -625,7 +625,7 @@
   "/api/v1/monitors/backtest": {
    "post": {
     "operationId": "backtest",
-    "summary": "If this rule had existed: the intervals it would have been pending and firing, and the counts, from one computation",
+    "summary": "If this rule had existed: the intervals it would have been pending and firing, with the annotations each alert would have carried, and the counts, from one computation. Alerting, anomaly and SLO rules",
     "tags": [
      "monitors"
     ],
@@ -658,7 +658,7 @@
       }
      },
      "422": {
-      "$ref": "#/components/responses/Invalid"
+      "$ref": "#/components/responses/BacktestRefused"
      },
      "401": {
       "$ref": "#/components/responses/Unauthorized"
@@ -1391,6 +1391,92 @@
      }
     }
    }
+  },
+  "/api/v1/monitors/{id}/backtest": {
+   "post": {
+    "operationId": "backtestMonitor",
+    "summary": "A saved monitor over a past range, as it is stored, at its interval: when it would have fired and resolved, with the explanation each alert would have carried",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/monitorId"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "fromMs",
+         "toMs"
+        ],
+        "properties": {
+         "fromMs": {
+          "type": "integer",
+          "description": "Unix milliseconds"
+         },
+         "toMs": {
+          "type": "integer",
+          "description": "Unix milliseconds"
+         },
+         "step": {
+          "type": "string",
+          "description": "Default the monitor's interval (the only step for anomaly and SLO monitors)",
+          "examples": [
+           "5m"
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Backtest",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Backtest"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/BacktestRefused"
+     },
+     "502": {
+      "description": "The range evaluation failed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    }
+   }
   }
  },
  "components": {
@@ -1481,6 +1567,38 @@
          }
         }
        }
+      }
+     }
+    }
+   },
+   "BacktestRefused": {
+    "description": "Validation problems (`problems`), or `over_budget`: the read was refused before anything was fetched",
+    "content": {
+     "application/json": {
+      "schema": {
+       "oneOf": [
+        {
+         "type": "object",
+         "required": [
+          "error",
+          "problems"
+         ],
+         "properties": {
+          "error": {
+           "$ref": "#/components/schemas/ErrorBody"
+          },
+          "problems": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Problem"
+           }
+          }
+         }
+        },
+        {
+         "$ref": "#/components/schemas/OverBudget"
+        }
+       ]
       }
      }
     }
@@ -1855,7 +1973,7 @@
     "required": [
      "name"
     ],
-    "description": "Give either `expr`, or `query` with `condition`, or `query` with `anomaly`.",
+    "description": "Give either `expr`, or `query` with `condition`, or `query` with `anomaly`, or `slo` (no query).",
     "properties": {
      "name": {
       "type": "string"
@@ -1892,7 +2010,7 @@
      },
      "group": {
       "type": "string",
-      "description": "Default: monitors/<interval> (anomaly monitors: anomalies/<interval>), shared by monitors with the same interval"
+      "description": "Default: monitors/<interval> (anomaly monitors: anomalies/<interval>, SLO monitors: slos/<interval>), shared by monitors with the same interval"
      },
      "description": {
       "type": "string"
@@ -1948,6 +2066,9 @@
      },
      "anomaly": {
       "$ref": "#/components/schemas/AnomalyInput"
+     },
+     "slo": {
+      "$ref": "#/components/schemas/SloInput"
      }
     }
    },
@@ -2007,7 +2128,11 @@
       ]
      },
      "expr": {
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "Null for an SLO monitor (its SLI is the expression)"
      },
      "warnings": {
       "type": "array",
@@ -2017,6 +2142,9 @@
      },
      "history": {
       "$ref": "#/components/schemas/AnomalyHistory"
+     },
+     "sloHistory": {
+      "$ref": "#/components/schemas/SloHistory"
      }
     }
    },
@@ -2187,7 +2315,7 @@
        "unknown",
        "warming"
       ],
-      "description": "warming: an anomaly monitor whose detector has not scored anything yet"
+      "description": "warming: an anomaly monitor whose detector has not scored anything yet, an SLO monitor whose windows hold too few buckets, or either while it is warmed from history"
      },
      "firingSince": {
       "type": [
@@ -2347,6 +2475,17 @@
        }
       ],
       "description": "Set for an anomaly monitor"
+     },
+     "slo": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/MonitorSlo"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Set for an SLO monitor"
      }
     }
    },
@@ -2633,10 +2772,8 @@
    },
    "Rule": {
     "type": "object",
-    "required": [
-     "expr"
-    ],
-    "description": "A Prometheus rule: `alert` or `record`. viz adds no_data, no_data_for, no_data_expr and monitor to alerting rules, and `anomaly` (an anomaly rule: `expr` is the series to watch and a detector decides which series alert).",
+    "required": [],
+    "description": "A Prometheus rule: `alert` or `record`. viz adds no_data, no_data_for, no_data_expr and monitor to alerting rules, `anomaly` (an anomaly rule: `expr` is the series to watch and a detector decides which series alert) and `slo` (an SLO burn-rate rule, without `expr`). `expr` is required except for an SLO rule.",
     "properties": {
      "alert": {
       "type": "string"
@@ -2726,6 +2863,45 @@
          "ticket",
          "info"
         ]
+       },
+       "max_series": {
+        "type": "integer"
+       },
+       "given": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "slo": {
+      "type": "object",
+      "description": "objective, window, sli ({ bad, total }, { good, total } or { error_ratio }, each with $window), alerts ([{ severity, long_window, short_window, burn_rate }]), min_events, min_coverage, max_series (and given, written by the export). An export with extensions=false leaves SLO rules out.",
+      "properties": {
+       "objective": {
+        "type": "number"
+       },
+       "window": {
+        "type": "string"
+       },
+       "sli": {
+        "type": "object",
+        "additionalProperties": {
+         "type": "string"
+        }
+       },
+       "alerts": {
+        "type": "array",
+        "items": {
+         "type": "object"
+        }
+       },
+       "min_events": {
+        "type": "number"
+       },
+       "min_coverage": {
+        "type": "number"
        },
        "max_series": {
         "type": "integer"
@@ -2830,7 +3006,9 @@
            "kind": {
             "enum": [
              "alert",
-             "record"
+             "record",
+             "anomaly",
+             "slo"
             ]
            },
            "key": {
@@ -2838,6 +3016,12 @@
            },
            "cost": {
             "$ref": "#/components/schemas/RuleCost"
+           },
+           "history": {
+            "$ref": "#/components/schemas/AnomalyHistory"
+           },
+           "slo": {
+            "$ref": "#/components/schemas/SloHistory"
            }
           }
          }
@@ -2860,7 +3044,7 @@
      "toMs",
      "step"
     ],
-    "description": "Give `monitor` (the document you are about to save) or `rule` (an alerting rule).",
+    "description": "Give `monitor` (the document you are about to save) or `rule` (a rule-file entry: alerting, anomaly or SLO). An anomaly or SLO rule runs at its interval (`step`, which `interval` must equal if given), its detector or windows warmed from the history before `fromMs`. Every read is planned first and refused whole over the budget (422 over_budget).",
     "properties": {
      "monitor": {
       "$ref": "#/components/schemas/MonitorInput"
@@ -2932,6 +3116,13 @@
      },
      "noData": {
       "type": "boolean"
+     },
+     "annotations": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "What the alert carried when it entered this state, templates expanded: for an anomaly or SLO alert, the explanation it would have been sent with"
      }
     }
    },
@@ -3012,6 +3203,107 @@
         "description": "What this step can and cannot show"
        }
       }
+     },
+     "kind": {
+      "enum": [
+       "alert",
+       "anomaly",
+       "slo"
+      ]
+     },
+     "warmup": {
+      "oneOf": [
+       {
+        "type": "object",
+        "properties": {
+         "reads": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "fromMs": {
+             "type": "integer"
+            },
+            "toMs": {
+             "type": "integer"
+            },
+            "stepMs": {
+             "type": "integer"
+            }
+           }
+          }
+         },
+         "points": {
+          "type": "integer"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Anomaly and SLO rules: the history before fromMs fed through the rule (no alerts), as a warm-up would"
+     },
+     "cost": {
+      "type": "object",
+      "description": "What the engine's plan said before the fetch, and the budget",
+      "properties": {
+       "scanSamples": {
+        "type": "integer"
+       },
+       "bytesToRead": {
+        "type": "integer"
+       },
+       "queries": {
+        "type": "integer"
+       },
+       "budget": {
+        "type": "object",
+        "properties": {
+         "scanSamples": {
+          "type": "integer"
+         },
+         "bytesToRead": {
+          "type": "integer"
+         }
+        }
+       },
+       "memory": {
+        "type": "object",
+        "description": "History is fetched and evaluated in windows, one at a time, carrying only the rule's state: a long read is first counted (count(expr): its series at each step) and cut into windows by the points they hold. The modelled peak, the budget, the longest window of each read in steps, and the range queries the run made",
+        "properties": {
+         "peakBytes": {
+          "type": "integer"
+         },
+         "budgetBytes": {
+          "type": "integer"
+         },
+         "windowSteps": {
+          "type": "array",
+          "items": {
+           "type": "integer"
+          },
+          "description": "The longest window of each read, in steps"
+         },
+         "queries": {
+          "type": "integer",
+          "description": "Range queries the run made: series counts and windows"
+         }
+        }
+       },
+       "cpu": {
+        "type": "object",
+        "description": "The CPU model's cost of the run (modelled, not measured) and maxBacktestCpuMs",
+        "properties": {
+         "modelledMs": {
+          "type": "integer"
+         },
+         "budgetMs": {
+          "type": "integer"
+         }
+        }
+       }
+      }
      }
     }
    },
@@ -3072,7 +3364,7 @@
      "incremental",
      "reason"
     ],
-    "description": "What the detector reads, classified like a rule's query (design \u00a77).",
+    "description": "What the detector reads, classified like a rule's query (design §7).",
     "properties": {
      "tick": {
       "enum": [
@@ -3170,6 +3462,9 @@
      },
      "pruned": {
       "type": "integer"
+     },
+     "warmup": {
+      "$ref": "#/components/schemas/Warmup"
      }
     }
    },
@@ -3410,6 +3705,510 @@
      },
      "source": {
       "type": "string"
+     }
+    }
+   },
+   "Warmup": {
+    "type": "object",
+    "required": [
+     "status",
+     "reads",
+     "plan",
+     "budget",
+     "points",
+     "attempts",
+     "message",
+     "finishedAt"
+    ],
+    "description": "How warming an anomaly or SLO rule from history went (contracts/rules.ts `WarmupStatus`, contract version 4). The read is planned first (the engine's plan, nothing fetched); over the budget it is refused whole and the rule starts cold.",
+    "properties": {
+     "status": {
+      "enum": [
+       "pending",
+       "done",
+       "refused",
+       "failed",
+       "not_needed"
+      ],
+      "description": "pending: not run yet, or retried at the next tick after an engine failure; refused: over the budget or refused by the engine's plan, nothing fetched, the rule started cold; failed: the engine failed 3 times, the rule started cold"
+     },
+     "reads": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "fromMs": {
+         "type": "integer"
+        },
+        "toMs": {
+         "type": "integer"
+        },
+        "stepMs": {
+         "type": "integer"
+        }
+       }
+      }
+     },
+     "plan": {
+      "oneOf": [
+       {
+        "type": "object",
+        "properties": {
+         "scanSamples": {
+          "type": "integer"
+         },
+         "bytesToRead": {
+          "type": "integer"
+         },
+         "queries": {
+          "type": "integer"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "What the engine's plan said before anything was fetched, summed over the range queries"
+     },
+     "budget": {
+      "type": "object",
+      "properties": {
+       "scanSamples": {
+        "type": "integer"
+       },
+       "bytesToRead": {
+        "type": "integer"
+       }
+      }
+     },
+     "points": {
+      "type": "integer",
+      "description": "Points fed through the rule's evaluation"
+     },
+     "attempts": {
+      "type": "integer"
+     },
+     "message": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "finishedAt": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     }
+    }
+   },
+   "SloInput": {
+    "type": "object",
+    "required": [
+     "objective",
+     "sli"
+    ],
+    "description": "An SLO monitor (contract version 4): no query or condition; the SLI is the expression and the multi-window, multi-burn-rate alerts of the SRE Workbook decide (by default page 1h/5m at 14.4x and 6h/30m at 6x, ticket 1d/2h at 3x and 3d/6h at 1x). Each alert carries severity page or ticket. Default group slos/<interval>.",
+    "properties": {
+     "objective": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "description": "Target fraction of good events, e.g. 0.999"
+     },
+     "window": {
+      "type": "string",
+      "description": "Compliance window, default 30d",
+      "examples": [
+       "5m"
+      ]
+     },
+     "sli": {
+      "type": "object",
+      "description": "{ bad, total }, { good, total } or { errorRatio }: PromQL with $window, which the ruler replaces with the bucket width (the interval), e.g. sum(increase(http_requests_total{code=~\"5..\"}[$window]))",
+      "properties": {
+       "good": {
+        "type": "string"
+       },
+       "bad": {
+        "type": "string"
+       },
+       "total": {
+        "type": "string"
+       },
+       "errorRatio": {
+        "type": "string"
+       }
+      }
+     },
+     "alerts": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+       "type": "object",
+       "required": [
+        "severity",
+        "longWindow",
+        "shortWindow",
+        "burnRate"
+       ],
+       "properties": {
+        "severity": {
+         "enum": [
+          "page",
+          "ticket"
+         ]
+        },
+        "longWindow": {
+         "type": "string",
+         "description": "Prometheus duration, e.g. 5m, 1h30m",
+         "examples": [
+          "5m"
+         ]
+        },
+        "shortWindow": {
+         "type": "string",
+         "description": "Prometheus duration, e.g. 5m, 1h30m",
+         "examples": [
+          "5m"
+         ]
+        },
+        "burnRate": {
+         "type": "number",
+         "exclusiveMinimum": 0
+        }
+       }
+      }
+     },
+     "minEvents": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Events a long window must hold before its alert may fire (low-traffic guard). Default 0"
+     },
+     "minCoverage": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Fraction of a window's buckets that must have data for the window to count. Default 0.9"
+     },
+     "maxSeries": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Most series the SLI may return; above it the evaluation is refused. Default 10, at most 100"
+     }
+    }
+   },
+   "SloHistory": {
+    "type": "object",
+    "required": [
+     "tick",
+     "coldStart",
+     "lookbackMs",
+     "bucketMs",
+     "budgetLookbackMs",
+     "budgetBucketMs",
+     "reason"
+    ],
+    "description": "What an SLO rule reads: one bucket per tick; warming reads the longest alert window in buckets of the interval and the compliance window in coarser buckets.",
+    "properties": {
+     "tick": {
+      "enum": [
+       "tail",
+       "recent",
+       "rollup"
+      ]
+     },
+     "coldStart": {
+      "enum": [
+       "tail",
+       "recent",
+       "rollup"
+      ]
+     },
+     "lookbackMs": {
+      "type": "integer"
+     },
+     "bucketMs": {
+      "type": "integer"
+     },
+     "budgetLookbackMs": {
+      "type": "integer"
+     },
+     "budgetBucketMs": {
+      "type": "integer"
+     },
+     "reason": {
+      "type": "string"
+     }
+    }
+   },
+   "SloStatus": {
+    "type": "object",
+    "required": [
+     "status",
+     "message",
+     "series",
+     "maxSeries",
+     "burning",
+     "warming",
+     "budgetRemaining",
+     "budgetCoveredMs",
+     "stateSeries",
+     "stateBytes",
+     "pruned"
+    ],
+    "properties": {
+     "status": {
+      "enum": [
+       "ok",
+       "warming",
+       "series_cap_exceeded",
+       "invalid_result",
+       "state_unreadable",
+       "unknown"
+      ],
+      "description": "A refused evaluation (series_cap_exceeded, invalid_result, state_unreadable) changes no state and no alert"
+     },
+     "message": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "series": {
+      "type": "integer"
+     },
+     "maxSeries": {
+      "type": "integer"
+     },
+     "burning": {
+      "type": "object",
+      "properties": {
+       "page": {
+        "type": "integer"
+       },
+       "ticket": {
+        "type": "integer"
+       }
+      },
+      "description": "Series whose page / ticket condition held at the last evaluation"
+     },
+     "warming": {
+      "type": "integer"
+     },
+     "budgetRemaining": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "description": "Lowest fraction of the error budget left over the series (negative once overspent)"
+     },
+     "budgetCoveredMs": {
+      "type": "integer",
+      "description": "How much of the compliance window that figure covers"
+     },
+     "stateSeries": {
+      "type": "integer"
+     },
+     "stateBytes": {
+      "type": "integer"
+     },
+     "pruned": {
+      "type": "integer"
+     },
+     "warmup": {
+      "$ref": "#/components/schemas/Warmup"
+     }
+    }
+   },
+   "MonitorSlo": {
+    "type": "object",
+    "required": [
+     "objective",
+     "windowMs",
+     "sli",
+     "alerts",
+     "minEvents",
+     "minCoverage",
+     "maxSeries",
+     "history",
+     "status"
+    ],
+    "properties": {
+     "objective": {
+      "type": "number"
+     },
+     "windowMs": {
+      "type": "integer"
+     },
+     "sli": {
+      "type": "object",
+      "properties": {
+       "kind": {
+        "enum": [
+         "good_total",
+         "bad_total",
+         "error_ratio"
+        ]
+       },
+       "good": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "bad": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "total": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "errorRatio": {
+        "type": [
+         "string",
+         "null"
+        ]
+       }
+      }
+     },
+     "alerts": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "severity": {
+         "enum": [
+          "page",
+          "ticket"
+         ]
+        },
+        "longMs": {
+         "type": "integer"
+        },
+        "shortMs": {
+         "type": "integer"
+        },
+        "burnRate": {
+         "type": "number"
+        }
+       }
+      }
+     },
+     "minEvents": {
+      "type": "number"
+     },
+     "minCoverage": {
+      "type": "number"
+     },
+     "maxSeries": {
+      "type": "integer"
+     },
+     "history": {
+      "$ref": "#/components/schemas/SloHistory"
+     },
+     "status": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/SloStatus"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    }
+   },
+   "OverBudget": {
+    "type": "object",
+    "required": [
+     "error",
+     "plan",
+     "budget"
+    ],
+    "description": "Refused, whole, nothing kept, no window read: the modelled peak memory is over the backtest's memory budget (windows cannot be small enough to hold the rule's state and one step), the engine's plan of the read is over the backtest budget, the engine's own limits would refuse it, or its cost could not be asked (plan null); or, after a long read's series counts (count(expr) over the range), the plans of the windows as they would be fetched are over the budget, or the CPU model's projection of the whole run is over maxBacktestCpuMs (cpu set). The message says whether nothing was fetched or only the series counts were",
+    "properties": {
+     "error": {
+      "$ref": "#/components/schemas/ErrorBody"
+     },
+     "plan": {
+      "oneOf": [
+       {
+        "type": "object",
+        "properties": {
+         "scanSamples": {
+          "type": "integer"
+         },
+         "bytesToRead": {
+          "type": "integer"
+         },
+         "queries": {
+          "type": "integer"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "budget": {
+      "type": "object",
+      "properties": {
+       "scanSamples": {
+        "type": "integer"
+       },
+       "bytesToRead": {
+        "type": "integer"
+       }
+      }
+     },
+     "memory": {
+      "oneOf": [
+       {
+        "type": "object",
+        "properties": {
+         "peakBytes": {
+          "type": "integer",
+          "description": "The memory model's peak: the rule's state, its alerts and intervals, and the largest window"
+         },
+         "budgetBytes": {
+          "type": "integer"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The memory model; null when the engine's plan refused before sizing"
+     },
+     "cpu": {
+      "oneOf": [
+       {
+        "type": "object",
+        "properties": {
+         "modelledMs": {
+          "type": "integer",
+          "description": "The CPU model's projection of the whole run (modelled, not measured)"
+         },
+         "budgetMs": {
+          "type": "integer"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The CPU model; null when another budget refused the run"
      }
     }
    }
