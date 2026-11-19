@@ -153,8 +153,10 @@ amended('A_2shards', '2 shards, ledger loss + shard loss + compaction, no client
 amended('A_2tenants', '2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss, no client retry', { nt: 2, nb: 2, maxSend: 1, maxLL: 1, maxSL: 1, sameContent: true }, 4_000_000)
 
 // ---- liveness: AG EF (query done) on the whole graph; unbounded refusals
+// The whole graph is kept (edges in memory), so these use one flush Worker and are capped at
+// 3 M states; a run that hits the cap cannot decide AG EF and says so.
 const live = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>
-  E.push({ name, kind: 'liveness', label, cfg: { ...cfg, liveness: true }, props: [], expect })
+  E.push({ name, kind: 'liveness', label, cfg: { ...cfg, maxJobs: 1, liveness: true }, props: [], expect, maxStates: 3_000_000 })
 live('LIVE_amended', 'amended protocol, ledger loss + shard loss + compaction (1 send per batch)', { ...AMENDED, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1 }, 'holds')
 live('LIVE_design', 'DESIGN as written, ledger loss + shard loss (1 send per batch)', { ...DESIGN, maxSend: 1, maxLL: 1, maxSL: 1 }, 'violated')
 live('LIVE_impl', 'as built, ledger loss + shard loss, no compaction (1 send per batch)', { ...IMPL, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
