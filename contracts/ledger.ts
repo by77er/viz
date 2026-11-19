@@ -20,8 +20,7 @@ export type SignalTable = 'spans' | 'trace_index' | 'logs'
  * the span and log tables only where `INGEST_SIGNALS` enables a signal. The publisher reads all
  * five since 2026-11-19 (it publishes the metric pair and records the others as not published:
  * publisher/README.md, "Tables it does not publish"); `INGEST_SIGNALS` waits until that release
- * is the publisher's rollback floor (design/DECISIONS.md, the rollout rule of the decision that
- * made it).
+ * is the publisher's rollback floor (design/DECISIONS.md D64, "The rollout rule").
  */
 export type LedgerTable = Table | SignalTable
 

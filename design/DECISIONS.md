@@ -2275,9 +2275,98 @@ in-memory engines' (`stack/README.md`, "Traces and logs end to end").
 publisher is updated (readers check it at run time, as the publisher does). A span or log read
 gets every batch of its signal above the watermark, whatever its time range. `INGEST_SIGNALS`
 must stay off in any deployment with a publisher until the publisher reads these tables (it
-stops a tenant at the first change naming one).
+stops a tenant at the first change naming one). (Since 2026-11-19 the publisher reads them and
+`removedFiles` is typed `LedgerTable`: D64, which also gives the rule for turning the flag on.)
 
 **Would change if.** The publisher reads the span and log tables (then `removedFiles` and
 `Table` are retyped, and `Table` may become the full union); span tails grow large enough that
 per-batch time bounds at append pay (then (e) at batch granularity); or tenants ask for traces
 and logs to follow their metric retention (then (g), or a control-side default).
+
+## D64. The publisher reads the span and log tables and does not publish them yet: it records them per tenant, releases their removed files to the janitor, and never stops a tenant for them; `INGEST_SIGNALS` goes on only once this publisher release is the oldest a rollback can reach
+
+(Written 2026-11-19. Step 1 of publishing traces and logs; publishing them as Iceberg tables is
+the next step, not done: `publisher/README.md`, "Not implemented".)
+
+**Decision.** The publisher's log reader knows every table the ledger lists (`LedgerTable`): it
+publishes `metric_samples` and `metric_series` as before and reads `spans`, `trace_index` and
+`logs` without publishing them (`PUBLISHED_TABLES`, `UNPUBLISHED_TABLES` in
+`publisher/src/log.ts`, pinned there and tested equal to the contract's `TABLES`). A change, a
+base or a checkpoint that names them no longer stops the tenant; a table no release knows still
+does (`unsupported`, COMPATIBILITY.md §3.2). A re-base counts their files and does not stage
+them; their tombstones are staged as tombstones. After the metric commits, in SQLite only, the
+publisher records per tenant and table (`unpublished`, storage migration 4, `readableFrom` 1):
+the ledger version through which it counted, the live files counted, where the count started
+(`base`: a re-base's base or checkpoint; `log`: the first change it read that named the table),
+and when the table was first and last named. Each publish reports the counts per tenant;
+`unpublished()` returns the records; `status(table)` answers `published: false` with the tenants
+and files counted. The files of those tables that a change removes, and a re-base's tombstones of
+them, are recorded as removed before they were ever published and released to the janitor
+`deleteGraceMs` later, as such metric files already are; not while the cell holds an object under
+`{cell}/iceberg/{table}/` (only a newer publisher, one that publishes the table, writes there).
+`LedgerChange.removedFiles` is typed `LedgerTable` (contracts/ledger.ts). Metric publication is
+unchanged: the same Iceberg bytes.
+
+**The rollout rule.** The publisher is the reader that must act on every file of the ledger's
+log, so it goes first and `INGEST_SIGNALS` (edge, the writer of span and log changes) goes last
+(COMPATIBILITY.md §3.3):
+
+1. Deploy viz-publisher at this release. It is additive (migration 4 has `readableFrom` 1; it
+   writes no new format; its Iceberg output is unchanged), so the release before stays a
+   rollback target, and nothing in the release tooling stops a rollback to it (D46 judges
+   storage, not the log tables a release reads).
+2. Set `INGEST_SIGNALS` in a deployment with a publisher only after viz-publisher at this release
+   or later has served there and the operator treats it as viz-publisher's rollback floor: from
+   then on a rollback of viz-publisher may only go to this release or later. Without a publisher
+   bound, the flag needs no publisher release at all.
+3. If viz-publisher is rolled back below this release while any tenant's log names a span or log
+   table: the release before opens this storage, publishes every tenant up to its first change
+   naming one, and stops it there, metrics included (`unsupported`, retried every `retryMs`), and
+   releases none of that tenant's files, so the janitor deletes nothing of it. Stuck, not lost
+   (COMPATIBILITY.md §9); rolled forward, this release catches up. Turning the flag off does not
+   unstick it: the changes are in the log already. Shown with the release before frozen beside
+   this one (`publisher/test/n1/`, `test/signals.test.ts`, "releases N and N-1 side by side").
+
+**Alternatives.** (a) Publish the tables in this release (Iceberg tables with hour partitions
+from `start_time`, contracts/TRACES.md, LOGS.md). (b) Pass over their changes with no record
+(the least D63 asked for). (c) Record every span and log file (a `live` row each). (d) Release
+none of their removed files until they are published. (e) Make this release forward-only
+(migration 4 `readableFrom` 4), so the release tooling enforces the floor. (f) Keep stopping at
+any table the publisher does not publish (as before).
+
+**Why.** (a) is the larger change (nested schemas, a partition transform the metric tables do
+not use, per-table manifest schemas, a re-base of every tenant on the upgrade, and readers shown
+to read all of it), and the flag waits on the publisher only for this much: never stopping a
+tenant. (b) makes span and log data invisible: neither published nor said to be unpublished. (c)
+pays a row write per file for tables that are not published; counts say what is unpublished. (d)
+holds those files for ever with a publisher bound (the janitor's purge deletes only what the
+publisher releases), and past 10,000 held-back tombstones at the head of the ledger's answer the
+purge stops reaching the tenant's metric files as well (`janitor/src/janitor.ts`, the `held`
+window); no snapshot of this publisher can reference them, which is exactly the rule for metric
+files removed before they were published. (e) would make a rollback below this release refuse
+the publisher's storage for every tenant, and the janitor's purge fail closed for the whole cell,
+to protect tenants whose logs name tables a rollback target cannot read; the rollback that (e)
+refuses costs, without it, only those tenants' publication, retried until rolled forward. (f)
+makes `INGEST_SIGNALS` unusable wherever a publisher runs.
+
+**Measured** (here, workerd; `publisher/README.md`, "Tables it does not publish"): with the
+same fixed ids and clock, the Iceberg objects published from a log with span and log changes,
+from the same log with them removed, and by the release before from the log without them are
+byte-identical, at two stages (units, expiries of logs and metrics, a compaction). The readers'
+export (PyIceberg 0.12.0, DuckDB 2.0.0) reads 504 checks, 0 failed, with the eight content hashes
+of the metric tables as before. A publish costs one R2 list more per span or log table only when
+it reads a removal of one (the check for a newer publisher's table); none for a metric-only log.
+
+**Cost of it.** One SQLite table, a row per tenant and span or log table, written by a publish
+that reads a change naming one (at most three rows a tenant). A count that started at a cursor
+(`origin: log`) misses files added before it if this publisher has lost its storage since (it
+then restarts at the cursors restored from R2) until the tenant's next re-base; a release before
+this one never passes such a change, so nothing else is missed. A removal read while a newer
+publisher's table of that name exists is never released by this release. The rollout rule rests
+on an operator, not on the release tooling. Span and log data reach no Iceberg reader yet.
+
+**Would change if.** The publisher publishes the tables (then the record is replaced by their
+Iceberg state, their removals are released by the snapshot rule, and every tenant is re-based once
+for the new tables' cursors); the release tooling learns per-format floors (then step 2 of the
+rule is enforced); or counts must be exact across a publisher storage loss (then a re-base of
+every tenant after a resync).

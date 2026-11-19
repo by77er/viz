@@ -140,7 +140,8 @@ const READS: { name: string; path: string; params: [string, string][]; method?: 
   { name: 'LogQL range (OTLP logs)', path: '/loki/api/v1/query_range', params: [['query', '{service_name="gw-svc-a"}'], ['start', START_NS], ['end', END_NS], ['limit', '100']], check: (b) =>
     expect(linesOf(b).sort()).toEqual(['gateway line one', 'gateway line two']) },
   { name: 'LogQL range (Loki push), POST', path: '/loki/api/v1/query_range', method: 'POST', params: [['query', '{job="gw-loki"}'], ['start', START_NS], ['end', END_NS], ['direction', 'forward']], check: (b) =>
-    expect(linesOf(b)).toEqual(['loki line 1', 'loki line 2']) },
+    // Two streams in the answer: the first entry's structured metadata is part of its labels.
+    expect(linesOf(b).sort()).toEqual(['loki line 1', 'loki line 2']) },
   { name: 'LogQL instant', path: '/loki/api/v1/query', params: [['query', 'sum(count_over_time({job="gw-loki"}[1h]))'], ['time', `${Math.floor(NOW / 1000)}000000000`]], check: (b) =>
     expect((b as { data: { result: { value: [number, string] }[] } }).data.result.map((r) => r.value[1])).toEqual(['2']) },
   { name: 'Loki labels', path: '/loki/api/v1/labels', params: [['start', START_NS], ['end', END_NS]], check: (b) => expect((b as { data: string[] }).data).toEqual(expect.arrayContaining(['instance', 'job', 'service_name'])) },
@@ -227,7 +228,8 @@ describe('through the gateway, both flags on', () => {
     for (const r of READS) {
       const a = await read(t.key, r)
       expect([r.name, a.status, a.route]).toEqual([r.name, 200, 'query'])
-      expect(Number(a.headers.get('X-Viz-Files-Read')), r.name).toBeGreaterThan(0)
+      // From files now (the label endpoints answer from the files' index fragments without reading them).
+      expect(Number(a.headers.get('X-Viz-Files-Listed')), r.name).toBeGreaterThan(0)
       expect(Number(a.headers.get('X-Viz-Tail-Batches')), r.name).toBe(0)
       expect(stable(a.text), r.name).toEqual(stable(before.get(r.name)!.text))
     }

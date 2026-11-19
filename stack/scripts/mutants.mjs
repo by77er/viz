@@ -2,7 +2,7 @@
 // run the tests that should notice, expect them to FAIL, restore the source.
 //   node scripts/mutants.mjs [part] [substring of a mutant name]      (from stack/)
 //   MUTANT_FILES=compact/,janitor/ node scripts/mutants.mjs all          only mutants in those files
-// Parts: trigger, compaction, precedence, deletion, limit, review, publication. Paths are
+// Parts: trigger, compaction, precedence, deletion, limit, review, publication, gateway. Paths are
 // relative to the root of the tree the script sits in.
 //
 // AGENTS.md (Evidence): mutants are applied to a COPY of the tree in a scratch area, never in
@@ -41,6 +41,7 @@ const T = {
   stackGolden: ['stack', `npx vitest run ${W} test/golden.test.ts`],
   janitorPub: ['janitor', `npx vitest run ${W} test/publication.test.ts`],
   stackPub: ['stack', `npx vitest run ${W} test/publisher.test.ts`],
+  gatewayE2E: ['stack', `npx vitest run -c vitest.gateway.config.ts ${W}`],
 }
 
 const mutants = [
@@ -316,6 +317,23 @@ const mutants = [
     '  fetch: (req, env) => edge.fetch(req, env),', "  fetch: async (req, env) => ((await (await import('../../publisher/src/nudge')).nudge(env.PUBLISHER, env.CELL || 'cell-0', ['ingest'])), edge.fetch(req, env)),"],
   ['publication', 'the cron nudges the publisher (an idle deployment wakes it hourly)', 'stack/src/index.ts', T.triggers,
     '  const [f, m] = await Promise.allSettled([sweepPending(env, { now }), enqueueDue(env, now)])', "  const [f, m] = await Promise.allSettled([sweepPending(env, { now }), enqueueDue(env, now), import('../../publisher/src/nudge').then((x) => x.nudge(env.PUBLISHER, env.CELL || 'cell-0', ['cron']))])"],
+  // ── Traces and logs, stage 3: the public path through the gateway (test/gateway/) ──
+  ['gateway', 'gateway: a trace path goes to ingest (OTLP traces and Tempo share /api/traces/…)', 'deploy/gateway/src/index.ts', T.gatewayE2E,
+    "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'", "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path) || path.startsWith('/api/traces/')) return 'ingest'"],
+  ['gateway', 'gateway: every /loki/ path goes to ingest (where the push is served)', 'deploy/gateway/src/index.ts', T.gatewayE2E,
+    "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'", "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path) || path.startsWith('/loki/')) return 'ingest'"],
+  ['gateway', 'gateway: the span and log ingest paths are not routed', 'deploy/gateway/src/index.ts', T.gatewayE2E,
+    "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'", "if (INGEST_PATHS.has(path)) return 'ingest'"],
+  ['gateway', 'gateway: /api/v1/plan is not routed', 'deploy/gateway/src/index.ts', T.gatewayE2E,
+    "'/api/v1/metadata', '/api/v1/plan'])", "'/api/v1/metadata'])"],
+  ['gateway', 'edge: a base pool ending in /logs is accepted', 'edge/src/route.ts', T.gatewayE2E,
+    '!DERIVED_SIGNALS.some((s) => pool.endsWith(`/${s}`))', "!pool.endsWith('/traces')"],
+  ['gateway', 'query: QUERY_SIGNALS ignored on the Loki read paths', 'query/src/index.ts', T.gatewayE2E,
+    "if (path.startsWith('/loki/')) return signalEnabled(env, 'logs') ? lokiRoute(path) : null", "if (path.startsWith('/loki/')) return lokiRoute(path)"],
+  ['gateway', 'query: QUERY_SIGNALS ignored on the Tempo read paths', 'query/src/index.ts', T.gatewayE2E,
+    "return signalEnabled(env, 'traces') ? tempoRoute(path) : null", 'return tempoRoute(path)'],
+  ['gateway', 'edge: INGEST_SIGNALS ignored on the span and log ingest paths', 'edge/src/index.ts', T.gatewayE2E,
+    'if (signal !== null && signalEnabled(env, signal)) {', 'if (signal !== null) {'],
 ]
 
 const [part, only] = process.argv.slice(2)

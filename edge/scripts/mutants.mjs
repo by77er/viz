@@ -136,7 +136,7 @@ const mutants = [
   ['otel: an attribute with an empty key accepted', 'src/otel.ts', "    if (k === '') return fail(ATTR_REASONS.emptyKey)\n", ''],
   ['otel: OTLP log stream labels from every resource attribute', 'src/logs.ts', '    if (STREAM_LABEL_KEYS.has(k)) m.set(labelName(k), plainText(v))', '    m.set(labelName(k), plainText(v))'],
   ['otel: log record without a timestamp stored at 0', 'src/logs.ts', '    if (x.ts === null) return this.reject(LogReject.noTime)', '    if (x.ts === null) x.ts = [0, 0]'],
-  ['otel: spans appended to the metrics pool', 'src/route.ts', "  const pool = `${map.pool}/${signal}`", '  const pool = map.pool'],
+  ['otel: spans appended to the metrics pool', 'src/route.ts', '  const derived = signalPool(map, signal)\n', '  const derived: PoolMap | null = map\n'],
   ['otel: routes served without INGEST_SIGNALS', 'src/index.ts', 'if (signal !== null && signalEnabled(env, signal)) {', 'if (signal !== null) {'],
   ['D61: a stream being registered answered 429', 'src/route.ts', "if (scope === 'overload' || scope === 'registering') overloadMs", "if (scope === 'overload') overloadMs"],
   ['D61: a stream being registered noted as an overloaded shard', 'src/route.ts', "if (last.status === 'backpressure' && (last as { scope: string }).scope === 'overload') noteOverload", "if (last.status === 'backpressure' && ['overload', 'registering'].includes((last as { scope: string }).scope)) noteOverload"],

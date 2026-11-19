@@ -844,7 +844,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    */
   private async noteUnpublished(store: Store, logs: TenantLog[], reports: Map<string, TenantReport>): Promise<void> {
     const sql = this.sql
-    type Note = { tenant: string; table: SignalTable; incarnation: number; version: number; files: number; origin: 'base' | 'log'; named: boolean; existed: boolean; firstSeen: number; lastSeen: number; release: string[] }
+    type Note = { tenant: string; table: SignalTable; incarnation: number; version: number; files: number; origin: 'base' | 'log'; firstSeen: number; lastSeen: number; release: string[] }
     const notes: Note[] = []
     for (const log of logs) {
       if (log.status === 'no_log' || log.status === 'no_base' || log.status === 'cursor_ahead') continue
@@ -893,7 +893,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         if (!row && !named) continue
         const now = this.now()
         notes.push({
-          tenant: log.tenant, table, incarnation: log.incarnation, version, files, origin, named, existed: row !== undefined, release,
+          tenant: log.tenant, table, incarnation: log.incarnation, version, files, origin, release,
           firstSeen: (row?.first_seen as number | undefined) ?? now, lastSeen: named ? now : (row!.last_seen as number),
         })
       }

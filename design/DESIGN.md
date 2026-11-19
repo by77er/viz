@@ -300,9 +300,10 @@ and time.
 
 The span and log tables are written and listed as built on the write side (stage 2, behind
 `INGEST_SIGNALS`): flush, the ledger, retention and deletion. Not yet: their compaction,
-reading through `query`, and Iceberg publication (the publisher refuses a log change naming a
-table it does not know, so `INGEST_SIGNALS` stays off in a deployment with a publisher until it
-reads them).
+reading through `query`, and Iceberg publication. The publisher reads them and does not
+publish them yet (D64, §5.3): a change naming them no longer stops a tenant, so
+`INGEST_SIGNALS` may go on in a deployment with a publisher once that publisher release is the
+oldest one a rollback of viz-publisher can reach (the rollout rule in D64).
 
 Native histograms share the samples layout and are added after float samples work. Flat
 rows are chosen over chunk blobs for openness and simplicity, pending the read-slice spike.
@@ -364,7 +365,11 @@ version order per tenant, read from the ledger's R2 log (segments, in whole segm
 or a segment it cannot read stops that tenant there, never skipped). A tenant it has no cursor
 for in the newest ledger incarnation is re-based from that incarnation's newest checkpoint, or
 its base, streamed into SQLite and diffed against what is published there, so the publisher's
-memory does not grow with a tenant's size (D55). A removed
+memory does not grow with a tenant's size (D55). It publishes the metric tables; the span and
+log tables it reads without publishing (D64): their files are counted per tenant and table,
+reported as not published, and never stop a tenant (a table no release knows still does), and
+the files of theirs a change removes are released to the janitor after the delete grace, since
+no snapshot can reference them. A removed
 file is physically deleted only after the removal is published and every snapshot that
 referenced it has expired (the janitor asks the publisher before each purge). Each snapshot
 points at an object

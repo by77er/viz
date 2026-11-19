@@ -8,8 +8,9 @@
  *     `log_days`, by whole days, in ledger changes of their own after the metric one, and a ledger
  *     that refuses them (a release before these tables) costs the metric expiry nothing;
  *   - removed objects are deleted by the purge under the same rules as metric files: logged,
- *     older than the grace, and, with a publisher bound, released by it (the real publisher of
- *     this release does not know these tables and releases none of them: fail closed);
+ *     older than the grace, and, with a publisher bound, released by it (the real publisher reads
+ *     these tables without publishing them, since publisher/ D64, and releases their removed files
+ *     only after its own delete grace: until then nothing is deleted);
  *   - the orphan sweep lists every table's prefix of the tenant, spans keys one level deeper,
  *     and judges their flush files as it judges metric ones; another tenant's are never touched.
  */
@@ -130,7 +131,7 @@ describe('the publisher gate applies to the span and log tables', () => {
     return { ...t, removed: r.removed }
   }
 
-  it('the real publisher of this release does not know these tables: it releases none of them, and nothing is deleted', async () => {
+  it('the real publisher reads these tables and does not publish them: inside its delete grace it releases none of them, and nothing is deleted', async () => {
     const t = await expired('gate-real')
     const cell = `gs${Date.now().toString(36)}${n++}`
     // The publisher reads the tenant's log under its own cell (a copy), as publisher/'s tests do.
@@ -138,7 +139,8 @@ describe('the publisher gate applies to the span and log tables', () => {
     for (const o of (await env.BUCKET.list({ prefix: from })).objects) await env.BUCKET.put(`${cell}/ledger/tenant=${t.tenant}/${o.key.slice(from.length)}`, await (await env.BUCKET.get(o.key))!.arrayBuffer())
     const publisher = env.TEST_PUBLISHER.get(env.TEST_PUBLISHER.idFromName(cell))
     const pub = await publisher.publish([t.tenant])
-    expect(pub.tenants[0]).toMatchObject({ status: 'unsupported' })
+    // Since publisher/ D64 the tenant is not stopped (before it: `unsupported`); its removed span and log files wait for the publisher's grace.
+    expect(pub.tenants[0]).toMatchObject({ status: 'ok', unpublished: { spans: 0, trace_index: 0, logs: 0 } })
     // The janitor asks the publisher of its cell: here, the one that read the copy.
     const gate: PublisherGateNamespace = { idFromName: () => env.TEST_PUBLISHER.idFromName(cell), get: (x) => env.TEST_PUBLISHER.get(x) }
     const p = await purgeTenant({ ...env, PUBLISHER: gate }, t.tenant, { graceMs: 100 })
