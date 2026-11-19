@@ -43,6 +43,8 @@
   "triggers": { "crons": ["7 * * * *"] },
   "vars": {
     "CELL": "cell-0",
-    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
+    // Mirrors wrangler.jsonc (the publisher reads a new base whole until it streams parts).
+    "LEDGER_STATE_MAX_BYTES": "16777216"
   }
 }
