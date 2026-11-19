@@ -8,6 +8,7 @@ import type {
   PromMatrixData,
   PromQueryData,
 } from './types'
+import { MatrixParser, NotAMatrix, type ParsedMatrix } from './matrix'
 
 /** An error reported by the API, or a transport failure, in one shape the UI can render. */
 export class PromApiError extends Error {
@@ -57,6 +58,14 @@ export interface PromClientOptions {
 
 export interface RequestOptions {
   signal?: AbortSignal
+}
+
+/** A range query read into typed arrays (`queryRangeMatrix`). */
+export interface MatrixResult {
+  matrix: ParsedMatrix
+  warnings: string[]
+  infos: string[]
+  cost: ApiCost
 }
 
 export class PromClient {
@@ -133,21 +142,65 @@ export class PromClient {
     )
   }
 
-  private async request<T>(path: string, init: RequestInit, opts?: RequestOptions): Promise<ApiResult<T>> {
+  /**
+   * Range query, read into typed arrays as the body arrives (api/matrix.ts) instead of
+   * `JSON.parse`: what the Explore view uses. Errors, and any answer that is not a matrix,
+   * are reported exactly as `queryRange` reports them.
+   */
+  async queryRangeMatrix(query: string, start: number, end: number, step: number, opts?: RequestOptions): Promise<MatrixResult> {
+    const res = await this.send(
+      '/api/v1/query_range',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ query, start: String(start), end: String(end), step: String(step) }).toString(),
+      },
+      opts,
+    )
+    if (!res.ok || !res.body) {
+      // An error (or an empty body): read and reported as any other answer is; a success here is not a matrix.
+      this.read<unknown>(res, await res.text())
+      throw new PromApiError('parse', 'The response is not a range-query matrix', res.status)
+    }
+    const parser = new MatrixParser()
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      parser.push(value)
+    }
+    try {
+      const matrix = parser.finish()
+      return { matrix, warnings: matrix.warnings, infos: matrix.infos, cost: costOf(res.headers) }
+    } catch (e) {
+      if (!(e instanceof NotAMatrix)) throw e
+      // Not a matrix: an error envelope (with HTTP 200), another result type, or not JSON.
+      const body = e.body as PromEnvelope<unknown> | undefined
+      if (body && typeof body === 'object' && body.status === 'error') throw new PromApiError(body.errorType || 'error', body.error || `HTTP ${res.status}`, res.status)
+      throw new PromApiError('parse', body && typeof body === 'object' && body.status === 'success' ? 'The response is not a range-query matrix' : 'The response is not a Prometheus API envelope', res.status)
+    }
+  }
+
+  private async send(path: string, init: RequestInit, opts?: RequestOptions): Promise<Response> {
     const headers = new Headers(init.headers)
     headers.set('Accept', 'application/json')
     if (this.token) headers.set('Authorization', `Bearer ${this.token}`)
-
-    let res: Response
     try {
-      res = await this.fetchFn(this.baseUrl + path, { ...init, headers, signal: opts?.signal })
+      return await this.fetchFn(this.baseUrl + path, { ...init, headers, signal: opts?.signal })
     } catch (err) {
       // Aborts propagate unchanged so callers (TanStack Query) can tell them from failures.
       if (isAbort(err) || opts?.signal?.aborted) throw err
       throw new PromApiError('network', `Cannot reach ${this.baseUrl || 'the API'}: ${errorMessage(err)}`, 0)
     }
+  }
 
-    const text = await res.text()
+  private async request<T>(path: string, init: RequestInit, opts?: RequestOptions): Promise<ApiResult<T>> {
+    const res = await this.send(path, init, opts)
+    return this.read<T>(res, await res.text())
+  }
+
+  /** An answer as an envelope: its data, or the error it reports, or why it is not one. */
+  private read<T>(res: Response, text: string): ApiResult<T> {
     let body: PromEnvelope<T> | undefined
     try {
       body = text ? (JSON.parse(text) as PromEnvelope<T>) : undefined

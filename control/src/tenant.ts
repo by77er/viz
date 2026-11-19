@@ -8,7 +8,7 @@ import { auditOps } from './ops-audit'
 import { dashboardOps } from './ops-dashboards'
 import { expireProposals, proposalOps } from './ops-proposals'
 import { keyOps, newKey, purgeStaleSecrets } from './ops-keys'
-import { purgeDashboards } from './ops-dashboards'
+import { mayApply, purgeDashboards } from './ops-dashboards'
 import { settingsOps } from './ops-settings'
 import { type OpInput, type OpName, type OpResult, routeOf } from './routes'
 import { TENANT_SCHEMA } from './schema'
@@ -49,7 +49,9 @@ export class NoChange extends Rollback {}
 
 
 const OPS: Record<OpName, Op> = {
-  whoami: (_t, c) => ({ status: 200, body: { tenant: c.id.tenant, subject: c.id.subject, kind: c.id.kind, name: c.id.name ?? null, scopes: c.id.scopes } }),
+  // mayApply: whether this caller's direct dashboard writes take effect (rather than being refused or
+  // turned into proposals), so a client can know without a dry run. Depends on the tenant's settings.
+  whoami: (t, c) => ({ status: 200, body: { tenant: c.id.tenant, subject: c.id.subject, kind: c.id.kind, name: c.id.name ?? null, scopes: c.id.scopes, mayApply: mayApply(t, c) } }),
   ...keyOps,
   ...dashboardOps,
   ...proposalOps,

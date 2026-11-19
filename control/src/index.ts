@@ -89,6 +89,23 @@ function ifMatch(req: Request): string | undefined {
 const tenantNotAccepted = (where: string): Problem =>
   new Problem(400, 'tenant-not-accepted', `A tenant was named in the ${where}. This API never takes a tenant from a request.`, 'Remove it. The tenant is always the one your credential belongs to (see GET /api/v1/control/whoami).')
 
+/**
+ * `GET /healthz`: outside the API and without a credential, as viz-ingest and viz-query
+ * serve it, for the gateway's `/healthz` to call through its service binding (the gateway
+ * answers the public `/healthz` itself and never forwards it, so this is not public).
+ * 200 `ok` when this Worker runs with its two bindings; 503 naming a missing one. It calls
+ * no Tenant object and no KV: without a credential there is no tenant to ask, and a probe
+ * object would be storage of its own to migrate on every release.
+ */
+function health(req: Request, env: Env): Response {
+  const text = (status: number, body: string, extra: Record<string, string> = {}) =>
+    new Response(body, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...extra } })
+  if (req.method !== 'GET' && req.method !== 'HEAD') return text(405, 'method not allowed\n', { Allow: 'GET, HEAD' })
+  const missing = (['TENANT', 'CONFIG'] as const).filter((b) => !env[b])
+  if (missing.length) return text(503, `misconfigured: no ${missing.join(' or ')} binding\n`)
+  return text(200, 'ok\n')
+}
+
 export function createWorker(hooks: Hooks = {}): ExportedHandler<Env> {
   async function handle(req: Request, env: Env): Promise<OpResult> {
     const url = new URL(req.url)
@@ -124,6 +141,7 @@ export function createWorker(hooks: Hooks = {}): ExportedHandler<Env> {
 
   return {
     async fetch(req, env): Promise<Response> {
+      if (new URL(req.url).pathname === '/healthz') return health(req, env)
       const cors = corsHeaders(req, env)
       if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
       try {

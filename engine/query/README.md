@@ -13,12 +13,12 @@ deterministic simulator. Nothing panics on input. Builds for the host and for
 
 ```
 export CARGO_TARGET_DIR=$PWD/target
-cargo test -j 2 -- --test-threads 2                         # 46 tests, about 6 minutes on a loaded machine
+cargo test -j 2 -- --test-threads 2                         # 47 tests, about 6 minutes on a loaded machine
 cargo test --test corpus -- --nocapture                     # upstream corpus through storage, per file
 cargo build --release --target wasm32-unknown-unknown       # the library
 (cd wasm && cargo build --release --target wasm32-unknown-unknown) && node tools/wasm_check.mjs
 cargo run --release --example bench                         # the benchmark
-python3 tools/mutants.py                                    # mutation check
+python3 tools/mutants.py                                    # mutation check (edits src/ in place: build nothing else meanwhile)
 ```
 
 ```rust
@@ -280,8 +280,8 @@ own report.
 All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 1.97.0, Node 22.23), not on Cloudflare.
 
-`cargo test`: **46 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
-plan 5, prune 3, split 7, staleness 5), run on 2026-11-18 with `-j 2` and two test threads
+`cargo test`: **47 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
+plan 5, prune 3, split 8, staleness 5), run on 2026-11-18 with `-j 2` and two test threads
 on a machine with a load average of 6 to 20 (6 min). Seven are property tests. The
 references of the invariance tests (and of `query/`'s fixtures) are `viz-promql` over its
 in-memory source **with this crate's aggregations** (`reference_range`), since every
@@ -322,6 +322,12 @@ evaluation here uses them; with that change all 37 earlier tests pass unchanged.
   its batches in.
 - `signed_zeros_give_the_same_bits_in_any_order`: `-0` and `+0` in different parts or
   orders give the same bits for `min`, `max`, `sum`, `avg`.
+- `min_by_group_over_signed_zeros_regression`: the input CI's run of
+  `partials_merge_exactly` reported (`min by (g)` over `1e-300`, `-0`, `+0`), split four
+  ways and merged in three orders. That CI run tested a snapshot of the tree taken while
+  the mutation check had mutant 36 applied (the mutation tools edit sources in place and
+  restore them): the property caught the mutant, which is its job; the source was right.
+  **Do not snapshot or build `engine/query` or `query/` while a mutation run is going.**
 - `exact::tests` (unit): correct rounding on cancellation, ties to even, sticky bits,
   subnormals, overflow, infinities; variance of small integers equals the rational value.
 

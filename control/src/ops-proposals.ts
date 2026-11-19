@@ -438,6 +438,10 @@ const list: Op = (t, c) => {
 const get: Op = (t, c) => {
   const row = load(t, c.input.params.proposal!)
   const body: Record<string, unknown> = { proposal: view(row, c.now, true), review: null }
+  if (isCreation(row)) {
+    if (statusOf(row, c.now) === 'open') body.review = reviewCreation(t, row)
+    return { status: 200, body }
+  }
   const dash = t.one<{ deleted_at: number | null }>('SELECT deleted_at FROM dashboards WHERE tenant = ? AND id = ?', t.tenant, row.dashboard)
   if (statusOf(row, c.now) === 'open' && dash && dash.deleted_at === null) {
     const live = loadDashboard(t, row.dashboard)
@@ -449,17 +453,24 @@ const get: Op = (t, c) => {
 
 function mustBeOpen(row: PropRow, now: number): void {
   const status = statusOf(row, now)
-  if (status !== 'open') throw new Problem(409, 'proposal-closed', `This proposal is ${status}; it can no longer be changed or applied.`, 'Create a new proposal against the current revision.', { status })
+  // A retry of an apply whose answer was lost finds the proposal applied, and which revision that made.
+  if (status !== 'open') throw new Problem(409, 'proposal-closed', `This proposal is ${status}; it can no longer be changed or applied.`, 'Create a new proposal against the current revision.', { status, appliedNumber: row.applied_number })
 }
 
 const edit: Op = (t, c) => {
-  const b = fields(c.input.body, ['changes', 'ops', 'reason', 'message', 'dryRun'], 'request body')
+  const b = fields(c.input.body, ['changes', 'ops', 'reason', 'message', 'spec', 'dryRun'], 'request body')
   const row = load(t, c.input.params.proposal!)
   mustBeOpen(row, c.now)
   const by = JSON.parse(row.by) as Actor
   if (by.subject !== c.id.subject && !hasApplyScope(c)) {
     throw new Problem(403, 'not-yours', 'Only the proposer, or someone who may apply changes, can edit a proposal.', 'Create your own proposal instead.')
   }
+  // Each kind takes its own fields: a whole spec for a creation, ops or changes for a change.
+  const wrong = (isCreation(row) ? ['changes', 'ops', 'reason'] : ['spec']).find((k) => b[k] !== undefined)
+  if (wrong) {
+    throw invalid(`Unknown field "${wrong}" for a proposal that ${isCreation(row) ? 'creates' : 'changes'} a dashboard.`, isCreation(row) ? 'Send "spec" (the whole dashboard) and optionally "message".' : 'Send "ops" or "changes", and optionally "message".', { field: wrong })
+  }
+  if (isCreation(row)) return proposeCreation(t, c, mustValidate(b.spec), str(b.message, 'message', { max: 500, optional: true }) ?? row.message, row)
   const dash = loadDashboard(t, row.dashboard)
   const message = str(b.message, 'message', { max: 500, optional: true }) ?? row.message
   // An edit is always made against the dashboard as it is now, so it also rebases the proposal.
@@ -470,6 +481,7 @@ const apply: Op = (t, c) => {
   const b = fields(c.input.body, ['changes', 'message', 'baseRevision', 'dryRun'], 'request body')
   const row = load(t, c.input.params.proposal!)
   mustBeOpen(row, c.now)
+  if (isCreation(row)) return applyCreation(t, c, row, b)
   const by = JSON.parse(row.by) as Actor
   const editors = JSON.parse(row.editors) as Actor[]
   // An agent never approves its own work, whatever scopes its key has, unless the tenant allows it.
@@ -539,6 +551,7 @@ export function expireProposals(t: Tenant, actor: Actor, now: number): void {
 export const proposalOps = {
   'proposals.create': create,
   'proposals.list': list,
+  'proposals.createDashboard': createDashboard,
   'proposals.get': get,
   'proposals.edit': edit,
   'proposals.apply': apply,
