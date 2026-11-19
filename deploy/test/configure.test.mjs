@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { configure, durableObjectsOf, generateWorker, loadPlan, queuesOf, stageVars } from '../configure.mjs'
+import { checkEntrypoints, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, stageVars } from '../configure.mjs'
 import { GENERATED_DIR, REPO_ROOT, checkStage, parseJsonc, readJsonc, stagedName } from '../lib/common.mjs'
 import { SCHEMAS_VAR, parseSource, readSchemas, schemaSources, schemasVar } from '../lib/schemas.mjs'
 
@@ -82,6 +82,21 @@ test('deployment-wide vars override a disagreeing component, with a note', () =>
   }
 })
 
+test('PUBLIC_URL: control (OAuth issuer) and mcp (resource) get the same origin, from the domain', () => {
+  const pub = `https://${plan.domain}`
+  const declaring = plan.workers.filter((w) => w.deploy && 'PUBLIC_URL' in gen(w.name).config.vars)
+  assert.deepEqual(declaring.map((w) => w.name).sort(), ['viz-control', 'viz-mcp'])
+  for (const w of declaring) assert.equal(gen(w.name).config.vars.PUBLIC_URL, pub, w.name)
+  // A component that disagrees is overridden, with a note.
+  const cfg = readJsonc(join(REPO_ROOT, 'mcp/wrangler.jsonc'))
+  cfg.vars.PUBLIC_URL = 'https://elsewhere.example'
+  const g = gen('viz-mcp', undefined, cfg)
+  assert.equal(g.config.vars.PUBLIC_URL, pub)
+  assert.match(g.summary.warnings.join('\n'), /PUBLIC_URL: .*elsewhere\.example/)
+  // A stage has no custom domain: it keeps the component's value, never production's origin.
+  assert.equal(gen('viz-mcp', 'trial', cfg).config.vars.PUBLIC_URL, 'https://elsewhere.example')
+})
+
 test('refuses what it does not understand instead of guessing', () => {
   const base = readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc'))
   assert.throws(() => gen('viz-query', undefined, { ...base, d1_databases: [{ binding: 'DB' }] }), /d1_databases/)
@@ -130,7 +145,7 @@ test('every service a Worker binds is deployed before it, and resolves to a depl
   const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
   for (const w of m.workers.filter((x) => x.deploy)) {
     for (const edge of w.crossScript) {
-      const callee = edge.split('→')[1].trim().split(':')[0]
+      const callee = edge.split('→')[1].trim().split(/[:#]/)[0]
       assert.ok(callee.startsWith('viz-citest-'), `${w.name}: ${edge}`)
       assert.ok(m.order.indexOf(callee) >= 0, `${w.name} binds ${callee}, which is not deployed`)
       assert.ok(m.order.indexOf(callee) < m.order.indexOf(w.name), `${w.name} binds ${callee}, which must deploy first`)
@@ -140,7 +155,7 @@ test('every service a Worker binds is deployed before it, and resolves to a depl
   const ingest = m.workers.find((w) => w.canonical === 'viz-ingest')
   assert.ok(ingest.crossScript.includes('PUBLISHER → viz-citest-publisher:Publisher'), ingest.crossScript.join(', '))
   const ruler = m.workers.find((w) => w.canonical === 'viz-ruler')
-  assert.deepEqual(ruler.crossScript.sort(), ['INGEST → viz-citest-ingest', 'QUERY → viz-citest-query', 'TENANT → viz-citest-control:Tenant'])
+  assert.deepEqual(ruler.crossScript.sort(), ['INGEST → viz-citest-ingest', 'QUERY → viz-citest-query', 'SINK → viz-citest-ingest#RecordedSamples', 'TENANT → viz-citest-control:Tenant'])
   const mcp = m.workers.find((w) => w.canonical === 'viz-mcp')
   // mcp/ may bind more (its OAuth work binds control's Tenant too); the order check above covers every binding.
   for (const b of ['CONTROL → viz-citest-control', 'QUERY → viz-citest-query', 'RULER → viz-citest-ruler']) assert.ok(mcp.crossScript.includes(b), `${b} in ${mcp.crossScript.join(', ')}`)
@@ -244,4 +259,40 @@ test('stack/wrangler.test.jsonc differs from the config production is generated 
   assert.deepEqual(test.durable_objects.bindings.find((b) => b.name === 'TEST_PUBLISHER'), { name: 'TEST_PUBLISHER', class_name: 'TestPublisher' })
   assert.equal(test.main, 'test/worker.ts')
   assert.equal(prod.main, 'src/index.ts')
+})
+
+test('the ruler\'s SINK: viz-ingest\'s RecordedSamples entrypoint with props naming the ruler, a caller contracts/ingest.ts allows', () => {
+  for (const stage of [undefined, 'trial']) {
+    const { config, summary } = gen('viz-ruler', stage)
+    const sink = config.services.find((s) => s.binding === 'SINK')
+    assert.deepEqual(sink, { binding: 'SINK', service: stagedName('viz-ingest', stage), entrypoint: 'RecordedSamples', props: { caller: 'viz-ruler' } })
+    assert.deepEqual(summary.entrypoints, [{ binding: 'SINK', callee: 'viz-ingest', entrypoint: 'RecordedSamples' }])
+    // Remote Write stays bound for the fallback (D52).
+    assert.deepEqual(config.services.find((s) => s.binding === 'INGEST'), { binding: 'INGEST', service: stagedName('viz-ingest', stage) })
+  }
+  // The entrypoint refuses any caller not in RECORDED_SAMPLES_CALLERS (contracts/ingest.ts).
+  const contract = readFileSync(join(REPO_ROOT, 'contracts', 'ingest.ts'), 'utf8')
+  const callers = JSON.parse(/RECORDED_SAMPLES_CALLERS: readonly string\[\] = (\[[^\]]*\])/.exec(contract)[1].replace(/'/g, '"'))
+  assert.equal(/RECORDED_SAMPLES_ENTRYPOINT = '(\w+)'/.exec(contract)[1], 'RecordedSamples')
+  assert.ok(callers.includes(gen('viz-ruler').config.services.find((s) => s.binding === 'SINK').props.caller), callers.join(', '))
+})
+
+test('an entrypoint a binding names is exported by the callee as deployed (a stage\'s ingest shim too); otherwise the release is refused', () => {
+  const prodMain = join(REPO_ROOT, 'stack/src/index.ts')
+  const stageMain = join(REPO_ROOT, 'deploy/stage/ingest.ts')
+  assert.ok(exportedNames(prodMain).has('RecordedSamples'))
+  assert.ok(exportedNames(stageMain).has('RecordedSamples'), 'followed through export * from the stage shim')
+  assert.ok(!exportedNames(prodMain).has('FlushOptions'), '`export type { … }` exports no value')
+  const e = [{ binding: 'SINK', callee: 'viz-ingest', entrypoint: 'RecordedSamples' }]
+  checkEntrypoints('viz-ruler', e, new Map([['viz-ingest', prodMain]]))
+  checkEntrypoints('viz-ruler', e, new Map([['viz-ingest', stageMain]]))
+  // An ingest from before the entrypoint (its export removed), or a typo, or a callee not configured first.
+  assert.throws(() => checkEntrypoints('viz-ruler', [{ ...e[0], entrypoint: 'RecordedSample' }], new Map([['viz-ingest', prodMain]])), /does not export: a callee ships an entrypoint before or with its first caller/)
+  assert.throws(() => checkEntrypoints('viz-ruler', e, new Map()), /not configured before it/)
+  // Malformed bindings are refused, not passed on.
+  const cfg = readJsonc(join(REPO_ROOT, 'ruler/wrangler.jsonc'))
+  const withSink = (sink) => ({ ...cfg, services: [...cfg.services.filter((s) => s.binding !== 'SINK'), sink] })
+  assert.throws(() => gen('viz-ruler', undefined, withSink({ binding: 'SINK', service: 'viz-ingest', entrypoint: 'Recorded-Samples' })), /entrypoint must name an export/)
+  assert.throws(() => gen('viz-ruler', undefined, withSink({ binding: 'SINK', service: 'viz-ingest', entrypoint: 'RecordedSamples', props: 'viz-ruler' })), /props must be an object/)
+  assert.throws(() => gen('viz-ruler', undefined, withSink({ binding: 'SINK', service: 'viz-elsewhere', entrypoint: 'RecordedSamples' })), /not a Worker in deploy\/workers.json/)
 })
