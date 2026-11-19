@@ -43,13 +43,13 @@ const dumpAll = (s: Stub): Promise<Dump> =>
   runInDurableObject(s, (_i: Shard, st) => {
     const out: Dump = {}
     for (const t of st.storage.sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name`).toArray()) {
-      out[t.name as string] = st.storage.sql.exec(`SELECT * FROM ${t.name as string} ORDER BY 1, 2`).toArray()
+      out[t.name as string] = st.storage.sql.exec(`SELECT * FROM ${t.name as string} ORDER BY 1`).toArray()
     }
     return out
   })
 const schemaRow = (s: Stub) => runInDurableObject(s, (_i: Shard, st) => st.storage.sql.exec(`SELECT component, version, compat FROM viz_schema`).toArray()[0])
 
-async function install(s: Stub, ddl: string[], rows: Record<string, Record<string, SqlStorageValue>[]>): Promise<void> {
+async function install(s: Stub, ddl: string[], rows: Record<string, Record<string, unknown>[]>): Promise<void> {
   await runInDurableObject(s, async (_i: Shard, st) => {
     await st.storage.deleteAll()
     for (const stmt of ddl) st.storage.sql.exec(stmt)
@@ -62,7 +62,7 @@ async function install(s: Stub, ddl: string[], rows: Record<string, Record<strin
 
 const OLD_ROWS = {
   stream: [{ tenant: 't', incarnation: 1_800_000_000_000_000, epoch: 1, sealed_through: 2, recorded_through: 0, discarded_through: 0 }],
-  batch: [1, 2, 3].map((seq) => ({ tenant: 't', seq, fingerprint: `f${seq}`, rows: 1, bytes: 8, at: 1_800_000_000_000 + seq, payload: new Uint8Array(8).fill(seq) })),
+  batch: [1, 2, 3].map((seq) => ({ tenant: 't', seq, fingerprint: `f${seq}`, rows: 1, bytes: 8, at: 1_800_000_000_000 + seq, payload: new Uint8Array(8).fill(seq).buffer })),
   segment: [{ tenant: 't', seq_lo: 1, seq_hi: 2, bytes: 16, rows: 2, recorded_at: null }],
 }
 

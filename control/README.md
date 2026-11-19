@@ -15,7 +15,7 @@ data path never calls it.
 | `src/tenant.ts` | `Tenant`: opening (and migrating) storage, the mutation wrapper (one transaction: change + audit row + KV outbox), dry run, the outbox drain, the alarm, `provision`, `resolveKey`, `recordUsage` |
 | `src/ops-keys.ts` | Keys: create, list, disable/enable, rotate, delete; the KV records |
 | `src/ops-dashboards.ts` | Dashboards and revisions: create, get, list/search, patch, revert, delete/restore, owner, caps |
-| `src/ops-proposals.ts` | Proposed changes: create, list, review against the current revision, edit, apply (whole or part), decline, expire |
+| `src/ops-proposals.ts` | Proposed changes: create, list, review against the current revision, edit, apply (whole or part), decline, expire; proposals that create a dashboard |
 | `src/ops-settings.ts` | Settings: general, retention, limits, pool, notifications |
 | `src/ops-audit.ts` | The audit log's two read routes |
 | `src/openapi.ts`, `openapi.json` | OpenAPI 3.1, written next to the handlers, generated to JSON, held equal to the route table by a test |
@@ -41,9 +41,16 @@ giving `identify` a second branch that returns `kind: 'user'`; no handler change
   ignored. The object refuses an identity whose tenant is not the one it is bound to, and
   re-checks the key on every call.
 - **Scopes**: `admin`, `dashboards:read`, `dashboards:write`, `dashboards:apply`, plus edge's
-  `write` and `read`. `admin` is accepted wherever any scope is. Keys, settings and the
-  audit log need `admin`. `dashboards:write` may propose and dry-run; `dashboards:apply` may
-  change dashboards and apply proposals.
+  `write` and `read`, and the ruler's `monitors:read`, `monitors:write`, `monitors:ack`
+  (`ruler/src/http.ts` `Scope`; mcp's `list_monitors` and `get_monitor` need
+  `monitors:read`). A key can be created with any of them; each service checks its own
+  literally, and here the others reach only `whoami`. `admin` is accepted wherever any of
+  this API's scopes is. Keys, settings and the audit log need `admin`. `dashboards:write`
+  may propose and dry-run; `dashboards:apply` may change dashboards and apply proposals.
+- **`GET /whoami`** answers for any scope: tenant, subject, kind, name, scopes, and
+  `mayApply`: whether this caller's direct dashboard writes take effect (false without
+  `dashboards:apply` or `admin`, and for an agent while `agentsMayApply` is false), so a
+  client such as mcp knows without a dry run.
 - **Kind.** A key is created as `key` or `agent`. Every mutation stores
   `{ subject, kind, name }`, so the UI can say "by an agent" or "by Dana". There is no
   `user` identity yet; in the tests "Dana" is a key named Dana.
@@ -150,6 +157,40 @@ revision, plus a message.
   agent's direct patch becomes a proposal, and its create, revert, delete and restore are
   refused with 403 `agents-may-not-apply`.
 
+**Proposals that create a dashboard** (`POST /proposals` with `{ spec, message }`). The same
+flow for a dashboard that does not exist yet, so an agent can put a new dashboard in front of
+a person for review instead of describing it in text.
+
+- **Proposing** needs `dashboards:write`. The spec is validated with the dashboard package's
+  `validate` (422 `invalid-dashboard`, each error with its pointer and suggestion, exactly as
+  `validate` reports it), and its id must be free: 409 `dashboard-exists` (live) or
+  `dashboard-deleted` (restorable). Size caps and the per-id cap of open proposals apply.
+  Nothing else is written: no dashboard, no revision. The proposal is `kind: "create"`,
+  `dashboard` = the id it would create, `baseRevision` "" and `baseNumber` 0, no `changes`;
+  the spec is in the full view, not in lists.
+- **Review** (`GET /proposals/{id}`) validates the stored spec again and checks the id
+  against the tenant as it is now: `exists`, `reasons`, the one-line summary, and the
+  revision it would become (number 1) with lint. `current` is null.
+- **Apply** is whole (no `changes`, no `baseRevision`; 422 otherwise) and needs the right
+  to create dashboards directly: `dashboards:apply` (or `admin`) and, for an agent,
+  `agentsMayApply`. So an agent key is refused with 403 `agents-may-not-apply` whatever its
+  scopes, its own proposal or another agent's, unlike a change, which an agent with the
+  apply scope may apply for another. The spec is validated again; the dashboard is created by
+  the same code as `POST /dashboards`, its revision 1 of kind `apply` with the proposal and
+  proposer recorded, and the person who applied it as creator. One audit entry,
+  `proposal.apply`, with `created: true`.
+- **Idempotent.** The same caller proposing the same spec (same `revisionOf`) while its
+  proposal is open gets that proposal back: 200 `outcome: "unchanged"`, nothing written,
+  no audit entry, whatever the message says. Another caller, or another spec, is another
+  proposal. Applying twice, or two applies at once, creates one dashboard and one revision;
+  the second is 409 `proposal-closed` with `appliedNumber`. Once one proposal for an id is
+  applied, another for the same id reviews as `exists: true` and is refused with 409
+  `dashboard-exists`.
+- **Edit** (`PUT /proposals/{id}` with `spec`) by the proposer or anyone who may apply:
+  validated, same id (422 otherwise); `ops`/`changes` are refused, as `spec` is for a change.
+  Decline and expiry are as for any proposal. Purging a deleted dashboard deletes its
+  proposals but keeps an open proposal to create one under that id.
+
 ### Settings
 
 `GET /settings`, `GET /settings/{section}`, `PUT /settings/{section}` with
@@ -182,6 +223,12 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 ### HTTP
 
 - JSON under `/api/v1/control/…`; `GET /api/v1/control/openapi.json` needs no credential.
+- **`GET /healthz`** (and `HEAD`), outside the API and without a credential, as viz-ingest
+  and viz-query serve it: what the gateway's `/healthz` calls through its service binding
+  (the gateway never forwards `/healthz`, so it is not public). 200 `ok` when the Worker runs
+  with its `TENANT` and `CONFIG` bindings; 503 naming a missing one; 405 for other methods. It
+  calls no Tenant object and no KV: without a credential there is no tenant to ask, and a
+  probe object would be storage of its own to migrate on every release.
 - Errors are problem details (`application/problem+json`) with `code` and `fix`.
 - Lists return `items` and `next`, an opaque cursor.
 - `ETag` on dashboard reads and writes; `If-Match: "<revision>"` instead of `baseRevision`.
@@ -206,7 +253,21 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 - **Storage.** The constructor opens SQLite with `openSchema(ctx.storage, TENANT_SCHEMA)`
   (`contracts/schema.ts`). Version 1 is the schema exactly as the code before versioning
-  created it, so such storage is adopted without a row changing. A newer release's storage
+  created it, so such storage is adopted without a row changing.
+  **Version 2** adds one nullable column, `proposals.spec`, for proposals that create a
+  dashboard (`readableFrom: 1`, additive: the previous release stays a valid rollback
+  target, and `schemaRelease` is `{ latest: 2, compat: 1 }`). A creation is a row with
+  `base_number` 0 and `spec` set; both conditions, because a release that does not know the
+  column may rewrite the row. What release 1 does with such a row, read from its handlers
+  (not run; see "Known risks"): lists it as a proposal with no changes; shows it with no
+  review; declines and expires it. While no dashboard has the id, apply and edit answer 404
+  (no such dashboard). Once one has, get and apply answer 404 (they look for revision 0),
+  and an edit by the proposer turns the row into an ordinary proposal with `base_number` ≥ 1,
+  which this release reads as one (tested by writing such a row). It never creates a
+  dashboard from it. Migration 2
+  needs the first versioned release to be the rollback floor (COMPATIBILITY.md §6); no
+  control from before versioning was ever deployed (the trial in `deploy/README.md` was
+  deleted, production has not been deployed), so that holds. A newer release's storage
   is served when its `compat` allows this code; otherwise the object **refuses**: every route
   answers 503 `schema-too-new` with `Retry-After: 30` (also through `identify`, so a valid key
   is never turned into a 401), `resolveKey` and `recordUsage` return the `schema_too_new`
@@ -237,11 +298,14 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 - **A caller of `recordUsage`.** The shard does not know which key a batch came from.
 - **A reader of `revocation:<tenant>`**, and of every `limits` and `retention` field except
   `active_series` and `metric_samples_days`.
-- **Proposals to create or delete a dashboard**; accepting the rest of a proposal after a
-  partial apply; extending a proposal's expiry.
+- **Proposals to delete a dashboard**; accepting the rest of a proposal after a partial
+  apply; extending a proposal's expiry; an owner on a proposal that creates a dashboard
+  (set it after applying, `PUT …/owner`).
 - **Pruning old revisions.** A dashboard at its revision cap has to be copied to a new id.
 - **Idempotency keys.** A retry after a lost response is refused (name taken, dashboard
-  exists, stale revision) rather than recognised as the same request.
+  exists, stale revision) rather than recognised as the same request. The exceptions are
+  proposals that create a dashboard (the same caller and spec get the open proposal back)
+  and applying any proposal twice (409 `proposal-closed` says `applied` and `appliedNumber`).
 - **Editing a key's name or scopes**; create a new key instead.
 - **Notifications** are stored only. **Rule definitions**, which DESIGN §3.1 lists under
   `Tenant`, are not here.
@@ -253,9 +317,9 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 74 tests in 12 files, in workerd
+npm test             # 92 tests in 14 files, in workerd
 npx tsc --noEmit     # clean
-npm run mutants      # 45 mutants, all killed (node scripts/mutants.mjs versioned: runs the 10 of versioning)
+npm run mutants      # 58 mutants (run it on a copy of the tree, not in place: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 

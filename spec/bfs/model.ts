@@ -39,7 +39,7 @@ export interface Cfg {
   delLogged: boolean // a removed file is deleted only once its removal is logged
   missingErr: boolean // a planned file that is missing / has other bytes is an error -> re-plan (else read as empty)
   keying: 'content' | 'inm' | 'overwrite' // (h) flush keys: content hash; deterministic + If-None-Match; deterministic + overwrite
-  sweep: 'off' | 'spec' | 'impl' | 'any' // orphan sweeper rule (see sweep())
+  sweep: 'off' | 'spec' | 'impl' | 'inputs' | 'any' // orphan sweeper rule (see the sweeper action)
   sweepIncLogged: boolean // with 'impl': "the ledger has a newer incarnation" counts only once that registration is logged
   reg: 'design' | 'logged' | 'impl' // stream registration: before writes (committed) / before writes (logged) + repeat / lazily by flush (as built)
   query: 'design' | 'impl' // ask only streams in the plan / also every pool shard, unregistered streams from 0 (coordinator.ts)
@@ -84,6 +84,7 @@ export interface FileRec {
   v: number
   key: number // interned object key
   name: string
+  ins: number[] // compaction output: its inputs (R2 metadata `viz-inputs`)
 }
 const fileKeys = new Map<string, number>()
 export const FILES: FileRec[] = []
@@ -98,12 +99,12 @@ function keyId(k: string): number {
   }
   return id
 }
-export function fileId(t: number, rows: number[], comp: boolean, v: number, key: string, name: string): number {
+export function fileId(t: number, rows: number[], comp: boolean, v: number, key: string, name: string, ins: number[] = []): number {
   const k = `${t}|${rows.join('.')}|${comp ? 1 : 0}|${v}|${key}`
   let id = fileKeys.get(k)
   if (id === undefined) {
     id = FILES.length
-    FILES.push({ t, rows, comp, v, key: keyId(key), name })
+    FILES.push({ t, rows, comp, v, key: keyId(key), name, ins })
     fileKeys.set(k, id)
   }
   return id
@@ -372,7 +373,7 @@ function flushFile(c: Cfg, t: number, rows: number[], v: number, sh: number, inc
 function compFile(c: Cfg, t: number, ins: number[], jobId: number): number {
   const rows = sortU(ins.flatMap((f) => FILES[f]!.rows))
   const key = `C${ins.join('.')}${c.compKey === 'unique' ? `@${jobId}` : ''}`
-  return fileId(t, rows, true, 1, key, `L1(${ins.map((f) => FILES[f]!.name).join('+')}${c.compKey === 'unique' ? ` step${jobId - 100}` : ''})`)
+  return fileId(t, rows, true, 1, key, `L1(${ins.map((f) => FILES[f]!.name).join('+')}${c.compKey === 'unique' ? ` step${jobId - 100}` : ''})`, ins)
 }
 
 function inFlightPlan(s: St, t: number, key: number): boolean {
@@ -797,6 +798,20 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       else if (c.sweep === 'spec') {
         // DESIGN §4.3: unreferenced AND its sequence range is below the stream's logged watermark
         ok = !F.comp && F.rows.every((r) => { const [sh, , inc, q] = ROWS[r]!; return L.wm[sh!]![0] === inc && q! <= L.lg[sh!]! })
+      } else if (c.sweep === 'inputs') {
+        // janitor.ts sweepOrphans (second version): not live, not tombstoned. A flush file is dead
+        // if its stream's logged watermark covers it, or the ledger's (committed) incarnation is
+        // newer AND has a logged watermark above 0; age still applies (uploader not in flight).
+        // A compaction output is dead if one of its inputs is neither live nor in R2; no clock.
+        if (L.tb.some((x) => FILES[x[0]!]!.key === k)) continue
+        if (F.comp) ok = F.ins.some((i) => !live(L, i) && !s.obj.some((o) => o[0] === FILES[i]!.key))
+        else {
+          if (up !== -1) continue
+          const [sh, , inc] = ROWS[F.rows[0]!]!
+          const hi = Math.max(...F.rows.map((r) => ROWS[r]![3]!))
+          const w = L.wm[sh!]!
+          ok = (w[0]! > inc! && L.lg[sh!]! > 0) || (w[0] === inc && L.lg[sh!]! >= hi)
+        }
       } else {
         // janitor.ts sweepOrphans: not live, not tombstoned; flush file dead by the LOGGED watermark
         // (or a newer incarnation); compaction output by age. Age is untimed here: the object's

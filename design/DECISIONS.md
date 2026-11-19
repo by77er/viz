@@ -468,3 +468,121 @@ with the same transactional guarantee; or deploys become strictly forward-only (
 rollbacks), when `readableFrom` would always equal `version`; or a component needs a
 migration too large for the constructor's 30 s, when backfills move to alarm-driven batches
 under the same version row.
+
+## D25. The MCP server uses the SDK v2 handler directly, not the `agents` wrapper
+
+**Decision.** `mcp/` serves MCP with `createMcpHandler` from `@modelcontextprotocol/server`
+2.4.0 (the TypeScript SDK's v2 line, implementing the 2026-07-28 revision), on a plain
+Worker. The Worker does its own routing, Origin check and authentication in front of it.
+
+**Alternatives.** (a) `createMcpHandler` from `agents` 0.33.0 (`agents/mcp/server`), which
+wraps the same SDK v2 handler and adds route matching, CORS, Origin/Host checks and an
+`AsyncLocalStorage` auth context. (b) `McpAgent` from `agents`, a Durable Object per session.
+(c) `@modelcontextprotocol/sdk` 1.x, the sessionful v1 line.
+
+**Why.** All three run in workerd (checked: `mcp/` `npm run spike:libs`). The wrapper (a)
+adds what this Worker already does itself, plus a dependency tree (`yaml`, `nanoid`,
+`capnweb`, `partysocket`, OpenTelemetry, …) and `nodejs_compat`. `McpAgent` (b) is marked
+deprecated and feature-frozen in its own types, and needs sessions this server does not
+keep (D26). The v1 SDK (c) is built around sessions; its client is still used in tests as
+the 2025-era client.
+
+**Would change if.** viz adopts `@cloudflare/workers-oauth-provider` and its integration turns
+out to need the wrapper (it wraps any `fetch` handler, so probably not), or the SDK v2 line
+stops supporting Workers without `nodejs_compat`.
+
+## D26. The MCP server is stateless: a server per request, no sessions
+
+**Decision.** Every HTTP request to `/mcp` builds a fresh server; nothing is kept between
+requests. Revision 2026-07-28 is served natively (per-request `_meta`, `server/discover`, no
+`initialize`); 2025-11-25, 2025-06-18 and 2025-03-26 clients are served through the SDK's
+stateless legacy path (`initialize` and `ping` answered, no session id). `GET` and `DELETE
+/mcp` are 405. Paging state travels in cursors bound to the tool and its arguments, with the
+time range and dashboard revision pinned.
+
+**Alternatives.** (a) Sessions held in a Durable Object per session (`McpAgent`). (b)
+Sessions in KV. (c) Sessionful only for the 2025 revisions.
+
+**Why.** The spec became stateless at 2026-07-28 (research 09 §2.1, 08 §5.4), and nothing
+the tools do needs server-side state: identity is checked against the control plane on
+every request, and a cursor carries what a next page needs. A Durable Object per session would
+put a stateful hop and a billable object on every agent call for no behaviour; KV cannot
+give a session read-your-writes. Costs: no server-initiated messages (`subscriptions`,
+progress, `logging/setLevel` are not offered), and every page re-runs its queries.
+
+**Would change if.** viz needs server-to-client notifications (subscriptions to a monitor or
+a dashboard), or measured re-query cost of paging dominates an agent's spend.
+
+## D27. The JSON agent API mirrors the MCP tools, one dispatcher for both
+
+**Decision.** `mcp/` also serves the same tools as plain JSON: `POST /api/v1/agent/tools/{name}`
+with the tool's arguments as the body, plus resources and prompts under `/api/v1/agent/…`.
+Both surfaces go through one dispatcher (scopes, argument schema, budget hook, counters), so
+a call returns the same text and structure on either; tool errors carry their HTTP status.
+
+**Alternatives.** (a) MCP only. (b) A REST design of its own (resources per noun, e.g.
+`GET /dashboards/{id}/digest`), with MCP tools calling it. (c) Agents use the control plane
+and the Prometheus API directly.
+
+**Why.** Agent hosts without MCP, scripts, the agentic monitors' Workflows (DESIGN §7) and
+tests need the same operations; one dispatcher means one place for scopes, cleaning of
+untrusted text and budgets, and a test asserts the two surfaces answer identically. A REST
+design of its own (b) would be a second contract to keep equal to the first. The underlying
+APIs (c) return raw data with tenant text unfenced and no token budget, which is what the
+tools exist to avoid.
+
+**Would change if.** The in-app assistant or the UI needs operations that are not tools (then
+they belong in the control plane or query APIs), or a tool's arguments stop being
+expressible as one JSON object.
+
+## D28. Per-identity agent budgets are returned counters, not server-side counters
+
+**Decision.** Every agent tool result carries `usage` (queries, series, points, upstream calls,
+milliseconds); the caller (an agent host, AI Gateway, or an agentic monitor's Workflow with
+per-run and per-day budgets, research 08 §6.4) sums them and stops. Each single call is
+bounded by the server's limits, and the query service enforces the tenant's own. A
+`BudgetHook { admit, record }` in `mcp/src/session.ts` is the seam for a server-side cap.
+
+**Alternatives.** (a) Counters in KV per identity. (b) Counters in a Durable Object per
+identity or tenant.
+
+**Why.** KV has no atomic increment, allows about one write per second per key and propagates
+in tens of seconds, so a per-call counter under-counts concurrent calls by design while
+costing a write per call: it would look like enforcement without being it. A Durable Object
+(b) is exact but puts a stateful hop on every call of a surface that is otherwise stateless
+(D26).
+
+**Would change if.** Agents that do not budget themselves become common enough that a tenant
+needs a hard server-side cap; then (b), behind the existing hook.
+
+## D29. Agents propose and a person applies, including new dashboards
+
+**Decision.** An agent identity's dashboard writes are proposals: named changes to an existing
+dashboard, or a whole new dashboard (`POST /api/v1/control/proposals`), reviewed and applied by
+a person in the control plane. `write_dashboard` mode `apply` is refused for an agent (403
+with an offer to propose) rather than silently turned into a proposal; whether a caller may
+apply comes from the control plane's `whoami` (`mayApply`). The agent surface has no apply,
+approve, revert or delete tool, and it does not honour `admin`: agent keys get explicit
+scopes. A tenant can let agents apply (`agentsMayApply`); applying a proposal that creates a
+dashboard then follows the same rule as a direct create.
+
+**Alternatives.** (a) The control plane turns an agent's apply into a proposal and says so
+(its behaviour for `PATCH`), with the agent surface passing that through. (b) New dashboards
+are not proposable: an agent can only describe one in text. (c) A creation proposal stored
+apart from proposals (its own table), or as a JSON Patch replacing the document root.
+(d) `admin` honoured on the agent surface as it is in the control plane.
+
+**Why.** D8: agents are advisory; a person decides what changes. A silent proposal (a) leaves
+an agent believing it applied something. Without creation proposals (b) the commonest agent
+task, "build a dashboard for X", ends in text a person must paste. A creation is a row of
+the same proposals table with an additive nullable `spec` column (control schema version 2),
+so review, expiry, decline, listing and caps are shared, and the previous release stays a
+valid rollback target; a separate table (c) duplicates all of that, and a root-replacing
+patch hides a creation in the shape of a change, which every path that handles changes
+(rebase check, partial apply, edit) would then have to recognise anyway.
+`admin` is total in the control plane (keys, settings, `agentsMayApply`), so honouring it
+here (d) would let an agent key escape every agent rule.
+
+**Would change if.** People routinely approve agent changes without reading them (then the
+review is theatre and the rule should be revisited with data), or `user` identities with
+roles arrive and replace keys for people.

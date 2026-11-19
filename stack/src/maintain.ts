@@ -116,7 +116,11 @@ export async function readMarker(env: Pick<MaintEnv, 'CONFIG'>, tenant: string):
 }
 
 /** One attempt (the best-effort writes: their facts also travel in a message). */
-const writeMarker = (env: MaintEnv, tenant: string, m: MaintMarker): Promise<void> => env.CONFIG.put(maintMarkerKey(tenant), '1', { metadata: { ...m, v: MAINT_MARKER_VERSION } })
+const writeMarker = (env: MaintEnv, tenant: string, m: MaintMarker): Promise<void> =>
+  env.CONFIG.put(maintMarkerKey(tenant), '1', {
+    // Exactly these fields, in this order (the golden file pins it); KV metadata holds 1,024 bytes.
+    metadata: { v: MAINT_MARKER_VERSION, due: m.due, orphansAt: m.orphansAt, sweep: m.sweep, ...(m.retention !== undefined ? { retention: m.retention } : {}) },
+  })
 
 /**
  * KV takes one write per second per key and refuses more with 429 ("Writes to same key: 1 per

@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz · Charts</title><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../dist/fonts/SchibstedGrotesk-Variable.woff2"><link rel="stylesheet" href="../../../dist/viz.css"><style>body{margin:0}</style></head><body class="vz"><a class="vz-button vz-skip" href="#main">Skip to content</a><nav class="vz-nav" aria-label="Sections"><span class="vz-nav-name">viz</span><a href="#" aria-current="page">Explore</a><a href="#">Dashboards</a><a href="#">Monitors</a><a href="#">Traces</a><a href="#">Logs</a><a href="#" class="vz-nav-end">acme-prod</a><a href="#">Settings</a></nav>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz · Charts</title><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../dist/fonts/SchibstedGrotesk-Variable.woff2"><link rel="stylesheet" href="../../../dist/viz.css"><style>html{background:var(--ground)}body{margin:0}</style></head><body class="vz"><a class="vz-button vz-skip" href="#main">Skip to content</a><nav class="vz-nav" aria-label="Sections"><span class="vz-nav-name">viz</span><a href="#" aria-current="page">Explore</a><a href="#">Dashboards</a><a href="#">Monitors</a><a href="#">Traces</a><a href="#">Logs</a><a href="#" class="vz-nav-end">acme-prod</a><a href="#">Settings</a></nav>
 <main class="vz-page" id="main">
   <header class="vz-page-head"><div><h1 class="vz-page-title">checkout-api</h1><p class="vz-page-sub">The same charts after a filter was applied and cleared, after a new pod appeared, and in many-series cases.</p></div></header>
   <div class="vz-dashboard"><div class="vz-grid">
@@ -17,7 +17,7 @@
   </div></div>
 </main>
 <script src="../../../dist/viz-chart.js"></script>
-<script>(function () {
+<script>vzChartInit(); (function () {
   const top3 = (spec) => new Set(spec.series.map((s) => [Object.keys(s.labels).sort().map((k) => k + '=' + s.labels[k]).join(','), Math.max(...s.values)]).sort((a, b) => b[1] - a[1]).slice(0, 3).map((x) => x[0]))
   const trip = document.getElementById('trip'), t3 = top3(vzChartDemos.s36()); trip.vz.setFilter((s) => !t3.has(s.key)); trip.vz.setFilter(null)
   const np = document.getElementById('newpod'), spec = vzChartDemos.s36(); let v = 3.1; const vals = Array.from({ length: 61 }, (_, i) => (v += Math.sin(i / 5) * 0.06, +v.toFixed(3)))

@@ -3,6 +3,8 @@ import { env } from 'cloudflare:workers'
 import type { Ledger } from '../../ledger/src/ledger'
 import type { Shard } from '../../shard/src/shard'
 import { type Row, bitsOf, encodeBatch } from '../../engine/wasm/test/vzb1'
+import type { Engine } from '../../contracts/engine'
+import { type FlushEnv, type FlushOptions, type FlushResult, flushTenant } from '../src/flush'
 import { engine } from '../src/index'
 import { readTenant } from './read'
 
@@ -93,6 +95,34 @@ export function someSamples(tenant: string, t: number, count: number, seed = 0):
 }
 
 export const read = (tenant: string, shards: string[], opts: Parameters<typeof readTenant>[4] = {}) => readTenant(env, engine, tenant, shards, opts)
+
+/**
+ * Flush until the ledger's LOGGED watermark has caught up (`awaitingLog: false`), the way
+ * production gets there: the ledger drains its log in the background (contracts/LEDGER-LOG.md),
+ * the consumer retries `awaiting_log`, and the next run tells the shard `recorded`. Here the
+ * drain is run at once (`drain()`, what the ledger's alarm does) and the flush repeated. With a
+ * ledger that logs before it answers this is one plain run. The result is the last run's,
+ * with every segment as the run that FIRST handled it saw it (what was written and admitted).
+ */
+export async function flushSettled(
+  e: FlushEnv,
+  eng: Engine,
+  tenant: string,
+  shardName: string,
+  opts: FlushOptions = {},
+): Promise<FlushResult> {
+  const first = await flushTenant(e, eng, tenant, shardName, opts)
+  let last = first
+  const seen = new Map(first.segments.map((g) => [g.seqLo, g]))
+  let changed = first.changed
+  for (let i = 0; i < 5 && last.status === 'ok' && last.awaitingLog; i++) {
+    await e.LEDGER.get(e.LEDGER.idFromName(tenant)).drain()
+    last = await flushTenant(e, eng, tenant, shardName, opts)
+    changed ||= last.changed
+    for (const g of last.segments) if (!seen.has(g.seqLo)) seen.set(g.seqLo, g)
+  }
+  return { ...last, changed, segments: [...seen.values()].sort((a, b) => a.seqLo - b.seqLo) }
+}
 
 /** Make the ledger's R2 writes fail (its change log cannot be written). Lasts until `heal` or eviction. */
 export const breakLedgerLog = (l: DurableObjectStub<Ledger>) =>

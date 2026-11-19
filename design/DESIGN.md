@@ -392,11 +392,16 @@ result, limited per tenant, and exposed to agents through `validate_query`.
   form, generated from the same spec and data. Agents read digests (value, range, trend,
   outliers, threshold state per panel) instead of raw series or screenshots; the digest is
   also the accessible view.
-- **Agent tools.** A stateless MCP endpoint with OAuth scopes and about a dozen tools:
-  search telemetry, describe a metric, validate a query, run a query, search / get / read /
-  write dashboards, list revisions, annotate. Results are compact text within a token
-  budget. The REST API and the in-app assistant call the same operations. Rendering a live
-  panel inside an agent host (MCP Apps) comes after launch.
+- **Agent tools.** A stateless MCP endpoint (its own Worker, `mcp/`; D25, D26) with
+  scoped, tenant-bound credentials: API keys today, with OAuth a seam not yet built.
+  Thirteen tools: search telemetry, describe a metric, validate a query, run a query,
+  search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
+  list and get monitors, annotate (refused until an annotation store exists). Results are
+  compact text within a token budget, with tenant text fenced as data, and the same page as
+  structured content. A JSON API (`/api/v1/agent/…`) serves the same tools through the same
+  dispatcher (D27); the in-app assistant, not built yet, is to call them too. Writes by agents are dry runs and proposals, for a new dashboard or a
+  change to one; a person applies them (D29). Rendering a live panel inside an agent host
+  (MCP Apps) comes after launch.
 - **Compatibility.** The Prometheus and Tempo HTTP APIs are served, so Grafana and existing
   tooling work against viz from day one.
 - **Stack.** React 19 single-page app on Workers static assets; Hono; TanStack Router and

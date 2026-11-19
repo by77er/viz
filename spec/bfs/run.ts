@@ -46,19 +46,30 @@ export const DESIGN: Cfg = {
 }
 
 /**
- * As built: shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, query coordinator.ts. ledger.ts
- * switched from one R2 object per change to the segment log (with the F10 and F11 fixes, and
- * tombstones in the base) while this work ran; IMPL follows the newer code.
+ * As built when this work started (2026-11-18 evening): shard.ts, flush.ts, query coordinator.ts,
+ * compact.ts deleting its outputs on conflict, janitor.ts sweeping compaction outputs by age and
+ * old incarnations by the committed incarnation. The ledger is the segment log (with the F10 and
+ * F11 fixes, tombstones in the base) that replaced one object per change during this work.
+ * F13, F14 and F15 are against this version.
  */
-export const IMPL: Cfg = {
+export const IMPL_V1: Cfg = {
   ...AMENDED,
   reg: 'impl', query: 'impl', unknownStream: 'empty', readBound: false, log: 'segments', drainRetrySame: true, baseFirst: true,
   baseTombstones: true, sweepIncLogged: false,
   sweep: 'impl', compKey: 'inputs', compConflictDelete: true, noRetryAcrossLoss: false,
 }
 
+/**
+ * As built now: IMPL_V1 with the F13/F14/F15 fix of compact/ and janitor/ (2026-11-19): output
+ * keys unchanged (hash of inputs + bytes), outputs carry their inputs as R2 metadata, a step
+ * never deletes its outputs, the sweeper deletes an unreferenced output only when one of its
+ * inputs is neither live nor in R2, and a newer incarnation makes old flush files dead only once
+ * its logged watermark is above 0.
+ */
+export const IMPL: Cfg = { ...IMPL_V1, sweep: 'inputs', compConflictDelete: false }
+
 /** As built, with the segment log as LEDGER-LOG.md stated it at the start of this work (before F10 and F11 were fixed). */
-export const IMPL_PLANNED: Cfg = { ...IMPL, log: 'segments', drainRetrySame: false, baseFirst: false, baseTombstones: false }
+export const IMPL_PLANNED: Cfg = { ...IMPL_V1, log: 'segments', drainRetrySame: false, baseFirst: false, baseTombstones: false }
 
 const ALLSAFE = SAFETY
 
@@ -129,18 +140,22 @@ const IMPL_PEEL: [string, Partial<Cfg>][] = [
   ['IMPL_1_as_built', {}],
   ['IMPL_2_fix_F6', { unknownStream: 'refuse', reg: 'logged' }],
   ['IMPL_3_assume_F3', { unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true }],
-  ['IMPL_4_fix_F15', { unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true, sweepIncLogged: true }],
-  ['IMPL_5_fix_F13_F14', { unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true, sweepIncLogged: true, compKey: 'unique' }],
 ]
 for (const [name, over] of IMPL_PEEL) {
   E.push({ name, kind: 'finding', label: `as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts)${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ''}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
-    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_4_fix_F15' || name === 'IMPL_5_fix_F13_F14' ? 'holds' : 'violated', maxStates: 6_000_000 })
+    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_1_as_built' ? 'violated' : 'holds', maxStates: 6_000_000 })
 }
 finding('F6_impl_unknown_stream', 'F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss)', { ...IMPL, maxSL: 1, noRetryAcrossLoss: true }, ['I4_NoGapAtSeam'])
 finding('F12_impl_read_unbound', 'F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)', { ...IMPL, maxSL: 1, unknownStream: 'refuse', noRetryAcrossLoss: true }, ['I3_NoDuplicates'])
-finding('F13_impl_comp_adopts_old_output', 'F13: compaction adopts an earlier step\'s output ("exists"); the sweeper judges it by the earlier upload', { ...IMPL, maxComp: 1 }, ['I11_LiveFilesReadable'])
-finding('F14_impl_comp_conflict_delete', 'F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild', { ...IMPL, sweep: 'off', maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
-finding('F15_sweeper_trusts_unlogged_registration', 'F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild', { ...AMENDED, sweepIncLogged: false, maxSL: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
+finding('F13_impl_comp_adopts_old_output', 'F13: compaction adopts an earlier step\'s output ("exists"); the sweeper judges it by the earlier upload', { ...IMPL_V1, maxComp: 1 }, ['I11_LiveFilesReadable'])
+finding('F14_impl_comp_conflict_delete', 'F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild', { ...IMPL_V1, sweep: 'off', maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
+// the fixed compact/ + janitor/ (IMPL), same bounds as the findings, with the sweeper ON
+E.push({ name: 'F13_check_fixed', kind: 'finding', label: 'F13 bounds against the fixed compact/janitor (inputs rule): expect no counterexample', cfg: { ...IMPL, maxComp: 1 }, props: ['I1_AckedIsDurable', 'I11_LiveFilesReadable'], expect: 'holds' })
+E.push({ name: 'F14_check_fixed', kind: 'finding', label: 'F14 bounds against the fixed compact/janitor, sweeper on: expect no counterexample', cfg: { ...IMPL, maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, props: ['I1_AckedIsDurable', 'I11_LiveFilesReadable'], expect: 'holds' })
+E.push({ name: 'F15_check_fixed', kind: 'finding', label: 'F15 bounds against the fixed janitor (newer incarnation counts once its logged watermark > 0): expect no counterexample', cfg: { ...AMENDED, sweep: 'inputs', maxSL: 1, maxLL: 1 }, props: ['I1_AckedIsDurable', 'I11_LiveFilesReadable'], expect: 'holds' })
+E.push({ name: 'F15_check_fixed_impl', kind: 'finding', label: 'F15 bounds against the code as built now (lazy registration, inputs rule)', cfg: { ...IMPL, maxSL: 1, maxLL: 1, unknownStream: 'refuse', reg: 'logged' }, props: ['I1_AckedIsDurable', 'I11_LiveFilesReadable'], expect: 'holds' })
+finding('F15_sweeper_trusts_unlogged_registration', 'F15: janitor.ts (first version) calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild', { ...AMENDED, sweepIncLogged: false, maxSL: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
+E.push({ name: 'IMPL_ledger_2LL', kind: 'finding', label: 'as built now + F6 fix (F3 assumed), 2 ledger storage losses + compaction: the segment log as built (base first) against incarnation reuse and every other property', cfg: { ...IMPL, unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true, maxLL: 2, maxComp: 1, maxSL: 0, maxExp: 0 }, props: ALLSAFE, expect: 'holds', maxStates: 6_000_000 })
 finding('IMPL_PLANNED_fixed', 'As built with the fixes above (F6, F12, F13/F14, F15, F3 assumed), but the segment log as LEDGER-LOG.md stated it at the start of this work; ledger loss, compaction', { ...IMPL_PLANNED, unknownStream: 'refuse', noRetryAcrossLoss: true, readBound: true, compKey: 'unique', sweepIncLogged: true, maxLL: 1, maxComp: 1 }, ALLSAFE)
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation
@@ -148,6 +163,7 @@ const amended = (name: string, label: string, over: Partial<Cfg>, maxStates?: nu
   E.push({ name, kind: 'amended', label, cfg: { ...AMENDED, ...over }, props: ALLSAFE, expect: 'holds', maxStates })
 amended('A_retries_faults', 'client retries + two flush Workers, ledger loss + shard loss', { maxLL: 1, maxSL: 1 }, 4_000_000)
 amended('A_maintenance_faults', 'compaction (2 steps at once) + retention + ledger loss + shard loss, no client retry', { maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1 }, 4_000_000)
+amended('A_maintenance_impl_compaction', 'as A_maintenance_faults, with compaction and sweeper as built now (keys = hash of inputs + bytes, no delete on conflict, inputs rule)', { maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1, sweep: 'inputs', compKey: 'inputs', compConflictDelete: false }, 4_000_000)
 amended('A_3batches', '3 batches, ledger loss + shard loss, no client retry', { nb: 3, maxSend: 1, maxLL: 1, maxSL: 1 }, 4_000_000)
 amended('A_2shards', '2 shards, ledger loss + shard loss + compaction, no client retry', { ns: 2, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1 }, 4_000_000)
 amended('A_2tenants', '2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss, no client retry', { nt: 2, nb: 2, maxSend: 1, maxLL: 1, maxSL: 1, sameContent: true }, 4_000_000)

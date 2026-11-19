@@ -52,6 +52,30 @@
    ]
   },
   {
+   "name": "monitor-silence-menu-1440",
+   "url": "reviews/system-v5/compositions/monitor.html",
+   "scale": 1,
+   "height": 900,
+   "steps": [
+    {
+     "eval": "document.getElementById('silence-menu').setAttribute('data-open',''); document.querySelector('[aria-haspopup=menu]').setAttribute('aria-expanded','true')"
+    }
+   ]
+  },
+  {
+   "name": "monitor-silence-menu-400",
+   "url": "reviews/system-v5/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "height": 800,
+   "steps": [
+    {
+     "eval": "document.getElementById('silence-menu').setAttribute('data-open',''); document.querySelector('[aria-haspopup=menu]').setAttribute('aria-expanded','true')"
+    }
+   ]
+  },
+  {
    "name": "monitor-zoom-200",
    "url": "reviews/system-v5/compositions/monitor.html",
    "zoom": 2,

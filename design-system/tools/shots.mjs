@@ -39,7 +39,8 @@ function measurePage(coarse) {
   const owner = (x, y) => { const e = document.elementFromPoint(x, y); return e && e.closest(sel) }
   const name = (el) => (el.getAttribute('aria-label') || el.textContent || el.value || el.tagName).trim().replace(/\s+/g, ' ').slice(0, 40)
   for (const el of document.querySelectorAll(sel)) {
-    if (el.disabled || el.closest('[aria-busy="true"]')) continue
+    if (el.disabled || el.closest('[aria-busy="true"]') || getComputedStyle(el).visibility !== 'visible') continue
+    const modal = document.querySelector('dialog:modal, .vz-scrim'); if (modal && !modal.contains(el)) continue // behind a dialog the page is inert
     if (el.matches('input[type="checkbox"]') && el.closest('label')) continue // measured as its label
     const r = el.getBoundingClientRect(); if (r.width <= 1 || r.height <= 1 || r.bottom < 0 || r.top > innerHeight) continue // a visually hidden control (skip link at rest)
     // a link inside a sentence is text and exempt from 44px; it is measured and listed, because the main path must never be one
@@ -50,7 +51,8 @@ function measurePage(coarse) {
     const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2)), cy = r.top + r.height / 2, at = owner(cx, cy)
     if (at !== el) { out.covered.push({ name: name(el), by: at ? name(at) : 'nothing it owns' }); continue } // covered at its centre: the worst overlap, reported
     // its drawn box, sampled: a neighbour's hit area reaching into it takes those taps
-    for (const fx of [0.1, 0.5, 0.9]) for (const fy of [0.15, 0.5, 0.85]) { const o = owner(r.left + r.width * fx, r.top + r.height * fy); if (o && o !== el && !el.contains(o) && !o.contains(el)) { out.overlaps.push({ name: name(el), by: name(o) }); break } }
+    const top0 = el.matches('.vz-plot') ? r.top + (parseFloat(getComputedStyle(el).getPropertyValue('--strip')) || 0) : r.top, h0 = r.bottom - top0 // a plot's data area starts under its strip of words
+    for (const fx of [0.1, 0.5, 0.9]) for (const fy of [0.15, 0.5, 0.85]) { const o = owner(r.left + r.width * fx, top0 + h0 * fy); if (o && o !== el && !el.contains(o) && !o.contains(el)) { out.overlaps.push({ name: name(el), by: name(o) }); break } }
     let top = cy, bottom = cy, left = cx, right = cx
     const q = 0.25 // quarter-pixel steps, so an area of exactly 44px is not reported as 43
     while (top > cy - 60 && owner(cx, top - q) === el) top -= q
