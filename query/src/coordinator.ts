@@ -118,12 +118,17 @@ export interface Cost {
    * and time). Empty when nothing was split.
    */
   seriesReads: string
+  /** Traces and logs: rows of the row groups the index fragments say a query reads (checked against `maxSpans` / `maxLogRows` before any fetch). */
+  scanRows: number
+  /** Traces and logs: spans or log rows the engine decoded (files and tail, before de-duplication). */
+  rowsDecoded: number
 }
 
 export const newCost = (): Cost => ({
   ledgerVersion: 0, planAttempts: 0, filesListed: 0, filesSkipped: 0, filesRead: 0, scanSamples: 0, seriesEstimate: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, leafCalls: 0,
   leavesUsed: 0, leafRounds: 0, shardsAsked: 0, shardCalls: 0, tailBatches: 0, tailBytes: 0, seriesLoaded: 0, samplesLoaded: 0, engineMs: 0, wasmMemoryBytes: 0,
   execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0, pruning: '', tailMode: '', seriesReads: '',
+  scanRows: 0, rowsDecoded: 0,
 })
 
 /** The plan-only answer's fields that come from what was recorded so far. */
@@ -163,6 +168,8 @@ export const hooks: {
   tailCap?: number
   /** Readers read the series files by name and time, as before ABI 5 (the measurement's same-run comparison). */
   seriesByName?: boolean
+  /** Traces and logs: false reads every file the ledger lists, whole, and every span hour (to show pruning changes no answer). */
+  signalPruning?: boolean
 } = {}
 
 export interface Context {
