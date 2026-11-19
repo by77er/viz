@@ -144,10 +144,12 @@ export function planSecrets(now, rotate, steps) {
  * Makes sure `versionId` of `worker` carries every secret in `specs`, creating (or, when asked,
  * replacing) them with `wrangler versions secret put`. Returns the version to promote (a new one
  * when anything was put) and what was done, by name. Throws SecretRefused when generating would
- * replace a secret nobody asked to replace, or when the newest version is not `versionId`.
- * `api`: { wrangler, versionInfo, listVersions }.
+ * replace a secret nobody asked to replace, when the newest version is not `versionId` or does not
+ * carry this run's `run` (VIZ_DEPLOY_RUN), or when the keyed version was built on a version of
+ * another run (m-11: that run uploaded between the check and the put). `api`: { wrangler,
+ * versionInfo, listVersions }.
  */
-export async function ensureSecrets({ worker, versionId, specs, now, rotate, release, tag, message, api, log = () => {} }) {
+export async function ensureSecrets({ worker, versionId, specs, now, rotate, release, run, tag, message, api, log = () => {} }) {
   let current = versionId
   const info = await api.versionInfo(worker, current)
   if (!info) throw new Error(`${worker}: version ${current} was not found, so its secrets cannot be checked`)
@@ -167,12 +169,17 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
       )
     } else toPut.push({ spec, action: 'created' })
   }
+  if (!run) throw new Error(`${worker}: no run id to check the keyed version against`)
   for (const { spec, action } of toPut) {
-    // `versions secret put` patches the NEWEST version. It must be this release's, or the keyed
-    // version could carry code nobody reviewed for this release.
+    // `versions secret put` patches the NEWEST version. It must be this run's upload, or the keyed
+    // version could carry code nobody reviewed for this release, or another run's version.
     const newest = (await api.listVersions(worker))[0]?.id ?? null
     if (newest !== current) {
       throw new SecretRefused(`${worker}: the newest version is ${newest ?? '(none)'}, not ${current} which this release made; putting ${spec.name} would build on that one, so nothing is put and nothing is promoted. Is another deploy running?`)
+    }
+    const base = current === versionId ? info : await api.versionInfo(worker, current)
+    if (plainVar(base, RUN_VAR) !== run) {
+      throw new SecretRefused(`${worker}: version ${current} carries ${RUN_VAR} ${plainVar(base, RUN_VAR) ?? '(none)'}, not this run's ${run}; nothing is put on it and nothing is promoted (was it uploaded without --var ${RUN_VAR}?)`)
     }
     let value = generateSecretValue(spec.bytes)
     let out
@@ -190,6 +197,15 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
     const made = await api.versionInfo(worker, m[1])
     if (!secretNamesOf(made).includes(spec.name)) throw new Error(`${worker}: version ${m[1]} does not list ${spec.name} after it was put; nothing was promoted`)
     if (plainVar(made, 'VIZ_RELEASE') !== release) throw new Error(`${worker}: version ${m[1]} carries VIZ_RELEASE ${plainVar(made, 'VIZ_RELEASE')}, not ${release}; it is not this release's, so nothing is promoted`)
+    // The put patched whatever version was newest when Cloudflare applied it; its vars are that
+    // version's. Another run of the same release that uploaded after the check above has the same
+    // VIZ_RELEASE but not this run's VIZ_DEPLOY_RUN (review of D53, m-11).
+    if (plainVar(made, RUN_VAR) !== run) {
+      throw new SecretRefused(
+        `${worker}: ${spec.name} went on version ${m[1]}, built on an upload of another run (${RUN_VAR} ${plainVar(made, RUN_VAR) ?? '(none)'}, this run is ${run}): another deploy uploaded between the check and the put. ` +
+          `Nothing is promoted. That version serves nothing; the other run refuses it too (its upload is no longer the newest). Run the deploy again once the other has finished.`,
+      )
+    }
     log(`  ${worker}: secret ${spec.name} ${action} on new version ${m[1]} (from ${current})`)
     actions.push({ worker, name: spec.name, action, versionId: m[1], from: current })
     current = m[1]
