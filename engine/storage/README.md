@@ -8,10 +8,12 @@ it is given, so it runs unchanged in WASM, natively and in a deterministic simul
 Builds for the host and for `wasm32-unknown-unknown`.
 
 ```
-CARGO_TARGET_DIR=$PWD/target cargo test                                    # 41 tests
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2           # 49 tests
 CARGO_TARGET_DIR=$PWD/target cargo build --release --target wasm32-unknown-unknown
 node tools/hyparquet_check.mjs      # independent reader (after cargo test --test export)
-python3 tools/mutants.py            # mutation check
+cargo run --release --example independent -- DIR && python3 tools/independent_check.py DIR   # PyArrow and DuckDB
+cargo run --release --example layout -- 10000 100000                       # the layout experiment (DECISIONS D41)
+python3 tools/mutants.py [pruning]  # mutation check, on a scratch copy (never edits this tree)
 ```
 
 ## What is implemented
@@ -25,7 +27,10 @@ python3 tools/mutants.py            # mutation check
 | `select(input, matchers, min_ts, max_ts)` | Resolves `=`, `!=`, `=~`, `!~` against series from the `metric_series` files and the tail batches' series tables, reads matching samples from the `metric_samples` files and the tail, and returns one time-ordered, de-duplicated stream per series, sorted by label set. Tail beats lake; later file / later batch beats earlier. Row groups are pruned by statistics. |
 | `merge_files(table, inputs)` | Compaction of one tenant-day. Samples: streaming k-way merge (binary heap, one row group per input in memory). Series: union with `min_ts`/`max_ts` combined. Later inputs win. Rejects unsorted inputs and inputs spanning two days. |
 | `merge_files_shared(table, &[Bytes], opts)` | The same merge over inputs the caller already holds as `Bytes`: no copy of the inputs, and the output buffer is pre-sized to the inputs' total so it does not double. Added for the WASM binding, where the copies were most of the memory (`engine/wasm/README.md`). |
-| `*_with` variants | Same functions with `WriteOptions { max_row_group_rows }` or `SelectOptions { prune_row_groups }`, used by tests and available to callers. |
+| `*_with` variants | Same functions with `WriteOptions { max_row_group_rows, page_rows, column_index }` or `SelectOptions { prune_row_groups }`, used by tests and the layout experiment. The defaults are the contract's layout. |
+| `RowGroupIndex::may_hold(name, sids)`, `::overlaps` | **Series-level pruning** (2026-11-19): whether a row group can hold a row of metric `name` with a `series_id` in `sids` (sorted inclusive intervals), exact for the sort order from the fragment's `sid` (first and last row's id) and name range; whether it overlaps a time range. |
+| `FileIndex::byte_ranges(groups, gap)` | The byte ranges a reader fetches for those row groups: theirs and the footer region (`foot`), joined when less than `gap` apart; `None` for a fragment without `foot` (read the whole file). |
+| `sparse::Source`, `sparse::encode`, `sparse::cut`, `sparse::reader` | **Reading part of a file**: a file held as the byte ranges a reader fetched, in a container (`VZS1`, `src/sparse.rs`) that every reader here accepts in place of a whole file. A row group whose `series_id` chunk is not held is skipped (the caller left it out); any other byte a read needs and does not have fails the read. Files open with their offset index, so a page a read does not need is passed over without being read. |
 
 Design choices worth knowing:
 
@@ -57,6 +62,14 @@ Design choices worth knowing:
   in precedence order and stably sorted only if they are not already increasing.
   `merge_files` does rely on its inputs being sorted, so it checks and returns
   `Error::Unsorted`.
+- **Series-level pruning (2026-11-19, `contracts/TABLES.md` "The index fragment",
+  DECISIONS D41).** The layout is unchanged: the same batches give byte-identical Parquet
+  (tested against files the 2026-11-18 writer wrote, `tests/golden/v1-2026-11-18`). The
+  index fragment gains `"sid":[first,last]` per row group and `"foot":[offset,length]` per
+  file. `select` decodes a row group's `series_id`, finds the runs of rows of the series it
+  selected, and reads `ts` and `value` only for those runs (`pq::read_runs`): a page holding
+  none of them is skipped by its offset-index location; with pruning off every row is read
+  (the equivalence is tested). Measured layouts are in `examples/layout.rs` and D41.
 - **Deterministic output.** Same input, same bytes, natively and in WASM (checked: the
   WASM build produced byte-for-byte the same total size, and a merge of several flushes
   is byte-identical to one flush of the same batches).
@@ -68,18 +81,43 @@ Design choices worth knowing:
 - The WASM/JS binding lives in `engine/wasm` (a separate crate, with its own README).
   `wasm-probe/` here is only the earlier size probe and smoke test.
 - zstd (the contract says snappy for now).
-- Page-level pruning. Statistics are per row group; no column index is written and the
-  index fragment has no page locations (DESIGN §5.2 mentions them).
-- Reading by byte range from the index fragment. `select` takes whole files and prunes
-  with the footer statistics; the fragment is for the planner.
+- Fetching pages. Pages a read does not need are skipped in memory (by the offset index),
+  but a caller fetches whole row groups: a page fetch needs the footer first (a second round
+  trip) and three ranges a row group, for bytes below 1 MB anyway (D41). No column index is
+  written.
+- A sort key that clusters a label (`namespace=…`) before `series_id`: a selection spread over
+  the id space needs every row group (D19, D41).
 - Promoted label columns, rollup tables, native histograms.
 - Zero-copy file input: each Parquet file is copied once into a `bytes::Bytes` because
   the `parquet` reader needs an owned buffer.
 
 ## How it was verified
 
-`cargo test`: **41 tests, all passing** (batch 11, contract_v2 6, encode 11, select 8,
-merge 4, export 1). Seven are property tests (proptest), 200 to 600 cases each.
+`cargo test`: **49 tests, all passing** (batch 11, contract_v2 6, encode 11, select 8,
+merge 4, export 1, pruning 8), run on 2026-11-19 with `-j 2` and two test threads at a load
+average of 7 to 13. Eight are property tests (proptest), 200 to 600 cases each.
+
+- **Series-level pruning** (`tests/pruning.rs`, new):
+  - `reading_part_of_a_file_changes_nothing` (property, 300 cases; I14 and I17): the lake of
+    `select_is_location_invariant` (segments cut anywhere, row groups of 1 to 6 rows, **pages
+    of 1 to 4 rows**, optional compaction, a tail that may overlap) read four ways, each equal
+    to the reference: whole files with pruning on and off; sparse files holding only the
+    footer and the row groups `may_hold` keeps for the selected series (gaps 0, 40 and 64 KiB),
+    series files cut the same way; and sample files narrowed further to the pages of `ts` and
+    `value` that hold a selected row (from the offset index), which `select` can only read if
+    it never touches the others.
+  - `the_parquet_bytes_are_those_the_previous_writer_wrote`: flush and merge outputs of the
+    golden batches are byte-identical to the files the 2026-11-18 writer wrote
+    (`tests/golden/v1-2026-11-18`, written by `examples/golden_v1.rs` in a copy of that tree),
+    and their fragments equal the old ones once `sid` and `foot` are removed.
+  - `files_and_fragments_of_the_previous_writer_read_as_before`: old fragments parse with no
+    `sid` or `foot` (name range only; `byte_ranges` says "whole file"); old files read back to
+    the reference through flush files and the merged pair; an old file and a new one merge into
+    a file with the new fragment.
+  - `the_fragment_carries_series_bounds_and_where_the_footer_is` (against the record API),
+    `may_hold_follows_the_sort_order_exactly`, `byte_ranges_join_close_ranges_and_always_hold_the_footer`,
+    `malformed_new_fields_make_the_fragment_unreadable`, `the_sparse_container_is_checked`
+    (every malformation an error, every prefix no panic).
 
 - **Contracts v2** (`tests/contract_v2.rs`), verifying what was reported as "already true"
   and what was added:

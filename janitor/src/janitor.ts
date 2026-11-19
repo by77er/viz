@@ -206,18 +206,26 @@ export async function purgeTenant(env: JanitorEnv, tenant: string, opts: { grace
     }
   }
 
-  let held = 0 // deletable by the ledger, not released by the publisher: they stay at the head of its answer
+  // Keys the ledger offers but the publisher holds back stay at the head of the ledger's answer
+  // (lowest version first) until released, so each read asks for that many more, up to the
+  // ledger's limit of 10,000: a held-back head never starves released keys behind it.
+  let held = 0
   const offered = new Set<string>()
   while (deleted.length < maxKeys) {
-    // The ledger decides: logged, older than the grace by its clock, not live. Lowest version
-    // first, so the keys the publisher holds back come back first and are skipped again.
-    const batch = await ledger.deletable({ minAgeMs: graceMs, limit: Math.min(10_000, held + Math.min(1000, maxKeys - deleted.length)) })
+    const want = Math.min(1000, maxKeys - deleted.length)
+    const limit = Math.min(10_000, held + want)
+    // The ledger decides: logged, older than the grace by its clock, not live.
+    const batch = await ledger.deletable({ minAgeMs: graceMs, limit })
     const keys = batch.tombstones.map((t) => t.key)
     for (const k of keys) offered.add(k)
-    const doomed = released ? keys.filter((k) => released!.has(k)) : keys
-    held = keys.length - doomed.length
-    waiting = batch.waiting + held
-    if (doomed.length === 0) break
+    const doomed = (released ? keys.filter((k) => released!.has(k)) : keys).slice(0, want)
+    held = released ? keys.filter((k) => !released!.has(k)).length : 0
+    waiting = batch.waiting + keys.length - doomed.length
+    if (doomed.length === 0) {
+      // Everything offered is held back: look further only while the ledger may have more.
+      if (keys.length < limit || limit >= 10_000) break
+      continue
+    }
     await env.BUCKET.delete(doomed) // one request for the whole list
     // Forgotten only after the delete returned: a crash in between deletes again, harmlessly.
     await ledger.forget(doomed)

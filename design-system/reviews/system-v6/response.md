@@ -116,4 +116,143 @@ rule for content wider than a kept column (a status could not wrap; a phrase cou
 
 <!-- AUDIT-RESULT -->
 
+## Majors
+
+### M1. The text form left out members of Other
+
+**Root cause.** The text form was written separately from the picture (its own loop over `m.coloured`),
+so it could drift from what the legend note and the readout computed. **Change.** One computation for
+the readout, the note and the text form: `chartFacts(model, drawnSet, spec)` returns the drawn set
+(lines, picked members, the band's members), the highest at any point, the series above the threshold
+at the end and earlier, Other's highest member and the note; `textLines` turns those facts into
+sentences and the page only prints them. The text form now says, for image 06's state: "3.5 cores limit.
+Above it at 15:16: Other, checkout-api-7d9f8c6b5-new01 (…). Above it earlier in the range but not at
+15:16: …", carries the note's sentence word for word and names Other's highest member. **Guard.**
+Properties P4 to P6 in `chart-rules.test.mjs` compare every fact against a brute-force computation over
+every drawn series after every step of 400 random sequences, and require the note and the threshold's
+names to appear in the text form; the image-06 case is a fixed test (fails on v5: there is no text form
+outside a page; v5's own function tested only coloured series). Mutants C5, C6 and C7 (facts over
+coloured lines only, the note over the result) are caught. **Image.** `images/v6-limit-text-form-*`:
+the Chart preview's new "CPU by pod, against the limit" panel with its text form open.
+
+### M2. The Chart specification had open places
+
+Each now has one sentence in the Chart README, a case in the preview, and a test:
+
+| Open place | The rule now | Test |
+|---|---|---|
+| Reserved slots (rules 4 and 5 disagreed) | One algorithm (B1) | B1's tests and properties |
+| Values below zero | The axis holds zero, every drawn value and the threshold; it runs from the lowest value when that is below zero; zero is a tick in `rule-control`; nothing is drawn outside the plot. A panel may start above zero only down to its lowest value | `valueTicks` cases (−120 to 120; all positive from zero; all negative up to zero); mutant C9; preview panel "Request rate, change on last week"; `compare/v6-m2-values-below-zero-*` |
+| "Which series are above it" | Over every drawn series, Other's members included; "above" is strictly greater; two facts, at the end and earlier in the range | P5; image-06 case |
+| Precision at a 2.5 step | One decimal place more than the place of the step's leading digit (250 and 200: whole; 2.5, 2, 1: tenths; 0.25: hundredths), never fewer than the ticks | `numberFormat(2.5).value(7.4321) === '7.4'` and four more (the code already did this; the sentence had two readings) |
+| A small negative value lost its sign | A minus sign (U+2212) on every negative; a small one prints "> −0.1" | four cases; mutant C8 |
+| Unsaved series in a panel's map | Each viewer's copy places a series that appeared after the last save at that viewer's first sight, so viewers can differ for it until an editor saves; the stored map's series are the same for everyone | the rule only (no stored-map code exists in the system) |
+| The threshold inflated the axis (m6) | Nothing is added for the threshold's label; its label goes under the line when above would reach the strip | `valueTicks` case: data to 4.0 with a 3.5 threshold tops at 4, not 6 |
+
+### M3. The speed harness could not judge the budgets it exists for
+
+**Changes to `tools/speed.mjs` and the fixture.**
+
+- **A finger's press is a finger's.** On the phone layout every press is CDP touch events (`touchStart`
+  held, then `touchEnd`) and every toggle, menu, theme, view and run is a tap. A press is judged by the
+  fill actually painted: from `pointerdown`, the first frame in which the control's background differs
+  from its rest fill (a press never painted within 1 s counts 1000 ms). This is what showed the
+  reviewer's finding as a number: v5's Run button, pressed by a held finger, **never** paints (1000 ms in
+  every run); v6 paints it from `pointerdown` through `viz-press.js` and the `[data-pressed]` twin of
+  every `:active` rule (`check.mjs` fails if any `:active` has no twin; mutant V5).
+- **Every budget row is measured**: added "Open a menu (Share…)", "Change theme (to dark)", "Move to a
+  view whose data is not loaded: its shell and waiting state" (the fixture has a second view, Pods, whose
+  data loads when it opens; its shell, panel, caption strip and reserved table appear at once, the link is
+  busy until 400 ms, then a waiting line with the stage and elapsed time) and "Run a query: request sent
+  and waiting state shown" (a new `send` row: counted only once the request has left). Both scenarios.
+- **Before and after alternate in one session**: `--compare <before page>` runs before, after, before,
+  after…, each from a fresh browser context, so both share the machine's load; both shipped scenarios
+  (`speed.json`, `speed-phone.json`), not trimmed copies.
+- **Load next to every number, one rule**: every sample records the 1-minute load average when it was
+  taken; the table prints the median and range of the load beside every row; a timing row is judged only
+  when most of its samples were taken at a load at or below the core count, stated in the output. The
+  calibration ratio is printed as context and judges nothing (M4.2).
+
+<!-- SPEED-RESULT -->
+
+### M4. The rubric gave two verdicts in four places
+
+| Place | One reading now |
+|---|---|
+| Charts: told apart without hue | Lines in different dash groups differ by dash; neighbours by the lightness step (1.3:1); lines that share both (1 and 3, 2 and 4, 5 and 7, 6 and 8) are told apart by a direct label, emphasis from the legend or the readout's name; a greyscale image in which two such lines look alike does not fail the row if those three work |
+| Speed and load | A timing row is judged only when most of its samples were taken at a load at or below the core count; otherwise neither passed nor failed, whatever the calibration ratio. The rules' "or with the calibration ratio stated" is gone, so rules and rubric say the same |
+| Type: numbers in mono, right-aligned | The row names the three exceptions the Type rules give and no others (a `vz-stat` in the sans; a mixed-unit column left-aligned; `vz-qty` in prose) |
+| Tokens: `check.mjs` passes | The property is the absence of literals (the exceptions listed in `tools/lib/lint.mjs`); `check.mjs` finds them, and a literal it misses is still the row's failure |
+
+Read again for other double readings: the Many series row now states the algorithm's guarantee (a
+series on screen keeps its colour; a filter cleared or a query edited back returns every colour) and
+names both blocker cases (a series hidden by a filter returning grey; a series returning grey while no
+series on screen holds its slot), and asks for the note's "nothing coloured" sentence.
+
+### M5. `check.mjs` passed literal values it says it rejects
+
+**Root cause.** The lint read text with regular expressions written for the values the author expected
+(lower-case units from a list, functions by lower-case name, `style` only in double quotes, a 50%
+exemption anywhere, conditions stripped before linting), and the structural checks covered only the fixes
+somebody remembered to add a check for.
+
+**Change.** `check.mjs` now parses: **css-tree** for every piece of CSS (component CSS, `<style>`,
+`style` attributes in either quote, CSS written by script through `style="…"` in templates, `cssText`,
+`style.<prop> =` and `setProperty`) and **parse5** for HTML; both are exact-version npm dev dependencies
+(`css-tree` 3.2.1, MIT; `parse5` 8.0.1, MIT; nothing vendored, so `THIRD_PARTY.md` is unchanged). Every
+value is walked at every depth (inside `calc()`, `var()` fallbacks, colour functions, gradients,
+filters and conditions), and anything that is a design value is reported by kind: colour (hex, named and
+system colours, any colour function in any case, `color-mix` of tokens), length/duration/angle in any
+unit and case, percentage outside geometry, non-integer number (off-scale arithmetic), weight (numbers
+and keywords), size (keywords, or anything but a type token for `font-size`), typeface, italic, capitals,
+tracking, radius (only radius tokens), shadow (a blurred layer that is not `shadow-overlay`), filter,
+opacity, blend, easing (keywords and functions; `linear` only on a scroll timeline), breakpoint (any unit
+other than px, any px that is not a breakpoint token), and hover rules that do anything but recolour.
+The exceptions are written at the top of `tools/lib/lint.mjs` with their reasons. Structure
+(`tools/lib/structure.mjs`): colour confined to toned buttons, status marks, chart series and the focus
+ring; `shadow-overlay` on overlays only; presses never eased and every `:active` with its `[data-pressed]`
+twin; and **presence checks for every fix of v4, v5 and v6** (focus ring and the rings drawn by cells,
+coarse hit areas for 15 controls and table rows, the chart's reservation from the coarse sizes and never
+keyed on a `style` attribute, dashed slots and swatches, emphasis, `touch-action`, reduced motion, the
+swatch ring, the dot edge, the error state's hollow swatches, the positioned table wrap and its scroll
+edge, the fold pattern and its two forms in step, the caption as one run, the status mark on the first
+line, links in running text, a cut link's underline). New token checks: disabled ink apart from muted ink,
+Other apart in lightness from every slot, micro the smallest type. The rendered audit adds a finger's
+press (`[data-pressed]`) and, at both pointers, reserved against drawn height for every chart that reserves.
+
+**The corpus.** `tools/mutants-corpus.mjs` holds the reviewer's 32 mutants as X1 to X32 (each written
+from the review's description; several plant more than one literal, and each must be reported), with
+v4's R1 to R18, v5's N1 to N13, v6's V1 to V16, chart-rule mutants C1 to C9, page-audit mutants A1 to A4
+and harmless edits H1 to H4. `npm test` runs it (`tools/test/check.test.mjs`; `VIZ_SLOW=1` adds the
+mutants that need a browser); `tools/mutants.mjs` prints it as a table. Every mutant is applied to a copy
+outside the tree (the runner refuses a directory inside it).
+
+<!-- CORPUS-RESULT -->
+
+### M6. The dashboard composition's figures disagreed
+
+**Root cause.** The composition's figures were typed by hand beside charts that compute theirs, and
+nothing compared them. **Change.** One sheet of numbers: the stats and the table read what the charts
+draw (the routes chart's last p99 for POST /v2/orders, 912 ms; the request-rate chart's last value for
+checkout-api, 1,087 req/s), the table is "Slowest routes of checkout-api" (no route of another service
+under a checkout-api chart), its p99 column is the chart's last value for the three routes the chart
+draws, its window is the chart's last step ("the 6 min to 15:16"), its six routes' requests add up to less
+than the service's total (946.5 of 1,087 req/s), and the stat labels say whose figure each is ("p99 of POST
+/v2/orders", "Errors on POST /v2/orders"), not the dashboard's. The waiting state moved to the 200-series
+panel, so the chart the Requests stat is read from is current. The fixture's stats were made to agree with
+its charts the same way (m10's middle dots went with them). **Guard.** Figures that come from a chart
+carry `data-figure="<chart>|<series>|last"` and figures shown twice `data-same`; `tools/audit.mjs`
+compares each with the chart's own model (`vz.figures()`) at 1500 px on every composition and the
+fixture. On v5's composition the same marks would have reported the three disagreements the review lists.
+
+### M7. The dashboards list hid that it was partial, and its order and ages were wrong
+
+**Change.** "3 of 12 dashboards, most recently changed first", in that order, with dates and times beyond a
+day ("15 Nov, 10:42, by Sam"). **Guard.** `tools/audit.mjs` on every composition: a caption's first number
+must be the number of rows under it; "most recently … first", "slowest first" and "highest … first" must
+match the rows' order; an age beyond a day must be a date and time. On v5's dialog composition it
+reports all three ("12 dashboards …" over 3 rows; "3 d ago" after "12 d ago"; "12 d ago" and "3 d ago"
+as ages). It also found one in v5's traces composition ("13 spans …, 10 shown" over 10 rows), now
+"10 of 13 spans, in the order they started", in the composition and the Waterfall preview.
+
 <!-- SECTIONS -->

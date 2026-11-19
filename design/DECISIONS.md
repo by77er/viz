@@ -729,7 +729,7 @@ EWMA with the parameters chosen on held-out data (half-life 100 points, k 8) and
 give the level. The robust z-score (MAD), the seasonal baseline (MAD) and CUSUM can be named;
 the save then warns with their held-out score, and CUSUM may not page (default `info`). STL and
 PELT are not rule detectors: they are for scheduled jobs and explanations; burn rate is to
-compile to recording rules (that clause is replaced by D41: an SLO is its own rule kind). The 99th-percentile ("quantile") spread can be chosen, is marked
+compile to recording rules (that clause is replaced by D42: an SLO is its own rule kind). The 99th-percentile ("quantile") spread can be chosen, is marked
 unvalidated in the warning and in the guide, and is never a default. The guide, with the kind
 of evidence behind each line (held out, post hoc, not scorable), is served at
 `GET /api/v1/monitors/detectors` from one copy in `ruler/src/anomaly.ts`.
@@ -1052,90 +1052,6 @@ specified and are not copied.
 differently; or clients turn out to depend on a Tempo artefact (then that one rule is copied
 and recorded here).
 
-## D41. An SLO is a rule kind evaluated from one query per tick and per-series bucket rings, not compiled to recording rules
-
-**Decision.** An SLO burn-rate rule (`contracts/rules.ts`, version 4) is an objective, a
-compliance window and an SLI written with `$window`. Each tick the ruler sends ONE expression per
-rule in the group's batch: the SLI's two parts over the last interval, told apart by
-`label_replace(…, "viz_slo_part", …) or …`. It keeps, per series, a ring of interval buckets as
-long as the longest alert window and a ring of about 720 coarse buckets over the compliance
-window, as rows (a head and blocks of 60 and 24 buckets; three rows a tick), warmed from history
-when the rule is new (D42). The alerts are the SRE Workbook's (anomaly/'s `SRE_WORKBOOK_RULES`,
-judged by its `evaluateWindows`), one alert per series and severity (`page`, `ticket`). A window
-counts once 90% of its buckets have data (`min_coverage`). This replaces D33's "burn rate is to
-compile to recording rules".
-
-**Alternatives.** (a) Compile to recording rules, as Sloth and Pyrra do: one recording rule per
-window (seven for the workbook's alerts) and alerting rules over them. (b) Query every window at
-every tick: 7 to 14 expressions, the longest reading three days. (c) The library's incremental
-detector (`burnRate.detect`) with its JSON state. (d) The three alerts of the workbook's Table 5-8
-rather than the four of its alert expressions. (e) One alert per series carrying the most urgent
-severity.
-
-**Why.** Through the HTTP wiring (D39) every expression is one request in sequence and (b) reads
-the 3-day window each minute, a rollup-class read per tick; (a) costs the same seven windowed
-reads per tick through the recording rules, plus Remote Write and a read of what was written, and
-the sentence would still lack the budget left. One bucket per tick is a tail-class read, and the
-windows are sums over state. (c) copies its whole ring into and out of JSON at every point
-(anomaly/README: 1.7 ms a tick through JSON at 1-minute buckets, 67 KB of state per series) and
-would rewrite it every tick; the ruler's rings write one block and the head. The four alerts are
-what the library already reproduces against every table of the chapter; the fourth (1 d / 2 h at
-3×) resets a slow burn sooner. Per-severity alerts are what the workbook's expressions and Sloth
-produce, so routing and inhibition (`severity=page` over `severity=ticket`) work unchanged; (e)
-would resolve one alert and fire another whenever the severity changed.
-
-**Cost.** State per series: 4,320 + 720 buckets at a 1-minute interval (about 100 KB stored, 85 KB
-in memory), counted against the per-object state budget; a 10-second interval needs 25,920
-buckets. The window sums are the ruler's own (fixed-order, block-cached), not the library's
-loop: the same buckets give the same sums however they arrived, and agree with the library at
-every point when the counts are whole numbers (tested), but they are a second implementation of
-the summing. The budget-left figure's far edge moves an hour at a time (one coarse bucket).
-`$window` must be the bucket: an author used to `rate(x[5m])` must write `[$window]`.
-
-**Would change if.** viz-query exports an RPC entrypoint that plans a batch with shared scans
-(then (b)'s reads cost little more than one); the ruler gains a cheaper store for rings than a
-row per block; or SLOs need windows longer than the 100,000-bucket ring (then coarser fine
-buckets, or (a)).
-
-## D42. New anomaly and SLO rules are warmed from history before their first evaluation, under a budget checked with the engine's plan; backtests run the same evaluation under a larger budget
-
-**Decision.** When an anomaly or SLO rule is created (a new rule key: a new detector, parameter,
-SLI or interval), a warm-up job is stored with it. At the rule's first tick the ruler builds the
-reads its history class needs (the detector's look-back, or an SLO's longest window and
-compliance window) at the rule's interval, asks viz-query's `/api/v1/plan` for every piece
-(nothing fetched), and refuses the whole warm-up when the sum is over `RulerLimits.maxWarmup*`
-(3,000,000 samples, 16 MiB) or the plan carries the engine's own refusal; otherwise it fetches the
-reads whole and feeds them, in time order, through the rule's own evaluation, then commits the
-state rows and the status in one transaction. An engine failure is retried at the next tick
-while the rule waits (at most three attempts), then the rule starts cold. A refused or failed
-warm-up starts the rule cold and says why in its status. Backtests of threshold, anomaly and SLO
-rules plan their reads the same way under `RulerLimits.maxBacktest*` (20,000,000 samples,
-128 MiB) and refuse with `over_budget` before fetching; an anomaly or SLO backtest starts with the
-state a warm-up at `fromMs` would leave and runs at the rule's interval.
-
-**Alternatives.** (a) Start cold and warm live (as before). (b) Evaluate live at once and merge
-history in later. (c) Fetch what fits the budget and warm partially. (d) No budget: the engine's
-own limits refuse what is too large. (e) One budget for warm-ups and backtests.
-
-**Why.** (a) leaves a seasonal rule silent for its k periods and an SLO's ticket windows
-meaningless for three days. (b) cannot work for sequential detectors (an EWMA cannot take earlier
-points after later ones). (c) gives a detector a state that is neither cold nor warm, and an SLO
-window that looks covered while it is not. (d) is per query: a warm-up of several reads, or a
-read split into 11,000-step pieces, could each pass and together cost many times one query; and
-the engine's limits are about its own memory, not about what the tenant is willing to pay for an
-automatic read. (e) warm-ups run by themselves at every save; a backtest is asked for and shown.
-The plan is one ledger read and touches no shard, leaf or R2 object (query/README).
-
-**Cost.** A plan request per piece before every warm-up and backtest; the plan does not count the
-shards' tail, so a read can cost a little more than planned. A new rule's first tick waits for
-its warm-up (one engine call at a time per object, D39). A rule whose history is over the budget
-warms live, as before. The budgets are choices sized to one query of viz-query, not measured on
-Cloudflare.
-
-**Would change if.** The plan reports the tail too (then the budget is exact); warm-ups prove
-cheap enough on Cloudflare to raise the budget; or a rule kind needs history it cannot read at
-its interval (then a coarser warm-up read with a declared approximation).
-
 ## D41. Series-level pruning: the layout stays; the index fragment gains row-group series bounds and the footer's place; pages are skipped in memory, not fetched
 
 **Decision.** Files keep the layout they had (row groups of at most 100,000 rows, data pages
@@ -1182,3 +1098,89 @@ ways to make a `namespace=…` selection read less; a format change, not taken h
 smaller row groups, and a fragment that is not in the ledger's state); the ledger's state cap
 is lifted or fragments move out of it; or label locality is added to the sort key (then pages
 pay, and a column index with them).
+
+## D42. An SLO is a rule kind evaluated from one query per tick and per-series bucket rings, not compiled to recording rules
+
+**Decision.** An SLO burn-rate rule (`contracts/rules.ts`, version 4) is an objective, a
+compliance window and an SLI written with `$window`. Each tick the ruler sends ONE expression per
+rule in the group's batch: the SLI's two parts over the last interval, told apart by
+`label_replace(…, "viz_slo_part", …) or …`. It keeps, per series, a ring of interval buckets as
+long as the longest alert window and a ring of about 720 coarse buckets over the compliance
+window, as rows (a head and blocks of 60 and 24 buckets; three rows a tick), warmed from history
+when the rule is new (D43). The alerts are the SRE Workbook's (anomaly/'s `SRE_WORKBOOK_RULES`,
+judged by its `evaluateWindows`), one alert per series and severity (`page`, `ticket`). A window
+counts once 90% of its buckets have data (`min_coverage`). This replaces D33's "burn rate is to
+compile to recording rules".
+
+**Alternatives.** (a) Compile to recording rules, as Sloth and Pyrra do: one recording rule per
+window (seven for the workbook's alerts) and alerting rules over them. (b) Query every window at
+every tick: 7 to 14 expressions, the longest reading three days. (c) The library's incremental
+detector (`burnRate.detect`) with its JSON state. (d) The three alerts of the workbook's Table 5-8
+rather than the four of its alert expressions. (e) One alert per series carrying the most urgent
+severity.
+
+**Why.** Through the HTTP wiring (D39) every expression is one request in sequence and (b) reads
+the 3-day window each minute, a rollup-class read per tick; (a) costs the same seven windowed
+reads per tick through the recording rules, plus Remote Write and a read of what was written, and
+the sentence would still lack the budget left. One bucket per tick is a tail-class read, and the
+windows are sums over state. (c) copies its whole ring into and out of JSON at every point
+(anomaly/README: 1.7 ms a tick through JSON at 1-minute buckets, 67 KB of state per series) and
+would rewrite it every tick; the ruler's rings write one block and the head. The four alerts are
+what the library already reproduces against every table of the chapter; the fourth (1 d / 2 h at
+3×) resets a slow burn sooner. Per-severity alerts are what the workbook's expressions and Sloth
+produce, so routing and inhibition (`severity=page` over `severity=ticket`) work unchanged; (e)
+would resolve one alert and fire another whenever the severity changed.
+
+**Cost.** State per series: 4,320 + 720 buckets at a 1-minute interval: about 80 KB in memory, and
+40–170 KB stored depending on how the counts print (whole numbers, or extrapolated increases),
+counted against the per-object state budget; a 10-second interval needs 25,920 buckets. Three rows
+written a tick (measured), 0.3 ms CPU a tick at one series and about 9 ms at 100 (measured here,
+`ruler/README.md`). The window sums are the ruler's own (fixed-order, block-cached), not the library's
+loop: the same buckets give the same sums however they arrived, and agree with the library at
+every point when the counts are whole numbers (tested), but they are a second implementation of
+the summing. The budget-left figure's far edge moves an hour at a time (one coarse bucket).
+`$window` must be the bucket: an author used to `rate(x[5m])` must write `[$window]`.
+
+**Would change if.** viz-query exports an RPC entrypoint that plans a batch with shared scans
+(then (b)'s reads cost little more than one); the ruler gains a cheaper store for rings than a
+row per block; or SLOs need windows longer than the 100,000-bucket ring (then coarser fine
+buckets, or (a)).
+
+## D43. New anomaly and SLO rules are warmed from history before their first evaluation, under a budget checked with the engine's plan; backtests run the same evaluation under a larger budget
+
+**Decision.** When an anomaly or SLO rule is created (a new rule key: a new detector, parameter,
+SLI or interval), a warm-up job is stored with it. At the rule's first tick the ruler builds the
+reads its history class needs (the detector's look-back, or an SLO's longest window and
+compliance window) at the rule's interval, asks viz-query's `/api/v1/plan` for every piece
+(nothing fetched), and refuses the whole warm-up when the sum is over `RulerLimits.maxWarmup*`
+(3,000,000 samples, 16 MiB) or the plan carries the engine's own refusal; otherwise it fetches the
+reads whole and feeds them, in time order, through the rule's own evaluation, then commits the
+state rows and the status in one transaction. An engine failure is retried at the next tick
+while the rule waits (at most three attempts), then the rule starts cold. A refused or failed
+warm-up starts the rule cold and says why in its status. Backtests of threshold, anomaly and SLO
+rules plan their reads the same way under `RulerLimits.maxBacktest*` (20,000,000 samples,
+128 MiB) and refuse with `over_budget` before fetching; an anomaly or SLO backtest starts with the
+state a warm-up at `fromMs` would leave and runs at the rule's interval.
+
+**Alternatives.** (a) Start cold and warm live (as before). (b) Evaluate live at once and merge
+history in later. (c) Fetch what fits the budget and warm partially. (d) No budget: the engine's
+own limits refuse what is too large. (e) One budget for warm-ups and backtests.
+
+**Why.** (a) leaves a seasonal rule silent for its k periods and an SLO's ticket windows
+meaningless for three days. (b) cannot work for sequential detectors (an EWMA cannot take earlier
+points after later ones). (c) gives a detector a state that is neither cold nor warm, and an SLO
+window that looks covered while it is not. (d) is per query: a warm-up of several reads, or a
+read split into 11,000-step pieces, could each pass and together cost many times one query; and
+the engine's limits are about its own memory, not about what the tenant is willing to pay for an
+automatic read. (e) warm-ups run by themselves at every save; a backtest is asked for and shown.
+The plan is one ledger read and touches no shard, leaf or R2 object (query/README).
+
+**Cost.** A plan request per piece before every warm-up and backtest; the plan does not count the
+shards' tail, so a read can cost a little more than planned. A new rule's first tick waits for
+its warm-up (one engine call at a time per object, D39). A rule whose history is over the budget
+warms live, as before. The budgets are choices sized to one query of viz-query, not measured on
+Cloudflare.
+
+**Would change if.** The plan reports the tail too (then the budget is exact); warm-ups prove
+cheap enough on Cloudflare to raise the budget; or a rule kind needs history it cannot read at
+its interval (then a coarser warm-up read with a declared approximation).

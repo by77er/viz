@@ -465,7 +465,7 @@ monitor's own field names (`slo.sli.errorRatio`, `slo.alerts[0].longWindow`).
 - **Defaults are written out at save** (`given` lists what the author chose): the workbook's four
   alerts as `anomaly/` defines them (`SRE_WORKBOOK_RULES`: page 1 h / 5 m at 14.4× and 6 h / 30 m at
   6×, ticket 1 d / 2 h at 3× and 3 d / 6 h at 1×; the task named three, the library's table and the
-  workbook's alert expressions have the fourth, D41), window 30 d, `min_coverage` 0.9,
+  workbook's alert expressions have the fourth, D42), window 30 d, `min_coverage` 0.9,
   `max_series` 10 (at most `RulerLimits.maxSloSeriesPerRule`, 100). Any change of objective,
   window, SLI, alerts, `min_events` or `min_coverage` is a new rule key, with fresh state and a
   warm-up. Refused at save with a path and a fix: an objective outside (0, 1) (99.9 is answered
@@ -686,8 +686,9 @@ data names the tenant.
   webhook and Slack, `/api/v2/alerts` ingestion, editing a silence, updating a Slack message.
 - **Metrics about itself** (`viz_rule_evaluations_total`…): `health()` only.
 - **`DESIGN.md` / `DECISIONS.md`**: the earlier tasks' items under "Contract issues" (13) are
-  still not made. Anomaly rules are in DESIGN §7 and D33; the published design page
-  (`design/artifact/viz-design.html`) was not regenerated for them.
+  still not made. Anomaly rules are in DESIGN §7 and D33; SLO rules, warm-ups and backtests in
+  DESIGN §7, D42 and D43; the published design page (`design/artifact/viz-design.html`) was not
+  regenerated for either (outside this component).
 - **Production deployment.** The pipeline deploys viz-ruler (`deploy/workers.json`); it has run
   on Cloudflare only as a staged trial, since destroyed (`deploy/README.md`, "Trial 2").
 
@@ -1035,7 +1036,49 @@ were re-learning at the end), so it also writes alert, hand-off and history rows
 Nothing here is measured on Cloudflare; what would settle it is the same rule deployed with
 the engine binding, its duration and rows read from Cloudflare's analytics (spike S0).
 
-### Cost model
+#### SLO rules, warm-ups and backtests (`npm run bench:history`)
+
+**Measured here (workerd, local)**: workerd 1.20261117.1 under the vitest pool, one worker, 4 cores
+shared with other sessions' work: **load average 6.9–8.2** (1-minute) during the three runs below.
+CPU is the workerd process's thread time (`HOST`, as above), so it includes the RPC into the object
+and the fake engine building each tick's result in the same isolate; the warm-ups' and backtests'
+history was built before the measured call. Peak memory is the workerd process's VmHWM, which also
+holds the test's own copies of the matrices. Ranges are min–max over 3 runs (each tick figure the
+median of 30 ticks). SLO rule: 99.9% over 30 days, the workbook's four alerts, 1-minute interval
+(a 4,320-bucket and a 720-bucket ring per series); SLI `sum by (svc)`, 1,000 events a minute per
+series, a trickle of errors and bursts that page.
+
+T. One alarm tick of a group holding one rule, warm (after its warm-up and 3 unmeasured ticks):
+
+| rule | series | ms CPU per tick | warm-up (first tick), ms CPU | SQL rows per tick | peak RSS, MB |
+|---|---|---|---|---|---|
+| counterfactual: alerting rule, empty result | 1 | 1.98–2.28 | – | 0 | 149–150 |
+| SLO | 1 | 2.44–2.51 | 67–82 | 3 | 178–180 |
+| SLO | 10 | 3.60–3.71 | 209–232 | 3 (up to 6 with transitions) | 232–234 |
+| SLO | 100 | 10.0–11.2 (single ticks up to 147) | 883–1,000 | 3 (up to 7) | 372–389 |
+
+B. A 7-day backtest at 1 minute over 100 series (one RPC; the reads planned, then handed over):
+
+| rule | points read | ms CPU | wall, s | intervals | peak RSS, MB |
+|---|---|---|---|---|---|
+| threshold (the alert state machine alone) | 1,008,100 | 1,473–1,683 | 2.1–3.0 | 200 | 430–442 |
+| EWMA anomaly (half-life 10) | 1,010,100 | 4,156–4,639 | 4.5–7.7 | 998 | 448–546 |
+| SLO (fine read 7 d + 3 d + 1 h, coarse 30 d) | 3,021,400 | 9,576–9,899 | 13.4–14.6 | 316 | 587–638 |
+
+**Reading it.** A burn-rate tick costs about 0.3 ms CPU more than the empty counterfactual at one
+series, 1.5 ms at 10 and 8–9 ms at 100 (about 0.09 ms a series: window sums over cached blocks,
+`evaluateWindows`, the working copy of the rings), and writes **3 rows whatever the number of
+series**. A warm-up is a one-off of 70–80 ms at one series and about 1 s at 100 (two reads of
+~5,100 steps fed through `evalSlo`, ~100 rows written). The 7-day backtests show what feeding
+history through the live evaluation costs: the state machine alone 1.5 s for a million points,
+EWMA 4.3 s, the SLO rule 9.7 s for three million (it reads three days more and two parts per
+series, and judges 100 series' windows at each of 10,080 steps). **These backtests would not run
+as measured on Cloudflare**: viz-query refuses a range query of more than 500,000 output points
+(`maxOutputPoints`; 11,000 steps × 100 series is 1.1 million), and the object held 0.4–0.6 GB here,
+where a Durable Object has 128 MB. One range query of 11,000 steps fits about 45 result series
+(an SLO's series count twice: two parts); longer ranges or more series need a coarser interval. Nothing here is measured on Cloudflare; what would settle the
+production cost is the same rules deployed, CPU and rows read from Cloudflare's analytics.
+
 ### Cost model
 
 **Modelled**, not measured on Cloudflare; unchanged in method from the previous version.
@@ -1057,6 +1100,12 @@ research/10 §1.
 Platform-wide, not per 1,000 rules: the sweeper's 16 index requests per run, 46,080 a month,
 about $0.007. The single-call form, for comparison, was $0.07–$1.0 before counting
 evaluator calls as requests and about $6.5 more if they are (previous version of this file).
+
+**SLO rules, per rule, modelled** from the measurements above (rows at $1 per million): a
+1-minute SLO rule writes 3 rows a tick, 129,600 a month, about $0.13, whatever its series; it adds
+0.3–9 ms CPU a tick (1–100 series); its warm-up is one read of the longest window and the
+compliance window (two range queries, 70 ms–1 s CPU here). To settle: the same rules on
+Cloudflare, rows and duration from the analytics API.
 
 **Anomaly rules, per rule, modelled** from the measurements above (rows at $1 per million):
 a 1-minute EWMA rule of 100 series writes one row a tick, 43,200 a month, about $0.04, and adds
@@ -1260,8 +1309,11 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
 - **A warm-up holds its group's tick** (and, through the one-call gate, every engine call of the
   object) while it reads; a rule whose history is large but within the budget delays the first
   evaluation of the group's other rules by the read's duration (not measured on Cloudflare).
-- **Backtests run in the request.** A 7-day SLO backtest over 100 series costs seconds of CPU in
-  the object (measured below); the budget bounds what is read, not the CPU.
+- **Backtests run in the request, and the budget bounds what is read, not what is held.** A 7-day
+  SLO backtest over 100 series cost 9.7 s of CPU and held about 0.6 GB in workerd here; on
+  Cloudflare the engine's 500,000-output-point limit refuses such a read first (`failed`, 502), and
+  the object's 128 MB would not hold it. There is no ruler-side bound on points held; a plan
+  cannot say how many series a query returns.
 - **Anomaly state is written every tick**: at least one row per anomaly rule per tick (43,200 a
   month for a 1-minute rule, about $0.04 at $1 per million rows, modelled), more for large
   states (6 rows a tick for 100 daily seasonal series). A rule whose state changes every tick

@@ -172,6 +172,27 @@ describe('deletion waits for publication (a publisher is bound)', () => {
     expect(fake.calls.acknowledged.sort()).toEqual([...tombs.slice(0, 4), `cell-0/data/metric_samples/tenant=${t.tenant}/day=2026-11-18/L0-x-1-1-1-00000000.parquet`].sort())
   })
 
+  it('keys the publisher holds back at the head of the ledger\'s answer do not starve the released ones behind them', async () => {
+    const t = await setup('gate4', 4)
+    expect((await compactStep(env, engine, t.tenant, { now: QUIET })).status).toBe('merged')
+    await t.ledger.drain()
+    await sleep(120)
+    // The ledger's order: lowest version first (here all one change), then key.
+    const tombs = (await t.ledger.deletable({ minAgeMs: 100 })).tombstones.map((x) => x.key)
+    expect(tombs).toHaveLength(8)
+    const released = tombs.slice(4)
+    const fake = fakePublisher({ released })
+    // Two at a time: the first read (two keys) is all held back; the run must look further.
+    const first = await purgeTenant({ ...env, PUBLISHER: fake.ns }, t.tenant, { graceMs: 100, maxKeys: 2 })
+    expect(first.deleted).toHaveLength(2)
+    expect(released).toEqual(expect.arrayContaining(first.deleted))
+    const second = await purgeTenant({ ...env, PUBLISHER: fake.ns }, t.tenant, { graceMs: 100, maxKeys: 2 })
+    expect([...first.deleted, ...second.deleted].sort()).toEqual([...released].sort())
+    const third = await purgeTenant({ ...env, PUBLISHER: fake.ns }, t.tenant, { graceMs: 100, maxKeys: 2 })
+    expect(third).toMatchObject({ deleted: [], waiting: 4, unpublished: 4 })
+    expect(await exists(tombs)).toEqual([true, true, true, true, false, false, false, false])
+  })
+
   it('a publisher that refuses or does not answer: nothing is deleted, the run returns within its bound and says why', async () => {
     const t = await setup('gate3', 3)
     await compactStep(env, engine, t.tenant, { now: QUIET })

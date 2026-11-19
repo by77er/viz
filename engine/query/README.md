@@ -45,9 +45,9 @@ let json = query_range(&input, "sum by (job) (rate(http_requests_total[5m]))", s
 | `query_range(input, query, start_ms, end_ms, step_ms) -> String` | Prometheus `query_range`; returns the `data` object as JSON (`PromMatrix`). |
 | `query_instant(input, query, time_ms) -> String` | Prometheus instant `query`; `vector`, `scalar`, `string`, or `matrix` for a top-level range vector. |
 | `query_range_with`, `query_instant_with` | The same, typed (`Matrix` / `Value`), with `Options { limits, eval }`, returning `Stats { selects, series, samples, output_points }` (DESIGN §6.5: what a query read is returned with every result). |
-| `label_names(input, matchers, min_ts, max_ts)` | `/api/v1/labels`. Sorted, unique. |
-| `label_values(input, name, matchers, min_ts, max_ts)` | `/api/v1/label/<name>/values`. |
-| `series(input, matcher_sets, min_ts, max_ts)` | `/api/v1/series`: sorted, unique label sets matching any set. Refuses, as Prometheus does, no sets and a set whose matchers all match the empty string. |
+| `label_names(input, matchers, min_ts, max_ts)` | `/api/v1/labels`. Sorted, unique. **A series-only read** (CARDINALITY.md item 3, 2026-11-19): series files and tail series tables, never sample files; "in the range" decided per file (below). |
+| `label_values(input, name, matchers, min_ts, max_ts)` | `/api/v1/label/<name>/values`. The same read. |
+| `series(input, matcher_sets, min_ts, max_ts)` | `/api/v1/series`: sorted, unique label sets matching any set. The same read. Refuses, as Prometheus does, no sets and a set whose matchers all match the empty string. |
 | `parse_selector(text)` | A `match[]` string to matchers; anything but a bare series selector is `bad_data`. |
 | `files_needed(indexes, ranges)` | For each ledger index fragment (`viz_storage::FileIndex` JSON): `false` if the file provably holds nothing the fetch ranges read. A row group can contribute to a range only if it overlaps it in time and, when the range has an equality matcher on `__name__`, the name lies in the row group's `[min_name, max_name]`. Nothing else prunes; a fragment that does not parse keeps its file. |
 | `scan_rows(indexes, ranges)` | The same decision with a number: an upper bound on the rows the ranges decode from each file (each row group once per range that may read it), `Some(0)` for "skip", `None` for a fragment that does not parse. Lets a caller refuse a query that would decode too much before fetching anything. |
@@ -59,7 +59,10 @@ let json = query_range(&input, "sum by (job) (rate(http_requests_total[5m]))", s
 | `exact`: `ExactSum`, `ExactVariance` | Exact sums and variances of `f64`, rounded once. |
 | `split_plan(query, opts) -> SplitPlan` | Split over leaves (`fragments`, `SplitKey`) or one place, and why. |
 | `split::extract`, `split::split_tails`, `split::Gathered`, `split::leaf_evaluate`, `split::merge_range`, `split::merge_instant` | The pieces of split execution: a reader's rows of one part, the tail cut by part, a leaf's data and its evaluation into partials, the coordinator's merge. |
-| `catalog::for_each_series` | A series-only read of `metric_series` files (storage has none). |
+| `catalog::for_each_series`, `for_each_series_with` | A series-only read of `metric_series` files (whole, or a sparse file of the row groups fetched); `_with` decodes a row group's `labels` only when it holds an id the caller has not seen. |
+| `file_plan(indexes, ranges, gap)` | **Reading part of a file**: per fragment, the row groups the ranges can touch by name and time (exactly `scan_rows`), as a `FilePlan`: skip, the whole object, or byte ranges (the footer and those row groups, joined under `gap`; whole when they would cover half the file or the fragment has no `foot`). |
+| `sample_plan(series_files, indexes, reads, part, gap)` | **Series-level pruning** (CARDINALITY.md item 2): resolve each read's matchers against the series files, keep a split part's series if asked, and plan each sample file to read only the row groups whose key range can hold a selected series (`viz_storage::RowGroupIndex::may_hold`). Returns the plans, the exact series count (per file in each read's window, summed over reads), and a **carrier** batch of the selected series to evaluate with instead of the series files. A series whose labels carry a `without` label is placed by its labels (found without a parse: `"name":` occurs in canonical JSON only as a key). |
+| `part_plan`, `part_sids` | One split part's row groups from the fragments alone: its `series_id` range (`part_sids`: exactly the ids `SplitKey::part_of` gives it, one or two intervals in `i64` order). |
 | `cardinality::State`, `Summary` | The cardinality report: one part's counts, merged, rendered as `/api/v1/status/tsdb` and `/api/v1/status/cardinality`. |
 
 ### Who owns what between the three crates
@@ -226,6 +229,31 @@ group of at most six files' worth of its part) while gathering, or one selector'
 evaluation. The coordinator weighs the stopped leaves (see `query/` README, "Split
 execution"). What remains, inside `viz_storage::select`, is in "Not implemented".
 
+### Series-level pruning and the series-only read (2026-11-19)
+
+`src/prune.rs`, `src/meta.rs`; `contracts/TABLES.md` "The index fragment" and "Reading part of
+a file"; `design/DECISIONS.md` D41; numbers in `query/CARDINALITY.md`.
+
+- **What a caller fetches.** `file_plan` from the fragments alone (name and time);
+  `sample_plan` once the series files are in hand (series); `part_plan` for a split part
+  before (its id range). Each gives byte ranges: the footer region and whole row groups. The
+  engine takes them as a sparse file container wherever it takes a file.
+- **What the engine decodes.** Inside a row group `viz_storage::select` decodes `series_id`,
+  then only the pages of `ts` and `value` that hold a selected series' rows.
+- **The carrier.** When every read selects by more than a name, `sample_plan` returns a batch
+  of exactly the selected series, with one row each at a time no read covers (the extract's
+  carrier of split execution). Evaluating with it first among the tail batches and no series
+  files gives the same answer (tested), without resolving the series twice or holding the
+  series files.
+- **The label calls** read series files and tail series tables only. A series is listed if a
+  series-file row's `[min_ts, max_ts]` overlaps the window, or a tail row lies in it: per
+  file, as Prometheus decides per block, so a series with samples in one file on both sides of
+  the window and none inside is listed (a query would not see it). `max_series` bounds the
+  series listed; no sample is loaded, so `max_samples` does not apply (before 2026-11-19 these
+  calls went through `select`, loaded samples, and listed exactly the series with a sample in
+  the window). A row group's `labels` column is decoded only if it holds a series not seen in
+  an earlier file.
+
 ### Cardinality
 
 `src/cardinality.rs`. From `metric_series` files (`catalog`) and tail batches' series
@@ -243,14 +271,12 @@ own report.
 ## What is not implemented
 
 - **The engine does not fetch.** `plan` says what to fetch; reading the ledger, R2 and
-  the shards is the caller's job (`query/` does it). `plan` returns matchers and time
-  ranges, not row groups or byte ranges. `files_needed` and `scan_rows` prune whole
-  **files** from the ledger's index fragments; pruning to row groups and pages
-  (DESIGN §6.1) is not done, and `select` is given whole files.
+  the shards is the caller's job (`query/` does it). `file_plan`, `sample_plan` and
+  `part_plan` say which byte ranges (row groups and the footer); pages are not fetched, only
+  skipped in memory (D41).
 - **Split execution, what is left** (DESIGN §6.2): partials travel in this crate's
-  binary form, not Arrow IPC; readers read whole files and decode every row group's
-  `series_id` column for every part (key-range row-group reads need range reads and
-  smaller row groups); `quantile`, binary operators between vectors and aggregations in
+  binary form, not Arrow IPC; readers read every series file whole for every part (their sample files only in their
+  part's id range since 2026-11-19); `quantile`, binary operators between vectors and aggregations in
   subqueries are not split (one place); leaf partials are not cached (§6.3).
 - **An early abort inside storage.** `viz_storage::select` still materialises one
   selector's matching samples (one part's, under split execution) before a limit can be
@@ -262,9 +288,14 @@ own report.
   read from storage twice (and counted twice by the limits).
 - **A time limit.** The engine has no clock, so there is no timeout; the bounds are on
   samples, series, steps and points instead.
-- **A series-only read.** `label_names`, `label_values` and `series` go through
-  `select` and load the samples of the series they list; storage has no cheaper call.
-  The Prometheus `limit` parameter of these endpoints is not implemented.
+- **The Prometheus `limit` parameter of the label endpoints.** (The series-only read itself
+  is implemented, 2026-11-19.)
+- **Series files read in part by key.** `sample_plan` and the split readers read the series
+  files whole (by name and time): a part's series cannot be found in a key range of them,
+  because a series whose key leaves a label out is not where its id is. Every split part reads
+  every series file (`query/CARDINALITY.md` has what that costs).
+- **A sort key that clusters a label.** A selection spread over the id space (`namespace=…`)
+  needs every row group of the metric (D19, D41).
 - **Annotations** (warnings and infos), exemplars, `/api/v1/metadata`, `/targets`,
   `/rules`, `/alerts`, `/status/*` other than the cardinality report, remote read.
 - **Approximate cardinality** (HyperLogLog): counting is exact and refused above its caps.

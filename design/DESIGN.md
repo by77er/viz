@@ -442,11 +442,11 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   Workbook's multi-window, multi-burn-rate alerts (page 1 h / 5 m at 14.4× and 6 h / 30 m at 6×,
   ticket 1 d / 2 h at 3× and 3 d / 6 h at 1×) from **one query per rule per tick**, the last
   interval's events, and keeps each series' buckets for the longest window and coarser ones for
-  the compliance window as state (D41), so every alert says which windows burned, how fast, and
+  the compliance window as state (D42), so every alert says which windows burned, how fast, and
   how much budget is left. A new anomaly or SLO rule is **warmed from history** before its first
   evaluation: its look-back is read at its interval, planned first (viz-query's
   `/api/v1/plan`) and refused whole over a budget, never fetched in part, then fed through the
-  rule's own evaluation (D42). **Backtests** of threshold, anomaly and SLO rules run the same
+  rule's own evaluation (D43). **Backtests** of threshold, anomaly and SLO rules run the same
   evaluation over a past range in time order, under a larger budget, and return when each alert
   would have fired and resolved with the explanation it would have carried.
 - **Agentic monitors** are a natural-language objective with a deterministic guard and a
