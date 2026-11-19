@@ -113,11 +113,11 @@ export type AddUnitResult =
   /** The unit itself is unacceptable (a key already belongs to another unit, an empty unit). Nothing changed. */
   | { status: 'invalid'; reason: string }
   /**
-   * The ledger already holds as much state as it can write as one base or checkpoint and
-   * rebuild within one isolate (`stateBytes` of `limitBytes`, estimated; LEDGER-LOG.md "Size").
-   * Nothing changed. Retryable: compaction and retention shrink the state; if it persists the
-   * tenant needs splitting. Added 2026-11-19 (review S-2); a caller that does not know it
-   * fails closed and retries (COMPATIBILITY.md §3.2).
+   * The ledger already holds as much state as it may (`stateBytes` of `limitBytes`, estimated;
+   * LEDGER-LOG.md "Size"): since checkpoints are written in parts, a bound on the time a rebuild
+   * takes, not on memory. Nothing changed. Retryable: compaction and retention shrink the state;
+   * if it persists the tenant needs splitting. Added 2026-11-19 (review S-2); a caller that does
+   * not know it fails closed and retries (COMPATIBILITY.md §3.2).
    */
   | { status: 'full'; stateBytes: number; limitBytes: number }
 
@@ -322,7 +322,12 @@ export interface LedgerJanitorRpc {
  *                                                      incarnation's first segment begins
  *                                                      with its `base`
  *     {incarnation}/ckpt-{version:012}.jsonl           a checkpoint: the whole state at
- *                                                      `version`, for a bounded rebuild
+ *                                                      `version`, for a bounded rebuild. Its
+ *                                                      header's `v` says the format: 1, the
+ *                                                      state as one `base` line; 2, a manifest
+ *                                                      naming parts (contracts/LEDGER-LOG.md)
+ *     {incarnation}/ckpt-{version:012}-{attempt}/{part:06}.jsonl
+ *                                                      a part of a format-2 checkpoint
  * ─────────────────────────────────────────────────────────────────────────────────────────
  */
 
@@ -351,6 +356,75 @@ export const LEDGER_SEGMENT_MAX_BYTES = 4 * 1024 * 1024
 
 export const LEDGER_SEGMENT_KIND = 'viz.ledger.segment'
 export const LEDGER_CHECKPOINT_KIND = 'viz.ledger.checkpoint'
+export const LEDGER_CHECKPOINT_PART_KIND = 'viz.ledger.checkpoint.part'
+
+/**
+ * Checkpoint formats (the header `v` of `ckpt-{version}.jsonl`). Added 2026-11-19 (review S-2's
+ * full fix; contracts/LEDGER-LOG.md, "Checkpoints"):
+ *
+ *   1  the whole state as ONE `base` line after the header (`encodeLedgerSegment` with kind
+ *      checkpoint). Still written for a state no larger than one part, and always read.
+ *   2  a MANIFEST: the header, then one `LedgerCheckpointManifest` line naming `parts` part
+ *      objects (`ledgerCheckpointPartKey`), each a part header and up to
+ *      `LEDGER_CHECKPOINT_PART_MAX_BYTES` of `LedgerCheckpointRecord` lines. The manifest is
+ *      written last, with `If-None-Match: *`: a checkpoint without one does not exist.
+ *
+ * Segments stay at `LEDGER_SEGMENT_VERSION` 1. A reader that knows only format 1 sees a format-2
+ * manifest as `unsupported` and passes over it for an older checkpoint or the base: a
+ * checkpoint is only an accelerator, so nothing is skipped (COMPATIBILITY.md §3.2).
+ */
+export const LEDGER_CHECKPOINT_VERSION = 2
+/** A checkpoint part holds records up to this many bytes; one larger record goes alone. */
+export const LEDGER_CHECKPOINT_PART_MAX_BYTES = 1024 * 1024
+
+/** The one line of a format-2 checkpoint after its header: the state at `version` that is not in its parts, and what the parts must add up to. */
+export interface LedgerCheckpointManifest {
+  ledgerIncarnation: number
+  version: number
+  at: number
+  /** Names the parts (`ledgerCheckpointPartKey`): 8 lowercase hex digits, new for every attempt at a checkpoint. */
+  attempt: string
+  /** Part objects `0 … parts - 1`. Zero for an empty state. */
+  parts: number
+  /** Records in all parts, by kind. A reader that counts other totals has not read this checkpoint. */
+  files: number
+  tombstones: number
+  /** Bytes of all parts (informational). */
+  bytes: number
+  /** Every stream at `version`, as in a `base`. */
+  watermarks: Watermark[]
+  previousIncarnations: { shard: string; previousIncarnation: number }[]
+}
+
+/** The first line of a checkpoint part. Readers ignore fields they do not know. */
+export interface LedgerCheckpointPartHeader {
+  v: number
+  kind: typeof LEDGER_CHECKPOINT_PART_KIND
+  tenant: string
+  ledgerIncarnation: number
+  version: number
+  attempt: string
+  part: number
+  /** Number of record lines that follow. */
+  records: number
+}
+
+/** The flush unit a file came from (null or absent for a compaction output). */
+export interface LedgerUnitRef {
+  shard: string
+  incarnation: number
+  seqLo: number
+  seqHi: number
+}
+
+/**
+ * One line of a checkpoint part: exactly one of `file` (a live file at the checkpoint's version,
+ * with its precedence and, for a flush file, its unit) or `tombstone` (a removed file whose
+ * object may still exist; removed at or below the version). Any other shape is refused.
+ */
+export type LedgerCheckpointRecord =
+  | { file: LiveFile & { unit?: LedgerUnitRef | null } }
+  | { tombstone: Tombstone }
 
 /** The first line of a segment or checkpoint object. Readers ignore fields they do not know. */
 export interface LedgerSegmentHeader {
@@ -377,6 +451,16 @@ export const ledgerSegmentKey = (tenant: string, ledgerIncarnation: number, firs
 export const ledgerCheckpointKey = (tenant: string, ledgerIncarnation: number, version: number): string =>
   `${ledgerIncarnationPrefix(tenant, ledgerIncarnation)}ckpt-${pad12(version)}.jsonl`
 
+/** A checkpoint attempt's name: 8 lowercase hex digits. */
+export const LEDGER_CHECKPOINT_ATTEMPT = /^[0-9a-f]{8}$/
+
+/**
+ * A part of a format-2 checkpoint. Under `ckpt-{version}-{attempt}/`, so no part key parses as a
+ * segment, a checkpoint or a first-layout change for a reader of an older release.
+ */
+export const ledgerCheckpointPartKey = (tenant: string, ledgerIncarnation: number, version: number, attempt: string, part: number): string =>
+  `${ledgerIncarnationPrefix(tenant, ledgerIncarnation)}ckpt-${pad12(version)}-${attempt}/${String(part).padStart(6, '0')}.jsonl`
+
 /**
  * `startAfter` for an R2 listing of an incarnation's segments that START after `version`:
  * every `seg-{first}-…` with `first > version`, and nothing before. (`~` sorts after the
@@ -389,6 +473,8 @@ export const ledgerSegmentsStartingAfter = (tenant: string, ledgerIncarnation: n
 export type LedgerLogObject =
   | { type: 'segment'; ledgerIncarnation: number; firstVersion: number; lastVersion: number }
   | { type: 'checkpoint'; ledgerIncarnation: number; version: number }
+  /** Added with checkpoint format 2: one part of a checkpoint (its manifest is the `checkpoint`). */
+  | { type: 'checkpoint_part'; ledgerIncarnation: number; version: number; attempt: string; part: number }
   | { type: 'base'; ledgerIncarnation: number }
   | { type: 'change'; ledgerIncarnation: number; version: number }
 
@@ -396,6 +482,8 @@ export type LedgerLogObject =
 export function parseLedgerLogKey(key: string): LedgerLogObject | null {
   let m = /\/(\d+)\/seg-(\d{12,})-(\d{12,})\.jsonl$/.exec(key)
   if (m) return { type: 'segment', ledgerIncarnation: Number(m[1]), firstVersion: Number(m[2]), lastVersion: Number(m[3]) }
+  m = /\/(\d+)\/ckpt-(\d{12,})-([0-9a-f]{8})\/(\d{6,})\.jsonl$/.exec(key)
+  if (m) return { type: 'checkpoint_part', ledgerIncarnation: Number(m[1]), version: Number(m[2]), attempt: m[3]!, part: Number(m[4]) }
   m = /\/(\d+)\/ckpt-(\d{12,})\.jsonl$/.exec(key)
   if (m) return { type: 'checkpoint', ledgerIncarnation: Number(m[1]), version: Number(m[2]) }
   m = /\/(\d+)\/base\.json$/.exec(key)
@@ -501,4 +589,291 @@ export function decodeLedgerSegment(
     changes.push(c)
   }
   return { status: 'ok', header, changes }
+}
+
+// ───────────────────────────── checkpoint format 2 ─────────────────────────────
+
+/** The manifest of a format-2 checkpoint: a header (`v` 2, kind checkpoint) and the manifest line. */
+export function encodeLedgerCheckpointManifest(tenant: string, m: LedgerCheckpointManifest): string {
+  if (!LEDGER_CHECKPOINT_ATTEMPT.test(m.attempt)) throw new Error('ledger checkpoint: bad attempt name')
+  // Field order is fixed by these literals: a retried write must repeat the bytes.
+  const header: LedgerSegmentHeader = { v: LEDGER_CHECKPOINT_VERSION, kind: LEDGER_CHECKPOINT_KIND, tenant, ledgerIncarnation: m.ledgerIncarnation, firstVersion: m.version, lastVersion: m.version, changes: 1 }
+  const line: LedgerCheckpointManifest = {
+    ledgerIncarnation: m.ledgerIncarnation, version: m.version, at: m.at, attempt: m.attempt, parts: m.parts, files: m.files, tombstones: m.tombstones, bytes: m.bytes,
+    watermarks: m.watermarks, previousIncarnations: m.previousIncarnations,
+  }
+  return `${JSON.stringify(header)}\n${JSON.stringify(line)}\n`
+}
+
+/** One part of a format-2 checkpoint: its header, then each record's JSON on its own line. */
+export function encodeLedgerCheckpointPart(tenant: string, ledgerIncarnation: number, version: number, attempt: string, part: number, records: readonly string[]): string {
+  if (!LEDGER_CHECKPOINT_ATTEMPT.test(attempt)) throw new Error('ledger checkpoint: bad attempt name')
+  if (records.some((r) => r.includes('\n'))) throw new Error('ledger checkpoint: a record spans lines')
+  const header: LedgerCheckpointPartHeader = { v: LEDGER_CHECKPOINT_VERSION, kind: LEDGER_CHECKPOINT_PART_KIND, tenant, ledgerIncarnation, version, attempt, part, records: records.length }
+  return `${JSON.stringify(header)}\n${records.map((r) => `${r}\n`).join('')}`
+}
+
+export type DecodedLedgerCheckpointManifest =
+  | { status: 'ok'; header: LedgerSegmentHeader; manifest: LedgerCheckpointManifest }
+  | { status: 'unsupported'; reason: string }
+  | { status: 'corrupt'; reason: string }
+
+const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
+
+/**
+ * Check the header line of a checkpoint object (`ckpt-{version}.jsonl`) against its key: its
+ * format version (1 or 2), kind, tenant, incarnation and version. Null if it may be read.
+ */
+export function checkpointHeaderProblem(
+  header: unknown,
+  expected: { ledgerIncarnation: number; version: number; tenant?: string },
+): { status: 'unsupported' | 'corrupt'; reason: string } | null {
+  const h = header as LedgerSegmentHeader
+  if (typeof h !== 'object' || h === null) return { status: 'corrupt', reason: 'the header line is not an object' }
+  if (typeof h.v !== 'number' || !Number.isSafeInteger(h.v) || h.v < 1) return { status: 'corrupt', reason: `unreadable checkpoint version ${JSON.stringify(h.v)}` }
+  if (h.v > LEDGER_CHECKPOINT_VERSION) return { status: 'unsupported', reason: `checkpoint version ${h.v}; this code reads up to ${LEDGER_CHECKPOINT_VERSION}` }
+  if (h.kind !== LEDGER_CHECKPOINT_KIND) return { status: h.kind === LEDGER_SEGMENT_KIND ? 'corrupt' : 'unsupported', reason: `a ${JSON.stringify(h.kind)} where a checkpoint was expected` }
+  if (expected.tenant !== undefined && h.tenant !== expected.tenant) return { status: 'corrupt', reason: `tenant ${JSON.stringify(h.tenant)}, expected ${expected.tenant}` }
+  if (h.ledgerIncarnation !== expected.ledgerIncarnation || h.firstVersion !== expected.version || h.lastVersion !== expected.version || h.changes !== 1) {
+    return { status: 'corrupt', reason: `header says ${h.ledgerIncarnation}/${h.firstVersion}-${h.lastVersion} (${h.changes} lines), the key ${expected.ledgerIncarnation}/${expected.version}` }
+  }
+  return null
+}
+
+/** Decode the manifest line of a format-2 checkpoint whose header passed `checkpointHeaderProblem`. */
+export function decodeLedgerCheckpointManifest(line: string | object, header: LedgerSegmentHeader): DecodedLedgerCheckpointManifest {
+  const corrupt = (reason: string): DecodedLedgerCheckpointManifest => ({ status: 'corrupt', reason })
+  if (header.v !== 2) return { status: 'unsupported', reason: `a manifest of checkpoint version ${header.v}` }
+  let m: LedgerCheckpointManifest
+  try {
+    m = (typeof line === 'string' ? JSON.parse(line) : line) as LedgerCheckpointManifest
+  } catch {
+    return corrupt('the manifest line is not JSON')
+  }
+  if (typeof m !== 'object' || m === null) return corrupt('the manifest line is not an object')
+  if (m.ledgerIncarnation !== header.ledgerIncarnation || m.version !== header.firstVersion) return corrupt(`the manifest is ${m.ledgerIncarnation}/${m.version}, its header ${header.ledgerIncarnation}/${header.firstVersion}`)
+  if (typeof m.attempt !== 'string' || !LEDGER_CHECKPOINT_ATTEMPT.test(m.attempt)) return corrupt('bad attempt name')
+  if (!isCount(m.parts) || !isCount(m.files) || !isCount(m.tombstones) || !isCount(m.bytes)) return corrupt('bad part or record counts')
+  if (!Array.isArray(m.watermarks) || !Array.isArray(m.previousIncarnations)) return corrupt('no watermarks')
+  return { status: 'ok', header, manifest: m }
+}
+
+export type DecodedLedgerCheckpointPart =
+  | { status: 'ok'; header: LedgerCheckpointPartHeader; records: LedgerCheckpointRecord[] }
+  | { status: 'unsupported'; reason: string }
+  | { status: 'corrupt'; reason: string }
+
+/**
+ * Parse and check one part of a format-2 checkpoint against what its manifest and key say.
+ * Strict on structure and counts, tolerant of unknown fields inside a record, refusing a record
+ * that is neither a file nor a tombstone.
+ */
+export function decodeLedgerCheckpointPart(
+  body: string,
+  expected: { tenant?: string; ledgerIncarnation: number; version: number; attempt: string; part: number },
+): DecodedLedgerCheckpointPart {
+  const corrupt = (reason: string): DecodedLedgerCheckpointPart => ({ status: 'corrupt', reason })
+  const lines = body.split('\n')
+  if (lines.length < 2 || lines[lines.length - 1] !== '') return corrupt('not a header line followed by record lines, each ending in a newline')
+  let h: LedgerCheckpointPartHeader
+  try {
+    h = JSON.parse(lines[0]!) as LedgerCheckpointPartHeader
+  } catch {
+    return corrupt('the header line is not JSON')
+  }
+  if (typeof h !== 'object' || h === null) return corrupt('the header line is not an object')
+  if (typeof h.v !== 'number' || !Number.isSafeInteger(h.v) || h.v < 2) return corrupt(`unreadable part version ${JSON.stringify(h.v)}`)
+  if (h.v > LEDGER_CHECKPOINT_VERSION) return { status: 'unsupported', reason: `checkpoint part version ${h.v}; this code reads up to ${LEDGER_CHECKPOINT_VERSION}` }
+  if (h.kind !== LEDGER_CHECKPOINT_PART_KIND) return { status: 'unsupported', reason: `unknown log object kind ${JSON.stringify(h.kind)}` }
+  if (expected.tenant !== undefined && h.tenant !== expected.tenant) return corrupt(`tenant ${JSON.stringify(h.tenant)}, expected ${expected.tenant}`)
+  if (h.ledgerIncarnation !== expected.ledgerIncarnation || h.version !== expected.version || h.attempt !== expected.attempt || h.part !== expected.part) {
+    return corrupt(`part header says ${h.ledgerIncarnation}/${h.version}/${h.attempt}/${h.part}, expected ${expected.ledgerIncarnation}/${expected.version}/${expected.attempt}/${expected.part}`)
+  }
+  if (!isCount(h.records) || h.records !== lines.length - 2) return corrupt(`${lines.length - 2} record lines; the header says ${h.records}`)
+  const records: LedgerCheckpointRecord[] = []
+  for (let i = 1; i < lines.length - 1; i++) {
+    let r: Record<string, unknown>
+    try {
+      r = JSON.parse(lines[i]!) as Record<string, unknown>
+    } catch {
+      return corrupt(`line ${i + 1} is not JSON`)
+    }
+    if (typeof r !== 'object' || r === null) return corrupt(`line ${i + 1} is not an object`)
+    const f = r.file as LiveFile | undefined
+    const t = r.tombstone as Tombstone | undefined
+    if ((f === undefined) === (t === undefined)) return { status: 'unsupported', reason: `line ${i + 1} is neither one file nor one tombstone` }
+    if (f !== undefined && (typeof f !== 'object' || f === null || typeof f.key !== 'string' || typeof f.precedence !== 'number' || typeof f.precedenceLow !== 'number')) return corrupt(`line ${i + 1}: a malformed file`)
+    if (t !== undefined && (typeof t !== 'object' || t === null || typeof t.key !== 'string' || !isCount(t.version) || t.version > h.version)) return corrupt(`line ${i + 1}: a malformed tombstone`)
+    records.push(r as LedgerCheckpointRecord)
+  }
+  return { status: 'ok', header: h, records }
+}
+
+// ───────────────────────────── reading a large line in bounded memory ─────────────────────────────
+
+/**
+ * Reads ONE JSON object given in pieces, without holding it: each element of a top-level array
+ * member is parsed on its own and handed to `onElement(member, element)` as soon as it ends;
+ * every other top-level member is collected in `scalars`. Memory is bounded by the largest
+ * element, not by the object. For a `base` change (contracts/LEDGER-LOG.md, "The base") or a
+ * format-1 checkpoint, whose size grows with the state: `added`, `tombstones` and `units` arrive
+ * file by file. Malformed input throws.
+ */
+export class JsonObjectStream {
+  private depth = 0
+  private inString = false
+  private escaped = false
+  /** Text of what is being collected: a top-level member, or an element of `array`. */
+  private buf = ''
+  /** The top-level member whose array is being streamed, or null. */
+  private array: string | null = null
+  private started = false
+  done = false
+  readonly scalars: Record<string, unknown> = {}
+
+  constructor(private readonly onElement: (member: string, element: unknown) => void) {}
+
+  push(s: string): void {
+    let from = 0
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i)
+      if (this.inString) {
+        if (this.escaped) this.escaped = false
+        else if (c === 0x5c) this.escaped = true
+        else if (c === 0x22) this.inString = false
+        continue
+      }
+      if (this.done) {
+        if (c !== 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) throw new Error('json stream: text after the object')
+        continue
+      }
+      if (!this.started) {
+        if (c === 0x7b) {
+          this.started = true
+          this.depth = 1
+          from = i + 1
+        } else if (c !== 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) throw new Error('json stream: not an object')
+        continue
+      }
+      if (c === 0x22) this.inString = true
+      else if (c === 0x5b && this.depth === 1) {
+        // A member whose value is an array: what was collected is `"name":`.
+        const head = (this.buf + s.slice(from, i)).trim()
+        if (!head.endsWith(':')) throw new Error('json stream: an array where a member name was expected')
+        const name = JSON.parse(head.slice(0, -1)) as unknown
+        if (typeof name !== 'string') throw new Error('json stream: a member name that is not a string')
+        this.array = name
+        this.depth = 2
+        this.buf = ''
+        from = i + 1
+      } else if (c === 0x7b || c === 0x5b) this.depth++
+      else if (c === 0x5d && this.depth === 2 && this.array !== null) {
+        this.element(this.buf + s.slice(from, i))
+        this.array = null
+        this.depth = 1
+        this.buf = ''
+        from = i + 1
+      } else if (c === 0x7d && this.depth === 1) {
+        this.member(this.buf + s.slice(from, i))
+        this.buf = ''
+        this.depth = 0
+        this.done = true
+        from = i + 1
+      } else if (c === 0x7d || c === 0x5d) {
+        this.depth--
+        if (this.depth < 1) throw new Error('json stream: unbalanced brackets')
+      } else if (c === 0x2c && this.depth === 2 && this.array !== null) {
+        this.element(this.buf + s.slice(from, i), true)
+        this.buf = ''
+        from = i + 1
+      } else if (c === 0x2c && this.depth === 1) {
+        this.member(this.buf + s.slice(from, i))
+        this.buf = ''
+        from = i + 1
+      }
+    }
+    if (!this.done) this.buf += s.slice(from)
+  }
+
+  /** The object has ended; returns its non-array members. Throws if it has not. */
+  end(): Record<string, unknown> {
+    if (!this.done || this.inString) throw new Error('json stream: the object does not end')
+    return this.scalars
+  }
+
+  private element(text: string, more = false): void {
+    if (text.trim() === '') {
+      if (more) throw new Error('json stream: an empty array element')
+      return
+    }
+    this.onElement(this.array!, JSON.parse(text))
+  }
+
+  private member(text: string): void {
+    if (text.trim() === '') return // after a streamed array
+    Object.assign(this.scalars, JSON.parse(`{${text}}`) as Record<string, unknown>)
+  }
+}
+
+/**
+ * Read a ledger log object (a segment, a checkpoint, or a first-layout `base.json`) from a
+ * stream, line by line. The line at index `streamLine` (0 is the header of a segment or
+ * checkpoint; a `base.json` has no header, so its object is line 0) is fed through
+ * `JsonObjectStream` with `onElement`, and its other members come back in `streamed`; every
+ * other line is parsed whole and handed to `onLine`. Lines are those of the contract: each ends
+ * in `\n` (a `base.json` may lack the final one).
+ */
+export async function readLedgerLogStream(
+  body: ReadableStream<Uint8Array>,
+  streamLine: number | null,
+  onElement: (member: string, element: unknown) => void,
+  onLine: (index: number, value: unknown) => void,
+): Promise<{ lines: number; streamed: Record<string, unknown> | null }> {
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  let index = 0
+  let pending = ''
+  let json: JsonObjectStream | null = streamLine === 0 ? new JsonObjectStream(onElement) : null
+  let streamed: Record<string, unknown> | null = null
+  const text = (s: string, last: boolean) => {
+    let from = 0
+    for (;;) {
+      const nl = s.indexOf('\n', from)
+      const piece = nl === -1 ? s.slice(from) : s.slice(from, nl)
+      if (json) json.push(piece)
+      else pending += piece
+      if (nl === -1) break
+      // A line ends.
+      if (json) {
+        streamed = json.end()
+        json = null
+      } else {
+        onLine(index, JSON.parse(pending))
+        pending = ''
+      }
+      index++
+      if (index === streamLine) json = new JsonObjectStream(onElement)
+      from = nl + 1
+    }
+    if (last) {
+      if (json) {
+        // A `base.json`: one object, with or without a final newline.
+        if (!json.done) throw new Error('ledger log: the last line does not end')
+        streamed = json.end()
+        index++
+      } else if (pending.trim() !== '') throw new Error('ledger log: the last line does not end in a newline')
+    }
+  }
+  const reader = body.getReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      text(decoder.decode(value, { stream: true }), false)
+    }
+    text(decoder.decode(), true)
+  } catch (e) {
+    await reader.cancel().catch(() => undefined)
+    throw e
+  }
+  return { lines: index, streamed }
 }
