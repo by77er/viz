@@ -53,6 +53,15 @@ pub fn parse(s: &str) -> Result<JValue<'_>, String> {
 }
 
 impl<'a> Reader<'a> {
+    /// A reader positioned at byte `i` of `s`.
+    pub fn with_pos(s: &'a str, i: usize) -> Self {
+        Reader { s, b: s.as_bytes(), i }
+    }
+
+    pub fn pos(&self) -> usize {
+        self.i
+    }
+
     fn ws(&mut self) {
         while self.i < self.b.len() && matches!(self.b[self.i], b' ' | b'\t' | b'\n' | b'\r') {
             self.i += 1;
