@@ -1553,6 +1553,59 @@ delays its rule's first evaluation by an interval.
 any read); Cloudflare's measured `cpuTime` for the same runs disagrees with the model by more than
 its margin (then the prices change); or the platform exposes CPU time to the running code.
 
+## D54. The query coordinator reads each shard's tail filtered and paged under its byte budget; split parts read the rest in their key range only when it does not fit
+
+**Decision.** Every tail read from `query/` passes the shard's `TailReadOptions` (D48): the hull
+of the read's times, its metric names when every range pins one, and the label values every
+range pins (the cardinality report sends no filter: it counts a tail series by the span of its
+rows in each batch, which a time filter changes at the window's edges). Pages are followed to the
+end under the read's byte budget (one place: `maxFetchBytes` minus the files; split execution,
+label endpoints, the report: `maxFetchBytes`); a refusal on any page re-plans or fails exactly as
+on the first. **The coordinator reads first.** When the tail fits, it is cut by part there as
+before. When it does not, and the query decomposes over a split key the shards can cut
+(`series_id`: `without` at most `__type__`/`__unit__`), the query is split (from one place too):
+the coordinator cuts what it read by `series_id` in JavaScript (bytes copied, the shard's own
+key-range cut), and each part reads the rest of each shard's tail, after the last batch the
+coordinator read and through the end it saw, with the filter and its key range, under its own
+`maxFetchBytes`; it cuts its rows by split key and refuses the query if any belong to another
+part (a series carrying `__type__`/`__unit__`). Otherwise the query is refused with
+`max_fetch_bytes`. A shard of the previous release answers with its whole tail and is used as
+before; a leaf of the previous release, which ignores the rest it is given, is refused (503).
+
+**Alternatives.** (a) Every split part always reads its own key range (shard/README.md "Needed
+changes" 2): no coordinator cap on the tail at all. (b) The coordinator always reads the whole
+tail and cuts it (before: refused above 16 MiB, and a shard's answer above 32 MiB cannot cross
+RPC at all). (c) When the tail does not fit, parts re-read it from the watermark and the
+coordinator drops what it read. (d) Cut what the coordinator read by split key in the engine
+(`splitTails`), as for a tail that fits. (e) A size probe (`describe`) before choosing.
+
+**Why.** A filtered read costs the shard a scan of its whole tail per call (D48, "Cost of it"),
+and the shard is the object that acknowledges writes: (a) makes every split query scan each
+shard's tail `L` times where one scan serves a tail that fits, and leaves the coordinator without
+the tail's size to choose `L`. (b) is the wall CARDINALITY.md measured. (c) scans and moves the
+coordinator's part twice. (d) peaked at 132.6 MiB of WASM memory at the coordinator for a
+21 MiB tail of 100,000 series (measured here, local workerd, `query/test/tail.bench.ts`), past a
+128 MB isolate; the JavaScript cut held 2.0 MiB of WASM for the same query and answer.
+(e) costs a call before every split for a figure that is only an upper bound. Measured here
+(local workerd, load 7.6 to 9.3; `query/README.md`, "Measurements"): with 21 MiB unflushed, the
+previous release refused every call (`max_fetch_bytes`); with the cap raised it answered the
+one-series query in 267 ms and this release in 149 ms with identical bodies, reading 0.002 MiB of
+tail instead of 21; with 68 MiB unflushed (one scrape per request), every call of the previous
+release failed (an RPC answer over 32 MiB) and this release answered all but the label calls.
+
+**Cost of it.** A split whose tail does not fit asks each shard once from the coordinator and
+once per part (each a scan of the shard's tail from where it starts). A tail whose series carry
+`__type__` or `__unit__` and does not fit is refused, not answered. The tail's series are
+estimated from the pages read, so a split over a tail with no lake below it can be sized too
+small and refused by the per-leaf budgets. When the coordinator's first page is already over
+budget, the end of the tail is not known and parts read to the shard's end (a part may see an
+append others do not).
+
+**Would change if.** Shards skip batches without scanning them (per-batch metadata, D48 (b): then
+(a) costs little and the coordinator need not read first); the split key stops leaving out
+`__type__`/`__unit__` for series that carry them, or shards can cut by a key that leaves labels
+out; or the tail contract moves into `contracts/` with a size field (then (e) is free).
+
 ## D55. The publisher re-bases a tenant from its newest checkpoint, else its base, streamed into SQLite; a re-base that cannot be read whole publishes nothing
 
 **Decision.** When the publisher meets a ledger incarnation it has no cursor in (a new tenant, a
@@ -1634,3 +1687,71 @@ publisher's CPU limit on Cloudflare (then progress kept across invocations, or a
 "Would change if" says); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
 files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
 part is checked on its own as it arrives, not only the totals at the end).
+
+## D56. The label endpoints are counted over leaves by ranges of `series_id`, each part listing its files in waves and counting distinct series by id
+
+**Decision.** `/labels`, `/label/<name>/values` and `/series` run in one place while the series
+files their window needs fit `maxFetchBytes` and the tail fits the coordinator (D54). Otherwise
+they are counted over `L` parts, as the cardinality report is (D32): part `j` lists the series
+whose `series_id` is in its key range, reading its row groups of every series file (from the
+fragments) in waves of at most half of `maxFetchBytes`, one engine call a wave, and its part of
+the tail. The engine returns, with each listing, the ids of the series it listed, so a series in
+many files counts once; the coordinator merges the parts' lists in the engine's order (UTF-8
+byte order) and adds their counts against `maxMetadataSeries`. The answer is byte-identical to
+one place. `L` is the series in the files over `cardinalitySplitAboveSeries`, at least 2.
+Prometheus' `limit` is applied to the merged list (the first `limit`, and its warning).
+
+**Alternatives.** (a) Each part reads its row groups in one engine call under a per-part byte
+cap. (b) A listing session kept in the engine (files added one by one, like a split leaf's
+gathering session). (c) Raise the cap for label calls and stay in one place. (d) Parts by file
+(each part some of the files): a series would be counted by several parts. (e) Cut each part's
+listing at `limit` in the engine.
+
+**Why.** A series file of under 100,000 series is one row group (D41), so (a) gives every part
+every file whole, and its cap refuses exactly where one place did (measured here: 190,000 series
+over an hour are 72 files and 18.71 MiB, each read whole by each of 4 parts). Waves bound what a
+part holds whatever the window. (b) is the same bound with more engine code and a session that
+dies with the instance; returning ids is a few lines. (c) is what the isolate cannot hold: one
+place held 61 to 64 MiB of WASM for these calls with 18.71 MiB read (local workerd). (d) cannot
+count distinct series without shipping them. (e) changes nothing the cap protects (the part's
+whole listing is still built) and is not exact for `/series` without a merge by label set.
+
+**Cost of it.** `L` parts read every series file of under 100,000 series `L` times (74.8 MiB for
+18.7 MiB at 4 parts; Cache API hits after the first) and decode its `series_id` column; locally
+the calls took 2 to 2.6 times one place with its cap raised (load 8 to 11). A part's ids live in
+its memory (8 bytes and a set entry per series of the part).
+
+**Would change if.** Series files are cut into more row groups by `series_id` (then each part
+reads its own range: `partPlan` already plans it); the metadata calls get an index of their own
+(label values per metric, written at flush); or Prometheus clients come to depend on `limit`
+shortening the work, not only the answer (then (e)).
+
+## D59. Split parts read their `series_id` range of the series files too, and the split runs again with whole series files if any part sees a series whose key is not its id
+
+**Decision.** When a split's key is the `series_id` of every series that carries no
+`__type__`/`__unit__` (D54's "the shards can cut"), its readers read the series files by the
+part's id range (`part_plan`), as they read the sample files (D41). Every reader counts the
+series it sees whose id is in its range but whose key is another part's (`foreign`, ABI 5); if
+any part of the split saw one, the coordinator drops the answers and runs the split again with
+the series files read by name and time.
+
+**Alternatives.** (a) Keep reading series files by name and time (every part reads every
+series file). (b) Read by id range only when the key leaves nothing out (`without` empty), where
+no series can be foreign: almost never for a `rate` under an aggregation, which leaves out
+`__type__`/`__unit__`. (c) Read by id range and ignore the check, as no ingest path adds
+`__type__` today. (d) Each part asks its neighbours for its strays.
+
+**Why (measured here, native, `engine/query/examples/series_ranges.rs`, load 8 to 9).** At
+1,000,000 series over 32 parts (a series file of ten row groups) the parts read 640.7 MiB of
+series files and spent 36.4 s of reader CPU by name and time, 82.5 MiB and 9.9 s by id range,
+with identical extracts; at 100,000 series (one row group a file) nothing changed, so (a) only
+costs where splits are already expensive. (c) answers wrong for a tenant whose clients send
+`__type__` (a part misses its own series whose id lies elsewhere: shown in
+`tests/series_ranges.rs`). The check is exact because every such series is seen by the reader of
+the part its id is in. (d) is a second round of calls for a case that is rare.
+
+**Cost of it.** A split over series that carry `__type__`/`__unit__` reads twice (once by id
+range, then whole). Readers parse the labels of the series they see either way.
+
+**Would change if.** The split key stops leaving out `__type__`/`__unit__` (then nothing is
+foreign), or series files are written per part (then the check is moot).

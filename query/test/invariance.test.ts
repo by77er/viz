@@ -89,14 +89,16 @@ describe('results do not depend on where the rows are', () => {
     const tail = await runAll(w, 'all tail')
     const c1 = tail.costs.get('a/rate-sum-by')!
     expect(c1).toMatchObject({ files: 0, shards: 2 })
-    expect(c1.tail).toBeGreaterThanOrEqual(4)
+    // The shards return only the batches that hold this query's metric in its window (D48):
+    // both requests' batches, of one shard or both, depending on where the senders went.
+    expect(c1.tail).toBeGreaterThanOrEqual(2)
 
     // ── 2. The sealed segment is flushed; the second request stays in the tail. ──
     await flushAll(w)
     const mixed = await runAll(w, 'lake + tail')
     const c2 = mixed.costs.get('a/rate-sum-by')!
     expect(c2.files).toBeGreaterThanOrEqual(2) // a samples file and its series file, at least
-    expect(c2.tail).toBeGreaterThanOrEqual(2)
+    expect(c2.tail).toBeGreaterThanOrEqual(1)
     expect(c2.tail).toBeLessThan(c1.tail) // only rows above the watermark
     // The rewritten samples are in the lake with their old value and in the tail with the new one.
     expect(tail.bodies.get('a/sel-rewritten')).toContain(',"values":[')

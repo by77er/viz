@@ -39,7 +39,7 @@ pub mod split;
 
 pub use error::{ErrorType, Limit, QueryError};
 pub use limits::{estimate_depth, Limits};
-pub use meta::{label_names, label_names_with, label_values, label_values_with, series, series_with, Labels};
+pub use meta::{label_names, label_names_part, label_names_with, label_values, label_values_part, label_values_with, series, series_part, series_with, Labels, MetaPart};
 pub use plan::{plan, plan_with, FetchRange};
 pub use prune::{file_plan, files_needed, part_plan, part_sids, sample_plan, scan_rows, FilePlan, FileRead, PartFilter, ReadPlan, RANGE_GAP};
 pub use source::{to_storage_matcher, Stats, StorageSource};
