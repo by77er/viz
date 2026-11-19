@@ -255,6 +255,64 @@ describe('rebuild reproduces exactly the state of a live ledger', () => {
     expect(await dumpState(l)).toEqual(live)
   })
 
+  it('a checkpoint is the state at its own version, also when one drain writes several segments (only the last ends at the committed version)', async () => {
+    const { tenant, l } = open(tenantName('ckptsplit'))
+    await setCheckpointEvery(l, 1)
+    // Three changes of about 1.5 MB: one drain holds them all, but a segment takes at most
+    // 4 MiB, so it writes [1..3] and then [4]. A checkpoint after [1..3] would have to be the
+    // state at version 3, which the drain cannot read any more: none is written there.
+    const big = (n: number) => 'x'.repeat(750_000) + n
+    await l.addUnit(unit(1, 1, [file('a1', { index: big(1) }), file('a2', { index: big(2) })]))
+    await l.addUnit(unit(2, 2, [file('b1', { index: big(3) }), file('b2', { index: big(4) })]))
+    await l.addUnit(unit(3, 3, [file('c1', { index: big(5) }), file('c2', { index: big(6) })]))
+    await l.drain()
+    const inc = await incarnationOf(l)
+    expect((await readSegments(tenant)).filter((s) => s.ledgerIncarnation === inc).map((s) => [s.first, s.last])).toEqual([[0, 0], [1, 3], [4, 4]])
+    const ckpts = (await listAll(`${logPrefix(tenant)}${inc}/ckpt-`)).map((key) => (parseLedgerLogKey(key) as { version: number }).version)
+    expect(ckpts).toEqual([4])
+    // With the newest checkpoint unreadable the rebuild starts from whatever older one there
+    // is (none, here: the base) and must still come back exactly.
+    const live = await dumpState(l)
+    await env.BUCKET.put(`${env.CELL}/${ledgerCheckpointKey(tenant, inc, 4)}`, 'not a checkpoint\n')
+    const result: RebuildResult = await runInDurableObject(l, async (i: Ledger, state) => {
+      await state.storage.deleteAll()
+      return i.rebuildFromLog()
+    })
+    expect(result.checkpoint).toBeNull()
+    expect(await dumpState(l)).toEqual(live)
+  })
+
+  it('a change committed while a segment is being written goes in the next segment, never lost with the first one\'s rows', async () => {
+    const { tenant, l } = open()
+    await l.addUnit(pair(1, 1))
+    const proto = Ledger.prototype as unknown as { putLogObject(this: Ledger, key: string, body: string): Promise<void> }
+    const real = proto.putLogObject
+    let release!: () => void
+    const held = new Promise<void>((r) => { release = r })
+    let entered!: () => void
+    const inPut = new Promise<void>((r) => { entered = r })
+    proto.putLogObject = async function (this: Ledger, key: string, body: string) {
+      entered()
+      await held // the PUT of the first segment is slow
+      return real.call(this, key, body)
+    }
+    let first: Promise<unknown>
+    try {
+      first = l.drain()
+      await inPut
+      await l.addUnit(pair(2, 2)) // commits while the segment [1..2] is in flight
+    } finally {
+      proto.putLogObject = real
+      release()
+    }
+    await first!
+    await l.drain()
+    const inc = await incarnationOf(l)
+    expect((await readSegments(tenant)).filter((s) => s.ledgerIncarnation === inc).map((s) => [s.first, s.last])).toEqual([[0, 0], [1, 2], [3, 3]])
+    expect(await loggedOf(l)).toBe(2)
+    expect(await l.outboxDepth()).toBe(0)
+  })
+
   it('an unreadable checkpoint is passed over: the rebuild uses an older one or the base, and still comes back exactly', async () => {
     const { tenant, l } = open(tenantName('badckpt'))
     await history(l, 32, 4)
