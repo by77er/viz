@@ -1,0 +1,24 @@
+{
+ "format": "store.slo-state",
+ "version": 1,
+ "rows": [
+  {
+   "rule_key": "872cfda92b6e0660",
+   "part": "coarse",
+   "block": 1424460,
+   "body": "{\"v\":1,\"series\":[{\"k\":\"488bdcb81aee8d83\",\"b\":[1,2,101,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],\"t\":[100,200,200,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]}]}"
+  },
+  {
+   "rule_key": "872cfda92b6e0660",
+   "part": "fine",
+   "block": 1139568,
+   "body": "{\"v\":1,\"series\":[{\"k\":\"488bdcb81aee8d83\",\"b\":[1,1,1,100,1,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],\"t\":[100,100,100,100,100,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]}]}"
+  },
+  {
+   "rule_key": "872cfda92b6e0660",
+   "part": "head",
+   "block": 0,
+   "body": "{\"v\":1,\"origin\":48701,\"stepMs\":60000,\"budgetStepMs\":120000,\"lastSlot\":68374084,\"lastCoarse\":34187042,\"lastTs\":4102445088701,\"pruned\":0,\"series\":[{\"k\":\"488bdcb81aee8d83\",\"l\":{},\"last\":{\"page\":{\"value\":20.79999999999998,\"text\":\"error budget burning at 20.8\u00d7 over 10 minutes and 50.5\u00d7 over 2 minutes (page threshold 10\u00d7); 14.4% of the 1 day budget for a 99% objective was spent in the last 10 minutes; the budget is spent over the 6 minutes on record (the window is 1 day) (-1980% left)\",\"detail\":{\"v\":1,\"severity\":\"page\",\"longWindowMs\":600000,\"shortWindowMs\":120000,\"longBurnRate\":20.79999999999998,\"shortBurnRate\":50.49999999999996,\"threshold\":10,\"objective\":0.99,\"windowMs\":86400000,\"spentInLongWindow\":0.1444444444444443,\"budgetRemaining\":-19.79999999999998,\"budgetCoveredMs\":360000,\"exhaustionMs\":null,\"longEvents\":500,\"at\":4102445088701}},\"ticket\":null,\"warming\":null},\"seen\":4102445088701}]}"
+  }
+ ]
+}

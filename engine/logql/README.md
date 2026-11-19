@@ -275,7 +275,37 @@ copies the crate to the scratch directory (never edits the shared tree), applies
 mutation at a time, runs the suites (`props` with 32 cases; `differential` re-exports seed 7
 from the mutant and compares with the recorded Loki answers) and restores the copy.
 
-FILL_MUTANTS
+| # | mutation | unit | api | semantics | conformance | props | differential |
+|---:|---|---|---|---|---|---|---|
+| 1 | range window closed on the left | not caught | caught | caught | not caught | caught | caught |
+| 2 | rate of a log range not divided by the range | not caught | not caught | caught | not caught | not caught | caught |
+| 3 | negated line filters keep matching lines | not caught | not caught | caught | not caught | not caught | caught |
+| 4 | a label value that does not convert drops the line | not caught | not caught | caught | not caught | not caught | caught |
+| 5 | extracted keys starting with a digit not prefixed | not caught | not caught | caught | not caught | not caught | caught |
+| 6 | no _extracted suffix on collision with a stream label | not caught | caught | caught | caught | not caught | caught |
+| 7 | a later error overwrites the first | not caught | not caught | caught | not caught | not caught | not caught |
+| 8 | json parser keeps null members as empty labels | caught | not caught | caught | not caught | not caught | caught |
+| 9 | logfmt keeps empty values without --keep-empty | not caught | not caught | caught | caught | not caught | caught |
+| 10 | unwrapped label kept in the series labels | not caught | not caught | caught | not caught | not caught | caught |
+| 11 | offset sign flipped | not caught | not caught | caught | not caught | caught | caught |
+| 12 | log query end inclusive | not caught | caught | not caught | not caught | not caught | not caught |
+| 13 | direction ignored (always forward) | not caught | caught | caught | not caught | not caught | caught |
+| 14 | __error__ filters not moved after the other label filters | not caught | not caught | caught | not caught | not caught | not caught |
+| 15 | pattern line filter accepts empty captures | not caught | not caught | caught | not caught | not caught | caught |
+| 16 | missing label in a template prints <no value> | caught | not caught | caught | caught | not caught | caught |
+| 17 | by and without swapped in range-aggregation grouping | not caught | caught | caught | not caught | not caught | caught |
+| 18 | absent_over_time takes labels from regex matchers too | not caught | not caught | caught | not caught | not caught | not caught |
+| 19 | line filters after decolorize see the decolorized line | not caught | not caught | caught | not caught | not caught | not caught |
+| 20 | negated line filters pushed down as required literals | not caught | caught | caught | not caught | caught | not caught |
+| 21 | rate_counter ignores counter resets | not caught | not caught | caught | not caught | not caught | not caught |
+| 22 | equal timestamps in a backward log query tie-broken by descending stream labels | not caught | not caught | caught | not caught | not caught | not caught |
+
+All 22 mutants are caught by at least one suite; each was applied to the copy and the copy
+restored after its run. `tests/semantics.rs` catches 21; the differential run catches 14. Mutant 12 (log query end inclusive) survived the first round, because `MemSource`
+already trims to the range so the engine's re-filter was never exercised;
+`extra_rows_from_the_source_are_refiltered` (a source that returns extra rows, as the
+contract allows) was added and catches it. The props column is weak on purpose: the
+properties compare viz with itself.
 
 ### (e) WASM
 

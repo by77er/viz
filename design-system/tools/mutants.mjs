@@ -1,65 +1,53 @@
-// Teeth for check.mjs: break each property it guards, on a copy, and confirm the check fails; then confirm a harmless reformatting passes.
-//   node tools/mutants.mjs [workDir]      (default: a folder in the system temp directory; the source tree is never touched)
-// Prints one row per mutant: what was broken, whether check.mjs caught it, and the first line it printed. Exits non-zero if any mutant
-// survives or the harmless one is refused. R1 to R18 are the v4 review's (reviews/system-v4/review.md, "check.mjs mutants"); N1 to N13 are v5's.
-import { cpSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+// Teeth for the checks: break each property in a copy of the system and confirm the check that guards it fails; confirm the harmless edits pass.
+//   node tools/mutants.mjs [workDir] [--only R1,X5,…] [--json out.json]
+// workDir defaults to $VIZ_MUTANT_DIR, else the system temp directory; it must be outside the tree, which is never edited (AGENTS.md: mutants
+// are applied to a copy in a scratch area; one reached a pull request when applied in place). Each mutant gets a fresh copy of tools/, src/,
+// project/, fixtures/ and the latest review's compositions, with node_modules linked, and the copy is deleted afterwards.
+// The corpus and what each mutant expects: tools/mutants-corpus.mjs. Prints one row per mutant and exits non-zero if any is not as expected.
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir, loadavg, cpus } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
-const root = new URL('..', import.meta.url).pathname, work = process.argv[2] ?? join(tmpdir(), 'viz-mutants')
-const tok = (name, theme, value) => ({ file: 'project/tokens.json', edit: (s) => { const j = JSON.parse(s), k = j.color.tokens.find((x) => x.name === name); if (typeof k.value === 'string') k.value = value; else k.value[theme] = value; return JSON.stringify(j, null, 2) } })
-const css = (from, to) => ({ file: 'src/components.css', edit: (s) => { if (!s.includes(from)) throw new Error('mutant does not apply: ' + from); return s.replace(from, to) } })
-const append = (text) => ({ file: 'src/components.css', edit: (s) => s + '\n' + text + '\n' })
-const M = [
-  // v4 review: caught then, must stay caught
-  ['R1', 'swatch ring removed', css('background: var(--series); box-shadow: 0 0 0 var(--stroke) var(--ground); }', 'background: var(--series); }')],
-  ['R2', 'pressed equal to hover (light)', tok('pressed', 'light', '#ededed')],
-  ['R3', 'series-4 back to v3 #eda100 (light)', tok('series-4', 'light', '#eda100')],
-  ['R4', 'crosshair dot edge to rule', css('stroke: var(--ground); stroke-width: var(--hairline); }\n.vz-plot .vz-dot-named', 'stroke: var(--rule); stroke-width: var(--hairline); }\n.vz-plot .vz-dot-named')],
-  ['R5', 'status-info equal to blue (light)', tok('status-info', 'light', '#1257ff')],
-  ['R6', 'two near-identical neighbours (series-3 a copy of series-2, light)', tok('series-3', 'light', '#bd6a2f')],
-  ['R7', 'a literal 3px', append('.vz-panel-title { margin-top: 3px; }')],
-  ['R8', 'series-other near white (light)', tok('series-other', 'light', '#e8e8e8')],
-  // v4 review: survived then
-  ['R9', 'swatch ring overridden on hover: tr:hover .vz-swatch { box-shadow: none }', append('.vz-table.vz-legend-table tr:hover .vz-swatch { box-shadow: none; }')],
-  ['R10', 'ink-muted on pressed in the legend (the pressed override removed)', css('.vz-table.vz-legend-table tr[data-key]:active .vz-series-rest, ', '')],
-  ['R11', 'ink-muted on rule in the legend (the chosen override removed)', css(', .vz-table.vz-legend-table tr[aria-selected="true"] .vz-series-rest {', ' {')],
-  ['R12', 'the plot filled with hover on hover', append('.vz-plot:hover { background: var(--hover); }')],
-  ['R13', 'series-8 set to status-critical (light)', tok('series-8', 'light', '#e0221b')],
-  ['R14', 'a literal angle (deg)', append('.vz-mark[data-state="warn"] { transform: rotate(45deg); }')],
-  ['R15', 'a literal percentage', append('.vz-skip:focus { left: 37%; }')],
-  ['R16', 'a literal unitless weight', append('.vz-panel-title { font-weight: 600; }')],
-  ['R17', 'an opaque scrim (light)', tok('scrim', 'light', 'rgba(17,17,17,1)')],
-  ['R18', 'harmless: the swatch rule reformatted onto two lines (v4 misfired here)', css('.vz-swatch { display: inline-block; flex: none;', '.vz-swatch {\n  display: inline-block; flex: none;'), 'pass'],
-  // v5
-  ['N1', 'swatch ring removed on a pressed row only', append('.vz-table.vz-legend-table tbody tr[data-key]:active .vz-swatch { box-shadow: none; }')],
-  ['N2', 'neighbours at one lightness (series-2 as dark as series-1, light)', tok('series-2', 'light', '#8a4f1f')],
-  ['N3', 'slot 7 drawn solid (its dash removed)', css('[data-series="7"] { --series: var(--series-7); --pattern: var(--space-2) var(--space-1); }', '[data-series="7"] { --series: var(--series-7); }')],
-  ['N4', 'lines that step back drawn in rule (too faint to follow)', css('.vz-plot[data-emph] .vz-series-g:not([data-emph-on]) .vz-line { stroke: var(--series-other);', '.vz-plot[data-emph] .vz-series-g:not([data-emph-on]) .vz-line { stroke: var(--rule);')],
-  ['N5', 'a breakpoint that is not a token (800px)', append('@container (max-width: 799px) { .vz-split { gap: var(--space-6); } }')],
-  ['N6', 'token-lint-ignore without a reason', append('.vz-panel-title { margin-top: 3px; } /* token-lint-ignore */')],
-  ['N7', 'a series in the dark theme below 3:1 on rule', tok('series-1', 'dark', '#1f4f7a')],
-  ['N8', 'chosen legend row text in ink-muted', append('.vz-table.vz-legend-table tr[aria-selected="true"] td { color: var(--ink-muted); }')],
-  // v5, after the restart: the R10 survivor's cause, the legend ring, and the Waterfall and Log components
-  ['N9', 'a waterfall bar drawn in rule (too faint to read as a span)', append('.vz-waterfall-bar { background: var(--rule); }')],
-  ['N10', 'the legend row\'s ring back to an outline on the row (painted under its first cell)', css('.vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td:first-child {', '.vz-table.vz-legend-table tr:has(.vz-series:focus-visible) { outline: var(--stroke) solid var(--focus); }\n.vz-legend-unused td:first-child {')],
-  ['N11', 'a matched search term in ink-muted (4.19:1 on its rule fill)', append('.vz-match { color: var(--ink-muted); }')],
-  ['N12', '"3 spans inside" in ink-muted (3.67:1 when its row is pressed)', append('.vz-waterfall-inside { color: var(--ink-muted); }')],
-  ['N13', 'a literal line count for a cut log message', append('.vz-log-text { -webkit-line-clamp: 4; }')],
-]
-const load = loadavg().map((x) => x.toFixed(2)).join(' '), rows = []
-let bad = 0
-for (const [id, what, m, expect = 'fail'] of M) {
-  rmSync(work, { recursive: true, force: true }); mkdirSync(join(work, 'project'), { recursive: true })
-  for (const p of ['tools', 'src', 'project/components', 'project/tokens.json']) cpSync(join(root, p), join(work, p), { recursive: true })
-  const f = join(work, m.file); writeFileSync(f, m.edit(readFileSync(f, 'utf8')))
-  const r = spawnSync('node', [join(work, 'tools/check.mjs')], { encoding: 'utf8', cwd: work }), out = (r.stdout + r.stderr).split('\n')
-  const first = out.find((l) => /^(FAIL|LITERAL)/.test(l)) ?? '', got = r.status === 0 ? 'pass' : 'fail', ok = got === expect
-  if (!ok) bad++
-  rows.push(`| ${id} | ${what} | ${expect === 'fail' ? 'caught' : 'passes'} | ${ok ? (expect === 'fail' ? 'caught' : 'passes') : '**' + (expect === 'fail' ? 'SURVIVED' : 'REFUSED') + '**'} | ${first.replace(/\|/g, '\\|').slice(0, 150)} |`)
-  process.stdout.write(`\r${rows.length}/${M.length}`)
+import { fileURLToPath } from 'node:url'
+import { corpus } from './mutants-corpus.mjs'
+export { corpus }
+const root = resolve(new URL('..', import.meta.url).pathname)
+const latest = () => readdirSync(join(root, 'reviews')).filter((d) => /^system-v\d+$/.test(d) && existsSync(join(root, 'reviews', d, 'compositions'))).sort((a, b) => +a.slice(8) - +b.slice(8)).pop()
+
+export function runMutant(m, base = process.env.VIZ_MUTANT_DIR ?? tmpdir()) {
+  base = resolve(base)
+  if (base === root || base.startsWith(root + '/')) throw new Error(`refusing to mutate inside the tree (${base})`)
+  mkdirSync(base, { recursive: true })
+  const dir = mkdtempSync(join(base, `viz-mutant-${m.id}-`))
+  try {
+    for (const p of ['tools', 'src', 'project', 'fixtures', 'package.json']) cpSync(join(root, p), join(dir, p), { recursive: true })
+    const rev = latest(); if (rev) cpSync(join(root, 'reviews', rev, 'compositions'), join(dir, 'reviews', rev, 'compositions'), { recursive: true })
+    symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'))
+    const f = join(dir, m.edit.file); writeFileSync(f, m.edit.edit(readFileSync(f, 'utf8')))
+    const run = m.run ?? 'check', node = (args) => spawnSync('node', args, { encoding: 'utf8', cwd: dir, maxBuffer: 64 << 20 })
+    let r
+    if (run === 'check') r = node(['tools/check.mjs', ...(m.args ?? []), ...(m.render ? [] : ['--no-render'])])
+    else if (run === 'chart') r = node(['--test', '--test-concurrency=1', 'tools/test/chart-rules.test.mjs'])
+    else if (run === 'audit') { for (const s of ['tools/build.mjs', 'tools/reference.mjs']) node([s]); r = node(['tools/audit.mjs', '--quick', ...(m.args ?? [])]) }
+    const out = (r.stdout ?? '') + (r.stderr ?? ''), got = r.status === 0 ? 'pass' : 'fail', expect = m.expect ?? 'fail'
+    const missing = got === 'fail' ? (m.all ?? []).filter((re) => !re.test(out)) : []
+    const ok = got === expect && missing.length === 0
+    const first = out.split('\n').find((l) => (run === 'chart' ? /^not ok|^\s+P\d|error:/.test(l) : /^(FAIL|LITERAL)|^\s{4}\w/.test(l))) ?? ''
+    return { id: m.id, what: m.what, run, expect, got, ok, missing: missing.map(String), first: first.trim() }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 }
-rmSync(work, { recursive: true, force: true })
-console.log(`\n\nload average ${load} on ${cpus().length} cores\n\n| Mutant | What was broken | Expected | Result | First line check.mjs printed |\n|---|---|---|---|---|\n` + rows.join('\n'))
-console.log(bad ? `\n${bad} mutant(s) not as expected.` : `\nEvery mutant caught; the harmless change passes.`)
-process.exit(bad ? 1 : 0)
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  const args = process.argv.slice(2), opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined }
+  const base = args.find((a, i) => !a.startsWith('--') && !['--only', '--json'].includes(args[i - 1])), only = opt('--only')?.split(',')
+  const list = corpus.filter((m) => !only || only.includes(m.id)), rows = [], load = loadavg().map((x) => x.toFixed(2)).join(' ')
+  for (const m of list) { const r = runMutant(m, base); rows.push(r); process.stdout.write(`\r${rows.length}/${list.length} ${m.id}${r.ok ? '' : ' NOT AS EXPECTED'}        `) }
+  const esc = (s) => String(s).replace(/\|/g, '\\|').slice(0, 150)
+  console.log(`\n\nload average ${load} on ${cpus().length} cores\n\n| Mutant | What was broken | Run | Expected | Result | First line the check printed |\n|---|---|---|---|---|---|`)
+  for (const r of rows) console.log(`| ${r.id} | ${esc(r.what)} | ${r.run} | ${r.expect === 'fail' ? 'caught' : 'passes'} | ${r.ok ? (r.expect === 'fail' ? 'caught' : 'passes') : '**' + (r.expect === 'fail' ? (r.got === 'pass' ? 'SURVIVED' : 'CAUGHT, but not every literal: ' + r.missing.join(' ')) : 'REFUSED') + '**'} | ${esc(r.first)} |`)
+  const bad = rows.filter((r) => !r.ok), groups = {}; for (const r of rows) { const g = r.id.replace(/\d+$/, ''); (groups[g] ??= [0, 0])[1]++; if (r.ok) groups[g][0]++ }
+  console.log('\n' + Object.entries(groups).map(([g, [ok, n]]) => `${g}: ${ok} of ${n} as expected`).join('; '))
+  console.log(bad.length ? `${bad.length} mutant(s) not as expected: ${bad.map((r) => r.id).join(', ')}` : 'Every mutant caught; every harmless edit passes.')
+  if (opt('--json')) writeFileSync(opt('--json'), JSON.stringify({ at: new Date().toISOString(), load, cores: cpus().length, rows }, null, 1))
+  process.exit(bad.length ? 1 : 0)
+}

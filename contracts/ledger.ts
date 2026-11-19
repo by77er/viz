@@ -322,7 +322,12 @@ export interface LedgerJanitorRpc {
  *                                                      incarnation's first segment begins
  *                                                      with its `base`
  *     {incarnation}/ckpt-{version:012}.jsonl           a checkpoint: the whole state at
- *                                                      `version`, for a bounded rebuild
+ *                                                      `version`, for a bounded rebuild. Its
+ *                                                      header's `v` says the format: 1, the
+ *                                                      state as one `base` line; 2, a manifest
+ *                                                      naming parts (contracts/LEDGER-LOG.md)
+ *     {incarnation}/ckpt-{version:012}-{attempt}/{part:06}.jsonl
+ *                                                      a part of a format-2 checkpoint
  * ─────────────────────────────────────────────────────────────────────────────────────────
  */
 
@@ -351,6 +356,75 @@ export const LEDGER_SEGMENT_MAX_BYTES = 4 * 1024 * 1024
 
 export const LEDGER_SEGMENT_KIND = 'viz.ledger.segment'
 export const LEDGER_CHECKPOINT_KIND = 'viz.ledger.checkpoint'
+export const LEDGER_CHECKPOINT_PART_KIND = 'viz.ledger.checkpoint.part'
+
+/**
+ * Checkpoint formats (the header `v` of `ckpt-{version}.jsonl`). Added 2026-11-19 (review S-2's
+ * full fix; contracts/LEDGER-LOG.md, "Checkpoints"):
+ *
+ *   1  the whole state as ONE `base` line after the header (`encodeLedgerSegment` with kind
+ *      checkpoint). Still written for a state no larger than one part, and always read.
+ *   2  a MANIFEST: the header, then one `LedgerCheckpointManifest` line naming `parts` part
+ *      objects (`ledgerCheckpointPartKey`), each a part header and up to
+ *      `LEDGER_CHECKPOINT_PART_MAX_BYTES` of `LedgerCheckpointRecord` lines. The manifest is
+ *      written last, with `If-None-Match: *`: a checkpoint without one does not exist.
+ *
+ * Segments stay at `LEDGER_SEGMENT_VERSION` 1. A reader that knows only format 1 sees a format-2
+ * manifest as `unsupported` and passes over it for an older checkpoint or the base: a
+ * checkpoint is only an accelerator, so nothing is skipped (COMPATIBILITY.md §3.2).
+ */
+export const LEDGER_CHECKPOINT_VERSION = 2
+/** A checkpoint part holds records up to this many bytes; one larger record goes alone. */
+export const LEDGER_CHECKPOINT_PART_MAX_BYTES = 1024 * 1024
+
+/** The one line of a format-2 checkpoint after its header: the state at `version` that is not in its parts, and what the parts must add up to. */
+export interface LedgerCheckpointManifest {
+  ledgerIncarnation: number
+  version: number
+  at: number
+  /** Names the parts (`ledgerCheckpointPartKey`): 8 lowercase hex digits, new for every attempt at a checkpoint. */
+  attempt: string
+  /** Part objects `0 … parts - 1`. Zero for an empty state. */
+  parts: number
+  /** Records in all parts, by kind. A reader that counts other totals has not read this checkpoint. */
+  files: number
+  tombstones: number
+  /** Bytes of all parts (informational). */
+  bytes: number
+  /** Every stream at `version`, as in a `base`. */
+  watermarks: Watermark[]
+  previousIncarnations: { shard: string; previousIncarnation: number }[]
+}
+
+/** The first line of a checkpoint part. Readers ignore fields they do not know. */
+export interface LedgerCheckpointPartHeader {
+  v: number
+  kind: typeof LEDGER_CHECKPOINT_PART_KIND
+  tenant: string
+  ledgerIncarnation: number
+  version: number
+  attempt: string
+  part: number
+  /** Number of record lines that follow. */
+  records: number
+}
+
+/** The flush unit a file came from (null or absent for a compaction output). */
+export interface LedgerUnitRef {
+  shard: string
+  incarnation: number
+  seqLo: number
+  seqHi: number
+}
+
+/**
+ * One line of a checkpoint part: exactly one of `file` (a live file at the checkpoint's version,
+ * with its precedence and, for a flush file, its unit) or `tombstone` (a removed file whose
+ * object may still exist; removed at or below the version). Any other shape is refused.
+ */
+export type LedgerCheckpointRecord =
+  | { file: LiveFile & { unit?: LedgerUnitRef | null } }
+  | { tombstone: Tombstone }
 
 /** The first line of a segment or checkpoint object. Readers ignore fields they do not know. */
 export interface LedgerSegmentHeader {
@@ -377,6 +451,16 @@ export const ledgerSegmentKey = (tenant: string, ledgerIncarnation: number, firs
 export const ledgerCheckpointKey = (tenant: string, ledgerIncarnation: number, version: number): string =>
   `${ledgerIncarnationPrefix(tenant, ledgerIncarnation)}ckpt-${pad12(version)}.jsonl`
 
+/** A checkpoint attempt's name: 8 lowercase hex digits. */
+export const LEDGER_CHECKPOINT_ATTEMPT = /^[0-9a-f]{8}$/
+
+/**
+ * A part of a format-2 checkpoint. Under `ckpt-{version}-{attempt}/`, so no part key parses as a
+ * segment, a checkpoint or a first-layout change for a reader of an older release.
+ */
+export const ledgerCheckpointPartKey = (tenant: string, ledgerIncarnation: number, version: number, attempt: string, part: number): string =>
+  `${ledgerIncarnationPrefix(tenant, ledgerIncarnation)}ckpt-${pad12(version)}-${attempt}/${String(part).padStart(6, '0')}.jsonl`
+
 /**
  * `startAfter` for an R2 listing of an incarnation's segments that START after `version`:
  * every `seg-{first}-…` with `first > version`, and nothing before. (`~` sorts after the
@@ -389,6 +473,8 @@ export const ledgerSegmentsStartingAfter = (tenant: string, ledgerIncarnation: n
 export type LedgerLogObject =
   | { type: 'segment'; ledgerIncarnation: number; firstVersion: number; lastVersion: number }
   | { type: 'checkpoint'; ledgerIncarnation: number; version: number }
+  /** Added with checkpoint format 2: one part of a checkpoint (its manifest is the `checkpoint`). */
+  | { type: 'checkpoint_part'; ledgerIncarnation: number; version: number; attempt: string; part: number }
   | { type: 'base'; ledgerIncarnation: number }
   | { type: 'change'; ledgerIncarnation: number; version: number }
 
@@ -396,6 +482,8 @@ export type LedgerLogObject =
 export function parseLedgerLogKey(key: string): LedgerLogObject | null {
   let m = /\/(\d+)\/seg-(\d{12,})-(\d{12,})\.jsonl$/.exec(key)
   if (m) return { type: 'segment', ledgerIncarnation: Number(m[1]), firstVersion: Number(m[2]), lastVersion: Number(m[3]) }
+  m = /\/(\d+)\/ckpt-(\d{12,})-([0-9a-f]{8})\/(\d{6,})\.jsonl$/.exec(key)
+  if (m) return { type: 'checkpoint_part', ledgerIncarnation: Number(m[1]), version: Number(m[2]), attempt: m[3]!, part: Number(m[4]) }
   m = /\/(\d+)\/ckpt-(\d{12,})\.jsonl$/.exec(key)
   if (m) return { type: 'checkpoint', ledgerIncarnation: Number(m[1]), version: Number(m[2]) }
   m = /\/(\d+)\/base\.json$/.exec(key)

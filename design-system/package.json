@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node tools/build.mjs && node tools/reference.mjs",
+    "build": "node tools/build.mjs && node tools/reference.mjs && node fixtures/build.mjs",
     "check": "node tools/check.mjs",
-    "check:app": "node tools/check.mjs ../app/src"
+    "check:app": "node tools/check.mjs ../app/src",
+    "test": "node --test --test-concurrency=1 'tools/test/*.test.mjs'",
+    "test:slow": "VIZ_SLOW=1 node --test --test-concurrency=1 'tools/test/*.test.mjs'",
+    "audit": "node tools/audit.mjs",
+    "mutants": "node tools/mutants.mjs"
   },
   "devDependencies": {
     "css-tree": "3.2.1",

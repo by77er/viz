@@ -128,7 +128,7 @@ const upAll = [{ matchers: [{ name: '__name__', op: '=', value: 'up' }], minTs: 
 const fp = engine.filePlan([frag, '?', frag], [...upAll, { matchers: [{ name: '__name__', op: '=', value: 'down' }], minTs: T, maxTs: T }], 0)
 check('filePlan: by name and time; an unparsable fragment is read whole', fp[0].read === 'whole' && fp[0].rows === 400 && fp[1].read === 'whole' && fp[1].rows === null, JSON.stringify(fp))
 const pp = engine.partPlan([frag], upAll, 0, 2 ** 20, 0)
-check('partPlan: the part holding small ids reads one row group and the footer', JSON.stringify(pp[0]) === JSON.stringify({ rows: 100, read: [[4, 1000], [4004, 500]] }), JSON.stringify(pp))
+check('partPlan: the part holding small ids reads one row group and the footer', pp[0].rows === 100 && JSON.stringify(pp[0].read) === JSON.stringify([[4, 1000], [4004, 500]]), JSON.stringify(pp))
 const sp = engine.samplePlan([], [frag, '?'], upAll)
 check('samplePlan: with no series file, nothing is selected; unknown stays whole', sp.series === 0 && sp.files[0].read === 'skip' && sp.files[1].read === 'whole', JSON.stringify(sp))
 const bad = errorOf(() => engine.labelNames({ seriesFiles: [sparseFile(100, [{ offset: 90, bytes: new Uint8Array(20) }])], sampleFiles: [], tailBatches: [] }, [], 0, T))
