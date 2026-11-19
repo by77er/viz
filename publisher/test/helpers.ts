@@ -95,6 +95,17 @@ export const mirror = async (tenant: string, cell: string, opts: { skip?: number
   await copyLog(tenant, env.CELL, cell, opts)
 }
 
+/**
+ * Remove a tenant's checkpoints from a cell's copy of its log. A re-base starts from the newest
+ * checkpoint, so a test about how SEGMENTS are read (a hole, an object of a newer version, a
+ * backlog) drops them: otherwise the publisher legitimately starts past what the test put there.
+ */
+export const dropCheckpoints = async (cell: string, tenant: string) => {
+  const keys = (await listKeys(`${cell}/ledger/tenant=${tenant}/`)).filter((k) => k.includes('/ckpt-'))
+  if (keys.length > 0) await env.BUCKET.delete(keys)
+  return keys.length
+}
+
 export const copyLog = async (tenant: string, fromCell: string, toCell: string, opts: { skip?: number[]; upTo?: number } = {}) => {
   const from = `${fromCell}/ledger/tenant=${tenant}/`
   let cursor: string | undefined

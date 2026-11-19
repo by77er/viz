@@ -215,7 +215,7 @@ fn many_row_groups_and_metrics_prune_consistently() {
     }
     let rows_ref: Vec<(&[(&str, &str)], i64, f64)> = rows.iter().map(|(l, t, v)| (l.as_slice(), *t, *v)).collect();
     let b = batch_of(&rows_ref);
-    let files = encode_segment_with(&[&b.bytes()], &WriteOptions { max_row_group_rows: 64 }).unwrap();
+    let files = encode_segment_with(&[&b.bytes()], &WriteOptions { max_row_group_rows: 64, ..Default::default() }).unwrap();
     let mut lake = Lake::default();
     lake.add(files);
     let input = lake.input(&[]);
@@ -269,7 +269,7 @@ proptest! {
         let j = j_sel.index(k + 1);
         let (min_ts, max_ts) = if full_range { ALL } else { (TS[lo] - (lo % 2) as i64, TS[hi] + (hi % 2) as i64) };
         let bytes: Vec<Vec<u8>> = batches.iter().map(|b| b.bytes()).collect();
-        let opts = WriteOptions { max_row_group_rows: cap };
+        let opts = WriteOptions { max_row_group_rows: cap, ..Default::default() };
 
         let mut lake = Lake::default();
         let mut by_day: std::collections::BTreeMap<String, (Vec<Vec<u8>>, Vec<Vec<u8>>)> = Default::default();

@@ -2,8 +2,8 @@
 // run the tests that should notice, expect them to FAIL, restore the source.
 //   node scripts/mutants.mjs [part] [substring of a mutant name]      (from stack/)
 //   MUTANT_FILES=compact/,janitor/ node scripts/mutants.mjs all          only mutants in those files
-// Parts: trigger, compaction, precedence, deletion, limit, review. Paths are relative to the
-// root of the tree the script sits in.
+// Parts: trigger, compaction, precedence, deletion, limit, review, publication. Paths are
+// relative to the root of the tree the script sits in.
 //
 // AGENTS.md (Evidence): mutants are applied to a COPY of the tree in a scratch area, never in
 // place in the shared checkout (a mutant left in place was once captured for main). The script
@@ -39,6 +39,8 @@ const T = {
   flushUnit: ['flush', `npx vitest run ${W} test/flush.test.ts`],
   cron: ['stack', `npx vitest run ${W} test/cron.test.ts`],
   stackGolden: ['stack', `npx vitest run ${W} test/golden.test.ts`],
+  janitorPub: ['janitor', `npx vitest run ${W} test/publication.test.ts`],
+  stackPub: ['stack', `npx vitest run ${W} test/publisher.test.ts`],
 }
 
 const mutants = [
@@ -283,6 +285,37 @@ const mutants = [
     "inputs.join('\\n')", "inputs.join(',')"],
   ['review', 'encoding: a flush file key keeps nine hex digits of its hash', 'flush/src/keys.ts', T.flushGolden,
     "-${p.seqHi}-${p.sha256Hex.slice(0, 8)}.parquet`", "-${p.seqHi}-${p.sha256Hex.slice(0, 9)}.parquet`"],
+  // ── The publisher wired in (D34, D15) and deletion gated on publication (DESIGN §5.2, §5.3) ──
+  ['publication', 'the deletion gate is ignored: the ledger alone decides', 'janitor/src/janitor.ts', T.janitorPub,
+    '    const doomed = (released ? keys.filter((k) => released!.has(k)) : keys).slice(0, want)', '    const doomed = keys.slice(0, want)'],
+  ['publication', 'a key the publisher releases is deleted although the ledger does not offer it', 'janitor/src/janitor.ts', T.janitorPub,
+    '    const doomed = (released ? keys.filter((k) => released!.has(k)) : keys).slice(0, want)', '    const doomed = (released ? [...new Set([...keys.filter((k) => released!.has(k)), ...released])] : keys).slice(0, want)'],
+  ['publication', 'a publisher that cannot answer releases everything (fails open)', 'janitor/src/janitor.ts', T.janitorPub,
+    '      const batch = await ledger.deletable({ minAgeMs: graceMs, limit: 1 })\n      return { deleted: [], waiting: batch.waiting + batch.tombstones.length, publisher: why }', '      gate = null'],
+  ['publication', "the publisher's answer is awaited without a bound", 'janitor/src/janitor.ts', T.janitorPub,
+    '      released = new Set(await within(gate.safeToDelete(tenant), timeoutMs, `the publisher of ${cell}`))', '      released = new Set(await gate.safeToDelete(tenant))'],
+  ['publication', 'a held-back head starves the released keys behind it', 'janitor/src/janitor.ts', T.janitorPub,
+    '      if (keys.length < limit || limit >= 10_000) break\n      continue', '      break'],
+  ['publication', 'what was deleted is not acknowledged to the publisher', 'janitor/src/janitor.ts', T.janitorPub,
+    '  const ack = [...deleted]', '  const ack: string[] = []'],
+  ['publication', 'maintenance does not nudge the publisher', 'stack/src/maintain.ts', T.stackPub,
+    "    nudged = await nudge(env.PUBLISHER, env.CELL || 'cell-0', [tenant], publisherTimeoutMs)\n", '    nudged = true\n'],
+  ['publication', 'a nudge that may not have been recorded does not make the tenant due again', 'stack/src/maintain.ts', T.stackPub,
+    '    if (!nudged) due.push(Date.now() + HOUR_MS)\n', ''],
+  ['publication', 'a deployment without a publisher still nudges (every tenant due hourly)', 'stack/src/maintain.ts', T.stackPub,
+    '  if (env.PUBLISHER) {\n    nudged = await nudge(', '  if (true) {\n    nudged = await nudge('],
+  ['publication', 'the nudge waits as long as the publisher takes', 'stack/src/maintain.ts', T.stackPub,
+    "    nudged = await nudge(env.PUBLISHER, env.CELL || 'cell-0', [tenant], publisherTimeoutMs)", "    nudged = await nudge(env.PUBLISHER, env.CELL || 'cell-0', [tenant], 2 ** 31 - 1)"],
+  ['publication', 'maintenance deletes without asking the publisher', 'stack/src/maintain.ts', T.stackPub,
+    '  const purged = await purgeTenant(env, tenant, { graceMs: deleteGraceMs, publisherTimeoutMs })', '  const purged = await purgeTenant({ ...env, PUBLISHER: undefined }, tenant, { graceMs: deleteGraceMs, publisherTimeoutMs })'],
+  ['publication', 'a removal waiting only for publication is looked at every grace (hourly)', 'stack/src/maintain.ts', T.stackPub,
+    '    else due.push(Date.now() + (opts.publicationRecheckMs ?? PUBLICATION_RECHECK_MS))', '    else due.push(Date.now() + Math.max(deleteGraceMs, 60_000))'],
+  ['publication', 'the flush path nudges the publisher', 'stack/src/maintain.ts', T.stackPub,
+    '  await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant: result.tenant, wrote: true })\n}', "  await nudge(env.PUBLISHER, env.CELL || 'cell-0', [result.tenant])\n  await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant: result.tenant, wrote: true })\n}"],
+  ['publication', 'ingest asks the publisher before acknowledging', 'stack/src/index.ts', T.stackPub,
+    '  fetch: (req, env) => edge.fetch(req, env),', "  fetch: async (req, env) => ((await (await import('../../publisher/src/nudge')).nudge(env.PUBLISHER, env.CELL || 'cell-0', ['ingest'])), edge.fetch(req, env)),"],
+  ['publication', 'the cron nudges the publisher (an idle deployment wakes it hourly)', 'stack/src/index.ts', T.triggers,
+    '  const [f, m] = await Promise.allSettled([sweepPending(env, { now }), enqueueDue(env, now)])', "  const [f, m] = await Promise.allSettled([sweepPending(env, { now }), enqueueDue(env, now), import('../../publisher/src/nudge').then((x) => x.nudge(env.PUBLISHER, env.CELL || 'cell-0', ['cron']))])"],
 ]
 
 const [part, only] = process.argv.slice(2)

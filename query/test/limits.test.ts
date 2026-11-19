@@ -33,6 +33,7 @@ describe('limits', () => {
       maxFetchBytes: 16 << 20, maxScanSamples: 3_000_000, maxFiles: 2_000, timeoutMs: 30_000,
       splitAboveSamples: 1_500_000, splitAboveSeries: 15_000, maxQuerySamples: 64_000_000, maxQuerySeries: 640_000, maxQueryScanSamples: 100_000_000, maxQueryFetchBytes: 512 << 20,
       maxQueryFiles: 20_000, maxLeaves: 32, maxCardinalitySeries: 1_000_000, maxCardinalityPairs: 400_000, cardinalitySplitAboveSeries: 50_000,
+      maxMetadataSeries: 200_000,
     })
   })
 
@@ -73,8 +74,8 @@ describe('limits', () => {
     await setLimits(w.a.name, { maxSteps: 40 })
     const steps = await range('up')
     expect([steps.status, await steps.json()]).toEqual([400, { status: 'error', errorType: 'bad_data', error: 'exceeded maximum resolution of 40 points per timeseries. Try decreasing the query resolution (?step=XX)' }])
-    // The label endpoints obey the limits too.
-    await setLimits(w.a.name, { maxSeries: 3 })
+    // The label endpoints obey their own series limit (they read no samples).
+    await setLimits(w.a.name, { maxMetadataSeries: 3 })
     for (const path of ['/api/v1/labels', '/api/v1/label/job/values', '/api/v1/series?match[]=up']) {
       const res = await api(w.a.key, path)
       expect([path, res.status, (await res.json<{ error: string }>()).error]).toEqual([path, 422, expect.stringMatching(/^query exceeded limit max_series: /)])

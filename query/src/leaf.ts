@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
-import { type FetchRange, type Grid, type LeafBudget, type QueryLimits, createQueryEngine } from '../../engine/wasm-query/js/index'
+import { type FetchRange, type FilePlan, type Grid, type LeafBudget, type QueryLimits, createQueryEngine, sparseFile } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { hash32 } from '../../shard/src/pool'
 
@@ -70,12 +70,20 @@ export const leafHooks: {
   beforeExtract?: (part: number, group: number, attempt: number) => Promise<void>
   /** Called when a split leaf starts; may throw to simulate a failure. */
   beforeEvaluate?: (part: number, attempt: number) => Promise<void>
+  /** Readers read whole files, as before 2026-11-19 (for the measurement's same-run comparison). */
+  wholeReads?: boolean
 } = {}
 
 /** One file a reader reads: its key and the size the ledger recorded. */
 export interface FileRef {
   key: string
   bytes: number
+  /**
+   * Its index fragment (`FileEntry.index`). With it a reader range-reads only its part of
+   * the file (contracts/TABLES.md, "Reading part of a file"); without it (a coordinator of an
+   * earlier release) it reads the whole object, as before.
+   */
+  index?: string
 }
 
 /** A reader's job: sample files (precedence order) and the series files that describe them. */
@@ -145,6 +153,27 @@ export function cacheUrl(item: ReadItem): string {
   return `https://viz-file-cache.invalid/${item.key.split('/').map(encodeURIComponent).join('/')}${range}`
 }
 
+/** Run `f` over `items` with at most `n` in flight; results in the order of `items`. */
+export async function inWaves<I, O>(items: I[], n: number, f: (item: I) => Promise<O>): Promise<O[]> {
+  const out: O[] = new Array(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const k = next++
+      out[k] = await f(items[k]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker))
+  return out
+}
+
+/** Whether reading as `have` fetched every byte `need` reads (`need` is not 'skip'). */
+export function covers(have: FilePlan['read'], need: Exclude<FilePlan['read'], 'skip'>): boolean {
+  if (have === 'whole') return true
+  if (have === 'skip' || need === 'whole') return false
+  return need.every(([o, l]) => have.some(([ho, hl]) => o >= ho && o + l <= ho + hl))
+}
+
 /** The Workers default cache. (Typed here because the DOM library's `CacheStorage` has no `default`.) */
 export const fileCache = (): Cache => (caches as unknown as { default: Cache }).default
 
@@ -172,23 +201,113 @@ export class Leaf extends DurableObject<LeafEnv> {
     if (files.length > MAX_READS_PER_CALL) return { status: 'refused', reason: `${files.length} reads in one call; the limit is ${MAX_READS_PER_CALL}` }
     const total = files.reduce((a, f) => a + f.bytes, 0)
     if (total > MAX_BYTES_PER_CALL) return { status: 'refused', reason: `${total} bytes in one call; the limit is ${MAX_BYTES_PER_CALL}` }
-    const read = await Promise.all(files.map((f) => this.one({ key: f.key }, req.cacheTtlS)))
-    let cacheHits = 0
-    let bytesRead = 0
-    const bytes: Uint8Array[] = []
-    for (let i = 0; i < files.length; i++) {
-      const r = read[i]!
-      if (r.status !== 'ok') return { status: 'missing', key: files[i]!.key }
-      // A short read would be a silent hole: refuse it.
-      if (r.bytes.byteLength !== files[i]!.bytes) return { status: 'refused', reason: `data file ${files[i]!.key}: read ${r.bytes.byteLength} bytes, expected ${files[i]!.bytes}` }
-      if (r.cached) cacheHits++
-      bytesRead += r.bytes.byteLength
-      bytes.push(r.bytes)
+    const stats = { cacheHits: 0, r2Gets: 0, bytesRead: 0 }
+    // Every byte range, at most six in flight (a Durable Object's own connections).
+    const fetch = async (list: { f: FileRef; read: 'whole' | [number, number][] }[]): Promise<{ status: 'ok'; bytes: Uint8Array[] } | { status: 'missing'; key: string } | { status: 'refused'; reason: string }> => {
+      const items: { i: number; item: ReadItem; length: number }[] = []
+      list.forEach(({ f, read }, i) => {
+        if (read === 'whole') items.push({ i, item: { key: f.key }, length: f.bytes })
+        else for (const [offset, length] of read) items.push({ i, item: { key: f.key, offset, length }, length })
+      })
+      const got = await inWaves(items, MAX_READS_PER_CALL, (x) => this.one(x.item, req.cacheTtlS))
+      const parts: { offset: number; bytes: Uint8Array }[][] = list.map(() => [])
+      for (let k = 0; k < items.length; k++) {
+        const r = got[k]!
+        const { i, item, length } = items[k]!
+        if (r.status !== 'ok') return { status: 'missing', key: item.key }
+        // A short read would be a silent hole: refuse it.
+        if (r.bytes.byteLength !== length) return { status: 'refused', reason: `data file ${item.key}: read ${r.bytes.byteLength} bytes, expected ${length}` }
+        if (r.cached) stats.cacheHits++
+        else stats.r2Gets++
+        stats.bytesRead += r.bytes.byteLength
+        parts[i]!.push({ offset: item.offset ?? 0, bytes: r.bytes })
+      }
+      return { status: 'ok', bytes: list.map(({ f, read }, i) => (read === 'whole' ? parts[i]![0]!.bytes : sparseFile(f.bytes, parts[i]!))) }
     }
+    const asRead = (p: FilePlan | undefined): 'whole' | [number, number][] | null => (!p || p.read === 'whole' ? 'whole' : p.read === 'skip' ? null : p.read)
     try {
-      const t0 = performance.now()
-      const ex = leafEngine.extract(bytes.slice(0, req.series.length), bytes.slice(req.series.length), req.without, req.part, req.parts, req.ranges)
-      return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead, cacheHits, r2Gets: files.length - cacheHits, engineMs: performance.now() - t0 }
+      let engineMs = 0
+      const own = <T>(f: () => T): T => {
+        const t = performance.now()
+        try {
+          return f()
+        } finally {
+          engineMs += performance.now() - t
+        }
+      }
+      const ranged = !leafHooks.wholeReads && req.samples.length > 0 && req.samples.every((f) => typeof f.index === 'string') && req.series.every((f) => typeof f.index === 'string')
+      let seriesBytes: Uint8Array[]
+      let sampleBytes: Uint8Array[]
+      if (!ranged) {
+        // Whole objects (a request without fragments).
+        const r = await fetch(files.map((f) => ({ f, read: 'whole' as const })))
+        if (r.status !== 'ok') return r
+        seriesBytes = r.bytes.slice(0, req.series.length)
+        sampleBytes = r.bytes.slice(req.series.length)
+      } else {
+        // One round: the series files by name and time, and of each sample file the row
+        // groups of this part's series_id range (exact for every series whose split key is
+        // its id: all but those that carry a label of `without`). When `without` holds a
+        // label other than `__type__` and `__unit__` (a relabelled or unpinned name, which
+        // most series carry), the part's series are spread over every id, so the sample
+        // files wait for the series files instead (two rounds, nothing read twice).
+        const sp = own(() => leafEngine.filePlan(req.series.map((f) => f.index!), req.ranges))
+        const optimistic = req.without.every((l) => l === '__type__' || l === '__unit__')
+        const pp: FilePlan[] = optimistic ? own(() => leafEngine.partPlan(req.samples.map((f) => f.index!), req.ranges, req.part, req.parts)) : req.samples.map(() => ({ rows: 0, read: 'skip' }))
+        const first: { f: FileRef; read: 'whole' | [number, number][] }[] = []
+        const seriesAt: number[] = []
+        const samplesAt: number[] = []
+        req.series.forEach((f, i) => {
+          const read = asRead(sp[i])
+          seriesAt.push(read === null ? -1 : first.length)
+          if (read !== null) first.push({ f, read })
+        })
+        req.samples.forEach((f, i) => {
+          const read = asRead(pp[i])
+          samplesAt.push(read === null ? -1 : first.length)
+          if (read !== null) first.push({ f, read })
+        })
+        const r = await fetch(first)
+        if (r.status !== 'ok') return r
+        seriesBytes = seriesAt.filter((k) => k >= 0).map((k) => r.bytes[k]!)
+        sampleBytes = samplesAt.filter((k) => k >= 0).map((k) => r.bytes[k]!)
+        if (optimistic) {
+          // The id range is enough unless one of the part's series lies outside it.
+          const ex = own(() => leafEngine.extract(seriesBytes, sampleBytes, req.without, req.part, req.parts, req.ranges))
+          if (ex.strays === 0) return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs }
+        }
+        // What the part's series need, now that their labels are known; a sample file whose
+        // first read does not cover it is read again as planned (a second round). The part's
+        // series by their split key, whatever the other matchers say (the extract applies
+        // them): with only the metric's name left, the engine parses no label set except of a
+        // series that carries a `without` label. A group lists each sample file with its
+        // series file at the same position.
+        const pairOf = req.samples.map((_, i) => (seriesAt[i] !== undefined && seriesAt[i]! >= 0 ? seriesAt.slice(0, i).filter((k) => k >= 0).length : null))
+        const byName = req.ranges.map((x) => ({ ...x, matchers: x.matchers.filter((m) => m.name === '__name__' && m.op === '=') }))
+        const exact = own(() => leafEngine.samplePlan(seriesBytes, req.samples.map((f) => f.index!), byName, { without: req.without, part: req.part, parts: req.parts }, pairOf))
+        const again: { f: FileRef; read: 'whole' | [number, number][] }[] = []
+        const againAt = new Map<number, number>()
+        req.samples.forEach((f, i) => {
+          const need = exact.files[i]!.read
+          if (need === 'skip' || covers(pp[i]!.read, need)) return
+          againAt.set(i, again.length)
+          again.push({ f, read: need })
+        })
+        let more: Uint8Array[] = []
+        if (again.length > 0) {
+          const r2 = await fetch(again)
+          if (r2.status !== 'ok') return r2
+          more = r2.bytes
+        }
+        sampleBytes = []
+        req.samples.forEach((_, i) => {
+          if (exact.files[i]!.read === 'skip') return
+          const k = againAt.get(i)
+          sampleBytes.push(k !== undefined ? more[k]! : r.bytes[samplesAt[i]!]!)
+        })
+      }
+      const ex = own(() => leafEngine.extract(seriesBytes, sampleBytes, req.without, req.part, req.parts, req.ranges))
+      return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs }
     } finally {
       maybeReset()
     }

@@ -776,8 +776,15 @@ backlog, `retryMs`), `sweep` (an orphan grace period after a commit or a failed 
 the grace end of what it marked) and `expire:<table>` (when every snapshot beyond the newest
 two has left the window, so one expiry drops them all). The alarm is set at the earliest
 deadline and deleted when there is none. Nothing on the ingest or flush path, and nothing in
-the cron, calls the publisher. As built in `publisher/`; the stack's two lines are in
-`publisher/README.md`, "Needed changes".
+the cron, calls the publisher. As built in `publisher/`, and **wired since 2026-11-19**:
+`stack/wrangler.jsonc` binds `PUBLISHER` (class `Publisher` of viz-publisher, which deploys
+first), `maintainTenant` (`stack/src/maintain.ts`) ends with the nudge only when that binding
+exists, and the janitor's purge also waits for the publisher's `safeToDelete`
+(`stack/README.md`, "The publisher wired in"; on Cloudflare, `deploy/README.md`, Trial 3).
+A tenant whose only waiting tombstones are held back by the publisher is looked at again after
+6 h, not every delete grace (1 h): a release comes at the earliest a day after the removal is
+published, and in a cell that publishes nothing more it never comes (its objects stay). Would
+change if the publisher told the janitor when it releases a tenant's keys.
 
 **Alternatives.** (a) The ledger's drain nudges after writing a segment: the exact moment a
 change becomes readable, but it puts a publisher call on the drain, which shards wait on for
@@ -858,7 +865,9 @@ Starting an incarnation (a new tenant, storage loss, or storage still on the fir
 runs outside `blockConcurrencyWhile`: requests wait at most 2 s and are then refused as
 retryable (`ledger_unavailable`), and the incarnation's base segment is written to R2
 **before** SQLite commits the incarnation, so one incarnation number never names two
-histories. Contract: `contracts/LEDGER-LOG.md`; code: `ledger/src/ledger.ts`.
+histories. Contract: `contracts/LEDGER-LOG.md`; code: `ledger/src/ledger.ts`. **The checkpoint
+format and the 16 MiB size limit described here are replaced by D47** (2026-11-19: alternative
+(h) below, built); the rest stands.
 
 **Alternatives.** (a) As built before: one R2 object per change, written before the
 mutation answers. (b) One object per change, written in the background. (c) Group commit
@@ -1084,6 +1093,53 @@ balanced tree), or a Workers isolate turns out to have a much smaller stack than
 regexes: users need Unicode classes (then Go's names and its Script semantics are translated
 and measured against the module size), or Tempo moves off Go's `regexp`.
 
+## D41. Series-level pruning: the layout stays; the index fragment gains row-group series bounds and the footer's place; pages are skipped in memory, not fetched
+
+**Decision.** Files keep the layout they had (row groups of at most 100,000 rows, data pages
+of at most 20,000, the offset index the `parquet` crate writes, no column index): the Parquet
+bytes of a flush or a merge do not change. The index fragment (`FileEntry.index`) gains, per
+row group, the `series_id` of its first and last row (`"sid"`), and per file where the footer
+region starts and how long it is (`"foot"`), additively within version 1
+(`contracts/TABLES.md`, "The index fragment"). A reader that has resolved its matchers against
+the `metric_series` files, or owns a split part's `series_id` range, fetches the footer region
+and the row groups whose `(metric_name, series_id)` range can hold one of its series, joining
+ranges less than 64 KiB apart and reading the whole object when the ranges would cover half
+of it; inside a row group it decodes `series_id`, then skips the pages of `ts` and `value` that
+hold none of its rows, by the offset index, without reading them. The query Worker resolves
+first only when the fragments alone say a query does not fit one place and a matcher selects
+by more than the metric name (one more round of reads); split readers read their part's id
+range of each sample file; the label endpoints read series files only (item 3 of
+`query/CARDINALITY.md`, same entry).
+
+**Why (measured here, native, `engine/storage/examples/layout.rs`, one ten-minute unit of
+100,000 series, load average 10 to 15).** What a one-series read fetches is one row group and
+the footer whatever the row-group size: 235 KiB at 100,000 rows, 140 KiB at 50,000, 90 KiB at
+25,000, 79 KiB at 10,000, always two range reads, all under the 1 MB below which a range read
+costs about one round trip (AGENTS.md). Smaller row groups cost where it is scarce: the
+fragment grows from 1.7 KiB a file (10 row groups) to 3.3, 6.5 and 16.2 KiB, against the
+ledger's 16 MiB of state for all of a tenant's live files (`contracts/LEDGER-LOG.md`), and the
+footer from 6.9 to 55 KiB. Smaller pages cost bytes (+1.3 % at 8,192 rows, +4.5 % at 4,096,
++15 % at 1,024) and did not make one-series decode measurably faster (0.5 to 0.7 ms at every
+size: a row group is five pages of 20,000 rows, and four are skipped). A column index (per-page
+min and max) doubled the footer region (16.7 to 34.0 KiB at 4,096-row pages) and would let a
+reader skip decoding `series_id`, which is the cheap column. A selection spread over the id
+space (`namespace=…`, a twentieth of the series) needs every row group at every size measured:
+`series_id` is a hash of all labels (D19), and no layout of this kind changes that.
+
+**Alternatives.** (a) Row groups of 10,000 to 50,000 rows: fewer bytes per one-series read,
+same number of reads, a 2 to 10 times larger fragment in the ledger. (b) Pages of 1,000 to
+8,000 rows, with or without a column index: more bytes on every read, no measured gain.
+(c) Fetching pages (two round trips: footer and page index first, then pages): three ranges a
+row group instead of one, for bytes that are below 1 MB anyway. (d) Row groups cut at metric
+boundaries: unnecessary with first/last-row bounds, which are exact across metrics.
+(e) Locality in the id (D19), or a promoted label before `series_id` in the sort key: the only
+ways to make a `namespace=…` selection read less; a format change, not taken here.
+
+**Would change if.** A range read's cost on Cloudflare grows with its size below 1 MB (then
+smaller row groups, and a fragment that is not in the ledger's state); the ledger's state cap
+is lifted or fragments move out of it; or label locality is added to the sort key (then pages
+pay, and a column index with them).
+
 ## D42. An SLO is a rule kind evaluated from one query per tick and per-series bucket rings, not compiled to recording rules
 
 **Decision.** An SLO burn-rate rule (`contracts/rules.ts`, version 4) is an objective, a
@@ -1207,6 +1263,194 @@ not measured on Cloudflare.
 count query); viz-query exports an RPC entrypoint that streams results (then one query per
 read again); or the Durable Object memory limit changes.
 
+## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
+
+**Decision.** viz-ingest exports `RecordedSamples`, a `WorkerEntrypoint` with one method,
+`write(tenant, batches)` (`contracts/ingest.ts`, `edge/src/recorded.ts`). Only a Worker whose
+deployed config has a service binding naming that entrypoint can call it; the binding carries
+`props: { caller: "viz-ruler" }`, which only that config sets, and any other caller is refused
+(`unauthorized`). The tenant is the explicit first argument, which only a binding holder can
+supply; it is validated (`TENANT_ID`) and every batch id must start with `<tenant>/`. The
+samples go through Remote Write's own validation, routing and appends; the promise resolves
+only when everything is durably appended, and rejects with a message that starts with a
+refusal word otherwise; a call with any invalid sample writes nothing. The ruler's existing
+`SINK` binding path uses it unchanged; its one-line binding is in `edge/README.md`, "Needed
+changes".
+
+**Alternatives.** (a) Remote Write over HTTP with a service key control issues (D39, today): a
+stored key per Ruler object, issued, rotated, propagated through KV (a fresh key may not have
+reached every location) and checked on every request. (b) A shared secret or HMAC in the RPC
+arguments: a secret to store and rotate again. (c) The entrypoint without a `props` check: any
+viz Worker given a binding to it could write any tenant's samples. (d) A status union as the
+result, the house style for RPC: the deployed ruler treats a resolved `write` as written, so a
+resolved refusal would fail open. (e) The tenant in `props`: bindings are static per Worker, and
+the ruler serves every tenant.
+
+**Why.** A service binding cannot be forged from outside the account, and a named entrypoint is
+not reachable over HTTP at all, so the binding is a credential nobody has to store, rotate or
+leak; `props` names the caller so a binding added for another purpose does not grant this. The
+explicit, validated tenant is the same rule as `contracts/control.ts` (the caller derives it
+from its own binding context). Rejecting on every failure matches `Sink.write` in
+`contracts/rules.ts`, which the ruler already implements.
+
+**Cost.** One more export on viz-ingest and one more caller list to keep. The accept window
+applies as for Remote Write: samples of a tick more than an hour old are `invalid`. Measured on
+Cloudflare in Trial 3 (`deploy/README.md`) through a probe Worker standing in for the ruler.
+
+**Would change if.** The platform attests the calling script itself (then `props` is not
+needed); another Worker needs to write derived series (it is added to
+`RECORDED_SAMPLES_CALLERS`); or query gets the same kind of entrypoint (then the ruler needs no
+stored key at all, the ruler's README "Needed changes" 1).
+
+## D46. Release records carry each Durable Object class's schema versions, stamped on every version; a rollback judges every version since its target
+
+**Decision.** `deploy/workers.json` names, for every Durable Object class a Worker defines, its
+`SchemaSpec` or why it keeps no storage. `deploy/lib/schemas.mjs` reads the specs from the
+sources (esbuild bundles just them; a Node `vm` evaluates the bundle with platform modules
+stubbed; `contracts/schema.ts`'s own `schemaRelease` runs on them). Each class's `{latest,
+compat}` goes into the release record and into **every version's `VIZ_SCHEMAS` var**. A
+release is recorded forward-only when a class's `compat` is above what the version serving
+before it declares (a version that declares nothing counts as knowing version 1), or when it
+changes a class's lifecycle. `release.mjs rollback` lists every version Cloudflare keeps of the
+target's Workers that is newer than the target's, reads their `VIZ_SCHEMAS`, and refuses,
+naming the release and migration, when any of them ran a class the target cannot open
+(`canOpen`). A record or a newer version without schema versions is refused, not guessed.
+
+**Alternatives.** (a) Each component publishes a generated `schema.json`: a change in every
+component, and a second copy of the spec to keep in step. (b) `/healthz` reports the schema:
+needs the version running and a request to it, and says nothing about versions no longer
+serving. (c) A high-water mark the deploy writes to KV or R2: extra state outside the versions,
+KV's eventual consistency, and a rollback that restores old versions must still update it. (d)
+The chain of CI release records: artifacts expire after 90 days and the job would download
+many. (e) Judge only the version serving now: a forward-only release that was itself rolled
+back would be missed (A → B → C with C raising `compat`, back to B, then to A passes, and A
+cannot open what C migrated: `deploy/test/release.test.mjs`).
+
+**Why.** A rollback can only reach a version Cloudflare still keeps, and every such version
+carries what its code knows, so the data the check needs lives exactly as long as the rollback
+is possible, with no store of its own. Judging every version since the target is the rule of
+contracts/COMPATIBILITY.md §6 ("the newest release that ever ran since T"), made conservative
+(uploaded versions that never served count too).
+
+**Cost.** A deploy reads one version per Worker (it already did, for the release tag); a
+rollback reads one version per Worker per version since its target (tens of API calls). A spec
+module that does more than define values at load time breaks the read, loudly. Format versions
+(queue messages, R2 objects, KV records) are not recorded yet, so the tool does not refuse a
+rollback below the reader of a format.
+
+**Would change if.** Format versions join the record (the same var can carry them); components
+start publishing their specs in a form the deploy can read directly; or Cloudflare keeps
+deployment metadata that makes listing versions unnecessary.
+
+## D47. A ledger checkpoint larger than one part is written in parts across drains from the state at its version, kept by pre-images; a rebuild streams into SQLite
+
+This replaces the size limit of D36 as the answer to review S-2 (D36's alternative (h)).
+
+**Decision.** A checkpoint of a state above 1 MiB (estimated) is format 2: the drain only begins
+it, in the synchronous step that fixes the segment ending at the committed version (a row with
+that version, the streams and a new attempt name); later drain steps write parts of at most
+1 MiB, one PUT each, files in SQLite's key order then tombstones, a segment always first; then a
+manifest, `If-None-Match: *`, which alone makes the checkpoint exist. Every mutation committed
+meanwhile records, in its own transaction, the pre-image of each file it adds or removes ahead of
+the checkpoint's cursor, and advances a `tracked` version; a part merges live rows with
+pre-images, so it is the state at the checkpoint's version, and a checkpoint whose `tracked` is
+behind (a release without this code committed) is abandoned. Superseded checkpoints are deleted
+only once the newer manifest is in R2, manifests before parts. A state of one part or less is
+still written as one object (format 1). A rebuild loads a checkpoint part by part, a base line
+element by element (`readLedgerLogStream`), into SQLite in transactions of a few hundred rows,
+and a new incarnation's base is written from SQLite in pieces into one conditional PUT; nothing
+holds the state. The size limit becomes the largest state measured (300 MiB, about 300,000
+files), bounded by rebuild time, not memory. Format 1 is still read; migration 3 is additive.
+
+**Alternatives.** (a) Keep the 16 MiB limit (D36). (b) A snapshot: copy the state into SQLite
+tables at the checkpoint's version, then write it out across drains. (c) Rows that record the
+version that added and removed them (soft deletion in `file`), read as of the checkpoint's
+version. (d) The checkpoint as one object written with an R2 multipart upload across drains
+(format 1 unchanged). (e) Build each checkpoint from the previous checkpoint and the segments
+since, outside the object. (f) Write a format-2 checkpoint at every new incarnation as well, and
+never read a base whole. (g) Format 2 for every state.
+
+**Why.** (a) caps a tenant at about 15,800 files. (b) writes every row of the state again at
+every checkpoint (billed row writes, seconds of copying in one step). (c) changes what a row of
+`file` means, so every reader of it changes and the release becomes forward-only. Pre-images cost
+row writes only for files changed ahead of the cursor while a checkpoint is being written, and
+leave `file` as it is. (d) cannot be conditional (`If-None-Match` does not apply to a multipart
+completion), needs parts of 5 MiB, and a rebuild would still parse one object. (e) needs a sorted
+merge of the whole state outside SQLite. (f) doubles a start's writes; a streaming reader of the
+base costs one parser instead and also reads format-1 checkpoints and older bases. (g) would
+change, for every small tenant, the bytes the publisher's golden scenario pins, for no benefit:
+a state of one part is one part either way.
+
+**Measured** (here, workerd, the release before on the same data; `ledger/README.md`): at
+100,000 files the longest step a caller waited for during a checkpoint fell from 0.93 s to 2 ms
+and the process grew by 14 MB instead of 410 MB; a rebuild grew it by 12 MB instead of 196 MB
+but took 5.4 s instead of 3.9 s; at 300,000 files a checkpoint was 272 parts in 9.3 s and a
+rebuild took 20 s, memory flat. Not measured on Cloudflare.
+
+**Cost of it.** About two row writes per file changed during a checkpoint window; a few hundred
+PUTs per checkpoint instead of one (about $0.01 a day for a busy tenant, modelled); slower
+rebuilds; one more table pair and a `tracked` write per mutation while a checkpoint runs. The
+publisher re-bases in bounded memory since D55, but production keeps the 16 MiB limit
+(`LEDGER_STATE_MAX_BYTES` in `stack/wrangler.jsonc`) for this release, for two reasons from the
+review of D47, D48 and D55 (P-2, P-3; `design/reviews/d47-d48-d55.md`):
+- the release before cannot hold or checkpoint a larger state: it answers `full` to every unit
+  and its drain builds the whole state in memory, so a rollback or gradual deployment to it must
+  never meet one;
+- a rebuild above 16 MiB (20 s here at 300 MiB) and a first publication (27–38 s here) have not
+  been measured within a Durable Object's CPU limit on Cloudflare, and neither keeps progress.
+
+**Would change if.** A rebuild of the largest tenants takes too long on Cloudflare (then keep
+rebuild progress, or start a new incarnation from the old checkpoint); R2 offered conditional
+multipart completion (then (d) is simpler); or row writes during checkpoints show on the bill
+(then (c), forward-only). **Production's 16 MiB is lifted** in a later release whose rollback
+floor is this one, once a rebuild and a first publication above it are measured within the CPU
+limit on Cloudflare (S4's ledger at 300,000 files with a storage loss, CPU from the analytics
+API; the publisher's first publication of that tenant), or `limits.cpu_ms` is set and then
+measured. That release's record must say what a rollback below it does to a tenant above
+16 MiB: forward-only for such tenants, or the record carries the state limit and the rollback
+check compares it.
+
+## D48. A shard filters and pages its tail reads itself, by reading the batches it stores; the unpaged form stays
+
+**Decision.** `Shard.tailRead` takes optional `TailReadOptions` (`v` 1): a time range, metric
+names, exact label values and a range of `series_id` (unsigned, the engine's split key), a page
+budget and a cursor. The shard decodes each stored `VZB1` batch above the watermark, keeps the
+series and rows the filter keeps, and returns them as new `VZB1` batches (series entries and
+values copied as bytes), at most `maxBytes` a page, with `page.next` bound to the tenant,
+incarnation, watermark and filter, through the end fixed by the first page. A batch whose kept
+rows do not fit a page is refused (`page_limit`), never cut. Without options the answer is as
+before; an older shard ignores options, so `page` in the answer is how a caller knows. An
+answer without `page` in the middle of a paged read is the whole tail: the caller drops the
+pages it has and uses that answer alone. A new filter field comes with `v` 2, because a `v` 1
+shard ignores fields it does not know and still pages (review of D47, D48 and D55, P-9;
+`shard/README.md`, "Needed changes elsewhere").
+
+**Alternatives.** (a) Filter at the coordinator (as `engine.splitTails` does now). (b) Per-batch
+metadata (time bounds, metric names) written at append and used to skip whole batches. (c) A
+second, filtered RPC method instead of options on `tailRead`. (d) Run the engine (WASM) in the
+shard to select rows. (e) Page without filtering.
+
+**Why.** (a) still moves the whole tail over RPC and counts it against the query's fetch budget:
+the wall CARDINALITY.md measured (20 MB of tail refused every query of a 100,000-series tenant).
+(b) skips little: a batch from one sender spans most metrics and every series key; it would add
+work and a schema change to the append path, which is the shard's hot path. (c) is cleaner under
+skew (an old shard fails the call instead of ignoring options) but asks every caller to change;
+options plus `page` keep current callers working and are additive. (d) puts a second engine
+instance and its memory in the object that acknowledges writes, for a filter that needs a byte
+compare. (e) bounds the answer but not what a query must fetch.
+
+**Measured** (here, workerd; `shard/README.md`): on a 22 MB tail of 100,000 series, one series
+read 248 bytes, a selective query 0.7 MB and a split leaf of 8 2.8 MB, the engine selecting
+identical samples from each; times were the same as reading the whole tail locally (30–140 ms),
+because the shard still scans every batch.
+
+**Cost of it.** The shard now reads inside stored batches (only on this read path; appends do
+not). CPU per filtered read is proportional to the shard's whole tail for that tenant.
+
+**Would change if.** Filtered reads show on the shard's CPU under load (then (b)); queries need
+regular-expression matchers or `without` splits pushed down; or `query/` prefers failing on an
+old shard to filtering itself (then (c)).
+
 ## D49. LogQL's vector operations run on viz-promql's evaluator, through its hooks
 
 **Decision.** `engine/logql` computes LogQL's range aggregations itself, then prints the rest of
@@ -1308,3 +1552,85 @@ delays its rule's first evaluation by an interval.
 (a) or (b)); viz-query's plan reports the series a read returns (then the check can refuse before
 any read); Cloudflare's measured `cpuTime` for the same runs disagrees with the model by more than
 its margin (then the prices change); or the platform exposes CPU time to the running code.
+
+## D55. The publisher re-bases a tenant from its newest checkpoint, else its base, streamed into SQLite; a re-base that cannot be read whole publishes nothing
+
+**Decision.** When the publisher meets a ledger incarnation it has no cursor in (a new tenant, a
+new incarnation after a ledger storage loss, the publisher's own storage loss), it starts from
+the newest checkpoint of that incarnation whose format it reads (1: one object; 2: a manifest
+and parts), else from the base at the head of the incarnation's first segment, then reads the
+segments after it as before. Nothing holds the state: a base line or a format-1 checkpoint is
+parsed element by element (`readLedgerLogStream`), parts are read in order with at most four
+requested ahead, and every R2 operation of a publish takes one of six shared slots (a GET until
+its body has been read). Files and tombstones go into a SQLite table, `stage` (publisher storage
+migration 3, additive); the changes read after the starting point are applied to it; the commit
+takes what the tenant adds and removes as `stage` against `live`, in SQL, and writes manifests a
+page at a time, two at once. A resync from R2 fills `live_next` a manifest at a time and swaps it
+in in one transaction. Each part is checked against its key and its manifest (tenant,
+incarnation, version, attempt, part number, record count), records must be in strictly
+ascending key order across parts, and the parts must add up to the manifest's files, tombstones
+and bytes. Any disagreement stops the tenant (`corrupt`), and so does a part that is not there
+(`incomplete`). Neither publishes anything of the checkpoint, and the alarm retries. A
+checkpoint of a format this code does not read is passed over for the base. The tombstones a
+checkpoint or base carries are recorded as removed by the commit's snapshot, so files a
+checkpoint skipped are released, and only once no snapshot that could reference them is
+retained. A tenant's log is read once per publish, from the lower of its two tables' cursors,
+or from the newest checkpoint or base when either table has no cursor in the newest
+incarnation. A table whose cursor is below the version a log read from a checkpoint or base
+starts at (`log.start`) is re-based too, never planned from its cursor. Planning from the cursor
+would skip the changes between, and they are not in what was read. That skip was the blocker
+P-1 of the review of D47, D48 and D55 (`design/reviews/d47-d48-d55.md`), fixed with its test.
+`planFromCursor` also refuses a log that starts above its cursor, as defence in depth: it is not
+reachable with the first rule. This lets the ledger's 300 MiB apply, but production keeps the
+16 MiB limit (`stack/wrangler.jsonc`) for this release (D47, "Cost of it"; review P-2, P-3).
+
+**Alternatives.** (a) Keep reading the base whole, with the 16 MiB pin (D47's interim). (b) Stream
+the base only and never read checkpoints (the change `ledger/README.md` asked for). (c) A new
+incarnation writes a format-2 checkpoint at start, so a re-base reads parts only (D47's (f)).
+(d) Diff by merging the key-ordered input against `live` read in key order, with no staging.
+(e) On a missing or mismatched part, fall back to the base in the same publish, as the ledger's
+rebuild passes over a bad checkpoint. (f) Keep the published keys of the tenant in memory and
+stream only the files.
+
+**Why.** (a) caps a tenant at about 15,800 files. (b) bounds memory on its own, and is what a
+re-base right after a ledger storage loss does here (a new incarnation has no checkpoint before
+its 256th segment); reading the newest checkpoint is added so that a publisher that re-bases
+late, or after losing its own storage, does not read every segment since the base, and because
+the base is one object of about 250 MB at the limit while parts are 1 MiB reads, a few at a
+time. Measured here at 300,000 files: a re-base took 8.0–8.5 s from parts, 9.6–13.4 s from the base
+and about 17 s from a format-1 checkpoint of the same state, all with identical output.
+(c) doubles a start's writes in the ledger, which owns that choice. (d) needs its input in key
+order: parts are, a base is not promised to be (the contract says nothing of `added`'s order),
+and the changes after the start must be merged in as well. (e) would hide a corrupt checkpoint,
+which should be seen, and turns a missing part, which a retry heals once the newer checkpoint
+is listed, into a read of the whole base; it is kept as what would change. (f) is memory in
+proportion to the tenant: 300,000 keys of about 130 characters are tens of MB of the 128 MB.
+
+**Measured** (here, local workerd, `publisher/bench/`, 2026-11-19, load average 7–9; not on
+Cloudflare): at 300,000 S4-shaped files (an estimated state of 299 MiB), a first publication, a
+re-base onto a new incarnation, a publish from the cursor and a resync from R2 all completed
+with V8's old space capped at 32 MB (plus 12 MB of young generation; the test runner shares that
+heap), from parts, from the base and from a format-1 checkpoint, with byte-identical Iceberg
+output; at 24 MB the first publication ran out of heap. Two of the tuning steps that got it
+there: manifest entries built as the Avro encoder reaches them, and a resync decoding manifests
+record by record (each was out of heap at 48 MB before). The publisher before this change, on
+the same data, needed more than 48 MB at 32,000 files and more than 128 MB at 100,000, and grew
+the process by up to 226 MB there.
+
+**Cost of it.** A re-base writes every file of the tenant to `stage` and deletes it after
+(about two row writes per file, 600,000 at the limit: modelled at about $0.60 per re-base at
+$1 per million rows written, a price from training knowledge); a first publication also writes
+each added file's statistics into its row once. Re-bases are slower than holding the state in
+memory: at 100,000 files 2.3 s from parts against 1.0 s for the publisher before (which could
+not reach 300,000 in an isolate), and a first publication of 300,000 files took 27–38 s. The commit writes two
+manifests at a time instead of four. A corrupt checkpoint stops that tenant's re-base until the
+ledger writes a newer one or an operator removes it. The publisher becomes a reader of the
+checkpoint format, which `contracts/LEDGER-LOG.md` says only the ledger reads; a newer format
+is passed over, so the ledger still needs no readers-first release to change it.
+
+**Would change if.** A re-base or first publication of the largest tenants exceeds the
+publisher's CPU limit on Cloudflare (then progress kept across invocations, or a higher
+`limits.cpu_ms`; until that is measured, production stays at 16 MiB, and it is lifted as D47's
+"Would change if" says); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
+files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
+part is checked on its own as it arrives, not only the totals at the end).

@@ -18,15 +18,16 @@ import {
   LEDGER_CHANGE_KINDS,
   LEDGER_CHANGE_VERSION as CONTRACT_CHANGE_VERSION,
   LEDGER_CHECKPOINT_KIND,
+  LEDGER_CHECKPOINT_VERSION as CONTRACT_CHECKPOINT_VERSION,
   LEDGER_SEGMENT_KIND,
   LEDGER_SEGMENT_VERSION as CONTRACT_SEGMENT_VERSION,
   ledgerLogKey,
 } from '../../contracts/ledger'
 import { describeSchema, type Migration, openSchema, schemaRelease, type SchemaSpec } from '../../contracts/schema'
-import { LEDGER_CHANGE_VERSION, LEDGER_SEGMENT_VERSION, unsupported, unsupportedSegment } from '../src/log'
+import { LEDGER_CHANGE_VERSION, LEDGER_CHECKPOINT_VERSION, LEDGER_SEGMENT_VERSION, unsupported, unsupportedSegment } from '../src/log'
 import { FORMATS, PUBLISHER_SCHEMA } from '../src/schema'
 import { expectGolden, goldenDir } from './golden'
-import { addUnit, copyLog, fresh, icebergLive, ledgerVersion, listKeys, metaDir, metadataVersions, mirror, pairUnit, publisher, putObjects, readMetadata, segmentsOf, T0, DAY_MS, TABLES } from './helpers'
+import { addUnit, copyLog, dropCheckpoints, fresh, icebergLive, ledgerVersion, listKeys, metaDir, metadataVersions, mirror, pairUnit, publisher, putObjects, readMetadata, segmentsOf, T0, DAY_MS, TABLES } from './helpers'
 import v0 from './fixtures/storage/v0.json'
 import { type Dump, dumpOf, install, replaceWith, schemaRow, withoutVersion } from './storage'
 
@@ -90,9 +91,9 @@ describe('versioned storage', () => {
     const after = await runInDurableObject(p, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(ownDump(dumpOf(s))) }))
     // Every migration after 1 is additive (readableFrom 1): `compat` stays 1.
     expect(after.row).toMatchObject({ version: LATEST, compat: 1 })
-    // Version 2 added the `due` table, empty; every row of the adopted tables is as it was.
-    expect(after.dump.rows.due).toEqual([])
-    const { due: _due, ...adopted } = after.dump.rows
+    // Version 2 added the `due` table and version 3 `stage` and `live_next`, all empty; every row of the adopted tables is as it was.
+    for (const t of ['due', 'stage', 'live_next']) expect(after.dump.rows[t], t).toEqual([])
+    const { due: _due, stage: _stage, live_next: _next, ...adopted } = after.dump.rows
     expect(canon(adopted)).toEqual(canon(V0.rows))
   })
 
@@ -220,6 +221,8 @@ describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §
     const t = tenant('acme')
     for (let i = 0; i < 4; i++) await addUnit(t, pairUnit(cell, t, 1 + 3 * i, 3 + 3 * i, T0 + i * 1000), { drain: true })
     await mirror(t, cell)
+    // About segments: a re-base from a checkpoint would start past the one rewritten below.
+    await dropCheckpoints(cell, t)
     const { ledgerIncarnation, version } = await ledgerVersion(t)
     const seg = (await segmentsOf(cell, t, ledgerIncarnation)).find((s) => s.first === version - 1)!
     expect(seg).toMatchObject({ first: version - 1, last: version - 1 })
@@ -293,6 +296,9 @@ describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §
     expect(unsupportedSegment({ kind: LEDGER_SEGMENT_KIND })).toMatch(/unreadable/)
     expect(LEDGER_SEGMENT_VERSION).toBe(CONTRACT_SEGMENT_VERSION)
     expect(LEDGER_CHANGE_VERSION).toBe(CONTRACT_CHANGE_VERSION)
+    // Checkpoints this reader re-bases from: a newer format is passed over for the base
+    // (test/checkpoints.test.ts), but a bump in the contract still shows here.
+    expect(LEDGER_CHECKPOINT_VERSION).toBe(CONTRACT_CHECKPOINT_VERSION)
     for (const kind of LEDGER_CHANGE_KINDS) expect(unsupported({ kind }), kind).toBeNull()
     expect(FORMATS['read.ledger-segment']).toBe(LEDGER_SEGMENT_VERSION)
     expect(FORMATS['read.ledger-change']).toBe(LEDGER_CHANGE_VERSION)

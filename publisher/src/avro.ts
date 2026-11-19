@@ -185,15 +185,18 @@ const BLOCK_RECORDS = 2000
 
 /**
  * Write an Avro object container file. `metadata` is added to the header next to
- * `avro.schema` and `avro.codec`.
+ * `avro.schema` and `avro.codec`. `records` is iterated once and encoded as it comes, a block
+ * of `BLOCK_RECORDS` at a time, so a generator need not hold them all.
  */
 export async function writeAvro(
   schema: AvroSchema,
-  records: readonly unknown[],
+  records: Iterable<unknown>,
   metadata: Record<string, string>,
   codec: AvroCodec = 'deflate',
+  /** The 16-byte sync marker; random unless given (a writer that must repeat its bytes passes one). */
+  sync: Uint8Array = crypto.getRandomValues(new Uint8Array(16)),
 ): Promise<Uint8Array> {
-  const sync = crypto.getRandomValues(new Uint8Array(16))
+  if (sync.length !== 16) throw new Error('avro: a sync marker is 16 bytes')
   const o = new Out()
   o.raw(MAGIC)
   const meta: [string, string][] = [['avro.schema', JSON.stringify(schema)], ['avro.codec', codec], ...Object.entries(metadata)]
@@ -206,15 +209,20 @@ export async function writeAvro(
   o.raw(sync)
   const parts: Uint8Array[] = [o.take()]
   const block = new Out()
-  for (let at = 0; at < records.length; at += BLOCK_RECORDS) {
-    const end = Math.min(records.length, at + BLOCK_RECORDS)
-    for (let i = at; i < end; i++) encode(block, schema, records[i], '$')
+  let count = 0
+  const flush = async () => {
     let data = block.take()
     if (codec === 'deflate') data = await pipe(data, new CompressionStream('deflate-raw'))
-    o.long(end - at)
+    o.long(count)
     o.long(data.length)
     parts.push(o.take(), data, sync)
+    count = 0
   }
+  for (const r of records) {
+    encode(block, schema, r, '$')
+    if (++count === BLOCK_RECORDS) await flush()
+  }
+  if (count > 0) await flush()
   const total = parts.reduce((n, p) => n + p.length, 0)
   const file = new Uint8Array(total)
   let n = 0
@@ -343,7 +351,8 @@ export interface AvroFile<T> {
 }
 
 /** Read an Avro object container file written with the `null` or `deflate` codec. */
-export async function readAvro<T = Record<string, unknown>>(file: Uint8Array): Promise<AvroFile<T>> {
+/** Read an Avro object container file. With `onRecord`, each record goes to it as its block is decoded and none are kept (`records` is empty). */
+export async function readAvro<T = Record<string, unknown>>(file: Uint8Array, onRecord?: (record: T) => void): Promise<AvroFile<T>> {
   const i = new In(file)
   const magic = i.raw(4)
   if (magic.some((b, k) => b !== MAGIC[k])) throw new Error('avro: not an object container file')
@@ -374,7 +383,11 @@ export async function readAvro<T = Record<string, unknown>>(file: Uint8Array): P
     const marker = i.raw(16)
     if (marker.some((b, k) => b !== sync[k])) throw new Error('avro: bad sync marker')
     const block = new In(data)
-    for (let k = 0; k < count; k++) records.push(decode(block, schema) as T)
+    for (let k = 0; k < count; k++) {
+      const r = decode(block, schema) as T
+      if (onRecord) onRecord(r)
+      else records.push(r)
+    }
     if (!block.done) throw new Error('avro: block has trailing bytes')
   }
   return { schema, metadata, records }

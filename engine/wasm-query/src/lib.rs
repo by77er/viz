@@ -50,7 +50,7 @@
 //! | `viz_q_series` | `limits, i64 min_ts, i64 max_ts, u32 n, str*, scan` | JSON `[{"label":"value",…},…]` |
 //! | `viz_q_scan_rows` | `u32 n_files, str index*, u32 n_ranges, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*` | `u64[n_files]`: an upper bound on the rows the ranges decode from each file. 0 = the file provably holds nothing the ranges read (skip it); `u64::MAX` = the fragment does not parse (unknown: read the file) |
 //! | `viz_q_split_plan` | `limits, str query` | JSON `{"split":true,"fragments":n,"without":[…]}` or `{"split":false,"reason":"…"}` (`viz_query::split_plan`) |
-//! | `viz_q_extract` | `key, u32 part, u32 parts, ranges, u32 n, str* (series files), u32 m, str* (sample files, precedence order)` | `u64 rows, u64 series`, then a `VZB1` batch (empty: no rows) |
+//! | `viz_q_extract` | `key, u32 part, u32 parts, ranges, u32 n, str* (series files), u32 m, str* (sample files, precedence order; whole or sparse)` | `u64 rows, u64 series, u64 strays` (ABI 3: the part's series outside its id range), then a `VZB1` batch (empty: no rows) |
 //! | `viz_q_split_tails` | `key, u32 parts, ranges, u32 n, str* (tail batches, in order)` | per part: `u32 n`, then `str*` (its batches, in order) |
 //! | `viz_q_gather_new` | `u64 samples, u64 series, u64 step_points (the leaf's budget), ranges` | `u32 handle` of a gathering session kept in the module |
 //! | `viz_q_gather_add` | `u32 handle, u32 rank, str batch` | `u8 aborted, u64 samples, u64 series` held so far |
@@ -59,17 +59,25 @@
 //! | `viz_q_merge` | `limits, u8 kind, i64 start, i64 end, i64 step, str query, u32 n, str* (leaf answers)` | as `viz_q_query_range` |
 //! | `viz_q_card_part` | `i64 start, i64 end, u32 part, u32 parts, u64 max_series, u64 max_pairs, u32 n, str* (series files), u32 m, str* (tail batches)` | a cardinality summary (`viz_query::cardinality::Summary`) |
 //! | `viz_q_card_report` | `u64 max_series, u64 max_pairs, u32 limit, i64 start, i64 end, i64 lookback_start, u32 n, str* (summaries)` | `u32 n`, the `/status/tsdb` JSON (n bytes), then the `/status/cardinality` JSON |
-//! | `viz_q_abi_version` | (no request) | returns 2 |
+//! | `viz_q_file_plan` | `u64 gap, ranges, u32 n, str* (index fragments)` | JSON `[plan, …]`, one per fragment: how to read each file by name and time (`viz_query::file_plan`) |
+//! | `viz_q_sample_plan` | `u64 gap, u8 has_part, [key, u32 part, u32 parts], ranges (the reads), u32 n, str* (series files, whole or sparse), u32 m, str* (sample files' index fragments), u32 k, u32* (per sample file, the index of its series file; u32::MAX: unknown; k = 0: no pairs)` | `u32 n`, JSON `{"series":n,"files":[plan, …]}` (n bytes), then the carrier batch (`VZB1`; empty: none): the matchers resolved against the series files, how to read each sample file, and the selected series to evaluate with instead of the series files (`viz_query::sample_plan`) |
+//! | `viz_q_part_plan` | `u64 gap, u32 part, u32 parts, ranges, u32 n, str* (sample files' index fragments)` | JSON `[plan, …]`: one split part's row groups by its `series_id` range, from the fragments alone (`viz_query::part_plan`) |
+//! | `viz_q_abi_version` | (no request) | returns 3 |
 //!
 //! `key` is `u32 n, str*`: the labels left out of the split key (`viz_query::SplitKey`).
+//! A `plan` is `{"rows":n|null,"read":"skip"|"whole"|[[offset,length],…]}`: `rows` bounds the
+//! rows the reads decode from the file (`null`: the fragment does not parse); `read` says
+//! to skip it, read it whole, or range-read those byte ranges (footer and row groups) and
+//! pass them on as a sparse file container (`viz_storage::sparse`, magic `VZS1`).
+//! Any file of a `scan` may be such a container.
 //! `ranges` is `u32 n, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*`.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use viz_query::split::{self, Gathered, Grid, LeafBudget, LeafOutput};
-use viz_query::{EvalOptions, FetchRange, Limits, MatchOp, Matcher, Options, QueryError, ScanInput, SplitKey, SplitPlan, Stats};
+use viz_query::{EvalOptions, FetchRange, FileRead, Limits, MatchOp, Matcher, Options, PartFilter, QueryError, ScanInput, SplitKey, SplitPlan, Stats};
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 const OK: u32 = 0;
 const MALFORMED: u32 = 5;
 
@@ -433,6 +441,75 @@ fn do_scan_rows(mut r: Req<'_>) -> Res<Vec<u8>> {
     Ok(viz_query::scan_rows(&indexes, &ranges).into_iter().flat_map(|r| r.unwrap_or(u64::MAX).to_le_bytes()).collect())
 }
 
+fn plan_json(p: &viz_query::FilePlan) -> serde_json::Value {
+    let read = match &p.read {
+        FileRead::Skip => serde_json::json!("skip"),
+        FileRead::Whole => serde_json::json!("whole"),
+        FileRead::Ranges(r) => serde_json::json!(r.iter().map(|(o, l)| [*o, *l]).collect::<Vec<_>>()),
+    };
+    serde_json::json!({"rows": p.rows, "read": read})
+}
+
+fn index_texts<'a>(raw: &[&'a [u8]]) -> Vec<&'a str> {
+    // A fragment that is not UTF-8 cannot be parsed either: "" keeps the file whole.
+    raw.iter().map(|b| std::str::from_utf8(b).unwrap_or("")).collect()
+}
+
+fn do_file_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let gap = r.u64("gap")?;
+    let ranges = r.ranges()?;
+    let raw = r.files("index fragment")?;
+    r.end()?;
+    let plans = viz_query::file_plan(&index_texts(&raw), &ranges, gap);
+    Ok(serde_json::Value::Array(plans.iter().map(plan_json).collect()).to_string().into_bytes())
+}
+
+fn do_part_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let gap = r.u64("gap")?;
+    let (part, parts) = (r.u32("part")?, r.u32("parts")?);
+    let ranges = r.ranges()?;
+    let raw = r.files("index fragment")?;
+    r.end()?;
+    if parts == 0 || part >= parts {
+        return Err(Fail::Malformed(format!("part {part} of {parts}")));
+    }
+    let plans = viz_query::part_plan(&index_texts(&raw), &ranges, part, parts, gap);
+    Ok(serde_json::Value::Array(plans.iter().map(plan_json).collect()).to_string().into_bytes())
+}
+
+fn do_sample_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let gap = r.u64("gap")?;
+    let part = match r.u8("has_part")? {
+        0 => None,
+        1 => Some((r.key()?, r.u32("part")?, r.u32("parts")?)),
+        x => return Err(Fail::Malformed(format!("has_part is {x}"))),
+    };
+    let ranges = r.ranges()?;
+    let series = r.files("series file")?;
+    let raw = r.files("index fragment")?;
+    let n_pairs = r.u32("n_pairs")?;
+    let mut pairs: Vec<Option<usize>> = Vec::with_capacity((n_pairs as usize).min(r.b.len() / 4));
+    for _ in 0..n_pairs {
+        let p = r.u32("pair")?;
+        pairs.push((p != u32::MAX).then_some(p as usize));
+    }
+    r.end()?;
+    if let Some((_, part, parts)) = &part {
+        if *parts == 0 || part >= parts {
+            return Err(Fail::Malformed(format!("part {part} of {parts}")));
+        }
+    }
+    let filter = part.as_ref().map(|(key, part, parts)| PartFilter { key, part: *part, parts: *parts });
+    let p = viz_query::sample_plan(&series, &index_texts(&raw), &ranges, filter, (n_pairs > 0).then_some(&pairs[..]), gap)?;
+    let v = serde_json::json!({"series": p.series, "files": p.files.iter().map(plan_json).collect::<Vec<_>>()}).to_string();
+    let carrier = p.carrier.unwrap_or_default();
+    let mut out = Vec::with_capacity(4 + v.len() + carrier.len());
+    out.extend_from_slice(&(v.len() as u32).to_le_bytes());
+    out.extend_from_slice(v.as_bytes());
+    out.extend_from_slice(&carrier);
+    Ok(out)
+}
+
 fn do_split_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
     let opts = r.limits()?;
     let q = r.str("query")?;
@@ -455,9 +532,10 @@ fn do_extract(mut r: Req<'_>) -> Res<Vec<u8>> {
         return Err(Fail::Malformed(format!("part {part} of {parts}")));
     }
     let ex = split::extract(&series, &samples, &key, part, parts, &ranges)?;
-    let mut out = Vec::with_capacity(16 + ex.batch.len());
+    let mut out = Vec::with_capacity(24 + ex.batch.len());
     out.extend_from_slice(&ex.rows.to_le_bytes());
     out.extend_from_slice(&ex.series.to_le_bytes());
+    out.extend_from_slice(&ex.strays.to_le_bytes());
     out.extend_from_slice(&ex.batch);
     Ok(out)
 }
@@ -628,3 +706,6 @@ export!(viz_q_gather_free, do_gather_free);
 export!(viz_q_merge, do_merge);
 export!(viz_q_card_part, do_card_part);
 export!(viz_q_card_report, do_card_report);
+export!(viz_q_file_plan, do_file_plan);
+export!(viz_q_sample_plan, do_sample_plan);
+export!(viz_q_part_plan, do_part_plan);

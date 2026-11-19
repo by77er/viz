@@ -38,10 +38,10 @@ async function drainFlushQueue(): Promise<number> {
 }
 const markerOf = async (t: SimTenant) => (await env.CONFIG.getWithMetadata<{ v: number; due: number; orphansAt: number; sweep: boolean }>(maintMarkerKey(t.name))).metadata
 
-/** `env` whose Durable Object namespaces and queues count every use. */
+/** `env` whose Durable Object namespaces and queues count every use. A publisher is bound (the real one), so its use is counted too. */
 function counting(base: StackEnv) {
-  const calls = { shard: 0, ledger: 0, flushMessages: 0, maintMessages: 0 }
-  const ns = <T extends object>(target: T, key: 'shard' | 'ledger'): T =>
+  const calls = { shard: 0, ledger: 0, publisher: 0, flushMessages: 0, maintMessages: 0 }
+  const ns = <T extends object>(target: T, key: 'shard' | 'ledger' | 'publisher'): T =>
     new Proxy(target, {
       get(t, prop) {
         const v = Reflect.get(t, prop)
@@ -50,7 +50,8 @@ function counting(base: StackEnv) {
       },
     })
   const queue = (key: 'flushMessages' | 'maintMessages') => ({ send: async () => void calls[key]++, sendBatch: async (list: unknown[]) => void (calls[key] += [...list].length) }) as unknown as Queue<never>
-  return { calls, env: { ...base, SHARD: ns(base.SHARD, 'shard'), LEDGER: ns(base.LEDGER, 'ledger'), FLUSH_QUEUE: queue('flushMessages'), MAINT_QUEUE: queue('maintMessages') } as StackEnv }
+  const publisher = ns(env.TEST_PUBLISHER as unknown as NonNullable<StackEnv['PUBLISHER']>, 'publisher')
+  return { calls, env: { ...base, SHARD: ns(base.SHARD, 'shard'), LEDGER: ns(base.LEDGER, 'ledger'), PUBLISHER: publisher, FLUSH_QUEUE: queue('flushMessages'), MAINT_QUEUE: queue('maintMessages') } as StackEnv }
 }
 
 describe('what happens without anyone calling it', () => {
@@ -183,7 +184,7 @@ describe('an idle deployment', () => {
     const swept = await handleScheduled(first.env)
     expect(swept.flush).toEqual({ markers: 2, shardsAsked: 2, deferred: 0, enqueued: [], failed: [], unsent: 0 })
     expect(swept.errors).toEqual([])
-    expect(first.calls).toEqual({ shard: 2, ledger: 0, flushMessages: 0, maintMessages: 0 })
+    expect(first.calls).toEqual({ shard: 2, ledger: 0, publisher: 0, flushMessages: 0, maintMessages: 0 })
 
     // The time-driven work that is left runs once: hours go quiet, today closes (a policy
     // clock two days ahead), the merged inputs pass their grace, the orphan sweep looks once.
@@ -215,7 +216,8 @@ describe('an idle deployment', () => {
       expect(x.maintenance!.enqueued).toEqual([])
       expect(x.maintenance!.markers).toBeGreaterThanOrEqual(3)
     }
-    expect(idle.calls).toEqual({ shard: 0, ledger: 0, flushMessages: 0, maintMessages: 0 })
+    // ... and asks the publisher nothing (D34: it is nudged by maintenance runs only, and none is due).
+    expect(idle.calls).toEqual({ shard: 0, ledger: 0, publisher: 0, flushMessages: 0, maintMessages: 0 })
     expect(sim.flushQueue.length).toBe(announced)
     expect(sim.maintQueue).toEqual([])
     // No timer is pending in any object: nothing will wake by itself either.
@@ -226,7 +228,7 @@ describe('an idle deployment', () => {
     const expiresFirst = Math.min(...retentionDue.values())
     const woken = await handleScheduled(idle.env, expiresFirst)
     expect(woken.maintenance!.enqueued.sort()).toEqual(sim.tenants.filter((t) => retentionDue.get(t.name) === expiresFirst).map((t) => t.name).sort())
-    expect(idle.calls).toMatchObject({ shard: 0, ledger: 0, flushMessages: 0 })
+    expect(idle.calls).toMatchObject({ shard: 0, ledger: 0, publisher: 0, flushMessages: 0 })
     // And the data is all still there.
     for (const t of sim.tenants) await checkTenant(sim, t, 0, 'idle')
   })

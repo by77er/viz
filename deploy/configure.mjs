@@ -11,6 +11,15 @@
 // --expires (a stage only): sets VIZ_STAGE_EXPIRES_AT in every Worker; the ruler's alarms and
 // cron stop at that time by themselves (AGENTS.md: anything on a timer stops at a deadline).
 //
+// VIZ_STAGE_VARS (a stage only, from the environment): JSON `{ "<worker>": { "VAR": "value" } }`,
+// set on top of the component's vars, e.g. a trial's shorter maintenance graces. Refused for
+// production, whose vars come only from the components and workers.json.
+//
+// Schemas: every Durable Object class a Worker defines is declared in workers.json, either with
+// its SchemaSpec (`schemas`) or as keeping no storage (`unversioned`). The specs are read
+// (lib/schemas.mjs) into the manifest, and into each version's `VIZ_SCHEMAS` var, where later
+// deploys and rollbacks read what that version knows (contracts/COMPATIBILITY.md §6).
+//
 // Writes deploy/generated/<production|stage-NAME>/<worker>.jsonc and manifest.json there.
 // Anything it does not understand (a binding kind, a resource not named viz-…, a script_name
 // that is no Worker of ours, a placeholder id left behind) is an error, not a guess.
@@ -18,6 +27,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJson, readJsonc, releaseId, stagedName, targetName } from './lib/common.mjs'
+import { SCHEMAS_VAR, readSchemas, schemaSources, schemasVar } from './lib/schemas.mjs'
 
 const KNOWN_KEYS = new Set([
   'name', 'main', 'compatibility_date', 'compatibility_flags', 'durable_objects', 'migrations', 'r2_buckets', 'kv_namespaces',
@@ -57,14 +67,37 @@ export function durableObjectsOf(cfg) {
   return { classes, migrationTags: tags, migrationTag: tags.length ? tags[tags.length - 1] : null }
 }
 
+/** Stage vars from VIZ_STAGE_VARS: `{ worker: { VAR: value } }`, string values only. */
+export function stageVars(raw, stage) {
+  if (!raw) return {}
+  if (!stage) throw new Error('VIZ_STAGE_VARS is for a stage only: production vars come from the components and deploy/workers.json')
+  let v
+  try {
+    v = JSON.parse(raw)
+  } catch (e) {
+    throw new Error(`VIZ_STAGE_VARS is not JSON: ${e.message}`)
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('VIZ_STAGE_VARS must be {"<worker>": {"VAR": "value"}}')
+  for (const [w, vars] of Object.entries(v)) {
+    if (typeof vars !== 'object' || vars === null || Object.values(vars).some((x) => typeof x !== 'string')) throw new Error(`VIZ_STAGE_VARS.${w}: values must be strings`)
+  }
+  return v
+}
+
 /**
- * One generated config. `ids` maps a KV namespace title to its id. Pure: no I/O, so the tests
- * can call it with any component config.
+ * One generated config. `ids` maps a KV namespace title to its id; `schemas` is what
+ * lib/schemas.mjs read for this Worker's classes. Pure: no I/O, so the tests can call it with
+ * any component config.
  */
-export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null }) {
+export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], extraVars = {} }) {
   const where = `${worker.component}/wrangler.jsonc`
   const warnings = []
   for (const k of Object.keys(cfg)) if (!KNOWN_KEYS.has(k)) throw new Error(`${where}: "${k}" is not something configure.mjs knows how to deploy; extend it rather than drop it`)
+  // Every class this Worker defines has its storage schema declared, or is declared to keep none.
+  for (const cls of durableObjectsOf(cfg).classes) {
+    const declared = Object.hasOwn(worker.schemas ?? {}, cls) || Object.hasOwn(worker.unversioned ?? {}, cls)
+    if (!declared) throw new Error(`deploy/workers.json ${worker.name}: Durable Object class ${cls} has no "schemas" entry (its SchemaSpec, "<path>.ts#<EXPORT>") and no "unversioned" entry (why it keeps no storage)`)
+  }
   const out = structuredClone(cfg)
   out.name = stagedName(worker.name, stage)
 
@@ -131,7 +164,9 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   }
   vars.VIZ_RELEASE = release
   vars.VIZ_WORKER = worker.name
+  if (schemas.length > 0) vars[SCHEMAS_VAR] = schemasVar(schemas)
   if (stage) vars.VIZ_STAGE_PREFIX = `viz-${stage}-`
+  for (const [k, v] of Object.entries(extraVars)) vars[k] = v
   if (expires !== null) {
     if (!stage) throw new Error('--expires is for a stage only: production does not stop by itself')
     vars.VIZ_STAGE_EXPIRES_AT = expires
@@ -156,6 +191,7 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
       doClasses: dobj.classes,
       migrationTags: dobj.migrationTags,
       migrationTag: dobj.migrationTag,
+      schemas,
       crossScript,
       queues: queuesOf(out),
       warnings,
@@ -168,8 +204,13 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   if (expires !== null && !(Number.isFinite(Date.parse(expires)) && /^\d{4}-\d{2}-\d{2}T/.test(expires))) throw new Error(`--expires must be an ISO 8601 time: ${expires}`)
   const { plan, resources } = loadPlan()
   const ids = resources.kv_namespaces ?? {}
+  const extra = stageVars(process.env.VIZ_STAGE_VARS, stage)
+  for (const w of Object.keys(extra)) if (!plan.workers.some((x) => x.name === w)) throw new Error(`VIZ_STAGE_VARS names ${w}, which is not a Worker in deploy/workers.json`)
   const outDir = join(GENERATED_DIR, targetName(stage))
   mkdirSync(outDir, { recursive: true })
+  // The schemas of every class, read once for all Workers whose component is in this checkout.
+  const present = plan.workers.filter((w) => existsSync(join(REPO_ROOT, w.component, 'wrangler.jsonc')))
+  const schemas = readSchemas(schemaSources(present))
   const workers = []
   for (const worker of plan.workers) {
     const componentDir = join(REPO_ROOT, worker.component)
@@ -181,7 +222,7 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       }
       throw new Error(`${worker.component}/wrangler.jsonc not found, and ${worker.name} is to be deployed`)
     }
-    const g = generateWorker({ worker, cfg: readJsonc(cfgPath), componentDir, plan, stage, release, ids, outDir, idsOptional, expires })
+    const g = generateWorker({ worker, cfg: readJsonc(cfgPath), componentDir, plan, stage, release, ids, outDir, idsOptional, expires, schemas: schemas.filter((s) => s.worker === worker.name), extraVars: extra[worker.name] ?? {} })
     const file = join(outDir, `${worker.name}.jsonc`)
     const header = `// GENERATED by deploy/configure.mjs from ${worker.component}/wrangler.jsonc for ${targetName(stage)}, release ${release}. Do not edit.\n`
     writeFileSync(file, header + g.text + '\n')
@@ -198,6 +239,8 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
     domain: stage ? null : plan.domain,
     durableObjectsCodeUpdate: plan.durable_objects_code_update,
     order: workers.filter((w) => w.deploy).map((w) => w.name),
+    // The Worker whose version tag says which release is serving (the write path).
+    releaseFrom: stagedName(plan.resources.queues_from, stage),
     workers,
     resources: {
       kv: Object.values(plan.resources.kv).map((t) => ({ title: stagedName(t, stage), id: ids[stagedName(t, stage)] ?? null })),
@@ -210,6 +253,7 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
     log(`configure: ${manifest.target}, release ${release} → ${relative(REPO_ROOT, outDir)}/`)
     for (const w of workers) {
       log(`  ${w.deploy ? 'deploy' : 'skip  '} ${w.name.padEnd(24)} ${w.deploy ? `from ${w.component}/; migration ${w.migrationTag ?? '-'}; ${w.crossScript?.join(', ') || 'no cross-script bindings'}` : w.reason}`)
+      for (const sc of w.schemas ?? []) log(`         schema ${sc.component}: version ${sc.latest}, readable from ${sc.compat}`)
       for (const warn of w.warnings ?? []) log(`         note: ${warn}`)
     }
   }

@@ -100,6 +100,10 @@ if [ $rc -ne 0 ]; then note "release: FAILED during upload or promotion (see abo
 note "release: promoted; record deploy/generated/$TARGET/release.json"
 # shellcheck disable=SC2016  # the single quotes hold JavaScript, not shell
 MIGRATED=$(node -e 'const r=require(process.argv[1]);console.log((r.migrations||[]).map(m=>`${m.worker} ${m.from??"(none)"}→${m.to}`).join(", "))' "$OUT/release.json")
+# Forward-only for a schema reason (contracts/COMPATIBILITY.md §6): a class's storage may already
+# be in a shape the previous release cannot open; release.mjs would refuse the rollback anyway.
+# shellcheck disable=SC2016
+FORWARD_ONLY=$(node -e 'const r=require(process.argv[1]);console.log((r.forwardOnlyBecause||[]).filter(f=>f.kind==="schema").map(f=>`${f.component} readable from ${f.compat}`).join(", "))' "$OUT/release.json")
 
 if [ $SMOKE -eq 0 ]; then note "smoke: skipped (--skip-smoke)"; exit 0; fi
 step "smoke test"
@@ -108,6 +112,13 @@ if node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --expect-release "$
   exit 0
 fi
 note "smoke: FAILED"
+if [ -n "$FORWARD_ONLY" ] && [ -z "$MIGRATED" ]; then
+  echo "::error::Smoke test failed after a FORWARD-ONLY release ($FORWARD_ONLY)." >&2
+  echo "  Not rolling back: storage this release migrated cannot be opened by the previous release (contracts/COMPATIBILITY.md §6)." >&2
+  echo "  What to do: fix forward with a new commit (see deploy/README.md, 'When a deploy fails')." >&2
+  note "rollback: NOT attempted (forward-only release: $FORWARD_ONLY)"
+  exit 1
+fi
 if [ -n "$MIGRATED" ]; then
   echo "::error::Smoke test failed after a release that applied Durable Object migrations ($MIGRATED)." >&2
   echo "  Not rolling back: Cloudflare cannot roll back across a migration, and migrations are forward-only." >&2

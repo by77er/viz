@@ -25,7 +25,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -368,6 +368,27 @@ const MUTANTS = [
     find: '(bytes > c.limits.maxFetchBytes || est > per ?',
     replace: '(bytes > c.limits.maxFetchBytes ?',
   },
+  {
+    name: 'A split reader never reads again what its id-range read did not cover (a series whose key is not its id is lost)',
+    tests: ['test/pruning.test.ts'],
+    file: 'src/leaf.ts',
+    find: "  if (have === 'whole') return true\n",
+    replace: "  if (have === 'whole' || need.length >= 0) return true\n",
+  },
+  {
+    name: 'A range read is put back one byte off (the sparse file names the wrong offset)',
+    tests: ['test/pruning.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '    if (chunks.length === 1) segments.push({ offset, bytes: chunks[0]! })',
+    replace: '    if (chunks.length === 1) segments.push({ offset: offset + 1, bytes: chunks[0]! })',
+  },
+  {
+    name: 'The label endpoints count series against the query limit, not maxMetadataSeries (refused at 20,000 series again)',
+    tests: ['test/pruning.test.ts'],
+    file: 'src/index.ts',
+    find: 'const metaLimits = (c: Context) => ({ ...c.limits, maxSeries: c.limits.maxMetadataSeries })',
+    replace: 'const metaLimits = (c: Context) => ({ ...c.limits })',
+  },
 ]
 
 function run(cmd, args, opts = {}) {
@@ -480,4 +501,7 @@ for (const m of chosen) {
 console.log(`\n${chosen.length - survived} of ${chosen.length} mutants killed`)
 const after = fingerprint()
 console.log(`shared tree, files the mutants touch: ${before} before, ${after} after${before === after ? ' (unchanged)' : ' (CHANGED: by someone else; this tool writes only to the scratch tree)'}`)
+// The scratch tree (with the copy's WASM target directory) is large on a shared disk: delete it.
+rmSync(scratch, { recursive: true, force: true })
+console.log(`scratch tree ${scratch} deleted`)
 process.exit(survived ? 1 : 0)

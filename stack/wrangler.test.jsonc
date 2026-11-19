@@ -1,0 +1,55 @@
+// TESTS ONLY. stack/wrangler.jsonc with two differences: the main module is test/worker.ts
+// (src/index.ts plus the publisher's test class), and the publisher is that class in this
+// script (TEST_PUBLISHER) instead of a binding to the viz-publisher Worker. Keep the rest equal
+// to wrangler.jsonc: deploy/test/configure.test.mjs checks that nothing else differs.
+{
+  // The whole write path as ONE script: edge (the default export, and the `RecordedSamples`
+  // entrypoint), the shard and ledger Durable Objects, flush (the `Flush` entrypoint and the
+  // flush queue's consumer) and maintenance. deploy/configure.mjs generates viz-ingest's config
+  // from this file. Tests run against wrangler.test.jsonc (the same, with the publisher's class
+  // in the script instead of a binding to viz-publisher).
+  "name": "viz-stack",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARD", "class_name": "Shard" },
+      { "name": "LEDGER", "class_name": "Ledger" },
+      // The real publisher with a test clock, in this script. Not called PUBLISHER: a test that
+      // wants one passes it as PUBLISHER; every other test (the soak among them) runs without.
+      { "name": "TEST_PUBLISHER", "class_name": "TestPublisher" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger"] }, { "tag": "v2", "new_sqlite_classes": ["TestPublisher"] }],
+  // Data files and the ledgers' change logs, under the cell prefix.
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  // API keys (`key:<keyId>`) and per-tenant pool maps (`pool:<tenant>`).
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  // A shard's seal puts {tenant, shard} on the flush queue; a successful flush and the cron
+  // put {tenant} on the maintenance queue. This script consumes both, and their dead letters.
+  "queues": {
+    "producers": [
+      { "binding": "FLUSH_QUEUE", "queue": "viz-flush" },
+      { "binding": "MAINT_QUEUE", "queue": "viz-maint" }
+    ],
+    "consumers": [
+      { "queue": "viz-flush", "max_batch_size": 50, "max_batch_timeout": 1, "max_retries": 8, "dead_letter_queue": "viz-flush-dlq" },
+      { "queue": "viz-maint", "max_batch_size": 20, "max_batch_timeout": 1, "max_retries": 5, "dead_letter_queue": "viz-maint-dlq" },
+      { "queue": "viz-flush-dlq", "max_batch_size": 50, "max_batch_timeout": 5 },
+      { "queue": "viz-maint-dlq", "max_batch_size": 50, "max_batch_timeout": 5 }
+    ]
+  },
+  // Hourly: the flush sweep and the maintenance sweep (src/index.ts, `scheduled`).
+  "triggers": { "crons": ["7 * * * *"] },
+  "vars": {
+    "CELL": "cell-0",
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
+    // The ledger can hold 300 MiB (D47) and the publisher re-bases it in bounded memory (D55), but
+    // production keeps 16 MiB for this release (review of D47/D55, P-2 and P-3): the release before
+    // cannot hold or checkpoint a larger state, so a rollback to it must not meet one; and a
+    // rebuild and first publication above 16 MiB have not been measured within a Durable Object's
+    // CPU limit on Cloudflare. Lift it in a release whose rollback floor is this one, once those
+    // are measured (design/reviews/d47-d48-d55.md).
+    "LEDGER_STATE_MAX_BYTES": "16777216"
+  }
+}

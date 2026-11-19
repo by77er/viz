@@ -293,31 +293,36 @@ describe('rebuild reproduces exactly the state of a live ledger', () => {
   })
 
   it('a checkpoint is the state at its own version, also when one drain writes several segments (only the last ends at the committed version)', async () => {
-    const { tenant, l } = open(tenantName('ckptsplit'))
-    await setCheckpointEvery(l, 1)
-    // Three changes of about 1.5 MB: one drain holds them all, but a segment takes at most
-    // 4 MiB, so it writes [1..3] and then [4]. A checkpoint after [1..3] would have to be the
-    // state at version 3, which the drain cannot read any more: none is written there.
-    const big = (n: number) => 'x'.repeat(750_000) + n
-    await l.addUnit(unit(1, 1, [file('a1', { index: big(1) }), file('a2', { index: big(2) })]))
-    await l.addUnit(unit(2, 2, [file('b1', { index: big(3) }), file('b2', { index: big(4) })]))
-    await l.addUnit(unit(3, 3, [file('c1', { index: big(5) }), file('c2', { index: big(6) })]))
-    // The checkpoint at the end of the drain (version 4) cannot be written, so it supersedes
-    // nothing: whatever checkpoint the drain took after [1..3] would stay and be used.
-    await breakR2(l, (key) => key.includes('/ckpt-000000000004'))
-    await l.drain()
-    const inc = await incarnationOf(l)
-    expect((await readSegments(tenant)).filter((s) => s.ledgerIncarnation === inc).map((s) => [s.first, s.last])).toEqual([[0, 0], [1, 3], [4, 4]])
-    const ckpts = (await listAll(`${logPrefix(tenant)}${inc}/ckpt-`)).map((key) => (parseLedgerLogKey(key) as { version: number }).version)
-    expect(ckpts).toEqual([]) // none after [1..3]: it does not end at the committed version
-    // The rebuild starts from the base and must come back exactly.
-    const live = await dumpState(l)
-    const result: RebuildResult = await runInDurableObject(l, async (i: Ledger, state) => {
-      await state.storage.deleteAll()
-      return i.rebuildFromLog()
-    })
-    expect(result.checkpoint).toBeNull()
-    expect(await dumpState(l)).toEqual(live)
+    // In both formats: one object (format 1), and in parts (format 2), whose tracking would
+    // abandon a checkpoint begun at another version anyway.
+    for (const oneObjectBytes of [1e12, -1]) {
+      const { tenant, l } = open(tenantName('ckptsplit'))
+      await setCheckpointEvery(l, 1)
+      await runInDurableObject(l, (inst: Ledger) => { (inst as unknown as { checkpointOneObjectBytes: number }).checkpointOneObjectBytes = oneObjectBytes })
+      // Three changes of about 1.5 MB: one drain holds them all, but a segment takes at most
+      // 4 MiB, so it writes [1..3] and then [4]. A checkpoint after [1..3] would have to be the
+      // state at version 3, which the drain cannot read any more: none is written there.
+      const big = (n: number) => 'x'.repeat(750_000) + n
+      await l.addUnit(unit(1, 1, [file('a1', { index: big(1) }), file('a2', { index: big(2) })]))
+      await l.addUnit(unit(2, 2, [file('b1', { index: big(3) }), file('b2', { index: big(4) })]))
+      await l.addUnit(unit(3, 3, [file('c1', { index: big(5) }), file('c2', { index: big(6) })]))
+      // The checkpoint at the end of the drain (version 4) cannot be written, so it supersedes
+      // nothing: whatever checkpoint the drain took after [1..3] would stay and be used.
+      await breakR2(l, (key) => key.includes('/ckpt-000000000004'))
+      await l.drain()
+      const inc = await incarnationOf(l)
+      expect((await readSegments(tenant)).filter((s) => s.ledgerIncarnation === inc).map((s) => [s.first, s.last])).toEqual([[0, 0], [1, 3], [4, 4]])
+      const ckpts = (await listAll(`${logPrefix(tenant)}${inc}/ckpt-`)).map((key) => parseLedgerLogKey(key)).filter((p) => p?.type === 'checkpoint').map((p) => (p as { version: number }).version)
+      expect(ckpts, `format ${oneObjectBytes > 0 ? 1 : 2}`).toEqual([]) // none after [1..3]: it does not end at the committed version
+      // The rebuild starts from the base and must come back exactly.
+      const live = await dumpState(l)
+      const result: RebuildResult = await runInDurableObject(l, async (i: Ledger, state) => {
+        await state.storage.deleteAll()
+        return i.rebuildFromLog()
+      })
+      expect(result.checkpoint).toBeNull()
+      expect(await dumpState(l)).toEqual(live)
+    }
   })
 
   it('a change committed while a segment is being written goes in the next segment, never lost with the first one\'s rows', async () => {
@@ -624,9 +629,11 @@ describe('a rollback to the first-layout release and back (review S-1)', () => {
 describe('the base is in R2 before an incarnation commits (spec F11)', () => {
   it('if the base cannot be written, nothing commits and nothing is served; once it can, the incarnation starts with its base', async () => {
     const tenant = tenantName('nobase')
-    const proto = Ledger.prototype as unknown as { putLogObject(this: Ledger, key: string, body: string): Promise<void> }
-    const real = proto.putLogObject
+    // The base is written from SQLite in pieces (`writeBase`), every other log object by `putLogObject`.
+    const proto = Ledger.prototype as unknown as { putLogObject(this: Ledger, key: string, body: string): Promise<void>; writeBase(this: Ledger, inc: number, version: number): Promise<number> }
+    const real = { put: proto.putLogObject, base: proto.writeBase }
     proto.putLogObject = async () => { throw new Error('injected: R2 PUT failed') }
+    proto.writeBase = async () => { throw new Error('injected: R2 PUT failed') }
     let l: Stub
     try {
       ;({ l } = open(tenant))
@@ -639,7 +646,8 @@ describe('the base is in R2 before an incarnation commits (spec F11)', () => {
       expect(meta.filter((k) => k !== 'state_bytes')).toEqual(['starting'])
       expect(await listAll(logPrefix(tenant))).toEqual([])
     } finally {
-      proto.putLogObject = real
+      proto.putLogObject = real.put
+      proto.writeBase = real.base
     }
     await runDurableObjectAlarm(l!)
     expect((await l!.logStatus()).phase).toBe('ready')

@@ -13,6 +13,7 @@ import {
   TABLES,
   addUnit,
   dayOf,
+  dropCheckpoints,
   expectVerified,
   fileFor,
   fresh,
@@ -80,7 +81,8 @@ describe('version order and gaps', () => {
 
     const p = publisher(cell)
     const r = await p.publish()
-    expect(r.tenants).toEqual([{ tenant: a, status: 'ok', cursors: { metric_samples: await ledgerVersion(a), metric_series: await ledgerVersion(a) } }])
+    // The first publication re-bases: from the base segment (two segments, no checkpoint yet).
+    expect(r.tenants).toEqual([{ tenant: a, status: 'ok', cursors: { metric_samples: await ledgerVersion(a), metric_series: await ledgerVersion(a) }, rebase: expect.objectContaining({ source: 'base', version: 0 }) }])
     await expectPublished(cell, [a])
     expect(await icebergLive(cell, 'metric_samples')).not.toContain(merged.key)
     await expectVerified(p)
@@ -103,6 +105,8 @@ describe('version order and gaps', () => {
     const top = (await ledgerVersion(a)).version
     await mirror(a, cell, { skip: [top - 1] }) // unit 2's segment is missing; unit 3's is there
     await mirror(b, cell)
+    // About segments: a re-base from a checkpoint after the hole would start past it (rightly).
+    await dropCheckpoints(cell, a)
 
     const p = publisher(cell)
     const r = await p.publish()
@@ -228,6 +232,8 @@ describe('net changes', () => {
     const a = tenant('a')
     for (let i = 1; i <= 12; i++) await addUnit(a, pairUnit(cell, a, i, i), { drain: true })
     await mirror(a, cell)
+    // About reading a backlog change by change: a re-base from a checkpoint would skip it.
+    expect(await dropCheckpoints(cell, a)).toBeGreaterThan(0)
     const p = publisher(cell)
     await p.configure({ maxChangesPerTenant: 5 })
     const r = await p.publish()

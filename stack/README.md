@@ -1,10 +1,12 @@
 # Stack
 
-The write path as **one script**: `edge` (the default export's `fetch`), the `Shard` and
-`Ledger` Durable Objects, `flush` (the `Flush` entrypoint and the flush queue's consumer),
-and the maintenance of each tenant's files (compaction, retention, deletion), behind one
-wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two queues
-(`FLUSH_QUEUE`, `MAINT_QUEUE`) with their dead-letter queues, and an hourly cron.
+The write path as **one script**: `edge` (the default export's `fetch`, and the
+`RecordedSamples` entrypoint for the ruler), the `Shard` and `Ledger` Durable Objects, `flush`
+(the `Flush` entrypoint and the flush queue's consumer), and the maintenance of each tenant's
+files (compaction, retention, deletion), behind one wrangler config that binds `SHARD`,
+`LEDGER`, `PUBLISHER` (the cell's publisher, in the viz-publisher Worker), R2 (`BUCKET`), KV
+(`CONFIG`), two queues (`FLUSH_QUEUE`, `MAINT_QUEUE`) with their dead-letter queues, and an
+hourly cron. It is deployed as viz-ingest (`deploy/`).
 
 ```
  senders ─► edge ─► Shard ──seal──► [flush queue] ─► flush ─► R2 Parquet ─► Ledger
@@ -19,7 +21,9 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 |---|---|
 | `src/index.ts` | `default`: `fetch` = edge, `queue` = flush / maintenance / dead letters by queue name, `scheduled` = both sweeps. Re-exports `Flush`, `Shard`, `Ledger` |
 | `src/maintain.ts` | `maintainTenant` (expire → compact → purge → orphan sweep), its KV marker, `noteFlushed`, `enqueueDue`, `consumeMaintBatch` |
-| `wrangler.jsonc` | The single config: queues, consumers, dead-letter queues, cron |
+| `wrangler.jsonc` | The single config: queues, consumers, dead-letter queues, cron; what `deploy/configure.mjs` generates viz-ingest's config from |
+| `wrangler.test.jsonc`, `test/worker.ts` | The test script: the same config with the publisher's class (with a test clock) in the script as `TEST_PUBLISHER` instead of `PUBLISHER` bound to viz-publisher; `deploy/test/configure.test.mjs` holds the two configs equal otherwise |
+| `test/publisher.test.ts` | 5 tests: the publisher wired into maintenance, against the real `Publisher` and against ones that hang or refuse |
 | `test/e2e.test.ts` | 6 end-to-end tests that drive flush by hand |
 | `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
 | `test/triggers.test.ts` | 8 tests of the triggers, the maintenance marker, the orphan-sweep flag and the idle deployment |
@@ -28,6 +32,8 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
 | `test/precedence.property.test.ts` | 6 seeded runs: random rewrites of the same samples always read back as the latest write |
 | `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
+| `test/settle.ts` | The soak's checked purge and orphan sweep and its end phase, shared with `test/settle.test.ts` |
+| `test/settle.test.ts` | 1 test: the end phase reaches its end state while a ledger's drain is still backing off (regression test for the soak's end-phase failure of 2026-11-19) |
 | `test/sim.ts`, `test/world.ts` | Simulated deployments: tenants, real requests, queues under test control, the model, the invariants |
 | `scripts/mutants.mjs` | Mutation check for the four new parts |
 | `tools/hyparquet_check.mjs` | Reads one produced Parquet file with hyparquet, in Node |
@@ -43,6 +49,7 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 | The cron fires (hourly) | (1) streams of shards with a pending marker whose segments have waited 10 minutes are re-enqueued, at most 500 shards per cron (a window that moves on each hour); (2) tenants whose maintenance marker is due are enqueued. The two sweeps run independently; a shard, a listing or a send that fails stops neither the other sweep nor the rest of its own, and every failure (and every retention record that cannot be read) is logged and fails the invocation after everything else ran (review R-7) | `handleScheduled`, `sweepPending`, `enqueueDue` |
 | A message exhausts its retries | the batch is written to ONE object `{cell}/dead-letters/{queue}/…json` (review R-12) and logged; the next sweep re-enqueues the work | `consumeDeadLetters` |
 | A message of a version this release does not know (`v` other than 1) | retried with backoff, never run and never dead-lettered (contracts/COMPATIBILITY.md §3.2) | `consumeFlushBatch`, `consumeMaintBatch` |
+| A maintenance run ends (with a publisher bound) | `nudge(PUBLISHER, CELL, [tenant])`: the publisher records the tenant and a `publish` deadline (2 min); its own alarm publishes. At most 2 s, never throws; not recorded → the tenant is due again within the hour. One log line per run (`maintenance <tenant>: merged …, deleted …, waiting … (for publication …), nudged …`) | `maintainTenant`, `summary` |
 
 **Idle means free.** Both sweeps read KV only. A shard has a `flush-pending:` key only
 while it has unrecorded segments; a tenant's `maint:` key carries the time it is next due
@@ -76,34 +83,115 @@ message and the cron's, in different batches). A run writes its marker only if i
 and retries a refused write after 1 s, 2 s and 4 s before failing (then the message is
 retried). `noteFlushed`'s write is best effort, because its message carries the same facts.
 
+## The publisher wired in (2026-11-19)
+
+publisher/README.md "Needed changes" 1 and 3, design/DECISIONS.md D34 and D15.
+
+- **Binding.** `wrangler.jsonc` binds `PUBLISHER` = class `Publisher` of script `viz-publisher`.
+  `deploy/workers.json` deploys viz-publisher before viz-ingest (callee first).
+- **The nudge** (`src/maintain.ts`, end of `maintainTenant`, after the run's own ledger changes,
+  before the marker is settled): `nudge(env.PUBLISHER, CELL, [tenant], publisherTimeoutMs)` from
+  `publisher/src/nudge.ts`, at most `publisherTimeoutMs` (default `NUDGE_TIMEOUT_MS`, 2 s), never
+  throws. Not recorded (a timeout, a refusal, a publisher that is gone): the tenant is due again
+  within the hour, so the cron runs it and it nudges again. Only with the binding: without one,
+  `nudged` is null and nothing is made due. `MaintReport.nudged` says which.
+- **Never on an ingest or flush acknowledgement path** (D15). The edge's `fetch`, the flush
+  consumer (`consumeFlushBatch`, `noteFlushed`) and the cron do not touch `PUBLISHER`; the
+  maintenance consumer is a separate queue invocation that acknowledges only its own messages.
+- **Deletion waits for publication** (`janitor/README.md`): `purgeTenant` gets the same env, so
+  with a publisher bound it deletes only what the ledger AND the publisher release. Tombstones
+  waiting only for the publisher (`PurgeResult.unpublished`) make the tenant due again after
+  `PUBLICATION_RECHECK_MS` (6 h; `publicationRecheckMs`) instead of every delete grace (1 h): a
+  release comes at the earliest a day after the removal is published (a snapshot is kept 24 h,
+  and at least until a newer commit). A publisher that could not be asked: due within the grace.
+
+| Test (`test/publisher.test.ts`, `test/triggers.test.ts`) | What it shows |
+|---|---|
+| a flush leads to a maintenance run … nobody calls publish | ingest, seal, the flush queue through the script's handler, the maintenance queue: `nudged: true`; the publisher has a `publish` deadline and an alarm and has published nothing; its alarm then publishes and the current snapshot lists exactly the ledger's live files for the tenant |
+| a publisher that hangs or refuses never slows or fails ingest or flush | with a stand-in that never answers, and one that throws `schema_too_new`: every Remote Write 204 in less than the nudge bound; every flush message acknowledged, nothing pending; **the stand-in was asked nothing** by either path; the maintenance run is acknowledged (not retried), `nudged: false`, deleted nothing, took at least the bound (hang) and well under twice it plus slack; the tenant is due within the hour; every acknowledged row still reads back (`checkTenant`) |
+| without a publisher bound | `nudged: null`, no `unpublished`: today's behaviour |
+| a nudge that may not have been recorded … | a tenant with nothing to do: no marker after a run whose nudge was recorded; due in (59 min, 60 min] after one that hung or was refused |
+| a removal waiting only for publication | compaction's inputs are deletable by the ledger, not released: nothing deleted, `unpublished = waiting`, due more than 5 h later |
+| an idle deployment (triggers) | the counted env now binds the real publisher: 168 hourly crons make **0 publisher calls** (and 0 shard, 0 ledger calls, 0 messages) |
+
+The four tests in `test/publisher.test.ts` that existed before the code was changed **failed
+against it** (no `nudged`, no recheck interval), and pass after it.
+
+**Mutants, part "publication" (2026-11-19)**: `node scripts/mutants.mjs publication`, run from a
+copy of the tree in a scratch directory (the script refuses a git checkout), after the copy's
+unmutated janitor gate tests (4 of 4) and stack publisher and trigger tests (13 of 13) passed:
+**15 of 15 killed**.
+
+| Mutant | Killed by |
+|---|---|
+| janitor: the deletion gate is ignored (the ledger alone decides) | janitor gate: published, then retained snapshot; both must say so |
+| janitor: a key the publisher releases is deleted although the ledger does not offer it | janitor gate: same two |
+| janitor: a publisher that cannot answer releases everything (fails open) | janitor gate: refuses or does not answer |
+| janitor: the publisher's answer is awaited without a bound | janitor gate: refuses or does not answer |
+| janitor: a held-back head starves the released keys behind it | janitor gate: held-back head |
+| janitor: what was deleted is not acknowledged to the publisher | janitor gate: published …; both must say so |
+| maintenance does not nudge the publisher | a flush leads to a maintenance run …; hangs or refuses |
+| a nudge that may not have been recorded does not make the tenant due again | hangs or refuses; the only reason … within the hour |
+| a deployment without a publisher still nudges (every tenant due hourly) | without a publisher bound |
+| the nudge waits as long as the publisher takes | hangs or refuses; the only reason … within the hour |
+| maintenance deletes without asking the publisher | hangs or refuses; waiting only for publication |
+| a removal waiting only for publication is looked at every grace (hourly) | waiting only for publication |
+| the flush path nudges the publisher | hangs or refuses (the stand-in was asked during flush) |
+| ingest asks the publisher before acknowledging | hangs or refuses (the stand-in was asked during ingest) |
+| the cron nudges the publisher (an idle deployment wakes it hourly) | triggers: an idle deployment, 0 publisher calls |
+
+**Soak, 2026-11-19, with the publisher wired in** (`SOAK_STEPS=3000 npx vitest run
+--maxWorkers=1 test/soak.test.ts`, seed 20261118, run alone among this engineer's jobs, others'
+query and ruler suites running on the machine): 3,000 steps, **every invariant held at every
+step**; 325 s; peak memory 991 MB for the process tree and 564 MB for the largest process
+(sampled every 3 s, threads not counted). The soak runs without a publisher (its env has none),
+so it checks that the wiring changed nothing for a deployment that has none; the gate's own
+behaviour is in the tests above. Run again with `--reporter=verbose` for the counts: again **every invariant held** (282 s;
+1,036 MB tree, 570 MB largest process): 893 acknowledged requests (188 repeats), 655 segments
+admitted through 1,459 delivered flush messages (621 retried), 390 merges, 3 conflicts and 21
+more under a concurrent retention, 25 crashed steps, 1,368 files expired, 4,964 objects purged,
+76 orphans deleted, 105 evictions, 74 ledger-log outages, 72 old-plan readers verified, 0 dead
+letters.
+
 ## Not implemented
 
 - **A query Worker.** The read path here is test code; nothing serves queries.
 - **Separate deployment.** In production these are several Workers bound to each other;
   that wiring (service bindings, `script_name` on the Durable Object bindings, the queue
   consumers in their own scripts) is not written.
-- **The ledger ↔ shard-map epoch**, the publisher, rollups.
+- **The ledger ↔ shard-map epoch**, rollups. (The publisher is wired in: above.)
 - **The compaction Workflow is not started from here**; the maintenance consumer calls the
   step function (see `compact/README.md`).
 - **Alerting** on dead letters; they are written to R2 and to the error log only.
 - **Concurrency limits** on maintenance (two messages for one tenant in different batches
   run two maintenance runs; each step is safe to run twice, it is only wasted work. Before
   D30 that was not true together with the orphan sweep: review R-2).
-- Nothing was deployed to Cloudflare. Queue delivery, cron and KV metadata are miniflare's.
+- **No production deployment yet.** This script has run on Cloudflare as viz-ingest in three
+  staged trials (`deploy/README.md`: Trial 1 under load across four cutovers, Trial 2, and
+  Trial 3 with the publisher wired in, its maintenance runs and deletion gate on their own);
+  everything in "How it was verified" below is local (queue delivery, cron and KV metadata are
+  miniflare's).
 
 ## How it was verified
 
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npx vitest run --maxWorkers=2    # 41 tests in workerd, 8 files (soak: 400 steps)
+npx vitest run --maxWorkers=2    # 47 tests in workerd, 10 files (soak: 400 steps)
 npm run soak                     # the soak with 3,000 steps
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
 node tools/hyparquet_check.mjs   # 4 checks agree
 ```
 
-Last run, 2026-11-19: **41 passed, 0 failed**; `tsc --noEmit` clean.
+Last run, 2026-11-19: **41 passed, 0 failed**; `tsc --noEmit` clean. With the publisher wired
+in (2026-11-19, `npx vitest run --maxWorkers=2`): **46 passed, 0 failed** (9 files); `tsc
+--noEmit` clean. (A first run during the change failed 38 tests with `LEDGER_SEGMENT_VERSION is
+not defined`: the ledger was mid-edit by its engineer; rerun once it was whole.) After the
+soak's end-phase fix (2026-11-19, `test/settle.ts`, `test/settle.test.ts`; "The end phase judged
+the end state before the ledger had logged" below): **47 passed, 0 failed** (10 files, 91 s);
+`tsc --noEmit` clean; `ledger/`, `janitor/` and `compact/` unchanged and green alongside it
+(101, 21 and 24 tests; `tsc --noEmit` clean in each).
 
 ### Wiring for the ledger's background log (2026-11-19)
 
@@ -244,8 +332,9 @@ live set is exactly what it references: every live key is an object of the liste
 key is both live and tombstoned, and every other object under the tenant's prefix is
 tombstoned (the janitor's) or has a name the orphan sweep can judge (nothing leaked). Checked at each deletion: a purged key had a tombstone, older than the grace
 and with a logged removal; an orphan was unreferenced, old enough, and (a flush file)
-below its stream's logged watermark. At the end, after flushing, compacting, expiring and
-deleting everything: the objects in R2 are exactly the ledger's live set, all level 2, no
+below its stream's logged watermark. At the end, after flushing, compacting and expiring
+everything, waiting out the graces and for each ledger to log its removals (by its own
+drain), and deleting: the objects in R2 are exactly the ledger's live set, all level 2, no
 tombstone and no pending segment left.
 
 **Result.** Last run (`npm run soak`, seed 20261118, on the final code: file precedence and
@@ -298,6 +387,107 @@ caused by the code under test was seen in the soak or the property test; the bug
 while building were caught earlier, by the unit suites (a tombstone's time differing by
 1 ms from its logged change after a rebuild; a native ABI test crashing on a 32-bit
 pointer field).
+
+### The end phase judged the end state before the ledger had logged (fixed 2026-11-19)
+
+**Symptom.** The soak at its default length and seed failed now and then at its end-state
+check `expect(state.objects).toEqual(state.live.map((f) => f.key).sort())`: R2 still held
+objects the ledger no longer listed (level-0 flush files of two days, a level-2 file; 26
+objects against 4 live in CI, 28 against 6 locally). The same commit passed one CI run and
+failed another.
+
+**Cause: a test bug.** The soak breaks a ledger's log now and then. While it is broken every
+drain fails and the ledger backs off (1 s doubling to 60 s, `contracts/LEDGER-LOG.md`). The
+soak heals it by hand (`healLedgerLog`, then `drain()`): the explicit drain writes everything,
+but the backoff stays until it ends, and only then does the ledger drain its next commits (its
+alarm is set at the end of the backoff). A log that recovers by itself leaves the same window:
+the ledger cannot know R2 is back until it tries again. When a tenant's outage came late in a
+run, the end phase committed its expiry and merges inside that backoff, slept for the graces
+(3.2 s) and purged. `deletable` refuses a tombstone whose removal is not logged (contract rule
+1), so those removals' objects stayed, and the end state was judged before the ledger got to
+log them. Nothing was deleted that should not have been, and nothing is stuck: the ledger logs
+them when the backoff ends, and in production a maintenance run whose purge left
+`waiting > 0` comes back after max(grace, 60 s) (`src/maintain.ts`).
+
+**Evidence** (a scratch copy with read-only probes of the ledger's backoff, alarm and outbox,
+and every leftover key classified by the gate that kept it; main's code, and the same on the
+development branch's):
+
+- A natural failure (seed 6, 400 steps; the soak is not deterministic for a seed, since
+  timing changes which operations run): one tenant's log broken at step 365 and healed only
+  by the end phase's `quiesce`. At the end phase's last commit the ledger still had 4
+  failures, `lastError` "injected R2 failure" and its alarm 3,969 ms ahead; at the purge,
+  3.3 s later, version 111 was still in the outbox and the alarm 666 ms away. All 6 leftover
+  objects were tombstones of version 111 (the last merge), 3,340 ms old (grace 1,500 ms), not
+  logged. The other tenants had no backoff and nothing left.
+- The same condition forced (scratch only: just before the end phase, every tenant's log
+  broken, the ledger's alarm run until it backs off 16 s, then healed by hand): 5 of 5 runs
+  failed, the first with exactly "expected [ …(28) ] to deeply equal [ …(6) ]". 246 leftover
+  objects in 15 tenant ends (192 level 0, 8 level 1, 46 level 2), **every one a tombstone
+  whose removal was not logged at the purge**; the orphan sweep judged none of them (it leaves
+  tombstoned keys to the purge), and every ledger's alarm was set about 12 s ahead, at the end
+  of its backoff.
+- On the development branch's code, forced the same way: 3 of 3 runs failed, 202 leftover
+  objects, every one an unlogged tombstone.
+- Not the cause, in every failing run examined here: an undelivered alarm (it was set, at the
+  end of the backoff, and not yet due); the compaction-output rule (D30) or F15 (no leftover
+  was unreferenced, so the orphan sweep had nothing to judge; the level-2 leftovers were
+  tombstoned files, refused by the purge's rule like the rest). The CI and local failures were
+  not instrumented; their leftovers match this pattern.
+
+**Fix: the end phase waits for the real condition.** It moved to `test/settle.ts`, shared
+with its regression test. After the graces it waits until each tenant's ledger has logged
+everything it committed (`outboxDepth() === 0`), by the ledger's own drain (no `drain()`
+call), as an operator or the next maintenance run would; then it purges and sweeps exactly as
+before. The wait is bounded at 75 s (the longest backoff is 60 s): a ledger that does not
+drain by then fails the soak with its `logStatus`. No sleep was lengthened and no check in
+purge or orphans changed; in a run without a late outage the wait is zero. The soak's summary
+line counts the tenants that waited and for how long. In the same change the soak's eviction
+step leaves alone an object that has not run yet (seed 10 failed at step 0 with "Cannot evict
+Durable Object: it is not currently running"; a test bug unrelated to the end phase).
+
+**Regression test** (`test/settle.test.ts`): one tenant, two flushed requests, then the
+outage (log broken while a flush commits, the ledger's alarm run until the drain backs off for
+16 s), healed by hand; then the end phase, with a check that when the graces have passed its
+removals are still unlogged (the failing timing, asserted, so a slow machine cannot turn the
+test into one that proves nothing).
+
+**Runs** (each one `SOAK_STEPS=400 npx vitest run --maxWorkers=1 test/soak.test.ts`, one at
+a time, measured here on a machine shared with other engineers' jobs, load average 6–15). A
+natural failure needs a tenant's outage late in a run, so it is rare here; "outage forced"
+is the same soak with, in a scratch copy only, every tenant's log broken until its ledger backs
+off 16 s and then healed by hand just before the end phase: the same workload with and without
+the fix.
+
+| Code | Workload | Runs | Failed |
+|---|---|---|---|
+| main, before | default seed (5 of them pinned to one CPU) | 15 | 0 |
+| main, before | seed 6 | 5 | 0 |
+| main, before, with read-only probes | default seed; seeds 1–10 once each | 7; 10 | 0; 2 (seed 6: this failure; seed 10: the eviction) |
+| main, before | outage forced, default seed | 5 | **5** (first: "expected [ …(28) ] to deeply equal [ …(6) ]") |
+| main, after | default seed; seeds 1–10 once each | 12; 10 | 0; 0 |
+| main, after | outage forced, default seed | 10 | **0** (each end phase waited about 12.4 s for the logs) |
+| dev, before | default seed; seeds 1–6 and 10 once each | 8; 7 | 0; 2 (seed 5: this failure, "expected [ …(12) ] to deeply equal [ …(6) ]"; seed 10: the eviction) |
+| dev, before, with probes | outage forced, default seed | 3 | **3** (202 leftover objects, every one an unlogged tombstone) |
+| dev, after | default seed; seeds 1–6 and 10 once each | 10; 7 | 0; 0 |
+| dev, after | outage forced, default seed | 5 | **0** (each end phase waited about 12.3–12.6 s) |
+
+In the natural runs after the fix no end phase happened to find a ledger backing off (the
+summary line's `end:` counts were absent), so those runs show that nothing else broke; the
+forced runs show the fix.
+
+**Mutants** (each in a scratch copy, never in this tree):
+
+| Mutant | Caught by |
+|---|---|
+| The end phase does not wait for the logs (the `awaitLogged` call removed) | `test/settle.test.ts`, at the end-state check, "expected [ …(10) ] to deeply equal [ …(2) ]": 3 of 3 runs on main's code, 3 of 3 on the development branch's |
+| The ledger sets no alarm for a commit made during a backoff (main's `scheduleDrain` returns early), so a tenant whose drain backs off never drains by itself: the product bug this could have been | `test/settle.test.ts`: "ledger did not log its changes within 75000 ms" with its `logStatus` (`alarmAt: null`, `pending: 1`) |
+| The ledger sets no alarm for the last commits at all (`afterCommit` without `scheduleDrain`) | `test/settle.test.ts`, already while setting up the outage (no alarm to run) |
+
+The regression test passes on the fixed code in about 20 s (it waits out the backoff): 3 of 3
+runs on main's code, 3 of 3 on the development branch's. "main" is main's stack, ledger,
+janitor, compact and flush; "dev" is the development branch's (ledger checkpoints in parts,
+D47), whose soak, `test/sim.ts` and end phase are the same files.
 
 ### Mutation checks (`node scripts/mutants.mjs all`)
 
@@ -511,6 +701,16 @@ had the adversarial review `AGENTS.md` asks for protocol changes.
 - **Graces are real time in the soak**, scaled to 1–1.5 s; a deletion is checked against
   its rule when it happens, but a machine that stalls for seconds changes which
   operations a run exercises. Two runs with one seed are not identical.
+- **The soak's end phase can take up to a minute longer** when a ledger is still backing off
+  from an outage (it waits for the ledger's own drain, bounded at 75 s; the longest backoff is
+  60 s). Rare in natural runs: none of 39 runs after the fix waited.
+- **A ledger's backoff outlives a successful `drain()`** (seen while fixing the soak; not
+  changed here). After an explicit `drain()` the failure count, the backoff and
+  `logStatus().lastError` stay until the alarm's next drain, so commits made meanwhile are
+  logged up to the rest of the backoff (at most 60 s) late: shards keep their rows and purges
+  wait that much longer. Nothing counts as logged early, so no safety rule is touched; the
+  alarm's own successful drain clears all three. Whether `drain()` (contract: "what the alarm
+  does") should clear them too is for `ledger/` to decide; the soak no longer depends on it.
 - **Files that disagree** are now ordered by the ledger's precedence (D22) and tested with
   rewrites (`test/precedence.property.test.ts`); the soak's model still sends one value per
   `(series, ts)`. Admission order equals write order across streams only once the

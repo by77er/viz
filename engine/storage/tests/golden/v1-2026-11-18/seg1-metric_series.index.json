@@ -1,0 +1,1 @@
+{"v":1,"rg":[{"rows":50,"off":4,"len":1001,"min_name":"a_total","max_name":"b_seconds","min_ts":1763467245000,"max_ts":1763467305006},{"rows":50,"off":1005,"len":882,"min_name":"b_seconds","max_name":"c_bytes","min_ts":1763467245000,"max_ts":1763467305006},{"rows":20,"off":1887,"len":534,"min_name":"c_bytes","max_name":"c_bytes","min_ts":1763467245000,"max_ts":1763467305006}]}

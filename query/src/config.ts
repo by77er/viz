@@ -84,6 +84,14 @@ export interface TenantLimits extends QueryLimits {
    * place held 51.9 MiB of WASM memory for 100,000 series (measured here).
    */
   cardinalitySplitAboveSeries: number
+  /**
+   * The label endpoints (`/labels`, `/label/<name>/values`, `/series`): distinct series
+   * listed. They read series files only, never samples (CARDINALITY.md, item 3), so they are
+   * bounded by this instead of a query's `maxSeries`; what one place holds is the series files
+   * (within `maxFetchBytes`) and, per series listed, its label set for `/series` or one name
+   * or value for the other two.
+   */
+  maxMetadataSeries: number
 }
 
 /**
@@ -116,6 +124,7 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxCardinalitySeries: 1_000_000,
   maxCardinalityPairs: 400_000,
   cardinalitySplitAboveSeries: 50_000,
+  maxMetadataSeries: 200_000,
 }
 
 /** A configuration that cannot be trusted: the query is refused (503), never run on a guess. */

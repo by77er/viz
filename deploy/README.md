@@ -9,15 +9,17 @@ changes no component: everything it needs from one is under "Needed changes".
 | `workers.json` | Which Workers exist, in dependency order (callees first), which are deployed, and why the others are not. Deployment-wide settings: domain, observability sampling, Durable Object code-update mode, resource names, shared vars |
 | `configure.mjs` | Generates each Worker's production (or staged) wrangler config into `generated/` from the component's own `wrangler.jsonc` |
 | `resources.mjs` | Creates the R2 bucket, KV namespace and queues (idempotent); `destroy --stage` deletes a stage |
-| `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records; rollback |
+| `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records (with schema versions and whether the release is forward-only); rollback, refused across a forward-only release |
+| `lib/schemas.mjs` | Reads every Durable Object class's `SchemaSpec` from the component sources (esbuild, no Worker run) for the manifest, the `VIZ_SCHEMAS` var of each version, and the rollback check |
 | `deploy.sh` | The whole deploy: WASM, `npm ci`, resources, configure, release, smoke test, automatic rollback |
 | `smoke.mjs` | `/healthz` until the release just promoted answers, then a real Remote Write and a query that must return it within 60 s |
 | `bootstrap.mjs` | A tenant's first API key, through a one-time token |
 | `load.mjs` | Steady write and read load with a cutover report (used by the trial) |
 | `gateway/` | `viz-gateway`, the Worker on `vis.bitcru.sh`, and its tests |
 | `stage/` | The one shim a staged deployment needs (queue names, see "Needed changes" 1) |
-| `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports |
+| `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports. Trial 3: `probe/index.ts`, a stand-in for the ruler's `SINK` binding |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
+| `scripts/mutants-release.mjs` | Mutation check of the schema rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs` (run on a copy) |
 | `resources.json` | KV namespace ids by title (not secret; rewritten by `resources.mjs`) |
 | `generated/` | Build output: configs, manifests, release records. Git-ignored |
 
@@ -38,8 +40,8 @@ push to main
                  configure.mjs              generated/production/*.jsonc + manifest.json
                  release.mjs deploy         plan → refuse unacknowledged migrations (exit 3)
                                             phase 1: upload every Worker (serves nothing)
-                                            phase 2: promote viz-ingest, viz-control, viz-query, viz-ruler,
-                                                     viz-mcp, viz-gateway
+                                            phase 2: promote viz-publisher, viz-ingest, viz-control,
+                                                     viz-query, viz-ruler, viz-mcp, viz-gateway
                  smoke.mjs                  /healthz until the new release answers; Remote Write +
                                             query with SMOKE_KEY
                  on smoke failure           no migration in the release → roll back to the previous
@@ -64,10 +66,12 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
  edge, Shard,    Leaf DOs;    Tenant DO         Ruler, Notifier,   stateless; QUERY, CONTROL,
  Ledger, Flush,  SHARD and    (keys,            RulerIndex DOs;    RULER service bindings,
  4 consumers,    LEDGER from  dashboards,       QUERY, INGEST      each call with the caller's
- hourly cron     viz-ingest   settings)         service bindings,  own key
-                                                TENANT (control's
-                                                Tenant) by script_name;
-                                                cron */15
+ hourly cron,    viz-ingest   settings)         service bindings,  own key
+ RecordedSamples                                TENANT (control's
+ entrypoint                                     Tenant) by script_name;
+     │ PUBLISHER (DO, by script_name): nudged by    cron */15
+     │ maintenance runs, asked before deletion
+ viz-publisher: Publisher DO, one per cell (Iceberg metadata in viz-lake); no route, no cron
      └──── R2 viz-lake, KV viz-config (ingest, query, control, ruler and mcp read it), queues ────┘
 ```
 
@@ -162,14 +166,16 @@ and the exact trailer it needs, and the job fails with exit code 3. Names are al
 production names (`viz-ingest@v2`), also for a stage. Per `contracts/COMPATIBILITY.md` §7, a
 release that changes a class's lifecycle should contain nothing else.
 
-**The first production deploy is such a release**: viz-ingest, viz-control and viz-query go
-from no migration to `v1`, and viz-ruler from none to `v2` (its config has two steps, `v1`
-`Ruler` and `Notifier`, `v2` `RulerIndex`; the gate compares the newest tag, and `wrangler
-deploy` applies both). viz-mcp and viz-gateway have no Durable Object class. Start it by hand:
-Actions → Deploy → Run workflow on `main`, with `acknowledge_migrations` =
-`viz-ingest@v1 viz-control@v1 viz-query@v1 viz-ruler@v2` (or put the four trailers on the merge
-commit). Measured in Trial 2: without them the release is refused, exit 3, before anything is
-uploaded, and the refusal lists exactly these four.
+**The first production deploy is such a release**: viz-publisher, viz-ingest, viz-control and
+viz-query go from no migration to `v1`, and viz-ruler from none to `v2` (its config has two
+steps, `v1` `Ruler` and `Notifier`, `v2` `RulerIndex`; the gate compares the newest tag, and
+`wrangler deploy` applies both). viz-ingest only *binds* the publisher's class (by
+`script_name`), which is no migration of its own. viz-mcp and viz-gateway have no Durable Object
+class. Start it by hand: Actions → Deploy → Run workflow on `main`, with
+`acknowledge_migrations` = **`viz-publisher@v1 viz-ingest@v1 viz-control@v1 viz-query@v1
+viz-ruler@v2`** (or put the five trailers on the merge commit). Measured in Trial 3: without them
+the release is refused, exit 3, before anything is uploaded, and the refusal lists exactly
+these five (Trial 2 measured the four before viz-publisher was deployed).
 
 ## Release record
 
@@ -179,9 +185,43 @@ uploaded, and the refusal lists exactly these four.
 ```json
 { "kind": "release", "release": "<git sha>", "target": "production", "previousRelease": "<sha>",
   "migrations": [{ "worker": "viz-ingest", "from": "v1", "to": "v2" }],
+  "schemas": { "ledger.Ledger": { "worker": "viz-ingest", "latest": 3, "compat": 2, "by": "2: the change log in segments …" }, "…": "…" },
+  "forwardOnly": true,
+  "forwardOnlyBecause": [{ "worker": "viz-ingest", "kind": "schema", "component": "ledger.Ledger", "previousKnows": 1,
+    "latest": 3, "compat": 2, "migrations": [{ "version": 2, "readableFrom": 2, "name": "…" }, "…"], "why": "…" }],
   "via": { "viz-ingest": "deploy", "viz-control": "versions", "...": "..." },
   "workers": [{ "name": "viz-ingest", "versionId": "…", "migrationTag": "v2", "release": "<sha>" }, "…"] }
 ```
+
+**Schema versions and forward-only releases** (contracts/COMPATIBILITY.md §6; design/DECISIONS.md
+D46; added 2026-11-19). `deploy/workers.json` declares, for every Durable Object class a Worker defines,
+its `SchemaSpec` (`"schemas": {"Ledger": "ledger/src/ledger.ts#LEDGER_SCHEMA"}`) or why it keeps
+no storage (`"unversioned"`: query's `Leaf`); `configure.mjs` refuses a class declared neither
+way, and a test checks that each declared spec is the one its class opens storage with.
+`lib/schemas.mjs` reads the specs from the sources (esbuild bundles just them, tree-shaken, and
+a Node `vm` evaluates the bundle with the platform modules stubbed; contracts/schema.ts's own
+`schemaRelease` and `checkSpec` run on them). Each class's `{latest, compat}` goes into the
+manifest, the release record, and **every version's `VIZ_SCHEMAS` var**, so Cloudflare itself
+keeps what each version knows for as long as it keeps the version.
+
+- **Forward-only.** At deploy, for each class: `compat` (its highest `readableFrom`) above the
+  `latest` that the version serving now declares is forward-only, and the record lists each
+  such migration and why. A serving version that declares nothing (from before this) is taken
+  to know version 1 (COMPATIBILITY.md §6, Bootstrapping). A Durable Object migration tag change
+  on an existing Worker is listed too (`kind: lifecycle`). The ledger's migration 2 (the segment
+  log, `readableFrom` 2) makes the first release that carries it forward-only for any
+  deployment that ran an older ledger. `deploy.sh` does not roll a forward-only release back
+  automatically; it fails and says to fix forward.
+- **Rollback refusal.** `release.mjs rollback` (and `rollback_to` in the workflow) lists, for
+  each Worker with versioned classes in the target record, every version Cloudflare keeps that
+  is newer than the target's, reads each one's `VIZ_SCHEMAS`, and refuses, changing nothing,
+  when any of them ran a class at `{latest, compat}` that the target cannot open (`canOpen`,
+  contracts/schema.ts). The message names the component, the release and version that ran it,
+  and the migration that raised `compat`. Judging every version since the target, not only the
+  one serving now, is what COMPATIBILITY.md asks ("the newest release that ever ran since T"):
+  A → B (additive) → C (`readableFrom` 2) → back to B → back to A is refused at the second step
+  although B, serving then, is additive. A target record without schema versions, or a newer
+  version that declares none, is refused too (never guessed).
 
 `previous.json` is the same shape, captured from Cloudflare just before phase 1: what an
 automatic rollback restores. Every version is also tagged with the release SHA on
@@ -195,8 +235,9 @@ rollback`: every Worker back to its recorded version id, callers first (viz-gate
 viz-query, viz-control, viz-ingest), then the smoke test. Locally:
 `node deploy/release.mjs rollback --record <release.json> [--stage S]`.
 
-It refuses, changing nothing, when a recorded version no longer exists (Cloudflare keeps 100)
-or when any Worker's Durable Object migration tag in force differs from the recorded one.
+It refuses, changing nothing, when a recorded version no longer exists (Cloudflare keeps 100),
+when any Worker's Durable Object migration tag in force differs from the recorded one, or when
+storage a newer version wrote cannot be opened by the target (schema versions, above).
 Cloudflare refuses the same thing itself (measured in the trial: `versions deploy` of a
 pre-migration version answers code 10210, "the version depends on Durable Object migration
 "v1", but the current deployment is using migration "v2""); the tool's check says why before
@@ -205,13 +246,13 @@ anything is attempted, and also covers Workers rolled back as a set.
 Cloudflare will not run code from before it on that class's objects, and their storage may
 already be in the new shape; no version from before the migration can serve again. A bad
 release that applied a migration is repaired by a new commit (fix forward), never by a
-rollback. `contracts/COMPATIBILITY.md` §6 extends this to schema versions inside SQLite and
-to wire formats; this tool checks only the Cloudflare migration tag (see "Not implemented").
+rollback. `contracts/COMPATIBILITY.md` §6 extends this to schema versions inside SQLite, which
+this tool checks too (above), and to wire formats, which it does not (see "Not implemented").
 
-**Automatically**: when the smoke test fails after a deploy that applied no migration,
-`deploy.sh` restores `previous.json`, checks health again, and fails the job. When the
-release applied a migration it does not roll back; it fails with an error naming the
-migrations and the instruction to fix forward.
+**Automatically**: when the smoke test fails after a deploy that applied no migration and is
+not forward-only, `deploy.sh` restores `previous.json`, checks health again, and fails the job.
+When the release applied a migration, or is forward-only for a schema, it does not roll back; it
+fails with an error naming the migrations or classes and the instruction to fix forward.
 
 **Redeploying an older commit** (instead of restoring its versions): run the workflow on
 that commit. That builds new versions of old code and goes through the same migration gate,
@@ -249,8 +290,9 @@ that happens, dispatch it again.
    `production`, which GitHub creates on first use; add protection rules to it if a person
    should approve each deploy.
 2. **First deploy**: run the Deploy workflow on `main` with `acknowledge_migrations` =
-   `viz-ingest@v1 viz-control@v1 viz-query@v1 viz-ruler@v2` (see above). It creates `viz-lake`,
-   `viz-config` and the four queues, deploys the six Workers and attaches `vis.bitcru.sh`.
+   `viz-publisher@v1 viz-ingest@v1 viz-control@v1 viz-query@v1 viz-ruler@v2` (see above). It
+   creates `viz-lake`, `viz-config` and the four queues, deploys the seven Workers and attaches
+   `vis.bitcru.sh`.
    Without `SMOKE_KEY` the smoke test checks health only.
 3. **First tenant**, from a machine with the two Cloudflare variables set and `npm ci` done
    in `deploy/`:
@@ -341,6 +383,29 @@ All measured here unless it says Cloudflare.
   the gateway's `RULER`, `MCP`); `--expires` sets `VIZ_STAGE_EXPIRES_AT` in every staged Worker
   and is refused for production and for a non-ISO time. `npx tsc --noEmit` clean (now also
   over `trial/sink`).
+- **The publisher, schema versions and forward-only releases (2026-11-19):** `node --test
+  'test/*.test.mjs'`: **35 of 35** (configure: viz-publisher deployed first with its health route
+  and the publisher's own `/healthz` source; viz-ingest's `PUBLISHER` resolves to the stage's
+  viz-publisher, deployed before it; every Durable Object class declared, each declared spec the
+  one its class opens storage with, an undeclared class refused; the seven specs read from the
+  sources with the ledger's migration 2 `readableFrom` 2, into the manifest and `VIZ_SCHEMAS`;
+  `VIZ_STAGE_VARS` stage-only; `stack/wrangler.test.jsonc` equal to `stack/wrangler.jsonc` but for
+  the publisher binding and the test main. release: forward-only marking (a readableFrom above
+  what the serving version declares, an additive step that is not, a serving version that
+  declares nothing, a first deploy, a lifecycle change); the rollback refusal naming release
+  and migration, its positive cases, a record or a newer version without schema versions; A →
+  B → C → B → A refused by the pure check and through `rollback()` with B serving; nothing
+  restored when refused). `npx vitest run --maxWorkers=2`: 95 of 95 (the gateway's suite, which
+  others have extended since). `npx tsc --noEmit` clean (now also over `trial/probe`).
+  `node scripts/mutants-release.mjs` on a copy of the tree in a scratch directory, after the
+  copy's tests passed unmutated: **12 of 12 killed** (a first run: 11 of 12; "only the version
+  serving now is judged" survived until the rolled-back-release test above was added). The
+  mutants: forward-only not marked, an undeclared serving version taken to know the new
+  version, a lifecycle change not marked; `canOpen` dropped, off by one, the schema check never
+  run, a newer undeclared version ignored, a record without schemas accepted, only the serving
+  version judged; an undeclared class deployed, versions without `VIZ_SCHEMAS`, `compat`
+  recorded as `latest`. `deploy.sh`'s new branch was not run (shellcheck is not installed here
+  now); on Cloudflare, Trial 3.
 - `npx tsc --noEmit` in deploy/: clean. It covers the gateway and the stage queue-name
   mapping, not `stage/ingest.ts`: typing that file means type-checking the whole write path
   (stack/, ledger/, …), which is their CI job's business and was mid-edit by others while this
@@ -572,9 +637,73 @@ namespace, R2 bucket, queue, custom domain or Durable Object namespace whose nam
 this trial's. The API keys, the sink token and the webhook secret were deleted from the scratch
 directory; the shared tree's `resources.json` was never written (the trial ran from the snapshot).
 
+## Trial 3: the publisher wired in, deletion gated on publication, recorded samples, forward-only releases (2026-11-19)
+
+`deploy.sh --stage trial3` against the real account: Workers `viz-trial3-publisher`, `-ingest`,
+`-control`, `-query`, `-ruler`, `-mcp`, `-gateway` (only the gateway on workers.dev) and
+`viz-trial3-probe` (workers.dev, a path that answers 404 without a token generated for the trial
+and set with `wrangler secret put` on stdin); R2 `viz-trial3-lake`, KV `viz-trial3-config`, queues
+`viz-trial3-flush`, `-maint`, `-flush-dlq`, `-maint-dlq`. Production and `vis.bitcru.sh` were not
+touched. 03:58–04:37 UTC.
+
+**Cost, stated before it ran** (modelled, Workers Paid rates): at most 90 minutes of the stage
+(`VIZ_STAGE_EXPIRES_AT` two hours out stops the ruler; the stage was to be destroyed at the end),
+a writer at 1 Remote Write request a second for at most 45 minutes and a reader at one query a
+second, seven Workers and the probe, at most a few thousand queue operations, 1,000 R2 class A
+and 10,000 class B operations, 50,000 Durable Object requests and 1,000 KV writes: well under
+US$0.10, **stated as under US$1 worst case**. **Measured on Cloudflare** (GraphQL
+`workersInvocationsAdaptive`, 03:58–04:38 UTC, read after the deletion): 7,282 Worker invocations,
+4 errors, 17,627 subrequests, all under `__unknown__`, the name analytics gives deleted scripts
+(the trial's were deleted at 04:37; that no other deleted script ran then is likely, not
+checked). No bill was read.
+
+**How it ran.** From a snapshot of the working tree in a scratch directory (others were editing
+it), with `VIZ_SKIP_NPM_CI=1` and `VIZ_WASM_PREBUILT=1`. The first two attempts stopped in phase 1,
+before anything was uploaded: the snapshot's `ruler/` was mid-edit by its engineer (`wrangler
+deploy --dry-run`: no export `fetchHistory` in `ruler/src/history.ts`); `ruler/` was copied again
+a minute later and bundled. One stage var for the trial (`VIZ_STAGE_VARS`): viz-ingest's
+`MAINTENANCE` = `{"deleteGraceMs":120000}`, so the **ledger** releases a removed file after
+2 minutes instead of an hour, and anything the publisher still holds back is visible within the
+trial. Everything else at its defaults (shards seal after 10 minutes; compaction merges an hour
+once it has four level-0 pairs; the publisher publishes 2 minutes after a nudge, keeps snapshots
+24 h and at least two, releases a file an hour after its last snapshot expired).
+
+| Step | Result |
+|---|---|
+| deploy without acknowledgement | **refused, exit 3**, before anything was uploaded; the refusal listed exactly `viz-publisher@v1`, `viz-ingest@v1`, `viz-control@v1`, `viz-query@v1`, `viz-ruler@v2` |
+| deploy with those five | the seven Workers by `wrangler deploy` in order, viz-publisher first (viz-ingest's `PUBLISHER → viz-trial3-publisher:Publisher`); health through the gateway, all five backends 200; 65 s. Release record: not forward-only (nothing older existed), the seven classes' `{latest, compat}` (ledger 3/2, publisher 2/1, …). **Each version's `VIZ_SCHEMAS` read back from Cloudflare's version API** (`resources.bindings`) |
+| bootstrap `trial3-tenant`, smoke with data | keys written to 0600 files in the scratch directory, never printed, deleted afterwards; Remote Write 204 in 439 ms, all 9 samples returned 980 ms after the acknowledgement |
+| writer, 30 minutes (`load.mjs`, 1 request a second × 4 series) | **1,800 requests, 0 refused, 0 retried**; acknowledgement p50 72 ms, p90 89, p99 288, max 1,170 (from outside, through this sandbox's proxy); 1,798 reads, 0 errors, p50 81 ms, p99 319; **7,200 acknowledged samples, 7,200 returned with the values sent, 0 missing, 0 wrong** |
+| **publication on its own** | nobody called the publisher. 04:11:57–04:12:08: three maintenance runs (after the first flushes) each ended `nudged true` (viz-ingest's log line); viz-publisher's tail shows a `safeToDelete` and a `notify` per run and nothing else; **04:13:57 its alarm** committed `v1.metadata.json` of both tables (the two level-0 pairs; format version 2, `viz.format-version` 1); 04:23:57 and 04:33:58 the next alarms committed v2 and v3 after the next rounds of flushes and maintenance. The tables read back from R2 (`metadata.json`, manifest lists and manifests decoded with `publisher/src/avro.ts`): every data file of every retained snapshot is in the bucket |
+| **a deleted file waits for publication** | 04:22: the second round of flushes made four level-0 pairs; the maintenance run merged them (`merged 1`, 8 tombstones). 04:23:58 the publisher's snapshot 2 lists the two published samples files (and the two series files) as DELETED; snapshot 1, retained, still names them. 04:31:57, 04:32:03, 04:32:11 (the next maintenance runs, the ledger's 2-minute grace long past): **`deleted 0, waiting 8 (for publication 8)`**: the ledger offered all 8 objects for deletion and the publisher released none (4 are still named by snapshot 1; 4 were added and compacted away between publications, released by the publisher an hour after it saw them). At 04:36, listing the bucket: all 8 objects present (14 data objects = 6 live + 8 waiting), both DELETED entries' objects present, nothing any retained snapshot names missing. Without the gate (`janitor/test/publication.test.ts`, the same scenario unbound) they would have been deleted at the first run after 04:24. Their release (a day after a later commit expires snapshot 1) was not waited for |
+| **recorded samples through a service binding** | the probe, bound to viz-trial3-ingest's `RecordedSamples` as `viz-ruler` and as `viz-mcp`: as the ruler, two batches (`42`, `+Inf`) written, 38 ms inside the probe, and returned by a query through the gateway with the tenant's key (`+Inf` and `42` at their timestamps); the same call again: written, nothing doubled. As `viz-mcp`: `unauthorized: this service binding does not name a caller …`; another tenant's batch: `invalid: batch "someone-else/…" is not one of tenant trial3-tenant's; nothing was written`; tenant `../x`: `invalid: tenant id …`; value `0x10`: `invalid: … nothing was written`. Without the probe's token: 404 |
+| **forward-only release, live** | in the snapshot only (never in the repository), the ledger's spec got an empty migration 4 with `readableFrom` 4; release N2 deployed (no Durable Object migration, so uploaded then promoted, 103 s; smoke with data passed). The plan printed and the record says **`forwardOnly: true`**: "ledger.Ledger: migration 4 (…) has readableFrom 4, above version 3, which the release serving before it knew" (version 3 read from N1's `VIZ_SCHEMAS` on Cloudflare) |
+| `release.mjs rollback` to N1's record | **refused, exit 3, nothing changed**: "ledger.Ledger: release trial3-n2 (viz-trial3-ingest version d06427fe-…) ran schema version 4, readable from 4, and trial3-n1 knows only up to 3: that release is forward-only (migration 4: …). Fix forward instead." viz-ingest still served N2 afterwards. Positive control: `rollback` to N2's own record (nothing newer) passed every check and restored the seven versions, exit 0 |
+
+**What did not go as expected.** viz-ingest's tail showed three invocations of `RecordedSamples`
+ending `exception` with "The Workers runtime canceled this request because it detected that
+your Worker's code had hung …": the refused calls. The caller had already received each refusal,
+with its message, in 2–4 ms, and nothing was written; the two successful calls ended `ok`. Not
+understood (one guess, not tested: the refusal is a thrown error and the probe never disposes
+the RPC stub, so the callee's invocation is closed when the probe's request ends). It counts
+refused recorded-sample writes as ingest errors (the 4 errors above are probably these and one
+more). Not seen locally.
+
+### Cleanup (Trial 3)
+
+`resources.mjs destroy --stage trial3` (from the snapshot) deleted the four queue consumers, the
+seven Workers (callers first), the four queues, `viz-trial3-config` and the bucket with its 50
+objects, then reported `viz-trial3-probe` as left over (not a stage resource, exit 1); it was
+deleted through the API. Listing the account afterwards (Workers, KV namespaces, R2 buckets,
+queues, Durable Object namespaces): **nothing whose name contains `viz-trial3`** (nor
+`viz-trial`); the counts were back to those listed before the trial (20 Workers, 7 namespaces,
+6 buckets, 0 queues, 28 Durable Object namespaces); the only `viz-` resource is a spike Worker
+that is not this trial's. The keys, the probe token, the tails and the snapshot were deleted from
+the scratch directory; the shared tree's `resources.json` was never written.
+
 ## Cost
 
-Modelled, not read from Cloudflare's analytics. Production idle: three Durable Object
+Modelled, not read from Cloudflare's analytics (Trial 3 read invocation counts from it, above). Production idle: three Durable Object
 Workers and the gateway cost nothing while unused; the hourly cron reads KV only
 (`stack/README.md`, "Idle means free"); storage is whatever `viz-lake` and the queues hold.
 Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests.
@@ -631,11 +760,10 @@ None of these were made here; 3 was made since in query/, and 4 in control/ and 
    `script_aliases`. Wanted: `viz-ingest` in the component config.
 6. **`stack/test/e2e.test.ts` imports hyparquet from `bench/node_modules`**, so stack's CI
    job has to `npm ci` in bench/. Wanted: hyparquet as a dev dependency of stack.
-7. **Schema versions the deploy can read.** `contracts/COMPATIBILITY.md` §6 wants each
-   release to record `schemaRelease(spec)` per Durable Object class and the rollback to
-   refuse across a forward-only release. The deploy can only do that if each component
-   publishes its `SchemaSpec` in a form readable without importing its TypeScript (for
-   example a generated `schema.json` next to `wrangler.jsonc`, or `/healthz` reporting it).
+7. **Schema versions the deploy can read.** Done here instead (2026-11-19): `lib/schemas.mjs`
+   bundles the specs `workers.json` names with esbuild and evaluates them in a Node `vm`; no
+   component changed. A spec module that does more than define values at load time would fail
+   that read, loudly.
 8. **`query/`: an engine that cannot start is reported as a storage outage.** In release N0
    of the trial (below) the query module and its binding disagreed (`engine: module ABI 1,
    binding expects 2`); every query answered **503 `unavailable`, "a storage component did
@@ -649,12 +777,11 @@ None of these were made here; 3 was made since in query/, and 4 in control/ and 
 
 ## Not deployed yet, and why
 
-| Worker | Why not |
-|---|---|
-| viz-publisher | Not wired in yet: it reads the ledger's segments and is nudged by the maintenance run, but stack/ does not bind `PUBLISHER`, so nothing would reach it. When ingest binds it, it deploys **before** viz-ingest (callees first) |
-
-`configure.mjs` still generates its config on every run (so a binding it needs that the
-deployment lacks is caught early), and `workers.json` records the reason. viz-ruler and
+Every Worker is deployed. **viz-publisher** is since 2026-11-19: viz-ingest binds its
+`Publisher` class (`PUBLISHER`, by `script_name`), every maintenance run nudges it, and the
+janitor's purge deletes only what it releases (`stack/README.md`, `janitor/README.md`). It deploys
+first (callees first), has no route and no cron, and its health route (`GET /healthz`) is
+recorded in `workers.json` but not asked by the gateway, which has no binding to it. viz-ruler and
 viz-mcp are deployed since Trial 2 (below): viz-ruler after viz-control, viz-query and
 viz-ingest, which it calls; viz-mcp after viz-ruler; the gateway last. A test
 (`test/configure.test.mjs`) fails if any deployed Worker binds one that is not deployed
@@ -663,11 +790,10 @@ deployment and nothing here needs it: the gateway has no page and no static asse
 
 ## Not implemented
 
-- **Schema versions in the rollback check.** `contracts/COMPATIBILITY.md` §6 asks the release
-  tool to record each Durable Object class's `schemaRelease` (`contracts/schema.ts`) and to
-  refuse a rollback across a forward-only release (the rollback floor). The record has the
-  Cloudflare migration tag only; the components do not yet expose their `SchemaSpec` in a
-  form the deploy can read without importing their TypeScript (see "Needed changes").
+- **Wire-format versions in the rollback check.** Schema versions are checked (above); the
+  versions of formats a release reads and writes (queue messages, R2 objects, KV records:
+  COMPATIBILITY.md §6) are not recorded, so a rollback below the reader of a format is not
+  refused by the tool.
 - **Gradual (percentage) rollouts.** Every promotion is 100%. Splitting would put two
   versions of the write path's objects in service at once; the tooling refuses nothing about
   it but never does it.
@@ -675,6 +801,15 @@ deployment and nothing here needs it: the gateway has no page and no static asse
 - **The workflows have not run on GitHub** (see above).
 
 ## Known risks
+
+- **Reading the schemas runs component code in Node.** `lib/schemas.mjs` evaluates the bundle of
+  the spec modules (and what they import) in a `vm` context; a spec module that does more than
+  define values at load time (a top-level call to a platform API) makes configure fail, loudly.
+- **A rollback lists versions.** It reads every version Cloudflare keeps that is newer than the
+  target's (one API call each); far back, that is up to 100 calls per Worker.
+- **Refused recorded-sample writes show as ingest exceptions on Cloudflare** (Trial 3, "What did
+  not go as expected"): the caller gets the refusal; the callee's invocation ends "hung". Not
+  understood.
 
 - **viz-mcp behind the gateway shares the gateway request's six connections** with everything
   it calls (Six connections, above): `read_dashboard`'s six queries in flight then wait on each

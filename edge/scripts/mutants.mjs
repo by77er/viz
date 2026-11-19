@@ -91,6 +91,19 @@ const mutants = [
   ['a shard status edge does not know counts as stored', 'src/route.ts', "      if (!KNOWN.has(last.status)) return { status: 'error' }\n", ''],
   ['names: a pool map whose pool is outside POOL_NAME is used', 'src/route.ts',
     '  if (!validPoolName(m.pool)) return null', "  if (typeof m.pool !== 'string' || m.pool === '') return null"],
+  // the recorded-samples entrypoint (contracts/ingest.ts, D41)
+  ['recorded: any service binding may write (caller not checked)', 'src/recorded.ts',
+    "  if (typeof caller !== 'string' || !RECORDED_SAMPLES_CALLERS.includes(caller)) refuse(", '  if (false) refuse('],
+  ['recorded: the tenant argument is not validated', 'src/recorded.ts',
+    "  if (typeof tenant !== 'string' || !TENANT_ID.test(tenant)) refuse(", "  if (typeof tenant !== 'string') refuse("],
+  ['recorded: batches of another tenant are accepted', 'src/recorded.ts',
+    "if (typeof b.id !== 'string' || !b.id.startsWith(prefix)) return", "if (typeof b.id !== 'string') return"],
+  ['recorded: invalid samples are dropped and the rest written', 'src/recorded.ts',
+    '  if (c.rejectedTotal > 0) refuse(', '  if (false) refuse('],
+  ['recorded: a full buffer resolves (acknowledged, not written)', 'src/recorded.ts',
+    "  if (outcome.status === 'backpressure') refuse(", "  if (outcome.status === 'backpressure') return\n  if (false) refuse("],
+  ['recorded: new series over the limit resolve', 'src/recorded.ts', '  if (ok.limited) {', '  if (false) {'],
+  ['recorded: values parsed with Number() (hex, empty accepted)', 'src/recorded.ts', '  if (!DECIMAL.test(text)) return null\n', ''],
 ]
 
 const only = check ? undefined : process.argv[2]

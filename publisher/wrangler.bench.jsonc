@@ -1,0 +1,16 @@
+{
+  // The re-base benchmark (bench/): this publisher and the frozen one before the streaming
+  // re-base, on a simulated bucket. Not deployed.
+  "name": "viz-publisher-bench",
+  "main": "bench/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "PUBLISHER", "class_name": "BenchPublisher" },
+      { "name": "PUBLISHER_BEFORE", "class_name": "PublisherBefore" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BenchPublisher", "PublisherBefore"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "vars": { "ICEBERG_LOCATION_PREFIX": "s3://viz-lake" }
+}

@@ -8,8 +8,9 @@
  *   segments   {inc}/seg-{first:012}-{last:012}.jsonl: a header line, then the changes
  *              first..last, one per line. The incarnation's first segment begins with its
  *              `base`. What the ledger writes since LEDGER-LOG.md was built. Checkpoints
- *              ({inc}/ckpt-…) exist only to speed up the ledger's own rebuild; this reader
- *              never reads them.
+ *              ({inc}/ckpt-{version}.jsonl: format 1, one object; format 2, a manifest naming
+ *              parts under ckpt-{version}-{attempt}/) hold the state at their version; a re-base
+ *              starts from the newest one this code reads, else from the base.
  *   objects    {inc}/base.json and {inc}/{version:012}.json, one object per change: the first
  *              layout. Still read, because a deployment that ran the trial stage may hold
  *              incarnations in it (LEDGER-LOG.md "Versions", COMPATIBILITY.md §3.6 step 3).
@@ -18,25 +19,37 @@
  *
  *   readTenantLog   what `publish` uses: the changes after a cursor, in version order, up to
  *                   the first hole or the first object this code may not read. With segments
- *                   it advances over whole segments only.
+ *                   it advances over whole segments only. A re-base (no cursor in the newest
+ *                   incarnation) streams the state it starts from into a `BaseSink` (the
+ *                   publisher's SQLite), a part or a few hundred files at a time: nothing here
+ *                   holds a state, whatever its size.
  *   replayAt        what `verify` uses: the ledger's whole live set at a cursor, rebuilt from
  *                   the incarnation's base with every change checked against the state before it.
+ *                   It holds that set in memory (README, "Not implemented").
  *
  * Refuse, never guess (contracts/COMPATIBILITY.md §3.2): a segment header `v` or `kind`, a change
  * `v` or `kind`, or a file table this code does not know stops the tenant BEFORE that segment
  * (status `unsupported`); a hole stops it before the hole (`gap`); an object that is not what its
- * key says stops it before that object (`corrupt`). Nothing after a stop is ever returned, so it
- * can never be skipped; the publisher keeps the tenant pending and tries again.
+ * key says stops it before that object (`corrupt`); a checkpoint part its manifest names that is
+ * not there stops it (`incomplete`). Nothing after a stop is ever returned, so it can never be
+ * skipped; the publisher keeps the tenant pending and tries again. A re-base that stops returns no
+ * base, so nothing of what it read is published.
  */
 import {
+  checkpointHeaderProblem,
+  decodeLedgerCheckpointManifest,
+  decodeLedgerCheckpointPart,
   decodeLedgerSegment,
   ledgerBaseKey,
+  ledgerCheckpointPartKey,
   ledgerIncarnationPrefix,
   ledgerLogKey,
   ledgerSegmentsStartingAfter,
   parseLedgerLogKey,
+  readLedgerLogStream,
   type FileEntry,
   type LedgerChange,
+  type LedgerSegmentHeader,
   type Table,
 } from '../../contracts/ledger'
 
@@ -47,13 +60,103 @@ export interface Cursor {
 
 export const cursorCompare = (a: Cursor, b: Cursor): number => a.ledgerIncarnation - b.ledgerIncarnation || a.version - b.version
 
-/** The parts of R2 the publisher uses. `CountingBucket` implements it. */
+/** What the publisher reads of an R2 object. `R2ObjectBody` is one. */
+export interface StoreObject {
+  readonly key: string
+  readonly size: number
+  readonly body: ReadableStream<Uint8Array>
+  text(): Promise<string>
+  json<T>(): Promise<T>
+  arrayBuffer(): Promise<ArrayBuffer>
+}
+
+/** The parts of R2 the publisher uses. `CountingBucket` implements it (and `R2Bucket` is one). */
 export interface Store {
-  get(key: string): Promise<R2ObjectBody | null>
+  get(key: string): Promise<StoreObject | null>
   head(key: string): Promise<R2Object | null>
   list(options: R2ListOptions): Promise<R2Objects>
   put(key: string, value: string | Uint8Array, options?: R2PutOptions): Promise<R2Object | null>
   delete(keys: string | string[]): Promise<void>
+}
+
+/**
+ * Outbound connections one Durable Object invocation may have in flight (AGENTS.md: six, R2
+ * binding reads included). Every R2 operation of a publish, a sweep or a verify takes a slot of
+ * one shared `Slots`, and a GET keeps its slot until its body has been read, so the readers of
+ * every tenant, the parts read ahead and the commit's writes together never exceed it.
+ */
+export const R2_CONNECTIONS = 6
+
+/** A counting semaphore: `take` waits for a free slot and returns its release (idempotent). */
+export class Slots {
+  private free: number
+  private readonly waiting: (() => void)[] = []
+  /** Slots held now, and the most ever held at once. */
+  held = 0
+  highWater = 0
+  constructor(readonly size: number) {
+    this.free = size
+  }
+  async take(): Promise<() => void> {
+    if (this.free > 0) this.free--
+    else await new Promise<void>((resolve) => this.waiting.push(resolve))
+    this.held++
+    this.highWater = Math.max(this.highWater, this.held)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.held--
+      const next = this.waiting.shift()
+      if (next) next()
+      else this.free++
+    }
+  }
+}
+
+/**
+ * The object `o` with `release` called once its body has been read (or failed, or was
+ * cancelled): the slot of a GET is held for as long as its connection is.
+ */
+export function holding(o: StoreObject, release: () => void): StoreObject {
+  const after = async <T>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read()
+    } finally {
+      release()
+    }
+  }
+  let body: ReadableStream<Uint8Array> | null = null
+  return {
+    key: o.key,
+    size: o.size,
+    text: () => after(() => o.text()),
+    json: <T>() => after(() => o.json<T>()),
+    arrayBuffer: () => after(() => o.arrayBuffer()),
+    get body() {
+      if (body) return body
+      const reader = o.body.getReader()
+      body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const { done, value } = await reader.read()
+            if (done) {
+              release()
+              controller.close()
+            } else controller.enqueue(value)
+          } catch (e) {
+            release()
+            controller.error(e)
+          }
+        },
+        cancel(reason) {
+          release()
+          return reader.cancel(reason)
+        },
+      })
+      return body
+    },
+  }
 }
 
 export type LogStatus =
@@ -78,6 +181,13 @@ export type LogStatus =
    * waits for a publisher that reads it.
    */
   | 'unsupported'
+  /**
+   * A re-base found a checkpoint whose manifest names a part that is not in R2: deleted while it
+   * was being read (the ledger deletes a checkpoint's parts once a newer one is complete), or
+   * lost. Nothing read from it is used (`base` is null); the tenant stays pending, and the next
+   * publish lists the checkpoints again.
+   */
+  | 'incomplete'
 
 /** A removed key with its table: from `LedgerChange.removedFiles`, or from the key layout for logs written before it (null if the key does not follow it). */
 export interface RemovedFile {
@@ -96,13 +206,54 @@ export interface TenantLog {
   incarnation: number
   /** The layout of that incarnation, once known. */
   layout: 'segments' | 'objects' | null
-  /** Loaded when the reader started from the base (no cursor, or an older incarnation). */
-  base: LogChange | null
+  /**
+   * Set when the reader started from the state an incarnation holds at some version (no cursor,
+   * or one in an older incarnation): its base, or its newest checkpoint. Its files and tombstones
+   * are in the `BaseSink`; null whenever that read did not complete, so a partial one is never used.
+   */
+  base: BaseInfo | null
   /** The version `changes` starts after. */
   start: number
   /** Contiguous: `changes[i].version === start + 1 + i`. */
   changes: LogChange[]
   gapAt?: number
+}
+
+/**
+ * Where a re-base puts the state it reads: the publisher's SQLite (`stage`), never memory. Calls
+ * come in batches of at most a part (or `BASE_BATCH` files of a base); each is one transaction.
+ */
+export interface BaseSink {
+  /** Forget whatever an earlier read left for this tenant. */
+  reset(tenant: string): void
+  /** Live files at the base's version. Throws if a key repeats. */
+  files(tenant: string, files: FileEntry[]): void
+  /** Removed files whose objects may still exist (tombstones), removed at or below that version. */
+  tombstones(tenant: string, tombstones: { key: string; table: Table }[]): void
+  /**
+   * Waits for this tenant's turn to read a checkpoint or base, and returns its release. The
+   * publisher gives one turn at a time, so tenants re-basing in the same publish hold one window
+   * of parts between them, not one each. Absent: no turns.
+   */
+  turn?(): Promise<() => void>
+}
+
+/** What a re-base started from. Its files are in the `BaseSink`, not here. */
+export interface BaseInfo {
+  /** The ledger version of that state. */
+  version: number
+  /** The head of the incarnation's first segment, or a checkpoint. */
+  source: 'base' | 'checkpoint'
+  /** For a checkpoint: format 1 (one object) or 2 (a manifest and parts). */
+  format: 1 | 2 | null
+  files: number
+  tombstones: number
+  /** Log objects read for it: 1, or a manifest and its parts. */
+  objects: number
+  /** The most checkpoint parts requested and not yet applied at any moment (at most `PART_WINDOW`). */
+  window: number
+  /** Checkpoints passed over because this code does not read their format, newest first. */
+  passedOver: string[]
 }
 
 /** The tables a ledger file may belong to, as far as this publisher knows (contracts/ledger.ts `Table`). */
@@ -111,6 +262,15 @@ const CHANGE_OBJECT = /\/(\d{12,})\.json$/
 /** `{cell}/data/{table}/…` (contracts/TABLES.md): the table of a removed key in a log written before `removedFiles`. */
 const KEY_TABLE = /^[^/]+\/data\/([^/]+)\//
 const READ_FANOUT = 6
+/**
+ * Checkpoint parts requested ahead of, or held with, the one being applied. A part is at most
+ * about 1 MiB (`LEDGER_CHECKPOINT_PART_MAX_BYTES`; a single larger record goes alone), so a
+ * re-base holds a few MiB of it whatever the state. The reads also take slots of the shared
+ * `Slots`, so they never add to what else is in flight beyond `R2_CONNECTIONS`.
+ */
+export const PART_WINDOW = 4
+/** Files of a base (or a format-1 checkpoint) handed to the sink per transaction. */
+export const BASE_BATCH = 256
 
 // ───────────────────────────── what this code reads ─────────────────────────────
 //
@@ -120,8 +280,15 @@ const READ_FANOUT = 6
 
 /** Segment and checkpoint header versions (`v`) this publisher reads. */
 export const LEDGER_SEGMENT_VERSION = 1
-/** The segment header kind this publisher reads (checkpoints are never read here). */
+/** The segment header kind this publisher reads. */
 const SEGMENT_KIND = 'viz.ledger.segment'
+/**
+ * Checkpoint formats this publisher reads (header `v` of `ckpt-{version}.jsonl`): 1, one object;
+ * 2, a manifest and parts (contracts/LEDGER-LOG.md, "Checkpoints"). A checkpoint of a higher
+ * format is passed over for an older one or the base, as the ledger's rebuild does: a checkpoint
+ * is only a shortcut, so nothing is skipped and no reader has to be released first.
+ */
+export const LEDGER_CHECKPOINT_VERSION = 2
 /** The `LedgerChange` versions this code reads (absent `v` = 1) and the kinds it knows how to apply. */
 export const LEDGER_CHANGE_VERSION = 1
 const KINDS: ReadonlySet<string> = new Set<LedgerChange['kind']>(['base', 'add_unit', 'replace', 'expire', 'register_stream'])
@@ -269,12 +436,324 @@ async function hasObjectBase(store: Store, cell: string, tenant: string, incarna
   return (await store.head(`${cell}/${ledgerBaseKey(tenant, incarnation)}`)) !== null
 }
 
+// ───────────────────────────── re-base: the state an incarnation is at ─────────────────────────────
+
+/** Why reading a base or a checkpoint stops; thrown out of the stream's callbacks and caught below. */
+class Stop extends Error {
+  constructor(
+    readonly status: 'corrupt' | 'unsupported' | 'no_base' | 'incomplete' | 'passed_over',
+    why: string,
+  ) {
+    super(why)
+  }
+}
+
+/** What a malformed object (bad JSON, UTF-8 or line structure) makes the stream reader throw. Anything else is R2 failing, and propagates. */
+const malformed = (e: unknown): e is Error =>
+  e instanceof SyntaxError || (e instanceof TypeError && /encod|utf/i.test(e.message)) || (e instanceof Error && /^(json stream|ledger log):/.test(e.message))
+
+/** SQLite's key order (UTF-8 bytes), the order the ledger writes a checkpoint's records in. */
+export function compareKeys(a: string, b: string): number {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    let x = a.charCodeAt(i)
+    let y = b.charCodeAt(i)
+    if (x === y) continue
+    // Surrogates (code points above U+FFFF) come after U+E000–FFFF in UTF-8.
+    if (x >= 0xd800 && y >= 0xd800) {
+      x = x >= 0xe000 ? x - 0x800 : x + 0x2000
+      y = y >= 0xe000 ? y - 0x800 : y + 0x2000
+    }
+    return x - y
+  }
+  return a.length - b.length
+}
+
+/** A live file of a base or checkpoint, checked as far as the publisher uses it. */
+function fileOf(x: unknown, where: string): FileEntry {
+  const f = x as FileEntry
+  if (typeof f !== 'object' || f === null || typeof f.key !== 'string' || typeof f.day !== 'string' || typeof f.rows !== 'number' || typeof f.bytes !== 'number') {
+    throw new Stop('corrupt', `${where}: a malformed file`)
+  }
+  if (!TABLES.has(f.table)) throw new Stop('unsupported', `${where}: a file of table ${JSON.stringify(f.table)}, which this publisher does not know`)
+  return f
+}
+
+function tombstoneOf(x: unknown, where: string): { key: string; table: Table } {
+  const t = x as { key?: unknown; table?: unknown }
+  if (typeof t !== 'object' || t === null || typeof t.key !== 'string') throw new Stop('corrupt', `${where}: a malformed tombstone`)
+  if (typeof t.table !== 'string' || !TABLES.has(t.table)) throw new Stop('unsupported', `${where}: a tombstone of table ${JSON.stringify(t.table)}, which this publisher does not know`)
+  return { key: t.key, table: t.table as Table }
+}
+
+/** Files and tombstones on their way to the sink, `BASE_BATCH` per transaction. */
+class Batches {
+  private f: FileEntry[] = []
+  private t: { key: string; table: Table }[] = []
+  files = 0
+  tombstones = 0
+  constructor(
+    private readonly sink: BaseSink,
+    private readonly tenant: string,
+  ) {}
+  file(f: FileEntry): void {
+    this.f.push(f)
+    this.files++
+    if (this.f.length >= BASE_BATCH) this.flush()
+  }
+  tombstone(t: { key: string; table: Table }): void {
+    this.t.push(t)
+    this.tombstones++
+    if (this.t.length >= BASE_BATCH) this.flush()
+  }
+  flush(): void {
+    if (this.f.length > 0) this.sink.files(this.tenant, this.f)
+    if (this.t.length > 0) this.sink.tombstones(this.tenant, this.t)
+    this.f = []
+    this.t = []
+  }
+}
+
+/** The header line of a segment, checked against its key and its tenant (as `decodeLedgerSegment` does, and against what this code reads). */
+function segmentHeader(value: unknown, seg: SegmentRef, tenant: string, incarnation: number, where: string): LedgerSegmentHeader {
+  const h = value as LedgerSegmentHeader
+  if (typeof h !== 'object' || h === null) throw new Stop('corrupt', `${where}: the header line is not an object`)
+  if (typeof h.v !== 'number' || !Number.isSafeInteger(h.v) || h.v < 1) throw new Stop('corrupt', `${where}: unreadable segment version ${JSON.stringify(h.v)}`)
+  if (h.kind === 'viz.ledger.checkpoint') throw new Stop('corrupt', `${where}: a checkpoint where a segment was expected`)
+  const why = unsupportedSegment(h)
+  if (why) throw new Stop('unsupported', `${where}: ${why}`)
+  if (h.tenant !== tenant) throw new Stop('corrupt', `${where}: tenant ${JSON.stringify(h.tenant)}, expected ${tenant}`)
+  if (h.ledgerIncarnation !== incarnation || h.firstVersion !== seg.first || h.lastVersion !== seg.last || h.changes !== seg.last - seg.first + 1) {
+    throw new Stop('corrupt', `${where}: its header says ${h.ledgerIncarnation}/${h.firstVersion}-${h.lastVersion} (${h.changes} lines)`)
+  }
+  return h
+}
+
+type BaseRead = { status: 'ok'; info: BaseInfo; changes: LogChange[] } | { status: 'corrupt' | 'unsupported' | 'no_base'; reason: string }
+
 /**
- * The segment path of `readTenantLog`. `from` is null to start from the incarnation's base.
- * Returns null when the incarnation has no segment after the cursor (the caller then looks for
- * the first layout).
+ * An incarnation's first segment, streamed: its header, its `base` line element by element into
+ * the sink (`readLedgerLogStream`), then any changes after it in the same segment. Memory: one
+ * file of the base at a time and `BASE_BATCH` on their way to SQLite, whatever the state.
  */
-async function readSegmentLog(store: Store, cell: string, tenant: string, incarnation: number, from: Cursor | null, maxChanges: number): Promise<TenantLog | null> {
+async function readBaseSegment(store: Store, tenant: string, incarnation: number, seg: SegmentRef, sink: BaseSink, passedOver: string[]): Promise<BaseRead> {
+  const where = `segment ${seg.first}-${seg.last} of incarnation ${incarnation}`
+  const o = await store.get(seg.key)
+  if (!o) return { status: 'corrupt', reason: `${where} was listed and is gone` }
+  sink.reset(tenant)
+  const out = new Batches(sink, tenant)
+  let header: LedgerSegmentHeader | null = null
+  const changes: LogChange[] = []
+  try {
+    const { lines, streamed } = await readLedgerLogStream(
+      o.body,
+      1,
+      (member, element) => {
+        if (member === 'added') out.file(fileOf(element, where))
+        else if (member === 'tombstones') out.tombstone(tombstoneOf(element, where))
+        // `removed`, `units`, `watermarks`, `previousIncarnations` and anything newer: not the
+        // publisher's. Each element is parsed on its own and dropped.
+      },
+      (index, value) => {
+        if (index === 0) {
+          header = segmentHeader(value, seg, tenant, incarnation, where)
+          return
+        }
+        const c = value as LedgerChange
+        if (typeof c !== 'object' || c === null) throw new Stop('corrupt', `${where}: line ${index + 1} is not an object`)
+        const why = unsupported(c)
+        if (why) throw new Stop('unsupported', `${where}: version ${seg.first + index - 1}: ${why}`)
+        if (c.ledgerIncarnation !== incarnation || c.version !== seg.first + index - 1) throw new Stop('corrupt', `${where}: line ${index + 1} is ${c.ledgerIncarnation}/${c.version}`)
+        if (c.kind === 'base') throw new Stop('corrupt', `version ${c.version} of incarnation ${incarnation} is a base inside the log`)
+        const r = check(c)
+        if ('unsupported' in r) throw new Stop('unsupported', `${where}: version ${c.version}: ${r.unsupported}`)
+        if ('corrupt' in r) throw new Stop('corrupt', `${where}: ${r.corrupt}`)
+        changes.push(r.ok)
+      },
+    )
+    out.flush()
+    const h = header as LedgerSegmentHeader | null
+    if (!h || !streamed || lines !== h.changes + 1) throw new Stop('corrupt', `${where}: ${lines - 1} lines after its header, which says ${h?.changes}`)
+    const why = unsupported(streamed)
+    if (why) throw new Stop('unsupported', `${where}: version ${seg.first}: ${why}`)
+    if (streamed.kind !== 'base' || streamed.version !== seg.first) throw new Stop('no_base', `the first segment of incarnation ${incarnation} does not begin with its base`)
+    if (streamed.ledgerIncarnation !== incarnation) throw new Stop('corrupt', `${where}: its base is of incarnation ${String(streamed.ledgerIncarnation)}`)
+  } catch (e) {
+    if (e instanceof Stop) return { status: e.status as 'corrupt' | 'unsupported' | 'no_base', reason: e.message }
+    if (malformed(e)) return { status: 'corrupt', reason: `${where}: ${e.message}` }
+    throw e
+  }
+  return {
+    status: 'ok',
+    info: { version: seg.first, source: 'base', format: null, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver },
+    changes,
+  }
+}
+
+type CheckpointRead =
+  | { status: 'ok'; info: BaseInfo }
+  /** No checkpoint this code reads: start from the base. */
+  | { status: 'none'; passedOver: string[] }
+  | { status: 'corrupt' | 'unsupported' | 'incomplete'; reason: string }
+
+/**
+ * The newest checkpoint of an incarnation that this code reads, into the sink. One list (with a
+ * delimiter, so each checkpoint's parts are one prefix, not a key each), then the manifests,
+ * newest first: one of a format this code does not read is passed over (the base is always
+ * there); one that is corrupt, or names a part that is not there, stops the re-base.
+ */
+async function readNewestCheckpoint(store: Store, cell: string, tenant: string, incarnation: number, sink: BaseSink): Promise<CheckpointRead> {
+  const prefix = `${cell}/${ledgerIncarnationPrefix(tenant, incarnation)}ckpt-`
+  const manifests: { key: string; version: number }[] = []
+  let cursor: string | undefined
+  do {
+    const page = await store.list({ prefix, delimiter: '/', cursor })
+    for (const o of page.objects) {
+      const p = parseLedgerLogKey(o.key)
+      if (p?.type === 'checkpoint' && p.ledgerIncarnation === incarnation) manifests.push({ key: o.key, version: p.version })
+    }
+    cursor = page.truncated ? page.cursor : undefined
+  } while (cursor)
+  manifests.sort((a, b) => b.version - a.version)
+  const passedOver: string[] = []
+  for (const m of manifests) {
+    const r = await readCheckpoint(store, cell, tenant, incarnation, m, sink)
+    if (r.status === 'passed_over') {
+      passedOver.push(r.reason)
+      continue
+    }
+    if (r.status === 'ok') return { status: 'ok', info: { ...r.info, passedOver } }
+    return r as { status: 'corrupt' | 'unsupported' | 'incomplete'; reason: string }
+  }
+  return { status: 'none', passedOver }
+}
+
+/**
+ * One checkpoint into the sink. Format 1: its one `base` line, streamed like a base. Format 2: its
+ * manifest, then its parts in order, `PART_WINDOW` requested at a time, each checked against the
+ * manifest and its key (tenant, incarnation, version, attempt, part number, record count), files
+ * then tombstones in strictly ascending key order across parts, and in total the files, the
+ * tombstones and the bytes the manifest names. Any disagreement stops it (`corrupt`); a missing
+ * part too (`incomplete`); either way the caller gets no base, so nothing of it is published.
+ */
+async function readCheckpoint(
+  store: Store,
+  cell: string,
+  tenant: string,
+  incarnation: number,
+  m: { key: string; version: number },
+  sink: BaseSink,
+): Promise<{ status: 'ok'; info: BaseInfo } | { status: 'corrupt' | 'unsupported' | 'incomplete' | 'passed_over'; reason: string }> {
+  const where = `checkpoint ${m.version} of incarnation ${incarnation}`
+  const o = await store.get(m.key)
+  if (!o) return { status: 'incomplete', reason: `${where} was listed and is gone (superseded meanwhile)` }
+  sink.reset(tenant)
+  const out = new Batches(sink, tenant)
+  let format = 0 as 0 | 1 | 2
+  let header: LedgerSegmentHeader | null = null
+  const arrays: Record<'watermarks' | 'previousIncarnations', unknown[]> = { watermarks: [], previousIncarnations: [] }
+  try {
+    const { lines, streamed } = await readLedgerLogStream(
+      o.body,
+      1,
+      (member, element) => {
+        if (format === 1) {
+          if (member === 'added') out.file(fileOf(element, where))
+          else if (member === 'tombstones') out.tombstone(tombstoneOf(element, where))
+        } else if (member === 'watermarks' || member === 'previousIncarnations') arrays[member].push(element)
+        else throw new Stop('corrupt', `${where}: a manifest with an array member ${JSON.stringify(member)}`)
+      },
+      (index, value) => {
+        if (index !== 0) throw new Stop('corrupt', `${where}: more than one line after its header`)
+        const problem = checkpointHeaderProblem(value, { ledgerIncarnation: incarnation, version: m.version, tenant })
+        if (problem) throw new Stop(problem.status === 'unsupported' ? 'passed_over' : 'corrupt', `${where}: ${problem.reason}`)
+        const h = value as LedgerSegmentHeader
+        if (h.v > LEDGER_CHECKPOINT_VERSION) throw new Stop('passed_over', `${where}: format ${h.v}; this publisher reads up to ${LEDGER_CHECKPOINT_VERSION}`)
+        header = h
+        format = h.v as 1 | 2
+      },
+    )
+    out.flush()
+    const h = header as LedgerSegmentHeader | null
+    if (lines !== 2 || !h || !streamed) throw new Stop('corrupt', `${where}: not a header and one line`)
+    if (format === 1) {
+      const why = unsupported(streamed)
+      if (why) throw new Stop('passed_over', `${where}: ${why}`)
+      if (streamed.kind !== 'base' || streamed.ledgerIncarnation !== incarnation || streamed.version !== m.version) throw new Stop('corrupt', `${where}: its line is not the base at ${m.version}`)
+      return { status: 'ok', info: { version: m.version, source: 'checkpoint', format: 1, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver: [] } }
+    }
+
+    const d = decodeLedgerCheckpointManifest({ ...streamed, ...arrays }, h)
+    if (d.status === 'unsupported') throw new Stop('passed_over', `${where}: ${d.reason}`)
+    if (d.status === 'corrupt') throw new Stop('corrupt', `${where}: ${d.reason}`)
+    const man = d.manifest
+    const fetchPart = async (part: number): Promise<{ size: number; text: string } | null> => {
+      const p = await store.get(`${cell}/${ledgerCheckpointPartKey(tenant, incarnation, m.version, man.attempt, part)}`)
+      return p ? { size: p.size, text: await p.text() } : null
+    }
+    // Parts in order; the next few are requested while one is applied.
+    const ahead: Promise<{ size: number; text: string } | null>[] = []
+    let next = 0
+    let window = 0
+    let bytes = 0
+    let files = 0
+    let tombstones = 0
+    let lastFile: string | null = null
+    let lastTombstone: string | null = null
+    for (let part = 0; part < man.parts; part++) {
+      while (next < man.parts && ahead.length < PART_WINDOW) {
+        const read = fetchPart(next++)
+        read.catch(() => undefined) // awaited below, in order
+        ahead.push(read)
+      }
+      window = Math.max(window, ahead.length)
+      const got = await ahead.shift()!
+      if (!got) throw new Stop('incomplete', `${where} names part ${part} (attempt ${man.attempt}), which is not in R2`)
+      const p = decodeLedgerCheckpointPart(got.text, { tenant, ledgerIncarnation: incarnation, version: m.version, attempt: man.attempt, part })
+      if (p.status === 'unsupported') throw new Stop('passed_over', `${where}, part ${part}: ${p.reason}`)
+      if (p.status === 'corrupt') throw new Stop('corrupt', `${where}, part ${part}: ${p.reason}`)
+      bytes += got.size
+      const fs: FileEntry[] = []
+      const ts: { key: string; table: Table }[] = []
+      for (const r of p.records) {
+        if ('file' in r) {
+          if (lastTombstone !== null) throw new Stop('corrupt', `${where}, part ${part}: a file after the tombstones`)
+          const f = fileOf(r.file, `${where}, part ${part}`)
+          if (lastFile !== null && compareKeys(f.key, lastFile) <= 0) throw new Stop('corrupt', `${where}, part ${part}: files out of key order (${f.key} after ${lastFile})`)
+          lastFile = f.key
+          fs.push(f)
+        } else {
+          const t = tombstoneOf(r.tombstone, `${where}, part ${part}`)
+          if (lastTombstone !== null && compareKeys(t.key, lastTombstone) <= 0) throw new Stop('corrupt', `${where}, part ${part}: tombstones out of key order (${t.key} after ${lastTombstone})`)
+          lastTombstone = t.key
+          ts.push(t)
+        }
+      }
+      files += fs.length
+      tombstones += ts.length
+      if (fs.length > 0) sink.files(tenant, fs)
+      if (ts.length > 0) sink.tombstones(tenant, ts)
+    }
+    if (files !== man.files || tombstones !== man.tombstones) {
+      throw new Stop('corrupt', `${where}: its parts hold ${files} files and ${tombstones} tombstones, its manifest says ${man.files} and ${man.tombstones}`)
+    }
+    // The only size the format gives: the manifest's total of the parts' bytes, as R2 stored them.
+    if (bytes !== man.bytes) throw new Stop('corrupt', `${where}: its parts are ${bytes} bytes, its manifest says ${man.bytes}`)
+    return { status: 'ok', info: { version: m.version, source: 'checkpoint', format: 2, files, tombstones, objects: 1 + man.parts, window, passedOver: [] } }
+  } catch (e) {
+    if (e instanceof Stop) return { status: e.status === 'no_base' ? 'corrupt' : e.status, reason: e.message }
+    if (malformed(e)) return { status: 'corrupt', reason: `${where}: ${e.message}` }
+    throw e
+  }
+}
+
+/**
+ * The segment path of `readTenantLog`. `from` is null to re-base: start from the newest
+ * checkpoint this code reads, else from the base at the head of the incarnation's first
+ * segment, either streamed into `sink`. Returns null when the incarnation has no segment after
+ * the cursor (the caller then looks for the first layout).
+ */
+async function readSegmentLog(store: Store, cell: string, tenant: string, incarnation: number, from: Cursor | null, maxChanges: number, sink: BaseSink): Promise<TenantLog | null> {
   const result = (status: LogStatus, extra: Partial<TenantLog> = {}): TenantLog => ({ tenant, status, incarnation, layout: 'segments', base: null, start: from?.version ?? 0, changes: [], ...extra })
   // How many versions above `after` the listed segments cover.
   const covered = (segs: SegmentRef[], after: number) => segs.reduce((n, s) => n + Math.max(0, s.last - Math.max(s.first - 1, after)), 0)
@@ -282,26 +761,76 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
   let refs: SegmentRef[]
   let complete: boolean
   let after: number
+  /** A re-base's starting state, once read. */
+  let base: BaseInfo | null = null
+  /** A re-base from the base: the first segment, streamed rather than read whole. */
+  let baseSegment: SegmentRef | null = null
+  let cursor = from
   if (from === null) {
-    // Re-base: the first segment starts with the base; list from it.
-    ;({ segs: refs, complete } = await listSegments(store, cell, tenant, incarnation, undefined, (s) => s.length > 0 && covered(s, s[0]!.first) > maxChanges))
-    if (refs.length === 0) return null
-    if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
-    after = refs[0]!.first // the base's version: changes start after it
-  } else {
-    after = from.version
-    const startAfter = `${cell}/${ledgerSegmentsStartingAfter(tenant, incarnation, after)}`
-    ;({ segs: refs, complete } = await listSegments(store, cell, tenant, incarnation, startAfter, (s) => covered(s, after) > maxChanges))
-    if (refs.length === 0) return null
-    if (refs[0]!.first > after + 1) {
-      // The cursor is inside a segment, or there is a hole: find the segment holding after + 1.
-      const all = await listSegments(store, cell, tenant, incarnation, undefined, (s) => s.length > 0 && s[s.length - 1]!.first > after + 1)
-      const holding = all.segs.find((s) => s.first <= after + 1 && after + 1 <= s.last)
-      if (!holding) return result('gap', { gapAt: after + 1, detail: `version ${after + 1} of incarnation ${incarnation} is in no segment; the next one starts at ${refs[0]!.first}` })
-      refs = [holding, ...refs]
+    // One tenant's checkpoint or base at a time (the publisher's turns): released on every way out.
+    const done = (await sink.turn?.()) ?? (() => {})
+    try {
+      const ck = await readNewestCheckpoint(store, cell, tenant, incarnation, sink)
+      if (ck.status === 'corrupt' || ck.status === 'unsupported' || ck.status === 'incomplete') {
+        // Never a partial publish: no base, so nothing read from it is used.
+        if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
+        return result(ck.status, { detail: ck.reason })
+      }
+      if (ck.status === 'ok') {
+        // Only a segment incarnation has checkpoints. From here on, as from a cursor at its version.
+        if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
+        base = ck.info
+        cursor = { ledgerIncarnation: incarnation, version: ck.info.version }
+      } else {
+        // No checkpoint: the first segment starts with the base; list from it.
+        ;({ segs: refs, complete } = await listSegments(store, cell, tenant, incarnation, undefined, (s) => s.length > 0 && covered(s, s[0]!.first) > maxChanges))
+        if (refs.length === 0) return null
+        if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
+        after = refs[0]!.first // the base's version: changes start after it
+        baseSegment = refs[0]!
+        const b = await readBaseSegment(store, tenant, incarnation, baseSegment, sink, (ck as { passedOver: string[] }).passedOver)
+        if (b.status !== 'ok') return result(b.status, { detail: b.reason, start: after, ...(b.status === 'unsupported' ? { gapAt: baseSegment.first } : {}) })
+        done()
+        return readAfter(store, tenant, incarnation, refs, complete, after, maxChanges, b.info, b.changes, baseSegment)
+      }
+    } finally {
+      done()
     }
   }
+  after = (cursor as Cursor).version
+  const startAfter = `${cell}/${ledgerSegmentsStartingAfter(tenant, incarnation, after)}`
+  ;({ segs: refs, complete } = await listSegments(store, cell, tenant, incarnation, startAfter, (s) => covered(s, after) > maxChanges))
+  if (refs.length === 0) {
+    // Nothing after the cursor. After a checkpoint that is the whole log: the state is the checkpoint's.
+    return base ? { tenant, status: 'ok', incarnation, layout: 'segments', base, start: after, changes: [] } : null
+  }
+  if (refs[0]!.first > after + 1) {
+    // The cursor is inside a segment, or there is a hole: find the segment holding after + 1.
+    const all = await listSegments(store, cell, tenant, incarnation, undefined, (s) => s.length > 0 && s[s.length - 1]!.first > after + 1)
+    const holding = all.segs.find((s) => s.first <= after + 1 && after + 1 <= s.last)
+    if (!holding) return result('gap', { base, start: after, gapAt: after + 1, detail: `version ${after + 1} of incarnation ${incarnation} is in no segment; the next one starts at ${refs[0]!.first}` })
+    refs = [holding, ...refs]
+  }
+  return readAfter(store, tenant, incarnation, refs, complete, after, maxChanges, base, [], null)
+}
 
+/**
+ * Whole segments after `after`, contiguous, up to about `maxChanges` changes (at least one
+ * segment). With a base read from the first of `refs` (`pre` holds the changes after its base
+ * line), that segment is not read again.
+ */
+async function readAfter(
+  store: Store,
+  tenant: string,
+  incarnation: number,
+  refs: SegmentRef[],
+  complete: boolean,
+  after: number,
+  maxChanges: number,
+  base: BaseInfo | null,
+  pre: LogChange[],
+  baseSegment: SegmentRef | null,
+): Promise<TenantLog> {
   // Whole segments, contiguous, up to the cap (at least one segment).
   let status: LogStatus = 'ok'
   let gapAt: number | undefined
@@ -334,12 +863,20 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
   }
   if (status === 'ok' && !complete) status = 'more'
 
-  let base: LogChange | null = null
   const start = after
   const changes: LogChange[] = []
-  const reads = take.length
-  for (let i = 0; i < reads; i += READ_FANOUT) {
-    const batch = take.slice(i, i + READ_FANOUT)
+  // A base segment was streamed already: its changes after the base line are `pre`.
+  let reads = take
+  if (baseSegment !== null) {
+    if (take[0] !== baseSegment) {
+      // Overlapping with the segment after it: nothing of the incarnation is trusted, not even its base.
+      return { tenant, status, detail, incarnation, layout: 'segments', base: null, start, changes }
+    }
+    changes.push(...pre.filter((c) => c.version > start))
+    reads = take.slice(1)
+  }
+  for (let i = 0; i < reads.length; i += READ_FANOUT) {
+    const batch = reads.slice(i, i + READ_FANOUT)
     const got = await Promise.all(batch.map((s) => readSegment(store, tenant, incarnation, s)))
     for (const [j, r] of got.entries()) {
       const seg = batch[j]!
@@ -348,12 +885,6 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
         return { tenant, status: r.status, detail: r.reason, incarnation, layout: 'segments', base, start, changes, ...(r.status === 'unsupported' ? { gapAt: seg.first } : {}) }
       }
       for (const c of r.changes) {
-        if (from === null && base === null) {
-          // An incarnation's first line is its base, and only there.
-          if (c.kind !== 'base' || c.version !== seg.first) return result('no_base', { start, detail: `the first segment of incarnation ${incarnation} does not begin with its base` })
-          base = c
-          continue
-        }
         if (c.kind === 'base') return { tenant, status: 'corrupt', detail: `version ${c.version} of incarnation ${incarnation} is a base inside the log`, incarnation, layout: 'segments', base, start, changes }
         if (c.version > start) changes.push(c)
       }
@@ -408,15 +939,46 @@ async function readChange(store: Store, cell: string, tenant: string, incarnatio
   return r.ok
 }
 
-async function readObjectLog(store: Store, cell: string, tenant: string, incarnation: number, from: Cursor | null, maxChanges: number): Promise<TenantLog> {
+/** The first layout's `base.json`, streamed into the sink (it has no header: the object is line 0). */
+async function streamObjectBase(store: Store, cell: string, tenant: string, incarnation: number, sink: BaseSink): Promise<BaseInfo | null | Stop> {
+  const where = `base.json of incarnation ${incarnation}`
+  const o = await store.get(`${cell}/${ledgerBaseKey(tenant, incarnation)}`)
+  if (!o) return null
+  sink.reset(tenant)
+  const out = new Batches(sink, tenant)
+  try {
+    const { streamed } = await readLedgerLogStream(
+      o.body,
+      0,
+      (member, element) => {
+        if (member === 'added') out.file(fileOf(element, where))
+        else if (member === 'tombstones') out.tombstone(tombstoneOf(element, where))
+      },
+      () => {
+        throw new Stop('corrupt', `${where} is more than one object`)
+      },
+    )
+    out.flush()
+    if (!streamed) throw new Stop('corrupt', `${where} is not a base change`)
+    const why = unsupported(streamed)
+    if (why) throw new Stop('unsupported', `${where}: ${why}`)
+    if (streamed.kind !== 'base' || streamed.ledgerIncarnation !== incarnation || !Number.isSafeInteger(streamed.version)) throw new Stop('corrupt', `${where} is not a base change`)
+    return { version: streamed.version as number, source: 'base', format: null, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver: [] }
+  } catch (e) {
+    if (e instanceof Stop) return e
+    if (malformed(e)) return new Stop('corrupt', `${where}: ${e.message}`)
+    throw e
+  }
+}
+
+async function readObjectLog(store: Store, cell: string, tenant: string, incarnation: number, from: Cursor | null, maxChanges: number, sink: BaseSink): Promise<TenantLog> {
   const none = (status: LogStatus, detail?: string): TenantLog => ({ tenant, status, detail, incarnation, layout: 'objects', base: null, start: 0, changes: [] })
-  let base: LogChange | null = null
+  let base: BaseInfo | null = null
   let start: number
   if (from === null) {
-    const b = await readBase(store, cell, tenant, incarnation)
+    const b = await streamObjectBase(store, cell, tenant, incarnation, sink)
     if (b === null) return none('no_base', `incarnation ${incarnation} has neither a base segment nor a base.json`)
-    if (b === 'corrupt') return none('corrupt', `base.json of incarnation ${incarnation} is not a base change`)
-    if (b instanceof Unsupported) return { ...none('unsupported', `base.json of incarnation ${incarnation}: ${b.why}`), gapAt: 0 }
+    if (b instanceof Stop) return b.status === 'unsupported' ? { ...none('unsupported', b.message), gapAt: 0 } : none('corrupt', b.message)
     base = b
     start = b.version
   } else {
@@ -469,20 +1031,21 @@ async function readObjectLog(store: Store, cell: string, tenant: string, incarna
  *
  * R2 operations: one list for the incarnations, one for the segments after the cursor (a
  * second only if the cursor sits inside a segment), one get per segment read. When nothing is
- * new, one more list looks for the first layout. A re-base adds one head (no `base.json`
- * beside segments).
+ * new, one more list looks for the first layout. A re-base adds one list (checkpoints), one head
+ * (no `base.json` beside segments) and the get of its checkpoint's manifest and parts, or of the
+ * base segment; its files and tombstones go to `sink`, a part or `BASE_BATCH` at a time.
  */
-export async function readTenantLog(store: Store, cell: string, tenant: string, from: Cursor | null, maxChanges: number): Promise<TenantLog> {
+export async function readTenantLog(store: Store, cell: string, tenant: string, from: Cursor | null, maxChanges: number, sink: BaseSink): Promise<TenantLog> {
   const incarnation = await latestIncarnation(store, cell, tenant)
   if (incarnation === null) return { tenant, status: 'no_log', incarnation: 0, layout: null, base: null, start: 0, changes: [] }
   if (from && from.ledgerIncarnation > incarnation) {
     return { tenant, status: 'cursor_ahead', detail: `cursor is at incarnation ${from.ledgerIncarnation}, R2 has ${incarnation}`, incarnation, layout: null, base: null, start: 0, changes: [] }
   }
   const cursor = from && from.ledgerIncarnation === incarnation ? from : null
-  const segments = await readSegmentLog(store, cell, tenant, incarnation, cursor, Math.max(1, maxChanges))
+  const segments = await readSegmentLog(store, cell, tenant, incarnation, cursor, Math.max(1, maxChanges), sink)
   if (segments) return segments
   // No segment at all (a re-base), or none after the cursor: the first layout, or nothing new.
-  const objects = await readObjectLog(store, cell, tenant, incarnation, cursor, Math.max(1, maxChanges))
+  const objects = await readObjectLog(store, cell, tenant, incarnation, cursor, Math.max(1, maxChanges), sink)
   // Nothing after the cursor in either layout: which one the incarnation uses is not known here.
   return cursor && objects.status === 'ok' && objects.changes.length === 0 ? { ...objects, layout: null } : objects
 }

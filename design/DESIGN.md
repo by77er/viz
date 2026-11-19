@@ -211,9 +211,17 @@ new ledger incarnation, whose base segment is in R2 before it commits anything, 
 incarnation number is never used for two histories and versions are never reused.
 Checkpoints, taken once the log since the last one is as large as it, bound a rebuild, which
 runs outside `blockConcurrencyWhile`: requests meanwhile wait at most 2 s and are refused as
-retryable. Because a base or checkpoint is the whole state in one piece, a ledger's state is
-bounded (16 MiB, about 15,800 files): above it `addUnit` answers `full`, retryably, until
-compaction or retention makes room (`contracts/LEDGER-LOG.md`, "Size").
+retryable. A checkpoint of a state larger than 1 MiB is written in parts across drains, from
+the state at its version (changes committed meanwhile keep pre-images), and a rebuild streams
+checkpoints and bases into SQLite, so nothing holds the whole state (D47). The bound left is
+time: a rebuild reads and writes the whole state while the tenant is refused, so the state is
+bounded at the largest measured (300 MiB, about 300,000 files; 20 s locally): above it
+`addUnit` answers `full`, retryably, until compaction or retention makes room
+(`contracts/LEDGER-LOG.md`, "Size"). Production keeps the bound at 16 MiB for this release
+(`stack/wrangler.jsonc`): the release before cannot hold or checkpoint a larger state, so a
+rollback must not meet one, and a rebuild and a first publication above 16 MiB have not been
+measured within a Durable Object's CPU limit on Cloudflare. A later release, whose rollback
+floor is this one, lifts it once they are (D47; `design/reviews/d47-d48-d55.md`, P-2 and P-3).
 Measured on Cloudflare: 234–422 units per second with eight writers, and a rebuild of
 5,008 changes in 5.4 s (`spikes/s4-ledger-scale/`). The orphan sweeper deletes an object only if the
 ledger neither lists nor tombstones it and it can never be listed: a flush file once its
@@ -246,7 +254,7 @@ and time.
 | Table | Grain | Sort order | Notes |
 |---|---|---|---|
 | `metric_series` | series per day | `metric_name, series_id` | promoted label columns + full label map |
-| `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` is a plain 64-bit hash of all labels (`contracts/BATCH.md`). Putting hashes of `namespace` and `job` in its top 24 bits was measured on 200,000 series: a `{namespace=…}` query reads 1.3–2.6× fewer bytes by row group (6–17× only with page-level pruning, which the engine lacks), a full-metric scan is no better, and 40 bits are left to tell series apart, which is not enough (D19). Locality is to come from the sort key instead: a promoted-label column before `series_id` |
+| `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` is a plain 64-bit hash of all labels (`contracts/BATCH.md`). Putting hashes of `namespace` and `job` in its top 24 bits was measured on 200,000 series: a `{namespace=…}` query reads 1.3–2.6× fewer bytes by row group (6–17× only with page-level pruning, which the engine does in memory but does not fetch, D41), a full-metric scan is no better, and 40 bits are left to tell series apart, which is not enough (D19). Locality is to come from the sort key instead: a promoted-label column before `series_id` |
 | `metric_rollup_5m`, `_1h` | series per window | same | count, sum, min, max, last, reset-aware increase |
 | `spans` | span | `service_name, span_name, start_time` | hour partitions; promoted attributes + residual maps |
 | `trace_index` | trace per day | `trace_id` | root, start, duration, counts, and the **hour partitions** that hold its spans (logical references survive compaction) |
@@ -284,8 +292,10 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   removes whole files from the ledger. Objects are deleted after the removal has been
   published and a grace period has passed. As built (raw tier only, one policy per tenant):
   the ledger keeps a tombstone per removed key and releases it for deletion once the
-  removal is in its R2 log and a grace period has passed by its own clock; the wait for
-  publication is added with the publisher (tombstones carry the ledger version for that).
+  removal is in its R2 log and a grace period has passed by its own clock; with a publisher
+  bound (as viz-ingest is), the janitor also waits for the cell's publisher to release the key
+  (`safeToDelete`: removal published, no retained snapshot references the file, the
+  publisher's grace passed). A publisher that cannot answer releases nothing.
   A tenant without a policy record gets the default (30 days); a record that cannot be read
   (malformed, or of a version the janitor does not know) expires nothing for that tenant and
   is reported every hour until fixed, never replaced by the default.
@@ -297,13 +307,22 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
 ### 5.3 Iceberg publication
 
 The publisher applies ledger changes to the cell's Iceberg tables every few minutes, only
-when something changed. As built (D34), each tenant's maintenance run nudges the cell's
-publisher, which publishes from its own alarm a couple of minutes later; an idle cell has no
-alarm and nothing calls it. The nudge is only that: changes are applied strictly in ledger
+when something changed. As built and wired (D34): viz-ingest binds the cell's publisher
+(viz-publisher, deployed first) and every maintenance run ends with a nudge to it, at most 2 s
+and never on an ingest or flush acknowledgement path; a nudge that may not have been recorded
+makes the tenant due again within the hour. The publisher publishes from its own alarm a
+couple of minutes later; an idle cell has no alarm and nothing calls it. The nudge is only
+that: changes are applied strictly in ledger
 version order per tenant, read from the ledger's R2 log (segments, in whole segments; a hole
-or a segment it cannot read stops that tenant there, never skipped). A removed
+or a segment it cannot read stops that tenant there, never skipped). A tenant it has no cursor
+for in the newest ledger incarnation is re-based from that incarnation's newest checkpoint, or
+its base, streamed into SQLite and diffed against what is published there, so the publisher's
+memory does not grow with a tenant's size (D55). A table whose cursor is below the checkpoint or
+base its tenant was read from is re-based with it, never planned from its cursor, so no change
+between the two is skipped (`design/reviews/d47-d48-d55.md`, P-1). A removed
 file is physically deleted only after the removal is published and every snapshot that
-referenced it has expired. Each snapshot points at an object
+referenced it has expired (the janitor asks the publisher before each purge). Each snapshot
+points at an object
 recording which ledger version of each tenant it reflects. A scrubber checks continuously
 that the Iceberg live set equals the union of the ledgers at those versions.
 
@@ -337,8 +356,13 @@ with label-based access rules. A caller cannot omit it.
 1. One call to the tenant's ledger returns the ledger version, the partition index objects
    for the time range, and the shard watermarks.
 2. Index objects are fetched (immutable; cached).
-3. The planner prunes to row groups and pages and cuts the work into splits. Matcher
-   resolution against `metric_series` happens in the leaves, next to the data.
+3. The planner prunes files and row groups by name and time from the index fragments, and
+   reads a file as its footer and the row groups needed (byte ranges). When that does not fit
+   one place and a matcher selects by more than the metric name, it resolves the matchers
+   against `metric_series` first and reads only the row groups whose `(metric, series_id)`
+   range holds a selected series (one more round of reads); split leaves resolve their own
+   part. Pages are skipped in memory, not fetched (D41). The label endpoints read
+   `metric_series` and the tail only.
 
 ### 6.2 Execute
 
@@ -356,7 +380,11 @@ with label-based access rules. A caller cannot omit it.
   files) at three quarters of one isolate's limits. Queries that do not decompose run in one
   place. Approximate quantiles are not built.
 - A tail read is a filtered scan over a shard's unsealed and unflushed segments. Segments
-  are bounded by seal size, so the shard needs no query engine and no second index. Shards
+  are bounded by seal size, so the shard needs no query engine and no second index. The
+  filter (time range, metric names, exact label values, a range of series keys) is applied
+  by the shard and the answer comes in pages with a continuation (D48), so a query takes only
+  the tail it needs and a split leaf only its key range (built in `shard/`; `query/` does not
+  use it yet). Shards
   keep recorded segments for a short bounded time, and a refused split is retried on its
   own with a fresh ledger read, so a busy shard cannot make a whole query loop.
 - **Leaves are Durable Objects.** Measured on Cloudflare (`spikes/s1-fanout-r2/`): R2 reads
@@ -424,7 +452,10 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   expressions to viz-query's Prometheus HTTP API one at a time (one engine call in flight per
   `Ruler` object: a service-bound callee shares its caller's six connections), recording rules
   write through Remote Write, and both authenticate with a service key the tenant's control
-  plane issues (`service:viz-ruler/<shard>`, visible and revocable there).
+  plane issues (`service:viz-ruler/<shard>`, visible and revocable there). viz-ingest now
+  also exports `RecordedSamples` (`contracts/ingest.ts`, D45): an RPC entrypoint the ruler can
+  bind as `SINK`, authenticated by the binding itself (no key), with the tenant an explicit,
+  validated argument; the ruler's binding is not added yet (`edge/README.md`, "Needed changes").
 - **Anomaly detection** is statistics first. An *anomaly rule* is a rule kind
   (`contracts/rules.ts`, version 2): each tick the ruler feeds every series of one PromQL
   expression to that series' detector, through the same batch call as other rules, and the
@@ -559,7 +590,11 @@ forward-only. `design/UPGRADES.md` has the inventory of formats, the verified pl
 facts, the rollback rules and what each component still has to change. As built, control,
 the ruler, the publisher, and on the write path the ledger, the shard and edge follow it,
 as do the flush and maintenance messages; `UPGRADES.md` §7 lists what the others still
-have to change.
+have to change. The deploy records each class's schema version in every release record and
+on every Worker version, marks a release forward-only when a class's `readableFrom` is above
+what the release before it knew, and refuses a rollback when any version that ran since the
+target wrote storage the target cannot open (D46; `deploy/README.md`). Format versions are not
+in that check yet.
 
 ## 12. Launch scope
 
@@ -582,6 +617,6 @@ have to change.
 | ~~The ledger admits about one flush unit per second~~ (measured, `spikes/s4-ledger-scale/`) | **Fixed** (D36): it answers after the SQLite commit and logs in batched background segments; 234–422 units per second with eight writers, measured on Cloudflare 2026-11-19 |
 | A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6) | Not fixed. Register a new incarnation with the ledger before the shard accepts its first write (spec F1), across shard, ledger, flush and query |
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
-| A tenant's ledger holds at most 16 MiB of state, about 15,800 live files (a base or checkpoint is the whole state in one piece; review S-2) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. Lifting it needs checkpoints written in pieces and a rebuild that streams into SQLite: not built |
+| A tenant's ledger holds at most 300 MiB of state, about 300,000 live files: memory no longer bounds it (checkpoints in parts, a rebuild that streams; D47), the time a rebuild takes does (20 s here at that size, modelled 20–60 s on Cloudflare, the tenant refused meanwhile) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. The publisher re-bases such a tenant streaming, from its newest checkpoint or its base, in bounded memory (measured at 300,000 files under a capped heap, `publisher/README.md`), but production keeps 16 MiB for this release: a rollback to the release before must not meet a larger state, and a rebuild and a first publication above 16 MiB are not yet measured within the CPU limit on Cloudflare. It is lifted in a release whose rollback floor is this one, once they are (D47; `design/reviews/d47-d48-d55.md`, P-2, P-3) |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |

@@ -1,0 +1,54 @@
+# bench/checkpoint.bench.test.ts, 2026-11-19, local workerd on the shared 4-core machine (load averages in the lines after each run).
+# Runs: A = 8k,32k both variants with cross-reads; before/after = 100k; after300 = 300k (this release only).
+## run A
+ 04:06:28 up  3:25,  0 user,  load average: 6.92, 7.38, 8.68
+ 04:06:49 up  3:25,  0 user,  load average: 6.49, 7.25, 8.60
+ROW {"v":"before","files":8000,"stateDigest":"96c0a33fb3657aee","logSegments":3,"logMB":6.9,"checkpointMs":164,"blockedMs":58,"checkpointObjects":1,"checkpointMB":8.4,"largestObjectMB":8.37,"rebuildMs":368,"rebuildFrom":4,"segmentsAfter":0}
+ROW {"v":"after","files":8000,"stateDigest":"96c0a33fb3657aee","logSegments":3,"logMB":6.9,"checkpointMs":226,"blockedMs":2,"checkpointObjects":9,"checkpointMB":7.5,"largestObjectMB":1.05,"rebuildMs":486,"rebuildFrom":4,"segmentsAfter":0}
+ROW {"cross":"after reads before's log","files":8000,"ms":653}
+ROW {"cross":"before reads after's log","files":8000,"ms":264}
+ROW {"v":"before","files":32000,"stateDigest":"6a9c1a2c55b7e897","logSegments":9,"logMB":27.7,"checkpointMs":779,"blockedMs":305,"checkpointObjects":1,"checkpointMB":33.5,"largestObjectMB":33.53,"rebuildMs":1452,"rebuildFrom":10,"segmentsAfter":0}
+ROW {"v":"after","files":32000,"stateDigest":"6a9c1a2c55b7e897","logSegments":9,"logMB":27.7,"checkpointMs":736,"blockedMs":3,"checkpointObjects":30,"checkpointMB":30.1,"largestObjectMB":1.05,"rebuildMs":1689,"rebuildFrom":10,"segmentsAfter":0}
+ROW {"cross":"after reads before's log","files":32000,"ms":2436}
+ROW {"cross":"before reads after's log","files":32000,"ms":1110}
+RSS peak: largest process 624 MB, all 1112 MB
+fill             {"v":"before","files":8000}                      startMB 400 peakMB 397 +-3 0.5s
+checkpoint       {"v":"before","files":8000}                      startMB 397 peakMB 397 +0 0.2s
+rebuild          {"v":"before","files":8000}                      startMB 397 peakMB 397 +0 0.4s
+fill             {"v":"after","files":8000}                       startMB 397 peakMB 397 +0 0.5s
+checkpoint       {"v":"after","files":8000}                       startMB 397 peakMB 397 +0 0.2s
+rebuild          {"v":"after","files":8000}                       startMB 397 peakMB 397 +0 0.5s
+cross            {"reader":"after","writer":"before","files":8000} startMB 397 peakMB 397 +0 0.7s
+cross            {"reader":"before","writer":"after","files":8000} startMB 397 peakMB 415 +18 0.3s
+fill             {"v":"before","files":32000}                     startMB 415 peakMB 451 +36 1.8s
+checkpoint       {"v":"before","files":32000}                     startMB 451 peakMB 587 +136 0.8s
+rebuild          {"v":"before","files":32000}                     startMB 581 peakMB 624 +43 1.5s
+fill             {"v":"after","files":32000}                      startMB 541 peakMB 497 +-44 1.9s
+checkpoint       {"v":"after","files":32000}                      startMB 491 peakMB 501 +10 0.7s
+rebuild          {"v":"after","files":32000}                      startMB 494 peakMB 499 +5 1.7s
+cross            {"reader":"after","writer":"before","files":32000} startMB 467 peakMB 460 +-7 2.4s
+cross            {"reader":"before","writer":"after","files":32000} startMB 448 peakMB 571 +123 1.1s
+## run before
+ 04:06:57 up  3:25,  0 user,  load average: 6.29, 7.20, 8.58
+ 04:07:13 up  3:26,  0 user,  load average: 6.23, 7.14, 8.54
+ROW {"v":"before","files":100000,"stateDigest":"1aa8d3e1b4ca92ce","logSegments":26,"logMB":86.8,"checkpointMs":2305,"blockedMs":928,"checkpointObjects":1,"checkpointMB":105.4,"largestObjectMB":105.4,"rebuildMs":3879,"rebuildFrom":27,"segmentsAfter":0}
+RSS peak: largest process 955 MB, all 1444 MB
+fill             {"v":"before","files":100000}                    startMB 403 peakMB 454 +51 5.5s
+checkpoint       {"v":"before","files":100000}                    startMB 450 peakMB 860 +410 2.3s
+rebuild          {"v":"before","files":100000}                    startMB 759 peakMB 955 +196 3.9s
+## run after
+ 04:07:13 up  3:26,  0 user,  load average: 6.23, 7.14, 8.54
+ 04:07:31 up  3:26,  0 user,  load average: 5.83, 6.98, 8.45
+ROW {"v":"after","files":100000,"stateDigest":"1aa8d3e1b4ca92ce","logSegments":26,"logMB":86.7,"checkpointMs":2530,"blockedMs":2,"checkpointObjects":92,"checkpointMB":94.5,"largestObjectMB":1.05,"rebuildMs":5398,"rebuildFrom":27,"segmentsAfter":0}
+RSS peak: largest process 490 MB, all 939 MB
+fill             {"v":"after","files":100000}                     startMB 397 peakMB 436 +39 5.4s
+checkpoint       {"v":"after","files":100000}                     startMB 436 peakMB 450 +14 2.5s
+rebuild          {"v":"after","files":100000}                     startMB 451 peakMB 463 +12 5.4s
+## run after300
+ 04:07:40 up  3:26,  0 user,  load average: 6.00, 6.98, 8.44
+ 04:08:47 up  3:27,  0 user,  load average: 6.53, 7.00, 8.35
+ROW {"v":"after","files":300000,"stateDigest":"d11e0c70b8814756","logSegments":76,"logMB":260.7,"checkpointMs":9314,"blockedMs":3,"checkpointObjects":272,"checkpointMB":284,"largestObjectMB":1.05,"rebuildMs":20337,"rebuildFrom":77,"segmentsAfter":0}
+RSS peak: largest process 536 MB, all 1018 MB
+fill             {"v":"after","files":300000}                     startMB 397 peakMB 536 +139 27.0s
+checkpoint       {"v":"after","files":300000}                     startMB 425 peakMB 452 +27 9.4s
+rebuild          {"v":"after","files":300000}                     startMB 467 peakMB 442 +-25 20.3s
