@@ -537,6 +537,19 @@ Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite take
 on a shared machine (75 s on a cold cache with the load average above 6). Last run
 2026-11-19, after the review of D44: 147 of 147 pass, `tsc` clean.
 
+2026-11-19, the isolation fuzz test's false alarm (found on the development branch, where the
+fuzzer reached it at run 155 of 400 while the review of D44 was being ported there; not specific
+to any change): `isolation.test.ts`'s fuzz property failed once because B sent
+`var.env=<A's tenant id>` to `GET /dashboards/beta_dash?view=resolved`, and the resolved view's
+issue (`"<value>" given but not among the variable's values; ignored`) echoed B's own input, which
+the leak check read as A's tenant id. The check now removes exactly that echo, and only when the
+request carried that value; every other occurrence of A's tenant id, ids or marker still fails
+it. On `main` (measured here): 147 of 147 pass (`npx vitest run --maxWorkers=2`), `tsc` clean,
+`isolation.test.ts` alone 5 runs of 6 tests, 5 passes. Its teeth after the change: mutants 1 and 2
+(the tenant taken from `?tenant=`), run in a scratch copy whose unmutated suite passed 147 of 147,
+are still killed by `isolation.test.ts` (with `rules`, and `oauth-review` for 2); the copy's
+sources were afterwards equal to the tree's.
+
 **After the review of D44** (`design/reviews/d44-d52-d53-d60.md`; dispositions there):
 `test/oauth-review.test.ts`, 15 tests, and `test/forged-cost.test.ts`, 1. The entrypoint is
 bound in `vitest.config.ts` (miniflare service bindings to this Worker itself) as three callers:
@@ -745,7 +758,8 @@ What the tests establish:
   hostile strings), queries, headers and bodies never returns a 2xx for an id of A's.
   After each part a snapshot of A (keys, dashboards, specs, revisions, proposals and their
   reviews, settings, audit log, and A's six KV records) is unchanged, and no response to B
-  contains the marker, A's tenant id or any of A's ids.
+  contains the marker, A's tenant id or any of A's ids, apart from B's own `var.env` value
+  echoed back in a resolved dashboard's issue when B sent A's tenant id as that value (below).
 - **Durability** (`durability.test.ts`, 6 tests). The object is evicted after each of 12
   steps of a lifecycle and the tenant's state and alarm are identical afterwards. Eviction
   while 12 key creations are in flight: every acknowledged key exists and works at edge,
