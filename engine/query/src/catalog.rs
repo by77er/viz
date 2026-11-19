@@ -10,13 +10,14 @@
 //! - the cardinality report (`crate::cardinality`), which never needs samples.
 //!
 //! Row groups are decoded one at a time; a row group whose `metric_name` statistics
-//! exclude every wanted name is skipped.
+//! exclude every wanted name is skipped, and so is one the caller did not fetch (a file
+//! may be a sparse file container, `viz_storage::sparse`).
 use crate::error::QueryError;
 use bytes::Bytes;
 use parquet::basic::Type as PhysicalType;
 use parquet::column::reader::get_typed_column_reader;
 use parquet::data_type::{ByteArray, ByteArrayType, DataType, Int64Type};
-use parquet::file::reader::{FileReader, RowGroupReader, SerializedFileReader};
+use parquet::file::reader::{FileReader, RowGroupReader};
 use parquet::file::statistics::Statistics;
 
 const COLUMNS: [(&str, PhysicalType); 5] = [
@@ -69,7 +70,23 @@ pub fn for_each_series(
     want: &dyn Fn(&[u8]) -> bool,
     f: &mut dyn FnMut(SeriesRow<'_>) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    let r = SerializedFileReader::new(Bytes::copy_from_slice(bytes)).map_err(perr(file))?;
+    for_each_series_with(bytes, file, want_range, want, &|_| true, f)
+}
+
+/// [`for_each_series`], decoding a row group's `labels` column only when `labels_for` says
+/// so for its `series_id`s (otherwise every row's `labels_json` is empty): a caller that
+/// needs only ids and times, or has already seen the labels of every id (the same series
+/// in file after file of a day), saves the column that is most of the file.
+pub fn for_each_series_with(
+    bytes: &[u8],
+    file: usize,
+    want_range: &dyn Fn(&[u8], &[u8]) -> bool,
+    want: &dyn Fn(&[u8]) -> bool,
+    labels_for: &dyn Fn(&[i64]) -> bool,
+    f: &mut dyn FnMut(SeriesRow<'_>) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
+    let src = viz_storage::sparse::Source::from_bytes(Bytes::copy_from_slice(bytes), Some(file)).map_err(|e| QueryError::internal(format!("metric_series file {file}: {e}")))?;
+    let r = viz_storage::sparse::reader(src.clone()).map_err(perr(file))?;
     let descr = r.metadata().file_metadata().schema_descr();
     if descr.num_columns() != COLUMNS.len() {
         return Err(QueryError::internal(format!("metric_series file {file}: {} columns, the table has {}", descr.num_columns(), COLUMNS.len())));
@@ -83,6 +100,9 @@ pub fn for_each_series(
     let (mut names, mut sids, mut labels, mut lo, mut hi) = (Vec::<ByteArray>::new(), Vec::<i64>::new(), Vec::<ByteArray>::new(), Vec::<i64>::new(), Vec::<i64>::new());
     for g in 0..r.num_row_groups() {
         let md = r.metadata().row_group(g);
+        if !src.has_row_group(md) {
+            continue; // not fetched: it holds no series the caller needs
+        }
         if let Some(Statistics::ByteArray(st)) = md.column(0).statistics() {
             if let (Some(a), Some(b)) = (st.min_opt(), st.max_opt()) {
                 if !want_range(a.data(), b.data()) {
@@ -97,12 +117,16 @@ pub fn for_each_series(
             continue;
         }
         read_col::<Int64Type>(&*rg, 1, n, file, &mut sids)?;
-        read_col::<ByteArrayType>(&*rg, 2, n, file, &mut labels)?;
+        let with_labels = labels_for(&sids);
+        if with_labels {
+            read_col::<ByteArrayType>(&*rg, 2, n, file, &mut labels)?;
+        }
         read_col::<Int64Type>(&*rg, 3, n, file, &mut lo)?;
         read_col::<Int64Type>(&*rg, 4, n, file, &mut hi)?;
         for i in 0..n {
             if want(names[i].data()) {
-                f(SeriesRow { metric_name: names[i].data(), series_id: sids[i], labels_json: labels[i].data(), min_ts: lo[i], max_ts: hi[i] })?;
+                let labels_json = if with_labels { labels[i].data() } else { &[] };
+                f(SeriesRow { metric_name: names[i].data(), series_id: sids[i], labels_json, min_ts: lo[i], max_ts: hi[i] })?;
             }
         }
     }

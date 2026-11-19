@@ -13,7 +13,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
-import { createQueryEngine, DEFAULT_LIMITS, QueryError } from '../js/index.ts'
+import { createQueryEngine, DEFAULT_LIMITS, QueryError, sparseFile } from '../js/index.ts'
 
 const path = new URL('../js/viz_query.wasm', import.meta.url)
 const bytes = readFileSync(path)
@@ -102,6 +102,14 @@ for (let k = 0; k <= 40; k++) {
 rows.push([2, T + 20 * 15_000, STALE])
 const input = { seriesFiles: [], sampleFiles: [], tailBatches: [batch(series, rows)] }
 
+const errorOf = (f) => {
+  try {
+    f()
+  } catch (e) {
+    return e
+  }
+  return null
+}
 const engine = createQueryEngine(module)
 const r = engine.queryRange(input, 'sum by (job)(rate(http_requests_total[1m]))', T + 60_000, T + 600_000, 60_000)
 check('queryRange: sum by (job)(rate(m[1m])) is 3 per second at every step', r.resultType === 'matrix' && r.result.length === 1 && r.result[0].values.length === 10 && r.result[0].values.every(([t, v], i) => t === (T + 60_000) / 1000 + 60 * i && Math.abs(Number(v) - 3) < 1e-9), JSON.stringify(r.result[0]?.values.slice(0, 2)))
@@ -114,15 +122,19 @@ check('select: the marker comes back bit for bit', sel.length === 1 && sel[0].ts
 check('plan', JSON.stringify(engine.plan('rate(up[1m])', T, T + 60_000, 15_000)) === JSON.stringify([{ matchers: [{ name: '__name__', op: '=', value: 'up' }], minTs: T - 59_999, maxTs: T + 60_000 }]))
 check('labelNames / labelValues / series', engine.labelNames(input, [], 0, T + 10 ** 9).join() === '__name__,instance,job' && engine.labelValues(input, 'instance', ['up'], 0, T + 10 ** 9).join() === 'a' && engine.series(input, ['up'], 0, T + 10 ** 9).length === 1)
 check('scanRows on an unparsable fragment is unknown, never "skip"', engine.scanRows(['?'], [])[0] === null && engine.filesNeeded(['?'], [])[0] === true)
+// Series-level pruning (ABI 3). A fragment with row-group series bounds and a footer location.
+const frag = JSON.stringify({ v: 1, rg: [0, 1, 2, 3].map((g) => ({ rows: 100, off: 4 + 1000 * g, len: 1000, min_name: 'up', max_name: 'up', min_ts: T, max_ts: T + 600_000, sid: [g * 2 ** 50, g * 2 ** 50 + 999] })), foot: [4004, 500] })
+const upAll = [{ matchers: [{ name: '__name__', op: '=', value: 'up' }], minTs: T, maxTs: T + 60_000 }]
+const fp = engine.filePlan([frag, '?', frag], [...upAll, { matchers: [{ name: '__name__', op: '=', value: 'down' }], minTs: T, maxTs: T }], 0)
+check('filePlan: by name and time; an unparsable fragment is read whole', fp[0].read === 'whole' && fp[0].rows === 400 && fp[1].read === 'whole' && fp[1].rows === null, JSON.stringify(fp))
+const pp = engine.partPlan([frag], upAll, 0, 2 ** 20, 0)
+check('partPlan: the part holding small ids reads one row group and the footer', pp[0].rows === 100 && JSON.stringify(pp[0].read) === JSON.stringify([[4, 1000], [4004, 500]]), JSON.stringify(pp))
+const sp = engine.samplePlan([], [frag, '?'], upAll)
+check('samplePlan: with no series file, nothing is selected; unknown stays whole', sp.series === 0 && sp.files[0].read === 'skip' && sp.files[1].read === 'whole', JSON.stringify(sp))
+const bad = errorOf(() => engine.labelNames({ seriesFiles: [sparseFile(100, [{ offset: 90, bytes: new Uint8Array(20) }])], sampleFiles: [], tailBatches: [] }, [], 0, T))
+check('a malformed sparse file is an internal error, with no trap', bad instanceof QueryError && bad.errorType === 'internal' && engine.instances() === 1, bad?.message)
+check('the label calls never open a sample file', engine.labelValues({ ...input, sampleFiles: [new TextEncoder().encode('PAR1 not parquet')] }, 'instance', ['up'], 0, T + 10 ** 9).join() === 'a')
 
-const errorOf = (f) => {
-  try {
-    f()
-  } catch (e) {
-    return e
-  }
-  return null
-}
 const limit = errorOf(() => engine.queryRange(input, 'http_requests_total', T, T + 600_000, 15_000, { ...DEFAULT_LIMITS, maxSamples: 10 }))
 check('a limit is a typed execution error naming the limit', limit instanceof QueryError && limit.errorType === 'execution' && limit.limit?.name === 'max_samples' && limit.limit.max === 10, limit?.message)
 const kinds = [['sum(', 'bad_data'], ['up[', 'bad_data'], ['rate(up)', 'bad_data'], ['up{a=~"("}', 'bad_data'], ['1 +', 'bad_data'], ['up offset', 'bad_data'], ['limitk(1, up)', 'unsupported'], ['up + on (job) http_requests_total', 'execution']]

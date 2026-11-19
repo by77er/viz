@@ -130,6 +130,9 @@ pub struct Stored {
     pub series_files: Vec<Vec<u8>>,
     pub sample_files: Vec<Vec<u8>>,
     pub tail: Vec<Vec<u8>>,
+    /// The index fragments of `series_files` and `sample_files`, in the same order.
+    pub series_index: Vec<String>,
+    pub sample_index: Vec<String>,
 }
 
 impl Stored {
@@ -144,8 +147,14 @@ impl Stored {
     fn add_files(&mut self, files: Vec<EncodedFile>) {
         for f in files {
             match f.table {
-                Table::MetricSamples => self.sample_files.push(f.bytes),
-                Table::MetricSeries => self.series_files.push(f.bytes),
+                Table::MetricSamples => {
+                    self.sample_files.push(f.bytes);
+                    self.sample_index.push(f.index);
+                }
+                Table::MetricSeries => {
+                    self.series_files.push(f.bytes);
+                    self.series_index.push(f.index);
+                }
             }
         }
     }
@@ -179,7 +188,7 @@ pub fn store(batches: &[Vec<u8>], layout: &Layout) -> Stored {
     let n = batches.len();
     let flushed = layout.flushed.min(n);
     let mut out = Stored::default();
-    let opts = WriteOptions { max_row_group_rows: layout.row_group_rows };
+    let opts = WriteOptions { max_row_group_rows: layout.row_group_rows, ..Default::default() };
     let mut cuts: Vec<usize> = layout.segment_cuts.iter().copied().filter(|c| *c > 0 && *c < flushed).collect();
     cuts.sort_unstable();
     cuts.dedup();

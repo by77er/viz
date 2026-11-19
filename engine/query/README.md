@@ -13,7 +13,7 @@ deterministic simulator. Nothing panics on input. Builds for the host and for
 
 ```
 export CARGO_TARGET_DIR=$PWD/target
-cargo test -j 2 -- --test-threads 2                         # 47 tests, about 6 minutes on a loaded machine
+cargo test -j 2 --no-fail-fast -- --test-threads 2          # 55 tests, about 12 minutes on a loaded machine
 cargo test --test corpus -- --nocapture                     # upstream corpus through storage, per file
 cargo build --release --target wasm32-unknown-unknown       # the library
 (cd wasm && cargo build --release --target wasm32-unknown-unknown) && node tools/wasm_check.mjs
@@ -45,9 +45,9 @@ let json = query_range(&input, "sum by (job) (rate(http_requests_total[5m]))", s
 | `query_range(input, query, start_ms, end_ms, step_ms) -> String` | Prometheus `query_range`; returns the `data` object as JSON (`PromMatrix`). |
 | `query_instant(input, query, time_ms) -> String` | Prometheus instant `query`; `vector`, `scalar`, `string`, or `matrix` for a top-level range vector. |
 | `query_range_with`, `query_instant_with` | The same, typed (`Matrix` / `Value`), with `Options { limits, eval }`, returning `Stats { selects, series, samples, output_points }` (DESIGN §6.5: what a query read is returned with every result). |
-| `label_names(input, matchers, min_ts, max_ts)` | `/api/v1/labels`. Sorted, unique. |
-| `label_values(input, name, matchers, min_ts, max_ts)` | `/api/v1/label/<name>/values`. |
-| `series(input, matcher_sets, min_ts, max_ts)` | `/api/v1/series`: sorted, unique label sets matching any set. Refuses, as Prometheus does, no sets and a set whose matchers all match the empty string. |
+| `label_names(input, matchers, min_ts, max_ts)` | `/api/v1/labels`. Sorted, unique. **A series-only read** (CARDINALITY.md item 3, 2026-11-19): series files and tail series tables, never sample files; "in the range" decided per file (below). |
+| `label_values(input, name, matchers, min_ts, max_ts)` | `/api/v1/label/<name>/values`. The same read. |
+| `series(input, matcher_sets, min_ts, max_ts)` | `/api/v1/series`: sorted, unique label sets matching any set. The same read. Refuses, as Prometheus does, no sets and a set whose matchers all match the empty string. |
 | `parse_selector(text)` | A `match[]` string to matchers; anything but a bare series selector is `bad_data`. |
 | `files_needed(indexes, ranges)` | For each ledger index fragment (`viz_storage::FileIndex` JSON): `false` if the file provably holds nothing the fetch ranges read. A row group can contribute to a range only if it overlaps it in time and, when the range has an equality matcher on `__name__`, the name lies in the row group's `[min_name, max_name]`. Nothing else prunes; a fragment that does not parse keeps its file. |
 | `scan_rows(indexes, ranges)` | The same decision with a number: an upper bound on the rows the ranges decode from each file (each row group once per range that may read it), `Some(0)` for "skip", `None` for a fragment that does not parse. Lets a caller refuse a query that would decode too much before fetching anything. |
@@ -59,7 +59,10 @@ let json = query_range(&input, "sum by (job) (rate(http_requests_total[5m]))", s
 | `exact`: `ExactSum`, `ExactVariance` | Exact sums and variances of `f64`, rounded once. |
 | `split_plan(query, opts) -> SplitPlan` | Split over leaves (`fragments`, `SplitKey`) or one place, and why. |
 | `split::extract`, `split::split_tails`, `split::Gathered`, `split::leaf_evaluate`, `split::merge_range`, `split::merge_instant` | The pieces of split execution: a reader's rows of one part, the tail cut by part, a leaf's data and its evaluation into partials, the coordinator's merge. |
-| `catalog::for_each_series` | A series-only read of `metric_series` files (storage has none). |
+| `catalog::for_each_series`, `for_each_series_with` | A series-only read of `metric_series` files (whole, or a sparse file of the row groups fetched); `_with` decodes a row group's `labels` only when it holds an id the caller has not seen. |
+| `file_plan(indexes, ranges, gap)` | **Reading part of a file**: per fragment, the row groups the ranges can touch by name and time (exactly `scan_rows`), as a `FilePlan`: skip, the whole object, or byte ranges (the footer and those row groups, joined under `gap`; whole when they would cover half the file or the fragment has no `foot`). |
+| `sample_plan(series_files, indexes, reads, part, gap)` | **Series-level pruning** (CARDINALITY.md item 2): resolve each read's matchers against the series files, keep a split part's series if asked, and plan each sample file to read only the row groups whose key range can hold a selected series (`viz_storage::RowGroupIndex::may_hold`). Returns the plans, the exact series count (per file in each read's window, summed over reads), and a **carrier** batch of the selected series to evaluate with instead of the series files. A series whose labels carry a `without` label is placed by its labels (found without a parse: `"name":` occurs in canonical JSON only as a key). |
+| `part_plan`, `part_sids` | One split part's row groups from the fragments alone: its `series_id` range (`part_sids`: exactly the ids `SplitKey::part_of` gives it, one or two intervals in `i64` order). |
 | `cardinality::State`, `Summary` | The cardinality report: one part's counts, merged, rendered as `/api/v1/status/tsdb` and `/api/v1/status/cardinality`. |
 
 ### Who owns what between the three crates
@@ -226,6 +229,31 @@ group of at most six files' worth of its part) while gathering, or one selector'
 evaluation. The coordinator weighs the stopped leaves (see `query/` README, "Split
 execution"). What remains, inside `viz_storage::select`, is in "Not implemented".
 
+### Series-level pruning and the series-only read (2026-11-19)
+
+`src/prune.rs`, `src/meta.rs`; `contracts/TABLES.md` "The index fragment" and "Reading part of
+a file"; `design/DECISIONS.md` D41; numbers in `query/CARDINALITY.md`.
+
+- **What a caller fetches.** `file_plan` from the fragments alone (name and time);
+  `sample_plan` once the series files are in hand (series); `part_plan` for a split part
+  before (its id range). Each gives byte ranges: the footer region and whole row groups. The
+  engine takes them as a sparse file container wherever it takes a file.
+- **What the engine decodes.** Inside a row group `viz_storage::select` decodes `series_id`,
+  then only the pages of `ts` and `value` that hold a selected series' rows.
+- **The carrier.** When every read selects by more than a name, `sample_plan` returns a batch
+  of exactly the selected series, with one row each at a time no read covers (the extract's
+  carrier of split execution). Evaluating with it first among the tail batches and no series
+  files gives the same answer (tested), without resolving the series twice or holding the
+  series files.
+- **The label calls** read series files and tail series tables only. A series is listed if a
+  series-file row's `[min_ts, max_ts]` overlaps the window, or a tail row lies in it: per
+  file, as Prometheus decides per block, so a series with samples in one file on both sides of
+  the window and none inside is listed (a query would not see it). `max_series` bounds the
+  series listed; no sample is loaded, so `max_samples` does not apply (before 2026-11-19 these
+  calls went through `select`, loaded samples, and listed exactly the series with a sample in
+  the window). A row group's `labels` column is decoded only if it holds a series not seen in
+  an earlier file.
+
 ### Cardinality
 
 `src/cardinality.rs`. From `metric_series` files (`catalog`) and tail batches' series
@@ -243,14 +271,12 @@ own report.
 ## What is not implemented
 
 - **The engine does not fetch.** `plan` says what to fetch; reading the ledger, R2 and
-  the shards is the caller's job (`query/` does it). `plan` returns matchers and time
-  ranges, not row groups or byte ranges. `files_needed` and `scan_rows` prune whole
-  **files** from the ledger's index fragments; pruning to row groups and pages
-  (DESIGN §6.1) is not done, and `select` is given whole files.
+  the shards is the caller's job (`query/` does it). `file_plan`, `sample_plan` and
+  `part_plan` say which byte ranges (row groups and the footer); pages are not fetched, only
+  skipped in memory (D41).
 - **Split execution, what is left** (DESIGN §6.2): partials travel in this crate's
-  binary form, not Arrow IPC; readers read whole files and decode every row group's
-  `series_id` column for every part (key-range row-group reads need range reads and
-  smaller row groups); `quantile`, binary operators between vectors and aggregations in
+  binary form, not Arrow IPC; readers read every series file whole for every part (their sample files only in their
+  part's id range since 2026-11-19); `quantile`, binary operators between vectors and aggregations in
   subqueries are not split (one place); leaf partials are not cached (§6.3).
 - **An early abort inside storage.** `viz_storage::select` still materialises one
   selector's matching samples (one part's, under split execution) before a limit can be
@@ -262,9 +288,14 @@ own report.
   read from storage twice (and counted twice by the limits).
 - **A time limit.** The engine has no clock, so there is no timeout; the bounds are on
   samples, series, steps and points instead.
-- **A series-only read.** `label_names`, `label_values` and `series` go through
-  `select` and load the samples of the series they list; storage has no cheaper call.
-  The Prometheus `limit` parameter of these endpoints is not implemented.
+- **The Prometheus `limit` parameter of the label endpoints.** (The series-only read itself
+  is implemented, 2026-11-19.)
+- **Series files read in part by key.** `sample_plan` and the split readers read the series
+  files whole (by name and time): a part's series cannot be found in a key range of them,
+  because a series whose key leaves a label out is not where its id is. Every split part reads
+  every series file (`query/CARDINALITY.md` has what that costs).
+- **A sort key that clusters a label.** A selection spread over the id space (`namespace=…`)
+  needs every row group of the metric (D19, D41).
 - **Annotations** (warnings and infos), exemplars, `/api/v1/metadata`, `/targets`,
   `/rules`, `/alerts`, `/status/*` other than the cardinality report, remote read.
 - **Approximate cardinality** (HyperLogLog): counting is exact and refused above its caps.
@@ -280,6 +311,27 @@ own report.
 
 All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 1.97.0, Node 22.23), not on Cloudflare.
+
+**2026-11-19, series-level pruning and the series-only read:** `cargo test -j 2` with two
+test threads: **55 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
+plan 5, prune 3, pruning 8, split 8, staleness 5), from 05:06 to 05:21 UTC at a load average of
+10 to 16. That run first found a bug in this work: `pruning`'s property failed for part 1 of 3
+of `count(label_join(n, …))`, because `split::extract` returned early, with no `strays`, when
+it was given no sample file, so a reader whose id range held nothing would have taken "no
+strays" for an answer and missed a relabelled series' rows. The count is now made before that
+return; `pruning` and `split` were run again and pass, and so do `staleness`, `api` and `lib`
+(the others do not reach `extract`). New tests (`tests/pruning.rs`): `the_sample_plan_never_changes_a_result`
+(property, 32 cases, I14): every query of the pool and three relabelled ones, over the files
+read as `sample_plan` (with and without file pairs) and `file_plan` say, gives the same JSON and
+statistics as over whole files, also when evaluated with the carrier instead of the series
+files, and loads no more lake samples than the planned rows; and for split parts 1 and 3,
+the extract over planned files (and over the id-range plan wherever it covers) is identical;
+`label_calls_list_exactly_the_series_in_the_window_per_file` (property, I17): in every placement
+the label calls equal a reference computed from the history and the layout alone, include every
+series a query over the window sees, and do not change without the sample files;
+`part_sids_are_the_parts_key_range` (property, 256 cases); directed tests for one series of a
+20-row-group file (one row group and the footer), a part's key range, older and broken
+fragments, a sample "file" that is not Parquet, and inclusive windows.
 
 `cargo test`: **47 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
 plan 5, prune 3, split 8, staleness 5), run on 2026-11-18 with `-j 2` and two test threads
@@ -484,6 +536,25 @@ Stack needed at depth 100, measured with `examples/stack_probe.rs` and
 | native debug | between 1 and 2 MiB | 2 MiB (test threads get 4 MiB in debug builds for this test) |
 
 ### 6. Mutation check
+
+**Series-level pruning and the series-only read (2026-11-19, mutants 42 to 51, on a scratch
+copy, with `--test pruning`; 04:29 to 04:52 UTC, load average 8 to 10): 10 of 10 killed**, the
+shared tree's files unchanged. A part's plan keeping the other parts' series
+(`a_part_reads_its_key_range`, `the_sample_plan_never_changes_a_result`); a series carrying a
+`without` label placed by its id, not its key (`the_sample_plan…`, through the relabelled
+queries added for it); a read without a name keeping a row group only if it may hold every
+wanted name (`one_series_of_a_large_file…`, `the_sample_plan…`; its pattern had gone stale
+after a change to `sample_plan` and was fixed before this run); `part_sids`' upper end running
+into the next part (`part_sids_are_the_parts_key_range`, `the_sample_plan…`); a part's id-range
+plan reading the next part's range (`the_sample_plan…`); the carrier's rows inside a read's
+range (`the_sample_plan…`); a file's row in the window one millisecond late
+(`the_label_calls_never_open_a_sample_file`); the tail not read
+(`label_calls_list_exactly_the_series_in_the_window_per_file`); `max_series` not firing in the
+series-only read (`the_label_calls_never_open…`). **One survived the first run**: a tail row
+exactly at the window's start left out (`t > min_ts`); the property's windows rarely start on a
+tail sample. `the_window_is_inclusive_at_both_ends_in_files_and_in_the_tail` was added, and kills
+it. The storage side (the predicate, the index writer, partial reads) is in
+`engine/storage/README.md` (18 of 18) and the Worker side in `query/README.md`.
 
 `python3 tools/mutants.py` applies one source change at a time, runs the suite (property
 tests at 8 cases, corpus left out, `-j 2`, two test threads), restores the file, and
@@ -749,6 +820,13 @@ is lexical and runs before the parser; the JavaScript bindings are removed by
 the module; `internal` is a fourth error type.
 
 ## Known risks
+
+- **A resolved query parses labels twice in a split.** The coordinator's `sample_plan` parses
+  every label set of the metric in the window, and each split reader's extract parses its
+  series files' again; one place avoids the second parse with the carrier, a split does not.
+- **Partial reads rest on the planners.** A row group left out of a sparse file is skipped
+  without an error; `may_hold`, `part_sids` and `strays` are what make that safe (property
+  tests and mutants above and in `engine/storage`).
 
 - **Split execution reads whole files per part** (see "Split execution": `L`-fold reads and
   `series_id` decodes). Fine for a few parts; the fix is row-group reads by key range.

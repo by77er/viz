@@ -20,7 +20,7 @@
 import type { ScanInput } from '../../contracts/engine'
 import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
-import { ENGINE_LOAD_PREFIX, type FetchRange, type Grid, type LeafSummary, type QueryEngine, type QueryLimits, type QueryStats, leafSummary } from '../../engine/wasm-query/js/index'
+import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type Grid, type LeafSummary, type QueryEngine, type QueryLimits, type QueryStats, leafSummary, planBytes, sparseFile } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
 import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult } from './leaf'
@@ -94,12 +94,19 @@ export interface Cost {
   leafMaxSamples: number
   /** Split leaves run again after stopping at their share of the budget. */
   leafReruns: number
+  /**
+   * How the files to read were chosen: `fragments` (by name and time from the index
+   * fragments, as before 2026-11-19, now with byte ranges), or `series` (the matchers were
+   * resolved against the series files first, and only row groups holding a selected
+   * series were read: CARDINALITY.md item 2).
+   */
+  pruning: string
 }
 
 export const newCost = (): Cost => ({
   ledgerVersion: 0, planAttempts: 0, filesListed: 0, filesSkipped: 0, filesRead: 0, scanSamples: 0, seriesEstimate: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, leafCalls: 0,
   leavesUsed: 0, leafRounds: 0, shardsAsked: 0, shardCalls: 0, tailBatches: 0, tailBytes: 0, seriesLoaded: 0, samplesLoaded: 0, engineMs: 0, wasmMemoryBytes: 0,
-  execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0,
+  execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0, pruning: '',
 })
 
 /** The plan-only answer's fields that come from what was recorded so far. */
@@ -145,6 +152,8 @@ export interface Context {
   cost: Cost
   /** Unix ms after which the query gives up with `timeout`. */
   deadline: number
+  /** What the timeout message says the deadline was: its length and whose limit it is. */
+  deadlineWhy?: string
   /** Spreads this query's reads over the leaf pool differently from any other query's. */
   queryId: string
 }
@@ -240,17 +249,38 @@ export function assign(pieces: Piece[], pool: number, queryId: string): Map<numb
   return rounds
 }
 
-/** Whole-object reads, except that an object above `MAX_PART_BYTES` is cut into ranges. */
-export function pieces(files: Pick<FileEntry, 'key' | 'bytes'>[], max = MAX_PART_BYTES): Piece[] {
+/** A file to read and how (`engine` `filePlan` / `samplePlan`): whole, or these byte ranges. */
+export interface Planned {
+  f: Pick<FileEntry, 'key' | 'bytes'>
+  read: Exclude<FileRead, 'skip'>
+}
+
+/** The whole object as one read, and nothing else. */
+export const whole = (f: Pick<FileEntry, 'key' | 'bytes'>): Planned => ({ f, read: 'whole' })
+
+/** Bytes a plan reads. */
+export const plannedBytes = (p: Planned): number => planBytes({ rows: null, read: p.read }, p.f.bytes)
+
+/**
+ * The reads of `files`: a whole object as one read, the ranges of a planned file as one
+ * read each; any read above `MAX_PART_BYTES` is cut into several, so no RPC message nears
+ * 32 MiB. `part` numbers a file's pieces in order.
+ */
+export function pieces(files: (Pick<FileEntry, 'key' | 'bytes'> | Planned)[], max = MAX_PART_BYTES): Piece[] {
   const out: Piece[] = []
-  files.forEach((f, file) => {
-    if (f.bytes <= max) {
-      out.push({ key: f.key, file, part: 0, bytes: f.bytes })
-      return
-    }
-    for (let offset = 0, part = 0; offset < f.bytes; offset += max, part++) {
-      const length = Math.min(max, f.bytes - offset)
-      out.push({ key: f.key, offset, length, file, part, bytes: length })
+  files.forEach((x, file) => {
+    const p: Planned = 'read' in x ? x : whole(x)
+    const spans: [number, number][] = p.read === 'whole' ? [[0, p.f.bytes]] : p.read
+    let part = 0
+    for (const [start, length] of spans) {
+      if (p.read === 'whole' && length <= max) {
+        out.push({ key: p.f.key, file, part: part++, bytes: length })
+        continue
+      }
+      for (let offset = start; offset < start + length; offset += max) {
+        const n = Math.min(max, start + length - offset)
+        out.push({ key: p.f.key, offset, length: n, file, part: part++, bytes: n })
+      }
     }
   })
   return out
@@ -262,13 +292,46 @@ class MissingFile extends Error {
   }
 }
 
+/** What a planned read hands the engine: the bytes of the whole object, or a sparse file of its ranges. */
+export function assemble(p: Planned, parts: Uint8Array[]): Uint8Array {
+  if (p.read === 'whole') {
+    if (parts.length === 1) return parts[0]!
+    const out = new Uint8Array(p.f.bytes)
+    let at = 0
+    for (const b of parts) {
+      out.set(b, at)
+      at += b.byteLength
+    }
+    return out
+  }
+  // Pieces arrive in order; a range cut into pieces is put back together.
+  const segments: { offset: number; bytes: Uint8Array }[] = []
+  let k = 0
+  for (const [offset, length] of p.read) {
+    const chunks: Uint8Array[] = []
+    let got = 0
+    while (got < length) {
+      const b = parts[k++]!
+      chunks.push(b)
+      got += b.byteLength
+    }
+    if (chunks.length === 1) segments.push({ offset, bytes: chunks[0]! })
+    else segments.push({ offset, bytes: assemble({ f: { key: p.f.key, bytes: length }, read: 'whole' }, chunks) })
+  }
+  return sparseFile(p.f.bytes, segments)
+}
+
+const planKey = (p: Planned): string => (p.read === 'whole' ? p.f.key : `${p.f.key}#${JSON.stringify(p.read)}`)
+
 /**
- * Fetch `files` through the leaf pool. Resolves with one buffer per file, in order, or
- * rejects: with `MissingFile` if R2 does not have an object, with `ApiError` if a leaf
- * failed twice. There is no partial result.
+ * Fetch `files` (whole, or the byte ranges of their plans) through the leaf pool. Resolves
+ * with one buffer per file, in order (a whole object, or a sparse file container of its
+ * ranges), or rejects: with `MissingFile` if R2 does not have an object, with `ApiError`
+ * if a leaf failed twice. There is no partial result.
  */
-async function fetchFiles(c: Context, files: FileEntry[], have: Map<string, Uint8Array>): Promise<Uint8Array[]> {
-  const todo = files.filter((f) => !have.has(f.key))
+async function fetchFiles(c: Context, entries: (FileEntry | Planned)[], have: Map<string, Uint8Array>): Promise<Uint8Array[]> {
+  const files: Planned[] = entries.map((x) => ('read' in x ? x : whole(x)))
+  const todo = files.filter((f) => !have.has(planKey(f)))
   const pool = leafPoolSize(c.env)
   const ttl = fileCacheTtl(c.env)
   const parts: Uint8Array[][] = todo.map(() => [])
@@ -320,22 +383,8 @@ async function fetchFiles(c: Context, files: FileEntry[], have: Map<string, Uint
     )
   }
   c.cost.leavesUsed = Math.max(c.cost.leavesUsed, used.size)
-
-  todo.forEach((f, i) => {
-    const list = parts[i]!
-    if (list.length === 1) {
-      have.set(f.key, list[0]!)
-      return
-    }
-    const whole = new Uint8Array(f.bytes)
-    let at = 0
-    for (const b of list) {
-      whole.set(b, at)
-      at += b.byteLength
-    }
-    have.set(f.key, whole)
-  })
-  return files.map((f) => have.get(f.key)!)
+  todo.forEach((f, i) => have.set(planKey(f), assemble(f, parts[i]!)))
+  return files.map((f) => have.get(planKey(f))!)
 }
 
 // ────────────────────────────────── tail ──────────────────────────────────
@@ -387,7 +436,8 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
     // retryable failure, never an empty tail and never a stream to re-read.
     const status: string = r.status
     if (status === 'schema_too_new') throw new ApiError('unavailable', `shard ${shard} runs a newer storage schema than this release reads (schema_too_new); retry`)
-    if (status !== 'incarnation_mismatch') throw new ApiError('unavailable', `shard ${shard} answered a status this release does not know (${status.slice(0, 40)}); retry`)
+    // (`page_limit`, a paged tail this release does not read yet, is one of these: it fails closed.)
+    if (r.status !== 'incarnation_mismatch') throw new ApiError('unavailable', `shard ${shard} answered a status this release does not know (${status.slice(0, 40)}); retry`)
     if (r.incarnation < incarnation) return { status: 'refused', why: `shard ${shard} is behind the ledger` }
     known.set(shard, r.incarnation)
     if (w) return { status: 'refused', why: `shard ${shard} has a newer stream than the ledger knows` }
@@ -408,8 +458,11 @@ async function shardsOf(c: Context, watermarks: Watermark[]): Promise<string[]> 
 
 // ───────────────────────────────── gather ─────────────────────────────────
 
+/** The timeout message: it names the limit, so a person can tell a limit from a stall. */
+export const timedOut = (why?: string): string => (why ? `query timed out after ${why}` : 'query timed out')
+
 export function checkDeadline(c: Context): void {
-  if (Date.now() > c.deadline) throw new ApiError('timeout', 'query timed out')
+  if (Date.now() > c.deadline) throw new ApiError('timeout', timedOut(c.deadlineWhy))
 }
 
 /**
@@ -534,6 +587,21 @@ export interface SplitSpec<T> {
   done: (out: { json: string; stats: QueryStats }) => T
 }
 
+/** Files with their plans, leaving out the ones to skip (a plan never skips a file `filesNeeded` keeps; this is the same rule). */
+function toPlanned(files: FileEntry[], plans: FilePlan[]): Planned[] {
+  const out: Planned[] = []
+  files.forEach((f, i) => {
+    const r = plans[i]?.read ?? 'whole'
+    if (r !== 'skip') out.push({ f, read: r })
+  })
+  return out
+}
+
+const sumPlanned = (ps: Planned[]): number => ps.reduce((a, p) => a + plannedBytes(p), 0)
+
+/** Whether resolving matchers against series files can prune: some read selects by more than `__name__ =`. */
+export const resolvable = (reads: FetchRange[]): boolean => reads.some((r) => r.matchers.some((m) => !(m.name === '__name__' && m.op === '=')))
+
 export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRange[], evaluate: (input: ScanInput) => T, split?: SplitSpec<T>, explain?: (p: QueryPlan) => T): Promise<T> {
   // No selector (`1 + 1`, `time()`): nothing to read, and no reason to wake anything.
   if (ranges.length === 0 && explain) return explain({ ...planOf(c), execution: 'none', splitReason: 'the query reads no data' })
@@ -563,23 +631,68 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       const listed = [...snap.series, ...snap.samples]
       const keep = c.engine.filesNeeded(listed.map((f) => f.index), ranges)
       const series = snap.series.filter((_, i) => keep[i])
-      const samples = snap.samples.filter((_, i) => keep[snap.series.length + i])
+      let samples = snap.samples.filter((_, i) => keep[snap.series.length + i])
       // How many samples would the engine decode? Known from the row groups' row counts,
       // before anything is fetched. The engine's own `max_samples` fires only after a
       // selector's samples are in memory, so this is what keeps a too-large query from
       // being materialised at all.
       const rows = c.engine.scanRows(samples.map((f) => f.index), reads)
-      const scan = rows.reduce<number>((a, r, i) => a + (r ?? samples[i]!.rows * reads.length), 0)
-      const wanted = [...series, ...samples]
+      let scan = rows.reduce<number>((a, r, i) => a + (r ?? samples[i]!.rows * reads.length), 0)
+      // How to read each file, from its fragment: the row groups of the ranges' metrics and
+      // times, with the footer, or the whole object (contracts/TABLES.md, "Reading part of a file").
+      const byFragment = c.engine.filePlan([...series, ...samples].map((f) => f.index), ranges)
+      const seriesPlans = toPlanned(series, byFragment.slice(0, series.length))
+      let samplePlans = toPlanned(samples, byFragment.slice(series.length))
       // Recorded before any limit is checked, so a refused query still says what it would have cost.
       c.cost.scanSamples = scan
       c.cost.filesListed = listed.length
-      c.cost.filesSkipped = listed.length - wanted.length
-      const lakeBytesAll = wanted.reduce((a, f) => a + f.bytes, 0)
+      c.cost.filesSkipped = listed.length - series.length - samples.length
+      c.cost.pruning = 'fragments'
+      let lakeBytesAll = sumPlanned(seriesPlans) + sumPlanned(samplePlans)
       // How many series? From the series files' row groups, also known before any fetch:
       // a query over many series with few samples each needs leaves as much as one with many samples.
-      const seriesEst = seriesEstimate(series, c.engine.scanRows(series.map((f) => f.index), reads))
+      let seriesEst = seriesEstimate(series, c.engine.scanRows(series.map((f) => f.index), reads))
       c.cost.seriesEstimate = seriesEst
+      const overOnePlace = (scanned: number, est: number, bytes: number, files: number): boolean =>
+        split !== undefined
+          ? scanned > c.limits.splitAboveSamples || est > c.limits.splitAboveSeries || bytes > c.limits.maxFetchBytes || files > c.limits.maxFiles
+          : scanned > c.limits.maxScanSamples || bytes > c.limits.maxFetchBytes || files > c.limits.maxFiles
+
+      // Series-level pruning (CARDINALITY.md, item 2). When the fragments alone say the query
+      // does not fit one place and a read selects by more than its metric's name, resolve the
+      // matchers against the series files first: then only the sample row groups that hold a
+      // selected series are counted and read, and the series estimate is exact. One more round
+      // of reads, so only when it can change the answer.
+      // The selected series, to evaluate with instead of the series files (engine `samplePlan`).
+      let carrier: Uint8Array | null = null
+      if (!explain && hooks.forceLeaves === undefined && overOnePlace(scan, seriesEst, lakeBytesAll, series.length + samples.length) && resolvable(reads) && sumPlanned(seriesPlans) <= c.limits.maxFetchBytes) {
+        let got: Uint8Array[]
+        try {
+          got = await fetchFiles(c, seriesPlans, have)
+        } catch (e) {
+          if (!(e instanceof MissingFile)) throw e
+          refused(`file ${e.key}`, e.message)
+          continue
+        }
+        const t0 = performance.now()
+        // Each sample file is planned for the series of its own series file (the pair).
+        const at = new Map(seriesPlans.map((p, i) => [pairKey(p.f.key), i]))
+        const rp = c.engine.samplePlan(got, samples.map((f) => f.index), reads, undefined, samples.map((f) => at.get(pairKey(f.key)) ?? null))
+        c.cost.engineMs += Math.round(performance.now() - t0)
+        scan = rp.files.reduce<number>((a, p, i) => a + (p.rows ?? samples[i]!.rows * reads.length), 0)
+        samplePlans = toPlanned(samples, rp.files)
+        samples = samples.filter((_, i) => rp.files[i]!.read !== 'skip')
+        seriesEst = rp.series
+        carrier = rp.carrier
+        // With the carrier, the series files are not needed again: let them go.
+        if (carrier) for (const p of seriesPlans) have.delete(planKey(p))
+        lakeBytesAll = sumPlanned(seriesPlans) + sumPlanned(samplePlans)
+        c.cost.scanSamples = scan
+        c.cost.seriesEstimate = seriesEst
+        c.cost.filesSkipped = listed.length - series.length - samples.length
+        c.cost.pruning = 'series'
+      }
+      const wanted = [...series, ...samples]
       const splitting =
         split !== undefined &&
         (hooks.forceLeaves !== undefined || scan > c.limits.splitAboveSamples || seriesEst > c.limits.splitAboveSeries || lakeBytesAll > c.limits.maxFetchBytes || wanted.length > c.limits.maxFiles)
@@ -638,7 +751,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       // Tails strictly after the plan; shards and leaves in parallel.
       const shards = await shardsOf(c, snap.watermarks)
       c.cost.shardsAsked = shards.length
-      const files = fetchFiles(c, wanted, have).then(
+      const files = fetchFiles(c, carrier ? samplePlans : [...seriesPlans, ...samplePlans], have).then(
         (bytes) => ({ ok: true as const, bytes }),
         (error: unknown) => ({ ok: false as const, error }),
       )
@@ -673,8 +786,87 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
 
       if (hooks.sampleOrder) hooks.sampleOrder(samples.map((f) => f.key))
       const all = got.ok ? got.bytes : []
-      const input: ScanInput = { seriesFiles: all.slice(0, series.length), sampleFiles: all.slice(series.length), tailBatches }
+      // The carrier goes first among the tail batches: its rows lie outside every range, so
+      // it only names the series (engine `sample_plan`), and the series files are not needed.
+      const input: ScanInput = carrier
+        ? { seriesFiles: [], sampleFiles: all, tailBatches: [carrier, ...tailBatches] }
+        : { seriesFiles: all.slice(0, seriesPlans.length), sampleFiles: all.slice(seriesPlans.length), tailBatches }
       return timed(c, evaluate, input)
+    }
+  } finally {
+    inFlightBytes -= reserved
+  }
+}
+
+/**
+ * The label endpoints (CARDINALITY.md, item 3): a series-only read. Only the
+ * `metric_series` files the ranges can touch (by name and time, range-read to the row
+ * groups of the ranges' metrics) and every shard's tail, from one ledger version with the
+ * same fence as a query; no sample file is listed for reading, fetched or decoded. "In the
+ * range" is decided per file (contracts/TABLES.md). Bounded by `maxFetchBytes` and
+ * `maxFiles` over what is read, and in the engine by `maxMetadataSeries` (`evaluate` passes it).
+ */
+export async function gatherSeries<T>(c: Context, ranges: FetchRange[], evaluate: (input: ScanInput) => T): Promise<T> {
+  const minTs = Math.min(...ranges.map((r) => r.minTs))
+  const maxTs = Math.max(...ranges.map((r) => r.maxTs))
+  const have = new Map<string, Uint8Array>()
+  const refusals = new Map<string, number>()
+  const known = new Map<string, number>()
+  const refused = (who: string, why: string): void => {
+    const n = (refusals.get(who) ?? 0) + 1
+    refusals.set(who, n)
+    if (n > MAX_REFUSALS) throw new ApiError('unavailable', `${why}, and the ledger does not catch up; retry later`)
+  }
+  let reserved = 0
+  try {
+    for (let attempt = 1; ; attempt++) {
+      checkDeadline(c)
+      const snap = await snapshot(c, minTs, maxTs)
+      c.cost.ledgerVersion = snap.version
+      if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
+      const plans = toPlanned(snap.series, c.engine.filePlan(snap.series.map((f) => f.index), ranges))
+      c.cost.filesListed = snap.series.length + snap.samples.length
+      c.cost.filesSkipped = c.cost.filesListed - plans.length
+      c.cost.pruning = 'series-only'
+      const bytes = sumPlanned(plans)
+      if (plans.length > c.limits.maxFiles) throw new ApiError('execution', `query exceeded limit max_files: ${plans.length} series files to read, the limit is ${c.limits.maxFiles}. Narrow the time range.`)
+      if (bytes > c.limits.maxFetchBytes) throw tooMuch(c, `the ${plans.length} series files in range`, bytes)
+      if (reserved === 0) {
+        if (inFlightBytes > 0 && inFlightBytes + bytes > (hooks.isolateBudgetBytes ?? ISOLATE_BUDGET_BYTES)) throw new ApiError('unavailable', 'the query service is busy; retry')
+        reserved = Math.max(bytes, 1)
+        inFlightBytes += reserved
+      }
+      const shards = await shardsOf(c, snap.watermarks)
+      c.cost.shardsAsked = shards.length
+      const files = fetchFiles(c, plans, have).then(
+        (b) => ({ ok: true as const, bytes: b }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))
+      let again = false
+      shards.forEach((s, i) => {
+        const t = tails[i]!
+        if (t.status === 'refused') {
+          refused(`shard ${s}`, t.why)
+          again = true
+        }
+      })
+      const got = await files
+      if (!got.ok) {
+        if (!(got.error instanceof MissingFile)) throw got.error
+        refused(`file ${got.error.key}`, got.error.message)
+        again = true
+      }
+      if (again) continue
+      const tailBatches = tails.flatMap((t) => (t.status === 'ok' ? t.batches : []))
+      const tailBytes = tails.reduce((a, t) => a + (t.status === 'ok' ? t.bytes : 0), 0)
+      if (bytes + tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the series files in range plus the unflushed tail', bytes + tailBytes)
+      c.cost.filesRead = plans.length
+      c.cost.bytesRead = bytes
+      c.cost.tailBatches = tailBatches.length
+      c.cost.tailBytes = tailBytes
+      checkDeadline(c)
+      return timed(c, evaluate, { seriesFiles: got.ok ? got.bytes : [], sampleFiles: [], tailBatches })
     }
   } finally {
     inFlightBytes -= reserved
@@ -708,8 +900,9 @@ export function readerGroups(series: FileEntry[], samples: FileEntry[]): { serie
       groups.push(cur)
       bytes = 0
     }
-    cur.series.push({ key: s.key, bytes: s.bytes })
-    cur.samples.push({ key: f.key, bytes: f.bytes })
+    // With their fragments, so a reader can range-read its part of each file.
+    cur.series.push({ key: s.key, bytes: s.bytes, index: s.index })
+    cur.samples.push({ key: f.key, bytes: f.bytes, index: f.index })
     bytes += add
   }
   return groups

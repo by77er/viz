@@ -1062,6 +1062,53 @@ and recorded here). For the limits: clients send longer chains than 197 operator
 `||` lists are the likely case; a chain of one associative operator could then be built as a
 balanced tree), or a Workers isolate turns out to have a much smaller stack than Node's.
 
+## D41. Series-level pruning: the layout stays; the index fragment gains row-group series bounds and the footer's place; pages are skipped in memory, not fetched
+
+**Decision.** Files keep the layout they had (row groups of at most 100,000 rows, data pages
+of at most 20,000, the offset index the `parquet` crate writes, no column index): the Parquet
+bytes of a flush or a merge do not change. The index fragment (`FileEntry.index`) gains, per
+row group, the `series_id` of its first and last row (`"sid"`), and per file where the footer
+region starts and how long it is (`"foot"`), additively within version 1
+(`contracts/TABLES.md`, "The index fragment"). A reader that has resolved its matchers against
+the `metric_series` files, or owns a split part's `series_id` range, fetches the footer region
+and the row groups whose `(metric_name, series_id)` range can hold one of its series, joining
+ranges less than 64 KiB apart and reading the whole object when the ranges would cover half
+of it; inside a row group it decodes `series_id`, then skips the pages of `ts` and `value` that
+hold none of its rows, by the offset index, without reading them. The query Worker resolves
+first only when the fragments alone say a query does not fit one place and a matcher selects
+by more than the metric name (one more round of reads); split readers read their part's id
+range of each sample file; the label endpoints read series files only (item 3 of
+`query/CARDINALITY.md`, same entry).
+
+**Why (measured here, native, `engine/storage/examples/layout.rs`, one ten-minute unit of
+100,000 series, load average 10 to 15).** What a one-series read fetches is one row group and
+the footer whatever the row-group size: 235 KiB at 100,000 rows, 140 KiB at 50,000, 90 KiB at
+25,000, 79 KiB at 10,000, always two range reads, all under the 1 MB below which a range read
+costs about one round trip (AGENTS.md). Smaller row groups cost where it is scarce: the
+fragment grows from 1.7 KiB a file (10 row groups) to 3.3, 6.5 and 16.2 KiB, against the
+ledger's 16 MiB of state for all of a tenant's live files (`contracts/LEDGER-LOG.md`), and the
+footer from 6.9 to 55 KiB. Smaller pages cost bytes (+1.3 % at 8,192 rows, +4.5 % at 4,096,
++15 % at 1,024) and did not make one-series decode measurably faster (0.5 to 0.7 ms at every
+size: a row group is five pages of 20,000 rows, and four are skipped). A column index (per-page
+min and max) doubled the footer region (16.7 to 34.0 KiB at 4,096-row pages) and would let a
+reader skip decoding `series_id`, which is the cheap column. A selection spread over the id
+space (`namespace=…`, a twentieth of the series) needs every row group at every size measured:
+`series_id` is a hash of all labels (D19), and no layout of this kind changes that.
+
+**Alternatives.** (a) Row groups of 10,000 to 50,000 rows: fewer bytes per one-series read,
+same number of reads, a 2 to 10 times larger fragment in the ledger. (b) Pages of 1,000 to
+8,000 rows, with or without a column index: more bytes on every read, no measured gain.
+(c) Fetching pages (two round trips: footer and page index first, then pages): three ranges a
+row group instead of one, for bytes that are below 1 MB anyway. (d) Row groups cut at metric
+boundaries: unnecessary with first/last-row bounds, which are exact across metrics.
+(e) Locality in the id (D19), or a promoted label before `series_id` in the sort key: the only
+ways to make a `namespace=…` selection read less; a format change, not taken here.
+
+**Would change if.** A range read's cost on Cloudflare grows with its size below 1 MB (then
+smaller row groups, and a fragment that is not in the ledger's state); the ledger's state cap
+is lifted or fragments move out of it; or label locality is added to the sort key (then pages
+pay, and a column index with them).
+
 ## D42. An SLO is a rule kind evaluated from one query per tick and per-series bucket rings, not compiled to recording rules
 
 **Decision.** An SLO burn-rate rule (`contracts/rules.ts`, version 4) is an objective, a

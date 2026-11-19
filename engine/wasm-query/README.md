@@ -46,6 +46,10 @@ node tools/check.mjs          # load proof and size report, in Node
 | `leafSummary(answer)` | (JavaScript only) | The fixed header of a leaf's answer: status, samples and series held and loaded |
 | `mergeJson(answers, promql, grid, limits?)` | `viz_q_merge` | The coordinator: merge the leaves' answers, replay the limits, finish the query; `{ json, stats }` as `queryRangeJson` |
 | `cardinalityPart(seriesFiles, tailBatches, startMs, endMs, part, parts, caps)`, `cardinalityReport(summaries, limit, startMs, endMs, lookbackStartMs, caps)` | `viz_q_card_part`, `viz_q_card_report` | The cardinality report: one part's summary, and the merged report as the `data` of `/api/v1/status/tsdb` and `/api/v1/status/cardinality` |
+| `filePlan(indexes, ranges, gap?)` | `viz_q_file_plan` | How to read each file from its fragment, by name and time: `{rows, read}` with `read` `'skip'`, `'whole'` or `[[offset, length], …]` (the footer and the row groups needed) |
+| `samplePlan(seriesFiles, indexes, reads, part?, pairs?, gap?)` | `viz_q_sample_plan` | Series-level pruning: the reads' matchers resolved against the series files; per sample file its plan (for the series of its own series file when `pairs` says which), the exact series count, and a `carrier` batch of the selected series to evaluate with instead of the series files |
+| `partPlan(indexes, ranges, part, parts, gap?)` | `viz_q_part_plan` | A split part's plans from the fragments alone: the row groups of its `series_id` range |
+| `sparseFile(size, segments)`, `planBytes(plan, size)`, `RANGE_GAP` | (JavaScript only) | A sparse file container (`VZS1`) of the ranges read, which every call accepts in place of a whole file; the bytes a plan reads; the join distance (64 KiB) |
 | `memoryBytes()`, `instances()`, `reset()` | | The instance's linear memory (its high-water mark), how many instances were created, and dropping the instance so the memory can be reclaimed |
 
 - **No imports.** The crate applies the three `[patch.crates-io]` stand-ins of
@@ -77,7 +81,14 @@ node tools/check.mjs          # load proof and size report, in Node
   binding's) throws `EngineLoadError`, whose message starts with `ENGINE_LOAD_PREFIX`
   (so it is recognisable after an RPC boundary). The query Worker answers it with 500:
   retrying in the same deployment cannot help (`query/test/http.test.ts`).
-- **ABI version 2** (was 1: the operations above were added; none changed). A gathering
+- **ABI version 3** (2026-11-19; was 2): `viz_q_file_plan`, `viz_q_sample_plan` and
+  `viz_q_part_plan` were added, and any file of a `scan` may be a sparse file container. No
+  operation changed its request; the label calls (`viz_q_label_names`, `_values`,
+  `viz_q_series`) now ignore sample files (a series-only read, `engine/query` README). The
+  binding and the module must be built together: a binding of one version refuses a module of
+  the other with `EngineLoadError` (500), which is what a stale `js/viz_query.wasm` gives
+  under `wrangler dev` until `./build.sh` is run.
+- **ABI version 2** (was 1: split execution and the cardinality report were added; none changed). A gathering
   session lives in the instance: if the instance is dropped (a trap, or `reset()`), its
   sessions are gone and the next `gatherAdd` fails (`internal`), so the query Worker's
   leaves never reset their engine while a session is open.
@@ -85,8 +96,8 @@ node tools/check.mjs          # load proof and size report, in Node
 ## What is not implemented
 
 - **The write half** (`encodeSegment`, `mergeFiles`): that is `engine/wasm`.
-- **Range reads.** Every file is handed over whole. `scanRows` reads the row groups'
-  offsets and lengths that a range-read plan would need, but returns only row counts.
+- **Page reads.** A plan reads whole row groups and the footer; pages are skipped in memory
+  (`engine/storage`, DECISIONS D41).
 - **A lookback, subquery-step or name-removal option**: `EvalOptions` other than
   `maxSteps` are the defaults of `viz-promql`.
 - **Statistics for the metadata calls.** `queryRangeJson` and `queryInstantJson` return
@@ -157,6 +168,18 @@ copied into linear memory, which agrees with the native figure in
 `engine/query/README.md` (20.2 MiB of heap above the inputs). Through the Worker, with
 24 small files instead of 2 and the last ten minutes in two tail batches, the same query
 peaked at 21.6 MiB (`query/README.md`, "Measurements").
+
+### 2026-11-19: series-level pruning (ABI 3)
+
+Rebuilt with `./build.sh` (`-j 2`) from the tree of this change: **3,152,742 bytes, 983,968
+gzip**, SHA-256 `0bea92296051781e…` (was 3,078,525 and 958,971: +74 KB, +25 KB gzip for the
+planners and the sparse reader). `viz_q_extract`'s answer gained `u64 strays` before the batch. `node tools/check.mjs`: **17 of 17 checks pass** (12 before, plus `filePlan` by name
+and time with an unparsable fragment kept whole; `partPlan` reading one row group and the
+footer for the part holding the smallest ids; `samplePlan` selecting nothing without series
+files and keeping an unknown fragment whole; a malformed sparse file an `internal` error with
+no trap; and the label calls answering with a sample "file" that is not Parquet). The module's
+other calls are tested through the binding in workerd by `query/` (86 tests, among them
+`test/pruning.test.ts` and `test/engine.test.ts`, which asserts the 27 exports and ABI 3).
 
 ### Tests
 

@@ -11,7 +11,7 @@ use viz_storage::{encode_segment_with, EncodedFile, ScanInput, Table, WriteOptio
 /// Every batch flushed as its own segment (many small files), the last `tail` batches
 /// also in the tail.
 fn flush_each(batches: &[Vec<u8>], row_group_rows: usize) -> Vec<EncodedFile> {
-    let opts = WriteOptions { max_row_group_rows: row_group_rows };
+    let opts = WriteOptions { max_row_group_rows: row_group_rows, ..Default::default() };
     batches.iter().flat_map(|b| encode_segment_with(&[b.as_slice()], &opts).expect("flush")).collect()
 }
 

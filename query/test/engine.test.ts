@@ -45,15 +45,15 @@ describe('the module in workerd', () => {
     expect(wasm).toBeInstanceOf(WebAssembly.Module)
     expect(WebAssembly.Module.imports(wasm)).toEqual([])
     expect(WebAssembly.Module.exports(wasm).map((e) => e.name).sort()).toEqual([
-      'memory', 'viz_alloc', 'viz_free', 'viz_q_abi_version', 'viz_q_card_part', 'viz_q_card_report', 'viz_q_extract', 'viz_q_gather_add', 'viz_q_gather_eval',
-      'viz_q_gather_free', 'viz_q_gather_new', 'viz_q_label_names', 'viz_q_label_values', 'viz_q_merge', 'viz_q_parse_selectors', 'viz_q_plan',
-      'viz_q_query_instant', 'viz_q_query_range', 'viz_q_scan_rows', 'viz_q_select', 'viz_q_selectors', 'viz_q_series', 'viz_q_split_plan', 'viz_q_split_tails',
+      'memory', 'viz_alloc', 'viz_free', 'viz_q_abi_version', 'viz_q_card_part', 'viz_q_card_report', 'viz_q_extract', 'viz_q_file_plan', 'viz_q_gather_add', 'viz_q_gather_eval',
+      'viz_q_gather_free', 'viz_q_gather_new', 'viz_q_label_names', 'viz_q_label_values', 'viz_q_merge', 'viz_q_parse_selectors', 'viz_q_part_plan', 'viz_q_plan',
+      'viz_q_query_instant', 'viz_q_query_range', 'viz_q_sample_plan', 'viz_q_scan_rows', 'viz_q_select', 'viz_q_selectors', 'viz_q_series', 'viz_q_split_plan', 'viz_q_split_tails',
     ])
     // workerd's clock has millisecond resolution: time many and divide.
     const t0 = performance.now()
     for (let i = 0; i < 500; i++) {
       const inst = new WebAssembly.Instance(wasm, {})
-      expect((inst.exports.viz_q_abi_version as () => number)()).toBe(2)
+      expect((inst.exports.viz_q_abi_version as () => number)()).toBe(3)
     }
     console.log(`MEASURE instantiate in workerd (local): ${((performance.now() - t0) / 500).toFixed(3)} ms each (mean of 500, with one call into the module)`)
     const engine = createQueryEngine(wasm)
@@ -179,7 +179,9 @@ describe('the query half of contracts/engine.ts', () => {
     // plan and the metadata calls take limits too.
     expect(fails(() => engine.plan('up', T, T, 1, lim({ maxQueryBytes: 1 })))).toMatchObject({ limit: { name: 'max_query_bytes' } })
     expect(fails(() => engine.labelNames(tail, [], 0, T + 60_000, lim({ maxSeries: 1 })))).toMatchObject({ limit: { name: 'max_series' } })
-    expect(fails(() => engine.series(tail, ['{job="api"}'], 0, T + 60_000, lim({ maxSamples: 5 })))).toMatchObject({ limit: { name: 'max_samples', reached: 6 } })
+    // The label calls read series, not samples (since 2026-11-19): a sample limit does not bind them, the series limit does.
+    expect(engine.series(tail, ['{job="api"}'], 0, T + 60_000, lim({ maxSamples: 1 }))).toHaveLength(2)
+    expect(fails(() => engine.series(tail, ['{job="api"}'], 0, T + 60_000, lim({ maxSeries: 1 })))).toMatchObject({ limit: { name: 'max_series', reached: 2 } })
     // No limit is remembered by the instance.
     expect(range(DEFAULT_LIMITS).result).toHaveLength(2)
   })

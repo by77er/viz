@@ -53,6 +53,8 @@ def setup():
 SELECT = "let found = viz_storage::select(self.input, &ms, min_ts_ms, max_ts_ms).map_err(|e| self.fail(QueryError::from_storage(e)))?;"
 HANDOVER = "Ok(found.into_iter().map(|s| Series { labels: s.labels, ts: s.ts, values: s.values }).collect())"
 
+PRUNING = ["--test", "pruning"]
+
 MUTANTS = [
     ("tail data dropped", "source.rs", SELECT,
      SELECT.replace("self.input,", "&ScanInput { tail_batches: vec![], ..self.input.clone() },")),
@@ -134,14 +136,39 @@ MUTANTS = [
      "            if self.samples > self.budget.samples {", "            if false && self.samples > self.budget.samples {"),
     ("exact sum rounded as truncation (no round-to-nearest)", "exact.rs",
      "        if guard && (rest || m & 1 == 1) {", "        if false && guard && (rest || m & 1 == 1) {"),
+    # Series-level pruning and the series-only read (2026-11-19). A fifth element names the
+    # test targets that cover the mutant; the others run TESTS.
+    ("pruning: a part's plan keeps the other parts' series", "prune.rs",
+     "=> SplitKey::part_of(row.series_id as u64, p.parts) == p.part,", "=> SplitKey::part_of(row.series_id as u64, p.parts) != p.part,", PRUNING),
+    ("pruning: a series that carries a `without` label is placed by its id, not its key", "prune.rs",
+     "let carries = |json: &[u8]| needles.iter().any(|n| json.windows(n.len()).any(|w| w == &n[..]));",
+     "let carries = |json: &[u8]| needles.is_empty() && json.is_empty();", PRUNING),
+    ("pruning: a read without a name keeps a row group only if it may hold every wanted name", "prune.rs",
+     "g.overlaps(r.min_ts, r.max_ts) && w.iter().any(|(n, iv)| g.may_hold(n, iv))", "g.overlaps(r.min_ts, r.max_ts) && w.iter().all(|(n, iv)| g.may_hold(n, iv))", PRUNING),
+    ("pruning: part_sids' upper end runs into the next part", "prune.rs",
+     "let hi = (first(part + 1) - 1) as u64;", "let hi = first(part + 1) as u64;", PRUNING),
+    ("pruning: a part's id-range plan reads the next part's range", "prune.rs",
+     "    let sids = part_sids(part, parts);", "    let sids = part_sids((part + 1) % parts, parts);", PRUNING),
+    ("pruning: the carrier's rows sit inside a read's range", "prune.rs",
+     "let rows: Vec<Row> = (0..selected.len()).map(|i| Row::new(i as u32, nowhere, 0.0)).collect();",
+     "let rows: Vec<Row> = (0..selected.len()).map(|i| Row::new(i as u32, reads[0].min_ts.max(0), 0.0)).collect();", PRUNING),
+    ("series-only read: a file's row is in the window one millisecond late", "meta.rs",
+     "if row.min_ts > max_ts || row.max_ts < min_ts {", "if row.min_ts >= max_ts || row.max_ts < min_ts {", PRUNING),
+    ("series-only read: a tail row at the window's start is not in it", "meta.rs",
+     "            if t >= min_ts && t <= max_ts {\n                in_window", "            if t > min_ts && t <= max_ts {\n                in_window", PRUNING),
+    ("series-only read: the tail is not read", "meta.rs",
+     "    for (bi, bytes) in input.tail_batches.iter().enumerate() {", "    for (bi, bytes) in input.tail_batches.iter().enumerate().take(0) {", PRUNING),
+    ("series-only read: max_series does not fire", "meta.rs",
+     "            if count > limits.max_series {", "            if false && count > limits.max_series {", PRUNING),
 ]
+
 
 TESTS = ["--test", "api", "--test", "invariance", "--test", "limits", "--test", "plan", "--test", "staleness", "--test", "split", "--lib"]
 
 
-def run():
+def run(targets=None):
     # -j 2 and two test threads: the machine is shared (AGENTS.md).
-    p = subprocess.run(["cargo", "test", "--offline", "--no-fail-fast", "-j", "2"] + TESTS + ["--", "--test-threads", "2"], cwd=ROOT, env=ENV, capture_output=True, text=True)
+    p = subprocess.run(["cargo", "test", "--offline", "--no-fail-fast", "-j", "2"] + (targets or TESTS) + ["--", "--test-threads", "2"], cwd=ROOT, env=ENV, capture_output=True, text=True)
     out = p.stdout + p.stderr
     failed = sorted(set(re.findall(r"^test (\S+) \.\.\. FAILED", out, re.M)))
     build_error = "could not compile" in out
@@ -165,13 +192,15 @@ def main():
     setup()
     print(f"scratch tree: {TOP} (copies of engine/query and engine/promql, a link to engine/storage)")
     before = fingerprint()
-    code, failed, be = run()
-    if code != 0:
-        print("the unmutated suite does not pass:", failed, "(build error)" if be else "")
-        sys.exit(2)
+    for targets in sorted({tuple(m[4]) if len(m) > 4 else tuple(TESTS) for i, m in enumerate(MUTANTS, 1) if not only or i in only}):
+        code, failed, be = run(list(targets))
+        if code != 0:
+            print("the unmutated suite does not pass:", failed, "(build error)" if be else "")
+            sys.exit(2)
     print("unmutated suite: passes\n")
     survived = 0
-    for i, (name, file, old, new) in enumerate(MUTANTS, 1):
+    for i, m in enumerate(MUTANTS, 1):
+        name, file, old, new = m[:4]
         if only and i not in only:
             continue
         path = os.path.join(PROMQL, file[len("PROMQL/"):]) if file.startswith("PROMQL/") else os.path.join(SRC, file)
@@ -182,7 +211,7 @@ def main():
             continue
         try:
             open(path, "w").write(original.replace(old, new))
-            code, failed, be = run()
+            code, failed, be = run(m[4] if len(m) > 4 else None)
         finally:
             open(path, "w").write(original)
         if be:
@@ -199,6 +228,9 @@ def main():
     print(f"{survived} mutant(s) not killed")
     after = fingerprint()
     print(f"shared tree, files the mutants touch: {before} before, {after} after" + (" (unchanged)" if before == after else " (CHANGED: by someone else; this script writes only to the scratch tree)"))
+    # The scratch tree and its target directory run to gigabytes on a shared disk: delete them.
+    shutil.rmtree(TOP, ignore_errors=True)
+    print(f"scratch tree {TOP} deleted")
     sys.exit(1 if survived or code else 0)
 
 

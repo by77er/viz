@@ -140,6 +140,7 @@ describe('compactStep', () => {
     expect(before.canon).toEqual(t.sent.canon())
     expect(before.sampleFiles).toHaveLength(5)
     const inputKeys = await liveKeys(t.ledger)
+    const inputFiles = [...(await planOf(t.ledger, 'metric_samples')), ...(await planOf(t.ledger, 'metric_series'))]
 
     const r = await compactStep(env, engine, t.tenant, { now: QUIET })
     expect(r.status).toBe('merged')
@@ -166,6 +167,17 @@ describe('compactStep', () => {
       expect(f.level).toBe(1)
     }
     expect(pairStem(samples.key)).toBe(pairStem(series.key))
+    // The index fragments carry what the read path prunes with (contracts/TABLES.md, "The
+    // index fragment"): each row group's first and last series_id, and where the footer is.
+    // Flush writes them; compaction writes them again for its outputs, so they are preserved.
+    for (const f of [...inputFiles, ...r.outputs]) {
+      const idx = JSON.parse(f.index) as { v: number; rg: { off: number; len: number; sid?: unknown[] }[]; foot?: number[] }
+      expect(idx.v).toBe(1)
+      expect(idx.rg.length).toBeGreaterThan(0)
+      expect(idx.rg.every((g) => Array.isArray(g.sid) && g.sid.length === 2), f.key).toBe(true)
+      const last = idx.rg.at(-1)!
+      expect(idx.foot, f.key).toEqual([last.off + last.len, f.bytes - last.off - last.len])
+    }
 
     // Invariant I8: the query result is the same, row for row and bit for bit.
     const after = await read(t.tenant, [t.shardName])

@@ -24,9 +24,11 @@ the `Leaf` Durable Object it reads files through.
 | `src/coordinator.ts` | Plan, one ledger version, pruning, leaf fan-out, tail reads with the fence, evaluation; split execution (`runSplit`); the cardinality report |
 | `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2, extracts one part's rows from them (a reader), evaluates one part of a split query (a split leaf), and summarises one part's series for the cardinality report |
 | `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults |
-| `wrangler.jsonc` | The production shape (never deployed) |
+| `wrangler.jsonc` | The production shape (not deployed to production; deployed twice as a staged copy, `deploy/README.md`) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
-| `test/*.test.ts` | 82 tests in workerd, 10 files |
+| `test/*.test.ts` | 86 tests in workerd, 11 files |
+| `test/pruning.test.ts` | Series-level pruning and the series-only read through the whole path (25,000 series, a samples file of eight row groups) |
+| `test/pruning.bench.ts` | The counterfactual of that work, local: five query shapes at 10,000 and 100,000 series, run in this tree and in a copy of the tree as of 2026-11-18 (`npm run measure -- test/pruning.bench.ts`) |
 | `test/measure.bench.ts` | The local measurement of split execution (`npm run measure`) |
 | `test/cardinality.bench.ts` | The local measurement of high cardinality: 10,000 and 100,000 series (`npm run measure -- test/cardinality.bench.ts`) |
 | `CARDINALITY.md` | How viz handles high-cardinality metrics, what they cost at 10k, 100k and 1M series, and what is left |
@@ -38,7 +40,7 @@ the `Leaf` Durable Object it reads files through.
 (cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it; owned by engine/wasm)
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
-npx vitest run --maxWorkers=2              # 82 tests in workerd, 10 files, 1 to 5 minutes on a loaded machine (`npm test` uses every core)
+npx vitest run --maxWorkers=2              # 86 tests in workerd, 11 files, 3 to 6 minutes on a loaded machine (`npm test` uses every core)
 npx tsc --noEmit                           # clean
 npm run measure                            # both local measurements (split execution about 2 minutes, cardinality about 3)
 node tools/mutants.mjs                     # the mutation check, on a scratch copy of the tree (never edits this one)
@@ -112,6 +114,7 @@ password of Basic auth.
 | `X-Viz-Rpc-Bytes` | bytes of a split query that crossed RPC: extracts, tail parts, leaf answers |
 | `X-Viz-Leaf-Peak-Wasm-Bytes`, `X-Viz-Leaf-Max-Samples` | the largest engine memory a split leaf reported, and the most samples one held |
 | `X-Viz-Leaf-Reruns` | split leaves run again after stopping at their share of the budget |
+| `X-Viz-Pruning` | how the files were chosen: `fragments` (name and time, byte ranges from the index fragments), `series` (matchers resolved against the series files first: only row groups holding a selected series were read), `series-only` (a label endpoint: series files and the tail, no sample file) |
 
 ## What is implemented
 
@@ -146,6 +149,20 @@ key, not by cookies. A preflight (`OPTIONS`) is answered from the list without a
    group overlaps a fetch range in time and, where the range has an equality matcher on
    `__name__`, no row group's `[min_name, max_name]` contains the name. Nothing else
    prunes; a fragment that does not parse keeps its file.
+3a. **Byte ranges** (2026-11-19, `contracts/TABLES.md` "Reading part of a file"). The same
+   fragments give, per file, the row groups of the ranges' metrics and times and where the
+   footer is (`filePlan`): a file is read as the footer and those row groups, joined when less
+   than 64 KiB apart, or whole when they would cover half of it or its fragment predates the
+   footer's location. A one-metric file of a one-metric tenant is read whole as before.
+3b. **Series-level pruning** (CARDINALITY.md item 2, D41). When the numbers from the fragments
+   say the query does not fit one place (`maxScanSamples`, or for a query that decomposes
+   `splitAboveSamples`/`splitAboveSeries`, `maxFetchBytes`, `maxFiles`) and a read selects by
+   more than the metric's name, the series files are read first (one round) and the engine
+   resolves the matchers against them (`samplePlan`): sample files are then read only in the
+   row groups whose key range holds a selected series, the scan bound counts only those, and
+   the series estimate is exact. The decision (one place, split, refused) is taken again with
+   these numbers. One place then evaluates with the engine's **carrier** batch of the selected
+   series instead of the series files. `/api/v1/plan` does not resolve (one ledger read only).
 4. **The scan bound.** The same call returns, per file, the rows of the row groups the
    reads touch. Summed over the reads evaluation will make (one per selector), that is an
    upper bound on the lake samples the engine decodes, known before anything is fetched.
@@ -177,11 +194,10 @@ key, not by cookies. A preflight (`OPTIONS`) is answered from the list without a
   spread like any other read and put back together in order; a call's total stays under
   24 MiB. A read that returns a different number of bytes than the ledger recorded fails
   the query. The tests run the whole path with the cut-off lowered to 700 bytes.
-- **The seam for row-group reads.** `ReadItem` already carries `offset` and `length`, and
-  the index fragment carries each row group's offset and length. Whole-file reads are
-  used today (a 1 MB read costs about what a 4 KB read costs: spike S1); reading only the
-  footer and the row groups `scanRows` names is the next step, and needs the engine to
-  accept a file as footer plus row groups.
+- **Row-group reads.** A planned file is read as its byte ranges (`ReadItem` with `offset`
+  and `length`, each a read of its own, cached under the key plus the range) and handed to
+  the engine as a sparse file container (`sparseFile` of the binding). A range above 16 MiB is
+  cut like a whole object.
 - **Leaves hold no state**: no storage, no fields, no alarm. A leaf that fails is retried
   once on the next leaf of the pool; a second failure fails the query with 503.
 - **A missing object** (the ledger lists it, R2 does not have it) is never left out: the
@@ -249,6 +265,7 @@ could loosen a limit. Unknown fields are ignored. Records are cached for 30 s pe
 | `maxLeaves` | 32 | (not an error) the most parts a query is split into |
 | `maxCardinalitySeries`, `maxCardinalityPairs` | 1,000,000, 400,000 | the cardinality report: 422 `cardinality report exceeded limit max_series` / `max_pairs`. The pair cap was 2,000,000 until 2026-11-19: the coordinator's merge holds about 130 bytes of WASM memory per pair or triple (CARDINALITY.md) |
 | `cardinalitySplitAboveSeries` | 50,000 | (not an error) the cardinality report is counted over leaves above this many series in its series files |
+| `maxMetadataSeries` | 200,000 | the label endpoints: 422 `… max_series: N series listed, …`. They read series files only (no sample is loaded), so `maxSamples`, `maxSeries` and `maxScanSamples` do not bind them; `maxFetchBytes` and `maxFiles` do, over the series files and the tail (new 2026-11-19) |
 
 **Why the byte cap is 16 MiB and why there is a scan cap.** A cap near 64 MiB of Parquet
 was considered first. Measured here, that is not safe, for two reasons.
@@ -302,9 +319,18 @@ one-place limits. `X-Viz-Execution` and `X-Viz-Split-Reason` say which and why.
    straddles them sees one stream). Only the tail is held at the coordinator.
 3. **Split leaves** (`Leaf.evaluate`, `leaf/<cell>/<n>` objects chosen from the query id)
    call **readers** (`Leaf.extract`, other objects of the same pool) for every group of at
-   most six files (sample files in precedence order, each with its series file), all at
-   once. A reader reads its files (Cache API, then R2) and returns its part's rows as one
-   batch. The leaf gathers extracts as they arrive (each ranked by its group's position)
+   most six files (sample files in precedence order, each with its series file, and their
+   index fragments), all at once. A reader reads its files (Cache API, then R2; at most six
+   reads in flight) and returns its part's rows as one batch. Since 2026-11-19 it reads the
+   series files by name and time and, of each sample file, only the row groups of its part's
+   `series_id` range with the footer (`partPlan`), and extracts; only if the extract reports a
+   series of its part outside that range (a "stray": its key leaves out a label it carries)
+   does it ask the engine what the part's series need (`samplePlan` with the part) and read
+   what was not covered, in a second round, before extracting again. When the split key leaves out a label other than
+   `__type__`/`__unit__` (a relabelled or unpinned name, which most series carry, so the
+   part's series are spread over every id), the sample files wait for the series files
+   instead. A request without fragments (a coordinator of an earlier release) reads whole
+   files, as before. The leaf gathers extracts as they arrive (each ranked by its group's position)
    and its tail batches, then evaluates the query's aggregations into partials.
 4. **The coordinator** merges the answers (`mergeJson`) and finishes the query. Limits are
    replayed on the summed counts in the order one place checks them.
@@ -412,22 +438,37 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   `/alerts`, `/query_exemplars`, remote read, `DELETE` on series, native histograms.
   Everything `engine/promql/README.md` lists as not implemented returns `unsupported`
   (422) or `bad_data`.
-- **Cheap label endpoints.** `labels`, `label values` and `series` load the samples of
-  the series they list (the engine has no series-only read). With no `start` and `end`
-  they cover all time, as in Prometheus, and are then bounded only by the limits.
+- **Label endpoints over leaves.** `labels`, `label values` and `series` read series files
+  and the tail only (since 2026-11-19), in one place: when the series files of the window pass
+  `maxFetchBytes` (an hour of about 120,000 series, a ten-minute unit of 1,000,000) they are
+  refused. Counting them over leaves, as the cardinality report is, is not built. With no
+  `start` and `end` they cover all time, as in Prometheus.
 - **Statistics for the label endpoints**: `X-Viz-Samples-Loaded` and `-Series-Loaded`
-  are 0 for them.
+  are 0 for them (they load no samples; the series listed are not reported).
+- **Asked for by the app** (`app/README.md`, "Needed changes in query/"), not done here:
+  parse errors with a `line:column` position and the unexpected token (the engine's parser
+  reports neither); the step cap counts points (`steps + 1 > 11,000`) where Prometheus refuses
+  only `(end − start) / step > 11,000` (`engine/query` `check_range`); `unsupported` messages
+  that are noun phrases, not sentences; a top-level subquery in a range query is 422
+  `execution` where Prometheus answers 400 `bad_data`; label endpoints with no default window
+  (all time, as Prometheus; a default would be a decision); `/api/v1/metadata` is always `{}`
+  (above). Done: a timeout now names its length and whose limit it is (`query timed out after
+  30 s (the tenant’s limit, timeoutMs)`), and answers vary on `Accept-Encoding` as well as
+  `Origin` (the runtime compresses them).
 - **Metric metadata** (type, unit, help; asked for by the MCP server): `/api/v1/metadata`
   answers `{}` because nothing stores it; the write path drops Remote Write metadata and
   OTLP descriptions. It needs a place to live first ("Needed changes", 9); the endpoint is
   then a lookup.
-- **High cardinality, what is left** (CARDINALITY.md): series-level pruning (a selector on
-  one series of a 100,000-series metric decodes every row of the metric, and is refused
-  above `maxScanSamples` over an hour); a series-only read for the label endpoints (refused
-  the same way); a streaming merge for the cardinality report; sketches.
+- **High cardinality, what is left** (CARDINALITY.md): the tail's paging and filter
+  (`shard/`); split readers still read every series file whole for every part; a streaming
+  merge for the cardinality report; sketches.
 - **Production wiring.** `wrangler.jsonc` binds `SHARD` and `LEDGER` by `script_name` to
-  Workers that are themselves still combined scripts. Nothing was deployed, and the
-  bindings were only exercised in the one-script composition. `wrangler deploy --dry-run`
+  Workers that are themselves still combined scripts. Not deployed to production. It did run
+  on Cloudflare in two staged trials, `viz-trial-query` (2026-11-18) and `viz-trial2-query`
+  (2026-11-19), deployed by `deploy/deploy.sh --stage` with its bindings to the other staged
+  Workers and deleted afterwards; latencies and the cutover are in `deploy/README.md` ("Trial on
+  Cloudflare", "Trial 2"). Neither trial ran the series-level pruning of 2026-11-19, and neither
+  measured high cardinality. `wrangler deploy --dry-run`
   bundles (run with the Cloudflare credentials removed from its environment): 2,625.57 KiB
   to upload, 824.96 KiB gzip, of which 49 KB is JavaScript and the rest the WASM module.
 - **Warm leaves.** Nothing keeps the pool warm; first use of a leaf costs a few hundred
@@ -439,8 +480,29 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
 ## How it was verified
 
 All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node 22.23,
-workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing ran on
-Cloudflare.
+workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing in this
+section ran on Cloudflare (the Worker itself did, in two staged trials: `deploy/README.md`).
+
+**After series-level pruning and the series-only read (2026-11-19, ABI 3; 05:21 to 05:23
+UTC, load average 10 to 12):** `npx vitest run --maxWorkers=2`: **86 tests, all passing** in
+11 files (111 s), against `engine/wasm-query/js/viz_query.wasm` rebuilt from this tree (SHA-256
+`0bea9229…`) and `engine/wasm/js/viz_engine.wasm` rebuilt from the new `engine/storage`;
+`npx tsc --noEmit`: clean (after `readTail` was made to fail closed on `page_limit`, a status
+the shard's in-progress paged tail added to its type). New: `test/pruning.test.ts` (4 tests over 25,000 series
+whose samples file has eight row groups, one shard, the seal size raised so the unit is one
+segment): a one-series query refused by the fragments' scan bound answers once resolved
+(`X-Viz-Pruning: series`, series estimate 1, fewer bytes, the same body and samples loaded as
+the unpruned answer); a selection over the id space gets an exact series estimate and splits
+with the same body; split readers over 2 and 5 leaves give the one-place body for a full-metric
+aggregate (reading less than every part reading every file, at 5 leaves) and for a relabelled
+one whose split key leaves out `job` (the readers read what their series need after the series
+files); the label calls read one series file and no sample file, ignore every sample and query
+limit, are refused by `maxMetadataSeries` naming `max_series`, agree with `/series` and
+`/labels`, and keep tenants apart. Changed: `engine.test.ts` (27 exports, ABI 3; the label
+calls bound by series, not samples), `limits.test.ts` (`maxMetadataSeries` in the defaults; the
+label endpoints refused by it), `http.test.ts` (the timeout names its limit; `Vary` includes
+`Accept-Encoding`). The counterfactual (`test/pruning.bench.ts`, both ways) is in
+CARDINALITY.md.
 
 **After the series rule, `/api/v1/plan` and the cardinality limits (2026-11-19, 01:12 to
 01:16 UTC, load average 11 to 13):** `npx vitest run --maxWorkers=2`: **82 tests, all
@@ -571,6 +633,14 @@ page states them. The independent consumer is the app's client. **Grafana itself
 run against the Worker**, and no response was compared with a running Prometheus.
 
 ### Mutation check
+
+**Series-level pruning and the series-only read (2026-11-19, mutants 44 to 46, on a scratch
+tree, 04:51 to 05:10 UTC, load average 9 to 13): 3 of 3 killed**, the shared tree's files
+unchanged: a split reader that never reads again what its id-range read did not cover (by
+`pruning.test.ts`, the relabelled split; the mutant's first form did not type-check and was
+rewritten), a range read put back one byte off (the one-series test), and the label endpoints
+bounded by the query's `maxSeries` instead of `maxMetadataSeries` (the label-calls test). The
+engine's and storage's mutants for this change are in their READMEs (10 of 10, 18 of 18).
 
 `node tools/mutants.mjs` applies one change to the source, runs the whole suite,
 restores the source, and prints the failing tests. It first confirms that every mutant

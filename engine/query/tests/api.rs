@@ -274,6 +274,8 @@ fn metadata_respects_limits() {
     let sets = vec![vec![Matcher::new("__name__", MatchOp::Eq, "up")], vec![Matcher::new("__name__", MatchOp::Eq, "http")]];
     let e = viz_query::series_with(&i, &sets, T, T + 120_000, &tight).unwrap_err();
     assert_eq!(e.limit, Some((viz_query::Limit::MaxSeries, 2, 3)), "the limit applies to the sum over matcher sets");
-    let e = viz_query::label_values_with(&i, "job", &[], T, T + 120_000, &Limits { max_samples: 26, ..Limits::default() }).unwrap_err();
-    assert_eq!(e.limit, Some((viz_query::Limit::MaxSamples, 26, 27)));
+    // The label calls read series, not samples (a series-only read, since 2026-11-19): a
+    // sample budget does not bind them (before, this call was refused at 27 samples).
+    assert_eq!(viz_query::label_values_with(&i, "job", &[], T, T + 120_000, &Limits { max_samples: 1, ..Limits::default() }).unwrap(), ["api", "db"]);
+    assert!(e.message.contains("series listed"), "{e}");
 }

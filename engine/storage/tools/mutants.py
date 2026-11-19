@@ -1,15 +1,30 @@
 #!/usr/bin/env python3
-"""Mutation check: break one behaviour at a time, run the test suite, expect it to fail.
+"""Mutation check: break one behaviour at a time, run the tests, expect them to fail.
 
-    python3 tools/mutants.py            # from engine/storage
+    python3 tools/mutants.py                 # every mutant (from engine/storage)
+    python3 tools/mutants.py pruning         # only mutants whose name contains "pruning"
+    VIZ_MUTANTS_DIR=<dir> python3 …          # where the scratch copy goes
 
-Each mutant is a literal text replacement in one source file. The file is restored after
-each run (and on interrupt). Prints KILLED (tests failed, good) or SURVIVED per mutant and
-exits 1 if any survived or a pattern no longer matches the source.
+NOTHING IN THE SHARED TREE IS WRITTEN (AGENTS.md, "Tests must have teeth": others commit and
+snapshot the tree while this runs). The crate is copied to a scratch directory first (no
+`target/`), mutants are applied to the copy, and the copy builds in its own target
+directory. Each mutant is a literal text replacement in one source file, restored after
+its run. A mutant may name the test targets that cover it (`--test pruning`); otherwise the
+whole suite runs. Prints KILLED (tests failed, good), SURVIVED or NOBUILD per mutant and
+exits 1 if any survived, did not build, or a pattern no longer matches the source exactly once.
+At the end the shared tree's copies of the mutated files are compared with their state at
+the start.
 """
-import os, subprocess, sys
+import hashlib, os, shutil, subprocess, sys, tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SHARED = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # read, never written
+base = os.environ.get("VIZ_MUTANTS_DIR")
+if base:
+    os.makedirs(base, exist_ok=True)
+ROOT = os.path.join(tempfile.mkdtemp(prefix="viz-storage-mutants-", dir=base), "storage")
+shutil.copytree(SHARED, ROOT, ignore=shutil.ignore_patterns("target", "target-*"))
+print(f"scratch copy: {ROOT}", flush=True)
+PRUNING = ["--test", "pruning"]
 MUTANTS = [
     ("earlier batch wins on duplicates in flush", "src/encode.rs",
      "for (b, map) in decoded.iter().zip(&local) {\n        for i in 0..b.n_rows() {",
@@ -29,9 +44,9 @@ MUTANTS = [
     ("index fragment row-group offset is off by one", "src/pq.rs",
      "            offset,\n            length: end - offset,", "            offset: offset + 1,\n            length: end - offset,"),
     ("select drops the ts range filter on lake rows", "src/select.rs",
-     "if ts[k] >= min_ts && ts[k] <= max_ts {", "if true {"),
+     "let t = ts[k];\n                        if t >= min_ts && t <= max_ts {", "let t = ts[k];\n                        if true {"),
     ("select drops the ts range filter on tail rows", "src/select.rs",
-     "if t >= min_ts && t <= max_ts {", "if true {"),
+     "let t = b.ts(i);\n                if t >= min_ts && t <= max_ts {", "let t = b.ts(i);\n                if true {"),
     ("regex matchers are not anchored", "src/select.rs",
      '"^(?s:{})$"', '"(?s:{})"'),
     ("missing label does not compare as the empty string", "src/select.rs",
@@ -73,12 +88,44 @@ MUTANTS = [
      "if i + 1 < rows.len() && rows[i + 1].0 == *t {", "if i + 1 < rows.len() && rows[i + 1].0 == *t && false {"),
     ("v2: canonical JSON escapes control characters in upper-case hex", "src/json.rs",
      "out.push(char::from_digit((c as u32) & 15, 16).unwrap());", "out.push(char::from_digit((c as u32) & 15, 16).unwrap().to_ascii_uppercase());"),
+    # series-level pruning (2026-11-19): the predicate, the index writer, partial reads
+    ("pruning: may_hold's lower series bound is off by one", "src/pq.rs",
+     "            if name == lo_name {\n                lo = first;", "            if name == lo_name {\n                lo = first.saturating_add(1);", PRUNING),
+    ("pruning: may_hold ignores the upper series bound", "src/pq.rs",
+     "            if name == hi_name {\n                hi = last;", "            if name == hi_name {\n                hi = i64::MAX;", PRUNING),
+    ("pruning: may_hold trusts statistics that contradict the sort order", "src/pq.rs",
+     "            if lo > hi {\n                return true;", "            if lo > hi {\n                return false;", PRUNING),
+    ("pruning: may_hold misses an interval that ends exactly at the bound", "src/pq.rs",
+     "sids.partition_point(|(_, b)| *b < lo)", "sids.partition_point(|(_, b)| *b <= lo)", PRUNING),
+    ("pruning: may_hold ignores the name range", "src/pq.rs",
+     "        if name < lo_name || name > hi_name {\n            return false;", "        if name < lo_name {\n            return false;", PRUNING),
+    ("pruning: index writer records the first series_id as the last", "src/pq.rs",
+     "sid: Some((sids[0], sids[n - 1])),", "sid: Some((sids[0], sids[0])),", PRUNING),
+    ("pruning: index writer's footer offset is one byte late", "src/pq.rs",
+     ".map(|g| g.offset + g.length).max().unwrap_or(4);", ".map(|g| g.offset + g.length + 1).max().unwrap_or(4);", PRUNING),
+    ("pruning: index writer's footer length is one byte short", "src/pq.rs",
+     "(bytes.len() as u64).saturating_sub(end)", "(bytes.len() as u64).saturating_sub(end + 1)", PRUNING),
+    ("pruning: byte ranges leave out the footer", "src/pq.rs",
+     "        r.push(foot);\n", "", PRUNING),
+    ("pruning: byte ranges join ranges one byte too far apart", "src/pq.rs",
+     "Some((po, pl)) if o <= (*po + *pl).saturating_add(gap) => {", "Some((po, pl)) if o <= (*po + *pl).saturating_add(gap + 1) => {", PRUNING),
+    ("pruning: select maps rows of a later span to the wrong place", "src/select.rs",
+     "base += spans[span].1 - spans[span].0;", "base += spans[span].1;", PRUNING),
+    ("pruning: select reads a row group that was not fetched", "src/select.rs",
+     "                if !src.has_row_group(md) {\n                    continue;\n                }\n                if opts.prune_row_groups {", "                if opts.prune_row_groups {", PRUNING),
+    ("pruning: select skips a row group that was fetched", "src/select.rs",
+     "                if !src.has_row_group(md) {\n                    continue;\n                }\n                if opts.prune_row_groups {", "                if !src.has_row_group(md) || g % 2 == 1 {\n                    continue;\n                }\n                if opts.prune_row_groups {", PRUNING),
+    ("pruning: the run reader skips one row too few", "src/pq.rs",
+     "        pos = b;\n    }\n    Ok(())", "        pos = b.saturating_sub(1);\n    }\n    Ok(())", PRUNING),
+    ("pruning: a sparse container's segment is held one byte longer than it is", "src/sparse.rs",
+     "(end <= s.0 + s.1.len() as u64).then_some(s)", "(end <= s.0 + s.1.len() as u64 + 1).then_some(s)", PRUNING),
 ]
 
-def tests_fail():
+def tests_fail(targets=None):
     """Returns (status, failing test names); status is 'pass', 'fail' or 'nobuild'."""
     env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(ROOT, "target"))
-    p = subprocess.run(["cargo", "test", "--tests", "--no-fail-fast"], cwd=ROOT, env=env, capture_output=True, text=True)
+    which = targets if targets else ["--tests"]
+    p = subprocess.run(["cargo", "test", "-j", "2", "--no-fail-fast"] + which + ["--", "--test-threads", "2"], cwd=ROOT, env=env, capture_output=True, text=True)
     if "could not compile" in p.stderr:
         return "nobuild", []
     failed = sorted({l.split()[1] for l in p.stdout.splitlines() if l.startswith("test ") and l.rstrip().endswith("FAILED")})
@@ -86,17 +133,23 @@ def tests_fail():
         return "pass", []
     return "fail", failed or ["(test binary aborted)"]
 
+def digest(rel):
+    return hashlib.sha256(open(os.path.join(SHARED, rel), "rb").read()).hexdigest()
+
 def main():
     only = sys.argv[1:]
-    status, which = tests_fail()
-    print(f"baseline (no mutation): {status}", flush=True)
-    if status != "pass":
-        print("the unmutated suite must pass first:", which)
-        sys.exit(2)
+    chosen = [m for m in MUTANTS if not only or any(o in m[0] for o in only)]
+    start = {m[1]: digest(m[1]) for m in chosen}
+    targets = sorted({tuple(m[4]) if len(m) > 4 else () for m in chosen})
+    for t in targets:
+        status, which = tests_fail(list(t))
+        print(f"baseline (no mutation) {' '.join(t) or 'all tests'}: {status}", flush=True)
+        if status != "pass":
+            print("the unmutated suite must pass first:", which)
+            sys.exit(2)
     bad = 0
-    for name, rel, old, new in MUTANTS:
-        if only and not any(o in name for o in only):
-            continue
+    for m in chosen:
+        name, rel, old, new = m[:4]
         path = os.path.join(ROOT, rel)
         src = open(path).read()
         if src.count(old) != 1:
@@ -105,12 +158,17 @@ def main():
             continue
         try:
             open(path, "w").write(src.replace(old, new))
-            status, which = tests_fail()
+            status, which = tests_fail(m[4] if len(m) > 4 else None)
         finally:
             open(path, "w").write(src)
         label = {"fail": "KILLED  ", "pass": "SURVIVED", "nobuild": "NOBUILD "}[status]
         print(f"{label}  {name}  [{rel}]" + (f"  failing: {', '.join(which)}" if which else ""), flush=True)
         bad += 0 if status == "fail" else 1
+    changed = [rel for rel, h in start.items() if digest(rel) != h]
+    print("shared tree untouched" if not changed else f"WARNING: the shared tree's {changed} changed during the run (someone else's edit?)")
+    # The copy and its target directory run to gigabytes on a shared disk: delete them.
+    shutil.rmtree(os.path.dirname(ROOT), ignore_errors=True)
+    print(f"scratch copy {os.path.dirname(ROOT)} deleted")
     sys.exit(1 if bad else 0)
 
 main()

@@ -23,10 +23,11 @@ pub mod json;
 mod merge;
 mod pq;
 mod select;
+pub mod sparse;
 mod util;
 
 pub use encode::{encode_segment, encode_segment_with};
 pub use error::{BatchError, Error, Result};
 pub use merge::{merge_files, merge_files_shared, merge_files_with};
-pub use pq::{EncodedFile, FileIndex, RowGroupIndex, Table, WriteOptions, MAX_ROW_GROUP_ROWS};
+pub use pq::{EncodedFile, FileIndex, RowGroupIndex, Table, WriteOptions, MAX_ROW_GROUP_ROWS, PAGE_ROWS};
 pub use select::{select, select_with, MatchOp, Matcher, ScanInput, SelectOptions, SeriesData};
