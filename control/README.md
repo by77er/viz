@@ -317,14 +317,15 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 92 tests in 14 files, in workerd
+npm test             # 92 tests in 14 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 58 mutants (run it on a copy of the tree, not in place: AGENTS.md)
+npm run mutants      # 58 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
-Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 27 s
-on a shared machine.
+Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 75 s
+on a shared machine (75 s on a cold cache with the load average above 6). Last run
+2026-11-19: 92 of 92 pass, `tsc` clean.
 
 What the tests establish:
 
@@ -593,7 +594,7 @@ insert, then retried, yields one dashboard and one entry.
 ## Needed changes
 
 Things outside this directory that this component needs or exposes. Only the gateway part of 7
-was made (in `deploy/gateway`, which was free).
+(in `deploy/gateway`) and 8's §3.1 were made.
 
 1. **`edge/src/auth.ts`**: `authenticate`'s `scope` is typed `'write' | 'read'` and is
    mandatory. The control plane needs to verify a key without naming a scope, and to ask for
@@ -615,9 +616,9 @@ was made (in `deploy/gateway`, which was free).
    field, absent meaning 1, and refuse a newer one (`design/UPGRADES.md` §7); only then can
    this component bump a record's version. (**deploy/gateway**, done: the bootstrap route
    answers 503 with `Retry-After` when `provision` throws `schema_too_new`, tested.)
-8. **`design/DESIGN.md` §3.1** says of `Tenant` "reads are cached" and lists rule
-   definitions; neither is true of this implementation. §9's "revocable at the shard" is
-   still open.
+8. **`design/DESIGN.md`**: §3.1's `Tenant` row now says what this implementation holds (no
+   read cache, no rule definitions: rule groups are the ruler's), done. §9's "revocable at
+   the shard" is still open.
 
 ## Contract issues
 
