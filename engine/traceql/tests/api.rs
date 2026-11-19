@@ -43,6 +43,12 @@ fn span(id: u8, parent: Option<u8>, name: &str, svc: Option<&str>, kind: Kind, s
 /// Trace A: a1 (root, frontend) -> a2 (backend, error) -> a3 (db); a1 -> a4 (backend).
 /// Trace B: b1 (root) -> b2. Trace D: d1 (root) -> d2; d3 has a missing parent -> d4.
 fn data() -> Vec<Trace> {
+    let mut a3 = span(0xa3, Some(0xa2), "query", Some("db"), Kind::Internal, Status::Ok, 20, 200, vec![
+        a("n", AttrValue::Int(7)),
+        a("r", AttrValue::Float(f64::NAN)),
+        a("ea", AttrValue::StrArray(vec![])),
+    ]);
+    a3.scope_name = "lib".into();
     let mut a2 = span(0xa2, Some(0xa1), "db", Some("backend"), Kind::Client, Status::Error, 10, 500, vec![a("foo", s("baz")), a("n", AttrValue::Int(5)), a("f", AttrValue::Float(2.5))]);
     a2.status_message = "boom".into();
     a2.events = vec![
@@ -62,7 +68,7 @@ fn data() -> Vec<Trace> {
                 a("env", s("staging")),
             ]),
             a2,
-            span(0xa3, Some(0xa2), "query", Some("db"), Kind::Internal, Status::Ok, 20, 200, vec![a("n", AttrValue::Int(7))]),
+            a3,
             span(0xa4, Some(0xa1), "cache", Some("backend"), Kind::Client, Status::Unset, 600, 50, vec![a("foo", s("bar")), a("n", AttrValue::Float(4.5))]),
         ],
     );
@@ -140,6 +146,12 @@ fn regex_is_anchored_and_arrays_match_elements() {
     assert_eq!(ids(r#"{ .arr != "x" }"#), Vec::<u8>::new(), "!= on an array: no element equal");
     assert_eq!(ids(r#"{ .arr != "z" }"#), vec![0xa1]);
     assert_eq!(ids(r#"{ .arr > "a" }"#), vec![0xa1]);
+    // Differential regressions (Tempo v3.1.1): an empty array is neither nil nor present,
+    // and NaN is unequal to every number.
+    assert_eq!(ids(r#"{ span.ea != nil }"#), Vec::<u8>::new());
+    assert_eq!(ids(r#"{ span.ea = nil && name = "query" }"#), Vec::<u8>::new());
+    assert_eq!(ids(r#"{ span.r != 1.5 }"#), vec![0xa3]);
+    assert_eq!(ids(r#"{ span.r = 1.5 || span.r < 0 || span.r >= 0 }"#), Vec::<u8>::new());
 }
 
 #[test]
@@ -304,6 +316,9 @@ fn metrics_values_and_labels() {
     assert_eq!(series("{ } | avg_over_time(.n)", req)[0].1, vec![(1, 5.5), (12, 1.0), (13, 3.0)]);
     assert_eq!(series("{ } | max_over_time(.n)", req)[0].1, vec![(1, 7.0), (12, 1.0), (13, 4.0)]);
     assert_eq!(series("{ } | min_over_time(duration)", req)[0].1[0], (1, 0.05), "durations in seconds");
+    // NaN values are skipped by sums and averages (a3 has r = NaN; no other span has r).
+    assert!(series("{ } | avg_over_time(span.r)", req).is_empty());
+    assert!(series("{ } | sum_over_time(span.r)", req).is_empty());
     let by = series("{ } | count_over_time() by (.foo)", RangeRequest::instant(S, S + 20_000 * MS));
     let labels: Vec<&str> = by.iter().map(|s| s.0.as_str()).collect();
     assert_eq!(labels, vec![r#".foo=Str("bar")"#, r#".foo=Str("baz")"#, r#".foo=Str("nil")"#]);

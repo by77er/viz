@@ -116,7 +116,7 @@ const shortB = (s) => s
   .replace(/^ledger( t\d)? start: commit incarnation (\d+), serve$/, 'start: commit(inc $2)')
   .replace(/^LEDGER( t\d)? STORAGE LOSS -> rebuild from R2(.*)$/, (_m, t, x) => `LEDGER-LOSS+rebuild${x.includes('REFUSED') ? ' REFUSED' : x.includes('reused') ? ' (incarnation reused)' : ''}${/start incarnation (\d+)/.test(x) ? ` → inc ${/start incarnation (\d+)/.exec(x)[1]}` : ''}`)
   .replace(/^SHARD STORAGE LOSS\(s\d\)$/, 'SHARD-LOSS')
-const bres = (r) => (r.verdict === 'violated' ? `**${r.violated}** violated` : r.verdict === 'holds' ? 'holds (exhaustive)' : `stopped (memory bound): ${r.note}`)
+const bres = (r) => (r.verdict === 'violated' ? `**${r.violated}** violated` : r.verdict === 'holds' ? 'holds (exhaustive)' : `stopped: ${r.note}`)
 const bfsTraceTable = (kind) => ['| Experiment | Checked | Result | Steps | Distinct states | Time | Shortest counterexample |', '|---|---|---|---|---|---|---|',
   ...bfs.filter((r) => r.kind === kind).map((r) => `| \`${r.name}\` ${r.label} | ${r.props.length > 3 ? 'all safety' : r.props.join(', ')} | ${bres(r)} | ${r.trace ? r.trace.length : ''} | ${n(r.states)} | ${r.seconds} s | ${r.trace ? r.trace.map(shortB).join(' → ') : ''} |`)].join('\n')
 out.BFS_TEETH = bfsTraceTable('teeth')

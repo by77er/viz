@@ -435,6 +435,12 @@ def _inf_avg(case, kinds, viz, tem):
     if case["kind"] == "search" or "avg_over_time" not in case["query"]:
         return False
     a, b = norm_metrics(viz), norm_metrics(tem)
+    if "topk" in case["query"] or "bottomk" in case["query"]:
+        # The infinite average changes which series topk/bottomk pick at that point.
+        inf_ts = {t for vals in a.values() for t, x in vals.items() if math.isinf(x)}
+        diff_ts = {t for lab in set(a) | set(b) for t in set(a.get(lab, {})) | set(b.get(lab, {}))
+                   if not (t in a.get(lab, {}) and t in b.get(lab, {}) and fclose(a[lab][t], b[lab][t]))}
+        return bool(inf_ts) and diff_ts <= inf_ts
     for lab in set(a) | set(b):
         va, vb = a.get(lab, {}), b.get(lab, {})
         for t in set(va) | set(vb):
@@ -473,6 +479,65 @@ def _after_select(case, kinds, viz, tem):
 def _missing_id(case, kinds, viz, tem):
     # Tempo returned a trace without a traceID (every generated trace has one).
     return case["kind"] == "search" and any(not t.get("traceID") for t in tem.get("traces") or [])
+
+
+FIELD_ALIASES = {"span:duration": "duration", "span:kind": "kind", "span:status": "status", "span:name": "name"}
+
+
+def field_names(text):
+    out = set()
+    for f in re.split(r"\s*,\s*", text.strip()):
+        f = FIELD_ALIASES.get(f, f)
+        out.add(f)
+        if f.startswith(("span.", "resource.")):
+            out.add("." + f.split(".", 1)[1])
+    return {f for f in out if f}
+
+
+@rule("tempo_field_read_under_condition")
+def _field_cond(case, kinds, viz, tem):
+    # Tempo reads a field that by() or the metrics function uses only for spans where a
+    # filter condition on that same field held: `{ name != "zzz" || span.n > 4 } |
+    # count_over_time() by (span.n)` put n = 1..4 under nil, and `{ .n > 0 } || { duration
+    # < 0 } | histogram_over_time(duration)` returned nothing (probes in README). This
+    # shows when spans that failed the condition are still in the result: the query must
+    # read field F in by()/the function, compare F in a filter, and have `||` or a spanset
+    # operator.
+    q = case["query"]
+    used = set()
+    for m in re.finditer(r"by\s*\(([^)]*)\)", q):
+        used |= field_names(m.group(1))
+    for m in re.finditer(r"_over_time\(([^,)]+)", q):
+        used |= field_names(m.group(1))
+    if not used:
+        return False
+    filters = " ".join(re.findall(r"\{[^{}]*\}", q))
+    compared = set()
+    for m in re.finditer(r"([.\w:]+)\s*(?:=|!=|<=|>=|<|>|=~|!~)", filters):
+        compared |= field_names(m.group(1))
+    spanset_op = re.search(r"\}\s*(&&|\|\||>>|<<|>|<|~|!>>|!<<|!>|!<|!~|&>>|&<<|&>|&<|&~)\s*[\{(]", q)
+    return bool(used & compared) and ("||" in filters or spanset_op is not None)
+
+
+@rule("tempo_bare_bool_or")
+def _bare_bool(case, kinds, viz, tem):
+    # A bare boolean attribute inside `||` makes Tempo require the attribute to exist:
+    # `{ instrumentation:version = "1.0" || .b }` matched only the span that has `b`, while
+    # `... || .b = true` matched every 1.0 span (probe in README).
+    return re.search(r"(\|\|\s*\(?\s*(\.|span\.)[\w.]+\s*[)}|&])|([({]\s*(\.|span\.)[\w.]+\s*\|\|)", case["query"]) is not None
+
+
+@rule("tempo_nil_ne_missing")
+def _nil_ne(case, kinds, viz, tem):
+    # When a filter also tests an attribute against nil, Tempo lets a missing value satisfy
+    # `!=`: `{ (name = "zzz" || span.foo = nil) && span.foo != "bar" }` matched spans
+    # without foo, `{ name = "query" && span.foo != "bar" }` did not (probe in README).
+    for f in re.findall(r"\{[^{}]*\}", case["query"]):
+        nil_keys = set(re.findall(r"([.\w]+)\s*=\s*nil", f))
+        ne_keys = set(re.findall(r"([.\w]+)\s*!=\s*(?!nil)", f))
+        if nil_keys & ne_keys:
+            return True
+    return False
 
 
 @rule("ambiguous_root_metrics")

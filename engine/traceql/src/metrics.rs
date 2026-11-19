@@ -302,8 +302,10 @@ impl<'q> Leaf<'q> {
                 let Some((_, acc)) = self.series.get_mut(&key) else { continue };
                 match acc {
                     Acc::Count(c) => c[k] += 1,
+                    // NaN values are skipped by sums and averages, as Tempo's average and
+                    // min/max do (observed); they carry no value.
                     Acc::Sum(s, has) => {
-                        if let Some(x) = arg_val.as_ref().and_then(metric_value) {
+                        if let Some(x) = arg_val.as_ref().and_then(metric_value).filter(|x| !x.is_nan()) {
                             s[k].add(x);
                             has[k] = true;
                         }
@@ -325,7 +327,7 @@ impl<'q> Leaf<'q> {
                         }
                     }
                     Acc::Avg(s, c) => {
-                        if let Some(x) = arg_val.as_ref().and_then(metric_value) {
+                        if let Some(x) = arg_val.as_ref().and_then(metric_value).filter(|x| !x.is_nan()) {
                             s[k].add(x);
                             c[k] += 1;
                         }

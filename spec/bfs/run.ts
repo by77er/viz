@@ -190,6 +190,7 @@ d30('D30_3batches', 'amended + D30 + log as built: 3 batches, ledger loss + shar
 d30('D30_2shards', 'amended + D30 + log as built: 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, ns: 2, maxLL: 1, maxSL: 1, maxComp: 1 }, 'holds', ALLSAFE, 6_000_000)
 d30('D30_2tenants', 'amended + D30 + log as built: 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, nt: 2, nb: 2, maxLL: 1, maxSL: 1, maxComp: 1, sameContent: true }, 'holds', ALLSAFE, 6_000_000)
 d30('D30_variants', 'amended + D30 + log as built: two encoder outputs per segment, ledger loss + compaction + retention, no client retry, ≤ 2 sweep runs', { ...AD, ...X, variants: 2, maxLL: 1, maxComp: 1, maxExp: 1 }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_chain', 'amended + D30 + log as built: 3 batches, 2 compactions, so an output is an input of the next (the rule applied inductively), retention, ledger loss, no client retry, one flush Worker, no query, ≤ 2 sweep runs', { ...AD, ...X, nb: 3, maxJobs: 1, maxQ: 0, maxComp: 2, maxCJobs: 1, maxExp: 1, maxLL: 1 })
 // teeth: which parts of D30 are load-bearing (F14's bounds unless said otherwise)
 const T14 = { ...X, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }
 d30('D30_teeth_not_live_only', 'D30 teeth: an input counts as gone when it is merely not live (its object may still exist)', { ...AD, ...T14, sweepGone: 'notLive' }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
@@ -215,6 +216,7 @@ logrun('LOG_teeth_retry_new_bounds', 'segment log teeth: a retried drain takes e
 logrun('LOG_S1_rollback', 'review S-1, as built: one rollback to the first-layout ledger and back, one ledger loss, retention, compaction, registration logged before writes', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 1, maxExp: 1, maxJobs: 1 }, 'violated')
 logrun('LOG_S1_rollback_I1', 'review S-1, as built, carried through to acknowledged-row loss', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 0, maxExp: 0, maxJobs: 1 }, 'violated', ['I1_AckedIsDurable'])
 logrun('LOG_S1_rollback_I11', 'review S-1, as built, carried through to a listed file with no object (a removal the first-layout drain logged, purged, then undone by the rebuild)', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 0, maxExp: 1, maxJobs: 1 }, 'violated', ['I11_LiveFilesReadable'])
+logrun('LOG_S1_heal_1batch', 'review S-1 with fix (b), one batch, one ledger loss, one flush Worker (small enough to be exhaustive)', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, rbFix: 'heal', maxLL: 1, maxSend: 1, maxJobs: 1, nb: 1 })
 logrun('LOG_S1_heal', 'review S-1 with fix (b): on roll-forward an outbox that does not continue the segment log starts a new incarnation from SQLite; same bounds', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, rbFix: 'heal', maxLL: 1, maxComp: 1, maxExp: 1, maxJobs: 1 })
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation

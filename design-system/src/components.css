@@ -192,6 +192,12 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold] tbody tr:hover { background: var(--hover); }
   .vz-table[data-fold] tbody tr[aria-selected="true"], .vz-table[data-fold] tbody tr[aria-current] { background: var(--rule); }
   .vz-table[data-fold] tbody tr:has(.vz-waterfall-span:active), .vz-table[data-fold] tbody tr:has(.vz-waterfall-span[data-pressed]) { background: var(--pressed); }
+  /* A state in a kept column wraps between words, never cut (v5 review B2.2; flows G19). Actions… ends the key's line in every row, at the
+     row's right edge, so it is always on screen and its hit area inside the row (B2.2; flows G20, G26). No gutter after a right-aligned
+     column once the columns are folded (flows G21). */
+  .vz-table[data-fold] [data-priority="1"] .vz-status { white-space: normal; }
+  .vz-table[data-fold] td.vz-row-actions:not([data-key]) { order: 1; flex: none; width: auto; display: flex; align-items: center; align-self: center; padding-block: 0; }
+  .vz-table[data-fold] .vz-right + :not(.vz-right) { padding-left: var(--space-2); }
   .vz-table[data-fold] tbody tr td, .vz-table[data-fold] tbody tr:hover td, .vz-table[data-fold] tbody tr[aria-selected="true"] td, .vz-table[data-fold] tbody tr[aria-current] td, .vz-waterfall[data-fold] tbody tr:has(.vz-waterfall-span:active) td, .vz-waterfall[data-fold] tbody tr:has(.vz-waterfall-span[data-pressed]) td { background: transparent; }
 }
 @container (max-width: 1199px) {
@@ -211,11 +217,18 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold="wide"] tbody tr { background: var(--ground); }
   .vz-table[data-fold="wide"] tbody tr:hover { background: var(--hover); }
   .vz-table[data-fold="wide"] tbody tr[aria-selected="true"], .vz-table[data-fold="wide"] tbody tr[aria-current] { background: var(--rule); }
-  .vz-table[data-fold="wide"] tbody tr td, .vz-table[data-fold="wide"] tbody tr:hover td, .vz-table[data-fold="wide"] tbody tr[aria-selected="true"] td, .vz-table[data-fold="wide"] tbody tr[aria-current] td { background: transparent; }
+  /* A state in a kept column wraps between words, never cut (v5 review B2.2; flows G19). Actions… ends the key's line in every row, at the
+     row's right edge, so it is always on screen and its hit area inside the row (B2.2; flows G20, G26). No gutter after a right-aligned
+     column once the columns are folded (flows G21). */
+  .vz-table[data-fold="wide"] [data-priority="1"] .vz-status { white-space: normal; }
+  .vz-table[data-fold="wide"] td.vz-row-actions:not([data-key]) { order: 1; flex: none; width: auto; display: flex; align-items: center; align-self: center; padding-block: 0; }
+  .vz-table[data-fold="wide"] .vz-right + :not(.vz-right) { padding-left: var(--space-2); }
+  .vz-table[data-fold="wide"] tbody tr:has(.vz-waterfall-span:active), .vz-table[data-fold="wide"] tbody tr:has(.vz-waterfall-span[data-pressed]) { background: var(--pressed); }
+  .vz-table[data-fold="wide"] tbody tr td, .vz-table[data-fold="wide"] tbody tr:hover td, .vz-table[data-fold="wide"] tbody tr[aria-selected="true"] td, .vz-table[data-fold="wide"] tbody tr[aria-current] td, .vz-waterfall[data-fold="wide"] tbody tr:has(.vz-waterfall-span:active) td, .vz-waterfall[data-fold="wide"] tbody tr:has(.vz-waterfall-span[data-pressed]) td { background: transparent; }
 }
 
 /* Status: a mark with its own shape, then a word. Shape and word carry the state; colour reinforces it. */
-.vz-status { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; color: var(--ink); }
+.vz-status { display: inline-flex; align-items: flex-start; gap: var(--space-2); white-space: nowrap; color: var(--ink); } /* the mark is centred on the first line, so a status that wraps (in a folded table's kept column) keeps it there */
 .vz-status::before, .vz-mark { content: ""; display: inline-block; flex: none; width: var(--mark); height: var(--stroke); background: var(--ink-muted); } /* unknown: a dash */
 .vz-status[data-state="critical"]::before, .vz-mark[data-state="critical"] { height: var(--mark); background: var(--status-critical); } /* solid square */
 .vz-status[data-state="warn"]::before, .vz-mark[data-state="warn"] { width: calc(var(--mark) - var(--space-half)); height: calc(var(--mark) - var(--space-half)); margin-inline: var(--hairline); background: var(--status-warn); transform: rotate(var(--diagonal)); box-shadow: inset 0 0 0 var(--hairline) var(--status-warn-edge); } /* diamond */
@@ -226,6 +239,10 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-status[data-state="silenced"]::before, .vz-mark[data-state="silenced"] { height: var(--mark); background: transparent; border: 0 solid var(--ink-secondary); border-inline-width: var(--stroke); } /* two bars: paused */
 .vz-status[data-state="ruled-out"]::before, .vz-mark[data-state="ruled-out"] { width: calc(var(--mark) + var(--stroke)); margin-inline: calc(var(--stroke) / -2); background: var(--ink-muted); transform: rotate(calc(-1 * var(--diagonal))); } /* slash: struck out */
 .vz-mark[data-state="agent"] { width: var(--stroke); height: 1lh; background: var(--ink-muted); } /* the agent's rule, as the mark of a line an agent wrote (Timeline) */
+.vz-status::before { margin-top: calc((1lh - var(--stroke)) / 2); } /* the dash and the slash */
+.vz-status:is([data-state="critical"], [data-state="ok"], [data-state="ack"], [data-state="silenced"])::before { margin-top: calc((1lh - var(--mark)) / 2); }
+.vz-status[data-state="warn"]::before { margin-top: calc((1lh - var(--mark) + var(--space-half)) / 2); }
+.vz-status[data-state="info"]::before { margin-top: calc((1lh - var(--space-1)) / 2); }
 
 /* Dashboard grid: twelve, six or one column by the width the dashboard has, not the device. */
 .vz-dashboard { container-type: inline-size; }
@@ -484,6 +501,12 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
   .vz-waterfall[data-fold] .vz-waterfall-span { flex-wrap: wrap; column-gap: var(--space-2); } /* "3 spans inside, 1 failed" goes under the name rather than cutting it */
   .vz-waterfall[data-fold] .vz-waterfall-time { flex: 0 0 100%; order: 1; width: auto; min-width: 0; padding-block: var(--space-1); } /* the bars keep one scale: a line of their own, the table's full width */
 }
+@container (max-width: 1199px) {
+  .vz-waterfall[data-fold="wide"] tbody tr { align-items: center; }
+  .vz-waterfall[data-fold="wide"] td[data-key] { display: flex; align-items: center; padding-left: calc(var(--space-1) + var(--depth, 0) * var(--space-3)); } /* toggle and name on one line */
+  .vz-waterfall[data-fold="wide"] .vz-waterfall-span { flex-wrap: wrap; column-gap: var(--space-2); } /* "3 spans inside, 1 failed" goes under the name rather than cutting it */
+  .vz-waterfall[data-fold="wide"] .vz-waterfall-time { flex: 0 0 100%; order: 1; width: auto; min-width: 0; padding-block: var(--space-1); } /* the bars keep one scale: a line of their own, the table's full width */
+}
 @media (pointer: coarse) { .vz-tree-toggle, .vz-tree-gap { width: var(--control-touch); height: var(--control-touch); margin-right: 0; } .vz-log-tail > .vz-button { margin-block: calc((var(--control-touch) - var(--control-sm)) / 2); } }
 
 /* Log lines: what a program wrote, newest first, read line by line. Time (with milliseconds) is the key; the message wraps (nothing scrolls
@@ -503,6 +526,9 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 .vz-log-tail { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 var(--space-3); min-height: var(--strip); } /* the strip: count and order, and while paused the held lines */
 @container (max-width: 639px) {
   .vz-log[data-fold] td.vz-log-msg:not([data-key]):not([data-priority]) { flex: 0 0 100%; order: 1; min-width: 0; padding-top: 0; font: var(--text-data); color: var(--ink); white-space: pre-wrap; } /* the message is what the list is for: its full width and size, never folded small */
+}
+@container (max-width: 1199px) {
+  .vz-log[data-fold="wide"] td.vz-log-msg:not([data-key]):not([data-priority]) { flex: 0 0 100%; order: 1; min-width: 0; padding-top: 0; font: var(--text-data); color: var(--ink); white-space: pre-wrap; } /* the message is what the list is for: its full width and size, never folded small */
 }
 
 /* Agent claim: something an agent wrote. A rule down its left edge and a first line that says who wrote it and whether a person has checked it. */
@@ -560,7 +586,7 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
 /* Progress: measured work. The bar exists only when its length is a real fraction. */
 .vz-progress { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .vz-progress-track { height: var(--stroke); background: var(--rule); overflow: hidden; }
-.vz-progress-bar { height: 100%; background: var(--ink); transform-origin: left; transition: transform var(--duration-slow) linear; }
+.vz-progress-bar { height: 100%; background: var(--ink); transform-origin: left; transition: transform var(--duration-slow) var(--ease-measured); }
 .vz-progress[data-unmeasured] .vz-progress-track { display: none; }
 .vz-progress-text { display: flex; align-items: baseline; gap: var(--space-3); font: var(--text-small); color: var(--ink-secondary); }
 .vz-progress-text > :first-child { flex: 1; min-width: 0; }
@@ -576,8 +602,10 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
   .vz-check { min-height: var(--control-touch); } /* real height: a checkbox in a form stack cannot overlap its neighbours */
   .vz-button, .vz-segmented button, .vz-nav a { min-width: var(--control-touch); justify-content: center; }
   .vz-done { min-height: var(--control-touch); }
-  /* A link that stands alone is a control. A link inside a sentence (a p) is text and keeps its line; it is never the main path. */
-  .vz-link:not(p .vz-link, .vz-table td[data-key] .vz-link) { display: inline-flex; align-items: center; min-height: var(--control-touch); }
+  /* A link that stands alone is a control. A link inside running text (a paragraph, a list item, a help line, a definition, prose) is text
+     and keeps its line; it is never the main path (v5 review, m1). In a list of links and in a timeline line, a link that is the item's own
+     child stands alone: a sentence with a link in it goes in a p there. A key link fills its cell, which is control-touch tall. */
+  .vz-link:not(:is(p, li, dd, .vz-help, .vz-secondary, .vz-text, .vz-page-sub) .vz-link, .vz-table td[data-key] .vz-link), :is(.vz-links, .vz-timeline) > li > .vz-link { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .vz-links { gap: 0; }
   .vz-controls, .vz-dialog-actions, .vz-banner, .vz-secret-row, .vz-notice { row-gap: calc(var(--control-touch) - var(--control-sm)); } /* wrapped rows: even two rows of small buttons keep 44px between centres */
   .vz-table tr:has(a, button, input, select) td { height: calc(var(--control-touch) + var(--hairline)); } /* rows that hold a control; a table of figures keeps its density */

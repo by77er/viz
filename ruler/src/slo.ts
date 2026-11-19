@@ -172,7 +172,8 @@ export function parseSloSpec(c: ParseContext, v: unknown, path: string, interval
     return null
   }
   for (const k of Object.keys(v)) if (!FIELDS.includes(k)) err(`${path}.${k}`, `unknown field "${k}"`, `An slo block has: ${FIELDS.filter((f) => f !== 'given').join(', ')}.`)
-  const given: string[] = FIELDS.filter((f) => f !== 'given' && v[f] !== undefined)
+  // The fields the author gave. A file the ruler exported writes every field out and says in `given` which were chosen.
+  let given: string[] = FIELDS.filter((f) => f !== 'given' && v[f] !== undefined)
 
   // objective
   let objective = 0
@@ -285,7 +286,7 @@ export function parseSloSpec(c: ParseContext, v: unknown, path: string, interval
   }
   if (v.given !== undefined) {
     if (!Array.isArray(v.given) || v.given.some((g) => typeof g !== 'string' || !FIELDS.includes(g))) err(`${path}.given`, 'given must list slo fields', 'Leave it out; the ruler writes it.')
-    else for (const g of v.given as string[]) if (!given.includes(g)) given.push(g)
+    else given = [...new Set(v.given as string[])]
   }
   given.sort()
   if (labels.severity !== undefined) err(`${path.replace(/\.slo$/, '')}.labels.severity`, 'an SLO rule sets severity itself: page or ticket, from the burn-rate alert that fires', 'Remove the severity label; route on severity="page" and severity="ticket".')

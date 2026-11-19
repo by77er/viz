@@ -690,6 +690,345 @@ One weakness found this way: the coarse-pointer version of the sideways-scroll c
 fail on the "toolbar fields" mutant; the fine-pointer 400 px checks did. Why was not
 investigated.
 
+### Speed of this change (the real API, and the response path)
+
+Measured here with `e2e/measure.cjs` (`node e2e/summarise.cjs` prints the tables): Chromium,
+CPU throttled 4x, network shaped to DevTools' Fast 4G, a fresh context per run, the 75th
+percentile of 20 runs (median, maximum), in alternating batches of five runs. Desktop is
+1440 x 900 with a fine pointer; phone is 400 x 800 with touch, a coarse pointer and device
+scale 2 (presses are touches, the crosshair a touch drag), as `design-system/tools/speed.mjs`
+sets them. The page is Explore over the fixed three-hour window; the 36- and 200-series
+bodies come from the mock over the shaped network, gzip-compressed as the real API sends them
+(0.88 MB and 3.4 MB of JSON; 0.84 MB on the wire for 200 series). This is the application, not
+the system's fixture page.
+
+**Load.** The machine was shared with other builders throughout (mutation runs, model
+checkers, Rust builds): the 1-minute load average at the start of every run is in the files
+and under every table, and **no run was judged**: the load was above the 4 cores in every
+one of the 380 runs, between 4.8 and 26.3. Every timing figure below is printed, not judged
+(design-system README, "Load"); layout shift is judged. The calibration task (the loop of
+`tools/speed.mjs`, timed in Node before each batch) took 294 to 894 ms over the 35 batches;
+no idle figure could be taken here. On a quieter machine
+every timing would be lower; the comparisons hold because the columns alternated in batches
+and share the load.
+
+**Two harness corrections** made before these runs. (1) "Response to paint, from the last
+byte" now starts at the last byte also for a body read in a worker (the worker's own
+Resource Timing, moved to the page's clock); the earlier partial files (`cand-*` at the
+restart) had no such figure for the worker. (2) DevTools' CPU throttling does not throttle a
+dedicated worker as it throttles the page: the same loop ran 3.5 to 4.4 times slower on the
+page at 4x and 1.4 to 1.6 times slower in a worker (measured here, two rounds). Work moved
+into a worker is therefore measured at roughly a third of its throttled cost, and candidate W
+below cannot be compared fairly with the others.
+
+#### Reading the body: four candidates
+
+The same workload four ways, each built from the same source but for the one step, against
+the same design-system snapshot, and each rendering exactly the same thing: before any time
+was compared, `e2e/fingerprint.cjs` recorded for 4, 36 and 200 series the chart's pixels
+(SHA-256 of the canvas), the legend with Other opened, every table row, the text digest and
+the JSON form, and the four builds were identical in all fifteen (the JSON form shows its
+first 60,000 characters; those were compared). The parsers also read each other's output:
+`src/api/matrix.test.ts` checks the streaming parser against `JSON.parse` and `Number` on
+1,000 random bodies cut into pieces anywhere, and `src/lib/series.test.ts` checks that both
+align to what the previous implementation gave.
+
+- **A**: the app before this change (commit `060d3bd`): `JSON.parse` of the whole body, then
+  every sample a boxed number in `(number | null)[]` columns.
+- **B**: this change, but the body read whole (`res.text()`) and `JSON.parse`d, then copied
+  into Float64Arrays (`fromJson`).
+- **C**: this change: the body read as it arrives into Float64Arrays (`src/api/matrix.ts`),
+  on the main thread.
+- **W**: C in a dedicated worker (`src/api/matrixWorker.ts`): the worker fetches and parses,
+  the arrays come back by transfer and the text by copy. **Not comparable** (above): the
+  worker is not throttled like the page.
+
+Desktop, 20 runs each, typing and crosshair left out (they do not touch the body), in
+alternating batches of five (A, B, C, W, A, …). Files `e2e/measurements/cand-{A,B,C,W}-{36,200}.json`;
+they replace the partial files of the same names left at the container restart (at most 8
+runs each, the earlier timing, no figure from the last byte for W).
+
+#### 36 series (sum by (service, route, status) (rate(http_requests_total[5m]))), desktop
+
+| What | Budget | A | B | W | C | Within budget (C)? |
+|---|---|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 23 (19, 90) | 26 (16, 96) | 28 (22, 74) | 30 (20, 138) | within, not judged (load > cores) |
+| Click on Run query to the busy state painted | 100 ms | 45 (35, 215) | 50 (44, 107) | 43 (37, 415) | 48 (43, 363) | within, not judged (load > cores) |
+| Chart to table | 100 ms | 116 (73, 552) | 104 (78, 475) | 105 (61, 285) | 143 (80, 194) | over, not judged (load > cores) |
+| Table to text | 100 ms | 90 (72, 255) | 54 (45, 128) | 55 (46, 310) | 61 (46, 173) | within, not judged (load > cores) |
+| Text to chart | 100 ms | 46 (35, 136) | 54 (42, 178) | 41 (39, 58) | 43 (38, 157) | within, not judged (load > cores) |
+| Open the time picker | 100 ms | 79 (68, 270) | 84 (66, 206) | 62 (58, 514) | 79 (61, 282) | within, not judged (load > cores) |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 261 (136, 330) | 170 (101, 270) | 195 (122, 282) | 138 (79, 266) | over, not judged (load > cores) |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 290 (176, 390) | 266 (173, 661) | 214 (128, 286) | 190 (135, 392) | over, not judged (load > cores) |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 1015 (868, 1738) | 1040 (924, 1700) | 1049 (886, 1513) | 1121 (780, 2199) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 144 (128, 464) | 112 (104, 448) | 176 (88, 472) | 152 (112, 336) | within, not judged (load > cores) |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- A: 20 runs, load at run start median 18.1 (9.8 to 22.7) on 4 cores, 0 of 20 runs judged, calibration 723 ms (median of 4 batches)
+- B: 20 runs, load at run start median 16.8 (10.1 to 22.1) on 4 cores, 0 of 20 runs judged, calibration 557 ms (median of 4 batches)
+- W: 20 runs, load at run start median 17.6 (10.7 to 23.1) on 4 cores, 0 of 20 runs judged, calibration 773 ms (median of 4 batches)
+- C: 20 runs, load at run start median 17.8 (12.0 to 26.3) on 4 cores, 0 of 20 runs judged, calibration 584 ms (median of 4 batches)
+
+#### 200 series (viz_synthetic_series), desktop
+
+| What | Budget | A | B | W | C | Within budget (C)? |
+|---|---|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 37 (22, 137) | 34 (20, 79) | 29 (21, 64) | 35 (20, 78) | within, not judged (load > cores) |
+| Click on Run query to the busy state painted | 100 ms | 59 (35, 416) | 49 (42, 196) | 58 (35, 132) | 46 (35, 121) | within, not judged (load > cores) |
+| Chart to table | 100 ms | 118 (66, 227) | 109 (67, 338) | 91 (63, 406) | 80 (68, 211) | within, not judged (load > cores) |
+| Table to text | 100 ms | 85 (69, 140) | 53 (44, 175) | 46 (40, 120) | 55 (46, 154) | within, not judged (load > cores) |
+| Text to chart | 100 ms | 50 (42, 177) | 39 (33, 157) | 49 (39, 169) | 65 (38, 188) | within, not judged (load > cores) |
+| Open the time picker | 100 ms | 69 (60, 158) | 74 (63, 364) | 80 (64, 277) | 96 (74, 506) | within, not judged (load > cores) |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 175 (142, 590) | 119 (92, 318) | 141 (106, 437) | 107 (79, 854) | over, not judged (load > cores) |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 426 (383, 1381) | 398 (357, 1191) | 190 (139, 607) | 240 (191, 1951) | over, not judged (load > cores) |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 3152 (2591, 5276) | 2884 (2348, 4479) | 2785 (2431, 3829) | 2819 (2257, 4531) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 152 (80, 408) | 176 (104, 360) | 120 (80, 392) | 136 (88, 576) | within, not judged (load > cores) |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0002) | 0.0000 (0.0000, 0.0002) | 0.0000 (0.0000, 0.0002) | 0.0000 (0.0000, 0.0002) | yes |
+
+- A: 20 runs, load at run start median 18.0 (8.9 to 23.3) on 4 cores, 0 of 20 runs judged, calibration 723 ms (median of 4 batches)
+- B: 20 runs, load at run start median 17.7 (12.1 to 22.8) on 4 cores, 0 of 20 runs judged, calibration 557 ms (median of 4 batches)
+- W: 20 runs, load at run start median 18.9 (12.4 to 22.1) on 4 cores, 0 of 20 runs judged, calibration 773 ms (median of 4 batches)
+- C: 20 runs, load at run start median 17.1 (11.4 to 25.4) on 4 cores, 0 of 20 runs judged, calibration 584 ms (median of 4 batches)
+
+**What the candidates show** (all not judged, load 9 to 26): from the last byte to the
+painted result, C took 190 ms at 36 series and 240 ms at 200 series at the 75th percentile,
+against 290 and 426 ms for A and 266 and 398 ms for B; W's 214 and 190 ms are not comparable
+(its parsing ran about three times too fast). B shows that typed arrays alone (A to B: 290 to
+266, 426 to 398 ms) are not what helps at 200 series; reading the body while it downloads
+(B to C) is. All three fair candidates are over the 100 ms budget at this load. C was kept.
+
+**Tuning, each candidate on its own** (steps in order; "measured" says how):
+
+- **C, the streaming parser** (the previous session's steps are as its code comments record
+  them; their figures were not kept):
+  1. The unit cut at the end of one piece is finished on a short junction string (the cut
+     unit plus the next piece's first 1,024 characters), and the rest of the piece is read
+     from the piece itself: reading through `pending + chunk` (a V8 cons string) was "about
+     twice as slow" (code comment; no figure kept).
+  2. The compact pair `[t,"v"]` is found with `indexOf` (native) before the general loop
+     (code comment: "faster than a loop here"; no figure kept).
+  3. The text digest is prepared when the browser is idle after a result arrives
+     (`requestIdleCallback`), so the first switch to the text form only renders it (about
+     15 ms at 4x for 200 series, code comment).
+  4. This session: the body's text (3.4 MB for 200 series) is joined when the JSON form
+     first reads it, not in `finish()`. Measured with the CPU profiler at 4x CPU and Fast 4G
+     (two runs, load about 20): the join took 10 and 55 ms of main thread in the 100 ms after
+     the last byte; in Node, unthrottled, one `finish()` took 12 ms. Then measured in the
+     harness, C against C with this step (C2), 200 series, 10 runs each, alternating (load
+     median 5.8 and 7.6, 4.8 to 12.7; not judged): from the last byte 218 (163, 292) ms
+     against 213 (179, 224) ms; release to paint 2,057 against 1,867 ms. **No difference the
+     harness can show at this load.** Kept: the profile shows the join gone from the response
+     path, the rendered result is identical (fingerprints), and the join now happens only if
+     the JSON form is opened. Files `e2e/measurements/tune-{C,C2}-200.json`.
+  5. Considered, not adopted: aligning in place, i.e. using the parser's own Float64Array as
+     the column when a series has every grid point and every value finite. In Node, warm, it
+     took `alignSeries` for 200 series from 1.1 to 0.5 ms (median of 50); in the page it runs
+     once per result and cold (17 to 40 ms at 4x in the profiles), so the saving there is
+     unknown and below what this machine's noise lets the harness see, and it would share
+     the result's arrays with the parser.
+  6. Observed, not acted on: the parser costs more the smaller the pieces. In Node,
+     unthrottled, 200 series: 44 ms in one piece, 58 ms in 64 KiB pieces, 76 ms in 4 KiB
+     pieces (medians of 35, load about 13; minima 19, 23 and 26 ms). The browser hands the
+     reader pieces of 4 to 130 KB (seen in the timeline below).
+- **B, `JSON.parse` into typed arrays**: one indexed pass over the parsed pairs, the special
+  values compared before `Number()`. Nothing else was tried: its cost is `JSON.parse` of the
+  whole body after the last byte, which no loop around it can move.
+- **W, the worker**: the arrays are transferred, not copied; the text is posted (a copy). Not
+  tuned further, because its figures cannot be compared (above).
+- **A** is the app before this change and was not changed.
+
+**Where the time after the last byte goes** (C, 200 series, an instrumented copy of the
+build, 4x CPU, Fast 4G, three runs, load about 20; times from the last byte): the body
+arrives over about 0.85 s in 180 to 260 pieces and parsing keeps up with it (160 to 210 ms
+of parsing in all, under 2 ms after the last byte); `finish()` 9 to 34 ms (the join, since
+removed); then 70 to 80 ms in which the profiler sees mostly native work ("(program)") and
+the query library's notification; then the render of the new result (aligning 10 to 40 ms,
+names, statistics, colours, the chart's redraw) in one task of 70 to 100 ms; the next frame
+comes 185 to 315 ms after the last byte. What the native work is was not found.
+
+#### Before and after: desktop
+
+Before is the app at commit `060d3bd` (the review fixes), after is this change; both built against the same
+design-system snapshot, each rendering the three cases identically (`e2e/fingerprint.cjs`: `fingerprint-cand-A.json`,
+`fingerprint-after.json`). 20 runs each, alternating batches of five, typing and crosshair included. Files
+`e2e/measurements/rapi-{before,after}-{4,36,200}.json`.
+
+#### 4 series (sum by (service) (rate(http_requests_total[5m]))), desktop
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 36 (22, 172) | 27 (19, 111) | within, not judged (load > cores) |
+| Click on Run query to the busy state painted | 100 ms | 104 (42, 382) | 55 (44, 162) | within, not judged (load > cores) |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 34 (30, 51) | 33 (30, 47) | within, not judged (load > cores) |
+| Typing: the slowest key of a run (not a budget figure) |  | 142 (66, 278) | 148 (93, 235) |  |
+| Typing: keys over 50 ms, of 60 |  | 8 (2, 16) | 5 (2, 14) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 29 (26, 62) | 27 (26, 54) | within, not judged (load > cores) |
+| Chart to table | 100 ms | 81 (48, 201) | 53 (40, 172) | within, not judged (load > cores) |
+| Table to text | 100 ms | 63 (39, 117) | 34 (30, 57) | within, not judged (load > cores) |
+| Text to chart | 100 ms | 45 (38, 146) | 41 (37, 87) | within, not judged (load > cores) |
+| Open the time picker | 100 ms | 94 (77, 253) | 68 (57, 286) | within, not judged (load > cores) |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 72 (51, 182) | 60 (41, 104) | within, not judged (load > cores) |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 87 (63, 243) | 73 (58, 190) | within, not judged (load > cores) |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 585 (536, 852) | 550 (526, 626) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 112 (88, 368) | 112 (64, 184) | within, not judged (load > cores) |
+| Worst interaction, Event Timing, the whole run | 200 ms | 160 (112, 368) | 160 (112, 232) | within, not judged (load > cores) |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 14.7 (6.8 to 19.0) on 4 cores, 0 of 20 runs judged, calibration 602 ms (median of 4 batches)
+- After: 20 runs, load at run start median 13.6 (10.1 to 16.0) on 4 cores, 0 of 20 runs judged, calibration 749 ms (median of 4 batches)
+
+#### 36 series (sum by (service, route, status) (rate(http_requests_total[5m]))), desktop
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 33 (21, 118) | 30 (25, 57) | within, not judged (load > cores) |
+| Click on Run query to the busy state painted | 100 ms | 50 (43, 212) | 51 (42, 202) | within, not judged (load > cores) |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 33 (31, 50) | 33 (30, 41) | within, not judged (load > cores) |
+| Typing: the slowest key of a run (not a budget figure) |  | 135 (112, 237) | 151 (104, 294) |  |
+| Typing: keys over 50 ms, of 60 |  | 7 (5, 14) | 7 (4, 10) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 35 (31, 54) | 31 (29, 62) | within, not judged (load > cores) |
+| Chart to table | 100 ms | 102 (55, 298) | 86 (63, 294) | within, not judged (load > cores) |
+| Table to text | 100 ms | 93 (58, 161) | 51 (44, 205) | within, not judged (load > cores) |
+| Text to chart | 100 ms | 43 (38, 164) | 51 (38, 250) | within, not judged (load > cores) |
+| Open the time picker | 100 ms | 72 (64, 108) | 76 (65, 270) | within, not judged (load > cores) |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 206 (127, 272) | 155 (85, 298) | over, not judged (load > cores) |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 243 (183, 438) | 199 (140, 420) | over, not judged (load > cores) |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 1036 (779, 2577) | 852 (761, 1430) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 144 (72, 264) | 136 (88, 224) | within, not judged (load > cores) |
+| Worst interaction, Event Timing, the whole run | 200 ms | 184 (144, 296) | 224 (144, 264) | over, not judged (load > cores) |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 15.6 (6.3 to 18.0) on 4 cores, 0 of 20 runs judged, calibration 602 ms (median of 4 batches)
+- After: 20 runs, load at run start median 13.9 (10.9 to 18.2) on 4 cores, 0 of 20 runs judged, calibration 749 ms (median of 4 batches)
+
+#### 200 series (viz_synthetic_series), desktop
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 30 (22, 67) | 22 (17, 138) | within, not judged (load > cores) |
+| Click on Run query to the busy state painted | 100 ms | 63 (40, 170) | 49 (37, 184) | within, not judged (load > cores) |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 35 (34, 44) | 33 (31, 36) | within, not judged (load > cores) |
+| Typing: the slowest key of a run (not a budget figure) |  | 132 (101, 212) | 222 (94, 305) |  |
+| Typing: keys over 50 ms, of 60 |  | 8 (4, 12) | 6 (3, 12) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 34 (29, 54) | 31 (29, 48) | within, not judged (load > cores) |
+| Chart to table | 100 ms | 106 (68, 302) | 71 (66, 566) | within, not judged (load > cores) |
+| Table to text | 100 ms | 75 (60, 301) | 60 (39, 210) | within, not judged (load > cores) |
+| Text to chart | 100 ms | 43 (35, 64) | 44 (38, 208) | within, not judged (load > cores) |
+| Open the time picker | 100 ms | 64 (55, 478) | 68 (59, 388) | within, not judged (load > cores) |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 155 (123, 495) | 105 (86, 276) | over, not judged (load > cores) |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 449 (378, 1332) | 233 (188, 353) | over, not judged (load > cores) |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 2637 (2377, 3329) | 2474 (2289, 5374) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 152 (80, 368) | 112 (72, 472) | within, not judged (load > cores) |
+| Worst interaction, Event Timing, the whole run | 200 ms | 184 (160, 368) | 232 (152, 472) | over, not judged (load > cores) |
+| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0002) | yes |
+
+- Before: 20 runs, load at run start median 14.4 (8.0 to 16.8) on 4 cores, 0 of 20 runs judged, calibration 602 ms (median of 4 batches)
+- After: 20 runs, load at run start median 14.0 (10.6 to 20.3) on 4 cores, 0 of 20 runs judged, calibration 749 ms (median of 4 batches)
+
+#### Before and after: phone (400 x 800, touch)
+
+The same builds and alternation, 36 and 200 series. Files
+`e2e/measurements/rapi-{before,after}-phone-{36,200}.json`.
+
+#### 36 series (sum by (service, route, status) (rate(http_requests_total[5m]))), phone
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 23 (20, 51) | 32 (23, 67) | within, not judged (load > cores) |
+| Click on Run query to the busy state painted | 100 ms | 77 (61, 150) | 76 (62, 260) | within, not judged (load > cores) |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 35 (33, 84) | 37 (31, 47) | within, not judged (load > cores) |
+| Typing: the slowest key of a run (not a budget figure) |  | 146 (107, 246) | 167 (129, 319) |  |
+| Typing: keys over 50 ms, of 60 |  | 5 (3, 30) | 8 (5, 13) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 62 (56, 117) | 59 (55, 73) | over, not judged (load > cores) |
+| Chart to table | 100 ms | 89 (82, 164) | 91 (80, 221) | within, not judged (load > cores) |
+| Table to text | 100 ms | 78 (75, 175) | 73 (62, 214) | within, not judged (load > cores) |
+| Text to chart | 100 ms | 59 (55, 139) | 64 (53, 120) | within, not judged (load > cores) |
+| Open the time picker | 100 ms | 94 (80, 176) | 92 (85, 180) | within, not judged (load > cores) |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 104 (71, 355) | 66 (53, 202) | within, not judged (load > cores) |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 141 (93, 389) | 87 (72, 341) | within, not judged (load > cores) |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 748 (642, 1036) | 663 (616, 816) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 136 (88, 160) | 136 (88, 216) | within, not judged (load > cores) |
+| Worst interaction, Event Timing, the whole run | 200 ms | 160 (136, 240) | 192 (136, 320) | within, not judged (load > cores) |
+| Layout shift, first load | 0.05 | 0.0032 (0.0031, 0.0033) | 0.0032 (0.0031, 0.0033) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 12.5 (10.1 to 15.2) on 4 cores, 0 of 20 runs judged, calibration 476 ms (median of 4 batches)
+- After: 20 runs, load at run start median 12.5 (9.4 to 14.6) on 4 cores, 0 of 20 runs judged, calibration 443 ms (median of 4 batches)
+
+#### 200 series (viz_synthetic_series), phone
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 25 (21, 88) | 29 (23, 138) | within, not judged (load > cores) |
+| Click on Run query to the busy state painted | 100 ms | 79 (60, 115) | 84 (68, 270) | within, not judged (load > cores) |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 34 (30, 78) | 37 (32, 41) | within, not judged (load > cores) |
+| Typing: the slowest key of a run (not a budget figure) |  | 143 (80, 281) | 214 (113, 304) |  |
+| Typing: keys over 50 ms, of 60 |  | 5 (2, 21) | 7 (3, 12) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 51 (46, 64) | 57 (54, 118) | over, not judged (load > cores) |
+| Chart to table | 100 ms | 106 (89, 133) | 119 (90, 530) | over, not judged (load > cores) |
+| Table to text | 100 ms | 86 (80, 175) | 71 (61, 140) | within, not judged (load > cores) |
+| Text to chart | 100 ms | 59 (52, 123) | 79 (58, 125) | within, not judged (load > cores) |
+| Open the time picker | 100 ms | 96 (84, 140) | 112 (89, 212) | over, not judged (load > cores) |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 147 (119, 360) | 86 (77, 124) | within, not judged (load > cores) |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 323 (246, 701) | 185 (123, 922) | over, not judged (load > cores) |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 1591 (1425, 4508) | 1445 (1297, 2180) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 112 (96, 168) | 144 (104, 512) | within, not judged (load > cores) |
+| Worst interaction, Event Timing, the whole run | 200 ms | 144 (112, 272) | 200 (144, 512) | within, not judged (load > cores) |
+| Layout shift, first load | 0.05 | 0.0016 (0.0016, 0.0016) | 0.0016 (0.0016, 0.0019) | yes |
+| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0003) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 11.7 (10.4 to 16.6) on 4 cores, 0 of 20 runs judged, calibration 476 ms (median of 4 batches)
+- After: 20 runs, load at run start median 12.7 (9.6 to 14.2) on 4 cores, 0 of 20 runs judged, calibration 443 ms (median of 4 batches)
+
+**What changed, and what is still missed** (every timing not judged: load 4.8 to 26.3 on 4 cores).
+
+- **Response to paint, from the last byte** (the budget's "100 ms after it arrives"): desktop,
+  36 series 243 → 199 ms, 200 series 449 → 233 ms; phone, 36 series 141 → 87 ms (inside the
+  budget at the 75th percentile, not judged), 200 series 323 → 185 ms. **Still over the
+  100 ms budget on desktop at both sizes and on the phone at 200 series.** Where the remaining time goes (the timeline above): about
+  70 to 80 ms of native work and the query library's notification after `finish()`, then one
+  task of 70 to 100 ms that aligns, names, colours and draws the new result. The next steps
+  are not in this change: the result's preparation split from its first paint (draw the
+  coloured series first, then the legend, statistics and colours of the rest, which is
+  "coarse data first, refined in place" in the budget table), and the cause of the native
+  work, which the profiler cannot attribute.
+- **36 series, the boxed-sample garbage collection** the review fixes named: series values are
+  Float64Arrays from the parser to every view (the chart converts only the series it draws), so
+  no sample of the result is a boxed number. In the 200-series
+  profiles (two runs) garbage collection after the last byte was 3 to 4 ms in a 25 ms slice;
+  36 series was not profiled after the change, so whether its 10 to 55 ms pauses are gone is
+  not shown, only that its figure fell from 243 to 199 ms and is still over the budget.
+- **200 series, `JSON.parse` of 3.4 MB** (about 125 ms at 4x, after the last byte): gone from
+  the response path. The body is parsed while it downloads (160 to 210 ms of parsing in all
+  at 4x, under 2 ms of it after the last byte).
+- **Chart to table, 200 series**: desktop 106 → 71 ms, within the budget; phone 106 → 119 ms,
+  **over** (medians 89 → 90 ms: no change the runs can show). **Table to text, 200 series**:
+  desktop 75 → 60 ms, phone 86 → 71 ms, within. Single runs still reach 566 ms (desktop) and
+  530 ms (phone). The digest prepared in idle time (tuning step 3) is what changed for the
+  text form; the 50-row table is still rendered on the switch, and making it cheaper (render
+  it parked in idle time, as the chart is kept) is the next step for the phone.
+- **On the phone at 200 series several local figures are higher after** (not judged): text
+  to chart 59 → 79 ms, the time picker 96 → 112 ms (over), the worst interaction before
+  typing 112 → 144 ms. One candidate cause, not tested: the digest prepared with
+  `requestIdleCallback` (timeout 5 s) runs during the first switches the harness makes
+  700 ms after the result. The 36-series phone figures did not move.
+- **The crosshair on the phone** is over 50 ms before and after (36 series 62 → 59 ms, 200
+  series 51 → 57 ms; a touch drag, pointer move to the next frame). Not addressed here.
+- **Worst interaction over the whole run** (typing and crosshair included) is over 200 ms after
+  at the 75th percentile on desktop (36 series 184 → 224 ms, 200 series 184 → 232 ms), with
+  the medians unchanged (144 → 152, 168 → 160 ms), and at 200 ms on the phone at 200 series
+  (144 → 200 ms); the slowest key of a run at 200 series is higher (desktop median 110 →
+  161 ms, phone 143 → 214 ms at the 75th percentile). Typing itself is unchanged at the 75th percentile (33 to 35
+  ms). Whether this is the load or the change was not found: the runs alternated, but the
+  tail is where a shared machine shows most. Measure again on a quiet machine.
+- Everything else is within its budget at the 75th percentile, as before, and layout shift
+  is 0 on load and on a run at both layouts.
+
 ### Earlier measurements
 
 The review fixes' before/after tables (4, 36 and 200 series, with typing; Chromium, 4x CPU,
@@ -743,7 +1082,12 @@ compressed (the parser, the error kinds and advice, the retries) to 156.6 kB, un
 
 ## Known issues
 
-- Speed: SPEED_KNOWN_ISSUE
+- Speed (this change's section in "Verification"; nothing judged): response to paint from
+  the last byte is still over 100 ms on desktop (36 series 199 ms, 200 series 233 ms) and on
+  the phone at 200 series (185 ms); on the phone at 200 series chart to table (119 ms) and the
+  time picker (112 ms) are over, and the crosshair by touch is over 50 ms at both sizes; the
+  worst interaction over a whole run is 224 and 232 ms on desktop at the 75th percentile
+  (medians unchanged). Single slow keys while typing remain, in CodeMirror's own work.
 - No timing in this README was judged: every run started with the load average above the
   core count (9 to 26 on 4 cores). They need measuring again on a quiet machine.
 - `node ../design-system/tools/check.mjs src` fails on four values in `src/app.css` (an

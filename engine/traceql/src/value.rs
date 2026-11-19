@@ -120,8 +120,15 @@ pub fn regex_match(v: &Val, re: &regex::Regex, negated: bool) -> bool {
 }
 
 /// `x = nil` holds when `x` is missing, `x != nil` when it is present; other operators with
-/// `nil` never hold.
+/// `nil` never hold. An empty array satisfies neither.
 pub fn nil_test(x: &Val, op: BinOp) -> bool {
+    // An empty array is neither nil nor a value (Tempo's observed behaviour: it matches
+    // neither `= nil` nor `!= nil`).
+    if let Val::Arr(a) = x {
+        if elements(a).is_empty() {
+            return false;
+        }
+    }
     match op {
         BinOp::Eq => x.is_nil(),
         BinOp::Neq => !x.is_nil(),

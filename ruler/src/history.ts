@@ -19,6 +19,44 @@ import { bucketsOf, COARSE_BLOCK, coarseExprOf, evalSlo, FINE_BLOCK, newSloRt, R
 import type { AlertEvalOptions, Series } from './statemachine'
 import { fingerprint, formatDuration, parseSampleValue } from './util'
 
+/**
+ * What one warm-up and one backtest may read, as the engine's plan estimates it before anything is
+ * fetched (contracts/rules.ts `RulerLimits`). The warm-up's is what one query of viz-query may read
+ * in one place (query/README.md: `maxScanSamples` 3,000,000, `maxFetchBytes` 16 MiB), because it
+ * runs by itself when a rule is saved; a backtest is asked for, and may read about seven times that.
+ */
+export const HISTORY_LIMIT_DEFAULTS = {
+  maxWarmupScanSamples: 3_000_000,
+  maxWarmupBytes: 16 * 1024 * 1024,
+  maxBacktestScanSamples: 20_000_000,
+  maxBacktestBytes: 128 * 1024 * 1024,
+} as const
+
+/** A warm-up the engine failed is tried at this many ticks before the rule starts cold. */
+export const MAX_WARMUP_ATTEMPTS = 3
+
+/** The two budgets from a ruler's limits. */
+export function historyBudgets(limits: Partial<Record<keyof typeof HISTORY_LIMIT_DEFAULTS, number>>): { warmup: Budget; backtest: Budget } {
+  return {
+    warmup: { scanSamples: limits.maxWarmupScanSamples ?? HISTORY_LIMIT_DEFAULTS.maxWarmupScanSamples, bytesToRead: limits.maxWarmupBytes ?? HISTORY_LIMIT_DEFAULTS.maxWarmupBytes },
+    backtest: { scanSamples: limits.maxBacktestScanSamples ?? HISTORY_LIMIT_DEFAULTS.maxBacktestScanSamples, bytesToRead: limits.maxBacktestBytes ?? HISTORY_LIMIT_DEFAULTS.maxBacktestBytes },
+  }
+}
+
+/** The stored form of a warm-up status (`warmup.body`, format `store.warmup` v1). */
+export const WARMUP_VERSION = 1
+export const warmupBody = (w: WarmupStatus): string => JSON.stringify({ v: WARMUP_VERSION, ...w })
+
+/** A stored warm-up status, or null for a version this code does not read (the rule is then treated as warmed: nothing is re-read on a guess). */
+export function readWarmup(body: string): WarmupStatus | null {
+  try {
+    const { v, ...w } = JSON.parse(body) as { v?: unknown } & WarmupStatus
+    return v === WARMUP_VERSION ? w : null
+  } catch {
+    return null
+  }
+}
+
 /** Prometheus' (and viz-query's) most steps per series in one range query. */
 export const MAX_STEPS_PER_QUERY = 11_000
 
@@ -191,7 +229,7 @@ export const coarseExpr = (rule: SloRuleV2, coarseMs: number): string => coarseE
 export function seedSlo(rule: SloRuleV2, intervalMs: number, fine: Read, coarse: Read | null, coarseMatrix: PromMatrix | null): { rt: SloRt; points: number } | { error: string } {
   const g = sloGeometry(rule.slo, intervalMs)
   const rt = newSloRt(rule)
-  const origin = residue(fine.toMs, intervalMs)
+  const origin = residue(fine.fromMs, intervalMs)
   rt.origin = origin
   const nFirst = Math.round((fine.fromMs - origin) / intervalMs)
   const m = g.coarseMs / intervalMs

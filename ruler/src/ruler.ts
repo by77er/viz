@@ -15,6 +15,8 @@ import type {
   GroupBundle,
   GroupHealth,
   GroupSnapshot,
+  HistoryPlan,
+  HistoryPlanner,
   IngestResult,
   RangeEvaluator,
   RuleV2 as Rule,
@@ -27,15 +29,20 @@ import type {
   RuleStatus,
   SampleBatch,
   SaveGroupsResult,
+  SavedRule,
   Sink,
+  SloRuleV2 as SloRule,
   Timeline,
   TimelineEntry,
   ValidationError,
   Validator,
   Refused,
+  WarmupStatus,
 } from '../contracts-proposal/rules.v2'
 import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, historyOf, maxClass, newAnomalyRt, readStateRows, stateRows, type AnomalyEval, type AnomalyRt } from './anomaly'
 import { MAX_BACKTEST_STEPS, runBacktest } from './backtest'
+import { anomalyWarmPoints, anomalyWarmReads, backtestAnomaly, backtestSlo, fetchHistory, HISTORY_LIMIT_DEFAULTS, historyBudgets, MAX_WARMUP_ATTEMPTS, readWarmup, sloWarmReads, warmAnomaly, warmSlo, warmupBody, warmupStatus, type Read } from './history'
+import { allRows, cloneSloRt, emptySloStatus, evalSlo, newSloRt, readSloRows, SLO_LIMIT_DEFAULTS, sliExpressions, sloHistory, tickRows, type SloEval, type SloRow, type SloRt } from './slo'
 import { classify } from './classify'
 import type { ServiceKeyResult, TenantServiceRpc } from '../../contracts/control'
 import { ServiceCredential, type StoredKey } from './credential'
@@ -82,6 +89,7 @@ export interface RulerEnv {
     instant?(tenant: string, promql: string, timeMs: number): Promise<PromVector | PromScalar>
     evaluate?(tenant: string, requests: EvalRequest[]): Promise<EvalResult[]>
     range?(tenant: string, promql: string, startMs: number, endMs: number, stepMs: number): Promise<PromMatrix>
+    plan?(tenant: string, promql: string, startMs: number, endMs: number, stepMs: number): Promise<HistoryPlan>
     check?(tenant: string, promql: string): ReturnType<Validator['check']>
   }
   SINK?: { write(tenant: string, batches: SampleBatch[]): Promise<void> }
@@ -118,6 +126,8 @@ export const DEFAULT_RULER_CONFIG: RulerConfig = {
     maxGroupBytes: 1_500_000,
     minIntervalMs: 10_000,
     ...ANOMALY_LIMIT_DEFAULTS,
+    ...SLO_LIMIT_DEFAULTS,
+    ...HISTORY_LIMIT_DEFAULTS,
   },
   defaultIntervalMs: 60_000,
   heartbeatMs: 5 * 60_000,
@@ -164,10 +174,14 @@ interface GroupRt {
   /** The first evaluation is at the first aligned time at or after this. */
   notBefore: number
   compiled: (CompiledAlertRule | null)[]
-  /** Anomaly rules' templates, by rule key. */
+  /** Anomaly and SLO rules' templates, by rule key. */
   anomalyCompiled: Map<string, CompiledAlertRule>
   /** Anomaly rule key → per-series detector state, as committed (rebuilt from `anomaly_state`). */
   anomaly: Map<string, AnomalyRt>
+  /** SLO rule key → per-series bucket rings, as committed (rebuilt from `slo_state`). */
+  slo: Map<string, SloRt>
+  /** Anomaly and SLO rule key → how warming it from history went (rebuilt from `warmup`). */
+  warmup: Map<string, WarmupStatus>
   /** rule key → fingerprint → alert */
   alerts: Map<string, Map<string, Alert>>
   rules: Map<string, RuleRt>
@@ -182,22 +196,27 @@ interface GroupRt {
 }
 
 interface Staged {
-  rule: AlertingRule | AnomalyRule
+  rule: AlertingRule | AnomalyRule | SloRule
   result: Extract<AlertEvalResult, { ok: true }>
   /** Anomaly rules: the detector state to commit with the alerts. */
   anomaly?: Extract<AnomalyEval, { ok: true }>
+  /** SLO rules: the working copy of the rings, to commit with the alerts. */
+  slo?: { rt: SloRt; ev: Extract<SloEval, { ok: true }> }
 }
 
-/** Every rule of a group, in evaluation order: the ordinary rules, then the anomaly rules. */
+/** Every rule of a group, in evaluation order: the ordinary rules, then the anomaly rules, then the SLO rules. */
 export function allRules(spec: RuleGroup): AnyRule[] {
-  return [...(spec.rules as AnyRule[]), ...((spec.anomalyRules ?? []) as AnomalyRule[])]
+  return [...(spec.rules as AnyRule[]), ...((spec.anomalyRules ?? []) as AnomalyRule[]), ...((spec.sloRules ?? []) as SloRule[])]
 }
+
+/** The rules with state that a warm-up fills: anomaly and SLO rules. */
+const stateRules = (spec: RuleGroup): (AnomalyRule | SloRule)[] => [...((spec.anomalyRules ?? []) as AnomalyRule[]), ...((spec.sloRules ?? []) as SloRule[])]
 
 /**
  * The alert state machine reads only `name`, `forMs`, `keepFiringForMs` and `noData` of a rule,
- * which an anomaly rule has with the same meaning.
+ * which anomaly and SLO rules have with the same meaning.
  */
-const asAlerting = (r: AnomalyRule): AlertingRule => r as unknown as AlertingRule
+const asAlerting = (r: AnomalyRule | SloRule): AlertingRule => r as unknown as AlertingRule
 
 type Cursor = { at: number; samplesDropped: number; groups: Record<string, [number | null, number, number, number, number]> }
 
@@ -323,6 +342,18 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     return { range: (promql, startMs, endMs, stepMs) => range(this.tenant, promql, startMs, endMs, stepMs) }
   }
 
+  /** The cost of a range read before it is made: the engine's `plan`, else query's `/api/v1/plan`. Without either, history is not read. */
+  protected historyPlanner(): HistoryPlanner {
+    const binding = this.env.EVALUATOR
+    if (!binding?.plan) {
+      const http = this.httpEngine()
+      if (http) return { plan: (promql, startMs, endMs, stepMs) => http.plan(promql, startMs, endMs, stepMs) }
+      return { plan: () => Promise.reject(new Error('no engine plan binding: the cost of the read cannot be checked, so it is not made')) }
+    }
+    const plan = binding.plan.bind(binding)
+    return { plan: (promql, startMs, endMs, stepMs) => plan(this.tenant, promql, startMs, endMs, stepMs) }
+  }
+
   /** Save-time PromQL validation: the engine's `check`, else query's `/api/v1/plan`, else permissive. */
   protected validator(): Validator {
     const binding = this.env.EVALUATOR
@@ -358,7 +389,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 
   /** Fault-injection point for crash tests. Does nothing in production. */
-  protected fault(_point: 'commit' | 'after-commit' | 'handoff-sent'): void {}
+  protected fault(_point: 'commit' | 'after-commit' | 'handoff-sent' | 'warmup-commit'): void {}
 
   // ───────────────────────── storage helpers ─────────────────────────
 
@@ -420,6 +451,27 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       rt.json = read.json
       rt.status = { ...rt.status, stateSeries: read.series.size, stateBytes: rows.reduce((n, b) => n + byteLength(b), 0) }
     }
+    // SLO rings: the same, from `slo_state`.
+    const sloRows = new Map<string, SloRow[]>()
+    for (const row of this.exec<{ grp: string; rule_key: string; part: string; block: number; body: string }>(`SELECT grp, rule_key, part, block, body FROM slo_state WHERE tenant = ? ORDER BY grp, rule_key, part, block`, t)) {
+      const k = `${row.grp}\n${row.rule_key}`
+      let list = sloRows.get(k)
+      if (!list) sloRows.set(k, (list = []))
+      list.push({ part: row.part as SloRow['part'], block: row.block, body: row.body })
+    }
+    for (const [k, rows] of sloRows) {
+      const cut = k.lastIndexOf('\n')
+      const g = this.groups.get(k.slice(0, cut))
+      const rule = g?.spec.sloRules?.find((r) => r.key === k.slice(cut + 1)) as SloRule | undefined
+      if (!g || !rule) continue
+      this.adoptSloRows(g, rule, rows)
+    }
+    for (const row of this.exec<{ grp: string; rule_key: string; body: string }>(`SELECT grp, rule_key, body FROM warmup WHERE tenant = ?`, t)) {
+      const g = this.groups.get(row.grp)
+      if (!g) continue
+      const w = readWarmup(row.body)
+      if (w) g.warmup.set(row.rule_key, w)
+    }
     if (cursor) {
       for (const [name, c] of Object.entries(cursor.groups)) {
         const g = this.groups.get(name)
@@ -436,6 +488,21 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     this.handoffNextSeq = (h?.top ?? 0) + 1
   }
 
+  /** Memory for one SLO rule from its rows; rows a newer release wrote are refused and kept. */
+  private adoptSloRows(g: GroupRt, rule: SloRule, rows: SloRow[]): void {
+    const read = readSloRows(rule, g.spec.intervalMs, rows)
+    const rt = g.slo.get(rule.key) ?? newSloRt(rule)
+    if ('error' in read) {
+      // A newer release's row format: refuse the rule and keep the rows (COMPATIBILITY.md §3.2).
+      rt.unreadable = read.error
+      rt.rawRows = rows
+      rt.status = { ...rt.status, status: 'state_unreadable', message: read.error }
+      g.slo.set(rule.key, rt)
+      return
+    }
+    g.slo.set(rule.key, read.rt)
+  }
+
   private newGroup(spec: RuleGroup, notBefore: number): GroupRt {
     return {
       spec,
@@ -445,8 +512,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       gen: ++this.genCounter,
       notBefore,
       compiled: spec.rules.map((r) => (r.kind === 'alert' ? compileAlertRule(r) : null)),
-      anomalyCompiled: new Map(((spec.anomalyRules ?? []) as AnomalyRule[]).map((r) => [r.key, compileAlertRule(asAlerting(r))])),
+      anomalyCompiled: new Map(stateRules(spec).map((r) => [r.key, compileAlertRule(asAlerting(r))])),
       anomaly: new Map(((spec.anomalyRules ?? []) as AnomalyRule[]).map((r) => [r.key, newAnomalyRt(r)])),
+      slo: new Map(((spec.sloRules ?? []) as SloRule[]).map((r) => [r.key, newSloRt(r)])),
+      warmup: new Map(),
       alerts: new Map(),
       rules: new Map(allRules(spec).map((r) => [r.key, { health: 'unknown', lastError: null, lastEvaluationMs: null, lastDurationMs: null, noData: false }])),
       lastEvalMs: null,
@@ -593,7 +662,11 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     const limit = g.spec.limit > 0 ? Math.min(g.spec.limit, hardCap) : hardCap
     const staged: Staged[] = []
     let pending: { rule: Rule; batch: SampleBatch }[] = []
-    const rules = allRules(g.spec)
+    // New anomaly and SLO rules are warmed from history before their first evaluation; one whose
+    // warm-up the engine just failed sits this tick out (it says so) and is tried again.
+    const waiting = await this.warmUp(g, queryTime - g.spec.intervalMs, current)
+    if (!current()) return
+    const rules = allRules(g.spec).filter((r) => !waiting.has(r.key))
     const aLimits = anomalyLimits(this.cfg)
 
     // The time budget. At the deadline the evaluator is told to stop (`abort`) and the sink
@@ -715,6 +788,25 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             }, presence ?? ev.present)
             if (result.ok) staged.push({ rule, result, anomaly: ev })
             setHealth(rule, result.ok ? null : result.error, res?.durationMs ?? null, result.ok ? result.noData : undefined)
+          } else if (rule.kind === 'slo') {
+            // The burn-rate alerts decide which series (and severities) are the rule's result. The
+            // rings are evaluated on a working copy, adopted only after the commit.
+            const rt = g.slo.get(rule.key) as SloRt
+            const work = cloneSloRt(rt)
+            const ev = evalSlo(rule, work, series, queryTime, g.spec.intervalMs)
+            if (!ev.ok) {
+              rt.status = ev.status
+              setHealth(rule, ev.error, res?.durationMs ?? null)
+              continue
+            }
+            const result = evalAlertingRule(asAlerting(rule), g.anomalyCompiled.get(rule.key) as CompiledAlertRule, g.alerts.get(rule.key) ?? EMPTY, ev.flagged, ts, {
+              resolvedRetentionMs: this.cfg.resolvedRetentionMs,
+              limit,
+              maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes,
+              externalLabels: this.cfg.externalLabels,
+            }, presence ?? ev.present)
+            if (result.ok) staged.push({ rule, result, slo: { rt: work, ev } })
+            setHealth(rule, result.ok ? null : result.error, res?.durationMs ?? null, result.ok ? result.noData : undefined)
           } else if (rule.kind === 'alert') {
             const result = evalAlertingRule(rule, g.compiled[i] as CompiledAlertRule, g.alerts.get(rule.key) ?? EMPTY, series, ts, {
               resolvedRetentionMs: this.cfg.resolvedRetentionMs,
@@ -750,7 +842,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   /** Persist the tick's transitions and their hand-off rows in one transaction, then adopt the new state. */
   private commit(g: GroupRt, ts: number, staged: Staged[]): void {
-    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {
+    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true || s.slo?.ev.changed === true)) {
       const t = this.tenant
       const updates: AlertUpdate[] = []
       this.ctx.storage.transactionSync(() => {
@@ -775,12 +867,14 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         // Detector state goes in the same transaction as the alerts it produced, so a replay
         // finds both or neither. Whole batches of series per row, never a row per series.
         for (const { rule, anomaly } of staged) if (anomaly?.changed) this.writeAnomalyState(g.spec.name, rule.key, anomaly.json)
+        // SLO rings likewise: the head and the current block of each ring, as whole batches.
+        for (const { rule, slo } of staged) if (slo?.ev.changed) this.writeSloTick(g, rule as SloRule, slo.rt)
         this.enqueueHandoff(updates, ts)
         this.fault('commit')
       })
       this.noteHandoff(updates, ts)
     }
-    for (const { rule, result, anomaly } of staged) {
+    for (const { rule, result, anomaly, slo } of staged) {
       g.alerts.set(rule.key, result.alerts)
       if (anomaly) {
         const rt = g.anomaly.get(rule.key) as AnomalyRt
@@ -788,6 +882,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         rt.json = anomaly.json
         rt.status = anomaly.status
         rt.pruned = anomaly.status.pruned
+      }
+      if (slo) {
+        slo.rt.status = { ...slo.ev.status, stateBytes: slo.rt.stateBytes }
+        g.slo.set(rule.key, slo.rt)
       }
     }
     this.fault('after-commit')
@@ -806,7 +904,111 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND chunk >= ?`, this.tenant, group, key, rows.length)
   }
 
-  private toUpdate(g: GroupRt, rule: AlertingRule | AnomalyRule, a: Alert, status: 'firing' | 'resolved', at: number): AlertUpdate {
+  /**
+   * Inside a transaction: one SLO tick's rows. The head and the current block of each ring are
+   * replaced; blocks that left the rings are deleted (3 rows written a tick, plus a delete when a
+   * block leaves). `rt.stateBytes` is kept as the sum of the rule's row bytes.
+   */
+  private writeSloTick(g: GroupRt, rule: SloRule, rt: SloRt): void {
+    const t = this.tenant
+    const { rows, keepFine, keepCoarse } = tickRows(rt, rule, g.spec.intervalMs)
+    for (const r of rows) {
+      this.exec(`INSERT INTO slo_state (tenant, grp, rule_key, part, block, body) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (tenant, grp, rule_key, part, block) DO UPDATE SET body = excluded.body`, t, g.spec.name, rule.key, r.part, r.block, r.body)
+    }
+    this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND ((part = 'fine' AND block < ?) OR (part = 'coarse' AND block < ?))`, t, g.spec.name, rule.key, keepFine, keepCoarse)
+    rt.stateBytes = this.exec<{ n: number }>(`SELECT COALESCE(SUM(LENGTH(CAST(body AS BLOB))), 0) AS n FROM slo_state WHERE tenant = ? AND grp = ? AND rule_key = ?`, t, g.spec.name, rule.key)[0]?.n ?? 0
+  }
+
+  /** Inside a transaction: replace all of one SLO rule's rows (a warm-up, a shard move). */
+  private writeSloAll(group: string, key: string, rows: SloRow[]): void {
+    this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ? AND rule_key = ?`, this.tenant, group, key)
+    for (const r of rows) this.exec(`INSERT INTO slo_state (tenant, grp, rule_key, part, block, body) VALUES (?, ?, ?, ?, ?, ?)`, this.tenant, group, key, r.part, r.block, r.body)
+  }
+
+  private putWarmup(group: string, key: string, w: WarmupStatus): void {
+    this.exec(`INSERT INTO warmup (tenant, grp, rule_key, body) VALUES (?, ?, ?, ?) ON CONFLICT (tenant, grp, rule_key) DO UPDATE SET body = excluded.body`, this.tenant, group, key, warmupBody(w))
+  }
+
+  /**
+   * Warm the group's pending anomaly and SLO rules so that their state at `endTs` (the query time
+   * before this tick's) is what it would be had they run all along. Per rule: the reads are planned
+   * (nothing fetched); over the budget, or refused by the engine's plan, the warm-up is refused and
+   * the rule starts cold; otherwise the reads are fetched whole and fed, in time order, through the
+   * rule's own evaluation; the state rows and the status commit in one transaction. An engine
+   * failure leaves the job pending (the rule waits this tick out) until `MAX_WARMUP_ATTEMPTS`, then
+   * the rule starts cold. Returns the keys of rules that wait.
+   */
+  private async warmUp(g: GroupRt, endTs: number, current: () => boolean): Promise<Set<string>> {
+    const waiting = new Set<string>()
+    const budget = historyBudgets(this.cfg.limits).warmup
+    const aLimits = anomalyLimits(this.cfg)
+    const I = g.spec.intervalMs
+    for (const rule of stateRules(g.spec)) {
+      const job = g.warmup.get(rule.key)
+      if (!job || job.status !== 'pending') continue
+      let reads: Read[]
+      let slo: ReturnType<typeof sloWarmReads> | null = null
+      if (rule.kind === 'anomaly') reads = anomalyWarmReads(rule, I, endTs)
+      else {
+        slo = sloWarmReads(rule, I, endTs)
+        reads = slo.coarse ? [slo.fine, slo.coarse] : [slo.fine]
+      }
+      const base: WarmupStatus = { ...warmupStatus(reads, budget), attempts: job.attempts }
+      const finish = (w: WarmupStatus, write?: () => void) => {
+        if (!current()) return
+        this.ctx.storage.transactionSync(() => {
+          write?.()
+          this.putWarmup(g.spec.name, rule.key, w)
+          this.fault('warmup-commit')
+        })
+        g.warmup.set(rule.key, w)
+      }
+      if (reads.length === 0) {
+        finish({ ...base, status: 'not_needed', finishedAt: this.now() })
+        continue
+      }
+      let fetched: Awaited<ReturnType<typeof fetchHistory>>
+      try {
+        fetched = await fetchHistory(this.historyPlanner(), this.rangeEvaluator(), reads, budget)
+      } catch (e) {
+        const attempts = job.attempts + 1
+        const last = attempts >= MAX_WARMUP_ATTEMPTS
+        finish({ ...base, status: last ? 'failed' : 'pending', attempts, message: `the engine failed the read (${errorText(e)}); ${last ? 'the rule started cold' : 'tried again at the next tick'}`, finishedAt: last ? this.now() : null })
+        if (!last) waiting.add(rule.key)
+        continue
+      }
+      if (!current()) return waiting
+      if (!fetched.ok) {
+        finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: fetched.plan, message: `${fetched.refused}; nothing was fetched and the rule started cold`, finishedAt: this.now() })
+        continue
+      }
+      const done = (points: number): WarmupStatus => ({ ...base, status: 'done', attempts: job.attempts + 1, plan: fetched.plan, points, finishedAt: this.now() })
+      if (rule.kind === 'anomaly') {
+        const w = warmAnomaly(rule, fetched.matrices[0]!, reads[0]!, aLimits)
+        if (!w.ok) {
+          finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: fetched.plan, message: `${w.error}; nothing was kept and the rule started cold`, finishedAt: this.now() })
+          continue
+        }
+        finish(done(w.points), () => this.writeAnomalyState(g.spec.name, rule.key, w.rt.json))
+        if (current()) g.anomaly.set(rule.key, { ...w.rt, status: { ...w.rt.status, status: 'unknown', message: null } })
+      } else {
+        const sr = slo as NonNullable<typeof slo>
+        const w = warmSlo(rule, I, sr.fine, sr.coarse, fetched.matrices[0]!, sr.coarse ? (fetched.matrices[1] ?? null) : null)
+        if (!w.ok) {
+          finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: fetched.plan, message: `${w.error}; nothing was kept and the rule started cold`, finishedAt: this.now() })
+          continue
+        }
+        const rows = allRows(w.rt, rule, I)
+        w.rt.stateBytes = rows.reduce((n, r) => n + byteLength(r.body), 0)
+        finish(done(w.points), () => this.writeSloAll(g.spec.name, rule.key, rows))
+        if (current()) g.slo.set(rule.key, { ...w.rt, status: { ...emptySloStatus(rule.slo.maxSeries), stateSeries: w.rt.series.size, stateBytes: w.rt.stateBytes } })
+      }
+    }
+    return waiting
+  }
+
+  private toUpdate(g: GroupRt, rule: AlertingRule | AnomalyRule | SloRule, a: Alert, status: 'firing' | 'resolved', at: number): AlertUpdate {
     const heartbeat = g.spec.name === DEADMAN_GROUP
     return {
       fingerprint: a.fingerprint,
@@ -938,6 +1140,11 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             r.anomaly.history = historyOf(r.anomaly.detector, r.anomaly.params, g.spec.intervalMs, next)
             r.cost = { class: maxClass(exprCost.class, r.anomaly.history.tick), windowMs: Math.max(exprCost.windowMs, r.anomaly.history.tickLookbackMs), reason: `${exprCost.reason}; the detector: ${r.anomaly.history.reason}` }
           }
+          for (const r of (g.spec.sloRules ?? []) as SloRule[]) {
+            const tick = classify(r.expr, next)
+            r.slo.history = sloHistory(r.slo, g.spec.intervalMs, tick.class, next)
+            r.cost = { class: tick.class, windowMs: tick.windowMs, reason: `${tick.reason}; ${r.slo.history.reason}` }
+          }
           this.exec(`UPDATE rule_group SET spec = ? WHERE tenant = ? AND name = ?`, JSON.stringify(g.spec), this.tenant, g.spec.name)
         }
       }
@@ -971,6 +1178,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             const text = (r as Record<string, unknown> | null)?.[field]
             if (typeof text === 'string' && text.trim() !== '') exprs.push({ path: `groups[${gi}].rules[${ri}].${field}`, text })
           }
+          // An SLO rule's SLI, with $window as one minute (contract version 4).
+          for (const e of sliExpressions((r as Record<string, unknown> | null)?.slo)) exprs.push({ path: `groups[${gi}].rules[${ri}].${e.field}`, text: e.text })
         })
       })
     }
@@ -1014,12 +1223,16 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     const budget = anomalyLimits(this.cfg).maxAnomalyStateBytesPerObject
     const replaced = new Set(parsed.groups.map((g) => g.name))
     let reserved = 0
-    for (const g of this.groups.values()) if (!replaced.has(g.spec.name)) for (const r of (g.spec.anomalyRules ?? []) as AnomalyRule[]) reserved += r.anomaly.stateBytesPerSeries * r.anomaly.maxSeries
+    // SLO rules' rings count against the same budget (they are held in memory between ticks too).
+    const reserve = (r: AnomalyRule | SloRule) => (r.kind === 'anomaly' ? r.anomaly.stateBytesPerSeries * r.anomaly.maxSeries : r.slo.stateBytesPerSeries * r.slo.maxSeries)
+    for (const g of this.groups.values()) if (!replaced.has(g.spec.name)) for (const r of stateRules(g.spec)) reserved += reserve(r)
     for (const g of parsed.groups) {
-      for (const r of (g.anomalyRules ?? []) as AnomalyRule[]) {
-        reserved += r.anomaly.stateBytesPerSeries * r.anomaly.maxSeries
+      for (const r of stateRules(g)) {
+        reserved += reserve(r)
         if (reserved > budget) {
-          errors.push({ path: `${parsed.anomalyPaths?.get(r) ?? 'groups'}.anomaly.max_series`, message: `this ruler shard's anomaly rules would reserve ${reserved} bytes of detector state (max_series × about ${r.anomaly.stateBytesPerSeries} bytes per series for this rule); the limit per shard is ${budget}`, fix: 'Lower max_series (to the series the expression really returns), aggregate the expression, or put the rule in a group on another shard.' })
+          const at = r.kind === 'anomaly' ? `${parsed.anomalyPaths?.get(r) ?? 'groups'}.anomaly.max_series` : `${parsed.sloPaths?.get(r) ?? 'groups'}.slo.max_series`
+          const per = r.kind === 'anomaly' ? r.anomaly.stateBytesPerSeries : r.slo.stateBytesPerSeries
+          errors.push({ path: at, message: `this ruler shard's anomaly and SLO rules would reserve ${reserved} bytes of state (max_series × about ${per} bytes per series for this rule); the limit per shard is ${budget}`, fix: 'Lower max_series (to the series the expression really returns), aggregate the expression, or put the rule in a group on another shard.' })
           break
         }
       }
@@ -1038,7 +1251,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             intervalMs: spec.intervalMs,
             offsetMs: g.offsetMs,
             nextEvaluationMs: this.ceilTick(g, now),
-            rules: allRules(spec).map((r) => (r.kind === 'anomaly' ? { name: r.name, kind: r.kind, key: r.key, cost: r.cost, history: r.anomaly.history } : { name: r.name, kind: r.kind, key: r.key, cost: r.cost })),
+            rules: allRules(spec).map((r): SavedRule => (r.kind === 'anomaly' ? { name: r.name, kind: r.kind, key: r.key, cost: r.cost, history: r.anomaly.history } : r.kind === 'slo' ? { name: r.name, kind: r.kind, key: r.key, cost: r.cost, slo: r.slo.history } : { name: r.name, kind: r.kind, key: r.key, cost: r.cost })),
           }
         }),
       },
@@ -1098,13 +1311,33 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           }
           // Same key (detector and parameters too) and the same interval (the detector's step): the
           // detector state carries over; otherwise it describes another rule and is deleted.
+          const sameStep = old.spec.intervalMs === spec.intervalMs
           for (const [key, rt] of old.anomaly) {
-            if (kept.has(key) && old.spec.intervalMs === spec.intervalMs) g.anomaly.set(key, rt)
+            if (kept.has(key) && sameStep) g.anomaly.set(key, rt)
             else this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ?`, t, spec.name, key)
+          }
+          // SLO rings the same way (an interval is a bucket width), and the warm-up status with them.
+          for (const [key, rt] of old.slo) {
+            if (kept.has(key) && sameStep) g.slo.set(key, rt)
+            else this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ? AND rule_key = ?`, t, spec.name, key)
+          }
+          for (const [key, w] of old.warmup) {
+            if (kept.has(key) && sameStep) g.warmup.set(key, w)
+            else this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ? AND rule_key = ?`, t, spec.name, key)
           }
         } else {
           // A new group: no state may be inherited from a group of the same name that is gone.
           this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ?`, t, spec.name)
+          this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ?`, t, spec.name)
+          this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, t, spec.name)
+        }
+        // A new anomaly or SLO rule (no state carried over) is warmed from history before its first
+        // evaluation: a pending job, one row, run by the next tick (contract version 4).
+        for (const r of stateRules(spec)) {
+          if (g.warmup.has(r.key) || (r.kind === 'anomaly' ? g.anomaly.get(r.key)?.series.size : g.slo.get(r.key)?.lastTs !== null && g.slo.get(r.key)?.lastTs !== undefined)) continue
+          const w = warmupStatus([], historyBudgets(this.cfg.limits).warmup)
+          this.putWarmup(spec.name, r.key, w)
+          g.warmup.set(r.key, w)
         }
         this.exec(`INSERT INTO rule_group (tenant, name, spec, not_before) VALUES (?, ?, ?, ?)
           ON CONFLICT (tenant, name) DO UPDATE SET spec = excluded.spec, not_before = excluded.not_before`, t, spec.name, JSON.stringify(spec), g.notBefore)
@@ -1204,6 +1437,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     this.ctx.storage.transactionSync(() => {
       this.exec(`DELETE FROM rule_group WHERE tenant = ? AND name = ?`, this.tenant, name)
       this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ?`, this.tenant, name)
+      this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ?`, this.tenant, name)
+      this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, this.tenant, name)
       for (const [key, alerts] of g.alerts) this.dropRuleAlerts(g, key, alerts, now, updates)
       this.enqueueHandoff(updates, now)
     })
@@ -1245,7 +1480,20 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   private anomalyStatus(g: GroupRt, rule: AnomalyRule) {
     const rt = g.anomaly.get(rule.key)
-    return rt ? { ...rt.status, maxSeries: rule.anomaly.maxSeries } : emptyStatus(rule.anomaly.maxSeries)
+    const status = rt ? { ...rt.status, maxSeries: rule.anomaly.maxSeries } : emptyStatus(rule.anomaly.maxSeries)
+    const w = g.warmup.get(rule.key)
+    return w ? { ...status, warmup: w } : status
+  }
+
+  private sloStatus(g: GroupRt, rule: SloRule) {
+    const rt = g.slo.get(rule.key)
+    const { warmup: _w, ...status } = rt ? { ...rt.status, maxSeries: rule.slo.maxSeries, stateSeries: rt.series.size, stateBytes: rt.stateBytes } : emptySloStatus(rule.slo.maxSeries)
+    const w = g.warmup.get(rule.key)
+    if (w?.status === 'pending' && status.status === 'unknown') {
+      // Not evaluated yet because it is being warmed: say so rather than "unknown".
+      return { ...status, status: 'warming' as const, message: w.message ?? 'warming from history before the first evaluation', warmup: w }
+    }
+    return w ? { ...status, warmup: w } : status
   }
 
   async snapshot(tenant: string) {
@@ -1269,6 +1517,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           alerts: [...(g.alerts.get(rule.key)?.values() ?? [])],
         }
         if (rule.kind === 'anomaly') snap.anomaly = this.anomalyStatus(g, rule)
+        if (rule.kind === 'slo') snap.slo = this.sloStatus(g, rule)
         return snap
       }),
     }))
@@ -1350,6 +1599,15 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         else if (rt.json.size > 0) bundle.anomalyState[key] = stateRows(rt.json)
       }
     }
+    if (g.slo.size > 0) {
+      bundle.sloState = {}
+      for (const [key, rt] of g.slo) {
+        const rule = g.spec.sloRules?.find((r) => r.key === key) as SloRule | undefined
+        if (rt.rawRows !== null) bundle.sloState[key] = rt.rawRows
+        else if (rule && rt.lastSlot !== null) bundle.sloState[key] = allRows(rt, rule, g.spec.intervalMs)
+      }
+    }
+    if (g.warmup.size > 0) bundle.warmup = Object.fromEntries(g.warmup)
     return { status: 'ok' as const, bundle }
   }
 
@@ -1406,6 +1664,24 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         rt.json = read.json
         this.writeAnomalyState(spec.name, key, read.json)
       }
+      this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ?`, t, spec.name)
+      for (const [key, rows] of Object.entries(bundle.sloState ?? {})) {
+        const rule = (spec as RuleGroup).sloRules?.find((r) => r.key === key) as SloRule | undefined
+        if (!rule || !keys.has(key)) continue
+        // Stored as they came (a format this code cannot read is refused, and kept, by `adoptSloRows`).
+        for (const r of rows) this.exec(`INSERT INTO slo_state (tenant, grp, rule_key, part, block, body) VALUES (?, ?, ?, ?, ?, ?)`, t, spec.name, key, r.part, r.block, r.body)
+        this.adoptSloRows(g, rule, rows as SloRow[])
+      }
+      // Warm-up status travels with the state; a rule that arrives without state is warmed here.
+      this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, t, spec.name)
+      for (const r of stateRules(spec as RuleGroup)) {
+        const carried = bundle.warmup?.[r.key]
+        const hasState = r.kind === 'anomaly' ? (g.anomaly.get(r.key)?.series.size ?? 0) > 0 || g.anomaly.get(r.key)?.rawRows !== null : g.slo.get(r.key)?.lastTs !== null || g.slo.get(r.key)?.rawRows !== null
+        const w = carried ?? (hasState ? null : warmupStatus([], historyBudgets(this.cfg.limits).warmup))
+        if (!w) continue
+        this.putWarmup(spec.name, r.key, w)
+        g.warmup.set(r.key, w)
+      }
     })
     this.groups.set(spec.name, g)
     this.syncDeadman()
@@ -1423,6 +1699,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       this.exec(`DELETE FROM rule_group WHERE tenant = ? AND name = ?`, this.tenant, name)
       this.exec(`DELETE FROM alert WHERE tenant = ? AND grp = ?`, this.tenant, name)
       this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ?`, this.tenant, name)
+      this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ?`, this.tenant, name)
+      this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, this.tenant, name)
       for (const r of allRules(g.spec)) if (r.kind !== 'record' && r.monitor) this.exec(`DELETE FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, r.monitor.id)
     })
     this.groups.delete(name)
@@ -1455,6 +1733,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           alerts: [...(g.alerts.get(r.key)?.values() ?? [])],
         }
         if (r.kind === 'anomaly') status.anomaly = this.anomalyStatus(g, r)
+        if (r.kind === 'slo') status.slo = this.sloStatus(g, r)
         rules.push(status)
       }
     }
