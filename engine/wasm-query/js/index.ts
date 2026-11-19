@@ -231,7 +231,8 @@ export interface SignalBudget {
    * Traces: a span whose start lies outside `[lo, hi]` (nanoseconds, inclusive) is not part of
    * the call's data; it is dropped as it is read, before de-duplication, so what the call sees
    * does not depend on what else outside the bound was read. `tqExtent` cuts fragments, tail
-   * spans, the hull and the hours to it. Default: all time.
+   * spans, the hull and the hours to it (and holds its traces' extents under `maxBytes`).
+   * Default: all time.
    */
   bound?: { lo: bigint; hi: bigint }
 }
@@ -692,7 +693,7 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     tqFilePlan: (table, indexes, lo, hi, id) =>
       call('viz_q_tq_file_plan', traceId(new Request().u64(BigInt(RANGE_GAP)).u8(table === 'spans' ? 0 : 1).i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).strs(indexes), json<SignalFilePlan[]>),
     tqExtent: (indexFiles, tailBatches, lo, hi, id, budget) =>
-      call('viz_q_tq_extent', bound(traceId(new Request().i64(nanos('lo', lo)).i64(nanos('hi', hi)), id), budget).files(indexFiles).files(tailBatches), json<{ traces: number; lo?: string; hi?: string; hours: number[] }>),
+      call('viz_q_tq_extent', maxBytes(bound(traceId(new Request().i64(nanos('lo', lo)).i64(nanos('hi', hi)), id), budget), budget).files(indexFiles).files(tailBatches), json<{ traces: number; lo?: string; hi?: string; hours: number[] }>),
     tqSearch: (files, tails, query, q, budget) =>
       call('viz_q_tq_search', spanBudget(new Request(), q.maxSpans, budget).count('limit', q.limit).count('spss', q.spss).i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).str(query).files(files).files(tails), counted),
     tqMetrics: (files, tails, query, q, budget) =>

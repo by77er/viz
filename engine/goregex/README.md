@@ -159,7 +159,14 @@ crate and are run against its own suite too (Unicode `\d \w \s`, Unicode `\b`, t
 bound dropped, `{` as an error, parentheses unbalanced: all caught by `tests/go_rules.rs` or the
 unit tests and by TraceQL's Tempo test; mutant 31, one of the two balance checks removed, is
 equivalent and survives); `engine/logql/tools/mutate.py` mutant 30 (nesting limit lifted:
-caught by LogQL's `limits` and `props`).
+caught by LogQL's `limits` and `props`). For group names and re-wrapping (2026-11-19):
+TraceQL's mutants 33–42, **10 of 10 caught** (a leading digit refused, Unicode letters
+accepted in names, the Unsupported check removed or narrowed to digits, `compile_anchored`
+keeping names, `(?<=` as Perl syntax: by `group_names_are_gos` or `named_groups`, the first two
+also by TraceQL's Tempo test; re-wraps never written, written unsorted (a panic on nested
+re-wraps), a second wrap at one offset not counted: by `rewraps_are_assembled_in_place`; the
+per-wrap insert restored, which changes no output: only by `rewrapping_costs_linear_time`);
+LogQL's mutants 31–33, 3 of 3 caught by its `api` suite (`engine/logql/README.md` (h)).
 
 ## Known risks
 

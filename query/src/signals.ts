@@ -284,10 +284,12 @@ async function traceRounds<T>(
     c.cost.ledgerVersion = first.version
     if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
     const r1 = round(first.files, pruning() ? c.engine.tqFilePlan('trace_index', first.files.map((f) => f.index), bound.lo, bound.hi, id) : null)
-    capsBeforeFetch(c, [r1], c.limits.maxSpans, 'max_spans')
+    // Files and bytes only: a fragment is not a span. The engine holds one extent per trace
+    // under the byte budget (`tqExtent`).
+    capsBeforeFetch(c, [r1], c.limits.maxSpans, 'max_spans', [])
     const [indexFiles, tails] = await Promise.all([fetchRound(c, r1, have, rf.refused), readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf)])
     if (!indexFiles || !tails) continue
-    const ext = engineCall(c, () => c.engine.tqExtent(indexFiles, tails, window.lo, window.hi, id, { bound }))
+    const ext = engineCall(c, () => c.engine.tqExtent(indexFiles, tails, window.lo, window.hi, id, budget(c, bound)))
     if (ext.traces === 0 || ext.lo === undefined || ext.hi === undefined) return empty()
     // Every span of every trace found that starts inside the bound starts inside its hull.
     const hull = pruning() ? { lo: BigInt(ext.lo), hi: BigInt(ext.hi) } : bound

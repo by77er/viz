@@ -34,12 +34,15 @@ and Loki's HTTP APIs over the tenant's span and log tables and shards, behind
 | `CLEANROOM.md` | The documentation the Tempo and Loki endpoints were written from |
 | `test/signals.test.ts`, `test/signals-load.ts` | Traces and logs: every endpoint against the engines' in-memory answers over three seeds, pruning on and off, tenancy, caps, signals in tails, the seam, the flag, one byte budget over a signal's shards (21 tests) |
 | `test/signals.e2e.test.ts` | Traces and logs end to end: the corpus's OTLP and Loki push requests through edge, the shards, the real flush and the ledger, then every case against the in-memory answers, with and without the shards' signal filter (2 tests) |
+| `test/completeness.test.ts` | Traces whole within the margin (review M-1): the review's case and six neighbours through edge, four flush units and a tail; pruning on and off; against "every span" |
+| `test/memory.test.ts` | Memory bounded by bytes held (review M-2): the review's fat resource, fat attributes and fat lines through the Worker, the tenant's `maxDecodedBytes` |
+| `test/sigcompat.test.ts` | Loki's timestamps, Loki's plain-text errors, Tempo's `/api/echo` (review m-4) |
 | `test/signals.bench.ts` | The trace and log measurements (`npm run measure -- test/signals.bench.ts`) |
 | `tools/gen-signal-fixtures.sh`, `tools/pack-requests.mjs` | The trace and log fixtures (git-ignored; run before the tests): per seed the corpus's batches, flushed files and cases, and its requests with the cases for the end-to-end test |
 | `wrangler.jsonc` | The production shape (not deployed to production; deployed twice as a staged copy, `deploy/README.md`) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
 | `src/meta.ts` | The label endpoints over leaves: the engine's order (code points; label sets pair by pair) and the exact union of listings (`Listing`) |
-| `test/*.test.ts` | 152 tests in workerd, 16 files |
+| `test/*.test.ts` | 163 tests in workerd, 19 files |
 | `test/meta.test.ts` | The label endpoints over leaves (the one-place bytes at the three moments, by themselves, with the tail read by the parts, the cap over parts and waves, code-point order, a missing file) and `limit` |
 | `test/meta.bench.ts` | Their counterfactual, local: 190,000 series over an hour and a 68 MiB tail (`npm run measure -- test/meta.bench.ts`) |
 | `test/tail.test.ts` | Tail reads filtered and paged: the same answers from shards of this release and the previous one, pages followed to the end, refusals on any page, a tail over the cap split with each part reading the rest, release skew of shards and leaves, `tailFilter` and `cutById` against the shard's own filter |
@@ -59,7 +62,7 @@ and Loki's HTTP APIs over the tenant's span and log tables and shards, behind
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
 tools/gen-signal-fixtures.sh               # the trace and log fixtures (test/fixtures/signals/, git-ignored; builds a native example)
-npx vitest run --maxWorkers=2              # 152 tests in workerd, 16 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
+npx vitest run --maxWorkers=2              # 163 tests in workerd, 19 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
 npx tsc --noEmit                           # clean
 npm run measure                            # both local measurements (split execution about 2 minutes, cardinality about 3)
 node tools/mutants.mjs                     # the mutation check, on a scratch copy of the tree (never edits this one)
@@ -692,16 +695,187 @@ metrics query of a tenant with a span or log stream registered would have failed
 
 Checked before anything is fetched, from the ledger's sizes and the fragments' row counts:
 `maxFiles` (both rounds of a trace query together), `maxFetchBytes` (files; then files plus the
-tail, as for metrics), and **`maxSpans` (40,000) / `maxLogRows` (60,000)** on the rows of the row
-groups a query reads. The engine checks the same caps again as it decodes, the tail's rows
-included (`max_spans`, `max_rows`: 422 naming the limit). TraceQL: `maxTraceSeries` (10,000),
-`maxTracePoints` (11,000 per series); LogQL: `maxSeries`, `maxSteps`. The isolate's byte budget
-applies as for metrics. A query over a cap is refused (422); split execution is not built for
-traces and logs, so one isolate is the bound (below, and D62).
+tail, as for metrics), and **`maxSpans` (18,000) / `maxLogRows` (30,000)** on the rows of the row
+groups a query reads (a trace query's `trace_index` rows and its `spans` rows each on their own:
+a fragment is not a span). The engine checks the row caps again on the rows it HOLDS, the
+tail's included (`max_spans`, `max_rows`: 422 naming the limit); a span outside the query's
+bound, or a log row no selector reads, is decoded and dropped and counts nothing (since ABI 7;
+before, every row decoded counted). **What bounds memory is `maxDecodedBytes` (32 MiB)**,
+counted by the engine ("Memory"). TraceQL: `maxTraceSeries` (10,000), `maxTracePoints` (11,000
+per series); LogQL: `maxSeries`, `maxSteps`; a metric query's series must also fit what the byte
+budget leaves (48 bytes a point). The isolate's byte budget applies as for metrics. A query over
+a cap is refused (422); split execution is not built for traces and logs, so one isolate is the
+bound (D62).
 
-### Measurements (measured here)
+### Memory (review M-2)
 
-Local workerd through the whole Worker (`test/signals.bench.ts`): ledger, leaves reading
+**The finding** (reproduced here before the change, Node 22, the review's scripts with the
+committed module `bfcda39f…`): the caps bounded rows and compressed bytes. A resource repeated on
+every span, or a long line, costs almost nothing in a file (dictionary pages, snappy) and was
+copied per row by the engine. 1,000 spans with a 180 KB resource (0.18 MiB of files) took
+**176.1 MiB** of WASM memory, 2,000 took **348.9 MiB**, and 400 log lines of 200 KB (3.77 MiB of
+files) **158.5 MiB** and a 19.1 MiB answer, all answered 200.
+
+**The change** (`engine/wasm-query` ABI 7, `src/sigfiles.rs` `Mem` and `Resources`; D62):
+
+- The engine counts the bytes each span or log call holds and refuses past the tenant's
+  `maxDecodedBytes` (32 MiB): 422 `max_decoded_bytes`, an `execution` error naming the limit.
+  A span is charged 512 bytes plus every string it keeps, with 56 bytes per attribute; a log row
+  192 bytes plus its line and its metadata twice (as stored, and as LogQL sees it); a stream's
+  labels once per file or batch; a metric series 48 bytes a point; an answer four times its
+  length (the text and the result buffer in WASM, and the JavaScript string). The charges were
+  set so that they are at or above what the measured memory grows by (below).
+- A span's resource is held once per distinct resource of the call, from files and tail alike
+  (`Resources`), and in the engine's form once more (`viz_traceql::Span.resource` is now a
+  shared `Resource`), each charged once.
+- Spans outside the query's bound and log rows no selector reads are dropped before they are
+  held, and count against nothing (also "The tail").
+
+**Measured after** (here; Node 22 through the binding, the review's scripts against this
+module, and workerd through the whole Worker, `test/memory.test.ts`; load average 7 to 10):
+
+| Input | Before | After (Node) | After (Worker) |
+|---|---|---|---|
+| 1,000 spans, 180 KB resource | 200, 176.1 MiB | 200, **4.8 MiB** | |
+| 2,000 spans, 180 KB resource | 200, 348.9 MiB | 200, **6.0 MiB** | 200, **6.0 MiB** |
+| 600 spans, each its own 60 KB attribute | (not run) | | 422 `max_decoded_bytes`, **39.4 MiB** (1.8 MB of files fetched) |
+| 400 log lines of 200 KB | 200, 158.5 MiB + 19.1 MiB answer | 422, **46.7 MiB** | 422, **41.5 MiB** |
+| 40 of those lines, `limit` 10 | | | 200, **17.8 MiB** |
+
+So the isolate holds at most the budget plus what was fetched plus the engine's few MiB, and a
+query that does not fit is refused, never answered from part of its rows.
+
+**The caps, re-derived** (`src/config.ts`; the resource shape is TRAINING KNOWLEDGE of
+auto-instrumented services on Kubernetes, not measured from a tenant): a generator of spans with
+a resource of 37 attributes (about 3 KiB: service, SDK, process command line, host, container,
+Kubernetes and cloud keys; 50 distinct, 10 services of 5 pods) and 12 to 14 span attributes
+(HTTP, client, user agent, a SQL statement on a third), and of log lines of 150 to 400 bytes with
+two metadata keys in 50 streams (`mem-signals.mjs` in this work's scratch area; one engine
+instance per run, so the memory is that call's peak):
+
+| Rows | Engine ms | Peak WASM, no budget | Charged |
+|---|---:|---:|---:|
+| 10,000 spans | 384 | 20.3 MiB | |
+| 20,000 spans | 757 | 34.3 MiB | 34 MiB |
+| 40,000 spans | 1,790 | 66.3 MiB | 67.5 MiB |
+| 20,000 log rows | 448 | 29.3 MiB | |
+| 60,000 log rows | 902 | 54.4 MiB | 47.6 MiB (at 48 B an attribute; 46.5 at 48) |
+
+A realistic span grows memory by 1.64 KiB and is charged 1.72 KiB; a log row grows it by
+0.64 KiB and is charged about 0.8 KiB. 32 MiB holds about 19,000 such spans: `maxSpans` is
+18,000 (was 40,000), so a realistic query meets the cheap refusal before anything is fetched;
+`maxLogRows` is 30,000 (was 60,000), which leaves 8 MiB for an answer of 5,000 lines. The budget
+is 32 MiB because the worst query then holds, in WASM, its inputs (`maxFetchBytes`, 16 MiB, and
+one file's copy while it is opened) plus the budget plus about 5 MiB, and in the JavaScript heap
+the fetched bytes and the answer: about 100 MiB with the module, against an isolate of 128 MB
+(modelled; the trial of "What remains" measures it). Memory per span is mostly its own
+attributes, kept whole: projection by the plan's columns would cut it, and is not built.
+
+### Completeness (review M-1)
+
+**The finding** (reproduced here before the change, `search-hull.mjs`): a search read the
+`trace_index` files of the window only, so the late child of trace `a` (root 09:00 to 09:05 in
+one flush unit, child 11:00 in a later one; window 08:55 to 09:10) was never read: `durationMs`
+300,000 where the engine over every span says 7,260,000, `{ trace:duration > 1h }` empty, and
+`{ name = "root" } >> { name = "late-child" }` empty (the review's `span.name` queries match an
+attribute called `name`, so they were empty either way).
+
+**What Tempo guarantees** (its public documentation, read 2026-11-19; no Tempo source was read,
+`engine/traceql/CLEANROOM.md`): trace by ID with `start` and `end` "includes traces for the
+specified time range only … this can result in trace not being found or partial results"; for
+search the API documentation makes no completeness statement (it "takes the first N results"
+and "even identical searches differs due to things like machine load"), and the TraceQL
+documentation defines `trace:duration` as "max(end) - min(start) time of the spans in the trace".
+
+**The change** (D62): a margin, `traceMarginMs` (2 h by default, a tenant limit). A search, a
+whole-trace metrics query and trace by ID with a hint read `trace_index` over the window widened
+by the margin (the bound); the engine merges every fragment and tail span inside the bound per
+trace, finds the traces whose merged extent overlaps the window and gives their hull cut to the
+bound; the spans of the hull are read; and the engine drops every span that starts outside the
+bound before de-duplication. Every trace the answer names is then evaluated over exactly its
+spans that start inside the bound: all of them when it lies within the margin of the window,
+wherever they were flushed, whether they are still in a tail, and with pruning on or off. A
+trace longer than the margin is answered from its part inside the bound, the same part every
+time. Trace by ID without a hint is bounded by all time. Why one round over the bound and not a
+second round by trace id (the review's other option), and what it costs: D62. In short: a flush
+unit's `trace_index` file is one row group whose random ids span the id space, so a second
+round by id would read the same files; the margin costs `trace_index` over the window and twice
+the margin, about 5 % of the span bytes per hour (measured here on the benchmark data: 180,576 of
+3,569,847 bytes), so about a fifth of an hour's span bytes for a one-hour search at 2 h, and one
+more file per flush unit (modelled: 24 S more R2 reads for S span shards over four hours,
+uncompacted; not measured on Cloudflare).
+
+**After** (the review's script mirrored on the new planner, `search-hull-after.mjs`): all six
+queries, the review's four and the two with the `name` intrinsic, equal the engine over every
+span with the 2-hour margin; with a 1-hour margin the four that depend on the child 1 h 50 min
+after the window differ, as the bound says. In workerd, `test/completeness.test.ts` (below).
+
+### The tail (review m-3)
+
+A span or log read gets the signal's whole tail, whatever its window: the shard returns a span
+or log batch whole to any filter that admits its signal, and its time fields select metric rows
+only (`shard/src/tail.ts` `filterBatch`; D63). **The window is not sent**: it would change
+nothing in this shard release, and the shard's contract says the time fields are for metric rows.
+What changed here: tail rows outside the query (spans outside its bound, log rows no selector
+reads) are dropped by the engine before they are held, so they cost no row of `maxSpans` or
+`maxLogRows` and no byte of the budget (`test/signals.test.ts`, "the ones outside the query do
+not"). What is left, **a usability limit** (modelled, not measured): the tail's bytes count
+against `maxFetchBytes` (16 MiB) whatever the window. A shard seals at 4 MiB or 10 minutes and
+holds at most 64 MiB a tenant, so a tenant whose spread S is 4 or more, with segments near the
+seal size, has 16 MiB or more of span (or log) tail and every trace (or log) query is refused
+422 `max_fetch_bytes`, even one over last week. It refuses; it never answers in part. The fix
+belongs to `shard/` ("Needed changes elsewhere", 4): time bounds per span and log batch, kept at
+append, so that a filter's window skips whole batches.
+
+### `trace_index` counts (compaction's open item)
+
+`trace_index` counts a span retried into two flush units twice (`compact/README.md`,
+`engine/storage/README.md`; D68 kept them). **Decided: the counts are upper bounds, and the query
+de-duplicates** by never answering from them: every summary is computed from the spans, which
+are de-duplicated on `(trace_id, span_id)`. The counts are used only to plan, where an
+over-count only makes a cap fire early. `test/completeness.test.ts` trace `g` (one span sent
+into two units) answers `spanCount` 1.
+
+### Grafana (review m-4)
+
+Fixed from the public documentation (read 2026-11-19):
+- **Loki times**: an integer of ten or fewer digits is seconds, a longer one nanoseconds. Loki's
+  current API reference says "All epoch values will be interpreted as a Unix timestamp in
+  nanoseconds"; its v2.8 reference (archive.grafana.com/docs/loki/v2.8.x/api/, "Timestamp
+  formats") says "An integer with ten or fewer digits is interpreted as a Unix timestamp in
+  seconds. More than ten digits are interpreted as a Unix timestamp in nanoseconds." The two
+  differ only for the first ten seconds of 1970; the second is what a client that sends seconds
+  means (before, such a client got a range in 1970).
+- **Tempo's `/api/echo`**: "Returns status code 200 and body `echo` when the query frontend is up
+  and ready to receive requests." It answers `echo`, behind the key like every path.
+
+Changed on secondary evidence, labelled as such:
+- **Loki errors are plain text** with the status code (they were the Prometheus envelope).
+  Loki's API reference gives no error body; its troubleshooting page quotes parse errors as text
+  ("parse error at line …"), community reports show a plain-text body, and Grafana's Loki client
+  is reported to read a JSON `message` and else the body as text (secondary sources found by
+  search; Grafana's source was not read). Plain text reads correctly either way.
+
+Not done, TRAINING KNOWLEDGE only: Grafana's Tempo data source may call `/api/echo` on "Save &
+test" and `/api/status/buildinfo` to choose features; Grafana's Loki data source tests with a
+labels query. viz answers neither buildinfo path for these APIs (Prometheus' answers), and
+reporting a Tempo or Loki version it is not could switch on features viz does not have.
+
+**No Grafana data source has been pointed at viz.** How one would be (the deploy README's "A
+client run", on a staged deployment with `INGEST_SIGNALS` and `QUERY_SIGNALS` on and a key with
+`read` and `write`): send a corpus through the gateway (`edge/scripts/otel-corpus.mjs
+--requests`); in a Grafana of a current release, add a Tempo data source with URL
+`https://<staged host>` and a custom header `Authorization: Bearer <key>`, and a Loki data
+source the same way; press "Save & test" on each (and record which paths the gateway logged);
+then in Explore run a TraceQL search, open a trace by ID from it, run the trace view's "logs for
+this span" link if configured, a LogQL range query, a metric query, and the label browser; record
+each answer and any error text shown. The gateway must route `/api/echo` first ("Needed changes
+elsewhere", 5).
+
+### Measurements before the review (measured here)
+
+Kept for comparison: these ran before the changes above (the resource copied per span, no byte
+budget, the window-only plan). Local workerd through the whole Worker (`test/signals.bench.ts`): ledger, leaves reading
 miniflare's R2, the shard tail, the engine. Synthetic data of `engine/wasm-query/examples/
 signal_bench.rs` (the generator of `engine/storage/examples/otel_bench.rs`: ~12 spans a trace
 over one hour, 6 to 8 attributes; logfmt lines of 80 to 260 bytes in 50 streams), flushed in
@@ -723,16 +897,46 @@ on a fresh engine instance (so the memory is that call's peak); caps raised for 
 What this says: the engine dominates (the files are a few MiB and few: miniflare's reads are
 cheap, Cloudflare's cost about one round trip each, AGENTS.md). **Trace by ID costs the hour, not
 the trace**: a flush unit of 20,000 spans is one row group, and the record-API reader decodes
-every span of it to find one trace (12 µs a span here). Memory is about 1.5 KiB per span held
-and 1 KiB per log row held (every attribute and the resource are copied per span, as the
-engines' seams take them), which is what sets `maxSpans` and `maxLogRows` (about 60 MiB each, at
-the size of a tenant's busy hour of a few tens of thousands of rows). Two changes measured on the
+every span of it to find one trace (12 µs a span here). Memory was about 1.5 KiB per span held
+and 1 KiB per log row held (every attribute and the resource copied per span), which is what set
+`maxSpans` and `maxLogRows` then; the review showed that this measured synthetic rows, not what a
+row can cost ("Memory"). Two changes measured on the
 way: holding each log row once, its stream's labels shared (106.4 to 82.8 MiB at 80,000 rows,
 800 to 571 ms), and dropping rows no selector reads before holding them (82.8 to 14.9 MiB for the
 one-stream query). Not measured: larger sizes through the Worker (a fixture module over about
 12 MB does not reach the test runner: one message is at most 32 MiB), and anything on Cloudflare.
 
 ### Verification
+
+**The review's findings (2026-11-19)**, run on the final code (load average 7 to 10, 4 shared
+cores):
+
+- `test/completeness.test.ts` (4 tests): the review's trace and six neighbours, each piece in a
+  flush unit of its own (four units through edge and the real `Flush`, one span left in the
+  tail), window 08:55 to 09:10, margin 2 h: trace `a` lasts 7,260,000 ms with 2 spans; `c`,
+  found by its child, starts at its root's 07:30; `d`, no piece in the window, is found and lasts
+  75 minutes; `e`'s child beyond the margin is not in the answer; `f`'s child in the tail is;
+  `g`, one span sent into two units, counts 1; `{ trace:duration > 1h }` is `a`, `c`, `d`, `f`;
+  a structural query across units matches. Every answer (5 searches, 2 whole-trace metrics
+  queries, 7 trace-by-ID calls) is identical with pruning off; with the margin past all the data
+  and pruning off ("every span") only the four answers that involve `e` differ; pruning reads
+  fewer files than not. Run on the code before this change (mutants 98 to 101 restore it in
+  parts), it fails.
+- `test/memory.test.ts` (3 tests): the review's inputs through the Worker ("Memory"), the
+  tenant's `maxDecodedBytes` reaching the engine, Loki's error as text.
+- `test/sigcompat.test.ts` (4 tests): Loki's timestamps, plain-text errors for Loki and Tempo
+  and the envelope for Prometheus, `/api/echo` with and without a key and with the flag off.
+- `test/signals.test.ts`: the 128 cases of each of the three seeds still equal the in-memory
+  answers, pruning on and off (their traces lie within the margin of their windows, so the
+  in-memory answers over every batch are unchanged); the engine-cap test now runs on a tenant
+  whose data is all in the tail and checks that tail rows outside the query cost nothing.
+- `engine/wasm-query`: `cargo test -j 2 --lib`, 7 of 7 (`src/sigtests.rs`); `./build.sh` and
+  `node tools/check.mjs`, every check passes (4,476,450 bytes, 1,436,641 gzip -9).
+  `engine/traceql`: `cargo test -j 2`, api 14, props 6, limits 6, regex_dialect 1, conformance 1
+  (skips upstream), differential 1 ignored, as before; its probe and `engine/storage/readback`
+  build.
+- The whole suite: `npx vitest run --maxWorkers=2` and `npx tsc --noEmit`: see "How it was
+  verified" for the run on the final code.
 
 `test/signals.test.ts` (21 tests, in workerd) against fixtures from
 `tools/gen-signal-fixtures.sh`: per seed (1, 2, 3), `edge/scripts/otel-corpus.mjs` makes OTLP and
@@ -805,12 +1009,20 @@ were run again (the reads around them changed), 53, 86 and 96 name the new signa
 
 ## Not implemented
 
-- **Traces and logs, what is left** ("Traces and logs"; D62): split execution (a query over
-  `maxSpans`, `maxLogRows`, `maxFetchBytes` or `maxFiles` is refused, never split or answered in
-  part); partial results with a cursor; newest-first day waves for trace by ID without a time
+- **Traces and logs, what is left** ("Traces and logs"; D62): the flag itself ("What remains
+  before the flag": a second review, a Cloudflare trial, a Grafana run, the contract); split
+  execution (a query over `maxSpans`, `maxLogRows`, `maxDecodedBytes`, `maxFetchBytes` or
+  `maxFiles` is refused, never split or answered in part); traces longer than `traceMarginMs`
+  answered whole (they are answered from their part inside the margin); a span or log tail read
+  by window (the shard has no time bounds for those batches: "The tail"); the logs token filter
+  (written by compaction, not read here); `/api/status/buildinfo` for Tempo and
+  `/loki/api/v1/status/buildinfo` (not documented as needed by Grafana; training knowledge says
+  Grafana's Tempo source may read the first); a histogram TraceQL metric's buckets in the memory
+  count (a point is charged 48 bytes; a histogram point holds a map of buckets: not measured);
+  partial results with a cursor; newest-first day waves for trace by ID without a time
   hint (every day is planned at once, under the caps); the trace id bloom filters and page reads
   inside an hour (trace by ID decodes the hour's row group); projection by the TraceQL plan's
-  columns; the logs token filter (no builder); tag-based search (`tags`, `minDuration`,
+  columns; tag-based search (`tags`, `minDuration`,
   `maxDuration`), Tempo's `q` and span pruning on trace by ID, `Accept: application/protobuf`,
   exemplars, Loki's `interval`, live tail, volume, patterns and the index stats endpoints; the
   plan-only endpoint for these queries; cost headers specific to them beyond `X-Viz-Scan-Rows`
@@ -1765,7 +1977,16 @@ the whole path). What is left, for its owners:
 3. **`deploy/`**: `QUERY_SIGNALS` on `viz-query` after 1, and with `INGEST_SIGNALS` (D63: not in a
    deployment whose publisher does not read these tables yet). Still open: what remains before
    either flag is set in production is listed in `deploy/README.md` ("Needed changes in
-   components", stage 3).
+   components", stage 3), and "What remains before the flag" above.
+4. **`shard/` (review m-3)**: time bounds per span and log batch (the smallest start and largest
+   end of its spans, or of its log records' `ts`), kept at append, so that a filter's `minTs` and
+   `maxTs` skip whole span and log batches that lie outside them (D63 alternative (e) at batch
+   granularity, which D63's "Would change if" names). Then this Worker sends a trace query's
+   bound and a log query's selector hull, and the tail stops counting against `maxFetchBytes`
+   whatever the window. Needs the filter's meaning for signals 2 and 3 written in the shard's
+   contract first (time fields would then select batches, not only metric rows).
+5. **The gateway (`deploy/gateway/`, review m-4)**: route `GET /api/echo` to viz-query, exactly,
+   like the other Tempo paths (this Worker answers it behind `QUERY_SIGNALS`).
 
 ## Needed changes in other components
 
@@ -1865,6 +2086,35 @@ signal field is in `shard/src/tail.ts`, with the rest of the shard's RPC (item 5
 10. **The cardinality report reads `metric_series` directly** (`engine/query`
     `catalog.rs`), as `contracts/TABLES.md` defines the table; storage has no
     series-only read.
+11. **`SignalEngine` has no budget or bound** (2026-11-19, D62, the review's M-1 and M-2).
+    `contracts/engine.ts` was being edited by another builder, so it was not changed here; the
+    binding (`engine/wasm-query/js/index.ts`) adds an optional last argument, `SignalBudget`, to
+    the span and log operations, and its `QueryEngine` declares them with it. The change the
+    contract needs, in a commit of its own (additive: a caller of today's shape still works):
+
+    ```ts
+    /**
+     * What a span or log call may hold, and (traces) which spans are its data (D62).
+     * `maxBytes`: bytes of decoded rows, metric series and the answer the call may hold, as the
+     * engine counts them (a resource once per distinct resource; an answer four times its
+     * length); past it an `execution` error whose limit is `max_decoded_bytes`. Default: the
+     * engine's (32 MiB). `bound`: a span whose start lies outside `[lo, hi]` (nanoseconds,
+     * inclusive) is not part of the call's data and is dropped before de-duplication; `tqExtent`
+     * counts only fragments that overlap it and tail spans that start in it, and cuts the hull
+     * and hours to it. Default: all time.
+     */
+    export interface SignalBudget {
+      maxBytes?: number
+      bound?: { lo: bigint; hi: bigint }
+    }
+    ```
+
+    and in `SignalEngine`, a last parameter `budget?: SignalBudget` on `tqExtent` (its `bound`
+    only), `tqSearch`, `tqMetrics`, `tqTrace`, `tqTags`, `tqTagValues` (`maxBytes` only) and
+    `lqQuery` (`maxBytes` only); and in the comment above `SignalEngine`, "`maxSpans`/`maxRows`
+    bound the rows decoded" becomes "bound the rows held (a span outside `bound`, or a log row
+    no selector reads, is not held); `budget.maxBytes` bounds their bytes". Then the
+    redeclarations in `QueryEngine` go.
 
 9. **The write path (`edge/`, `flush/`, `contracts/`): somewhere to keep metric metadata**
    (type, unit, help from Remote Write metadata and OTLP descriptions), for
@@ -1906,15 +2156,25 @@ New with split execution, each with its alternative:
 ## Known risks
 
 - **Traces and logs are tested against fixtures from one generator** (edge's corpus, three
-  seeds, a few hundred spans and about a thousand log rows each) and measured on synthetic data
-  up to 40,000 spans and 80,000 rows; larger tenants were not run through the Worker, and the
-  caps (`maxSpans`, `maxLogRows`) were chosen from two sizes' memory (about 1.5 KiB a span,
-  1 KiB a row) and a 128 MB isolate, not from a soak test.
+  seeds, a few hundred spans and about a thousand log rows each), the review's inputs and a
+  seven-trace completeness corpus; memory was measured on generated data whose resource shape is
+  training knowledge. The byte budget's charges were set at or above the measured growth of WASM
+  memory for those shapes; a shape whose overhead per string is larger (many tiny attributes,
+  deep arrays inside "other" values, histogram metrics) could hold more than it is charged. The
+  128 MB isolate model is modelled, not measured on Cloudflare.
+- **The margin's reads are not measured on Cloudflare.** A trace query reads `trace_index` over
+  its window and four more hours by default; for a tenant with many span shards and
+  uncompacted recent hours that is tens of extra R2 reads (modelled). If it costs too much the
+  default goes down (a tenant can set `traceMarginMs`, 0 being the window-only answer).
+- **The engine's charge is an estimate checked after decoding a row**, not an allocator count: a
+  single row (up to edge's 256 KiB entry limit, and its decoded copies) is held before it is
+  charged. The answer of trace by ID is charged as written, so it can pass the budget by one
+  span's text before the refusal.
 - **Shards are told apart by name** while shards of an earlier release (no signal filter) may
   answer: a metric pool named `…/traces` or `…/logs` would have its reads refused (never misread);
   since stage 3 edge refuses a pool map naming one, so such a pool is neither written nor read.
-- **A trace straddling the window from the lake into the tail** (lake spans and their fragments
-  all outside the window, unflushed spans inside it) is summarised from the spans read (D62).
+- **A trace longer than the margin** is answered from its spans that start within the margin
+  of the window (D62): deterministic, the same with pruning on or off, but not the whole trace.
 - **Tempo compatibility of trace by ID** rests on Tempo's documentation and Grafana's
   documented trace JSON (`batches`, base64 ids); no Tempo client was run against it.
 - **A span or log tail held mostly by one of its signal's shards is read in two rounds** (one

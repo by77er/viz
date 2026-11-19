@@ -162,7 +162,7 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
 .vz-table td:has(> .vz-link:active), .vz-table td:has(> .vz-link[data-pressed]) { background: var(--pressed); }
 .vz-table td.vz-row-actions { width: 0; text-align: right; } /* the last column: "Actions…", a quiet small button that opens the row's menu */
 /* Sortable head: a button in the th; the th carries aria-sort. The arrow's space is always reserved. */
-.vz-sort { position: relative; display: inline-flex; align-items: center; gap: var(--space-1); font: inherit; color: inherit; background: none; border: 0; border-radius: var(--radius-1); cursor: pointer; padding: var(--space-half) var(--space-1); margin: calc(-1 * var(--space-half)) calc(-1 * var(--space-1)); }
+.vz-sort { position: relative; display: inline-flex; align-items: center; gap: var(--space-1); font: inherit; color: inherit; background: none; border: 0; border-radius: var(--radius-1); cursor: pointer; padding: var(--space-1); margin: calc(-1 * var(--space-1)); } /* space-1 on every side, given back by the margin: a ring drawn inside it (the legend's heads) keeps a hairline clear of its letters (v9: space-half put it on the descenders) */
 .vz-sort::after { content: ""; flex: none; border: var(--space-1) solid transparent; border-top-width: 0; visibility: hidden; }
 .vz-right .vz-sort { flex-direction: row-reverse; }
 .vz-sort:hover { color: var(--ink); background: var(--hover); }
@@ -460,7 +460,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 /* Navigation: the product's sections. The current one is marked by weight and an underline, like a tab. */
 .vz-nav { display: flex; align-items: center; gap: var(--space-6); padding: 0 var(--space-6); height: calc(var(--control-md) + var(--space-4)); border-bottom: var(--hairline) solid var(--rule); overflow-x: auto; scrollbar-width: none; }
 .vz-nav-name { font: var(--text-heading); letter-spacing: var(--text-heading-track); flex: none; }
-.vz-nav a { position: relative; flex: none; display: inline-flex; align-items: center; padding-inline: var(--space-1); margin-inline: calc(-1 * var(--space-1)); color: var(--ink-secondary); text-decoration: none; white-space: nowrap; } /* side padding, given back by the margin: a ring drawn inside the link stays off its letters (v8) */
+.vz-nav a { position: relative; flex: none; display: inline-flex; align-items: center; padding: var(--space-1); margin-inline: calc(-1 * var(--space-1)); color: var(--ink-secondary); text-decoration: none; white-space: nowrap; } /* space-1 round the words, the sides given back by the margin: a ring drawn inside the link keeps a hairline clear of its letters (v8: the sides; v9: above and below too, where it touched the descender of "Explore") */
 .vz-nav a:hover { color: var(--ink); }
 .vz-nav a[aria-current="page"] { color: var(--ink); font: var(--text-ui-strong); }
 .vz-nav .vz-nav-end { margin-left: auto; } /* the first item of the group at the right: the tenant, settings */

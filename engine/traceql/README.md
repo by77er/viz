@@ -41,6 +41,7 @@ let p = plan(query, start, end)?;                       // columns, predicates, 
 | `plan(query, start, end) -> ReadPlan` | What a query reads, from the text alone: `columns` (intrinsics and attributes by scope), `span_filter` (spans failing it can be dropped), `trace_filter` (traces with no span passing it can be dropped; `And` across different spans), `trace_window` (search), `span_window` (metrics; prunes spans only when `span_local`), `full_traces` (structural operators, `span:childCount`) |
 | `trait SpanSource { fn traces(&self, &ReadPlan, visit) }` | The only data seam. A source may return more than the plan admits, never less (contract in the doc comment) |
 | `MemSource` | In-memory source; `.pruning(true)` applies the plan as storage would (used to test that pruning never changes a result) |
+| `Span.resource: Resource` | A span's resource attributes, `Arc<Attrs>`: shared by every span of one resource, so a reader holds each distinct resource once (since 2026-11-19, the review of spans and logs, M-2: a 180 KB resource copied per span took 349 MiB for 2,000 spans in the query engine). Read as a slice (`attr(&span.resource, k)`); build one with `vec![…].into()` |
 | `align_request(&RangeRequest)` | Tempo's query-frontend alignment of range requests, as observed |
 | `SearchResponse::to_json`, `MetricsResponse::to_json` | Tempo's HTTP JSON (protobuf-JSON: 64-bit integers as strings, `AnyValue` objects, empty fields omitted) |
 | `matching_spansets(query, &Trace)` | Spansets of one trace (for storage-side checks) |
@@ -387,6 +388,22 @@ source tree is never modified. A suite that dies of a stack overflow is reported
 | 30 | a `{` that starts no repetition is an error, not a literal | regex_dialect, goregex (`go_only_escapes_and_literals`) |
 | 31 | an unmatched `)` passed through | **not caught** (equivalent, below) |
 | 32 | parentheses not balanced at all (unmatched `)` passed, unclosed `(` allowed) | regex_dialect, goregex (`what_go_refuses_is_refused`) |
+| 33 | a group name that starts with a digit is refused (in `engine/goregex`) | regex_dialect (`(?P<1>a)`, which Tempo accepts), goregex (`named_groups`) |
+| 34 | group names may hold any Unicode letter or digit | regex_dialect (`(?P<é>a)`, which Tempo refuses), goregex (`group_names_are_gos`, `what_go_refuses_is_refused`) |
+| 35 | names kept: a name the regex crate cannot hold is passed to it (its refusal, not Unsupported) | goregex (`named_groups`) |
+| 36 | names kept: a repeated name is passed to the regex crate | goregex (`named_groups`) |
+| 37 | `compile_anchored` keeps names (refuses a name Go accepts) | goregex (`named_groups`) |
+| 38 | `(?<=` and `(?<!` read as Perl syntax rather than as a named group (Go's wording) | goregex (`group_names_are_gos`) |
+| 39 | recorded re-wraps never written | regex_dialect, goregex (`rewraps_are_assembled_in_place`) |
+| 40 | recorded re-wraps written in recording order, not by offset (a panic on nested re-wraps) | goregex (`rewraps_are_assembled_in_place`) |
+| 41 | a second re-wrap at the same offset not counted | goregex (`rewraps_are_assembled_in_place`) |
+| 42 | each re-wrap inserted at the atom's start again (the quadratic version; same output) | goregex (`rewrapping_costs_linear_time`) |
+
+Mutants 33–42 (group names and re-wrapping in `engine/goregex`, the PR #4 review nits) were
+run on 2026-11-19 with `--only 33,…,42`: **10 of 10 caught**, the copies restored and re-run
+green, then deleted. The goregex column names the first failing test binary's failures (cargo
+stops at the first). Mutant 42 changes no output: only the timing test, on a 2 MiB nested
+pattern, can see it. The conformance suite skipped (Tempo's examples are not in the tree).
 
 **31 of 32 caught** on the final run of 2026-11-19 (final code: regex dialect, `MAX_DEPTH`
 100); the copies were restored and re-run green after each, then deleted. Mutants 1–24 are

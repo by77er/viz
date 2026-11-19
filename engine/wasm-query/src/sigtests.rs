@@ -122,7 +122,7 @@ fn search(files: &[Vec<u8>], tails: &[Vec<u8>], q: &str, bound: (i64, i64), max_
 }
 
 fn extent(index: &[Vec<u8>], tails: &[Vec<u8>], bound: (i64, i64)) -> serde_json::Value {
-    let w = W::default().i64(T0 - 5 * MIN).i64(T0 + 10 * MIN).u8(0).i64(bound.0).i64(bound.1).files(index).files(tails);
+    let w = W::default().i64(T0 - 5 * MIN).i64(T0 + 10 * MIN).u8(0).i64(bound.0).i64(bound.1).u64(BIG).files(index).files(tails);
     serde_json::from_slice(&run(traces::do_tq_extent, w).expect("extent")).unwrap()
 }
 
@@ -253,4 +253,26 @@ fn the_budget_holds_exactly_its_limit() {
     let mut a = crate::sigfiles::Mem::new(400);
     assert!(a.charge_answer(100).is_ok());
     assert!(a.charge_answer(1).is_err());
+}
+
+#[test]
+fn extents_are_charged_to_the_budget_by_trace_not_by_row_cap() {
+    // 3,000 traces in one unit: 3,000 fragments, far more than a small row cap would allow, held
+    // in well under 1 MiB; refused only when the budget cannot hold their entries.
+    let spans: Vec<Sp> = (0..3000).map(|i| Sp { trace: 1, span: 1, parent: 0, name: "op", from: i % 10, to: i % 10 + 1 }).collect();
+    let mut b = batch(&spans, &api(), |_| Vec::new());
+    // Distinct trace ids: rewrite each row's id (byte 0 and 1 of the id vary).
+    let decoded = otel::decode_spans(&b).unwrap();
+    let mut rows: Vec<Span<String>> = decoded.rows.iter().map(|r| Span { entry: r.entry, trace_id: r.trace_id, span_id: r.span_id, parent_span_id: r.parent_span_id, start: r.start, end: r.end, flags: 0, dropped: [0; 3], kind: r.kind, status: r.status, name: r.name.to_string(), trace_state: String::new(), status_message: String::new(), attrs: Vec::new(), events: Vec::new(), links: Vec::new() }).collect();
+    for (i, r) in rows.iter_mut().enumerate() {
+        r.trace_id[0] = (i / 256) as u8 + 1;
+        r.trace_id[1] = (i % 256) as u8;
+    }
+    let entries: Vec<SpanEntry<String>> = decoded.entries.iter().map(|e| SpanEntry { resource_fp: e.resource_fp, resource: e.resource.iter().map(Attr::to_owned_attr).collect(), scope_name: String::new(), scope_version: String::new(), scope_attrs: String::new() }).collect();
+    b = otel::encode_spans(&entries, &rows).unwrap();
+    let index: Vec<Vec<u8>> = viz_storage::encode_spans(&[&b]).unwrap().into_iter().filter(|f| f.table != viz_storage::SignalTable::Spans).map(|f| f.bytes).collect();
+    let call = |max: u64| run(traces::do_tq_extent, W::default().i64(T0 - 5 * MIN).i64(T0 + 10 * MIN).u8(0).i64(BOUND.0).i64(BOUND.1).u64(max).files(&index).files(&[]));
+    let ok: serde_json::Value = serde_json::from_slice(&call(1 << 20).expect("fits")).unwrap();
+    assert_eq!(ok["traces"], 3000);
+    assert_eq!(call(100_000), Err("limit max_decoded_bytes".into()));
 }

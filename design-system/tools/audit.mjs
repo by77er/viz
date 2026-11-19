@@ -257,12 +257,15 @@ function guards({ fine, coarse, hitOnly }) {
     if (s.outlineStyle === 'none' || Math.abs(parseFloat(s.outlineWidth) - stroke) > 0.01 || s.outlineColor !== focus || ![stroke, hair, -stroke].some((o) => Math.abs(parseFloat(s.outlineOffset) - o) < 0.01)) return `${name(el)} focused draws outline ${s.outlineStyle} ${s.outlineWidth} ${s.outlineColor} offset ${s.outlineOffset}, not the ring (${stroke}px solid ${focus}, offset ${stroke}px)`
     const ring = parse(s.outlineColor), behind = bgOf(el.parentElement); if (ring && ratio(ring, behind) < 3) return `${name(el)} focused: its ring is ${ratio(ring, behind).toFixed(2)}:1 on what is behind it (needs 3:1)`
     const r = el.getBoundingClientRect(), d = parseFloat(s.outlineOffset) + parseFloat(s.outlineWidth), box = [r.left - d, r.top - d, r.right + d, r.bottom + d]
-    // a ring drawn inside the control (offset below zero) stays off its letters: every line of its own text lies inside the ring's inner edge
+    // a ring drawn inside the control (offset below zero) keeps clear of its letters: the ink of every run of its own text (the run's box,
+    // narrowed to its glyphs by the font's measured ascent, descent and side bearings) lies at least a hairline inside the ring's inner edge
     // (v9; the v8 review's V10: the navigation's side padding removed put the ring over the first 2 px of "Explore")
-    if (parseFloat(s.outlineOffset) < 0) { const inset = -parseFloat(s.outlineOffset), inner = [r.left + inset, r.top + inset, r.right - inset, r.bottom - inset], rg = document.createRange(), tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let t, worst = 0
-      while ((t = tw.nextNode())) { if (!t.textContent.trim() || t.parentElement.closest('.vz-sr')) continue; rg.selectNodeContents(t)
-        for (const q of rg.getClientRects()) if (q.width > 0) worst = Math.max(worst, inner[0] - q.left, inner[1] - q.top, q.right - inner[2], q.bottom - inner[3]) }
-      if (worst > 0.5) return `${name(el)} focused: its ring is drawn inside it and lies ${Math.round(worst * 10) / 10} px over its letters (a ring drawn inside keeps clear of the words)` }
+    if (parseFloat(s.outlineOffset) < 0) { const inset = -parseFloat(s.outlineOffset), inner = [r.left + inset, r.top + inset, r.right - inset, r.bottom - inset], rg = document.createRange(), tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), ink = (window.__vzInk ??= document.createElement('canvas').getContext('2d')); let t, clear = Infinity
+      while ((t = tw.nextNode())) { const text = t.textContent.trim(); if (!text || t.parentElement.closest('.vz-sr')) continue; rg.selectNodeContents(t); const qs = [...rg.getClientRects()].filter((q) => q.width > 0), st = cs(t.parentElement)
+        ink.font = `${st.fontStyle} ${st.fontWeight} ${st.fontSize} ${st.fontFamily}`; const m = ink.measureText(text)
+        for (const q of qs) { const base = q.top + m.fontBoundingBoxAscent, box = qs.length === 1 ? [q.left - m.actualBoundingBoxLeft, base - m.actualBoundingBoxAscent, q.left + m.actualBoundingBoxRight, base + m.actualBoundingBoxDescent] : [q.left, q.top, q.right, q.bottom]
+          clear = Math.min(clear, box[0] - inner[0], box[1] - inner[1], inner[2] - box[2], inner[3] - box[3]) } }
+      if (clear < hair - 0.25) return `${name(el)} focused: its ring is drawn inside it and ${clear < 0 ? `lies ${Math.round(-clear * 10) / 10} px over its letters` : `comes within ${Math.round(clear * 10) / 10} px of its letters`} (a ring drawn inside keeps a hairline clear of the words)` }
     for (let x = el.parentElement; x && x !== document.body && x !== document.documentElement; x = x.parentElement) { const st = cs(x)
       // paint containment clips as overflow does (contain: paint, content or strict; content-visibility: auto or hidden), at its padding box
       // grown by overflow-clip-margin (v8: charts are content-visibility: auto)

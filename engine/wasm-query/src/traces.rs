@@ -359,6 +359,11 @@ fn read_id(r: &mut Req<'_>) -> Res<Option<[u8; 16]>> {
 
 // ───────────────────────────── extents ─────────────────────────────
 
+/// Bytes charged per trace an extent holds (its id, extent and hour set in a hash map), and per
+/// hour in a trace's set: a fragment is not a span, so `max_spans` does not count them.
+const EXTENT_BYTES: u64 = 192;
+const HOUR_BYTES: u64 = 32;
+
 /// `viz_q_tq_extent`: the traces whose extent overlaps `[lo, hi]` (or the one trace `id`),
 /// from `trace_index` fragments merged per trace and the spans of the tail: how many, the
 /// hull of their extents, and the `spans` hours that hold them (`contracts/TRACES.md`,
@@ -372,6 +377,7 @@ pub(crate) fn do_tq_extent(mut r: Req<'_>) -> Res<Vec<u8>> {
     let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
     let id = read_id(&mut r)?;
     let (blo, bhi) = (r.i64("bound_lo")?, r.i64("bound_hi")?);
+    let mut mem = Mem::new(r.u64("max_bytes")?);
     let index = r.files("trace_index file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
@@ -384,22 +390,34 @@ pub(crate) fn do_tq_extent(mut r: Req<'_>) -> Res<Vec<u8>> {
         start.saturating_add(HOUR - 1) >= blo && start <= bhi
     };
     let mut ext: HashMap<[u8; 16], (i64, i64, BTreeSet<i32>)> = HashMap::new();
-    // `a` is the earliest start (cut to the bound) and `b` the latest end of what is added.
-    let mut add = |t: [u8; 16], a: i64, b: i64, hours: &mut dyn Iterator<Item = i32>| {
+    // `a` is the earliest start (cut to the bound) and `b` the latest end of what is added. A
+    // trace's entry is charged to the budget when it is made, an hour when it is added.
+    let mut add = |t: [u8; 16], a: i64, b: i64, hours: &mut dyn Iterator<Item = i32>| -> Res<()> {
         if id.is_some_and(|x| x != t) {
-            return;
+            return Ok(());
         }
         let a = a.max(blo);
-        let e = ext.entry(t).or_insert((a, b, BTreeSet::new()));
+        let e = match ext.entry(t) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                mem.charge(EXTENT_BYTES)?;
+                v.insert((a, b, BTreeSet::new()))
+            }
+        };
         e.0 = e.0.min(a);
         e.1 = e.1.max(b);
-        e.2.extend(hours.filter(|h| hour_in(*h)));
+        for h in hours.filter(|h| hour_in(*h)) {
+            if e.2.insert(h) {
+                mem.charge(HOUR_BYTES)?;
+            }
+        }
+        Ok(())
     };
     for f in &index {
         sigfiles::read_trace_index(f, |g| {
             // A fragment overlaps the bound when some span of it may start inside it.
             if g.max_end >= blo && g.min_start <= bhi {
-                add(g.trace_id, g.min_start, g.max_end, &mut g.hours.iter().copied());
+                add(g.trace_id, g.min_start, g.max_end, &mut g.hours.iter().copied())?;
             }
             Ok(())
         })?;
@@ -407,7 +425,7 @@ pub(crate) fn do_tq_extent(mut r: Req<'_>) -> Res<Vec<u8>> {
     for b in &tails {
         sigfiles::batch_span_times(b, |t, start, end| {
             if start >= blo && start <= bhi {
-                add(t, start, end, &mut std::iter::once(start.div_euclid(HOUR) as i32));
+                add(t, start, end, &mut std::iter::once(start.div_euclid(HOUR) as i32))?;
             }
             Ok(())
         })?;

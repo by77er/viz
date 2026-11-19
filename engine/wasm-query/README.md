@@ -66,7 +66,7 @@ node tools/check.mjs          # load proof and size report, in Node
 |---|---|---|
 | `tqPlan(kind, query, start, end, step)` | `viz_q_tq_plan` | What a TraceQL query reads, from its text: whether every span of a candidate trace is needed (`complete`: search, structural operators, `span:childCount`, trace-level intrinsics, pipelines that are not span-local), the window of span starts or trace extents, and a metrics request as Tempo's frontend aligns it (`viz_traceql::align_request`) |
 | `tqFilePlan(table, fragments, lo, hi, traceId?)` | `viz_q_tq_file_plan` | Per `spans` file the row groups whose span starts overlap `[lo, hi]`; per `trace_index` file those whose fragments overlap it and, with an id, whose `[min_tid, max_tid]` holds it; byte ranges with the footer (as `filePlan`) |
-| `tqExtent(indexFiles, tail, lo, hi, traceId?)` | `viz_q_tq_extent` | The traces whose extent overlaps the window (or the one id), from `trace_index` fragments merged per trace and the tail's spans: how many, the hull of their extents, and the `spans` hours holding them |
+| `tqExtent(indexFiles, tail, lo, hi, traceId?, budget?)` | `viz_q_tq_extent` | The traces whose extent overlaps the window (or the one id), from `trace_index` fragments merged per trace and the tail's spans, inside the bound (ABI 7): how many, the hull of their extents cut to the bound, and the `spans` hours holding them |
 | `tqSearch(spanFiles, tail, query, req)` | `viz_q_tq_search` | Tempo's `/api/search` body (`viz_traceql::search`) over the spans read; spans decoded and traces |
 | `tqMetrics(spanFiles, tail, query, req)` | `viz_q_tq_metrics` | Tempo's `/api/metrics/query_range` or `/query` body; a span-local plan keeps only the spans that start in the window (after de-duplication) |
 | `tqTrace(spanFiles, tail, id, version, maxSpans)` | `viz_q_tq_trace` | One trace as OTLP JSON in Tempo's form (`{"batches":[…]}`; v2 `{"trace":…}`), or null |
@@ -85,9 +85,12 @@ node tools/check.mjs          # load proof and size report, in Node
   read.
 - **Strict about signals.** A span operation fed a log or metric batch, or a log operation fed
   anything but signal 3, is an `internal` error: the decoders check the header.
-- **Limits**: `max_spans`, `max_rows` bound the rows decoded (files and tail); past them, an
-  `execution` error naming the limit (the binding's `QueryError.limit`). TraceQL's series and
-  points limits and LogQL's steps and series are passed per call.
+- **Limits**: `max_spans`, `max_rows` bound the rows held (files and tail; since ABI 7 a span
+  outside the call's bound, or a log row no selector reads, is decoded, dropped and not
+  counted); `max_bytes` bounds the bytes of what is held and of the answer (ABI 7, below); past
+  any of them, an `execution` error naming the limit (the binding's `QueryError.limit`).
+  TraceQL's series and points limits and LogQL's steps and series are passed per call, and a
+  metric query's series must also fit what the byte budget leaves.
 - **Existing operations are byte-compatible.** No request or answer of ABI 5 changed;
   `tools/check.mjs` passes unchanged. The ABI number moved to 6 because operations were added
   (a binding of one version refuses a module of the other, as for ABI 3 and 4).
@@ -120,6 +123,37 @@ node tools/check.mjs          # load proof and size report, in Node
 `scanRows` and `filesNeeded` are thin: the rule lives in `engine/query`
 (`src/prune.rs`, `scan_rows` and `files_needed`), next to the format it reads.
 
+- **ABI version 7** (2026-11-19; was 6; the review of spans and logs end to end, M-1 and M-2,
+  `design/reviews/signals-end-to-end.md`; D62): the span and log operations gained a byte
+  budget and the trace operations a bound. Requests changed (the binding's optional last
+  argument, `SignalBudget`, fills them): `viz_q_tq_search`, `_tq_metrics` and `_tq_trace` take
+  `u64 max_bytes, i64 bound_lo, i64 bound_hi` after `max_spans`; `viz_q_tq_extent` takes the
+  bound after the id; `viz_q_tq_tags`, `_tq_tag_values` and `viz_q_lq_query` take `max_bytes`.
+  What the calls do:
+  - **The budget** (`src/sigfiles.rs` `Mem`): each row held is charged a fixed overhead and
+    the length of every string it keeps (a span 512 bytes and 56 per attribute; a log row 192
+    bytes, its line and its metadata twice), a stream's labels once per file or batch, a
+    resource once per distinct resource, a metric series 48 bytes a point, and the answer four
+    times its length; past `max_bytes`, `max_decoded_bytes`. Measured (Node, this module): the
+    charges are at or above the growth of linear memory for realistic spans (1.72 KiB charged,
+    1.64 KiB grown) and log rows (about 0.8 and 0.64 KiB); `query/README.md` "Memory".
+  - **Resources held once** (`Resources`): a span's resource is interned per call, from files
+    and tail alike, and its TraceQL form made once (`viz_traceql::Span.resource` is now a shared
+    `Resource`, an `Arc`). 2,000 spans with a 180 KB resource: 349 MiB of linear memory before,
+    6.0 MiB after.
+  - **The bound** (`traces.rs` `Budget`): a span whose start lies outside it is dropped as it is
+    read, before de-duplication, so what a call sees does not depend on which files outside the
+    bound were read; `tqExtent` counts only fragments that overlap the bound and tail spans that
+    start in it, cuts the hull's end and the hours to it, and selects traces by their merged
+    extent. Spans of tail batches are read for `tqExtent` without being held
+    (`batch_span_times`).
+  - `max_spans` and `max_rows` count rows held, not decoded.
+  Tests: `src/sigtests.rs` (7, `cargo test -j 2 --lib`): the bound before de-duplication with
+  and without the out-of-bound file, extents across units and the tail, a fat resource held
+  once from files and tail and fat attributes refused, trace by ID's answer charged as written,
+  fat log lines and their answer refused, a metric query's series refused by the budget, and the
+  budget's exact boundary. Through the Worker: `query/test/completeness.test.ts`,
+  `memory.test.ts`.
 - **A module that does not load** (instantiation fails, or its ABI number is not the
   binding's) throws `EngineLoadError`, whose message starts with `ENGINE_LOAD_PREFIX`
   (so it is recognisable after an RPC boundary). The query Worker answers it with 500:
@@ -251,8 +285,10 @@ linear memory; load average about 3): see `query/README.md`, "Traces and logs",
 "Measurements". In short: about 1.5 KiB of WASM memory per span held (a search over 40,000 spans
 peaked at 62 MiB, files included), about 1 KiB per log row held (83 MiB for 80,000 rows; a query
 selecting one stream of the same files, 15 MiB); trace by ID holds one trace but decodes every
-span of the row groups its hours name (37 MiB at 40,000 spans an hour). These are why the query
-Worker's `maxSpans` (40,000) and `maxLogRows` (60,000) defaults are what they are.
+span of the row groups its hours name (37 MiB at 40,000 spans an hour). These set the query
+Worker's `maxSpans` (40,000) and `maxLogRows` (60,000) defaults then; the review of spans and
+logs showed that rows do not bound memory (a 180 KB resource repeated on every span), and ABI 7
+bounds bytes instead (above; the caps are now 18,000 and 30,000).
 
 `node tools/check.mjs`: every check passes (no new check: the span and log operations are
 exercised through the binding in workerd by `query/test/signals.test.ts`, 18 tests, and
@@ -361,6 +397,10 @@ because this binding is where they become visible to TypeScript.
 5. **`Engine` cannot be implemented by one module any more.** The write half lives in
    `engine/wasm` and the query half here; `QueryEngine` in `js/index.ts` is the interface
    this binding satisfies. The contract should be split the same way.
+7. **`SignalEngine` has no budget or bound** (ABI 7). The binding adds the optional last
+   argument `SignalBudget` and redeclares the seven operations in `QueryEngine`; the exact text
+   the contract needs is in `query/README.md`, "Contract issues", 11 (another builder held
+   `contracts/engine.ts` when this was built).
 6. **`FileEntry.index` is "opaque to the ledger"**, and now has a second consumer (the
    query planner, through `scanRows`). Its format is still only `FileIndex` in
    `engine/storage`; a version bump there must keep `scan_rows` returning "unknown" for
