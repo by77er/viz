@@ -3,7 +3,14 @@
 //! stack test `test/signals.test.ts` driven by `tools/signals_readback.mjs`), read back by
 //! viz-storage's readers and through the engines' read seams.
 //!
-//!   signals-readback CORPUS EXPORT
+//!   signals-readback CORPUS EXPORT [COMPACTED]
+//!
+//! COMPACTED (optional) is a second export of the same tenant's live files after compaction ran
+//! to the end (contracts/TRACES.md and LOGS.md, "Compaction"): checked the same way (each file is
+//! a unit of its own, ranked by its precedence), except that a merged `trace_index` file is not
+//! compared with spans of its own unit; instead every trace's merged fragments must equal those of
+//! EXPORT, and every TraceQL and LogQL answer must be byte-identical to the one over EXPORT (and
+//! LogQL's again with row groups pruned by the outputs' token filters, LOGS.md §6).
 //!
 //! CORPUS is what `edge/scripts/otel-corpus.mjs … --requests` wrote (the requests that were sent,
 //! the batches edge's decoders make of them, and the expected logical rows computed by the
@@ -66,16 +73,75 @@ fn unhex<const N: usize>(s: &str) -> [u8; N] {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: signals-readback CORPUS EXPORT");
+        eprintln!("usage: signals-readback CORPUS EXPORT [COMPACTED]");
         std::process::exit(2);
     }
     let corpus = Path::new(&args[1]);
     let export = Path::new(&args[2]);
+    let compacted = args.get(3).map(Path::new);
     let mut names: Vec<_> = fs::read_dir(corpus.join("batches")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
     names.sort();
     let load = |prefix: &str| -> Vec<Vec<u8>> { names.iter().filter(|n| n.starts_with(prefix)).map(|n| fs::read(corpus.join("batches").join(n)).unwrap()).collect() };
     let (span_batches, log_batches) = (load("spans-"), load("logs-"));
 
+    let mut rep = Report::default();
+    // Edge's batches decode strictly here and re-encode to the same bytes.
+    for b in &span_batches {
+        let d = viz_storage::otel::decode_spans(b);
+        rep.check(d.as_ref().is_ok_and(|d| viz_storage::otel::encode_spans(&d.entries, &d.rows).as_deref() == Ok(b.as_slice())), || format!("span batch does not round-trip: {:?}", d.err()));
+    }
+    for b in &log_batches {
+        let d = viz_storage::otel::decode_logs(b);
+        rep.check(d.as_ref().is_ok_and(|d| viz_storage::otel::encode_logs(&d.streams, &d.rows).as_deref() == Ok(b.as_slice())), || format!("log batch does not round-trip: {:?}", d.err()));
+    }
+    let expected_spans = jsonl(&corpus.join("expected").join("spans.jsonl"));
+    let expected_logs = jsonl(&corpus.join("expected").join("logs.jsonl"));
+    let flushed = check_export(&mut rep, export, &expected_spans, &expected_logs, false);
+    let mut summary = flushed.summary.clone();
+    summary["batches"] = json!({"spans": span_batches.len(), "logs": log_batches.len()});
+    if let Some(dir) = compacted {
+        let after = check_export(&mut rep, dir, &expected_spans, &expected_logs, true);
+        // Before and after compaction: the same answer to every query, the same merged fragments.
+        let same = |a: &[String], b: &[String]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y);
+        rep.check(same(&flushed.traceql, &after.traceql), || "TraceQL answers differ before and after compaction".into());
+        rep.check(same(&flushed.logql, &after.logql), || "LogQL answers differ before and after compaction".into());
+        let identical_tq = flushed.traceql.iter().zip(&after.traceql).filter(|(a, b)| a == b).count();
+        let identical_lq = flushed.logql.iter().zip(&after.logql).filter(|(a, b)| a == b).count();
+        let mut frag_diff = 0;
+        for (t, f) in &flushed.fragments {
+            let ok = after.fragments.get(t) == Some(f);
+            frag_diff += !ok as usize;
+            rep.check(ok, || format!("trace {}: merged fragments {:?} before compaction, {:?} after", hex(t), f, after.fragments.get(t)));
+        }
+        rep.check(after.fragments.len() == flushed.fragments.len(), || format!("{} traces in trace_index before compaction, {} after", flushed.fragments.len(), after.fragments.len()));
+        summary["compacted"] = after.summary;
+        summary["before_vs_after"] = json!({
+            "traceql_identical": identical_tq, "traceql_of": flushed.traceql.len(),
+            "logql_identical": identical_lq, "logql_of": flushed.logql.len(),
+            "traces": flushed.fragments.len(), "merged_fragments_differing": frag_diff,
+        });
+    }
+    summary["checks"] = json!(rep.checks);
+    summary["failures"] = json!(rep.failures.len());
+    println!("{summary}");
+    for f in rep.failures.iter().filter(|f| !f.is_empty()) {
+        println!("FAIL {f}");
+    }
+    std::process::exit(if rep.failures.is_empty() { 0 } else { 1 });
+}
+
+/// What one export holds, for comparing two of them.
+struct Checked {
+    summary: J,
+    traceql: Vec<String>,
+    logql: Vec<String>,
+    /// Every trace's `trace_index` rows merged (in precedence order).
+    fragments: BTreeMap<[u8; 16], Fragment>,
+}
+
+/// The checks of the module documentation over one export. `compacted`: its files are
+/// compaction outputs (no per-unit `trace_index` check).
+fn check_export(rep: &mut Report, export: &Path, expected_spans: &[J], expected_logs: &[J], compacted: bool) -> Checked {
     // 1. The units the stack's flush wrote, in the ledger's precedence order.
     let manifest: Vec<J> = serde_json::from_str(&fs::read_to_string(export.join("manifest.json")).unwrap()).unwrap();
     let mut by_unit: BTreeMap<u64, Vec<SignalFile>> = BTreeMap::new();
@@ -104,48 +170,41 @@ fn main() {
     let (span_units, log_units): (Vec<Vec<SignalFile>>, Vec<Vec<SignalFile>>) = by_unit.into_values().partition(|u| u.iter().all(|f| f.table != SignalTable::Logs));
     let encode_ms = 0u128;
 
-    let mut rep = Report::default();
-    // Edge's batches decode strictly here and re-encode to the same bytes.
-    for b in &span_batches {
-        let d = viz_storage::otel::decode_spans(b);
-        rep.check(d.as_ref().is_ok_and(|d| viz_storage::otel::encode_spans(&d.entries, &d.rows).as_deref() == Ok(b.as_slice())), || format!("span batch does not round-trip: {:?}", d.err()));
-    }
-    for b in &log_batches {
-        let d = viz_storage::otel::decode_logs(b);
-        rep.check(d.as_ref().is_ok_and(|d| viz_storage::otel::encode_logs(&d.streams, &d.rows).as_deref() == Ok(b.as_slice())), || format!("log batch does not round-trip: {:?}", d.err()));
-    }
-    let expected_spans = jsonl(&corpus.join("expected").join("spans.jsonl"));
-    let expected_logs = jsonl(&corpus.join("expected").join("logs.jsonl"));
-
     // 2 and 3. Spans and trace_index.
     let read_units: Vec<Vec<SpanRecord>> = span_units.iter().map(|u| u.iter().filter(|f| f.table == SignalTable::Spans).flat_map(|f| read_spans(&f.bytes).unwrap()).collect()).collect();
-    let spans = check_spans(&mut rep, &expected_spans, &read_units);
-    let index_stats = check_trace_index(&mut rep, &span_units, &read_units, &spans);
+    let spans = check_spans(rep, expected_spans, &read_units);
+    let index_stats = if compacted { json!("not per unit: merged files") } else { check_trace_index(rep, &span_units, &read_units, &spans) };
+    let mut fragments: BTreeMap<[u8; 16], Vec<Fragment>> = BTreeMap::new();
+    for u in &span_units {
+        for f in u.iter().filter(|f| f.table == SignalTable::TraceIndex) {
+            for x in read_trace_index(&f.bytes).unwrap() {
+                fragments.entry(x.trace_id).or_default().push(x);
+            }
+        }
+    }
+    // Later units first: a root claimed by two fragments (a span in two units) is the later one's,
+    // as compaction merges it (contracts/TRACES.md, "Compaction").
+    let fragments: BTreeMap<[u8; 16], Fragment> = fragments.into_iter().map(|(t, mut v)| {
+        v.reverse();
+        (t, merge_fragments(&v).unwrap())
+    }).collect();
 
     // 2. Logs.
     let log_files: Vec<(Vec<u8>, String)> = log_units.iter().flatten().map(|f| (f.bytes.clone(), f.index.clone())).collect();
-    let logs = check_logs(&mut rep, &expected_logs, &log_units);
+    let logs = check_logs(rep, expected_logs, &log_units);
 
     // 4. Engines.
-    let tq = traceql(&mut rep, &expected_spans, &spans);
-    let lq = logql(&mut rep, &expected_logs, &log_files);
+    let (tq, traceql_answers) = traceql(rep, expected_spans, &spans);
+    let (lq, logql_answers) = logql(rep, expected_logs, &log_files);
     let _ = logs;
 
     let files: usize = span_units.iter().chain(&log_units).map(Vec::len).sum();
-    println!(
-        "{}",
-        json!({
-            "batches": {"spans": span_batches.len(), "logs": log_batches.len()},
-            "units": units, "files": files, "encode_ms": encode_ms as u64,
-            "spans": spans.len(), "logs": expected_logs.len(),
-            "trace_index": index_stats, "traceql": tq, "logql": lq,
-            "checks": rep.checks, "failures": rep.failures.len(),
-        })
-    );
-    for f in rep.failures.iter().filter(|f| !f.is_empty()) {
-        println!("FAIL {f}");
-    }
-    std::process::exit(if rep.failures.is_empty() { 0 } else { 1 });
+    let summary = json!({
+        "units": units, "files": files, "encode_ms": encode_ms as u64,
+        "spans": spans.len(), "logs": expected_logs.len(),
+        "trace_index": index_stats, "traceql": tq, "logql": lq,
+    });
+    Checked { summary, traceql: traceql_answers, logql: logql_answers, fragments }
 }
 
 fn jsonl(p: &Path) -> Vec<J> {
@@ -523,7 +582,7 @@ const TRACEQL_METRICS: &[&str] = &[
     "{ span.http.response.status_code >= 400 } | rate() by (span.http.response.status_code) | topk(3)",
 ];
 
-fn traceql(rep: &mut Report, expected: &[J], read: &[SpanRecord]) -> J {
+fn traceql(rep: &mut Report, expected: &[J], read: &[SpanRecord]) -> (J, Vec<String>) {
     let mem = viz_traceql::MemSource::new(traces(expected.iter().map(tspan_from_json).collect()));
     let files = traces(read.iter().map(|r| (r.trace_id, tspan_from_record(r))).collect());
     let file_src = viz_traceql::MemSource::new(files.clone());
@@ -534,6 +593,7 @@ fn traceql(rep: &mut Report, expected: &[J], read: &[SpanRecord]) -> J {
     let (start, end) = (lo / step * step, (hi / step + 2) * step);
     let req = viz_traceql::SearchRequest { limit: 1_000_000, spans_per_spanset: 1_000, start_unix_nano: 0, end_unix_nano: 0 };
     let (mut nonempty, mut equal) = (0, 0);
+    let mut answers = Vec::new();
     // Statistics count what the source returned, which pruning changes by design; the
     // engine's own pruning tests compare without them too.
     let search = |src: &viz_traceql::MemSource, q: &str, stats: bool| {
@@ -550,12 +610,13 @@ fn traceql(rep: &mut Report, expected: &[J], read: &[SpanRecord]) -> J {
         let a = run(&mem, true);
         let b = run(&file_src, true);
         rep.check(a == b, || format!("TraceQL {q} (files): {} vs {} bytes", a.len(), b.len()));
+        answers.push(b.clone());
         let (a0, c0) = (run(&mem, false), run(&pruned, false));
         rep.check(a0 == c0, || format!("TraceQL {q} (files, pruned): {} vs {} bytes", a0.len(), c0.len()));
         equal += (a == b) as u32 + (a0 == c0) as u32;
         nonempty += if metric { a.contains("\"samples\"") } else { !a.contains("\"traces\":[]") } as u32;
     }
-    json!({"queries": TRACEQL_SEARCH.len() + TRACEQL_METRICS.len(), "answers_compared": 2 * (TRACEQL_SEARCH.len() + TRACEQL_METRICS.len()), "identical": equal, "nonempty": nonempty})
+    (json!({"queries": TRACEQL_SEARCH.len() + TRACEQL_METRICS.len(), "answers_compared": 2 * (TRACEQL_SEARCH.len() + TRACEQL_METRICS.len()), "identical": equal, "nonempty": nonempty}), answers)
 }
 
 // ───────────────────────────── LogQL ─────────────────────────────
@@ -620,8 +681,12 @@ fn mem_logs(expected: &[J]) -> viz_logql::MemSource {
 struct FileLogs {
     files: Vec<(Vec<u8>, String)>,
     prune: bool,
+    /// Also skip row groups the file's token filter rules out for the request's `required`
+    /// clauses (contracts/LOGS.md §6), when its fragment says where the filter is (`tok`).
+    tokens: bool,
     groups_read: std::cell::Cell<u64>,
     groups_total: std::cell::Cell<u64>,
+    groups_skipped_by_tokens: std::cell::Cell<u64>,
 }
 
 fn matches(ms: &[viz_logql::Matcher], labels: &[(String, String)]) -> Option<bool> {
@@ -643,7 +708,26 @@ fn matches(ms: &[viz_logql::Matcher], labels: &[(String, String)]) -> Option<boo
 }
 
 impl FileLogs {
-    fn groups(&self, index: &str, req: &viz_logql::SelectRequest<'_>) -> Vec<usize> {
+    fn new(files: &[(Vec<u8>, String)], prune: bool, tokens: bool) -> FileLogs {
+        FileLogs { files: files.to_vec(), prune, tokens, groups_read: 0.into(), groups_total: 0.into(), groups_skipped_by_tokens: 0.into() }
+    }
+
+    fn groups(&self, bytes: &[u8], index: &str, req: &viz_logql::SelectRequest<'_>) -> Vec<usize> {
+        let keep = self.groups_by_fragment(index, req);
+        let ix: J = serde_json::from_str(index).unwrap();
+        match ix.get("tok").and_then(J::as_array) {
+            Some(t) if self.tokens && !req.required.is_empty() => {
+                let (o, l) = (t[0].as_u64().unwrap() as usize, t[1].as_u64().unwrap() as usize);
+                let Ok(filter) = viz_storage::tokens::TokenFilter::parse(&bytes[o..o + l]) else { return keep };
+                let out: Vec<usize> = keep.iter().copied().filter(|g| filter.may_match(*g, req.required)).collect();
+                self.groups_skipped_by_tokens.set(self.groups_skipped_by_tokens.get() + (keep.len() - out.len()) as u64);
+                out
+            }
+            _ => keep,
+        }
+    }
+
+    fn groups_by_fragment(&self, index: &str, req: &viz_logql::SelectRequest<'_>) -> Vec<usize> {
         let ix: J = serde_json::from_str(index).unwrap();
         let rg = ix["rg"].as_array().unwrap();
         self.groups_total.set(self.groups_total.get() + rg.len() as u64);
@@ -680,7 +764,7 @@ impl LogSource for FileLogs {
         // (stream_id, ts, line, metadata) → (labels, row): later files overwrite earlier ones.
         let mut rows: HashMap<(i64, i64, String, Vec<(String, String)>), (Vec<(String, String)>, viz_logql::LogRow)> = HashMap::new();
         for (bytes, index) in &self.files {
-            let groups = self.groups(index, req);
+            let groups = self.groups(bytes, index, req);
             self.groups_read.set(self.groups_read.get() + groups.len() as u64);
             if groups.is_empty() {
                 continue;
@@ -718,6 +802,10 @@ const LOGQL_LOGS: &[&str] = &[
     "{job=\"Zürich\"} != \"GET\"",
     "{service_name=~\".+\"} | http_route=\"/ünïcode\"",
     "{service_name=~\".+\"} | user_tier=\"gold\" | line_format \"{{.user_id}} {{.http_route}}\"",
+    // Literals with tokens strictly inside them, which a token filter can prune by (LOGS.md §6).
+    "{service_name=~\".+\"} |= \"error: connection refused\"",
+    "{job=~\".+\"} |= \"level=error msg=\"",
+    "{service_name=~\".+\"} |= \" starting worker\"",
 ];
 const LOGQL_METRICS: &[&str] = &[
     "count_over_time({service_name=~\".+\"}[5m])",
@@ -726,12 +814,16 @@ const LOGQL_METRICS: &[&str] = &[
     "topk(3, sum by (job) (bytes_over_time({job=~\".+\"}[30m])))",
     "sum(count_over_time({service_name=~\".+\"} | severity_number=\"17\" [1h]))",
     "avg_over_time({service_name=~\".+\"} | logfmt | unwrap duration(duration) [15m]) by (service_name)",
+    "sum by (service_name) (count_over_time({service_name=~\".+\"} |= \" status=500 \" [10m]))",
 ];
 
-fn logql(rep: &mut Report, expected: &[J], files: &[(Vec<u8>, String)]) -> J {
+fn logql(rep: &mut Report, expected: &[J], files: &[(Vec<u8>, String)]) -> (J, Vec<String>) {
     let mem = mem_logs(expected);
-    let full = FileLogs { files: files.to_vec(), prune: false, groups_read: 0.into(), groups_total: 0.into() };
-    let pruned = FileLogs { files: files.to_vec(), prune: true, groups_read: 0.into(), groups_total: 0.into() };
+    let full = FileLogs::new(files, false, false);
+    let pruned = FileLogs::new(files, true, false);
+    let tokens = FileLogs::new(files, true, true);
+    let with_filters = files.iter().filter(|(_, ix)| ix.contains("\"tok\":[")).count();
+    let mut answers = Vec::new();
     let ts: Vec<i64> = expected.iter().map(|j| j["ts"].as_str().unwrap().parse().unwrap()).collect();
     let step = 60_000_000_000i64;
     let (start, end) = (ts.iter().min().unwrap() / step * step, (ts.iter().max().unwrap() / step + 2) * step);
@@ -739,15 +831,22 @@ fn logql(rep: &mut Report, expected: &[J], files: &[(Vec<u8>, String)]) -> J {
     let (mut equal, mut nonempty) = (0, 0);
     for q in LOGQL_LOGS.iter().chain(LOGQL_METRICS) {
         let a = viz_logql::query_range(&mem, q, start, end, step, &opts).unwrap_or_else(|e| panic!("{q}: {e:?}")).data_json();
-        for (name, src) in [("files", &full), ("files, pruned", &pruned)] {
+        for (name, src) in [("files", &full), ("files, pruned", &pruned), ("files, pruned and token filters", &tokens)] {
             let b = viz_logql::query_range(src, q, start, end, step, &opts).unwrap_or_else(|e| panic!("{q}: {e:?}")).data_json();
             rep.check(a == b, || format!("LogQL {q} ({name}): {} vs {} bytes", a.len(), b.len()));
             equal += (a == b) as u32;
+            if name == "files" {
+                answers.push(b);
+            }
         }
         nonempty += !a.contains("\"result\":[]") as u32;
     }
-    json!({
-        "queries": LOGQL_LOGS.len() + LOGQL_METRICS.len(), "answers_compared": 2 * (LOGQL_LOGS.len() + LOGQL_METRICS.len()), "identical": equal, "nonempty": nonempty,
-        "row_groups_read": {"unpruned": full.groups_read.get(), "pruned": pruned.groups_read.get(), "of": pruned.groups_total.get()},
-    })
+    (
+        json!({
+            "queries": LOGQL_LOGS.len() + LOGQL_METRICS.len(), "answers_compared": 3 * (LOGQL_LOGS.len() + LOGQL_METRICS.len()), "identical": equal, "nonempty": nonempty,
+            "row_groups_read": {"unpruned": full.groups_read.get(), "pruned": pruned.groups_read.get(), "pruned_and_token_filters": tokens.groups_read.get(), "skipped_by_token_filters": tokens.groups_skipped_by_tokens.get(), "of": pruned.groups_total.get()},
+            "files_with_token_filters": with_filters,
+        }),
+        answers,
+    )
 }

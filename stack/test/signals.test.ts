@@ -18,6 +18,7 @@ import { makeKey, postWrite, setPool } from '../../edge/test/helpers'
 import { lokiProto, postSignal, streamIdOf, tracesProto } from '../../edge/test/otelhelpers'
 import { loggedChanges, sha256Hex } from '../../flush/test/helpers'
 import { type PoolMap, signalPool, shardName } from '../../shard/src/pool'
+import { compactTenant } from '../../compact/src/compact'
 import { engine, flushTenant } from '../src/index'
 import { quiesce } from './settle'
 import { SIGNAL_INGEST, checkSignals, logKey, sendLogs, sendSpans, signalShards, spanKey } from './signals'
@@ -173,15 +174,33 @@ describe.skipIf(!corpus.SIGNALS_CORPUS_REQUESTS)('an OTLP corpus through the wri
     const files = (await allFiles(t.name)).filter((f) => f.table === 'spans' || f.table === 'trace_index' || f.table === 'logs')
     const units = (await loggedChanges(t.name)).filter((c) => c.kind === 'add_unit' && /\/(traces|logs)\/\d+$/.test(c.watermark!.shard))
     console.log(`SIGNALS_EXPORT_SUMMARY ${JSON.stringify({ requests: requests.length, refusals, units: units.length, files: files.length, bytes: files.reduce((a, f) => a + f.bytes, 0), rows: Object.fromEntries(['spans', 'trace_index', 'logs'].map((x) => [x, files.filter((f) => f.table === x).reduce((a, f) => a + f.rows, 0)])) })}`)
-    for (const [i, f] of files.entries()) {
-      const m = /\/L0-(.+)-(\d+)-(\d+)-(\d+)-[0-9a-f]{8}\.parquet$/.exec(f.key)!
-      const bytes = new Uint8Array(await (await env.BUCKET.get(f.key))!.arrayBuffer())
-      let b64 = ''
-      for (let k = 0; k < bytes.length; k += 0x8000) b64 += btoa(String.fromCharCode(...bytes.subarray(k, k + 0x8000)))
-      const hour = /\/hour=(\d\d)\//.exec(f.key)?.[1]
-      console.log(`SIGNALS_EXPORT_FILE ${JSON.stringify({ i, key: f.key, table: f.table, day: f.day, hour: hour === undefined ? null : Number(hour), rows: f.rows, bytes: f.bytes, minTs: f.minTs, maxTs: f.maxTs, order: Math.floor(f.precedence / PRECEDENCE_PER_VERSION), unit: `${m[1]}:${m[2]}:${m[3]}-${m[4]}`, index: f.index, parts: Math.ceil(b64.length / 60_000) })}`)
-      for (let k = 0, part = 0; k < b64.length; k += 60_000, part++) console.log(`SIGNALS_EXPORT_PART ${i} ${part} ${b64.slice(k, k + 60_000)}`)
+    const exportFiles = async (tag: string, list: LiveFile[]) => {
+      for (const [i, f] of list.entries()) {
+        // A flush file names its unit; a compaction output is a unit of its own (its precedence orders it).
+        const m = /\/L0-(.+)-(\d+)-(\d+)-(\d+)-[0-9a-f]{8}\.parquet$/.exec(f.key)
+        const bytes = new Uint8Array(await (await env.BUCKET.get(f.key))!.arrayBuffer())
+        let b64 = ''
+        for (let k = 0; k < bytes.length; k += 0x7ffe) b64 += btoa(String.fromCharCode(...bytes.subarray(k, k + 0x7ffe))) // a multiple of 3: no padding inside
+        const hour = /\/hour=(\d\d)\//.exec(f.key)?.[1]
+        const order = m ? Math.floor(f.precedence / PRECEDENCE_PER_VERSION) * PRECEDENCE_PER_VERSION : f.precedence
+        console.log(`${tag}_FILE ${JSON.stringify({ i, key: f.key, table: f.table, day: f.day, hour: hour === undefined ? null : Number(hour), rows: f.rows, bytes: f.bytes, minTs: f.minTs, maxTs: f.maxTs, level: f.level, order, unit: m ? `${m[1]}:${m[2]}:${m[3]}-${m[4]}` : f.key, index: f.index, parts: Math.ceil(b64.length / 60_000) })}`)
+        for (let k = 0, part = 0; k < b64.length; k += 60_000, part++) console.log(`${tag}_PART ${i} ${part} ${b64.slice(k, k + 60_000)}`)
+      }
+      console.log(`${tag}_END`)
     }
-    console.log('SIGNALS_EXPORT_END')
+    await exportFiles('SIGNALS_EXPORT', files)
+    // Then compaction to the end (every day closed: spans to one file per hour, trace_index and
+    // logs per day, within the step budget), and the live files again: the read-back requires
+    // every row and every TraceQL and LogQL answer to be the same as before it.
+    let merged = 0
+    for (let i = 0; i < 100; i++) {
+      const run = await compactTenant(env, engine, t.name, { now: 8.64e15, maxSteps: 50 })
+      merged += run.merged
+      for (const x of run.steps) expect(['merged', 'idle'], JSON.stringify(x).slice(0, 300)).toContain(x.status)
+      if (!run.more) break
+    }
+    const after = (await allFiles(t.name)).filter((f) => f.table === 'spans' || f.table === 'trace_index' || f.table === 'logs')
+    console.log(`SIGNALS_COMPACTED_SUMMARY ${JSON.stringify({ merges: merged, files: after.length, levels: [...new Set(after.map((f) => f.level))], bytes: after.reduce((a, f) => a + f.bytes, 0) })}`)
+    await exportFiles('SIGNALS_COMPACTED', after)
   })
 })

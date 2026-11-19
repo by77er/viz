@@ -8,6 +8,7 @@ import { consumeFlushBatch, sweepPending } from '../../flush/src/index'
 import { expireTenant } from '../../janitor/src/janitor'
 import { FLUSH_QUEUE_NAME, MAINT_QUEUE_NAME, consumeMaintBatch, engine, flushTenant, noteFlushed } from '../src/index'
 import { checkedOrphans, checkedPurge, quiesce as quiesceTenant, settle } from './settle'
+import { parquetReadObjects } from '../../bench/node_modules/hyparquet/src/index.js'
 import { sendLogs, sendSpans } from './signals'
 import { DAY_MS, type Sim, type SimTenant, checkTenant, createSim, deliver, ingest, ledger, rng, shard, take } from './sim'
 
@@ -34,7 +35,10 @@ import { DAY_MS, type Sim, type SimTenant, checkTenant, createSim, deliver, inge
  * crashes), expire (by `trace_days` and `log_days`), purge and sweep with everything else; and
  * every check also requires a reader to see exactly the acknowledged spans and log records,
  * from the files and the tails (test/signals.ts). Those decisions take a generator of their own
- * (`rs`), so the metric operations are drawn as in the run without them.
+ * (`rs`), so the metric operations are drawn as in the run without them. Compaction merges the
+ * span and log tables too (compact/, contracts/TRACES.md and LOGS.md "Compaction"): every check
+ * then reads merged files, the old-plan reader also reads its plan's span and log files after
+ * maintenance ran, and the end requires every span and log file at level 2.
  */
 const vars = env as unknown as { SOAK_STEPS?: string; SOAK_SEED?: string }
 const STEPS = Number(vars.SOAK_STEPS ?? 400)
@@ -175,6 +179,7 @@ describe('soak', () => {
               tt.signals?.expire(report.expired)
               did('files expired', report.expired.removed.length)
               did('merges', report.compaction.merged)
+              for (const x of report.compaction.steps) if (x.status === 'merged' && x.job.table) did(`merges of ${x.job.table}`)
               did('objects purged', report.purged.deleted.length)
               did('orphans deleted', report.orphans?.deleted.length ?? 0)
               return report
@@ -188,7 +193,7 @@ describe('soak', () => {
         const crash = r.chance(0.15)
         const run = () => compactStep(sim.env, engine, t.name, { now: clock(), policy: compaction(), hooks: crash ? { afterPut: () => { throw new Error('injected: crash after PUT') } } : {} })
         const results = await Promise.allSettled(r.chance(0.2) ? [run(), run()] : [run()])
-        for (const x of results) did(x.status === 'rejected' ? 'compaction crashed' : `compaction ${x.value.status}`)
+        for (const x of results) did(x.status === 'rejected' ? 'compaction crashed' : `compaction ${x.value.status}${'job' in x.value && x.value.job.table ? ` (${x.value.job.table})` : ''}`)
         for (const x of results) if (x.status === 'fulfilled') expect(x.value.status, where).not.toBe('error')
       } else if (op < 82) {
         // Retention, with a compaction step running across it.
@@ -224,7 +229,10 @@ describe('soak', () => {
         // A query takes its plan, maintenance runs, and the query then reads the files of its OLD plan.
         const s1 = await ledger(t).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
         const s2 = await ledger(t).plan({ table: 'metric_series', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
-        if (s1.version === s2.version) {
+        // With spans and logs: the same reader takes its plan of the span and log tables too, at
+        // that version (compaction of those tables runs in the steps below).
+        const sig = t.signals ? await Promise.all((['spans', 'trace_index', 'logs'] as const).map((table) => ledger(t).plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER }))) : []
+        if (s1.version === s2.version && sig.every((p) => p.version === s1.version)) {
           const started = Date.now()
           const fetch = (keys: string[]) => Promise.all(keys.map(async (k) => {
             const o = await env.BUCKET.get(k)
@@ -232,12 +240,20 @@ describe('soak', () => {
             return new Uint8Array(await o!.arrayBuffer())
           }))
           const select = async () => canonOf(engine.select({ sampleFiles: await fetch(s1.files.map((f) => f.key)), seriesFiles: await fetch(s2.files.map((f) => f.key)), tailBatches: [] }, [], 0, 253_402_300_799_999))
+          // The span and log files of the old plan, read (hyparquet) in its precedence order.
+          const signalRows = async () => {
+            const out: string[] = []
+            for (const p of sig) for (const [k, bytes] of (await fetch(p.files.map((f) => f.key))).entries()) for (const r of await parquetReadObjects({ file: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer })) out.push(`${k} ${JSON.stringify(r, (_, v) => (typeof v === 'bigint' ? String(v) : v instanceof Uint8Array ? Array.from(v) : v))}`)
+            return out
+          }
+          const expectedSignals = await signalRows()
           const expected = await select()
           for (let i = 0; i < 4; i++) await compactStep(sim.env, engine, t.name, { now: Date.now() + 3 * DAY_MS, policy: compaction() })
           await purge(t, where)
           await orphans(t, where)
           if (Date.now() - started < DELETE_GRACE) {
             expect(await select(), `${where}: the old plan reads differently`).toEqual(expected)
+            if (t.signals) expect(await signalRows(), `${where}: the old plan's span and log files read differently`).toEqual(expectedSignals)
             did('old-plan readers verified')
           }
         }

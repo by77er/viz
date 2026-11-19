@@ -2,7 +2,7 @@
 //
 // Each mutant breaks one property in the source, on purpose. The script copies the component
 // (and the sibling sources it imports: contracts/, edge/src/, anomaly/src/, control/src/,
-// dashboard/src/) to a fresh scratch
+// dashboard/src/, shard/src/) to a fresh scratch
 // directory, applies the mutant to the COPY, runs the named test files there, requires at least
 // one test to fail, and deletes the copy at the end. The shared tree is only read: others commit
 // and snapshot it while this runs (AGENTS.md, Evidence), and the script checks at the end that
@@ -1098,6 +1098,17 @@ export const MUTANTS = [
     edits: one('src/anomalystore.ts', 'blocks: blockRanges([...store.entries.keys()]), entries: entryCount }', 'blocks: blockRanges([...dirty].filter((b) => store.entries.has(b))), entries: entryCount }'),
     tests: ['test/anomalystore.test.ts'],
   },
+  // ───────────── the flaky move test (its wait was shorter than the new shard's grid allows) ─────────────
+  {
+    name: '`for` restarts on the new shard: a moved group\'s first evaluation there starts from no alerts',
+    edits: one('src/ruler.ts', 'const result = evalAlertingRule(rule, g.compiled[i] as CompiledAlertRule, g.alerts.get(rule.key) ?? EMPTY, series, ts, {', 'const result = evalAlertingRule(rule, g.compiled[i] as CompiledAlertRule, (g.evaluations === 0 ? EMPTY : g.alerts.get(rule.key) ?? EMPTY), series, ts, {'),
+    tests: ['test/robust.test.ts'],
+  },
+  {
+    name: 'a moved group waits four intervals on its new shard before its first evaluation (its pending alerts fire late)',
+    edits: one('src/ruler.ts', '    const g = this.newGroup(spec as RuleGroup, now)\n    const keys = new Set(', '    const g = this.newGroup(spec as RuleGroup, now + 4 * spec.intervalMs)\n    const keys = new Set('),
+    tests: ['test/robust.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0
@@ -1110,8 +1121,9 @@ function makeCopy() {
   const base = process.env.VIZ_SCRATCH ?? tmpdir()
   mkdirSync(base, { recursive: true })
   const dir = mkdtempSync(join(base, 'ruler-mutants-'))
-  // control/src and dashboard/src: the tests bind control's real Tenant object (test/harness.ts), which imports the dashboard package.
-  for (const d of ['contracts', 'edge/src', 'anomaly/src', 'control/src', 'control/openapi.json', 'dashboard/src']) cpSync(join(repo, d), join(dir, d), { recursive: true })
+  // control/src and dashboard/src: the tests bind control's real Tenant object (test/harness.ts), which imports the dashboard
+  // package and shard/src (its ops settings import `DERIVED_SIGNALS` from shard/src/pool.ts).
+  for (const d of ['contracts', 'edge/src', 'anomaly/src', 'control/src', 'control/openapi.json', 'dashboard/src', 'shard/src']) cpSync(join(repo, d), join(dir, d), { recursive: true })
   const skip = new Set(['node_modules', '.capture', '.wrangler'].map((d) => join(source, d)))
   cpSync(source, join(dir, 'ruler'), { recursive: true, filter: (p) => ![...skip].some((s) => p === s || p.startsWith(`${s}/`)) })
   symlinkSync(join(source, 'node_modules'), join(dir, 'ruler', 'node_modules'), 'dir')

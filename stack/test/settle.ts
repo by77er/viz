@@ -13,7 +13,7 @@ import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { expect } from 'vitest'
 import { COMPACTION_INPUTS_META, compactStep, decodeCompactionInputs } from '../../compact/src/compact'
-import { METRIC_TABLES, TABLES, type Watermark } from '../../contracts/ledger'
+import { TABLES, type Watermark } from '../../contracts/ledger'
 import { dataKeys, healLedgerLog } from '../../flush/test/helpers'
 import { type OrphanResult, type PurgeResult, expireTenant, purgeTenant, sweepOrphans } from '../../janitor/src/janitor'
 import type { Ledger } from '../../ledger/src/ledger'
@@ -182,8 +182,9 @@ export async function settle(sim: Sim, g: Graces, did: Count = () => {}, hooks: 
     expect(state.objects).toEqual(state.live.map((f) => f.key).sort())
     expect(state.objects).toEqual(await dataKeys(t.name))
     expect(state.tombstones).toEqual([])
-    // Metric files are merged to level 2; span and log files are not compacted (not built: they stay level 0).
-    expect(state.live.every((f) => f.level === ((METRIC_TABLES as readonly string[]).includes(f.table) ? 2 : 0))).toBe(true)
+    // Every file is merged to level 2: metric pairs and trace_index and logs files per day, spans per hour.
+    expect(state.live.filter((f) => f.level !== 2).map((f) => f.key)).toEqual([])
+    for (const f of state.live) if (f.table === 'spans') expect(f.key).toMatch(/\/hour=(\d\d)\/L2-h\1-[0-9a-f]{16}-[0-9a-f]{8}\.parquet$/)
     for (const s of [...sim.shards, ...sim.signalShards]) expect(await shard(s).pendingSegments(t.name)).toEqual([])
   }
 }

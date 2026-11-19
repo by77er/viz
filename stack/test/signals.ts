@@ -206,7 +206,8 @@ export async function checkSignals(tenant: string, model: SignalModel, shards: s
   expect(got.logs, `${where}: ${tenant} log records`).toEqual(want.logs)
   for (const f of got.files) {
     expect(f.key.includes(`/tenant=${tenant}/`), `${where}: ${f.key} outside the tenant's prefix`).toBe(true)
-    if (f.table === 'spans') expect(f.key, `${where}: a spans file keyed by its hour`).toMatch(/\/day=\d{4}-\d{2}-\d{2}\/hour=\d\d\/L0-/)
+    // Flush files and compaction outputs alike: a spans file under its hour (an output named after it).
+    if (f.table === 'spans') expect(f.key, `${where}: a spans file keyed by its hour`).toMatch(/\/day=\d{4}-\d{2}-\d{2}\/hour=(\d\d)\/(?:L0-|L[12]-h\1-)/)
   }
   return got
 }
