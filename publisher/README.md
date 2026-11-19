@@ -10,18 +10,22 @@ and physical deletes wait. Nothing else.
 | File | Contents |
 |---|---|
 | `src/publisher.ts` | `Publisher`: publish, commit, resync, expire, sweep, `verify`, `safeToDelete`; the one alarm and its deadlines |
-| `src/log.ts` | Reading a ledger's R2 log, segments and the first layout: changes after a cursor in version order, in whole segments, up to the first hole or unreadable object; a strict replay for `verify` |
+| `src/log.ts` | Reading a ledger's R2 log, segments and the first layout: changes after a cursor in version order, in whole segments, up to the first hole or unreadable object; a re-base from the newest checkpoint (one object, or parts) or the base, streamed into SQLite; the six-connection slots; a strict replay for `verify` |
 | `src/nudge.ts` | `nudge(PUBLISHER, cell, tenants)`: what the maintenance run calls; bounded, never throws (D34) |
 | `src/iceberg.ts` | Table schemas, Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 77 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout) |
+| `test/` | 99 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `bench/` | The re-base at the ledger's state limit (`rebase.bench.test.ts`), the frozen publisher from before it streamed (`before/`, the counterfactual), `phases.mjs` (memory per phase) |
 | `tools/fixtures/` | Rust: real Parquet files made with `viz_storage::encode_segment` and `merge_files` |
 | `tools/verify_readers.py` | PyIceberg and DuckDB read the published tables and are compared with the ledgers |
 | `tools/mutants.mjs` | Mutation checks |
 
 Bindings: Durable Object `PUBLISHER`, R2 bucket `BUCKET`, variable `ICEBERG_LOCATION_PREFIX`
-(default `s3://viz-lake`).
+(default `s3://viz-lake`). Deployed as **viz-publisher**, before viz-ingest, which binds its
+`Publisher` class (`deploy/workers.json`). The Worker answers only `GET /healthz` (200 `ok`
+with both bindings, 503 naming a missing one, 404 for anything else; it calls no object), for
+the deploy's record of a health route; nothing reaches the publisher over HTTP.
 
 ## What is implemented
 
@@ -43,7 +47,8 @@ cursors-{snapshot}-{tag}.json      {tenant: {ledgerIncarnation, version}} for ev
 which itself makes the ledger's compactions and expiries) ends with `nudge(PUBLISHER, cell,
 [tenant])`. `nudge` waits at most 2 s and never throws; it returns false if the nudge may not
 have been recorded, and the run then marks the tenant due in an hour so the cron runs it
-again. (That wiring is two lines in `stack/`, not done here: "Needed changes".) `notify`
+again. (Wired in `stack/src/maintain.ts` since 2026-11-19; `stack/README.md`, "The publisher
+wired in".) `notify`
 writes the tenants to `pending` and a `publish` deadline `publishIntervalMs` (2 min) after the
 first nudge, so nudges coalesce into one commit per table; it writes nothing to R2 and never
 publishes itself.
@@ -76,9 +81,10 @@ tenant from the lower of the two. Each incarnation uses one layout:
   inside it); if none does, that is a hole. It reads whole segments only, contiguous, until
   about `maxChangesPerTenant` changes (at least one segment; the rest is `more`), decodes each
   with the contract's codec against its key and tenant, then checks it against what this
-  publisher reads (below). Checkpoints are never read. A newer incarnation is re-based from the
-  first line of its first segment, which must be its `base`; an incarnation that also has a
-  `base.json` is corrupt.
+  publisher reads (below). A newer incarnation (or a tenant with no cursor) is **re-based**: from
+  its newest checkpoint this code reads, else from the first line of its first segment, which
+  must be its `base`, then the segments after it; streamed, never held ("Re-base in bounded
+  memory", below). An incarnation that also has a `base.json` is corrupt.
 - **The first layout** (`base.json` and one `{version}.json` per change): read as before, for
   incarnations a trial deployment may still hold (COMPATIBILITY.md §3.6, step 3). A ledger
   that takes such a tenant over starts a new incarnation in segments, which the publisher
@@ -97,10 +103,69 @@ for a log written before it, from the key layout of contracts/TABLES.md. `remove
 does not list `removed` key for key is `corrupt`.
 
 R2 operations per tenant read: one list (incarnations), one list (segments after the cursor;
-a second only when the cursor is inside a segment), one get per segment read, one head on a
-re-base. When nothing is new, one more list looks for the first layout. A cursor inside the
+a second only when the cursor is inside a segment), one get per segment read; a re-base adds
+one list (the incarnation's checkpoints, with a delimiter so each checkpoint's parts are one
+prefix), one head, and the get of its checkpoint's manifest and each part, or of the base
+segment. When nothing is new, one more list looks for the first layout. A cursor inside the
 newest segment (this reader never leaves one; another release might) waits until the ledger
 writes the next segment, which the "starts above `version + 1`" rule then catches.
+
+**Re-base in bounded memory** (design/DECISIONS.md D55, since 2026-11-19; it lifted production's
+16 MiB pin of the ledger's state, `stack/wrangler.jsonc`). A tenant with no cursor in the newest
+ledger incarnation is re-based, and nothing in it grows with the tenant's size:
+
+- **Where it starts.** The incarnation's newest checkpoint whose format this code reads: format 1
+  (`ckpt-{version}.jsonl`, one `base` line) or format 2 (that key is a manifest naming parts
+  `ckpt-{version}-{attempt}/{part}.jsonl` of at most 1 MiB). A checkpoint of a format it does not
+  read is passed over (it is only a shortcut; `rebase.passedOver` in the report says so). Without
+  one, the base, the first line of the first segment. Then the segments after it, as from a
+  cursor at its version. Each tenant's report says what it started from (`rebase`: source,
+  format, version, files, tombstones, objects read, the most parts in flight).
+- **How it is read.** A base line or a format-1 checkpoint with `readLedgerLogStream`
+  (`contracts/ledger.ts`): one element at a time, files and tombstones into SQLite (`stage`) 256
+  per transaction, every other member parsed an element at a time and dropped. Format 2: the
+  manifest, then the parts in order, at most `PART_WINDOW` (4) requested ahead of the one being
+  applied, a part per transaction.
+- **Six connections.** Every R2 operation of a publish, sweep, maintenance or verify takes a slot
+  of one `Slots` of `R2_CONNECTIONS` (6) per invocation, a GET until its body has been read or
+  cancelled. So the tenants read six at a time, the segments of each six at a time, the parts
+  window and the commit's writes never have more than six in flight together. Re-bases of one
+  publish take turns reading their checkpoint or base (`BaseSink.turn`), so the parts held at once
+  are one window whatever the number of tenants. Tested from under the store
+  (`test/checkpoints.test.ts`): six tenants re-basing from parts at once, at most six in flight,
+  each tenant's part reads one unbroken run.
+- **What is checked of parts.** Each part's header against its key and manifest (tenant,
+  incarnation, version, attempt, part number) and its record count against its lines (the
+  contract's decoder); every record one file or one tombstone; files in strictly ascending key
+  order (SQLite's, UTF-8 bytes) across parts, then tombstones likewise; at the end the files,
+  tombstones and bytes (as R2 stored them) of all parts against the manifest's. The format has no
+  per-part size or digest (Contract issues 13).
+- **When it cannot be read whole.** A part the manifest names that is not there: `incomplete`.
+  The ledger deletes a superseded checkpoint's parts once the newer manifest is in R2, so a
+  reader that listed the older manifest can meet this; the next publish lists again and starts
+  from the newer one. A manifest or part that is not what it should be: `corrupt`. Either way
+  the reader returns no base: nothing of the tenant is committed, its cursors do not move, it
+  stays pending and the alarm retries every `retryMs`. What was staged is deleted at the end
+  of the attempt, and at the start of the next one if an eviction cut it short.
+- **The difference.** The changes read after the start are applied to `stage`, checked as
+  ever (`inconsistent` for a removal of a key not live or an addition of a live one). The commit
+  then takes what the tenant adds (`stage` not in `live`) and removes (`live` not in `stage`) in
+  SQL: counts and sums by aggregate, the manifests to rewrite by `DISTINCT`, the added files a
+  page of 1,000 at a time in `(day, key)` order into manifests of `manifestTargetEntries`, two
+  manifests written at once, each entry built as the Avro encoder reaches it. Statistics are
+  computed only for added files and kept in their `stage` row; after the commit point one
+  transaction inserts and deletes `live` rows by key range, in SQL. A tenant read from its cursor
+  is planned as before, but with a point lookup in `live` per key the changes touch instead of
+  loading its published keys; merges of small manifests read `live` a page at a time.
+- **Tombstones.** A checkpoint or base carries the tombstones of removed files whose objects may
+  remain. Those neither published nor live in the new state are recorded as removed by the
+  commit's snapshot, and released once no older snapshot is retained (the conservative rule,
+  since the publisher cannot know whether an earlier publication referenced them). Without this a
+  re-base from a checkpoint would never release the files added and removed before it.
+- **Resync** (SQLite rebuilt from R2) fills `live_next` a manifest at a time, two in flight, and
+  swaps it into `live` in one transaction, so an eviction midway leaves SQLite as it was.
+- **What still grows:** `verify` (Not implemented); the changes read per publish from a cursor
+  (Risks); one manifest of `manifestTargetEntries` files while it is written.
 
 **Net changes.** A commit holds the difference between what is published and the ledgers'
 live sets after the changes read. A file added and removed between two publications is in
@@ -182,7 +247,10 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   `blockConcurrencyWhile` (`publisher.Publisher`, version 1 = the schema the pre-versioning
   code created; version 2 adds `due`, the alarm's deadlines, `readableFrom` 1, so release 1
   stays a rollback target: on this storage it publishes on nudges and drops the expiry and
-  sweep deadlines until the next commit by a release that knows them). Storage a newer release migrated past what this code may read is refused:
+  sweep deadlines until the next commit by a release that knows them; version 3 adds `stage` and
+  `live_next`, the scratch of a re-base and of a resync, `readableFrom` 1: releases 1 and 2 never
+  touch them, and each is emptied by the operation that fills it, so they hold rows only while
+  it runs or after an eviction in the middle of it). Storage a newer release migrated past what this code may read is refused:
   every method throws `SchemaTooNewError` (message `schema_too_new: …`; its results are reports,
   not status unions, and its future callers, a queue consumer and a cron, retry on an
   exception), and the alarm only re-arms itself.
@@ -210,7 +278,11 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   incarnations, a checkpoint, a compaction with `removedFiles`, retention and a unit in one
   segment), with what each stage must publish. One test publishes those checked-in bytes stage
   by stage; another re-runs the scenario on the current ledger and requires the same bytes
-  (only `at` differs), so a change of segment format without a new version fails here. A further test requires that, across
+  (only `at` differs), so a change of segment format without a new version fails here. And
+  `read.ledger-checkpoint.v2.json`: a real log with a checkpoint in parts (17 parts, files,
+  tombstones) written by the current `Ledger`; one test re-base-publishes those bytes, another
+  requires the ledger to still write them (only `at` and the attempt name differ). The format-1
+  checkpoint in `read.ledger-segment.v1.json` is re-based from too. A further test requires that, across
   every golden version and the code, a column keeps its field id and an id names one column.
 
 ## The partition columns
@@ -245,17 +317,23 @@ contract change; see "Contract issues").
 
 ## Not implemented
 
-- **The nudge is not wired.** `stack/` does not yet bind `PUBLISHER` or call `nudge` from the
-  maintenance run ("Needed changes"); until it does, nothing publishes without a caller.
+- **`verify` in bounded memory.** The scrubber still replays each tenant's log from its base into
+  a map, reads the base segment whole, and holds the table's manifest entries: at the ledger's
+  limit (300,000 files) that is not expected to fit an isolate. It is an operator's tool, not on
+  the publish path; streaming it (into `live_next`, say) is not done.
+- **Re-base progress across invocations.** A re-base that is cut off (an eviction, a CPU limit)
+  starts again from its checkpoint or base at the next attempt; what it staged is thrown away.
+- **A fall-back to the base when a checkpoint is corrupt** (D55, alternative (e)): the tenant
+  stops instead.
+
 - **No backoff for a stuck tenant.** A tenant stopped by a hole, a corrupt or unsupported
   segment or an inconsistent change is retried every `retryMs` (1 min) for as long as it lasts.
-- **Physical deletion does not wait for publication.** The janitor's purge releases a removed
-  file on the ledger's tombstone rules alone; DESIGN §5.2 wants it to wait for the removal to
-  be published and its snapshots expired (`safeToDelete`). "Needed changes", 3.
 - **Managed catalog.** Only the R2-native implementation exists. The catalog interface of
   D4 has not been extracted; a REST catalog commit would be a second implementation.
-- **The deleter.** `safeToDelete` and `acknowledgeDeleted` exist; nothing calls them or
-  deletes data objects.
+- **A release for the newest snapshot's removals in a quiet cell.** `minSnapshots` is 2, so a
+  file removed by a table's newest commit is released only after a later commit to that table
+  and the window; if the cell publishes nothing more, it is never released (its object stays;
+  the janitor looks again every 6 h). The deleter is the janitor's purge (`janitor/README.md`).
 - **Paging over tenants.** One `publish()` reads every requested tenant's log in one
   invocation. A cell with thousands of tenants needs the publish split across invocations
   (R2 calls are subrequests).
@@ -279,8 +357,13 @@ contract change; see "Contract issues").
 ```
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
-npm test             # 77 tests in workerd, 9 files, at most 2 workers; fills export/
+npm test             # 99 tests in workerd, 10 files, at most 2 workers; fills export/
 npm run typecheck
+# the re-base at scale (Measurements); one size and variant per process for clean memory figures:
+MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=32 --max-semi-space-size=4" \
+  BENCH_SIZES=300000 BENCH_VARIANTS=parts RSS_LOG=<scratch>/rss.log \
+  node ../ledger/bench/rss.mjs -- npm run bench -- --silent=false > <scratch>/bench.out
+node bench/phases.mjs <scratch>/bench.out <scratch>/rss.log
 # the readers, in a scratch virtualenv (versions as measured):
 python3 -m venv <scratch>/readers-venv
 <scratch>/readers-venv/bin/pip install pyiceberg==0.12.0 duckdb==2.0.0 pyarrow==26.0.1
@@ -288,14 +371,39 @@ python3 -m venv <scratch>/readers-venv
 MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see "Mutation checks"
 ```
 
-Last run (2026-11-19, segment reader and triggers): **77 passed, 0 failed**; `tsc --noEmit`
-clean. Run against `ledger/src/ledger.ts` as committed at `54cc31f` (segments, base first,
+**Last run (2026-11-19, the streaming re-base): 99 passed, 0 failed** (10 files, `npx vitest run
+--maxWorkers=2`); `tsc --noEmit` clean; the readers script on the export of the run before the last test was
+added (the end-to-end test unchanged since): **504 checks, 0 failed**, every content hash as in the table under "Independent readers" (the re-based stage
+included). Against `ledger/src/ledger.ts` as on disk that day (checkpoints in parts, D47) and
+the frozen release before it (`ledger/bench/before/`). `deploy/`'s `node --test
+test/configure.test.mjs` (which requires `stack/wrangler.jsonc` and `wrangler.test.jsonc` to
+differ only as it allows) passed 20 of 20 after the pin was removed from both. `stack/`'s own
+suite was not run for this change (its tenants are small; it imports nothing changed here).
+
+What changed in the tests besides the new file: `TestPublisher` gained a probe under the store
+(R2 operations in flight, the order of GETs, a pause, a failure or a deletion at a GET), fixed
+ids and clock, `ctx.abort()`, and the `stage`/`live_next` row counts; the test worker binds the
+ledger release before checkpoints in parts (`LEDGER_BEFORE`). Because a re-base now starts from
+the newest checkpoint, four tests about how SEGMENTS are read (a hole; a segment, change or file
+of a newer version, five cases; a backlog read change by change) drop the checkpoints from their
+copy of the log (`dropCheckpoints`), with a comment saying why; two that compared a report
+exactly also expect its new `rebase` field; "never reads a checkpoint, even an unreadable one"
+is replaced by "a manifest that is not a checkpoint: corrupt, explicitly" (the opposite
+behaviour, on purpose); the adoption test also expects `stage` and `live_next` empty.
+
+Earlier (2026-11-19, segment reader and triggers): **77 passed, 0 failed**; `tsc --noEmit`
+clean.
+
+With the health route (2026-11-19): **78 passed, 0 failed** (9 files, `npx vitest run --maxWorkers=2`); `tsc --noEmit` clean. The one test added
+(`test/smoke.test.ts`, "the Worker") calls `src/index.ts`'s `fetch`: `GET` and `HEAD /healthz` 200
+`ok`, 503 `misconfigured: no BUCKET binding` without the bucket, `POST` 405, `/` and `/publish`
+404. The publisher's interface did not change. Run against `ledger/src/ledger.ts` as committed at `54cc31f` (segments, base first,
 checkpoints). The pool sets `LEDGER_DRAIN_DELAY_MS` to 60 s, so a ledger drains when a test
 says (`drain()`, `mirror`), and `LEDGER_CHECKPOINT_EVERY` to 3, so most logs carry checkpoints
-the publisher must not read. Before this change, against that ledger, 45 of 59 tests failed:
+(which, since the streaming re-base, a first publication starts from). Before this change, against that ledger, 45 of 59 tests failed:
 the ledger writes no per-change objects any more, and it admits only keys under its own cell,
 which the tests' file keys were not. `wrangler deploy --dry-run` bundles the production entry
-(111 KiB; nothing uploaded).
+(111 KiB then; 157 KiB with the streaming re-base, 2026-11-19; nothing uploaded).
 
 ### Fixtures and the ledger
 
@@ -336,8 +444,8 @@ manifest lists and the manifests are the real locations of the dumped files. The
 refuses to run if the directory has moved. What this does not show is a read through
 `s3://`.
 
-`tools/verify_readers.py export`, run on 2026-11-19 on the export of the segment-reading
-publisher, in a fresh virtualenv with PyIceberg 0.12.0 (pyarrow 26.0.1) via
+`tools/verify_readers.py export`, run on 2026-11-19 on the export of the streaming re-base (and before it on that of the segment-reading
+publisher), in a fresh virtualenv with PyIceberg 0.12.0 (pyarrow 26.0.1) via
 `StaticTable.from_metadata` and DuckDB 2.0.0 (iceberg and avro extensions as installed for
 DuckDB 2.0.0) via `iceberg_scan`: **504 checks, 0 failed** (240 PyIceberg, 256 DuckDB, 8
 content hashes). For both tables, for each of the four stages (after a compaction, after a
@@ -378,7 +486,7 @@ the partition columns present in its data files, so it is a fault of that extens
 with identity-partitioned tables and not of how these tables are written. Everything else
 attempted was readable.
 
-### Workerd tests (77)
+### Workerd tests (99)
 
 | Area | Tests |
 |---|---|
@@ -402,16 +510,49 @@ attempted was readable.
 | Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment (left by publishing through a `[5, 5]` holding the ledger's own line) finished from the holding segment once a later one exists, without re-applying the change at the cursor; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
 | Triggers (`triggers.test.ts`, 3) | `notify` writes nothing to R2 and publishes nothing, later nudges never push the deadline back; a nudge returns false within its bound from a publisher that is slow (5 s) or refuses, and with none bound; a tenant's day of flushes and a compaction, each nudged, then the alarm settles in 5 runs (sweep, two expiries, mark, delete) to no alarm and no deadline, every remaining metadata object referenced, and 48 idle hours run no alarm and write nothing |
 | Golden formats (`golden.test.ts`, 5) | every format has a file for its version; `metadata.json` of both new tables; field ids permanent across versions; Avro schemas; the cursors object and an `add_unit` change (now read from its segment) |
+| Re-base from checkpoints (`checkpoints.test.ts`, 22) | the real ledger writing parts (format 2): re-based from them, in part order, at most 4 requested ahead, at most 6 R2 operations in flight, no segment at or before the checkpoint read, verified; the same state from parts, from a format-1 checkpoint and from the base: **byte-identical Iceberg objects** (fixed ids and clock); a published tenant re-based on a new incarnation's parts, removing and adding by difference; a staged re-base across many tiny manifests with merges, and SQLite rebuilt from R2 alone equal row for row; a part deleted while the checkpoint is read (`incomplete`, nothing published, retried, published once back); a record changed with its size (bytes), a record dropped with the size made up (files), two parts swapped, a part of another attempt, records out of key order across parts, a manifest that is not one: `corrupt`, nothing published; a newer checkpoint format passed over for the base; the object reset (`ctx.abort()`) while paused at a GET mid-stream, and an R2 failure at a part then `evictDurableObject`: nothing committed, staged rows never used, the next publish complete; six tenants re-basing at once: at most six in flight, each tenant's parts in order and in one run (re-bases take turns); six tenants each with eight segments to read from their cursors: at most six in flight (36 without the slots); a checkpoint's tombstones released; the ledger release before parts (N-1) read from its format-1 checkpoint and then across its storage loss; a base segment that is not alone; golden: the ledger still writes the checked-in checkpoint bytes, which are published, and the segment golden's format-1 checkpoint is re-based from |
 
 ### Mutation checks
 
 `tools/mutants.mjs` copies the component (with `contracts/` and the ledger sources it imports,
 `node_modules` linked) to `$MUTANT_DIR` outside the shared tree, applies one mutant at a time
 to the copy, runs the suites it names with at most 2 workers, and restores the copy's file.
-The shared tree is only read (AGENTS.md). Run on 2026-11-19 on the final code:
-**34 mutants, 34 killed, 0 survived** (01:39 to 01:48, all suites the mutants name).
+The shared tree is only read (AGENTS.md). `DRY=1` only checks that every mutant's text occurs
+exactly once in the source.
 
-The three properties asked for with the segment reader: **stop at an unknown version** (S1,
+**Run on 2026-11-19 on the streaming re-base (the final code): 46 mutants, 45 killed, 1 survived
+at first; the survivor was then killed by a test added for it** (all suites the mutants name, 18
+minutes, load average 8–11). Five earlier mutants (M2, M4, M5, M6, S5) were re-targeted at the
+rewritten plan, commit and gap code, same mutation, same property; all killed. The twelve new ones,
+asked for with the re-base: **skip the size/digest check** (K1, K2), **publish after a missing
+part** (K3, K4, K8), **read parts out of order** (K5, K6), **unbounded concurrency** (C1, C2, C3,
+C4), and the tombstones a checkpoint carries (K7):
+
+| # | Mutation | Result (tests failing) | A test that fails |
+|---|---|---|---|
+| K1 | skip the size check: parts that do not add up to the bytes the manifest names are used | killed (1) | a record changed, its size with it (rows 10 → 100): the parts do not add up to the bytes the manifest names |
+| K2 | skip the record check: parts that do not hold the files and tombstones the manifest names are used | killed (1) | a record dropped, the bytes made up with spaces: the parts do not hold the files the manifest names |
+| K3 | a missing part is skipped (the checks after it still see the shortfall) | killed (1) | a part deleted while the checkpoint is read: incomplete, retried, and published once readable |
+| K4 | publish after a missing part: skipped, with no check left to notice | killed (3) | a part deleted while the checkpoint is read: incomplete, retried, and published once readable |
+| K8 | a re-base that stopped still hands on its base: what it staged is published | killed (7) | a part deleted while the checkpoint is read: incomplete, retried, and published once readable |
+| K5 | read parts out of order (last to first, each checked against its own key) | killed (16) | is re-based from the parts: in order, a window at a time, with every R2 operation within six, and verified |
+| K6 | parts applied without the key-order check (as a reader applying them as they arrive would need) | killed (1) | records out of key order across parts (a reader that applies parts as they arrive would not see it otherwise) |
+| C1 | unbounded concurrency: every part requested at once, and no connection limit | killed (2) | is re-based from the parts: in order, a window at a time, with every R2 operation within six, and verified |
+| C2 | no connection limit (the window of parts kept) | **survived**, then killed (1) | six tenants with a backlog of segments, read from their cursors at once: never more than six R2 operations in flight |
+| C3 | no window of parts (the connection limit kept): every part read ahead into memory | killed (1) | is re-based from the parts: in order, a window at a time, with every R2 operation within six, and verified |
+| C4 | re-bases of one publish read their checkpoints all at once (no turns): a window of parts per tenant | killed (1) | six tenants re-basing at once, each from parts: never more than six R2 operations in flight, and one tenant's parts at a time |
+| K7 | the tombstones of a checkpoint are not recorded (the files it skipped leak) | killed (1) | files added and removed before the checkpoint, never published, are released once no snapshot can reference them |
+
+**C2 survived the full run.** Once re-bases took turns, the only test of the limit (six tenants
+re-basing at once) never had more than six operations in flight without it: one tenant's window
+of four parts, the others waiting their turn. The limit matters most on the ordinary path, six
+tenants read from their cursors at once, each fetching up to six segments. A test of exactly that
+was added (36 GETs in flight without the slots); C2 was run again on its own and killed. The
+concurrency tests compare with literal 6 and 4, not the constants they test, so a mutant that
+raises a constant raises nothing in the test.
+
+Earlier, on the segment reader: **34 mutants, 34 killed, 0 survived** (2026-11-19, 01:39 to
+01:48). The three properties asked for with the segment reader: **stop at an unknown version** (S1,
 S2, S3, M19), **never skip a hole** (S4, S5, S6, M3), **never block ingest** (I1, I2, I3; I4 and
 I5 for "nothing while idle").
 
@@ -512,6 +653,103 @@ A manifest costs about 3.9 kB of header (the schemas) plus about 34 bytes per fi
 snapshot, 5.7 kB with four), so at one commit every 5 minutes and a 24-hour window it is
 about 290 kB per commit (modelled from that slope, not measured).
 
+### Re-base: memory and time
+
+Measured here, in local workerd (`bench/rebase.bench.test.ts`, 2026-11-19, load average 5–11 on
+the shared machine, printed per run): not on Cloudflare. The bench writes a tenant's log with
+the contract's encoders, S4-shaped (keys of about 130 characters, a version-1 index fragment of
+three row groups, about 500 characters; half samples, half series, over 30 days; tombstones for
+1% of the files), so that N files have the ledger's estimated state N × (key + fragment + 448
+bytes): **300,000 files is 299 MiB**, the limit. Incarnation 1 is a base of N files, a segment
+adding a unit, and a checkpoint at that version in the variant's format: **parts** (format 2, 246
+parts at 300,000), **one** (format 1, one object; the ledger writes it only up to 1 MiB, written
+here at every size to compare), **base** (no checkpoint: the 254 MB base segment, streamed),
+**before** (the base, published by the frozen publisher from before this change, `bench/before/`).
+Steps: the tenant's first publication (N + 2 files added), a re-base onto incarnation 2 (the
+same files and a unit, a checkpoint of the same format), one unit from the cursor, and a resync
+(the publisher's SQLite deleted: the re-base read again, R2's tables rebuilt into SQLite, the
+attempt restarted, nothing to commit).
+
+**The counterfactual: same data, one object or parts.** Every after-variant publishes with fixed
+ids and clock (`random()` and `now()` seams) and prints a SHA-256 of every Iceberg object it
+wrote: at 600, 32,040, 100,020 and 300,000 files the three variants wrote **byte-identical**
+manifests, manifest lists, cursor objects, `metadata.json` and hints (one distinct digest set per
+size), and every tuning step below kept them identical. `test/checkpoints.test.ts` shows the
+same on the real ledger's parts, format-1 checkpoint and base.
+
+**Memory: the isolate's heap capped.** workerd does not enforce the 128 MB isolate limit, and in
+this pool the publisher shares one V8 heap with the test runner (which also writes the log), so
+resident memory says little. Each variant ran in its own process with V8's heap capped
+(`MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=<MB> --max-semi-space-size=4"`, young
+generation 3 × 4 MB on top); a run that does not fit dies with "JavaScript heap out of memory".
+
+| Files (estimated state) | Publisher, read from | Old space 24 MB | 32 MB | 48 MB | 100 MB | 128 MB | 512 MB |
+|---|---|---|---|---|---|---|---|
+| 8,040 (8 MiB) | before, base | | completes | | | | |
+| 32,040 (32 MiB) | before, base | | | out of heap (first publication) | | completes | |
+| 100,020 (100 MiB) | before, base | | | | | out of heap (first publication) | completes |
+| 8,040 | this, parts | completes | | | | | |
+| 32,040 | this, parts | completes | completes | | | | |
+| 300,000 (299 MiB) | this, parts | out of heap (first publication) | **completes** | | completes | | |
+| 300,000 | this, base | | **completes** | | completes | | |
+| 300,000 | this, one object | | **completes** | | completes | | |
+
+So **the publisher's peak for a 299 MiB state is under 32 MB of old space plus 12 MB of young
+generation, with the test runner in the same heap**: under the isolate's 128 MB with room to
+spare, every step, every format. Some growth with size is left: at 8,040 and 32,040 files the
+first publication fits in 24 MB, at 300,000 it does not (what grows was not found; it is under
+8 MB across a ninefold larger state). The publisher before this change needed more than 128 MB
+at 100,020 files.
+
+Resident memory of the workerd process, sampled every 100 ms (`../ledger/bench/rss.mjs`,
+`bench/phases.mjs`), growth during each phase, uncapped: this publisher at most +28 MB at 100,020
+files (+0 to +22 MB from parts), at most +3 MB at 300,000 (capped runs); the publisher before,
++63 MB (first publication), +27 MB (re-base) and +88 MB (resync) at 32,040 files, and +190 MB,
++153 MB and +138 MB at 100,020.
+
+**Time** (seconds, wall, from outside the object; the uncapped pass at 32,040 and 100,020 files,
+load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5–10):
+
+| Files | Publisher, read from | First publication | Re-base | One unit from the cursor | Resync |
+|---|---|---|---|---|---|
+| 32,040 | this, parts | 2.7 | 0.7 | 0.02 | 2.7 |
+| 32,040 | this, base | 2.9 | 2.3 | 0.08 | 4.7 |
+| 32,040 | this, one object | 3.8 | 1.4 | 0.05 | 4.5 |
+| 32,040 | before | 2.7 | 0.3 | 0.14 | 2.8 |
+| 100,020 | this, parts | 8.8 | 2.4 | 0.08 | 10.5 |
+| 100,020 | this, base | 12.0 | 6.4 | 0.05 | 17.7 |
+| 100,020 | this, one object | 10.6 | 4.3 | 0.02 | 15.5 |
+| 100,020 | before | 12.1 | 1.3 | 0.23 | 8.5 |
+| 300,000 | this, parts | 27.5–32.1 | 8.0–8.5 | 0.17–0.30 | 28.5–31.8 |
+| 300,000 | this, base | 30.3–34.1 | 9.6–13.4 | 0.16–0.28 | 30.9–48.3 |
+| 300,000 | this, one object | 37.7–38.3 | 16.9–17.0 | 0.23 | 42.9–50.7 |
+| 300,000 | before | does not fit an isolate | | | |
+
+- **What got slower.** A re-base: the state is written to SQLite and diffed there instead of in a
+  map (2.4 s against 1.3 s at 100,020 files, from parts; from the base, which is parsed a
+  character at a time, 6.4 s). A resync step reads the re-base twice (once before the conflict
+  that sends it to R2, once after) and then rebuilds through `live_next`. A first publication
+  is about as fast as before (8.8 s against 12.1 s at 100,020).
+- **Parts are the fastest start**: their lines are parsed whole (`JSON.parse`), a base's elements
+  by `JsonObjectStream`; four parts are read while one is applied.
+- **Tuning steps, in order, each measured on the same data and required to keep the output
+  identical:** (1) statistics computed only for added files, at their manifest, not for every
+  staged file (the re-base at 100,020 files from parts 6.4 s → 2.3 s, the resync step 22.7 s →
+  9.2 s; a re-base that publishes few files computes few); (2) manifest entries built as the
+  Avro encoder reaches them instead of all 10,000 of a manifest first (the first publication at
+  300,000 files went from out of heap at 48 MB to fitting 32 MB); (3) a resync decodes manifests
+  record by record into `live_next`, 500 per transaction (the resync step went from out of heap
+  at 48 MB to fitting 32 MB). Not tried: one manifest in flight instead of two, keeping a base's
+  members other than files out of the parser. The cap search at 300,000 was rerun after each.
+- **The last change** (re-bases of one publish take turns reading their checkpoint or base) came
+  after most of these runs. It does nothing for a single tenant, which is what the bench measures;
+  parts and base at 300,000 files were run once more on the final code under the 32 MB cap:
+  completed, same digests (their times are in the ranges above).
+- **On Cloudflare** none of this is measured: R2 reads there take tens of milliseconds each (a
+  re-base from parts is 247 GETs, four at a time) and the CPU an invocation may use is limited
+  (Risks). Modelled, the reads add 3–12 s to a 300,000-file re-base from parts (247 reads of
+  about 0.05 s, four at a time to one at a time); the CPU time is the open question.
+
 ## Risks
 
 - **Refusals stall publication, not ingest.** A refusing publisher (newer storage) or a table
@@ -530,8 +768,10 @@ about 290 kB per commit (modelled from that slope, not measured).
   affected). A nudge that is not recorded is retried through the maintenance marker (an hour);
   one that is recorded but whose changes were not yet logged when the publish read the log is
   caught by the next run of that tenant, which the purge of the change's tombstones brings
-  (by the delete grace, 1 h). Measured only in workerd, with the maintenance run simulated by
-  a direct `nudge`; the wiring in `stack/` is not built.
+  (by the delete grace, 1 h). Wired in `stack/` since 2026-11-19 and run on Cloudflare in
+  Trial 3 (`deploy/README.md`): every maintenance run nudged (`notify` and `safeToDelete` the
+  only calls the publisher saw), and its alarm committed both tables 2 minutes after the first
+  nudges, and again after each later round, with nobody calling `publish`.
 - **A stuck tenant costs a wake a minute.** A hole, a corrupt or unsupported segment, or an
   inconsistent change keeps the tenant pending and the alarm retrying every `retryMs`, not
   backed off: about 1,440 wakes and a few thousand R2 operations a day for as long as it lasts
@@ -556,25 +796,51 @@ about 290 kB per commit (modelled from that slope, not measured).
   briefly name an older (still valid) version, and a sweep by a writer with a stale view
   is protected only by its staleness check and the grace period.
 - **`verify` cost.** It reads every segment of every tenant since the incarnation's base and
-  does one HEAD per data file. Checkpoints would bound it, but they are for the ledger's
-  rebuild only (contracts/LEDGER-LOG.md), so this grows with the incarnation.
+  does one HEAD per data file, and it holds each tenant's replayed live set and the table's
+  manifest entries in memory (Not implemented). It does not start from a checkpoint, so this
+  grows with the incarnation.
 - **Clock.** Snapshot expiry, the orphan grace period and the delete grace period use the
   Durable Object's clock.
 - **Memory and time for a very large catch-up.** All changes read in one publish are held
-  in memory (bounded by `maxChangesPerTenant` = 2,000 per tenant, not across tenants).
+  in memory (bounded by `maxChangesPerTenant` = 2,000 per tenant, not across tenants), and so
+  are the files they add (a tenant read from its cursor is planned in memory; a re-based one is
+  not). A change is one ledger SQLite value (at most 2 MB), so this is up to the changes' size,
+  not the state's; with S4's 2,000-file units it could be large, and it is not measured.
+- **CPU time of a re-base at the limit.** At 300,000 files a re-base took 8–17 s and a first
+  publication 27–38 s here (Measurements), wall time on a loaded machine with a local R2. On
+  Cloudflare an invocation's CPU is limited (30 s by default for a Durable Object, raised with
+  `limits.cpu_ms`; training knowledge, not checked here); a publish that is cut off is retried
+  by the alarm and would be cut off again. Not measured on Cloudflare. The experiment that
+  settles it: viz-publisher on Cloudflare re-basing a tenant of 300,000 files (the bench's log,
+  written to a `viz-` bucket), its CPU time read from the analytics API.
+- **A corrupt checkpoint stops that tenant's re-base** (explicitly: `corrupt`, retried every
+  `retryMs`) until the ledger writes a newer one, which supersedes and deletes it, or an
+  operator removes it. The ledger's own rebuild passes over such a checkpoint for the base; this
+  publisher refuses rather than read around it (D55, "would change if").
+- **Row writes of a re-base.** Every file of a re-based tenant is written to `stage` and deleted
+  after (about two row writes per file; a first publication also updates each added row with
+  its statistics): about 600,000 at the limit, modelled at $0.60 per re-base at $1 per million
+  rows written (the price is training knowledge). A re-base happens at a ledger storage loss,
+  a new tenant, or a publisher storage loss.
+- **Key order.** Manifests are filled in `(tenant, day, key)` order; `stage` is read in SQLite's
+  order and in-memory adds in JavaScript's. They agree for ASCII, which tenant ids, days and the
+  key layout are; for other keys the order of entries in a manifest could differ, not what it
+  holds.
 - **House rule not followed to the letter.** AGENTS.md wants every SQL statement that
   touches tenant data to name the tenant. The publisher is a cell-level object whose
   manifests are shared by tenants, so the statements that rewrite or merge a manifest and
   the ones that rebuild state select by table and manifest, not by tenant. Statements about
   one file or one tenant's files do name the tenant. Its callers are internal; a tenant id
   passed to it is not a credential check.
-- No adversarial review of the commit protocol, the segment reader or the trigger has been
-  done (AGENTS.md asks for one before building on it), and the publisher is not in the
-  protocol model (spec/README.md, "Not modelled").
+- No adversarial review of the commit protocol, the segment reader, the trigger or the
+  streaming re-base (D55: reading checkpoints, the staged diff, the six slots) has been done
+  (AGENTS.md asks for one before building on it), and the publisher is not in the protocol model
+  (spec/README.md, "Not modelled").
 
 ## Needed changes
 
-In components others own; not edited from here.
+In components others own; not edited from here. **1, 2 and 3 are done** (2026-11-19: `stack/`,
+`deploy/`, `janitor/`; their READMEs say how and how it was tested); kept below as asked.
 
 1. **stack: nudge the publisher from every maintenance run** (D34). In the Worker that consumes
    `viz-maint`, bind the publisher's namespace, `{ "name": "PUBLISHER", "class_name":
@@ -608,7 +874,15 @@ In components others own; not edited from here.
    and say how a cursor inside the newest segment is finished (Contract issues 10, 11).
 5. **ledger/README.md** still describes one R2 object per change, with no segments, checkpoints
    or `removedFiles`; the publisher was written against `contracts/LEDGER-LOG.md` and
-   `ledger/src/ledger.ts` instead.
+   `ledger/src/ledger.ts` instead. (Since done by the ledger's engineer.)
+6. **contracts/LEDGER-LOG.md** (the ledger's owner): the publisher now reads checkpoints, and no
+   longer reads a base whole (Contract issues 12–14). Not edited from here.
+7. **deploy**: viz-publisher with the streaming re-base must run before, or together with, a
+   viz-ingest whose ledger is no longer pinned at 16 MiB (`stack/wrangler.jsonc` no longer pins
+   it): readers first. The deploy already deploys viz-publisher before viz-ingest. Rolling
+   viz-publisher back below this release while a tenant is above about 16 MiB brings back the
+   old risk (a re-base that does not fit), for that tenant's re-bases only; its storage
+   (migration 3, additive) is readable by the release before.
 
 ## Contract issues
 
@@ -659,3 +933,24 @@ Recorded here because this work could not change `contracts/`, `ledger/`, `engin
    in between did not touch that table.
 9. The partition-column choice and the DELETED-entry choice are decisions between real
    alternatives and should get entries in `design/DECISIONS.md`.
+12. **The publisher now reads checkpoints; contracts/LEDGER-LOG.md says nothing but the ledger
+    does** (not edited from here: the contract is the ledger's). "Checkpoints": "A checkpoint is
+    only an accelerator for a rebuild. Nothing else reads it"; "Truncation": "(only the ledger's
+    rebuild reads them)"; "Versions": "the publisher never reads checkpoints"; "Size": "The
+    publisher still reads a new incarnation's base whole ... until it reads it with
+    `readLedgerLogStream`". Proposed text: a re-base (the publisher) starts from the newest
+    checkpoint it reads, else the base, both streamed; a checkpoint of a format a reader does not
+    know is passed over for the base (so checkpoint formats still need no readers-first
+    release); the ledger may delete a superseded checkpoint's parts while a reader reads them,
+    and the reader then stops (`incomplete`) and lists again. And in "Readers of the log": the
+    publisher's re-base is from the newest checkpoint or the base.
+13. **A checkpoint manifest names no per-part size or digest.** It carries `parts`, `files`,
+    `tombstones` and `bytes` (all parts, called "informational"). The publisher checks every part
+    against its key and these totals, `bytes` included (the ledger writes it from each PUT's
+    stored size, so it is exact), but a change inside one record that keeps its length is not
+    detectable, and a part can only be judged once all have been read. Proposal: the manifest
+    lists each part's size and SHA-256 (format 3); readers check each part as it arrives.
+14. **A base's `added` has no promised order.** Checkpoint parts are in key order (stated); a
+    base's elements are written from SQLite in key order but the contract does not say so. With
+    it stated, a re-base could merge a base against what is published without staging it (D55,
+    "would change if").

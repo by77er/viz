@@ -1,14 +1,20 @@
 {
-  // The whole write path as ONE script, for testing: edge (the default export), the shard
-  // and ledger Durable Objects, and flush (the `Flush` entrypoint). In production these are
-  // separate Workers; see README.md.
+  // The whole write path as ONE script: edge (the default export, and the `RecordedSamples`
+  // entrypoint), the shard and ledger Durable Objects, flush (the `Flush` entrypoint and the
+  // flush queue's consumer) and maintenance. deploy/configure.mjs generates viz-ingest's config
+  // from this file. Tests run against wrangler.test.jsonc (the same, with the publisher's class
+  // in the script instead of a binding to viz-publisher).
   "name": "viz-stack",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "durable_objects": {
     "bindings": [
       { "name": "SHARD", "class_name": "Shard" },
-      { "name": "LEDGER", "class_name": "Ledger" }
+      { "name": "LEDGER", "class_name": "Ledger" },
+      // The cell's publisher (publisher/, the viz-publisher Worker): every maintenance run nudges
+      // it (D34), and a purge deletes only what it releases (janitor/). Never called on the
+      // ingest or flush path (D15). viz-publisher deploys before this Worker (callee first).
+      { "name": "PUBLISHER", "class_name": "Publisher", "script_name": "viz-publisher" }
     ]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger"] }],
@@ -35,5 +41,8 @@
   "vars": {
     "CELL": "cell-0",
     "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"
+    // No LEDGER_STATE_MAX_BYTES: the ledger's own limit, 300 MiB (D47), applies. The 16 MiB pin
+    // that stood here until the publisher re-based streaming is gone (D55; publisher/README.md,
+    // "Re-base in bounded memory": 300,000 files re-based under a capped heap).
   }
 }

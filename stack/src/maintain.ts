@@ -2,7 +2,8 @@ import type { Engine } from '../../contracts/engine'
 import { TENANT_ID } from '../../contracts/ledger'
 import { type CompactPolicy, type CompactRun, compactTenant } from '../../compact/src/compact'
 import type { FlushResult } from '../../flush/src/flush'
-import { DEFAULT_DELETE_GRACE_MS, DEFAULT_ORPHAN_GRACE_MS, type ExpireResult, type JanitorEnv, type OrphanResult, type PurgeResult, expireTenant, purgeTenant, sweepOrphans } from '../../janitor/src/janitor'
+import { DEFAULT_DELETE_GRACE_MS, DEFAULT_ORPHAN_GRACE_MS, type ExpireResult, type JanitorEnv, type OrphanResult, type PublisherGate, type PurgeResult, expireTenant, purgeTenant, sweepOrphans } from '../../janitor/src/janitor'
+import { NUDGE_TIMEOUT_MS, nudge } from '../../publisher/src/nudge'
 
 /**
  * Maintenance of one tenant's files, and what makes it run without anyone calling it.
@@ -27,6 +28,12 @@ import { DEFAULT_DELETE_GRACE_MS, DEFAULT_ORPHAN_GRACE_MS, type ExpireResult, ty
  * (one KV list, the metadata comes with it) and enqueues only the due ones, so a deployment
  * whose tenants are idle wakes no Durable Object and sends no message until the first of
  * them has a day to expire.
+ *
+ * With a publisher bound (`PUBLISHER`, the viz-publisher Worker's namespace), every run ends by
+ * nudging the cell's publisher (design/DECISIONS.md D34): bounded, never throwing, and off the
+ * ingest and flush paths (D15: the publisher is never upstream of ingest). A nudge that may not
+ * have been recorded makes the tenant due again within the hour, so the cron runs it and it
+ * nudges again. Deletion then also waits for publication (janitor's `purgeTenant`).
  */
 
 /**
@@ -42,12 +49,29 @@ export interface MaintMessage {
 
 export const MAINT_MESSAGE_VERSION = 1
 
+/** The cell's publisher as maintenance uses it: nudged at the end of a run (D34), asked before deletion (janitor). */
+export interface MaintPublisherNamespace {
+  idFromName(name: string): DurableObjectId
+  get(id: DurableObjectId): PublisherGate & { notify(tenants: string[]): Promise<void> }
+}
+
 export interface MaintEnv extends JanitorEnv {
   MAINT_QUEUE: Queue<MaintMessage>
+  /** Absent: no publication, no nudge, deletion on the ledger's rules alone. */
+  PUBLISHER?: MaintPublisherNamespace
 }
 
 /** Kept objects stop keeping the orphan sweep due once the youngest has waited this long (review S-6). */
 export const STALLED_AFTER_MS = 7 * 24 * 3_600_000
+
+/**
+ * How soon a run looks again when its only waiting tombstones are ones the ledger would delete
+ * but the publisher has not released. The publisher releases a file at the earliest its delete
+ * grace (1 h) after the last snapshot referencing it expired, and a snapshot is kept at least
+ * 24 h and until a newer commit replaces it, so looking every grace (1 h) would mostly find
+ * nothing. Bounded so that what it releases is deleted the same day.
+ */
+export const PUBLICATION_RECHECK_MS = 6 * 3_600_000
 
 export interface MaintOptions {
   /** Policy clock (tests). Graces are always judged by real clocks: the ledger's and R2's. */
@@ -72,6 +96,10 @@ export interface MaintOptions {
   orphanEveryMs?: number
   /** First delay before the marker write is retried (KV's per-key rate). Default 1 s. */
   markerRetryMs?: number
+  /** How long the run waits for the publisher, per call (the nudge, the deletion gate). Default `NUDGE_TIMEOUT_MS`, 2 s. */
+  publisherTimeoutMs?: number
+  /** See `PUBLICATION_RECHECK_MS`. */
+  publicationRecheckMs?: number
 }
 
 export interface MaintReport {
@@ -84,6 +112,8 @@ export interface MaintReport {
   nextDueAt: number | null
   /** True if compaction stopped at `maxCompactSteps`: run again now. */
   more: boolean
+  /** The nudge to the cell's publisher: recorded (true), maybe not (false: looked at again within the hour), or no publisher bound (null). */
+  nudged: boolean | null
 }
 
 export const MAINT_MARKER_PREFIX = 'maint:'
@@ -197,7 +227,9 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
     if (!marker.sweep) await writeMarker(env, tenant, { ...marker, sweep: true }).catch(() => undefined)
     throw e
   }
-  const purged = await purgeTenant(env, tenant, { graceMs: deleteGraceMs })
+  // With a publisher, deletion also waits for publication (janitor): bounded, fails closed.
+  const publisherTimeoutMs = opts.publisherTimeoutMs ?? NUDGE_TIMEOUT_MS
+  const purged = await purgeTenant(env, tenant, { graceMs: deleteGraceMs, publisherTimeoutMs })
   // The orphan sweep lists the tenant's whole prefix. It is needed only if objects may have
   // been written since the last sweep that found nothing to wait for: by a flush (the
   // message says so), or by this run's compaction (a merge, a conflict, a refused swap).
@@ -235,8 +267,23 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
   // fix is applied within the hour), and say why in the marker, which the cron logs.
   if (expired.refused !== undefined) due.push(Date.now() + HOUR_MS)
   // Tombstones waiting for their grace or for the ledger's log: after the grace at the latest.
-  if (purged.waiting > 0) due.push(Date.now() + Math.max(deleteGraceMs, 60_000))
+  // Those waiting only for the publisher to release them: after `publicationRecheckMs`.
+  if (purged.waiting > 0) {
+    const onLedger = purged.waiting - (purged.unpublished ?? 0)
+    if (onLedger > 0 || purged.publisher !== undefined) due.push(Date.now() + Math.max(deleteGraceMs, 60_000))
+    else due.push(Date.now() + (opts.publicationRecheckMs ?? PUBLICATION_RECHECK_MS))
+  }
   if (sweep) due.push(marker.orphansAt + orphanEveryMs)
+
+  // The run's own ledger changes are made: tell the cell's publisher (D34). At most
+  // `publisherTimeoutMs`, never throws. Not recorded: due again within the hour, so the cron runs
+  // the tenant and it nudges again. Only with a publisher bound: without one, no tenant is made
+  // due hourly for a nudge nobody would receive.
+  let nudged: boolean | null = null
+  if (env.PUBLISHER) {
+    nudged = await nudge(env.PUBLISHER, env.CELL || 'cell-0', [tenant], publisherTimeoutMs)
+    if (!nudged) due.push(Date.now() + HOUR_MS)
+  }
 
   const nextDueAt = due.length === 0 ? null : Math.min(...due)
   // The marker is written before the run is acknowledged: if this still throws after its
@@ -244,7 +291,7 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
   const after: MaintMarker | null =
     nextDueAt === null ? null : { v: MAINT_MARKER_VERSION, due: nextDueAt, orphansAt: marker.orphansAt, sweep, ...(expired.refused !== undefined ? { retention: expired.refused.slice(0, 200) } : {}) }
   await settleMarker(env, tenant, before, after, opts.markerRetryMs)
-  return { tenant, compaction, expired, purged, orphans, nextDueAt, more }
+  return { tenant, compaction, expired, purged, orphans, nextDueAt, more, nudged }
 }
 
 export interface DueResult {
@@ -292,6 +339,21 @@ export async function enqueueDue(env: MaintEnv, now = Date.now()): Promise<DueRe
     }
   }
   return out
+}
+
+/**
+ * One line per run, for the log: what it did and what it waits for (counts only). Tolerates a
+ * partial report (a stand-in `run`): logging never changes a run's outcome.
+ */
+export function summary(r: Partial<MaintReport>): string {
+  const p = r.purged
+  return (
+    `maintenance ${r.tenant ?? '?'}: merged ${r.compaction?.merged ?? 0}, expired ${r.expired?.removed.length ?? 0}, deleted ${p?.deleted.length ?? 0}, waiting ${p?.waiting ?? 0}` +
+    (p?.unpublished !== undefined ? ` (for publication ${p.unpublished})` : '') +
+    (p?.publisher !== undefined ? `, publisher not asked: ${p.publisher}` : '') +
+    `, orphans deleted ${r.orphans?.deleted.length ?? 0}, nudged ${r.nudged === null || r.nudged === undefined ? 'n/a' : r.nudged}` +
+    `, next ${typeof r.nextDueAt === 'number' ? new Date(r.nextDueAt).toISOString() : 'none'}${r.more ? ', more' : ''}`
+  )
 }
 
 export interface MaintOutcome {
@@ -353,6 +415,7 @@ export async function consumeMaintBatch(
       outcome.action = 'again'
       outcome.why = e instanceof Error ? e.message : String(e)
     }
+    if (outcome.report) console.log(summary(outcome.report))
     const carrier = outcome.action === 'again' ? messages.reduce((a, b) => (b.attempts < a.attempts ? b : a)) : null
     for (const m of messages) {
       if (m === carrier) m.retry({ delaySeconds: Math.min(600, 15 * 2 ** Math.max(0, m.attempts - 1)) })

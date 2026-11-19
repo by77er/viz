@@ -1,11 +1,13 @@
 declare namespace Cloudflare {
   interface GlobalProps {
-    mainModule: typeof import('../src/index')
-    durableNamespaces: 'Shard' | 'Ledger'
+    mainModule: typeof import('./worker')
+    durableNamespaces: 'Shard' | 'Ledger' | 'TestPublisher'
   }
   interface Env {
     SHARD: DurableObjectNamespace<import('../../shard/src/shard').Shard>
     LEDGER: DurableObjectNamespace<import('../../ledger/src/ledger').Ledger>
+    /** The real publisher with a test clock (test/worker.ts); passed as `PUBLISHER` by the deletion gate's tests. */
+    TEST_PUBLISHER: DurableObjectNamespace<import('../../publisher/test/worker').TestPublisher>
     BUCKET: R2Bucket
     CONFIG: KVNamespace
     CELL: string

@@ -10,10 +10,13 @@
       { "name": "LEDGER", "class_name": "Ledger" },
       // The frozen as-built ledger (ledger/bench/asbuilt/): an independent writer of the
       // first log layout (base.json + one object per change), which the publisher still reads.
-      { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" }
+      { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" },
+      // The release of the ledger before checkpoints in parts (ledger/bench/before/, frozen): it
+      // writes format-1 checkpoints only. The publisher must read its log as well (ledger N-1).
+      { "name": "LEDGER_BEFORE", "class_name": "LedgerBefore" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestPublisher", "Ledger", "LedgerAsBuilt"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestPublisher", "Ledger", "LedgerAsBuilt"] }, { "tag": "v2", "new_sqlite_classes": ["LedgerBefore"] }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
   "vars": { "CELL": "cell-0", "ICEBERG_LOCATION_PREFIX": "s3://viz-lake" }
 }

@@ -10,8 +10,11 @@ when, and whether that removal is durably logged is kept by the tenant's ledger
 | `src/formats.ts` | `READS`: the formats the janitor reads, by version (it writes none) |
 | `test/janitor.test.ts` | 15 tests in workerd against the real `Shard`, `Ledger`, flush and compaction, and a simulated R2; 3 of them the review's R-1 and the protocol model's F15 |
 | `test/golden.test.ts` | 2 tests: the retention record (control's golden files) and the compaction inputs record (compact's) read as an independent reader |
+| `test/publication.test.ts` | 4 tests of the deletion gate: against the real `Publisher` (with a test clock) and against stand-ins that lie, refuse or hang |
+| `test/worker.ts` | The test script's main: `src/index.ts` plus the publisher's test class (`TEST_PUBLISHER`) |
 
-Bindings: `LEDGER`, `BUCKET`, `CONFIG` (KV), `CELL`.
+Bindings: `LEDGER`, `BUCKET`, `CONFIG` (KV), `CELL`, and optionally `PUBLISHER` (the cell's
+publisher; in production viz-publisher's namespace, bound by viz-ingest).
 
 ## What is implemented
 
@@ -55,6 +58,28 @@ ledger writes its log in the background (`contracts/LEDGER-LOG.md`), so a remova
 deletable one drain cycle (about 200 ms) after it is committed, plus the grace. Deletes go to
 R2 as one `delete()` per 1,000 keys; tombstones are forgotten only after the delete returned
 (a crash in between deletes again, harmlessly). At most `maxKeys` (10,000) per run.
+
+**With a publisher bound, deletion also waits for publication** (DESIGN §5.2, §5.3; added
+2026-11-19). An Iceberg snapshot that an external reader may still hold names data files; once
+published, a file must outlive every retained snapshot that names it. So the run first asks the
+cell's publisher (`PUBLISHER.get(idFromName(CELL)).safeToDelete(tenant)`,
+`publisher/src/publisher.ts`) which of the tenant's keys it releases: the removal is published
+(or the file was never published), no retained snapshot references it, and the publisher's own
+delete grace (1 h) has passed since the last one that did expired. A key is deleted only if the
+ledger calls it deletable **and** the publisher releases it:
+
+| The publisher | What is deleted | `PurgeResult` |
+|---|---|---|
+| not bound | what the ledger calls deletable (as before) | `{ deleted, waiting }` |
+| releases some keys | the intersection; keys the ledger offers and the publisher holds stay at the head of the ledger's answer and are skipped (the next read asks for that many more, up to the ledger's 10,000) | `unpublished`: how many of `waiting` wait only for publication |
+| throws (for example `schema_too_new` during a deploy), or does not answer within `publisherTimeoutMs` (2 s) | **nothing** (fails closed) | `publisher`: why; `waiting`: every tombstone |
+
+After deleting, the run tells the publisher (`acknowledgeDeleted(tenant, keys)`), best effort and
+bounded. It also acknowledges keys the publisher releases that the ledger no longer has as live
+or tombstoned (one `orphanCheck`): deleted by an earlier run whose acknowledgement was lost.
+Acknowledging never deletes anything. A key the publisher releases that the ledger does not
+offer is never deleted (`test/publication.test.ts`: half the tombstones, a live key and a key
+the ledger never had: only the released half of the tombstones goes).
 
 ### `sweepOrphans(env, tenant, { graceMs, maxCompactStepMs, now })`: objects nothing will ever list
 
@@ -122,9 +147,14 @@ Not measured on Cloudflare; the experiment is a deployed purge of 10,000 keys
 
 ## Not implemented
 
-- **The wait for publication.** `DESIGN.md` §5.2 deletes after the removal is *published*;
-  there is no publisher on this path yet. Tombstones carry the ledger version so that gate
-  can be added to `deletable`.
+- **Releasing files whose last snapshot never expires.** The publisher keeps at least two
+  snapshots per table, so a file removed by the newest commit of a cell's table is released
+  only after a later commit to that table (by any tenant of the cell) and a day. In a cell where
+  nothing more is published it waits for ever (storage, not correctness), and its tenant's
+  maintenance looks again every `PUBLICATION_RECHECK_MS` (6 h, `stack/src/maintain.ts`).
+- **Removals the publisher never saw.** Files removed before the publisher first read a
+  tenant's log, or across a publisher storage loss, are never released (publisher/README.md,
+  "Not implemented"): their objects stay (nothing is deleted early).
 - **A remembered policy.** The reviewer's optional second step for R-1 (keep the last policy
   read successfully and never apply a shorter one without an explicit change) is not built:
   see "Known risks" for the one path it would close.
@@ -134,7 +164,10 @@ Not measured on Cloudflare; the experiment is a deployed purge of 10,000 keys
   tombstones of that log; removals logged only in an older incarnation are found by the
   orphan sweep instead (their flush files are below the logged watermark).
 - **Deleting the ledger's own log objects**, and shard-side data.
-- Not run on Cloudflare; R2's `uploaded` time and list consistency are miniflare's here.
+- On Cloudflare only inside staged trials of viz-ingest (`deploy/README.md`). In Trial 3 the
+  deletion gate held back 8 objects the ledger offered after its (shortened) grace, with the
+  removal published and the snapshot naming them retained; their release was not waited for.
+  R2's `uploaded` time and list consistency in the tests here are miniflare's.
 
 ## How it was verified
 
@@ -145,7 +178,24 @@ npx tsc --noEmit                           # clean
 ```
 
 Last run 2026-11-19 against the real tree (the ledger draining its log asynchronously): 17 of
-17, tsc clean. The suite pins `LEDGER_DRAIN_DELAY_MS` to 60 s (`vitest.config.ts`), as
+17, tsc clean.
+
+**With the deletion gate (2026-11-19):** `npx vitest run --maxWorkers=2`: **21 of 21** (3 files);
+`npx tsc --noEmit` clean. The three gate tests were written first and **failed against the
+code before the gate** (the janitor deleted all ten removed files at once, deleted all eight
+tombstones the stand-in half-released, and deleted with a refusing publisher), then passed.
+The real-publisher test walks one tenant through: ten files published (snapshot 1), compacted
+away (the ledger's own rules then allow deletion); (1) removal not published: nothing deleted;
+(2) published as snapshot 2, snapshot 1 retained: nothing deleted, and every file snapshot 1
+names is still in R2; (3) a day later a new commit expires snapshot 1, the publisher's grace not
+passed: nothing deleted; (4) after the grace exactly those ten are deleted, the ledger and the
+publisher forget them, and every file of every retained snapshot is still there. A fourth
+test was added while writing the mutants and failed against the first version of the loop,
+which stopped when the publisher held back the whole first answer of the ledger: keys held back
+at the head (lowest versions) no longer starve released keys behind them.
+
+Mutants (on a copy in a scratch directory, `MUTANT_FILES=janitor/,stack/ node scripts/mutants.mjs
+publication` from the copy's `stack/`): see `stack/README.md`, "The publisher wired in". The suite pins `LEDGER_DRAIN_DELAY_MS` to 60 s (`vitest.config.ts`), as
 `ledger/` does, and drains the ledger where a test needs a removal or a unit logged
 (`ledger.drain()`, `flushSettled` in `flush/test/helpers.ts`), so no assertion depends on when
 the ledger's alarm happens to run.

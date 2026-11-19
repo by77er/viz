@@ -1,16 +1,21 @@
 {
   "name": "viz-janitor",
-  "main": "src/index.ts",
+  // Test-only script (the janitor runs inside viz-ingest, stack/): test/worker.ts is
+  // src/index.ts plus the publisher's test class, for the deletion gate's tests.
+  "main": "test/worker.ts",
   "compatibility_date": "2026-10-01",
   // As in flush/: the shard and ledger classes ship in this script so the tests run against
   // the real Durable Objects. In production these are bindings to the scripts that own them.
   "durable_objects": {
     "bindings": [
       { "name": "SHARD", "class_name": "Shard" },
-      { "name": "LEDGER", "class_name": "Ledger" }
+      { "name": "LEDGER", "class_name": "Ledger" },
+      // The real publisher (with a test clock). Not called PUBLISHER: a test that wants the
+      // deletion gate passes it as PUBLISHER explicitly; every other test runs without one.
+      { "name": "TEST_PUBLISHER", "class_name": "TestPublisher" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger"] }, { "tag": "v2", "new_sqlite_classes": ["TestPublisher"] }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
   // Retention policies (`retention:<tenant>`).
   "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
