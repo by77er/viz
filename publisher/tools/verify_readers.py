@@ -25,7 +25,9 @@ opening that stage's own vN.metadata.json), each reader:
   6. a content hash over every row (all columns, sorted) is identical from PyIceberg, from
      DuckDB, and from the ledgers' live Parquet files read directly with pyarrow (no Iceberg).
 
-Usage: verify_readers.py <export dir> [--fixture path]
+Usage: verify_readers.py <export dir> [--fixture path] [--expected path]
+(`--expected` reads what each stage must contain from another file: the teeth check uses a
+copy with one file removed, outside the export.)
 Exit status 0 only if every check passed.
 """
 import argparse
@@ -199,9 +201,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("export_dir")
     ap.add_argument("--fixture", default=os.path.join(os.path.dirname(__file__), "..", "test", "fixtures", "fixture.json"))
+    ap.add_argument("--expected", default=None)
     args = ap.parse_args()
     root = os.path.abspath(args.export_dir)
-    expected = json.load(open(os.path.join(root, "expected.json")))
+    expected = json.load(open(args.expected or os.path.join(root, "expected.json")))
     fixture = json.load(open(args.fixture))
     prefix = expected["locationPrefix"]
     if prefix != "file://" + root:

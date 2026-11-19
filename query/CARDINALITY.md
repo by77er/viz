@@ -97,7 +97,7 @@ compaction; modelled from the per-unit size).
 | native, per part (each reads every series file) | 8 parts: 3 ms | 8 parts: 49 ms; 32: 26 ms (680 ms all parts) | 8 parts: 553 ms, 58.5 MiB; 32: 319 ms, 40.9 MiB (7.5 s all parts) |
 | local stack, an hour, one place | 66 to 144 ms engine, 6.8 to 8.6 MiB WASM | 658 ms engine, **51.9 MiB WASM** | not run (over the 1.5 GB a process may use here) |
 | local stack, an hour, 8 leaves | coordinator 4.4 MiB | **coordinator 25.9 MiB** for about 200,000 pairs and triples | |
-| modelled production, an hour | 0.1 to 0.4 s | 0.6 to 2.0 s | refused by `maxCardinalityPairs` (now 400,000): about 70 ms, from the ledger and tail reads alone |
+| modelled production, an hour | 0.1 to 0.4 s | 0.6 to 2.0 s | **refused** by `maxCardinalityPairs` (now 400,000) at the merge, after 20 leaves (50,000 series each) have read every series file of the hour: 2 to 16 s (about 2 s natively per part, x 1 to 8) |
 
 What the table says: memory is set by distinct pairs and triples, not by samples; at the
 coordinator about 130 bytes each in WASM (115 to 147 natively). The merge time grows with
@@ -121,17 +121,31 @@ leaves, cold and warm (`design/VERIFICATION.md` S1 extended with this Worker).
 | the rule now (samples and series) | one place | 7 leaves | 67 needed, capped at 32: refused |
 | local stack, one hour, everything flushed | one place: 115 to 400 ms engine, 31 MiB | **7 leaves, 200**: 6.5 M samples, 80 files (29.9 MiB) read by every leaf's readers (98 calls), 179 MiB of extracts, 76 MiB peak per leaf | not run |
 | local stack, one hour, ten minutes in the tails | one place, as above | **422 `max_fetch_bytes`**: the 20.2 MB tail | not run |
-| modelled production, one hour | 0.3 to 1.0 s | 1.5 to 6 s (warm leaves) | refused in 0.1 to 0.3 s from the ledger and the leaves' first counts |
+| modelled production, one hour | 0.3 to 1.0 s | 1 to 4.5 s (warm leaves) | refused in 0.1 to 0.3 s from the ledger and the leaves' first counts |
 
-The counterfactual (same data, same bench, `query/src` as at 09f601d before this work):
-COUNTERFACTUAL
+**The counterfactual** (local stack, 100,000 series, everything flushed): the same bench,
+the same data generator, with `query/src` as at commit 09f601d (before this work) in a
+scratch tree, run after the new code, both at a load average of 9 to 12.
+
+| query | before (samples only) | now (samples and series) |
+|---|---|---|
+| `sum by (job)`, 1 h | 5 leaves; every leaf stopped at its share, run again, **refused** (`max_samples`: "one leaf's part holds more than one isolate may load … unevenly spread") after 24 to 26 s; 140 reader calls, 357 MiB of extracts | **7 leaves, 200**: 98 reader calls, 179 MiB of extracts, 76 MiB peak per leaf, 15 to 20 s locally with the leaves in series |
+| `sum by (job)`, 10 min | 2 leaves, **refused** (`max_series`: at least 62,826 series loaded, the limit is 40,000) after 3.5 to 4.4 s | **7 leaves, 200**, 3.9 to 5.2 s locally |
+| `sum(rate(m{instance="x"}[5m]))`, 1 h | 5 leaves, 70 reader calls | 7 leaves, **98 reader calls** (worse: the estimate counts the metric's series, not the matched one) |
+| the other calls of the table | identical outcomes (the cardinality report took 852 ms one place, 52.0 MiB) | identical outcomes |
+
+Where both answer (10,000 series, every query), the bodies are byte-identical. The new
+rule is worse for selective aggregations over a high-cardinality metric: it splits them by
+the metric's series although few match. Series-level pruning ("What is left", 2) removes
+both costs.
 
 Modelled production for 100,000 series: ledger 22 to 143 ms, tail 10 to 70 ms, one DO call
 to each leaf, then each leaf's 14 reader calls at once: 1 to 4 rounds of 55 to 203 ms (1 if
 calls to one object get their own six connections, 98 / 32 if they share; unmeasured), and
 CPU on the critical path of 2 x (one leaf's own engine plus its longest reader call): 2 x
-(0.3 to 1.0 s) by the native per-call figures scaled to WASM by the local stack's ratio (3.5
-to 12, see "Native and WASM"). **Experiment that settles it:** the same query on Cloudflare
+(0.3 to 1.0 s): a leaf's own evaluation about 0.3 s and its longest reader call about 0.1 s
+natively for this hour, scaled to WASM by the local stack's ratio (0.6
+to 2, see "Native and WASM"), so 1 to 4.5 s in all. **Experiment that settles it:** the same query on Cloudflare
 with a 100,000-series tenant, warm and cold leaves, recording per-leaf CPU and whether one
 object's reader calls queue behind six connections.
 
@@ -154,10 +168,11 @@ between 10,000 and 100,000 series per metric over an hour. The fix is a series-o
 
 The same 10,000-series, ten-minute aggregation took 31 to 34 ms natively and 49 to 135 ms
 of engine time in the local stack (WASM in workerd, including the copy of the files into
-linear memory), and the hour 115 to 400 ms against an extrapolated 200 ms natively: WASM in
-workerd is 1.5 to 4 times native here, at these loads. The spikes measured engine CPU on
-Cloudflare at about twice the local workerd time (S2). Modelled 1,000,000-series costs above
-use native x 3 to 8. **Experiment that settles it:** `engine/query/examples/cardinality.rs`'s
+linear memory); the hour took 115 to 400 ms against about 220 ms natively (the ten-minute
+figure scaled by the samples loaded). So WASM in workerd ran at 0.6 to 4 times native here,
+at load averages of 4 to 12: too noisy to be one number. The spikes measured engine CPU on
+Cloudflare at about twice the local workerd time (S2), so modelled Cloudflare CPU is native
+x 1 to 8. **Experiment that settles it:** `engine/query/examples/cardinality.rs`'s
 calls through `engine/wasm-query` in a Worker on Cloudflare, one call per request.
 
 ## What changed in this work

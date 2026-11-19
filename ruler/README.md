@@ -579,6 +579,38 @@ the new "dryRun on every write" test.
 | 57 | the idempotency key derivation changes without a format version | golden: "the hand-off, the webhook, its signature and idempotency key …" |
 | 58 | the hand-off to the notifier gains a field without a format version | golden: same |
 | 59 | the registry partition hash changes | golden: "id.placement …" |
+| 60 | anomaly: series beyond `max_series` dropped silently (the first ones scored) instead of refusing | anomaly: "more series than max_series: the evaluation is refused …" |
+| 61 | anomaly: detector state never written to SQLite | anomaly: "only the anomalous series fires …" (+7 more) |
+| 62 | anomaly: the constructor does not rebuild detector state from SQLite | anomaly: "evicted every few ticks, the stored state … equal a batch run of the library" (+2 more) |
+| 63 | anomaly: a replayed tick advances each detector again (per-series replay guard removed) | anomaly: "a tick replayed after an eviction … advances no detector twice" |
+| 64 | anomaly: a newer release's state rows scored over (start cold) instead of refused | anomaly: "state rows a newer release wrote are refused (state_unreadable) …" |
+| 65 | anomaly: loading detector state does not name the tenant | anomaly: "every statement on detector state names the tenant …" (**survived the first run**: the injected foreign row reused a series key of this tenant, so it was overwritten on load; the test now gives it a key of its own and checks the series count after load; MUTANT65) |
+| 66 | anomaly: the alert does not carry the detector's sentence | anomaly: "only the anomalous series fires; the receiver gets the library's sentence …" |
+| 67 | anomaly: the `severity` label not set from `anomaly.severity` | anomaly: "… severity routes" (+2 more) |
+| 68 | anomaly: the default EWMA uses the library's parameters (30 / 4) instead of the held-out ones | anomaly: "… severity routes" (+3 more, including the monitors API defaults) |
+| 69 | anomaly: `severity: page` without a detector defaults to EWMA, not the static threshold | anomaly: "… severity routes" (+1 more) |
+| 70 | anomaly: CUSUM may page | anomaly: "problems come back in the monitor's own field names …" |
+| 71 | anomaly: no per-series state limit at run time | anomaly: "a series whose state outgrows the per-series limit at run time is refused …" |
+| 72 | anomaly: no per-object state budget at save | anomaly: "the anomaly rules of one object may reserve at most maxAnomalyStateBytesPerObject …" |
+| 73 | anomaly: a row per series (state rows of one byte) | anomaly: "state is written as whole batches: one row per rule per tick …" (+2 more) |
+| 74 | anomaly: state carried over an interval change | anomaly: "an edit that keeps the detector and parameters keeps the state; a new parameter or interval …" |
+| 75 | anomaly: the rule key leaves out the detector and parameters | anomaly: same (+1 more, golden) |
+| 76 | anomaly: a NaN point clears the series' flag (a gap treated as a recovery) | anomaly: "a NaN point is not scored and keeps the series' flag …" |
+| 77 | anomaly: migration 2 declared breaking (`readableFrom` 2) | compat: "is adopted as version 1 by all three classes …" (+3 more) |
+| 78 | anomaly monitors: write without scope (as 29) | anomaly: "authorisation: creating, editing and deleting an anomaly monitor needs monitors:write …" |
+| 79 | anomaly monitors: tenant from the query string (as 31) | anomaly: "tenant isolation: the tenant is the credential's …" |
+| 80 | anomaly monitors: tenant from a header (as 32) | anomaly: same |
+
+**Mutants now run on a scratch copy.** `scripts/mutants.mjs` copies the component (and
+`contracts/`, `edge/src/`, `anomaly/src/`, which it imports) to `$VIZ_SCRATCH` or the system
+temporary directory, applies each mutant to the copy, runs the tests there, deletes the copy, and
+checks at the end that every file a mutant touches is unchanged in the shared tree (AGENTS.md:
+others snapshot the tree while mutants run; two such snapshots were taken during this task's
+runs, and neither held a mutant). Before this change the script edited the shared tree in place.
+
+**Anomaly mutants 60–80** (`VIZ_SCRATCH=… node scripts/mutants.mjs 60 … 80`, on the final code
+apart from the test fix for 65): 20 killed, 1 survived (65, the tenant filter on loading state;
+see its row), then MUTANT65_RERUN. RERUN_OLD
 
 Mutants 51–59 were run on the final code (`node scripts/mutants.mjs 51 52 53 54 55 56 57 58
 59`): 9 of 9 killed. Two patterns (57, 59) did not apply on the first try because of an
