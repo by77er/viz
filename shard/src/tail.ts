@@ -31,6 +31,28 @@ export const TAIL_SCAN_MAX_BYTES = 32 * 1024 * 1024
 export const TAIL_SCAN_MAX_BATCHES = 32_768
 
 /**
+ * True for a batch `b` that a read's time range skips (D72): it has bounds, and they lie wholly
+ * outside the range. Decided from the partial index `batch_time` alone, which holds the bounds
+ * without the payload (review of D72, M-1: in the row they follow the payload, so reading them
+ * there reads every overflow page of it; measured in bench/skipread.node.mjs). Arguments:
+ * the tenant, the range's `minTs`, its `maxTs`. `INDEXED BY` because SQLite's planner does not
+ * pick a covering index by itself here (review M-1), and it fails the statement, never silently
+ * reads the rows, if the index is missing.
+ */
+export const SKIPPED_BY_BOUNDS = `EXISTS (SELECT 1 FROM batch AS t INDEXED BY batch_time WHERE t.tenant = ? AND t.seq = b.seq
+  AND t.min_ts IS NOT NULL AND t.max_ts IS NOT NULL AND (t.max_ts < ? OR t.min_ts > ?))`
+
+/**
+ * A filtered tail read with a time range (`Shard.tailPage`): the batches `seq BETWEEN ? AND ?` of one
+ * tenant that the range does not skip (`SKIPPED_BY_BOUNDS`), in order. Arguments: tenant, first seq,
+ * last seq, then `SKIPPED_BY_BOUNDS`'s. `payload IS NOT NULL` is left to the caller (in the WHERE it
+ * would read every row's record, skipped ones too). Here, not in shard.ts, so that the plan test and
+ * bench/skipread.node.mjs (Node) run this very statement.
+ */
+export const TIMED_TAIL_SQL = `SELECT b.seq AS seq, b.rows AS rows, b.payload AS payload FROM batch AS b
+  WHERE b.tenant = ? AND b.seq BETWEEN ? AND ? AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`
+
+/**
  * What a filtered tail read keeps. Every field is optional; what is absent does not filter. A row
  * is kept when its timestamp is in `[minTs, maxTs]` and its series matches every given filter.
  *

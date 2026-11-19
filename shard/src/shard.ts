@@ -4,10 +4,12 @@ import type { Ledger } from '../../ledger/src/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 import { SeriesWindow, UnreadableSketch } from './sketch'
 import {
-  type CompiledFilter, TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, type TailPage, type TailReadOptions, UnreadableBatch, batchTimeBounds,
-  compileFilter, decodeCursor, encodeCursor, filterBatch, fnv64,
+  type CompiledFilter, SKIPPED_BY_BOUNDS, TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, TIMED_TAIL_SQL, type TailPage, type TailReadOptions,
+  UnreadableBatch, batchTimeBounds, compileFilter, decodeCursor, encodeCursor, filterBatch, fnv64,
 } from './tail'
-export { TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange } from './tail'
+export {
+  TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, TIMED_TAIL_SQL, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange,
+} from './tail'
 
 /**
  * A pooled shard: the write-ahead log for several tenants in one Durable Object.
@@ -214,26 +216,6 @@ export const SHARD_SCHEMA: SchemaSpec = {
     },
   }],
 }
-
-/**
- * True for a batch `b` that a read's time range skips (D72): it has bounds, and they lie wholly
- * outside the range. Decided from the partial index `batch_time` alone, which holds the bounds
- * without the payload (review of D72, M-1: in the row they follow the payload, so reading them
- * there reads every overflow page of it; measured in shard/bench/skipread.node.mjs). Arguments:
- * the tenant, the range's `minTs`, its `maxTs`. `INDEXED BY` because SQLite's planner does not
- * pick a covering index by itself here (review M-1), and it fails the statement, never silently
- * reads the rows, if the index is missing.
- */
-const SKIPPED_BY_BOUNDS = `EXISTS (SELECT 1 FROM batch AS t INDEXED BY batch_time WHERE t.tenant = ? AND t.seq = b.seq
-  AND t.min_ts IS NOT NULL AND t.max_ts IS NOT NULL AND (t.max_ts < ? OR t.min_ts > ?))`
-
-/**
- * A filtered tail read with a time range: the batches `seq BETWEEN ? AND ?` of one tenant that the
- * range does not skip (`SKIPPED_BY_BOUNDS`), in order. Arguments: tenant, first seq, last seq, then
- * `SKIPPED_BY_BOUNDS`'s. `payload IS NOT NULL` is left to the caller. Exported for the plan test.
- */
-export const TIMED_TAIL_SQL = `SELECT b.seq AS seq, b.rows AS rows, b.payload AS payload FROM batch AS b
-  WHERE b.tenant = ? AND b.seq BETWEEN ? AND ? AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`
 
 /**
  * The format version of `FlushMessage` (contracts/COMPATIBILITY.md §3.1: a JSON message
