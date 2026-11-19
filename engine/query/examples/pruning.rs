@@ -97,7 +97,8 @@ fn main() {
                 let work = |limits: Limits| {
                     let (mplans, scan, est, carrier) = if resolve {
                         let s: Vec<&[u8]> = series.iter().map(|b| &b[..]).collect();
-                        let rp = sample_plan(&s, &m_idx, &reads, None, RANGE_GAP).unwrap();
+                        let pairs: Vec<Option<usize>> = (0..files.len()).map(|i| if sp[i].read == FileRead::Skip { None } else { Some(sp[..i].iter().filter(|p| p.read != FileRead::Skip).count()) }).collect();
+                        let rp = sample_plan(&s, &m_idx, &reads, None, Some(&pairs), RANGE_GAP).unwrap();
                         let scan: u64 = rp.files.iter().map(|f| f.rows.unwrap()).sum();
                         (rp.files, scan, rp.series, rp.carrier)
                     } else {

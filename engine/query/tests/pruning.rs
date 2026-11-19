@@ -105,6 +105,7 @@ proptest! {
         nsteps in 1i64..8,
         step in prop_oneof![Just(15_000i64), 1_000i64..120_000],
         gap in prop_oneof![Just(0u64), Just(64u64), Just(1u64 << 16)],
+        paired in any::<bool>(),
     ) {
         let end = start + (nsteps - 1) * step;
         let b = h.encoded();
@@ -114,7 +115,9 @@ proptest! {
             let (Ok(ranges), Ok(reads)) = (plan(q, start, end, step), selectors(q, start, end, step)) else { continue };
             let reads: Vec<viz_query::FetchRange> = reads.into_iter().map(|r| viz_query::FetchRange { matchers: r.matchers, min_ts: r.min_ts_ms, max_ts: r.max_ts_ms }).collect();
             let series_plan = file_plan(&idx(&s.series_index), &ranges, gap);
-            let sp = sample_plan(&whole.series_files, &idx(&s.sample_index), &reads, None, gap).unwrap();
+            let ident: Vec<Option<usize>> = (0..s.sample_files.len()).map(Some).collect();
+            let pairs = paired.then_some(&ident[..]);
+            let sp = sample_plan(&whole.series_files, &idx(&s.sample_index), &reads, None, pairs, gap).unwrap();
             let (series, samples) = planned(&s, &series_plan, &sp.files);
             let got = run(&input(&series, &samples, &s.tail), q, start, end, step);
             let want = run(&whole, q, start, end, step);
@@ -140,7 +143,7 @@ proptest! {
                 for parts in [1u32, 3] {
                     for part in 0..parts {
                         let pf = PartFilter { key: &key, part, parts };
-                        let pp = sample_plan(&whole.series_files, &idx(&s.sample_index), &ranges, Some(pf), gap).unwrap();
+                        let pp = sample_plan(&whole.series_files, &idx(&s.sample_index), &ranges, Some(pf), pairs, gap).unwrap();
                         let (_, mine) = planned(&s, &series_plan, &pp.files);
                         let mine: Vec<&[u8]> = mine.iter().map(|f| f.as_slice()).collect();
                         let a = split::extract(&whole.series_files, &mine, &key, part, parts, &ranges).unwrap();
@@ -271,7 +274,7 @@ fn one_series_of_a_large_file_reads_one_row_group_and_the_footer() {
     let fi = FileIndex::from_json(&sidx).unwrap();
     assert_eq!(fi.row_groups.len(), 20);
     let reads = vec![viz_query::FetchRange { matchers: vec![Matcher::new("__name__", MatchOp::Eq, "x"), Matcher::new("pod", MatchOp::Eq, "p01234")], min_ts: MID, max_ts: MID + 300_000 }];
-    let p = sample_plan(&[&series], &[&sidx], &reads, None, 0).unwrap();
+    let p = sample_plan(&[&series], &[&sidx], &reads, None, None, 0).unwrap();
     assert_eq!(p.series, 1);
     let FileRead::Ranges(r) = &p.files[0].read else { panic!("{:?}", p.files[0]) };
     // One row group and the footer (one read when the row group is the last one).
@@ -289,13 +292,13 @@ fn one_series_of_a_large_file_reads_one_row_group_and_the_footer() {
     assert!(run(&a, q, MID, MID + 240_000, 60_000).unwrap().0.contains("p01234"));
     // A 1/20 selection is scattered over the id space: every row group, so the whole file.
     let reads = vec![viz_query::FetchRange { matchers: vec![Matcher::new("__name__", MatchOp::Eq, "x"), Matcher::new("ns", MatchOp::Eq, "n3")], min_ts: MID, max_ts: MID + 300_000 }];
-    let p = sample_plan(&[&series], &[&sidx], &reads, None, 0).unwrap();
+    let p = sample_plan(&[&series], &[&sidx], &reads, None, None, 0).unwrap();
     assert_eq!((p.series, &p.files[0].read, p.files[0].rows), (200, &FileRead::Whole, Some(20_000)));
     // Another metric: nothing. Outside the time: nothing.
     let reads = vec![viz_query::FetchRange { matchers: vec![Matcher::new("__name__", MatchOp::Eq, "y")], min_ts: MID, max_ts: MID + 300_000 }];
-    assert_eq!(sample_plan(&[&series], &[&sidx], &reads, None, 0).unwrap().files[0].read, FileRead::Skip);
+    assert_eq!(sample_plan(&[&series], &[&sidx], &reads, None, None, 0).unwrap().files[0].read, FileRead::Skip);
     let reads = vec![viz_query::FetchRange { matchers: vec![Matcher::new("pod", MatchOp::Eq, "p00001")], min_ts: MID + 300_001, max_ts: MID + 400_000 }];
-    let p = sample_plan(&[&series], &[&sidx], &reads, None, 0).unwrap();
+    let p = sample_plan(&[&series], &[&sidx], &reads, None, None, 0).unwrap();
     assert_eq!((p.series, &p.files[0].read), (0, &FileRead::Skip));
 }
 
@@ -307,7 +310,7 @@ fn a_part_reads_its_key_range() {
     let mut total = 0u64;
     let fi = FileIndex::from_json(&sidx).unwrap();
     for part in 0..7 {
-        let p = sample_plan(&[&series], &[&sidx], &ranges, Some(PartFilter { key: &key, part, parts: 7 }), 0).unwrap();
+        let p = sample_plan(&[&series], &[&sidx], &ranges, Some(PartFilter { key: &key, part, parts: 7 }), None, 0).unwrap();
         let FileRead::Ranges(r) = &p.files[0].read else { panic!("part {part}: {:?}", p.files[0]) };
         // The part's seventh of the ids, plus at most the row groups at its two ends.
         let rows = p.files[0].rows.unwrap();
@@ -333,7 +336,7 @@ fn an_older_fragment_reads_whole_files_and_a_broken_one_is_kept() {
     old.push_str(rest);
     assert!(!old.contains("sid") && !old.contains("foot"));
     let reads = vec![viz_query::FetchRange { matchers: vec![Matcher::new("pod", MatchOp::Eq, "p01234")], min_ts: MID, max_ts: MID + 300_000 }];
-    let p = sample_plan(&[&series], &[&old, "{not json", r#"{"v":2,"rg":[]}"#], &reads, None, 0).unwrap();
+    let p = sample_plan(&[&series], &[&old, "{not json", r#"{"v":2,"rg":[]}"#], &reads, None, None, 0).unwrap();
     assert_eq!(p.files[0], FilePlan { read: FileRead::Whole, rows: Some(20_000) }, "name and time only: every row group of x");
     assert_eq!(p.files[1], FilePlan { read: FileRead::Whole, rows: None });
     assert_eq!(p.files[2], FilePlan { read: FileRead::Whole, rows: None });

@@ -199,12 +199,23 @@ pub struct PartFilter<'a> {
 ///
 /// `series_files` must describe every series of the sample files (the files written with
 /// them, as for `viz_storage::select`). A read whose only matcher is `__name__ = x` needs no
-/// labels: every series of `x` is wanted.
+/// labels: every series of `x` is wanted. `pairs`, when given, names for each sample file the
+/// series file written with it (`contracts/TABLES.md`, "Pairing"), which lists exactly the
+/// series that file holds: a sample file is then planned for the selected series of its own
+/// series file only (a series of another shard or another time is not looked for in it).
+/// Without a pair, a sample file is planned for every selected series.
 ///
 /// Guarantee (tested as `the_sample_plan_never_changes_a_result`): evaluating over the
 /// sample files read as planned (skipped, whole, or as sparse files of the ranges) gives the
 /// same result as over the whole files.
-pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange], part: Option<PartFilter<'_>>, gap: u64) -> Result<ReadPlan, QueryError> {
+pub fn sample_plan(
+    series_files: &[&[u8]],
+    indexes: &[&str],
+    reads: &[FetchRange],
+    part: Option<PartFilter<'_>>,
+    pairs: Option<&[Option<usize>]>,
+    gap: u64,
+) -> Result<ReadPlan, QueryError> {
     struct Read {
         ms: Vec<CompiledMatcher>,
         name: Option<Vec<u8>>,
@@ -216,14 +227,18 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
         sids: BTreeMap<Vec<u8>, Vec<i64>>,
         /// Distinct series in the window (decided per file).
         seen: HashSet<i64>,
+        /// With `pairs`: the wanted sids per metric name of each series file.
+        per_file: Vec<BTreeMap<Vec<u8>, Vec<i64>>>,
     }
+    let paired = pairs.is_some();
     let mut rs: Vec<Read> = reads
         .iter()
         .map(|r| {
             let ms = r.matchers.iter().map(|m| m.compile()).collect::<Result<Vec<_>, _>>().map_err(QueryError::from_promql)?;
             let name = r.matchers.iter().find(|m| m.name == NAME_LABEL && m.op == MatchOp::Eq).map(|m| m.value.as_bytes().to_vec());
             let name_only = name.is_some() && r.matchers.iter().all(|m| m.name == NAME_LABEL && m.op == MatchOp::Eq);
-            Ok(Read { ms, name, name_only, min_ts: r.min_ts, max_ts: r.max_ts, sids: BTreeMap::new(), seen: HashSet::new() })
+            let per_file = if pairs.is_some() { vec![BTreeMap::new(); series_files.len()] } else { Vec::new() };
+            Ok(Read { ms, name, name_only, min_ts: r.min_ts, max_ts: r.max_ts, sids: BTreeMap::new(), seen: HashSet::new(), per_file })
         })
         .collect::<Result<_, QueryError>>()?;
     let part_needs_labels = part.is_some_and(|p| !p.key.without.is_empty());
@@ -311,6 +326,15 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
                     if v.last() != Some(&row.series_id) {
                         v.push(row.series_id);
                     }
+                    if paired {
+                        let f = &mut r.per_file[fi];
+                        match f.get_mut(row.metric_name) {
+                            Some(v) => v.push(row.series_id),
+                            None => {
+                                f.insert(row.metric_name.to_vec(), vec![row.series_id]);
+                            }
+                        }
+                    }
                     if row.min_ts <= r.max_ts && row.max_ts >= r.min_ts {
                         r.seen.insert(row.series_id);
                     }
@@ -320,25 +344,36 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
         })?;
     }
     let series = rs.iter().map(|r| r.seen.len() as u64).sum();
-    let wanted: Vec<Vec<(Vec<u8>, Vec<(i64, i64)>)>> = rs
-        .iter_mut()
-        .map(|r| {
-            std::mem::take(&mut r.sids)
-                .into_iter()
-                .map(|(n, mut ids)| {
-                    ids.sort_unstable();
-                    ids.dedup();
-                    (n, ids.into_iter().map(|i| (i, i)).collect())
-                })
-                .collect()
-        })
-        .collect();
+    type Wanted = Vec<(Vec<u8>, Vec<(i64, i64)>)>;
+    let intervals = |m: BTreeMap<Vec<u8>, Vec<i64>>| -> Wanted {
+        m.into_iter()
+            .map(|(n, mut ids)| {
+                ids.sort_unstable();
+                ids.dedup();
+                (n, ids.into_iter().map(|i| (i, i)).collect())
+            })
+            .collect()
+    };
+    // Per read: the wanted keys of all series files, and of each one.
+    let wanted: Vec<Wanted> = rs.iter_mut().map(|r| intervals(std::mem::take(&mut r.sids))).collect();
+    let wanted_file: Vec<Vec<Wanted>> = rs.iter_mut().map(|r| std::mem::take(&mut r.per_file).into_iter().map(intervals).collect()).collect();
     let files = indexes
         .iter()
-        .map(|text| {
+        .enumerate()
+        .map(|(i, text)| {
             let Ok(index) = FileIndex::from_json(text) else { return FilePlan { read: FileRead::Whole, rows: None } };
+            let pair = pairs.and_then(|p| p.get(i).copied().flatten()).filter(|fi| *fi < series_files.len());
             let (groups, rows) = groups_of(&index, &|g| {
-                rs.iter().zip(&wanted).filter(|(r, w)| g.overlaps(r.min_ts, r.max_ts) && w.iter().any(|(n, iv)| g.may_hold(n, iv))).count() as u64
+                rs.iter()
+                    .enumerate()
+                    .filter(|(k, r)| {
+                        let w = match pair {
+                            Some(fi) => &wanted_file[*k][fi],
+                            None => &wanted[*k],
+                        };
+                        g.overlaps(r.min_ts, r.max_ts) && w.iter().any(|(n, iv)| g.may_hold(n, iv))
+                    })
+                    .count() as u64
             });
             decide(&index, &groups, rows, gap)
         })
