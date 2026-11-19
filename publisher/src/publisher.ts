@@ -286,6 +286,7 @@ function checkMetadata(meta: TableMetadata, key: string): void {
 
 type Row = Record<string, SqlStorageValue>
 type Part = { file: LiveFile; status: number }
+type Totals = { files: number; rows: number; bytes: number }
 
 interface TableState {
   version: number
@@ -947,67 +948,107 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return Number.isSafeInteger(n) && n > 0 ? n : 0
   }
 
+  // What a re-based tenant adds (staged, not live) and removes (live, not staged), in SQL.
+  private static readonly STAGED_ADD = `s.tenant = ? AND s.tbl = ? AND s.tomb = 0 AND NOT EXISTS (SELECT 1 FROM live l WHERE l.tbl = s.tbl AND l.key = s.key)`
+  private static readonly STAGED_REMOVE = `l.tbl = ? AND l.tenant = ? AND NOT EXISTS (SELECT 1 FROM stage s WHERE s.tenant = l.tenant AND s.tbl = l.tbl AND s.tomb = 0 AND s.key = l.key)`
+
+  /** Files, rows and bytes a re-based tenant adds to and removes from a table, and the days they touch. */
+  private stagedChange(table: Table, tenant: string): { adds: Totals; removes: Totals; days: string[] } {
+    const totals = (r: Row): Totals => ({ files: r.n as number, rows: r.r as number, bytes: r.b as number })
+    const adds = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table).one())
+    const removes = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant).one())
+    const days = new Set<string>()
+    for (const r of this.sql.exec(`SELECT DISTINCT day FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table)) days.add(r.day as string)
+    for (const r of this.sql.exec(`SELECT DISTINCT day FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant)) days.add(r.day as string)
+    return { adds, removes, days: [...days] }
+  }
+
+  /**
+   * Tombstones of a re-based tenant (removed files whose objects may remain, from its checkpoint
+   * or base) that are neither published nor live in its new state: the publisher may never have
+   * seen them (a checkpoint skips the changes before it), so they are recorded as removed by the
+   * snapshot `seq`, and released only once no snapshot older than it is retained.
+   */
+  private recordStagedTombstones(table: Table, tenant: string, seq: number): void {
+    this.sql.exec(
+      `INSERT INTO removed (tbl, tenant, key, removed_seq, free_at)
+       SELECT s.tbl, s.tenant, s.key, ?, NULL FROM stage s
+       WHERE s.tenant = ? AND s.tbl = ? AND s.tomb = 1
+         AND NOT EXISTS (SELECT 1 FROM live l WHERE l.tbl = s.tbl AND l.key = s.key)
+         AND NOT EXISTS (SELECT 1 FROM stage f WHERE f.tenant = s.tenant AND f.tbl = s.tbl AND f.tomb = 0 AND f.key = s.key)
+       ON CONFLICT (tbl, key) DO NOTHING`,
+      seq, tenant, table,
+    )
+  }
+
+  /**
+   * One commit. Memory is a few manifests (`manifestTargetEntries` files each) and what the
+   * changes read from cursors touch; the files of a re-based tenant stay in SQLite and are read
+   * a page at a time, so a tenant of any size is published (README, "Memory").
+   */
   private async commit(store: CountingBucket, cfg: PublisherConfig, table: Table, plan: TablePlan): Promise<TableReport> {
     const t0 = this.now()
-    if (plan.adds.length === 0 && plan.removes.length === 0) {
+    const sql = this.sql
+    const staged = plan.staged.map((tenant) => ({ tenant, ...this.stagedChange(table, tenant) }))
+    const stagedSet = new Set(plan.staged)
+    // The published files that read-from-cursor changes remove: as many as the changes read.
+    const removedRows = plan.removes.map(({ tenant, key }) => {
+      const r = sql.exec(`SELECT tenant, key, day, rows, bytes, manifest FROM live WHERE tbl = ? AND tenant = ? AND key = ?`, table, tenant, key).toArray()[0]
+      if (!r) throw new Error(`publisher: ${key} is to be removed but is not published`)
+      return { tenant, key, day: r.day as string, rows: r.rows as number, bytes: r.bytes as number, manifest: r.manifest as string }
+    })
+    const addFiles = plan.adds.length + staged.reduce((n, x) => n + x.adds.files, 0)
+    const removeFiles = removedRows.length + staged.reduce((n, x) => n + x.removes.files, 0)
+
+    if (addFiles === 0 && removeFiles === 0) {
       // Nothing changes in the table. The cursors still move: the changes read did not
       // touch this table (or cancelled out), so the snapshot reflects them as it is.
-      const version = this.state(table).version
-      if (plan.cursors.size === 0 && plan.transient.length === 0) return emptyReport(version)
+      const st = this.state(table)
+      if (plan.cursors.size === 0 && plan.transient.length === 0 && staged.length === 0) return emptyReport(st.version)
       // The plan was made against SQLite. Moving a cursor on a stale view of the table
       // would be wrong, so check that no newer metadata exists (one HEAD, no write).
-      if (await store.head(this.metaKey(table, version + 1))) {
+      if (await store.head(this.metaKey(table, st.version + 1))) {
         await this.resync(store, cfg, table)
-        throw new Conflict(`${table}: R2 is ahead of v${version}`)
+        throw new Conflict(`${table}: R2 is ahead of v${st.version}`)
       }
       const now = this.now()
       this.ctx.storage.transactionSync(() => {
         for (const [tenant, c] of plan.cursors) this.setCursor(table, tenant, c)
         for (const t of plan.transient) this.recordRemoved(table, t.tenant, t.key, 0, now)
+        for (const x of staged) this.recordStagedTombstones(table, x.tenant, st.seq)
       })
-      return emptyReport(version)
+      return emptyReport(st.version)
     }
 
     const { state, prev } = await this.currentMetadata(store, cfg, table)
     const now = this.now()
-    const base = prev ?? emptyMetadata(table, this.uri(cfg, `${this.cell}/iceberg/${table}`), this.cell, crypto.randomUUID(), now)
-    const snapshotId = newSnapshotId()
+    const base = prev ?? emptyMetadata(table, this.uri(cfg, `${this.cell}/iceberg/${table}`), this.cell, uuidOf(this.random(16)), now)
+    const snapshotId = snapshotIdOf(this.random(8))
     const seq = base['last-sequence-number'] + 1
-    const tag = crypto.randomUUID().slice(0, 8)
+    const tag = hex(this.random(4))
     const report = emptyReport(state.version + 1)
     report.snapshotId = snapshotId
-    report.added = plan.adds.length
-    report.removed = plan.removes.length
+    report.added = addFiles
+    report.removed = removeFiles
 
     // ── manifests ──
     const kept = new Map<string, ManifestInfo>()
     const liveCount = new Map<string, number>()
-    for (const r of this.sql.exec(`SELECT path, info FROM manifest WHERE tbl = ?`, table).toArray()) kept.set(r.path as string, JSON.parse(r.info as string) as ManifestInfo)
-    for (const r of this.sql.exec(`SELECT manifest, COUNT(*) AS n FROM live WHERE tbl = ? GROUP BY manifest`, table).toArray()) liveCount.set(r.manifest as string, r.n as number)
+    for (const r of sql.exec(`SELECT path, info FROM manifest WHERE tbl = ?`, table).toArray()) kept.set(r.path as string, JSON.parse(r.info as string) as ManifestInfo)
+    for (const r of sql.exec(`SELECT manifest, COUNT(*) AS n FROM live WHERE tbl = ? GROUP BY manifest`, table).toArray()) liveCount.set(r.manifest as string, r.n as number)
 
-    // Removed files: rewrite only the manifests that hold them. The rewritten manifest
-    // keeps the surviving files as EXISTING and lists the removed ones as DELETED.
+    // Removed files: rewrite only the manifests that hold them. The rewritten manifest keeps
+    // the surviving files as EXISTING and lists the removed ones as DELETED.
     const removing = new Map<string, Set<string>>()
-    for (const { tenant, key } of plan.removes) {
-      const r = this.sql.exec(`SELECT manifest FROM live WHERE tbl = ? AND tenant = ? AND key = ?`, table, tenant, key).toArray()[0]
-      if (!r) throw new Error(`publisher: ${key} is to be removed but is not published`)
-      const m = r.manifest as string
-      if (!removing.has(m)) removing.set(m, new Set())
-      ;(removing.get(m) as Set<string>).add(key)
+    const mark = (m: string) => removing.get(m) ?? removing.set(m, new Set()).get(m)!
+    for (const r of removedRows) mark(r.manifest).add(r.key)
+    for (const x of staged) {
+      if (x.removes.files === 0) continue
+      for (const r of sql.exec(`SELECT DISTINCT manifest FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, x.tenant)) mark(r.manifest as string)
     }
-    const outputs: { path: string; parts: Part[] }[] = []
+    const rewrites = [...removing.keys()].sort()
     const replaced: string[] = []
-    let n = 0
-    const newPath = () => `${this.metaDir(table)}${snapshotId}-m${n++}-${tag}.avro`
-    for (const [path, keys] of removing) {
-      const parts = this.sql
-        .exec(`SELECT * FROM live WHERE tbl = ? AND manifest = ? ORDER BY tenant, day, key`, table, path)
-        .toArray()
-        .map((r): Part => ({ file: toLive(r), status: keys.has(r.key as string) ? STATUS_DELETED : STATUS_EXISTING }))
-      outputs.push({ path: newPath(), parts })
-      replaced.push(path)
-      kept.delete(path)
-    }
+    for (const path of rewrites) kept.delete(path)
     // A manifest left with no live file by an earlier commit has done its job.
     for (const path of [...kept.keys()]) {
       if (!liveCount.has(path)) {
@@ -1015,47 +1056,144 @@ export class Publisher extends DurableObject<PublisherEnv> {
         replaced.push(path)
       }
     }
-    // Added files: one new manifest (more only above `manifestTargetEntries`).
-    const adds = plan.adds
-      .map(({ tenant, entry }): LiveFile => ({
-        key: entry.key, tenant, day: entry.day, rows: entry.rows, bytes: entry.bytes, snapshotId, seq, fileSeq: seq, stats: statsFor(table, entry),
-      }))
-      .sort(byPartition)
-    for (let i = 0; i < adds.length; i += cfg.manifestTargetEntries) {
-      outputs.push({ path: newPath(), parts: adds.slice(i, i + cfg.manifestTargetEntries).map((file): Part => ({ file, status: STATUS_ADDED })) })
-    }
+    const addManifests = Math.ceil(addFiles / cfg.manifestTargetEntries)
     // Merge: when the list would be too long, fold the small untouched manifests together.
-    if (kept.size + outputs.length > cfg.maxManifests) {
-      const small = [...kept.keys()].filter((p) => (liveCount.get(p) ?? 0) < cfg.manifestTargetEntries / 2)
-      if (small.length >= 2) {
-        const files: LiveFile[] = []
-        for (const p of small) {
-          for (const r of this.sql.exec(`SELECT * FROM live WHERE tbl = ? AND manifest = ?`, table, p).toArray()) files.push(toLive(r))
-          kept.delete(p)
-          replaced.push(p)
+    let small: string[] = []
+    if (kept.size + rewrites.length + addManifests > cfg.maxManifests) {
+      small = [...kept.keys()].filter((p) => (liveCount.get(p) ?? 0) < cfg.manifestTargetEntries / 2).sort()
+      if (small.length < 2) small = []
+      for (const p of small) kept.delete(p)
+      report.manifestsMerged = small.length
+    }
+    replaced.push(...rewrites, ...small)
+
+    // What the transaction after the commit point applies to `live`, recorded as each manifest is written.
+    const memAdded: { file: LiveFile; path: string }[] = []
+    const stagedRanges: { tenant: string; lo: [string, string]; hi: [string, string]; path: string }[] = []
+    const moved: { from: string; path: string }[] = []
+    const mergedRanges: { lo: [string, string, string]; hi: [string, string, string]; path: string }[] = []
+
+    let n = 0
+    const newPath = () => `${this.metaDir(table)}${snapshotId}-m${n++}-${tag}.avro`
+    const toAdd = (tenant: string, entry: FileEntry): LiveFile => ({ key: entry.key, tenant, day: entry.day, rows: entry.rows, bytes: entry.bytes, snapshotId, seq, fileSeq: seq, stats: statsFor(table, entry) })
+    const memAdds = plan.adds.map(({ tenant, entry }) => toAdd(tenant, entry)).sort(byPartition)
+
+    /** Every manifest this commit writes, in order, each built only when it is written. */
+    function* outputs(this: Publisher): Generator<{ path: string; parts: Part[] }> {
+      // Rewritten manifests, a manifest at a time.
+      for (const from of rewrites) {
+        const keys = removing.get(from)!
+        const parts = sql
+          .exec(`SELECT * FROM live WHERE tbl = ? AND manifest = ? ORDER BY tenant, day, key`, table, from)
+          .toArray()
+          .map((r): Part => {
+            const gone = keys.has(r.key as string) || (stagedSet.has(r.tenant as string) && !this.staged(table, r.tenant as string, r.key as string))
+            return { file: toLive(r), status: gone ? STATUS_DELETED : STATUS_EXISTING }
+          })
+        const path = newPath()
+        moved.push({ from, path })
+        yield { path, parts }
+      }
+      // Added files, in (tenant, day, key) order: the tenants read from cursors from memory, the
+      // re-based ones from `stage`, a page at a time; `manifestTargetEntries` per manifest.
+      let parts: Part[] = []
+      let ranges: { tenant: string; lo: [string, string]; hi: [string, string] }[] = []
+      let mem: LiveFile[] = []
+      const flush = () => {
+        const path = newPath()
+        for (const f of mem) memAdded.push({ file: f, path })
+        for (const r of ranges) stagedRanges.push({ ...r, path })
+        const out = { path, parts }
+        parts = []
+        ranges = []
+        mem = []
+        return out
+      }
+      const tenants = [...new Set([...memAdds.map((f) => f.tenant), ...plan.staged])].sort()
+      let i = 0
+      for (const tenant of tenants) {
+        if (!stagedSet.has(tenant)) {
+          while (i < memAdds.length && memAdds[i]!.tenant === tenant) {
+            const f = memAdds[i++]!
+            parts.push({ file: f, status: STATUS_ADDED })
+            mem.push(f)
+            if (parts.length >= cfg.manifestTargetEntries) yield flush()
+          }
+          continue
         }
-        files.sort(byPartition)
-        for (let i = 0; i < files.length; i += cfg.manifestTargetEntries) {
-          outputs.push({ path: newPath(), parts: files.slice(i, i + cfg.manifestTargetEntries).map((file): Part => ({ file, status: STATUS_EXISTING })) })
+        let after: [string, string] = ['', '']
+        for (;;) {
+          const page = sql
+            .exec(`SELECT key, day, rows, bytes, stats FROM stage s WHERE ${Publisher.STAGED_ADD} AND (s.day, s.key) > (?, ?) ORDER BY s.day, s.key LIMIT 1000`, tenant, table, after[0], after[1])
+            .toArray()
+          if (page.length === 0) break
+          for (const r of page) {
+            const day = r.day as string
+            const key = r.key as string
+            const f: LiveFile = { key, tenant, day, rows: r.rows as number, bytes: r.bytes as number, snapshotId, seq, fileSeq: seq, stats: JSON.parse(r.stats as string) as FileStats }
+            parts.push({ file: f, status: STATUS_ADDED })
+            const open = ranges.at(-1)
+            if (open && open.tenant === tenant) open.hi = [day, key]
+            else ranges.push({ tenant, lo: [day, key], hi: [day, key] })
+            after = [day, key]
+            if (parts.length >= cfg.manifestTargetEntries) yield flush()
+          }
         }
-        report.manifestsMerged = small.length
+      }
+      if (parts.length > 0) yield flush()
+      // Merged small manifests, in (tenant, day, key) order, a page at a time.
+      if (small.length > 0) {
+        const inSmall = `manifest IN (${small.map(() => '?').join(', ')})`
+        let after: [string, string, string] = ['', '', '']
+        let chunk: Part[] = []
+        let lo: [string, string, string] | null = null
+        let hi: [string, string, string] = ['', '', '']
+        const done = () => {
+          const path = newPath()
+          mergedRanges.push({ lo: lo!, hi, path })
+          const out = { path, parts: chunk }
+          chunk = []
+          lo = null
+          return out
+        }
+        for (;;) {
+          const page = sql
+            .exec(`SELECT * FROM live WHERE tbl = ? AND ${inSmall} AND (tenant, day, key) > (?, ?, ?) ORDER BY tenant, day, key LIMIT 1000`, table, ...small, ...after)
+            .toArray()
+          if (page.length === 0) break
+          for (const r of page) {
+            const f = toLive(r)
+            chunk.push({ file: f, status: STATUS_EXISTING })
+            hi = [f.tenant, f.day, f.key]
+            lo ??= hi
+            after = hi
+            if (chunk.length >= cfg.manifestTargetEntries) yield done()
+          }
+        }
+        if (chunk.length > 0) yield done()
       }
     }
 
+    // Two manifests at a time: one being built and encoded while the other's PUT is in flight.
     const written: ManifestInfo[] = []
-    for (const group of chunk(outputs, 4)) {
-      written.push(
-        ...(await Promise.all(
-          group.map(async (o): Promise<ManifestInfo> => {
-            const records = o.parts.map((p) => manifestEntry(table, p.file, p.status, this.uri(cfg, p.file.key), snapshotId))
-            const bytes = await writeAvro(MANIFEST_ENTRY_SCHEMA, records, manifestHeader(table), cfg.codec)
-            await store.put(o.path, bytes)
-            report.bytes.manifests += bytes.length
-            return { ...summarise(o.parts, seq, snapshotId), path: o.path, length: bytes.length }
-          }),
-        )),
+    const writing: Promise<void>[] = []
+    for (const o of outputs.call(this)) {
+      const at = written.length
+      written.push(null as unknown as ManifestInfo)
+      const records = o.parts.map((p) => manifestEntry(table, p.file, p.status, this.uri(cfg, p.file.key), snapshotId))
+      const info = { ...summarise(o.parts, seq, snapshotId), path: o.path }
+      const sync = this.random(16)
+      writing.push(
+        (async () => {
+          const bytes = await writeAvro(MANIFEST_ENTRY_SCHEMA, records, manifestHeader(table), cfg.codec, sync)
+          await store.put(o.path, bytes)
+          report.bytes.manifests += bytes.length
+          written[at] = { ...info, length: bytes.length }
+        })(),
       )
+      if (writing.length >= 2) await writing.shift()
     }
+    await Promise.all(writing)
     report.manifestsWritten = written.length
     await this.step('manifests-written', table)
 
@@ -1067,6 +1205,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       manifests.map((m) => manifestListRecord(m, this.uri(cfg, m.path))),
       { 'snapshot-id': String(snapshotId), 'sequence-number': String(seq), 'format-version': '2', ...(state.snapshotId ? { 'parent-snapshot-id': String(state.snapshotId) } : {}) },
       cfg.codec,
+      this.random(16),
     )
     await store.put(listKey, listBytes)
     report.bytes.manifestList = listBytes.length
@@ -1082,28 +1221,32 @@ export class Publisher extends DurableObject<PublisherEnv> {
     await this.step('cursors-written', table)
 
     // ── metadata.json: the commit ──
-    const removedLive = plan.removes.map(({ tenant, key }) => toLive(this.sql.exec(`SELECT * FROM live WHERE tbl = ? AND tenant = ? AND key = ?`, table, tenant, key).one()))
     const before = prev?.snapshots.find((s) => s['snapshot-id'] === prev['current-snapshot-id'])?.summary
     const total = (k: string) => Number(before?.[k] ?? 0)
     const sum = (fs: { rows: number; bytes: number }[], f: 'rows' | 'bytes') => fs.reduce((a, x) => a + x[f], 0)
-    const partitions = new Set([...adds, ...removedLive].map((f) => `${f.tenant}/${f.day}`))
+    const addedRows = sum(memAdds, 'rows') + staged.reduce((a, x) => a + x.adds.rows, 0)
+    const addedBytes = sum(memAdds, 'bytes') + staged.reduce((a, x) => a + x.adds.bytes, 0)
+    const removedRowsN = sum(removedRows, 'rows') + staged.reduce((a, x) => a + x.removes.rows, 0)
+    const removedBytes = sum(removedRows, 'bytes') + staged.reduce((a, x) => a + x.removes.bytes, 0)
+    const partitions = new Set([...memAdds, ...removedRows].map((f) => `${f.tenant}/${f.day}`))
+    for (const x of staged) for (const d of x.days) partitions.add(`${x.tenant}/${d}`)
     const snapshot: Snapshot = {
       'snapshot-id': snapshotId,
       'sequence-number': seq,
       'timestamp-ms': Math.max(now, (prev?.['last-updated-ms'] ?? 0) + 1),
       'manifest-list': this.uri(cfg, listKey),
       summary: {
-        operation: plan.removes.length === 0 ? 'append' : plan.adds.length === 0 ? 'delete' : 'overwrite',
-        'added-data-files': String(adds.length),
-        'deleted-data-files': String(removedLive.length),
-        'added-records': String(sum(adds, 'rows')),
-        'deleted-records': String(sum(removedLive, 'rows')),
-        'added-files-size': String(sum(adds, 'bytes')),
-        'removed-files-size': String(sum(removedLive, 'bytes')),
+        operation: removeFiles === 0 ? 'append' : addFiles === 0 ? 'delete' : 'overwrite',
+        'added-data-files': String(addFiles),
+        'deleted-data-files': String(removeFiles),
+        'added-records': String(addedRows),
+        'deleted-records': String(removedRowsN),
+        'added-files-size': String(addedBytes),
+        'removed-files-size': String(removedBytes),
         'changed-partition-count': String(partitions.size),
-        'total-data-files': String(total('total-data-files') + adds.length - removedLive.length),
-        'total-records': String(total('total-records') + sum(adds, 'rows') - sum(removedLive, 'rows')),
-        'total-files-size': String(total('total-files-size') + sum(adds, 'bytes') - sum(removedLive, 'bytes')),
+        'total-data-files': String(total('total-data-files') + addFiles - removeFiles),
+        'total-records': String(total('total-records') + addedRows - removedRowsN),
+        'total-files-size': String(total('total-files-size') + addedBytes - removedBytes),
         'total-delete-files': '0',
         'total-position-deletes': '0',
         'total-equality-deletes': '0',
@@ -1124,22 +1267,43 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const freeBelow = oldestSeq(meta)
     const keptSnapshots = new Set(meta.snapshots.map((s) => s['snapshot-id']))
     this.ctx.storage.transactionSync(() => {
-      const sql = this.sql
-      for (const f of removedLive) {
+      // Removed files leave `live` first, recorded as removed by this snapshot.
+      for (const f of removedRows) {
         sql.exec(`DELETE FROM live WHERE tbl = ? AND tenant = ? AND key = ?`, table, f.tenant, f.key)
         this.recordRemoved(table, f.tenant, f.key, seq, null)
       }
+      for (const x of staged) {
+        if (x.removes.files === 0) continue
+        sql.exec(
+          `INSERT INTO removed (tbl, tenant, key, removed_seq, free_at) SELECT l.tbl, l.tenant, l.key, ?, NULL FROM live l WHERE ${Publisher.STAGED_REMOVE} ON CONFLICT (tbl, key) DO NOTHING`,
+          seq, table, x.tenant,
+        )
+        sql.exec(`DELETE FROM live AS l WHERE ${Publisher.STAGED_REMOVE}`, table, x.tenant)
+      }
       for (const t of plan.transient) this.recordRemoved(table, t.tenant, t.key, 0, now)
-      for (const o of outputs) {
-        for (const p of o.parts) {
-          if (p.status === STATUS_ADDED) {
-            this.insertLive(table, p.file, o.path)
-            sql.exec(`DELETE FROM removed WHERE tbl = ? AND tenant = ? AND key = ?`, table, p.file.tenant, p.file.key)
-          } else if (p.status === STATUS_EXISTING) {
-            sql.exec(`UPDATE live SET manifest = ? WHERE tbl = ? AND tenant = ? AND key = ?`, o.path, table, p.file.tenant, p.file.key)
-          }
+      // Survivors of rewritten and merged manifests move to the new ones.
+      for (const m of moved) sql.exec(`UPDATE live SET manifest = ? WHERE tbl = ? AND manifest = ?`, m.path, table, m.from)
+      if (small.length > 0) {
+        const inSmall = `manifest IN (${small.map(() => '?').join(', ')})`
+        for (const m of mergedRanges) {
+          sql.exec(`UPDATE live SET manifest = ? WHERE tbl = ? AND ${inSmall} AND (tenant, day, key) >= (?, ?, ?) AND (tenant, day, key) <= (?, ?, ?)`, m.path, table, ...small, ...m.lo, ...m.hi)
         }
       }
+      // Added files: a re-based tenant's from `stage`, range by range; the others' from memory.
+      for (const r of stagedRanges) {
+        const range = `s.tenant = ? AND s.tbl = ? AND s.tomb = 0 AND (s.day, s.key) >= (?, ?) AND (s.day, s.key) <= (?, ?) AND NOT EXISTS (SELECT 1 FROM live l WHERE l.tbl = s.tbl AND l.key = s.key)`
+        sql.exec(`DELETE FROM removed WHERE tbl = ? AND tenant = ? AND key IN (SELECT s.key FROM stage s WHERE ${range})`, table, r.tenant, r.tenant, table, ...r.lo, ...r.hi)
+        sql.exec(
+          `INSERT INTO live (tbl, key, tenant, day, rows, bytes, snapshot_id, seq, file_seq, stats, manifest)
+           SELECT s.tbl, s.key, s.tenant, s.day, s.rows, s.bytes, ?, ?, ?, s.stats, ? FROM stage s WHERE ${range}`,
+          snapshotId, seq, seq, r.path, r.tenant, table, ...r.lo, ...r.hi,
+        )
+      }
+      for (const { file, path } of memAdded) {
+        this.insertLive(table, file, path)
+        sql.exec(`DELETE FROM removed WHERE tbl = ? AND tenant = ? AND key = ?`, table, file.tenant, file.key)
+      }
+      for (const x of staged) this.recordStagedTombstones(table, x.tenant, seq)
       for (const p of replaced) sql.exec(`DELETE FROM manifest WHERE tbl = ? AND path = ?`, table, p)
       for (const m of written) sql.exec(`INSERT INTO manifest (tbl, path, info) VALUES (?, ?, ?)`, table, m.path, JSON.stringify(m))
       for (const [tenant, c] of plan.cursors) this.setCursor(table, tenant, c)
@@ -1207,26 +1371,16 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return (await readAvro<ManifestEntryRecord>(new Uint8Array(await o.arrayBuffer()))).records
   }
 
-  /** The live files of a snapshot, read from its manifests: file and the manifest holding it. */
-  private async readSnapshotFiles(store: Store, cfg: PublisherConfig, manifests: ManifestInfo[]): Promise<{ file: LiveFile; manifest: string }[]> {
-    const out: { file: LiveFile; manifest: string }[] = []
-    const all = await inBatches(manifests, FANOUT, (m) => this.readManifest(store, m.path))
-    for (const [i, entries] of all.entries()) {
-      const m = manifests[i] as ManifestInfo
-      for (const e of entries) {
-        if (e.status === STATUS_DELETED) continue
-        out.push({ file: liveFromEntry(e, this.keyOf(cfg, e.data_file.file_path), { snapshotId: m.addedSnapshotId, seq: m.seq }), manifest: m.path })
-      }
-    }
-    return out
-  }
-
   /**
    * Replace everything SQLite caches about a table with what R2 says. This is the recovery
    * path for a crash after the metadata write, for a lost conditional write, and for lost
    * storage. Files that were live in SQLite and are not in the snapshot were removed by a
    * commit SQLite never recorded; they are kept as removed with the current sequence
    * number, which is at or after the real one (so they are freed no earlier than is safe).
+   *
+   * The snapshot's files go into `live_next` a manifest at a time (never all in memory), and
+   * replace `live` in the one transaction that also writes the rest, so an eviction midway
+   * leaves SQLite as it was and the next resync starts over.
    */
   private async resync(store: Store, cfg: PublisherConfig, table: Table): Promise<void> {
     const version = await this.latestVersion(store, table)
@@ -1244,52 +1398,70 @@ export class Publisher extends DurableObject<PublisherEnv> {
     checkMetadata(meta, this.metaKey(table, version))
     const current = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])
     let manifests: ManifestInfo[] = []
-    let files: { file: LiveFile; manifest: string }[] = []
     let cursors: Record<string, Cursor> = {}
-    if (current) {
-      manifests = await this.readManifestList(store, cfg, current['manifest-list'])
-      files = await this.readSnapshotFiles(store, cfg, manifests)
-      const c = await store.get(this.keyOf(cfg, current.summary[CURSORS_KEY] as string))
-      if (!c) throw new Error(`publisher: cursor object of snapshot ${current['snapshot-id']} is not in R2`)
-      const body = await c.json<{ v?: number; cursors: Record<string, Cursor> }>()
-      if ((body.v ?? 1) > CURSORS_FORMAT_VERSION) throw new MetadataTooNew(`metadata_too_new: cursors object of snapshot ${current['snapshot-id']} is version ${body.v}`)
-      cursors = body.cursors
-    }
-    // What each retained snapshot references, for the sweep. Known snapshots are not re-read.
-    const known = new Set(this.sql.exec(`SELECT snapshot_id FROM snap WHERE tbl = ?`, table).toArray().map((r) => r.snapshot_id as number))
-    const fresh = await inBatches(meta.snapshots.filter((s) => !known.has(s['snapshot-id'])), FANOUT, async (s) => {
-      const list = s === current ? manifests : await this.readManifestList(store, cfg, s['manifest-list'])
-      return { snapshot: s, files: [this.keyOf(cfg, s['manifest-list']), this.keyOf(cfg, s.summary[CURSORS_KEY] as string), ...list.map((m) => m.path)] }
-    })
-    const hint = await this.hint(store, table)
-    if (hint < version) await store.put(this.hintKey(table), String(version))
+    const sql = this.sql
+    sql.exec(`DELETE FROM live_next WHERE tbl = ?`, table)
+    try {
+      if (current) {
+        manifests = await this.readManifestList(store, cfg, current['manifest-list'])
+        // Two manifests in flight; each one's live entries into `live_next` as it arrives.
+        await inBatches(manifests, 2, async (m) => {
+          const entries = await this.readManifest(store, m.path)
+          this.ctx.storage.transactionSync(() => {
+            for (const e of entries) {
+              if (e.status === STATUS_DELETED) continue
+              const f = liveFromEntry(e, this.keyOf(cfg, e.data_file.file_path), { snapshotId: m.addedSnapshotId, seq: m.seq })
+              sql.exec(
+                `INSERT INTO live_next (tbl, key, tenant, day, rows, bytes, snapshot_id, seq, file_seq, stats, manifest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                table, f.key, f.tenant, f.day, f.rows, f.bytes, f.snapshotId, f.seq, f.fileSeq, JSON.stringify(f.stats), m.path,
+              )
+            }
+          })
+        })
+        const c = await store.get(this.keyOf(cfg, current.summary[CURSORS_KEY] as string))
+        if (!c) throw new Error(`publisher: cursor object of snapshot ${current['snapshot-id']} is not in R2`)
+        const body = await c.json<{ v?: number; cursors: Record<string, Cursor> }>()
+        if ((body.v ?? 1) > CURSORS_FORMAT_VERSION) throw new MetadataTooNew(`metadata_too_new: cursors object of snapshot ${current['snapshot-id']} is version ${body.v}`)
+        cursors = body.cursors
+      }
+      // What each retained snapshot references, for the sweep. Known snapshots are not re-read.
+      const known = new Set(sql.exec(`SELECT snapshot_id FROM snap WHERE tbl = ?`, table).toArray().map((r) => r.snapshot_id as number))
+      const fresh = await inBatches(meta.snapshots.filter((s) => !known.has(s['snapshot-id'])), FANOUT, async (s) => {
+        const list = s === current ? manifests : await this.readManifestList(store, cfg, s['manifest-list'])
+        return { snapshot: s, files: [this.keyOf(cfg, s['manifest-list']), this.keyOf(cfg, s.summary[CURSORS_KEY] as string), ...list.map((m) => m.path)] }
+      })
+      const hint = await this.hint(store, table)
+      if (hint < version) await store.put(this.hintKey(table), String(version))
 
-    const now = this.now()
-    const seq = meta['last-sequence-number']
-    const stillLive = new Set(files.map((f) => f.file.key))
-    this.ctx.storage.transactionSync(() => {
-      const sql = this.sql
-      for (const r of sql.exec(`SELECT tenant, key FROM live WHERE tbl = ?`, table).toArray()) {
-        if (!stillLive.has(r.key as string)) this.recordRemoved(table, r.tenant as string, r.key as string, seq, null)
-      }
-      for (const t of ['live', 'manifest', 'cursor']) sql.exec(`DELETE FROM ${t} WHERE tbl = ?`, table)
-      for (const f of files) {
-        this.insertLive(table, f.file, f.manifest)
-        sql.exec(`DELETE FROM removed WHERE tbl = ? AND tenant = ? AND key = ?`, table, f.file.tenant, f.file.key)
-      }
-      for (const m of manifests) sql.exec(`INSERT INTO manifest (tbl, path, info) VALUES (?, ?, ?)`, table, m.path, JSON.stringify(m))
-      for (const [tenant, c] of Object.entries(cursors)) this.setCursor(table, tenant, c)
-      sql.exec(
-        `INSERT INTO tbl (name, version, snapshot_id, seq, uuid) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (name) DO UPDATE SET version = excluded.version, snapshot_id = excluded.snapshot_id, seq = excluded.seq, uuid = excluded.uuid`,
-        table, version, meta['current-snapshot-id'] ?? null, seq, meta['table-uuid'],
-      )
-      for (const f of fresh) {
-        sql.exec(`INSERT INTO snap (tbl, snapshot_id, seq, files) VALUES (?, ?, ?, ?)`, table, f.snapshot['snapshot-id'], f.snapshot['sequence-number'], JSON.stringify(f.files))
-      }
-      this.dropExpired(table, new Set(meta.snapshots.map((s) => s['snapshot-id'])), oldestSeq(meta), now)
-      this.noteMetadata(cfg, table, meta, false)
-    })
+      const now = this.now()
+      const seq = meta['last-sequence-number']
+      this.ctx.storage.transactionSync(() => {
+        sql.exec(
+          `INSERT INTO removed (tbl, tenant, key, removed_seq, free_at)
+           SELECT l.tbl, l.tenant, l.key, ?, NULL FROM live l WHERE l.tbl = ? AND NOT EXISTS (SELECT 1 FROM live_next n WHERE n.tbl = l.tbl AND n.key = l.key)
+           ON CONFLICT (tbl, key) DO NOTHING`,
+          seq, table,
+        )
+        for (const t of ['live', 'manifest', 'cursor']) sql.exec(`DELETE FROM ${t} WHERE tbl = ?`, table)
+        sql.exec(`DELETE FROM removed AS r WHERE r.tbl = ? AND EXISTS (SELECT 1 FROM live_next n WHERE n.tbl = r.tbl AND n.tenant = r.tenant AND n.key = r.key)`, table)
+        sql.exec(`INSERT INTO live SELECT tbl, key, tenant, day, rows, bytes, snapshot_id, seq, file_seq, stats, manifest FROM live_next WHERE tbl = ?`, table)
+        sql.exec(`DELETE FROM live_next WHERE tbl = ?`, table)
+        for (const m of manifests) sql.exec(`INSERT INTO manifest (tbl, path, info) VALUES (?, ?, ?)`, table, m.path, JSON.stringify(m))
+        for (const [tenant, c] of Object.entries(cursors)) this.setCursor(table, tenant, c)
+        sql.exec(
+          `INSERT INTO tbl (name, version, snapshot_id, seq, uuid) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (name) DO UPDATE SET version = excluded.version, snapshot_id = excluded.snapshot_id, seq = excluded.seq, uuid = excluded.uuid`,
+          table, version, meta['current-snapshot-id'] ?? null, seq, meta['table-uuid'],
+        )
+        for (const f of fresh) {
+          sql.exec(`INSERT INTO snap (tbl, snapshot_id, seq, files) VALUES (?, ?, ?, ?)`, table, f.snapshot['snapshot-id'], f.snapshot['sequence-number'], JSON.stringify(f.files))
+        }
+        this.dropExpired(table, new Set(meta.snapshots.map((s) => s['snapshot-id'])), oldestSeq(meta), now)
+        this.noteMetadata(cfg, table, meta, false)
+      })
+    } finally {
+      sql.exec(`DELETE FROM live_next WHERE tbl = ?`, table)
+    }
   }
 
   // ───────────────────────────── maintenance ─────────────────────────────
@@ -1583,10 +1755,21 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
 export type CommitStep = 'manifests-written' | 'manifest-list-written' | 'cursors-written' | 'metadata-written' | 'hint-written' | 'state-saved'
 
-/** Snapshot ids are Iceberg longs; these stay inside JavaScript's safe integers. */
-function newSnapshotId(): number {
-  const a = crypto.getRandomValues(new Uint32Array(2))
-  return ((a[0] as number) & 0xfffff) * 0x100000000 + (a[1] as number) + 1
+/** Snapshot ids are Iceberg longs; these stay inside JavaScript's safe integers. From 8 random bytes. */
+function snapshotIdOf(b: Uint8Array): number {
+  const v = new DataView(b.buffer, b.byteOffset, 8)
+  return (v.getUint32(0) & 0xfffff) * 0x100000000 + v.getUint32(4) + 1
+}
+
+const hex = (b: Uint8Array): string => [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
+
+/** A version-4 UUID from 16 random bytes. */
+function uuidOf(b: Uint8Array): string {
+  const u = b.slice()
+  u[6] = (u[6]! & 0x0f) | 0x40
+  u[8] = (u[8]! & 0x3f) | 0x80
+  const h = hex(u)
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
 
 const oldestSeq = (meta: TableMetadata): number => meta.snapshots.reduce((m, s) => Math.min(m, s['sequence-number']), Number.MAX_SAFE_INTEGER)

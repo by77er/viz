@@ -2,8 +2,9 @@
 // check.mjs (which renders it to audit contrast), so what is checked is exactly what is built.
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
-export function buildCss(root) {
-  const t = JSON.parse(readFileSync(root + 'project/tokens.json', 'utf8'))
+// The token custom properties and type styles of a tokens object. tools/audit.mjs calls it with every token moved (colours inverted,
+// lengths and durations doubled) to find, as rendered, any value that does not come from a token.
+export function tokenCss(t) {
   const themes = t.color.themes.map((x) => x.id)
   const val = (tok, th) => (typeof tok.value === 'string' ? tok.value : tok.value[th] ?? tok.value[themes[0]])
   const themed = [...t.color.tokens, ...(t.shadow?.tokens ?? [])]
@@ -22,6 +23,11 @@ export function buildCss(root) {
 :root {\n${flat}\n${fams}\n}
 `
   const typeCss = `:root {\n${typeProps}\n}\n${typeClasses}\n`
+  return { tokensCss, typeCss }
+}
+export function buildCss(root) {
+  const t = JSON.parse(readFileSync(root + 'project/tokens.json', 'utf8'))
+  const { tokensCss, typeCss } = tokenCss(t)
   const src = readFileSync(root + 'src/components.css', 'utf8')
   // Self-hosted faces, and a fallback face with matched metrics so text does not move when the font arrives.
   const faces = t.type.fonts.map((f) => `@font-face { font-family: "${f.family}"; src: url("fonts/${basename(f.file)}") format("woff2"); font-weight: ${f.weight}; font-style: normal; font-display: swap; }`).join('\n')

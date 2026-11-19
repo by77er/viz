@@ -7,6 +7,14 @@
 //   z-index of two digits; line-height: 1; linear only in an animation driven by a scroll timeline (it maps scroll to the edge, not time);
 //   data custom properties (DATA_PROPS) in style attributes; in script, values built at run time (a ${…} or a concatenation).
 // Everything else is reported, by kind. A line containing `token-lint-ignore: <reason>` is skipped; the reason is required.
+// v7 (the v6 review's mutants Y1 to Y20): names are read unescaped (`\72 ed` is red); the keyword widths thin, medium and thick are
+// lengths; small capitals in font-variant and font-feature-settings are capitals; an animation that repeats (infinite, or a count above
+// one) loops and a keyframe that rotates is a spinner; declarations in every at-rule (@property, @font-face, @page) and in nested rules
+// are walked; an emoji anywhere (a content string, text, an attribute, script) is reported; SVG presentation attributes (fill="red",
+// stroke-width="3") are values; a media attribute (<style media>, <link media>, <source media>) and matchMedia() are conditions; script
+// that writes style by Object.assign(el.style, …), el.animate(…), setAttribute('style' | a presentation attribute, …) or style['…'] is
+// read as CSS. tools/audit.mjs then checks, as rendered, that every colour, length, duration and opacity on a page comes from a token,
+// whatever its spelling.
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const csstree = require('css-tree'), parse5 = require('parse5')
@@ -27,6 +35,12 @@ const HOVER_OK = /^(color|background|background-color|border-color|border-(top|r
 const DATA_PROPS = new Set(['--at', '--len', '--legend-rows', '--legend-notes'])
 const SIZE_KW = /^(xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger)$/
 
+const unesc = (x) => { try { return csstree.ident.decode(String(x)) } catch { return String(x) } }
+export const EMOJI = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F|[\u{1F000}-\u{1FAFF}]/u
+const SMALL_CAPS = /^(small-caps|all-small-caps|petite-caps|all-petite-caps|unicase|titling-caps)$/
+const WIDTH_KW = /^(thin|medium|thick)$/
+// SVG presentation attributes, read as the property of the same name (a bare number in a length attribute is a length in px)
+export const PRESENTATION = { fill: 'colour', stroke: 'colour', 'stop-color': 'colour', 'flood-color': 'colour', 'lighting-color': 'colour', color: 'colour', 'stroke-width': 'length', 'font-size': 'length', 'stroke-dasharray': 'length', 'stroke-dashoffset': 'length', 'letter-spacing': 'length', 'word-spacing': 'length', opacity: 'opacity', 'fill-opacity': 'opacity', 'stroke-opacity': 'opacity', 'stop-opacity': 'opacity', 'flood-opacity': 'opacity', 'font-weight': 'weight', 'font-family': 'typeface', 'font-style': 'italic' }
 // Walks a value AST; `report(kind, text)` for each literal. ctx: { prop, rule (selector text), scroll (the rule has a scroll timeline), select (the
 // select's arrow rule), tokens (Set of colour token names) }
 function lintValue(node, ctx, report) {
@@ -34,7 +48,7 @@ function lintValue(node, ctx, report) {
   const visit = (n, fns) => {
     if (!n) return
     switch (n.type) {
-      case 'Dimension': { const u = n.unit.toLowerCase(), v = +n.value
+      case 'Dimension': { const u = unesc(n.unit).toLowerCase(), v = +n.value
         if (v === 0) return; if (u === 'lh' && v === 1) return; if (u === 'fr' && Number.isInteger(v)) return
         report(UNIT_KIND(u), n.value + n.unit); return }
       case 'Percentage': { const v = +n.value, inGradient = fns.some((f) => GRADIENT_FN.test(f))
@@ -47,11 +61,15 @@ function lintValue(node, ctx, report) {
         if (prop === 'line-height') { if (v !== 1) report('line height', n.value); return }
         if (prop === 'z-index') { if (!Number.isInteger(v) || Math.abs(v) > 99) report('z-index', n.value); return }
         if (prop === 'opacity' || prop === 'zoom') { report(prop, n.value); return }
+        if (/^animation(-iteration-count)?$/.test(prop) && v > 1) { report('loop', `${prop}: ${n.value} repeats: nothing loops (Motion)`); return }
         if (!Number.isInteger(v)) report('number', n.value); return }
-      case 'Hash': report('colour', '#' + n.value); return
-      case 'Identifier': { const id = n.name.toLowerCase()
+      case 'Hash': report('colour', '#' + unesc(n.value)); return
+      case 'Identifier': { const id = unesc(n.name).toLowerCase(), shown = id === n.name.toLowerCase() ? n.name : `${n.name} (${id})`
         if (id.startsWith('--')) return // a custom property's name, inside var()
-        if (NAMED.has(id)) { report('colour', n.name); return }
+        if (NAMED.has(id)) { report('colour', shown); return }
+        if (/^(border|outline|column-rule)(-(top|right|bottom|left|inline|block|inline-start|inline-end|block-start|block-end))?(-width)?$/.test(prop) && WIDTH_KW.test(id)) { report('length', `${shown} (a keyword width)`); return }
+        if (/^font-variant(-caps)?$/.test(prop) && SMALL_CAPS.test(id)) { report('capitals', shown); return }
+        if (/^animation(-iteration-count)?$/.test(prop) && id === 'infinite') { report('loop', `${prop}: infinite: nothing loops, and a spinner never covers a wait (Motion; owner's direction)`); return }
         if (prop === 'font-weight' && !/^(inherit|initial|unset)$/.test(id)) { report('weight', n.name); return }
         if (prop === 'font-size' && SIZE_KW.test(id)) { report('size', n.name); return }
         if (prop === 'font-style' && /^(italic|oblique)$/.test(id)) { report('italic', n.name); return }
@@ -60,10 +78,13 @@ function lintValue(node, ctx, report) {
         if (prop === 'font-family' && !/^(inherit|initial|unset)$/.test(id)) { report('typeface', n.name); return }
         if (TIMING_PROPS.test(prop) && TIMING_KW.has(id) && !(id === 'linear' && ctx.scroll)) { report('easing', n.name); return }
         return }
-      case 'String': if (prop === 'font-family') report('typeface', n.value); return
+      case 'String': if (prop === 'font-family') report('typeface', n.value)
+        if (EMOJI.test(n.value)) report('emoji', `"${n.value}": no emoji (Words)`)
+        if (prop === 'font-feature-settings' && /^(smcp|c2sc|pcap|c2pc|unic|titl)$/.test(n.value)) report('capitals', `"${n.value}"`)
+        return
       case 'Url': report('asset', g(n)); return
       case 'Raw': { const t = n.value.trim(); if (!t) return; try { visit(csstree.parse(t, { context: 'value' }), fns) } catch { report('unparsed', t) } return }
-      case 'Function': { const f = n.name.toLowerCase()
+      case 'Function': { const f = unesc(n.name).toLowerCase()
         if (COLOUR_FN.test(f)) report('colour', g(n).slice(0, 60))
         else if (GRADIENT_FN.test(f) && !ctx.select) report('gradient', g(n).slice(0, 60))
         else if (FILTER_FN.test(f) && /filter/.test(prop)) { /* reported by the property */ }
@@ -102,27 +123,41 @@ export function lintCss(text, { file, line0 = 0, report, tokens, declarationsOnl
   let ast
   try { ast = csstree.parse(declarationsOnly ? `x{${text}}` : text, { positions: true, parseCustomProperty: true, onParseError: (e) => report('unparsed', file, line0 + (e.line ?? 1), [e.formattedMessage?.split('\n')[0] ?? e.message]) }) } catch (e) { report('unparsed', file, line0 + 1, [e.message]); return rules }
   const ignored = (line) => { const src = sourceLines[line - 1] ?? ''; if (!/token-lint-ignore/.test(src)) return false; if (!/token-lint-ignore:\s*\S/.test(src)) report('ignore-without-reason', file, line0 + line, ['token-lint-ignore']); return true }
-  const walk = (block, cond) => block.children.forEach((node) => {
-    if (node.type === 'Atrule') {
-      const pre = node.prelude ? csstree.generate(node.prelude) : ''
-      if (/^(media|container|supports)$/i.test(node.name) && node.prelude && !ignored(node.loc.start.line)) csstree.walk(node.prelude, (n) => {
-        if (n.type === 'Dimension') { const u = n.unit.toLowerCase(), v = +n.value; if (u !== 'px' || (breakpoints && !breakpoints.has(v))) report('breakpoint', file, line0 + node.loc.start.line, [`@${node.name} ${pre}: ${n.value}${n.unit} is not a breakpoint token (or one less)`]) } })
-      if (node.block) walk(node.block, [...cond, `@${node.name} ${pre}`]) ; return }
-    if (node.type !== 'Rule') return
-    const sel = csstree.generate(node.prelude).split(/,(?![^()[\]]*[)\]])/).map((x) => x.trim()), line = node.loc.start.line, decls = []
+  // one declaration list: a rule's, an at-rule's (@property, @font-face, @page) or a nested rule's
+  const declare = (node, sel, cond, at) => {
+    const line = node.loc.start.line, decls = []
     const scroll = node.block.children.some((d) => d.type === 'Declaration' && d.property === 'animation-timeline' && /scroll|view/.test(csstree.generate(d.value)))
     const select = sel.every((x) => /^\.vz-select$/.test(x))
     node.block.children.forEach((d) => {
       if (d.type !== 'Declaration') return
-      const prop = d.property.toLowerCase(), dline = d.loc.start.line; decls.push([prop, csstree.generate(d.value).trim(), d.value, !!d.important])
+      const prop = unesc(d.property).toLowerCase(), dline = d.loc.start.line; decls.push([prop, csstree.generate(d.value).trim(), d.value, !!d.important])
       if (ignored(dline) || (declarationsOnly && DATA_PROPS.has(prop))) return
       const hits = [], r = (kind, what) => hits.push([kind, what])
       lintValue(d.value, { prop, scroll, select, tokens }, r); lintProperty(prop, d.value, { tokens }, r)
+      if (at === 'keyframes' && /^(transform|rotate)$/.test(prop) && /rotate/i.test(csstree.generate(d.value))) r('spinner', `${prop}: ${csstree.generate(d.value)} in @keyframes: a turning mark is a spinner, which never covers a wait (owner's direction; Responsiveness and feedback)`)
       if (sel.some((x) => x.includes(':hover')) && !HOVER_OK.test(prop) && !prop.startsWith('--')) r('hover', `${prop} under :hover in "${sel.find((x) => x.includes(':hover'))}": hover may change colour only; nothing appears, moves or resizes on hover (a phone has none)`)
       for (const [kind, what] of hits) report(kind, file, line0 + dline, [`${prop}: ${what}`])
     })
     rules.push({ sel, decls, cond, line: line0 + line })
-  })
+    // nested rules (CSS nesting): their selectors resolved against this one
+    node.block.children.forEach((c) => { if (c.type === 'Rule') rule(c, sel, cond, at); else if (c.type === 'Atrule') atrule(c, sel, cond) })
+  }
+  const split = (text) => text.split(/,(?![^()[\]]*[)\]])/).map((x) => x.trim())
+  const rule = (node, parent, cond, at) => {
+    const own = split(csstree.generate(node.prelude)), sel = parent ? parent.flatMap((p) => own.map((x) => (x.includes('&') ? x.replace(/&/g, p) : `${p} ${x}`))) : own
+    declare(node, sel, cond, at)
+  }
+  const atrule = (node, parent, cond) => {
+    const pre = node.prelude ? csstree.generate(node.prelude) : '', name = unesc(node.name).toLowerCase()
+    if (/^(media|container|supports)$/.test(name) && node.prelude && !ignored(node.loc.start.line)) csstree.walk(node.prelude, (n) => {
+      if (n.type === 'Dimension') { const u = unesc(n.unit).toLowerCase(), v = +n.value; if (u !== 'px' || (breakpoints && !breakpoints.has(v))) report('breakpoint', file, line0 + node.loc.start.line, [`@${node.name} ${pre}: ${n.value}${n.unit} is not a breakpoint token (or one less)`]) } })
+    if (!node.block) return
+    const c = [...cond, `@${node.name} ${pre}`]
+    // an at-rule whose block holds declarations (@property, @font-face, @page, @counter-style), or declarations nested in a conditional
+    if (node.block.children.some((d) => d.type === 'Declaration')) declare(node, parent ?? [`@${node.name} ${pre}`.trim()], c, name)
+    else node.block.children.forEach((x) => { if (x.type === 'Rule') rule(x, parent, c, name === 'keyframes' ? 'keyframes' : null); else if (x.type === 'Atrule') atrule(x, parent, c) })
+  }
+  const walk = (block, cond) => block.children.forEach((node) => { if (node.type === 'Atrule') atrule(node, null, cond); else if (node.type === 'Rule') rule(node, null, cond, null) })
   walk(ast, [])
   return rules
 }

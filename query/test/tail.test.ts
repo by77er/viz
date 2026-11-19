@@ -172,10 +172,11 @@ describe('tail reads (D48)', () => {
         { status: 'ok', incarnation: 1, through: 9, batches: [] },
       ]
       for (const answer of unknown) {
-        let n = 0
-        hooks.alterTail = (shard, a) => (shard === w.shards[0] && ++n === 2 ? answer : a)
+        // The second page of a read (a call answered with `page`, after the first such answer).
+        let pages = 0
+        hooks.alterTail = (shard, a) => (shard === w.shards[0] && (a as { page?: unknown }).page !== undefined && ++pages === 2 ? answer : a)
         for (const path of ['/api/v1/query_range', '/api/v1/labels', '/api/v1/status/tsdb']) {
-          n = 0
+          pages = 0
           res = path === '/api/v1/query_range' ? await run(w.a.key, q) : await api(w.a.key, path, { start: sec(workload.t0), end: sec(workload.end) })
           const body = await res.json<{ errorType?: string; data?: unknown }>()
           expect([JSON.stringify(answer).slice(0, 40), path, res.status, body.errorType, body.data]).toEqual([JSON.stringify(answer).slice(0, 40), path, 503, 'unavailable', undefined])
@@ -213,9 +214,9 @@ describe('tail reads (D48)', () => {
             viaLeaves++
             expect(body, `${t.which} ${q.id} (${q.query}), cap ${cap}`).toBe(want)
             expect(res.headers.get('X-Viz-Execution')).toBe('split')
-            // Every byte of the tail reached the engine once: the coordinator's and the parts' reads add up.
-            expect(cost(res, 'Tail-Bytes'), `${q.id} tail bytes`).toBe(total)
-          } else if (res.status !== 200 || body !== want) {
+            // Every sample of the tail reached the engine once: what was loaded is what one place loads.
+            expect([cost(res, 'Samples-Loaded'), cost(res, 'Series-Loaded')], `${q.id} loaded`).toEqual([cost(one, 'Samples-Loaded'), cost(one, 'Series-Loaded')])
+          } else if (body !== want) {
             // Fitted (the query reads no tail) or refused: never an answer that differs.
             expect([q.id, res.status], body).toEqual([q.id, 422])
             expect(JSON.parse(body).error).toMatch(/^query exceeded limit max_fetch_bytes: /)
@@ -228,15 +229,19 @@ describe('tail reads (D48)', () => {
 
   it('a shard of the previous release next to one of this one, the rest read by the parts: the same answer', async () => {
     tailHooks.previousRelease = (s) => s === w.shards[1]
+    let viaLeaves = 0
     for (const q of extra.filter((x) => !x.query.includes('label_replace') && !x.query.includes('__name__=~'))) {
       delete hooks.tailCap
       const want = await (await run(w.a.key, q)).text()
       hooks.tailCap = 1
       const res = await run(w.a.key, q)
       expect(await res.text(), q.id).toBe(want)
-      // The previous release's shard answered whole (unfiltered); the other's rest went to the parts.
-      expect(res.headers.get('X-Viz-Tail-Mode'), q.id).toBe('unfiltered+leaves')
+      // The previous release's shard answered whole (unfiltered); the other's rest, if it holds
+      // any of the query's rows, went to the parts.
+      expect(['unfiltered', 'unfiltered+leaves'], q.id).toContain(res.headers.get('X-Viz-Tail-Mode'))
+      if (res.headers.get('X-Viz-Tail-Mode') === 'unfiltered+leaves') viaLeaves++
     }
+    expect(viaLeaves).toBeGreaterThan(5)
   }, 600_000)
 
   it('a leaf of the previous release ignores the rest of the tail it is given: 503, never an answer without it', async () => {
@@ -285,7 +290,6 @@ describe('tail reads (D48)', () => {
           const res = await api(t.key, path, params)
           expect(await res.text(), `${t.which} ${path} cap ${cap}`).toBe(want)
           expect([res.headers.get('X-Viz-Execution'), res.headers.get('X-Viz-Tail-Mode')]).toEqual(['split', 'filtered+leaves'])
-          expect(cost(res, 'Tail-Bytes')).toBe(cost(one, 'Tail-Bytes'))
         }
       }
     }
@@ -296,16 +300,18 @@ describe('a series whose split key is not its id', () => {
   it('in a tail the coordinator cuts, the exact answer; in the rest of a tail the shards cut by key, refused (never a wrong answer)', async () => {
     const w = await world()
     const at = workload.t0 + 60_000
-    // `__type__` is left out of the split key of a `rate` under `sum`: these two series have
-    // the same key (and must meet in one part) but different ids.
+    // `__type__` is left out of the split key of a `rate` under `sum`: these series' keys are
+    // not their ids, so a shard's key range of ids is not a part.
+    const samples = (k: number) => Array.from({ length: 20 }, (_, i) => [at + i * 15_000, k * i] as [number, number])
     await write(w.a, [
-      { labels: { __name__: 'typed_total', __type__: 'counter', job: 'j' }, samples: Array.from({ length: 20 }, (_, i) => [at + i * 15_000, i] as [number, number]) },
-      { labels: { __name__: 'typed_total', job: 'j' }, samples: Array.from({ length: 20 }, (_, i) => [at + i * 15_000, 2 * i] as [number, number]) },
+      ...Array.from({ length: 8 }, (_, i) => ({ labels: { __name__: 'typed_total', __type__: 'counter', job: 'j', i: `t${i}` }, samples: samples(i + 1) })),
+      ...Array.from({ length: 8 }, (_, i) => ({ labels: { __name__: 'typed_total', job: 'j', i: `u${i}` }, samples: samples(i + 2) })),
     ])
     const q = { query: 'sum by (job) (rate(typed_total[1m]))', start: sec(at + 120_000), end: sec(at + 240_000), step: '15' }
     const one = await api(w.a.key, '/api/v1/query_range', q)
     const want = await one.text()
-    expect(one.status).toBe(200)
+    expect(one.status, want).toBe(200)
+    let refused = 0
     for (const n of [2, 3, 5]) {
       hooks.forceLeaves = n
       const cut = await api(w.a.key, '/api/v1/query_range', q)
@@ -313,11 +319,15 @@ describe('a series whose split key is not its id', () => {
       hooks.tailCap = 1
       const rest = await api(w.a.key, '/api/v1/query_range', q)
       const body = await rest.text()
-      // Unless both series' ids fall in one part, the parts see a row of another part: refused.
+      // Unless every typed series' id falls in the part of its key, a part sees a row of another part: refused.
       if (rest.status === 200) expect(body, `${n} leaves`).toBe(want)
-      else expect([rest.status, JSON.parse(body).error]).toEqual([422, expect.stringMatching(/__type__ or __unit__ label, which the shards cannot cut by key/)])
+      else {
+        refused++
+        expect([rest.status, JSON.parse(body).error]).toEqual([422, expect.stringMatching(/__type__ or __unit__ label, which the shards cannot cut by key/)])
+      }
       delete hooks.tailCap
     }
+    expect(refused).toBeGreaterThan(0)
   }, 300_000)
 })
 

@@ -273,7 +273,7 @@ describe('reading segments', () => {
     await mirror(t, cell) // [7, 7] starts above 6: the reader looks for the segment holding 6
     // The reader's own promise: the changes after the cursor, contiguous, the holding segment's
     // lines at or below the cursor left out.
-    const read = await readTenantLog(env.BUCKET, cell, t, { ledgerIncarnation: 1, version: 5 }, 2000)
+    const read = await readTenantLog(env.BUCKET, cell, t, { ledgerIncarnation: 1, version: 5 }, 2000, { reset: () => {}, files: () => {}, tombstones: () => {} })
     expect({ status: read.status, start: read.start, versions: read.changes.map((c) => c.version) }).toEqual({ status: 'ok', start: 5, versions: [6, 7] })
     const again = await p.publish([t])
     expect(again.tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: { version: 7 }, metric_series: { version: 7 } } })

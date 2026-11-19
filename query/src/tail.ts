@@ -67,8 +67,11 @@ export interface TailRead {
   /** The stream and watermark it was read at. */
   incarnation: number
   above: number
-  /** The last sequence number of the tail the read covers (fixed by its first page). */
-  through: number
+  /**
+   * The last sequence number of the tail the read covers (fixed by its first page); null when
+   * no page was answered (the first kept batch did not fit the budget), so it is not known.
+   */
+  through: number | null
   /** Batches in sequence order: filtered when `paged`, else the whole tail above `above`. */
   batches: { seq: number; payload: Uint8Array }[]
   bytes: number
@@ -114,10 +117,10 @@ export async function readPages(
   filter: TailFilter,
   budget: TailBudget,
   where: 'coordinator' | 'leaf',
-  through?: number,
+  through?: number | null,
   alter?: (answer: unknown) => unknown,
 ): Promise<PageOutcome> {
-  const out: TailRead = { status: 'ok', shard, incarnation, above, through: above, batches: [], bytes: 0, paged: true, complete: true, overBytes: 0, calls: 0, scannedBatches: 0, scannedBytes: 0 }
+  const out: TailRead = { status: 'ok', shard, incarnation, above, through: null, batches: [], bytes: 0, paged: true, complete: true, overBytes: 0, calls: 0, scannedBatches: 0, scannedBytes: 0 }
   const previous = tailHooks.previousRelease?.(shard) ?? false
   const unavailable = (reason: string): PageOutcome => ({ status: 'unavailable', shard, reason, calls: out.calls })
   let cursor: string | undefined
@@ -138,7 +141,7 @@ export async function readPages(
         out.paged = false
         out.through = r.through
         for (const b of r.batches) {
-          if (through !== undefined && b.seq > through) continue
+          if (through !== undefined && through !== null && b.seq > through) continue
           out.batches.push({ seq: b.seq, payload: b.payload })
           out.bytes += b.payload.byteLength
         }
@@ -150,7 +153,7 @@ export async function readPages(
       let got = 0
       for (const b of r.batches) {
         // A leaf reads the rest of what the coordinator saw, and no later append.
-        if (through !== undefined && b.seq > through) continue
+        if (through !== undefined && through !== null && b.seq > through) continue
         out.batches.push({ seq: b.seq, payload: b.payload })
         got += b.payload.byteLength
       }
@@ -216,8 +219,8 @@ export function tailEstimate(reads: TailRead[]): { bytes: number; series: number
     )
     bytes += r.bytes + r.overBytes
     if (r.complete) continue
-    // (The batch that did not fit is in `overBytes`, and not in `scannedBatches`.)
-    const left = Math.max(0, r.through - r.above - r.scannedBatches - (r.overBytes > 0 ? 1 : 0))
+    // (The batch that did not fit is in `overBytes`, and not in `scannedBatches`; an unknown end adds nothing.)
+    const left = r.through === null ? 0 : Math.max(0, r.through - r.above - r.scannedBatches - (r.overBytes > 0 ? 1 : 0))
     const avg = r.scannedBatches > 0 ? r.scannedBytes / r.scannedBatches : 1 << 20
     const ratio = r.scannedBytes > 0 ? Math.min(1, (r.bytes + r.overBytes) / r.scannedBytes) : 1
     bytes += Math.ceil(left * avg * ratio)
@@ -236,9 +239,10 @@ export interface TailPart {
   batches: Uint8Array[]
   /**
    * The rest of the tail, above the last batch the coordinator read: the part reads it with
-   * `filter` and its key range, through `through` (what the coordinator saw: no later append).
+   * `filter` and its key range, through `through` (what the coordinator saw: no later append),
+   * or to the shard's end when the coordinator saw no page (null).
    */
-  rest: { incarnation: number; above: number; through: number; filter: TailFilter } | null
+  rest: { incarnation: number; above: number; through: number | null; filter: TailFilter } | null
 }
 
 /** The rest reads of a part, from the leaf's side. */
