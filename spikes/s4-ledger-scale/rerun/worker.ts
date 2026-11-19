@@ -170,6 +170,28 @@ export default {
       }
       return Response.json(out)
     }
+    if (u.pathname === '/replay1') {
+      // A tenant written by the AS-BUILT ledger (one R2 object per change): the time until the
+      // ledger as built now, on empty storage, first answers a plan, i.e. replays that log one
+      // GET per change, six at a time: the as-built ledger's own rebuild path.
+      const tenant = u.searchParams.get('tenant')!
+      const want = await ledgerOf(env, 'asbuilt', tenant).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
+      const ledger = env.LEDGER.get(env.LEDGER.idFromName(tenant))
+      const t0 = Date.now()
+      let refusals = 0
+      let got
+      for (;;) {
+        try {
+          got = await ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
+          break
+        } catch (e) {
+          if (!String(e).includes('ledger_unavailable')) return Response.json({ error: String(e).slice(0, 300), refusals }, { status: 500 })
+          refusals++
+        }
+        if (Date.now() - t0 > 300_000) return Response.json({ error: 'not rebuilt after 300 s', refusals }, { status: 500 })
+      }
+      return Response.json({ tenant, changes: want.version, ms: Date.now() - t0, refusals, files: got.files.length, same: JSON.stringify(got.files) === JSON.stringify(want.files) && JSON.stringify(got.watermarks) === JSON.stringify(want.watermarks), status: await ledger.logStatus() })
+    }
     if (u.pathname === '/status') return Response.json(await env.LEDGER.get(env.LEDGER.idFromName(u.searchParams.get('tenant')!)).logStatus())
     return new Response('not found', { status: 404 })
   },

@@ -372,6 +372,7 @@ async function measureCase(browser, SERIES) {
   fs.writeFileSync(file, JSON.stringify(out, null, 2) + '\n')
   console.log(`\n${name}: ${SERIES} series, 75th percentile of ${runs.length} runs (median, max)`)
   for (const [k, v] of Object.entries(summary)) {
+    if (v.p75 === undefined) { console.log(`  ${k.padEnd(14)} ${JSON.stringify(v)}`); continue }
     const f = (x) => (k.startsWith('cls') ? x.toFixed(4) : k.startsWith('load') ? x.toFixed(1) : k === 'typingOver' ? `${x.toFixed(0)} keys` : `${x.toFixed(0)} ms`)
     console.log(`  ${k.padEnd(14)} ${f(v.p75).padStart(9)}   (${f(v.median)}, ${f(v.max)})`)
   }

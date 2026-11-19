@@ -80,7 +80,7 @@ describe('versioned storage', () => {
     expect(v1).toEqual(V0.schema.map((s) => ({ type: s.type, name: s.name, sql: norm(s.sql) })))
   })
 
-  it('adopts storage written by the pre-versioning code (checked-in dump) as version 1 without changing a row, and serves it', async () => {
+  it('adopts storage written by the pre-versioning code (checked-in dump) as version 1, migrates it to the latest without changing a row, and serves it', async () => {
     const p = publisher(V0.cell)
     await p.pending()
     await install(p, V0)
@@ -88,21 +88,47 @@ describe('versioned storage', () => {
     const st = await p.status('metric_samples')
     expect(st.files).toBe(V0.rows.live!.filter((r) => r.tbl === 'metric_samples').length)
     const after = await runInDurableObject(p, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(ownDump(dumpOf(s))) }))
-    expect(after.row).toMatchObject({ version: 1, compat: 1 })
-    expect(canon(after.dump.rows)).toEqual(canon(V0.rows))
+    // Every migration after 1 is additive (readableFrom 1): `compat` stays 1.
+    expect(after.row).toMatchObject({ version: LATEST, compat: 1 })
+    // Version 2 added the `due` table, empty; every row of the adopted tables is as it was.
+    expect(after.dump.rows.due).toEqual([])
+    const { due: _due, ...adopted } = after.dump.rows
+    expect(canon(adopted)).toEqual(canon(V0.rows))
   })
 
-  it('a publisher made by the pre-versioning code keeps publishing after adoption, survives eviction, and verifies clean', async () => {
+  it('storage at golden version 1 is migrated to the latest, keeps publishing, survives eviction and is not migrated twice', async () => {
     const { cell, t, p } = await published()
-    // What the pre-versioning code left: the same tables (version 1 is identical), no version row.
-    await runInDurableObject(p, (_i, s) => void s.storage.sql.exec('DROP TABLE viz_schema'))
+    // What release 1 left: no `due` table, the version row at 1.
+    await runInDurableObject(p, (_i, s) => {
+      s.storage.sql.exec('DROP TABLE due')
+      s.storage.sql.exec('UPDATE viz_schema SET version = 1, compat = 1')
+    })
     await evictDurableObject(p)
     await addUnit(t, pairUnit(cell, t, 10, 12, T0 + DAY_MS))
     await mirror(t, cell)
     expect((await p.publish([t])).tenants[0]!.status).toBe('ok')
     for (const table of TABLES) expect((await p.verify(table)).ok, table).toBe(true)
     const row = await runInDurableObject(p, (_i, s) => schemaRow(s))
-    expect(row).toMatchObject({ version: 1 })
+    expect(row).toMatchObject({ version: LATEST, compat: 1 })
+    expect((await p.schedule()).due.sweep).toBeDefined() // the new table is used at once
+    await evictDurableObject(p)
+    expect(await runInDurableObject(p, (_i, s) => ({ row: schemaRow(s), reopen: openSchema(s.storage, PUBLISHER_SCHEMA) }))).toMatchObject({ row, reopen: { migrated: [] } })
+  })
+
+  it('a publisher made by the pre-versioning code keeps publishing after adoption, survives eviction, and verifies clean', async () => {
+    const { cell, t, p } = await published()
+    // What the pre-versioning code left: the tables of version 1, no version row.
+    await runInDurableObject(p, (_i, s) => {
+      s.storage.sql.exec('DROP TABLE viz_schema')
+      s.storage.sql.exec('DROP TABLE due')
+    })
+    await evictDurableObject(p)
+    await addUnit(t, pairUnit(cell, t, 10, 12, T0 + DAY_MS))
+    await mirror(t, cell)
+    expect((await p.publish([t])).tenants[0]!.status).toBe('ok')
+    for (const table of TABLES) expect((await p.verify(table)).ok, table).toBe(true)
+    const row = await runInDurableObject(p, (_i, s) => schemaRow(s))
+    expect(row).toMatchObject({ version: LATEST })
     await evictDurableObject(p)
     expect(await runInDurableObject(p, (_i, s) => ({ row: schemaRow(s), reopen: openSchema(s.storage, PUBLISHER_SCHEMA) }))).toMatchObject({ row, reopen: { migrated: [] } })
   })
