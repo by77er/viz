@@ -248,7 +248,7 @@ const mutants = [
   ['review', 'R-2: an inputs record of an unknown version is read', 'compact/src/compact.ts', T.janitorGolden,
     "  if (rec.v !== COMPACTION_INPUTS_VERSION) return", "  if (false) return"],
   ['review', 'R-2: inputs outside the output\'s tenant and day are accepted', 'compact/src/compact.ts', T.compactGolden,
-    "!inputs.every((k) => typeof k === 'string' && (k.startsWith(prefix('metric_samples')) || k.startsWith(prefix('metric_series'))))", "!inputs.every((k) => typeof k === 'string')"],
+    "!inputs.every((k) => typeof k === 'string' && prefixes.some((p) => k.startsWith(p) && !k.slice(p.length).includes('/')))", "!inputs.every((k) => typeof k === 'string')"],
   ['review', 'R-2: outputs are written without their inputs record', 'compact/src/compact.ts', T.compact,
     "{ [COMPACTION_INPUTS_META]: record }", "{}"],
   ['review', 'F14: a replace answer this code does not know is taken for a conflict', 'compact/src/compact.ts', T.compact,

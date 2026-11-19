@@ -551,6 +551,15 @@ test (cargo failures are now reported by test name). The previous engineer's 57 
 re-run unchanged before this review's changes: 57 of 57. `flush/scripts/mutants.mjs`: 18 of
 18 on the final code; `edge/scripts/mutants.mjs`: 35 of 35.
 
+**Run of 2026-11-19, compaction of spans and logs.** A part `signals` (7 mutants of
+`compact/src/compact.ts`: an output deleted by its own step on a conflict or after its PUT, a
+closed day's spans merged across hours, a spans output keyed without its hour, outputs without
+their inputs record, a spans record accepting another hour's files, inputs merged in key order).
+On a copy of the components in a scratch area, `MUTANT_FILES=compact/ node scripts/mutants.mjs
+all`: **27 of 27 killed** (signals 7, compaction 11, precedence 3, review 6); the
+pattern of "R-2: inputs outside the output's tenant and day are accepted" was updated for the
+rewritten reader (it printed NOT APPLIED first). Details: compact/README.md.
+
 **Run of 2026-11-19 (the write-path review's fixes in compact, janitor, flush and this
 script's cron and maintenance).** On a copy of the tree in a scratch area (the script refuses a
 git checkout), `MUTANT_FILES=compact/,janitor/,flush/,stack/ node scripts/mutants.mjs all`:

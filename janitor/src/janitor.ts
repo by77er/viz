@@ -96,14 +96,16 @@ export interface RetentionPolicy {
    * Spans and their `trace_index` files, and log records (added 2026-11-19, stage 2 of traces
    * and logs), by the fields control writes (`trace_days`, `log_days`, control/src/ops-settings.ts).
    * A record without one keeps that signal for `DEFAULT_SIGNAL_DAYS`, whatever its metrics say.
+   * Null: the record has the field but it cannot be read; that signal's tables expire nothing
+   * until it is fixed, and the metric tables and the other signal expire as usual (review m-1).
    */
-  trace_days: number
-  log_days: number
+  trace_days: number | null
+  log_days: number | null
 }
 
 /** Days of spans and of logs kept for a tenant whose record does not name them: the deployment default, as for metrics. */
 export const DEFAULT_SIGNAL_DAYS = 30
-export const DEFAULT_RETENTION: RetentionPolicy = { metric_samples_days: 30, trace_days: DEFAULT_SIGNAL_DAYS, log_days: DEFAULT_SIGNAL_DAYS }
+export const DEFAULT_RETENTION: { metric_samples_days: number; trace_days: number; log_days: number } = { metric_samples_days: 30, trace_days: DEFAULT_SIGNAL_DAYS, log_days: DEFAULT_SIGNAL_DAYS }
 /** Grace between a key leaving the ledger and its object being deleted. Longer than any query may run. */
 export const DEFAULT_DELETE_GRACE_MS = 3_600_000
 /** Age at which an object the ledger does not know is taken for an orphan. */
@@ -125,9 +127,12 @@ const ledgerOf = (env: JanitorEnv, tenant: string): DurableObjectStub<Ledger> =>
  *     `metric_samples_days` not a positive integer): `unreadable`. Nothing is expired for the
  *     tenant until the record is fixed (review R-1: falling back to the default could be
  *     SHORTER than what the tenant asked for; refuse rather than guess).
+ *   - A record whose `trace_days` or `log_days` is present but not a positive integer: `ok`, with
+ *     that field null and the reason in `unreadable`. Only that signal is refused, for the same
+ *     reason as R-1; the metric expiry never depends on the signal fields (review m-1).
  */
 export type RetentionRead =
-  | { status: 'ok'; policy: RetentionPolicy; source: 'record' | 'default' }
+  | { status: 'ok'; policy: RetentionPolicy; source: 'record' | 'default'; unreadable?: string[] }
   | { status: 'unreadable'; reason: string }
 
 /** Version of the retention record this code reads (contracts/COMPATIBILITY.md §3.1). */
@@ -146,16 +151,18 @@ export function parseRetention(raw: string): RetentionRead {
   if (v !== RETENTION_RECORD_VERSION) return unreadable(`version ${JSON.stringify(v)}; this code reads version ${RETENTION_RECORD_VERSION}`)
   const days = (rec as Partial<RetentionPolicy>).metric_samples_days
   if (typeof days !== 'number' || !Number.isSafeInteger(days) || days < 1) return unreadable(`metric_samples_days is ${JSON.stringify(days)}, not a positive integer`)
-  // Optional; when present they must be readable too (a bad one refuses the record, never a guess).
-  const signal = (k: 'trace_days' | 'log_days'): number | string => {
+  // Optional; when present they must be readable too. A bad one refuses its own signal (null), never
+  // a guess, and never the metric tables or the other signal (review m-1).
+  const reasons: string[] = []
+  const signal = (k: 'trace_days' | 'log_days'): number | null => {
     const x = (rec as Record<string, unknown>)[k]
     if (x === undefined) return DEFAULT_SIGNAL_DAYS
-    return typeof x === 'number' && Number.isSafeInteger(x) && x >= 1 ? x : `${k} is ${JSON.stringify(x)}, not a positive integer`
+    if (typeof x === 'number' && Number.isSafeInteger(x) && x >= 1) return x
+    reasons.push(`${k} is ${JSON.stringify(x)}, not a positive integer`)
+    return null
   }
-  const [traceDays, logDays] = [signal('trace_days'), signal('log_days')]
-  if (typeof traceDays === 'string') return unreadable(traceDays)
-  if (typeof logDays === 'string') return unreadable(logDays)
-  return { status: 'ok', policy: { metric_samples_days: days, trace_days: traceDays, log_days: logDays }, source: 'record' }
+  const policy: RetentionPolicy = { metric_samples_days: days, trace_days: signal('trace_days'), log_days: signal('log_days') }
+  return { status: 'ok', policy, source: 'record', ...(reasons.length ? { unreadable: reasons } : {}) }
 }
 
 export async function readRetention(env: Pick<JanitorEnv, 'CONFIG'>, tenant: string): Promise<RetentionRead> {
@@ -194,12 +201,19 @@ export interface ExpireResult {
   keepDays: number | null
   /** Keys removed from the ledger by this run. */
   removed: string[]
-  /** Set when the tenant's retention record cannot be read: nothing was expired. */
+  /**
+   * Set when the tenant's retention record, or part of it, cannot be read: why. With `beforeDay`
+   * null the whole record (nothing was expired). Otherwise `trace_days` or `log_days` (review m-1):
+   * the metric tables and any readable signal were expired, and the tables of an unreadable
+   * signal were not (they have no entry in `signals`). Either way the run is looked at again
+   * hourly and the reason shown in the maintenance marker (stack/src/maintain.ts).
+   */
   refused?: string
   /**
    * The span and log tables (stage 2), after the metric tables and in requests of their own, so
    * the metric expiry never depends on them: one request when `trace_days` and `log_days` give
-   * the same day, else one per signal. Absent when the run was refused.
+   * the same day, else one per signal; none for a signal whose field cannot be read. Absent when
+   * the run was refused.
    */
   signals?: SignalExpiry[]
 }
@@ -224,6 +238,8 @@ export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.n
   // uses no version, so a tenant without traces or logs sees no change in its log.
   const groups = new Map<string, { tables: SignalTable[]; keepDays: number }>()
   for (const [tables, keepDays] of [[TRACE_TABLES, policy.trace_days], [LOG_TABLES, policy.log_days]] as const) {
+    // Its field cannot be read: these tables expire nothing until it is fixed (fail closed per signal).
+    if (keepDays === null) continue
     const day = cutoffDay(now, keepDays)
     const g = groups.get(day)
     if (g) g.tables.push(...tables)
@@ -241,6 +257,11 @@ export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.n
       console.error(`janitor: expiring ${g.tables.join(', ')} of ${tenant} failed (${e.error}); the next run tries again`)
     }
     signals.push(e)
+  }
+  if (read.unreadable) {
+    const refused = `${read.unreadable.join('; ')}: ${[policy.trace_days === null ? 'spans and trace_index' : '', policy.log_days === null ? 'logs' : ''].filter(Boolean).join(' and ')} not expired`
+    console.error(`janitor: retention:${tenant} is partly unreadable (${refused}); the metric tables and any readable signal were expired, the rest waits until it is fixed`)
+    return { beforeDay, keepDays: policy.metric_samples_days, removed, refused, signals }
   }
   return { beforeDay, keepDays: policy.metric_samples_days, removed, signals }
 }

@@ -1,4 +1,4 @@
-import { DERIVED_SIGNALS, type PoolMap, shardName, signalPool, slotFor, tenantSlots, validPoolName } from '../../shard/src/pool'
+import { type PoolMap, shardName, signalPool, slotFor, tenantSlots, validBasePool } from '../../shard/src/pool'
 import type { AppendResult, Shard } from '../../shard/src/shard'
 import { type Batch, buildBatches, type Collector } from './batch'
 import { HttpError } from './errors'
@@ -159,13 +159,11 @@ export async function activeSeriesLimit(env: RouteEnv, tenant: string): Promise<
 export const shardShare = (limit: number, map: PoolMap, tenant: string): number => Math.ceil(limit / tenantSlots(map, tenant).length)
 
 /**
- * Whether a pool may be the base pool of a map: a valid pool name (`POOL_NAME`) that does not
- * end in a derived pool's suffix (`/traces`, `/logs`; contracts/BATCH.md "Streams per signal").
- * Otherwise its metric shard `{base}/{slot}` would be the same object, under the same name, as
- * the span or log shard of the pool one level up, and readers that tell a shard's signal by its
- * name (query's `signalOfShard`, D62) would take it for one.
+ * Whether a pool may be the base pool of a map is `validBasePool` (shard/src/pool.ts): one function
+ * for this reader and for control, which writes the maps (D66), so control never publishes a map
+ * this code refuses. Re-exported for the readers that imported it from here.
  */
-export const validBasePool = (pool: unknown): pool is string => validPoolName(pool) && !DERIVED_SIGNALS.some((s) => pool.endsWith(`/${s}`))
+export { validBasePool }
 
 /** A pool map of a version this code does not read. */
 const NEWER_MAP = Symbol('newer pool map')

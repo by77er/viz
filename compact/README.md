@@ -229,8 +229,7 @@ with viz:
 | a spans output's record under its hour | the record names that hour's files; the same record with another hour's keys is refused; the leftover is kept a year on while its inputs are live |
 | golden | the key shapes of spans (both levels, under the hour), trace_index and logs outputs are pinned with the metric ones (`key.compaction-output.v1.json`, fields added; the metric fields unchanged); a spans record is refused for another hour, another table, metric keys; a logs record read back; a logs record under a spans key refused |
 
-**Mutants** (`stack/scripts/mutants.mjs signals`, on a copy of the tree in a scratch directory):
-see "Mutants of the span and log compaction" below.
+**Mutants**: 27 of 27 killed, "Mutants of the span and log compaction" below.
 
 Last run 2026-11-19 against the real tree, with the ledger draining its log asynchronously
 (`contracts/LEDGER-LOG.md`): 24 of 24, tsc clean. The suite pins `LEDGER_DRAIN_DELAY_MS` to 60 s
@@ -263,6 +262,28 @@ ledger of that time (snapshot `dc2a1c3`); the failures are quoted in the table.
 The property test for I8 and the soak are in `stack/` (`test/compaction.property.test.ts`,
 `test/soak.test.ts`). Mutants: `stack/scripts/mutants.mjs compaction` and `review` (run on a
 copy, never in the checkout); results in `stack/README.md`.
+
+## Mutants of the span and log compaction
+
+`stack/scripts/mutants.mjs signals` (part added 2026-11-19), run with `MUTANT_FILES=compact/` and
+every part, on a copy of the components in a scratch directory (node_modules linked, no `.git`),
+2026-11-19: **27 of 27 killed** (7 new, 20 earlier ones; one earlier pattern, "R-2: inputs
+outside the output's tenant and day are accepted", no longer matched the rewritten
+`decodeCompactionInputs` and was updated; then killed by the new spans-record golden test and
+the old one).
+
+| Mutant | Killed by |
+|---|---|
+| an output deleted by its own step when `replace` conflicts | the retention-during-a-step tests (spans, logs) |
+| an output deleted by its own step when it gives up after its PUT | the crash-after-PUT tests (spans, logs) |
+| a span merged across hours (a closed day's spans one partition) | the closed-day test (the engine refuses two hours); the retention test |
+| a spans output keyed as a day file (no hour level) | the open-hour and closed-day tests |
+| signal outputs written without their inputs record | the open-hour test (record), the retention test (the sweep cannot judge it) |
+| a spans output's record accepting another hour's files | the spans-record golden test |
+| signal inputs merged in key order, not precedence | the open-hour and closed-day tests (the re-sent span and log row keep their earlier versions) |
+
+The engine's mutants (rows lost, the earlier input winning, a token filter missing tokens, …) are
+in `engine/storage/README.md`.
 
 ## Contract issues
 

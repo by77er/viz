@@ -20,6 +20,11 @@
 // (lib/schemas.mjs) into the manifest, and into each version's `VIZ_SCHEMAS` var, where later
 // deploys and rollbacks read what that version knows (contracts/COMPATIBILITY.md §6).
 //
+// Formats (D69): the version of each format a Worker writes and the versions it reads, from the
+// sources workers.json names under `formats` (lib/formats.mjs), go into the manifest and each
+// version's `VIZ_FORMATS` var. Rollback floors (`rollback_floors`, lib/floors.mjs): a Worker whose
+// floor is declared on evidence is checked to have it and stamped with `VIZ_FLOORS`.
+//
 // Durable Object classes of another Worker (by script_name) are bound only where workers.json
 // lists them under the binding Worker's `binds_classes`: such a binding can call every method of
 // every object of the class, for any tenant.
@@ -37,6 +42,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJson, readJsonc, releaseId, stagedName, targetName } from './lib/common.mjs'
+import { FLOORS_VAR, floorRules, floorsVar, stampedFloors } from './lib/floors.mjs'
+import { FORMATS_VAR, formatSources, formatsVar, readFormats } from './lib/formats.mjs'
 import { SCHEMAS_VAR, readSchemas, schemaSources, schemasVar } from './lib/schemas.mjs'
 
 const KNOWN_KEYS = new Set([
@@ -127,10 +134,11 @@ export function stageVars(raw, stage) {
 
 /**
  * One generated config. `ids` maps a KV namespace title to its id; `schemas` is what
- * lib/schemas.mjs read for this Worker's classes. Pure: no I/O, so the tests can call it with
- * any component config.
+ * lib/schemas.mjs read for this Worker's classes, `formats` what lib/formats.mjs read for its
+ * formats, `floors` the rollback floors its code is stamped at (lib/floors.mjs). Pure: no I/O, so
+ * the tests can call it with any component config.
  */
-export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], extraVars = {} }) {
+export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], floors = [], extraVars = {} }) {
   const where = `${worker.component}/wrangler.jsonc`
   const warnings = []
   for (const k of Object.keys(cfg)) if (!KNOWN_KEYS.has(k)) throw new Error(`${where}: "${k}" is not something configure.mjs knows how to deploy; extend it rather than drop it`)
@@ -231,6 +239,8 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   vars.VIZ_RELEASE = release
   vars.VIZ_WORKER = worker.name
   if (schemas.length > 0) vars[SCHEMAS_VAR] = schemasVar(schemas)
+  if (formats.length > 0) vars[FORMATS_VAR] = formatsVar(formats)
+  if (floors.length > 0) vars[FLOORS_VAR] = floorsVar(floors)
   if (stage) vars.VIZ_STAGE_PREFIX = `viz-${stage}-`
   for (const [k, v] of Object.entries(extraVars)) vars[k] = v
   if (expires !== null) {
@@ -259,11 +269,28 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
       migrationTags: dobj.migrationTags,
       migrationTag: dobj.migrationTag,
       schemas,
+      formats: formats.map(({ format, writes, reads }) => ({ format, writes, reads })),
+      floors,
       crossScript,
       entrypoints,
       queues: queuesOf(out),
       warnings,
     },
+  }
+}
+
+/**
+ * Every schema floor of a rollback rule names a class its Worker declares, read from the sources:
+ * a floor on a schema that does not exist would judge every version below it.
+ */
+export function checkFloorSchemas(rules, schemas) {
+  for (const rule of rules) {
+    for (const f of rule.floors) {
+      if (f.schema === undefined) continue
+      if (!schemas.some((s) => s.worker === f.canonical && s.component === f.schema)) {
+        throw new Error(`deploy/workers.json rollback_floors ${rule.name}: ${f.canonical}'s floor names schema ${f.schema}, which none of its classes has (${schemas.filter((s) => s.worker === f.canonical).map((s) => s.component).join(', ') || 'none'})`)
+      }
+    }
   }
 }
 
@@ -298,6 +325,9 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   // The schemas of every class, read once for all Workers whose component is in this checkout.
   const present = plan.workers.filter((w) => existsSync(join(REPO_ROOT, w.component, 'wrangler.jsonc')))
   const schemas = readSchemas(schemaSources(present))
+  const formats = readFormats(formatSources(present))
+  const rules = floorRules(plan, stage)
+  checkFloorSchemas(rules, schemas)
   const workers = []
   /** Main module of each Worker configured so far, for the entrypoint check of the ones after it. */
   const mains = new Map()
@@ -311,7 +341,13 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       }
       throw new Error(`${worker.component}/wrangler.jsonc not found, and ${worker.name} is to be deployed`)
     }
-    const g = generateWorker({ worker, cfg: readJsonc(cfgPath), componentDir, plan, stage, release, ids, outDir, idsOptional, expires, schemas: schemas.filter((s) => s.worker === worker.name), extraVars: extra[worker.name] ?? {} })
+    const g = generateWorker({
+      worker, cfg: readJsonc(cfgPath), componentDir, plan, stage, release, ids, outDir, idsOptional, expires,
+      schemas: schemas.filter((s) => s.worker === worker.name),
+      formats: formats.filter((f) => f.worker === worker.name),
+      floors: stampedFloors(rules, worker.name, exportedNames),
+      extraVars: extra[worker.name] ?? {},
+    })
     checkEntrypoints(worker.name, g.summary.entrypoints, mains)
     mains.set(worker.name, g.mainAbs)
     const file = join(outDir, `${worker.name}.jsonc`)
@@ -345,6 +381,9 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
     for (const w of workers) {
       log(`  ${w.deploy ? 'deploy' : 'skip  '} ${w.name.padEnd(24)} ${w.deploy ? `from ${w.component}/; migration ${w.migrationTag ?? '-'}; ${w.crossScript?.join(', ') || 'no cross-script bindings'}` : w.reason}`)
       for (const sc of w.schemas ?? []) log(`         schema ${sc.component}: version ${sc.latest}, readable from ${sc.compat}`)
+      const split = (w.formats ?? []).filter((f) => f.reads.length > 1 || f.writes === null)
+      if (w.formats?.length) log(`         formats: ${w.formats.length}${split.length ? `; ${split.map((f) => `${f.format} writes ${f.writes ?? '-'}, reads ${f.reads.join(',')}`).join('; ')}` : ''}`)
+      for (const f of w.floors ?? []) log(`         at the rollback floor of ${f} (${FLOORS_VAR})`)
       for (const warn of w.warnings ?? []) log(`         note: ${warn}`)
     }
   }

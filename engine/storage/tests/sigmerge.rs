@@ -365,6 +365,26 @@ fn literals_of(units: &[Vec<LogBatchDef>], picks: &[(usize, usize, usize)]) -> V
     out
 }
 
+/// Rows re-sent by another unit with their other columns changed (a retry whose severity, observed
+/// time or ids differ): the same row key in two units, so which unit wins shows in the merged row.
+/// Each `(unit, batch, row)` picks a row; the copy goes into the next unit (the first unit's copy
+/// into the last, so earlier units also re-send later ones' rows).
+fn resend_logs(mut units: Vec<Vec<LogBatchDef>>, resent: &[(usize, usize, usize)]) -> Vec<Vec<LogBatchDef>> {
+    let n = units.len();
+    for &(u, b, r) in resent {
+        let (u, to) = (u % n, (u % n + 1) % n);
+        let src = &units[u][b % units[u].len()];
+        let mut row = src.rows[r % src.rows.len()].clone();
+        let stream = src.streams[row.entry as usize].clone();
+        row.entry = 0;
+        row.severity_number = (row.severity_number + 1) % 25;
+        row.observed_ts = row.observed_ts.wrapping_add(1).max(0);
+        row.flags ^= 1;
+        units[to].push(LogBatchDef { streams: vec![stream], rows: vec![row] });
+    }
+    units
+}
+
 fn check_logs_merge(units: &[Vec<LogBatchDef>], rg: usize, cut: usize, picks: &[(usize, usize, usize)]) -> Result<(), TestCaseError> {
     let o = small(rg);
     let flushed: Vec<Vec<SignalFile>> = units.iter().map(|u| flush_logs(u, &o)).collect();
@@ -422,8 +442,9 @@ proptest! {
     fn logs_merge_per_day_into_the_deduplicated_union_with_its_token_filter(
         units in prop::collection::vec(prop::collection::vec(arb_log_batch(), 1..3), 1..5), rg in 1usize..6, cut in 1usize..5,
         picks in prop::collection::vec((0usize..1000, 0usize..40, 0usize..40), 0..8),
+        resent in prop::collection::vec((0usize..1000, 0usize..1000, 0usize..1000), 0..6),
     ) {
-        check_logs_merge(&units, rg, cut, &picks)?;
+        check_logs_merge(&resend_logs(units, &resent), rg, cut, &picks)?;
     }
 
     /// Default options: the merged bytes are one flush's (spans and logs) with the same options.

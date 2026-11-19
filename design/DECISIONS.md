@@ -1399,7 +1399,7 @@ documentation ("Requests can exceed your configured limit"; "Other Cloudflare lo
 separate counts"), and keyed by the only identifiers an unauthenticated request has (IP, which the
 documentation advises against, or the tenant, which hands the attacker the limit); it bounds a
 source's rate, not what reaches a tenant's object. Still wanted before public exposure, for the
-Worker's own CPU (`control/README.md`, Known risks).
+Worker's own CPU (`control/README.md`, Known risks); built as one layer of D70, keyed after the tag.
 
 **Cost of the tag.** Replacing `OAUTH_CLIENT_KEY` (D53, by a deploy told to) now also ends every
 code and token: clients connect again and a person approves again, rather than only registering
@@ -2718,3 +2718,128 @@ larger steps); the binding streams the output to JS during the merge (then the W
 the output); `trace_index` must count retried spans once (then (c), at the cost above); or reads
 need traces across hours together (then hour-pure spans would be revisited with the publisher's
 partition).
+
+## D70. OAuth is rate-limited in two layers: Cloudflare's Rate Limiting binding before any object (per client network; after the tag, per client, per token and per tenant), failing open; and an exact per-grant refresh limit in the tenant's object
+
+(Written 2026-11-19 for the review of D44, M-2: "a rate limit in front of `/oauth/token`,
+`/oauth/revoke`, `/oauth/register`, `/oauth/authorize` and OAuth bearers before public exposure".)
+
+**What needs limiting, from the code** (costs measured here, `control/test/oauth-cost.test.ts`:
+local workerd, sequential, three runs; `control/README.md` has the table). Since the tag (D44) a
+made-up credential reaches no object: registration (0.18–0.41 ms), the authorization page
+(0.23–0.52 ms) and a forged code (0.16–0.33 ms) cost the Worker alone and write nothing; anyone can
+send them. What reaches a tenant's object is a credential this deployment made: a code exchange or a
+refresh (4.3–8.4 ms, 9 rows and 2 `setAlarm`, so about 11 billed row writes each), a revocation
+(1 to 18 rows), an introspection (0.9–1.5 ms, no write), and a **replay** of a spent, rotated or
+revoked credential, whose tag stays good for ever (0.75–2.1 ms, one object request, no write). Only
+a client or someone holding one of its old credentials can drive those. An approval (17 rows, 2
+alarm writes, 1 KV write) needs a person's admin key and was already bounded exactly (20 a tenant
+an hour). So: the Worker's own cost by source; object requests and writes by credential (client,
+token, grant, tenant), never by the tenant a request merely names.
+
+**Decision.**
+
+- **Layer 1, approximate, before any object: the Workers Rate Limiting binding** (developers.
+  cloudflare.com/workers/runtime-apis/bindings/rate-limit/, read 2026-11-19, page modified
+  2026-11-12). Five bindings, period 60 s each; the limits are deploy configuration (proposed values
+  below, `control/README.md`, "Needed changes elsewhere"):
+
+  | Binding | Key | Proposed limit per 60 s, per Cloudflare location | Where | What it bounds |
+  |---|---|---|---|---|
+  | `OAUTH_RL_SOURCE` | client network: IPv4 address, IPv6 /64, from `CF-Connecting-IP` | 120 | `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, before the body is read | one network's Worker CPU and its replays: 2 a second |
+  | `OAUTH_RL_CLIENT` | tenant and `client_id` (hashed) of a tagged code or refresh token | 20 | `/oauth/token`, after the tag | a looping client's object requests, and its share of its tenant's budget |
+  | `OAUTH_RL_TENANT` | tenant of a tagged credential | 300 | `/oauth/token` and `/oauth/revoke`, after the tag | OAuth token traffic on one tenant's object: 5 a second |
+  | `OAUTH_RL_BEARER` | the access token (hashed), tagged | 600 | introspection (`OAuthIntrospection`), after the tag | one agent's `/mcp` requests: 10 a second |
+  | `OAUTH_RL_BEARER_TENANT` | tenant of a tagged access token | 3,000 | introspection, after the tag | introspection on one tenant's object: 50 a second |
+
+  The narrower key is asked first and a refused call does not count, so one client's or token's
+  flood spends at most its own allowance of the tenant's budget. Keys built from request text are
+  SHA-256 prefixes, so no input sets a key's length.
+- **Layer 2, exact, in the tenant's object, where rows are written:** at most 6 refresh tokens per
+  grant in any 60 s (`OAUTH_LIMITS.refreshesPerGrantPerMinute`, the code exchange's included),
+  counted from the `oauth_tokens` rows the object already keeps (no new state, one read), checked
+  after reuse detection and before the presented token is spent. With the approvals, clients and
+  live grants D44 bounds, this is what bounds writes, from any number of locations.
+- **Refusal**: 429, `Retry-After` (60 for a binding, which does not say where in its window it is;
+  the exact time for the per-grant limit), `Cache-Control: no-store`, the endpoints' CORS headers,
+  and `{ "error": "too_many_requests", "error_description": … }`; the authorization page answers a
+  plain-text page with the same code. Nothing is read, changed or spent: a refused code or refresh
+  token still works. RFC 6749 §5.2 has no rate-limit code; `too_many_requests` is the code the MCP
+  TypeScript SDK's own authorization server sends with 429 on these four endpoints, and its client
+  maps it to `TooManyRequestsError` and keeps its credentials (verified in
+  `@modelcontextprotocol/sdk` 1.32.2, `client/auth.js`): an unknown code becomes a `ServerError`,
+  after which that client abandons the refresh and starts a new authorization (a person approves
+  again), and `invalid_grant` makes it discard its tokens. `temporarily_unavailable` (RFC 6749
+  §4.1.2.1) is registered for the authorization endpoint and means the server is overloaded, not
+  that this caller is over its rate; `slow_down` (RFC 8628) is device-flow polling. Introspection
+  answers the new status `rate_limited` with `retryAfterMs` (`contracts/oauth.ts`, additive within
+  version 1: the agent surface answers a status it does not know with a retryable 503 today, and is
+  to map it to 429, `mcp/` "Needed changes").
+- **Every binding check fails open**, for every endpoint, when the binding is absent, throws, does
+  not answer `{ success: boolean }`, or has not answered within 1 s; it logs. Per endpoint:
+  registration and the authorization page store nothing and reach no object, so a closed failure
+  would refuse onboarding and protect nothing; at the token endpoint, revocation and introspection
+  the tag still keeps made-up credentials from every object and layer 2 still bounds writes exactly,
+  so what an open failure lets through is object requests from holders of genuine credentials for
+  as long as the fault lasts, while a closed one would end every agent's access within the hour its
+  access token lasts, and would block revocations, which a client sends to end access. The
+  exact limits in layer 2 cannot fail open: they are statements in the request's own transaction.
+  That the bindings exist is for the deploy to check (a needed change: it is to refuse a production
+  viz-control without them), not something the Worker discovers request by request.
+- Not limited: the RFC 8414 metadata (static, `max-age=300`) and CORS preflights.
+
+**Alternatives, with what each costs per request (modelled; Cloudflare list prices as training
+knowledge: Workers $0.30 a million requests, Durable Objects $0.15 a million requests and $1.00 a
+million rows written; a service-binding call is not billed as a request) and what an attacker can
+still do.**
+
+- (a) **The binding alone**, keyed as above. Cost: the page names no price and says a check "uses a
+  locally cached count"; modelled $0 to unknown, 0.01–1 ms. (Measured here only through miniflare,
+  whose binding is a SQLite-backed object: 2.1–4.0 ms for a registration with the source limit asked
+  against 0.18–0.41 ms without, 0.62–0.99 ms for one it refuses; an upper bound for local workerd,
+  not Cloudflare.) Still possible: per location and approximate ("Requests can exceed your configured
+  limit before those updates arrive"; "Other Cloudflare locations maintain separate counts"), so a
+  client spread over N locations gets N budgets and a burst overshoots; a botnet gets 120 a minute
+  per network; NAT and carrier-grade NAT share one budget, which is why the page advises against IP
+  keys (the source limit is set well above what people behind one address do in a minute). Every
+  refused request is still a billed Worker request: the binding saves CPU and object work, not
+  requests. Its `namespace_id` is account-wide in an account with unrelated Workers. Alone, it does
+  not bound writes exactly; with layer 2 it does not need to.
+- (b) **A Durable Object counter** (exact, global). Cost per check: one object request ($0.15 a
+  million), duration (about $0.002 a million at a few ms), and $1.00 a million more if every count
+  is a stored row, as AGENTS.md requires of state an object must not lose: $0.15–1.15 a million
+  checks, on every request including legitimate ones; latency 1–10 ms in the object's region,
+  50–300 ms from another continent (an object stays where it was created). Still possible: a counter
+  object is single-threaded (modelled 300–1,500 simple requests a second, review M-2), so a flood
+  moves to the limiter, and per-network objects multiply with the attacker's networks. Rejected as
+  the first layer; kept where it is free, inside the tenant's object the request reaches anyway
+  (layer 2).
+- (c) **A WAF rate-limiting rule on the zone** (`vis.bitcru.sh` only). Cost: in the plan's price
+  (training knowledge: the number of rules, periods and counting characteristics depend on the
+  plan); a refused request never runs a Worker, so it is the only layer that saves the request
+  charge. Still possible: it counts by IP (higher plans add headers and similar), cannot see a
+  credential's tenant, a form's `client_id` or a token, so it can do the source limit only; outside
+  the Worker and outside what the deploy manages, so its existence and values are not in a release.
+  Recommended in addition, by hand, as the volumetric layer (`control/README.md`, "Known risks"); not
+  built.
+- (d) **Combinations.** The chosen one is (a) plus exact accounting where the object already is. A
+  binding keyed by tenant before the tag check was rejected: it would hand any tenant's budget to
+  whoever writes its name into a made-up credential. Rate-limiting approvals further was not needed:
+  they already need a person's admin key and are bounded exactly per tenant.
+- (e) **Fail closed** on a limiter fault (all or some endpoints): rejected above.
+
+**Why.** The properties that matter are already exact: no made-up credential reaches an object (the
+tag), and what a tenant's object stores is bounded inside it (approvals, clients, grants, and now
+refreshes per grant). What remains is cost, which is approximate by nature, and the cheapest
+approximate counter is the binding: no object request, no row, no latency to speak of. Keying after
+the tag means only a credential this deployment made can spend a tenant's budget, so a tenant's
+OAuth can be denied in one location only by someone holding its genuine credentials, and then only
+its OAuth, not its control plane.
+
+**Would change if.** The binding's per-location counting is measured to let a flood that matters
+through (then a WAF rule in front, or an exact counter for the tenant budgets); replayed genuine
+credentials become a real cost (then the credential format carries an expiry the Worker can check, a
+new version in `contracts/oauth.ts`); the binding is billed per call at a price that matters; MCP
+clients converge on another rate-limit code; viz moves to a plan or product where zone rules are
+managed with the release (then (c) carries the source limit); or a sign-in replaces approval by API
+key (the authorization page becomes a form and may need its own limits).

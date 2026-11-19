@@ -49,3 +49,9 @@ ruler reads that variable.
 **Worst case: under US$0.01, stated as under US$0.10.** All of it fits inside the plan's
 included allowances. Prices are from developers.cloudflare.com/workers/platform/pricing/ as viz's
 earlier spikes read them.
+
+**Extension, stated at 11:19 UTC before it ran.** After the two runs of the created case, a third
+run covers the rotated case named in the same risk: a first deploy through the normal tooling,
+which puts the key in phase 2; a release with `--rotate-secret OAUTH_CLIENT_KEY`; a rollback to
+the first release's record; then one more release. Same stage, the same two resource names
+(`viz-s9-control`, `viz-s9-config`) created again and deleted again, and the same worst case.

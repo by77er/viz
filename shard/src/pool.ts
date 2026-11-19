@@ -76,7 +76,9 @@ export const validPoolName = (pool: unknown): pool is string => typeof pool === 
  * A pool holding exactly one tenant. Dedicated and pooled tenants share every code path.
  * Tenant ids may contain `_`, pool names may not: it becomes `-`, so two tenants whose ids
  * differ only there share their "dedicated" objects (each in its own streams, as in any
- * pool; their keys stay apart, being under their own `tenant=` prefixes).
+ * pool; their keys stay apart, being under their own `tenant=` prefixes). This is the only
+ * dedicated pool `control` assigns (D66). For a tenant whose id is `traces` or `logs` it is not a
+ * valid base pool (`validBasePool`), and control refuses it.
  */
 export const dedicatedPool = (tenant: string, slots: number, epoch: number): PoolMap => ({
   pool: `tenant/${tenant.replaceAll('_', '-')}`,
@@ -93,6 +95,19 @@ export const dedicatedPool = (tenant: string, slots: number, epoch: number): Poo
  */
 export type DerivedSignal = 'traces' | 'logs'
 export const DERIVED_SIGNALS: readonly DerivedSignal[] = ['traces', 'logs']
+
+/**
+ * Whether a pool may be the base pool of a map: a valid pool name (`POOL_NAME`) that does not
+ * end in a derived pool's suffix (`/traces`, `/logs`; contracts/BATCH.md "Streams per signal").
+ * Otherwise its metric shard `{base}/{slot}` would be the same object, under the same name, as
+ * the span or log shard of the pool one level up, and readers that tell a shard's signal by its
+ * name (query's `signalOfShard`, D62) would take it for one.
+ *
+ * The one rule for a pool map's pool: `edge` refuses a map that breaks it (503 for every signal,
+ * `edge/src/route.ts` `parseMap`), and `control` refuses to publish one (D66), with this same
+ * function, so the two cannot disagree.
+ */
+export const validBasePool = (pool: unknown): pool is string => validPoolName(pool) && !DERIVED_SIGNALS.some((s) => pool.endsWith(`/${s}`))
 
 /** The pool map of a signal's shards, or null when the derived name is not a valid pool name (a base pool over 113 characters). */
 export function signalPool(map: PoolMap, signal: DerivedSignal): PoolMap | null {

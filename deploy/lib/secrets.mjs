@@ -203,7 +203,7 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
     if (plainVar(made, RUN_VAR) !== run) {
       throw new SecretRefused(
         `${worker}: ${spec.name} went on version ${m[1]}, built on an upload of another run (${RUN_VAR} ${plainVar(made, RUN_VAR) ?? '(none)'}, this run is ${run}): another deploy uploaded between the check and the put. ` +
-          `Nothing is promoted. That version serves nothing; the other run refuses it too (its upload is no longer the newest). Run the deploy again once the other has finished.`,
+          `Nothing is promoted. That version serves nothing, and the other run never promotes it (it promotes its own upload, or refuses because its upload is no longer the newest). Run the deploy again once the other has finished.`,
       )
     }
     log(`  ${worker}: secret ${spec.name} ${action} on new version ${m[1]} (from ${current})`)

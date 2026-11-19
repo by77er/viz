@@ -1,5 +1,5 @@
 {
-  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage). Every Durable Object class a Worker binds from ANOTHER Worker (by script_name) is listed under `binds_classes` as `<worker>:<class>`, with why: such a binding can call every method of every object of the class (any tenant), so configure.mjs refuses one that is not listed. A Worker that needs one question answered binds a named entrypoint of the other Worker instead (viz-mcp: viz-control's OAuthIntrospection, contracts/oauth.ts).",
+  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage). Every Durable Object class a Worker binds from ANOTHER Worker (by script_name) is listed under `binds_classes` as `<worker>:<class>`, with why: such a binding can call every method of every object of the class (any tenant), so configure.mjs refuses one that is not listed. A Worker that needs one question answered binds a named entrypoint of the other Worker instead (viz-mcp: viz-control's OAuthIntrospection, contracts/oauth.ts). Every format a Worker's components write (their `FORMATS` maps, contracts/COMPATIBILITY.md §3.1) is declared under `formats`, with the read lists they keep (`reads`: `{format: [versions]}` maps; `reads_of`: one format's versions): read into release records and each version's VIZ_FORMATS (D69). `rollback_floors`: a switch on a writer (INGEST_SIGNALS) that, once on, puts a floor under the Workers listed, each judged by its storage schema or by `evidence` (VIZ_FLOORS) (D64, D69).",
   "domain": "vis.bitcru.sh",
   "observability": {
     "enabled": true,
@@ -26,6 +26,36 @@
     "viz-flush": "viz-ingest",
     "viz-stack": "viz-ingest"
   },
+  "rollback_floors": [
+    {
+      "name": "signal-data",
+      "writer": "viz-ingest",
+      "var": "INGEST_SIGNALS",
+      "why": "with it, edge appends span and log batches to shards of their own ({pool}/traces, {pool}/logs), flush writes spans, trace_index and logs files, and the ledger's log names those tables (D57, D63). Turning it off leaves all of that in place",
+      "floors": {
+        "viz-publisher": {
+          "schema": "publisher.Publisher",
+          "at_least": 4,
+          "why": "D64: the first publisher that reads the span and log tables (migration 4 shipped with that reader; D67's migration 5 is additive). An older one stops every tenant whose log names one, metrics included: stuck, not lost"
+        },
+        "viz-query": {
+          "evidence": [
+            "query/src/shards.ts#checkSignal",
+            "query/src/shards.ts#signalOfShard"
+          ],
+          "why": "D62: the first query that asks each signal's shards by name and checks every batch's header. An older one reads every shard a plan names, and the shards hand span and log batches whole to a metrics read with no series filter ({__name__=~\"...\"}, cardinality), which then fails for every tenant that sent spans or logs (review of traces and logs, M-4)"
+        },
+        "viz-ingest": {
+          "evidence": [
+            "janitor/src/janitor.ts#DEFAULT_SIGNAL_DAYS",
+            "contracts/ledger.ts#TRACE_TABLES",
+            "contracts/ledger.ts#LOG_TABLES"
+          ],
+          "why": "D63: the first flush, ledger and janitor that flush, list and expire span and log files. An older one stalls their flush (invalid_unit, or encodeSegment thrown on a span batch) and their retention: stuck, not lost (review of traces and logs, M-4)"
+        }
+      }
+    }
+  ],
   "workers": [
     {
       "name": "viz-publisher",
@@ -34,6 +64,11 @@
       "health": "/healthz",
       "schemas": {
         "Publisher": "publisher/src/schema.ts#PUBLISHER_SCHEMA"
+      },
+      "formats": {
+        "writes": [
+          "publisher/src/schema.ts#FORMATS"
+        ]
       }
     },
     {
@@ -47,6 +82,18 @@
       "schemas": {
         "Shard": "shard/src/shard.ts#SHARD_SCHEMA",
         "Ledger": "ledger/src/ledger.ts#LEDGER_SCHEMA"
+      },
+      "formats": {
+        "writes": [
+          "flush/src/formats.ts#FORMATS",
+          "compact/src/formats.ts#FORMATS",
+          "janitor/src/formats.ts#FORMATS",
+          "stack/src/formats.ts#FORMATS"
+        ],
+        "reads": [
+          "flush/src/formats.ts#READS",
+          "janitor/src/formats.ts#READS"
+        ]
       }
     },
     {
@@ -56,6 +103,11 @@
       "health": "/healthz",
       "schemas": {
         "Tenant": "control/src/schema.ts#TENANT_SCHEMA"
+      },
+      "formats": {
+        "writes": [
+          "control/src/schema.ts#FORMATS"
+        ]
       }
     },
     {
@@ -83,6 +135,14 @@
         "Ruler": "ruler/src/schema.ts#RULER_SCHEMA",
         "Notifier": "ruler/src/schema.ts#NOTIFIER_SCHEMA",
         "RulerIndex": "ruler/src/schema.ts#INDEX_SCHEMA"
+      },
+      "formats": {
+        "writes": [
+          "ruler/src/schema.ts#FORMATS"
+        ],
+        "reads_of": {
+          "store.anomaly-state": "ruler/src/schema.ts#ANOMALY_STATE_READS"
+        }
       }
     },
     {

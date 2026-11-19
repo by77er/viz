@@ -6,14 +6,16 @@
 // Cloudflare API: Workers, their versions (vars, secrets), deployments, and a log of every call
 // (argv, how many bytes came on stdin, whether any environment variable contained them).
 // Models, as wrangler 4.164.0 and Cloudflare do (deploy/README.md cites both):
-//   versions upload            a new version from the config; secrets inherited from the newest version
-//   versions secret put K      a new version = the NEWEST version + K (value from stdin); deploys nothing
+//   versions upload            a new version from the config and `--var K:V`; secrets inherited from the newest version
+//   versions secret put K      a new version = the NEWEST version + K (value from stdin), its vars that version's; deploys nothing
 //   versions deploy ID@100%    the deployment becomes ID
-//   deploy                     a new version (secrets inherited), deployed at once; creates the Worker
+//   deploy                     a new version (config vars and `--var K:V`; secrets inherited), deployed at once; creates the Worker
 //   deploy --dry-run, triggers deploy: nothing
 // Knobs in the state: `failOn` (an argv prefix that fails, echoing its stdin as a careless tool
 // would), `inherit: "none"` (uploads inherit no secret), `afterUpload: "foreign"` (another
-// version appears right after an upload).
+// version appears right after an upload), `racePut: true` (another run of the same release uploads
+// after the deploy's checks and before the put is applied: review of D53, m-11), `ignoreVar: true`
+// (`--var` is not applied).
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 
 const statePath = process.env.VIZ_FAKE_WRANGLER_STATE
@@ -54,6 +56,17 @@ const newId = () => {
   return `00000000-0000-4000-8000-${String(state.counter).padStart(12, '0')}`
 }
 const inherited = (w) => (state.inherit === 'none' ? {} : { ...(w.versions.at(-1)?.secrets ?? {}) })
+/** Every `--var K:V` (wrangler splits at the first colon), unless the state says to ignore them. */
+const cliVars = () => {
+  const out = {}
+  if (state.ignoreVar) return out
+  args.forEach((a, i) => {
+    if (a !== '--var') return
+    const [k, ...v] = String(args[i + 1]).split(':')
+    out[k] = v.join(':')
+  })
+  return out
+}
 
 const line = args.join(' ')
 if (state.failOn && line.startsWith(state.failOn)) {
@@ -66,7 +79,7 @@ if (a === 'versions' && b === 'upload') {
   const cfg = readConfig(opt('config'))
   const w = state.workers[cfg.name]
   if (!w) fail(`This Worker does not exist on your account. [code: 10007]`)
-  const v = { id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, vars: cfg.vars ?? {}, secrets: inherited(w) }
+  const v = { id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w) }
   w.versions.push(v)
   if (state.afterUpload === 'foreign') w.versions.push({ id: newId(), number: v.number + 1, tag: 'someone-else', vars: { VIZ_RELEASE: 'someone-else' }, secrets: { ...v.secrets } })
   output({ type: 'version-upload', version_id: v.id })
@@ -76,6 +89,12 @@ if (a === 'versions' && b === 'upload') {
   const w = state.workers[opt('name')]
   if (!w || w.versions.length === 0) fail('There are currently no uploaded versions of this Worker. Please upload a version before modifying a secret.')
   if (stdin.length === 0) fail('fake wrangler: an empty secret')
+  if (state.racePut) {
+    // Another run of the same release: same code and VIZ_RELEASE, its own VIZ_DEPLOY_RUN, uploaded
+    // after this run's checks; the PATCH below applies to it, as Cloudflare's "latest" would.
+    const last = w.versions.at(-1)
+    w.versions.push({ ...structuredClone(last), id: newId(), number: last.number + 1, vars: { ...last.vars, VIZ_DEPLOY_RUN: 'another-run-of-the-same-release' } })
+  }
   const latest = w.versions.at(-1)
   const v = { ...structuredClone(latest), id: newId(), number: latest.number + 1, tag: opt('tag') ?? latest.tag, secrets: { ...latest.secrets, [key]: stdin.replace(/\s+$/, '') } }
   w.versions.push(v)
@@ -94,7 +113,7 @@ if (a === 'versions' && b === 'upload') {
 } else if (a === 'deploy') {
   const cfg = readConfig(opt('config'))
   const w = (state.workers[cfg.name] ??= { migrationTag: null, versions: [], deployment: [] })
-  const v = { id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, vars: cfg.vars ?? {}, secrets: inherited(w) }
+  const v = { id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w) }
   w.versions.push(v)
   w.deployment = [{ version_id: v.id, percentage: 100 }]
   w.migrationTag = cfg.migrations?.at(-1)?.tag ?? w.migrationTag

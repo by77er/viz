@@ -23,6 +23,7 @@ data path never calls it.
 | `src/ops-oauth.ts` | OAuth grants in the Tenant object: approve (the consent step), list, get, revoke; the token endpoint's code exchange and refresh; RFC 7009 revocation; introspection for the agent surface; the alarm's sweep |
 | `src/oauth-http.ts` | The authorization server's public endpoints: RFC 8414 metadata, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`; `readCapped`, a body read with a cap |
 | `src/introspection.ts` | `OAuthIntrospection`, the named entrypoint the agent surface binds (`contracts/oauth.ts`): token introspection for one caller, the tenant from the token, nothing else |
+| `src/ratelimit.ts` | Rate limits in front of OAuth (D70): the Rate Limiting binding checks (keys, order, failing open), the client network a request comes from, the exact per-grant refresh limit's window |
 
 Runtime dependencies: none. It imports `../edge/src/auth` (key verification),
 `../dashboard/src` (the `viz.dashboard/v1` model) and `../contracts/ledger` (`TENANT_ID`).
@@ -397,6 +398,82 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
   written, and before the review of D44 (M-2) every such request, a made-up one included, set
   it twice.
 
+### Rate limits in front of OAuth (D70)
+
+Required before OAuth is exposed publicly (review of D44, M-2). The tag already keeps a made-up
+credential away from every object; what is left is cost and abuse, and its measured shape decided
+the keys ("How it was verified", the cost table): registration, the authorization page and a
+made-up credential cost the Worker alone (0.2–0.5 ms here, nothing written) and anyone can send
+them; what reaches a tenant's object is a credential this deployment made (an exchange or a refresh:
+9 rows and 2 `setAlarm`; a replay of a spent or revoked one: an object request, nothing written), so
+only a client, or whoever holds one of its old credentials, can drive it. Two layers:
+
+**1. Approximate, before any object: Cloudflare's Rate Limiting binding** (`src/ratelimit.ts`).
+Per Cloudflare location, eventually consistent, a 60 s window each. The limits are the bindings'
+configuration, which the deploy does not create yet ("Needed changes elsewhere"):
+
+| Binding | Counted per | Where, and when | Proposed limit / 60 s | In the tests |
+|---|---|---|---|---|
+| `OAUTH_RL_SOURCE` | client network: IPv4 address, IPv6 /64 (an IPv4-mapped address as IPv4), from `CF-Connecting-IP`; without one, one shared key | `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, first thing, before the body is read | 120 | 5 |
+| `OAUTH_RL_CLIENT` | tenant and `client_id` (SHA-256 prefix) of a code or refresh token that carries the tag | `/oauth/token`, after the tag, before the object | 20 | 3 |
+| `OAUTH_RL_TENANT` | tenant of a credential that carries the tag | `/oauth/token` and `/oauth/revoke` together, after the tag, before the object | 300 | 6 |
+| `OAUTH_RL_BEARER` | access token (SHA-256 prefix) that carries the tag | `OAuthIntrospection`, after the tag, before the object | 600 | 3 |
+| `OAUTH_RL_BEARER_TENANT` | tenant of an access token that carries the tag | `OAuthIntrospection`, after the tag, before the object | 3,000 | 5 |
+
+- **After the tag**: only a credential this deployment made is counted against a client, a token or a
+  tenant, so a made-up credential naming a tenant cannot spend that tenant's budget.
+- **The narrower key first**, and a refused call does not count: a looping client or token spends
+  at most its own allowance of its tenant's budget, and the tenant's other clients go on.
+- **Not counted**: the RFC 8414 metadata (static, `max-age=300`) and CORS preflights.
+- **The proposed limits** are about ten times what the flows need: a person connecting makes 3 to 5
+  requests, a client refreshes about once an hour, a tenant has at most 50 live grants. What they
+  bound per location: a network at 2 requests a second; a tenant's object at 5 OAuth token requests
+  and 50 introspections a second, well under the 300–1,500 simple requests a second review M-2
+  modelled for one object. Modelled, not measured on real traffic.
+
+**2. Exact, in the tenant's object, where rows are written.** At most
+`OAUTH_LIMITS.refreshesPerGrantPerMinute` (6) refresh tokens per grant in any 60 s, the code
+exchange's included, counted from the `oauth_tokens` rows the object already keeps (one read, no
+new state): checked after reuse detection (a rotated token presented again still ends the grant)
+and before the presented token is spent. From any number of locations, a client stuck in a refresh
+loop writes at most 6 times a minute per grant. With D44's exact bounds (20 approvals an hour, 50
+clients, 50 live grants, all per tenant) this bounds what OAuth can make an object store.
+
+**A refusal** is 429 with `Retry-After` (60 for a binding, which does not say where in its window it
+is; for the per-grant limit, when its oldest refresh leaves the window), `Cache-Control: no-store`,
+the endpoints' CORS headers, and `{ "error": "too_many_requests", "error_description": … }` naming
+which budget is spent (never a key). The authorization page answers a plain-text page with the same
+code and header. Nothing is read, changed or spent: a refused code, refresh token or revocation can
+be sent again. `too_many_requests` because RFC 6749 §5.2 has no rate-limit code, and it is what the
+MCP TypeScript SDK's authorization server sends with 429 at these four endpoints; that SDK's client
+(`@modelcontextprotocol/sdk` 1.32.2 `client/auth.js`, read in `mcp/node_modules`) maps it to
+`TooManyRequestsError` and keeps its credentials, whereas an unknown code becomes a `ServerError`,
+after which it abandons the refresh and starts a new authorization (a person approves again), and
+`invalid_grant` makes it discard its tokens. Introspection answers `{ v: 1, status: 'rate_limited',
+retryAfterMs: 60000 }`.
+
+**Every binding check fails open**, deliberately, for every endpoint: a binding that is absent,
+throws, rejects, answers without a boolean `success`, or has not answered within 1 s lets the
+request through and logs (`control: rate limiter <binding> failed`, never the key).
+
+| Endpoint | Limiter fault | Why |
+|---|---|---|
+| `/oauth/register`, `/oauth/authorize` | open | they store nothing and reach no object: failing closed would refuse onboarding and protect nothing |
+| `/oauth/token` | open | the tag still keeps made-up credentials from every object, and layer 2 still bounds writes exactly; failing closed would end every agent's access within the hour its token lasts |
+| `/oauth/revoke` | open | a revocation ends access; a limiter fault must not keep a grant alive the client wants ended |
+| introspection (OAuth bearers at `/mcp`) | open | read only; failing closed would refuse every OAuth request at `/mcp` |
+| the per-grant refresh limit | cannot fail open | it is a statement in the refresh's own transaction |
+
+That the bindings exist is the deploy's to make sure of, not something the Worker finds out request
+by request; until the deploy creates them, every check is skipped as absent. Every other test file
+runs without them, as such a deployment does.
+
+**The contract** (`contracts/oauth.ts`, changed with this, additive within version 1 by
+COMPATIBILITY.md §4): the status `rate_limited` (`RateLimited`) in `TokenResult` and
+`OAuthIntrospectionResult`, and `OAUTH_LIMITS.refreshesPerGrantPerMinute`. The agent surface answers
+a status it does not know with a retryable 503 today (`mcp/src/auth.ts`); mapping it to 429 is its
+change to make ("Needed changes elsewhere").
+
 ### Audit log
 
 `GET /audit` (filters: `action`, `targetType`, `targetId`, `subject`, `kind`, `since`,
@@ -515,7 +592,13 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
   **Rule definitions**, which DESIGN §3.1 lists under `Tenant`, are not here.
 - **A test notification** when the webhook is saved, and a check that the URL answers.
 - **Grafana import** over HTTP (the dashboard package has the importer).
-- Rate limiting, metrics about this API, pruning of the audit log.
+- Rate limiting of the control API itself (`/api/v1/control/…`, API keys); OAuth's endpoints and
+  bearers are limited (D70). Metrics about this API, pruning of the audit log.
+- **The rate-limit bindings in a deployment** (D70): the Worker reads them, the deploy does not create
+  them yet ("Needed changes elsewhere"), so every deployment today runs OAuth without layer 1. A WAF
+  rate-limiting rule on `vis.bitcru.sh` (the only layer that saves the request charge of a refused
+  request) is recommended, not built. A per-network limit for OAuth bearers at `/mcp` is the agent
+  surface's (the network is known there, not in the entrypoint).
 - **Production deployment.** viz-control ran on Cloudflare only in two staged trials, both
   destroyed (`deploy/README.md`, "Trial on Cloudflare (2026-11-18)" and "Trial 2", 2026-11-19);
   it is mounted behind the gateway (`deploy/`), not in `app/`. The OAuth endpoints have not run on
@@ -525,17 +608,16 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
   false`. Also not built: a consent page and grants screen (above), OpenID Connect discovery, RFC
   7662 introspection over HTTP (introspection is an RPC only), the RFC 8252 any-port rule for
   loopback redirect URIs (redirect URIs match exactly; a client on a new port registers again), a
-  grace period for a refresh retried after a lost response (it counts as reuse), DPoP, and rate
-  limits on `/oauth/register`, `/oauth/authorize` and `/oauth/token` other than what stored state
-  bounds (registration stores nothing; approvals are bounded per tenant).
+  grace period for a refresh retried after a lost response (it counts as reuse), and DPoP. (Rate
+  limits on the OAuth endpoints: D70, above.)
 
 ## Verification
 
 ```
 npm install
-npm test             # 148 tests in 18 files, in workerd (at most 2 workers)
+npm test             # 161 tests in 20 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 97 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
+npm run mutants      # 137 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
@@ -816,6 +898,86 @@ What the tests establish:
   names the tenant; the audit table is only inserted into; KV is written only in the
   outbox drain; the Worker has one `idFromName`, on `identity.tenant`.
 
+### Rate limits in front of OAuth (D70)
+
+**Does the test runner have the binding?** Yes: `@cloudflare/vitest-plugin` 1.8.4 passes miniflare's
+`ratelimits` option through, and miniflare 5.20261117.0-beta implements it (a SQLite-backed object
+per namespace; windows aligned to the clock; exact counts; a refused call does not count, as on
+Cloudflare). `vitest.config.ts` declares six such bindings under test names with small limits, and
+`test/ratelimit.test.ts` puts them in place of the `OAUTH_RL_*` bindings in the environment it hands
+the Worker; only limiters that fail are stubs. Every other test file runs without the bindings.
+
+`test/ratelimit.test.ts`, 12 tests:
+- *Source*: register, authorize, token and revoke share one budget per network; the sixth request is
+  429 with `Retry-After: 60`, JSON, `no-store`, CORS and `too_many_requests` at each endpoint, and a
+  plain-text page at `/oauth/authorize` (no request handle on it); another network is served; the
+  metadata and preflights are not counted. A refused token request with a **genuine** code pulls
+  nothing from its body stream (`highWaterMark: 0`), asks no object, and the code is exchanged
+  afterwards from another network. IPv6 counts by /64 (two addresses of one /64 share, the next /64
+  does not), IPv4-mapped as IPv4, and a missing or unreadable header as one shared key (8 bad inputs).
+- *Token endpoint and revocation*: a client looping on refresh gets 3, then five refusals naming
+  its client that reach no object; another client of the tenant is served; the refused token still
+  refreshes without the limiter. 20 made-up refresh tokens and 20 made-up revocations naming tenant X
+  reach no object and spend nothing; then X's own six (3 revocations, 3 refreshes) pass, and the
+  seventh (a revocation, then a token request) is refused before the object; tenant Y is served.
+- *Introspection*: one token's flood is `{ v: 1, status: 'rate_limited', retryAfterMs: 60000 }`
+  before the object; another token of the tenant is served until the tenant's 5 are spent (the first
+  token's refusals did not count), then every token of the tenant is refused; another tenant is
+  served. 30 made-up tokens naming a tenant are refused before they count.
+- *Fails open*: with the bindings absent, throwing, rejecting, or answering `{ ok: true }`,
+  registration, the authorization page, introspection, a refresh and a revocation are all served;
+  with limiters that never answer, each check gives up after 1 s and the request is served.
+- *Reset*: a real binding with a 10 s window refuses at its limit and serves again in the next window.
+- *Exact per-grant limit*: after the exchange and 5 refreshes, the sixth refresh in the minute is 429
+  with `Retry-After` between 1 and 60, writes no row and no alarm, and does not spend the token;
+  another grant of the same tenant is served; with the grant's tokens dated back 61 s the same token
+  refreshes. A rotated refresh token presented while the grant is at its limit still ends the grant
+  (reuse detection first).
+
+**What each OAuth endpoint costs, measured here** (`test/oauth-cost.test.ts`; local workerd, one test
+file, sequential; three runs before this change, on the unchanged tree, and three after; the machine's
+load average 4–8; Worker plus object, not Cloudflare). Rows are as the object's SQLite counts them
+(`rowsWritten`, indexes included); each `setAlarm` or `deleteAlarm` is billed as a row written too.
+
+| Per request | n | Before: ms (3 runs) | After: ms (3 runs) | Objects | Rows | Alarm writes | KV writes |
+|---|---|---|---|---|---|---|---|
+| `POST /oauth/register` | 100 | 0.18–0.22 | 0.22–0.41 | 0 | 0 | 0 | 0 |
+| `GET /oauth/authorize` (the page) | 100 | 0.23–0.26 | 0.25–0.52 | 0 | 0 | 0 | 0 |
+| `/oauth/token`, made-up code (no tag) | 100 | 0.16–0.20 | 0.28–0.33 | 0 | 0 | 0 | 0 |
+| approve (control API, a person's admin key) | 40 | 11.70–25.48 | 12.43–14.10 | not counted (the API's path) | 17.1 | 2 | 1 |
+| `/oauth/token`, code exchange | 40 | 6.08–8.10 | 5.83–6.40 | 1 | 9 | 2 | 0 |
+| `/oauth/token`, refresh | 20 | 5.75–7.85 | 4.30–8.35 | 1 | 9 | 2 | 0 |
+| `/oauth/revoke`, live access token | 20 | 3.20–4.80 | 2.65–3.55 | 1 | 1 | 2 | 0 |
+| `/oauth/token`, rotated refresh token again (ends the grant) | 20 | 14.10–28.80 | 9.65–31.00 | 1 | 18.1 | 2 | 2 |
+| `/oauth/revoke`, live refresh token (ends the grant) | 20 | 19.65–23.10 | 10.65–17.10 | 1 | 17.1 | 2 | 2 |
+| `/oauth/token`, replay of a genuine refresh token, grant ended | 20 | 1.10–2.10 | 1.00–1.65 | 1 | 0 | 0 | 0 |
+| `/oauth/revoke`, replay of a genuine token, grant ended | 20 | 0.85–1.45 | 0.95–1.20 | 1 | 0 | 0 | 0 |
+| introspection, live token (the entrypoint's logic) | 20 | 0.90–1.50 | 0.90–1.35 | 1 | 0 | 0 | 0 |
+| introspection, live token (through the `OAUTH` binding) | 20 | 1.40–3.15 | 1.60–1.75 | 1 | 0 | 0 | 0 |
+| introspection, replay of a genuine token, grant ended | 20 | 0.80–1.45 | 0.75–1.80 | 1 | 0 | 0 | 0 |
+| register with the source limit asked and allowing (miniflare's binding) | 100 | | 2.13–3.96 | 0 | 0 | 0 | 0 |
+| register refused by the source limit (miniflare's binding) | 100 | | 0.62–0.99 | 0 | 0 | 0 | 0 |
+
+The "after" runs have no bindings but those two rows (as a deployment without them); the refresh
+row includes the per-grant count, one read. The limiter rows are miniflare's implementation, which
+writes a SQLite row per allowed call: an upper bound here, not what Cloudflare's locally cached count
+costs. The ranges overlap before and after; the machine is shared, so differences under about 2x are
+noise.
+
+**Modelled billing per request** (Cloudflare list prices as training knowledge, not read here:
+Workers $0.30 a million requests and $0.02 a million CPU-ms; Durable Objects $0.15 a million
+requests, $1.00 a million rows written, $12.50 a million GB-s; KV $5.00 a million writes; a
+service-binding call is not billed as a request): anything without a genuine credential, about
+$0.30–0.31 a million (the gateway's request; refused or not); a replay of a genuine credential, about
+$0.45 a million (plus an object request); a refresh or exchange, about $11.5 a million (11 billed
+rows); an approval, about $24 a million. A client looping on refresh at 1 a second would cost about
+$1 a day per grant and keep 86,400 rotated rows a day; at the exact limit, 6 a minute, about $0.10 a
+day and 8,640 rows. Settled only by billing on Cloudflare (the analytics API), for a stage with the
+bindings.
+
+**Neighbours**: `mcp/` imports this Worker and the entrypoint in its tests and uses the contract:
+`npx tsc --noEmit` clean there, and `npx vitest run test/oauth.test.ts` 12 of 12 (2026-11-19).
+
 ### Mutation checks
 
 `scripts/mutants.mjs` applies each change on its own, runs the suite and restores the
@@ -1072,24 +1234,44 @@ insert, then retried, yields one dashboard and one entry.
   person approves again). Strict by choice; a grace window would let a copied token through.
 - **OAuth: the tenant id is readable in codes and tokens.** Only their holder, the client acting
   for that tenant, sees them; they are never logged.
-- **OAuth: no rate limit in front of `/oauth/token`, `/oauth/revoke` and OAuth bearers at
-  `/mcp` yet. Required before public exposure.** Since the review of D44 (M-2) a made-up
-  credential costs one HMAC in the Worker and reaches no tenant's object (before: one object
-  request and two billed `setAlarm` writes each; it was this README's claim that it "writes
-  nothing", which the review found false). What remains is the Workers' own CPU and requests,
-  which scale with the attacker. The Workers Rate Limiting binding (developers.cloudflare.com/
-  workers/runtime-apis/bindings/rate-limit/, read 2026-11-19, page modified 2026-11-12) was read
-  and not used for the check the review asked for: its limits are "local to the Cloudflare
-  location that your Worker runs in", "approximate" ("Requests can exceed your configured limit
-  before those updates arrive"; "Other Cloudflare locations maintain separate counts"), periods
-  of 10 or 60 s only, and the page advises against keying on IP addresses ("since these can be
-  shared by many users"), which with the tenant are the only identifiers an unauthenticated
-  request has; keyed by tenant it would hand the limit to the attacker. Its `namespace_id` is an
-  integer that "uniquely defines this rate limiting namespace within your Cloudflare account",
-  and the account holds unrelated Workers, so the deploy would also have to allocate ids it can
-  show are not in use. **Before public exposure**: a zone rate-limiting rule on
-  `vis.bitcru.sh` for these paths keyed by client IP, or the binding keyed by `<IP>|<tenant>` as a
-  per-source throttle with namespace ids allocated by `deploy/configure.mjs` per deployment.
+- **OAuth: the rate limits (D70) are not in any deployment yet, so "required before public
+  exposure" still holds.** The Worker checks the bindings and fails open without them; the deploy does
+  not create them ("Needed changes elsewhere"). Until it does, OAuth runs as before: a made-up
+  credential costs one HMAC in the Worker and reaches no object (since the review of D44, M-2), and
+  layer 2, the exact per-grant refresh limit, works already.
+- **OAuth: the binding's limits are per Cloudflare location and approximate** (its documentation,
+  read 2026-11-19: "Requests can exceed your configured limit before those updates arrive"; "Other
+  Cloudflare locations maintain separate counts"). A client served from N locations gets N budgets,
+  a burst overshoots, and a botnet gets 120 a minute per network; people behind one NAT or
+  carrier-grade NAT share one network's budget (why the page advises against IP keys; the source
+  limit sits well above what a group connecting at once needs). What reaches objects without a
+  genuine credential is nothing whatever the counts; what is stored is bounded exactly (layer 2).
+- **OAuth: a refused request is still a billed Worker request** (the gateway's): a Worker-side limit
+  saves CPU and object work, not the request charge. Only a WAF rate-limiting rule on `vis.bitcru.sh`
+  in front of the four paths would; not built (outside what the deploy manages; AGENTS.md allows
+  rules for that host only).
+- **OAuth: a genuine credential's tag never expires, so its holder can spend its tenant's budgets.**
+  Someone holding old codes or tokens of tenant X (a former client, a leaked log) reaches X's object
+  with each replay (about 1 ms there, nothing written, measured here), at most 20 a minute per client
+  id and 600 per token, and can spend X's OAuth budgets in one location: X's clients served there get
+  429 for up to a minute while it lasts. X's control plane is not affected (the budgets keep OAuth's
+  load on X's object to 5 token and 50 introspection requests a second per location). Remedies: an
+  expiry in the credential the Worker can check (a format version in `contracts/oauth.ts`), or
+  rotating `OAUTH_CLIENT_KEY`, which ends every grant's codes and tokens.
+- **OAuth: the limits are proposed, not measured against traffic**, and the tests run miniflare's
+  implementation of the binding (an exact counter in a SQLite-backed object, windows aligned to the
+  clock), not Cloudflare's. Nothing of D70 has run on Cloudflare. Experiment: a stage with the
+  bindings and clients as Durable Objects in two locations (AGENTS.md), counting how far a flood gets
+  past each limit and how long `limit()` takes.
+- **OAuth: the network comes from `CF-Connecting-IP`**, which Cloudflare sets on the request the
+  gateway receives and the gateway forwards unchanged. A route to viz-control that bypassed the
+  gateway (it has none today: no route, no workers.dev) would let a caller choose its network key;
+  a request without the header counts against one shared key (`none`).
+- **OAuth: the agent surface reports an introspection refused by a limit as a 503 without
+  `Retry-After`** until its change ("Needed changes elsewhere"); a 503 is retryable and nothing was
+  acknowledged, so it is safe, but a client retries sooner than it should.
+- **D70 has not had an adversarial review** (AGENTS.md, "Review before building on it"): it changes
+  `contracts/oauth.ts` (a status) and the token endpoint's behaviour.
 - **OAuth: the ruler and the gateway still bind the `Tenant` class** (`deploy/workers.json`
   `binds_classes` lists both with why), so either can call any method of any tenant's object.
   Neither handles untrusted text the way viz-mcp does, and `invoke` no longer accepts an identity
@@ -1152,6 +1334,68 @@ Things outside this directory that this component needs or exposes. Only the gat
    run on Cloudflare.) `PUBLIC_URL` (the issuer and the resource are built from it) is set for viz-control and
    viz-mcp from the deployment's domain by `deploy/configure.mjs`, done. Still open, `app/`: the consent page and the grants screen ("What the UI must later show"), through
    design review.
+
+### Needed changes elsewhere (rate limits, D70)
+
+Not made here (`deploy/` is another builder's; `mcp/` another component's). Until the deploy part
+lands, D70's first layer is skipped in every deployment (absent bindings fail open).
+
+**`deploy/`** (all four together, then the `control/wrangler.jsonc` block below):
+
+1. `configure.mjs`: add `'ratelimits'` to `KNOWN_KEYS`. In `generateWorker`, for each entry of
+   `out.ratelimits`: require `name` to be an identifier, `simple.limit` a positive integer and
+   `simple.period` 60 (the Worker's `Retry-After` assumes 60; the platform also allows 10); replace
+   `namespace_id` with the id recorded for `<staged worker name>/<binding name>` (as KV ids are
+   replaced), refuse a placeholder `"0"` that survives (unless `idsOptional`), and refuse two bindings
+   of one deployment with the same id. A stage gets ids of its own, never production's: the counters
+   would be shared.
+2. `resources.mjs` (and `resources.json`): allocate those ids once per deployment and record them.
+   `namespace_id` "uniquely defines this rate limiting namespace within your Cloudflare account", and
+   the account holds unrelated Workers: before choosing, list the account's Workers' bindings
+   (read only) and exclude every `ratelimit` namespace id another script uses; take ids from a range
+   recorded as viz's (for example 7000–7999), and refuse to reuse an id seen on a script whose name
+   does not start with `viz-`. Deleting a stage frees its ids (nothing to delete on Cloudflare: a
+   namespace exists only as bindings name it).
+3. A production gate: refuse to release viz-control without the five bindings `OAUTH_RL_SOURCE`,
+   `OAUTH_RL_CLIENT`, `OAUTH_RL_TENANT`, `OAUTH_RL_BEARER`, `OAUTH_RL_BEARER_TENANT` (this is where
+   "required before public exposure" is enforced; the Worker itself fails open), with a test in
+   `configure.test.mjs` next to the `binds_classes` ones.
+4. `README.md`: the bindings, their ids, and that the gateway must keep forwarding the request
+   unchanged (`forward` passes `req`, so `CF-Connecting-IP` arrives; no gateway change is needed).
+
+Then, in `control/wrangler.jsonc` (not added now: today `configure.mjs` refuses an unknown key,
+which would fail deploy's configure tests and any release):
+
+```jsonc
+  // Rate limits in front of OAuth (D70, src/ratelimit.ts). namespace_id: placeholders, replaced by
+  // deploy/configure.mjs with ids it allocated for this deployment; never deploy with them.
+  "ratelimits": [
+    { "name": "OAUTH_RL_SOURCE", "namespace_id": "0", "simple": { "limit": 120, "period": 60 } },
+    { "name": "OAUTH_RL_CLIENT", "namespace_id": "0", "simple": { "limit": 20, "period": 60 } },
+    { "name": "OAUTH_RL_TENANT", "namespace_id": "0", "simple": { "limit": 300, "period": 60 } },
+    { "name": "OAUTH_RL_BEARER", "namespace_id": "0", "simple": { "limit": 600, "period": 60 } },
+    { "name": "OAUTH_RL_BEARER_TENANT", "namespace_id": "0", "simple": { "limit": 3000, "period": 60 } }
+  ],
+```
+
+Worst-case cost of the deploy change: none on Cloudflare's side that the page names (it gives no
+price for the binding; read 2026-11-19); no resource is created, only bindings.
+
+Optional, by hand, outside the deploy: a WAF rate-limiting rule on `vis.bitcru.sh` only, for
+`/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, counted by IP, above the
+Worker's source limit (for example 300 a minute), so that a flood is refused before any Worker runs.
+
+**`mcp/`**:
+
+1. `src/auth.ts` `identifyOAuth`: for `r.status === 'rate_limited'`, before the version check, throw
+   an `AuthError` with status 429, code `rate-limited`, and a fix that says to retry in
+   `Math.ceil(r.retryAfterMs / 1000)` seconds; `src/index.ts` sets
+   `Retry-After` on that 429. Test: `wrangler.test.jsonc` gains `ratelimits` for
+   `OAUTH_RL_BEARER` (limit 2) so its own `OAuthIntrospection` refuses the third call; a mutant that
+   drops the mapping.
+2. Its README's risk "no rate limit in front of OAuth bearers at `/mcp`" then reads: per token and
+   per tenant in control's entrypoint (D70); per network at `/mcp`, if wanted, is mcp's own (forged
+   bearers cost an HMAC in mcp and one in control's entrypoint, no object).
 
 ## Contract issues
 

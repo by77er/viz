@@ -154,7 +154,7 @@ test('rollback_to a release before a forward-only one: REFUSED with the reason, 
   const api = {
     liveState: async (names) => Object.fromEntries(names.map((n) => [n, { exists: true, migrationTag: 'v1', versions: [], release: 'sha-b', schemas: null }])),
     versionInfo: async (_w, id) => info[id] ?? null,
-    listVersions: async (w) => versions[w],
+    listVersions: async (w) => versions[w] ?? [], // as lib/cf.mjs answers for a Worker that does not exist
     restore: async (...args) => void restored.push(args),
   }
   const r = await rollback({ stage: 'citest', record: a, reason: 'test', api })
@@ -163,7 +163,7 @@ test('rollback_to a release before a forward-only one: REFUSED with the reason, 
   assert.equal(r.problems.length, 1)
   assert.match(r.problems[0], /ledger\.Ledger: release sha-b .* forward-only \(migration 2: the change log in segments\)/)
   // The same rollback before B ever ran (no newer versions): allowed, and restored.
-  const ok = await rollback({ stage: 'citest', record: a, reason: 'test', api: { ...api, listVersions: async (w) => versions[w].slice(1) } })
+  const ok = await rollback({ stage: 'citest', record: a, reason: 'test', api: { ...api, listVersions: async (w) => (versions[w] ?? []).slice(1) } })
   assert.equal(ok.exit, 0)
   assert.equal(restored.length, 1)
 })

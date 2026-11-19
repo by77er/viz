@@ -640,8 +640,12 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   that question and takes the tenant from the token, never through control's `Tenant` objects
   (review of D44, M-1). A code or token carries a tag made with control's key, so a made-up one
   is refused in the Worker before any tenant's object is asked, and a request that changes
-  nothing writes nothing (M-2). Until a sign-in exists the consent step is a call to the control
-  API, and only an API key may approve.
+  nothing writes nothing (M-2). Rate limits sit in front (D70): Cloudflare's Rate Limiting binding,
+  approximate and per location, counts each client network at the four OAuth endpoints and, once a
+  credential's tag holds, its client, its token and its tenant, before the tenant's object; the
+  object itself bounds refreshes per grant exactly; a refusal is 429 `too_many_requests` with
+  `Retry-After` and spends nothing; a limiter that fails lets requests through. Until a sign-in
+  exists the consent step is a call to the control API, and only an API key may approve.
   Fourteen tools: search telemetry, describe a metric, validate a query (with the query
   service's own plan: files, bytes, scan bound, refusal), run a query,
   search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,

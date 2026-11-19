@@ -374,7 +374,23 @@ async function lag() {
   if (A.out) writeFileSync(A.out, JSON.stringify(out, null, 2) + '\n')
 }
 
-const cmds = { inventory, kv, configure, 'deploy-r0': deployR0, versions, probe, analytics, leftovers, lag }
+/**
+ * What wrangler's own `rollback` does after its confirmation prompt when Cloudflare answers 10220:
+ * the same deployment, with `?force=true` (wrangler 4.164.0, src/versions/rollback). Never used by
+ * release.mjs; here only to see which key a forced rollback serves.
+ */
+async function forceDeploy() {
+  if (!A.version) throw new Error('force-deploy needs --version <id>')
+  const cf = await mod('lib/cf.mjs')
+  const r = await cf.cf('POST', `/workers/scripts/${WORKER}/deployments?force=true`, {
+    strategy: 'percentage',
+    versions: [{ version_id: A.version, percentage: 100 }],
+    annotations: { 'workers/message': 's9: forced rollback (10220 overridden)' },
+  })
+  console.log(JSON.stringify({ status: r.status, deployment: r.result?.id, versions: r.result?.versions }, null, 2))
+}
+
+const cmds = { inventory, kv, configure, 'deploy-r0': deployR0, versions, probe, analytics, leftovers, lag, 'force-deploy': forceDeploy }
 const cmd = cmds[A._[0]]
 if (!cmd) {
   console.error(`usage: run.mjs ${Object.keys(cmds).join('|')} --tree <worktree> …`)
