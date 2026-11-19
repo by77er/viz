@@ -1551,7 +1551,11 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   /**
    * "If this rule had existed": evaluate `rule` over [fromMs, toMs] with the engine's range
-   * query and run the result through the live state machine (`backtest.ts`).
+   * query and run the result through the live evaluation in time order (`backtest.ts`,
+   * `history.ts`). An alerting rule's points go to the alert state machine; an anomaly or SLO
+   * rule's go through its detector or burn-rate windows first, warmed from the history before
+   * `fromMs` as a new rule's warm-up would leave them, at the rule's interval (its step). Every read
+   * is planned first and refused, whole, over the backtest budget.
    */
   async backtest(tenant: string, rule: unknown, fromMs: number, toMs: number, stepMs: number, intervalMs?: number): Promise<BacktestResponse> {
     const bad = this.wrongTenant(tenant)
@@ -1564,27 +1568,57 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       const min = Math.ceil((toMs - fromMs) / (MAX_BACKTEST_STEPS - 1) / 1000) * 1000
       errors.push({ path: 'stepMs', message: `the range needs more than ${MAX_BACKTEST_STEPS} steps`, fix: `Use a step of at least ${min} ms, or a shorter range.` })
     }
-    const live = intervalMs ?? this.cfg.defaultIntervalMs
+    const o = (typeof rule === 'object' && rule !== null ? rule : {}) as { anomaly?: unknown; slo?: unknown }
+    const stateful = o.anomaly !== undefined || o.slo !== undefined
+    // A detector's step is the interval: an anomaly or SLO rule is backtested at its own interval.
+    const live = intervalMs ?? (stateful && whole(stepMs) ? stepMs : this.cfg.defaultIntervalMs)
+    if (stateful && errors.length === 0 && live !== stepMs) {
+      errors.push({ path: 'stepMs', message: `an ${o.slo !== undefined ? 'SLO' : 'anomaly'} rule is backtested at its interval (${formatDuration(live)}): its detector or windows count steps`, fix: `Use a step of ${formatDuration(live)}, or leave the interval out to test the rule at this step.` })
+    }
     const parsed = parseRuleFile({ groups: [{ name: 'backtest', interval: `${live}ms`, rules: [rule] }] }, this.cfg)
     for (const e of parsed.errors) errors.push({ ...e, path: e.path.replace(/^groups\[0\]\.rules\[0\]\.?/, 'rule.').replace(/\.$/, '') })
-    const parsedRule = parsed.groups[0]?.rules[0] as Rule | undefined
-    if (errors.length === 0 && parsedRule?.kind !== 'alert') errors.push({ path: 'rule', message: 'only an alerting rule can be backtested', fix: 'Give "alert" and "expr".' })
-    if (errors.length > 0 || !parsedRule || parsedRule.kind !== 'alert') return { status: 'invalid', errors }
-    let matrix: PromMatrix
-    let presence: PromMatrix | null = null
+    const parsedRule = parsed.groups[0] ? (allRules(parsed.groups[0])[0] as AnyRule | undefined) : undefined
+    if (errors.length === 0 && (!parsedRule || parsedRule.kind === 'record')) errors.push({ path: 'rule', message: 'a recording rule cannot be backtested', fix: 'Give "alert" with "expr", an "anomaly" block or an "slo" block.' })
+    if (errors.length > 0 || !parsedRule || parsedRule.kind === 'record') return { status: 'invalid', errors }
+
+    const budget = historyBudgets(this.cfg.limits).backtest
+    const opts = { resolvedRetentionMs: this.cfg.resolvedRetentionMs, limit: this.cfg.limits.maxAlertsPerRule, maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes, externalLabels: this.cfg.externalLabels }
+    const reads: Read[] = []
+    let warmFromMs = fromMs
+    let slo: ReturnType<typeof sloWarmReads> | null = null
+    if (parsedRule.kind === 'alert') reads.push({ promql: parsedRule.expr, fromMs, toMs, stepMs })
+    else if (parsedRule.kind === 'anomaly') {
+      warmFromMs = fromMs - anomalyWarmPoints(parsedRule, stepMs) * stepMs
+      reads.push({ promql: parsedRule.expr, fromMs: warmFromMs, toMs, stepMs })
+    } else {
+      slo = sloWarmReads(parsedRule, stepMs, fromMs - stepMs)
+      slo = { fine: { ...slo.fine, toMs }, coarse: slo.coarse }
+      warmFromMs = slo.fine.fromMs
+      reads.push(slo.fine)
+      if (slo.coarse) reads.push(slo.coarse)
+    }
+    const presenceAt = reads.length
+    if (parsedRule.noData?.expr) reads.push({ promql: parsedRule.noData.expr, fromMs, toMs, stepMs })
+    let fetched: Awaited<ReturnType<typeof fetchHistory>>
     try {
-      const range = this.rangeEvaluator()
-      matrix = await range.range(parsedRule.expr, fromMs, toMs, stepMs)
-      if (parsedRule.noData?.expr) presence = await range.range(parsedRule.noData.expr, fromMs, toMs, stepMs)
-      if (matrix.resultType !== 'matrix') throw new Error('the range evaluation did not return a matrix')
+      fetched = await fetchHistory(this.historyPlanner(), this.rangeEvaluator(), reads, budget)
     } catch (e) {
       return { status: 'failed', error: errorText(e) }
     }
-    const r = runBacktest({
-      rule: parsedRule, compiled: compileAlertRule(parsedRule), matrix, presence, fromMs, toMs, stepMs, liveIntervalMs: live,
-      opts: { resolvedRetentionMs: this.cfg.resolvedRetentionMs, limit: this.cfg.limits.maxAlertsPerRule, maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes, externalLabels: this.cfg.externalLabels },
-    })
-    return r.ok ? { status: 'ok', ...r.result } : { status: 'failed', error: r.error }
+    if (!fetched.ok) return { status: 'over_budget', message: `${fetched.refused}. Nothing was fetched: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, plan: fetched.plan, budget }
+    const presence = parsedRule.noData?.expr ? (fetched.matrices[presenceAt] ?? null) : null
+    const cost = { ...fetched.plan, budget }
+    if (parsedRule.kind === 'alert') {
+      const r = runBacktest({ rule: parsedRule, compiled: compileAlertRule(parsedRule), matrix: fetched.matrices[0]!, presence, fromMs, toMs, stepMs, liveIntervalMs: live, opts })
+      return r.ok ? { status: 'ok', ...r.result, kind: 'alert', warmup: null, cost } : { status: 'failed', error: r.error }
+    }
+    const input = { compiled: compileAlertRule(asAlerting(parsedRule)), fromMs, toMs, stepMs, opts, presence }
+    const r = parsedRule.kind === 'anomaly'
+      ? backtestAnomaly(parsedRule, fetched.matrices[0]!, warmFromMs, anomalyLimits(this.cfg), input)
+      : backtestSlo(parsedRule, (slo as NonNullable<typeof slo>).fine, (slo as NonNullable<typeof slo>).coarse, fetched.matrices[0]!, (slo as NonNullable<typeof slo>).coarse ? (fetched.matrices[1] ?? null) : null, input)
+    if (!r.ok) return { status: 'failed', error: r.error }
+    const warmReads = reads.slice(0, presenceAt).map((x) => ({ fromMs: x.fromMs, toMs: Math.min(x.toMs, fromMs - stepMs), stepMs: x.stepMs }))
+    return { status: 'ok', ...r.result, kind: parsedRule.kind, warmup: { reads: warmReads, points: r.warmPoints }, cost }
   }
 
   // ───────────────────────── moving a group between shards ─────────────────────────

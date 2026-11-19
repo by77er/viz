@@ -508,7 +508,9 @@ if (!window.vzChart) (function () {
       /* An error after a result was drawn: the message lies over the plot at its height; the legend keeps the previous result's figures. */
       setError(err) { st.error = err; draw() },
       text() { const id = root.dataset.textForm; return id ? document.getElementById(id)?.textContent : '' },
-      slot(k) { return slotOf(loadMap(view), k) } }
+      slot(k) { return slotOf(loadMap(view), k) },
+      /* The figures the legend shows for each series it lists, in the chart's number format: what a composition's stats and tables must agree with. */
+      figures() { const m = g.m, f = g.fmt; return m.listed.map((s) => ({ key: s.key, names: Object.values(s.labels), slot: s.slot, last: f.value(s.last), min: f.value(s.min), max: f.value(s.max) })) } }
   }
   window.vzChart = vzChart; window.vzChartDemos = demos
   window.vzChartRules = { assignSeries, newMap, slotOf, recolour, distinguish, fit, valueTicks, scaleUnit, numberFormat, chartModel, drawnSet, otherNote, chartFacts, textLines, seriesName }

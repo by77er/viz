@@ -178,8 +178,9 @@ export function parseSloSpec(c: ParseContext, v: unknown, path: string, interval
   // objective
   let objective = 0
   if (typeof v.objective !== 'number' || !Number.isFinite(v.objective) || !(v.objective > 0 && v.objective < 1)) {
-    const pct = typeof v.objective === 'number' && v.objective >= 1 && v.objective < 100
-    err(`${path}.objective`, 'objective must be a fraction between 0 and 1 (exclusive)', pct ? `Write ${v.objective}% as ${Number((v.objective / 100).toPrecision(12))}.` : 'Give the target fraction of good events, e.g. 0.999.')
+    const o = v.objective
+    const pct = typeof o === 'number' && o >= 1 && o < 100
+    err(`${path}.objective`, 'objective must be a fraction between 0 and 1 (exclusive)', pct ? `Write ${o}% as ${Number(((o as number) / 100).toPrecision(12))}.` : 'Give the target fraction of good events, e.g. 0.999.')
   } else objective = v.objective
 
   // compliance window
