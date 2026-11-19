@@ -53,3 +53,8 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 
 Each component has a README with what is implemented, what is not, how it was verified
 and its known risks.
+
+## Licence
+
+Apache-2.0 (`LICENSE`, `NOTICE`). Third-party material in the repository keeps its own licence;
+`THIRD_PARTY.md` lists each piece and how its obligations are met.

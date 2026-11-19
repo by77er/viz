@@ -1,5 +1,6 @@
 {
   "name": "viz-spec",
+  "license": "Apache-2.0",
   "version": "0.1.0",
   "private": true,
   "description": "Formal models of the viz write/read protocol (Quint + TLC, and an explicit-state checker in TypeScript) and their checks",

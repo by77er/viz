@@ -160,6 +160,21 @@ kernel kills processes when memory runs out.
 - If a run dies without a result, rerun it; never treat a missing result as a pass.
 - Stop servers you started when you finish.
 
+## Licensing
+
+- viz is Apache-2.0. Never copy, transcribe or port code, grammars, generated tables or tests
+  from a project whose licence is incompatible with it (AGPL, GPL, SSPL, BUSL and similar,
+  including Grafana Tempo, Loki and Mimir). Reimplement it clean-room: from public
+  documentation and black-box behaviour only, without reading the incompatible source, and
+  record what you consulted in a `CLEANROOM.md` next to the code.
+- An incompatible implementation may be used as a test oracle only as a separate program,
+  fetched or built at test time and never committed or shipped; its tests may be fetched at
+  test time as expected results, never stored here.
+- Anything copied from a compatible project (Apache-2.0, MIT, BSD, ISC, OFL for fonts) carries
+  its licence and notices next to it and gets a row in `THIRD_PARTY.md`.
+- Before adding a dependency that ships in a Worker, check its licence; copyleft is allowed
+  only as development tooling that is never bundled.
+
 ## Git
 
 - `node_modules/`, build output, `target*/`, Go module caches and third-party source

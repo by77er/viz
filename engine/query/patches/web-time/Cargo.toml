@@ -3,6 +3,7 @@
 [package]
 name = "web-time"
 version = "1.1.0"
+license = "Apache-2.0"
 edition = "2021"
 publish = false
 description = "std::time under web-time's name: no js-sys, no wasm-bindgen"

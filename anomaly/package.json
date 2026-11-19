@@ -1,5 +1,6 @@
 {
   "name": "@viz/anomaly",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "description": "Pure TypeScript anomaly detectors for the viz ruler (design §7). No I/O, no clocks, no randomness.",

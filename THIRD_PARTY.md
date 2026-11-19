@@ -19,5 +19,11 @@ time and never stored here. An earlier TraceQL crate that transcribed and ported
 code was removed from the tree on 2026-11-19 and is replaced, not shipped; git history still
 holds it. Each crate's `CLEANROOM.md` records what its author consulted.
 
-viz's own source has no licence yet: until one is chosen, the default is all rights reserved,
-even though the repository is public.
+viz itself is licensed under Apache-2.0 (`LICENSE`, `NOTICE`, decision D35). Everything in this
+table is compatible with it: Apache-2.0 and MIT material is redistributed with its notices,
+and the fonts stay under the OFL. A dependency licence check on 2026-11-19 found no copyleft
+package that ships: every npm dependency bundled into a Worker is MIT, ISC, BSD-3-Clause,
+Apache-2.0, BlueOak-1.0.0 or Unlicense, and every Rust dependency is permissive (`r-efi` is
+MIT OR Apache-2.0 OR LGPL-2.1, used under MIT/Apache). LGPL (`sharp`/libvips) and MPL
+(`lightningcss`, `axe-core`) packages appear only as development and test tooling, which is
+never bundled or distributed.

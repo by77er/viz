@@ -814,3 +814,23 @@ release deployed carries both migrations.
 nudges as well); publication must be fresher than a few minutes (then the ledger's drain
 nudges, with the call kept off its critical path); or the nudge RPC rate to one publisher
 object becomes a hot spot (then the maintenance consumer nudges once per batch).
+
+## D35. viz is Apache-2.0; TraceQL and LogQL are clean-room
+
+**Decision.** The owner chose Apache-2.0 for viz (2026-11-19). The query engines for TraceQL
+and LogQL, whose reference implementations (Grafana Tempo and Loki) are AGPL-3.0, are written
+clean-room from public documentation and checked against Tempo and Loki only as black boxes
+run at test time; their test suites are fetched at test time and never stored. An earlier
+TraceQL crate that transcribed Tempo's parser tables, ported its evaluator and vendored its
+tests was removed from the tree and is not shipped.
+
+**Alternatives.** AGPL-3.0 for all of viz, keeping the ported crate (simplest; every operator
+of a modified viz as a service must publish its source, and permissive or closed reuse is
+ruled out). Keeping TraceQL out of viz (no trace queries).
+
+**Why.** Everything else in viz is original or permissively licensed, the parsers are
+contained pieces, and differential testing against the real engines makes a clean-room
+rewrite checkable. Apache-2.0 keeps every later licensing option open.
+
+**Would change if.** A clean-room engine cannot reach useful conformance in reasonable time,
+or the owner decides viz should be copyleft.

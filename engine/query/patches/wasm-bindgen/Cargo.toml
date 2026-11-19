@@ -2,6 +2,7 @@
 [package]
 name = "wasm-bindgen"
 version = "0.2.130"
+license = "Apache-2.0"
 edition = "2021"
 publish = false
 description = "The one wasm_bindgen item chrono's `wasmbind` feature names; no bindings, no imports"
