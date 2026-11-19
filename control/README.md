@@ -36,6 +36,8 @@ credentials. Its one implementation is the API key: edge's `authenticate` (impor
 copied) proves possession of the secret against KV, then the caller's `Tenant` object says
 whether that key is still live and what its kind, name and scopes are. Sign-in is added by
 giving `identify` a second branch that returns `kind: 'user'`; no handler changes.
+OAuth access tokens are not credentials for this API: their audience is the agent surface's
+`/mcp` ("OAuth for agents" below), which calls this API with the grant's own agent key.
 
 - **The tenant is the credential's, always.** The Worker picks the `Tenant` object in one
   line, `idFromName(identity.tenant)`. No route has a tenant in its path. A request with
@@ -480,7 +482,7 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 npm install
 npm test             # 131 tests in 16 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 91 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
+npm run mutants      # 93 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
@@ -702,7 +704,19 @@ failed (a suite that crashed or hung is reported as `NO RESULT` and counts as no
 and refuses to run inside a git work tree: run it from `control/` in a copy of the
 repository (its header lists what the copy needs).
 
-**59–65** (the service surface, this change) were run on 2026-11-19 in a copy in a scratch
+**66–93** (OAuth, D44) were run on 2026-11-19 in a copy in a scratch directory outside git, in
+two batches, each taken from the shared tree after its unmutated suite passed there (129 of 129,
+then 131 of 131): `node scripts/mutants.mjs "oauth:"` (26), then the ones added or changed after
+the first copy. **28 of 28 killed in the end. One survived first and is reported here:** 88 (a
+code stored in clear) lived because every flow in the at-rest test ended in a code reuse, which
+deletes the grant's code rows before the dump; the test now keeps a spent code and an unexchanged
+one stored, checks two code rows exist, and 88 is killed. 85's text was updated when the
+approver check (92) changed the line it mutates, and it was run again: killed. 41, 42 (the refusal
+paths beside the changed constructor) and 58 (its anchor moved) were run again: killed. After the
+second batch the copy's `src/`, `contracts/`, `openapi.json`, mcp's `src/` and the gateway's were
+compared with the shared tree byte for byte: equal. 1–40, 43–57 and 59–65 were not re-run.
+
+**59–65** (the service surface, an earlier change) were run on 2026-11-19 in a copy in a scratch
 directory (`node scripts/mutants.mjs "service:"`): **7 of 7 killed**; the copy was taken from
 the shared tree after its suite passed 100 of 100. 1–58 were not re-run in this change.
 
@@ -780,6 +794,34 @@ first run, before a container restart, did not report, so this is their only res
 | 63 | service: a service key a person disabled is replaced | service (1) |
 | 64 | service: a rotation keeps the previous secret live | service (1) |
 | 65 | service: a person may create a key under the reserved `service:` prefix | service (1) |
+| 66 | oauth: a grant holds scopes its approver's key does not | oauth (1) |
+| 67 | oauth: `admin` stands for every grantable scope | oauth (1) |
+| 68 | oauth: an agent key may approve | oauth (1) |
+| 69 | oauth: approving needs only `dashboards:write`, not `admin` | oauth, openapi (2) |
+| 70 | oauth: the PKCE verifier is not checked at the token endpoint | oauth (1) |
+| 71 | oauth: plain PKCE (or none) accepted at `/oauth/authorize` | oauth (1) |
+| 72 | oauth: a used code is accepted again | oauth (3) |
+| 73 | oauth: code reuse refused but what it issued not revoked | oauth (2) |
+| 74 | oauth: refresh tokens not rotated (a used one stays valid) | oauth (1) |
+| 75 | oauth: refresh token reuse refused but the grant not revoked | oauth (1) |
+| 76 | oauth: redirect URI matched as a prefix at `/oauth/authorize` (open redirect) | oauth (1) |
+| 77 | oauth: redirect URI not checked at the token endpoint | oauth (1) |
+| 78 | oauth: an error redirected to the client's callback automatically (302) | oauth (1) |
+| 79 | oauth: the client id's signature not checked (tampered or forged registrations accepted) | oauth (1) |
+| 80 | oauth: an unapproved registration never expires | oauth (1) |
+| 81 | oauth: an expired access token is accepted | oauth (1) |
+| 82 | oauth: the audience is not checked | oauth (1) |
+| 83 | oauth: revoking a grant leaves its tokens | oauth (1) |
+| 84 | oauth: revoking a grant leaves its key (live in KV for the data path) | oauth (3) |
+| 85 | oauth: a suspended grant (its key disabled) still works at the resource | oauth (1) |
+| 86 | oauth: introspection answers for another tenant's object | golden, oauth (2) |
+| 87 | oauth: the token endpoint takes the tenant from a form field | rules (1) |
+| 88 | oauth: a code stored in clear, not hashed | **survived the first run**; after the test was strengthened: oauth (1) |
+| 89 | oauth: an error body repeats the presented code | oauth (1) |
+| 90 | oauth: a code nobody exchanged leaves its grant (and key) live | oauth (1) |
+| 91 | oauth: a grant's key can be rotated through the keys API | oauth (1) |
+| 92 | oauth: introspection ignores the approver's key | oauth (1) |
+| 93 | oauth: a credential naming an unprovisioned tenant creates storage for it | oauth (1) |
 
 Mutants 36–40 break `contracts/schema.ts`, the runner every component shares; they are run
 here because this suite tests it most fully.

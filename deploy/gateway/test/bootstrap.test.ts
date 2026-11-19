@@ -1,4 +1,6 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
+import { openSchema } from '../../../contracts/schema'
+import { TENANT_SCHEMA } from '../../../control/src/schema'
 import { env } from 'cloudflare:workers'
 import { authenticate } from '../../../edge/src/auth'
 import { describe, expect, it } from 'vitest'
@@ -21,10 +23,17 @@ async function setup(over: Partial<{ expiresAt: number; tenant: string }> = {}) 
   return { tenant, token, e, post }
 }
 
-/** The tenant's keys, counted inside its object. */
+/**
+ * The tenant's keys, counted inside its object. An object nobody provisioned has no storage at
+ * all (control/README.md, "Durable Object rules"), which is zero keys and a stronger "nothing
+ * was created".
+ */
 async function runCount(tenant: string): Promise<number> {
   const stub = env.TENANT.get(env.TENANT.idFromName(tenant))
-  return runInDurableObject(stub, (obj) => obj.all<{ n: number }>('SELECT COUNT(*) AS n FROM keys WHERE tenant = ?', tenant)[0]!.n)
+  return runInDurableObject(stub, (obj, state) => {
+    const tables = state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'keys'").toArray()
+    return tables.length === 0 ? 0 : obj.all<{ n: number }>('SELECT COUNT(*) AS n FROM keys WHERE tenant = ?', tenant)[0]!.n
+  })
 }
 
 describe('POST /api/v1/bootstrap', () => {
@@ -110,6 +119,8 @@ describe('POST /api/v1/bootstrap', () => {
     const stub = env.TENANT.get(env.TENANT.idFromName(tenant))
     // Storage as a newer, forward-only release of control left it: version and compat above what this code knows.
     const before = await runInDurableObject(stub, (_o, state) => {
+      // An unprovisioned object holds no storage: open it as this release would, then mark it newer.
+      openSchema(state.storage, TENANT_SCHEMA)
       state.storage.sql.exec('UPDATE viz_schema SET version = 99, compat = 99')
       return state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").toArray().length
     })

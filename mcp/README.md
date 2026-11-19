@@ -580,14 +580,14 @@ SDK v2 client as an MCP host would run it, against `wrangler dev` (local; `test/
 real control plane and agent surface, fake query service and ruler); the person's part through
 the control API; the browser's part by fetching the approval's redirect, which the script's own
 listener on the callback port receives. The signing key is generated per run and passed in an
-env file; wrangler runs in its own process group and is stopped with it. Run 2026-11-19 (the
-second run; the first also passed 16 of 16 but left wrangler running, since fixed), every
+env file; wrangler runs in its own process group and is stopped with it. Run 2026-11-19 on the
+final code (an earlier run also passed 16 of 16 but left wrangler running, since fixed), every
 credential redacted by the script, which also checks that none of the 7 it knows appears:
 
 ````
-viz OAuth flow, scripted: 2026-11-19T04:36:27.108Z, wrangler dev on http://127.0.0.1:8922 (local), client @modelcontextprotocol/client 2.4.0
+viz OAuth flow, scripted: 2026-11-19T05:19:57.319Z, wrangler dev on http://127.0.0.1:8922 (local), client @modelcontextprotocol/client 2.4.0
 
-0. setup (local only): tenant oauth-local-b8f16f66 with telemetry; a person's key "Dana" (admin and the five grantable scopes)
+0. setup (local only): tenant oauth-local-3eda8b50 with telemetry; a person's key "Dana" (admin and the five grantable scopes)
 
 1. the client connects with no token: 401, then discovery, registration and the authorization URL
   POST /mcp -> 401   WWW-Authenticate: Bearer realm="viz", resource_metadata="http://127.0.0.1:8922/.well-known/oauth-protected-resource/mcp", scope="read dashboards:read monitors:read"
@@ -655,7 +655,7 @@ viz OAuth flow, scripted: 2026-11-19T04:36:27.108Z, wrangler dev on http://127.0
   POST /mcp -> 401   WWW-Authenticate: Bearer realm="viz", resource_metadata="http://127.0.0.1:8922/.well-known/oauth-protected-resource/mcp", scope="read dashboards:read monitors:read", error="invalid_token", error_description="The access token is unknown, revoked or replaced."
   ok   the current access token is refused at once: 401 invalid_token
   GET /api/v1/control/oauth/grants?status -> 200
-  grant g_Awrady430qTdxCf0k7PK19: status revoked, reason refresh-reuse, revoked by system:oauth, key null
+  grant g_TxvywxgJ9v80XCOnSJER9o: status revoked, reason refresh-reuse, revoked by system:oauth, key null
   ok   the person sees the grant revoked for refresh-reuse, its key gone
   ok   no credential in this transcript (7 checked)
 
