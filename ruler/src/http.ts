@@ -484,8 +484,8 @@ async function listGroups(c: Call): Promise<Response> {
   return json(200, { groups: doc.groups.map((g, i) => ({ ...g, shard: (all[i] as { shard: string }).shard })) })
 }
 
-async function existingMonitors(c: Call): Promise<Map<string, AlertingRuleV2 | AnomalyRuleV2>> {
-  const out = new Map<string, AlertingRuleV2 | AnomalyRuleV2>()
+async function existingMonitors(c: Call): Promise<Map<string, MonitorRule>> {
+  const out = new Map<string, MonitorRule>()
   for (const f of alertingRules(await c.groups())) if (f.rule.monitor) out.set(f.rule.monitor.id, f.rule)
   return out
 }

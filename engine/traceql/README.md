@@ -90,6 +90,8 @@ Everything here is covered by `tests/api.rs` and the differential run unless not
 | `&&` / `||` inside a filter | one precedence level, left-associative: `{ a \|\| b && c }` is `(a \|\| b) && c` | `{ name="GET /" \|\| name="db" && kind=client }` returned only the client `db` spans |
 | spanset operators | `&&`, `\|\|` one level, left-assoc; structural operators bind tighter, left-assoc | `{ } \|\| { name="nope" } > { }` returned every span; `{a} > {} > {}` children of children |
 | comparisons with a missing value | false for every operator; only a literal `nil` tests presence | `{ span.cached != false }` does not match spans without `cached` |
+| empty arrays | neither `= nil` nor `!= nil`; no element compares | `{ span.ea != nil }` and `{ span.ea = nil && name = "query" }` both empty |
+| NaN | unequal to every number; skipped by `sum/avg/min/max_over_time` | `{ span.r != 1.5 }` matched r = NaN; `avg_over_time` over `[1.5, NaN, 2.5]` is 2 |
 | numbers | int, float, duration compare and combine by value; int/int division truncates (`5/2 = 2`) | `{ .n / 2 = 2 }` matched n=5; `{ .n * 1.0 > 4 }` matched 4.5 |
 | `resource.service.name` | a missing one reads as `""`; `= nil` is a validation error | `by(resource.service.name)` gave `""` for a resource without it |
 | event and link fields | the whole filter is evaluated per event (link); one event must satisfy it | `{ event:name = "log" && event.exception.message = "boom" }` empty when the two are on different events |
@@ -131,12 +133,21 @@ Measured here: Linux x86-64, 4 cores and 16 GB shared with other builds (load av
 9–19 during these runs), rustc 1.97.0, Go toolchain 1.27.3 (fetched), Node 22.23. Not on
 Cloudflare. `CARGO_TARGET_DIR` was outside the repository.
 
-```sh
-tools/fetch_tempo_tests.sh                  # oracle list into testdata/upstream (git-ignored)
-cargo test -j 2                             # api, conformance, props, unit
-PROPTEST_CASES=2000 cargo test --release --test props
-python3 -I tools/mutate.py $SCRATCH         # mutants, on a copy
-```
+**What `cargo test -j 2` runs** (as CI does, `deploy/ci/matrix.mjs`): offline, with no
+Go and no network: `tests/api.rs` (14 tests), `tests/props.rs` (6 properties, 48 cases
+each), `tests/conformance.rs` (prints `SKIPPED: … not found` and passes when the Tempo list
+has not been fetched), and the differential exporter, which is `#[ignore]`d. Nothing in the
+default run needs Tempo, its corpus or Go. The checks that do are explicit commands:
+
+| Check | Command (from `engine/traceql`) | Needs |
+|---|---|---|
+| Conformance against Tempo's example list | `tools/fetch_tempo_tests.sh && cargo test --test conformance -- --nocapture` | network (raw.githubusercontent.com); the file lands in git-ignored `testdata/upstream/` |
+| Differential run against Tempo | the commands in `tools/godiff/README.md` | Go and the Go module proxy (fetches Tempo v3.1.1 and toolchain go1.27.3, about 1.1 GB, outside the repository) |
+| Black-box probes | `VIZ_TQ_WORK=$SCRATCH python3 -I tools/probes/probe.py <queries.txt> [search\|range\|instant]` | the godiff binary in `$SCRATCH/bin` |
+| Long property run | `PROPTEST_CASES=2000 cargo test --release --test props` | |
+| Mutation checks | `python3 -I tools/mutate.py $SCRATCH` (copies the crate; never edits it) | |
+| WASM size and load | `tools/wasm-probe`: `cargo build --release --target wasm32-unknown-unknown` with the flags below, then `node check.mjs <module>` | Node |
+| Benchmark | `cargo run --release --example bench -- 20000 5` | |
 
 ### 1. Conformance against Tempo's example list (behavioural oracle)
 
@@ -168,50 +179,44 @@ up to 3 s, floats including NaN, ±Inf, ±0.0, 1e-300 and ints up to 2^53+1. Que
 feature in "Implemented"; search with limit 100,000 and spss 100,000; metrics with steps
 30 s, 60 s, 7 s (unaligned end) and instant.
 
-Four final runs, all on the final code (the comparison rules were last changed after
-these runs and re-applied to the same outputs):
+Four final runs on the final code:
 
 | Run | Seed | Queries | Data sets | Cases | Agree | Both reject | Classified | **Unexplained** |
 |---|---:|---|---:|---:|---:|---:|---:|---:|
-| A | 1 | one feature per query | 10 | 600 | 382 | 79 | 139 | **0** |
-| B | 2 | nested (operators, pipelines, arithmetic combined) | 10 | 600 | 385 | 86 | 126 | **3** |
-| C | 3 | one feature per query | 20 | 1,200 | 741 | 145 | 310 | **4** |
-| D | 4 | nested | 20 | 1,200 | 712 | 185 | 298 | **5** |
-| **total** | | | 60 | **3,600** | **2,220** | **495** | **873** | **12** |
+| A | 1 | one feature per query | 10 | 600 | 381 | 79 | 140 | **0** |
+| B | 2 | nested (operators, pipelines, arithmetic combined) | 10 | 600 | 386 | 86 | 128 | **0** |
+| C | 3 | one feature per query | 20 | 1,200 | 743 | 145 | 312 | **0** |
+| D | 4 | nested | 20 | 1,200 | 715 | 185 | 300 | **0** |
+| **total** | | | 60 | **3,600** | **2,225** | **495** | **880** | **0** |
 
 Every one of viz's 3,105 JSON answers decoded strictly into Tempo's `SearchResponse` /
 `QueryRangeResponse` protobuf types (unknown fields rejected); none failed.
 
-Classified differences, by rule (all four runs): `ambiguous_root` 264, `event_link_values`
-119 (+52 metrics), `tempo_negation_pushdown` 95 (+14 metrics), `tempo_typed_pushdown` 62,
-`tempo_unscoped_nil` 59, `unrooted_structure` 51 (+18 metrics), `tempo_union_structural` 41
-(+6 metrics), `tempo_sum_missing_value` 33, `tempo_metrics_intrinsic_arithmetic` 23,
-`tempo_after_select` 16, `tempo_avg_negative_int` 9, `tempo_regex_error` 4,
-`tempo_meta_missing` 3, `infinite_average` 1, `tempo_zero_span_ids` 1,
-`tempo_missing_trace_id` 1, `ambiguous_root_metrics` 1.
+Classified differences, by rule (all four runs): `ambiguous_root` 264 (+1 metrics),
+`event_link_values` 119 (+53 metrics), `tempo_negation_pushdown` 94 (+13 metrics),
+`tempo_typed_pushdown` 62, `tempo_unscoped_nil` 59, `unrooted_structure` 51 (+18 metrics),
+`tempo_union_structural` 41 (+2 metrics), `tempo_sum_missing_value` 33,
+`tempo_metrics_intrinsic_arithmetic` 22, `tempo_after_select` 15, `tempo_avg_negative_int` 9,
+`tempo_field_read_under_condition` 8, `tempo_regex_error` 4, `infinite_average` 3,
+`tempo_bare_bool_or` 3, `tempo_meta_missing` 3, `tempo_zero_span_ids` 1,
+`tempo_missing_trace_id` 1, `tempo_nil_ne_missing` 1. (A case counts under the first rule
+that explains it, in the order of `tools/compare.py`.)
 
-**The 12 unexplained differences are not resolved.** They are reported, not hidden; each
-may be a viz bug. Targeted probes did not reproduce them in isolation (a bare boolean in
-`||`, for example, behaves the same in both engines on small data).
+An earlier pass of these four runs left 12 cases unexplained. Each was settled by a probe
+(`tools/probes/`, Tempo on a small hand-made data set):
 
-| Run, case | Query |
-|---|---|
-| B 320 | `{ (span.n > 200 \|\| span:kind != unspecified) && trace:id = "4d57…4f44" } !< { span:kind = unspecified } \| min_over_time(span:duration) by (span:kind, span.n)` |
-| B 350 | `{ (span.cached \|\| span.retries > -1) && span:name != "render" && kind = internal } \| count_over_time()` |
-| B 542 | `{ rootServiceName = "cache" \|\| status = ok } \| avg_over_time(span.n) by (span:kind, status)` |
-| C 368 | `{ .rint > 0 } << { span.tags != nil } \| rate()` |
-| C 593 | `{ } \| avg_over_time(span.f) by (span:kind) \| bottomk(2)` |
-| C 677 | `{ span.n <= -1 } && { .ratio != 1.5 } \| max_over_time(span.n) by (span.n) \| topk(2)` |
-| C 772 | `{ span.http.status_code > -1 } !>> { span.tags != nil } \| { trace:id = "475f…323e" }` |
-| D 595 | `{ kind != internal } \| { (instrumentation:version = "0.9" \|\| span.http.route = nil) && span.http.route != "b" }` |
-| D 828 | `{ instrumentation:version = "1.2.0" \|\| .cached } \| select(span:kind, .http.status_code)` |
-| D 911 | `({ span.n > 0 } \|\| { span:duration < 0 } \| histogram_over_time(duration) by (resource.service.name, .env)) - 0.5` |
-| D 1103 | `{ span:duration <= 2.5s } !<< { instrumentation:version = "" } \| avg_over_time(span.f)` |
-| D 1143 | `{ .region = "GET" } << { !(span:childCount > 2) && resource.rint < -1 } !~ { … } \| coalesce() \| select(…)` |
+| Case | Cause | Settled by |
+|---|---|---|
+| C 368, C 772 | Tempo treats an empty array as neither `= nil` nor `!= nil`; viz treated it as present | **viz fixed** (`nil_test`); regression asserts in `regex_is_anchored_and_arrays_match_elements` |
+| D 1103 | Tempo's `avg_over_time` (and `min/max`) skip NaN values; viz propagated NaN | **viz fixed**: sums and averages skip NaN; regression asserts in `metrics_values_and_labels` |
+| B 320, B 542, C 677, D 911 | Tempo reads a field used by `by()` or the metrics function only where a filter condition on it held (`{ .n > 0 } \|\| { duration < 0 } \| histogram_over_time(duration)` returned nothing) | rule `tempo_field_read_under_condition` |
+| B 350, D 828, D 1143 | a bare boolean attribute in `\|\|` requires the attribute to exist in Tempo | rule `tempo_bare_bool_or` |
+| D 595 | a missing attribute satisfies `!=` in Tempo when the same filter also tests it against `nil` | rule `tempo_nil_ne_missing` |
+| C 593 | an infinite average (viz) is NaN in Tempo and shifts which series `bottomk` keeps | rule `infinite_average`, extended to `topk`/`bottomk` at those points |
 
 To reproduce: the commands in `tools/godiff/README.md` with `VIZ_DIFF_SEED=1..4`,
 `VIZ_DIFF_DEPTH=0` (A, C) or `1` (B, D), `VIZ_DIFF_DATASETS=10` (A, B) or `20` (C, D),
-`VIZ_DIFF_QUERIES=60`; `tools/compare.py --show N` prints each unexplained case.
+`VIZ_DIFF_QUERIES=60`; `tools/compare.py --show N` prints any unexplained case.
 
 **viz bugs found by the differential run and fixed** (each has a test in `tests/api.rs`):
 a missing attribute satisfied `!=`; an aggregate over no values satisfied `!=`; `NaN != x`
@@ -220,7 +225,8 @@ was false; metrics points were offsets from `start` instead of multiples of the 
 bucket bound instead of the previous bucket; `2^53+1` was bucketed above `2^53`; result
 keys used `span:kind` instead of `kind`; `&&` bound tighter than `||` in filters and
 structural operators bound as loosely as `&&`/`||`; spanset operators accepted a wrapped
-pipeline next to a plain filter; quantile series without countable values were returned.
+pipeline next to a plain filter; quantile series without countable values were returned;
+an empty array satisfied `!= nil`; NaN values poisoned `sum/avg_over_time`.
 The typed-literal rule first copied from Tempo's storage path was replaced by Tempo's
 evaluator rule (below).
 
@@ -243,7 +249,10 @@ evaluator rule (below).
 | `tempo_regex_error` | Tempo defect | "unexpected numbers of pre-compiled regexp" on a valid query |
 | `tempo_missing_trace_id` | Tempo defect | a result trace without `traceID` |
 | `tempo_meta_missing` | Tempo defect | `rootTraceName`/`durationMs` empty after `coalesce()` |
-| `infinite_average` | precision | ±Inf in a bucket: viz's exact sum gives ±Inf, Tempo's running mean NaN |
+| `infinite_average` | Tempo defect | ±Inf in a bucket: viz's exact sum gives ±Inf for `avg_over_time`; Tempo's running mean depends on order (`[inf, 3]` → no sample, `[3, inf]` → Inf), which can also change what `topk`/`bottomk` keep |
+| `tempo_field_read_under_condition` | Tempo defect | a field used by `by()` or the metrics function is read only where a filter condition on that field held: `{ name != "zzz" \|\| span.n > 4 } \| count_over_time() by (span.n)` grouped n = 1..4 under `nil`; with `\|\| status = ok` and an attribute-reading function, error spans lost `status` |
+| `tempo_bare_bool_or` | Tempo defect | `{ instrumentation:version = "1.0" \|\| .b }` matched only spans that have `b`; `... \|\| .b = true` matched every 1.0 span |
+| `tempo_nil_ne_missing` | Tempo defect | `{ (name = "zzz" \|\| span.foo = nil) && span.foo != "bar" }` matched spans without `foo`; `{ name = "query" && span.foo != "bar" }` did not |
 
 Echoed span attributes are compared separately. Keys only one side echoes are counted per
 kind, not as differences (across the four runs: viz only 50,620 — viz echoes every field
@@ -374,12 +383,10 @@ storage evaluates it on row-group statistics and skips I/O, which is not measure
 
 ## Known risks
 
-- **Tempo compatibility is not equality.** Fourteen kinds of Tempo behaviour that viz does
+- **Tempo compatibility is not equality.** Seventeen kinds of Tempo behaviour that viz does
   not reproduce are listed above; clients that depend on them (for example on
   `{ !(…) }` returning nothing) will see different answers. Where the documentation states
   the behaviour, viz follows the documentation.
-- **12 unexplained differences remain** in the differential run (section 2, 12 of 3,600
-  cases); they may be viz bugs.
 - **Precedence of `&&`/`||`** follows Tempo's observed behaviour, which differs from most
   languages; a later Tempo release may change it.
 - **Memory**: evaluation holds one trace at a time plus the search results and the metrics
