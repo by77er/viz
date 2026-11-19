@@ -1,7 +1,7 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { expect } from 'vitest'
-import { encodeLedgerSegment, ledgerSegmentKey, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type Table } from '../../contracts/ledger'
+import { encodeLedgerSegment, ledgerSegmentKey, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type LedgerTable, type Table } from '../../contracts/ledger'
 import type { Ledger } from '../../ledger/src/ledger'
 import { readAvro } from '../src/avro'
 import type { ManifestEntryRecord, ManifestListRecord, TableMetadata } from '../src/iceberg'
@@ -139,7 +139,7 @@ export const putSegment = async (cell: string, tenant: string, incarnation: numb
   return key
 }
 
-export const liveKeys = async (tenant: string, table: Table): Promise<string[]> =>
+export const liveKeys = async (tenant: string, table: LedgerTable): Promise<string[]> =>
   (await ledger(tenant).plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files.map((f) => f.key).sort()
 
 export const ledgerVersion = async (tenant: string) => {

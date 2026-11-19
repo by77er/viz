@@ -136,6 +136,25 @@ const mutants = [
   { id: 'K8', what: 'a re-base that stopped still hands on its base: what it staged is published', file: L, tests: ['test/checkpoints.test.ts'],
     edits: [["      return result(ck.status, { detail: ck.reason })", "      return result('ok', { detail: ck.reason, base: { version: 0, source: 'checkpoint', format: 2, files: 0, tombstones: 0, objects: 0, window: 0, passedOver: [] } })"]] },
 
+  // ── the span and log tables: read, recorded, never published, never a stop (D64; test/signals.test.ts) ──
+  { id: 'U1', what: 'stop on an unknown table: the span and log tables unknown again (a change naming one stops the tenant, metrics included)', file: L, tests: ['test/signals.test.ts'],
+    edits: [['const TABLES: ReadonlySet<string> = new Set<string>([...PUBLISHED_TABLES, ...UNPUBLISHED_TABLES])', 'const TABLES: ReadonlySet<string> = new Set<string>([...PUBLISHED_TABLES])']] },
+  { id: 'U2', what: 'a span file published into the metrics table (a tenant read from its cursor)', file: P, tests: ['test/signals.test.ts'],
+    edits: [['        if (f.table !== table) continue\n        if (live(f.key))', "        if (f.table !== table && !(table === 'metric_samples' && f.table === 'spans')) continue\n        if (live(f.key))"]] },
+  { id: 'U2b', what: 'a span file published into the metrics table (a re-base: the changes after its base)', file: P, tests: ['test/signals.test.ts'],
+    edits: [['          if (f.table !== table) continue\n          if (this.staged(table, tenant, f.key))', "          if (f.table !== table && !(table === 'metric_samples' && f.table === 'spans')) continue\n          if (this.staged(table, tenant, f.key))"]] },
+  { id: 'U2c', what: 'a span file published into the metrics table (a re-base: the files of its base or checkpoint staged as metric files)', file: L, tests: ['test/signals.test.ts'],
+    edits: [
+      ['    if (this.other.took(f)) return\n    this.f.push(f)', "    this.other.took(f)\n    if (!isPublished(f.table) && f.table !== 'spans') return\n    this.f.push(f.table === 'spans' ? { ...f, table: 'metric_samples' } : f)"],
+      ['          if (other.took(f)) counted++\n          else fs.push(f)', "          if (other.took(f) && f.table !== 'spans') counted++\n          else fs.push(f.table === 'spans' ? { ...f, table: 'metric_samples' } : f)"],
+    ] },
+  { id: 'U3', what: 'removedFiles filtering out the new tables (their removals never read)', file: L, tests: ['test/signals.test.ts'],
+    edits: [['      removedFiles.push({ key: r.key, table: r.table })', '      if (isPublished(r.table)) removedFiles.push({ key: r.key, table: r.table })']] },
+  { id: 'U4', what: 'their removed files released although a newer publisher has a table of that name', file: P, tests: ['test/signals.test.ts'],
+    edits: [['        if (owned.get(n.table)) continue\n', '']] },
+  { id: 'U5', what: 'their removed files released at once, without the delete grace', file: P, tests: ['test/signals.test.ts'],
+    edits: [['for (const key of n.release) this.recordRemoved(n.table, n.tenant, key, 0, now)', 'for (const key of n.release) this.recordRemoved(n.table, n.tenant, key, 0, now - 365 * 86_400_000)']] },
+
   // ── never upstream of ingest (D15), and nothing while idle (D34) ──
   { id: 'I1', what: 'a nudge waits for the publisher however long it takes', file: N, tests: ['test/triggers.test.ts'],
     edits: [['    return await Promise.race([call, late])', '    return await call']] },

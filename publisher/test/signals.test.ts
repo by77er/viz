@@ -29,7 +29,6 @@ import {
   TABLES,
   addUnit,
   dayOf,
-  dropCheckpoints,
   expectVerified,
   fileFor,
   fresh,
@@ -207,7 +206,8 @@ describe('a publisher that reads the span and log tables and does not publish th
     await addUnit(t, spanUnit(t, 1, T0 + 5 * HOUR), { drain: true })
     await addUnit(t, logUnit(t, 1, T0 + 2000))
     await addUnit(t, pairUnit(cell, t, 2, 2, T0 + DAY_MS + 1000), { drain: true })
-    const stage1 = await segmentsNow(t)
+    const live = async () => Object.fromEntries(await Promise.all(TABLES.map(async (table) => [table, await liveKeys(t, table)] as const)))
+    const stage1 = { log: await segmentsNow(t), live: await live() }
     // Then: spans, logs, a log day and a metric day expired, a compaction, more metrics.
     await addUnit(t, spanUnit(t, 2, T0 + DAY_MS + 6 * HOUR), { drain: true })
     await addUnit(t, logUnit(t, 2, T0 + DAY_MS + 3000), { drain: true })
@@ -220,8 +220,8 @@ describe('a publisher that reads the span and log tables and does not publish th
     expect(await l.replace({ remove: [u2, u3], add: [merged] })).toMatchObject({ status: 'ok' })
     expect((await l.expire({ tables: ['metric_samples', 'metric_series'], beforeDay: dayOf(T0 + DAY_MS) })).removed).toHaveLength(2)
     await addUnit(t, spanUnit(t, 3, T0 + DAY_MS + 7 * HOUR), { drain: true })
-    const stage2 = await segmentsNow(t)
-    expect(Object.values(stage2).join('')).toMatch(/"table":"spans"/)
+    const stage2 = { log: await segmentsNow(t), live: await live() }
+    expect(Object.values(stage2.log).join('')).toMatch(/"table":"spans"/)
 
     type Run = { publish: (tenants: string[]) => Promise<{ tenants: { status: string; unpublished?: unknown }[] }>; determinism: (seed: number, now: number) => Promise<void> }
     const variants: [string, Run, (body: string) => string][] = [
@@ -235,11 +235,11 @@ describe('a publisher that reads the span and log tables and does not publish th
       await p.determinism(20261119, Date.UTC(2026, 10, 19))
       runs[name] = []
       for (const stage of [stage1, stage2]) {
-        for (const [k, body] of Object.entries(stage)) await env.BUCKET.put(`${cell}/${k}`, rewrite(body))
+        for (const [k, body] of Object.entries(stage.log)) await env.BUCKET.put(`${cell}/${k}`, rewrite(body))
         const r = await p.publish([t])
         expect(r.tenants[0], name).toMatchObject({ status: 'ok' })
         expect(r.tenants[0]!.unpublished !== undefined, name).toBe(rewrite === variants[0]![2])
-        await metricsAsLedger(cell, t)
+        for (const table of TABLES) expect(await icebergLive(cell, table), `${name}: ${table}`).toEqual(stage.live[table])
         runs[name]!.push(await icebergObjects(cell))
       }
     }
@@ -430,6 +430,9 @@ describe('releases N and N-1 side by side (contracts/COMPATIBILITY.md §6): why 
     const a = fresh()
     const t = a.tenant('side')
     const before = await logWithSignals(a.cell, t)
+    // Retention of the first day's logs, after the stop: N-1 never reads it, N releases the file.
+    const expired = (await ledger(t).expire({ tables: ['logs'], beforeDay: dayOf(T0 + DAY_MS) })).removed
+    expect(expired).toHaveLength(1)
     await mirror(t, a.cell)
     const b = fresh()
     await mirror(t, b.cell)
@@ -447,9 +450,11 @@ describe('releases N and N-1 side by side (contracts/COMPATIBILITY.md §6): why 
 
     const now = publisher(b.cell)
     const r = (await now.publish([t])).tenants[0]!
-    expect(r).toMatchObject({ status: 'ok', cursors: { metric_samples: await ledgerVersion(t) }, unpublished: { spans: 1, trace_index: 1, logs: 1 } })
+    expect(r).toMatchObject({ status: 'ok', cursors: { metric_samples: await ledgerVersion(t) }, unpublished: { spans: 1, trace_index: 1, logs: 0 } })
     await metricsAsLedger(b.cell, t)
     expect(await now.pending()).toEqual([])
+    await now.advanceClock(7 * DAY_MS)
+    expect(await now.safeToDelete(t)).toEqual(expired)
   })
 
   it('a rollback from N to N-1 on N\'s storage: N-1 opens it, publishes until the next span or log change, then stops; rolled forward, N catches up and counts right', async () => {
@@ -498,6 +503,3 @@ describe('releases N and N-1 side by side (contracts/COMPATIBILITY.md §6): why 
     expect(await metadataVersions(cell, 'metric_samples')).toEqual([1, 2, 3])
   })
 })
-
-// Unused-import guard for helpers this file relies on only through types.
-void dropCheckpoints

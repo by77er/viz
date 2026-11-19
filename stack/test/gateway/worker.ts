@@ -17,7 +17,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { type Env as GatewayEnv, handle } from '../../../deploy/gateway/src/index'
 import query, { type Env as QueryEnv } from '../../../query/src/index'
-import stack, { type StackEnv } from '../../src/index'
+import stack, { type StackEnv, handleQueue } from '../../src/index'
 
 export { Flush, Ledger, Shard } from '../../src/index'
 export { Leaf } from '../../../query/src/index'
@@ -35,14 +35,14 @@ const flagsOff = (props: unknown): boolean => (props as { signals?: unknown } | 
 
 export default {
   fetch: (req, env) => handle(req, env),
-  queue: (batch, env, ctx) => stack.queue!(batch, env, ctx),
+  queue: (batch, env) => handleQueue(batch, env),
 } satisfies ExportedHandler<E2EEnv>
 
 /** viz-ingest's fetch, as the gateway's INGEST (or INGEST_OFF) binding reaches it. */
 export class Ingest extends WorkerEntrypoint<E2EEnv> {
   async fetch(req: Request): Promise<Response> {
     const env = flagsOff(this.ctx.props) ? { ...this.env, INGEST_SIGNALS: undefined } : this.env
-    return stack.fetch!(req as Parameters<NonNullable<typeof stack.fetch>>[0], env, this.ctx)
+    return stack.fetch(req as Parameters<typeof stack.fetch>[0], env)
   }
 }
 
