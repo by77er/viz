@@ -56,7 +56,157 @@ system itself (`src/`, `project/`, `tools/`, `dist/`), `reviews/` and `app/` wer
 | Keys at 400 px measured 0 hit areas (v4's Keys measures 0 with v5's tool too) | `shots.mjs` takes the first `.vz-scrim` in the page for the open dialog, even a hidden one, and measures only inside it | A dialog's scrim class is set only while it is shown (`data-scrim`; G24) |
 | The row menu at 400 px drawn at the foot of a 1,900 px page | A menu is a sheet across the bottom of the screen with a coarse pointer; a page-tall capture puts the screen's bottom at the page's | Menu states at 400 px imaged at a phone's height, 800 px |
 
-MEASUREMENTS-V5
+### Measured
+
+All on this machine (4 cores, shared). The 1-minute load average is given beside every run.
+
+**Touch and overflow at 400 px**, `node build.mjs --shots` (`measurements.txt`), 02:24 to 02:38 UTC, load
+12.6 to 19.7. 91 captures; 49 of them at 400 px with a coarse pointer and touch, both themes:
+
+| | v4 screens (same tool, same session) | v5 screens |
+|---|---|---|
+| Sideways overflow, every capture (1440, 400, 200% zoom) | 0 px | **0 px** |
+| Hit areas measured at 400 px | 584 in 30 captures | 915 in 49 captures |
+| Under 44 px | 1 (Zoom in, 29 px, under the open Silence menu) | **0** |
+| Drawn boxes reached by a neighbour's area | 0 | **0** |
+| Covered at their centre | 1 ("Read the report", under the Silence menu) | 8: in `4-monitor-silence-menu-400-{light,dark}` the open menu is a sheet at the foot of the screen and lies over four controls (the plot, Zoom in, two legend heads). That is a sheet while it is open; it closes on a press outside (G27) |
+| Links inside sentences | 11 (in 5, 6, 7 and 11's sub-lines and help lines) | **3**, all the same one: 7's runbook warning ("The runbook Checkout latency links to this panel"), a secondary path, in the form the Changes component itself gives; no main path is a link inside a sentence |
+| Keys at 400 px | 0 areas (the tool skipped the page: G24) | 10; the row menu's sheet rows, which the tool lists as inside the table's scrolling wrap, measured directly: Rename and Revoke key… 384 x 44 px, each owning its centre |
+| Smallest text | 11 px | 11 px (`micro`, chart axes); no sans text in tabular figures |
+
+(A stray re-run of `--shots` at 02:59, stopped within seconds, re-rendered the 1, 2 and part of the 3
+images from the same pages; `measurements.txt` is the 02:38 run's.)
+
+**Layout shift**, `node build.mjs --shift --runs 3` (`shift.txt`), 02:53 to 02:58 UTC: 400 x 800,
+coarse pointer and touch, CPU 4x, Fast 4G, each page opened scrolled to one chart with the chart's data
+drawn 800 ms after the page painted. 3 runs per chart, not 10 or 20: cut short when v6 was announced,
+so these are a small sample. Layout shift does not depend on speed and is judged at any load.
+
+| Chart | v5: p75 (median, worst) | v5 reserved / drawn, px | v5 load | v4: p75 (median, worst) | v4 reserved / drawn, px | v4 load |
+|---|---|---|---|---|---|---|
+| 2 Latency by route | 0.0000 (0.0000, 0.0000) | 490 / 487 | 12.1 to 12.5 | **0.6426** (0.4552, 0.6426) | 0 / 496 | 12.5 to 13.4 |
+| 2 Server errors by route | 0.0000 (0.0000, 0.0000) | 490 / 487 | 12.1 to 12.4 | 0.0000 | 0 / 496 | 12.3 to 13.5 |
+| 4 p99 by route | 0.0000 (0.0000, 0.0000) | 490 / 487 | 12.0 to 12.4 | 0.0000 | 0 / 496 | 12.3 to 13.5 |
+| 5 Backtest, 1 series | 0.0000 (0.0000, 0.0000) | 292 / 291 | 12.0 to 12.6 | **0.0505** | 0 / 300 | 12.0 to 13.5 |
+| 5 Backtest, 36 pods | 0.0000 (0.0000, 0.0000) | 750 / 740 | 12.2 to 12.6 | **0.1214** | 0 / 722 | 12.0 to 13.2 |
+| 6 Dependency latency (agent's) | 0.0000 (0.0000, 0.0000) | 410 / 407 | 12.2 to 13.1 | **0.1465** | 0 / 416 | 11.9 to 13.2 |
+| 7 New panel, dependency latency | 0.0000 (0.0000, 0.0000) | 410 / 407 | 12.3 to 13.1 | **0.4561** | 0 / 416 | 11.9 to 13.3 |
+| 9 Duration of POST /v2/orders | 0.0000 (0.0000, 0.0000) | 418 / 416 | 12.3 to 13.1 | 0.0000 | 0 / 425 | 11.6 to 13.3 |
+| 10 Error lines per minute | 0.0000 (0.0000, 0.0000) | 372 / 371 | 12.1 to 13.6 | 0.0000 | 0 / 380 | 11.6 to 13.1 |
+
+v5: within 0.05 on every chart. Every chart reserves 1 to 3 px more than it draws (10 px for 36
+pods): no shift, a gap of that size under the legend; v5's fixture measured reserved equal to drawn,
+so the difference is worth a look in v6. v4: nothing reserved, over budget on five charts. The four v4
+zeros are charts where the content under the chart did not move in the viewport (probably the
+browser's scroll anchoring holding it, so the chart grew above the reader instead); not verified.
+
+**Overflow beyond the required widths** (`tools/shots.mjs`, 320 px coarse and 200% zoom, every screen,
+02:58 UTC, load 11.4 to 13.7): 0 px everywhere except **12 Who is notified, 34 px at 320 and 144 px at
+200% zoom**, and **7 Proposed change, 27 px at 320**. On 12 at 200% (720 CSS px) Routes and Silences
+do not fold above 640 px, scroll inside their wraps, and the Silences head's visually hidden "Actions"
+(`vz-sr`, absolutely placed) escapes the wrap: the v5 review's B2.1. At 320 the Silences row (key,
+Until and End silence) is wider than the screen. The cause on 7 at 320 was not found in the time left.
+
+**`check.mjs`**: `node design-system/tools/check.mjs design-system/flows`: contrast and structure
+586/586 checks pass; literal values 0 in 14 files (12 screens, `build.mjs`, `fixture.js`).
+
+### The 16 system gaps of revision 2, on v5
+
+| # | Gap (revision 2) | v5 | In the screens now |
+|---|---|---|---|
+| G1 | Hidden skip link took 32 px above the nav | Closed | Work-around removed; every page starts its nav at the top (compare any v4/v5 pair at 1440) |
+| G2 | Page state a wrapping flex row | Closed | Mark and words in one run, no inline style or `&nbsp;` |
+| G3 | Menu: no note, no confirming button, no anchoring | Closed (`vz-menu-anchor`, `vz-menu-note`, sheet on phones) | Silence menu and Keys' row menu use them |
+| G4 | `vz-help` a flex row | Closed | Help lines are plain runs of text. New, nearby: G18 |
+| G5 | No trace waterfall | Closed (Waterfall) | Screen 9. What remains: the behaviour (tree keyboard, collapse, detail) is a preview script, copied into the screen (G25) |
+| G6 | No log line | Closed (Log) | Screen 10. What remains: the live tail's batching and "Show all N lines" are preview script or specified only (G25) |
+| G7 | Folded `vz-num` swallowed its label's space | Closed | Folded figures are `vz-num` with `data-label` again (Started, Own, Starts at, Requests, p50, Panels) |
+| G8 | Long axis unit off the page | Closed | "lines/min" written in full on the log chart |
+| G9 | A 2.5 step printed "3" | Closed in the system | No flows chart lands on such a step, so nothing changed here |
+| G10 | No multi-line field | Closed (`textarea.vz-input`) | New monitor's Message |
+| G11 | No component for an outbound message | **Not taken** by v5 (its look belongs to the phone and chat products) | Screen 11 still specifies the page and the channel message as content (`vz-kv`, `vz-diff`) |
+| G12 | A link drawn as a button kept its underline | Closed | First-run "New key" is a link drawn as a button again |
+| G13 | The row whose detail is shown had no mark | Closed | Slowest traces' chosen row, and the waterfall's chosen span, are drawn |
+| G14 | No body paragraph in a page | Closed (`vz-text`, `vz-secondary`, `vz-dialog-text`) | `flow-said` removed |
+| G15 | Chart marker words could not carry the agent's rule | Closed (`agent: true`) | "Agent: slow since 12:58" drawn with the rule |
+| G16 | No mark for "notification sent" or "escalated" | Closed as a rule (the info bar; who was told is in the sentence) | Screens 4 and 11 |
+
+**Closed by v5: 15 of 16** (G9 needed nothing here). **Remaining: G11.**
+
+### New gaps found on v5
+
+Each is worked around in `flows/` with existing components; nothing in the system was edited.
+
+| # | Gap | Effect | Work-around |
+|---|---|---|---|
+| G17 | `vz-table-caption` is a flex row (v5's strip), so the spaces around an inline element collapse | "up to1,284 req/sand1.69%errors" | The caption's words in one span |
+| G18 | `vz-help` has no margin reset, so on a `p` (as the Changes and Secret previews use it) it keeps 1em above and below | Uneven gaps in a form | `span.vz-help` in forms; Changes' warning line stays a `p` (as the system's own preview has it) so its runbook link is text |
+| G19 | A status in a kept (`data-priority="1"`) column does not wrap, and the column is `keep` (26%) wide | At 400 px "Above 500 ms objective" shows as "Above 500", "Never used" as "Never usec" (v4 too) | Those columns fold into the first place under the key |
+| G20 | `td.vz-row-actions { width: 0 }` in the folded form | "Actions…" runs past the table's edge at 400 px | The actions cell is the kept column, on the key line |
+| G21 | The gutter after a right-aligned column also applies in the folded form | A folded line indented 24 px | Right-aligned columns last |
+| G22 | No width for a field in a row of controls (inputs are 100% wide) | A search box or a short numeric field fills the row, or needs an inline style (v4's work-around, now a System major) | The input's `size` attribute, which sets its natural width in characters |
+| G23 | The nav's right group assumes the tenant is a link | No class for the tenant as text | `vz-nav-end vz-secondary` on a span (no tenant switch is designed) |
+| G24 | `tools/shots.mjs` takes the first `.vz-scrim` in the page for the open dialog, even when hidden | A page with closed dialogs measures 0 hit areas (v4's and v5's Keys) | The scrim class is present only while its dialog is shown |
+| G25 | Waterfall and Log behaviour ships only as preview script | Every screen copies it | Screen 9 carries the Waterfall preview's script, adapted to its own trace |
+| G26 | A small button on the last line of a folded row loses part of its 44 px area to the table wrap's clip | "End silence" measured 43.8 px | Kept on the key line |
+| G27 | A sheet menu has no scrim and covers the page's controls under it | The measure reports those controls as covered while the menu is open | None needed for use (a press outside closes the menu); listed so the measure's report is read correctly |
+
+### Against the v5 review (`reviews/system-v5/review.md`, reject), for checking v6
+
+The review arrived after this migration was imaged. Where its findings show on these screens:
+
+- **B1, colour slots after a filter or a query edited and back.** No static image here can show it:
+  every state is a fresh chart, and no screen has a filter. In a running view it would show on
+  **5 New monitor**: its query goes from one series (cart) to 36 pods (`#many`, whose help line
+  suggests removing "by (pod)") and back; by v5's rule 4 the pods take cart's slot while it is away,
+  so cart would come back grey, in Other. Explore, where the review measured the edit-and-undo case,
+  is not designed here. Dashboard (2), Monitor (4), Investigation (6) and Proposed change (7) draw
+  fixed sets of 3 series; Traces (9) 2; Logs (10) 1. On v6, check 5 default -> many -> default in one
+  view: cart must return in slot 1.
+- **B2.1, tables push the page sideways.** **12 Who is notified** at 200% zoom (144 px) and 320 px
+  (34 px), measured above; **8 Keys** carries the same `vz-sr` head and measured 0 px at 320, 400 and
+  200%, but its folded table scrolls inside its wrap at 320 (six controls partly out of view);
+  **7 Proposed change** 27 px at 320, cause not found. At 400 px every screen measures 0.
+- **B2.2, a status cut in a kept column.** Shown by v4's images of **1 Dashboards** ("Above 500",
+  "Orders faili") and **8 Keys** ("Never usec"); here worked around by folding those columns under
+  the key (G19). The review's other half, "Actions…" placed wherever the folded line ends, is G20,
+  worked around on 8 and 12 by making the actions cell the kept column.
+- **m4, the done state repeats the page state**: **4 Monitor** `#ack` and `#silenced` say
+  "Acknowledged by you at 15:16" (or "Silenced until 16:16") in the state line and again in
+  `vz-done`, as v5's own monitor composition does.
+- **m7, the reservation needs an inline style**: every chart here sets `--legend-rows` and
+  `--legend-notes` in `style=""`, as v5 requires.
+- **m8, the nav at 400 px**: "Logs" is cut at the edge and tenant and Settings are out of view on
+  every screen (the nav is a scrolling strip; the measure lists Settings as partly scrolled out).
+- **m10, middle dots in stat contexts**: **2 Dashboard**'s stats keep "last 5 min · POST
+  /v2/orders"; not changed in this migration.
+
+### Not done, not checked
+
+- **No independent review.** The verdict belongs to a reviewer who has not seen this reasoning
+  (`AGENTS.md`, "Design changes" step 5); `REVIEW-INPUT.md` says what to look at.
+- **Speed budgets other than layout shift** were not measured on these static screens (no
+  `tools/speed.mjs` run); the system's fixture page is the floor for them.
+- Not checked: a screen reader by ear, real touch hardware, Safari and Firefox, reduced motion,
+  enlarged text as distinct from zoom; 200% zoom beyond Monitors and Monitor.
+- **Cut short for v6**: layout shift has 3 runs per chart, not 10 or 20; the 320 px and 200% zoom
+  overflow found on 7 and 12 was measured, not fixed, and 7's cause was not found; 200% zoom is imaged
+  for 3 and 4 only. No second round of imaging after the measurements.
+- Behaviour shown only where a scenario drives it: the waterfall's keyboard (`9-traces-waterfall-focus-*`).
+  Legend emphasis, the readout, the log's live tail and "Show all N lines" are not imaged (no message
+  on screen 10 is longer than four lines).
+- `design-system/README.md` ("Not done yet") still says the flow screens are on v4; it is outside
+  `flows/` and was not edited.
+- Nothing was published, and git was not used.
+
+### Files
+
+`screens/*.html` (all twelve), `build.mjs` (work-around CSS removed; `data-scrim`; `?delay` and `?at`
+for measuring; `--shift`; `--compare` into `compare-v5/`; both themes at 400 px), `fixture.js` (the
+trace's spans and own times; the agent marker; "lines/min"), `shots/` (117 images, every one
+replaced), `measurements.txt`, `shift.txt` (new), `compare-v5/` (new: 60 pairs, the largest 464 KB),
+`scenarios/`, `README.md`, `REVIEW-INPUT.md`, this file. `compare/` is the v1 -> v4 record, unchanged.
+
 
 ## Revision 2, on v4: what changed and why
 

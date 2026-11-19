@@ -7,6 +7,10 @@ and `REVIEW-INPUT.md`. Only **Explore** exists as working software today. Everyt
 a design. What changed, revision by revision and finding by finding, is in `REVISION.md` (the v5
 migration is its first section).
 
+**Status.** v5 was rejected by its own review (`reviews/system-v5/review.md`) after these images were
+made; the screens are to be re-imaged on v6. `REVISION.md`, "Against the v5 review", lists which
+screens show its colour-slot and table-overflow findings, so v6 can be checked against them.
+
 ```
 node build.mjs                    # pages into flows/dist/ (ignored by git); open flows/dist/<screen>.html
 node build.mjs --facts            # every chart's last, min and max, and the trace's own times: the figures the screens state

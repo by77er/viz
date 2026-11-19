@@ -1,4 +1,4 @@
-# Layout shift on the flow screens' charts, v5 and v4, measured 19 Nov 2026 between 02:55 and 03:05 UTC
+# Layout shift on the flow screens' charts, v5 and v4, measured 19 Nov 2026 between 02:53 and 02:59 UTC
 
 ## v5 (these screens)
 

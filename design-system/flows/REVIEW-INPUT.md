@@ -3,7 +3,9 @@
 For the reviewer: what to look at and in what order, the clock, the one incident and its figures
 that every screen uses, which text an agent wrote, and for each screen who is looking, what they
 want, the first three things the eye should reach, and its one blue button. The design system is
-**v5** (`reviews/system-v5/response.md`), itself not yet reviewed. Nothing here claims a verdict.
+**v5** (`reviews/system-v5/response.md`), which its review rejected (`reviews/system-v5/review.md`)
+after these images were made; the screens will be re-imaged on v6. `REVISION.md`, "Against the v5
+review", says which screens show that review's findings. Nothing here claims a verdict.
 
 ## What to look at, in this order
 
