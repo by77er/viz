@@ -113,7 +113,7 @@ Each returns `Error::Unsupported` (or a parse error where Loki's grammar has no 
 - Instant log queries (Loki's HTTP API refuses them too); `interval` for log range queries;
   live tail; the label, series, volume, patterns and detected-fields endpoints (the engine
   answers queries only).
-- Query limits other than steps, series and nesting depth (200): no sample or byte budget
+- Query limits other than steps, series and nesting (below): no sample or byte budget
   and no timeout in this crate; a caller bounds input with `selectors()`.
 - Query sharding and split execution (`engine/query`'s split for PromQL has no LogQL
   counterpart yet).
@@ -134,6 +134,29 @@ Cost: the dependency brings `promql-parser` (most of the module size, below) and
 three `[patch.crates-io]` stand-ins of `engine/query/patches` for a module without imports;
 inside `engine/wasm-query`, which already links `viz-promql`, LogQL adds only its own code.
 
+## Nesting limits
+
+A WASM isolate has a 1 MiB stack, and a stack overflow, like a panic, aborts it. Every place
+the engine recurses over its input is bounded, and refuses rather than overflows:
+
+| Input | Limit | Error |
+|---|---|---|
+| Query: parentheses, aggregations, function calls (parser recursion) | 100 levels | parse error "query nested more than 100 levels deep" |
+| Query: syntax-tree height, so chains such as `1 + 1 + …` or `a > 0 and b > 0 and …` count | 100 | the same |
+| Template blocks (`if`/`with`/`range`; each `else if` is a level) | 100 | parse error "template nested more than 100 levels deep" |
+| Template parentheses within one action | 100 | the same |
+| JSON in `json`, `unpack` and `fromJson` | 128 levels | `JSONParserErr` "Malformed JSON error" (`fromJson`: no value) |
+| Regular expressions (all of them, through `src/goregex.rs`) | `regex`'s nesting limit (250) and 16 MiB compiled size | parse error (matchers, `regexp`), query error (line filters), `TemplateFormatErr` (template functions) |
+| Template execution | 1,000,000 steps; `repeat` output 1 MiB | `TemplateFormatErr` |
+
+100 is the bound `engine/query` applies to PromQL (`Limits::max_depth`); a query at the limit
+also runs `viz-promql`'s recursive evaluator over a tree of that height. `tests/limits.rs`
+gives 20,000-level inputs of every kind (and 200,000-deep JSON lines) and checks each is an
+error, and evaluates queries and templates just inside the limits; `wasm-check/limits.mjs` runs
+the same 24 cases through the WASM module (12 refused, 12 evaluated, no trap); the
+`random_deep_nesting_never_panics` property mixes the constructs at random depths up to 2,500
+(500 cases). Real queries nest a few levels.
+
 ## Verification
 
 All commands run in `engine/logql` with `CARGO_TARGET_DIR` outside the tree. Machine: Linux
@@ -142,8 +165,9 @@ rustc 1.97.0, Go 1.24.7 (and go1.26.10 for the harness), Node 22.23. Measured he
 Cloudflare, on 2026-11-19.
 
 `cargo test` runs offline and needs no Go: unit tests (25), `tests/api.rs` (8),
-`tests/semantics.rs` (10, rules observed in Loki), `tests/conformance.rs` (1; it reports
-itself skipped unless `tools/oracle/fetch.sh` was run), `tests/props.rs` (7 properties) and
+`tests/semantics.rs` (10, rules observed in Loki), `tests/limits.rs` (5, pathological
+nesting), `tests/conformance.rs` (1; it reports itself skipped unless
+`tools/oracle/fetch.sh` was run), `tests/props.rs` (8 properties) and
 the doc test. The differential exporters in `tests/differential.rs` are `#[ignore]`d; the
 oracle fetch, the Loki harness and the mutation run are explicit commands (below).
 
@@ -264,6 +288,7 @@ is not a difference; it looks like a unit slip in Loki and is noted here in case
 | a range query equals one instant query per step (values within 1e-12 relative) | pass |
 | evaluation reads exactly what `selectors()` reports | pass |
 | random tokens spliced into valid queries never panic (query and `selectors()`) | pass |
+| random deep nesting (query wrappers, template blocks and parentheses, label-filter chains, JSON lines, regexes, up to 2,500 levels) never panics, and past the limits is refused (`random_deep_nesting_never_panics`, run with 500 cases) | pass |
 | `query_pool_is_live`: of 523 generated queries, 511 evaluate and 236 return data, so the properties are not vacuous | pass |
 
 The two value properties allow 1e-12 relative because `viz-promql`'s `stddev`/`stdvar` give
@@ -311,6 +336,24 @@ already trims to the range so the engine's re-filter was never exercised;
 contract allows) was added and catches it. The props column is weak on purpose: the
 properties compare viz with itself.
 
+Mutants of the nesting limits (section "Nesting limits"), run the same way with the
+`limits` suite added (`--only 23,…,30`; the conformance oracle was not fetched for this run,
+so that suite skipped, and the Loki harness was not rebuilt):
+
+| # | mutation | unit | api | semantics | limits | props |
+|---:|---|---|---|---|---|---|
+| 23 | query parser recursion not bounded | not caught | caught | not caught | caught | caught |
+| 24 | syntax tree height not bounded (operator and label-filter chains) | not caught | not caught | not caught | caught | not caught |
+| 25 | template parentheses not bounded | not caught | not caught | not caught | caught | not caught |
+| 26 | template blocks not bounded | not caught | not caught | not caught | caught | caught |
+| 27 | JSON reader (`fromJson`) depth not bounded | caught | not caught | not caught | caught | not caught |
+| 28 | `json`/`unpack` skip of nested values not bounded | not caught | not caught | not caught | caught | not caught |
+| 29 | `json` parser object walk not bounded | not caught | not caught | not caught | caught | not caught |
+| 30 | regex nesting limit lifted | not caught | not caught | not caught | caught | caught |
+
+All 8 are caught (the unbounded versions overflow the test thread's stack and abort, or accept
+what must be refused).
+
 ### (e) WASM
 
 `wasm-check/` is a measurement wrapper (a 3-function C ABI over `MemSource`; not a product
@@ -321,10 +364,11 @@ stand-ins: `cargo build --release --target wasm32-unknown-unknown`. `node check.
 
 | | |
 |---|---|
-| module (`viz_logql_wasm_check.wasm`) | **2,420,254 bytes**, **738,399 bytes** `gzip -9` |
+| module (`viz_logql_wasm_check.wasm`) | **2,422,595 bytes**, **738,830 bytes** `gzip -9` |
 | imports | **0** (`WebAssembly.Module.imports` is `[]`) |
 | exports | `memory`, `viz_logql_alloc`, `viz_logql_free`, `viz_logql_query` |
-| instantiation with `{}` | succeeds; mean 0.50 ms over 200 instances (Node, module compiled once) |
+| instantiation with `{}` | succeeds; mean 0.5 to 0.6 ms over 200 instances (Node, module compiled once) |
+| `node limits.mjs <wasm>` | the 24 nesting cases of "Nesting limits": 12 refused with an error object, 12 evaluated, no trap |
 | a query (`sum by (level) (count_over_time(… \| logfmt \| __error__="" [1m]))`, 1,000 rows, first call) | 54 ms, correct values; a bad query returns the `bad_data` error object, no trap |
 | linear memory after that query | 2.5 MiB |
 | peak RSS of the build | 571 MB |
@@ -386,8 +430,9 @@ per line: the next things to optimise. Native, not WASM, and not measured on Clo
   and a log query buffers up to twice `limit` entries; there is no byte or sample budget in
   this crate, so the query Worker must bound input (`selectors()` gives the ranges).
 - Templates: execution is bounded (1,000,000 steps, `repeat` output 1 MiB) but slow.
-- A panic aborts a WASM isolate. The parser bounds nesting (200), the JSON reader depth
-  (128/256), templates their steps; the token-soup property is random testing, not proof.
+- A panic or stack overflow aborts a WASM isolate. Every recursion over input is bounded
+  (section "Nesting limits"); the token-soup and deep-nesting properties are random testing,
+  not proof.
 - The oracle cannot test structured metadata (the mock querier drops it).
 
 ## Integration (not done here)
@@ -407,15 +452,9 @@ per line: the next things to optimise. Native, not WASM, and not measured on Clo
   LogQL result shapes are not defined yet and needs them (this crate's `Data`).
 - **Split execution and rules**: decomposable LogQL aggregations over leaves, and LogQL rule
   evaluation in the ruler.
-- **Design text** (not edited here, per the task's scope): `design/DESIGN.md` §5.1 lists the
-  `logs` sort as `service_name, resource_fp, ts`; `contracts/LOGS.md` proposes
-  `service_name, stream_id, ts, line` and calls the stream identity `stream_id`. §1 and §6.5
-  of research 04 speak of a "LogQL subset"; this crate covers most of LogQL. Two choices here
-  deserve `design/DECISIONS.md` entries: evaluating LogQL's vector operations with
-  viz-promql (alternative: a LogQL-specific evaluator; would change if LogQL's vector
-  semantics diverge further from PromQL's than the translation can absorb), and reproducing
-  Loki behaviour observed as a black box where the documentation is silent (alternative:
-  documented behaviour only).
+- **Design text**: `design/DESIGN.md` (§1, the `logs` row of §5.1, §6.1, §12) and decisions
+  D49 (vector operations on viz-promql) and D50 (following Loki's observed behaviour) were
+  updated with this crate.
 
 ## Layout
 

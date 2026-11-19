@@ -1,7 +1,7 @@
 //! Pathological nesting and sizes: every input below must come back as an error (or a
 //! result), never a stack overflow or panic (`engine/AGENTS.md`: never panic on input; a
 //! panic or overflow aborts a WASM isolate). The same inputs run in WASM through
-//! `wasm-check/check.mjs`. Queries at the limits must still evaluate.
+//! `wasm-check/limits.mjs`. Queries at the limits must still evaluate.
 
 use viz_logql::*;
 
