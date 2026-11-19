@@ -163,7 +163,8 @@ async function audit() {
       if (!svgText && el.closest('svg')) {
         if (el.matches('.vz-line')) { const s = parse(cs.stroke), bg = bgOf(el.closest('svg')); if (s && R(s, bg) < 3) out.push(`${pass}: series line ${hex(s)} on ${hex(bg)} ${R(s, bg).toFixed(2)}:1 < 3  ${where(el)}`) }
         continue }
-      if (el.matches('.vz-swatch')) { const fill = parse(cs.backgroundColor), edge = parse(cs.borderLeftStyle !== 'none' ? cs.borderLeftColor : cs.borderTopColor), c = fill && fill.a > 0.99 ? fill : edge && (cs.borderLeftWidth !== '0px' || cs.borderTopWidth !== '0px') ? edge : null
+      if (el.matches('.vz-swatch')) { // the mark is its drawn edge where it has one (dashed slots, Other's band edges), else its fill
+        const side = ['Top', 'Left'].find((k) => cs[`border${k}Style`] !== 'none' && parseFloat(cs[`border${k}Width`]) > 0), fill = parse(cs.backgroundColor), c = side ? parse(cs[`border${side}Color`]) : fill && fill.a > 0.99 ? fill : null
         const ring = /(rgba?\([^)]*\)) 0px 0px 0px (\d+(?:\.\d+)?)px(?! inset)/.exec(cs.boxShadow), inset = /(rgba?\([^)]*\)) 0px 0px 0px [\d.]+px inset/.exec(cs.boxShadow)
         const bg = ring && parseFloat(ring[2]) >= 2 ? parse(ring[1]) : bgOf(el.parentElement), mark = c ?? (inset ? parse(inset[1]) : null)
         if (mark && R(mark, bg) < 3) out.push(`${pass}: swatch ${hex(mark)} on ${hex(bg)} ${R(mark, bg).toFixed(2)}:1 < 3  ${where(el)}`); continue }

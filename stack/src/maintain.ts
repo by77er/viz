@@ -29,11 +29,18 @@ import { DEFAULT_DELETE_GRACE_MS, DEFAULT_ORPHAN_GRACE_MS, type ExpireResult, ty
  * them has a day to expire.
  */
 
+/**
+ * A maintenance message (format `queue.maint`, src/formats.ts). `v` absent means 1; a
+ * consumer that meets another version retries the message (contracts/COMPATIBILITY.md §3.2).
+ */
 export interface MaintMessage {
+  v?: number
   tenant: string
   /** Sent after a flush: new objects exist, so the orphan sweep is needed again. */
   wrote?: boolean
 }
+
+export const MAINT_MESSAGE_VERSION = 1
 
 export interface MaintEnv extends JanitorEnv {
   MAINT_QUEUE: Queue<MaintMessage>
@@ -53,6 +60,8 @@ export interface MaintOptions {
   maxCompactStepMs?: number
   /** The orphan sweep lists the tenant's whole prefix, so it runs at most this often. */
   orphanEveryMs?: number
+  /** First delay before the marker write is retried (KV's per-key rate). Default 1 s. */
+  markerRetryMs?: number
 }
 
 export interface MaintReport {
@@ -69,35 +78,90 @@ export interface MaintReport {
 
 export const MAINT_MARKER_PREFIX = 'maint:'
 export const maintMarkerKey = (tenant: string): string => `${MAINT_MARKER_PREFIX}${tenant}`
+/**
+ * The marker's metadata (format `kv.maint-marker`, src/formats.ts). `v` absent means 1. A
+ * reader that meets another version does not act on it and does not overwrite it.
+ */
 export interface MaintMarker {
+  v?: number
   due: number
   orphansAt: number
   /** Objects may exist that only the orphan sweep would remove. A marker written before this field existed counts as true. */
   sweep: boolean
+  /** Set while the tenant's retention record cannot be read: why (janitor/, review R-1). The cron logs it every hour. */
+  retention?: string
 }
 
+export const MAINT_MARKER_VERSION = 1
 const DAY_MS = 86_400_000
+const HOUR_MS = 3_600_000
 
-export async function readMarker(env: Pick<MaintEnv, 'CONFIG'>, tenant: string): Promise<MaintMarker | null> {
+export type MarkerRead = { status: 'none' } | { status: 'ok'; marker: MaintMarker } | { status: 'unsupported'; version: unknown }
+
+export async function readMarkerVersioned(env: Pick<MaintEnv, 'CONFIG'>, tenant: string): Promise<MarkerRead> {
   const r = await env.CONFIG.getWithMetadata<Partial<MaintMarker>>(maintMarkerKey(tenant))
-  return r.value === null ? null : { due: r.metadata?.due ?? 0, orphansAt: r.metadata?.orphansAt ?? 0, sweep: r.metadata?.sweep ?? true }
+  if (r.value === null) return { status: 'none' }
+  const v = r.metadata?.v ?? 1
+  if (v !== MAINT_MARKER_VERSION) return { status: 'unsupported', version: v }
+  const m: MaintMarker = { v: MAINT_MARKER_VERSION, due: r.metadata?.due ?? 0, orphansAt: r.metadata?.orphansAt ?? 0, sweep: r.metadata?.sweep ?? true }
+  if (typeof r.metadata?.retention === 'string') m.retention = r.metadata.retention
+  return { status: 'ok', marker: m }
 }
 
-const writeMarker = (env: MaintEnv, tenant: string, m: MaintMarker): Promise<void> => env.CONFIG.put(maintMarkerKey(tenant), '1', { metadata: m })
+/** The marker, null if there is none; throws for a marker of a version this code does not read. */
+export async function readMarker(env: Pick<MaintEnv, 'CONFIG'>, tenant: string): Promise<MaintMarker | null> {
+  const r = await readMarkerVersioned(env, tenant)
+  if (r.status === 'unsupported') throw new Error(`maintain: ${maintMarkerKey(tenant)} is version ${JSON.stringify(r.version)}; this code reads ${MAINT_MARKER_VERSION}. Retry once a release that reads it runs`)
+  return r.status === 'ok' ? r.marker : null
+}
+
+/** One attempt (the best-effort writes: their facts also travel in a message). */
+const writeMarker = (env: MaintEnv, tenant: string, m: MaintMarker): Promise<void> => env.CONFIG.put(maintMarkerKey(tenant), '1', { metadata: { ...m, v: MAINT_MARKER_VERSION } })
+
+/**
+ * KV takes one write per second per key and refuses more with 429 ("Writes to same key: 1 per
+ * second", https://developers.cloudflare.com/kv/platform/limits/; the 429 and the advice to
+ * retry with exponential backoff: https://developers.cloudflare.com/kv/api/write-key-value-pairs/).
+ * Two runs of one tenant finishing within a second (a flush's message and the cron's, in
+ * different batches) both write this key; the second is retried after 1 s, 2 s, 4 s instead
+ * of failing a run that has done all its work (review R-11(c)). A delete is a write too.
+ */
+export const MARKER_WRITE_ATTEMPTS = 4
+export const MARKER_RETRY_MS = 1000
+
+const sameMarker = (a: MaintMarker | null, b: MaintMarker | null): boolean =>
+  a === b || (a !== null && b !== null && a.due === b.due && a.orphansAt === b.orphansAt && a.sweep === b.sweep && a.retention === b.retention)
+
+async function settleMarker(env: MaintEnv, tenant: string, before: MaintMarker | null, after: MaintMarker | null, retryMs = MARKER_RETRY_MS): Promise<void> {
+  // Unchanged since the run read it: no write at all (fewer writes, fewer collisions).
+  if (sameMarker(before, after)) return
+  for (let attempt = 1; ; attempt++) {
+    try {
+      if (after === null) await env.CONFIG.delete(maintMarkerKey(tenant))
+      else await writeMarker(env, tenant, after)
+      return
+    } catch (e) {
+      if (attempt >= MARKER_WRITE_ATTEMPTS) throw e
+      await new Promise((r) => setTimeout(r, retryMs * 2 ** (attempt - 1)))
+    }
+  }
+}
 
 /**
  * After a flush run that ended ok: make sure the tenant has a marker and ask for a
  * maintenance run now. Used as the flush consumer's `onFlushed`.
  */
 export async function noteFlushed(env: MaintEnv, result: Pick<FlushResult, 'tenant'>): Promise<void> {
-  const existing = await readMarker(env, result.tenant)
-  if (!existing || existing.due > Date.now() || !existing.sweep) {
+  const read = await readMarkerVersioned(env, result.tenant)
+  // A marker of a version this code does not read is left as it is (never overwritten by an older writer).
+  const existing = read.status === 'ok' ? read.marker : null
+  if (read.status !== 'unsupported' && (!existing || existing.due > Date.now() || !existing.sweep)) {
     // Best effort: KV allows one write a second per key, and two shards of a tenant may be
     // flushed in the same second. The message below carries the same facts (`wrote`), and
     // the maintenance run it causes writes the marker anyway.
-    await writeMarker(env, result.tenant, { due: Date.now(), orphansAt: existing?.orphansAt ?? Date.now(), sweep: true }).catch(() => undefined)
+    await writeMarker(env, result.tenant, { ...existing, due: Date.now(), orphansAt: existing?.orphansAt ?? Date.now(), sweep: true }).catch(() => undefined)
   }
-  await env.MAINT_QUEUE.send({ tenant: result.tenant, wrote: true })
+  await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant: result.tenant, wrote: true })
 }
 
 export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: string, opts: MaintOptions = {}): Promise<MaintReport> {
@@ -105,7 +169,9 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
   const now = opts.now ?? Date.now()
   const deleteGraceMs = opts.deleteGraceMs ?? DEFAULT_DELETE_GRACE_MS
   const orphanEveryMs = opts.orphanEveryMs ?? DAY_MS
-  const marker = (await readMarker(env, tenant)) ?? { due: 0, orphansAt: 0, sweep: true }
+  // A marker of a version this code does not read: refuse the run (retried), never overwrite it.
+  const before = await readMarker(env, tenant)
+  const marker: MaintMarker = before ? { ...before } : { v: MAINT_MARKER_VERSION, due: 0, orphansAt: 0, sweep: true }
 
   // Retention first: there is no point merging a day that is about to expire.
   const expired = await expireTenant(env, tenant, now)
@@ -128,7 +194,7 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
     marker.orphansAt = Date.now()
     // Still needed only for what it had to leave for later: young objects, units that may
     // yet be admitted, streams the ledger has not seen. (A name it cannot judge never changes.)
-    sweep = orphans.kept.some((k) => k.why !== 'unknown_name')
+    sweep = orphans.kept.some((k) => k.why !== 'unknown_name' && k.why !== 'unknown_inputs')
   }
 
   // When could time alone make work again?
@@ -146,34 +212,68 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
   // which it is more than `keepDays` days old (janitor's `retentionCutoffDay`), not before.
   // A policy changed in KV is applied by the tenant's next run, whatever causes it; for an
   // idle tenant that is this date, computed with the old policy (stack/README.md, "Idle").
-  if (days.length > 0) due.push(Date.parse(`${days[0]}T00:00:00Z`) + (expired.keepDays + 1) * DAY_MS)
+  if (days.length > 0 && expired.keepDays !== null) due.push(Date.parse(`${days[0]}T00:00:00Z`) + (expired.keepDays + 1) * DAY_MS)
+  // A retention record that cannot be read: nothing was expired. Look again every hour (so a
+  // fix is applied within the hour), and say why in the marker, which the cron logs.
+  if (expired.refused !== undefined) due.push(Date.now() + HOUR_MS)
   // Tombstones waiting for their grace or for the ledger's log: after the grace at the latest.
   if (purged.waiting > 0) due.push(Date.now() + Math.max(deleteGraceMs, 60_000))
   if (sweep) due.push(marker.orphansAt + orphanEveryMs)
 
   const nextDueAt = due.length === 0 ? null : Math.min(...due)
-  // The marker is written before the run is acknowledged: if this throws, the message is retried.
-  if (nextDueAt === null) await env.CONFIG.delete(maintMarkerKey(tenant))
-  else await writeMarker(env, tenant, { due: nextDueAt, orphansAt: marker.orphansAt, sweep })
+  // The marker is written before the run is acknowledged: if this still throws after its
+  // retries, the message is retried.
+  const after: MaintMarker | null =
+    nextDueAt === null ? null : { v: MAINT_MARKER_VERSION, due: nextDueAt, orphansAt: marker.orphansAt, sweep, ...(expired.refused !== undefined ? { retention: expired.refused.slice(0, 200) } : {}) }
+  await settleMarker(env, tenant, before, after, opts.markerRetryMs)
   return { tenant, compaction, expired, purged, orphans, nextDueAt, more }
 }
 
-/** The cron's part: enqueue every tenant whose marker is due. One KV list; no Durable Object. */
-export async function enqueueDue(env: MaintEnv, now = Date.now()): Promise<{ markers: number; enqueued: string[] }> {
-  const enqueued: string[] = []
-  let markers = 0
+export interface DueResult {
+  markers: number
+  enqueued: string[]
+  /** Tenants whose retention record cannot be read (the marker says so): logged by the cron every hour. */
+  retentionRefused: { tenant: string; reason: string }[]
+  /** Markers of a version this code does not read: not acted on (a newer release wrote them). */
+  unsupported: string[]
+  /** Due tenants whose message could not be sent (their `sendBatch` failed); the next cron sends them. */
+  unsent: number
+}
+
+/**
+ * The cron's part: enqueue every tenant whose marker is due. One KV list; no Durable Object.
+ * A failed send loses only its batch of 100 (the markers stay due, the next cron sends them).
+ */
+export async function enqueueDue(env: MaintEnv, now = Date.now()): Promise<DueResult> {
+  const out: DueResult = { markers: 0, enqueued: [], retentionRefused: [], unsupported: [], unsent: 0 }
+  const due: string[] = []
   let cursor: string | undefined
   do {
     const page: KVNamespaceListResult<Partial<MaintMarker>> = await env.CONFIG.list<Partial<MaintMarker>>({ prefix: MAINT_MARKER_PREFIX, cursor })
     for (const k of page.keys) {
-      markers++
+      out.markers++
       const tenant = k.name.slice(MAINT_MARKER_PREFIX.length)
-      if (TENANT_ID.test(tenant) && (k.metadata?.due ?? 0) <= now) enqueued.push(tenant)
+      if (!TENANT_ID.test(tenant)) continue
+      if ((k.metadata?.v ?? 1) !== MAINT_MARKER_VERSION) {
+        out.unsupported.push(tenant)
+        continue
+      }
+      if (typeof k.metadata?.retention === 'string') out.retentionRefused.push({ tenant, reason: k.metadata.retention })
+      if ((k.metadata?.due ?? 0) <= now) due.push(tenant)
     }
     cursor = page.list_complete ? undefined : page.cursor
   } while (cursor)
-  for (let i = 0; i < enqueued.length; i += 100) await env.MAINT_QUEUE.sendBatch(enqueued.slice(i, i + 100).map((tenant) => ({ body: { tenant } })))
-  return { markers, enqueued }
+  for (let i = 0; i < due.length; i += 100) {
+    const batch = due.slice(i, i + 100)
+    try {
+      await env.MAINT_QUEUE.sendBatch(batch.map((tenant) => ({ body: { v: MAINT_MESSAGE_VERSION, tenant } })))
+      out.enqueued.push(...batch)
+    } catch (e) {
+      out.unsent += batch.length
+      console.error(`maintenance sweep: ${batch.length} messages not sent: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  return out
 }
 
 export interface MaintOutcome {
@@ -192,21 +292,34 @@ export async function consumeMaintBatch(
   batch: MessageBatch<unknown>,
   env: MaintEnv,
   engine: Engine,
-  opts: MaintOptions & { run?: typeof maintainTenant; deadLetter?(m: Message<unknown>, reason: string): Promise<void> } = {},
+  opts: MaintOptions & { run?: typeof maintainTenant; deadLetter?(messages: Message<unknown>[], reason: string): Promise<void> } = {},
 ): Promise<MaintOutcome[]> {
   const groups = new Map<string, Message<unknown>[]>()
+  const junk: Message<unknown>[] = []
   for (const m of batch.messages) {
-    const tenant = (m.body as MaintMessage | null)?.tenant
+    const body = m.body
+    const isObject = typeof body === 'object' && body !== null && !Array.isArray(body)
+    // A version this release does not know: retry, never run on a guess, never dead-letter
+    // (contracts/COMPATIBILITY.md §3.2). `v` absent means 1.
+    if (isObject && ((body as MaintMessage).v ?? 1) !== MAINT_MESSAGE_VERSION) {
+      m.retry({ delaySeconds: Math.min(600, 15 * 2 ** Math.max(0, m.attempts - 1)) })
+      continue
+    }
+    const tenant = isObject ? (body as MaintMessage).tenant : undefined
     if (typeof tenant !== 'string' || !TENANT_ID.test(tenant)) {
-      try {
-        await opts.deadLetter?.(m, 'not a {tenant} message')
-        m.ack()
-      } catch {
-        m.retry({ delaySeconds: 60 })
-      }
+      junk.push(m)
       continue
     }
     groups.set(tenant, [...(groups.get(tenant) ?? []), m])
+  }
+  if (junk.length > 0) {
+    // Invalid in every version: recorded in ONE write, acknowledged; if the write fails, retried.
+    try {
+      await opts.deadLetter?.(junk, 'not a {tenant} message')
+      for (const m of junk) m.ack()
+    } catch {
+      for (const m of junk) m.retry({ delaySeconds: 60 })
+    }
   }
   const out: MaintOutcome[] = []
   for (const [tenant, messages] of groups) {
@@ -215,8 +328,10 @@ export async function consumeMaintBatch(
     const wrote = opts.wrote === true || messages.some((m) => (m.body as MaintMessage).wrote === true)
     try {
       outcome.report = await (opts.run ?? maintainTenant)(env, engine, tenant, { ...opts, wrote })
-      if (outcome.report.more) await env.MAINT_QUEUE.send({ tenant })
+      if (outcome.report.more) await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant })
     } catch (e) {
+      // Anything thrown is retried with a delay, including a ledger that refuses with
+      // `schema_too_new` during a deploy (contracts/COMPATIBILITY.md §2.4): nothing happened.
       outcome.action = 'again'
       outcome.why = e instanceof Error ? e.message : String(e)
     }

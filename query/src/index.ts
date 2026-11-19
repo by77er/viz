@@ -120,8 +120,7 @@ function splitSpec(c: Context, plan: SplitPlan, query: string, grid: Grid): Spli
   if (!plan.split) {
     c.cost.execution = 'single'
     c.cost.splitReason = plan.reason
-    if (/no selector|parse error/.test(plan.reason)) return undefined
-    plan = { split: true, fragments: 1, without: [] }
+    return undefined
   }
   return {
     query,

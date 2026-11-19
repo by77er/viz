@@ -5,3 +5,4 @@ What a region shows when it has no result: nothing matched, or something failed.
 - It is left-aligned in the region, at the top, where the result would have started, with no space above it. No illustration.
 - A page or region that has never had anything in it is not empty in this sense: use FirstRun.
 - A region that has never had data and is waiting for its first result reserves its final height and shows `vz-progress` once the wait passes 400 ms.
+- **In a chart**, empty and error take the plot's place at the plot's height (the chart's `setError`, or a `vz-empty` as the chart's first child), and the chart keeps its reserved height, so a panel never collapses when its query fails after it has drawn.

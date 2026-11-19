@@ -275,7 +275,8 @@ describe('the runner refuses what no retry can fix, and the rollback rule', () =
     expect(schemaRelease(TENANT_SCHEMA)).toEqual({ component: 'control.Tenant', latest: LATEST, compat: 1 })
     // Every migration so far is additive, so every earlier release may still open this storage:
     // the previous release stays a valid rollback target (COMPATIBILITY.md §2.3, §6).
-    for (let known = 1; known < LATEST; known++) expect(canOpen(known, schemaRelease(TENANT_SCHEMA)), `a release that knows ${known}`).toBe(true)
+    const release = schemaRelease(TENANT_SCHEMA)
+    for (let known = 1; known < LATEST; known++) expect(canOpen(known, { version: release.latest, compat: release.compat }), `a release that knows ${known}`).toBe(true)
     expect(TENANT_SCHEMA.migrations.map((m) => m.readableFrom)).toEqual(TENANT_SCHEMA.migrations.map(() => 1))
     expect(canOpen(1, { version: 2, compat: 2 })).toBe(false)
     expect(canOpen(1, { version: 2, compat: 1 })).toBe(true)

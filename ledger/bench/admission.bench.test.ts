@@ -53,6 +53,8 @@ interface Run {
   /** Time from the last answer until every admitted unit was in R2 (`loggedWatermarks`). */
   loggedLagMs: number
   r2Writes: number
+  /** Segment ledger only: its own count of segment writes and how long they took (ms). */
+  drain?: unknown
   tenant: string
 }
 
@@ -83,6 +85,7 @@ async function run(kind: Kind, putMs: number, writers: number, unitsPerWriter: n
     unitsPerSecond: Math.round((lat.length / seconds) * 10) / 10,
     ackMs: { p50: pct(lat, 50), p90: pct(lat, 90), p99: pct(lat, 99), max: pct(lat, 100) },
     loggedLagMs, r2Writes, tenant,
+    ...(kind === 'segments' ? { drain: await (l as unknown as { logStatus(): Promise<{ segmentsWritten: number; segmentWriteMs: unknown }> }).logStatus().then((x) => ({ segments: x.segmentsWritten, writeMs: x.segmentWriteMs })) } : {}),
   }
 }
 

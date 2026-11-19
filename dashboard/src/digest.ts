@@ -390,6 +390,12 @@ export interface RenderOptions {
   maxTokens: number
   /** Continue from a previous call's `cursor`. */
   cursor?: string
+  /**
+   * Write the truncation footer (default true): the line naming the next cursor, or saying that
+   * series were omitted. A caller with its own cursors and wording passes false; `truncated` and
+   * `cursor` in the result still say what was left out, and the footer's space is not reserved.
+   */
+  continuation?: boolean
 }
 
 export interface RenderedDigest {
@@ -446,6 +452,7 @@ function badge(p: PanelDigest): string {
 const clean = (s: string) => s.replace(/[\t\r\n|]+/g, ' ').trim()
 const cut = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(0, n - 1)) + '…' : s)
 
+/** Rank of a panel in the rendering order (lower first). */
 function importance(p: PanelDigest): number {
   if (p.state === 'crit') return 0
   if (p.state === 'warn') return 1
@@ -454,6 +461,16 @@ function importance(p: PanelDigest): number {
   if (p.noData) return 4
   if (p.worst && p.worst !== 'ok') return 5
   return p.kind === 'text' ? 7 : 6
+}
+
+/**
+ * The order `renderDigest` writes panels in, as indices into `panels`: crit, warn, info,
+ * panels with outliers, no data, panels that reached a threshold within the window, the rest,
+ * text panels last; ties keep the given (layout) order. A `cursor` "o:N" from `renderDigest`
+ * means the first N entries of this order have been consumed.
+ */
+export function panelOrder(panels: readonly PanelDigest[]): number[] {
+  return panels.map((p, i) => ({ r: importance(p), i })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.i)
 }
 
 function omittedText(p: PanelDigest, shown: number): string {
@@ -518,14 +535,15 @@ function panelLine(p: PanelDigest, format: 'markdown' | 'tsv'): string {
  * Render a dashboard digest as compact text within a token budget.
  *
  * Panels are ordered by importance: crit, warn, info, outliers, no data,
- * then the rest in layout order. Panels are written in full until one does
+ * then the rest in layout order (`panelOrder`). Panels are written in full until one does
  * not fit; the remaining ones get a one-line summary while space lasts.
- * `cursor` continues from the first panel not shown in full.
+ * `cursor` continues from the first panel not shown in full. With `continuation: false`
+ * no truncation footer is written; the caller says how to continue.
  */
 export function renderDigest(d: DashboardDigest, opts: RenderOptions): RenderedDigest {
   const format = opts.format
   const budget = Math.max(0, Math.floor(opts.maxTokens * 4))
-  const ordered = d.panels.map((p, i) => ({ p, i })).sort((a, b) => importance(a.p) - importance(b.p) || a.i - b.i).map((x) => x.p)
+  const ordered = panelOrder(d.panels).map((i) => d.panels[i]!)
   const total = ordered.length
   const m = /^o:(\d+)$/.exec(opts.cursor ?? '')
   const offset = m ? Math.min(Number(m[1]), total) : 0
@@ -558,7 +576,8 @@ export function renderDigest(d: DashboardDigest, opts: RenderOptions): RenderedD
 
   const footerFor = (next: number) =>
     format === 'tsv' ? `# truncated\tnext cursor o:${next}\t${total - next} of ${total} panels not shown in full\n` : `_Truncated: ${total - next} of ${total} panels not shown in full. Continue with cursor "o:${next}"._\n`
-  const reserve = footerFor(total).length + 2
+  const continuation = opts.continuation !== false
+  const reserve = continuation ? footerFor(total).length + 2 : 0
 
   let text = header
   let full = 0
@@ -608,7 +627,7 @@ export function renderDigest(d: DashboardDigest, opts: RenderOptions): RenderedD
     listed++
   }
   const truncated = degraded || next < total
-  if (truncated) text += next < total ? footerFor(next) : format === 'tsv' ? '# truncated\tseries omitted to fit the budget\n' : '_Truncated: series omitted to fit the budget._\n'
+  if (truncated && continuation) text += next < total ? footerFor(next) : format === 'tsv' ? '# truncated\tseries omitted to fit the budget\n' : '_Truncated: series omitted to fit the budget._\n'
   let cutOff = false
   if (text.length > budget) {
     text = text.slice(0, budget)

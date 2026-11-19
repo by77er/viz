@@ -6,4 +6,4 @@ A secret that exists on screen once: a new API key, a signing secret. `vz-secret
 - **"I have saved the key"** is a `vz-check`. The dialog's only action, "Done" (blue), is disabled until it is ticked. There is no Cancel and Escape does not close the dialog: closing loses the key. If the person must leave, the key is revoked by "Discard this key" (a quiet button), which says so.
 - After Done the key is shown everywhere else truncated in the middle: "viz_k7…4f2a".
 - States: masked, revealed, copied, saved (Done enabled), copy failed (a `vz-notice` under the row: "Could not copy. Select the key and copy it by hand.").
-- With a coarse pointer the well is `control-touch` tall and the buttons wrap below it with the touch row gap.
+- The well has its own line at every width and its two buttons sit together under it, so Reveal and Copy key are never split across lines. With a coarse pointer the well is `control-touch` tall and the buttons keep the touch row gap.

@@ -1,16 +1,33 @@
 /* eslint-disable */
 // "Tests must have teeth" (AGENTS.md, Evidence): break one property at a time in the source,
-// rebuild, run the checks, and record which fail. The source is restored after every mutant.
-// A mutant that no check catches is reported as SURVIVED.
+// rebuild, run the checks, and record which fail. A mutant that no check catches is reported
+// as SURVIVED.
+// Mutants are applied to a COPY of the app (AGENTS.md: never in place in the shared tree): the
+// app's src, mock, e2e and config are copied to VIZ_MUTANT_DIR (default: a new directory under
+// the system's temporary directory), node_modules and design-system are linked, every mutant
+// is applied, built and checked there, and only the result file is written back to
+// e2e/measurements/. The checkout itself is never written to.
 //   VIZ_E2E_APP_PORT=... VIZ_E2E_MOCK_PORT=... node e2e/mutants.cjs                 the restyle's set: e2e/design.cjs
 //   VIZ_E2E_APP_PORT=... VIZ_E2E_MOCK_PORT=... MUTANTS=fixes node e2e/mutants.cjs   the review fixes' set: unit tests and e2e/fixes.cjs
+//   VIZ_E2E_APP_PORT=... VIZ_E2E_MOCK_PORT=... MUTANTS=real node e2e/mutants.cjs    the real-API change: the typed-array parser and
+//                                                                                     the error states (unit tests and e2e/errors.cjs)
 // ONLY=<substring of a name> runs one mutant and writes no file.
 // The fixes set runs e2e/fixes.cjs without its 60 s stop case (VIZ_E2E_SKIP_STOP=1) to keep each run short.
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
-const ROOT = path.resolve(__dirname, '..')
+const SOURCE = path.resolve(__dirname, '..')
+/** The copy every mutant is applied to. */
+const ROOT = path.join(process.env.VIZ_MUTANT_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viz-mutants-')), 'app')
+function makeCopy() {
+  fs.rmSync(ROOT, { recursive: true, force: true })
+  fs.mkdirSync(ROOT, { recursive: true })
+  for (const f of ['src', 'mock', 'e2e', 'public', 'index.html', 'package.json', 'tsconfig.json', 'vite.config.ts']) fs.cpSync(path.join(SOURCE, f), path.join(ROOT, f), { recursive: true })
+  fs.symlinkSync(path.join(SOURCE, 'node_modules'), path.join(ROOT, 'node_modules'))
+  const ds = path.join(ROOT, '..', 'design-system')
+  if (!fs.existsSync(ds)) fs.symlinkSync(path.resolve(SOURCE, '../design-system'), ds)
+}
 
 // Each mutant: [name, [[file, from, to], ...]]
 const one = (name, file, from, to) => [name, [[file, from, to]]]
@@ -73,6 +90,44 @@ const SETS = {
         '  return false'),
     ],
   },
+  // The real-API change: the typed-array parser, and what a person sees when the API refuses or is busy.
+  real: {
+    suites: ['unit', 'errors'],
+    out: 'mutants-real.txt',
+    list: [
+      one('parser: a number is scaled by multiplying by a power of ten below 1 (inexact)', 'src/api/matrix.ts',
+        'const v = scale === 0 ? m : m / POW10[-scale]!', 'const v = scale === 0 ? m : m * Math.pow(10, scale)'),
+      one('parser: digits past 2^53 are computed, not read by Number()', 'src/api/matrix.ts',
+        'if (i !== to || !any || m >= EXACT || scale < -22) return Number(s.slice(from, to))', 'if (i !== to || !any || scale < -22) return Number(s.slice(from, to))'),
+      one('parser: "+Inf" is read as NaN', 'src/api/matrix.ts', "if (s.startsWith('+Inf', from)) return Infinity", "if (s.startsWith('+Inf', from)) return NaN"),
+      one('parser: a sample cut in two by the network loses its first character', 'src/api/matrix.ts',
+        '            if (j >= n) return start\n            const t1 = j', '            if (j >= n) return start + 1\n            const t1 = j'),
+      one('parser: an escaped quote in a label value ends the metric object early', 'src/api/matrix.ts',
+        '        if (d === BACKSLASH) i++\n        else if (d === QUOTE) break', '        if (d === QUOTE) break'),
+      one('parser: a time that is not a JSON number is accepted', 'src/api/matrix.ts',
+        '    if (d >= 0 && d <= 9) return NaN\n  }', '    if (d >= 0 && d <= 9) return Number(s.slice(from, to))\n  }'),
+      one('alignment: a gap is 0, not NaN', 'src/lib/series.ts', 'const values = new Float64Array(n).fill(NaN)', 'const values = new Float64Array(n)'),
+      one('chart: a NaN gap reaches the renderer as a value (and is bridged)', 'src/lib/downsample.ts',
+        'out[i] = v == null || v !== v ? null : v', 'out[i] = v'),
+      one('statistics: a NaN gap counts as a value', 'src/lib/series.ts', 'if (v == null || v !== v) continue\n    if (v < min) min = v', 'if (v == null) continue\n    if (v < min) min = v'),
+      one('errors: the API\'s time limit (503 timeout) is retried as if busy', 'src/api/errors.ts',
+        "  if (errorType === 'timeout') return 'timeout'\n", ''),
+      one('errors: Retry-After is ignored', 'src/api/errors.ts',
+        '  if (error instanceof PromApiError && error.retryAfterMs !== null) return error.retryAfterMs\n', ''),
+      one('errors: retries ignore the 60 s stop', 'src/api/errors.ts', '  return elapsedMs + retryDelayMs(error, failures) < budgetMs', '  return true'),
+      one('errors: the waiting line does not say the API is busy', 'src/explore/ExplorePage.tsx',
+        '{failures > 0 && query.failureReason', '{false && query.failureReason'),
+      one('errors: a refused key is told to change the query', 'src/api/errors.ts',
+        "      return 'The API did not accept the API key. Enter a valid key in Settings.'", '      return `Change the query and press ${mod} Enter to run it again.`'),
+      one('errors: the button of a refused key runs the query again instead of opening Settings', 'src/explore/ExplorePage.tsx',
+        "      ) : kind === 'auth' || kind === 'scope' ? (", "      ) : false ? ("),
+      one('errors: Retry-After as an HTTP date is not read', 'src/api/client.ts',
+        "  const at = /[A-Za-z]/.test(v) ? Date.parse(v) : NaN", '  const at = NaN'),
+      one('warnings: the banner does not say the result may be incomplete', 'src/explore/ExplorePage.tsx', ', so it may be\n        incomplete: {warnings', ': {warnings'),
+      one('autocomplete: lookups are not bounded by the page\'s time range', 'src/editor/promClient.ts',
+        '    const w = lookupWindow(options.range?.())', '    const w = lookupWindow(null)'),
+    ],
+  },
 }
 // The page keeps the draft in state again, as before the fix: the editor reports every change.
 SETS.fixes.list.find(([n]) => n.startsWith('B3: typing'))[1] = [
@@ -83,7 +138,9 @@ SETS.fixes.list.find(([n]) => n.startsWith('B3: typing'))[1] = [
 ]
 
 const SET = SETS[process.env.MUTANTS || 'design']
-if (!SET) throw new Error(`MUTANTS: no set ${process.env.MUTANTS} (design or fixes)`)
+if (!SET) throw new Error(`MUTANTS: no set ${process.env.MUTANTS} (design, fixes or real)`)
+makeCopy()
+console.log(`mutants are applied to a copy: ${ROOT}`)
 
 function runSuite(suite) {
   if (suite === 'unit') {
@@ -100,9 +157,9 @@ function runSuite(suite) {
     fs.rmSync(report, { force: true })
     return fails
   }
-  const file = suite === 'fixes' ? 'e2e/fixes.cjs' : 'e2e/design.cjs'
+  const file = { fixes: 'e2e/fixes.cjs', errors: 'e2e/errors.cjs', design: 'e2e/design.cjs' }[suite]
   const run = spawnSync(process.execPath, [file], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, VIZ_E2E_SKIP_STOP: '1' } })
-  const fails = run.stdout.split('\n').filter((l) => l.startsWith('FAIL')).map((l) => `${suite === 'fixes' ? 'e2e' : 'design'}: ${l.slice(6).split('  — ')[0]}`)
+  const fails = run.stdout.split('\n').filter((l) => l.startsWith('FAIL')).map((l) => `${suite === 'design' ? 'design' : 'e2e'}: ${l.slice(6).split('  — ')[0]}`)
   if (run.status !== 0 && fails.length === 0) fails.push(`${file} exited ${run.status}: ${(run.stderr || '').split('\n').filter(Boolean).slice(-1)[0] || ''}`)
   return fails
 }
@@ -115,6 +172,7 @@ if (process.env.DRY) {
     if (n !== 1) { bad++; console.log(`${n === 0 ? 'MISSING' : `${n} TIMES`}  ${name}  (${file})`) }
   }
   console.log(`${SET.list.length} mutants, ${bad} with a problem`)
+  if (!process.env.VIZ_MUTANT_DIR) fs.rmSync(path.dirname(ROOT), { recursive: true, force: true })
   process.exit(bad ? 1 : 0)
 }
 
@@ -145,6 +203,7 @@ for (const [name, edits] of SET.list) {
   }
   console.log(out[out.length - 1])
 }
-spawnSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build'], { cwd: ROOT })
-fs.mkdirSync(path.join(ROOT, 'e2e/measurements'), { recursive: true })
-if (!only) fs.writeFileSync(path.join(ROOT, 'e2e/measurements', SET.out), out.join('\n') + '\n')
+fs.mkdirSync(path.join(SOURCE, 'e2e/measurements'), { recursive: true })
+if (!only) fs.writeFileSync(path.join(SOURCE, 'e2e/measurements', SET.out), out.join('\n') + '\n')
+// The copy is left for inspection only when asked for.
+if (!process.env.VIZ_MUTANT_DIR) fs.rmSync(path.dirname(ROOT), { recursive: true, force: true })

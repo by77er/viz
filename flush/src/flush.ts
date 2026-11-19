@@ -97,6 +97,12 @@ export interface FlushResult {
   awaitingLog: boolean
   /** Sealed segments left for a later run because of `maxSegments`. */
   remaining: number
+  /**
+   * This run changed something maintenance may care about: it admitted a unit, wrote an
+   * object, or saw a segment it handled become recorded. A run that found everything already
+   * done (a duplicate delivery) has `changed: false` (review R-11(b)).
+   */
+  changed: boolean
   /** For `status: 'error'`. */
   reason?: FlushFailure
   detail?: string
@@ -251,6 +257,10 @@ async function report(c: Ctx, seg: Segment, unit: FlushUnit): Promise<{ outcome:
       // watermark and continue from the segment that extends it.
       throw new Restart()
     }
+    default:
+      // An answer this code does not know (a newer ledger, `schema_too_new`): fail closed.
+      // The exception makes the consumer retry; nothing is taken as admitted.
+      throw new Error(`flush: the ledger answered addUnit with ${JSON.stringify((result as { status?: unknown }).status)}; retry`)
   }
 }
 
@@ -283,7 +293,7 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
   }
   const maxSegments = opts.maxSegments ?? 64
   const handled = new Map<number, FlushedSegment>()
-  const out: FlushResult = { status: 'ok', tenant, shard: shardName, segments: [], loggedThrough: 0, recordedThrough: 0, awaitingLog: false, remaining: 0 }
+  const out: FlushResult = { status: 'ok', tenant, shard: shardName, segments: [], loggedThrough: 0, recordedThrough: 0, awaitingLog: false, remaining: 0, changed: false }
   let incarnation: number | null = null
 
   try {
@@ -333,6 +343,8 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
             if (r.status === 'not_contiguous') {
               throw new Stop('shard_not_contiguous', `the shard refused recorded(${logged}); it has recorded through ${r.recordedThrough}`)
             }
+            // Fail closed on an answer this code does not know: never take it for "recorded".
+            if (r.status !== 'ok') throw new Error(`flush: the shard answered recorded with ${JSON.stringify((r as { status?: unknown }).status)}; retry`)
           }
           await c.hooks.afterRecorded?.(seg)
         }
@@ -356,5 +368,10 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
   out.recordedThrough = state?.recordedThrough ?? 0
   if (state) out.loggedThrough = await loggedWatermark(c, state.incarnation)
   out.awaitingLog = out.segments.some((s) => s.incarnation === state?.incarnation && s.seqHi > out.recordedThrough)
+  // Every segment handled here was pending (unrecorded) when this run read the list; one that
+  // is recorded now became so during the run.
+  out.changed = out.segments.some(
+    (s) => s.outcome === 'admitted' || s.files.some((f) => f.put === 'created') || (s.incarnation === state?.incarnation && s.seqHi <= out.recordedThrough),
+  )
   return out
 }

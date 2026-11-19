@@ -100,7 +100,7 @@ describe('flush queue consumer', () => {
 
   it('retries when flush stops with an error status, with a delay that grows with the attempts', async () => {
     const a = await sealed('qe')
-    const failed: FlushResult = { status: 'error', reason: 'object_conflict', detail: 'injected', tenant: a.tenant, shard: a.shardName, segments: [], loggedThrough: 0, recordedThrough: 0, awaitingLog: false, remaining: 0 }
+    const failed: FlushResult = { status: 'error', reason: 'object_conflict', detail: 'injected', tenant: a.tenant, shard: a.shardName, segments: [], loggedThrough: 0, recordedThrough: 0, awaitingLog: false, remaining: 0, changed: false }
     const r = await deliver(batchOf([a.msg], [4]), { flush: async () => failed })
     expect(r.outcomes[0]).toMatchObject({ action: 'again', why: 'object_conflict' })
     expect(r.retried).toEqual([expect.objectContaining({ delaySeconds: 40 })])
@@ -124,13 +124,14 @@ describe('flush queue consumer', () => {
     expect((await read(a.tenant, [a.shardName])).canon).toEqual(a.sent.canon())
   })
 
-  it('calls onFlushed after every successful run, and retries the group if it throws', async () => {
+  it('calls onFlushed after a run that changed something, and retries the group if it throws', async () => {
     const a = await sealed('qh')
     const seen: string[] = []
-    const ok = await deliver(batchOf([a.msg]), { onFlushed: (r) => void seen.push(`${r.tenant}:${r.segments.length}`) })
+    const ok = await deliver(batchOf([a.msg]), { onFlushed: (r) => void seen.push(`${r.tenant}:${r.segments.length}:${r.changed}`) })
     expect(ok.outcomes[0]!.action).toBe('done')
-    expect(seen).toEqual([`${a.tenant}:1`])
-    const bad = await deliver(batchOf([a.msg]), { onFlushed: () => { throw new Error('KV down') } })
+    expect(seen).toEqual([`${a.tenant}:1:true`])
+    const b = await sealed('qh2')
+    const bad = await deliver(batchOf([b.msg]), { onFlushed: () => { throw new Error('KV down') } })
     expect(bad.outcomes[0]).toMatchObject({ action: 'again', why: 'exception: KV down' })
     expect(bad.retried).toHaveLength(1)
   })
@@ -194,7 +195,7 @@ describe('sweep', () => {
     const s = stream('sw0')
     await append(s.shard, s.tenant, someSamples(s.tenant, T0, 8))
     const c = counting()
-    for (let i = 0; i < 3; i++) expect(await sweepPending(c.env, { olderThanMs: 0 })).toEqual({ markers: 0, shardsAsked: 0, enqueued: [] })
+    for (let i = 0; i < 3; i++) expect(await sweepPending(c.env, { olderThanMs: 0 })).toEqual({ markers: 0, shardsAsked: 0, deferred: 0, enqueued: [], failed: [], unsent: 0 })
     expect(c.calls).toEqual({ shard: 0, messages: [] })
   })
 
@@ -207,16 +208,16 @@ describe('sweep', () => {
     const c = counting()
     const r = await sweepPending(c.env)
     expect(r).toMatchObject({ markers: 2, shardsAsked: 2 })
-    expect(c.calls.messages).toEqual([b.msg])
+    expect(c.calls.messages).toEqual([{ v: 1, ...b.msg }])
     // With no age threshold both are due.
-    expect((await sweepPending(c.env, { olderThanMs: 0 })).enqueued.sort((x, y) => (x.tenant < y.tenant ? -1 : 1))).toEqual([a.msg, b.msg].sort((x, y) => (x.tenant < y.tenant ? -1 : 1)))
+    expect((await sweepPending(c.env, { olderThanMs: 0 })).enqueued.sort((x, y) => (x.tenant < y.tenant ? -1 : 1))).toEqual([a.msg, b.msg].sort((x, y) => (x.tenant < y.tenant ? -1 : 1)).map((m) => ({ v: 1, ...m })))
 
     // The messages are consumed; the next sweep finds the markers, asks once, and the
     // shards clear them; after that the sweep costs nothing again.
     await deliver(batchOf([a.msg, b.msg]))
     const after = counting()
-    expect(await sweepPending(after.env, { olderThanMs: 0 })).toEqual({ markers: 2, shardsAsked: 2, enqueued: [] })
-    expect(await sweepPending(after.env, { olderThanMs: 0 })).toEqual({ markers: 0, shardsAsked: 0, enqueued: [] })
+    expect(await sweepPending(after.env, { olderThanMs: 0 })).toEqual({ markers: 2, shardsAsked: 2, deferred: 0, enqueued: [], failed: [], unsent: 0 })
+    expect(await sweepPending(after.env, { olderThanMs: 0 })).toEqual({ markers: 0, shardsAsked: 0, deferred: 0, enqueued: [], failed: [], unsent: 0 })
     expect(after.calls).toEqual({ shard: 2, messages: [] })
   })
 
@@ -231,7 +232,7 @@ describe('sweep', () => {
     await env.CONFIG.put(`pool:${a.tenant}`, JSON.stringify({ pool, slots: 2, spread: 2, epoch: 1 }))
     expect(await shardsFromPoolMaps({ CONFIG: env.CONFIG, DEFAULT_POOL: JSON.stringify({ pool: 'shared/x', slots: 1, spread: 1, epoch: 1 }) })).toEqual(expect.arrayContaining([`${pool}/0`, `${pool}/1`, 'shared/x/0']))
     const full = await sweepPending(c.env, { olderThanMs: 0, full: true })
-    expect(full.enqueued).toEqual([a.msg])
+    expect(full.enqueued).toEqual([{ v: 1, ...a.msg }])
     expect(full.shardsAsked).toBeGreaterThanOrEqual(2)
     await env.CONFIG.delete(`pool:${a.tenant}`)
   })

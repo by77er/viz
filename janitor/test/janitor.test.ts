@@ -5,7 +5,7 @@ import { flushTenant } from '../../flush/src/flush'
 import { DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, healLedgerLog, liveKeys, read, someSamples, stream } from '../../flush/test/helpers'
 import { canonOf } from '../../flush/test/read'
 import { engine } from '../../flush/src/index'
-import { DEFAULT_RETENTION, expireTenant, purgeTenant, retentionCutoffDay, retentionPolicy, sweepOrphans } from '../src/index'
+import { DEFAULT_RETENTION, expireTenant, parseRetention, purgeTenant, readRetention, retentionCutoffDay, sweepOrphans } from '../src/index'
 
 const QUIET = T0 + 30 * 60_000
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -29,19 +29,43 @@ async function tenantWith(prefix: string, n: number, dayBack: (i: number) => num
 }
 
 describe('retention policy', () => {
-  it('reads retention:<tenant> from KV, defaults to 30 days, and never shortens on a bad record', async () => {
+  it('no record: the default (30 days); a record: its number; anything unreadable: refused, never a default', async () => {
     expect(DEFAULT_RETENTION).toEqual({ metric_samples_days: 30 })
-    expect(await retentionPolicy(env, 'nobody')).toEqual({ metric_samples_days: 30 })
+    expect(await readRetention(env, 'nobody')).toEqual({ status: 'ok', policy: { metric_samples_days: 30 }, source: 'default' })
     await env.CONFIG.put('retention:pol-a', JSON.stringify({ metric_samples_days: 7 }))
-    expect(await retentionPolicy(env, 'pol-a')).toEqual({ metric_samples_days: 7 })
-    for (const bad of ['{', '{"metric_samples_days":0}', '{"metric_samples_days":-3}', '{"metric_samples_days":"1"}', '{"metric_samples_days":1.5}', 'null']) {
+    expect(await readRetention(env, 'pol-a')).toEqual({ status: 'ok', policy: { metric_samples_days: 7 }, source: 'record' })
+    // Fields this code does not use are ignored; `v: 1` spelt out is version 1.
+    expect(parseRetention('{"v":1,"metric_samples_days":400,"metric_5m_days":90,"later":true}')).toMatchObject({ status: 'ok', policy: { metric_samples_days: 400 } })
+    // Shorter or longer than the default alike: an unreadable record is never replaced by it.
+    for (const bad of ['{', '{"metric_samples_days": 365,}', '{"metric_samples_days":0}', '{"metric_samples_days":-3}', '{"metric_samples_days":"365"}', '{"metric_samples_days":1.5}', 'null', '[]', '{}', '{"v":2,"metric_samples_days":30}']) {
       await env.CONFIG.put('retention:pol-b', bad)
-      expect(await retentionPolicy(env, 'pol-b')).toEqual({ metric_samples_days: 30 })
+      expect(await readRetention(env, 'pol-b'), bad).toMatchObject({ status: 'unreadable' })
     }
     // Today and the N days before it are kept: with N = 2 on the 18th, the 16th is the first kept day.
     expect(retentionCutoffDay(T0, { metric_samples_days: 2 })).toBe('2026-11-16')
     expect(retentionCutoffDay(Date.UTC(2026, 10, 18, 23, 59, 59, 999), { metric_samples_days: 2 })).toBe('2026-11-16')
     expect(retentionCutoffDay(Date.UTC(2026, 10, 19), { metric_samples_days: 2 })).toBe('2026-11-17')
+    // A policy longer than the epoch keeps everything (and does not throw).
+    expect(retentionCutoffDay(T0, { metric_samples_days: 1e9 })).toBe('1970-01-01')
+  })
+
+  it('reads the retention record control writes (its golden file), as an independent reader', async () => {
+    const golden = (await import('../../control/test/golden/formats/kv.settings.v1.json')).default as { version: number; retention: string }
+    expect(golden.version).toBe(1)
+    expect(parseRetention(golden.retention)).toEqual({ status: 'ok', policy: { metric_samples_days: JSON.parse(golden.retention).metric_samples_days }, source: 'record' })
+  })
+
+  it('an unreadable record refuses the whole run for that tenant and says why; a fixed one is applied', async () => {
+    const t = await tenantWith('pol-r', 2, (i) => [100, 0][i]!)
+    await env.CONFIG.put(`retention:${t.tenant}`, '{"v":2,"metric_samples_days":7}')
+    const r = await expireTenant(env, t.tenant, T0)
+    expect(r).toEqual({ beforeDay: null, keepDays: null, removed: [], refused: expect.stringContaining('version 2') })
+    expect(await liveKeys(t.ledger)).toHaveLength(4)
+    // Deleting the record is an explicit return to the default: the 100-day-old day goes.
+    await env.CONFIG.delete(`retention:${t.tenant}`)
+    const d = await expireTenant(env, t.tenant, T0)
+    expect(d.refused).toBeUndefined()
+    expect(d.removed).toHaveLength(2)
   })
 })
 
@@ -218,20 +242,28 @@ describe('orphan sweep', () => {
     const failedMerge = (await dataKeys(t.tenant)).filter((k) => /\/L1-/.test(k))
     expect(failedMerge).toHaveLength(2)
 
-    // Young: kept, with the default graces and with a one-hour grace.
+    // Young: kept, with the default graces and with a one-hour grace. The failed merge's
+    // outputs are kept whatever their age while their inputs remain (a retry may adopt them).
     for (const opts of [{}, { graceMs: 3_600_000 }]) {
       const r = await sweepOrphans(env, t.tenant, opts)
       expect(r.deleted).toEqual([])
-      expect(r.kept.map((k) => [k.key, k.why]).sort()).toEqual([...[superseded, oldIncarnation, ...failedMerge].map((k) => [k, 'young']), [unknown, 'unknown_name']].sort())
+      expect(r.kept.map((k) => [k.key, k.why]).sort()).toEqual([...[superseded, oldIncarnation].map((k) => [k, 'young']), ...failedMerge.map((k) => [k, 'inputs_remain']), [unknown, 'unknown_name']].sort())
     }
-    // The flush files' grace alone does not release a compaction output: that needs twice a step's deadline.
     expect((await sweepOrphans(env, t.tenant, { graceMs: 0 })).deleted.sort()).toEqual([oldIncarnation, superseded].sort())
-    // Old enough (a day from now): the merge outputs go too. Live files and the unknown name never.
-    const r = await sweepOrphans(env, t.tenant, { now: Date.now() + 25 * 3_600_000 })
-    expect(r.deleted.sort()).toEqual(failedMerge.sort())
+    // A year on, with no grace at all: the merge outputs stay while their inputs are live.
+    const r = await sweepOrphans(env, t.tenant, { graceMs: 0, maxCompactStepMs: 0, now: Date.now() + 365 * DAY_MS })
+    expect(r.deleted).toEqual([])
     expect(r.listed).toBe(live.length + 3)
-    expect(await dataKeys(t.tenant)).toEqual([...live, unknown].sort())
+    expect(await dataKeys(t.tenant)).toEqual([...live, ...failedMerge, unknown].sort())
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
+    // The inputs expire and are purged: now nothing can ever list the outputs, and they go.
+    // The age floor still applies: a day later, not at once. Live files and the unknown name never.
+    await t.ledger.expire({ table: 'metric_samples', beforeDay: '2026-11-19' })
+    await t.ledger.expire({ table: 'metric_series', beforeDay: '2026-11-19' })
+    expect((await purgeTenant(env, t.tenant, { graceMs: 0 })).deleted.sort()).toEqual(live)
+    expect((await sweepOrphans(env, t.tenant)).kept.map((k) => k.why).sort()).toEqual(['unknown_name', 'young', 'young'])
+    expect((await sweepOrphans(env, t.tenant, { now: Date.now() + 25 * 3_600_000 })).deleted.sort()).toEqual(failedMerge.sort())
+    expect(await dataKeys(t.tenant)).toEqual([unknown])
   })
 
   it('a merge in flight keeps its outputs: the sweep runs between its PUTs and its replace', async () => {
@@ -239,11 +271,11 @@ describe('orphan sweep', () => {
     let swept: Awaited<ReturnType<typeof sweepOrphans>> | null = null
     const r = await compactStep(env, engine, t.tenant, {
       now: QUIET,
-      // Flush-file grace zero and "a little later": only the step deadline protects the outputs.
-      hooks: { afterPut: async () => { swept = await sweepOrphans(env, t.tenant, { graceMs: 0, now: Date.now() + 60_000 }) } },
+      // No grace and a year later: what protects the outputs is that their inputs are live.
+      hooks: { afterPut: async () => { swept = await sweepOrphans(env, t.tenant, { graceMs: 0, maxCompactStepMs: 0, now: Date.now() + 365 * DAY_MS }) } },
     })
     expect(swept!.deleted).toEqual([])
-    expect(swept!.kept.map((k) => k.why)).toEqual(['young', 'young'])
+    expect(swept!.kept.map((k) => k.why)).toEqual(['inputs_remain', 'inputs_remain'])
     expect(r.status).toBe('merged')
     expect(await exists(await liveKeys(t.ledger))).toEqual([true, true])
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())

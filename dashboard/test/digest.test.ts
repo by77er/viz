@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  digestDashboard, digestPanel, formatNumber, renderDigest, resolve, robustZ, thresholdState,
+  digestDashboard, digestPanel, formatNumber, panelOrder, renderDigest, resolve, robustZ, thresholdState,
   type DashboardDigest, type Panel, type PanelDigest, type PromMatrix, type PromVector,
 } from '../src/index.ts'
 import { red } from './helpers.ts'
@@ -301,6 +301,52 @@ describe('renderDigest', () => {
     expect(renderDigest(dash, { format: 'markdown', maxTokens: 20000, cursor: 'garbage' }).panelsShown).toBe(12)
     const end = renderDigest(dash, { format: 'markdown', maxTokens: 20000, cursor: 'o:99' })
     expect(end).toMatchObject({ panelsShown: 0, truncated: false })
+  })
+  it('panelOrder is the order the text is written in, so a caller can list the same panels in structure', () => {
+    const order = panelOrder(dash.panels)
+    expect(order.map((i) => dash.panels[i]!.id)).toEqual(fullIds(renderDigest(dash, { format: 'markdown', maxTokens: 20000 }).text))
+    expect([...order].sort((a, b) => a - b)).toEqual(dash.panels.map((_, i) => i))
+    // a page's cursor "o:N" consumed exactly the first N of that order
+    for (const maxTokens of [150, 400, 900]) {
+      const r = renderDigest(dash, { format: 'markdown', maxTokens })
+      const n = Number(r.cursor!.slice(2))
+      const written = fullIds(r.text) // panels with a heading: in full, or the first one cut to fit
+      expect(written).toEqual(order.slice(0, written.length).map((i) => dash.panels[i]!.id))
+      expect(written.length).toBeLessThanOrEqual(n)
+      expect(r.panelsShown).toBeLessThanOrEqual(n)
+    }
+    // ties keep the given (layout) order; text panels go last
+    const text = digestPanel({ kind: 'text', title: 'Notes', content: 'x' }, undefined, { id: 'n' })
+    const ok = dash.panels.find((p) => p.id === 'p0')!
+    expect(panelOrder([text, ok, ok])).toEqual([1, 2, 0])
+  })
+  it.each(['markdown', 'tsv'] as const)('continuation: false writes no truncation footer, uses its room, and still reports the cursor (%s)', (format) => {
+    for (const maxTokens of [60, 150, 400, 900]) {
+      const withFooter = renderDigest(dash, { format, maxTokens })
+      const without = renderDigest(dash, { format, maxTokens, continuation: false })
+      expect(without.text.length).toBeLessThanOrEqual(maxTokens * 4)
+      expect(without.text).not.toMatch(/_Truncated:|^# truncated/m)
+      expect(without.text).not.toContain('cursor')
+      expect(withFooter.text).toMatch(/_Truncated:|^# truncated/m)
+      expect(without.truncated).toBe(true)
+      expect(without.cursor).toMatch(/^o:\d+$/)
+      // never fewer panels than with the footer, since its room is not reserved
+      expect(Number(without.cursor!.slice(2))).toBeGreaterThanOrEqual(Number(withFooter.cursor!.slice(2)))
+    }
+    // paging without the footer still shows every panel exactly once
+    const seen: string[] = []
+    let cursor: string | undefined
+    let pages = 0
+    do {
+      const r = renderDigest(dash, { format: 'markdown', maxTokens: 400, continuation: false, ...(cursor ? { cursor } : {}) })
+      seen.push(...fullIds(r.text))
+      cursor = r.cursor
+      pages++
+    } while (cursor && pages < 50)
+    expect(new Set(seen).size).toBe(12)
+    expect(seen).toHaveLength(12)
+    // nothing to continue: identical to the default
+    expect(renderDigest(dash, { format, maxTokens: 20000, continuation: false }).text).toBe(renderDigest(dash, { format, maxTokens: 20000 }).text)
   })
   it('formatNumber is compact', () => {
     expect([0, 1, 0.5, 1234.5678, 0.000123, 12345678, 1e-7, -42.4242, null, NaN].map(formatNumber)).toEqual(['0', '1', '0.5', '1235', '0.000123', '1.23e7', '1e-7', '-42.42', '-', '-'])

@@ -220,6 +220,8 @@ describe('series', () => {
     expect([...a.series[1]!.values]).toEqual([1, 2, NaN, NaN, 5])
     expect([...a.series[0]!.values]).toEqual([NaN, NaN, NaN, NaN, 7])
     expect(seriesStats(a.xs, a.series[1]!.values)).toEqual({ last: 5, lastAt: 160, min: 1, max: 5, mean: 8 / 3, count: 3 })
+    // NaN gaps in a Float64Array count as gaps, as null did.
+    expect(seriesStats([0, 1, 2, 3], Float64Array.from([NaN, 2, NaN, 4]))).toEqual({ last: 4, lastAt: 3, min: 2, max: 4, mean: 3, count: 2 })
   })
   it('shortens names to the labels that differ', () => {
     expect(

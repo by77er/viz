@@ -204,7 +204,7 @@ describe('compactStep', () => {
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
   })
 
-  it('conflict: an input removed while the step ran means nothing is swapped and the outputs are deleted', async () => {
+  it('conflict: an input removed while the step ran means nothing is swapped; the outputs are left for the orphan sweep', async () => {
     const t = await flushed('c4', 4, (i) => T0 - 3 * DAY_MS + i * 60_000)
     const more = new Sent()
     await append(t.shard, t.tenant, someSamples(t.tenant, T0, 24, 9), more)
@@ -227,13 +227,18 @@ describe('compactStep', () => {
     expect(r.status).toBe('conflict')
     if (r.status !== 'conflict') return
     expect(r.missing.sort()).toEqual(live.filter((k) => k.includes('day=2026-11-15')))
-    expect(r.discarded.sort()).toEqual(outputs.sort())
-    for (const k of outputs) expect(await env.BUCKET.head(k)).toBeNull()
+    // The step deletes nothing (spec/README.md F14): the objects stay until the sweep can tell.
+    for (const k of outputs) expect(await env.BUCKET.head(k)).not.toBeNull()
     // The expired day did not come back, and what is left reads exactly as sent.
     expect(await liveKeys(t.ledger)).toEqual(live.filter((k) => k.includes('day=2026-11-18')))
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(more.canon())
     // Planning again finds nothing wrong and nothing to do.
     expect((await compactStep(env, engine, t.tenant, { now: T0 })).status).toBe('idle')
+    // Once the expired inputs are purged, nothing can ever list the outputs: the sweep deletes them.
+    const j = env as unknown as JanitorEnv
+    expect((await sweepOrphans(j, t.tenant, { now: Date.now() + 25 * HOUR })).deleted).toEqual([])
+    await purgeTenant(j, t.tenant, { graceMs: 0 })
+    expect((await sweepOrphans(j, t.tenant, { now: Date.now() + 25 * HOUR })).deleted.sort()).toEqual(outputs.sort())
   })
 
   it('conflict after an identical step won and its outputs were removed since: the tombstoned objects are left for the janitor', async () => {
@@ -258,7 +263,7 @@ describe('compactStep', () => {
         },
       },
     })
-    expect(b).toMatchObject({ status: 'conflict', discarded: [] })
+    expect(b).toMatchObject({ status: 'conflict' })
     const check = await t.ledger.orphanCheck(outputs)
     expect(check).toMatchObject({ live: [], tombstoned: outputs })
     // The reader holding the plan from before the removal can still read every file of it.

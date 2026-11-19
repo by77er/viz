@@ -80,7 +80,7 @@ export const writeDashboard: ToolDef = {
   name: 'write_dashboard',
   title: 'Write a dashboard',
   description:
-    'Create or change a dashboard. mode "dry_run" (the default) writes nothing: it validates against viz.dashboard/v1, lints, summarises the diff, runs the queries of every new or changed panel over the range and reports "no data", failed queries and metric names this tenant does not have (with near names) as warnings, and asks the control plane what applying would do. mode "propose" creates a proposal of named changes, each with a reason, for a person to accept whole or in part. mode "apply" writes a new revision; it is refused for agent keys unless the tenant allows agents to apply, and the refusal says to propose instead. Give one of: spec (a whole new dashboard, or a replacement for id), ops (RFC 6902 against base_revision) or changes (named groups of ops with reasons). Get base_revision from get_dashboard view "spec".',
+    'Create or change a dashboard. mode "dry_run" (the default) writes nothing: it validates against viz.dashboard/v1, lints, summarises the diff, runs the queries of every new or changed panel over the range and reports "no data", failed queries and metric names this tenant does not have (with near names) as warnings, and asks the control plane what applying would do. mode "propose" creates a proposal for a person to review: for an existing dashboard (id) named changes, each with a reason, accepted whole or in part; for a new dashboard (spec without id) the whole spec, accepted whole. Proposing the same new spec again returns the open proposal. mode "apply" writes a new revision or creates the dashboard; it is refused for agent keys unless the tenant allows agents to apply, and the refusal says to propose instead. Give one of: spec (a whole new dashboard, or a replacement for id), ops (RFC 6902 against base_revision) or changes (named groups of ops with reasons). Get base_revision from get_dashboard view "spec".',
   scopes: ['dashboards:write', 'read'],
   defaultTokens: 2000,
   readOnly: false,
@@ -203,7 +203,7 @@ export const writeDashboard: ToolDef = {
         : s.control!.call('POST', '/dashboards', { body: { spec: candidate, ...(message ? { message } : {}), dryRun: true } })
     }
     const refuseApply = (why: string): never => {
-      throw new ToolError('apply-refused', `${why} Nothing was written.`, id ? 'Call write_dashboard again with mode "propose" and the same changes; a person reviews and applies them. An admin can allow agents to apply with the tenant setting "agentsMayApply".' : 'Ask a person with dashboards:apply to create it; proposals to create a dashboard are not available yet.', { status: 403, meta: { offer: id ? { mode: 'propose' } : null }, detail: controlDetail || undefined })
+      throw new ToolError('apply-refused', `${why} Nothing was written.`, `Call write_dashboard again with mode "propose" and the same ${id ? 'changes' : 'spec'}; a person reviews and applies ${id ? 'them' : 'it'}. An admin can allow agents to apply with the tenant setting "agentsMayApply".`, { status: 403, meta: { offer: { mode: 'propose' } }, detail: controlDetail || undefined })
     }
     if (!valid) {
       if (mode !== 'dry_run') {
@@ -224,8 +224,20 @@ export const writeDashboard: ToolDef = {
         controlDetail = [typeof b.code === 'string' ? `code: ${cell(b.code, 40)}` : '', typeof b.detail === 'string' ? `detail: ${clean(b.detail, { max: MAX.error })}` : '', Array.isArray(b.errors) ? b.errors.slice(0, 10).map((e: any) => `${clean(e.path, { max: 120 })}: ${clean(e.message, { max: MAX.error })}`).join('\n') : ''].filter(Boolean).join('\n')
       }
       meta.wouldApply = (id && res.status === 200) || (!id && res.status === 201 && b.permitted !== false)
-    } else if (mode === 'propose') {
-      if (!id) throw new ToolError('propose-needs-existing', 'Proposals to create a dashboard are not available yet; the control plane holds proposals for existing dashboards only. Nothing was written.', 'Ask a person with dashboards:apply to create it, or (if the tenant allows agents to apply) use mode "apply".', { status: 409 })
+    } else if (mode === 'propose' && !id) {
+      // A whole new dashboard, for a person to review and apply (control: POST /proposals).
+      s.usage.upstreamCalls++
+      const res = await s.control.call('POST', '/proposals', { body: { spec: candidate, message: message || 'Proposed by an agent' } })
+      if (res.status !== 202 && !(res.status === 200 && res.body?.outcome === 'unchanged')) throw controlError(res, 'store the proposal')
+      const p = res.body.proposal
+      const pid = /^p_[A-Za-z0-9]{22}$/.test(String(p?.id)) ? String(p.id) : null
+      outcome =
+        res.status === 202
+          ? `proposal ${pid ?? '(see data)'} created to add this dashboard; a person reviews it and applies it whole`
+          : `this key already has proposal ${pid ?? '(see data)'} open for this same dashboard, so nothing new was stored; a person reviews it and applies it whole`
+      meta.proposal = { id: pid, kind: 'create', status: 'open', existing: res.status === 200, expiresAt: typeof p?.expiresAt === 'string' ? p.expiresAt : null }
+      controlDetail = `review: ${(res.body.review?.summary ?? []).slice(0, 10).map((x: unknown) => cell(x, 160)).join(' ; ')}`
+    } else if (mode === 'propose' && id) {
       s.usage.upstreamCalls++
       const res = await s.control.call('POST', `/dashboards/${encodeURIComponent(id)}/proposals`, { body: { changes, message: message || 'Proposed by an agent', baseRevision: base } })
       if (res.status !== 202) throw controlError(res, 'store the proposal')
@@ -235,12 +247,12 @@ export const writeDashboard: ToolDef = {
       meta.proposal = { id: pid, status: 'open', changes: changes.length, expiresAt: typeof p?.expiresAt === 'string' ? p.expiresAt : null }
       controlDetail = `review: ${(res.body.review?.summary ?? []).slice(0, 10).map((x: unknown) => cell(x, 160)).join(' ; ')}`
     } else {
-      // apply: ask first. The control plane turns an agent's write into a proposal unless the
-      // tenant allows agents to apply; this surface refuses instead of proposing silently.
-      const dry = await dryRunAt()
-      if (id && dry.status === 202) refuseApply('Agents may not apply changes in this tenant.')
-      if (!id && dry.status === 201 && dry.body?.permitted === false) refuseApply('Agents may not create dashboards in this tenant.')
-      if ((id && dry.status !== 200) || (!id && dry.status !== 201)) throw controlError(dry, 'apply the change')
+      // apply: the control plane said in whoami whether this caller's direct writes take effect.
+      // It would turn an agent's write into a proposal unless the tenant allows agents to apply;
+      // this surface refuses instead of proposing silently. No answer (an older control
+      // release, or edge's fallback) is a refusal too.
+      if (s.id.mayApply === false) refuseApply(s.id.kind === 'agent' ? `Agents may not ${id ? 'apply changes' : 'create dashboards'} in this tenant.` : 'This key may not apply changes here.')
+      if (s.id.mayApply !== true) refuseApply('The control plane did not say whether this key may apply changes, so this surface does not try.')
       s.usage.upstreamCalls++
       const res = id
         ? await s.control.call('PATCH', `/dashboards/${encodeURIComponent(id)}`, { body: { ops: flatOps, baseRevision: base, ...(message ? { message } : {}), propose: false } })

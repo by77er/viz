@@ -73,6 +73,18 @@ describe('downsampleMinMax', () => {
     expect(r.xs).toEqual([0, 3, 4, 7])
   })
 
+  it('hands gaps given as NaN (Float64Array series) to the renderer as null, which it never bridges', () => {
+    const xs = [0, 1, 2, 3, 4, 5]
+    const values = Float64Array.from([1, NaN, 3, NaN, NaN, 6])
+    // Fits: no downsampling, every NaN becomes null.
+    expect(downsampleMinMax(xs, [values], 10).series[0]).toEqual([1, null, 3, null, null, 6])
+    // Downsampled: a column of NaN only is a gap (null), and NaN never wins min or max.
+    const big = Float64Array.from({ length: 400 }, (_, i) => (i >= 100 && i < 200 ? NaN : i % 7))
+    const out = downsampleMinMax(Array.from({ length: 400 }, (_, i) => i), [big], 50)
+    expect(out.downsampled).toBe(true)
+    expect(out.series[0]!.some((v) => v !== null && Number.isNaN(v))).toBe(false)
+    expect(out.series[0]!.filter((v) => v === null).length).toBeGreaterThan(0)
+  })
   it('keeps gaps wider than a column as nulls', () => {
     const n = 1000
     const xs = Array.from({ length: n }, (_, i) => i)

@@ -78,13 +78,14 @@ describe('compaction preserves the rows (I8)', () => {
         const x = await compactStep(sim.env, engine, t.name, {
           now: clock(),
           policy: policy(),
-          hooks: { [at]: async () => { cutoff = (await expireTenant(sim.env, t.name)).beforeDay } },
+          hooks: { [at]: async () => { cutoff = (await expireTenant(sim.env, t.name)).beforeDay! } },
         })
-        if (cutoff === '') cutoff = (await expireTenant(sim.env, t.name)).beforeDay // the step was idle: expire anyway
+        if (cutoff === '') cutoff = (await expireTenant(sim.env, t.name)).beforeDay! // the step was idle: expire anyway
         expires++
         if (x.status === 'conflict') {
           conflicts++
-          for (const k of x.discarded) expect(await env.BUCKET.head(k), where).toBeNull()
+          // A conflicted step deletes nothing (spec/README.md F14): its outputs stay for the
+          // orphan sweep, and `checkTenant` below requires them to be names the sweep can judge.
         }
         t.model.expire(cutoff)
         // Nothing of an expired day came back, whatever the step did.

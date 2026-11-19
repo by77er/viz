@@ -131,6 +131,9 @@ export interface LogStatus {
   /** The alarm time this object set, if any. */
   alarmAt: number | null
   lastError: string | null
+  /** Since this instance started: segments written, and the slowest and the last segment write (ms). */
+  segmentsWritten: number
+  segmentWriteMs: { last: number; max: number }
 }
 
 /**
@@ -331,6 +334,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   private retryNotBefore = 0
   private failures = 0
   private lastError: string | null = null
+  /** Scheduling hints for drains started by commits: is one running, when did the last end, since when is something pending. */
+  private drainActive = false
+  private segmentsWritten = 0
+  private segmentWriteMs = { last: 0, max: 0 }
+  private lastDrainEnd = 0
+  private pendingSince: number | null = null
 
   constructor(ctx: DurableObjectState, env: LedgerEnv) {
     super(ctx, env)
@@ -481,7 +490,23 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
    * the alarm is part of the same write).
    */
   private afterCommit(): void {
+    const now = Date.now()
+    this.pendingSince ??= now
+    // Under continuous load the runtime may not deliver the alarm until the object is idle
+    // (measured in workerd: 1,600 units in 8 s, the alarm ran only after the last one), so
+    // a commit also starts a drain itself once one is due. Not awaited: the caller is
+    // answered when its commit is durable, never after an R2 write.
+    if (!this.drainActive && now >= this.retryNotBefore && now - this.pendingSince >= this.drainDelayMs && now - this.lastDrainEnd >= this.drainDelayMs) {
+      this.kickDrain()
+    }
+    // The alarm covers the tail: the last commits before the object goes quiet.
     this.scheduleDrain(this.drainDelayMs)
+  }
+
+  private kickDrain(): void {
+    void this.drainWithBackoff(SEGMENTS_PER_ALARM).then((failed) => {
+      if (this.hasPending()) this.scheduleDrain(failed ? this.retryNotBefore - Date.now() : this.drainDelayMs)
+    })
   }
 
   /** Set the alarm `delayMs` ahead unless one is already due by then; never before a backoff ends. */
@@ -842,9 +867,36 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   }
 
   private drainSerial(maxSegments: number): Promise<number> {
-    const run = this.draining.then(() => this.drainNow(maxSegments))
+    const run = this.draining.then(async () => {
+      this.drainActive = true
+      try {
+        return await this.drainNow(maxSegments)
+      } finally {
+        this.drainActive = false
+        this.lastDrainEnd = Date.now()
+        this.pendingSince = this.hasPending() ? this.lastDrainEnd : null
+      }
+    })
     this.draining = run.catch(() => undefined)
     return run
+  }
+
+  /** A drain whose failure sets the backoff and is reported, not thrown. Returns whether it failed. */
+  private async drainWithBackoff(maxSegments: number): Promise<boolean> {
+    try {
+      await this.drainSerial(maxSegments)
+      this.failures = 0
+      this.retryNotBefore = 0
+      return false
+    } catch (e) {
+      this.failures++
+      this.lastError = e instanceof Error ? e.message : String(e)
+      const fault = e instanceof LogFault
+      if (fault) console.error(`ledger ${this.tenant}: log fault, drain stopped: ${this.lastError}`)
+      const delay = fault ? DRAIN_RETRY_MAX_MS : Math.min(DRAIN_RETRY_MAX_MS, DRAIN_RETRY_MS * 2 ** (this.failures - 1))
+      this.retryNotBefore = Date.now() + delay
+      return true
+    }
   }
 
   /**
@@ -915,7 +967,11 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       if (!seg) break
       // The recorded bounds must survive a crash during the PUT, or a retry could choose others.
       if (seg.fresh) await this.ctx.storage.sync()
+      const t0 = Date.now()
       await this.putLogObject(seg.key, seg.body)
+      const ms = Date.now() - t0
+      this.segmentsWritten++
+      this.segmentWriteMs = { last: ms, max: Math.max(this.segmentWriteMs.max, ms) }
       this.ctx.storage.transactionSync(() => this.segmentWritten(seg))
       written += seg.rows.length
       if (seg.checkpoint) await this.writeCheckpoint(seg.checkpoint)
@@ -981,20 +1037,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       await this.starting?.catch(() => undefined)
       return
     }
-    let failed = false
-    try {
-      await this.drainSerial(SEGMENTS_PER_ALARM)
-      this.failures = 0
-      this.retryNotBefore = 0
-    } catch (e) {
-      failed = true
-      this.failures++
-      this.lastError = e instanceof Error ? e.message : String(e)
-      const fault = e instanceof LogFault
-      if (fault) console.error(`ledger ${this.tenant}: log fault, drain stopped: ${this.lastError}`)
-      const delay = fault ? DRAIN_RETRY_MAX_MS : Math.min(DRAIN_RETRY_MAX_MS, DRAIN_RETRY_MS * 2 ** (this.failures - 1))
-      this.retryNotBefore = Date.now() + delay
-    }
+    const failed = await this.drainWithBackoff(SEGMENTS_PER_ALARM)
     if (this.hasPending()) {
       this.scheduleDrain(failed ? this.retryNotBefore - Date.now() : 0)
     } else if (this.alarmAt !== null) {
@@ -1027,6 +1070,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       segmentsSinceCheckpoint: ready ? (this.meta('segs_since_ckpt') ?? 0) : 0,
       alarmAt: this.alarmAt,
       lastError: this.corrupt ?? this.lastError,
+      segmentsWritten: this.segmentsWritten,
+      segmentWriteMs: this.segmentWriteMs,
     }
   }
 
