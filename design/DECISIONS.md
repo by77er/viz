@@ -2176,3 +2176,99 @@ budget still warms about 9 at the default window, D51).
 rollback below the reader, and the gate can be checked by it); heads grow large enough to matter
 (then labels move to a row of their own, written when the series set changes); or a detector's state
 stops being a window of values on the grid.
+
+## D71. Edge counts what it builds while decoding metrics: a resource or data point of more than 65,536 key-value entries and array elements is refused at the limit, not built; a request decodes into at most 16 MiB of series table and a JSON body has at most 2^20 structural characters (413 otherwise); a body is at most 8 MiB decompressed
+
+*D61 to D70 are on the development branch, not on `main`. This entry is the metrics part of
+the development branch's D71, which applies the same limits to OTLP traces, OTLP logs and Loki
+push; those paths exist only on the development branch.*
+
+(Written 2026-11-19 for the development branch's review of spans and logs end to end, M-3:
+"count attributes, array items and value bytes while decoding, and refuse at the limit before
+materialising. Lower `maxDecompressedBytes`. Measure in workerd." The review reproduced 117 MiB
+of heap growth from a 2 MiB traces body that gzips to 2,076 bytes, and found the same flaw on
+`/v1/metrics`, which is live on `main`: 179 MiB for a 4 MiB metrics body, by its own repro.)
+
+**What was wrong, measured here** (the development branch's `edge/bench/memory.mjs`, run on
+`main`'s `edge/src` at `9e56957`: local workerd 2026-11-17, V8 heap from `--trace-gc`, peak = the
+largest heap any GC saw, one run per case; Node 22 alongside). The OTLP metrics decoders built
+every key-value entry and array element of a resource or data point as JavaScript objects and
+checked the limits afterwards, so a body of two-byte entries cost 25 to 40 bytes of heap per byte:
+a 4 MiB resource of empty `KeyValue`s peaked at 120 MiB in workerd (181 MiB in Node), the same
+body as JSON at 135 MiB (222 MiB). At the old default of 32 MiB decompressed, which a 32 KB gzip
+body reaches, that is about 1 GB (extrapolated). Worse, with a valid body: a resource's labels
+are copied into every series of it, so a 157 KiB OTLP metrics body (one 96 KiB resource, 2,000
+points) built a 498 MiB series table (Node, ArrayBuffers retained). Also: offset arrays grew with
+every child message, and a data point's attribute names were matched with `indexOf`, quadratic
+(262 ms for a 229 KiB point of distinct keys in Node).
+
+**Decision.**
+
+- **Values per item, counted before building** (`edge/src/meter.ts`). Every key-value entry and
+  every array element of an OTLP metric resource or data point, at any depth, as received, is
+  counted against it before it is built. At 65,536 the item is refused on its own (OTLP
+  `partial_success`: "label set too large to fit one batch"; a resource refuses every point under
+  it), its remainder is read only to check the wire (lengths, wire types, nesting, UTF-8), and the
+  rest of the request is decoded as before. Remote Write needs no count: its labels are read into a
+  fixed scratch as byte ranges. Contract: `contracts/BATCH.md`, "Decode limits".
+- **Per request: 413, nothing appended**, when the series table passes `maxDecodedBytes`
+  (16 MiB), or a JSON body has more than `maxJsonTokens` (1,048,576) structural characters,
+  counted before `JSON.parse`.
+- **`maxDecompressedBytes` 32 → 8 MiB.**
+- **Shape of the decoder:** a protobuf level is read twice (its scalar fields and how many
+  children, then the children) instead of keeping an offset per child; the series table's buffer
+  doubles only up to the decoded limit; a request's body is released once decoded; a point's
+  attribute names are found in a `Map`. Decoded batches are identical: 605 of 605 metrics requests
+  give the same batches, byte for byte, as `main` (the development branch's
+  `edge/bench/differential.mjs`, run on this change).
+
+**After, measured here** (same harness, on this change): the hostile 4 MiB protobuf bodies peak at
+1.3 to 6.0 MiB in workerd; hostile JSON is 413 before parsing, and JSON just under the token limit
+peaks at 28.2 MiB (the worst JSON shape found, measured on the development branch; `JSON.parse`
+builds that tree whatever the signal); the fan-out body is 413 and retains nothing; realistic
+bodies of 8,200 points peak at 3.2 MiB (protobuf) and 8.8 MiB (JSON) in workerd, against 3.2 and
+8.5 before. `edge/README.md`, "Memory per request", has the table and the model.
+
+**Why 8 MiB.** Realistic batches of 8,200 points measured here are 1.34 MiB as protobuf and
+3.06 MiB as JSON and decode into 2.14 MiB; on the development branch, realistic span, log and Loki
+batches of 8,200 items are 0.4 to 7.1 MiB. Clients' defaults (training knowledge, not verified
+here): the OpenTelemetry Collector's batch processor sends 8,192 items (`send_batch_size`) and does
+not cap a batch unless `send_batch_max_size` is set; gRPC's default largest message is 4 MiB; the
+Collector's HTTP server refuses bodies over 20 MiB by default; Prometheus sends 2,000 samples
+(625 KB measured here). 8 MiB holds the Collector's default metrics batch several times over; the
+README's earlier advice was 8 to 16 MiB.
+
+**Why 65,536 values.** It bounds an item's objects to what was measured above (6.0 MiB at worst)
+while every item real senders make has tens to a few thousand values. A data point of exactly
+65,536 values can still be stored, and is, in the tests, with every value read back.
+
+**Why 16 MiB decoded.** About seven times the realistic batch above (2.14 MiB for 8,200 points); a
+Kubernetes resource of about 25 attributes (about 1.4 KiB a series, modelled) makes 8,192 points
+about 11.5 MiB. It is what stops a resource's copies: the 157 KiB body above.
+
+**Alternatives.**
+
+- *Count after building* (as before): the measurements above.
+- *A byte budget per item* (a lower bound of the stored size against the series limits) instead
+  of a count: exact for well-formed input, but it still needs a count for entries the mapping
+  drops (empty values), and on the development branch one bound must hold for five mappings.
+  Would change if the count refuses items real senders make.
+- *Build nothing: write the mapping straight from the wire*: the least memory, but the live
+  metrics mapping re-implemented over the wire. Would change if 6 MiB per item is too much.
+- *Refuse the whole request (413) for an item over the limit*: simpler, but one bad point would
+  drop a sender's batch, against the per-item refusals OTLP's `partial_success` defines.
+- *One budget per request*: a large honest request would be refused for the sum of its items; the
+  body and decoded limits already govern a request's size.
+- *A streaming JSON parser* counted like protobuf: no pre-scan, more code; `JSON.parse` is native,
+  the pre-scan costs about 3 ms per MiB (Node).
+- *Resource attributes in `target_info`, not copied into every series*: removes the fan-out at
+  its source, but changes every OTLP series's labels, which queries and dashboards already use.
+- *`maxDecompressedBytes` 16 MiB*: twice the memory (modelled) for no realistic metrics batch;
+  *4 MiB* would refuse a default Collector batch of spans as JSON on the development branch.
+
+**Would change if.** Cloudflare measurements of isolate memory per request differ from these local
+ones (`design/VERIFICATION.md` §4: run the hostile and realistic bodies against a deployed edge and
+read the isolate's memory from Workers analytics); senders' bodies seen on Cloudflare are larger
+than 8 MiB, or metrics with wide resources reach 16 MiB decoded (then resource attributes go to
+`target_info` instead of every series, or the series table becomes chunks); OTLP clients learn to
+split on 413; a real sender's item passes 65,536 values.
