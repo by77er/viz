@@ -314,6 +314,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-series-name { overflow: hidden; }
 .vz-series-rest { color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .vz-legend-note { display: flex; flex-direction: column; min-width: 0; font: var(--text-small); color: var(--ink-muted); }
+.vz-legend-note[hidden] { display: none; }
 .vz-legend-note > p { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* one line per fact, so the reserved height holds; the script cuts long label sets in the middle */
 @container (max-width: 639px) { .vz-table.vz-legend-table [data-priority="2"] { display: none; } }
 /* Text form: the view's digest, the same facts as the picture, in sentences. */

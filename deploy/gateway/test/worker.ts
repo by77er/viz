@@ -5,6 +5,7 @@
  * reaches viz-ingest, viz-query and viz-control in production.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
+import control from '../../../control/src/index'
 
 export { default } from '../src/index'
 export { Tenant } from '../../../control/src/tenant'
@@ -34,7 +35,7 @@ async function echo(name: string, req: Request): Promise<Response> {
     return new Response(ts.readable, { headers: { 'x-fake-backend': name, 'Content-Type': 'text/plain' } })
   }
   if (url.pathname.endsWith('/__fake/throw')) throw new Error('fake backend failure')
-  if (url.pathname === '/healthz' || url.pathname === '/api/v1/control/openapi.json') return new Response('ok', { headers: { 'x-fake-backend': name } })
+  if (url.pathname === '/healthz') return new Response('ok', { headers: { 'x-fake-backend': name } })
   // Default: describe the request exactly.
   let bytes = 0
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', req.body ? await new Response(req.body).arrayBuffer().then((b) => ((bytes = b.byteLength), b)) : new ArrayBuffer(0)))
@@ -56,8 +57,10 @@ export class FakeQuery extends WorkerEntrypoint {
     return echo('query', req)
   }
 }
-export class FakeControl extends WorkerEntrypoint {
+/** Echoes like the others, except `/healthz`, which is control's real health route (control/src/index.ts) on this Worker's bindings. */
+export class FakeControl extends WorkerEntrypoint<Env> {
   fetch(req: Request) {
+    if (new URL(req.url).pathname === '/healthz') return control.fetch!(req as never, this.env as never, this.ctx)
     return echo('control', req)
   }
 }

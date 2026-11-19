@@ -1,6 +1,7 @@
 import { env, exports } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { type Env, ENTRYPOINTS, handle, routeOf } from '../src/index'
+import control from '../../../control/src/index'
+import { type Env, ENTRYPOINTS, HEALTH_PATHS, handle, routeOf } from '../src/index'
 
 const BASE = 'https://vis.bitcru.sh'
 const call = (path: string, init?: RequestInit) => exports.default.fetch(new Request(`${BASE}${path}`, init))
@@ -171,6 +172,26 @@ describe('health', () => {
       expect(body.backends[name]!.ok).toBe(false)
       for (const other of ['ingest', 'query', 'control'].filter((n) => n !== name)) expect(body.backends[other]!.ok).toBe(true)
     }
+  })
+
+  it('asks each backend its own /healthz; control\'s is control\'s real route, which fails when a binding of its is missing', async () => {
+    expect(HEALTH_PATHS).toEqual({ ingest: '/healthz', query: '/healthz', control: '/healthz' })
+    const asked: string[] = []
+    const recording = { fetch: (req: Request) => (asked.push(new URL(req.url).pathname), env.CONTROL.fetch(req)) } as unknown as Fetcher
+    const res = await handle(new Request(`${BASE}/healthz`), { ...env, CONTROL: recording } as unknown as Env)
+    expect(res.status).toBe(200)
+    expect(asked).toEqual(['/healthz'])
+    // control's own route answers (control/src/index.ts, run here on this Worker's bindings), without a credential
+    const direct = await env.CONTROL.fetch(new Request('https://gateway.internal/healthz'))
+    expect([direct.status, await direct.text()]).toEqual([200, 'ok\n'])
+    // and it is not the OpenAPI document any more: the old probe would have needed none of control's bindings
+    const misconfigured = await control.fetch!(new Request('https://gateway.internal/healthz') as never, { ...env, TENANT: undefined } as never, {} as ExecutionContext)
+    expect(misconfigured.status).toBe(503)
+    const broken = { fetch: (req: Request) => control.fetch!(req as never, { ...env, TENANT: undefined } as never, {} as ExecutionContext) } as unknown as Fetcher
+    const unhealthy = await handle(new Request(`${BASE}/healthz`), { ...env, CONTROL: broken } as unknown as Env)
+    expect(unhealthy.status).toBe(503)
+    const body = (await unhealthy.json()) as { backends: Record<string, { ok: boolean; status: number }> }
+    expect(body.backends.control).toMatchObject({ ok: false, status: 503 })
   })
 
   it('refuses methods other than GET and HEAD', async () => {

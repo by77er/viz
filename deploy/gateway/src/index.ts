@@ -51,11 +51,11 @@ export function routeOf(path: string): Route | null {
   return null
 }
 
-/** The health route each backend serves without a credential. control has none of its own; see deploy/README.md. */
+/** The health route each backend serves without a credential, reached only through its service binding. */
 export const HEALTH_PATHS: Record<Backend, string> = {
   ingest: '/healthz',
   query: '/healthz',
-  control: '/api/v1/control/openapi.json',
+  control: '/healthz',
 }
 
 export const ENTRYPOINTS = {
@@ -199,6 +199,11 @@ async function bootstrap(req: Request, env: Env, now: number): Promise<Response>
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     if (/already provisioned/.test(message)) return json(409, { error: 'this tenant already has keys; create further keys through /api/v1/control/keys' }, 'bootstrap')
+    // control's storage for this tenant was written by a newer release (contracts/COMPATIBILITY.md §2.4):
+    // nothing was created, and the same call works once that release serves the object again.
+    if (/^schema_too_new/.test(message)) {
+      return json(503, { error: 'a newer release holds this tenant\'s control-plane storage (a deploy or rollback is in progress); nothing was created; retry' }, 'bootstrap', { 'Retry-After': '30' })
+    }
     console.error('gateway: provision failed', message)
     return json(500, { error: 'provisioning failed; nothing was created' }, 'bootstrap')
   }

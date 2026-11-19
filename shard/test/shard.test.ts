@@ -41,9 +41,11 @@ describe('streams are per tenant', () => {
       expect(r.batches.length).toBeGreaterThan(0)
       for (const b of r.batches) expect(str(b.payload).startsWith(`${tenant}-secret-`)).toBe(true)
     }
-    // A tenant that has never written here sees nothing, not someone else's data.
-    const none = await s.tailRead('c', 1, 0)
-    expect(none).toMatchObject({ status: 'ok', batches: [] })
+    // A tenant that has never written here sees nothing, not someone else's data: asked
+    // with no incarnation, an empty tail; asked about one the shard does not hold, a refusal
+    // that makes the loss visible (review R-10), never an empty `ok`.
+    expect(await s.tailRead('c', 0, 0)).toMatchObject({ status: 'ok', batches: [] })
+    expect(await s.tailRead('c', 1, 0)).toEqual({ status: 'incarnation_mismatch', incarnation: 0 })
   })
 
   it('treats the same fingerprint from two tenants as two batches, and a retry as one', async () => {

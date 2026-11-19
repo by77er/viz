@@ -21,6 +21,9 @@
  *     timeout   503 timeout "query timed out"
  *     ratelimit 429, plain text, Retry-After: 10 (NOT the viz API: a rate limit in front of it)
  *   GET /__mock/fail?count=0                 clears it
+ *   GET /__mock/warn?text=<t>&count=<n>       the next n successful query answers carry `warnings: [t]`, as a
+ *                                            Prometheus-compatible store with a partial answer sends them (the
+ *                                            viz API sends none: it refuses instead of answering in part)
  *
  * The time limit: like the real API (`timeoutMs`, 30 s, lowered by a `timeout` parameter), a
  * query that would take longer is answered 503 `timeout` at the limit.
@@ -45,6 +48,8 @@ let queryDelay = 0
 let stall = false
 /** Set at run time through /__mock/fail. */
 let failure: { kind: string; left: number } = { kind: '', left: 0 }
+/** Set at run time through /__mock/warn: Prometheus `warnings` added to the next query answers (the viz API sends none). */
+let warning: { text: string; left: number } = { text: '', left: 0 }
 const requireToken = arg('require-token', '') || undefined
 const readlessToken = arg('readless-token', '') || undefined
 const api = createMockApi({ requireToken, readlessToken })
@@ -105,6 +110,12 @@ const server = createServer((req, res) => {
     res.writeHead(200, { ...c, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(failure))
     return
   }
+  if (reqUrl.pathname === '/__mock/warn') {
+    const count = Number(reqUrl.searchParams.get('count') ?? '1')
+    warning = count > 0 ? { text: reqUrl.searchParams.get('text') ?? 'partial response', left: count } : { text: '', left: 0 }
+    res.writeHead(200, { ...c, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(warning))
+    return
+  }
   const isQuery = /\/api\/v1\/query(_range)?$/.test(reqUrl.pathname)
   const perRequest = Number(reqUrl.searchParams.get('delay'))
   const wait = Math.max(delay, isQuery ? queryDelay : 0, Number.isFinite(perRequest) ? perRequest : 0)
@@ -132,6 +143,10 @@ const server = createServer((req, res) => {
           after = limit
         }
       }
+    }
+    if (isQuery && out.status === 200 && warning.left > 0) {
+      warning.left--
+      out = { ...out, body: { ...(out.body as object), warnings: [warning.text] } }
     }
     const payload = out.text ?? JSON.stringify(out.body)
     // Compressed when the client accepts it, as the real API's answers are (workerd and

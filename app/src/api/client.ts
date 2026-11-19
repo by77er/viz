@@ -9,6 +9,7 @@ import type {
   PromQueryData,
 } from './types'
 import { MatrixParser, NotAMatrix, type ParsedMatrix } from './matrix'
+import type { WorkerReply } from './matrixWorker'
 
 /** An error reported by the API, or a transport failure, in one shape the UI can render. */
 export class PromApiError extends Error {
@@ -54,6 +55,11 @@ export interface PromClientOptions {
   token?: string
   /** Injectable for tests. */
   fetch?: typeof fetch
+  /**
+   * A worker running api/matrixWorker.ts: range queries for the Explore view are then fetched
+   * and read there, off the main thread. Without one they are read on the main thread.
+   */
+  matrixWorker?: () => Worker
 }
 
 export interface RequestOptions {
@@ -72,11 +78,60 @@ export class PromClient {
   readonly baseUrl: string
   private readonly token: string
   private readonly fetchFn: typeof fetch
+  private readonly makeWorker: (() => Worker) | undefined
+  private worker: Worker | null = null
+  private nextId = 1
+  private readonly waiting = new Map<number, (reply: WorkerReply) => void>()
 
   constructor(opts: PromClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? '').trim().replace(/\/+$/, '')
     this.token = (opts.token ?? '').trim()
     this.fetchFn = opts.fetch ?? ((input, init) => fetch(input, init))
+    this.makeWorker = opts.matrixWorker
+  }
+
+  /** The range query through the worker: the same answers and errors as on the main thread. */
+  private async viaWorker(form: string, opts?: RequestOptions): Promise<MatrixResult> {
+    if (!this.worker) {
+      this.worker = this.makeWorker!()
+      this.worker.onmessage = (e: MessageEvent<WorkerReply>) => this.waiting.get(e.data.id)?.(e.data)
+    }
+    const worker = this.worker
+    const id = this.nextId++
+    const headers: [string, string][] = [['Accept', 'application/json'], ['Content-Type', 'application/x-www-form-urlencoded']]
+    if (this.token) headers.push(['Authorization', `Bearer ${this.token}`])
+    const url = new URL(this.baseUrl + '/api/v1/query_range', location.href).toString()
+    const reply = await new Promise<WorkerReply>((resolve, reject) => {
+      const onAbort = () => {
+        this.waiting.delete(id)
+        worker.postMessage({ id, abort: true })
+        reject(new DOMException('The operation was aborted.', 'AbortError'))
+      }
+      if (opts?.signal?.aborted) return onAbort()
+      opts?.signal?.addEventListener('abort', onAbort, { once: true })
+      this.waiting.set(id, (r) => {
+        this.waiting.delete(id)
+        opts?.signal?.removeEventListener('abort', onAbort)
+        resolve(r)
+      })
+      worker.postMessage({ id, url, headers, body: form })
+    })
+    if (reply.kind === 'error') {
+      if (reply.name === 'AbortError') throw new DOMException(reply.message, 'AbortError')
+      throw new PromApiError('network', `Cannot reach ${this.baseUrl || 'the API'}: ${reply.message}`, 0)
+    }
+    const res = new Response(null, { status: reply.status, headers: reply.headers })
+    if (reply.kind === 'response') {
+      this.read<unknown>(new Response(null, { status: reply.status, statusText: reply.statusText, headers: reply.headers }), reply.text)
+      throw new PromApiError('parse', 'The response is not a range-query matrix', reply.status)
+    }
+    const text = reply.text
+    const series = reply.series.map((s) => {
+      const range = s.range
+      return { metric: s.metric, times: s.times, values: s.values, valuesRange: range, valuesText: range ? () => text.slice(range[0], range[1]) : () => s.json ?? '[]' }
+    })
+    const matrix: ParsedMatrix = { series, warnings: reply.warnings, infos: reply.infos, text, fast: reply.fast }
+    return { matrix, warnings: matrix.warnings, infos: matrix.infos, cost: costOf(res.headers) }
   }
 
   /** Range query. Times are epoch seconds; step is seconds. */
@@ -148,6 +203,7 @@ export class PromClient {
    * are reported exactly as `queryRange` reports them.
    */
   async queryRangeMatrix(query: string, start: number, end: number, step: number, opts?: RequestOptions): Promise<MatrixResult> {
+    if (this.makeWorker) return this.viaWorker(new URLSearchParams({ query, start: String(start), end: String(end), step: String(step) }).toString(), opts)
     const res = await this.send(
       '/api/v1/query_range',
       {

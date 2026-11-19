@@ -1,4 +1,4 @@
-import { runInDurableObject } from 'cloudflare:test'
+import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { authenticate } from '../../../edge/src/auth'
 import { describe, expect, it } from 'vitest'
@@ -103,6 +103,27 @@ describe('POST /api/v1/bootstrap', () => {
     const second = await setup({ tenant: first.tenant })
     expect((await second.post()).status).toBe(409)
     expect(await runCount(first.tenant)).toBe(1)
+  })
+
+  it('while a newer release holds the tenant\'s storage (provision refuses with schema_too_new): a retryable 503, nothing created', async () => {
+    const { tenant, post } = await setup()
+    const stub = env.TENANT.get(env.TENANT.idFromName(tenant))
+    // Storage as a newer, forward-only release of control left it: version and compat above what this code knows.
+    const before = await runInDurableObject(stub, (_o, state) => {
+      state.storage.sql.exec('UPDATE viz_schema SET version = 99, compat = 99')
+      return state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").toArray().length
+    })
+    await evictDurableObject(stub)
+    const res = await post()
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+    expect(JSON.stringify(await res.json())).toMatch(/nothing was created/)
+    const after = await runInDurableObject(stub, (_o, state) => ({
+      keys: state.storage.sql.exec('SELECT COUNT(*) AS n FROM keys').one().n,
+      row: state.storage.sql.exec('SELECT version, compat FROM viz_schema').one(),
+      tables: state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").toArray().length,
+    }))
+    expect(after).toEqual({ keys: 0, row: { version: 99, compat: 99 }, tables: before })
   })
 })
 

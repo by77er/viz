@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
-import { SeriesWindow } from './sketch'
+import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
+import { SeriesWindow, UnreadableSketch } from './sketch'
 
 /**
  * A pooled shard: the write-ahead log for several tenants in one Durable Object.
@@ -8,11 +9,14 @@ import { SeriesWindow } from './sketch'
  * by `(shard, tenant, incarnation)`. Sequence numbers, seals, discard marks, quotas and
  * dedup fingerprints all belong to a stream. Nothing in this file reads or writes rows
  * without naming the tenant, and no state is shared between streams except the shard's
- * total byte budget.
+ * total byte budget and its in-flight limit.
  *
  * Lifecycle of a batch:  append → (seal) → [flush Worker writes Parquet] → recorded → discard
  *
- *   append    durable before the caller is answered (Durable Object output gate)
+ *   append    refused at once when the shard is over its in-flight limit (nothing is read or
+ *             written for it); otherwise it joins the open GROUP, and is answered after the
+ *             group's single SQLite transaction has committed (the runtime holds the answer
+ *             until that write is durable)
  *   seal      fixes a contiguous range of batches as a segment; the boundary is durable,
  *             and a `{tenant, shard}` message for the flush queue is written with it
  *   recorded  the tenant's ledger has admitted the segment's files
@@ -49,6 +53,22 @@ export interface ShardConfig {
   seriesExactMax: number
   /** Series windows changed in memory are written to storage at most this often. */
   seriesPersistMs: number
+  /**
+   * Early refusal: appends accepted but not yet committed may be at most this many, and
+   * carry at most `maxPendingBytes`. Past either, `append` answers `backpressure` with
+   * scope `overload` before it reads or writes anything.
+   */
+  maxInFlight: number
+  maxPendingBytes: number
+  /** The `Retry-After` of an overload refusal: this, plus up to as much again of jitter. */
+  overloadRetryMs: number
+  /**
+   * Group commit: the first append of an empty group waits this long (0: until the
+   * current event has finished) for others to join it; the group is then committed in one
+   * transaction. A group is also committed at once when it reaches `maxGroupBytes`.
+   */
+  groupWindowMs: number
+  maxGroupBytes: number
 }
 
 export const DEFAULT_CONFIG: ShardConfig = {
@@ -63,6 +83,51 @@ export const DEFAULT_CONFIG: ShardConfig = {
   seriesWindowMs: 60 * 60_000,
   seriesExactMax: 4096,
   seriesPersistMs: 60_000,
+  maxInFlight: 64,
+  maxPendingBytes: 16 << 20,
+  overloadRetryMs: 1000,
+  groupWindowMs: 0,
+  maxGroupBytes: 4 << 20,
+}
+
+/**
+ * The shard's storage, versioned (contracts/COMPATIBILITY.md §2). Version 1 is the schema
+ * as the code before versioning created it, with IF NOT EXISTS, so it adopts such storage;
+ * an object created before `segment.sealed_at` existed gets that column (0), which `CREATE
+ * TABLE IF NOT EXISTS` never added (design/UPGRADES.md §3.1). Stored BLOBs: `batch.payload`
+ * is `VZB1` (contracts/BATCH.md); `series_window.data` carries its own format byte
+ * (src/sketch.ts `SKETCH_FORMAT`).
+ */
+const V1 = [
+  `CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS stream (
+      tenant TEXT PRIMARY KEY, incarnation INTEGER NOT NULL, epoch INTEGER NOT NULL,
+      sealed_through INTEGER NOT NULL, recorded_through INTEGER NOT NULL, discarded_through INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS batch (
+      tenant TEXT NOT NULL, seq INTEGER NOT NULL, fingerprint TEXT NOT NULL, rows INTEGER NOT NULL,
+      bytes INTEGER NOT NULL, at INTEGER NOT NULL, payload BLOB, PRIMARY KEY (tenant, seq))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS batch_fp ON batch (tenant, fingerprint)`,
+  `CREATE TABLE IF NOT EXISTS segment (
+      tenant TEXT NOT NULL, seq_lo INTEGER NOT NULL, seq_hi INTEGER NOT NULL, bytes INTEGER NOT NULL,
+      rows INTEGER NOT NULL, recorded_at INTEGER, sealed_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant, seq_lo))`,
+  // Outbox of seal notifications: written in the same transaction as the segment, deleted
+  // when the message has been handed to the queue.
+  `CREATE TABLE IF NOT EXISTS notify (tenant TEXT PRIMARY KEY, due INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS series_window (
+      tenant TEXT NOT NULL, bucket INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (tenant, bucket))`,
+]
+
+export const SHARD_SCHEMA: SchemaSpec = {
+  component: 'shard.Shard',
+  migrations: [{
+    version: 1,
+    name: 'the schema as it stood when versioning began (segment.sealed_at added to objects that lack it)',
+    readableFrom: 1,
+    up: (sql) => {
+      for (const s of V1) sql.exec(s)
+      if (!columnsOf(sql, 'segment').has('sealed_at')) sql.exec(`ALTER TABLE segment ADD COLUMN sealed_at INTEGER NOT NULL DEFAULT 0`)
+    },
+  }],
 }
 
 /** What a shard puts on the flush queue when it seals a segment (binding `FLUSH_QUEUE`). */
@@ -108,7 +173,14 @@ export interface AppendRequest {
 
 export type AppendResult =
   | { status: 'ok'; incarnation: number; seq: number; duplicate: boolean }
-  | { status: 'backpressure'; scope: 'tenant' | 'shard'; retryAfterMs: number }
+  /**
+   * Nothing was stored; retry after `retryAfterMs`. `tenant`: this tenant's buffer is full.
+   * `shard`: the shard's byte budget is full and this tenant is over its fair share.
+   * `overload`: the shard has more appends in flight than it may take (refused before
+   * anything was read or written), or its storage belongs to a newer release; a caller
+   * that does not know this scope treats it like the others (backpressure).
+   */
+  | { status: 'backpressure'; scope: 'tenant' | 'shard' | 'overload'; retryAfterMs: number }
   | { status: 'stale_epoch'; epoch: number }
   /** The payload is over the batch size cap. Nothing was stored; a retry of the same bytes cannot succeed. */
   | { status: 'too_large'; maxBytes: number }
@@ -140,7 +212,11 @@ export type TailResult =
   | { status: 'ok'; incarnation: number; through: number; batches: TailBatch[] }
   /** The shard has discarded rows above the watermark it was asked about. Re-read the ledger. */
   | { status: 'stale_watermark'; incarnation: number; discardedThrough: number }
-  /** The stream was recreated (storage loss). The ledger must register the new incarnation. */
+  /**
+   * The stream was recreated (storage loss), or the shard holds no stream for this tenant
+   * while the caller names an incarnation (0 when the shard has none). The ledger must
+   * register the new incarnation.
+   */
   | { status: 'incarnation_mismatch'; incarnation: number }
 
 /** A tenant with sealed segments its ledger has not recorded. */
@@ -169,6 +245,29 @@ interface Stream {
   oldestUnsealedAt: number | null
 }
 
+/** One append waiting in the open group. */
+interface Pending {
+  req: AppendRequest
+  bytes: number
+  now: number
+  /** Appends of the same tenant and fingerprint in the same group share one row. */
+  joined: Pending[]
+  resolve(r: AppendResult): void
+  reject(e: unknown): void
+}
+
+/** Load-shedding counters since this instance started (`stats()`). */
+export interface ShardStats {
+  appends: number
+  committed: number
+  groups: number
+  /** Largest group committed. */
+  maxGroup: number
+  refusedOverload: number
+  inFlight: number
+  pendingBytes: number
+}
+
 /**
  * A stream incarnation: milliseconds since the epoch in the high bits, 10 random bits below.
  * Incarnations are therefore ordered by creation time (contracts/ledger.ts `StreamRef`): a
@@ -188,28 +287,32 @@ export class Shard extends DurableObject<ShardEnv> {
   private totalBytes = 0
   /** Active-series windows, rebuilt from `series_window` rows; `dirtySince` marks unsaved changes. */
   private windows = new Map<string, { w: SeriesWindow; dirtySince: number | null }>()
+  /** Tenants whose stored window this code cannot read: their metered appends are refused, never guessed. */
+  private unreadableWindows = new Set<string>()
   /** True once the KV pending marker is known to be written (config row `marker`). */
   private marked = false
+  private refusal: SchemaTooNew | null = null
+  /** Per tenant, the oldest `at` of a discarded batch whose fingerprint is still kept (a hint, rebuilt in `load`). */
+  private fingerprintsFrom = new Map<string, number>()
+  /** The open group and its accounting (memory only: nothing in it is acknowledged). */
+  private group: Pending[] = []
+  private groupBytes = 0
+  private groupTimer: ReturnType<typeof setTimeout> | null = null
+  private inFlight = 0
+  private pendingBytes = 0
+  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0 }
 
   constructor(ctx: DurableObjectState, env: ShardEnv) {
     super(ctx, env ?? {})
+    this.refusal = refusalOf(openSchema(ctx.storage, SHARD_SCHEMA))
+    if (this.refusal) {
+      // COMPATIBILITY.md §2.4: read nothing else, write nothing, keep the alarm coming back.
+      void ctx.blockConcurrencyWhile(async () => {
+        if ((await ctx.storage.getAlarm()) === null) await ctx.storage.setAlarm(Date.now() + this.refusal!.retryAfterMs)
+      })
+      return
+    }
     const sql = ctx.storage.sql
-    sql.exec(`CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS stream (
-      tenant TEXT PRIMARY KEY, incarnation INTEGER NOT NULL, epoch INTEGER NOT NULL,
-      sealed_through INTEGER NOT NULL, recorded_through INTEGER NOT NULL, discarded_through INTEGER NOT NULL)`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS batch (
-      tenant TEXT NOT NULL, seq INTEGER NOT NULL, fingerprint TEXT NOT NULL, rows INTEGER NOT NULL,
-      bytes INTEGER NOT NULL, at INTEGER NOT NULL, payload BLOB, PRIMARY KEY (tenant, seq))`)
-    sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS batch_fp ON batch (tenant, fingerprint)`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS segment (
-      tenant TEXT NOT NULL, seq_lo INTEGER NOT NULL, seq_hi INTEGER NOT NULL, bytes INTEGER NOT NULL,
-      rows INTEGER NOT NULL, recorded_at INTEGER, sealed_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant, seq_lo))`)
-    // Outbox of seal notifications: written in the same transaction as the segment, deleted
-    // when the message has been handed to the queue.
-    sql.exec(`CREATE TABLE IF NOT EXISTS notify (tenant TEXT PRIMARY KEY, due INTEGER NOT NULL)`)
-    sql.exec(`CREATE TABLE IF NOT EXISTS series_window (
-      tenant TEXT NOT NULL, bucket INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (tenant, bucket))`)
     const row = sql.exec(`SELECT v FROM config WHERE k = 'cfg'`).toArray()[0]
     if (row) this.cfg = { ...DEFAULT_CONFIG, ...JSON.parse(row.v as string) }
     this.marked = sql.exec(`SELECT v FROM config WHERE k = 'marker'`).toArray()[0]?.v === '1'
@@ -221,6 +324,7 @@ export class Shard extends DurableObject<ShardEnv> {
     const sql = this.ctx.storage.sql
     this.streams.clear()
     this.totalBytes = 0
+    this.fingerprintsFrom.clear()
     for (const r of sql.exec(`SELECT * FROM stream`).toArray()) {
       const tenant = r.tenant as string
       const agg = sql
@@ -228,7 +332,8 @@ export class Shard extends DurableObject<ShardEnv> {
           `SELECT COALESCE(MAX(seq), 0) AS max_seq,
                   COALESCE(SUM(CASE WHEN payload IS NOT NULL THEN bytes END), 0) AS buffered,
                   COALESCE(SUM(CASE WHEN seq > ? THEN bytes END), 0) AS unsealed,
-                  MIN(CASE WHEN seq > ? THEN at END) AS oldest
+                  MIN(CASE WHEN seq > ? THEN at END) AS oldest,
+                  MIN(CASE WHEN payload IS NULL THEN at END) AS fp_from
            FROM batch WHERE tenant = ?`,
           r.sealed_through, r.sealed_through, tenant,
         )
@@ -246,10 +351,12 @@ export class Shard extends DurableObject<ShardEnv> {
       }
       this.streams.set(tenant, s)
       this.totalBytes += s.bufferedBytes
+      if (agg.fp_from !== null) this.fingerprintsFrom.set(tenant, agg.fp_from as number)
     }
     // Series windows as last saved. Ids seen since the last save are not in them: after an
     // eviction the count is low by at most `seriesPersistMs` worth of new series.
     this.windows.clear()
+    this.unreadableWindows.clear()
     const now = Date.now()
     const stored = new Map<string, [number, Uint8Array][]>()
     for (const r of sql.exec(`SELECT tenant, bucket, data FROM series_window`).toArray()) {
@@ -258,7 +365,15 @@ export class Shard extends DurableObject<ShardEnv> {
       stored.set(r.tenant as string, list)
     }
     for (const [tenant, buckets] of stored) {
-      this.windows.set(tenant, { w: SeriesWindow.load(this.cfg.seriesWindowMs, this.cfg.seriesExactMax, now, buckets), dirtySince: null })
+      try {
+        this.windows.set(tenant, { w: SeriesWindow.load(this.cfg.seriesWindowMs, this.cfg.seriesExactMax, now, buckets), dirtySince: null })
+      } catch (e) {
+        // Written by a newer release: refuse this tenant's metered appends rather than start
+        // an empty window, which would loosen its limit (COMPATIBILITY.md §3.2).
+        if (!(e instanceof UnreadableSketch)) throw e
+        this.unreadableWindows.add(tenant)
+        console.error(`shard: series window of ${tenant} is unreadable: ${e.message}`)
+      }
     }
   }
 
@@ -269,11 +384,16 @@ export class Shard extends DurableObject<ShardEnv> {
     return e
   }
 
+  private refused(): never {
+    throw new SchemaTooNewError(this.refusal!)
+  }
+
   /**
    * Distinct series of one tenant active in this shard's window. `exact` is false when the
    * count is the sketch's estimate (standard error 1.6%). For a cardinality report.
    */
   async seriesCount(tenant: string): Promise<{ count: number; exact: boolean; windowMs: number }> {
+    if (this.refusal) this.refused()
     const e = this.windows.get(tenant)
     if (!e) return { count: 0, exact: true, windowMs: this.cfg.seriesWindowMs }
     e.w.rotate(Date.now())
@@ -304,12 +424,28 @@ export class Shard extends DurableObject<ShardEnv> {
   }
 
   async configure(cfg: Partial<ShardConfig>): Promise<ShardConfig> {
+    if (this.refusal) this.refused()
     this.cfg = { ...this.cfg, ...cfg }
     this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO config (k, v) VALUES ('cfg', ?)`, JSON.stringify(this.cfg))
     return this.cfg
   }
 
+  /** In-memory load counters since this instance started, for tests and operators. */
+  async stats(): Promise<ShardStats> {
+    return { ...this.counters, inFlight: this.inFlight, pendingBytes: this.pendingBytes }
+  }
+
   async append(req: AppendRequest): Promise<AppendResult> {
+    const bytes = req.payload.byteLength
+    // Early refusal, before anything is read or written: the shard already has as much in
+    // flight as it may take. Retryable; nothing about this request is stored or counted.
+    if (this.inFlight >= this.cfg.maxInFlight || this.pendingBytes + bytes > this.cfg.maxPendingBytes) {
+      this.counters.refusedOverload++
+      return { status: 'backpressure', scope: 'overload', retryAfterMs: this.cfg.overloadRetryMs + Math.floor(Math.random() * this.cfg.overloadRetryMs) }
+    }
+    // Storage of a newer release: retryable, never `ok` (design/UPGRADES.md §7).
+    if (this.refusal) return { status: 'backpressure', scope: 'overload', retryAfterMs: this.refusal.retryAfterMs }
+    this.counters.appends++
     const sql = this.ctx.storage.sql
     const known = this.streams.get(req.tenant)
     if (known && req.epoch < known.epoch) return { status: 'stale_epoch', epoch: known.epoch }
@@ -319,35 +455,46 @@ export class Shard extends DurableObject<ShardEnv> {
       const dup = sql.exec(`SELECT seq FROM batch WHERE tenant = ? AND fingerprint = ?`, req.tenant, req.fingerprint).toArray()[0]
       if (dup) return { status: 'ok', incarnation: known.incarnation, seq: dup.seq as number, duplicate: true }
     }
+    // The same batch is waiting in the open group: share its answer (and its one row).
+    const twin = this.group.find((p) => p.req.tenant === req.tenant && p.req.fingerprint === req.fingerprint)
+    if (twin) {
+      return new Promise<AppendResult>((resolve, reject) => {
+        twin.joined.push({ req, bytes: 0, now: 0, joined: [], resolve: (r) => resolve(r.status === 'ok' ? { ...r, duplicate: true } : r), reject })
+      })
+    }
 
-    const bytes = req.payload.byteLength
     // Checked before anything else about the payload, and before a stream is created for it.
     if (bytes > this.cfg.maxBatchBytes) return { status: 'too_large', maxBytes: this.cfg.maxBatchBytes }
-    const held = known?.bufferedBytes ?? 0
+    // What this tenant holds, including what is waiting in the open group.
+    let waiting = 0
+    for (const p of this.group) if (p.req.tenant === req.tenant) waiting += p.bytes
+    const held = (known?.bufferedBytes ?? 0) + waiting
     // A tenant is limited by its own cap first, so its backlog can never consume the shard.
     if (held + bytes > this.cfg.tenantMaxBytes) return { status: 'backpressure', scope: 'tenant', retryAfterMs: 1000 }
     // When the shard as a whole is full, only tenants above their fair share are refused.
     // A tenant at or below its share is always admitted, so one tenant cannot starve another.
     // Fair-share admission can overshoot the budget while over-share tenants drain, so
     // there is also a hard ceiling at twice the budget that nobody passes.
-    if (this.totalBytes + bytes > 2 * this.cfg.shardMaxBytes) return { status: 'backpressure', scope: 'shard', retryAfterMs: 1000 }
-    if (this.totalBytes + bytes > this.cfg.shardMaxBytes) {
+    const total = this.totalBytes + this.groupBytes
+    if (total + bytes > 2 * this.cfg.shardMaxBytes) return { status: 'backpressure', scope: 'shard', retryAfterMs: 1000 }
+    if (total + bytes > this.cfg.shardMaxBytes) {
       const sharers = this.activeStreams() + (held === 0 ? 1 : 0)
       const fairShare = Math.floor(this.cfg.shardMaxBytes / Math.max(1, sharers))
       if (held + bytes > fairShare) return { status: 'backpressure', scope: 'shard', retryAfterMs: 1000 }
     }
 
     // Active series. Only ids NEW to the window can be refused, so a tenant at its limit
-    // keeps writing the series it already has. Nothing is recorded unless the batch is stored.
+    // keeps writing the series it already has. Checked and recorded here, with no await in
+    // between, so two appends in one group cannot both take the last room.
     const now = Date.now()
-    let metered: { w: SeriesWindow; dirtySince: number | null } | null = null
     if (req.seriesIds) {
       // The one cheap check the shard can make without parsing the batch: `n_series` at offset 12.
       const header = bytes >= 16 ? new DataView(req.payload.buffer, req.payload.byteOffset, 16).getUint32(12, true) : -1
       if (header !== req.seriesIds.length) {
         return { status: 'invalid', reason: `${req.seriesIds.length} series ids for a batch whose header says ${header}` }
       }
-      metered = this.window(req.tenant, now)
+      if (this.unreadableWindows.has(req.tenant)) return { status: 'backpressure', scope: 'overload', retryAfterMs: 30_000 }
+      const metered = this.window(req.tenant, now)
       if (req.seriesLimit !== undefined) {
         const { current, fresh } = metered.w.check(req.seriesIds)
         const room = Math.max(0, req.seriesLimit - current)
@@ -355,33 +502,108 @@ export class Shard extends DurableObject<ShardEnv> {
           return { status: 'series_limit', limit: req.seriesLimit, current, refused: BigInt64Array.from(fresh.slice(room)) }
         }
       }
+      // Ids of a batch that is then not stored only make the count conservative (it is
+      // recorded before the commit); a save only when something changed (review R-11).
+      if (metered.w.add(req.seriesIds, req.seriesLimit ?? 0)) metered.dirtySince ??= now
     }
 
-    const s = this.stream(req.tenant, req.epoch)
-    if (req.epoch > s.epoch) {
-      s.epoch = req.epoch
-      sql.exec(`UPDATE stream SET epoch = ? WHERE tenant = ?`, s.epoch, req.tenant)
-    }
-    const seq = s.nextSeq
-    sql.exec(
-      `INSERT INTO batch (tenant, seq, fingerprint, rows, bytes, at, payload) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      req.tenant, seq, req.fingerprint, req.rows, bytes, now, req.payload,
-    )
-    s.nextSeq = seq + 1
-    s.bufferedBytes += bytes
-    s.unsealedBytes += bytes
-    s.oldestUnsealedAt ??= now
-    this.totalBytes += bytes
-    if (metered && req.seriesIds) {
-      metered.w.add(req.seriesIds, req.seriesLimit ?? 0)
-      metered.dirtySince ??= now
-    }
+    return new Promise<AppendResult>((resolve, reject) => {
+      this.inFlight++
+      this.pendingBytes += bytes
+      this.group.push({ req, bytes, now, joined: [], resolve, reject })
+      this.groupBytes += bytes
+      if (this.groupBytes >= this.cfg.maxGroupBytes) this.commitSoon(true)
+      else this.commitSoon(false)
+    })
+  }
 
-    if (s.unsealedBytes >= this.cfg.sealBytes && this.sealStream(req.tenant, s)) await this.deliver()
-    await this.arm()
-    // Returning here is the acknowledgement. The runtime holds the response until the
-    // writes above are durable, so an acknowledged batch survives a crash.
-    return { status: 'ok', incarnation: s.incarnation, seq, duplicate: false }
+  /** Commit the open group after the window (or at once). One timer per group. */
+  private commitSoon(now: boolean): void {
+    if (now) {
+      if (this.groupTimer !== null) clearTimeout(this.groupTimer)
+      this.groupTimer = null
+      void this.commitGroup()
+      return
+    }
+    if (this.groupTimer !== null) return
+    this.groupTimer = setTimeout(() => {
+      this.groupTimer = null
+      void this.commitGroup()
+    }, this.cfg.groupWindowMs)
+  }
+
+  /**
+   * One transaction for every append of the group: a row per batch (never per sample), the
+   * stream rows, and any seal with its notification. Each caller is answered only after it
+   * commits; if it throws, every caller of the group gets the error and nothing is stored.
+   */
+  private async commitGroup(): Promise<void> {
+    const group = this.group
+    if (group.length === 0) return
+    this.group = []
+    this.groupBytes = 0
+    const sql = this.ctx.storage.sql
+    let results: AppendResult[]
+    let sealed = false
+    try {
+      results = this.ctx.storage.transactionSync(() => {
+        const out: AppendResult[] = []
+        const touched = new Set<string>()
+        for (const p of group) {
+          const { req } = p
+          const s = this.stream(req.tenant, req.epoch)
+          if (req.epoch > s.epoch) {
+            s.epoch = req.epoch
+            sql.exec(`UPDATE stream SET epoch = ? WHERE tenant = ?`, s.epoch, req.tenant)
+          }
+          const seq = s.nextSeq
+          sql.exec(
+            `INSERT INTO batch (tenant, seq, fingerprint, rows, bytes, at, payload) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            req.tenant, seq, req.fingerprint, req.rows, p.bytes, p.now, req.payload,
+          )
+          s.nextSeq = seq + 1
+          s.bufferedBytes += p.bytes
+          s.unsealedBytes += p.bytes
+          s.oldestUnsealedAt ??= p.now
+          this.totalBytes += p.bytes
+          touched.add(req.tenant)
+          out.push({ status: 'ok', incarnation: s.incarnation, seq, duplicate: false })
+        }
+        for (const tenant of touched) {
+          const s = this.streams.get(tenant)!
+          if (s.unsealedBytes >= this.cfg.sealBytes && this.sealStream(tenant, s)) sealed = true
+        }
+        return out
+      })
+    } catch (e) {
+      // Rolled back: memory may have moved with it, so it is rebuilt from storage.
+      this.load()
+      this.settle(group)
+      for (const p of group) {
+        p.reject(e)
+        for (const j of p.joined) j.reject(e)
+      }
+      return
+    }
+    this.counters.groups++
+    this.counters.committed += group.length
+    this.counters.maxGroup = Math.max(this.counters.maxGroup, group.length)
+    try {
+      if (sealed) await this.deliver()
+      await this.arm()
+    } finally {
+      // The answers go out now; the runtime holds each until the transaction is durable.
+      this.settle(group)
+      group.forEach((p, i) => {
+        p.resolve(results[i]!)
+        for (const j of p.joined) j.resolve(results[i]!)
+      })
+    }
+  }
+
+  private settle(group: Pending[]): void {
+    this.inFlight -= group.length
+    for (const p of group) this.pendingBytes -= p.bytes
   }
 
   /** Fix every unsealed batch of one stream as a segment. Durable before anything reads it. */
@@ -403,13 +625,23 @@ export class Shard extends DurableObject<ShardEnv> {
   }
 
   async seal(tenant: string): Promise<Segment | null> {
+    if (this.refusal) this.refused()
+    // Appends waiting in the open group are committed first: a seal covers what was acknowledged before it.
+    if (this.group.length > 0) await this.flushGroup()
     const s = this.streams.get(tenant)
-    const seg = s ? this.sealStream(tenant, s) : null
+    const seg = s ? this.ctx.storage.transactionSync(() => this.sealStream(tenant, s)) : null
     if (seg) {
       await this.deliver()
       await this.arm()
     }
     return seg
+  }
+
+  /** Commit the open group now (and wait for it). */
+  private async flushGroup(): Promise<void> {
+    if (this.groupTimer !== null) clearTimeout(this.groupTimer)
+    this.groupTimer = null
+    await this.commitGroup()
   }
 
   /**
@@ -451,7 +683,10 @@ export class Shard extends DurableObject<ShardEnv> {
   }
 
   private anyPending(): boolean {
-    return this.ctx.storage.sql.exec(`SELECT 1 AS x FROM segment WHERE recorded_at IS NULL LIMIT 1`).toArray().length > 0
+    for (const tenant of this.streams.keys()) {
+      if (this.ctx.storage.sql.exec(`SELECT 1 AS x FROM segment WHERE tenant = ? AND recorded_at IS NULL LIMIT 1`, tenant).toArray().length > 0) return true
+    }
+    return false
   }
 
   private setMarked(v: boolean): void {
@@ -465,6 +700,7 @@ export class Shard extends DurableObject<ShardEnv> {
    * removes its pending marker, so the next sweep does not wake it.
    */
   async pendingTenants(olderThanMs = 0): Promise<PendingTenant[]> {
+    if (this.refusal) this.refused()
     const sql = this.ctx.storage.sql
     const out: PendingTenant[] = []
     const cutoff = Date.now() - olderThanMs
@@ -474,17 +710,29 @@ export class Shard extends DurableObject<ShardEnv> {
     }
     if (this.marked && this.env.CONFIG && !this.anyPending()) {
       const key = pendingMarkerKey(this.ctx.id.name ?? '')
-      // `marked` stays true during the delete, so a seal that happens meanwhile does not
-      // race a put against it; it is noticed below and the marker is written again.
+      // Believe the marker gone BEFORE deleting it (review R-6): from here a seal writes it
+      // again itself (`deliver`), and if anything below fails the alarm does (`arm`).
+      this.setMarked(false)
       await this.env.CONFIG.delete(key)
-      if (this.anyPending()) await this.env.CONFIG.put(key, JSON.stringify({ since: Date.now() }))
-      else this.setMarked(false)
+      // A seal during the delete may have written the marker just before the delete removed
+      // it: write it once more. If that fails, `marked` stays false and the alarm retries.
+      if (this.anyPending()) {
+        try {
+          await this.env.CONFIG.put(key, JSON.stringify({ since: Date.now() }))
+          this.setMarked(true)
+        } catch (e) {
+          this.setMarked(false)
+          await this.arm()
+          throw e
+        }
+      }
     }
     return out
   }
 
   /** Sealed segments of one tenant that its ledger has not yet recorded. */
   async pendingSegments(tenant: string): Promise<Segment[]> {
+    if (this.refusal) this.refused()
     const s = this.streams.get(tenant)
     if (!s) return []
     return this.ctx.storage.sql
@@ -495,6 +743,7 @@ export class Shard extends DurableObject<ShardEnv> {
 
   /** Payloads of one sealed segment, for the flush Worker. */
   async readSegment(tenant: string, seqLo: number): Promise<TailBatch[] | null> {
+    if (this.refusal) this.refused()
     const sql = this.ctx.storage.sql
     const seg = sql.exec(`SELECT seq_hi FROM segment WHERE tenant = ? AND seq_lo = ?`, tenant, seqLo).toArray()[0]
     if (!seg) return null
@@ -513,6 +762,7 @@ export class Shard extends DurableObject<ShardEnv> {
    * recorded prefix exactly at a segment boundary; anything else is refused unchanged.
    */
   async recorded(tenant: string, incarnation: number, throughSeq: number): Promise<RecordedResult> {
+    if (this.refusal) this.refused()
     const s = this.streams.get(tenant)
     if (!s || s.incarnation !== incarnation) return { status: 'incarnation_mismatch', incarnation: s?.incarnation ?? 0 }
     if (throughSeq <= s.recordedThrough) return { status: 'ok', recordedThrough: s.recordedThrough }
@@ -532,8 +782,15 @@ export class Shard extends DurableObject<ShardEnv> {
    * the caller would need, it says so instead of returning a result with a hole in it.
    */
   async tailRead(tenant: string, incarnation: number, aboveSeq: number): Promise<TailResult> {
+    if (this.refusal) this.refused()
+    // Appends waiting in the open group are not acknowledged yet, so not visible either.
     const s = this.streams.get(tenant)
-    if (!s) return { status: 'ok', incarnation, through: aboveSeq, batches: [] }
+    if (!s) {
+      // No stream here. A caller that names one (an incarnation the ledger registered) is
+      // told the shard does not hold it, so the loss shows instead of an empty tail (review
+      // R-10); one that names none (0) and so expects nothing gets nothing.
+      return incarnation === 0 ? { status: 'ok', incarnation: 0, through: aboveSeq, batches: [] } : { status: 'incarnation_mismatch', incarnation: 0 }
+    }
     if (s.incarnation !== incarnation) return { status: 'incarnation_mismatch', incarnation: s.incarnation }
     if (aboveSeq < s.discardedThrough) return { status: 'stale_watermark', incarnation, discardedThrough: s.discardedThrough }
     return { status: 'ok', incarnation, through: s.nextSeq - 1, batches: this.batches(tenant, aboveSeq + 1, s.nextSeq - 1) }
@@ -541,6 +798,7 @@ export class Shard extends DurableObject<ShardEnv> {
 
   /** Per-stream state, for the ledger, for tests and for operators. */
   async describe(tenant: string): Promise<(Stream & { totalBytes: number }) | null> {
+    if (this.refusal) this.refused()
     const s = this.streams.get(tenant)
     return s ? { ...s, totalBytes: this.totalBytes } : null
   }
@@ -556,13 +814,16 @@ export class Shard extends DurableObject<ShardEnv> {
     }
     const sql = this.ctx.storage.sql
     // A notification still in the outbox, or a pending marker that could not be written.
-    const unsent = sql.exec(`SELECT MIN(due) AS at FROM notify`).one().at as number | null
-    if (unsent !== null) due = Math.min(due, unsent)
+    for (const tenant of this.streams.keys()) {
+      const unsent = sql.exec(`SELECT MIN(due) AS at FROM notify WHERE tenant = ?`, tenant).one().at as number | null
+      if (unsent !== null) due = Math.min(due, unsent)
+      const rec = sql
+        .exec(`SELECT MIN(recorded_at) AS at FROM segment WHERE tenant = ? AND recorded_at IS NOT NULL AND seq_hi > ?`, tenant, this.streams.get(tenant)!.discardedThrough)
+        .one().at as number | null
+      if (rec !== null) due = Math.min(due, rec + this.cfg.retainRecordedMs)
+    }
     if (!this.marked && this.env.CONFIG && this.anyPending()) due = Math.min(due, Date.now() + this.cfg.notifyRetryMs)
-    const rec = sql.exec(`SELECT MIN(s.recorded_at) AS at FROM segment s JOIN stream t ON t.tenant = s.tenant WHERE s.recorded_at IS NOT NULL AND s.seq_hi > t.discarded_through`).one().at as number | null
-    if (rec !== null) due = Math.min(due, rec + this.cfg.retainRecordedMs)
-    const fp = sql.exec(`SELECT MIN(at) AS at FROM batch WHERE payload IS NULL`).one().at as number | null
-    if (fp !== null) due = Math.min(due, fp + this.cfg.fingerprintTtlMs)
+    for (const at of this.fingerprintsFrom.values()) due = Math.min(due, at + this.cfg.fingerprintTtlMs)
     const current = await this.ctx.storage.getAlarm()
     if (due === Infinity) {
       if (current !== null) await this.ctx.storage.deleteAlarm()
@@ -573,6 +834,10 @@ export class Shard extends DurableObject<ShardEnv> {
 
   /** Housekeeping. Idempotent: alarms are at-least-once. */
   async alarm(): Promise<void> {
+    if (this.refusal) {
+      await this.ctx.storage.setAlarm(Date.now() + this.refusal.retryAfterMs)
+      return
+    }
     const now = Date.now()
     const sql = this.ctx.storage.sql
     // 0. Save series windows that changed. Two rows per stream, whole buckets (never a row per id).
@@ -594,17 +859,24 @@ export class Shard extends DurableObject<ShardEnv> {
         .one().hi as number | null
       if (hi !== null) {
         // The fence moves first, in the same transaction as the payloads go.
-        const freed = sql.exec(`SELECT COALESCE(SUM(bytes), 0) AS b FROM batch WHERE tenant = ? AND seq <= ? AND payload IS NOT NULL`, tenant, hi).one().b as number
+        const freed = sql.exec(`SELECT COALESCE(SUM(bytes), 0) AS b, MIN(at) AS at FROM batch WHERE tenant = ? AND seq <= ? AND payload IS NOT NULL`, tenant, hi).one()
         sql.exec(`UPDATE stream SET discarded_through = ? WHERE tenant = ?`, hi, tenant)
         sql.exec(`UPDATE batch SET payload = NULL WHERE tenant = ? AND seq <= ? AND payload IS NOT NULL`, tenant, hi)
         sql.exec(`DELETE FROM segment WHERE tenant = ? AND seq_hi <= ?`, tenant, hi)
         s.discardedThrough = hi
-        s.bufferedBytes -= freed
-        this.totalBytes -= freed
+        s.bufferedBytes -= freed.b as number
+        this.totalBytes -= freed.b as number
+        if (freed.at !== null) this.fingerprintsFrom.set(tenant, Math.min(this.fingerprintsFrom.get(tenant) ?? Infinity, freed.at as number))
+      }
+      // 3. Forget fingerprints of discarded batches once clients can no longer be retrying
+      //    (per tenant, as every statement on tenant data is: AGENTS.md, review R-12).
+      if ((this.fingerprintsFrom.get(tenant) ?? Infinity) + this.cfg.fingerprintTtlMs <= now) {
+        sql.exec(`DELETE FROM batch WHERE tenant = ? AND payload IS NULL AND at + ? <= ?`, tenant, this.cfg.fingerprintTtlMs, now)
+        const left = sql.exec(`SELECT MIN(at) AS at FROM batch WHERE tenant = ? AND payload IS NULL`, tenant).one().at as number | null
+        if (left === null) this.fingerprintsFrom.delete(tenant)
+        else this.fingerprintsFrom.set(tenant, left)
       }
     }
-    // 3. Forget fingerprints of discarded batches once clients can no longer be retrying.
-    sql.exec(`DELETE FROM batch WHERE payload IS NULL AND at + ? <= ?`, this.cfg.fingerprintTtlMs, now)
     // 4. Seals made above, and anything a previous attempt could not send.
     await this.deliver()
     await this.arm()

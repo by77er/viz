@@ -32,6 +32,8 @@ export interface ParsedSeries {
   values: Float64Array
   /** This series' `values` array as JSON, for the raw JSON form: the text as it arrived on the fast path. */
   valuesText: () => string
+  /** Where that text is in `ParsedMatrix.text` ([from, to)); null on the slow path. */
+  valuesRange: [number, number] | null
 }
 
 export interface ParsedMatrix {
@@ -333,7 +335,7 @@ export class MatrixParser {
             if (!this.metric || !this.samples) throw new Error('series without metric or values')
             const k = this.samples.n
             const [from, to] = this.valuesAt
-            this.series.push({ metric: this.metric, times: this.samples.times.subarray(0, k), values: this.samples.values.subarray(0, k), valuesText: () => this.text().slice(from, to) })
+            this.series.push({ metric: this.metric, times: this.samples.times.subarray(0, k), values: this.samples.values.subarray(0, k), valuesText: () => this.text().slice(from, to), valuesRange: [from, to] })
             if (this.series.length === 1) this.capacity = Math.max(16, k)
             this.mode = Mode.Result
             i++
@@ -428,6 +430,11 @@ export class MatrixParser {
       }
     }
     return i
+  }
+
+  /** The body as received so far. */
+  received(): string {
+    return this.chunks.join('')
   }
 
   private joined: string | null = null
@@ -553,7 +560,7 @@ export function fromJson(text: string): ParsedMatrix {
       const v = pair[1]
       vs[k] = v === '+Inf' || v === 'Inf' ? Infinity : v === '-Inf' ? -Infinity : Number(v)
     }
-    series.push({ metric: r.metric ?? {}, times, values: vs, valuesText: () => JSON.stringify(values) })
+    series.push({ metric: r.metric ?? {}, times, values: vs, valuesText: () => JSON.stringify(values), valuesRange: null })
   }
   return { series, warnings: strings(e.warnings), infos: strings(e.infos), text, fast: false }
 }

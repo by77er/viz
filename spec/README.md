@@ -211,6 +211,17 @@ query). Breadth-first search stops at the shortest violation; the next run adds 
 that finding and searches again, until a run passes. Findings found that way are then isolated
 one at a time against the amended protocol (the `F…` rows).
 
+In short. **Design as written** (`DESIGN_1`–`7`): F11 (2 steps) → with it fixed, F1 (5) → F10
+(6) → F2 (15, through a retention removal; still the shortest after F3 is assumed away) →
+with the as-built sweeper, F15 (17) → with every fix: no violation among the 19 million states
+reachable in at most 23 steps (the run stopped at the memory bound, so this is bounded-depth,
+not complete). **Code as built** (`IMPL_1`–`5`): F6(b) (11 steps) → with F6 fixed, F15 (17) →
+with F15 fixed, and again with step-unique compaction keys: no violation among the 6 million
+states reachable in at most 20 steps (bounded). F13 and F14 need more than 20 steps once
+registration precedes writes, so they do not appear there; their own runs below show them (19
+and 21 steps with the code's lazy registration). F3 and F12 are shadowed by shorter findings in
+the peel and isolated below.
+
 <!-- BEGIN BFS_FINDINGS -->
 | Experiment | Checked | Result | Steps | Distinct states | Time | Shortest counterexample |
 |---|---|---|---|---|---|---|
