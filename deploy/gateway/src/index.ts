@@ -10,9 +10,6 @@
  *   /api/v1/rules, /api/v1/alerts, /api/v1/monitors,
  *   /api/v1/monitors/…                                          → RULER   (viz-ruler)
  *   /mcp, /api/v1/agent, /api/v1/agent/…                        → MCP     (viz-mcp)
- *   /.well-known/oauth-protected-resource[/mcp]                 → MCP     (OAuth protected resource metadata, RFC 9728)
- *   /.well-known/oauth-authorization-server, /oauth/register,
- *   /oauth/authorize, /oauth/token, /oauth/revoke               → CONTROL (the OAuth authorization server for MCP clients, D44)
  *   /healthz                                                    → this Worker: asks each backend's health route
  *   /api/v1/bootstrap (POST)                                    → this Worker: first key of a tenant, only while
  *                                                                 the one-time secret VIZ_BOOTSTRAP is set
@@ -54,9 +51,6 @@ const MONITORS_ROOT = '/api/v1/monitors'
 /** The MCP endpoint (exactly; mcp/src/index.ts MCP_PATH) and the JSON agent API with everything under it. */
 const MCP_PATH = '/mcp'
 const AGENT_ROOT = '/api/v1/agent'
-/** OAuth for MCP clients (contracts/oauth.ts): the resource's metadata is mcp's, the authorization server is control. Exact paths. */
-const MCP_OAUTH_PATHS = new Set(['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'])
-const CONTROL_OAUTH_PATHS = new Set(['/.well-known/oauth-authorization-server', '/oauth/register', '/oauth/authorize', '/oauth/token', '/oauth/revoke'])
 
 /** Which handler a path goes to, or null for 404. Exact paths, except the three prefixes. */
 export function routeOf(path: string): Route | null {
@@ -64,9 +58,9 @@ export function routeOf(path: string): Route | null {
   if (path === '/api/v1/bootstrap') return 'bootstrap'
   if (INGEST_PATHS.has(path)) return 'ingest'
   if (QUERY_PATHS.has(path) || QUERY_PREFIXES.some((p) => path.startsWith(p))) return 'query'
-  if (path === CONTROL_ROOT || path.startsWith(`${CONTROL_ROOT}/`) || CONTROL_OAUTH_PATHS.has(path)) return 'control'
+  if (path === CONTROL_ROOT || path.startsWith(`${CONTROL_ROOT}/`)) return 'control'
   if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'ruler'
-  if (path === MCP_PATH || path === AGENT_ROOT || path.startsWith(`${AGENT_ROOT}/`) || MCP_OAUTH_PATHS.has(path)) return 'mcp'
+  if (path === MCP_PATH || path === AGENT_ROOT || path.startsWith(`${AGENT_ROOT}/`)) return 'mcp'
   return null
 }
 
@@ -90,13 +84,9 @@ export const ENTRYPOINTS = {
     'GET /api/v1/metadata',
     'GET /api/v1/status/buildinfo',
   ],
-  control: [
-    '/api/v1/control/… (OpenAPI: GET /api/v1/control/openapi.json)',
-    'GET /.well-known/oauth-authorization-server (OAuth for MCP clients)',
-    'POST /oauth/register, GET /oauth/authorize, POST /oauth/token, POST /oauth/revoke',
-  ],
+  control: ['/api/v1/control/… (OpenAPI: GET /api/v1/control/openapi.json)'],
   ruler: ['GET /api/v1/rules', 'GET /api/v1/alerts', '/api/v1/monitors, /api/v1/monitors/… (monitors, groups, rule files, notifier, silences)'],
-  mcp: ['POST /mcp (Model Context Protocol, Streamable HTTP)', '/api/v1/agent, /api/v1/agent/… (the same tools as JSON)', 'GET /.well-known/oauth-protected-resource/mcp (OAuth protected resource metadata)'],
+  mcp: ['POST /mcp (Model Context Protocol, Streamable HTTP)', '/api/v1/agent, /api/v1/agent/… (the same tools as JSON)'],
   health: ['GET /healthz'],
 }
 

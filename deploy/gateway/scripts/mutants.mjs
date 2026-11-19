@@ -3,7 +3,7 @@
 // replacement in gateway/src/index.ts; the gateway's tests must fail with it. The source is
 // restored after every mutant, also on failure.
 //
-//   node gateway/scripts/mutants.mjs [name substring]       (from deploy/)
+//   node gateway/scripts/mutants.mjs        (from deploy/)
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -29,9 +29,6 @@ const MUTANTS = [
   ['/mcp matched as a prefix (/mcpx, /mcp/x reach the agent surface)', 'if (path === MCP_PATH || path === AGENT_ROOT', 'if (path.startsWith(MCP_PATH) || path === AGENT_ROOT'],
   ['agent prefix matches /api/v1/agents', 'path.startsWith(`${AGENT_ROOT}/`)', 'path.startsWith(AGENT_ROOT)'],
   ['the ruler is left out of /healthz', "const names: Backend[] = ['ingest', 'query', 'control', 'ruler', 'mcp']", "const names: Backend[] = ['ingest', 'query', 'control', 'mcp']"],
-  ['OAuth: the authorization server\'s paths are not routed (MCP clients cannot register or get tokens)', ' || CONTROL_OAUTH_PATHS.has(path)) return \'control\'', ") return 'control'"],
-  ['OAuth: /oauth/ and the metadata matched as prefixes (/oauth/x, /.well-known/oauth-authorization-server/x reach control)', ' || CONTROL_OAUTH_PATHS.has(path)) return \'control\'', " || path.startsWith('/oauth/') || path.startsWith('/.well-known/oauth-authorization-server')) return 'control'"],
-  ['OAuth: the protected resource metadata goes to control instead of mcp', ' || MCP_OAUTH_PATHS.has(path)) return \'mcp\'', ") return 'mcp'\n  if (MCP_OAUTH_PATHS.has(path)) return 'control'"],
   ['the ruler\'s paths go to the query service (both speak the Prometheus API)', "  if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'ruler'", "  if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'query'"],
 ]
 
@@ -50,7 +47,6 @@ const original = readFileSync(SRC, 'utf8')
 const results = []
 try {
   for (const [name, from, to] of MUTANTS) {
-    if (process.argv[2] && !name.includes(process.argv[2])) continue
     if (!original.includes(from)) throw new Error(`mutant "${name}": text not found in the source`)
     writeFileSync(SRC, original.replace(from, to))
     let killed = false
