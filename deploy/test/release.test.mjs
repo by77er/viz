@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { atFloor, deployFloorProblems, floorRules, floorsOfVersion, namesIn, rollbackFloorProblems } from '../lib/floors.mjs'
-import { formatsOfVersion, readsOf } from '../lib/formats.mjs'
-import { formatRollbackProblems, forwardOnlyReasons, parseAcks, planRelease, rollback, schemaRollbackProblems, schemasOfManifest } from '../release.mjs'
+import { ANY, formatsOfVersion, formatsVar, readsOf } from '../lib/formats.mjs'
+import { formatRollbackProblems, formatsOfManifest, forwardOnlyReasons, parseAcks, planRelease, restrictRecord, rollback, schemaRollbackProblems, schemasOfManifest } from '../release.mjs'
 
 const manifest = {
   release: 'sha1',
@@ -219,12 +219,54 @@ test('formats: the target must read every version written since it; what it read
   assert.match(formatRollbackProblems(reader, [ran('sha-x', null)])[0], /does not declare its format versions/)
 })
 
-test('formats: what a release reads is what every Worker of it that declares the format reads', () => {
+test('formats: what a release reads is what every Worker of it that reads the format reads; one that declares nothing reads version 1 of every format (review of D69, M-1 (c))', () => {
   const two = { 'viz-ingest': { 'r2.compaction-inputs': { writes: 1, reads: [1, 2] } }, 'viz-query': { 'r2.compaction-inputs': { writes: null, reads: [1] } } }
   assert.deepEqual(readsOf(two, 'r2.compaction-inputs'), [1])
   assert.deepEqual(readsOf({ 'viz-ingest': two['viz-ingest'] }, 'r2.compaction-inputs'), [1, 2])
-  assert.deepEqual(readsOf(two, 'not.declared'), [1])
+  // Complete declarations that do not list a format: nothing reads it.
+  assert.equal(readsOf(two, 'not.declared'), null)
+  // A Worker that declares nothing (viz-query before it declared what it reads) reads version 1 of everything.
+  assert.deepEqual(readsOf({ 'viz-ingest': two['viz-ingest'], 'viz-query': null }, 'r2.compaction-inputs'), [1])
+  assert.deepEqual(readsOf({ 'viz-ingest': two['viz-ingest'], 'viz-query': null }, 'not.declared'), [1])
+  // An incomplete declaration (D69's var, without `complete`) reads version 1 of what it does not list.
+  assert.deepEqual(readsOf({ 'viz-ingest': two['viz-ingest'], 'viz-query': { [ANY]: { writes: null, reads: [1] } } }, 'r2.compaction-inputs'), [1])
+  assert.deepEqual(readsOf({ 'viz-ingest': { ...two['viz-ingest'], [ANY]: { writes: null, reads: [1] } } }, 'r2.compaction-inputs'), [1, 2])
+  // A whole record from before format versions: version 1.
   assert.deepEqual(readsOf(null, 'anything'), [1])
+  // The manifest records a Worker that declares none as reading nothing ({}), and leaves out one with no declaration.
+  assert.deepEqual(formatsOfManifest({ order: ['a', 'b', 'c'], workers: [{ name: 'a', formats: [] }, { name: 'b', formats: null }, { name: 'c', formats: [{ format: 'x.y', writes: 1, reads: [1] }] }] }), { a: {}, c: { 'x.y': { writes: 1, reads: [1] } } })
+})
+
+test('formats rollback (review of D69, M-1): only the Workers restored read; one the record restores without an entry reads version 1 of everything; the Workers left out are judged as they wrote and write', () => {
+  const rec = (workers, formats, complete = true) => ({ release: 'sha-a', workers: workers.map((name) => ({ name, versionId: `${name}-a` })), formats, formatsComplete: complete })
+  const formats = { 'viz-ingest': { 'kv.settings': { writes: null, reads: [1] } }, 'viz-control': { 'kv.settings': { writes: 1, reads: [1] } } }
+  const control2 = { worker: 'viz-control', versionId: 'c-c', release: 'sha-c', formats: { 'kv.settings': { writes: 2, reads: [1, 2] } } }
+  // The whole record: control's own newer version wrote 2, which the restored ingest and control do not read.
+  assert.equal(formatRollbackProblems(rec(['viz-ingest', 'viz-control'], formats), [control2]).length, 1)
+  // Control left out: its record entry is no reader; what it wrote and writes is judged against the restored ingest.
+  const leftOut = formatRollbackProblems(rec(['viz-ingest'], formats), [], { left: [{ ...control2, serving: true }] })
+  assert.equal(leftOut.length, 1)
+  assert.match(leftOut[0], /^kv\.settings: viz-control is left serving by this rollback .*version c-c \(release sha-c, serving now\) writes version 2, and sha-a reads only 1\. What it wrote, and keeps writing, would be unreadable/)
+  // Left out and writing what the restored Workers read: allowed. An older kept version that wrote 2 is judged too.
+  assert.deepEqual(formatRollbackProblems(rec(['viz-ingest'], formats), [], { left: [{ ...control2, formats: { 'kv.settings': { writes: 1, reads: [1, 2] } }, serving: true }] }), [])
+  assert.equal(formatRollbackProblems(rec(['viz-ingest'], formats), [], { left: [{ ...control2, serving: false }] }).length, 1)
+  // A left-out version that declares nothing is unknown: refused.
+  assert.match(formatRollbackProblems(rec(['viz-ingest'], formats), [], { left: [{ ...control2, formats: null }] })[0], /^viz-control: this rollback leaves it serving .* does not declare its format versions/)
+  // A restored Worker the record has no entry for (viz-query in a record from D69) reads version 1 of every format.
+  const q = formatRollbackProblems(rec(['viz-ingest', 'viz-query'], { 'viz-ingest': { 'kv.settings': { writes: null, reads: [1, 2] } } }), [control2])
+  assert.equal(q.length, 1)
+  assert.match(q[0], /sha-a reads only 1 \(viz-query has no format versions in that record: taken to read version 1 of every format\)/)
+  // The same, every Worker declaring completely, nothing reads version 1 only: allowed.
+  assert.deepEqual(formatRollbackProblems(rec(['viz-ingest', 'viz-query'], { 'viz-ingest': { 'kv.settings': { writes: null, reads: [1, 2] } }, 'viz-query': {} }), [control2]), [])
+  // A record from before declarations were complete: an entry reads version 1 of what it does not list.
+  assert.equal(formatRollbackProblems(rec(['viz-ingest', 'viz-query'], { 'viz-ingest': { 'kv.settings': { writes: null, reads: [1, 2] } }, 'viz-query': {} }, false), [control2]).length, 1)
+})
+
+test('formats: --only restricts the record to the Workers named (production or deployed names); an unknown name is refused', () => {
+  const full = { release: 'sha-a', workers: [{ name: 'viz-t-query' }, { name: 'viz-t-control' }, { name: 'viz-t-ingest' }] }
+  assert.equal(restrictRecord(full, '', 't'), full)
+  assert.deepEqual(restrictRecord(full, 'viz-query, viz-t-ingest', 't').workers.map((w) => w.name), ['viz-t-query', 'viz-t-ingest'])
+  assert.throws(() => restrictRecord(full, 'viz-nothing', 't'), /--only names viz-t-nothing, which the record of sha-a does not have/)
 })
 
 test('formats: a release writing a version the serving release does not read is forward-only, by format; a serving release that declares nothing reads version 1', () => {
@@ -235,14 +277,25 @@ test('formats: a release writing a version the serving release does not read is 
   assert.deepEqual(f.map((x) => [x.worker, x.kind, x.format, x.writes, x.previousReads, x.previousDeclared]), [['viz-ruler', 'format', 'store.anomaly-state', 2, [1], true]])
   const undeclared = forwardOnlyReasons(m, live(null))
   assert.deepEqual(undeclared.map((x) => [x.format, x.previousDeclared]), [['store.anomaly-state', false]])
+  // Every Worker serving counts, not only those this release declares the format for (review of D69, M-1 (c)): another
+  // Worker that declares nothing reads version 1 of it; one that declares completely without it does not read it.
+  const others = (formats) => ({ ...live({ 'store.anomaly-state': { writes: 1, reads: [1, 2] } }), 'viz-query': { exists: true, formats } })
+  assert.deepEqual(forwardOnlyReasons(m, others(null)).map((x) => [x.format, x.previousReads, x.previousDeclared]), [['store.anomaly-state', [1], false]])
+  assert.match(forwardOnlyReasons(m, others(null))[0].why, /\(viz-query declares no version of this format, so it is taken to read version 1\)/)
+  assert.deepEqual(forwardOnlyReasons(m, others({})), [])
+  assert.equal(forwardOnlyReasons(m, others({ [ANY]: { writes: null, reads: [1] } })).length, 1)
   // Nothing older runs: a first deploy is never forward-only.
   assert.deepEqual(forwardOnlyReasons(m, { 'viz-ruler': { exists: false } }), [])
 })
 
-test('formats: VIZ_FORMATS is read back as written, and anything else is unknown', () => {
+test('formats: VIZ_FORMATS is read back as written, and anything else is unknown; one from before complete declarations reads version 1 of what it does not list', () => {
   const v = (text) => ({ resources: { bindings: [{ type: 'plain_text', name: 'VIZ_FORMATS', text }] } })
-  assert.deepEqual(formatsOfVersion(v('{"v":1,"formats":{"store.anomaly-state":{"w":2,"r":[1,2]},"kv.settings":{"w":null,"r":[1]}}}')), { 'store.anomaly-state': { writes: 2, reads: [1, 2] }, 'kv.settings': { writes: null, reads: [1] } })
-  for (const bad of ['{"v":2,"formats":{}}', 'nope', '{"v":1,"formats":{"x":{"w":0,"r":[1]}}}', '{"v":1,"formats":{"x":{"w":1,"r":[]}}}']) assert.equal(formatsOfVersion(v(bad)), null, bad)
+  const map = { 'store.anomaly-state': { writes: 2, reads: [1, 2] }, 'kv.settings': { writes: null, reads: [1] } }
+  assert.deepEqual(formatsOfVersion(v(formatsVar(Object.entries(map).map(([format, f]) => ({ format, ...f }))))), map)
+  assert.deepEqual(formatsOfVersion(v('{"v":1,"complete":true,"formats":{}}')), {})
+  // D69's var (no `complete`): incomplete.
+  assert.deepEqual(formatsOfVersion(v('{"v":1,"formats":{"store.anomaly-state":{"w":2,"r":[1,2]},"kv.settings":{"w":null,"r":[1]}}}')), { ...map, [ANY]: { writes: null, reads: [1] } })
+  for (const bad of ['{"v":2,"formats":{}}', 'nope', '{"v":1,"formats":{"x":{"w":0,"r":[1]}}}', '{"v":1,"formats":{"x":{"w":1,"r":[]}}}', '{"v":1,"complete":true,"formats":{"*":{"w":null,"r":[1]}}}']) assert.equal(formatsOfVersion(v(bad)), null, bad)
   assert.equal(formatsOfVersion({ resources: { bindings: [] } }), null)
 })
 

@@ -348,16 +348,24 @@ test('formats: what each Worker writes and reads is read from the components, in
   assert.deepEqual(of('viz-ingest', 'kv.settings'), { worker: 'viz-ingest', format: 'kv.settings', writes: null, reads: [1] })
   assert.deepEqual(of('viz-ingest', 'r2.compaction-inputs'), { worker: 'viz-ingest', format: 'r2.compaction-inputs', writes: 1, reads: [1] })
   assert.ok(of('viz-control', 'kv.settings') && of('viz-publisher', 'iceberg.metadata'))
+  // What other Workers read of control's records and answers (review of D69, M-1 (c)): a reader's constant, or version 1.
+  assert.deepEqual(of('viz-query', 'kv.key'), { worker: 'viz-query', format: 'kv.key', writes: null, reads: [1] })
+  assert.deepEqual(of('viz-query', 'kv.settings'), { worker: 'viz-query', format: 'kv.settings', writes: null, reads: [1] })
+  assert.deepEqual(of('viz-ruler', 'rpc.notification-target'), { worker: 'viz-ruler', format: 'rpc.notification-target', writes: null, reads: [1] })
+  assert.deepEqual(of('viz-mcp', 'rpc.oauth'), { worker: 'viz-mcp', format: 'rpc.oauth', writes: null, reads: [1] })
   // The publisher's `read.…` entries name what another component writes: not recorded.
   assert.deepEqual(read.filter((x) => x.format.startsWith('read.')), [])
-  assert.deepEqual([...new Set(read.map((x) => x.worker))].sort(), ['viz-control', 'viz-ingest', 'viz-publisher', 'viz-ruler'])
+  assert.deepEqual([...new Set(read.map((x) => x.worker))].sort(), ['viz-control', 'viz-ingest', 'viz-mcp', 'viz-publisher', 'viz-query', 'viz-ruler'])
   const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
   for (const w of m.workers.filter((x) => x.deploy)) {
     const cfg = readJsonc(join(REPO_ROOT, w.config))
     const mine = read.filter((x) => x.worker === w.canonical)
     assert.deepEqual(w.formats, mine.map(({ format, writes, reads }) => ({ format, writes, reads })), w.name)
-    assert.equal(cfg.vars[FORMATS_VAR], mine.length ? formatsVar(mine) : undefined, w.name)
+    // Every deployed Worker carries a complete VIZ_FORMATS, the gateway's empty.
+    assert.equal(cfg.vars[FORMATS_VAR], formatsVar(mine), w.name)
+    assert.equal(JSON.parse(cfg.vars[FORMATS_VAR]).complete, true, w.name)
   }
+  assert.equal(readJsonc(join(REPO_ROOT, m.workers.find((w) => w.canonical === 'viz-gateway').config)).vars[FORMATS_VAR], '{"v":1,"complete":true,"formats":{}}')
   assert.deepEqual(JSON.parse(readJsonc(join(REPO_ROOT, m.workers.find((w) => w.canonical === 'viz-ruler').config)).vars[FORMATS_VAR]).formats['store.anomaly-state'], { w: gate, r: [1, 2] })
 })
 
@@ -374,6 +382,46 @@ test('formats: every FORMATS map in the sources of a deployed component is decla
   }
   assert.ok(found.length >= 6, found.join(', '))
   for (const f of found) assert.ok(declared.has(f), `${f} is not under any Worker's formats.writes in deploy/workers.json`)
+})
+
+test('formats: every deployed Worker declares what it reads; one without a declaration is refused (review of D69, M-1 (c))', () => {
+  for (const w of plan.workers.filter((x) => x.deploy !== false)) assert.ok(w.formats !== undefined, `${w.name} has no "formats" in deploy/workers.json`)
+  const without = { ...plan, workers: plan.workers.map((w) => (w.name === 'viz-query' ? { ...w, formats: undefined } : w)) }
+  assert.throws(() => configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, plan: without }), /deploy\/workers\.json viz-query: no "formats"\. Every deployed Worker says completely what it reads/)
+})
+
+/**
+ * What a Worker's code reads, from the sources it is bundled from (esbuild's list of inputs, as
+ * wrangler bundles its main; packages left out): each signature names a format another Worker writes.
+ */
+const READ_SIGNATURES = [
+  [/`key:\$\{/, 'kv.key'],
+  [/`pool:\$\{/, 'kv.pool'],
+  [/`(?:limits|retention):\$\{/, 'kv.settings'],
+  [/`revocation:\$\{/, 'kv.revocation'],
+  [/\bKEY_RE\b/, 'credential.api-key'],
+  [/\bnotificationTarget\(/, 'rpc.notification-target'],
+  [/\bserviceKey\(/, 'rpc.service-key'],
+  [/\bintrospectAccessToken\(/, 'rpc.oauth'],
+  [/\bparseCredential\(/, 'credential.oauth'],
+]
+
+test('formats: each Worker declares the formats of control\'s KV records, API key and RPC answers that its bundled sources read (review of D69, M-1 (c))', async () => {
+  const { buildSync } = (await import('node:module')).createRequire(join(REPO_ROOT, 'deploy', 'package.json'))('esbuild')
+  const read = readFormats(formatSources(plan.workers))
+  const found = []
+  for (const w of plan.workers.filter((x) => x.deploy !== false)) {
+    const cfg = readJsonc(join(REPO_ROOT, w.component, 'wrangler.jsonc'))
+    const r = buildSync({ entryPoints: [join(REPO_ROOT, w.component, cfg.main)], absWorkingDir: REPO_ROOT, bundle: true, write: false, metafile: true, platform: 'neutral', format: 'esm', packages: 'external', external: ['cloudflare:*', '*.wasm', 'node:*'], logLevel: 'silent', loader: { '.wasm': 'empty' } })
+    const sources = Object.keys(r.metafile.inputs).map((f) => readFileSync(join(REPO_ROOT, f), 'utf8'))
+    for (const [re, format] of READ_SIGNATURES) {
+      if (!sources.some((t) => re.test(t))) continue
+      found.push(`${w.name} ${format}`)
+      assert.ok(read.some((x) => x.worker === w.name && x.format === format), `${w.name}'s sources read ${format} (${re}), and deploy/workers.json does not declare it`)
+    }
+  }
+  // The readers this pins (a change to a component that adds or drops one shows here).
+  for (const f of ['viz-ingest kv.pool', 'viz-query kv.pool', 'viz-query kv.settings', 'viz-ruler rpc.service-key', 'viz-mcp rpc.oauth', 'viz-mcp credential.oauth']) assert.ok(found.includes(f), `${f}: ${found.join(', ')}`)
 })
 
 test('formats: a Worker that writes a version it does not read, or one format at two versions, is refused', () => {
@@ -393,6 +441,12 @@ test('formats: a Worker that writes a version it does not read, or one format at
     assert.throws(() => readFormats(src('w', { reads: [rel('b.ts#READS')], reads_of: { 'x.one': rel('a.ts#ONLY_1') } })), /w: the read lists of x\.one have no version in common/)
     assert.throws(() => readFormats(src('w', { writes: [rel('a.ts#NOPE')] })), /does not export NOPE/)
     assert.throws(() => formatSources([{ name: 'w', formats: { write: [] } }]), /"write" is not one of/)
+    // One version (a reader's constant) reads that version; reads_v1 reads version 1 and says where.
+    writeFileSync(join(dir, 'c.ts'), 'export const V = 2\n')
+    assert.deepEqual(readFormats(src('w', { reads_of: { 'x.one': rel('c.ts#V') }, reads_v1: { 'x.two': 'c.ts: somewhere' } })), [{ worker: 'w', format: 'x.one', writes: null, reads: [2] }, { worker: 'w', format: 'x.two', writes: null, reads: [1] }])
+    assert.throws(() => readFormats(src('w', { writes: [rel('b.ts#FORMATS')], reads_v1: { 'x.one': 'reads 1 only' } })), /w: writes x\.one version 3 but reads only/)
+    assert.throws(() => formatSources([{ name: 'w', formats: { reads_v1: { 'x.one': '' } } }]), /say where the code reads it/)
+    assert.throws(() => formatSources([{ name: 'w', formats: { reads_v1: { '*': 'x' } } }]), /is not a format name/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
