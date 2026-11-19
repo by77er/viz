@@ -1,7 +1,7 @@
 {
   "name": "LEAK_P_sl_comp",
   "kind": "proposed",
-  "label": "no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp's bounds); sweep, purge and ledger start as single steps",
+  "label": "no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp's bounds). Expected to stop at the retention bound, not at F16: the one removal is undone by the rebuild and not refunded; sweep, purge and ledger start as single steps",
   "cfg": {
     "nt": 1,
     "ns": 1,
@@ -63,14 +63,14 @@
     "sweepNewerReg": true
   },
   "props": [],
-  "expect": "holds",
+  "expect": "violated",
   "maxStates": 8000000,
-  "asExpected": false,
+  "asExpected": true,
   "verdict": "violated",
   "states": 1455431,
   "transitions": 7901787,
   "depth": 51,
-  "seconds": 89.7,
+  "seconds": 81.4,
   "collisionProb": 5.7e-8,
   "violated": "LIVE_NoLeakComp",
   "trace": [

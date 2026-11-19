@@ -457,13 +457,16 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
 type Tails = { again: true } | { again: false; reads: TailRead[]; bytes: number; over: boolean; atLeast: number }
 
 /**
- * The tails of `shards`, in parallel, under one budget of `cap` bytes. `over`: the tail does
- * not fit (a read stopped at the budget, or together they passed it); `atLeast` is then a
- * lower bound of its bytes. Refusals are counted with `refused` (which throws past the bound).
+ * The tails of `shards`, in parallel, each read stopping at `cap` bytes and all of them
+ * checked against `cap` together. (Each read has a budget of its own so that where a read
+ * stops never depends on which shard answered first.) `over`: the tail does not fit (a read
+ * stopped at the cap, or together they passed it); `atLeast` is then a lower bound of its
+ * bytes. Refusals are counted with `refused` (which throws past the bound).
  */
 async function readTails(c: Context, shards: string[], watermarks: Watermark[], known: Map<string, number>, refused: (who: string, why: string) => void, filter: TailFilter, cap: number): Promise<Tails> {
-  const budget: TailBudget = { cap: Math.max(0, hooks.tailCap ?? cap), used: 0 }
-  const tails = await Promise.all(shards.map((s) => readTail(c, s, watermarks.find((w) => w.shard === s), known, filter, budget)))
+  const limit = Math.max(0, hooks.tailCap ?? cap)
+  const budget = { cap: limit }
+  const tails = await Promise.all(shards.map((s) => readTail(c, s, watermarks.find((w) => w.shard === s), known, filter, { cap: limit, used: 0 })))
   let again = false
   shards.forEach((s, i) => {
     const t = tails[i]!

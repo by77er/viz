@@ -8,10 +8,11 @@ the `Leaf` Durable Object it reads files through.
  client ─► query Worker ──plan──► engine (WASM)            which matchers, which time ranges; split or one place
  (Grafana,     │ ──plan x2──────► Ledger (the tenant's)    ONE version: live files (in precedence order) + watermarks
   the app)     │ ──scanRows─────► engine                   which files to skip, how much would be decoded
-               │ ──tailRead─────► Shards                   rows above each stream's watermark
+               │ ──tailRead─────► Shards                   rows above each stream's watermark, filtered and paged (D48)
    one place:  │ ──read (≤6)────► Leaf pool ──GET──► R2    whole objects, through the Cache API
                │ └ evaluate ────► engine                   PromQL over (lake files, tail batches)
    split:      │ ──evaluate ────► L split leaves           each owns a range of series keys, gets its part of the tail
+               │                   ├─tailRead (its key range)► Shards: the rest of a tail too large for the coordinator
                │                   └─extract (≤6 files)──► reader leaves ──GET──► R2: the part's rows, as one batch
                │                   └ gather + evaluate ──► partial aggregates
                └─ merge ────────► engine                   partials merged, the rest of the query finished
@@ -23,10 +24,13 @@ the `Leaf` Durable Object it reads files through.
 | `src/params.ts` | Prometheus parameter parsing: timestamps, durations, `match[]`, form bodies |
 | `src/coordinator.ts` | Plan, one ledger version, pruning, leaf fan-out, tail reads with the fence, evaluation; split execution (`runSplit`); the cardinality report |
 | `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2, extracts one part's rows from them (a reader), evaluates one part of a split query (a split leaf), and summarises one part's series for the cardinality report |
+| `src/tail.ts` | Tail reads (D48): the filter a read sends (`tailFilter`), pages under a byte budget (`readPages`), the cut of a tail by `series_id` (`cutById`), and a part's own reads of the rest (`readRests`) |
 | `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults |
 | `wrangler.jsonc` | The production shape (not deployed to production; deployed twice as a staged copy, `deploy/README.md`) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
-| `test/*.test.ts` | 86 tests in workerd, 11 files |
+| `test/*.test.ts` | 101 tests in workerd, 12 files |
+| `test/tail.test.ts` | Tail reads filtered and paged: the same answers from shards of this release and the previous one, pages followed to the end, refusals on any page, a tail over the cap split with each part reading the rest, release skew of shards and leaves, `tailFilter` and `cutById` against the shard's own filter |
+| `test/tail.bench.ts` | The counterfactual of that work, local: 100,000 series with 21 and 68 MiB unflushed, previous-release shards against this release (`npm run measure -- test/tail.bench.ts`) |
 | `test/pruning.test.ts` | Series-level pruning and the series-only read through the whole path (25,000 series, a samples file of eight row groups) |
 | `test/pruning.bench.ts` | The counterfactual of that work, local: five query shapes at 10,000 and 100,000 series, run in this tree and in a copy of the tree as of 2026-11-18 (`npm run measure -- test/pruning.bench.ts`) |
 | `test/measure.bench.ts` | The local measurement of split execution (`npm run measure`) |
@@ -40,7 +44,7 @@ the `Leaf` Durable Object it reads files through.
 (cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it; owned by engine/wasm)
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
-npx vitest run --maxWorkers=2              # 86 tests in workerd, 11 files, 3 to 6 minutes on a loaded machine (`npm test` uses every core)
+npx vitest run --maxWorkers=2              # 101 tests in workerd, 12 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
 npx tsc --noEmit                           # clean
 npm run measure                            # both local measurements (split execution about 2 minutes, cardinality about 3)
 node tools/mutants.mjs                     # the mutation check, on a scratch copy of the tree (never edits this one)
@@ -99,7 +103,8 @@ password of Basic auth.
 | `X-Viz-Scan-Samples` | upper bound on the lake samples the engine decodes, from the row groups' row counts |
 | `X-Viz-Series-Estimate` | series the query loads (summed over selectors), estimated from the series files before any fetch; sizes a split |
 | `X-Viz-Shards-Asked`, `X-Viz-Shard-Calls` | shards asked for their tail, and calls made to them |
-| `X-Viz-Tail-Batches`, `X-Viz-Tail-Bytes` | what the shards returned |
+| `X-Viz-Tail-Batches`, `X-Viz-Tail-Bytes` | what the shards returned: to the coordinator, plus what split parts read themselves |
+| `X-Viz-Tail-Mode` | how the tails were read (D48): `filtered` (every shard applied the read's filter and paged), `unfiltered` (a shard of the previous release answered with its whole tail), with `+leaves` when the tail did not fit the coordinator and each split part read the rest of it in its own key range |
 | `X-Viz-Samples-Loaded`, `X-Viz-Series-Loaded` | what the engine loaded, after de-duplication, summed over selectors |
 | `X-Viz-Engine-Ms` | wall time inside the engine |
 | `X-Viz-Cache-Hits`, `X-Viz-R2-Gets` | reads answered by the Cache API, and reads that went to R2 |
@@ -234,6 +239,56 @@ the fourth refusal fails the query with 503 `unavailable`. Files fetched by an e
 attempt are kept for the next. There is no path on which a refused shard contributes
 "nothing" to an answer.
 
+#### Filtered and paged (D48, D54; since 2026-11-19)
+
+Every `tailRead` passes `TailReadOptions` (`src/tail.ts`, the shard's `shard/src/tail.ts`):
+
+- **The filter** (`tailFilter`) is a superset of every row the read's ranges select: the hull of
+  their times; the `__name__` values when every range pins one with `=`; the `=` matchers on
+  other labels that every range has (`""` is "absent" on both sides). Queries and the label
+  endpoints send it (a tail row lists its series only if it lies in the window, so the time
+  filter is exact for them). **The cardinality report sends no filter**: it counts a tail
+  series by the span of its rows in each batch, which a time filter would change at the
+  window's edges; it is paged only.
+- **Pages under a byte budget.** Each page asks for at most what is left of the read's budget
+  (one place: `maxFetchBytes` minus the files; split execution, the label endpoints and the
+  report: `maxFetchBytes`), and pages are followed to the end. A kept batch that does not fit
+  comes back from the shard as `page_limit`; the read stops there (`complete: false`), and the
+  query is refused with `max_fetch_bytes: … is at least N bytes` or, when it can be, split
+  (below). Shards are read in parallel, each read stopping at the budget, and together they
+  are checked against it (each read has a budget of its own, so where one stops never depends
+  on which shard answered first): the coordinator can hold up to one budget per shard before
+  the total is checked.
+- **Refusals on any page** are handled as on the first: `stale_watermark` and
+  `incarnation_mismatch` send the query back to the ledger and the pages read so far are
+  dropped. `invalid`, `unsupported_version`, `schema_too_new`, a page of another version, an
+  `ok` without batches, a shard that stops paging in the middle of a read, and any status
+  this release does not know are a retryable 503 at once.
+- **A shard of the previous release** ignores the options and answers with its whole tail,
+  unfiltered, without `page` (contracts/COMPATIBILITY.md §3.3, callee first). It is used as
+  before (`X-Viz-Tail-Mode: unfiltered`): the engine applies every matcher and range anyway.
+  Shards of both releases side by side give the same answers (`tail.test.ts`).
+- **A tail too large for the coordinator.** When the budget stops a read and the query
+  decomposes over a split key the shards can cut (the `series_id`, which is the key of every
+  series that carries none of the key's `without` labels, and `without` is at most
+  `__type__`/`__unit__`, as for any `rate` under `sum` that pins the name), it is split
+  (from one place too) and the parts read the rest themselves: the coordinator cuts what it
+  read by `series_id` (`cutById`: bytes copied, no engine, the same cut as the shard's key
+  range), and each part gets, per shard, its cut and where the rest starts (after the last
+  batch the coordinator read, through the end the coordinator saw), reads it with the filter
+  and its `keyRange` (`splitKeyRange`), under `maxFetchBytes` of its own, cuts all of it by
+  its split key in the engine, and checks that nothing belongs to another part. A series that
+  carries `__type__` or `__unit__` (its key is not its id) makes a part see a row of another
+  part: the query is refused (422, `max_fetch_bytes`, naming the reason), never answered
+  without it. Leaves are sized from the lake and from the tail as estimated from the pages
+  read (`tailEstimate`), with each part's share under half its byte cap. The cardinality
+  report does the same over its parts (ranges of `series_id`, so nothing to check). The
+  label endpoints are refused in that case (`max_fetch_bytes`; counting them over leaves is
+  item 2).
+- **A leaf of the previous release** ignores `tailParts` and would answer without the rest of
+  the tail: the coordinator requires the part's `tail` statistics in the answer and refuses
+  one without them (503, retryable).
+
 ### Evaluation and limits
 
 The coordinator evaluates in one call to the WASM engine over (series files, sample
@@ -314,9 +369,11 @@ one-place limits. `X-Viz-Execution` and `X-Viz-Split-Reason` say which and why.
    `[j·2^64/L, (j+1)·2^64/L)` (the key is the `series_id` unless the query can change
    labels); every sample of a series reaches one leaf.
 2. **The tail** is read by the coordinator with the usual fence (refusals re-read the
-   ledger), cut by part in the engine (`splitTails`), and each part goes to its leaf.
-   So every series' lake rows and tail rows meet in one leaf (I17: a `rate` window that
-   straddles them sees one stream). Only the tail is held at the coordinator.
+   ledger), filtered and paged under `maxFetchBytes` (D48), cut by part in the engine
+   (`splitTails`), and each part goes to its leaf. So every series' lake rows and tail rows
+   meet in one leaf (I17: a `rate` window that straddles them sees one stream). Only the tail
+   is held at the coordinator. When it does not fit there, each part reads the rest of it in
+   its own key range ("The tail, and the fence", "Filtered and paged").
 3. **Split leaves** (`Leaf.evaluate`, `leaf/<cell>/<n>` objects chosen from the query id)
    call **readers** (`Leaf.extract`, other objects of the same pool) for every group of at
    most six files (sample files in precedence order, each with its series file, and their
@@ -391,10 +448,18 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
 ### Release skew (contracts/COMPATIBILITY.md)
 
 - **Every shard status is handled by name.** `tailRead` answers `ok`, `stale_watermark`
-  and `incarnation_mismatch` are handled as before; `schema_too_new`, any status this
-  release does not know, and an `ok` without batches are a retryable 503 (`unavailable`,
-  `Retry-After: 1`), never an empty tail and never a stream to re-read
-  (`fence.test.ts`, "release skew", through a test hook that replaces the shard's answer).
+  and `incarnation_mismatch` are handled as before, on any page; `page_limit` is the byte
+  cap; `schema_too_new`, `invalid`, `unsupported_version`, any status this release does not
+  know, a page of another version and an `ok` without batches are a retryable 503
+  (`unavailable`, `Retry-After: 1`), never an empty tail and never a stream to re-read
+  (`fence.test.ts`, "release skew", and `tail.test.ts`, through a test hook that replaces the
+  shard's answer).
+- **Shards of the previous release** (no `TailReadOptions`) answer with their whole tail and
+  are read as before; tested with every shard, one shard, and a shard rolled back between the
+  coordinator's read and a part's (`tail.test.ts`, `tailHooks.previousRelease`).
+- **Leaves of the previous release** do not read the rest of a tail they are given
+  (`tailParts`, new): the coordinator refuses an answer without the part's tail statistics
+  (503). `tailParts` is sent only when a tail does not fit the coordinator.
   A ledger that throws `schema_too_new` is a 503 with `Retry-After: 5`.
 - **Leaves keep no storage** (no SQLite, no alarm), so they have no schema to open through
   `contracts/schema.ts`.
@@ -416,9 +481,12 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   `absent` over raw series, binary operators between vectors below an aggregation,
   aggregations inside subqueries, a selector outside every aggregation) still run in one
   place and are bounded by one isolate. Partials travel in the engine's binary form, not
-  Arrow IPC. Readers read whole files, so every part reads every file of the range
-  (`L`-fold reads and `series_id` decodes; "Needed changes", 2). The tail is cut by part
-  at the coordinator, not filtered at the shards. Leaf partials are not cached. Evaluation
+  Arrow IPC. Readers read every series file of the range by name and time, so every part
+  reads them ("Needed changes", 2). A tail that fits the coordinator is cut by part there;
+  the shards cut it by key only when it does not fit, and only for split keys that are the
+  `series_id` (not for `without` labels series commonly carry, such as `__name__` or a
+  `label_replace` target, nor when a series carries `__type__`/`__unit__`: refused).
+  Leaf partials are not cached. Evaluation
   in time slices (which would split queries that do not decompose by series) is not built.
 - **Range reads by row group** (the seam is described above).
 - **Result caching, and caching leaf partials** (design §6.3). Only immutable files are
@@ -459,9 +527,18 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   answers `{}` because nothing stores it; the write path drops Remote Write metadata and
   OTLP descriptions. It needs a place to live first ("Needed changes", 9); the endpoint is
   then a lookup.
-- **High cardinality, what is left** (CARDINALITY.md): the tail's paging and filter
-  (`shard/`); split readers still read every series file whole for every part; a streaming
-  merge for the cardinality report; sketches.
+- **High cardinality, what is left** (CARDINALITY.md): the label endpoints over leaves (and
+  so with a tail too large for the coordinator); split readers still read every series file
+  for every part; a streaming merge for the cardinality report; sketches.
+- **The tail, what is left** (D48): the cardinality report reads the whole tail (paged, no
+  filter: its counts depend on each batch's whole spans); regular-expression and `!=`
+  matchers are not sent to the shards (exact values only); a tail read costs each shard a
+  scan of its whole tail per call, and a split that reads the rest scans it once per part
+  (`shard/` would need per-batch metadata to skip batches); when the coordinator's first page
+  is already over its budget the end of the tail is not known, so parts read to the shard's
+  end, and a part may then see an append the others do not (a torn last scrape, at most);
+  the series a tail holds are estimated from the pages read (a lower bound), so a split sized
+  for a tail with no lake below it can be too small and refused by the per-leaf budgets.
 - **Production wiring.** `wrangler.jsonc` binds `SHARD` and `LEDGER` by `script_name` to
   Workers that are themselves still combined scripts. Not deployed to production. It did run
   on Cloudflare in two staged trials, `viz-trial-query` (2026-11-18) and `viz-trial2-query`
@@ -936,7 +1013,7 @@ additive, tested hook: `EvalHooks`) was edited. These are for their owners.
    - A series-only read for the label endpoints and the cardinality report.
      `engine/query/src/catalog.rs` reads `metric_series` files as `contracts/TABLES.md`
      defines them in the meantime; a format change there must be made in both places.
-3. **`shard/`: `tailRead` needs paging and a filter. Measured, this is the first wall at
+3. **Done by `shard/` (D48) and used here since 2026-11-19 (D54).** Was: `tailRead` needs paging and a filter. Measured, this is the first wall at
    high cardinality** (CARDINALITY.md): ten minutes of 100,000 series at 60 s is 20.2 MB of
    tail, and every query, label call and cardinality report of that tenant was refused by
    `maxFetchBytes` until a flush. In steady state a tenant's tail is about its shards times
@@ -980,7 +1057,12 @@ additive, tested hook: `EvalHooks`) was edited. These are for their owners.
 4. **`ScanInput.tailBatches` "in sequence order"** is defined within one shard. This
    Worker concatenates shards in name order, each in sequence order. A series lives on
    one shard, so it matters only after a pool-map change.
-5. **The tail contract has no size bound** ("Needed changes", 3).
+5. **The tail read is not in `contracts/`.** Its size bound, filter and pages (D48) are
+   defined in `shard/src/tail.ts` and `shard/src/shard.ts` (`TailReadOptions`, `TailPage`,
+   `page_limit`, `splitKeyRange`), which this Worker imports (types, `splitKeyRange`, the
+   constants; the tests also import `compileFilter` and `filterBatch` as the oracle for
+   `tailFilter` and `cutById`). The closest faithful thing was done: nothing is redefined
+   here. It belongs in `contracts/` with the rest of the shard's RPC.
 6. **`FileEntry.index` is "opaque to the ledger"** and now has a second reader besides
    the engine's `select`: the planner, through `scanRows`. It is still only read inside
    the engine.
@@ -1076,9 +1158,14 @@ New with split execution, each with its alternative:
 - **Compacted files were never read by these tests.** The fixtures are flush files.
   `byPrecedence` puts compaction outputs before flush files, which is right when
   compaction only merges older files, and unverified here.
-- **The whole tail is read for every query**, whatever its time range, and counts
-  against `maxFetchBytes`: a tenant with 10 MiB unflushed pays 10 MiB per query, and one
-  with more than 16 MiB cannot query until a flush.
+- **The tail at the coordinator.** A filtered tail is held there for one place and for a
+  split whose tail fits; shards read in parallel can together pass the budget by up to one
+  budget per shard before it is checked. Cutting a 16 MiB tail by part in the engine
+  (`splitTails`) peaks at about 130 MiB of WASM memory at the coordinator for 100,000 series
+  (measured here, `tail.bench.ts`: 132.6 MiB for 21 MiB with the cap raised), which is why a
+  tail that does not fit is cut by `series_id` in JavaScript instead (2 MiB of WASM); a tail
+  between a few MiB and the cap is still cut in the engine (not changed: it is exact for
+  every split key).
 - **Local simulators.** R2, KV, the Cache API, Durable Object eviction and RPC limits
   are miniflare's. The six-connection limit is not simulated at all: the tests prove the
   coordinator never asks a leaf for more than six reads, not that six is what the

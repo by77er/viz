@@ -1664,3 +1664,56 @@ registrations under an old and a new key (then rotation can be automatic and ove
 wrangler can upload a version with secrets read from stdin (then code and key go in one version);
 or more generated secrets appear (they join `GENERATED_SECRETS`, and one `versions secret bulk`
 replaces one put per secret).
+
+## D54. The query coordinator reads each shard's tail filtered and paged under its byte budget; split parts read the rest in their key range only when it does not fit
+
+**Decision.** Every tail read from `query/` passes the shard's `TailReadOptions` (D48): the hull
+of the read's times, its metric names when every range pins one, and the label values every
+range pins (the cardinality report sends no filter: it counts a tail series by the span of its
+rows in each batch, which a time filter changes at the window's edges). Pages are followed to the
+end under the read's byte budget (one place: `maxFetchBytes` minus the files; split execution,
+label endpoints, the report: `maxFetchBytes`); a refusal on any page re-plans or fails exactly as
+on the first. **The coordinator reads first.** When the tail fits, it is cut by part there as
+before. When it does not, and the query decomposes over a split key the shards can cut
+(`series_id`: `without` at most `__type__`/`__unit__`), the query is split (from one place too):
+the coordinator cuts what it read by `series_id` in JavaScript (bytes copied, the shard's own
+key-range cut), and each part reads the rest of each shard's tail, after the last batch the
+coordinator read and through the end it saw, with the filter and its key range, under its own
+`maxFetchBytes`; it cuts its rows by split key and refuses the query if any belong to another
+part (a series carrying `__type__`/`__unit__`). Otherwise the query is refused with
+`max_fetch_bytes`. A shard of the previous release answers with its whole tail and is used as
+before; a leaf of the previous release, which ignores the rest it is given, is refused (503).
+
+**Alternatives.** (a) Every split part always reads its own key range (shard/README.md "Needed
+changes" 2): no coordinator cap on the tail at all. (b) The coordinator always reads the whole
+tail and cuts it (before: refused above 16 MiB, and a shard's answer above 32 MiB cannot cross
+RPC at all). (c) When the tail does not fit, parts re-read it from the watermark and the
+coordinator drops what it read. (d) Cut what the coordinator read by split key in the engine
+(`splitTails`), as for a tail that fits. (e) A size probe (`describe`) before choosing.
+
+**Why.** A filtered read costs the shard a scan of its whole tail per call (D48, "Cost of it"),
+and the shard is the object that acknowledges writes: (a) makes every split query scan each
+shard's tail `L` times where one scan serves a tail that fits, and leaves the coordinator without
+the tail's size to choose `L`. (b) is the wall CARDINALITY.md measured. (c) scans and moves the
+coordinator's part twice. (d) peaked at 132.6 MiB of WASM memory at the coordinator for a
+21 MiB tail of 100,000 series (measured here, local workerd, `query/test/tail.bench.ts`), past a
+128 MB isolate; the JavaScript cut held 2.0 MiB of WASM for the same query and answer.
+(e) costs a call before every split for a figure that is only an upper bound. Measured here
+(local workerd, load 7.6 to 9.3; `query/README.md`, "Measurements"): with 21 MiB unflushed, the
+previous release refused every call (`max_fetch_bytes`); with the cap raised it answered the
+one-series query in 267 ms and this release in 149 ms with identical bodies, reading 0.002 MiB of
+tail instead of 21; with 68 MiB unflushed (one scrape per request), every call of the previous
+release failed (an RPC answer over 32 MiB) and this release answered all but the label calls.
+
+**Cost of it.** A split whose tail does not fit asks each shard once from the coordinator and
+once per part (each a scan of the shard's tail from where it starts). A tail whose series carry
+`__type__` or `__unit__` and does not fit is refused, not answered. The tail's series are
+estimated from the pages read, so a split over a tail with no lake below it can be sized too
+small and refused by the per-leaf budgets. When the coordinator's first page is already over
+budget, the end of the tail is not known and parts read to the shard's end (a part may see an
+append others do not).
+
+**Would change if.** Shards skip batches without scanning them (per-batch metadata, D48 (b): then
+(a) costs little and the coordinator need not read first); the split key stops leaving out
+`__type__`/`__unit__` for series that carry them, or shards can cut by a key that leaves labels
+out; or the tail contract moves into `contracts/` with a size field (then (e) is free).

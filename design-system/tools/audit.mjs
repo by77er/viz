@@ -148,6 +148,9 @@ function audit({ coarse, words }) {
       const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0), oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0); if (ox <= 2 || oy <= 0) continue
       const area = ox * oy, least = Math.min((a.x1 - a.x0) * (a.y1 - a.y0), (b.x1 - b.x0) * (b.y1 - b.y0)); if (area > least / 3) say(name(a.el) + '|' + name(b.el), `"${a.word}" in ${name(a.el)} and "${b.word}" in ${name(b.el)} are drawn over each other (${Math.round(ox)} x ${Math.round(oy)} px)`) }
   }
+  // a state in a kept column wraps between words (v5 review, B2.2; mutant Y17), as rendered: never nowrap in a folded table
+  for (const st of document.querySelectorAll('table[data-fold] [data-priority="1"] .vz-status')) { const t = st.closest('table'); if (!shown(st) || cs(t).display !== 'block') continue
+    if (/^(nowrap|pre)$/.test(cs(st).whiteSpace) || /nowrap/.test(cs(st).textWrapMode ?? '')) { out.push(['guard', `${name(st)} in a kept column of a folded table does not wrap (white-space: ${cs(st).whiteSpace}): a long state is cut or pushes the row wider (v5 review, B2.2)`]); break } }
   // key width (v6 review, B1): in a folded table, every key is at least key-min of its row (the whole row when it has its line to
   // itself), so a name keeps a readable, tappable width at every width, zoom and pointer
   for (const t of document.querySelectorAll('table[data-fold]')) { if (!shown(t) || cs(t).display !== 'block') continue

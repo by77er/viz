@@ -350,7 +350,9 @@ export type RestOutcome =
 
 /**
  * Read the rests of `parts` (each in `keyRange`), in parallel, under `cap` bytes for the
- * part's whole tail (what the coordinator sent counts too). One answer for all shards: the
+ * part's whole tail (what the coordinator sent counts too): each read stops at what the cap
+ * leaves after what was sent, and all of it is checked against the cap together (so where a
+ * read stops does not depend on which shard answered first). One answer for all shards: the
  * first refusal by name, else every shard's batches.
  */
 export async function readRests(
@@ -360,9 +362,9 @@ export async function readRests(
   keyRange: { lo: string; hi: string } | null,
   cap: number,
 ): Promise<RestOutcome> {
-  const budget: TailBudget = { cap, used: parts.reduce((a, p) => a + p.batches.reduce((x, b) => x + b.byteLength, 0), 0) }
+  const sent = parts.reduce((a, p) => a + p.batches.reduce((x, b) => x + b.byteLength, 0), 0)
   const got = await Promise.all(
-    parts.map((p) => (p.rest === null ? null : readPages(stubOf(p.shard), p.shard, tenant, p.rest.incarnation, p.rest.above, keyRange ? { ...p.rest.filter, keyRange } : p.rest.filter, budget, 'leaf', p.rest.through))),
+    parts.map((p) => (p.rest === null ? null : readPages(stubOf(p.shard), p.shard, tenant, p.rest.incarnation, p.rest.above, keyRange ? { ...p.rest.filter, keyRange } : p.rest.filter, { cap, used: sent }, 'leaf', p.rest.through))),
   )
   const calls = got.reduce((a, g) => a + (g ? g.calls : 0), 0)
   for (let i = 0; i < got.length; i++) {
@@ -374,6 +376,7 @@ export async function readRests(
     return { status: 'unavailable', reason: g.reason, calls }
   }
   const reads = got.map((g) => (g && g.status === 'ok' ? g : null))
-  if (reads.some((r) => r && !r.complete) || budget.used > cap) return { status: 'too_large', bytes: budget.used + reads.reduce((a, r) => a + (r ? r.overBytes : 0), 0), calls }
-  return { status: 'ok', reads, bytes: budget.used, calls }
+  const used = sent + reads.reduce((a, r) => a + (r ? r.bytes : 0), 0)
+  if (reads.some((r) => r && !r.complete) || used > cap) return { status: 'too_large', bytes: used + reads.reduce((a, r) => a + (r ? r.overBytes : 0), 0), calls }
+  return { status: 'ok', reads, bytes: used, calls }
 }

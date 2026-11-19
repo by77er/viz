@@ -369,7 +369,8 @@ with label-based access rules. A caller cannot omit it.
   decomposable aggregations is split over `L` leaves, each owning a range of series keys, so
   all rows of a series reach one leaf whichever shards they came through; leaves pull their
   part's rows from reader leaves (one call per group of at most six files) and the
-  coordinator cuts the tail by part. Every aggregation is exact and order-independent (exact
+  coordinator cuts the tail by part (or, when it does not fit, each part reads the rest of it
+  in its own key range: below). Every aggregation is exact and order-independent (exact
   sums rounded once; `avg` as sum and count; `topk` per part then merged), so a split answer
   is byte-identical to one place. Partials travel in the engine's own binary form, not Arrow
   IPC. `L` covers both the samples (scan bound) and the series (estimated from the series
@@ -379,8 +380,9 @@ with label-based access rules. A caller cannot omit it.
   are bounded by seal size, so the shard needs no query engine and no second index. The
   filter (time range, metric names, exact label values, a range of series keys) is applied
   by the shard and the answer comes in pages with a continuation (D48), so a query takes only
-  the tail it needs and a split leaf only its key range (built in `shard/`; `query/` does not
-  use it yet). Shards
+  the tail it needs. The coordinator reads it under its byte budget; when it does not fit and
+  the query splits by `series_id`, each part reads the rest in its own key range (D54). A
+  shard of the previous release answers unfiltered and is read as before. Shards
   keep recorded segments for a short bounded time, and a refused split is retried on its
   own with a fresh ledger read, so a busy shard cannot make a whole query loop.
 - **Leaves are Durable Objects.** Measured on Cloudflare (`spikes/s1-fanout-r2/`): R2 reads

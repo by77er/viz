@@ -1,7 +1,7 @@
 {
   "name": "LEAK_P_llsl",
   "kind": "proposed",
-  "label": "no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss; sweep, purge and ledger start as single steps",
+  "label": "no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss. As LEAK_P_sl_comp: the retention bound; sweep, purge and ledger start as single steps",
   "cfg": {
     "nt": 1,
     "ns": 1,
@@ -63,14 +63,14 @@
     "sweepNewerReg": true
   },
   "props": [],
-  "expect": "holds",
+  "expect": "violated",
   "maxStates": 8000000,
-  "asExpected": false,
+  "asExpected": true,
   "verdict": "violated",
   "states": 1455431,
   "transitions": 7901787,
   "depth": 51,
-  "seconds": 79.2,
+  "seconds": 57.7,
   "collisionProb": 5.7e-8,
   "violated": "LIVE_NoLeak",
   "trace": [
