@@ -116,6 +116,14 @@ describe('dashboards', () => {
     expect(await ids(`?tag=${(EXAMPLES.service_red as any).metadata.tags[0]}`)).toEqual(['cart', 'catalog', 'checkout_api'])
     expect(await ids('?q=%25')).toEqual([]) // a literal %, not a wildcard
     expect(await ids('?q=zzz')).toEqual([])
+    // A long search (CI's isolation-fuzz counterexample) and one made of LIKE metacharacters answer
+    // 200 and match literally: as LIKE patterns, searches past a short length failed with 500.
+    for (const q of ['alpha_secret_orders_total{customer="ALPHA-SECRET-customer"}', '%_\\'.repeat(66)]) {
+      const res: any = await get(t.admin, `/dashboards?q=${encodeURIComponent(q)}`)
+      expect(res.status, q).toBe(200)
+      expect(res.body.items, q).toEqual([])
+    }
+    expect(await ids(`?q=${encodeURIComponent('ECKOUT_A')}`)).toEqual(['checkout_api']) // case-insensitive, _ literal
 
     const seen: string[] = []
     let cursor: string | null = null
