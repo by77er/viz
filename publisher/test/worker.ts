@@ -1,6 +1,7 @@
-import type { Table } from '../../contracts/ledger'
+import type { LedgerTable } from '../../contracts/ledger'
 import { holding, type Store, type StoreObject } from '../src/log'
 import { Publisher, type CommitStep, type PublisherConfig, type PublisherEnv } from '../src/publisher'
+import { Publisher as PublisherD64 } from './d64/publisher'
 import { Publisher as PublisherN1 } from './n1/publisher'
 
 export { Ledger } from '../../ledger/src/ledger'
@@ -80,8 +81,8 @@ class Probe implements Store {
  * - `advanceClock` moves the publisher's clock (persisted, so it survives eviction).
  */
 export class TestPublisher extends Publisher {
-  private fail: { step: CommitStep; table?: Table } | null = null
-  private pause: { step: CommitStep; table?: Table } | null = null
+  private fail: { step: CommitStep; table?: LedgerTable } | null = null
+  private pause: { step: CommitStep; table?: LedgerTable } | null = null
   private waiting: (() => void) | null = null
   private reached: (() => void) | null = null
   private notifyDelayMs = 0
@@ -89,6 +90,8 @@ export class TestPublisher extends Publisher {
   private probe: Probe | null = null
   private onGet: { match: string; pause: boolean; fail?: boolean; del: string | null; reached: (() => void) | null; resume: Promise<void> | null } | null = null
   private seeded: number | null = null
+  /** One more seeded sequence per span or log table: the metric tables draw from `seeded` alone, as releases N-1 do. */
+  private seededSignal = new Map<LedgerTable, number>()
   private fixedNow: number | null = null
 
   constructor(ctx: DurableObjectState, env: PublisherEnv) {
@@ -110,11 +113,17 @@ export class TestPublisher extends Publisher {
     return this.probe
   }
 
-  /** A seeded generator (xorshift32) instead of `crypto`, so two publications can be compared byte for byte. */
-  protected override random(n: number): Uint8Array {
-    if (this.seeded === null) return super.random(n)
+  /**
+   * A seeded generator (xorshift32) instead of `crypto`, so two publications can be compared byte
+   * for byte. The metric tables (and a call that names no table) draw from one sequence, as the
+   * releases before do; each span or log table from its own, so the metric tables' ids are the same
+   * whether or not the log has span or log changes (production draws from `crypto` either way).
+   */
+  protected override random(n: number, table?: LedgerTable): Uint8Array {
+    if (this.seeded === null) return super.random(n, table)
+    const signal = table === 'spans' || table === 'trace_index' || table === 'logs'
+    let x = signal ? (this.seededSignal.get(table) ?? (((this.seeded0 ^ hashOf(table)) >>> 0) || 1)) : this.seeded
     const out = new Uint8Array(n)
-    let x = this.seeded
     for (let i = 0; i < n; i++) {
       x ^= x << 13
       x ^= x >>> 17
@@ -122,13 +131,17 @@ export class TestPublisher extends Publisher {
       x >>>= 0
       out[i] = x & 0xff
     }
-    this.seeded = x || 1
+    if (signal) this.seededSignal.set(table, x || 1)
+    else this.seeded = x || 1
     return out
   }
+  private seeded0 = 1
 
   /** Fixed ids and a fixed clock for this instance: what a byte-for-byte comparison needs. */
   async determinism(seed: number, now: number): Promise<void> {
     this.seeded = seed >>> 0 || 1
+    this.seeded0 = this.seeded
+    this.seededSignal = new Map()
     this.fixedNow = now
   }
 
@@ -183,7 +196,7 @@ export class TestPublisher extends Publisher {
     return { stage: n('stage'), liveNext: n('live_next') }
   }
 
-  protected override async step(name: CommitStep, table: Table): Promise<void> {
+  protected override async step(name: CommitStep, table: LedgerTable): Promise<void> {
     if (this.fail && this.fail.step === name && (!this.fail.table || this.fail.table === table)) {
       this.fail = null
       throw new Error(`injected crash after ${name} (${table})`)
@@ -214,12 +227,12 @@ export class TestPublisher extends Publisher {
     return { due, alarm: await this.ctx.storage.getAlarm(), now: this.now() }
   }
 
-  async failAt(step: CommitStep, table?: Table): Promise<void> {
+  async failAt(step: CommitStep, table?: LedgerTable): Promise<void> {
     this.fail = { step, table }
   }
 
   /** Arms a pause and resolves when a commit has reached it. */
-  async pauseAt(step: CommitStep, table?: Table): Promise<void> {
+  async pauseAt(step: CommitStep, table?: LedgerTable): Promise<void> {
     this.pause = { step, table }
     await new Promise<void>((resolve) => { this.reached = resolve })
   }
@@ -303,6 +316,64 @@ export class TestPublisherN1 extends PublisherN1 {
   async advanceClock(ms: number): Promise<void> {
     this.ctx.storage.sql.exec(`INSERT INTO test_clock (k, offset) VALUES (0, ?) ON CONFLICT (k) DO UPDATE SET offset = offset + excluded.offset`, ms)
   }
+}
+
+/**
+ * The D64 release (`test/d64/`, frozen at bcfe8db): it reads the span and log tables and does not
+ * publish them, the release before this one and, by D64's rollout rule, the oldest viz-publisher a
+ * rollback can reach once `INGEST_SIGNALS` is on. The same seams as `TestPublisherN1`, nothing else.
+ */
+export class TestPublisherD64 extends PublisherD64 {
+  private seeded: number | null = null
+  private fixedNow: number | null = null
+
+  constructor(ctx: DurableObjectState, env: PublisherEnv) {
+    super(ctx, env)
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS test_clock (k INTEGER PRIMARY KEY, offset INTEGER NOT NULL)`)
+  }
+
+  protected override cellOf(name: string): string {
+    return name.split('~')[0] as string
+  }
+
+  protected override now(): number {
+    const r = this.ctx.storage.sql.exec(`SELECT offset FROM test_clock WHERE k = 0`).toArray()[0]
+    return (this.fixedNow ?? Date.now()) + ((r?.offset as number | undefined) ?? 0)
+  }
+
+  protected override random(n: number): Uint8Array {
+    if (this.seeded === null) return super.random(n)
+    const out = new Uint8Array(n)
+    let x = this.seeded
+    for (let i = 0; i < n; i++) {
+      x ^= x << 13
+      x ^= x >>> 17
+      x ^= x << 5
+      x >>>= 0
+      out[i] = x & 0xff
+    }
+    this.seeded = x || 1
+    return out
+  }
+
+  async determinism(seed: number, now: number): Promise<void> {
+    this.seeded = seed >>> 0 || 1
+    this.fixedNow = now
+  }
+
+  async advanceClock(ms: number): Promise<void> {
+    this.ctx.storage.sql.exec(`INSERT INTO test_clock (k, offset) VALUES (0, ?) ON CONFLICT (k) DO UPDATE SET offset = offset + excluded.offset`, ms)
+  }
+}
+
+/** A 32-bit FNV-1a of a table name: the seed offset of that table's sequence. */
+function hashOf(s: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h
 }
 
 export default {

@@ -1,12 +1,11 @@
 import { DurableObject } from 'cloudflare:workers'
 import { openSchema, refusalOf, type SchemaState, SchemaTooNewError } from '../../contracts/schema'
-import { TENANT_ID, type FileEntry, type LedgerTable, type SignalTable, type Table } from '../../contracts/ledger'
+import { TENANT_ID, type FileEntry, type LedgerTable, type SignalTable } from '../../contracts/ledger'
 import { readAvro, writeAvro, type AvroCodec } from './avro'
 import {
   CURSORS_FORMAT_VERSION,
   CURSORS_KEY,
   metadataProblem,
-  MANIFEST_ENTRY_SCHEMA,
   MANIFEST_LIST_SCHEMA,
   STATUS_ADDED,
   STATUS_DELETED,
@@ -16,12 +15,17 @@ import {
   expiryDeadline,
   liveFromEntry,
   manifestEntry,
+  manifestEntrySchema,
+  partitionDay,
+  spanHour,
+  spanHourProblem,
   manifestHeader,
   manifestInfoFromRecord,
   manifestListRecord,
   nextMetadata,
   statsFor,
   summarise,
+  type AnyPartition,
   type FileStats,
   type LiveFile,
   type ManifestEntryRecord,
@@ -35,7 +39,6 @@ import { PUBLISHER_SCHEMA } from './schema'
 import {
   R2_CONNECTIONS,
   Slots,
-  UNPUBLISHED_TABLES,
   cursorCompare,
   holding,
   inBatches,
@@ -63,7 +66,7 @@ import {
  *                   (`orphanGraceMs` later), or the last sweep marked objects (their grace end)
  *   expire:<table>  every snapshot beyond the newest `minSnapshots` will be outside the window
  */
-type Job = 'publish' | 'sweep' | `expire:${Table}`
+type Job = 'publish' | 'sweep' | `expire:${LedgerTable}`
 
 /**
  * The publisher: one Durable Object per cell (the cell id is the object's name). It is the
@@ -196,18 +199,13 @@ export interface TenantReport {
   /** A re-base: the state it started from (a checkpoint or the base) and what reading it took. */
   rebase?: BaseInfo
   /** The cursor each table is at after this publish. */
-  cursors: Partial<Record<Table, Cursor>>
-  /**
-   * Tables of the tenant's ledger that this publisher reads and does not publish, with the live
-   * files it counts of each after this publish (`unpublished()` has the whole record). Absent for a
-   * tenant whose log has never named one, so a metric-only tenant's report is as it was.
-   */
-  unpublished?: Partial<Record<SignalTable, number>>
+  cursors: Partial<Record<LedgerTable, Cursor>>
 }
 
 /**
- * What the publisher records of a table it reads and does not publish, for one tenant (storage
- * table `unpublished`, migration 4; README, "Tables it does not publish").
+ * What the D64 release recorded of a table it read and did not publish, for one tenant (storage
+ * table `unpublished`, migration 4). Since D65 every table is published: this release neither reads
+ * nor writes that table, and `unpublished()` returns nothing. The type stays for that method.
  */
 export interface UnpublishedRecord {
   table: SignalTable
@@ -230,7 +228,7 @@ export interface UnpublishedRecord {
 
 /** Where a table is (`status`). */
 export interface TableStatus {
-  /** False for a table the ledger lists and this publisher does not publish: then only `unpublished` says anything. */
+  /** True for every table the ledger lists since D65 (the D64 release answered false for the span and log tables). */
   published: boolean
   version: number
   snapshotId: number | null
@@ -238,8 +236,6 @@ export interface TableStatus {
   files: number
   manifests: number
   metadataKey: string | null
-  /** For a table not published: the tenants whose ledgers list it and the live files counted, in total. */
-  unpublished?: { tenants: number; files: number }
 }
 
 export interface TableReport {
@@ -258,7 +254,7 @@ export interface TableReport {
 
 export interface PublishResult {
   tenants: TenantReport[]
-  tables: Record<Table, TableReport>
+  tables: Record<LedgerTable, TableReport>
   /** Conditional-write losses that were retried. */
   conflicts: number
   ops: R2Ops
@@ -267,7 +263,7 @@ export interface PublishResult {
 
 export interface VerifyResult {
   ok: boolean
-  table: Table
+  table: LedgerTable
   /** Metadata version in R2, and the one SQLite believes. */
   metadataVersion: number
   stateVersion: number
@@ -409,15 +405,20 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /** Called after each step of a commit. Tests override it to stop or pause there. */
-  protected async step(_name: CommitStep, _table: Table): Promise<void> {}
+  protected async step(_name: CommitStep, _table: LedgerTable): Promise<void> {}
 
   /** The bucket under the counting, slot-holding store. Tests wrap it to watch or disturb R2 traffic. */
   protected bucket(): Store {
     return this.env.BUCKET
   }
 
-  /** Random bytes for snapshot ids, file tags, table uuids and Avro sync markers. Tests fix them to compare two publications byte for byte. */
-  protected random(n: number): Uint8Array {
+  /**
+   * Random bytes for snapshot ids, file tags, table uuids and Avro sync markers, for a commit to
+   * `table`. Tests fix them to compare two publications byte for byte (a seeded sequence for the
+   * metric tables and one per span or log table, so that the metric tables' ids do not depend on
+   * whether a log has span or log changes); here the table does not matter.
+   */
+  protected random(n: number, _table?: LedgerTable): Uint8Array {
     return crypto.getRandomValues(new Uint8Array(n))
   }
 
@@ -433,18 +434,18 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return { ...DEFAULTS, locationPrefix: this.env.ICEBERG_LOCATION_PREFIX || 's3://viz-lake', ...stored } as PublisherConfig
   }
 
-  private state(table: Table): TableState {
+  private state(table: LedgerTable): TableState {
     const r = this.sql.exec(`SELECT version, snapshot_id, seq, uuid FROM tbl WHERE name = ?`, table).toArray()[0]
     if (!r) return { version: 0, snapshotId: null, seq: 0, uuid: '' }
     return { version: r.version as number, snapshotId: r.snapshot_id as number | null, seq: r.seq as number, uuid: r.uuid as string }
   }
 
-  private cursorOf(table: Table, tenant: string): Cursor | null {
+  private cursorOf(table: LedgerTable, tenant: string): Cursor | null {
     const r = this.sql.exec(`SELECT incarnation, version FROM cursor WHERE tbl = ? AND tenant = ?`, table, tenant).toArray()[0]
     return r ? { ledgerIncarnation: r.incarnation as number, version: r.version as number } : null
   }
 
-  private setCursor(table: Table, tenant: string, c: Cursor): void {
+  private setCursor(table: LedgerTable, tenant: string, c: Cursor): void {
     this.sql.exec(
       `INSERT INTO cursor (tbl, tenant, incarnation, version) VALUES (?, ?, ?, ?)
        ON CONFLICT (tbl, tenant) DO UPDATE SET incarnation = excluded.incarnation, version = excluded.version`,
@@ -452,7 +453,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     )
   }
 
-  private insertLive(table: Table, f: LiveFile, manifest: string): void {
+  private insertLive(table: LedgerTable, f: LiveFile, manifest: string): void {
     this.sql.exec(
       `INSERT INTO live (tbl, key, tenant, day, rows, bytes, snapshot_id, seq, file_seq, stats, manifest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       table, f.key, f.tenant, f.day, f.rows, f.bytes, f.snapshotId, f.seq, f.fileSeq, JSON.stringify(f.stats), manifest,
@@ -461,13 +462,13 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   // ───────────────────────────── paths ─────────────────────────────
 
-  private metaDir(table: Table): string {
+  private metaDir(table: LedgerTable): string {
     return `${this.cell}/iceberg/${table}/metadata/`
   }
-  private metaKey(table: Table, version: number): string {
+  private metaKey(table: LedgerTable, version: number): string {
     return `${this.metaDir(table)}v${version}.metadata.json`
   }
-  private hintKey(table: Table): string {
+  private hintKey(table: LedgerTable): string {
     return `${this.metaDir(table)}version-hint.text`
   }
   private uri(cfg: PublisherConfig, key: string): string {
@@ -600,7 +601,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * objects that commit stopped referencing are swept after the grace period, and the table
    * expires its old snapshots by itself if no later commit does.
    */
-  private noteMetadata(cfg: PublisherConfig, table: Table, meta: TableMetadata, committed: boolean): void {
+  private noteMetadata(cfg: PublisherConfig, table: LedgerTable, meta: TableMetadata, committed: boolean): void {
     if (committed) this.dueNoLaterThan('sweep', this.now() + cfg.orphanGraceMs)
     const at = expiryDeadline(meta, this.retention(cfg))
     if (at === null) this.clearDue(`expire:${table}`)
@@ -608,7 +609,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /** Snapshot expiry for `tables` and, with `sweep`, the orphan sweep of both tables; then their deadlines. */
-  private runMaintenance(tables: Table[], sweep: boolean): Promise<void> {
+  private runMaintenance(tables: LedgerTable[], sweep: boolean): Promise<void> {
     return this.serial(async () => {
       const cfg = this.config()
       const store = new CountingBucket(this.bucket())
@@ -640,7 +641,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     else this.setDue('sweep', oldest + cfg.orphanGraceMs)
   }
 
-  private async expireWithRetries(store: CountingBucket, cfg: PublisherConfig, table: Table): Promise<number> {
+  private async expireWithRetries(store: CountingBucket, cfg: PublisherConfig, table: LedgerTable): Promise<number> {
     for (let tries = 0; ; tries++) {
       try {
         return await this.expire(store, cfg, table)
@@ -656,7 +657,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return this.pendingTenants()
   }
 
-  async cursors(table: Table): Promise<Record<string, Cursor>> {
+  async cursors(table: LedgerTable): Promise<Record<string, Cursor>> {
     this.guard()
     const out: Record<string, Cursor> = {}
     for (const r of this.sql.exec(`SELECT tenant, incarnation, version FROM cursor WHERE tbl = ? ORDER BY tenant`, table).toArray()) {
@@ -665,39 +666,25 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return out
   }
 
-  /**
-   * Where a table is: metadata version, current snapshot, live files and manifests. For a table the
-   * ledger lists and this publisher does not publish (`UNPUBLISHED_TABLES`): `published: false`, no
-   * Iceberg state, and what it has counted of it.
-   */
+  /** Where a table is: metadata version, current snapshot, live files and manifests. Every table the ledger lists is published (D65). */
   async status(table: LedgerTable): Promise<TableStatus> {
     this.guard()
-    if (!isPublished(table)) {
-      if (!(UNPUBLISHED_TABLES as readonly string[]).includes(table)) throw new Error(`publisher: unknown table ${JSON.stringify(table)}`)
-      const r = this.sql.exec(`SELECT COUNT(*) AS tenants, COALESCE(SUM(files), 0) AS files FROM unpublished WHERE tbl = ?`, table).one()
-      return { published: false, version: 0, snapshotId: null, seq: 0, files: 0, manifests: 0, metadataKey: null, unpublished: { tenants: r.tenants as number, files: r.files as number } }
-    }
+    if (!isPublished(table)) throw new Error(`publisher: unknown table ${JSON.stringify(table)}`)
     const s = this.state(table)
     const files = this.sql.exec(`SELECT COUNT(*) AS n FROM live WHERE tbl = ?`, table).one().n as number
     const manifests = this.sql.exec(`SELECT COUNT(*) AS n FROM manifest WHERE tbl = ?`, table).one().n as number
     return { published: true, version: s.version, snapshotId: s.snapshotId, seq: s.seq, files, manifests, metadataKey: s.version > 0 ? this.metaKey(table, s.version) : null }
   }
 
-  /** What this publisher records of the tables it reads and does not publish: every tenant's, or one tenant's. */
-  async unpublished(tenant?: string): Promise<UnpublishedRecord[]> {
+  /**
+   * What the D64 release recorded of the tables it read and did not publish. Since D65 there are
+   * none: this release publishes every table and leaves that release's records alone (they serve
+   * only a rollback to it, which counts on from them). Always empty; kept so a caller of the D64
+   * interface gets an answer, not an error.
+   */
+  async unpublished(_tenant?: string): Promise<UnpublishedRecord[]> {
     this.guard()
-    const rows = tenant === undefined
-      ? this.sql.exec(`SELECT * FROM unpublished ORDER BY tenant, tbl`).toArray()
-      : this.sql.exec(`SELECT * FROM unpublished WHERE tenant = ? ORDER BY tbl`, tenant).toArray()
-    return rows.map((r) => ({
-      table: r.tbl as SignalTable,
-      tenant: r.tenant as string,
-      cursor: { ledgerIncarnation: r.incarnation as number, version: r.version as number },
-      files: r.files as number,
-      origin: r.origin as 'base' | 'log',
-      firstSeen: r.first_seen as number,
-      lastSeen: r.last_seen as number,
-    }))
+    return []
   }
 
   // ───────────────────────────── publish ─────────────────────────────
@@ -808,7 +795,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       reports.set(log.tenant, r)
     }
 
-    const tables = {} as Record<Table, TableReport>
+    const tables = {} as Record<LedgerTable, TableReport>
     for (const table of TABLE_NAMES) {
       const plan = this.plan(table, logs)
       for (const [tenant, why] of plan.problems) {
@@ -822,113 +809,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         if (c) (reports.get(log.tenant) as TenantReport).cursors[table] = c
       }
     }
-    // After the metric commits, and touching none of their state.
-    await this.noteUnpublished(store, logs, reports)
     return { tenants: [...reports.values()], tables }
-  }
-
-  /**
-   * The tables this publisher reads and does not publish (`UNPUBLISHED_TABLES`; README, "Tables it
-   * does not publish"). Per tenant and table: the live files the ledger lists, counted from the
-   * base or checkpoint of a re-base (staged as tombstones only, never as files) and the changes
-   * read; and the files those changes (and a re-base's tombstones) remove, which are released to
-   * the janitor one `deleteGraceMs` later, as files removed before they were ever published are:
-   * no snapshot of this publisher can reference them. Not while the cell has an Iceberg table of
-   * that name, which only a newer publisher would have written (COMPATIBILITY.md §5: never act
-   * against a newer writer's state); then nothing of that table is released.
-   *
-   * SQLite only, apart from that check. Idempotent: a row's version says how far its table has
-   * been counted, so changes at or below it are never counted again (an attempt retried after a
-   * lost conditional write reads them again). A tenant whose metric changes did not apply
-   * (`inconsistent`) is left as it was.
-   */
-  private async noteUnpublished(store: Store, logs: TenantLog[], reports: Map<string, TenantReport>): Promise<void> {
-    const sql = this.sql
-    type Note = { tenant: string; table: SignalTable; incarnation: number; version: number; files: number; origin: 'base' | 'log'; firstSeen: number; lastSeen: number; release: string[] }
-    const notes: Note[] = []
-    for (const log of logs) {
-      if (log.status === 'no_log' || log.status === 'no_base' || log.status === 'cursor_ahead') continue
-      if (reports.get(log.tenant)?.status === 'inconsistent') continue
-      for (const table of UNPUBLISHED_TABLES) {
-        const row = sql.exec(`SELECT incarnation, version, files, origin, first_seen, last_seen FROM unpublished WHERE tbl = ? AND tenant = ?`, table, log.tenant).toArray()[0]
-        let files: number
-        let origin: 'base' | 'log'
-        let after: number
-        const release: string[] = []
-        let named = false
-        if (log.base && (!row || (row.incarnation as number) < log.incarnation || (row.version as number) < log.start)) {
-          // Counted again from the state the log was re-based from.
-          files = log.base.unpublished?.[table] ?? 0
-          origin = 'base'
-          after = log.start
-          for (const r of sql.exec(`SELECT key FROM stage WHERE tenant = ? AND tbl = ? AND tomb = 1 ORDER BY key`, log.tenant, table)) release.push(r.key as string)
-          named = files > 0 || release.length > 0
-        } else if (row && (row.incarnation as number) === log.incarnation) {
-          files = row.files as number
-          origin = row.origin as 'base' | 'log'
-          after = row.version as number
-        } else if (!row && !log.base) {
-          // Never named before in what this publisher read: a release before this one cannot have
-          // passed a change that names it, so nothing of it lies below the cursor.
-          files = 0
-          origin = 'log'
-          after = log.start
-        } else continue // a row of another incarnation and no base to count from: nothing to say
-        let version = after
-        for (const c of log.changes) {
-          if (c.version <= after) continue
-          for (const f of c.added) {
-            if (f.table !== table) continue
-            files++
-            named = true
-          }
-          for (const r of c.removedFiles) {
-            if (r.table !== table) continue
-            files--
-            named = true
-            release.push(r.key)
-          }
-          version = c.version
-        }
-        if (!row && !named) continue
-        const now = this.now()
-        notes.push({
-          tenant: log.tenant, table, incarnation: log.incarnation, version, files, origin, release,
-          firstSeen: (row?.first_seen as number | undefined) ?? now, lastSeen: named ? now : (row!.last_seen as number),
-        })
-      }
-    }
-    // Released only while no Iceberg table of that name exists in the cell (one list per table, and only when there is something to release).
-    const owned = new Map<SignalTable, boolean>()
-    for (const table of new Set(notes.filter((n) => n.release.length > 0).map((n) => n.table))) {
-      owned.set(table, (await store.list({ prefix: `${this.cell}/iceberg/${table}/`, limit: 1 })).objects.length > 0)
-    }
-    const now = this.now()
-    this.ctx.storage.transactionSync(() => {
-      for (const n of notes) {
-        sql.exec(
-          `INSERT INTO unpublished (tbl, tenant, incarnation, version, files, origin, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (tbl, tenant) DO UPDATE SET incarnation = excluded.incarnation, version = excluded.version, files = excluded.files,
-             origin = excluded.origin, last_seen = excluded.last_seen`,
-          n.table, n.tenant, n.incarnation, n.version, n.files, n.origin, n.firstSeen, n.lastSeen,
-        )
-        if (owned.get(n.table)) continue
-        for (const key of n.release) this.recordRemoved(n.table, n.tenant, key, 0, now)
-      }
-    })
-    for (const n of notes) {
-      const r = reports.get(n.tenant)
-      if (r) (r.unpublished ??= {})[n.table] = n.files
-    }
-    // Tenants read in this publish whose records did not change still report them.
-    for (const log of logs) {
-      const r = reports.get(log.tenant)
-      if (!r) continue
-      for (const row of sql.exec(`SELECT tbl, files FROM unpublished WHERE tenant = ?`, log.tenant)) {
-        const t = row.tbl as SignalTable
-        if (r.unpublished?.[t] === undefined) (r.unpublished ??= {})[t] = row.files as number
-      }
-    }
   }
 
   /**
@@ -965,7 +846,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * published for each tenant and that tenant's live set after the changes read. A file
    * added and removed inside the changes read appears in neither list.
    */
-  private plan(table: Table, logs: TenantLog[]): TablePlan {
+  private plan(table: LedgerTable, logs: TenantLog[]): TablePlan {
     const plan: TablePlan = { adds: [], removes: [], transient: [], staged: [], cursors: new Map(), problems: new Map() }
     for (const log of logs) {
       if (log.status === 'no_log' || log.status === 'no_base' || log.status === 'cursor_ahead') continue
@@ -998,11 +879,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return plan
   }
 
-  private published(table: Table, tenant: string, key: string): boolean {
+  private published(table: LedgerTable, tenant: string, key: string): boolean {
     return this.sql.exec(`SELECT 1 FROM live WHERE tbl = ? AND tenant = ? AND key = ?`, table, tenant, key).toArray().length > 0
   }
 
-  private staged(table: Table, tenant: string, key: string): boolean {
+  private staged(table: LedgerTable, tenant: string, key: string): boolean {
     return this.sql.exec(`SELECT 1 FROM stage WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, tenant, table, key).toArray().length > 0
   }
 
@@ -1010,7 +891,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * A tenant read from its cursor: the published files it changes, looked up one by one. Memory
    * is what the changes read touch, never the tenant's published set.
    */
-  private planFromCursor(table: Table, tenant: string, log: TenantLog, cursor: Cursor): { adds: FileEntry[]; removes: string[]; transient: string[]; last: number } | { problem: string } {
+  private planFromCursor(table: LedgerTable, tenant: string, log: TenantLog, cursor: Cursor): { adds: FileEntry[]; removes: string[]; transient: string[]; last: number } | { problem: string } {
     // The changes must start at or below the cursor; a log that starts above it lacks the
     // versions between, and planning from it would skip them silently (review P-1). Refuse.
     if (log.start > cursor.version) {
@@ -1043,6 +924,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
       for (const f of c.added) {
         if (f.table !== table) continue
         if (live(f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
+        const hour = table === 'spans' ? spanHourProblem(f) : null
+        if (hour) problem = `change ${c.version}: ${hour}`
         work.set(f.key, this.published(table, tenant, f.key) ? null : f)
       }
       if (problem) break
@@ -1064,12 +947,26 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * then holds its live set at the new cursor. What it adds and removes is left in SQLite for
    * the commit (`stage` against `live`); only the keys the changes removed are listed here.
    */
-  private planStaged(table: Table, tenant: string, log: TenantLog, base: BaseInfo): { adds: FileEntry[]; removes: string[]; transient: string[]; last: number } | { problem: string } {
+  private planStaged(table: LedgerTable, tenant: string, log: TenantLog, base: BaseInfo): { adds: FileEntry[]; removes: string[]; transient: string[]; last: number } | { problem: string } {
     const sql = this.sql
     const start = base.version
     const dropped: string[] = []
     let problem: string | null = null
     let last = start
+    if (table === 'spans') {
+      // Every staged `spans` file must lie in the hour its key names (the partition value is taken
+      // from the key): found in SQL, judged by `spanHourProblem`.
+      for (const f of sql.exec(
+        `SELECT key, day, min_ts, max_ts FROM stage WHERE tenant = ? AND tbl = 'spans' AND tomb = 0 AND NOT (
+           instr(key, '/day=' || day || '/hour=') > 0 AND min_ts / 3600000 = max_ts / 3600000
+           AND min_ts / 3600000 = CAST(strftime('%s', day) AS INTEGER) / 3600 + CAST(substr(key, instr(key, '/hour=') + 6, 2) AS INTEGER))
+         LIMIT 10`,
+        tenant,
+      )) {
+        const why = spanHourProblem({ key: f.key as string, day: f.day as string, minTs: f.min_ts as number, maxTs: f.max_ts as number })
+        if (why) return { problem: `version ${start}: ${why}` }
+      }
+    }
     this.ctx.storage.transactionSync(() => {
       for (const c of log.changes) {
         if (c.version <= start) continue
@@ -1083,7 +980,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
         }
         for (const f of c.added) {
           if (f.table !== table) continue
-          if (this.staged(table, tenant, f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
+          const hour = table === 'spans' ? spanHourProblem(f) : null
+          if (hour) problem = `change ${c.version}: ${hour}`
+          else if (this.staged(table, tenant, f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
           else {
             sql.exec(
               `INSERT INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1112,7 +1011,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * either fails, SQLite is behind (or ahead of) R2: rebuild it and make the caller start
    * over with a fresh plan.
    */
-  private async currentMetadata(store: Store, cfg: PublisherConfig, table: Table): Promise<{ state: TableState; prev: TableMetadata | null }> {
+  private async currentMetadata(store: Store, cfg: PublisherConfig, table: LedgerTable): Promise<{ state: TableState; prev: TableMetadata | null }> {
     const state = this.state(table)
     let prev: TableMetadata | null = null
     if (state.version > 0) {
@@ -1132,7 +1031,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return { state, prev }
   }
 
-  private async hint(store: Store, table: Table): Promise<number> {
+  private async hint(store: Store, table: LedgerTable): Promise<number> {
     const o = await store.get(this.hintKey(table))
     if (!o) return 0
     const n = Number((await o.text()).trim())
@@ -1143,14 +1042,18 @@ export class Publisher extends DurableObject<PublisherEnv> {
   private static readonly STAGED_ADD = `s.tenant = ? AND s.tbl = ? AND s.tomb = 0 AND NOT EXISTS (SELECT 1 FROM live l WHERE l.tbl = s.tbl AND l.key = s.key)`
   private static readonly STAGED_REMOVE = `l.tbl = ? AND l.tenant = ? AND NOT EXISTS (SELECT 1 FROM stage s WHERE s.tenant = l.tenant AND s.tbl = l.tbl AND s.tomb = 0 AND s.key = l.key)`
 
-  /** Files, rows and bytes a re-based tenant adds to and removes from a table, and the days they touch. */
-  private stagedChange(table: Table, tenant: string): { adds: Totals; removes: Totals; days: string[] } {
+  /**
+   * Files, rows and bytes a re-based tenant adds to and removes from a table, and the partitions
+   * they touch besides the tenant's: days, or for `spans` `{day}/hour={HH}` (the hour level of the key).
+   */
+  private stagedChange(table: LedgerTable, tenant: string): { adds: Totals; removes: Totals; days: string[] } {
     const totals = (r: Row): Totals => ({ files: r.n as number, rows: r.r as number, bytes: r.b as number })
     const adds = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table).one())
     const removes = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant).one())
     const days = new Set<string>()
-    for (const r of this.sql.exec(`SELECT DISTINCT day FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table)) days.add(r.day as string)
-    for (const r of this.sql.exec(`SELECT DISTINCT day FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant)) days.add(r.day as string)
+    const part = table === 'spans' ? `day || '/' || substr(key, instr(key, '/hour='), 8)` : 'day'
+    for (const r of this.sql.exec(`SELECT DISTINCT ${part} AS p FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table)) days.add(r.p as string)
+    for (const r of this.sql.exec(`SELECT DISTINCT ${part} AS p FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant)) days.add(r.p as string)
     return { adds, removes, days: [...days] }
   }
 
@@ -1160,7 +1063,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * seen them (a checkpoint skips the changes before it), so they are recorded as removed by the
    * snapshot `seq`, and released only once no snapshot older than it is retained.
    */
-  private recordStagedTombstones(table: Table, tenant: string, seq: number): void {
+  private recordStagedTombstones(table: LedgerTable, tenant: string, seq: number): void {
     this.sql.exec(
       `INSERT INTO removed (tbl, tenant, key, removed_seq, free_at)
        SELECT s.tbl, s.tenant, s.key, ?, NULL FROM stage s
@@ -1177,7 +1080,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * changes read from cursors touch; the files of a re-based tenant stay in SQLite and are read
    * a page at a time, so a tenant of any size is published (README, "Memory").
    */
-  private async commit(store: CountingBucket, cfg: PublisherConfig, table: Table, plan: TablePlan): Promise<TableReport> {
+  private async commit(store: CountingBucket, cfg: PublisherConfig, table: LedgerTable, plan: TablePlan): Promise<TableReport> {
     const t0 = this.now()
     const sql = this.sql
     const staged = plan.staged.map((tenant) => ({ tenant, ...this.stagedChange(table, tenant) }))
@@ -1213,10 +1116,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
     const { state, prev } = await this.currentMetadata(store, cfg, table)
     const now = this.now()
-    const base = prev ?? emptyMetadata(table, this.uri(cfg, `${this.cell}/iceberg/${table}`), this.cell, uuidOf(this.random(16)), now)
-    const snapshotId = snapshotIdOf(this.random(8))
+    const base = prev ?? emptyMetadata(table, this.uri(cfg, `${this.cell}/iceberg/${table}`), this.cell, uuidOf(this.random(16, table)), now)
+    const snapshotId = snapshotIdOf(this.random(8, table))
     const seq = base['last-sequence-number'] + 1
-    const tag = hex(this.random(4))
+    const tag = hex(this.random(4, table))
     const report = emptyReport(state.version + 1)
     report.snapshotId = snapshotId
     report.added = addFiles
@@ -1382,11 +1285,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
       const records = (function* (uri: (key: string) => string) {
         for (const p of o.parts) yield manifestEntry(table, p.file, p.status, uri(p.file.key), snapshotId)
       })((key) => this.uri(cfg, key))
-      const info = { ...summarise(o.parts, seq, snapshotId), path: o.path }
-      const sync = this.random(16)
+      const info = { ...summarise(o.parts, seq, snapshotId, table), path: o.path }
+      const sync = this.random(16, table)
       writing.push(
         (async () => {
-          const bytes = await writeAvro(MANIFEST_ENTRY_SCHEMA, records, manifestHeader(table), cfg.codec, sync)
+          const bytes = await writeAvro(manifestEntrySchema(table), records, manifestHeader(table), cfg.codec, sync)
           await store.put(o.path, bytes)
           report.bytes.manifests += bytes.length
           written[at] = { ...info, length: bytes.length }
@@ -1406,7 +1309,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       manifests.map((m) => manifestListRecord(m, this.uri(cfg, m.path))),
       { 'snapshot-id': String(snapshotId), 'sequence-number': String(seq), 'format-version': '2', ...(state.snapshotId ? { 'parent-snapshot-id': String(state.snapshotId) } : {}) },
       cfg.codec,
-      this.random(16),
+      this.random(16, table),
     )
     await store.put(listKey, listBytes)
     report.bytes.manifestList = listBytes.length
@@ -1429,7 +1332,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const addedBytes = sum(memAdds, 'bytes') + staged.reduce((a, x) => a + x.adds.bytes, 0)
     const removedRowsN = sum(removedRows, 'rows') + staged.reduce((a, x) => a + x.removes.rows, 0)
     const removedBytes = sum(removedRows, 'bytes') + staged.reduce((a, x) => a + x.removes.bytes, 0)
-    const partitions = new Set([...memAdds, ...removedRows].map((f) => `${f.tenant}/${f.day}`))
+    // Partitions changed: (tenant, day), or for `spans` (tenant, hour).
+    const partOf = (f: { tenant: string; day: string; key: string }) => (table === 'spans' ? `${f.tenant}/${f.day}${f.key.slice(f.key.indexOf('/hour='), f.key.indexOf('/hour=') + 8)}` : `${f.tenant}/${f.day}`)
+    const partitions = new Set([...memAdds, ...removedRows].map(partOf))
     for (const x of staged) for (const d of x.days) partitions.add(`${x.tenant}/${d}`)
     const snapshot: Snapshot = {
       'snapshot-id': snapshotId,
@@ -1523,7 +1428,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /** The compare-and-swap: create `v{version}.metadata.json` only if it does not exist. */
-  private async putMetadata(store: CountingBucket, cfg: PublisherConfig, table: Table, version: number, meta: TableMetadata): Promise<number> {
+  private async putMetadata(store: CountingBucket, cfg: PublisherConfig, table: LedgerTable, version: number, meta: TableMetadata): Promise<number> {
     const body = JSON.stringify(meta)
     const put = await store.put(this.metaKey(table, version), body, { onlyIf: { etagDoesNotMatch: '*' }, httpMetadata: { contentType: 'application/json' } })
     if (put === null) {
@@ -1539,7 +1444,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /** Inside a transaction: forget expired snapshots and free the files only they held. */
-  private dropExpired(table: Table, keptSnapshots: Set<number>, freeBelow: number, now: number): void {
+  private dropExpired(table: LedgerTable, keptSnapshots: Set<number>, freeBelow: number, now: number): void {
     for (const r of this.sql.exec(`SELECT snapshot_id FROM snap WHERE tbl = ?`, table).toArray()) {
       if (!keptSnapshots.has(r.snapshot_id as number)) this.sql.exec(`DELETE FROM snap WHERE tbl = ? AND snapshot_id = ?`, table, r.snapshot_id)
     }
@@ -1551,7 +1456,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   // ───────────────────────────── resync: SQLite from R2 ─────────────────────────────
 
   /** Highest metadata version in R2, found from the hint and SQLite, then by probing up. */
-  private async latestVersion(store: Store, table: Table): Promise<number> {
+  private async latestVersion(store: Store, table: LedgerTable): Promise<number> {
     let v = Math.max(await this.hint(store, table), 0)
     const known = this.state(table).version
     if (known > v && (await store.head(this.metaKey(table, known)))) v = known
@@ -1559,17 +1464,17 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return v
   }
 
-  private async readManifestList(store: Store, cfg: PublisherConfig, uri: string): Promise<ManifestInfo[]> {
+  private async readManifestList(store: Store, cfg: PublisherConfig, uri: string, table: LedgerTable): Promise<ManifestInfo[]> {
     const o = await store.get(this.keyOf(cfg, uri))
     if (!o) throw new Error(`publisher: manifest list ${uri} is not in R2`)
     const { records } = await readAvro<ManifestListRecord>(new Uint8Array(await o.arrayBuffer()))
-    return records.map((r) => manifestInfoFromRecord(r, this.keyOf(cfg, r.manifest_path)))
+    return records.map((r) => manifestInfoFromRecord(r, this.keyOf(cfg, r.manifest_path), table))
   }
 
-  private async readManifest(store: Store, path: string): Promise<ManifestEntryRecord[]> {
+  private async readManifest(store: Store, path: string): Promise<ManifestEntryRecord<AnyPartition>[]> {
     const o = await store.get(path)
     if (!o) throw new Error(`publisher: manifest ${path} is not in R2`)
-    return (await readAvro<ManifestEntryRecord>(new Uint8Array(await o.arrayBuffer()))).records
+    return (await readAvro<ManifestEntryRecord<AnyPartition>>(new Uint8Array(await o.arrayBuffer()))).records
   }
 
   /**
@@ -1583,7 +1488,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * replace `live` in the one transaction that also writes the rest, so an eviction midway
    * leaves SQLite as it was and the next resync starts over.
    */
-  private async resync(store: Store, cfg: PublisherConfig, table: Table): Promise<void> {
+  private async resync(store: Store, cfg: PublisherConfig, table: LedgerTable): Promise<void> {
     const version = await this.latestVersion(store, table)
     if (version === 0) {
       this.ctx.storage.transactionSync(() => {
@@ -1604,7 +1509,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     sql.exec(`DELETE FROM live_next WHERE tbl = ?`, table)
     try {
       if (current) {
-        manifests = await this.readManifestList(store, cfg, current['manifest-list'])
+        manifests = await this.readManifestList(store, cfg, current['manifest-list'], table)
         // Two manifests in flight; each one's live entries into `live_next` as they are decoded,
         // 500 per transaction: no manifest's records are ever all in memory.
         await inBatches(manifests, 2, async (m) => {
@@ -1623,7 +1528,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
               }
             })
           }
-          await readAvro<ManifestEntryRecord>(new Uint8Array(await o.arrayBuffer()), (e) => {
+          await readAvro<ManifestEntryRecord<AnyPartition>>(new Uint8Array(await o.arrayBuffer()), (e) => {
             if (e.status === STATUS_DELETED) return
             batch.push(liveFromEntry(e, this.keyOf(cfg, e.data_file.file_path), { snapshotId: m.addedSnapshotId, seq: m.seq }))
             if (batch.length >= 500) flush()
@@ -1639,7 +1544,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       // What each retained snapshot references, for the sweep. Known snapshots are not re-read.
       const known = new Set(sql.exec(`SELECT snapshot_id FROM snap WHERE tbl = ?`, table).toArray().map((r) => r.snapshot_id as number))
       const fresh = await inBatches(meta.snapshots.filter((s) => !known.has(s['snapshot-id'])), FANOUT, async (s) => {
-        const list = s === current ? manifests : await this.readManifestList(store, cfg, s['manifest-list'])
+        const list = s === current ? manifests : await this.readManifestList(store, cfg, s['manifest-list'], table)
         return { snapshot: s, files: [this.keyOf(cfg, s['manifest-list']), this.keyOf(cfg, s.summary[CURSORS_KEY] as string), ...list.map((m) => m.path)] }
       })
       const hint = await this.hint(store, table)
@@ -1683,13 +1588,13 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * expires them as a side effect), then sweep orphans, now. The alarm does the same by itself
    * when each is due (`alarm`); this is the operator's handle on it.
    */
-  async maintain(): Promise<{ expired: Record<Table, number>; swept: Record<Table, { marked: number; deleted: number }>; ops: R2Ops }> {
+  async maintain(): Promise<{ expired: Record<LedgerTable, number>; swept: Record<LedgerTable, { marked: number; deleted: number }>; ops: R2Ops }> {
     this.guard()
     const out = await this.serial(async () => {
       const cfg = this.config()
       const store = new CountingBucket(this.bucket())
-      const expired = {} as Record<Table, number>
-      const swept = {} as Record<Table, { marked: number; deleted: number }>
+      const expired = {} as Record<LedgerTable, number>
+      const swept = {} as Record<LedgerTable, { marked: number; deleted: number }>
       for (const table of TABLE_NAMES) {
         expired[table] = await this.expireWithRetries(store, cfg, table)
         swept[table] = await this.sweepTable(store, cfg, table)
@@ -1702,7 +1607,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /** A metadata-only commit that drops expired snapshots. Returns how many. Leaves the table's expiry deadline current. */
-  private async expire(store: CountingBucket, cfg: PublisherConfig, table: Table): Promise<number> {
+  private async expire(store: CountingBucket, cfg: PublisherConfig, table: LedgerTable): Promise<number> {
     const state = this.state(table)
     if (state.version === 0) {
       this.clearDue(`expire:${table}`)
@@ -1729,12 +1634,12 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /** Sweep unreferenced metadata objects of both tables, now (the alarm does it when due). */
-  async sweep(): Promise<Record<Table, { marked: number; deleted: number }>> {
+  async sweep(): Promise<Record<LedgerTable, { marked: number; deleted: number }>> {
     this.guard()
     const out = await this.serial(async () => {
       const cfg = this.config()
       const store = new CountingBucket(this.bucket())
-      const out = {} as Record<Table, { marked: number; deleted: number }>
+      const out = {} as Record<LedgerTable, { marked: number; deleted: number }>
       for (const table of TABLE_NAMES) out[table] = await this.sweepTable(store, cfg, table)
       this.afterSweep(cfg)
       return out
@@ -1753,7 +1658,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * expired. The grace period covers both. Metadata files with a version above the current
    * one are never touched: they would be another writer's commit.
    */
-  private async sweepTable(store: CountingBucket, cfg: PublisherConfig, table: Table): Promise<{ marked: number; deleted: number }> {
+  private async sweepTable(store: CountingBucket, cfg: PublisherConfig, table: LedgerTable): Promise<{ marked: number; deleted: number }> {
     const out = { marked: 0, deleted: 0 }
     let state = this.state(table)
     if (state.version === 0) return out
@@ -1847,13 +1752,13 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * will continue from. `'snapshot'` uses the cursor object the snapshot points at, which
    * needs nothing but R2.
    */
-  async verify(table: Table, options: { cursors?: 'state' | 'snapshot'; checkObjects?: boolean } = {}): Promise<VerifyResult> {
+  async verify(table: LedgerTable, options: { cursors?: 'state' | 'snapshot'; checkObjects?: boolean } = {}): Promise<VerifyResult> {
     this.guard()
     // In the queue with publishes: a commit in progress has R2 ahead of SQLite for a moment.
     return this.serial(() => this.verifyNow(table, options))
   }
 
-  private async verifyNow(table: Table, options: { cursors?: 'state' | 'snapshot'; checkObjects?: boolean }): Promise<VerifyResult> {
+  private async verifyNow(table: LedgerTable, options: { cursors?: 'state' | 'snapshot'; checkObjects?: boolean }): Promise<VerifyResult> {
     const cfg = this.config()
     const store = new CountingBucket(this.bucket())
     const state = this.state(table)
@@ -1873,6 +1778,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
     result.metadataVersion = version
     if (version !== state.version) result.problems.push(`R2 is at v${version}, the publisher's state is at v${state.version}`)
     const iceberg = new Map<string, LiveFile>()
+    /** `spans`: each entry's `start_time_hour`. */
+    const hours = new Map<string, number | null>()
     let snapshotCursors: Record<string, Cursor> = {}
     if (version > 0) {
       const o = await store.get(this.metaKey(table, version))
@@ -1891,7 +1798,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         result.snapshotId = current['snapshot-id']
         let manifests: ManifestInfo[]
         try {
-          manifests = await this.readManifestList(store, cfg, current['manifest-list'])
+          manifests = await this.readManifestList(store, cfg, current['manifest-list'], table)
         } catch {
           result.missingObjects.push(this.keyOf(cfg, current['manifest-list']))
           return finish()
@@ -1908,6 +1815,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
             const f = liveFromEntry(e, this.keyOf(cfg, e.data_file.file_path), { snapshotId: m.addedSnapshotId, seq: m.seq })
             if (iceberg.has(f.key)) result.duplicates.push(f.key)
             iceberg.set(f.key, f)
+            if (table === 'spans') hours.set(f.key, partitionDay(e.data_file.partition).hour)
           }
         }
         const c = await store.get(this.keyOf(cfg, current.summary[CURSORS_KEY] as string))
@@ -1947,6 +1855,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
       }
       differ('tenant', f.tenant, tenant)
       differ('day', f.day, entry.day)
+      // `spans`: the partition must be hour(start_time) of its rows, which the key's hour level and the ledger's time range say.
+      if (table === 'spans') {
+        const want = spanHourProblem(entry) === null ? spanHour(entry.key, entry.day) : -1
+        differ('hour', hours.get(key) ?? -1, want)
+      }
       differ('rows', f.rows, entry.rows)
       differ('bytes', f.bytes, entry.bytes)
     }

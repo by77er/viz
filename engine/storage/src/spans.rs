@@ -40,7 +40,7 @@ pub const MAX_INDEX_SERVICES: usize = 64;
 
 const MAP: &str = "(MAP) { repeated group key_value { required binary key (UTF8); required";
 
-fn spans_schema() -> String {
+pub(crate) fn spans_schema() -> String {
     let mut s = String::from(
         "message spans {
   required fixed_len_byte_array(16) trace_id;
@@ -94,7 +94,7 @@ fn spans_schema() -> String {
     s
 }
 
-const TRACE_INDEX_SCHEMA: &str = "message trace_index {
+pub(crate) const TRACE_INDEX_SCHEMA: &str = "message trace_index {
   required fixed_len_byte_array(16) trace_id;
   required int64 min_start_unix_nano;
   required int64 max_end_unix_nano;
@@ -190,7 +190,7 @@ fn trace_index_props(opts: &SignalWriteOptions) -> std::sync::Arc<parquet::file:
 
 /// Residual attributes of one scope, split by type, and its promoted values.
 #[derive(Default)]
-struct Split<'a> {
+pub(crate) struct Split<'a> {
     promoted_str: Vec<Option<&'a str>>,
     promoted_int: Option<i64>,
     service: Option<&'a str>,
@@ -223,7 +223,7 @@ fn other_json(items: &[(&str, &str)]) -> Option<String> {
 
 /// Split one attribute list into promoted columns and residual maps. `resource`: the list
 /// is a resource's (promoted keys of `PROMOTED_RESOURCE` and `service.name`), else a span's.
-fn split<'a>(attrs: &[Attr<&'a str>], resource: bool) -> Split<'a> {
+pub(crate) fn split<'a>(attrs: &[Attr<&'a str>], resource: bool) -> Split<'a> {
     let mut out = Split { promoted_str: vec![None; if resource { PROMOTED_RESOURCE.len() } else { PROMOTED_SPAN.len() }], ..Default::default() };
     let mut other: Vec<(&str, &str)> = Vec::new();
     'next: for a in attrs {
@@ -271,17 +271,28 @@ fn split<'a>(attrs: &[Attr<&'a str>], resource: bool) -> Split<'a> {
     out
 }
 
-struct EntryInfo<'a> {
-    entry: &'a SpanEntry<&'a str>,
-    split: Split<'a>,
-    bytes: usize,
+pub(crate) struct EntryInfo<'a> {
+    pub entry: &'a SpanEntry<&'a str>,
+    pub split: Split<'a>,
+    pub bytes: usize,
+}
+
+impl<'a> EntryInfo<'a> {
+    pub(crate) fn of(entry: &'a SpanEntry<&'a str>) -> EntryInfo<'a> {
+        EntryInfo { entry, split: split(&entry.resource, true), bytes: otel::span_entry_bytes(entry) }
+    }
 }
 
 /// One row with what sorting and writing need.
-struct RowRef<'a> {
-    span: &'a Span<&'a str>,
-    info: usize,
-    hour: i64,
+pub(crate) struct RowRef<'a> {
+    pub span: &'a Span<&'a str>,
+    pub info: usize,
+    pub hour: i64,
+}
+
+/// The weight of one span row for the row-group byte cap (`contracts/TRACES.md`).
+pub(crate) fn span_weight(r: &RowRef<'_>, infos: &[EntryInfo<'_>]) -> usize {
+    96 + otel::span_var_bytes(r.span) + infos[r.info].bytes
 }
 
 /// Turn a sealed segment's span batches (in sequence order) into Parquet files: `spans`
@@ -308,7 +319,7 @@ pub fn encode_spans_with(batches: &[&[u8]], opts: &SignalWriteOptions) -> SResul
     for b in &decoded {
         base.push(infos.len());
         for e in &b.entries {
-            infos.push(EntryInfo { entry: e, split: split(&e.resource, true), bytes: otel::span_entry_bytes(e) });
+            infos.push(EntryInfo::of(e));
         }
     }
     // Later rows win: remember the last position of every (trace_id, span_id).
@@ -427,13 +438,49 @@ fn maps_and_other(splits: &[&Split<'_>]) -> Vec<Leaf> {
 }
 
 fn write_spans_file(rows: &[RowRef<'_>], infos: &[EntryInfo<'_>], hour: i64, opts: &SignalWriteOptions) -> SResult<SignalFile> {
-    let weights: Vec<usize> = rows.iter().map(|r| 96 + otel::span_var_bytes(r.span) + infos[r.info].bytes).collect();
-    let mut w = SerializedFileWriter::new(Vec::new(), schema(&spans_schema()), spans_props(opts)).map_err(perr)?;
-    let mut index = String::from("{\"v\":1,\"rg\":[");
-    let mut groups_end = 4u64;
-    let (mut min_ts, mut max_ts) = (i64::MAX, i64::MIN);
-    for (gi, (a, b)) in cut_groups(&weights, opts).into_iter().enumerate() {
-        let g = &rows[a..b];
+    let weights: Vec<usize> = rows.iter().map(|r| span_weight(r, infos)).collect();
+    let mut w = SpansFileWriter::new(hour, opts)?;
+    for (a, b) in cut_groups(&weights, opts) {
+        w.group(&rows[a..b], infos)?;
+    }
+    w.finish()
+}
+
+/// A `spans` file of one hour written one row group at a time (flush: the groups `cut_groups`
+/// makes of a segment; compaction: the groups it fills while it merges).
+pub(crate) struct SpansFileWriter {
+    w: SerializedFileWriter<Vec<u8>>,
+    index: String,
+    groups_end: u64,
+    min_ts: i64,
+    max_ts: i64,
+    rows: u64,
+    groups: usize,
+    hour: i64,
+}
+
+impl SpansFileWriter {
+    pub(crate) fn new(hour: i64, opts: &SignalWriteOptions) -> SResult<SpansFileWriter> {
+        Self::with_capacity(hour, opts, 0)
+    }
+
+    /// The output buffer pre-sized (a merge passes its inputs' size, so the buffer does not double).
+    pub(crate) fn with_capacity(hour: i64, opts: &SignalWriteOptions, capacity: usize) -> SResult<SpansFileWriter> {
+        Ok(SpansFileWriter {
+            w: SerializedFileWriter::new(Vec::with_capacity(capacity), schema(&spans_schema()), spans_props(opts)).map_err(perr)?,
+            index: String::from("{\"v\":1,\"rg\":["),
+            groups_end: 4,
+            min_ts: i64::MAX,
+            max_ts: i64::MIN,
+            rows: 0,
+            groups: 0,
+            hour,
+        })
+    }
+
+    /// Write one row group (non-empty, rows in the file's order, all of this file's hour).
+    pub(crate) fn group(&mut self, g: &[RowRef<'_>], infos: &[EntryInfo<'_>]) -> SResult<()> {
+        let gi = self.groups;
         let span_splits: Vec<Split<'_>> = g.iter().map(|r| split(&r.span.attrs, false)).collect();
         let info = |r: &RowRef<'_>| &infos[r.info];
         let mut leaves = vec![
@@ -488,38 +535,49 @@ fn write_spans_file(rows: &[RowRef<'_>], infos: &[EntryInfo<'_>], hour: i64, opt
         for k in 0..3 {
             leaves.push(opt_i32(g.iter().map(|r| (r.span.dropped[k] != 0).then_some(r.span.dropped[k] as i32))));
         }
-        let (off, len) = write_group(&mut w, leaves)?;
-        groups_end = off + len;
+        let (off, len) = write_group(&mut self.w, leaves)?;
+        self.groups_end = off + len;
 
         let gmin = g.iter().map(|r| r.span.start).min().unwrap();
         let gmax = g.iter().map(|r| r.span.start).max().unwrap();
         let dmin = g.iter().map(|r| r.span.end - r.span.start).min().unwrap();
         let dmax = g.iter().map(|r| r.span.end - r.span.start).max().unwrap();
-        min_ts = min_ts.min(gmin);
-        max_ts = max_ts.max(gmax);
+        self.min_ts = self.min_ts.min(gmin);
+        self.max_ts = self.max_ts.max(gmax);
+        self.rows += g.len() as u64;
         if gi > 0 {
-            index.push(',');
+            self.index.push(',');
         }
-        index.push_str(&format!("{{\"rows\":{},\"off\":{off},\"len\":{len},\"min_name\":", g.len()));
-        json_str(&mut index, info(&g[0]).split.service.unwrap_or(""));
-        index.push_str(",\"max_name\":");
-        json_str(&mut index, info(&g[g.len() - 1]).split.service.unwrap_or(""));
-        index.push_str(&format!(",\"min_ts\":{gmin},\"max_ts\":{gmax},\"min_dur\":{dmin},\"max_dur\":{dmax}}}"));
+        self.index.push_str(&format!("{{\"rows\":{},\"off\":{off},\"len\":{len},\"min_name\":", g.len()));
+        json_str(&mut self.index, info(&g[0]).split.service.unwrap_or(""));
+        self.index.push_str(",\"max_name\":");
+        json_str(&mut self.index, info(&g[g.len() - 1]).split.service.unwrap_or(""));
+        self.index.push_str(&format!(",\"min_ts\":{gmin},\"max_ts\":{gmax},\"min_dur\":{dmin},\"max_dur\":{dmax}}}"));
+        self.groups += 1;
+        Ok(())
     }
-    w.finish().map_err(perr)?;
-    let bytes = std::mem::take(w.inner_mut());
-    let (fo, fl) = foot(groups_end, bytes.len());
-    index.push_str(&format!("],\"foot\":[{fo},{fl}]}}"));
-    Ok(SignalFile {
-        table: SignalTable::Spans,
-        day: crate::day::format_day(hour.div_euclid(24)),
-        hour: Some(hour.rem_euclid(24) as u8),
-        bytes,
-        rows: rows.len() as u64,
-        min_ts,
-        max_ts,
-        index,
-    })
+
+    pub(crate) fn finish(mut self) -> SResult<SignalFile> {
+        if self.groups == 0 {
+            return Err(SignalError::Parquet("a spans file needs at least one row".into()));
+        }
+        self.w.finish().map_err(perr)?;
+        let bytes = std::mem::take(self.w.inner_mut());
+        let (fo, fl) = foot(self.groups_end, bytes.len());
+        let mut index = self.index;
+        index.push_str(&format!("],\"foot\":[{fo},{fl}]}}"));
+        let hour = self.hour;
+        Ok(SignalFile {
+            table: SignalTable::Spans,
+            day: crate::day::format_day(hour.div_euclid(24)),
+            hour: Some(hour.rem_euclid(24) as u8),
+            bytes,
+            rows: self.rows,
+            min_ts: self.min_ts,
+            max_ts: self.max_ts,
+            index,
+        })
+    }
 }
 
 /// One `trace_index` row: a trace's spans in this unit.
@@ -622,17 +680,53 @@ fn write_trace_index(rows: &[RowRef<'_>], infos: &[EntryInfo<'_>], opts: &Signal
     Ok(out)
 }
 
+/// The weight of one `trace_index` row for the row-group byte cap.
+pub(crate) fn fragment_weight(f: &Fragment) -> usize {
+    64 + f.root.as_ref().map_or(0, |r| r.0.as_ref().map_or(0, String::len) + r.1.len()) + f.services.iter().map(|s| s.0.len() + 8).sum::<usize>()
+}
+
 fn write_index_file(frags: &[Fragment], day: i64, opts: &SignalWriteOptions) -> SResult<SignalFile> {
-    let weights: Vec<usize> = frags
-        .iter()
-        .map(|f| 64 + f.root.as_ref().map_or(0, |r| r.0.as_ref().map_or(0, String::len) + r.1.len()) + f.services.iter().map(|s| s.0.len() + 8).sum::<usize>())
-        .collect();
-    let mut w = SerializedFileWriter::new(Vec::new(), schema(TRACE_INDEX_SCHEMA), trace_index_props(opts)).map_err(perr)?;
-    let mut index = String::from("{\"v\":1,\"rg\":[");
-    let mut groups_end = 4u64;
-    let (mut min_ts, mut max_ts) = (i64::MAX, i64::MIN);
-    for (gi, (a, b)) in cut_groups(&weights, opts).into_iter().enumerate() {
-        let g = &frags[a..b];
+    let weights: Vec<usize> = frags.iter().map(fragment_weight).collect();
+    let mut w = IndexFileWriter::new(day, opts)?;
+    for (a, b) in cut_groups(&weights, opts) {
+        w.group(&frags[a..b])?;
+    }
+    w.finish()
+}
+
+/// A `trace_index` file of one day written one row group at a time.
+pub(crate) struct IndexFileWriter {
+    w: SerializedFileWriter<Vec<u8>>,
+    index: String,
+    groups_end: u64,
+    min_ts: i64,
+    max_ts: i64,
+    rows: u64,
+    groups: usize,
+    day: i64,
+}
+
+impl IndexFileWriter {
+    pub(crate) fn new(day: i64, opts: &SignalWriteOptions) -> SResult<IndexFileWriter> {
+        Self::with_capacity(day, opts, 0)
+    }
+
+    pub(crate) fn with_capacity(day: i64, opts: &SignalWriteOptions, capacity: usize) -> SResult<IndexFileWriter> {
+        Ok(IndexFileWriter {
+            w: SerializedFileWriter::new(Vec::with_capacity(capacity), schema(TRACE_INDEX_SCHEMA), trace_index_props(opts)).map_err(perr)?,
+            index: String::from("{\"v\":1,\"rg\":["),
+            groups_end: 4,
+            min_ts: i64::MAX,
+            max_ts: i64::MIN,
+            rows: 0,
+            groups: 0,
+            day,
+        })
+    }
+
+    /// Write one row group (non-empty, fragments in trace id order).
+    pub(crate) fn group(&mut self, g: &[Fragment]) -> SResult<()> {
+        let gi = self.groups;
         let svc = Levels::repeated(g.iter().map(|f| Some(f.services.len())), false);
         let hrs = Levels::repeated(g.iter().map(|f| Some(f.hours.len())), false);
         let leaves = vec![
@@ -657,27 +751,37 @@ fn write_index_file(frags: &[Fragment], day: i64, opts: &SignalWriteOptions) -> 
             Leaf::Bool(g.iter().map(|f| f.services_truncated).collect(), Levels::none()),
             Leaf::I32(g.iter().flat_map(|f| f.hours.iter().copied()).collect(), hrs),
         ];
-        let (off, len) = write_group(&mut w, leaves)?;
-        groups_end = off + len;
+        let (off, len) = write_group(&mut self.w, leaves)?;
+        self.groups_end = off + len;
         let gmin = g.iter().map(|f| f.min_start).min().unwrap();
         let gmax = g.iter().map(|f| f.max_end).max().unwrap();
-        min_ts = min_ts.min(gmin);
-        max_ts = max_ts.max(gmax);
+        self.min_ts = self.min_ts.min(gmin);
+        self.max_ts = self.max_ts.max(gmax);
+        self.rows += g.len() as u64;
         if gi > 0 {
-            index.push(',');
+            self.index.push(',');
         }
-        index.push_str(&format!(
+        self.index.push_str(&format!(
             "{{\"rows\":{},\"off\":{off},\"len\":{len},\"min_tid\":\"{}\",\"max_tid\":\"{}\",\"min_ts\":{gmin},\"max_ts\":{gmax}}}",
             g.len(),
             hex(&g[0].trace_id),
             hex(&g[g.len() - 1].trace_id)
         ));
+        self.groups += 1;
+        Ok(())
     }
-    w.finish().map_err(perr)?;
-    let bytes = std::mem::take(w.inner_mut());
-    let (fo, fl) = foot(groups_end, bytes.len());
-    index.push_str(&format!("],\"foot\":[{fo},{fl}]}}"));
-    Ok(SignalFile { table: SignalTable::TraceIndex, day: crate::day::format_day(day), hour: None, bytes, rows: frags.len() as u64, min_ts, max_ts, index })
+
+    pub(crate) fn finish(mut self) -> SResult<SignalFile> {
+        if self.groups == 0 {
+            return Err(SignalError::Parquet("a trace_index file needs at least one row".into()));
+        }
+        self.w.finish().map_err(perr)?;
+        let bytes = std::mem::take(self.w.inner_mut());
+        let (fo, fl) = foot(self.groups_end, bytes.len());
+        let mut index = self.index;
+        index.push_str(&format!("],\"foot\":[{fo},{fl}]}}"));
+        Ok(SignalFile { table: SignalTable::TraceIndex, day: crate::day::format_day(self.day), hour: None, bytes, rows: self.rows, min_ts: self.min_ts, max_ts: self.max_ts, index })
+    }
 }
 
 /// Merge `trace_index` fragments of one trace (`contracts/TRACES.md`, "Merging

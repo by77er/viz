@@ -9,7 +9,7 @@
 //   Z1-Z8   v7's fixes, each removed or overridden
 //   W1-W10, W17, W23, W24  the v7 review's 13 (reviews/system-v7/review.md, M3): overrides limited to one context (a pointer, a theme, a
 //           mouse, a clipping parent, reduced motion with a coarse pointer), lint bypasses, picked members of Other, tokens redefined locally
-//   U1-U11  v8's fixes, each removed or overridden, and the review's W23 and W24 written where only the rendered checks can see them (U1)
+//   U1-U15  v8's fixes, each removed or overridden, and the review's W23 and W24 written where only the rendered checks can see them (U1)
 //   C1-C15  the Chart rules (tools/test/chart-rules.test.mjs must fail)
 //   A1-A4   the rendered page audit (tools/audit.mjs must fail)
 //   H1-H4   harmless edits (everything must pass)
@@ -72,7 +72,8 @@ export const corpus = [
   { id: 'X12', what: 'an off-scale calc(var(--space-1) * 1.5)', edit: append('.vz-stack { gap: calc(var(--space-1) * 1.5); }'), all: [/number.*1\.5/] },
   { id: 'X13', what: 'filter: opacity(0.5) and filter: brightness(0.9)', edit: append('.vz-button:disabled { filter: opacity(0.5); }\n.vz-menu { filter: brightness(0.9); }'), all: [/filter: opacity/, /filter: brightness/] },
   { id: 'X14', what: 'linear and ease-in-out', edit: append('.vz-button { transition: background-color var(--duration-fast) linear; }\n.vz-input { transition: border-color var(--duration-fast) ease-in-out; }'), all: [/easing.*linear/, /easing.*ease-in-out/] },
-  { id: 'X15', what: 'a press that eases', edit: css('.vz-button:active, .vz-button[data-pressed] { transition-duration: 0s; background: var(--pressed); }', '.vz-button:active, .vz-button[data-pressed] { background: var(--pressed); }'), all: [/press would ease/] },
+  // X15 under v8: no colour is eased any more, so a press can ease only if a transition comes back; the mutant puts one back and drops the press's 0s
+  { id: 'X15', what: 'a press that eases', edit: { file: 'src/components.css', edit: (t) => css('.vz-button:active, .vz-button[data-pressed] { transition-duration: 0s; background: var(--pressed); }', '.vz-button:active, .vz-button[data-pressed] { background: var(--pressed); }').edit(t) + '\n.vz-button { transition: background-color var(--duration-fast) var(--ease); }\n' }, all: [/press would ease/, /no colour is eased/] },
   { id: 'X16', what: 'selection in blue', edit: append('.vz-segmented button[aria-pressed="true"] { background: var(--blue); color: var(--on-blue); }'), all: [/action colour/] },
   { id: 'X17', what: 'a series colour on a panel rule', edit: append('.vz-panel { border-top-color: var(--series-1); }'), all: [/series colour belongs/] },
   { id: 'X18', what: 'the reduced-motion block removed', edit: cut('@media (prefers-reduced-motion: reduce)', '\n'), all: [/reduced-motion/] },
@@ -167,6 +168,10 @@ export const corpus = [
   { id: 'U9', what: "strong words at the browser's 700 again", run: 'audit', edit: css('.vz b, .vz strong { font-weight: var(--text-ui-strong-weight); }', ''), args: ['dist/preview/Section.html'] /* a claim's strong words have their own rule */, all: [/font-weight: 700/] },
   { id: 'U10', what: "a stacked folded row's key line ending at the line \"Actions…\" is on: its hit area takes the key's last words", run: 'audit', edit: css('.vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) tbody td[data-key] { padding-bottom: calc((var(--control-touch) - var(--control-sm)) / 2); }', ''), args: ['reviews/system-v8/compositions/folded-list.html'], all: [/hit-area.*part of what it draws/] },
   { id: 'U11', what: '"Other" in the legend allowed to shrink: cut beside a wide range at 320 px', run: 'audit', edit: css('.vz-table.vz-legend-table tr[data-key="other"] .vz-series-name { flex: none; }', ''), args: ['dist/reference.html'], all: [/cut.*"Other"/] },
+  { id: 'U12', what: 'charts restyled off screen again: content-visibility removed from .vz-chart (the theme change restyles every chart)', edit: css('.vz-chart { content-visibility: auto; contain-intrinsic-size: auto none; overflow-clip-margin: var(--space-3); }', ''), all: [/content-visibility: auto/] },
+  { id: 'U13', what: "a chart's clip margin removed: rings and small controls' hit areas at its edges cut by its paint containment", run: 'audit', edit: css('overflow-clip-margin: var(--space-3); }', '}'), args: ['dist/preview/Chart.html'], all: [/ring is cut by .*paint containment/] },
+  { id: 'U14', what: 'the press script marking every ancestor again (body included: every table cell restyled on each press and release)', run: 'audit', edit: { file: 'src/press.js', edit: (t) => { const a = "if (x === el || x.matches(PRESSABLE)) { x.setAttribute"; if (!t.includes(a)) throw new Error('mutant does not apply: ' + a); return t.replace(a, '{ x.setAttribute') } }, args: ['dist/preview/Button.html'], all: [/marks body/] },
+  { id: 'U15', what: 'a hover that eases a colour again (a change of theme would then start a transition on every control)', edit: append('.vz-segmented button:hover { transition: background-color var(--duration-fast) var(--ease); }'), all: [/no colour is eased/] },
   // ---- the Chart rules: tools/test/chart-rules.test.mjs must fail ----
   // C1 was v5's order (the filter applied before colours are assigned); under v8 a hidden series and one not in the result are the same to
   // the colours, so that order gives the same colours and the mutant became equivalent. C1 now forgets a series' slot when it leaves the screen.

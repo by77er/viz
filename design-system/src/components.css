@@ -310,8 +310,9 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-chart[data-size="sm"] { --chart-plot: var(--plot-sm); }
 /* Off screen, a chart is neither styled nor laid out nor painted until it comes near the viewport (v8: a change of theme restyles what
    is on screen, not every chart on the page). It keeps its reserved height (min-height, below) while skipped, and the size it last had
-   once drawn. Its paint is clipped at its box plus the reach of a ring and of a small control's 44 px hit area, so neither is cut. */
-.vz-chart { content-visibility: auto; contain-intrinsic-size: auto none; overflow-clip-margin: calc((var(--control-touch) - var(--control-sm)) / 2); }
+   once drawn. Its paint is clipped at its box plus space-3, more than the reach of a ring (2 strokes) and of a small control's 44 px hit area
+   (10 px), so neither is cut (overflow-clip-margin takes no calc() in Chromium). */
+.vz-chart { content-visibility: auto; contain-intrinsic-size: auto none; overflow-clip-margin: var(--space-3); }
 /* A chart reserves its whole height before its data arrives, including on first load: the plot, strip, foot and legend head always, and
    the rows and note lines it knows from its last result (--legend-rows: coloured series, plus Other and the legend's action row when there
    is an Other; --legend-notes: shared labels, and Other's sentence), set inline or from a stylesheet. Without them it reserves its fixed parts. */

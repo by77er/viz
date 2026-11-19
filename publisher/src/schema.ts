@@ -104,6 +104,16 @@ export const FORMATS = {
   'iceberg.metadata': 1,
   /** The Avro schemas of manifests and manifest lists (Iceberg v2, with their field ids). */
   'iceberg.manifest': 1,
+  /**
+   * The same conventions for the span and log tables (`SIGNAL_DEFS`, design/DECISIONS.md D65): their
+   * `metadata.json` when new (schemas with nested types and every nested field id, partition specs,
+   * `hour(start_time)` for `spans`, sort orders, nested name mapping, properties; `viz.format-version`
+   * 1, as the metric tables). Added beside `iceberg.metadata`, which keeps pinning the metric
+   * tables byte for byte.
+   */
+  'iceberg.signal-metadata': 1,
+  /** The Avro schema of a `spans` manifest (partition `{tenant, start_time_hour}`); `trace_index` and `logs` manifests use `iceberg.manifest`'s. */
+  'iceberg.signal-manifest': 1,
   /** `cursors-<snapshot>-<tag>.json`: `{ v, table, cell, snapshotId, cursors }` (absent `v` = 1). */
   'r2.cursors': 1,
   /** The ledger change log as the publisher READS it (`LedgerChange`, absent `v` = 1, the known kinds). */

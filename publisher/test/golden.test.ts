@@ -8,7 +8,19 @@
  */
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { emptyMetadata, MANIFEST_ENTRY_SCHEMA, MANIFEST_LIST_SCHEMA, TABLE_DEFS, TABLE_NAMES } from '../src/iceberg'
+import {
+  emptyMetadata,
+  flattenFields,
+  icebergSchema,
+  MANIFEST_ENTRY_SCHEMA,
+  MANIFEST_LIST_SCHEMA,
+  manifestEntrySchema,
+  METRIC_TABLE_NAMES,
+  SIGNAL_TABLE_NAMES,
+  SPANS_MANIFEST_ENTRY_SCHEMA,
+  TABLE_NAMES,
+  type SchemaField,
+} from '../src/iceberg'
 import { FORMATS } from '../src/schema'
 import { expectGolden, goldenDir } from './golden'
 import { addUnit, fresh, keyOf, ledgerVersion, mirror, pairUnit, publisher, readMetadata, segmentsOf } from './helpers'
@@ -29,25 +41,30 @@ describe('golden formats', () => {
     }
   })
 
-  it('iceberg.metadata: a new table\'s metadata.json, for both tables', () => {
-    const tables = Object.fromEntries(TABLE_NAMES.map((t) => [t, emptyMetadata(t, `s3://viz-lake/cell-0/iceberg/${t}`, 'cell-0', UUID, NOW)]))
+  it('iceberg.metadata: a new table\'s metadata.json, for both metric tables', () => {
+    const tables = Object.fromEntries(METRIC_TABLE_NAMES.map((t) => [t, emptyMetadata(t, `s3://viz-lake/cell-0/iceberg/${t}`, 'cell-0', UUID, NOW)]))
     expectGolden(file('iceberg.metadata'), { format: 'iceberg.metadata', version: FORMATS['iceberg.metadata'], tables })
   })
 
-  it('field ids: in every golden version, a column keeps its id and an id names one column', () => {
+  it('iceberg.signal-metadata: a new table\'s metadata.json, for the span and log tables', () => {
+    const tables = Object.fromEntries(SIGNAL_TABLE_NAMES.map((t) => [t, emptyMetadata(t, `s3://viz-lake/cell-0/iceberg/${t}`, 'cell-0', UUID, NOW)]))
+    expectGolden(file('iceberg.signal-metadata'), { format: 'iceberg.signal-metadata', version: FORMATS['iceberg.signal-metadata'], tables })
+  })
+
+  it('field ids: in every golden version, a column (nested ones included) keeps its id and an id names one column', () => {
     const ids = new Map<string, Map<number, string>>()
-    const versions = Object.values(goldenDir('formats')).filter((g) => (g as { format: string }).format === 'iceberg.metadata') as { tables: Record<string, { schemas: { fields: { id: number; name: string }[] }[] }> }[]
+    const versions = Object.values(goldenDir('formats')).filter((g) => ['iceberg.metadata', 'iceberg.signal-metadata'].includes((g as { format: string }).format)) as { tables: Record<string, { schemas: { fields: SchemaField[] }[] }> }[]
     // The code's current ids count as one more version.
-    const current = Object.fromEntries(TABLE_NAMES.map((t) => [t, { schemas: [{ fields: [...TABLE_DEFS[t].data, TABLE_DEFS[t].tenant, TABLE_DEFS[t].day] }] }]))
+    const current = Object.fromEntries(TABLE_NAMES.map((t) => [t, { schemas: [icebergSchema(t) as { fields: SchemaField[] }] }]))
     for (const v of [...versions.map((g) => g.tables), current]) {
       for (const [table, meta] of Object.entries(v)) {
         const byId = ids.get(table) ?? new Map<number, string>()
         ids.set(table, byId)
         for (const s of meta.schemas) {
-          for (const f of s.fields) {
-            const was = byId.get(f.id)
-            expect(was === undefined || was === f.name, `${table}: field id ${f.id} named both ${was} and ${f.name}`).toBe(true)
-            byId.set(f.id, f.name)
+          for (const [id, name] of flattenFields(s.fields)) {
+            const was = byId.get(id)
+            expect(was === undefined || was === name, `${table}: field id ${id} named both ${was} and ${name}`).toBe(true)
+            byId.set(id, name)
           }
         }
         const names = [...byId.values()]
@@ -58,6 +75,11 @@ describe('golden formats', () => {
 
   it('iceberg.manifest: the Avro schemas of manifests and manifest lists', () => {
     expectGolden(file('iceberg.manifest'), { format: 'iceberg.manifest', version: FORMATS['iceberg.manifest'], entry: MANIFEST_ENTRY_SCHEMA, list: MANIFEST_LIST_SCHEMA })
+  })
+
+  it('iceberg.signal-manifest: the Avro schema of a spans manifest; trace_index and logs use the metric tables\' one', () => {
+    expectGolden(file('iceberg.signal-manifest'), { format: 'iceberg.signal-manifest', version: FORMATS['iceberg.signal-manifest'], spans: SPANS_MANIFEST_ENTRY_SCHEMA })
+    for (const t of TABLE_NAMES) expect(manifestEntrySchema(t), t).toBe(t === 'spans' ? SPANS_MANIFEST_ENTRY_SCHEMA : MANIFEST_ENTRY_SCHEMA)
   })
 
   it('r2.cursors and read.ledger-change: the cursors object a commit writes, and the change the ledger logs', async () => {

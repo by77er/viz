@@ -217,9 +217,15 @@ describe('review S-6: leftovers that only the ledger or a shard can change stop 
     }
     // A leftover a crashed flush could have written: the next range of a stream the ledger
     // knows, above its logged watermark, so the sweep must keep it (`pending_unit`).
-    const s0 = sim.shards[0]!
+    // Which of the pool's shards hold a stream of the tenant is decided by rendezvous hashing of
+    // the tenant's name, which the sim builds from the clock: about one name in sixteen sends none
+    // of these four series to the pool's first shard. So the stream is one the ledger has logged,
+    // never an assumed shard (that assumption failed this test intermittently).
+    const streams = (await ledgerStub(t!.name).loggedWatermarks()).filter((w) => sim.shards.includes(w.shard))
+    expect(streams.length).toBeGreaterThan(0)
+    const s0 = streams[0]!.shard
     const inc = (await shard(s0).describe(t!.name))!.incarnation
-    const logged = (await ledgerStub(t!.name).loggedWatermarks()).find((w) => w.shard === s0)!.seq
+    const logged = streams[0]!.seq
     const day = new Date().toISOString().slice(0, 10)
     const leftover = `${env.CELL}/data/metric_samples/tenant=${t!.name}/day=${day}/L0-${s0.replaceAll('/', '_')}-${inc}-${logged + 1}-${logged + 1}-deadbeef.parquet`
     await env.BUCKET.put(leftover, 'not admitted')

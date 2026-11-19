@@ -92,6 +92,14 @@
    "budget": 100
   },
   {
+   "name": "Change theme: transitions still running when it is drawn",
+   "type": "transitions",
+   "selector": "#theme [data-theme-choice=\"dark\"]",
+   "expect": "html[data-theme=\"dark\"]",
+   "undo": "#theme [data-theme-choice=\"\"]",
+   "budget": 0
+  },
+  {
    "name": "Run a query: request sent and waiting state shown",
    "type": "send",
    "selector": "#run",

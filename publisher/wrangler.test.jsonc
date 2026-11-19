@@ -16,10 +16,13 @@
       { "name": "LEDGER_BEFORE", "class_name": "LedgerBefore" },
       // The publisher release before it read the span and log tables (test/n1/, frozen at 9292abb):
       // release N-1 beside this one, for the rollout rule of design/DECISIONS.md D64.
-      { "name": "PUBLISHER_N1", "class_name": "TestPublisherN1" }
+      { "name": "PUBLISHER_N1", "class_name": "TestPublisherN1" },
+      // The D64 release (test/d64/, frozen at bcfe8db): reads the span and log tables and does not
+      // publish them. Release N-1 of this one, which publishes them (design/DECISIONS.md D65).
+      { "name": "PUBLISHER_D64", "class_name": "TestPublisherD64" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestPublisher", "Ledger", "LedgerAsBuilt"] }, { "tag": "v2", "new_sqlite_classes": ["LedgerBefore"] }, { "tag": "v3", "new_sqlite_classes": ["TestPublisherN1"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestPublisher", "Ledger", "LedgerAsBuilt"] }, { "tag": "v2", "new_sqlite_classes": ["LedgerBefore"] }, { "tag": "v3", "new_sqlite_classes": ["TestPublisherN1"] }, { "tag": "v4", "new_sqlite_classes": ["TestPublisherD64"] }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
   "vars": { "CELL": "cell-0", "ICEBERG_LOCATION_PREFIX": "s3://viz-lake" }
 }

@@ -374,6 +374,10 @@ function tokenTrace({ css, names }) {
     if (v === w) say(p + v, `${p}: ${v} on ${name(e)} does not come from a token`) } })
   return out
 }
+// What content-visibility: auto skips off screen is drawn as it is on screen: the audit scrolls a control to the middle and hit-tests it
+// in the same task, before the browser could render what came into view, so every such element is laid out now, keeping the containment
+// (layout, style, paint) and the clip margin it has on screen (v8: charts are content-visibility: auto)
+function onScreen() { for (const e of document.querySelectorAll('*')) if (getComputedStyle(e).contentVisibility === 'auto') { e.style.setProperty('content-visibility', 'visible', 'important'); e.style.setProperty('contain', 'layout style paint', 'important') } }
 // moved tokens, for tokenTrace: colours inverted, px, ch and ms doubled, weights one step heavier, curves bent
 function perturbedCss(tokenCss, t) {
   const inv = (x) => String(x).replace(/#([0-9a-f]{6})\b/gi, (_, h) => '#' + [0, 2, 4].map((i) => (255 - parseInt(h.slice(i, i + 2), 16)).toString(16).padStart(2, '0')).join('')).replace(/#([0-9a-f]{3})\b/gi, (_, h) => '#' + [...h].map((c) => (15 - parseInt(c, 16)).toString(16).repeat(2)).join('')).replace(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/g, (_, r, g, b) => `rgba(${255 - r}, ${255 - g}, ${255 - b}`)
@@ -451,7 +455,7 @@ for (const c of configs) {
   page.on('pageerror', (e) => errors.push(e.message))
   for (const p of pages) {
     errors = []
-    try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => document.fonts.ready); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
+    try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => document.fonts.ready); await page.evaluate(onScreen); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
     const found = await page.evaluate(audit, { coarse: !!c.coarse, words: true })
     const fine = c.w === 1500 && !c.zoom && !c.coarse, touch = c.w === 400 && !!c.coarse
     if (fine || c.coarse) for (const theme of ['light', 'dark']) { // every guard in both themes, at both pointers (v7 review, M3)
@@ -474,7 +478,7 @@ for (const c of configs) {
 }
 for (const rm of [{ w: 1500 }, { w: 400, coarse: true }]) { // reduced motion: one more pass at each pointer, in both themes
   const ctx = await browser.newContext({ viewport: { width: rm.w, height: 900 }, reducedMotion: 'reduce', ...(rm.coarse ? { hasTouch: true, isMobile: true } : {}) }), page = await ctx.newPage()
-  for (const p of pages) { try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0) } catch { continue }
+  for (const p of pages) { try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(onScreen) } catch { continue }
     for (const theme of ['light', 'dark']) { await page.evaluate((th) => { document.documentElement.dataset.theme = th }, theme)
       for (const [kind, msg] of await page.evaluate(stillness)) results.push({ page: p, config: `${rm.w}${rm.coarse ? ' coarse' : ''} reduced motion`, kind, msg: `${theme}: ${msg}` }) } }
   await ctx.close() }

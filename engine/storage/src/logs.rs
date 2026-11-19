@@ -141,7 +141,7 @@ pub(crate) fn log_weight(row: &LogRow<&str>, label_bytes: usize) -> usize {
 
 fn write_logs_file(rows: &[RowRef<'_>], streams: &[StreamInfo<'_>], opts: &SignalWriteOptions) -> SResult<SignalFile> {
     let weights: Vec<usize> = rows.iter().map(|r| log_weight(r.row, streams[r.stream].label_bytes)).collect();
-    let mut w = LogsFileWriter::new(opts, false)?;
+    let mut w = LogsFileWriter::new(opts)?;
     for (a, b) in cut_groups(&weights, opts) {
         w.group(&rows[a..b], streams)?;
     }
@@ -167,9 +167,15 @@ pub(crate) struct LogsFileWriter {
 }
 
 impl LogsFileWriter {
-    pub(crate) fn new(opts: &SignalWriteOptions, token_filter: bool) -> SResult<LogsFileWriter> {
+    pub(crate) fn new(opts: &SignalWriteOptions) -> SResult<LogsFileWriter> {
+        Self::with_capacity(opts, None, 0)
+    }
+
+    /// The output buffer pre-sized (a merge passes its inputs' size, so the buffer does not double).
+    /// `token_filter`: write the filter, unless the file has more distinct tokens than this.
+    pub(crate) fn with_capacity(opts: &SignalWriteOptions, token_filter: Option<usize>, capacity: usize) -> SResult<LogsFileWriter> {
         Ok(LogsFileWriter {
-            w: SerializedFileWriter::new(Vec::new(), schema(LOGS_SCHEMA), logs_props(opts)).map_err(perr)?,
+            w: SerializedFileWriter::new(Vec::with_capacity(capacity), schema(LOGS_SCHEMA), logs_props(opts)).map_err(perr)?,
             index: String::from("{\"v\":1,\"rg\":["),
             groups_end: 4,
             min_ts: i64::MAX,
@@ -178,12 +184,8 @@ impl LogsFileWriter {
             groups: 0,
             first_ts: None,
             file_streams: Vec::new(),
-            tokens: token_filter.then(TokenFilterBuilder::new),
+            tokens: token_filter.map(TokenFilterBuilder::with_max_tokens),
         })
-    }
-
-    pub(crate) fn rows(&self) -> u64 {
-        self.rows
     }
 
     /// Write one row group (non-empty, rows in the file's order).

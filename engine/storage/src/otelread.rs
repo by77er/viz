@@ -68,13 +68,24 @@ fn rows(bytes: &[u8], table: &str, leaves: usize) -> SResult<Vec<Row>> {
     rows_of(bytes, table, leaves, None)
 }
 
-/// Rows of the whole file, or of the row groups `groups` (in the order given).
-fn rows_of(bytes: &[u8], table: &str, leaves: usize, groups: Option<&[usize]>) -> SResult<Vec<Row>> {
-    let r = SerializedFileReader::new(Bytes::copy_from_slice(bytes)).map_err(perr)?;
+/// Leaf columns of each table's schema.
+pub(crate) const SPANS_LEAVES: usize = 57;
+pub(crate) const TRACE_INDEX_LEAVES: usize = 14;
+pub(crate) const LOGS_LEAVES: usize = 13;
+
+/// A reader over a file of `table`, checked to have that table's schema.
+pub(crate) fn open(bytes: Bytes, table: &str, leaves: usize) -> SResult<SerializedFileReader<Bytes>> {
+    let r = SerializedFileReader::new(bytes).map_err(perr)?;
     let d = r.metadata().file_metadata().schema_descr();
     if d.root_schema().name() != table || d.num_columns() != leaves {
         return bad(format!("not a {table} file: schema {} with {} columns", d.root_schema().name(), d.num_columns()));
     }
+    Ok(r)
+}
+
+/// Rows of the whole file, or of the row groups `groups` (in the order given).
+fn rows_of(bytes: &[u8], table: &str, leaves: usize, groups: Option<&[usize]>) -> SResult<Vec<Row>> {
+    let r = open(Bytes::copy_from_slice(bytes), table, leaves)?;
     match groups {
         None => r.get_row_iter(None).map_err(perr)?.map(|x| x.map_err(perr)).collect(),
         Some(gs) => {
@@ -304,136 +315,139 @@ fn logical(row: &Row, scope: &str, promoted: &[(&str, &str)], what: &str) -> SRe
 
 /// Read every row of a `spans` file, in file order.
 pub fn read_spans(bytes: &[u8]) -> SResult<Vec<SpanRecord>> {
-    let leaves = 57;
+    rows(bytes, "spans", SPANS_LEAVES)?.iter().map(span_record).collect()
+}
+
+/// One `spans` row in its logical view.
+pub(crate) fn span_record(r: &Row) -> SResult<SpanRecord> {
     let mut promoted_res: Vec<(&str, &str)> = vec![("service_name", SERVICE_NAME_KEY)];
     promoted_res.extend(PROMOTED_RESOURCE.iter().copied());
     let promoted_span: Vec<(&str, &str)> = PROMOTED_SPAN.iter().map(|(c, k, _)| (*c, *k)).collect();
-    rows(bytes, "spans", leaves)?
+    let events = list(get(r, "events")?, "events")?
         .iter()
-        .map(|r| {
-            let events = list(get(r, "events")?, "events")?
-                .iter()
-                .map(|e| {
-                    let g = group(e, "event")?;
-                    Ok(Event { time_unix_nano: l(get(g, "time_unix_nano")?, "event time")?, name: s(get(g, "name")?, "event name")?, attrs: s(get(g, "attrs")?, "event attrs")? })
-                })
-                .collect::<SResult<Vec<_>>>()?;
-            let links = list(get(r, "links")?, "links")?
-                .iter()
-                .map(|e| {
-                    let g = group(e, "link")?;
-                    Ok(Link {
-                        trace_id: fixed::<16>(get(g, "trace_id")?, "link trace_id")?,
-                        span_id: fixed::<8>(get(g, "span_id")?, "link span_id")?,
-                        trace_state: s(get(g, "trace_state")?, "link trace_state")?,
-                        attrs: s(get(g, "attrs")?, "link attrs")?,
-                    })
-                })
-                .collect::<SResult<Vec<_>>>()?;
-            Ok(SpanRecord {
-                trace_id: fixed::<16>(get(r, "trace_id")?, "trace_id")?,
-                span_id: fixed::<8>(get(r, "span_id")?, "span_id")?,
-                parent_span_id: ofixed::<8>(get(r, "parent_span_id")?, "parent_span_id")?,
-                trace_state: os(get(r, "trace_state")?, "trace_state")?,
-                flags: oi(get(r, "flags")?, "flags")?,
-                start_unix_nano: l(get(r, "start_unix_nano")?, "start")?,
-                end_unix_nano: l(get(r, "end_unix_nano")?, "end")?,
-                duration_nano: l(get(r, "duration_nano")?, "duration")?,
-                start_time_us: l(get(r, "start_time")?, "start_time")?,
-                service_name: os(get(r, "service_name")?, "service_name")?,
-                span_name: s(get(r, "span_name")?, "span_name")?,
-                span_kind: i(get(r, "span_kind")?, "span_kind")?,
-                status_code: i(get(r, "status_code")?, "status_code")?,
-                status_message: os(get(r, "status_message")?, "status_message")?,
-                scope_name: os(get(r, "scope_name")?, "scope_name")?,
-                scope_version: os(get(r, "scope_version")?, "scope_version")?,
-                resource_fp: l(get(r, "resource_fp")?, "resource_fp")?,
-                resource: logical(r, "resource", &promoted_res, "resource attributes")?,
-                attrs: logical(r, "span", &promoted_span, "span attributes")?,
-                scope_attrs: os(get(r, "scope_attrs")?, "scope_attrs")?,
-                events,
-                links,
-                dropped: [
-                    oi(get(r, "dropped_attributes_count")?, "dropped")?,
-                    oi(get(r, "dropped_events_count")?, "dropped")?,
-                    oi(get(r, "dropped_links_count")?, "dropped")?,
-                ],
+        .map(|e| {
+            let g = group(e, "event")?;
+            Ok(Event { time_unix_nano: l(get(g, "time_unix_nano")?, "event time")?, name: s(get(g, "name")?, "event name")?, attrs: s(get(g, "attrs")?, "event attrs")? })
+        })
+        .collect::<SResult<Vec<_>>>()?;
+    let links = list(get(r, "links")?, "links")?
+        .iter()
+        .map(|e| {
+            let g = group(e, "link")?;
+            Ok(Link {
+                trace_id: fixed::<16>(get(g, "trace_id")?, "link trace_id")?,
+                span_id: fixed::<8>(get(g, "span_id")?, "link span_id")?,
+                trace_state: s(get(g, "trace_state")?, "link trace_state")?,
+                attrs: s(get(g, "attrs")?, "link attrs")?,
             })
         })
-        .collect()
+        .collect::<SResult<Vec<_>>>()?;
+    Ok(SpanRecord {
+        trace_id: fixed::<16>(get(r, "trace_id")?, "trace_id")?,
+        span_id: fixed::<8>(get(r, "span_id")?, "span_id")?,
+        parent_span_id: ofixed::<8>(get(r, "parent_span_id")?, "parent_span_id")?,
+        trace_state: os(get(r, "trace_state")?, "trace_state")?,
+        flags: oi(get(r, "flags")?, "flags")?,
+        start_unix_nano: l(get(r, "start_unix_nano")?, "start")?,
+        end_unix_nano: l(get(r, "end_unix_nano")?, "end")?,
+        duration_nano: l(get(r, "duration_nano")?, "duration")?,
+        start_time_us: l(get(r, "start_time")?, "start_time")?,
+        service_name: os(get(r, "service_name")?, "service_name")?,
+        span_name: s(get(r, "span_name")?, "span_name")?,
+        span_kind: i(get(r, "span_kind")?, "span_kind")?,
+        status_code: i(get(r, "status_code")?, "status_code")?,
+        status_message: os(get(r, "status_message")?, "status_message")?,
+        scope_name: os(get(r, "scope_name")?, "scope_name")?,
+        scope_version: os(get(r, "scope_version")?, "scope_version")?,
+        resource_fp: l(get(r, "resource_fp")?, "resource_fp")?,
+        resource: logical(r, "resource", &promoted_res, "resource attributes")?,
+        attrs: logical(r, "span", &promoted_span, "span attributes")?,
+        scope_attrs: os(get(r, "scope_attrs")?, "scope_attrs")?,
+        events,
+        links,
+        dropped: [
+            oi(get(r, "dropped_attributes_count")?, "dropped")?,
+            oi(get(r, "dropped_events_count")?, "dropped")?,
+            oi(get(r, "dropped_links_count")?, "dropped")?,
+        ],
+    })
 }
 
 /// Read every row of a `trace_index` file, in file order.
 pub fn read_trace_index(bytes: &[u8]) -> SResult<Vec<Fragment>> {
-    rows(bytes, "trace_index", 14)?
+    rows(bytes, "trace_index", TRACE_INDEX_LEAVES)?.iter().map(fragment_record).collect()
+}
+
+/// One `trace_index` row.
+pub(crate) fn fragment_record(r: &Row) -> SResult<Fragment> {
+    let root_name = os(get(r, "root_span_name")?, "root_span_name")?;
+    let root = match root_name {
+        None => None,
+        Some(name) => Some((
+            os(get(r, "root_service_name")?, "root_service_name")?,
+            name,
+            l(get(r, "root_start_unix_nano")?, "root_start")?,
+            fixed::<8>(get(r, "root_span_id")?, "root_span_id")?,
+        )),
+    };
+    let services = list(get(r, "services")?, "services")?
         .iter()
-        .map(|r| {
-            let root_name = os(get(r, "root_span_name")?, "root_span_name")?;
-            let root = match root_name {
-                None => None,
-                Some(name) => Some((
-                    os(get(r, "root_service_name")?, "root_service_name")?,
-                    name,
-                    l(get(r, "root_start_unix_nano")?, "root_start")?,
-                    fixed::<8>(get(r, "root_span_id")?, "root_span_id")?,
-                )),
-            };
-            let services = list(get(r, "services")?, "services")?
-                .iter()
-                .map(|e| {
-                    let g = group(e, "service")?;
-                    Ok((s(get(g, "name")?, "service name")?, i(get(g, "spans")?, "spans")?, i(get(g, "errors")?, "errors")?))
-                })
-                .collect::<SResult<Vec<_>>>()?;
-            let hours = list(get(r, "hours")?, "hours")?.iter().map(|h| i(h, "hour")).collect::<SResult<Vec<_>>>()?;
-            Ok(Fragment {
-                trace_id: fixed::<16>(get(r, "trace_id")?, "trace_id")?,
-                min_start: l(get(r, "min_start_unix_nano")?, "min_start")?,
-                max_end: l(get(r, "max_end_unix_nano")?, "max_end")?,
-                span_count: i(get(r, "span_count")?, "span_count")?,
-                error_count: i(get(r, "error_count")?, "error_count")?,
-                root,
-                services,
-                services_truncated: matches!(get(r, "services_truncated")?, Field::Bool(true)),
-                hours,
-            })
+        .map(|e| {
+            let g = group(e, "service")?;
+            Ok((s(get(g, "name")?, "service name")?, i(get(g, "spans")?, "spans")?, i(get(g, "errors")?, "errors")?))
         })
-        .collect()
+        .collect::<SResult<Vec<_>>>()?;
+    let hours = list(get(r, "hours")?, "hours")?.iter().map(|h| i(h, "hour")).collect::<SResult<Vec<_>>>()?;
+    Ok(Fragment {
+        trace_id: fixed::<16>(get(r, "trace_id")?, "trace_id")?,
+        min_start: l(get(r, "min_start_unix_nano")?, "min_start")?,
+        max_end: l(get(r, "max_end_unix_nano")?, "max_end")?,
+        span_count: i(get(r, "span_count")?, "span_count")?,
+        error_count: i(get(r, "error_count")?, "error_count")?,
+        root,
+        services,
+        services_truncated: matches!(get(r, "services_truncated")?, Field::Bool(true)),
+        hours,
+    })
 }
 
 /// Read every row of a `logs` file, in file order.
 pub fn read_logs(bytes: &[u8]) -> SResult<Vec<LogRecord>> {
-    logs_from(rows(bytes, "logs", 13)?)
+    logs_from(rows(bytes, "logs", LOGS_LEAVES)?)
 }
 
 /// Read the rows of row groups `groups` of a `logs` file (a reader that pruned by the index
 /// fragment), in the order given.
 pub fn read_logs_row_groups(bytes: &[u8], groups: &[usize]) -> SResult<Vec<LogRecord>> {
-    logs_from(rows_of(bytes, "logs", 13, Some(groups))?)
+    logs_from(rows_of(bytes, "logs", LOGS_LEAVES, Some(groups))?)
 }
 
 fn logs_from(rows: Vec<Row>) -> SResult<Vec<LogRecord>> {
-    rows
-        .iter()
-        .map(|r| {
-            let labels_json = s(get(r, "labels")?, "labels")?;
-            let labels = crate::json::parse_labels(&labels_json)?;
-            let metadata = map(get(r, "metadata")?, "metadata")?.into_iter().map(|(k, v)| Ok((k, s(v, "metadata value")?))).collect::<SResult<Vec<_>>>()?;
-            Ok(LogRecord {
-                service_name: s(get(r, "service_name")?, "service_name")?,
-                stream_id: l(get(r, "stream_id")?, "stream_id")?,
-                ts: l(get(r, "ts")?, "ts")?,
-                labels_json,
-                labels,
-                line: s(get(r, "line")?, "line")?,
-                metadata,
-                observed_ts: ol(get(r, "observed_ts")?, "observed_ts")?,
-                severity_number: oi(get(r, "severity_number")?, "severity_number")?,
-                severity_text: os(get(r, "severity_text")?, "severity_text")?,
-                trace_id: ofixed::<16>(get(r, "trace_id")?, "trace_id")?,
-                span_id: ofixed::<8>(get(r, "span_id")?, "span_id")?,
-                flags: oi(get(r, "flags")?, "flags")?,
-            })
-        })
-        .collect()
+    rows.iter().map(|r| log_record(r, None)).collect()
+}
+
+/// One `logs` row. `labels`: the previous row's labels cell and parsed labels, reused when this
+/// row's cell is the same (a stream's rows are contiguous, so a merge parses each stream once).
+pub(crate) fn log_record(r: &Row, labels: Option<(&str, &[(String, String)])>) -> SResult<LogRecord> {
+    let labels_json = s(get(r, "labels")?, "labels")?;
+    let labels = match labels {
+        Some((j, l)) if j == labels_json => l.to_vec(),
+        _ => crate::json::parse_labels(&labels_json)?,
+    };
+    let metadata = map(get(r, "metadata")?, "metadata")?.into_iter().map(|(k, v)| Ok((k, s(v, "metadata value")?))).collect::<SResult<Vec<_>>>()?;
+    Ok(LogRecord {
+        service_name: s(get(r, "service_name")?, "service_name")?,
+        stream_id: l(get(r, "stream_id")?, "stream_id")?,
+        ts: l(get(r, "ts")?, "ts")?,
+        labels_json,
+        labels,
+        line: s(get(r, "line")?, "line")?,
+        metadata,
+        observed_ts: ol(get(r, "observed_ts")?, "observed_ts")?,
+        severity_number: oi(get(r, "severity_number")?, "severity_number")?,
+        severity_text: os(get(r, "severity_text")?, "severity_text")?,
+        trace_id: ofixed::<16>(get(r, "trace_id")?, "trace_id")?,
+        span_id: ofixed::<8>(get(r, "span_id")?, "span_id")?,
+        flags: oi(get(r, "flags")?, "flags")?,
+    })
 }

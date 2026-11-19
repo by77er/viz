@@ -27,7 +27,7 @@ hourly cron. It is deployed as viz-ingest (`deploy/`).
 | `test/e2e.test.ts` | 6 end-to-end tests that drive flush by hand |
 | `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
 | `test/triggers.test.ts` | 8 tests of the triggers, the maintenance marker, the orphan-sweep flag and the idle deployment |
-| `test/cron.test.ts` | 7 tests: the cron with a failing shard, listing or send (review R-7), the bound on shards per cron, the marker under KV's write rate (R-11(c)), maintenance message versions |
+| `test/cron.test.ts` | 8 tests: the cron with a failing shard, listing or send (review R-7), the bound on shards per cron, the marker under KV's write rate (R-11(c)), maintenance message versions, leftovers that stop keeping the sweep due (S-6) |
 | `test/golden.test.ts`, `test/golden/` | 3 tests: golden files of the maintenance message and marker, and the marker reader's refusal of an unknown version |
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
 | `test/precedence.property.test.ts` | 6 seeded runs: random rewrites of the same samples always read back as the latest write |
@@ -257,6 +257,41 @@ the copy the janitor suite could not import control's golden file (its baseline 
 so it could not judge them). With them, the `trigger` part's six sweep mutants, including a
 new one for S-6 ("a leftover that waits on the ledger keeps the sweep due for ever", killed by
 `cron.test.ts` "review S-6"): 6 of 6 killed.
+
+### The intermittent S-6 failure was the test's assumption (fixed 2026-11-19)
+
+`test/cron.test.ts` "review S-6 … it is kept, never deleted" failed now and then (reported as one
+run in five; see "Through the gateway", Run). **Reproduced**: `npx vitest run test/cron.test.ts
+--maxWorkers=2`, 50 runs: **2 failed**, 0 of 30 at the machine's load and 2 of 20 pinned to one
+core (`taskset -c 3`), both `TypeError: Cannot read properties of null (reading 'incarnation')`
+at `(await shard(s0).describe(t.name))!.incarnation`.
+
+**Cause**: not timing, shared state, KV's per-key rate or a product race. The test named its
+leftover after the pool's first shard (`sim.shards[0]`) and assumed the tenant's data had reached
+it. `slotFor` (rendezvous hashing over the tenant's name and each series' job and instance) picks
+each series' shard, and the sim builds the tenant's name from `Date.now()`. The four series
+`ingest(…, rng(9), 4, …)` sends (1, 5, 0 and 4, four distinct routing keys) all go to the second
+shard for about one name in sixteen: **6.5% of 20,000 names** (computed in Node with
+`shard/src/pool.ts` `slotFor`, the sim's name pattern and the test's series). The first shard then
+has no stream of the tenant, `describe` answers null and the ledger has no watermark for it.
+Load does not change that probability. 2 failures in 50 runs is within it.
+**Deterministic reproduction** (a scratch copy of the test, not committed, that creates sims
+until the routing is the one wanted): with none of the four series on the first shard, **4 of 4
+failed** with that `TypeError`; with some on it, 4 of 4 passed.
+
+**Fix** (the test only): the leftover continues a stream the ledger has logged for the tenant,
+on whichever of the pool's shards it is, and the test asserts that there is one. No assertion
+was weakened and no wait was added. **After**: the same 50 runs (30 at load, 20 pinned):
+AFTER_COUNTS; the scratch variant passed 5 of 5 under both routings.
+
+**Mutants** (in a scratch copy of the tree, each source restored and compared afterwards;
+against `test/cron.test.ts` and against the scratch variant under both routings):
+
+| Mutant | Killed by |
+|---|---|
+| S-6: a leftover that waits on the ledger keeps the sweep due for ever (`stack/src/maintain.ts`, `scripts/mutants.mjs`) | "review S-6", in `cron.test.ts` and under both routings |
+| a flush file one unit above the logged watermark is judged dead and deleted (`janitor/src/janitor.ts` `flushFileState`) | "review S-6", in `cron.test.ts` and under both routings |
+| the test's fix reverted (the leftover named after `sim.shards[0]`) | the scratch variant with no series on the first shard (4 of 4 failed) |
 
 ### Triggers (`test/auto.test.ts`, `test/triggers.test.ts`)
 
@@ -786,7 +821,7 @@ files, 87 s; `vitest.config.ts` now leaves `test/gateway/` out). One later run o
 passes no worker cap to its first half) failed one test, `test/cron.test.ts` "a flush file of a unit
 that may yet be admitted keeps the orphan sweep due only for stalledAfterMs…"; it passed in the run
 before, and alone three times out of three. Nothing it covers was changed here (no `src/`, flush or
-janitor file); recorded as intermittent, not investigated.
+janitor file). Investigated since: a test bug, not a product one ("The intermittent S-6 failure", above).
 
 **Mutants** (`node scripts/mutants.mjs gateway`, on a copy of the tree in a scratch directory, after
 the copy's unmutated gateway suite passed 4 of 4; each against that suite; every source in the copy
@@ -904,5 +939,10 @@ had the adversarial review `AGENTS.md` asks for protocol changes.
   miniflare's. Nothing here says how the real services behave under failure or load.
 - **Small data.** The end-to-end tests send about 60 samples per tenant; the larger runs are
   the measurements in `flush/` and `engine/wasm/`.
+- **The sim's routing changes every run.** Its tenant and pool names embed the clock, so which
+  shard holds which series differs per run. A test that assumes a given shard holds a tenant's
+  data fails for some names: S-6 did, about one run in sixteen, until 2026-11-19.
+  `test/signals.test.ts` already allows for an empty first shard. New tests should take the shard
+  from where the data went (the ledger's streams, `describe`).
 - **A test run near UTC midnight** produces files for two days; the assertions allow for
   it but that path has only been exercised in `flush/test`.

@@ -57,6 +57,9 @@ pub enum SignalError {
     Batch { index: usize, error: SignalBatchError },
     /// The Parquet library failed, or a file does not read as the table it was passed as.
     Parquet(String),
+    /// A compaction merge's inputs cannot be merged: none, no rows, not sorted, or rows of more
+    /// than one partition (an hour of `spans`, a day of `trace_index` and `logs`).
+    Merge(String),
 }
 
 impl fmt::Display for SignalError {
@@ -64,6 +67,7 @@ impl fmt::Display for SignalError {
         match self {
             SignalError::Batch { index, error } => write!(f, "batch {index}: {error}"),
             SignalError::Parquet(m) => write!(f, "parquet: {m}"),
+            SignalError::Merge(m) => write!(f, "merge: {m}"),
         }
     }
 }

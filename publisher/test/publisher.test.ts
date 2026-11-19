@@ -82,7 +82,9 @@ describe('version order and gaps', () => {
     const p = publisher(cell)
     const r = await p.publish()
     // The first publication re-bases: from the base segment (two segments, no checkpoint yet).
-    expect(r.tenants).toEqual([{ tenant: a, status: 'ok', cursors: { metric_samples: await ledgerVersion(a), metric_series: await ledgerVersion(a) }, rebase: expect.objectContaining({ source: 'base', version: 0 }) }])
+    // Every table's cursor moves, those of the span and log tables too: the changes read did not touch them (D65).
+    const v = await ledgerVersion(a)
+    expect(r.tenants).toEqual([{ tenant: a, status: 'ok', cursors: { metric_samples: v, metric_series: v, spans: v, trace_index: v, logs: v }, rebase: expect.objectContaining({ source: 'base', version: 0 }) }])
     await expectPublished(cell, [a])
     expect(await icebergLive(cell, 'metric_samples')).not.toContain(merged.key)
     await expectVerified(p)
@@ -629,15 +631,15 @@ describe('snapshot expiry and the orphan sweep', () => {
       await p.publish()
     }
     expect((await readMetadata(cell, 'metric_samples')).snapshots.length).toBe(4)
-    expect((await p.maintain()).expired).toEqual({ metric_samples: 0, metric_series: 0 })
+    expect((await p.maintain()).expired).toEqual({ metric_samples: 0, metric_series: 0, spans: 0, trace_index: 0, logs: 0 })
     await p.advanceClock(2 * HOUR)
     const m = await p.maintain()
-    expect(m.expired).toEqual({ metric_samples: 2, metric_series: 2 }) // never fewer than two are kept
+    expect(m.expired).toEqual({ metric_samples: 2, metric_series: 2, spans: 0, trace_index: 0, logs: 0 }) // never fewer than two are kept; the span and log tables of a metric-only cell have no metadata
     const meta = await readMetadata(cell, 'metric_samples')
     expect(meta.snapshots.length).toBe(2)
     expect(await metadataVersions(cell, 'metric_samples')).toEqual([1, 2, 3, 4, 5])
     expect(meta['current-snapshot-id']).toBe((await p.status('metric_samples')).snapshotId)
-    expect((await p.maintain()).expired).toEqual({ metric_samples: 0, metric_series: 0 })
+    expect((await p.maintain()).expired).toEqual({ metric_samples: 0, metric_series: 0, spans: 0, trace_index: 0, logs: 0 })
     await expectPublished(cell, [a])
     await expectVerified(p)
   })

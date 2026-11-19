@@ -29,6 +29,11 @@ export function structure(rules, { fail, tokens }) {
     for (const [p, v] of r.nd) if (/^transition(-duration)?$/.test(p) && !/^(0s|none|0ms)$/.test(v)) { checked++; fail(`${s} sets ${p}: ${v} (line ${r.line}): a press is painted in the next frame, never eased`) }
     const base = s.replace(/\[[^\]]*\]|:[a-z-]+(\([^)]*\))?/g, ''), coveredBy = s.replace(/\[data-tone="[^"]*"\]|\[data-quiet\]/g, '')
     if (transitioned.includes(base)) { checked++; if (!R.some((q) => q.nsel.some((x) => x === coveredBy || x === s) && q.nd.some(([p, v]) => /^transition(-duration)?$/.test(p) && /^(0s|none|0ms)$/.test(v)))) fail(`${s} (line ${r.line}) changes a control that has a transition, and no press rule for it sets transition-duration: 0s: the press would ease in`) } }
+  // no colour is ever eased (Motion: animate opacity and position only): a change of theme moves every colour at once, and an eased colour
+  // would start a transition on every control and show the old theme after the change is drawn (v8: the theme change's trace)
+  const COLOUR = /^(all|color|background(-color)?|border(-(top|right|bottom|left))?(-color)?|outline(-color)?|fill|stroke|box-shadow|text-decoration(-color)?|caret-color|column-rule(-color)?)$/
+  for (const r of R) for (const [p, v] of r.decls) if (/^transition(-property)?$/.test(p) && String(v).trim() !== 'none') for (const s of r.nsel) { checked++
+    const props = v.split(',').map((x) => x.trim().split(/\s+/)[0]); if (p === 'transition' ? props.some((x) => COLOUR.test(x) || /^\d|^var\(/.test(x)) : props.some((x) => COLOUR.test(x))) fail(`${s} transitions ${v} (line ${r.line}): no colour is eased; a hover, like a press and a change of theme, is drawn in the next frame`) }
   // every :active has a [data-pressed] twin (a finger's press, painted from pointerdown by viz-press.js), with the same declarations
   for (const r of R) for (const s of r.nsel) if (s.includes(':active')) { checked++; const twin = s.replace(/:active/g, '[data-pressed]'); if (!R.some((q) => q.nsel.includes(twin) && N(JSON.stringify(q.nd)) === N(JSON.stringify(r.nd)))) fail(`${s} (line ${r.line}) has no [data-pressed] twin with the same declarations: a finger's press would not paint until the release`) }
 
@@ -56,6 +61,9 @@ export function structure(rules, { fail, tokens }) {
     need(R.some((r) => r.nsel.includes(`.vz-swatch[data-series="${i}"]`) && decl(r, 'border-inline').some((v) => v.includes('solid') && v.includes('var(--series)')) && decl(r, 'background').includes('transparent')), `.vz-swatch[data-series="${i}"] is not drawn dashed (two dashes and a gap: transparent fill, border-inline in the series colour)`) }
   need(has(eq('.vz-plot .vz-line[data-series]'), 'stroke-dasharray', vinc('var(--pattern')), '.vz-plot .vz-line[data-series] does not draw --pattern: dashed slots would be drawn solid')
   need(has(eq('.vz-plot[data-emph] .vz-series-g:not([data-emph-on]) .vz-line'), 'stroke', val('var(--series-other)')) && has(eq('.vz-plot[data-emph] .vz-series-g:not([data-emph-on]) .vz-line'), 'stroke-width', val('var(--hairline)')), 'emphasis from the legend is gone: the lines that step back must be series-other hairlines')
+  // v8: a chart off screen is skipped (content-visibility: auto), so a change of theme restyles what is on screen; it keeps its reserved
+  // height while skipped and draws its rings and hit areas inside its clip margin (the ring and hit-area guards in tools/audit.mjs)
+  need(R.some((r) => r.nsel.includes('.vz-chart') && r.ncond.length === 0 && decl(r, 'content-visibility').includes('auto') && decl(r, 'overflow-clip-margin').length), '.vz-chart is not content-visibility: auto with an overflow-clip-margin: a change of theme restyles every chart on the page, on screen or not (the theme budget row)')
   need(R.some((r) => r.ncond.some((c) => c.includes('prefers-reduced-motion:reduce')) && r.nsel.includes(N('.vz *')) && r.nd.some(([p, v, imp]) => p === 'transition' && v === 'none' && imp)), 'the reduced-motion block is gone: .vz * { transition: none !important } under prefers-reduced-motion: reduce')
   // the swatch's ground ring; the crosshair dot's ground edge
   { const RING = N('0 0 0 var(--stroke) var(--ground)'), OFF = N('inset 0 0 0 var(--hairline) var(--series-other)'); let base = false

@@ -30,13 +30,17 @@
 //   response    selector, url, expect    click on it; from the moment the response whose URL contains `url` arrives -> end of the first
 //               [, before]               frame in which `expect` matches. `before` is script run first (to clear what `expect` looks for). Budget 100 ms.
 //   shift       -                        cumulative layout shift over the whole run, load included (shifts within 500 ms of input excluded).
+//   transitions selector, expect[, undo]  click (tap) -> in the frame in which `expect` first matches, the CSS transitions running: a change
+//                                        that eases its colours shows the old state after the frame that counts as done. Budget 0; judged at
+//                                        any load, as layout shift is (v8: the theme change's regression check).
 //   load-shift  hash [, delay]           a separate load of the page at url#hash, so it opens scrolled to that region before its data arrives
 //                                        (as a reload does), every data response held `delay` ms more: cumulative layout shift until ready
 //                                        and 500 ms after. Budget 0.05.
 //   inp         -                        the longest interaction of the run by Event Timing (8 ms steps). Budget 200 ms.
 // "End of the frame" is a task posted from inside the requestAnimationFrame callback of that frame, which runs after its style, layout and
 // paint. When the condition is first seen inside a frame callback, the task is posted from that same callback, never from the next frame.
-// Times start at the input event's own timestamp, so input delay is included.
+// Times start at the input event's own timestamp, so input delay is included. A control scrolled into view is touched two frames later,
+// once it is painted, as a person would (v8: content-visibility: auto renders what comes into view at the next frame).
 // Say with every number whether it was measured on the system's fixture page (a floor) or on the application, and give the load.
 import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -117,7 +121,7 @@ for (let run = 0; run < runs; run++) for (const side of sides) {
   }
   const { ctx, page, cdp } = await newPage()
   await page.goto(url, { waitUntil: 'load' }); await page.waitForSelector(sc.ready ?? 'body', { timeout: 60000 }); await page.waitForTimeout(500)
-  const centre = async (sel) => { const loc = page.locator(sel).first(); if (!(await loc.count())) throw new Error('not on this page: ' + sel); await loc.scrollIntoViewIfNeeded(); const b = await loc.boundingBox(); if (!b) throw new Error('not found: ' + sel); return b }
+  const centre = async (sel) => { const loc = page.locator(sel).first(); if (!(await loc.count())) throw new Error('not on this page: ' + sel); await loc.scrollIntoViewIfNeeded(); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); const b = await loc.boundingBox(); if (!b) throw new Error('not found: ' + sel); return b }
   const wait = (ms = 30000) => Promise.race([page.evaluate(() => window.__speed.p), new Promise((_, r) => setTimeout(() => r(new Error('timed out')), ms))])
   const loaded = () => page.evaluate(() => document.body.dataset.loaded ?? '')
   const tap = (m) => m.input ? m.input === 'tap' : coarse, act = async (m, sel = m.selector) => (tap(m) ? page.tap(sel) : page.click(sel))
@@ -137,6 +141,7 @@ for (let run = 0; run < runs; run++) for (const side of sides) {
       else if (m.type === 'response') { await centre(m.selector); if (m.before) await page.evaluate(m.before); const before = await loaded(); await page.evaluate(([u, e]) => window.__speed.arm.response(u, e), [m.url, m.expect]); await act(m); push(await wait()); await page.waitForFunction((b) => (document.body.dataset.loaded ?? '') !== b, before, { timeout: 60000 }).catch(() => {}); await page.waitForTimeout(400) }
       else if (m.type === 'type') { await page.click(m.selector); await page.keyboard.press('End'); await page.evaluate(([s, n]) => window.__speed.arm.type(s, n), [m.selector, m.text.length]); await page.keyboard.type(m.text, { delay: 120 }); const s = (await wait()).sort((p, q) => p - q); push(s[Math.ceil(s.length * 0.75) - 1]) }
       else if (m.type === 'shift') push(await page.evaluate(() => window.__speed.shift))
+      else if (m.type === 'transitions') { await centre(m.selector); const n = page.evaluate((e) => new Promise((done) => { const tick = () => document.querySelector(e) ? done(document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length) : requestAnimationFrame(tick); requestAnimationFrame(tick) }), m.expect); await act(m); push(await n); await page.waitForTimeout(200); if (m.undo) { await act(m, m.undo); await page.waitForTimeout(300) } }
       else if (m.type === 'load-shift') { /* measured above, on its own load */ }
       else if (m.type === 'inp') { await page.waitForTimeout(300); push(await page.evaluate(() => window.__speed.worstEvent)) }
       else throw new Error('unknown type ' + m.type)
@@ -147,7 +152,7 @@ for (let run = 0; run < runs; run++) for (const side of sides) {
 }
 await browser.close(); for (const x of servers) x.close()
 const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.min(s.length - 1, Math.ceil(s.length * p) - 1)] : NaN }
-const fmt = (m, v) => (Number.isNaN(v) ? 'no data' : /shift/.test(m.type) ? v.toFixed(4) : Math.round(v) + ' ms')
+const fmt = (m, v) => (Number.isNaN(v) ? 'no data' : /shift/.test(m.type) ? v.toFixed(4) : m.type === 'transitions' ? String(v) : Math.round(v) + ' ms')
 const end = loadavg(), out = { runs, throttled: !flag('--no-throttle'), viewport: [vw, vh], coarse, cores, judgedAtLoadAtMost: limit, calibrationMs: cal, loadAtEnd: end, at: new Date().toISOString(), sides: {} }
 let over = 0
 for (const side of sides) {
@@ -155,9 +160,9 @@ for (const side of sides) {
   console.log(`\n\n${sides.length > 1 ? side.name.toUpperCase() + ': ' : ''}${url}\n${runs} runs, ${flag('--no-throttle') ? 'no throttling' : 'CPU 4x, Fast 4G'}, ${vw}x${vh}${coarse ? ', coarse pointer and touch (presses and taps by CDP touch events)' : ''}. p75 is the budgeted figure.`)
   console.log(`Load: 1-minute load average at the start of each run ${Math.min(...la).toFixed(1)} to ${Math.max(...la).toFixed(1)} (median ${q(la, 0.5).toFixed(1)}) on ${cores} cores; at the end ${end.map((x) => x.toFixed(1)).join(' ')}. Calibration task ${Math.round(cal)} ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of ${limit} or less.\n`)
   console.log('| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |\n|---|---|---|---|---|---|---|---|')
-  side.summary = sc.measure.map((m) => { const a = results[m.name], ld = loads[m.name], p75 = q(a, 0.75), busy = ld.filter((x) => x <= limit).length <= ld.length / 2, /* judged only when MOST samples were at or below the limit: a tie is not judged (v8; it was judged before) */ timing = !/shift/.test(m.type), judged = !(timing && busy), ok = a.length > 0 && p75 <= m.budget
+  side.summary = sc.measure.map((m) => { const a = results[m.name], ld = loads[m.name], p75 = q(a, 0.75), busy = ld.filter((x) => x <= limit).length <= ld.length / 2, /* judged only when MOST samples were at or below the limit: a tie is not judged (v8; it was judged before) */ timing = !/shift|transitions/.test(m.type), judged = !(timing && busy), ok = a.length > 0 && p75 <= m.budget
     if (judged && !ok && side.name === 'after') over++
-    console.log(`| ${m.name} | ${/shift/.test(m.type) ? m.budget : m.budget + ' ms'} | ${fmt(m, p75)} | ${fmt(m, q(a, 0.5))} | ${fmt(m, a.length ? Math.max(...a) : NaN)} | ${a.length} | ${ld.length ? `${q(ld, 0.5).toFixed(1)} (${Math.min(...ld).toFixed(1)} to ${Math.max(...ld).toFixed(1)})` : '-'} | ${!a.length ? 'no data' : !judged ? (ok ? 'within, not judged (load above ' + limit + ')' : 'over, not judged (load above ' + limit + ')') : ok ? 'within' : '**OVER**'} |`)
+    console.log(`| ${m.name} | ${/shift|transitions/.test(m.type) ? m.budget : m.budget + ' ms'} | ${fmt(m, p75)} | ${fmt(m, q(a, 0.5))} | ${fmt(m, a.length ? Math.max(...a) : NaN)} | ${a.length} | ${ld.length ? `${q(ld, 0.5).toFixed(1)} (${Math.min(...ld).toFixed(1)} to ${Math.max(...ld).toFixed(1)})` : '-'} | ${!a.length ? 'no data' : !judged ? (ok ? 'within, not judged (load above ' + limit + ')' : 'over, not judged (load above ' + limit + ')') : ok ? 'within' : '**OVER**'} |`)
     return { name: m.name, type: m.type, budget: m.budget, p75, median: q(a, 0.5), worst: a.length ? Math.max(...a) : null, judged, runs: a, loads: ld } })
   out.sides[side.name] = { url, loadAtRunStart: la, measurements: side.summary }
 }

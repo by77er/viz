@@ -4,7 +4,7 @@ import { expect } from 'vitest'
 import { encodeLedgerSegment, ledgerSegmentKey, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type LedgerTable, type Table } from '../../contracts/ledger'
 import type { Ledger } from '../../ledger/src/ledger'
 import { readAvro } from '../src/avro'
-import type { ManifestEntryRecord, ManifestListRecord, TableMetadata } from '../src/iceberg'
+import type { AnyPartition, ManifestEntryRecord, ManifestListRecord, TableMetadata } from '../src/iceberg'
 import type { TestPublisher } from './worker'
 
 export type LedgerStub = DurableObjectStub<Ledger>
@@ -161,7 +161,7 @@ export const keyOf = (uri: string, prefix = PREFIX) => {
   return uri.slice(prefix.length + 1)
 }
 
-export const metaDir = (cell: string, table: Table) => `${cell}/iceberg/${table}/metadata/`
+export const metaDir = (cell: string, table: LedgerTable) => `${cell}/iceberg/${table}/metadata/`
 
 export const listKeys = async (prefix: string): Promise<string[]> => {
   const out: string[] = []
@@ -175,14 +175,14 @@ export const listKeys = async (prefix: string): Promise<string[]> => {
 }
 
 /** Metadata versions present in R2 for a table, ascending. */
-export const metadataVersions = async (cell: string, table: Table): Promise<number[]> =>
+export const metadataVersions = async (cell: string, table: LedgerTable): Promise<number[]> =>
   (await listKeys(metaDir(cell, table)))
     .map((k) => /\/v(\d+)\.metadata\.json$/.exec(k)?.[1])
     .filter((v): v is string => v !== undefined)
     .map(Number)
     .sort((a, b) => a - b)
 
-export const readMetadata = async (cell: string, table: Table, version?: number): Promise<TableMetadata> => {
+export const readMetadata = async (cell: string, table: LedgerTable, version?: number): Promise<TableMetadata> => {
   const v = version ?? (await metadataVersions(cell, table)).at(-1)
   const o = await env.BUCKET.get(`${metaDir(cell, table)}v${v}.metadata.json`)
   if (!o) throw new Error(`no metadata v${v} for ${table} in ${cell}`)
@@ -200,16 +200,19 @@ export interface ReadEntry {
   status: number
   key: string
   tenant: string | null
+  /** The `day` partition value, or for `spans` the day of its hour. */
   day: number | null
+  /** `spans`: the `start_time_hour` partition value. */
+  hour: number | null
   rows: number
   bytes: number
   /** Data sequence number: the entry's own, or inherited from the manifest list. */
   seq: number
-  entry: ManifestEntryRecord
+  entry: ManifestEntryRecord<AnyPartition>
 }
 
 /** Every manifest entry (any status) reachable from one snapshot of a table. */
-export const snapshotEntries = async (cell: string, table: Table, snapshotId?: number, prefix = PREFIX): Promise<ReadEntry[]> => {
+export const snapshotEntries = async (cell: string, table: LedgerTable, snapshotId?: number, prefix = PREFIX): Promise<ReadEntry[]> => {
   const meta = await readMetadata(cell, table)
   const id = snapshotId ?? meta['current-snapshot-id']
   const snap = meta.snapshots.find((s) => s['snapshot-id'] === id)
@@ -217,13 +220,16 @@ export const snapshotEntries = async (cell: string, table: Table, snapshotId?: n
   const out: ReadEntry[] = []
   for (const m of await readAvroKey<ManifestListRecord>(keyOf(snap['manifest-list'], prefix))) {
     const manifest = keyOf(m.manifest_path, prefix)
-    for (const e of await readAvroKey<ManifestEntryRecord>(manifest)) {
+    for (const e of await readAvroKey<ManifestEntryRecord<AnyPartition>>(manifest)) {
+      const p = e.data_file.partition
+      const hour = 'start_time_hour' in p ? p.start_time_hour : null
       out.push({
         manifest,
         status: e.status,
         key: keyOf(e.data_file.file_path, prefix),
-        tenant: e.data_file.partition.tenant,
-        day: e.data_file.partition.day,
+        tenant: p.tenant,
+        day: 'start_time_hour' in p ? (hour === null ? null : Math.floor(hour / 24)) : p.day,
+        hour,
         rows: e.data_file.record_count,
         bytes: e.data_file.file_size_in_bytes,
         seq: e.sequence_number ?? m.sequence_number,
@@ -235,10 +241,10 @@ export const snapshotEntries = async (cell: string, table: Table, snapshotId?: n
 }
 
 /** Keys of the live data files (status ADDED or EXISTING) of a snapshot, sorted. */
-export const icebergLive = async (cell: string, table: Table, snapshotId?: number, prefix = PREFIX): Promise<string[]> =>
+export const icebergLive = async (cell: string, table: LedgerTable, snapshotId?: number, prefix = PREFIX): Promise<string[]> =>
   (await snapshotEntries(cell, table, snapshotId, prefix)).filter((e) => e.status !== 2).map((e) => e.key).sort()
 
-export const manifestList = async (cell: string, table: Table, prefix = PREFIX): Promise<ManifestListRecord[]> => {
+export const manifestList = async (cell: string, table: LedgerTable, prefix = PREFIX): Promise<ManifestListRecord[]> => {
   const meta = await readMetadata(cell, table)
   const snap = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])
   return readAvroKey<ManifestListRecord>(keyOf(snap!['manifest-list'], prefix))

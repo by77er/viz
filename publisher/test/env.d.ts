@@ -2,6 +2,7 @@ declare namespace Cloudflare {
   interface Env {
     PUBLISHER: DurableObjectNamespace<import('./worker').TestPublisher>
     PUBLISHER_N1: DurableObjectNamespace<import('./worker').TestPublisherN1>
+    PUBLISHER_D64: DurableObjectNamespace<import('./worker').TestPublisherD64>
     LEDGER: DurableObjectNamespace<import('../../ledger/src/ledger').Ledger>
     LEDGER_ASBUILT: DurableObjectNamespace<import('../../ledger/bench/asbuilt/ledger').Ledger>
     LEDGER_BEFORE: DurableObjectNamespace<import('../../ledger/bench/before/ledger').Ledger>
