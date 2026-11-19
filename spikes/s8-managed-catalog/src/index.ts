@@ -35,13 +35,13 @@ interface Target {
 
 const LIMITS = { committers: 16, commits: 20, latency: 50, trials: 40, probe: 50 }
 
-function catalogFor(env: Env, which: Which, fetcher?: (i: string, r?: RequestInit) => Promise<Response>): IcebergCatalog {
-  if (which === 'r2-native') return new R2NativeCatalog(env.BUCKET, env.BUCKET_NAME, 'r2native')
+function catalogFor(env: Env, which: Which, table?: Table, fetcher?: (i: string, r?: RequestInit) => Promise<Response>): IcebergCatalog {
+  if (which === 'r2-native') return new R2NativeCatalog(env.BUCKET, env.BUCKET_NAME, 'r2native', table ? emptyMetadata(table, 's3://placeholder', 'cell-0', crypto.randomUUID(), Date.now()) : null)
   return new RestCatalog({ uri: env.CATALOG_URI, warehouse: env.WAREHOUSE, token: env.CATALOG_TOKEN, bucket: env.BUCKET_NAME, ...(fetcher ? { fetch: fetcher } : {}) })
 }
 
 export function ctxFor(env: Env, t: Target, cat?: IcebergCatalog): Ctx {
-  return { cat: cat ?? catalogFor(env, t.catalog), bucket: env.BUCKET, keyOf: (u) => keyOfUri(u, env.BUCKET_NAME), ns: t.ns, name: t.name, table: t.table }
+  return { cat: cat ?? catalogFor(env, t.catalog, t.table), bucket: env.BUCKET, keyOf: (u) => keyOfUri(u, env.BUCKET_NAME), ns: t.ns, name: t.name, table: t.table }
 }
 
 const slim = (r: CommitResult) => ({ ...r, table: undefined })
@@ -79,7 +79,7 @@ export class Committer extends DurableObject<Env> {
   }
 
   async setup(t: Target) {
-    const cat = catalogFor(this.env, t.catalog)
+    const cat = catalogFor(this.env, t.catalog, t.table)
     const config = cat instanceof RestCatalog ? await cat.config() : null
     const init = emptyMetadata(t.table, 's3://placeholder', 'cell-0', crypto.randomUUID(), Date.now())
     const loaded = await cat.create(t.ns, t.name, init)

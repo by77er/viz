@@ -242,10 +242,12 @@ export class R2NativeCatalog implements IcebergCatalog {
   readonly kind = 'r2-native' as const
   readonly calls: { op: string; status: number; ms: number }[] = []
 
+  /** `init`: what a table that has no commit yet looks like (the publisher starts from `emptyMetadata`). */
   constructor(
     private readonly bucket: R2Bucket,
     private readonly bucketName: string,
     private readonly root: string,
+    private init: TableMetadata | null = null,
   ) {}
 
   private dir(ns: string, table: string) {
@@ -273,7 +275,8 @@ export class R2NativeCatalog implements IcebergCatalog {
     while (await this.bucket.head(`${dir}v${v + 1}.metadata.json`)) v++
     if (v === 0) {
       this.calls.push({ op: 'load-table', status: 404, ms: Date.now() - t0 })
-      return null
+      // Nothing is written before the first commit, as in the publisher: the table is its initial metadata.
+      return this.init ? { metadata: { ...this.init, location: `s3://${this.bucketName}/${this.root}/${ns}/${table}` }, metadataLocation: '' } : null
     }
     const o = await this.bucket.get(`${dir}v${v}.metadata.json`)
     if (!o) throw new Error(`r2-native: v${v} vanished`)
@@ -284,7 +287,8 @@ export class R2NativeCatalog implements IcebergCatalog {
 
   /** Nothing is written until the first commit, as in the publisher: the first commit is v1. */
   async create(ns: string, table: string, init: TableMetadata): Promise<LoadedTable> {
-    return (await this.load(ns, table)) ?? { metadata: { ...init, location: `s3://${this.bucketName}/${this.root}/${ns}/${table}` }, metadataLocation: '' }
+    this.init = init
+    return (await this.load(ns, table)) as LoadedTable
   }
 
   async commit(ns: string, table: string, req: CommitRequest): Promise<CommitOutcome> {
