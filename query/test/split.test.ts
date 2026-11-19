@@ -195,7 +195,7 @@ describe('split execution', () => {
   })
 
   it('/api/v1/plan says what a query would read and how it would run, from the ledger alone', async () => {
-    const params = (q: Query) =>
+    const params = (q: Query): Record<string, string> =>
       q.kind === 'range' ? { query: q.query, start: String(q.start! / 1000), end: String(q.end! / 1000), step: String(q.step! / 1000) } : { query: q.query, time: String(q.time! / 1000) }
     const plan = async (q: Query, method: 'GET' | 'POST' = 'GET') => {
       const res = await api(w.a.key, '/api/v1/plan', params(q), { method })
