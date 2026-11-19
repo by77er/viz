@@ -131,7 +131,7 @@ describe('the publisher gate applies to the span and log tables', () => {
     return { ...t, removed: r.removed }
   }
 
-  it('the real publisher reads these tables and does not publish them: inside its delete grace it releases none of them, and nothing is deleted', async () => {
+  it('the real publisher publishes these tables (publisher/ D67): files removed before any publish wait out its delete grace, and nothing is deleted', async () => {
     const t = await expired('gate-real')
     const cell = `gs${Date.now().toString(36)}${n++}`
     // The publisher reads the tenant's log under its own cell (a copy), as publisher/'s tests do.
@@ -139,8 +139,11 @@ describe('the publisher gate applies to the span and log tables', () => {
     for (const o of (await env.BUCKET.list({ prefix: from })).objects) await env.BUCKET.put(`${cell}/ledger/tenant=${t.tenant}/${o.key.slice(from.length)}`, await (await env.BUCKET.get(o.key))!.arrayBuffer())
     const publisher = env.TEST_PUBLISHER.get(env.TEST_PUBLISHER.idFromName(cell))
     const pub = await publisher.publish([t.tenant])
-    // Since publisher/ D64 the tenant is not stopped (before it: `unsupported`); its removed span and log files wait for the publisher's grace.
-    expect(pub.tenants[0]).toMatchObject({ status: 'ok', unpublished: { spans: 0, trace_index: 0, logs: 0 } })
+    // Since publisher/ D64 the tenant is not stopped (before it: `unsupported`); since D67 the span
+    // and log tables are published like the metric pair, so the report has no `unpublished` counts.
+    // The files were removed before any publish, so they wait for the publisher's grace.
+    expect(pub.tenants[0]).toMatchObject({ status: 'ok' })
+    expect(pub.tenants[0]).not.toHaveProperty('unpublished')
     // The janitor asks the publisher of its cell: here, the one that read the copy.
     const gate: PublisherGateNamespace = { idFromName: () => env.TEST_PUBLISHER.idFromName(cell), get: (x) => env.TEST_PUBLISHER.get(x) }
     const p = await purgeTenant({ ...env, PUBLISHER: gate }, t.tenant, { graceMs: 100 })

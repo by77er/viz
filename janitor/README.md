@@ -100,12 +100,14 @@ offer is never deleted (`test/publication.test.ts`: half the tombstones, a live 
 the ledger never had: only the released half of the tombstones goes).
 
 **Span and log files go through the same gate** (stage 2): the purge does not look at a
-tombstone's table. The publisher of this release does not publish those tables: it stops a
-tenant at the first change that names one (`unsupported`), so it releases none of that tenant's
-keys, metric or not, and with a publisher bound nothing of such a tenant is deleted (fail closed;
-tested against the real publisher in `test/signals.test.ts`). `INGEST_SIGNALS` therefore stays
-off in a deployment with a publisher until the publisher reads the span and log tables
-(what it needs: `edge/README.md`, "Needed changes" 2).
+tombstone's table, and the janitor's code and gate are unchanged for them. The publisher used to
+stop a tenant at the first change naming one of those tables (`unsupported`), which held every
+key of that tenant (fail closed). Since publisher/ D64 it reads them and, since D67, publishes
+`spans`, `trace_index` and `logs` as Iceberg tables of their own; their removed files are released
+like metric files, after the publisher's delete grace. Tested against the real publisher in
+`test/signals.test.ts`: span and log files removed before any publish are held through the grace
+and nothing is deleted (the test's assertion on D64's `unpublished` report field was replaced on
+2026-11-19 by one that the D67 report has no such field; 31 of 31 pass, `tsc` clean).
 
 ### `sweepOrphans(env, tenant, { graceMs, maxCompactStepMs, now })`: objects nothing will ever list
 
