@@ -1,0 +1,2339 @@
+{
+ "about": "",
+ "tempo": "",
+ "subjects": [
+  "",
+  "abc",
+  "ABC",
+  "abc_123",
+  "é",
+  "aé",
+  "١",
+  "日本",
+  " ",
+  "\t",
+  "\u000b",
+  "\f",
+  "\r",
+  "\n",
+  " ",
+  " ",
+  "a\nb",
+  "a b",
+  "K",
+  "k",
+  "K",
+  "ſ",
+  "s",
+  "S",
+  "ß",
+  "ẞ",
+  "σ",
+  "ς",
+  "Σ",
+  "foo bar",
+  "éfooé",
+  "afoob",
+  "a.b",
+  "a+b",
+  "A",
+  "<a>",
+  "a{start}",
+  "x{,5}",
+  "xx",
+  "&",
+  "~",
+  "[",
+  "]",
+  "-",
+  "_",
+  "abc\n",
+  "\u0000",
+  "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "ǅ",
+  "ǆ",
+  "Ǆ",
+  "İ",
+  "ı",
+  "i",
+  "I",
+  "Ω",
+  "ω",
+  "a_b",
+  "%",
+  "\\"
+ ],
+ "cases": [
+  {
+   "pattern": "\\w+",
+   "tempo": [
+    1,
+    2,
+    3,
+    19,
+    20,
+    22,
+    23,
+    31,
+    34,
+    38,
+    44,
+    47,
+    53,
+    54,
+    57
+   ]
+  },
+  {
+   "pattern": "\\W+",
+   "tempo": [
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    21,
+    24,
+    25,
+    26,
+    27,
+    28,
+    39,
+    40,
+    41,
+    42,
+    43,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "\\d+",
+   "tempo": []
+  },
+  {
+   "pattern": "\\D+",
+   "tempo": [
+    1,
+    2,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "\\s",
+   "tempo": [
+    8,
+    9,
+    11,
+    12,
+    13
+   ]
+  },
+  {
+   "pattern": "\\S",
+   "tempo": [
+    4,
+    6,
+    10,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[\\w]+",
+   "tempo": [
+    1,
+    2,
+    3,
+    19,
+    20,
+    22,
+    23,
+    31,
+    34,
+    38,
+    44,
+    47,
+    53,
+    54,
+    57
+   ]
+  },
+  {
+   "pattern": "[^\\w]+",
+   "tempo": [
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    21,
+    24,
+    25,
+    26,
+    27,
+    28,
+    39,
+    40,
+    41,
+    42,
+    43,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[\\W]+",
+   "tempo": [
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    21,
+    24,
+    25,
+    26,
+    27,
+    28,
+    39,
+    40,
+    41,
+    42,
+    43,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[\\d]",
+   "tempo": []
+  },
+  {
+   "pattern": "[^\\d]",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[\\s]",
+   "tempo": [
+    8,
+    9,
+    11,
+    12,
+    13
+   ]
+  },
+  {
+   "pattern": "[^\\s]",
+   "tempo": [
+    4,
+    6,
+    10,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[\\S]",
+   "tempo": [
+    4,
+    6,
+    10,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[\\w-]+",
+   "tempo": [
+    1,
+    2,
+    3,
+    19,
+    20,
+    22,
+    23,
+    31,
+    34,
+    38,
+    43,
+    44,
+    47,
+    53,
+    54,
+    57
+   ]
+  },
+  {
+   "pattern": "a\\w",
+   "tempo": []
+  },
+  {
+   "pattern": ".*\\bfoo\\b.*",
+   "tempo": [
+    29,
+    30
+   ]
+  },
+  {
+   "pattern": ".*\\Bfoo\\B.*",
+   "tempo": [
+    31
+   ]
+  },
+  {
+   "pattern": "foo\\b.*",
+   "tempo": [
+    29
+   ]
+  },
+  {
+   "pattern": "[[:alpha:]]+",
+   "tempo": [
+    1,
+    2,
+    19,
+    20,
+    22,
+    23,
+    31,
+    34,
+    38,
+    47,
+    53,
+    54
+   ]
+  },
+  {
+   "pattern": "[[:^alpha:]]+",
+   "tempo": [
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    21,
+    24,
+    25,
+    26,
+    27,
+    28,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[[:word:]]+",
+   "tempo": [
+    1,
+    2,
+    3,
+    19,
+    20,
+    22,
+    23,
+    31,
+    34,
+    38,
+    44,
+    47,
+    53,
+    54,
+    57
+   ]
+  },
+  {
+   "pattern": "[[:space:]]",
+   "tempo": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13
+   ]
+  },
+  {
+   "pattern": "[[:digit:]]",
+   "tempo": []
+  },
+  {
+   "pattern": "[^[:alpha:]]+",
+   "tempo": [
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    21,
+    24,
+    25,
+    26,
+    27,
+    28,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "k",
+   "tempo": [
+    19
+   ]
+  },
+  {
+   "pattern": "(?i)k",
+   "tempo": [
+    18,
+    19,
+    20
+   ]
+  },
+  {
+   "pattern": "(?i)K",
+   "tempo": [
+    18,
+    19,
+    20
+   ]
+  },
+  {
+   "pattern": "(?i)\\x{212A}",
+   "tempo": [
+    18,
+    19,
+    20
+   ]
+  },
+  {
+   "pattern": "(?i)s",
+   "tempo": [
+    21,
+    22,
+    23
+   ]
+  },
+  {
+   "pattern": "(?i)\\x{17F}",
+   "tempo": [
+    21,
+    22,
+    23
+   ]
+  },
+  {
+   "pattern": "(?i)\\x{DF}",
+   "tempo": [
+    24,
+    25
+   ]
+  },
+  {
+   "pattern": "(?i)\\x{1E9E}",
+   "tempo": [
+    24,
+    25
+   ]
+  },
+  {
+   "pattern": "(?i)σ",
+   "tempo": [
+    26,
+    27,
+    28
+   ]
+  },
+  {
+   "pattern": "(?i)ς",
+   "tempo": [
+    26,
+    27,
+    28
+   ]
+  },
+  {
+   "pattern": "(?i)abc",
+   "tempo": [
+    1,
+    2
+   ]
+  },
+  {
+   "pattern": "(?i)[a-z]",
+   "tempo": [
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    34,
+    53,
+    54
+   ]
+  },
+  {
+   "pattern": "(?i)[k]",
+   "tempo": [
+    18,
+    19,
+    20
+   ]
+  },
+  {
+   "pattern": "(?i)[^k]",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "(?i)\\w",
+   "tempo": [
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    34,
+    44,
+    53,
+    54
+   ]
+  },
+  {
+   "pattern": "(?i)\\W",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    24,
+    25,
+    26,
+    27,
+    28,
+    39,
+    40,
+    41,
+    42,
+    43,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "(?i:k)",
+   "tempo": [
+    18,
+    19,
+    20
+   ]
+  },
+  {
+   "pattern": "(?i)ǅ",
+   "tempo": [
+    48,
+    49,
+    50
+   ]
+  },
+  {
+   "pattern": "(?i)i",
+   "tempo": [
+    53,
+    54
+   ]
+  },
+  {
+   "pattern": "(?i)ω",
+   "tempo": [
+    55,
+    56
+   ]
+  },
+  {
+   "pattern": "(?i)[[:lower:]]",
+   "tempo": [
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    34,
+    53,
+    54
+   ]
+  },
+  {
+   "pattern": "(?i)[^a-z]",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    24,
+    25,
+    26,
+    27,
+    28,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "abc",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "ab",
+   "tempo": []
+  },
+  {
+   "pattern": "bc",
+   "tempo": []
+  },
+  {
+   "pattern": "b",
+   "tempo": []
+  },
+  {
+   "pattern": ".*b.*",
+   "tempo": [
+    1,
+    3,
+    16,
+    17,
+    29,
+    31,
+    32,
+    33,
+    45,
+    57
+   ]
+  },
+  {
+   "pattern": "a.b",
+   "tempo": [
+    16,
+    17,
+    32,
+    33,
+    57
+   ]
+  },
+  {
+   "pattern": "(?s)a.b",
+   "tempo": [
+    16,
+    17,
+    32,
+    33,
+    57
+   ]
+  },
+  {
+   "pattern": "(?-s:a.b)",
+   "tempo": [
+    17,
+    32,
+    33,
+    57
+   ]
+  },
+  {
+   "pattern": "(?s:a.b)",
+   "tempo": [
+    16,
+    17,
+    32,
+    33,
+    57
+   ]
+  },
+  {
+   "pattern": "abc|x",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "x|abc",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "^abc$",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "\\Aabc\\z",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "abc\\n",
+   "tempo": [
+    45
+   ]
+  },
+  {
+   "pattern": "(?m)abc$",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "abc$",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": ".*",
+   "tempo": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": ".+",
+   "tempo": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": ".",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "(?U)a+",
+   "tempo": []
+  },
+  {
+   "pattern": "a|",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "|a",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "\\Qa.b\\E",
+   "tempo": [
+    32
+   ]
+  },
+  {
+   "pattern": "\\Qa.b",
+   "tempo": [
+    32
+   ]
+  },
+  {
+   "pattern": "\\Q\\E",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "\\Qa]\\E",
+   "tempo": []
+  },
+  {
+   "pattern": "[\\Q]\\E]",
+   "tempo": {
+    "error": "invalid regex: `[\\Q]\\E]`"
+   }
+  },
+  {
+   "pattern": "a\\.b",
+   "tempo": [
+    32
+   ]
+  },
+  {
+   "pattern": "a\\+b",
+   "tempo": [
+    33
+   ]
+  },
+  {
+   "pattern": "\\101",
+   "tempo": [
+    34
+   ]
+  },
+  {
+   "pattern": "\\0",
+   "tempo": [
+    46
+   ]
+  },
+  {
+   "pattern": "\\00",
+   "tempo": [
+    46
+   ]
+  },
+  {
+   "pattern": "\\000",
+   "tempo": [
+    46
+   ]
+  },
+  {
+   "pattern": "\\1",
+   "tempo": {
+    "error": "invalid regex: `\\1`"
+   }
+  },
+  {
+   "pattern": "\\8",
+   "tempo": {
+    "error": "invalid regex: `\\8`"
+   }
+  },
+  {
+   "pattern": "\\x41",
+   "tempo": [
+    34
+   ]
+  },
+  {
+   "pattern": "\\x{41}",
+   "tempo": [
+    34
+   ]
+  },
+  {
+   "pattern": "\\x{212A}",
+   "tempo": [
+    18
+   ]
+  },
+  {
+   "pattern": "\\<a\\>",
+   "tempo": [
+    35
+   ]
+  },
+  {
+   "pattern": "<a>",
+   "tempo": [
+    35
+   ]
+  },
+  {
+   "pattern": "a\\b{start}",
+   "tempo": [
+    36
+   ]
+  },
+  {
+   "pattern": "x{,5}",
+   "tempo": [
+    37
+   ]
+  },
+  {
+   "pattern": "x{2}",
+   "tempo": [
+    38
+   ]
+  },
+  {
+   "pattern": "x{2}{3}",
+   "tempo": {
+    "error": "invalid regex: `x{2}{3}`"
+   }
+  },
+  {
+   "pattern": "x**",
+   "tempo": {
+    "error": "invalid regex: `x**`"
+   }
+  },
+  {
+   "pattern": "x{1000}",
+   "tempo": [
+    47
+   ]
+  },
+  {
+   "pattern": "x{1001}",
+   "tempo": {
+    "error": "invalid regex: `x{1001}`"
+   }
+  },
+  {
+   "pattern": "(?x) a b c",
+   "tempo": {
+    "error": "invalid regex: `(?x) a b c`"
+   }
+  },
+  {
+   "pattern": "(?u)abc",
+   "tempo": {
+    "error": "invalid regex: `(?u)abc`"
+   }
+  },
+  {
+   "pattern": "(?U)abc",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "(?P<n>abc)",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "(?<n>abc)",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "[a&&b]",
+   "tempo": [
+    39
+   ]
+  },
+  {
+   "pattern": "[a~~b]",
+   "tempo": [
+    40
+   ]
+  },
+  {
+   "pattern": "[[a]",
+   "tempo": [
+    41
+   ]
+  },
+  {
+   "pattern": "[]a]",
+   "tempo": [
+    42
+   ]
+  },
+  {
+   "pattern": "[^]a]",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[a-]",
+   "tempo": [
+    43
+   ]
+  },
+  {
+   "pattern": "[-a]",
+   "tempo": [
+    43
+   ]
+  },
+  {
+   "pattern": "[a\\-z]",
+   "tempo": [
+    43
+   ]
+  },
+  {
+   "pattern": "\\pL",
+   "tempo": [
+    4,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56
+   ]
+  },
+  {
+   "pattern": "\\p{L}",
+   "tempo": [
+    4,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56
+   ]
+  },
+  {
+   "pattern": "\\p{Greek}+",
+   "tempo": [
+    26,
+    27,
+    28,
+    55,
+    56
+   ]
+  },
+  {
+   "pattern": "\\PL",
+   "tempo": [
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[\\p{Greek}]",
+   "tempo": [
+    26,
+    27,
+    28,
+    55,
+    56
+   ]
+  },
+  {
+   "pattern": "\\z",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "\\Z",
+   "tempo": {
+    "error": "invalid regex: `\\Z`"
+   }
+  },
+  {
+   "pattern": "\\e",
+   "tempo": {
+    "error": "invalid regex: `\\e`"
+   }
+  },
+  {
+   "pattern": "\\_",
+   "tempo": [
+    44
+   ]
+  },
+  {
+   "pattern": "\\%",
+   "tempo": [
+    58
+   ]
+  },
+  {
+   "pattern": "\\-",
+   "tempo": [
+    43
+   ]
+  },
+  {
+   "pattern": "\\v",
+   "tempo": [
+    10
+   ]
+  },
+  {
+   "pattern": "\\a",
+   "tempo": []
+  },
+  {
+   "pattern": "\\f",
+   "tempo": [
+    11
+   ]
+  },
+  {
+   "pattern": "\\cA",
+   "tempo": {
+    "error": "invalid regex: `\\cA`"
+   }
+  },
+  {
+   "pattern": "\\N",
+   "tempo": {
+    "error": "invalid regex: `\\N`"
+   }
+  },
+  {
+   "pattern": "\\C",
+   "tempo": {
+    "error": "invalid regex: `\\C`"
+   }
+  },
+  {
+   "pattern": "[\\b]",
+   "tempo": {
+    "error": "invalid regex: `[\\b]`"
+   }
+  },
+  {
+   "pattern": "*a",
+   "tempo": {
+    "error": "invalid regex: `*a`"
+   }
+  },
+  {
+   "pattern": "a{2,1}",
+   "tempo": {
+    "error": "invalid regex: `a{2,1}`"
+   }
+  },
+  {
+   "pattern": "[z-a]",
+   "tempo": {
+    "error": "invalid regex: `[z-a]`"
+   }
+  },
+  {
+   "pattern": "()",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "(?:)",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "(?i)",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "[^\\x00-\\x{10FFFF}]",
+   "tempo": []
+  },
+  {
+   "pattern": "\\x{110000}",
+   "tempo": {
+    "error": "invalid regex: `\\x{110000}`"
+   }
+  },
+  {
+   "pattern": "[[:foo:]]",
+   "tempo": {
+    "error": "invalid regex: `[[:foo:]]`"
+   }
+  },
+  {
+   "pattern": "[[:alpha:]",
+   "tempo": {
+    "error": "invalid regex: `[[:alpha:]`"
+   }
+  },
+  {
+   "pattern": "\\\\",
+   "tempo": [
+    59
+   ]
+  },
+  {
+   "pattern": "[\\\\]",
+   "tempo": [
+    59
+   ]
+  },
+  {
+   "pattern": "\\x{0}",
+   "tempo": [
+    46
+   ]
+  },
+  {
+   "pattern": "a{,2}",
+   "tempo": []
+  },
+  {
+   "pattern": "a{1",
+   "tempo": []
+  },
+  {
+   "pattern": "a{",
+   "tempo": []
+  },
+  {
+   "pattern": "{",
+   "tempo": []
+  },
+  {
+   "pattern": "}",
+   "tempo": []
+  },
+  {
+   "pattern": "a{x}",
+   "tempo": []
+  },
+  {
+   "pattern": "(?i)\\pL",
+   "tempo": [
+    4,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56
+   ]
+  },
+  {
+   "pattern": "a)|(b",
+   "tempo": {
+    "error": "invalid regex: `a)|(b`"
+   }
+  },
+  {
+   "pattern": "a)(b",
+   "tempo": {
+    "error": "invalid regex: `a)(b`"
+   }
+  },
+  {
+   "pattern": ")",
+   "tempo": {
+    "error": "invalid regex: `)`"
+   }
+  },
+  {
+   "pattern": "(",
+   "tempo": {
+    "error": "invalid regex: `(`"
+   }
+  },
+  {
+   "pattern": "a\\Eb",
+   "tempo": {
+    "error": "invalid regex: `a\\Eb`"
+   }
+  },
+  {
+   "pattern": "\\Qa\\",
+   "tempo": []
+  },
+  {
+   "pattern": "\\u0041",
+   "tempo": {
+    "error": "invalid regex: `\\u0041`"
+   }
+  },
+  {
+   "pattern": "\\U00000041",
+   "tempo": {
+    "error": "invalid regex: `\\U00000041`"
+   }
+  },
+  {
+   "pattern": "(?P<a.b>x)",
+   "tempo": {
+    "error": "invalid regex: `(?P<a.b>x)`"
+   }
+  },
+  {
+   "pattern": "(?'n'abc)",
+   "tempo": {
+    "error": "invalid regex: `(?'n'abc)`"
+   }
+  },
+  {
+   "pattern": "(?P=n)",
+   "tempo": {
+    "error": "invalid regex: `(?P=n)`"
+   }
+  },
+  {
+   "pattern": "\\b+",
+   "tempo": []
+  },
+  {
+   "pattern": "^*",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "x*?",
+   "tempo": [
+    0,
+    38,
+    47
+   ]
+  },
+  {
+   "pattern": "x*??",
+   "tempo": {
+    "error": "invalid regex: `x*??`"
+   }
+  },
+  {
+   "pattern": "x{2}?",
+   "tempo": [
+    38
+   ]
+  },
+  {
+   "pattern": "x{2}??",
+   "tempo": {
+    "error": "invalid regex: `x{2}??`"
+   }
+  },
+  {
+   "pattern": "(?i-)abc",
+   "tempo": {
+    "error": "invalid regex: `(?i-)abc`"
+   }
+  },
+  {
+   "pattern": "(?)abc",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "(?i-i)abc",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "(?-)abc",
+   "tempo": {
+    "error": "invalid regex: `(?-)abc`"
+   }
+  },
+  {
+   "pattern": "\\x4",
+   "tempo": {
+    "error": "invalid regex: `\\x4`"
+   }
+  },
+  {
+   "pattern": "\\x{}",
+   "tempo": {
+    "error": "invalid regex: `\\x{}`"
+   }
+  },
+  {
+   "pattern": "[[:^space:]]",
+   "tempo": [
+    4,
+    6,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "[[:word:]-]",
+   "tempo": [
+    19,
+    20,
+    22,
+    23,
+    34,
+    43,
+    44,
+    53,
+    54
+   ]
+  },
+  {
+   "pattern": "[a-\\d]",
+   "tempo": {
+    "error": "invalid regex: `[a-\\d]`"
+   }
+  },
+  {
+   "pattern": "[\\d-z]",
+   "tempo": [
+    43
+   ]
+  },
+  {
+   "pattern": "[-]",
+   "tempo": [
+    43
+   ]
+  },
+  {
+   "pattern": "[^-]",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "\\pN",
+   "tempo": [
+    6
+   ]
+  },
+  {
+   "pattern": "\\p{^Greek}",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "\\p{greek}",
+   "tempo": {
+    "error": "creating fetch iter: error creating iterator: creating span iterator: creating span attribute iterator: creating attribute predicate: error parsing regexp: invalid character class range: `\\p{greek}`"
+   }
+  },
+  {
+   "pattern": "\\p{Nd}",
+   "tempo": [
+    6
+   ]
+  },
+  {
+   "pattern": "(?m)^abc",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "[\\x{0}-\\x{10FFFF}]",
+   "tempo": [
+    4,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    34,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    46,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    58,
+    59
+   ]
+  },
+  {
+   "pattern": "\\08",
+   "tempo": []
+  },
+  {
+   "pattern": "\\18",
+   "tempo": {
+    "error": "invalid regex: `\\18`"
+   }
+  },
+  {
+   "pattern": "\\17",
+   "tempo": []
+  },
+  {
+   "pattern": "[\\101]",
+   "tempo": [
+    34
+   ]
+  },
+  {
+   "pattern": "[\\1]",
+   "tempo": {
+    "error": "invalid regex: `[\\1]`"
+   }
+  },
+  {
+   "pattern": "\\Qa\\E\\Q.b\\E",
+   "tempo": [
+    32
+   ]
+  },
+  {
+   "pattern": "(?i)Abc|x",
+   "tempo": [
+    1,
+    2
+   ]
+  },
+  {
+   "pattern": "(?i:a)bc",
+   "tempo": [
+    1
+   ]
+  },
+  {
+   "pattern": "(?s-i:a.b)",
+   "tempo": [
+    16,
+    17,
+    32,
+    33,
+    57
+   ]
+  },
+  {
+   "pattern": "(?sm)a.b",
+   "tempo": [
+    16,
+    17,
+    32,
+    33,
+    57
+   ]
+  },
+  {
+   "pattern": "(?imsU)abc",
+   "tempo": [
+    1,
+    2
+   ]
+  },
+  {
+   "pattern": "(?ii)abc",
+   "tempo": [
+    1,
+    2
+   ]
+  },
+  {
+   "pattern": "a++",
+   "tempo": {
+    "error": "invalid regex: `a++`"
+   }
+  },
+  {
+   "pattern": "a?*",
+   "tempo": {
+    "error": "invalid regex: `a?*`"
+   }
+  },
+  {
+   "pattern": "(?:a*)*",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "a{1000}{2}",
+   "tempo": {
+    "error": "invalid regex: `a{1000}{2}`"
+   }
+  },
+  {
+   "pattern": "(?:a{1000}){1000}",
+   "tempo": {
+    "error": "invalid regex: `(?:a{1000}){1000}`"
+   }
+  },
+  {
+   "pattern": "\\x{D800}",
+   "tempo": []
+  },
+  {
+   "pattern": "\\x{FFFF}",
+   "tempo": []
+  },
+  {
+   "pattern": "(?:a{10}){100}",
+   "tempo": []
+  },
+  {
+   "pattern": "(?:a{10}){101}",
+   "tempo": {
+    "error": "invalid regex: `(?:a{10}){101}`"
+   }
+  },
+  {
+   "pattern": "(?:a{2,}){600}",
+   "tempo": {
+    "error": "invalid regex: `(?:a{2,}){600}`"
+   }
+  },
+  {
+   "pattern": "(?:a{0,10}b{0,100}){10}",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "(?:a*){1001}",
+   "tempo": {
+    "error": "invalid regex: `(?:a*){1001}`"
+   }
+  },
+  {
+   "pattern": "\\pZ",
+   "tempo": [
+    8,
+    14,
+    15
+   ]
+  },
+  {
+   "pattern": "a|b|",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "x{0}",
+   "tempo": [
+    0
+   ]
+  },
+  {
+   "pattern": "x{1000,}",
+   "tempo": [
+    47
+   ]
+  },
+  {
+   "pattern": "x{1000,1001}",
+   "tempo": {
+    "error": "invalid regex: `x{1000,1001}`"
+   }
+  }
+ ]
+}

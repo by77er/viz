@@ -16,7 +16,6 @@ import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { encodeLedgerCheckpointPart, ledgerSegmentKey, parseLedgerLogKey, type Table } from '../../contracts/ledger'
-import { PART_WINDOW, R2_CONNECTIONS } from '../src/log'
 import {
   DAY_MS,
   T0,
@@ -41,6 +40,14 @@ import {
   type LedgerStub,
   type PublisherStub,
 } from './helpers'
+
+/**
+ * The bounds under test, as literals: six is the platform's (AGENTS.md: outbound connections per
+ * invocation, R2 reads included); four is the window of parts (src/log.ts PART_WINDOW). Not
+ * imported, so a change of either constant is a change these tests see.
+ */
+const CONNECTIONS = 6
+const WINDOW = 4
 
 type Knobs = { checkpointEvery: number; checkpointByLogBytes: boolean; checkpointOneObjectBytes: number; checkpointPartBytes: number }
 const knobs = (l: LedgerStub | DurableObjectStub, k: Partial<Knobs>) => runInDurableObject(l as LedgerStub, (i: unknown) => void Object.assign(i as object, k))
@@ -117,7 +124,7 @@ describe('a ledger that writes its checkpoints in parts', () => {
     const { checkpointAt } = await scenario(cell, t, 'parts')
     const { manifests, parts } = await checkpointsOf(cell, t, 1)
     expect(manifests).toHaveLength(1)
-    expect(parts.length).toBeGreaterThan(PART_WINDOW + 2)
+    expect(parts.length).toBeGreaterThan(WINDOW + 2)
     const p = publisher(cell)
     await p.r2()
     const r = await p.publish([t])
@@ -126,9 +133,9 @@ describe('a ledger that writes its checkpoints in parts', () => {
     expect(r.tenants[0]!.rebase!.tombstones).toBeGreaterThan(0)
     // Read ahead, but never more than the window.
     expect(r.tenants[0]!.rebase!.window).toBeGreaterThan(1)
-    expect(r.tenants[0]!.rebase!.window).toBeLessThanOrEqual(PART_WINDOW)
+    expect(r.tenants[0]!.rebase!.window).toBeLessThanOrEqual(WINDOW)
     const seen = await p.r2()
-    expect(seen.max).toBeLessThanOrEqual(R2_CONNECTIONS)
+    expect(seen.max).toBeLessThanOrEqual(CONNECTIONS)
     // Requested in part order, each once; no segment at or before the checkpoint is read.
     expect(seen.gets.filter((k) => k.includes('/ckpt-') && !k.endsWith(`${String(checkpointAt).padStart(12, '0')}.jsonl`))).toEqual(parts)
     const segs = seen.gets.filter((k) => k.includes('/seg-')).map((k) => parseLedgerLogKey(k) as { firstVersion: number })
@@ -384,9 +391,9 @@ describe('eviction and concurrency', () => {
     const t = tenant('evict')
     await scenario(cell, t, 'parts')
     const { parts } = await checkpointsOf(cell, t, 1)
-    expect(parts.length).toBeGreaterThan(PART_WINDOW + 2)
+    expect(parts.length).toBeGreaterThan(WINDOW + 2)
     const p = publisher(cell)
-    const reached = p.pauseOnGet(parts[PART_WINDOW + 1]!.slice(parts[0]!.lastIndexOf('/', parts[0]!.lastIndexOf('/') - 1)))
+    const reached = p.pauseOnGet(parts[WINDOW + 1]!.slice(parts[0]!.lastIndexOf('/', parts[0]!.lastIndexOf('/') - 1)))
     const done = p.publish([t]).then(
       () => 'finished',
       (e: unknown) => `failed: ${String(e)}`,
@@ -415,7 +422,7 @@ describe('eviction and concurrency', () => {
     await scenario(cell, t, 'parts')
     const { parts } = await checkpointsOf(cell, t, 1)
     const p = publisher(cell)
-    await p.failOnGet(parts[PART_WINDOW + 1]!.slice(parts[0]!.lastIndexOf('/', parts[0]!.lastIndexOf('/') - 1)))
+    await p.failOnGet(parts[WINDOW + 1]!.slice(parts[0]!.lastIndexOf('/', parts[0]!.lastIndexOf('/') - 1)))
     expect((await p.tryPublish([t])).error).toMatch(/injected: R2 failed/)
     await nothingPublished(cell, p, t)
     await evictDurableObject(p)
@@ -434,7 +441,7 @@ describe('eviction and concurrency', () => {
     expect(r.tenants.map((x) => x.status)).toEqual(ts.map(() => 'ok'))
     const seen = await p.r2()
     expect(seen.max).toBeGreaterThan(2) // they do overlap
-    expect(seen.max).toBeLessThanOrEqual(R2_CONNECTIONS)
+    expect(seen.max).toBeLessThanOrEqual(CONNECTIONS)
     for (const t of ts) {
       const { parts } = await checkpointsOf(cell, t, 1)
       expect(seen.gets.filter((k) => k.includes(`tenant=${t}/`) && parts.includes(k)), t).toEqual(parts)
