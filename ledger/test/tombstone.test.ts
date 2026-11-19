@@ -160,6 +160,6 @@ describe('tombstones', () => {
     expect(c.live.map(nm).sort()).toEqual(['out', 'samples-2', 'series-5'])
     expect(c.tombstoned.map(nm)).toEqual(['samples-1'])
     // Committed through 9, logged through 4.
-    expect(c.logged).toEqual([{ shard: S, incarnation: INC, seq: 4 }])
+    expect(c.logged).toEqual([{ shard: S, incarnation: INC, seq: 4, loggedIncarnation: INC }])
   })
 })

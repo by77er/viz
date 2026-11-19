@@ -23,6 +23,7 @@ import { DETECTORS } from '../../anomaly/src/index.ts'
 import type { AnomalyRuleV2, RuleGroup } from '../contracts-proposal/rules.v2'
 import { anomalyLimits, evalAnomaly, newAnomalyRt, readAnomalyRows, type AnomalyRt } from '../src/anomaly'
 import { ANOMALY_BLOCK, base64ToF64, emptyStore, f64ToBase64, HEAD_CHUNK, planV2, type AnomalyWrite } from '../src/anomalystore'
+import { anomalyCpu, anomalyStateBytes } from '../src/history'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
 import { parseRuleFile } from '../src/rules'
 import { fingerprint, hash64 } from '../src/util'
@@ -35,8 +36,8 @@ const CFG = { ...DEFAULT_RULER_CONFIG, limits: { ...DEFAULT_RULER_CONFIG.limits,
 const LIMITS = anomalyLimits(CFG)
 
 /** An anomaly rule as the ruler stores it, from a rule-file entry. */
-function parsed(anomaly: Record<string, unknown>, interval = '1m'): AnomalyRuleV2 {
-  const p = parseRuleFile({ groups: [{ name: 'g', interval, rules: [{ alert: 'A', expr: LAT, anomaly }] }] }, CFG)
+function parsed(anomaly: Record<string, unknown>, interval = '1m', cfg: typeof DEFAULT_RULER_CONFIG = CFG): AnomalyRuleV2 {
+  const p = parseRuleFile({ groups: [{ name: 'g', interval, rules: [{ alert: 'A', expr: LAT, anomaly }] }] }, cfg)
   if (p.errors.length > 0) throw new Error(JSON.stringify(p.errors))
   return p.groups[0]!.anomalyRules![0] as AnomalyRuleV2
 }
@@ -200,29 +201,48 @@ describe('results do not change: the ruler\'s evaluation from version 2 rows equ
     expect(w2.filter((n) => n === 2).length / w2.length).toBeGreaterThan(0.85)
   })
 
-  it('one series gone quiet keeps no other series\' old entries: the stored bytes stay within the estimate', () => {
+  it('one series gone quiet keeps no other series\' old entries: stored bytes stay within the estimates, blocks within the windows; a pruned series is in no row', async () => {
     const rule = parsed({ detector: 'robust_z', params: { windowPoints: 120, minPoints: 5 }, max_series: 10 })
     let rt = newAnomalyRt(rule)
     const table = new Table()
     let ts = 1.8e12
     const most: number[] = []
+    const totals: number[] = []
     for (let i = 0; i < 900; i++) {
       ts += MIN
-      // "quiet" stops after 100 ticks and is pruned 120 ticks later (its window); the others go on.
-      const names = i < 100 ? ['quiet', 'x', 'y'] : ['x', 'y']
-      const ev = evalAnomaly(rule, rt, names.map((s) => ({ metric: { service: s }, value: 100 + (i % 7), text: '' })), ts, MIN, LIMITS, {}, true, 2)
+      // After 100 ticks "quiet" answers with a missing value at every tick (seen, so never pruned:
+      // its window stays where it was) and "gone" is not returned (pruned after its window); x and y go on.
+      const names = i < 100 ? ['gone', 'quiet', 'x', 'y'] : ['quiet', 'x', 'y']
+      const ev = evalAnomaly(rule, rt, names.map((s) => ({ metric: { service: s }, value: s === 'quiet' && i >= 100 ? NaN : 100 + (i % 7), text: '' })), ts, MIN, LIMITS, {}, true, 2)
       if (!ev.ok) throw new Error(ev.error)
       table.apply(ev.write!)
       rt = { ...rt, series: ev.next, json: ev.json, store: ev.write!.store, status: ev.status }
       most.push(Math.max(...ev.write!.perSeries.values()))
+      totals.push(ev.write!.bytes)
     }
-    // 120 points span at most 3 blocks of 60: the per-series estimate, at every tick.
+    // 120 points span at most 3 blocks of 60: within the per-series estimate at every tick, and the
+    // rule within the estimate of its series; quiet's 3 old blocks and x's and y's 3 current ones.
     expect(Math.max(...most)).toBeLessThanOrEqual(rule.anomaly.stateBytesPerSeries)
+    expect(Math.max(...totals.slice(300))).toBeLessThanOrEqual(3 * rule.anomaly.stateBytesPerSeries)
     const blocks = table.list().filter((x) => x.chunk > HEAD_CHUNK + 1e6)
-    expect(blocks.length).toBeLessThanOrEqual(3)
-    // Pruned (absent longer than its window), it is in no row any more.
-    expect(rt.series.size).toBe(2)
-    expect(table.list().some((b) => b.body.includes(fingerprint({ service: 'quiet' })))).toBe(false)
+    expect(blocks.length).toBeLessThanOrEqual(6)
+    expect(rt.series.size).toBe(3)
+    expect(table.list().some((b) => b.body.includes(fingerprint({ service: 'gone' })))).toBe(false)
+    // quiet's window is still read back whole from its old blocks.
+    const back = readAnomalyRows(table.list())
+    if ('error' in back) throw new Error(back.error)
+    expect(back.series).toEqual(rt.series)
+  })
+
+  it('the CPU and memory models price robust z by the points it scans, not by its stored size: as calibrated, whatever the version', () => {
+    const rule = parsed({}, '1m', DEFAULT_RULER_CONFIG)
+    expect(rule.anomaly).toMatchObject({ stateBytesPerSeries: 18772, maxSeries: 55 })
+    // 1.5 + 3 + 0.0063 × 55,400 (the window's size as JSON, which the price was calibrated against).
+    expect(anomalyCpu(rule, MIN)).toBeCloseTo(1.5 + 3 + 0.0063 * 55_400, 6)
+    expect(anomalyStateBytes(rule, MIN)).toBe(rule.anomaly.maxSeries * 55_400 * 3)
+    const confirmed = parsed({ detector: 'robust_z', params: { windowPoints: 4000 } }, '1m', DEFAULT_RULER_CONFIG)
+    expect(confirmed.anomaly).toMatchObject({ stateBytesPerSeries: 46996, maxSeries: 22 })
+    expect(anomalyCpu(confirmed, MIN)).toBeCloseTo(1.5 + 3 + 0.0063 * 145_400, 6)
   })
 })
 

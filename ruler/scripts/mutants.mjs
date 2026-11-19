@@ -392,12 +392,14 @@ export const MUTANTS = [
   },
   {
     name: 'anomaly: detector state is never written to SQLite (memory only)',
-    edits: one('src/ruler.ts', 'for (const { rule, anomaly } of staged) if (anomaly?.changed) this.writeAnomalyState(g.spec.name, rule.key, anomaly.json)', 'void staged'),
+    // Pattern brought up to date (the rows are a planned write, `AnomalyWrite`, since store.anomaly-state v2).
+    edits: one('src/ruler.ts', 'for (const { rule, anomaly } of staged) if (anomaly?.changed && anomaly.write) this.writeAnomalyState(g.spec.name, rule.key, anomaly.write)', 'void staged'),
     tests: ['test/anomaly.test.ts'],
   },
   {
     name: 'anomaly: the constructor does not rebuild detector state from SQLite',
-    edits: one('src/ruler.ts', '      rt.series = read.series\n      rt.json = read.json\n      rt.status = { ...rt.status, stateSeries', '      rt.status = { ...rt.status, stateSeries'),
+    // Pattern brought up to date (store.anomaly-state v2 adds what is known of the rows, `rt.store`).
+    edits: one('src/ruler.ts', '      rt.series = read.series\n      rt.json = read.json\n      rt.store = read.store\n      rt.status = { ...rt.status, stateSeries', '      rt.status = { ...rt.status, stateSeries'),
     tests: ['test/anomaly.test.ts'],
   },
   {
@@ -452,7 +454,8 @@ export const MUTANTS = [
   },
   {
     name: 'anomaly: a row per series (state rows of one byte, so every series gets its own)',
-    edits: one('src/ruler.ts', 'const rows = stateRows(json)', 'const rows = stateRows(json, 1)'),
+    // Pattern brought up to date (version 1 rows are planned in anomaly.ts since store.anomaly-state v2).
+    edits: one('src/anomaly.ts', 'function planV1(json: Map<string, string>, prev: StoreMeta): AnomalyWrite {\n  const rows = stateRows(json)', 'function planV1(json: Map<string, string>, prev: StoreMeta): AnomalyWrite {\n  const rows = stateRows(json, 1)'),
     tests: ['test/anomaly.test.ts'],
   },
   {
@@ -645,7 +648,8 @@ export const MUTANTS = [
   },
   {
     name: 'warm-up: the state is written outside the warm-up\'s transaction (a crash leaves it half-written)',
-    edits: one('src/ruler.ts', '        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, rt.json))', '        this.writeAnomalyState(g.spec.name, rule.key, rt.json)\n        finish(done)'),
+    // Pattern brought up to date (the warm-up's rows are a planned write since store.anomaly-state v2).
+    edits: one('src/ruler.ts', '        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, write))', '        this.writeAnomalyState(g.spec.name, rule.key, write)\n        finish(done)'),
     tests: ['test/history.test.ts'],
   },
   {
@@ -992,6 +996,60 @@ export const MUTANTS = [
     name: 'the queries refusal says nothing was fetched though the series counts were read',
     edits: one('src/history.ts', ", ...(counted.some((x) => x) ? { countsRead: true } : {}) }", ' }'),
     tests: ['test/history.test.ts'],
+  },
+  // ───────────── windowed detector state as Float64 ring blocks (store.anomaly-state v2, D56) ─────────────
+  {
+    name: 'ring blocks: values stored at the wrong float width (Float32 precision)',
+    edits: one('src/anomalystore.ts', 'view.setFloat64(i * 8, v === 0 ? 0 : v, true)', 'view.setFloat64(i * 8, v === 0 ? 0 : Math.fround(v), true)'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'ring blocks: the block boundary off by one (a block\'s last slot taken for the next block\'s)',
+    edits: one('src/anomalystore.ts', 'const blockOf = (slot: number, B: number) => Math.floor(slot / B)', 'const blockOf = (slot: number, B: number) => Math.floor((slot + 1) / B)'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'ring blocks: every block written at every tick (not only the head and the current block)',
+    edits: one('src/anomalystore.ts', '      if (dirty.has(b)) continue\n', '      dirty.add(b)\n      if (dirty.has(b)) continue\n'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'ring blocks: the reader keeps points the window evicted since their block was written',
+    edits: one('src/anomalystore.ts', 'if (ti <= after || (lastTs !== null && ti > lastTs)) continue', 'if (lastTs !== null && ti > lastTs) continue'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'ring blocks: a block is rewritten only for a pruned series (one series gone quiet keeps every other series\' old entries)',
+    edits: one('src/anomalystore.ts', '        if (!l || l.lo === null || blockOf(l.lo, B) > b) {\n          dirty.add(b)', '        if (!l) {\n          dirty.add(b)'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'version gate ignored: version 2 written whatever the gate says',
+    edits: one('src/anomaly.ts', '  const v2 = writeVersion === 2 && WINDOWED.has(spec.detector)', '  const v2 = WINDOWED.has(spec.detector)'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'conversion: version 1 rows left beside version 2 ones (not deleted when the format changes)',
+    edits: one('src/anomalystore.ts', '  const purge = full || prev.version !== 2 || prev.rewrite', '  const purge = full || prev.rewrite'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'rows renumbered by a release without version 2 are not rewritten under their own chunks',
+    edits: [
+      { file: 'src/anomalystore.ts', find: '      if (chunk !== HEAD_CHUNK + (body.i as number)) store.rewrite = true', replace: '      if (false) store.rewrite = true' },
+      { file: 'src/anomalystore.ts', find: '      if (chunk !== body.b) store.rewrite = true', replace: '      if (false) store.rewrite = true' },
+    ],
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'CPU model: robust z priced by its stored (ring block) size, not by the points it scans',
+    edits: one('src/history.ts', '  const bytes = cpuStateBytes(rule, intervalMs)', '  const bytes = rule.anomaly.stateBytesPerSeries'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'save-time estimate: the blocks a window spans counted one short',
+    edits: one('src/anomaly.ts', 'const blocksSpanned = (slots: number) => Math.ceil(Math.max(0, slots - 1) / ANOMALY_BLOCK) + 1', 'const blocksSpanned = (slots: number) => Math.ceil(slots / ANOMALY_BLOCK)'),
+    tests: ['test/anomaly.test.ts', 'test/anomalystore.test.ts'],
   },
 ]
 

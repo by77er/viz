@@ -1,4 +1,4 @@
-<!-- @dsCard group="Data" height=3600 -->
+<!-- @dsCard group="Data" height=4400 -->
 <!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}.chartdemo{display:flex;flex-direction:column;gap:var(--space-8);max-width:calc(2 * var(--dialog))}</style></head><body class="vz">
 <div class="chartdemo">
   <section class="vz-panel">
@@ -25,6 +25,11 @@
     <p class="vz-panel-desc">A member of Other above a threshold: the band crosses the line, the readout's "highest" names it, and the text form lists it among the series above the limit, at the end of the range and earlier.</p>
     <div class="vz-panel-body"><div class="vz-chart" data-demo="s36limit" data-then="limit" data-view="demo-limit" data-text-form="demo-limit-text"></div></div>
     <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-limit-text"></div></details>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, three of Other picked out</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+    <p class="vz-panel-desc">Other opened and its three largest members chosen: each is drawn in ink, solid, dashed and dotted in the order chosen, and its swatch shows the same pattern. The other rows are off until one is chosen.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="demo-picked" data-pick="3"></div></div>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate, change on last week</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span></span></div>
@@ -515,12 +520,16 @@ if (!window.vzChart) (function () {
       setError(err) { st.error = err; draw() },
       text() { const id = root.dataset.textForm; return id ? document.getElementById(id)?.textContent : '' },
       slot(k) { return slotOf(loadMap(view), k) },
+      /* The members of Other, largest first: what "Show 20 more of Other" lists, and what can be picked out. */
+      otherKeys() { return g.m.other.map((s) => s.key) },
       /* The figures the legend shows for each series it lists, in the chart's number format: what a composition's stats and tables must agree with. */
       figures() { const m = g.m, f = g.fmt; return m.listed.map((s) => ({ key: s.key, names: Object.values(s.labels), slot: s.slot, last: f.value(s.last), min: f.value(s.min), max: f.value(s.max) })) } }
   }
   window.vzChart = vzChart; window.vzChartDemos = demos
   window.vzChartRules = { assignSeries, newMap, slotOf, recolour, legendActions, distinguish, fit, valueTicks, scaleUnit, numberFormat, chartModel, drawnSet, otherNote, chartFacts, textLines, seriesName }
-  const init = () => { document.querySelectorAll('.vz-chart[data-demo]:not([data-ready])').forEach((el) => { el.dataset.ready = '1'; el.vz = vzChart(el, demos[el.dataset.demo]()); if (el.dataset.then) el.vz.setData(demos[el.dataset.then]()) })
+  const init = () => { document.querySelectorAll('.vz-chart[data-demo]:not([data-ready])').forEach((el) => { el.dataset.ready = '1'; el.vz = vzChart(el, demos[el.dataset.demo]()); if (el.dataset.then) el.vz.setData(demos[el.dataset.then]())
+      // data-pick="3": the largest members of Other picked out, as a person would (open Other, choose them): solid, dashed, dotted
+      if (el.dataset.pick) { el.querySelector('[data-more]')?.click(); for (const k of el.vz.otherKeys().slice(0, +el.dataset.pick)) el.vz.toggle(k) } })
     // "Without the three largest": the three series with the highest maximum in the chart's data, whatever the chart
     document.querySelectorAll('[data-filter-for]:not([data-ready])').forEach((seg) => { seg.dataset.ready = '1'; seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b))
       const el = document.querySelector(`.vz-chart[data-view="${seg.dataset.filterFor}"]`); if (!el?.vz) return

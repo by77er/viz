@@ -589,8 +589,12 @@ export class Shard extends DurableObject<ShardEnv> {
     return s
   }
 
-  /** The registration mode in force: the Worker var if set, else the stored configuration. */
+  /**
+   * The registration mode in force: the Worker var if set, else the stored configuration; and
+   * `lazy` whatever they say when there is no ledger to register with.
+   */
   private mode(): 'lazy' | 'logged' {
+    if (!this.ledgerNs) return 'lazy'
     const v = this.env.SHARD_REGISTRATION
     return v === 'logged' || v === 'lazy' ? v : this.cfg.registration === 'logged' ? 'logged' : 'lazy'
   }

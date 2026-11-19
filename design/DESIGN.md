@@ -472,7 +472,11 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   flagged series become alerts carrying the detector's sentence and numbers. Detector state
   lives in the ruler's SQLite per (rule, series), written as whole batches per row in the
   transaction that commits the alerts, and is rebuilt from there after eviction; a per-rule
-  series cap and state limits refuse an evaluation rather than drop series. Defaults follow
+  series cap and state limits refuse an evaluation rather than drop series. The windows of the
+  robust z-score and the seasonal baseline are kept as Float64 values in ring blocks on the
+  rule's interval grid (D56), like an SLO's buckets: a tick writes a head row and the block its
+  points fall in, about 18 KB of state a series at the default window instead of about 50 KB of
+  JSON, so a default rule holds 55 series rather than 18. Defaults follow
   evidence on data they were not chosen on (D33): a rule that does not page uses the robust
   z-score with a tail-aware spread (the 99th percentile of |x − median| over 1,500 points),
   which beat EWMA and a static threshold held out on NAB and on a second benchmark of server

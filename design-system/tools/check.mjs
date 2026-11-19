@@ -22,7 +22,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { buildCss } from './css.mjs'
-import { lintCss, lintHtml, lintScript } from './lib/lint.mjs'
+import { lintCss, lintHtml, lintScript, setTokenNames } from './lib/lint.mjs'
 import { structure } from './lib/structure.mjs'
 const root = new URL('..', import.meta.url).pathname
 const args = process.argv.slice(2), render = !args.includes('--no-render'), paths = args.filter((a) => !a.startsWith('--'))
@@ -125,6 +125,7 @@ for (const th of themes) for (const i of S) { checked++; const r = ratio(v('seri
 const compPath = root + 'src/components.css', comp = readFileSync(compPath, 'utf8')
 const bps = Object.entries(flatTok).filter(([k]) => k.startsWith('breakpoint-')).map(([, val]) => parseFloat(val)), bpOk = new Set(bps.flatMap((b) => [b, b - 1]))
 const colourTokens = new Set([...t.color.tokens.map((k) => k.name), 'series'])
+setTokenNames([...t.color.tokens.map((k) => k.name), ...(t.shadow?.tokens ?? []).map((k) => k.name), ...Object.keys(t).filter((k) => Array.isArray(t[k]?.tokens) && !['color', 'shadow'].includes(k)).flatMap((k) => t[k].tokens.map((x) => x.name)), ...t.type.groups.flatMap((g) => g.styles.flatMap((x) => ['', '-size', '-lh', '-weight', '-track'].map((suf) => 'text-' + x.name + suf))), ...Object.keys(t.type.families).map((k) => 'font-' + k)])
 let hits = 0
 const report = (kind, f, line, m) => { hits += m.length; console.log(`LITERAL ${kind}  ${f.replace(root, '')}:${line}  ${m.join(' ')}`) }
 const rules = lintCss(comp, { file: compPath, report, tokens: colourTokens, breakpoints: bpOk })

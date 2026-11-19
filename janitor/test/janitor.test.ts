@@ -306,7 +306,7 @@ describe('orphan sweep', () => {
     const objects = await dataKeys(a.tenant)
     expect(objects).toHaveLength(12) // 10 tombstoned inputs + 2 live outputs
     const r = await sweepOrphans(env, a.tenant, { ...NOW, now: Date.now() + 365 * DAY_MS })
-    expect(r).toEqual({ listed: 12, deleted: [], kept: [] })
+    expect(r).toEqual({ listed: 12, deleted: [], kept: [], ensured: [] })
     expect(await dataKeys(a.tenant)).toEqual(objects)
     expect((await dataKeys(b.tenant)).length).toBe(4)
     await expect(sweepOrphans(env, '../x', NOW)).rejects.toThrow(/tenant id/)

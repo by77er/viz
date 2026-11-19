@@ -35,6 +35,11 @@ const HOVER_OK = /^(color|background|background-color|border-color|border-(top|r
 const DATA_PROPS = new Set(['--at', '--len', '--legend-rows', '--legend-notes'])
 const SIZE_KW = /^(xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger)$/
 
+// every token the system defines (set by check.mjs from tokens.json): a component, a page or a script that declares one of these custom
+// properties redefines a system token below its theme (v7 review, W23 and W24: rule-control and focus redefined to rule in a row of
+// controls put a border at 1.61:1 and the focus ring at 1.27:1 with every check green). tools/audit.mjs checks the same as rendered.
+let TOKEN_NAMES = new Set()
+export function setTokenNames(names) { TOKEN_NAMES = new Set(names) }
 const unesc = (x) => { try { return csstree.ident.decode(String(x)) } catch { return String(x) } }
 export const EMOJI = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F|[\u{1F000}-\u{1FAFF}]/u
 const SMALL_CAPS = /^(small-caps|all-small-caps|petite-caps|all-petite-caps|unicase|titling-caps)$/
@@ -104,6 +109,7 @@ function lintProperty(prop, value, ctx, report) {
   if (/^(filter|backdrop-filter|-webkit-backdrop-filter)$/.test(prop) && id !== 'none') report('filter', `${prop}: ${text}`)
   if (prop === 'mix-blend-mode' && id !== 'normal') report('blend', `${prop}: ${text}`)
   if (prop === 'text-shadow' && id !== 'none') report('shadow', `text-shadow: ${text}`)
+  if (prop === 'font-variation-settings' && !/^(normal|inherit|initial|unset)$/.test(id)) report('weight', `font-variation-settings: ${text} (a weight or width set on a variation axis: weights come from the type tokens; v7 review, W10)`)
   if (prop === 'letter-spacing' && !/^(0|normal|inherit|var\(--text-[a-z-]+-track\))$/.test(id)) report('tracking', `letter-spacing: ${text}`)
   if (/^border(-(top|bottom)-(left|right)|-(start|end)-(start|end))?-radius$/.test(prop)) for (const part of (value.children?.toArray?.() ?? []).filter((c) => c.type !== 'WhiteSpace' && !(c.type === 'Operator' && c.value === '/')).map((c) => csstree.generate(c))) if (!/^(0|inherit|var\(--radius-\d\))$/.test(part)) { report('radius', `${prop}: ${text} (radii are radius tokens; nothing is fully rounded)`); break }
   if (prop === 'font-size' && !/^(inherit|var\(--text-[a-z-]+-size\)|max\(var\(--text-[a-z-]+-size\),calc\(100%\*var\(--qty-scale\)\)\))$/.test(id.replace(/\s+/g, ''))) report('size', `font-size: ${text} (a type style's size, nothing computed: micro is the smallest text)`)
@@ -119,7 +125,7 @@ function lintProperty(prop, value, ctx, report) {
 // One CSS text (a stylesheet, a <style> block, or a declaration list from a style attribute or script). Returns the parsed rules for the
 // structural checks: [{ sel: [selector text], decls: [[prop, value text, valueNode, important]], cond: [prelude text], line }].
 export function lintCss(text, { file, line0 = 0, report, tokens, declarationsOnly = false, breakpoints = null, sourceLines = text.split('\n') }) {
-  const rules = []
+  const rules = [], custom = {}, uses = []
   let ast
   try { ast = csstree.parse(declarationsOnly ? `x{${text}}` : text, { positions: true, parseCustomProperty: true, onParseError: (e) => report('unparsed', file, line0 + (e.line ?? 1), [e.formattedMessage?.split('\n')[0] ?? e.message]) }) } catch (e) { report('unparsed', file, line0 + 1, [e.message]); return rules }
   const ignored = (line) => { const src = sourceLines[line - 1] ?? ''; if (!/token-lint-ignore/.test(src)) return false; if (!/token-lint-ignore:\s*\S/.test(src)) report('ignore-without-reason', file, line0 + line, ['token-lint-ignore']); return true }
@@ -133,6 +139,9 @@ export function lintCss(text, { file, line0 = 0, report, tokens, declarationsOnl
       const prop = unesc(d.property).toLowerCase(), dline = d.loc.start.line; decls.push([prop, csstree.generate(d.value).trim(), d.value, !!d.important])
       if (ignored(dline) || (declarationsOnly && DATA_PROPS.has(prop))) return
       const hits = [], r = (kind, what) => hits.push([kind, what])
+      if (prop.startsWith('--') && TOKEN_NAMES.has(prop.slice(2))) r('token', `${prop} redefined in "${sel.join(', ').slice(0, 60)}": a system token is defined once, by its theme; a component that needs another value uses a variable of its own`)
+      if (prop.startsWith('--') && !TOKEN_NAMES.has(prop.slice(2))) (custom[prop] ??= []).push({ node: d.value, line: dline, scroll })
+      else { const used = [...csstree.generate(d.value).matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]).filter((v) => !TOKEN_NAMES.has(v.slice(2))); if (used.length) uses.push({ prop, used, line: dline, scroll, select }) }
       lintValue(d.value, { prop, scroll, select, tokens }, r); lintProperty(prop, d.value, { tokens }, r)
       if (at === 'keyframes' && /^(transform|rotate)$/.test(prop) && /rotate/i.test(csstree.generate(d.value))) r('spinner', `${prop}: ${csstree.generate(d.value)} in @keyframes: a turning mark is a spinner, which never covers a wait (owner's direction; Responsiveness and feedback)`)
       if (sel.some((x) => x.includes(':hover')) && !HOVER_OK.test(prop) && !prop.startsWith('--')) r('hover', `${prop} under :hover in "${sel.find((x) => x.includes(':hover'))}": hover may change colour only; nothing appears, moves or resizes on hover (a phone has none)`)
@@ -159,6 +168,11 @@ export function lintCss(text, { file, line0 = 0, report, tokens, declarationsOnl
   }
   const walk = (block, cond) => block.children.forEach((node) => { if (node.type === 'Atrule') atrule(node, null, cond); else if (node.type === 'Rule') rule(node, null, cond, null) })
   walk(ast, [])
+  // a custom property of the stylesheet's own, read where it is used: its value is linted as the property that reads it (a weight, an
+  // easing, a width put in --x and read by font-weight: var(--x) is still a weight; v7 review, W8 and W9)
+  for (const u of uses) for (const v of u.used) for (const d of custom[v] ?? []) { if (ignored(d.line)) continue
+    const hits = [], r = (kind, what) => hits.push([kind, what]); lintValue(d.node, { prop: u.prop, scroll: u.scroll || d.scroll, select: u.select, tokens }, r); lintProperty(u.prop, d.node, { tokens }, r)
+    for (const [kind, what] of hits) report(kind, file, line0 + d.line, [`${v}, read by ${u.prop} (line ${line0 + u.line}): ${what}`]) }
   return rules
 }
 

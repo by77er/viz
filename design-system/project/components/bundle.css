@@ -74,6 +74,7 @@
   background: var(--ground);
   -webkit-tap-highlight-color: transparent; /* a touch shows the control's own pressed fill, not the browser's tint */
   --strip: var(--space-6); /* the strip of words above a chart's plot or a table: where a waiting line lies */
+  --mark-size: var(--mark); /* a status mark's size: the mark token, larger on the page's state line (PageHeader); the token itself is never redefined */
 }
 .vz *, .vz *::before, .vz *::after { box-sizing: border-box; }
 .vz :focus-visible { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
@@ -95,6 +96,7 @@
 .vz-link { color: inherit; text-decoration: underline; text-underline-offset: var(--space-half); text-decoration-thickness: var(--hairline); }
 .vz-link:hover { text-decoration-thickness: var(--stroke); }
 .vz-link:active, .vz-link[data-pressed] { background: var(--pressed); }
+.vz b, .vz strong { font-weight: var(--text-ui-strong-weight); } /* strong words in prose take the strong weight of the type scale, not the browser's 700 (v8: the token trace) */
 .vz-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); align-items: flex-start; }
 .vz-cut { display: inline-flex; max-width: 100%; min-width: 0; white-space: nowrap; } /* an identifier cut in the middle: <span class="vz-cut"><span>checkout-api-7d9f8</span><span>c6b5-3742c</span></span> */
 .vz-cut > :first-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -202,7 +204,7 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
 .vz-tabs button { position: relative; flex: none; font: var(--text-ui); color: var(--ink-muted); background: none; border: 0; padding: var(--space-2) var(--space-1); margin-inline: calc(-1 * var(--space-1)); border-bottom: var(--stroke) solid transparent; cursor: pointer; white-space: nowrap; }
 .vz-tabs button:hover { color: var(--ink); }
 .vz-tabs button[aria-selected="true"] { color: var(--ink); font: var(--text-ui-strong); border-bottom-color: var(--ink); }
-.vz-tabs button:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* inside the strip, which clips anything outside; the side padding keeps it off the letters */
+.vz-tabs button:focus-visible, .vz-nav a:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* inside the strip, which clips anything outside; the side padding keeps it off the letters */
 
 /* Table. Wrap it in vz-table-wrap: the table scrolls inside its own region and keeps its first column. */
 /* position: relative, so what is absolutely placed inside (a visually hidden head, a key link's hit area) is clipped by the wrap's scroll and
@@ -312,19 +314,19 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 
 /* Status: a mark with its own shape, then a word. Shape and word carry the state; colour reinforces it. */
 .vz-status { display: inline-flex; align-items: flex-start; gap: var(--space-2); color: var(--ink); } /* its words wrap when there is no room (a long state at 320 px, a folded table's kept column), and the mark stays centred on the first line; in a table cell that does not fold they stay on one line, as the cell's words do */
-.vz-status::before, .vz-mark { content: ""; display: inline-block; flex: none; width: var(--mark); height: var(--stroke); background: var(--ink-muted); } /* unknown: a dash */
-.vz-status[data-state="critical"]::before, .vz-mark[data-state="critical"] { height: var(--mark); background: var(--status-critical); } /* solid square */
-.vz-status[data-state="warn"]::before, .vz-mark[data-state="warn"] { width: calc(var(--mark) - var(--space-half)); height: calc(var(--mark) - var(--space-half)); margin-inline: var(--hairline); background: var(--status-warn); transform: rotate(var(--diagonal)); box-shadow: inset 0 0 0 var(--hairline) var(--status-warn-edge); } /* diamond */
-.vz-status[data-state="ok"]::before, .vz-mark[data-state="ok"] { height: var(--mark); background: transparent; border: var(--stroke) solid var(--status-ok); } /* hollow square */
+.vz-status::before, .vz-mark { content: ""; display: inline-block; flex: none; width: var(--mark-size); height: var(--stroke); background: var(--ink-muted); } /* unknown: a dash */
+.vz-status[data-state="critical"]::before, .vz-mark[data-state="critical"] { height: var(--mark-size); background: var(--status-critical); } /* solid square */
+.vz-status[data-state="warn"]::before, .vz-mark[data-state="warn"] { width: calc(var(--mark-size) - var(--space-half)); height: calc(var(--mark-size) - var(--space-half)); margin-inline: var(--hairline); background: var(--status-warn); transform: rotate(var(--diagonal)); box-shadow: inset 0 0 0 var(--hairline) var(--status-warn-edge); } /* diamond */
+.vz-status[data-state="ok"]::before, .vz-mark[data-state="ok"] { height: var(--mark-size); background: transparent; border: var(--stroke) solid var(--status-ok); } /* hollow square */
 .vz-status[data-state="info"]::before, .vz-mark[data-state="info"] { height: var(--space-1); background: var(--status-info); } /* bar: a note, a deploy, a notification sent, an escalation */
 /* What a person has done about a state. Neutral: the severity keeps its colour only while nobody has it. */
-.vz-status[data-state="ack"]::before, .vz-mark[data-state="ack"] { height: var(--mark); background: transparent; border: var(--hairline) solid var(--ink-secondary); border-left-width: calc(var(--mark) / 2); } /* half-filled square: someone has it */
-.vz-status[data-state="silenced"]::before, .vz-mark[data-state="silenced"] { height: var(--mark); background: transparent; border: 0 solid var(--ink-secondary); border-inline-width: var(--stroke); } /* two bars: paused */
-.vz-status[data-state="ruled-out"]::before, .vz-mark[data-state="ruled-out"] { width: calc(var(--mark) + var(--stroke)); margin-inline: calc(var(--stroke) / -2); background: var(--ink-muted); transform: rotate(calc(-1 * var(--diagonal))); } /* slash: struck out */
+.vz-status[data-state="ack"]::before, .vz-mark[data-state="ack"] { height: var(--mark-size); background: transparent; border: var(--hairline) solid var(--ink-secondary); border-left-width: calc(var(--mark-size) / 2); } /* half-filled square: someone has it */
+.vz-status[data-state="silenced"]::before, .vz-mark[data-state="silenced"] { height: var(--mark-size); background: transparent; border: 0 solid var(--ink-secondary); border-inline-width: var(--stroke); } /* two bars: paused */
+.vz-status[data-state="ruled-out"]::before, .vz-mark[data-state="ruled-out"] { width: calc(var(--mark-size) + var(--stroke)); margin-inline: calc(var(--stroke) / -2); background: var(--ink-muted); transform: rotate(calc(-1 * var(--diagonal))); } /* slash: struck out */
 .vz-mark[data-state="agent"] { width: var(--stroke); height: 1lh; background: var(--ink-muted); } /* the agent's rule, as the mark of a line an agent wrote (Timeline) */
 .vz-status::before { margin-top: calc((1lh - var(--stroke)) / 2); } /* the dash and the slash */
-.vz-status:is([data-state="critical"], [data-state="ok"], [data-state="ack"], [data-state="silenced"])::before { margin-top: calc((1lh - var(--mark)) / 2); }
-.vz-status[data-state="warn"]::before { margin-top: calc((1lh - var(--mark) + var(--space-half)) / 2); }
+.vz-status:is([data-state="critical"], [data-state="ok"], [data-state="ack"], [data-state="silenced"])::before { margin-top: calc((1lh - var(--mark-size)) / 2); }
+.vz-status[data-state="warn"]::before { margin-top: calc((1lh - var(--mark-size) + var(--space-half)) / 2); }
 .vz-status[data-state="info"]::before { margin-top: calc((1lh - var(--space-1)) / 2); }
 
 /* Dashboard grid: twelve, six or one column by the width the dashboard has, not the device. */
@@ -427,13 +429,14 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-table.vz-legend-table tr[data-off] td { color: var(--ink-muted); }
 .vz-table.vz-legend-table tr[data-off] .vz-swatch { background: transparent; box-shadow: inset 0 0 0 var(--hairline) var(--series-other); border: 0; }
 .vz-table.vz-legend-table tr[data-off]:active td, .vz-table.vz-legend-table tr[data-off][data-pressed] td { color: var(--ink-secondary); }
-.vz-table.vz-legend-table tr.vz-legend-actions td { padding-block: 0; background: var(--ground); }
+.vz-table.vz-legend-table tr.vz-legend-actions td { padding-block: 0; background: var(--ground); overflow: visible; } /* its buttons' focus rings are not cut (v8: the rendered focus guard) */
 /* The ring is round the row it toggles. Drawn by the cells, because the first cell is positioned and would paint over an outline on the row. */
 .vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td { box-shadow: inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
 .vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td:first-child { box-shadow: inset var(--stroke) 0 0 var(--focus), inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
 .vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td:last-child { box-shadow: inset calc(-1 * var(--stroke)) 0 0 var(--focus), inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
 .vz-table.vz-legend-table { table-layout: fixed; } /* the script sets each figure column's width once per draw; the name takes the rest */
 .vz-table.vz-legend-table th, .vz-table.vz-legend-table td { overflow: hidden; }
+.vz-table.vz-legend-table .vz-sort:focus-visible, .vz-table.vz-legend-table .vz-legend-actions .vz-button:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* inside the legend, whose cells and scrolling wrap clip: the ring is drawn inside the control, as in a tab strip (v8: the rendered focus guard found it cut) */
 .vz-series { position: static; display: flex; align-items: center; gap: var(--space-2); width: 100%; min-width: 0; font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; white-space: nowrap; }
 .vz-series::after { content: ""; position: absolute; inset: 0; }
 .vz-series:focus-visible { outline: 0; }
@@ -521,7 +524,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 .vz-page-head > :first-child { flex: 1 1 var(--overlay-min); min-width: 0; } /* the actions stay beside the title while it keeps this much room, then drop below it, left-aligned */
 .vz-page-title { font: var(--text-title); letter-spacing: var(--text-title-track); margin: 0; overflow-wrap: anywhere; }
 /* The state line: one run of text that starts with a mark, so a second line wraps under the words, never leaving the mark alone. */
-.vz-page-state { --mark: var(--space-3); display: block; font: var(--text-heading); letter-spacing: var(--text-heading-track); margin: var(--space-2) 0 0; }
+.vz-page-state { --mark-size: var(--space-3); display: block; font: var(--text-heading); letter-spacing: var(--text-heading-track); margin: var(--space-2) 0 0; }
 .vz-page-state > .vz-mark:first-child { margin-right: var(--space-2); vertical-align: middle; }
 .vz-page-sub { color: var(--ink-secondary); margin: var(--space-1) 0 0; max-width: var(--measure); }
 .vz-section-title { font: var(--text-heading); letter-spacing: var(--text-heading-track); margin: 0; }
@@ -541,7 +544,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 .vz-timeline > li { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: start; padding: var(--space-2) 0; border-top: var(--hairline) solid var(--rule); }
 .vz-timeline > li:last-child { border-bottom: var(--hairline) solid var(--rule); }
 .vz-timeline time { color: var(--ink-secondary); line-height: inherit; } /* a grid item, not inline: it keeps the row's line so its baseline meets the sentence's */
-.vz-timeline .vz-mark { margin-top: calc((1lh - var(--mark)) / 2); }
+.vz-timeline .vz-mark { margin-top: calc((1lh - var(--mark-size)) / 2); }
 .vz-timeline .vz-mark:not([data-state]) { margin-top: calc((1lh - var(--stroke)) / 2); }
 .vz-timeline .vz-mark[data-state="agent"] { margin-top: 0; justify-self: center; }
 .vz-timeline p { margin: 0; max-width: var(--measure); }
@@ -607,6 +610,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 .vz-log tr[data-open] .vz-log-text { display: block; -webkit-line-clamp: none; line-clamp: none; }
 .vz-log-msg > .vz-button { display: flex; margin-top: var(--space-1); }
 .vz-log-msg > .vz-button[data-quiet] { margin-left: calc(-1 * var(--space-2)); } /* its words line up with the message's */
+.vz-log-msg > .vz-button:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* against the edge of a table that scrolls: the ring is drawn inside (v8) */
 .vz-match { padding: 0; color: var(--ink); background: var(--rule); font-weight: var(--text-data-strong-weight); } /* a matched term: weight and the chosen fill, like an insertion in a diff */
 .vz-log-tail { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 var(--space-3); min-height: var(--strip); } /* the strip: count and order, and while paused the held lines */
 @container (max-width: 639px) {
@@ -699,9 +703,10 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
   .vz-table tr:has(a, button, input, select) td { height: calc(var(--control-touch) + var(--hairline)); } /* rows that hold a control; a table of figures keeps its density */
   .vz-table th:has(.vz-sort) { padding-block: 0; }
   .vz-sort { min-height: var(--control-touch); margin-block: 0; }
+  .vz-sort:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* it fills its head, at the top of a table that scrolls: the ring is drawn inside (v8: the rendered focus guard at the coarse pointer) */
   .vz-table[data-fold] td[data-key], .vz-table[data-fold] td.vz-row-actions { min-height: var(--control-touch); } /* the key's line and the line "Actions…" ends: their targets keep 44 px inside the row */
   .vz-tabs button, .vz-nav a { padding-block: var(--space-3); } /* a scrolling strip clips overflow, so the hit area has to be real height */
-  .vz-segmented button { height: auto; min-height: var(--control-touch); } /* a segmented control wraps when wider than its room (320 px): stacked segments would share their hit areas, so each is drawn control-touch tall (v7: the rendered hit-area guard at 320 px) */
+  .vz-segmented { row-gap: calc(var(--control-touch) - var(--control-md) + 2 * var(--hairline)); } /* a segmented control that wraps (320 px) keeps its segments' 44 px hit areas apart by space between its rows; they are drawn at their own height (v7 review, m3) */
   .vz-menu [role^="menuitem"] { height: var(--control-touch); }
   .vz-details > summary { min-height: var(--control-touch); }
   .vz-input, .vz-select, .vz-input[data-mono] { height: var(--control-touch); font-size: var(--text-body-size); }
