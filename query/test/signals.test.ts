@@ -234,7 +234,7 @@ describe('caps: refused before anything is fetched, or by the engine as it decod
     const early = { ...pick(fx, 'search/0/'), params: pick(fx, 'search/0/').params.map(([k, v]): [string, string] => [k, k === 'start' || k === 'end' ? String(Number(v) - 7 * 86_400) : v]) }
     for (const c of [logs, early]) {
       const res = await call(w.a.key, c)
-      expect([c.id, res.status, cost(res, 'Rows-Decoded') > 0]).toEqual([c.id, 200, true])
+      expect([c.id, res.status, cost(res, 'Tail-Bytes') > 0]).toEqual([c.id, 200, true])
     }
   })
 })

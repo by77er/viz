@@ -9,58 +9,17 @@
  * corpus. Twice: with the shards' signal filter (`signals`, D63), and as with shards of the
  * previous release, which ignore it and answer unfiltered (the name rule and the header check).
  */
-import { runDurableObjectAlarm } from 'cloudflare:test'
-import { exports } from 'cloudflare:workers'
 import { afterEach, describe, expect, it } from 'vitest'
 import { hooks } from '../src/coordinator'
 import { shardSignalFilter } from '../src/shards'
 import { tailHooks } from '../src/tail'
-import type { Case, Fixture } from './signals-load'
-import { type Tenant, type World, api, cost, ledgerOf, shardOf, world } from './world'
+import { type Case, type Fixture, type PushRequest, flushSignals, post, signalShardsOf } from './signals-load'
+import { type Tenant, api, cost, ledgerOf, shardOf, world } from './world'
 
 /** `seed-N.e2e.json` (tools/pack-requests.mjs): the corpus's requests and the fixture's cases. */
 interface Requests extends Pick<Fixture, 'seed' | 'counts' | 'cases'> {
   nowMs: number
-  requests: { path: string; contentType: string; contentEncoding?: string; body: string }[]
-}
-
-const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-/** Every slot of the derived pools (the tenant's slots are all of them in the test world). */
-const signalShardsOf = (w: World): string[] => (['traces', 'logs'] as const).flatMap((s) => Array.from({ length: w.map.slots }, (_, i) => `${w.map.pool}/${s}/${i}`))
-
-/** One request through edge, resent whole while it is refused for a retryable reason (a new stream registering, backpressure), as a sender does. */
-async function post(t: Tenant, q: Requests['requests'][number]): Promise<void> {
-  for (let i = 0; ; i++) {
-    const headers: Record<string, string> = { Authorization: `Bearer ${t.key}`, 'Content-Type': q.contentType, ...(q.contentEncoding ? { 'Content-Encoding': q.contentEncoding } : {}) }
-    const res = await exports.default.fetch(`https://viz.test${q.path}`, { method: 'POST', headers, body: unb64(q.body) as Uint8Array<ArrayBuffer> })
-    const text = await res.text()
-    if (res.status === 200 || res.status === 204) {
-      // Nothing of the corpus is refused by validation (the corpus's own decode accepted all of it).
-      expect(text, q.path).not.toMatch(/rejected/i)
-      return
-    }
-    if (![429, 503].includes(res.status) || i > 100) throw new Error(`${q.path}: ${res.status} ${text.slice(0, 300)}`)
-    await ledgerOf(t).drain()
-    await sleep(20)
-  }
-}
-
-/** Seal and flush every derived shard of the tenant through the Flush entrypoint, until the ledger has logged what it admitted (its alarm's work, done here). */
-async function flushSignals(w: World, t: Tenant): Promise<number> {
-  let units = 0
-  for (const s of signalShardsOf(w)) {
-    await shardOf(s).seal(t.name)
-    let r = await exports.Flush.flushTenant(t.name, s)
-    for (let i = 0; i < 5 && r.status === 'ok' && r.awaitingLog; i++) {
-      await runDurableObjectAlarm(ledgerOf(t))
-      r = await exports.Flush.flushTenant(t.name, s)
-    }
-    if (r.status !== 'ok' || r.awaitingLog) throw new Error(`flush ${s}: ${JSON.stringify(r)}`)
-    units += (r as { units?: number }).units ?? 0
-  }
-  return units
+  requests: PushRequest[]
 }
 
 function withoutMetrics(s: string): string {

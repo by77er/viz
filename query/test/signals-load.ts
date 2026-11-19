@@ -4,7 +4,8 @@
  * edge would, and each flush unit's files put in R2 and admitted by the ledger (`addUnit`), so
  * that the tail is what lies above the units' watermark.
  */
-import { env } from 'cloudflare:workers'
+import { runDurableObjectAlarm } from 'cloudflare:test'
+import { env, exports } from 'cloudflare:workers'
 import type { FileEntry } from '../../contracts/ledger'
 import { type Tenant, type World, ledgerOf, shardOf } from './world'
 
@@ -85,3 +86,51 @@ export async function load(w: World, t: Tenant, fx: Fixture): Promise<void> {
   await loadSignal(w, t, 'logs', fx.logs)
 }
 
+
+// ─────────── through edge and the real flush (test/signals.e2e.test.ts, test/completeness.test.ts) ───────────
+
+/** A push request as sent: path, content type and encoding, the body in base64. */
+export interface PushRequest {
+  path: string
+  contentType: string
+  contentEncoding?: string
+  body: string
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Every slot of the derived pools (the tenant's slots are all of them in the test world). */
+export const signalShardsOf = (w: World): string[] => (['traces', 'logs'] as const).flatMap((s) => Array.from({ length: w.map.slots }, (_, i) => `${w.map.pool}/${s}/${i}`))
+
+/** One request through edge, resent whole while it is refused for a retryable reason (a new stream registering, backpressure), as a sender does. */
+export async function post(t: Tenant, q: PushRequest): Promise<void> {
+  for (let i = 0; ; i++) {
+    const headers: Record<string, string> = { Authorization: `Bearer ${t.key}`, 'Content-Type': q.contentType, ...(q.contentEncoding ? { 'Content-Encoding': q.contentEncoding } : {}) }
+    const res = await exports.default.fetch(`https://viz.test${q.path}`, { method: 'POST', headers, body: unb64(q.body) as Uint8Array<ArrayBuffer> })
+    const text = await res.text()
+    if (res.status === 200 || res.status === 204) {
+      // Nothing of a corpus is refused by validation (the corpus's own decode accepted all of it).
+      if (/rejected/i.test(text)) throw new Error(`${q.path}: ${text.slice(0, 300)}`)
+      return
+    }
+    if (![429, 503].includes(res.status) || i > 100) throw new Error(`${q.path}: ${res.status} ${text.slice(0, 300)}`)
+    await ledgerOf(t).drain()
+    await sleep(20)
+  }
+}
+
+/** Seal and flush every derived shard of the tenant through the Flush entrypoint, until the ledger has logged what it admitted (its alarm's work, done here). */
+export async function flushSignals(w: World, t: Tenant): Promise<number> {
+  let units = 0
+  for (const s of signalShardsOf(w)) {
+    await shardOf(s).seal(t.name)
+    let r = await exports.Flush.flushTenant(t.name, s)
+    for (let i = 0; i < 5 && r.status === 'ok' && r.awaitingLog; i++) {
+      await runDurableObjectAlarm(ledgerOf(t))
+      r = await exports.Flush.flushTenant(t.name, s)
+    }
+    if (r.status !== 'ok' || r.awaitingLog) throw new Error(`flush ${s}: ${JSON.stringify(r)}`)
+    units += (r as { units?: number }).units ?? 0
+  }
+  return units
+}
