@@ -183,12 +183,6 @@ pub fn parse_prom_duration(s: &str) -> Option<i64> {
     i64::try_from(total).ok()
 }
 
-/// A duration as LogQL accepts it in a range or `offset`: Go syntax first, then the
-/// Prometheus units Go lacks (`d`, `w`, `y`).
-pub fn parse_range_duration(s: &str) -> Option<i64> {
-    parse_go_duration(s).or_else(|| parse_prom_duration(s))
-}
-
 /// Human-readable byte sizes as the `go-humanize` library's `ParseBytes` reads them: a
 /// decimal number (commas ignored), optional spaces, and an optional unit, case-insensitive:
 /// `b`, SI `k kb m mb g gb t tb p pb e eb` (powers of 1000) and IEC `ki kib mi mib …`
@@ -291,7 +285,6 @@ mod tests {
         assert_eq!(parse_prom_duration("1d"), Some(86_400_000_000_000));
         assert_eq!(parse_prom_duration("1h30m"), Some(5_400_000_000_000));
         assert_eq!(parse_prom_duration("30m1h"), None);
-        assert_eq!(parse_range_duration("1.5m"), Some(90_000_000_000));
     }
 
     #[test]

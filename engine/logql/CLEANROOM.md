@@ -85,12 +85,13 @@ Session: 2026-11-19. Loki version used as a black box: **v3.7.10** (tag commit
 
 ### Loki's behaviour, observed
 
-- 13 probe files (about 240 queries over hand-made data, `tools/lokidiff` in probe mode)
+- 14 probe files (about 320 queries over hand-made data, `tools/lokidiff` in probe mode)
   established details the documentation leaves open: window edges, error-label wording and
   precedence, parser corner cases, label-name sanitising, pattern-filter anchoring, the
   order Loki runs `__error__` filters and line filters after `decolorize`, `rate_counter`'s
-  arithmetic, and where the oracle's mock querier differs from the HTTP API. Each finding is
-  cited in the code where it is used.
+  arithmetic, and where the oracle's mock querier differs from the HTTP API. The findings are listed in
+  the README ("Verification" and "Differences from Loki") and noted in code comments where
+  they shape the code.
 - The differential run (`tools/lokidiff`, README "Verification").
 
 ### Loki's tests, as oracle only (fetched at test time, git-ignored, never committed)

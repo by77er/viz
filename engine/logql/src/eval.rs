@@ -600,7 +600,7 @@ pub(crate) fn to_promql(e: &MetricExpr, next: &mut usize) -> Result<String, Erro
             let l = to_promql(lhs, next)?;
             let r = to_promql(rhs, next)?;
             // Between two scalars, LogQL comparisons return 0 or 1 without `bool`.
-            let b = *bool_mod || (op.is_comparison() && lhs.is_scalar() && rhs.is_scalar());
+            let b = op.is_comparison() && (*bool_mod || (lhs.is_scalar() && rhs.is_scalar()));
             let mut m = String::new();
             if b {
                 m.push_str(" bool");
@@ -619,7 +619,6 @@ pub(crate) fn to_promql(e: &MetricExpr, next: &mut usize) -> Result<String, Erro
             let re = crate::goregex::translate(regex).map_err(Error::Eval)?;
             format!("label_replace({inner}, {}, {}, {}, {})", prom_str(dst), prom_str(replacement), prom_str(src), prom_str(&re))
         }
-        MetricExpr::Neg(inner) => format!("-({})", to_promql(inner, next)?),
     })
 }
 
@@ -684,7 +683,7 @@ pub(crate) fn eval_metric(src: &dyn LogSource, e: &MetricExpr, grid: Grid, insta
 pub(crate) fn collect_ranges<'a>(e: &'a MetricExpr, out: &mut Vec<&'a MetricExpr>) {
     match e {
         MetricExpr::Range { .. } => out.push(e),
-        MetricExpr::Vector { inner, .. } | MetricExpr::LabelReplace { inner, .. } | MetricExpr::Neg(inner) => collect_ranges(inner, out),
+        MetricExpr::Vector { inner, .. } | MetricExpr::LabelReplace { inner, .. } => collect_ranges(inner, out),
         MetricExpr::Binary { lhs, rhs, .. } => {
             collect_ranges(lhs, out);
             collect_ranges(rhs, out);

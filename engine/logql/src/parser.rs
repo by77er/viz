@@ -5,7 +5,7 @@
 use crate::ast::*;
 use crate::error::Error;
 use crate::lexer::{lex, parse_error, Tok, Token};
-use crate::text::{parse_bytes, parse_go_duration, parse_range_duration};
+use crate::text::{parse_bytes, parse_go_duration};
 
 pub fn parse(src: &str) -> Result<Expr, Error> {
     let toks = lex(src)?;
@@ -37,6 +37,9 @@ struct Parser<'a> {
     i: usize,
     depth: usize,
 }
+
+/// Words the grammar reserves, refused as label names in selectors and label filters.
+const RESERVED: &[&str] = &["by", "without", "bool", "on", "ignoring", "group_left", "group_right", "offset", "and", "or", "unless"];
 
 const STAGE_KEYWORDS: &[&str] = &[
     "json", "logfmt", "regexp", "pattern", "unpack", "line_format", "label_format", "decolorize", "drop", "keep", "unwrap",
@@ -160,9 +163,6 @@ impl<'a> Parser<'a> {
             let rhs = self.expr(next_min)?;
             let (l, lpos) = self.metric(lhs, "binary operation")?;
             let (r, _) = self.metric(rhs, "binary operation")?;
-            if bool_mod && !op.is_comparison() {
-                return Err(self.err_at(op_pos, "syntax error: bool modifier can only be used on comparison operators"));
-            }
             if matching.group.is_some() && op.is_set() {
                 return Err(self.err_at(op_pos, format!("syntax error: no grouping allowed for \"{}\" operation", op.as_str())));
             }
@@ -226,7 +226,10 @@ impl<'a> Parser<'a> {
                     "vector" => {
                         self.next();
                         self.expect(Tok::LParen)?;
-                        let v = self.signed_number()?;
+                        let v = match self.next() {
+                            Tok::Number(v, _) => v,
+                            other => return Err(self.err_at(self.toks[self.i - 1].pos, format!("syntax error: unexpected {}, expecting NUMBER", other.describe()))),
+                        };
                         self.expect(Tok::RParen)?;
                         Ok(Node::Metric(MetricExpr::VectorLit(v), pos))
                     }
@@ -247,9 +250,6 @@ impl<'a> Parser<'a> {
                         self.expect(Tok::RParen)?;
                         crate::goregex::compile_anchored(&regex)
                             .map_err(|e| self.err_at(regex_pos, format!("invalid regex in label_replace: {e}")))?;
-                        if !valid_label_name(&dst) {
-                            return Err(self.err_at(pos, format!("invalid destination label name in label_replace(): {dst}")));
-                        }
                         Ok(Node::Metric(MetricExpr::LabelReplace { inner: Box::new(inner), dst, replacement, src, regex }, pos))
                     }
                     "approx_topk" => Err(Error::Unsupported("approx_topk (probabilistic aggregation) is not implemented".into())),
@@ -382,7 +382,11 @@ impl<'a> Parser<'a> {
     fn range_duration(&mut self) -> Result<i64, Error> {
         let pos = self.pos();
         let d = match self.next() {
-            Tok::Unit(t) => parse_range_duration(&t).ok_or_else(|| self.err_at(pos, format!("syntax error: invalid duration {t:?}")))?,
+            Tok::Unit(t) => crate::text::parse_prom_duration(&t).ok_or_else(|| self.err_at(pos, format!("syntax error: invalid duration {t:?}")))?,
+            Tok::Number(v, t) if v == 0.0 => {
+                let _ = t;
+                0
+            }
             other => return Err(self.err_at(pos, format!("syntax error: unexpected {}, expecting DURATION", other.describe()))),
         };
         Ok(d)
@@ -428,8 +432,8 @@ impl<'a> Parser<'a> {
             offset_ns = if neg { -d } else { d };
         }
         let range_ns = range.unwrap_or(0);
-        if range_ns <= 0 {
-            return Err(self.err_at(sel_pos, "syntax error: range must be positive"));
+        if range_ns < 0 {
+            return Err(self.err_at(sel_pos, "syntax error: range must not be negative"));
         }
         self.depth -= 1;
         Ok(LogRange { log: LogExpr { matchers, stages }, unwrap, range_ns, offset_ns })
@@ -449,6 +453,11 @@ impl<'a> Parser<'a> {
             if *self.peek() == Tok::RBrace {
                 self.next();
                 break;
+            }
+            if let Tok::Ident(w) = self.peek() {
+                if RESERVED.contains(&w.as_str()) {
+                    return Err(self.err_here(format!("syntax error: unexpected {w}, expecting IDENTIFIER or }}")));
+                }
             }
             let name = self.ident()?;
             let op_pos = self.pos();
@@ -544,7 +553,10 @@ impl<'a> Parser<'a> {
                 "line_format" => {
                     let p = self.pos();
                     let t = self.string()?;
-                    crate::template::Template::parse(&t).map_err(|e| self.err_at(p, format!("invalid line template: {e}")))?;
+                    crate::template::Template::parse(&t).map_err(|e| match e {
+                        crate::template::TemplateError::Unsupported(m) => Error::Unsupported(m),
+                        e => self.err_at(p, format!("invalid line template: {e}")),
+                    })?;
                     Stage::LineFormat(t)
                 }
                 "label_format" => Stage::LabelFormat(self.label_format()?),
@@ -640,7 +652,10 @@ impl<'a> Parser<'a> {
                 Tok::Str(t) => {
                     let tp = self.pos();
                     self.next();
-                    crate::template::Template::parse(&t).map_err(|e| self.err_at(tp, format!("invalid label template: {e}")))?;
+                    crate::template::Template::parse(&t).map_err(|e| match e {
+                        crate::template::TemplateError::Unsupported(m) => Error::Unsupported(m),
+                        e => self.err_at(tp, format!("invalid label template: {e}")),
+                    })?;
                     LabelFmt::Template { dst: dst.clone(), template: t }
                 }
                 _ => return Err(self.unexpected()),
@@ -751,6 +766,11 @@ impl<'a> Parser<'a> {
             let f = self.label_filter()?;
             self.expect(Tok::RParen)?;
             return Ok(f);
+        }
+        if let Tok::Ident(w) = self.peek() {
+            if RESERVED.contains(&w.as_str()) {
+                return Err(self.err_here(format!("syntax error: unexpected {w}")));
+            }
         }
         let name = self.ident()?;
         let op_pos = self.pos();

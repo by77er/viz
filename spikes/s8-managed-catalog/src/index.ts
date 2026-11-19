@@ -369,6 +369,9 @@ export default {
             msToSuccess: quantiles(all.map((r) => r.ms)),
             commitRequestMs: quantiles(all.flatMap((r) => r.attempts.map((a) => a.ms))),
             statuses: all.flatMap((r) => r.attempts.map((a) => a.status)).reduce<Record<string, number>>((m, st) => ((m[st] = (m[st] ?? 0) + 1), m), {}),
+            // What an attempt with an unknown outcome or a refusal said, by message.
+            details: all.flatMap((r) => r.attempts.filter((a) => a.kind === 'unknown' || a.kind === 'rejected').map((a) => `${a.kind} ${a.status}: ${(a.detail ?? '').slice(0, 160)}`)).reduce<Record<string, number>>((m, d) => ((m[d] = (m[d] ?? 0) + 1), m), {}),
+            names: args.names,
             wallMs: lastEnd - firstStart,
             commitsPerSecond: +(ids.length / ((lastEnd - firstStart) / 1000)).toFixed(2),
             startedLateMs: parts.map((p) => p.startedLateMs),

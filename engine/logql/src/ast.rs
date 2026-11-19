@@ -382,8 +382,6 @@ pub enum MetricExpr {
     /// `vector(s)`
     VectorLit(f64),
     LabelReplace { inner: Box<MetricExpr>, dst: String, replacement: String, src: String, regex: String },
-    /// `-expr` on a vector (literals fold the sign in).
-    Neg(Box<MetricExpr>),
 }
 
 impl MetricExpr {
@@ -392,7 +390,6 @@ impl MetricExpr {
         match self {
             MetricExpr::Literal(_) => true,
             MetricExpr::Binary { lhs, rhs, .. } => lhs.is_scalar() && rhs.is_scalar(),
-            MetricExpr::Neg(e) => e.is_scalar(),
             _ => false,
         }
     }
@@ -401,7 +398,7 @@ impl MetricExpr {
     pub fn ranges<'a>(&'a self, out: &mut Vec<&'a LogRange>) {
         match self {
             MetricExpr::Range { range, .. } => out.push(range),
-            MetricExpr::Vector { inner, .. } | MetricExpr::LabelReplace { inner, .. } | MetricExpr::Neg(inner) => inner.ranges(out),
+            MetricExpr::Vector { inner, .. } | MetricExpr::LabelReplace { inner, .. } => inner.ranges(out),
             MetricExpr::Binary { lhs, rhs, .. } => {
                 lhs.ranges(out);
                 rhs.ranges(out);

@@ -174,7 +174,7 @@ async function publish() {
 async function contend() {
   const out = []
   for (const catalog of CATALOGS) {
-    for (const n of [2, 4, 8]) {
+    for (const n of (process.env.S8_COMMITTERS ?? '2,4,8').split(',').map(Number)) {
       const name = `contend_${catalog.replace('-', '')}_${n}_${RUN}`
       await call('/setup', { catalog, ns: 'bench', name, table: 'metric_samples' })
       const { names } = await job('/contend', { catalog, ns: 'bench', name, table: 'metric_samples', committers: n, commits: 10, template, run: `${name}-${Date.now()}` })
@@ -183,7 +183,7 @@ async function contend() {
       console.log(`${catalog} x${n}: ${r.succeeded}/${r.commits} committed, ${r.conflicts} conflicts, ${r.unknowns} unknown, attempts/commit p50 ${r.attemptsPerCommit.p50} max ${r.attemptsPerCommit.max}, statuses ${JSON.stringify(r.statuses)}, chain ok ${r.verify.ok} (${r.verify.chain})`)
     }
   }
-  save(`contend${CATALOGS.length === 1 ? '-' + CATALOGS[0] : ''}.json`, { at: stamp(), runs: out })
+  save(`contend${CATALOGS.length === 1 ? '-' + CATALOGS[0] : ''}-${RUN}.json`, { at: stamp(), runs: out })
 }
 
 async function unknown() {

@@ -264,13 +264,6 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Error> {
 fn lex_number(bytes: &[(usize, char)], start: usize) -> usize {
     let n = bytes.len();
     let mut j = start;
-    if bytes[j].1 == '0' && j + 1 < n && (bytes[j + 1].1 == 'x' || bytes[j + 1].1 == 'X') {
-        j += 2;
-        while j < n && bytes[j].1.is_ascii_hexdigit() {
-            j += 1;
-        }
-        return j;
-    }
     while j < n && bytes[j].1.is_ascii_digit() {
         j += 1;
     }
@@ -297,9 +290,6 @@ fn lex_number(bytes: &[(usize, char)], start: usize) -> usize {
 }
 
 pub fn parse_number(text: &str) -> Option<f64> {
-    if let Some(h) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        return u64::from_str_radix(h, 16).ok().map(|v| v as f64);
-    }
     text.parse::<f64>().ok()
 }
 

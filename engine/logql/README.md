@@ -77,8 +77,10 @@ r.data_json();   // {"resultType":"matrix","result":[...],"stats":{...}}: Loki's
   `bottomk` (grouping before or after the argument), `sort`, `sort_desc`; **binary operators**
   `+ - * / % ^`, comparisons with and without `bool` (between scalars they return 0 or 1),
   `and`, `or`, `unless`, with `on` / `ignoring` / `group_left` / `group_right`;
-  **`label_replace`**, **`vector()`**, number literals (decimal, exponent, hex, signed),
-  **`offset`** (also negative), comments (`#`).
+  **`label_replace`**, **`vector()`**, number literals (decimal and exponent; a sign only on
+  literals; hex is refused as Loki does), ranges and **`offset`** in Prometheus duration syntax
+  (`[1h30m]`, `[1d]`, also negative offsets), comments (`#`). Grouping keywords (`by`,
+  `without`, `on`, …) are reserved and refused as label names, as in Loki.
 - **Templates**: text and actions with `{{-`/`-}}`, comments, pipelines, fields and chains,
   variables (`:=`, `=`), literals, parentheses, `if`/`else if`/`else`, `range` (with `else`,
   `break`, `continue`), `with`. Functions: Go's `and or not len index slice print printf
@@ -201,7 +203,7 @@ fixed: colons kept in sanitised keys; `| unpack != "x"` parsed as a label filter
 `Value is string, but can't find closing '"' symbol` and `Malformed JSON error` wording;
 `|>` requires non-empty captures; `ip()` label filters search the value for addresses and
 pass entries that already carry an error; `__error__` filters run after the other filters
-of their run; line filters after `decolorize`. Earlier, hand-written probes (about 250
+of their run; line filters after `decolorize`. Earlier, hand-written probes (about 320
 queries) fixed the window edges, `rate_counter`, error precedence, sanitising, pattern
 anchoring and the instant/range shapes before the generated runs.
 

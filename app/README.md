@@ -295,7 +295,8 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
   specialised scanner for `data.result`, exact for every number (property-tested equal to
   `JSON.parse` and `Number`, the body cut into pieces anywhere); anything it does not read
   falls back to `JSON.parse` with the same answer. Series values stay in Float64Arrays from
-  the parser to the chart, legend, table and digest (a gap is NaN).
+  the parser to the legend, table and digest (a gap is NaN); the chart converts the series it
+  draws (eight by default) to arrays with `null` gaps, which is what uPlot takes.
 - The query window is computed in whole milliseconds, as the API evaluates it (start and end
   rounded to the millisecond, the step a whole number of milliseconds), so a sub-second step
   asks for the grid the API answers on.
