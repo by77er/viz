@@ -1041,7 +1041,10 @@ ways depending on its query plan (its storage layer applying a condition itself 
 evaluator), viz follows the evaluator; where Tempo contradicts its documentation (union
 structural operators such as `&>>` returning only some of the left-hand spans), viz follows
 the documentation. Each such difference is a named rule in the crate's differential comparison
-(`engine/traceql/README.md`).
+(`engine/traceql/README.md`). Nesting is bounded where the query is parsed: deeper than 200
+levels of parser recursion or of syntax-tree height, a regex nested deeper than 64 levels or
+compiling to more than 1 MiB, or more than 16 regexes, and `parse` refuses the query, so no
+later pass can exhaust a stack (a stack overflow traps a WASM instance; it is not an error).
 
 **Alternatives.** A permissively licensed parser crate or a parser generator (none exists for
 TraceQL; a generated parser carries grammar tables into the WASM module: `promql-parser` and
@@ -1049,17 +1052,24 @@ what it pulls in, grammar tables included, are about 90% of `viz-promql`'s modul
 `engine/promql/README.md`). Reproducing every observed Tempo answer, plan artefacts included
 (byte-compatible with one Tempo release, but it would copy defects: Tempo returns nothing for
 a lone `{ !(status = error) }`, and `{ v = "1.0" || .b }` drops spans without `b`). Following
-only the documentation (leaves precedence and the metrics grid undefined).
+only the documentation (leaves precedence and the metrics grid undefined). For nesting:
+explicit heap stacks in every pass (parser, validation, conversion, planning, evaluation and
+an iterative `Drop`) instead of a limit, which accepts any depth Tempo does but rewrites every
+recursive function.
 
 **Why.** The hand-written parser is small (no grammar tables in the module: the whole engine
-is 1.29 MB raw and 0.44 MB gzipped, measured here), reports positions directly, and keeps the
+is 1.28 MB raw and 0.44 MB gzipped, measured here), reports positions directly, and keeps the
 clean-room record simple (D35). Tempo is the compatibility target, so its evaluator settles
 what the documentation leaves open; answers that depend on Tempo's internal plan cannot be
-specified and are not copied.
+specified and are not copied. One bound at `parse` covers every pass. At 200 levels the
+costliest query needs under 128 KiB of V8's stack and of the module's own (measured in Node;
+the defaults are about 1 MiB each), and real queries are far shallower.
 
 **Would change if.** Tempo documents a different semantics, or fixes the plan-dependent cases
 differently; or clients turn out to depend on a Tempo artefact (then that one rule is copied
-and recorded here).
+and recorded here). For the limits: clients send longer chains than 197 operators (generated
+`||` lists are the likely case; a chain of one associative operator could then be built as a
+balanced tree), or a Workers isolate turns out to have a much smaller stack than Node's.
 
 ## D41. Series-level pruning: the layout stays; the index fragment gains row-group series bounds and the footer's place; pages are skipped in memory, not fetched
 

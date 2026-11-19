@@ -3,12 +3,12 @@
 //!
 //! A stack overflow is not a panic. Natively it aborts the whole test process ("has
 //! overflowed its stack"); in WebAssembly it traps the instance. So these tests run each
-//! query on a thread with a bounded stack ([`STACK`]), through every entry point: `parse`, `plan`, `search`,
-//! `matching_spansets`, `query_range`, `query_instant` and the JSON writers. A regression
-//! shows as this test binary dying. `tools/wasm-probe/check.mjs` runs the same shapes in
-//! the WASM build.
+//! query on a thread with a bounded stack ([`STACK`]), through every entry point: `parse`,
+//! `plan`, `search`, `matching_spansets`, `query_range`, `query_instant` and the JSON
+//! writers. A regression shows as this test binary dying. `tools/wasm-probe/check.mjs` runs
+//! the same shapes in the WASM build. README, Verification, section 7, has the measurements.
 //!
-//! `PROPTEST_CASES` sets the number of cases of the property (default 48).
+//! `PROPTEST_CASES` sets the number of cases of each property (default 48).
 
 #[path = "common/shapes.rs"]
 mod shapes;
@@ -19,7 +19,7 @@ use viz_traceql::*;
 
 /// Stack for every query here. Debug frames are 5 to 10 times larger than release ones: at
 /// the limit the costliest shape (a 200-term `rate() + rate() + ...`) needs 2.6 MiB in the
-/// debug build and 280 KiB in the release build, natively (README, "Nesting limits").
+/// debug build and 280 KiB in the release build, natively.
 /// A query that escaped the limits recurses thousands of levels and overflows either.
 const STACK: usize = if cfg!(debug_assertions) { 4 << 20 } else { 512 << 10 };
 
@@ -32,7 +32,7 @@ fn cases() -> u32 {
 }
 
 /// Runs `f` on a thread with a [`STACK`]-byte stack. An overflow aborts the process.
-fn small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+fn bounded_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     match std::thread::Builder::new().stack_size(STACK).spawn(f).map(|h| h.join()) {
         Ok(Ok(v)) => v,
         Ok(Err(_)) => panic!("the query thread panicked"),
@@ -84,7 +84,7 @@ fn is_depth_error(r: &Result<usize, Error>) -> bool {
 
 #[test]
 fn each_shape_runs_at_its_limit_and_is_refused_one_past_it() {
-    let failures = small_stack(|| {
+    let failures = bounded_stack(|| {
         let mut failures = Vec::new();
         for s in NESTED {
             // The boundary, found by trying every n up to just past MAX_DEPTH.
@@ -115,7 +115,7 @@ fn each_shape_runs_at_its_limit_and_is_refused_one_past_it() {
 
 #[test]
 fn far_past_the_limit_is_refused_not_crashed() {
-    let failures = small_stack(|| {
+    let failures = bounded_stack(|| {
         let mut failures = Vec::new();
         for s in NESTED {
             let n = fill(s.make, MAX_QUERY_BYTES);
@@ -132,7 +132,7 @@ fn far_past_the_limit_is_refused_not_crashed() {
 
 #[test]
 fn long_flat_queries_are_not_nesting() {
-    let failures = small_stack(|| {
+    let failures = bounded_stack(|| {
         let mut failures = Vec::new();
         for s in FLAT {
             // As long as the size limit allows, and well past MAX_DEPTH.
@@ -150,7 +150,7 @@ fn long_flat_queries_are_not_nesting() {
 
 #[test]
 fn regexes_are_bounded_in_nesting_size_and_number() {
-    small_stack(|| {
+    bounded_stack(|| {
         let nested = |n: usize| format!("{{ .s =~ \"{}x{}\" }}", "(".repeat(n), ")".repeat(n));
         let nest = REGEX_NEST_LIMIT as usize;
         let mut accepted = 0;
@@ -187,8 +187,7 @@ proptest! {
 
     /// Random stacks of nesting constructs, at random depths up to 15 times the limit, never
     /// crash; whatever is accepted also evaluates on the bounded stack. (In a run of 300
-    /// cases, 126 were accepted and evaluated and 174 refused for depth; README, "Nesting
-    /// limits".)
+    /// cases, 126 were accepted and evaluated and 174 refused for depth.)
     #[test]
     fn random_deep_nesting_never_crashes(
         field in depths(7),
@@ -197,7 +196,7 @@ proptest! {
         to_metrics in proptest::bool::ANY,
     ) {
         let q = deep_query(&field, &spanset, to_metrics.then_some(metrics.as_slice()));
-        let r = small_stack(move || run_all(&q).map(|_| ()));
+        let r = bounded_stack(move || run_all(&q).map(|_| ()));
         prop_assert!(
             matches!(&r, Ok(()) | Err(Error::Parse { .. } | Error::Validation { .. } | Error::Unsupported(_))),
             "{r:?}"
@@ -210,7 +209,7 @@ proptest! {
         let unit: String = unit.iter().map(|&t| TOKENS[t]).collect();
         let n = n.min(MAX_QUERY_BYTES / unit.len().max(1));
         let q = format!("{}{{ }}", unit.repeat(n));
-        let r = small_stack(move || run_all(&q).map(|_| ()));
+        let r = bounded_stack(move || run_all(&q).map(|_| ()));
         prop_assert!(!matches!(r, Err(Error::Eval(_)) | Err(Error::Source(_))), "{r:?}");
     }
 }

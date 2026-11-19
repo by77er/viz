@@ -15,7 +15,8 @@ fetched at test time and never stored here.
 no parser crate or generator: there is no permissively licensed TraceQL grammar to reuse,
 and a hand-written parser carries no grammar tables into the WASM module (the PromQL
 parser's tables are about 90% of `viz-promql`'s module) and reports positions directly.
-The only runtime dependency is `regex` (MIT/Apache-2.0).
+Its recursion and the trees it builds are bounded, so no query can exhaust the stack
+("Limits" below; D40). The only runtime dependency is `regex` (MIT/Apache-2.0).
 
 ```rust
 use viz_traceql::{search, query_range, plan, MemSource, RangeRequest, SearchRequest, Trace};
@@ -105,6 +106,29 @@ Everything here is covered by `tests/api.rs` and the differential run unless not
 | `topk`/`bottomk` | per point; ties broken by labels (Tempo: arbitrary) | |
 | search order | most recent trace first, then trace id (Tempo: first found) | |
 
+### Limits: refused with an error, never a crash
+
+A stack overflow is not an error a caller can handle: natively it aborts the process, in
+WebAssembly it traps the instance. Every recursive pass (parser, validation, conversion,
+planning, evaluation, dropping the tree) recurses over the query's syntax tree, so `parse`
+bounds that tree and nothing else needs a guard. A query past a limit gets
+`Error::Validation` with a position.
+
+| Limit | Value | What counts |
+|---|---|---|
+| `MAX_QUERY_BYTES` | 128 KiB | query text |
+| `MAX_DEPTH`, parser recursion | 200 | counted on the way down: braces, unary operators, the right side of `^`, each precedence level entered, parentheses two levels each |
+| `MAX_DEPTH`, tree height | 200 | counted on the way up: a chain `a && b && c`, `x + y + z` or `{ } >> { } >> { }` is parsed by a loop but builds a tree one level deeper per operator |
+| `REGEX_NEST_LIMIT` | 64 | nesting in a pattern as the regex parser counts it (each group, repetition, alternation, concatenation); the regex compiler recurses over it |
+| `REGEX_SIZE_LIMIT` | 1 MiB per regex | compiled size (still compiles `\w{20}`; Unicode classes are large) |
+| `REGEX_DFA_SIZE_LIMIT` | 256 KiB per regex | lazy-DFA cache |
+| `MAX_REGEXES` | 16 per query | with the two above, at most about 26 MiB of a 128 MB isolate (measured: a regex at the size limit holds about 1.3 MiB) |
+
+In practice: 98 nested parentheses, 197 operators in one chain, about 195 unary operators.
+`tests/common/shapes.rs` lists 25 shapes with the exact largest accepted `n`. Long flat
+queries are not nesting: 5,000 pipeline stages, `topk` stages, `by` fields, quantiles or
+hints run. How this was verified is in Verification, section 7.
+
 ## Not implemented
 
 Each returns `Error::Unsupported`, or a parse error where Tempo also rejects it.
@@ -126,6 +150,10 @@ Each returns `Error::Unsupported`, or a parse error where Tempo also rejects it.
   for missing fields, repeats keys, and echoes the matched array element).
 - Span ids are compared without leading zeros on both sides (Tempo did not match
   `span:id` for ids with a leading zero byte).
+- Queries past the limits above: nesting deeper than 200 levels, more than 16 regexes, a
+  regex nested deeper than 64 levels or compiling to more than 1 MiB. Tempo (Go, growable
+  stacks) accepts them; viz refuses them with `Error::Validation` rather than risk the
+  isolate.
 
 ## Verification
 
@@ -135,7 +163,7 @@ Cloudflare. `CARGO_TARGET_DIR` was outside the repository.
 
 **What `cargo test -j 2` runs** (as CI does, `deploy/ci/matrix.mjs`): offline, with no
 Go and no network: `tests/api.rs` (14 tests), `tests/props.rs` (6 properties, 48 cases
-each), `tests/conformance.rs` (prints `SKIPPED: … not found` and passes when the Tempo list
+each), `tests/limits.rs` (4 tests and 2 properties, section 7), `tests/conformance.rs` (prints `SKIPPED: … not found` and passes when the Tempo list
 has not been fetched), and the differential exporter, which is `#[ignore]`d. Nothing in the
 default run needs Tempo, its corpus or Go. Verified on the final code with `testdata/upstream/`
 deleted, Go removed from `PATH` and `cargo test -j 2 --offline`: api 14 passed, props 6
@@ -147,9 +175,9 @@ warm build directory). The checks that do need them are explicit commands:
 | Conformance against Tempo's example list | `tools/fetch_tempo_tests.sh && cargo test --test conformance -- --nocapture` | network (raw.githubusercontent.com); the file lands in git-ignored `testdata/upstream/` |
 | Differential run against Tempo | the commands in `tools/godiff/README.md` | Go and the Go module proxy (fetches Tempo v3.1.1 and toolchain go1.27.3, about 1.1 GB, outside the repository) |
 | Black-box probes | `VIZ_TQ_WORK=$SCRATCH python3 -I tools/probes/probe.py <queries.txt> [search\|range\|instant]` | the godiff binary in `$SCRATCH/bin` |
-| Long property run | `PROPTEST_CASES=2000 cargo test --release --test props` | |
+| Long property run | `PROPTEST_CASES=2000 cargo test --release --test props` (and `--test limits`) | |
 | Mutation checks | `python3 -I tools/mutate.py $SCRATCH` (copies the crate; never edits it) | |
-| WASM size and load | `tools/wasm-probe`: `cargo build --release --target wasm32-unknown-unknown` with the flags below, then `node check.mjs <module>` | Node |
+| WASM size, load and limits | `tools/wasm-probe`: `cargo build --release --target wasm32-unknown-unknown` with the flags below, then `node check.mjs <module>` (exits non-zero on imports or any limit failure; add `node --stack-size=128` and `-C link-arg=-zstack-size=131072` for the margin check) | Node, the `wasm32-unknown-unknown` target |
 | Benchmark | `cargo run --release --example bench -- 20000 5` | |
 
 ### 1. Conformance against Tempo's example list (behavioural oracle)
@@ -287,8 +315,9 @@ addition (now exact: i128 for integers, Shewchuk partials for floats, as metrics
 ### 4. Mutation checks
 
 `python3 -I tools/mutate.py <scratch>` copies the crate to a scratch directory, applies one
-change at a time to the copy, runs `api`, `conformance` and `props` (48 cases), and removes
-the copy. The source tree is never modified.
+change at a time to the copy, runs `api`, `conformance`, `props` and `limits` (48 cases
+per property), and removes the copy. The source tree is never modified. A suite that dies
+of a stack overflow is reported as "aborted"; that is how a missing limit shows.
 
 | # | Mutant | Caught by |
 |---:|---|---|
@@ -308,9 +337,19 @@ the copy. The source tree is never modified.
 | 14 | a negated structural operator prunes traces without left-hand matches | api (`plans_say_what_a_query_reads`), props (`pruning_on_off_identical`) |
 | 15 | trace id printed with leading zeros | api (`search_json_has_tempo_shape`, `pipelines_aggregates_by_coalesce_select`) |
 | 16 | unscoped attribute looks at the resource first | api (`intrinsics_and_scopes`) |
+| 17 | tree height not bounded (chains build trees of any height) | limits (aborted: stack overflow) |
+| 18 | tree-height bound off by one (`> MAX_DEPTH + 1`) | limits (`each_shape_runs_at_its_limit_and_is_refused_one_past_it`) |
+| 19 | parser recursion not bounded | api (aborted), limits (aborted: stack overflow) |
+| 20 | unary minus before a spanset or number recurses uncounted (the defect found) | limits (aborted: stack overflow) |
+| 21 | field parentheses count one level, not two | limits (`each_shape_runs_at_its_limit_and_is_refused_one_past_it`) |
+| 22 | regex nesting at the regex crate's default (250) | limits (`regexes_are_bounded_in_nesting_size_and_number`) |
+| 23 | regex size at the regex crate's default (10 MiB) | limits (`regexes_are_bounded_in_nesting_size_and_number`) |
+| 24 | regexes per query not counted | limits (`regexes_are_bounded_in_nesting_size_and_number`) |
 
-**16 of 16 caught** on the final run (after the last semantic fixes); the copy was restored and re-run green after each,
-then deleted. The first run caught 13: mutant 3 then filtered the left side only, which is
+**24 of 24 caught** on the final run (after the limits were added); the copy was restored
+and re-run green after each, then deleted. Mutant 2 (regex not anchored) is now also caught
+by `limits`. The lazy-DFA cache limit has no mutant: it bounds memory and has no observable
+output to test. The first run of mutants 1–16 caught 13: mutant 3 then filtered the left side only, which is
 an equivalent mutant (an unconnected span can relate only to unconnected spans, and the
 right side is filtered), so it was moved to the right side; mutants 5 and 16 survived
 because no test covered `>>` precedence or a key present on both span and resource, and
@@ -328,12 +367,12 @@ under Node 22:
 
 | | |
 |---|---:|
-| `.wasm` | **1,285,286 B** (final build) |
-| gzip -9 (Node `zlib`, as `check.mjs` reports) | **438,117 B** |
+| `.wasm` | **1,284,354 B** (final build, with the limits) |
+| gzip -9 (Node `zlib`, as `check.mjs` reports) | **436,541 B** |
 | imports | **0** (instantiates with `{}`) |
 | exports | `memory`, `viz_tq_alloc`, `viz_tq_free`, `viz_tq_run` |
-| `new WebAssembly.Instance(module, {})` | 0.24 ms (final build, load average 8.5); earlier builds 0.34 ms and 2.2 ms at load average 15–19 (means of 200) |
-| linear memory after the run | 2 MiB |
+| `new WebAssembly.Instance(module, {})` | 0.23 ms (final build, load average 5.5); earlier builds 0.24–0.34 ms and 2.2 ms at load average 8–19 (means of 200) |
+| linear memory (peak; it never shrinks) | 2.1 MiB after the six queries below; 18 MiB after all the limit checks of section 7 (128 KiB queries, 16 regexes) |
 
 The only dependency is `regex` (Unicode tables trimmed as in `viz-promql`); no
 `wasm-bindgen`, `js-sys` or clock code is linked. The probe answered a search, a structural
@@ -363,6 +402,60 @@ a `MemSource`; median of 5 runs; single-threaded; **load average 18.9 → 17.9 o
 `MemSource` with pruning on evaluates the plan's predicates itself (as storage would) and
 copies the kept spans, so it is slower in memory (1.0–1.4 s here); the plan pays off when
 storage evaluates it on row-group statistics and skips I/O, which is not measured here.
+
+### 7. Nesting and regex limits
+
+**The defect, shown before fixing it.** On a scratch copy of the previous code (debug
+build, 8 MiB main thread), `parse` aborted with `stack overflow` on `- - - … { }` (20,000
+signs, 40 KB) and on 15,000-term `&&`, `>>` and `+` chains (under 128 KiB). Parentheses
+and `!` were already refused at 200 levels. Unary minus before a spanset or number recursed
+without being counted, and operator chains are parsed by loops that the recursion counter
+never saw, but that build trees every later pass recurses over.
+
+**Tests** (`tests/limits.rs`, shapes in `tests/common/shapes.rs`). Every query runs on a
+thread with a bounded stack (4 MiB in the debug build, 512 KiB in release) through `parse`,
+`plan`, `search`, `matching_spansets`, `query_range`, `query_instant` and the JSON writers.
+An overflow aborts the test binary, so a regression cannot pass quietly.
+
+| Test | Checks |
+|---|---|
+| `each_shape_runs_at_its_limit_and_is_refused_one_past_it` | 25 nesting shapes (field parentheses, `!`, unary minus, `&&` `\|\|` `+` `*` `^` and comparison chains, spanset parentheses and chains, `>>` chains, nested `>`, nested pipelines, metrics parentheses, `+` chains and unary minus, thresholds, scalar-filter constants, aggregate, `by()` and metrics arguments, a 64-level regex inside parentheses): the largest accepted `n` equals the recorded one, that query evaluates, `n + 1` gets the depth error |
+| `far_past_the_limit_is_refused_not_crashed` | each shape repeated to fill 128 KiB (up to 65,000 levels): the depth error |
+| `long_flat_queries_are_not_nesting` | 5 flat shapes repeated 5,000 times run |
+| `regexes_are_bounded_in_nesting_size_and_number` | 64-level pattern accepted, 65 refused, 65,000 refused; `x{100000}` (compiles under the regex crate's default 10 MiB) refused; `\w{16}` accepted; 16 regexes run, 17 refused |
+| `random_deep_nesting_never_crashes` (property) | random stacks of 7 field, 7 spanset and 4 metrics wrappers, 0 to 3,000 deep each: accepted queries evaluate, the rest get Parse, Validation or Unsupported. In a run of 300 cases, 126 were accepted and evaluated and 174 refused for depth |
+| `repeated_token_soup_never_crashes` (property) | a random 1–3 token unit from 28 tokens (unbalanced brackets, operators, strings, calls) repeated up to 30,000 times: no crash, no evaluation error |
+
+**Stack needed at the limit** (measured here: the smallest thread stack, found by bisection,
+on which the at-limit query runs through every entry point):
+
+| Shape at its limit | debug, native | release, native |
+|---|---:|---:|
+| `rate() + rate() + …` (199 terms) | 2,621 KiB | 278 KiB |
+| 98 field parentheses around a 64-level regex | 1,597 KiB | 224 KiB |
+| 98 spanset parentheses | 1,526 KiB | 219 KiB |
+| 98 field parentheses | 1,328 KiB | 195 KiB |
+| 197-term spanset `&&` chain | 1,016 KiB | 129 KiB |
+| 197-term field `&&` chain | 462 KiB | 52 KiB |
+
+Field parentheses first needed 638 KiB in release at 197 levels. Two changes brought them
+down: error construction, regex compilation and function-call parsing were moved out of
+the recursive functions (`#[inline(never)]`, 379 KiB), and a parenthesis now counts two
+levels, as spanset parentheses already did (195 KiB at 98).
+
+**In WebAssembly** (`tools/wasm-probe/check.mjs`, Node 22, release module). Every shape at
+its limit runs, one past it and filled to 128 KiB gets the depth error, and the flat
+shapes and regex limits behave as natively. There are 0 traps with V8's stack cut to
+128 KB (`node --stack-size=128`) and the module's own stack linked at 128 KiB
+(`-C link-arg=-zstack-size=131072`), both at once. The defaults are about 984 KB and
+1 MiB, so the margin is at least 7×. At `--stack-size=96` the regex-in-parentheses shape traps
+(`RangeError`). A shadow-stack overflow traps (`memory access out of bounds`; the stack is
+placed first in memory), it does not corrupt data.
+
+**Nothing else changed.** The four differential exports (A–D, 3,600 cases, 530 regex
+matches) were produced by the code before and after this change: viz's answers are
+byte-identical, so the comparison with Tempo (0 unexplained) still holds. Tempo's example
+list gives the same table (282 accepted, 0 failures).
 
 ## Integration (not part of this crate; what it needs)
 
@@ -396,7 +489,19 @@ storage evaluates it on row-group statistics and skips I/O, which is not measure
 - **Memory**: evaluation holds one trace at a time plus the search results and the metrics
   accumulators (series × points); `Limits` bounds series and points; nothing bounds span
   count per trace or result size beyond `limit`/`spss`.
-- **Regex dialect**: Rust `regex`, not Go `regexp`; both are RE2-like.
+- **Regex dialect**: Rust `regex`, not Go `regexp`; both are RE2-like. Lead, not verified
+  against Tempo: Rust's `\w`, `\d`, `\s` and `\b` are Unicode-aware by default, while Go's
+  are ASCII-only (training knowledge), so `=~ "\w+"` may match non-ASCII values that Tempo
+  does not. A probe with a non-ASCII value would settle it.
+- **Stack in Workers**: the limits leave at least 7× headroom on Node's default V8 stack
+  and on the module's 1 MiB stack. The stack size of a Workers isolate was not measured.
+- **Work per query**: a query within the limits can still be expensive. Each metrics
+  function in an arithmetic expression scans the source once, and parentheses allow
+  thousands of them in 128 KiB. Structural operators cost about |left| × |right| × depth
+  per trace. Nothing bounds CPU time; the caller's deadline must.
+- **Lazy-DFA cache** of 256 KiB per regex (the regex crate's default is 2 MiB, read from its
+  source): ordinary patterns fit, but a pathological one may fall back to slower matching.
+  Not measured.
 - **Performance**: about 0.5–1.7 M spans/s single-threaded here under heavy load; not
   measured in a Worker.
 
@@ -421,6 +526,7 @@ src/json.rs               Tempo HTTP API JSON
 tests/api.rs              behaviour on a hand-made trace set (Tempo's observed answers)
 tests/conformance.rs      Tempo's example list as an oracle (fetched at test time)
 tests/props.rs            properties; tests/common: data and query generators
+tests/limits.rs           nesting and regex limits; tests/common/shapes.rs: the nesting shapes
 tests/differential.rs     exporter for the differential run (ignored test)
 tools/godiff/             Tempo black-box harness (AGPL, test-only; see its README)
 tools/compare.py          comparison and classification

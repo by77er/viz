@@ -90,6 +90,10 @@ Other specifications: the OpenTelemetry trace data model and OTLP/JSON encoding
 (https://opentelemetry.io/docs/specs/otel/trace/api/, https://opentelemetry.io/docs/specs/otlp/),
 known from training and not re-fetched.
 
+Dependencies (not Tempo): the source of the `regex` 1.13.2 and `regex-syntax` 0.8.12 crates
+(MIT/Apache-2.0) in the local cargo registry, read for their default limits (compiled size
+10 MiB, lazy-DFA cache 2 MiB, nesting 250) when the regex limits were set.
+
 ## Fetched at test time (never committed)
 
 | What | From | Where it lives | Use |

@@ -13,13 +13,16 @@ let inst;
 for (let i = 0; i < 200; i++) inst = new WebAssembly.Instance(mod, {});
 const instMs = (performance.now() - t0) / 200;
 function run(kind, q, n) {
-  const { memory, viz_tq_alloc, viz_tq_run } = inst.exports;
+  const { memory, viz_tq_alloc, viz_tq_free, viz_tq_run } = inst.exports;
   const req = new TextEncoder().encode(q + '\0' + n);
   const p = viz_tq_alloc(req.length);
   new Uint8Array(memory.buffer, p, req.length).set(req);
   const out = viz_tq_run(kind, p, req.length);
   const len = new DataView(memory.buffer).getUint32(out, true);
-  return new TextDecoder().decode(new Uint8Array(memory.buffer, out + 4, len));
+  const text = new TextDecoder().decode(new Uint8Array(memory.buffer, out + 4, len));
+  viz_tq_free(p, req.length);
+  viz_tq_free(out, len + 4);
+  return text;
 }
 const results = {};
 for (const [kind, q] of [[0, '{ resource.service.name = "db" && span.http.status_code >= 500 }'], [0, '{ } >> { status = error } | count() > 2'], [1, '{ } | rate() by (resource.service.name)'], [1, '{ } | quantile_over_time(duration, 0.5, 0.9)'], [0, '{ .a = '], [0, '{ } | compare({ status = error })']]) {
@@ -27,6 +30,8 @@ for (const [kind, q] of [[0, '{ resource.service.name = "db" && span.http.status
   const out = run(kind, q, 200);
   results[q] = { ms: +(performance.now() - t).toFixed(2), head: out.slice(0, 80) };
 }
+
+const memoryAfterQueries = inst.exports.memory.buffer.byteLength;
 
 // ---- limits: same shapes and boundaries as tests/common/shapes.rs (MAX_DEPTH = 200).
 const MAX_QUERY_BYTES = 128 * 1024;
@@ -103,6 +108,7 @@ const regex = {
 };
 for (const k of ['nest64', 'unicode', 'count16']) if (isErr(regex[k])) failures.push(`regex ${k} (within the limits): ${regex[k].slice(0, 120)}`);
 for (const k of ['nest65', 'nestFar', 'size', 'count17']) if (!isErr(regex[k])) failures.push(`regex ${k}: ${regex[k].slice(0, 120)}`);
-const { memory } = inst.exports;
-console.log(JSON.stringify({ bytes: bytes.length, gzip9: gzipSync(bytes, { level: 9 }).length, imports: imports.length, exports: WebAssembly.Module.exports(mod).map(e => e.name), instantiateMs: +instMs.toFixed(3), memoryBytes: memory.buffer.byteLength, results, limits, traps, failures }, null, 1));
+// Linear memory never shrinks: these are peaks (a trap replaces the instance).
+const memoryAfterLimits = inst.exports.memory.buffer.byteLength;
+console.log(JSON.stringify({ bytes: bytes.length, gzip9: gzipSync(bytes, { level: 9 }).length, imports: imports.length, exports: WebAssembly.Module.exports(mod).map(e => e.name), instantiateMs: +instMs.toFixed(3), memoryAfterQueries, memoryAfterLimits, results, limits, traps, failures }, null, 1));
 if (imports.length !== 0 || failures.length !== 0) process.exit(1);

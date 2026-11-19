@@ -13,7 +13,7 @@ to find design and implementation bugs before more code is written on top of the
 | `bfs/model.ts` | Second model, written independently, at the granularity of the implementation's methods (`shard.ts`, `ledger.ts`, `flush.ts`, `compact.ts`, `janitor.ts`, `query/coordinator.ts`), including the PLANNED segment log of `contracts/LEDGER-LOG.md` and two tenants. |
 | `bfs/check.ts` | Explicit-state breadth-first model checker for it (TypeScript, no dependencies); also checks liveness as AG EF on the whole state graph. |
 | `bfs/run.ts` | Its experiments; writes `results/bfs/*.json` and `results/BFS.md`. |
-| `bfs/replay.ts` | Replays a recorded counterexample step by step against another configuration and says where it stops; writes `results/REPLAY.md`. |
+| `bfs/replay.ts` | Replays a recorded counterexample step by step against another configuration and says where it stops; writes `results/REPLAY.md`. With `--deadend`, replays a liveness counterexample in another configuration and searches forward from its last state for the goal. |
 | `fill-readme.mjs` | Regenerates every result table in this README from `results/` (`--write`). |
 | `results/RESULTS.md`, `results/BFS.md`, `results/REPLAY.md` | Every experiment with states, depth, time and every counterexample step by step; the replays. |
 
@@ -21,8 +21,9 @@ to find design and implementation bugs before more code is written on top of the
 npm install
 npm run check          # everything: typecheck, Quint tests, explicit-state checker, TLC, simulation; then the tables here
 npm run check:quick    # typecheck, Quint tests, explicit-state guard-off + findings, TLC guard-off + design-as-written (~30 min)
-npm run check:bfs      # explicit-state checker only;   node bfs/run.ts <name|teeth|finding|d30|log|amended|liveness> ...
-node bfs/replay.ts     # the recorded F13, F14, F15 and IMPL_PLANNED traces against the code as built
+npm run check:bfs      # explicit-state checker only;   node bfs/run.ts <name|teeth|finding|d30|log|amended|liveness|proposed> ...
+node bfs/replay.ts     # the recorded F13, F14, F15, IMPL_PLANNED and F6(b) traces against the code as built and the proposed fixes
+node bfs/replay.ts --deadend <trace> <cfg>   # is a liveness counterexample's last state a dead end in <cfg> too?
 npm run check:tlc      # TLC only;                      node experiments.mjs <name|teeth|literal|witness|fixed> ...
 npm run test:quint     # the Quint scenario tests
 ```
@@ -59,6 +60,9 @@ workers. Run TLC and the explicit-state checker one after the other, not togethe
   floor, which the code keeps but says is not what makes it safe), purge is delete then forget,
   and the ledger's start is two steps (base segment PUT, then commit, nothing served in
   between, storage can be lost again in between). Configuration `D30` in `bfs/run.ts`.
+- **Proposed fixes (2026-11-19, model only).** Registration before writes in four variants
+  (R1–R4) against the code as built, and a fix for F16; R2 with the F16 fix is recommended. See
+  "Proposed fixes" below; configurations `R1`–`R4`, `F16FIX`, `PROPOSED` in `bfs/run.ts`.
 - **Design text vs. code.** "As written" runs take `design/DESIGN.md` (draft 3.1) and
   `contracts/LEDGER-LOG.md` literally. "As built" runs (explicit-state checker only) follow
   the code read on 2026-11-18: lazy stream registration by `flush.ts`, the coordinator asking
@@ -618,6 +622,10 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new; F16 is against D
   inside one query's window, on a stream's first unit). And the refusal of (a) without
   re-registration is the liveness gap above, now in the code (`LIVE_impl`). Both go with
   registration before writes (`IMPL_3_fix_F6b`, `LIVE_impl_F6_fixed`).
+- **Proposed fix, checked:** variant R2 under "Proposed fixes" (registration logged before
+  the first acknowledged write; a shard asked about an incarnation it lost starts and registers
+  a fresh one). A registration that is only committed does not close F6(b) (R1: I4 in 15 steps
+  through a ledger rebuild).
 
 ### F10 (major in the plan as it stood; fixed during this work: `contracts/LEDGER-LOG.md`, `ledger.ts`) — A retried drain writes an overlapping segment; a strict rebuild then refuses the log
 
@@ -761,6 +769,11 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new; F16 is against D
 - **Fix (optional).** Report `pending_unit` objects older than a day in the sweep's result
   and the maintenance report, so an operator sees them; deleting them needs the shard's word
   that it no longer holds the incarnation, which the sweep does not ask today.
+- **Proposed fix, checked:** under "Proposed fixes": the janitor asks the shard
+  (`ensureStream`), a shard that lost the stream registers a fresh incarnation, and the sweep
+  counts a newer incarnation once its registration is logged (`orphanCheck` reports the logged
+  incarnation). Closes this leak and the older flush-file leak without the tenant writing
+  again; F15 stays fixed.
 
 ### F11 (minor in the plan as it stood; fixed during this work) — Without `base.json` a ledger incarnation number can be reused
 
