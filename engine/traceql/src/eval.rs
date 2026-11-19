@@ -670,13 +670,39 @@ pub fn expr_text(e: &FieldExpr) -> String {
                 s => format!("{}.{n}", s.prefix()),
             }
         }
-        FieldExpr::Intrinsic(_, text) => text.clone(),
+        FieldExpr::Intrinsic(i, _) => intrinsic_text(*i).to_string(),
         FieldExpr::Unary(UnOp::Neg, x) => format!("-{}", wrapped(x)),
         FieldExpr::Unary(UnOp::Not, x) => format!("!{}", wrapped(x)),
         FieldExpr::Binary(op, a, b) => format!("{} {} {}", wrapped(a), op.text(), wrapped(b)),
         FieldExpr::Regex { lhs, negated, text, .. } => {
             format!("{} {} {}", wrapped(lhs), if *negated { "!~" } else { "=~" }, static_text(&Static::Str(text.clone())))
         }
+    }
+}
+
+/// The name Tempo prints for an intrinsic in result keys and labels: the unscoped legacy
+/// name where one exists (`span:kind` is `kind`, `trace:rootService` is `rootServiceName`).
+pub fn intrinsic_text(i: Intrinsic) -> &'static str {
+    match i {
+        Intrinsic::Name => "name",
+        Intrinsic::Status => "status",
+        Intrinsic::StatusMessage => "statusMessage",
+        Intrinsic::Duration => "duration",
+        Intrinsic::Kind => "kind",
+        Intrinsic::SpanId => "span:id",
+        Intrinsic::ParentId => "span:parentID",
+        Intrinsic::ChildCount => "span:childCount",
+        Intrinsic::TraceDuration => "traceDuration",
+        Intrinsic::TraceRootName => "rootName",
+        Intrinsic::TraceRootService => "rootServiceName",
+        Intrinsic::TraceId => "trace:id",
+        Intrinsic::EventName => "event:name",
+        Intrinsic::EventTimeSinceStart => "event:timeSinceStart",
+        Intrinsic::LinkSpanId => "link:spanID",
+        Intrinsic::LinkTraceId => "link:traceID",
+        Intrinsic::InstrumentationName => "instrumentation:name",
+        Intrinsic::InstrumentationVersion => "instrumentation:version",
+        Intrinsic::NestedSet => "nestedSet",
     }
 }
 

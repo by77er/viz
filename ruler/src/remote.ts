@@ -47,7 +47,7 @@ export interface WriteSeries {
   samples: [timeMs: number, value: number][]
 }
 
-export function encodeWriteRequest(series: WriteSeries[]): Uint8Array {
+export function encodeWriteRequest(series: WriteSeries[]): Uint8Array<ArrayBuffer> {
   const out: number[] = []
   for (const s of series) {
     const ts: number[] = []
@@ -72,7 +72,7 @@ export function encodeWriteRequest(series: WriteSeries[]): Uint8Array {
 }
 
 /** Snappy block format, literals only. */
-export function snappyLiterals(input: Uint8Array): Uint8Array {
+export function snappyLiterals(input: Uint8Array): Uint8Array<ArrayBuffer> {
   const out: number[] = []
   varint(input.length, out)
   for (let off = 0; off < input.length; off += 65536) {

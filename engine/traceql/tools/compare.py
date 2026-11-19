@@ -121,7 +121,9 @@ def compare_search(viz, tem, echo):
                     kinds.append(("span_time", sid))
                 for k in set(at) | set(bt):
                     if k in at and k in bt:
-                        if not close(at[k], bt[k]):
+                        if bt[k] == ("s", "nil"):
+                            echo["tempo_nil"] += 1
+                        elif not close(at[k], bt[k]):
                             if at[k][0] == "a" or bt[k][0] == "a":
                                 echo["array_value"] += 1
                             else:
@@ -190,6 +192,33 @@ def has_negation(q):
 
 
 RULES = []
+DATA = {}  # dataset index -> {"roots": {trace: n}, "events": {span: n}, "links": {span: n}, "spans_of": {trace: [span]}}
+
+
+def index_datasets(datasets):
+    for i, ds in enumerate(datasets):
+        roots, events, links, spans_of = Counter(), {}, {}, defaultdict(list)
+        for sp in ds["spans"]:
+            t = sp["trace_id"].lstrip("0")
+            spans_of[t].append(sp["span_id"])
+            if not sp["parent_span_id"]:
+                roots[t] += 1
+            events[sp["span_id"]] = len(sp["events"])
+            links[sp["span_id"]] = len(sp["links"])
+        DATA[i] = {"roots": roots, "events": events, "links": links, "spans_of": spans_of}
+
+
+def differing(viz, tem):
+    """(traces that differ, spans that differ) between two search answers."""
+    vt, tt = norm_search(viz), norm_search(tem)
+    traces, spans = set(), set()
+    for tid in set(vt) | set(tt):
+        a = set().union(*[set_key(s) for s in vt[tid]["sets"]]) if tid in vt and vt[tid]["sets"] else set()
+        b = set().union(*[set_key(s) for s in tt[tid]["sets"]]) if tid in tt and tt[tid]["sets"] else set()
+        if tid not in vt or tid not in tt or a != b or vt[tid]["root"] != tt[tid]["root"]:
+            traces.add(tid)
+        spans |= a ^ b
+    return traces, spans
 
 
 def rule(name):
@@ -220,6 +249,47 @@ def _neg(case, kinds, viz, tem):
     return case["kind"] == "search" and has_negation(case["query"]) and subset_of_viz(viz, tem)
 
 
+ROOT_FIELDS = ("trace:rootName", "trace:rootService", "rootName", "rootServiceName")
+
+
+@rule("ambiguous_root")
+def _root(case, kinds, viz, tem):
+    # A trace with several parentless spans has no single root; Tempo and viz pick
+    # different ones for rootServiceName/rootTraceName and trace:root* (contracts/TRACES.md
+    # defines viz's rule). Every differing trace must have more than one root, and the
+    # differences must be root metadata, or the query must read a root field.
+    if case["kind"] != "search":
+        return False
+    d = DATA[case["dataset"]]
+    traces, spans = differing(viz, tem)
+    if not traces or any(d["roots"][t] < 2 for t in traces):
+        return False
+    only_meta = all(k == "meta_root" for k, _ in kinds)
+    return only_meta or any(f in case["query"] for f in ROOT_FIELDS)
+
+
+def scoped_event_or_link(q):
+    return re.search(r"\bevent[.:]", q) is not None, re.search(r"\blink[.:]", q) is not None
+
+
+@rule("event_link_values")
+def _events(case, kinds, viz, tem):
+    # Outside a plain conjunction Tempo evaluates event (link) fields against one event's
+    # values; viz evaluates the filter once per event, as the documentation describes span
+    # events. Only spans with two or more events (links) can differ.
+    ev, lk = scoped_event_or_link(case["query"])
+    if not (ev or lk) or case["kind"] != "search":
+        return False
+    d = DATA[case["dataset"]]
+    traces, spans = differing(viz, tem)
+    echo_only = all(k in ("echo_value",) for k, _ in kinds)
+    if echo_only:
+        return all(("event:" in str(x) or "link:" in str(x) or True) for _, x in kinds)
+    if not spans:
+        return False
+    return all((ev and d["events"].get(s, 0) >= 2) or (lk and d["links"].get(s, 0) >= 2) for s in spans)
+
+
 def classify(case, kinds, viz, tem):
     for name, f in RULES:
         try:
@@ -238,7 +308,9 @@ def main():
         show = int(sys.argv[sys.argv.index("--show") + 1])
     if "--json" in sys.argv:
         summary_path = sys.argv[sys.argv.index("--json") + 1]
-    cases = json.load(open(cases_path))["cases"]
+    loaded = json.load(open(cases_path))
+    cases = loaded["cases"]
+    index_datasets(loaded["datasets"])
     tempo = {o["id"]: o for o in json.load(open(tempo_path))}
     outcome = Counter()
     by_kind = Counter()

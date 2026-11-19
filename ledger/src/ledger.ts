@@ -361,6 +361,8 @@ interface PendingSegment {
 
 /** An existing log object with other bytes, or a recorded segment whose rows are gone: never overwritten, never guessed around. */
 class LogFault extends Error {}
+/** The outbox does not continue the written log: something other than this drain logged (or lost) changes in between. */
+class LogDiscontinuity extends LogFault {}
 
 export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, LedgerAdminRpc, LedgerJanitorRpc {
   private readonly tenant: string
@@ -623,6 +625,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
         this.starting = null
         this.lastError = null
         this.stuck = null
+        this.failures = 0
+        this.retryNotBefore = 0
         if (this.hasPending()) this.scheduleDrain(0)
       },
       (e: unknown) => {
@@ -950,9 +954,25 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     }
   }
 
-  /** A log fault: say so in `logStatus` and the error log (review S-1). */
+  /**
+   * A log fault: say so in `logStatus` and the error log (review S-1). One case is healed at
+   * once: the outbox does not continue the log AND this segment incarnation holds first-layout
+   * objects. That is what a rollback to the release that drains the first layout leaves after
+   * the roll-forward; SQLite holds every committed change, including those the old release
+   * logged as objects and told shards about, so a new incarnation started from SQLite (its base
+   * in R2 first) loses nothing (the protocol model checks this fix: spec/README.md). Any other
+   * fault stays stuck until an operator repairs R2 or calls `restartFromSqlite()`.
+   */
   private async noteStuck(e: LogFault): Promise<void> {
-    this.stuck = `${e.message}${await this.foreignLayout()}; operator: repair R2 or call restartFromSqlite()`
+    const foreign = await this.foreignLayout()
+    if (e instanceof LogDiscontinuity && foreign !== '' && !this.needsStart) {
+      this.lastError = `${e.message}${foreign}; restarting the incarnation from SQLite`
+      console.error(`ledger ${this.tenant}: ${this.lastError}`)
+      this.needsStart = 'sqlite'
+      this.beginStart()
+      return
+    }
+    this.stuck = `${e.message}${foreign}; operator: repair R2 or call restartFromSqlite()`
     console.error(`ledger ${this.tenant}: log stuck, drain stopped: ${this.stuck}`)
   }
 
@@ -1032,7 +1052,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       if (rows.length === 0) return null
       const loggedThrough = this.meta('logged_through')
       if (loggedThrough === null || rows[0]!.version !== loggedThrough + 1) {
-        throw new LogFault(`the outbox starts at version ${rows[0]!.version}, the log ends at ${loggedThrough}`)
+        throw new LogDiscontinuity(`the outbox starts at version ${rows[0]!.version}, the log ends at ${loggedThrough}`)
       }
       const first = rows[0]!.version
       const last = rows[rows.length - 1]!.version

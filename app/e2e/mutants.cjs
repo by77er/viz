@@ -142,6 +142,8 @@ const SETS = {
         "return (this.joined ??= this.chunks.join(''))", "return (this.joined ??= this.chunks[0] ?? '')"),
       one('alignment: the grid tolerance is a fraction of a step (steps of a few milliseconds leave the grid)', 'src/lib/series.ts',
         '  const tolerance = 5e-6 / step\n', '  const tolerance = 1e-6\n'),
+      one('alignment: the grid\'s points are counted with 1e-9 of a step (a millisecond step can lose the last point)', 'src/lib/series.ts',
+        '  const n = Math.floor((end - start) / step + Math.max(1e-9, tolerance)) + 1', '  const n = Math.floor((end - start) / step + 1e-9) + 1'),
     ],
   },
 }

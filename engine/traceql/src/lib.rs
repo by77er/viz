@@ -407,12 +407,7 @@ pub fn query_range_with(src: &dyn SpanSource, query: &str, req: &RangeRequest, l
 
 /// An instant metrics query: one value over `(start, end]`, at `end`.
 pub fn query_instant(src: &dyn SpanSource, query: &str, start_unix_nano: u64, end_unix_nano: u64) -> Result<MetricsResponse, Error> {
-    let req = RangeRequest {
-        start_unix_nano,
-        end_unix_nano,
-        step_nano: end_unix_nano.saturating_sub(start_unix_nano),
-    };
-    query_range(src, query, &req)
+    query_range(src, query, &RangeRequest::instant(start_unix_nano, end_unix_nano))
 }
 
 /// The request alignment Tempo's query frontend applies to range queries (observed by
@@ -421,12 +416,12 @@ pub fn query_instant(src: &dyn SpanSource, query: &str, start_unix_nano: u64, en
 /// exactly one step (an instant query) is left alone.
 pub fn align_request(req: &RangeRequest) -> RangeRequest {
     let s = req.step_nano;
-    if s == 0 || req.end_unix_nano.saturating_sub(req.start_unix_nano) == s {
+    if s == 0 || req.instant || req.end_unix_nano.saturating_sub(req.start_unix_nano) == s {
         return *req;
     }
     let start = (req.start_unix_nano / s) * s;
     let end = req.end_unix_nano.div_ceil(s).saturating_mul(s);
-    RangeRequest { start_unix_nano: start.saturating_sub(s), end_unix_nano: end, step_nano: s }
+    RangeRequest { start_unix_nano: start.saturating_sub(s), end_unix_nano: end, step_nano: s, instant: false }
 }
 
 /// Evaluates the spanset pipeline of a search query on one trace and returns the matched

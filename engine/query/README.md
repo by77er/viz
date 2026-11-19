@@ -490,7 +490,12 @@ reports the failing tests. **Since 2026-11-19 it works on a scratch copy**: it c
 where), links `engine/storage`, builds there with its own target directory, and never
 writes to the shared tree; at the end it compares the shared copies of the mutated files
 with their state at the start. (Before, it edited `src/` in place, and a CI snapshot taken
-during a run tested mutant 36; see `min_by_group_over_signed_zeros_regression`.) It
+during a run tested mutant 36; see `min_by_group_over_signed_zeros_regression`.) First run
+in that mode, 2026-11-19 01:54 to 02:00 UTC (load average 7 to 9), mutants 32, 36 and 40:
+**3 of 3 killed** (36 by `min_by_group_over_signed_zeros_regression` and
+`signed_zeros_give_the_same_bits_in_any_order`); the unmutated suite passed before and
+after; the shared files hashed the same before and after. The other 38 were not re-run:
+no file under `src/` changed since the in-place run that killed all 41. It
 confirms first that the unmutated suite passes and tells a failing test from a build
 error. **41 of 41 mutants were killed** (31 before split execution, all re-run where the
 source they mutate changed; 10 new for split execution and exact aggregation, run on

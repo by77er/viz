@@ -2,9 +2,10 @@
 //! `quantile_over_time`, `histogram_over_time`, `by`, `topk`/`bottomk`, comparisons and
 //! arithmetic between metrics queries.
 //!
-//! Time grid (Tempo's observed behaviour): a range `[start, end]` with step `s` has the
-//! points `start + k·s` for `k = 1..=ceil((end − start)/s)`; the point `t` covers span start
-//! times in `(t − s, t]`. An instant query is one step of `end − start`.
+//! Time grid (Tempo's observed behaviour): a range query has the points `k·step` (multiples
+//! of the step in Unix time) from the first one after `start` to the first one at or after
+//! `end`; the point `t` covers span start times in `(t − step, t]`, and only spans with
+//! `start < ts ≤ end` count. An instant query is one point at `end` covering `(start, end]`.
 //!
 //! Every sum is exact (Shewchuk partials, rounded once), so results do not depend on the
 //! order in which the source returns traces.
@@ -18,36 +19,56 @@ use crate::plan::ReadPlan;
 use crate::value::Val;
 use crate::Error;
 
-/// A metrics request over `[start, end]` with a step, all in Unix nanoseconds.
+/// A metrics request over `(start, end]` with a step, all in Unix nanoseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RangeRequest {
     pub start_unix_nano: u64,
     pub end_unix_nano: u64,
     pub step_nano: u64,
+    /// One point at `end` covering the whole range (Tempo's `/api/metrics/query`).
+    pub instant: bool,
 }
 
 impl RangeRequest {
+    pub fn range(start_unix_nano: u64, end_unix_nano: u64, step_nano: u64) -> RangeRequest {
+        RangeRequest { start_unix_nano, end_unix_nano, step_nano, instant: false }
+    }
+    pub fn instant(start_unix_nano: u64, end_unix_nano: u64) -> RangeRequest {
+        RangeRequest { start_unix_nano, end_unix_nano, step_nano: end_unix_nano.saturating_sub(start_unix_nano), instant: true }
+    }
+    fn base(&self) -> u64 {
+        self.start_unix_nano / self.step_nano
+    }
     pub fn points(&self) -> u64 {
-        let span = self.end_unix_nano.saturating_sub(self.start_unix_nano);
-        if self.step_nano == 0 {
+        if self.step_nano == 0 || self.end_unix_nano <= self.start_unix_nano {
             return 0;
         }
-        span.div_ceil(self.step_nano)
+        if self.instant {
+            return 1;
+        }
+        self.end_unix_nano.div_ceil(self.step_nano) - self.base()
     }
-    /// Point index for a span start time, if it falls in the range.
+    /// Point index for a span start time, if it counts.
     pub fn index(&self, ts: u64) -> Option<usize> {
-        if ts <= self.start_unix_nano || ts > self.end_unix_nano {
+        if ts <= self.start_unix_nano || ts > self.end_unix_nano || self.step_nano == 0 {
             return None;
         }
-        let k = (ts - self.start_unix_nano - 1) / self.step_nano;
-        if k >= self.points() {
-            return None;
+        if self.instant {
+            return Some(0);
         }
+        let k = ts.div_ceil(self.step_nano) - self.base() - 1;
         usize::try_from(k).ok()
     }
     pub fn timestamp_ms(&self, k: usize) -> i64 {
-        let t = self.start_unix_nano as i128 + (k as i128 + 1) * self.step_nano as i128;
+        if self.instant {
+            return (self.end_unix_nano / 1_000_000) as i64;
+        }
+        let t = (self.base() as i128 + k as i128 + 1) * self.step_nano as i128;
         (t / 1_000_000) as i64
+    }
+    /// The seconds `rate()` divides by.
+    pub fn step_seconds(&self) -> f64 {
+        self.step_nano as f64 / 1e9
     }
 }
 
@@ -313,7 +334,7 @@ impl<'q> Leaf<'q> {
     }
 
     fn finish(self, req: &RangeRequest, n: usize) -> Vec<Series> {
-        let step_s = req.step_nano as f64 / 1e9;
+        let step_s = req.step_seconds();
         let name_label = |name: &str| vec![("__name__".to_string(), Val::Str(name.to_string().into()))];
         // Missing grouping values are left out of the labels; a series left with no label
         // at all is labelled with the first `by` field and `nil` (observed in Tempo).

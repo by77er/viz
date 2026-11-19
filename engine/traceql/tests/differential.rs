@@ -168,11 +168,7 @@ fn export_differential_cases() {
                 let start = BASE;
                 let end = BASE + (WINDOW_S + 5) * 1_000_000_000 + end_extra;
                 let instant = step > 600_000_000_000;
-                let req = if instant {
-                    RangeRequest { start_unix_nano: start, end_unix_nano: end, step_nano: end - start }
-                } else {
-                    RangeRequest { start_unix_nano: start, end_unix_nano: end, step_nano: step }
-                };
+                let req = if instant { RangeRequest::instant(start, end) } else { RangeRequest::range(start, end, step) };
                 let viz = match query_range(&src, &q, &req) {
                     Ok(r) => r.to_json(),
                     Err(e) => format!("{{\"error\":{}}}", esc(&e.to_string())),

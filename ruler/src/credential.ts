@@ -84,7 +84,8 @@ export class ServiceCredential implements CredentialSource {
     }
     switch (r.status) {
       case 'ok':
-        this.host.save({ key: r.key, keyId: r.keyId, issuedAt: r.issuedAt })
+        // Our own clock, the one `get` compares with (control's `issuedAt` is its clock).
+        this.host.save({ key: r.key, keyId: r.keyId, issuedAt: this.host.now() })
         this.refused = null
         this.lastError = null
         return r.key

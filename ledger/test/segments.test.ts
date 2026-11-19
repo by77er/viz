@@ -547,65 +547,61 @@ const firstLayoutDrain = (l: Stub, tenant: string) =>
   })
 
 describe('a rollback to the first-layout release and back (review S-1)', () => {
-  it('after an operator restarts from SQLite, nothing a shard was told is lost and the log goes on', async () => {
-    const tenant = tenantName('rollback-heal')
-    const { l } = open(tenant)
-    await l.addUnit(pair(1, 1))
-    await l.drain()
-    await l.addUnit(pair(2, 2))
-    await firstLayoutDrain(l, tenant)
-    expect(await loggedOf(l)).toBe(2)
-    await evictDurableObject(l)
-    await l.addUnit(pair(3, 3))
-    expect(await failure(l, (i) => i.drain())).toMatch(/outbox starts at version/)
-    const before = await incarnationOf(l)
-    const r = await runInDurableObject(l, (i: Ledger) => i.restartFromSqlite())
-    expect(r).toMatchObject({ from: 'sqlite', ledgerIncarnation: before + 1 })
-    expect((await l.logStatus()).phase).toBe('ready')
-    expect(await loggedOf(l)).toBe(3) // all in the new base
-    await l.addUnit(pair(4, 4))
-    await l.drain()
-    await loseStorage(l)
-    expect(await seqOf2(l)).toBe(4)
-  })
-
-  it('a rebuild must refuse an incarnation holding both layouts, never drop what shards were told is logged', async () => {
+  it('the reviewer\'s sequence: after the roll-forward the drain finds the outbox does not continue its log, the ledger restarts from SQLite, and nothing a shard was told is lost', async () => {
     const tenant = tenantName('rollback')
     const { l } = open(tenant)
     await l.registerStream({ shard: S, incarnation: INC })
     await l.addUnit(pair(1, 1))
     await l.drain()
     await l.addUnit(pair(2, 2)) // committed, in the outbox
-    // Rollback: the previous release's drain (ledger/bench/asbuilt/ledger.ts), statement for statement.
-    await runInDurableObject(l, async (_i, state) => {
-      const sql = state.storage.sql
-      for (;;) {
-        const row = sql.exec(`SELECT version, body FROM outbox ORDER BY version LIMIT 1`).toArray()[0]
-        if (!row) break
-        const change = JSON.parse(row.body as string) as LedgerChange
-        await env.BUCKET.put(`${env.CELL}/${ledgerLogKey(tenant, change.ledgerIncarnation, change.version)}`, row.body as string)
-        state.storage.transactionSync(() => {
-          sql.exec(`DELETE FROM outbox WHERE version = ?`, change.version)
-          const w = change.watermark
-          if (w) sql.exec(`UPDATE stream SET logged = MAX(logged, ?) WHERE shard = ? AND incarnation = ?`, w.seq, w.shard, w.incarnation)
-        })
-      }
-    })
+    const before = await incarnationOf(l)
+    await firstLayoutDrain(l, tenant) // the rollback: 3 versions logged as {version}.json
     expect(await loggedOf(l)).toBe(2) // a shard is told 2 and may discard it
     await evictDurableObject(l) // roll forward
     await l.addUnit(pair(3, 3))
-    expect(await failure(l, (i) => i.drain())).toMatch(/outbox starts at version/) // stuck, and says so
-    const st = await l.logStatus()
-    expect(st.phase).toBe('stuck')
-    expect(st.stuck).toMatch(/first-layout objects \(from 000000000003\.json\).*restartFromSqlite/)
-    expect(await loggedOf(l)).toBe(2) // nothing more counts as logged
+    expect(await failure(l, (i) => i.drain())).toMatch(/outbox starts at version/)
+    // The rollback's signature (first-layout objects in this segment incarnation): healed at once.
+    expect(await incarnationOf(l)).toBe(before + 1)
+    expect(await l.logStatus()).toMatchObject({ phase: 'ready', stuck: null })
+    expect(await loggedOf(l)).toBe(3) // every committed change is in the new base
+    await l.addUnit(pair(4, 4))
+    await l.drain()
     await loseStorage(l)
     const outcome = await everything(l).then((p) => `rebuilt at seq ${p.watermarks.find((w) => w.shard === S)?.seq}`, (e: Error) => e.message)
-    expect(outcome).not.toMatch(/^rebuilt at seq [01]$/) // never below what a shard was told
-    expect(outcome).toMatch(/ledger_unavailable: its log could not be read \(ledger: incarnation \d+ holds both segments and first-layout change objects/)
-    expect(await l.logStatus()).toMatchObject({ phase: 'stuck', stuck: expect.stringMatching(/both segments and first-layout/) })
+    expect(outcome).toBe('rebuilt at seq 4') // never below what a shard was told
   })
 
+  it('a rebuild refuses an incarnation holding both layouts, explicitly, instead of skipping what the first layout holds', async () => {
+    const tenant = tenantName('bothlayouts')
+    const { l } = open(tenant)
+    await l.addUnit(pair(1, 1))
+    await l.drain()
+    await l.addUnit(pair(2, 2))
+    await firstLayoutDrain(l, tenant) // logged as an object; a shard is told 2
+    expect(await loggedOf(l)).toBe(2)
+    await loseStorage(l) // before anything drains again
+    const outcome = await everything(l).then((p) => `rebuilt at seq ${p.watermarks.find((w) => w.shard === S)?.seq}`, (e: Error) => e.message)
+    expect(outcome).toMatch(/^ledger_unavailable: its log could not be read \(ledger: incarnation \d+ holds both segments and first-layout change objects \(000000000003\.json\)/)
+    expect(await l.logStatus()).toMatchObject({ phase: 'stuck', stuck: expect.stringMatching(/both segments and first-layout.*operator: repair R2/) })
+  })
+
+  it('any other break in the log (an outbox that skips a version) is stuck, says so, logs nothing more, and an operator\'s restart from SQLite heals it', async () => {
+    const { l } = open(tenantName('skip'))
+    await l.addUnit(pair(1, 1))
+    await l.drain()
+    await l.addUnit(pair(2, 2))
+    await l.addUnit(pair(3, 3))
+    await runInDurableObject(l, (_i, st) => st.storage.sql.exec(`DELETE FROM outbox WHERE version = (SELECT MIN(version) FROM outbox)`))
+    expect(await failure(l, (i) => i.drain())).toMatch(/outbox starts at version/)
+    expect(await l.logStatus()).toMatchObject({ phase: 'stuck', stuck: expect.stringMatching(/outbox starts at version 4, the log ends at 2; operator/) })
+    expect(await loggedOf(l)).toBe(1)
+    await runDurableObjectAlarm(l)
+    expect(await loggedOf(l)).toBe(1)
+    const r = await runInDurableObject(l, (i: Ledger) => i.restartFromSqlite())
+    expect(r.from).toBe('sqlite')
+    expect(await l.logStatus()).toMatchObject({ phase: 'ready', stuck: null })
+    expect(await loggedOf(l)).toBe(3)
+  })
 })
 
 describe('the base is in R2 before an incarnation commits (spec F11)', () => {

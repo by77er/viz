@@ -3,7 +3,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { FlushUnit } from '../../contracts/ledger'
 import type { Ledger } from '../src/ledger'
-import { DAY_MS, INC, S, T0, dayOf, file, k, nm, open as openLedger, tenantName, type Stub } from './helpers'
+import { DAY_MS, INC, S, T0, breakR2, dayOf, failure, file, k, nm, open as openLedger, tenantName, type Stub } from './helpers'
 
 const open = (): Stub => openLedger(tenantName('tomb')).l
 const pair = (seqLo: number, seqHi: number, ts = T0): FlushUnit => ({
@@ -81,6 +81,27 @@ describe('tombstones', () => {
     const live = (await l.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files.map((f) => nm(f.key))
     expect(live).toEqual(['samples-1', 'samples-2'])
     expect(await l.removedSince(0)).toEqual([])
+  })
+
+  it('deletable: never while the removal\'s segment is recorded but its write failed or its answer was lost (review S-9)', async () => {
+    for (const mode of ['before', 'after'] as const) {
+      const l = open()
+      await l.addUnit(pair(1, 1))
+      await l.addUnit(pair(2, 2))
+      await l.drain()
+      const r = await l.replace({ remove: [k('samples-1'), k('series-1')], add: [file('out', { level: 1 })] })
+      expect(r.status).toBe('ok')
+      // The drain records the segment's bounds, then its PUT fails (or lands, its answer lost).
+      await breakR2(l, () => true, mode)
+      expect(await failure(l, (i) => i.drain())).toMatch(/injected/)
+      expect((await l.logStatus()).inFlight).not.toBeNull()
+      expect(await l.deletable({ minAgeMs: 0 }), mode).toEqual({ tombstones: [], waiting: 2 })
+      // Still not after an eviction (the record is in SQLite); deletable once a drain completes.
+      await evictDurableObject(l)
+      expect(await l.deletable({ minAgeMs: 0 }), mode).toEqual({ tombstones: [], waiting: 2 })
+      await l.drain()
+      expect(keysOf((await l.deletable({ minAgeMs: 0 })).tombstones).sort(), mode).toEqual(['samples-1', 'series-1'])
+    }
   })
 
   it('deletable once logged; forget drops only what is not live; both survive eviction', async () => {

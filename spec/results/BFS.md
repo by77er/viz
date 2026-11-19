@@ -61,6 +61,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `D30_F14x` F14's bounds (two compaction steps at once, retention, ledger loss) with D30, the sweeper ON (F14 had it off), ≤ 2 sweep runs, the ledger log as built (two-step start) | all safety | stopped: memory bound: stopped at 19,000,001 states; every state reachable in at most 31 steps checked, no violation | 19,000,001 | 127,029,162 | 31 | 2186.8 s | 0.0000098 |
 | `D30_F15x` F15's bounds (amended protocol, 2 flush Workers, shard loss + ledger loss) with D30's sweeper, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,003 states; every state reachable in at most 23 steps checked, no violation | 6,000,003 | 31,828,222 | 23 | 324.8 s | 9.8e-7 |
 | `D30_teeth_not_live_only` D30 teeth: an input counts as gone when it is merely not live (its object may still exist) | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 27 steps | 406,920 | 1,822,925 | 27 | 24.7 s | 4.5e-9 |
+| `D30_teeth_read_first` D30 teeth: the sweep reads the ledger BEFORE it lists R2 | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 25 steps | 247,867 | 1,035,235 | 25 | 10.2 s | 1.7e-9 |
 | `D30_teeth_newer_unlogged` D30 teeth: a newer incarnation kills old flush files as soon as it is committed (no logged-watermark > 0 test); F15's bounds | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 15 steps | 198,438 | 691,325 | 15 | 12.9 s | 1.1e-9 |
 | `D30_teeth_conflict_delete` D30 teeth: the step deletes its outputs on conflict again (F14 back); sweeper on | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 21 steps | 122,006 | 462,856 | 21 | 6.2 s | 4e-10 |
 | `D30_teeth_purge_unlogged` D30 teeth: purge deletes a removed file before its removal is logged | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 14 steps | 1,127 | 3,383 | 14 | 0.1 s | 3.4e-14 |
@@ -71,6 +72,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 |---|---|---|---|---|---|---|---|
 | `LOG_as_built` IMPL_PLANNED_fixed's bounds with the segment log as built (base PUT before the commit, two-step start, F10 fix, tombstones in the base) and the code at HEAD; F3 assumed; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,002 states; every state reachable in at most 22 steps checked, no violation | 6,000,002 | 32,503,444 | 22 | 336.3 s | 9.8e-7 |
 | `LOG_as_built_2LL` as LOG_as_built, two ledger losses (F11 needed two), compaction, one flush Worker; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 25 steps checked, no violation | 6,000,001 | 31,998,907 | 25 | 275.4 s | 9.8e-7 |
+| `LOG_as_built_3LL` as LOG_as_built, three ledger losses, no compaction, one flush Worker; ≤ 2 sweep runs | all safety | holds (exhaustive) | 3,386,220 | 22,143,834 | 45 | 167.1 s | 3.1e-7 |
 | `LOG_teeth_commit_first` segment log teeth: the incarnation commits before its base is in R2 (the plan before F11) | V_IncarnationNotReused | **violated** V_IncarnationNotReused in 7 steps | 693 | 1,638 | 7 | 0.1 s | 1.3e-14 |
 | `LOG_teeth_retry_new_bounds` segment log teeth: a retried drain takes every pending row (F10) | AV_RebuildSucceeds | **violated** AV_RebuildSucceeds in 16 steps | 160,162 | 817,710 | 16 | 9.1 s | 7e-10 |
 
@@ -925,6 +927,38 @@ Violates `I11_LiveFilesReadable`.
 25. ledger start: commit incarnation 2, serve
 26. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
 27. orphan sweep: delete L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+
+### D30_teeth_read_first
+
+D30 teeth: the sweep reads the ledger BEFORE it lists R2
+
+Violates `I11_LiveFilesReadable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush readSegment(s0 inc 1 1..1)
+10. flush PUT L0(s0 inc1 1..1)
+11. addUnit(s0 inc 1 1..1) admitted
+12. flush: pendingSegments(s0) -> inc 1 2..2
+13. flush readSegment(s0 inc 1 2..2)
+14. flush PUT L0(s0 inc1 2..2)
+15. ledger drain: delete outbox rows v1..v1, advance logged
+16. orphan sweep: orphanCheck first
+17. addUnit(s0 inc 1 2..2) admitted
+18. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+19. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+20. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
+21. ledger drain: PUT segment v2..v4
+22. ledger drain: delete outbox rows v2..v4, advance logged
+23. purge: delete L0(s0 inc1 2..2)
+24. orphan sweep: list -> doomed L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+25. orphan sweep: delete L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
 
 ### D30_teeth_newer_unlogged
 

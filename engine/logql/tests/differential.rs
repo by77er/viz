@@ -91,11 +91,12 @@ fn export_cases() {
         let src = dataset(&ds);
         for (feature, q, instant) in gen::queries(&mut rng) {
             let (start, end, step) = gen::window(&mut rng, instant);
+            let limit = [5u64, 50, 1000][rng.below(3) as usize];
             let mut c = json!({
                 "id": cases.len(), "dataset": datasets.len(), "query": q, "instant": instant,
                 "start": start.to_string(), "end": end.to_string(), "step": step.to_string(),
                 "direction": if rng.below(2) == 0 { "forward" } else { "backward" },
-                "limit": [5u64, 50, 1000][rng.below(3) as usize], "feature": feature,
+                "limit": limit, "feature": feature,
             });
             run_case(&src, &mut c);
             cases.push(c);

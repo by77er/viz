@@ -22,9 +22,11 @@ import {
   type TimelineEntry,
   type Refused,
 } from '../contracts-proposal/rules.v2'
+import { CONTROL_SERVICE_VERSION, type NotificationTarget, type NotificationTargetResult, type TenantServiceRpc } from '../../contracts/control'
 import {
   compileConfig,
   compileSilenceMatchers,
+  effectiveConfig,
   groupKey,
   groupLabels,
   inhibitedBy,
@@ -39,10 +41,10 @@ import {
   type Integration,
   type Route,
 } from './amconfig'
-import { slackPayload, webhookPayload, type PayloadAlert } from './payload'
+import { jsonPayload, slackPayload, webhookPayload, type PayloadAlert } from './payload'
 import { NOTIFIER_SCHEMA } from './schema'
 import { signatureHeader } from './signature'
-import { backoffMs, hash64, LABEL_NAME_RE, resolveObjectName, type Labels } from './util'
+import { backoffMs, hash64, LABEL_NAME_RE, resolveObjectName, stageExpired, type Labels } from './util'
 
 /**
  * The notifier: Alertmanager's model for one tenant, owned by a single object.
@@ -178,7 +180,34 @@ function errorText(e: unknown): string {
   return (e instanceof Error ? e.message : String(e)).slice(0, 500)
 }
 
-export class Notifier extends DurableObject implements NotifierRpc {
+/**
+ * A delivery failure as it may be stored and shown (`last_error`, the monitors' history, the
+ * outbox RPC): the error's kind and message with every URL cut out. A receiver URL can carry
+ * a credential in its path or query (Slack's does), and a runtime's network error may quote
+ * the URL it failed on.
+ */
+export function deliveryError(e: unknown): string {
+  const name = e instanceof Error || e instanceof DOMException ? e.name : 'Error'
+  const message = errorText(e).replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]*/gi, '<url>')
+  return `${name}: ${message}`.slice(0, 300)
+}
+
+/** How often the notifier asks control for the tenant's default destination while it has work. */
+export const CONTROL_REFRESH_MS = 60_000
+
+export interface NotifierEnv {
+  /** control's `Tenant` object (contracts/control.ts), for `CONTROL_RECEIVER`'s destination. */
+  TENANT?: DurableObjectNamespace
+  VIZ_STAGE_EXPIRES_AT?: string
+}
+
+/** The copy of control's destination kept in `meta` (k `control_target`), so a control outage changes nothing. */
+interface ControlCopy {
+  version: number
+  target: NotificationTarget | null
+}
+
+export class Notifier extends DurableObject<NotifierEnv> implements NotifierRpc {
   protected tenant = ''
   /** What opening storage found. Anything but `ok`: every RPC answers `schema_too_new` and nothing is written. */
   private schema: SchemaState = { status: 'schema_too_new', component: NOTIFIER_SCHEMA.component, found: 0, compat: 0, known: 0, retryAfterMs: 0 }
@@ -188,10 +217,14 @@ export class Notifier extends DurableObject implements NotifierRpc {
   private groups = new Map<string, GroupRt>()
   private nextOutboxId = 1
   private silenceCounter = 0
+  /** control's destination as last stored (`meta` `control_target`); rebuilt in `load`. */
+  private control: ControlCopy | null = null
+  /** When control was last asked (memory only: after an eviction it is asked again, which is harmless). */
+  private controlAskedAt = -Infinity
   private counters = { sqlRowsWritten: 0, alarmsSet: 0, delivered: 0, attempts: 0 }
 
-  constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx, env as never)
+  constructor(ctx: DurableObjectState, env: NotifierEnv) {
+    super(ctx, env)
     // The object's name IS the tenant.
     // Versioned storage (contracts/COMPATIBILITY.md §2): migrate, or refuse storage a newer
     // release wrote. Local SQLite only, so holding other events off for it is allowed.
@@ -218,6 +251,13 @@ export class Notifier extends DurableObject implements NotifierRpc {
   /** Fault-injection point for crash tests. Does nothing in production. */
   protected fault(_point: 'flush-commit' | 'flush-committed' | 'sent' | 'ack-commit'): void {}
 
+  /** The tenant's default destination, from its control plane. Rejects when there is no binding or it cannot be reached. */
+  protected controlTarget(): Promise<NotificationTargetResult> {
+    const ns = this.env?.TENANT
+    if (!ns) return Promise.reject(new Error('no TENANT binding'))
+    return (ns.get(ns.idFromName(this.tenant)) as unknown as TenantServiceRpc).notificationTarget(this.tenant)
+  }
+
   /** An unguessable token. Not derived from the clock or from data: it must not be predictable. */
   protected token(): string {
     return [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -243,10 +283,9 @@ export class Notifier extends DurableObject implements NotifierRpc {
   private load(): void {
     const t = this.tenant
     const cfg = this.exec<{ v: string }>(`SELECT v FROM meta WHERE tenant = ? AND k = 'config'`, t)[0]
-    if (cfg) {
-      const compiled = compileConfig(JSON.parse(cfg.v))
-      if (compiled.ok) this.cfg = compiled.config
-    }
+    const control = this.exec<{ v: string }>(`SELECT v FROM meta WHERE tenant = ? AND k = 'control_target'`, t)[0]
+    this.control = control ? (JSON.parse(control.v) as ControlCopy) : null
+    this.cfg = effectiveConfig(cfg ? JSON.parse(cfg.v) : null, this.control?.target ?? null)
     for (const r of this.exec<{ body: string }>(`SELECT body FROM alert WHERE tenant = ?`, t)) {
       const a = JSON.parse(r.body) as StoredAlert
       this.alerts.set(a.fingerprint, a)
@@ -331,6 +370,45 @@ export class Notifier extends DurableObject implements NotifierRpc {
     const refused = refusalOf(this.schema)
     if (refused) return refused
     return this.tenant !== '' && tenant === this.tenant ? null : { status: 'wrong_tenant' }
+  }
+
+  // ───────────────────────── control's destination ─────────────────────────
+
+  /**
+   * Ask control for the tenant's default destination at most every `CONTROL_REFRESH_MS`, and
+   * when it changed, store the copy and route by it (as `setConfig` does). Any failure keeps
+   * the stored copy: a control outage changes no routing. Nothing of it is logged.
+   */
+  private async refreshControl(now: number): Promise<void> {
+    if (this.tenant === '' || now - this.controlAskedAt < CONTROL_REFRESH_MS) return
+    this.controlAskedAt = now
+    let r: NotificationTargetResult
+    try {
+      r = await this.controlTarget()
+    } catch {
+      return
+    }
+    if (!r || r.status !== 'ok' || r.v !== CONTROL_SERVICE_VERSION) return
+    const next: ControlCopy = { version: r.version, target: r.target }
+    if (JSON.stringify(next) === JSON.stringify(this.control)) return
+    if (this.control === null && next.target === null) return
+    const own = this.exec<{ v: string }>(`SELECT v FROM meta WHERE tenant = ? AND k = 'config'`, this.tenant)[0]
+    const cfg = effectiveConfig(own ? JSON.parse(own.v) : null, next.target)
+    const bodies = new Map([...this.groups.values()].map((g) => [g.key, g.body]))
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.exec(`INSERT OR IGNORE INTO self (one, name) VALUES (1, ?)`, this.tenant)
+        this.exec(`INSERT INTO meta (tenant, k, v) VALUES (?, 'control_target', ?) ON CONFLICT (tenant, k) DO UPDATE SET v = excluded.v`, this.tenant, JSON.stringify(next))
+        this.control = next
+        this.cfg = cfg
+        this.rebuildGroups(bodies)
+        for (const key of bodies.keys()) if (!this.groups.has(key)) this.exec(`DELETE FROM agg_group WHERE tenant = ? AND gkey = ?`, this.tenant, key)
+        for (const a of this.alerts.values()) if (a.status === 'firing') this.joinGroups(a, now)
+      })
+    } catch (e) {
+      this.reset()
+      throw e
+    }
   }
 
   // ───────────────────────── grouping and decisions ─────────────────────────
@@ -475,17 +553,21 @@ export class Notifier extends DurableObject implements NotifierRpc {
             const alerts: PayloadAlert[] = [...d.payloadFiring, ...d.resolved].map((fp) => {
               const a = this.alerts.get(fp) as StoredAlert
               const isFiring = this.firingAsOf(a, tick)
-              return { fingerprint: fp, labels: a.labels, annotations: a.annotations, status: isFiring ? 'firing' : 'resolved', startsAt: a.startsAt, endsAt: isFiring ? null : a.endsAt }
+              return { fingerprint: fp, labels: a.labels, annotations: a.annotations, status: isFiring ? 'firing' : 'resolved', startsAt: a.startsAt, endsAt: isFiring ? null : a.endsAt, value: a.value }
             })
             const group = { groupKey: g.key, receiver: g.route.receiver, groupLabels: g.body.labels, externalUrl: cfg.externalUrl }
             const cap = d.integration.maxAlerts > 0 ? Math.min(d.integration.maxAlerts, DEFAULT_NOTIFIER_LIMITS.maxPayloadAlerts) : DEFAULT_NOTIFIER_LIMITS.maxPayloadAlerts
-            const body = d.integration.kind === 'slack' ? slackPayload(group, alerts, d.integration.channel, tick) : webhookPayload(group, alerts, cap)
             // Deterministic and attempt-independent: the same decision always yields this key.
             const state = hash64(`${d.firing.join(',')}|${d.resolved.join(',')}`)
             // `createdAt` tells apart two lives of the same group key: the log, and with it
             // `n`, starts again when a group empties and is later recreated.
             const seed = `${t}\n${g.route.receiver}\n${d.integration.key}\n${g.key}\n${g.body.createdAt}\n${state}\n${n}`
             const idem = hash64(seed) + hash64(`viz-notification\n${seed}`)
+            // Built once, here, and stored: every attempt sends these bytes.
+            const body =
+              d.integration.kind === 'slack' ? slackPayload(group, alerts, d.integration.channel, tick)
+              : d.integration.format === 'json' ? jsonPayload(group, alerts, idem, cap)
+              : webhookPayload(group, alerts, cap)
             // History, per monitor: who was told what, by which channel, under which key.
             const subjects = this.bySubject([...d.payloadFiring, ...d.resolved])
             for (const [monitor, fps] of subjects) {
@@ -580,7 +662,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
         }
         await res.body?.cancel()
       } catch (e) {
-        error = errorText(e)
+        error = deliveryError(e)
       } finally {
         clearTimeout(timer)
       }
@@ -635,7 +717,13 @@ export class Notifier extends DurableObject implements NotifierRpc {
       await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)
       return
     }
+    // A staged trial past its deadline stops by itself (AGENTS.md: timers end at a deadline).
+    if (stageExpired(this.env?.VIZ_STAGE_EXPIRES_AT, Date.now())) {
+      await this.ctx.storage.deleteAlarm()
+      return
+    }
     const now = this.now()
+    await this.refreshControl(now)
     try {
       this.expire(now)
       this.flush(now)
@@ -702,7 +790,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     if (bad) return bad
     const stored = this.exec<{ v: string }>(`SELECT v FROM meta WHERE tenant = ? AND k = 'config'`, this.tenant)[0]
     config = keepSecrets(config, stored ? JSON.parse(stored.v) : null)
-    const compiled = compileConfig(config)
+    const compiled = compileConfig(config, this.control?.target ?? null)
     if (!compiled.ok) return { status: 'invalid' as const, errors: compiled.errors }
     const now = this.now()
     const bodies = new Map([...this.groups.values()].map((g) => [g.key, g.body]))
@@ -730,6 +818,7 @@ export class Notifier extends DurableObject implements NotifierRpc {
     if (bad) return bad
     // A ruler shard may only speak for its own tenant.
     if (!source.startsWith(`${this.tenant}/`)) return { status: 'wrong_tenant' }
+    await this.refreshControl(this.now())
     const now = this.now()
     // Later updates in one batch see the earlier ones.
     const staged = new Map<string, StoredAlert>()

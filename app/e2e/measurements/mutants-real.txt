@@ -1,3 +1,4 @@
+# MUTANTS=real node e2e/mutants.cjs, 2026-11-19 (scratch copy; unit tests and e2e/errors.cjs). First run: 25 mutants, 23 killed, 2 survived.
 KILLED    parser: a number is scaled by multiplying by a power of ten below 1 (inexact)
             caught by: unit: the matrix parser (typed arrays, as the body arrives) property: reads exactly what JSON.parse and Number read, cut into pieces anywhere; unit: the matrix parser (typed arrays, as the body arrives) reads the real API's and the mock's bodies on the fast path; unit: the matrix parser (typed arrays, as the body arrives) reads numbers as Number does, by the fast path where it is exact; unit: alignMatrix in one pass (B3) property: the body read into typed arrays (api/matrix.ts) aligns to exactly what the previous implementation gave
 KILLED    parser: digits past 2^53 are computed, not read by Number()
@@ -46,3 +47,11 @@ KILLED    window: computed in fractional seconds (a 0.1 s step asks for another 
 KILLED    parser: the body text the JSON form reads is the first piece only (the lazy join)
             caught by: unit: the matrix parser (typed arrays, as the body arrives) property: reads exactly what JSON.parse and Number read, cut into pieces anywhere; unit: the matrix parser (typed arrays, as the body arrives) property: takes the fast path for the bodies APIs send, and keeps each values array as it arrived
 SURVIVED  alignment: the grid tolerance is a fraction of a step (sub-second steps leave the grid)
+
+# After the two survivors: a test of times JSON does not allow (matrix.test.ts) and of steps of a few milliseconds (series.test.ts, which found the grid's point count bug), and one new mutant for that count. Re-run with ONLY=<name>, one at a time:
+KILLED    parser: a time that is not a JSON number is accepted
+            caught by: unit: the matrix parser (typed arrays, as the body arrives) gives up the fast path, not the answer, for what it does not read
+KILLED    alignment: the grid tolerance is a fraction of a step (steps of a few milliseconds leave the grid)
+            caught by: unit: alignMatrix in one pass (B3) keeps the API's millisecond grid for steps of milliseconds: a missing step is a gap, not a bridged line
+KILLED    alignment: the grid's points are counted with 1e-9 of a step (a millisecond step can lose the last point)
+            caught by: unit: alignMatrix in one pass (B3) keeps the API's millisecond grid for steps of milliseconds: a missing step is a gap, not a bridged line

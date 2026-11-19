@@ -282,7 +282,71 @@ The same idea in `viz.qnt` (DESIGN as written, `literal_*`; TLC):
 | `literal_all` DESIGN 3.1 as written, all actions, all safety invariants | Safety | violated | 5 | 243 | register(inc 1) → append(b0) → LEDGER-LOSS+REBUILD → plan → done |
 <!-- END TLC_LITERAL -->
 
-### 2b. The amended protocol, exhaustive
+### 2b. The compaction fix (D30) and the segment log, as built (2026-11-19)
+
+**D30** (`compact.ts`, `janitor.ts` at 6488856, unchanged at 6ee76c8; configuration `D30`):
+the sweep is modelled as `janitor.ts` runs it, three kinds of step any other step can come
+between (list the tenant's objects with their `viz-inputs`; one `orphanCheck`; one delete
+per doomed key), with **no clock**: no age floor at all, so nothing rests on an upload time.
+Purge is delete, then forget. A compaction step adopts an existing object with its old
+uploader and never deletes anything. Results (every safety property, shortest counterexample
+first; "stopped" = every state reachable in at most that many steps was checked):
+
+<!-- BEGIN BFS_D30 -->
+<!-- END BFS_D30 -->
+
+- **F13, F14 and F15 no longer occur.** At F14's bounds (two compaction steps at once,
+  retention, ledger loss, the sweeper on, which F14's own run had off) no state reachable in
+  31 steps violates anything (19 million states); F14's trace is 21 steps. F13's exact bounds
+  (client retries, two flush Workers): 23 steps clean; its trace is 19. F15's bounds: 23
+  steps clean; its trace is 17. Bounded depth, not exhaustive: each run stopped at its state
+  cap (the machine's load average was 15–23 on 4 cores during this pass).
+- **The recorded traces, replayed** (`results/REPLAY.md`): F13's and F15's stop at the sweep
+  step, which D30 does not allow (the adopted output's inputs are live and present; the newer
+  incarnation's logged watermark is 0); F14's runs to its end with `conflict` deleting
+  nothing, and step A's `replace` lists a file whose object exists.
+- **Each part of the rule is load-bearing** (teeth, each a counterexample): the step deleting
+  on conflict again (F14, 21 steps, with the sweeper on); a newer incarnation counting before
+  it has a logged unit (F15, 15 steps — shorter than F15's 17 because no age rule has to pass:
+  the sweep judges the flush Worker's file dead, a rebuild rolls the registration back, the
+  Worker's `addUnit` makes the file live, the sweep deletes it); "gone" meaning only "not
+  live" (27 steps: the input's removal is unlogged, the sweep judges, a rebuild brings the
+  input back, the identical step commits, the sweep deletes the live output); purge before the
+  removal is logged (14). The order "list, then read the ledger" is load-bearing too
+  (`D30_teeth_read_first`, 25 steps, no rebuild needed: the sweep reads the ledger before an
+  input is admitted, the input is then admitted, compacted, the removal logged and purged; the
+  listing taken afterwards shows the input absent, and the stale read says the output is not
+  live: a live output is deleted). `janitor.ts` lists first, and its comment says why. The live test is not: with "absent from the listing" alone the
+  rule still holds (`D30_teeth_absent_only`), because an object is deleted only once its key
+  can never be live; `janitor.ts` keeps both, which costs nothing.
+- **Leaks (I11's no-leak half):** see `LEAK_*` in 2c and the finding **F16**.
+
+**The segment log as built** (`LEDGER-LOG.md`, `ledger.ts` `startIncarnation`): the start is
+two steps (PUT the base segment with If-None-Match, then commit; every request waits in
+between; storage can be lost again in between), numbered max(newest in R2, the storage's own)
++ 1. Review S-1 (`design/reviews/segment-log-and-compaction.md`) is modelled as two more
+steps, a rollback to the first-layout ledger (whose drain writes `{version}.json` objects into
+the segment incarnation's prefix and advances `logged`, but not `logged_through`) and the
+roll-forward (`maxRB`, `rbFix`).
+
+<!-- BEGIN BFS_LOG -->
+<!-- END BFS_LOG -->
+
+- **V_IncarnationNotReused and every other property hold**: **exhaustively** with three
+  ledger losses (`LOG_as_built_3LL`: 2 batches with retries, one flush Worker, no compaction,
+  3.4 million states, depth 45); at IMPL_PLANNED_fixed's bounds (22 steps clean) and with two
+  ledger losses and compaction (25 steps clean); the 7-step reuse of the plan as it
+  stood (F11) is gone (`results/REPLAY.md`). With the base committed before it is in R2 the
+  reuse comes back at once (`LOG_teeth_commit_first`, 7 steps), and a retried drain that takes
+  new bounds makes the rebuild refuse (`LOG_teeth_retry_new_bounds`, F10).
+- **S-1 is confirmed by the model** (`LOG_S1_rollback`): after a rollback the first-layout
+  drain logs a change only as a per-change object, flush tells the shard `recorded` through it,
+  and the segment rebuild would not read it: I5 fails in 14 steps (what the shard discarded is
+  above what a rebuild keeps), the first step of the review's data loss. With fix (b) (on
+  roll-forward an outbox that does not continue the segment log starts a new incarnation from
+  SQLite) it holds (`LOG_S1_heal`).
+
+### 2c. The amended protocol, exhaustive
 
 `AMENDED` (`bfs/run.ts`) = DESIGN + LEDGER-LOG as written + the fixes for F1 (registration
 logged before writes, repeated when the ledger does not know the stream), F2 (sweeper as in
@@ -416,7 +480,12 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   not this one; the model follows the current code.)
 - **Fix (smallest).** A fresh step id in compaction output keys, so no two steps ever share an
   object; a step then deletes on conflict only objects no other step can make live. Modelled
-  as `compKey: 'unique'` (a never-reused step id); `IMPL_5`, `DESIGN_7` and the `A_*` runs check it.
+  as `compKey: 'unique'` (a never-reused step id); `DESIGN_7` and the `A_*` runs check it.
+- **Status: fixed in code by D30** (`DECISIONS.md`), not by step-unique keys: a step deletes
+  nothing, and the sweep deletes an output only once an input is absent and not live. Checked
+  in 2b (`D30_F14x`: 31 steps clean, sweeper on; the trace replays to its end without a
+  violation; `D30_teeth_conflict_delete` brings it back). Code test: `compact/test/compact.test.ts`
+  "spec F14".
 
 ### F12 (major, code: `shard/src/shard.ts` with lazy registration) — A flush that spans a shard storage loss files the new incarnation's rows under the old one
 
@@ -437,6 +506,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   `incarnation_mismatch` (guard (o): 2.5 M states, no counterexample).
 - **Fix.** `readSegment(tenant, incarnation, seqLo, seqHi)` returns null unless the stream has
   that incarnation and exactly that segment (`readBound`).
+- **Status: fixed in code** (`shard.ts` `readSegment(tenant, seqLo, incarnation, seqHi)`,
+  used so by `flush.ts`; code tests "spec F12" in `shard/test/review.test.ts` and
+  `flush/test/flush.test.ts`). The as-built configuration has `readBound`.
 
 ### F6 (major, code: `shard/src/shard.ts`, and lazy registration) — `tailRead` answers "ok, nothing" for a stream the shard no longer holds
 
@@ -500,6 +572,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   false.
 - **Fix.** As F14: a step-unique key, so a step never relies on an object another step wrote
   (or re-PUT unconditionally, which resets the upload time).
+- **Status: fixed in code by D30**: no deletion depends on an upload time. Checked in 2b with no
+  clock at all (`D30_F13`, `D30_F13x`; the trace stops at its sweep step). Code tests:
+  `compact/test/compact.test.ts`, review R-2.
 
 ### F15 (major, rare; code: `janitor.ts` `flushFileState`, `contracts/ledger.ts` `orphanCheck`) — The sweeper calls an old incarnation dead on a registration that is not yet logged
 
@@ -519,8 +594,13 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   Worker 2, which read the segment before the loss, has still to report. Rare.
 - **Fix.** Count a newer incarnation only once its registration is logged (`orphanCheck`
   returns, per stream, the incarnation as of the logged prefix). Modelled as
-  `sweepIncLogged`; `DESIGN_7` and `IMPL_4`/`IMPL_5` check it. It also surfaced in the as-built
-  peel (`IMPL_2`, 17 steps).
+  `sweepIncLogged`; `DESIGN_7` checks it.
+- **Status: fixed in code** (`janitor.ts` `flushFileState`): a newer incarnation counts only
+  once its logged watermark is above 0, which proves its registration is logged (a unit's
+  version is above its stream's registration and the log is a prefix). Checked in 2b
+  (`D30_F15x`, 23 steps clean, no clock); without the "> 0" the finding comes back in 15
+  steps with no age rule needed (`D30_teeth_newer_unlogged`). Code test:
+  `janitor/test/janitor.test.ts` "spec F15". Cost: F16 (b).
 
 ### F4 (major, unstated assumption) — "A missing planned file is an error that re-plans" is load-bearing and not in the text
 
@@ -586,11 +666,12 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
 
 ## Implementation / model mismatches
 
-Read-only comparison of the model's actions with the code as of 2026-11-18 evening
-(`shard/src/shard.ts` 612 lines, `ledger/src/ledger.ts` 800 lines; `flush.ts`,
-`compact.ts`, `janitor.ts`, `query/src/coordinator.ts` where they decide behaviour). The
-"as built" configuration of the explicit-state model (`IMPL` in `bfs/run.ts`) encodes the
-code's choice for every row marked *modelled*.
+Read-only comparison of the model's actions with the code, first as of 2026-11-18 evening
+(`IMPL_V1` in `bfs/run.ts`), then as of commit 6488856 on 2026-11-19 (`IMPL`; the protocol
+paths are unchanged at 6ee76c8: the later diffs to `ledger.ts`, `shard.ts` and
+`coordinator.ts` add shard-name validation, an alarm deletion, a flush-message version and
+query splitting/explain). Rows say which version they describe. `IMPL` encodes the code's
+choice for every row marked *modelled*.
 
 ### `shard/src/shard.ts`
 
@@ -624,8 +705,8 @@ code's choice for every row marked *modelled*.
 
 | # | Code | Consequence |
 |---|---|---|
-| C1 | `compact.ts`. **First version** (`IMPL_V1`): output key = hash(input keys) + hash(bytes); `putFile` accepts an existing object with the same hash as written ("exists"); on `conflict` the step deleted its outputs unless one was live (later also unless tombstoned). **Now** (`IMPL`, 2026-11-19): same keys; each output carries its inputs as R2 metadata `viz-inputs`; a step never deletes an output, not even on conflict. | V1: **F13**, **F14**. Now: modelled as `compKey: 'inputs'`, `compConflictDelete: false`; F13/F14 bounds pass (`F13_check_fixed`, `F14_check_fixed`). |
-| C2 | `janitor.ts` `sweepOrphans`. **First version**: compaction outputs deleted by upload age only (≥ max(24 h, 2 × 5 min)); a flush file dead if its stream's logged watermark covers it or the ledger has a newer *committed* incarnation. **Now**: a compaction output is deleted only if not live, not tombstoned and one of its inputs is neither live nor in R2 (no clock; the age is only a floor); a newer incarnation makes old flush files dead only once its logged watermark is above 0. | V1: F13, **F15**. Now: `sweep: 'inputs'`; F15 bounds pass (`F15_check_fixed*`). Leaks: see F13–F15 status. |
+| C1 | `compact.ts`. **First version** (`IMPL_V1`): output key = hash(input keys) + hash(bytes); `putFile` accepts an existing object with the same hash as written ("exists"); on `conflict` the step deleted its outputs unless one was live (later also unless tombstoned). **D30** (6488856): same keys; each output carries its inputs as R2 metadata `viz-inputs` (an adopted object keeps whatever metadata it has: none if written before D30); a step never deletes an output, not on conflict, `too_slow` or an unknown answer. | V1: **F13**, **F14**. D30: `compKey: 'inputs'`, `compConflictDelete: false`; checked in 2b. |
+| C2 | `janitor.ts` `sweepOrphans`. **First version**: compaction outputs deleted by upload age only (≥ max(24 h, 2 × 5 min)); a flush file dead if its stream's logged watermark covers it or the ledger has a newer *committed* incarnation. **D30**: list the prefix (with metadata), then one `orphanCheck` for the listed keys and the absent inputs, then delete; a compaction output is doomed only if not live, not tombstoned, its inputs record readable and one input absent from the listing and not live; a newer incarnation makes old flush files dead only once its logged watermark is above 0; age floors remain (24 h; outputs max(24 h, 2 × `maxStepMs`)) but are not needed for safety. | V1: F13, **F15**. D30: `sweep: 'inputs'`, `sweepSteps`, `sweepAge: false`; checked in 2b with no clock. Leaks: F16. `janitor/README.md` still describes the first version (age rule for outputs). |
 | C3 | `query/src/coordinator.ts`: asks every pool shard plus every registered stream; an unregistered stream is read from 0 at the incarnation the shard names; a learned newer incarnation is kept across re-plans; a missing planned file re-plans (F4 implemented); at most 3 refusals per shard or file, then 503. | Modelled (`query: 'impl'`). The 3-refusal cap turns F5's livelock into an error after 4 attempts. |
 | C4 | `flush.ts`: tells the shard `recorded(loggedWatermarks())`, never the committed watermark (F8 handled by the caller). | Modelled. |
 
