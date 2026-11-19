@@ -39,7 +39,7 @@ function measurePage(coarse) {
   const owner = (x, y) => { const e = document.elementFromPoint(x, y); return e && e.closest(sel) }
   const name = (el) => (el.getAttribute('aria-label') || el.textContent || el.value || el.tagName).trim().replace(/\s+/g, ' ').slice(0, 40)
   for (const el of document.querySelectorAll(sel)) {
-    if (el.disabled || el.closest('[aria-busy="true"]') || getComputedStyle(el).visibility !== 'visible') continue
+    if (el.disabled || el.closest('[aria-busy="true"], [inert]') || getComputedStyle(el).visibility !== 'visible') continue // inert: not a control while it is (a chart's legend under an error)
     const modal = document.querySelector('dialog:modal, .vz-scrim'); if (modal && !modal.contains(el)) continue // behind a dialog the page is inert
     if (el.matches('input[type="checkbox"]') && el.closest('label')) continue // measured as its label
     const r = el.getBoundingClientRect(); if (r.width <= 1 || r.height <= 1 || r.bottom < 0 || r.top > innerHeight) continue // a visually hidden control (skip link at rest)

@@ -247,6 +247,12 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold] td.vz-num:not([data-key]):not([data-priority="1"]) { font-family: var(--font-mono); }
   .vz-table[data-fold] td[data-label]:not([data-priority="1"])::before { content: attr(data-label); margin-right: var(--space-1); font: var(--text-small); word-spacing: normal; color: var(--ink-muted); }
   .vz-table[data-fold] tbody tr::after { content: ""; order: 1; flex: 0 0 100%; } /* the folded cells always start a new line */
+  /* A folded row is one block of cells with gaps between them: the row carries its hover, chosen and pressed fill, so the fill is whole. */
+  .vz-table[data-fold] tbody tr { background: var(--ground); }
+  .vz-table[data-fold] tbody tr:hover { background: var(--hover); }
+  .vz-table[data-fold] tbody tr[aria-selected="true"], .vz-table[data-fold] tbody tr[aria-current] { background: var(--rule); }
+  .vz-table[data-fold] tbody tr:has(.vz-waterfall-span:active) { background: var(--pressed); }
+  .vz-table[data-fold] tbody tr td, .vz-table[data-fold] tbody tr:hover td, .vz-table[data-fold] tbody tr[aria-selected="true"] td, .vz-table[data-fold] tbody tr[aria-current] td, .vz-waterfall[data-fold] tbody tr:has(.vz-waterfall-span:active) td { background: transparent; }
 }
 @container (max-width: 1199px) {
   .vz-table[data-fold="wide"], .vz-table[data-fold="wide"] thead, .vz-table[data-fold="wide"] tbody { display: block; }
@@ -262,6 +268,10 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold="wide"] td.vz-num:not([data-key]):not([data-priority="1"]) { font-family: var(--font-mono); }
   .vz-table[data-fold="wide"] td[data-label]:not([data-priority="1"])::before { content: attr(data-label); margin-right: var(--space-1); font: var(--text-small); word-spacing: normal; color: var(--ink-muted); }
   .vz-table[data-fold="wide"] tbody tr::after { content: ""; order: 1; flex: 0 0 100%; }
+  .vz-table[data-fold="wide"] tbody tr { background: var(--ground); }
+  .vz-table[data-fold="wide"] tbody tr:hover { background: var(--hover); }
+  .vz-table[data-fold="wide"] tbody tr[aria-selected="true"], .vz-table[data-fold="wide"] tbody tr[aria-current] { background: var(--rule); }
+  .vz-table[data-fold="wide"] tbody tr td, .vz-table[data-fold="wide"] tbody tr:hover td, .vz-table[data-fold="wide"] tbody tr[aria-selected="true"] td, .vz-table[data-fold="wide"] tbody tr[aria-current] td { background: transparent; }
 }
 
 /* Status: a mark with its own shape, then a word. Shape and word carry the state; colour reinforces it. */
@@ -309,7 +319,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-chart {
   --chart-plot: var(--plot); --chart-foot: var(--control-sm);
   --legend-head: calc(var(--text-label-lh) + 2 * var(--space-1) + var(--hairline)); --legend-row: calc(var(--control-sm) + 2 * var(--hairline)); /* a row is its target plus its rule; the collapsed rule takes half a hairline from the cell, so the target keeps its full height */
-  display: flex; flex-direction: column; gap: var(--space-2); min-width: 0;
+  position: relative; display: flex; flex-direction: column; gap: var(--space-2); min-width: 0;
 }
 .vz-chart[data-size="sm"] { --chart-plot: var(--plot-sm); }
 /* A chart that knows how many legend rows and note lines it will have (set --legend-rows and --legend-notes from the last result) reserves
@@ -318,7 +328,11 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-chart[style*="--legend-rows"] { min-height: calc(var(--chart-plot) - var(--space-6) + var(--strip) + var(--space-2) + var(--chart-foot) + var(--space-2) + var(--legend-head) + var(--legend-rows) * var(--legend-row) + min(var(--legend-notes, 0), 1) * var(--space-2) + var(--legend-notes, 0) * var(--text-small-lh)); }
 .vz-plot { display: block; width: 100%; height: calc(var(--chart-plot) - var(--space-6) + var(--strip)); overflow: visible; touch-action: pan-y; user-select: none; -webkit-user-select: none; cursor: crosshair; }
 .vz-plot[hidden] { display: none; }
-.vz-chart > .vz-empty { height: calc(var(--chart-plot) - var(--space-6) + var(--strip)); padding-top: var(--strip); max-width: none; } /* empty or error in the plot's place, at its height */
+.vz-chart > .vz-empty { height: calc(var(--chart-plot) - var(--space-6) + var(--strip)); padding-top: var(--strip); max-width: none; } /* empty in the plot's place, at its height */
+/* An error after a result was drawn: the message lies over the plot (laid out, hidden), the legend keeps the previous result's figures and is inert. */
+.vz-chart[data-error] > .vz-empty { position: absolute; inset: 0 0 auto 0; z-index: 1; background: var(--ground); }
+.vz-chart[data-error] > .vz-plot, .vz-chart[data-error] .vz-chart-foot > .vz-controls { visibility: hidden; }
+.vz-chart[data-error] .vz-legend-table tbody tr[data-key] { cursor: default; }
 .vz-plot text { font: var(--text-micro); fill: var(--ink-muted); }
 .vz-plot line, .vz-plot path, .vz-plot polyline, .vz-plot rect { vector-effect: non-scaling-stroke; }
 .vz-plot .vz-gridline { stroke: var(--rule); stroke-width: var(--hairline); }
@@ -373,7 +387,10 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-table.vz-legend-table tr[data-off] .vz-swatch { background: transparent; box-shadow: inset 0 0 0 var(--hairline) var(--series-other); border: 0; }
 .vz-table.vz-legend-table tr[data-off]:active td { color: var(--ink-secondary); }
 .vz-table.vz-legend-table tr.vz-legend-actions td { padding-block: 0; background: var(--ground); }
-.vz-table.vz-legend-table tr:has(.vz-series:focus-visible) { outline: var(--stroke) solid var(--focus); outline-offset: calc(-1 * var(--stroke)); } /* the ring is round the row it toggles */
+/* The ring is round the row it toggles. Drawn by the cells, because the first cell is positioned and would paint over an outline on the row. */
+.vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td { box-shadow: inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
+.vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td:first-child { box-shadow: inset var(--stroke) 0 0 var(--focus), inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
+.vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td:last-child { box-shadow: inset calc(-1 * var(--stroke)) 0 0 var(--focus), inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
 .vz-table.vz-legend-table { table-layout: fixed; } /* the script sets each figure column's width once per draw; the name takes the rest */
 .vz-table.vz-legend-table th, .vz-table.vz-legend-table td { overflow: hidden; }
 .vz-series { position: static; display: flex; align-items: center; gap: var(--space-2); width: 100%; min-width: 0; font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; white-space: nowrap; }
@@ -431,7 +448,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-menu-anchor > .vz-menu[data-align="end"] { left: auto; right: 0; } /* no room to the right: right edges aligned */
 .vz-menu-anchor > .vz-menu:not([data-open]) { display: none; }
 @media (pointer: coarse) and (max-width: 639px) {
-  .vz-menu-anchor > .vz-menu { position: fixed; left: 0; right: 0; top: auto; bottom: 0; padding: var(--space-2) var(--space-2) var(--space-4); border-radius: var(--radius-3) var(--radius-3) 0 0; }
+  .vz-menu-anchor > .vz-menu, .vz-menu-anchor > .vz-menu[data-align="end"], .vz-menu-anchor > .vz-menu[data-flip] { position: fixed; left: 0; right: 0; top: auto; bottom: 0; padding: var(--space-2) var(--space-2) var(--space-4); border-radius: var(--radius-3) var(--radius-3) 0 0; } /* whatever side it would anchor to: the sheet is the screen's width */
 }
 .vz-tooltip { display: inline-block; font: var(--text-small); padding: var(--space-1) var(--space-2); max-width: var(--overlay-min); background: var(--ink); color: var(--ground); border-radius: var(--radius-2); }
 
@@ -474,7 +491,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 @container (max-width: 639px) { .vz-split { grid-template-columns: minmax(0, 1fr); gap: var(--space-8); } }
 
 /* Key-value list: facts about one thing. */
-.vz-kv { display: grid; grid-template-columns: fit-content(var(--key-max)) minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; }
+.vz-kv { display: grid; grid-template-columns: fit-content(var(--key-max)) minmax(0, 1fr); align-items: baseline; gap: var(--space-2) var(--space-4); margin: 0; } /* a name sits on its value's first line, also beside a query well */
 .vz-kv dt { color: var(--ink-secondary); }
 .vz-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
@@ -488,6 +505,64 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 .vz-timeline .vz-mark[data-state="agent"] { margin-top: 0; justify-self: center; }
 .vz-timeline p { margin: 0; max-width: var(--measure); }
 .vz-timeline > li > .vz-link { grid-column: 3; justify-self: start; } /* the line's link stands alone under its sentence: a control, with a whole hit area */
+
+/* Waterfall: one trace's spans as a tree in a table (role treegrid), in the order they started. Each bar is the span's start and length as
+   fractions of the trace (--at, --len: data, set by whoever draws the rows, like a chart's coordinates). Bars are ink-muted; a span whose
+   own time (its length less the time covered by the spans inside it) is a tenth of the trace or more is ink with its name strong: that is
+   where the time went. Neutral throughout: a span is not a series and its length is not a state; a failed span carries the critical mark. */
+.vz-waterfall td[data-key] { font: var(--text-ui); padding-left: calc(var(--space-1) + var(--depth, 0) * var(--space-4)); }
+.vz-waterfall tr[aria-level="2"] { --depth: 1; } .vz-waterfall tr[aria-level="3"] { --depth: 2; } .vz-waterfall tr[aria-level="4"] { --depth: 3; }
+.vz-waterfall tr[aria-level="5"] { --depth: 4; } .vz-waterfall tr[aria-level="6"] { --depth: 5; } .vz-waterfall tr[aria-level="7"] { --depth: 6; }
+.vz-waterfall tr[aria-level="8"] { --depth: 7; } .vz-waterfall tr[aria-level="9"] { --depth: 8; } /* deeper spans keep the ninth level's indent; the accessible tree has the true level */
+.vz-waterfall tr[hidden] { display: none; }
+.vz-waterfall td[data-key] > * { vertical-align: middle; }
+.vz-tree-toggle, .vz-tree-gap { position: relative; z-index: 1; flex: none; display: inline-grid; place-items: center; width: var(--control-sm); height: var(--control-sm); padding: 0; margin-right: var(--space-1); }
+.vz-tree-toggle { background: transparent; border: 0; border-radius: var(--radius-2); color: var(--ink-secondary); cursor: pointer; }
+.vz-tree-toggle::before { content: ""; border: var(--space-1) solid transparent; border-right-width: 0; border-left-color: currentColor; margin-left: var(--space-1); } /* a triangle pointing at what it would open */
+.vz-tree-toggle[aria-expanded="true"]::before { border-width: var(--space-1) var(--space-1) 0; border-color: currentColor transparent transparent; margin: var(--space-1) 0 0; }
+.vz-tree-toggle:hover { color: var(--ink); background: var(--hover); }
+.vz-tree-toggle:active { transition-duration: 0s; background: var(--pressed); }
+.vz-waterfall-span { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; min-width: 0; padding: 0; font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer; white-space: nowrap; }
+.vz-waterfall-span::after { content: ""; position: absolute; inset: 0; } /* the whole key cell shows the span's detail; the toggle sits above it */
+.vz-waterfall-span:focus-visible { outline: 0; }
+.vz-waterfall-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.vz-waterfall tr[data-heavy] .vz-waterfall-name { font-weight: var(--text-ui-strong-weight); }
+.vz-waterfall-inside { font: var(--text-small); color: var(--ink-secondary); }
+.vz-waterfall tr[aria-expanded="true"] .vz-waterfall-inside { display: none; } /* said only while what it counts is hidden */
+.vz-waterfall tbody tr:has(.vz-waterfall-span:active) td { background: var(--pressed); }
+.vz-waterfall tr:has(.vz-waterfall-span:focus-visible) td { box-shadow: inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
+.vz-waterfall tr:has(.vz-waterfall-span:focus-visible) td:first-child { box-shadow: inset var(--stroke) 0 0 var(--focus), inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
+.vz-waterfall tr:has(.vz-waterfall-span:focus-visible) td:last-child { box-shadow: inset calc(-1 * var(--stroke)) 0 0 var(--focus), inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
+.vz-waterfall .vz-waterfall-time { width: 50%; } /* half the table; below breakpoint-narrow the bar has its own full-width line */
+.vz-waterfall-bar { display: block; height: var(--space-2); margin-left: calc(var(--at) * 100%); width: max(var(--stroke), calc(var(--len) * 100%)); background: var(--ink-muted); } /* a 14 ms span in a 7 s trace is still a stroke wide */
+.vz-waterfall tr[data-heavy] .vz-waterfall-bar { background: var(--ink); }
+.vz-waterfall-scale { display: flex; justify-content: space-between; gap: var(--space-2); font: var(--text-micro); font-weight: var(--text-data-weight); color: var(--ink-muted); } /* the column head: the trace's start and end */
+@container (max-width: 639px) {
+  .vz-waterfall[data-fold] tbody tr { align-items: center; }
+  .vz-waterfall[data-fold] td[data-key] { display: flex; align-items: center; padding-left: calc(var(--space-1) + var(--depth, 0) * var(--space-3)); } /* toggle and name on one line */
+  .vz-waterfall[data-fold] .vz-waterfall-span { flex-wrap: wrap; column-gap: var(--space-2); } /* "3 spans inside, 1 failed" goes under the name rather than cutting it */
+  .vz-waterfall[data-fold] .vz-waterfall-time { flex: 0 0 100%; order: 1; width: auto; min-width: 0; padding-block: var(--space-1); } /* the bars keep one scale: a line of their own, the table's full width */
+}
+@media (pointer: coarse) { .vz-tree-toggle, .vz-tree-gap { width: var(--control-touch); height: var(--control-touch); margin-right: 0; } .vz-log-tail > .vz-button { margin-block: calc((var(--control-touch) - var(--control-sm)) / 2); } }
+
+/* Log lines: what a program wrote, newest first, read line by line. Time (with milliseconds) is the key; the message wraps (nothing scrolls
+   sideways) and is cut after four lines with a button for the rest; a matched search term is marked like an insertion. Error and warn lines
+   carry their status mark; info and debug carry the word only. A level every line shares is stated once in the caption, not per line. */
+.vz-log td { vertical-align: baseline; padding-block: calc((var(--row) - var(--text-data-lh)) / 2); height: auto; }
+.vz-log td[data-key] { font: var(--text-data); }
+.vz-log-level { font: var(--text-data); color: var(--ink-secondary); }
+.vz-log-level .vz-status { font: inherit; color: var(--ink); gap: var(--space-1); }
+.vz-log-msg { width: 100%; min-width: var(--overlay-min); font: var(--text-data); white-space: pre-wrap; overflow-wrap: anywhere; } /* never narrower than an overlay, so a long pod name cannot squeeze it to a word a line */
+.vz-table td.vz-log-msg { white-space: pre-wrap; }
+.vz-log-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--clamp-lines); line-clamp: var(--clamp-lines); overflow: hidden; }
+.vz-log tr[data-open] .vz-log-text { display: block; -webkit-line-clamp: none; line-clamp: none; }
+.vz-log-msg > .vz-button { display: flex; margin-top: var(--space-1); }
+.vz-log-msg > .vz-button[data-quiet] { margin-left: calc(-1 * var(--space-2)); } /* its words line up with the message's */
+.vz-match { padding: 0; color: var(--ink); background: var(--rule); font-weight: var(--text-data-strong-weight); } /* a matched term: weight and the chosen fill, like an insertion in a diff */
+.vz-log-tail { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 var(--space-3); min-height: var(--strip); } /* the strip: count and order, and while paused the held lines */
+@container (max-width: 639px) {
+  .vz-log[data-fold] td.vz-log-msg:not([data-key]):not([data-priority]) { flex: 0 0 100%; order: 1; min-width: 0; padding-top: 0; font: var(--text-data); color: var(--ink); white-space: pre-wrap; } /* the message is what the list is for: its full width and size, never folded small */
+}
 
 /* Agent claim: something an agent wrote. A rule down its left edge and a first line that says who wrote it and whether a person has checked it. */
 .vz-claim { display: flex; flex-direction: column; gap: var(--space-2); padding-left: var(--space-3); border-left: var(--stroke) solid var(--ink-muted); min-width: 0; }

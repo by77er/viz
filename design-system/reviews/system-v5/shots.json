@@ -348,6 +348,74 @@
    "scale": 1,
    "height": 800,
    "measure": true
+  },
+  {
+   "name": "traces-1440",
+   "url": "reviews/system-v5/compositions/traces.html",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "traces-400",
+   "url": "reviews/system-v5/compositions/traces.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "traces-keyboard-1440",
+   "url": "reviews/system-v5/compositions/traces.html",
+   "scale": 1,
+   "height": 900,
+   "steps": [
+    {
+     "focus": ".vz-waterfall-span[tabindex=\"0\"]"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowRight"
+    }
+   ]
+  },
+  {
+   "name": "logs-1440",
+   "url": "reviews/system-v5/compositions/logs.html",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "logs-400",
+   "url": "reviews/system-v5/compositions/logs.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "logs-line-open-1440",
+   "url": "reviews/system-v5/compositions/logs.html",
+   "scale": 1,
+   "steps": [
+    {
+     "click": "[data-log-more]"
+    }
+   ],
+   "themes": [
+    "light"
+   ],
+   "height": 1500
   }
  ]
 }

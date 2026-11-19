@@ -1,0 +1,60 @@
+<!-- @dsCard group="Data" height=900 -->
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}</style></head><body class="vz">
+<div class="vz-sections">
+<section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Lines</h3><span class="vz-panel-meta"><span>09:16 to 15:16</span><span>· newest first</span><span>· paused at 15:16:02</span></span></div>
+  <div class="vz-query" aria-label="Search">{service="checkout-api"} |~ "pool"</div>
+  <div class="vz-panel-body"><div class="vz-log-tail"><p class="vz-table-caption">6 newest of 1,912 lines. Paused while you read.</p><button class="vz-button" data-size="sm">Show 214 newer lines</button></div>
+  <div class="vz-table-wrap"><table class="vz-table vz-log" data-fold role="table" aria-label="Log lines from checkout-api, newest first">
+    <thead><tr role="row"><th role="columnheader" class="vz-label">Time</th><th role="columnheader" class="vz-label" data-priority="1">Level</th><th role="columnheader" class="vz-label">Message</th><th role="columnheader" class="vz-label">Pod</th><th role="columnheader" class="vz-label">Trace</th></tr></thead>
+    <tbody>
+      <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:16:01.884">15:16:01.884</time></td><td role="cell" class="vz-log-level" data-priority="1"><span class="vz-status" data-state="critical">error</span></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db <mark class="vz-match">pool</mark> exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…x2k4p</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="#">9d2e…71aa</a></td></tr>
+      <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:16:01.402">15:16:01.402</time></td><td role="cell" class="vz-log-level" data-priority="1"><span class="vz-status" data-state="critical">error</span></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db <mark class="vz-match">pool</mark> exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…q8m1z</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="#">0b7c…e9f3</a></td></tr>
+      <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:16:01.390">15:16:01.390</time></td><td role="cell" class="vz-log-level" data-priority="1"><span class="vz-status" data-state="warn">warn</span></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">payments-db <mark class="vz-match">pool</mark> at 50 of 50 connections, 37 requests waiting</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…x2k4p</span></td><td role="cell" data-label="Trace"></td></tr>
+      <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:16:00.977">15:16:00.977</time></td><td role="cell" class="vz-log-level" data-priority="1"><span class="vz-status" data-state="critical">error</span></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db <mark class="vz-match">pool</mark> exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…x2k4p</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="#">51aa…0c42</a></td></tr>
+      <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:15:59.211">15:15:59.211</time></td><td role="cell" class="vz-log-level" data-priority="1"><span class="vz-status" data-state="critical">error</span></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">payment authorisation for order ord_8f2kq abandoned after 3 attempts: SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 250ms.
+    at com.zaxxer.hikari.<mark class="vz-match">pool</mark>.HikariPool.createTimeoutException(HikariPool.java:696)
+    at com.zaxxer.hikari.<mark class="vz-match">pool</mark>.HikariPool.getConnection(HikariPool.java:197)
+    at com.zaxxer.hikari.HikariDataSource.getConnection(HikariDataSource.java:100)
+    at shop.payments.PaymentIntents.lockForOrder(PaymentIntents.java:88)
+    at shop.payments.Authoriser.authorise(Authoriser.java:141)
+    at shop.checkout.OrderHandler.place(OrderHandler.java:212)
+    at shop.checkout.http.Pipeline$Stage0.run(Pipeline.java:40)
+    at shop.checkout.http.Pipeline$Stage1.run(Pipeline.java:47)
+    at shop.checkout.http.Pipeline$Stage2.run(Pipeline.java:54)
+    at shop.checkout.http.Pipeline$Stage3.run(Pipeline.java:61)
+    at shop.checkout.http.Pipeline$Stage4.run(Pipeline.java:68)
+    at shop.checkout.http.Pipeline$Stage5.run(Pipeline.java:75)
+    at shop.checkout.http.Pipeline$Stage6.run(Pipeline.java:82)
+    at shop.checkout.http.Pipeline$Stage7.run(Pipeline.java:89)
+    at shop.checkout.http.Pipeline$Stage8.run(Pipeline.java:96)
+    at shop.checkout.http.Pipeline$Stage9.run(Pipeline.java:103)
+    at shop.checkout.http.Pipeline$Stage10.run(Pipeline.java:110)
+    at shop.checkout.http.Pipeline$Stage11.run(Pipeline.java:117)
+    at shop.checkout.http.Pipeline$Stage12.run(Pipeline.java:124)
+    at shop.checkout.http.Pipeline$Stage13.run(Pipeline.java:131)
+    at shop.checkout.http.Pipeline$Stage14.run(Pipeline.java:138)
+    at shop.checkout.http.Pipeline$Stage15.run(Pipeline.java:145)
+    at shop.checkout.http.Pipeline$Stage16.run(Pipeline.java:152)
+    at shop.checkout.http.Pipeline$Stage17.run(Pipeline.java:159)
+    at shop.checkout.http.Pipeline$Stage18.run(Pipeline.java:166)
+    at shop.checkout.http.Pipeline$Stage19.run(Pipeline.java:173)
+    at shop.checkout.http.Pipeline$Stage20.run(Pipeline.java:180)
+    at shop.checkout.http.Pipeline$Stage21.run(Pipeline.java:187)
+    at shop.checkout.http.Pipeline$Stage22.run(Pipeline.java:194)
+    at shop.checkout.http.Pipeline$Stage23.run(Pipeline.java:201)</span><button class="vz-button" data-size="sm" data-quiet data-log-more aria-expanded="false">Show all 31 lines</button></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…q8m1z</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="#">c4d2…a817</a></td></tr>
+      <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:15:58.804">15:15:58.804</time></td><td role="cell" class="vz-log-level" data-priority="1">info</td><td role="cell" class="vz-log-msg"><span class="vz-log-text">retrying payment authorisation for order ord_8f2kq, attempt 3 of 3: connection <mark class="vz-match">pool</mark> busy</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…q8m1z</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="#">c4d2…a817</a></td></tr>
+    </tbody></table></div></div></section>
+<section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Lines</h3><span class="vz-panel-meta"><span>09:16 to 15:16</span></span></div>
+  <div class="vz-query" aria-label="Search">{service="checkout-api", level="fatal"}</div>
+  <div class="vz-panel-body"><div class="vz-empty"><p class="vz-empty-title">No lines matched</p><p>checkout-api wrote no line at level <span class="vz-qty">fatal</span> from 09:16 to 15:16. It wrote 1,204 at <span class="vz-qty">error</span>.</p><div class="vz-controls"><button class="vz-button" data-size="sm">Show the error lines</button></div></div></div></section>
+</div>
+<script>
+/* Log: a message cut after its first lines opens in place, and closes again; nothing else moves but the rows below it. */
+(function () {
+  for (const b of document.querySelectorAll('[data-log-more]:not([data-ready])')) {
+    b.dataset.ready = '1'; const all = b.textContent
+    b.addEventListener('click', () => { const tr = b.closest('tr'), open = !tr.hasAttribute('data-open'); tr.toggleAttribute('data-open', open); b.setAttribute('aria-expanded', String(open)); b.textContent = open ? 'Show the first lines' : all })
+  }
+})()
+</script>
+</body></html>

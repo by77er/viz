@@ -5,29 +5,46 @@ m1 to m20, the tells, 7 surviving `check.mjs` mutants, the legend toggle's cost)
 gaps the flow screens' second revision found (`flows/REVISION.md`, "System gaps found", G1 to G16).
 Status: **not reviewed.** It needs an independent review under `project/review.md`.
 
-Nothing outside `design-system/` was edited; `flows/`, `reviews/system-v4/` and `app/` were not
-touched; git was not run, so "before" is a copy of v4 taken at the start of the work
-(`dist/`, `project/`, `src/`, `tools/`, `fixtures/` in the session scratchpad), not a commit.
-Nothing was published.
+The work was interrupted by a container restart and finished by a second designer, who inventoried
+what was done against the review, measured again every claim below that can be measured, fixed what did
+not hold (see "Found after the restart"), took the waterfall and log-line gaps the first session had
+declined, and wrote the mutant and speed sections. Nothing outside `design-system/` was edited;
+`flows/`, `reviews/system-v4/` and `app/` were not touched; git was used read-only. "Before" is v4
+exactly as reviewed: extracted from commit `f1c399a` (`git archive`, the commit that added the v4
+review; it was `48a7bdb` before the branch's history was rewritten to drop vendored code, and its
+`design-system/` is the same file for file), byte-identical in `src/`, `tokens.json`, `tools/` and the Chart preview to the copy the first
+session took, with v4's `dist/` built from it by v4's own `build.mjs`. Nothing was published.
 
 ## How it was checked
 
-- **Before and after images**: eight compositions (`compositions/`: a full dashboard, a monitor, a
+- **Before and after images**: ten compositions (`compositions/`: a full dashboard, a monitor, a
   dialog over a long list, empty and error states, a 30-row table, charts after a filter round trip
-  and a new pod, an agent's report, a secret shown once), rendered with `tools/shots.mjs scenario
-  shots.json` from the same files on the v4 copy and on v5: both themes, 1440 and 400 px, a full
-  screen at 1500 px, 400 px with a coarse pointer, 200% zoom, greyscale. 42 composed pairs in
-  `compare/` (natural size, side by side, palette-encoded, 5.9 MB). The v4 side renders v5 markup
-  with v4's CSS and chart, so a class v4 does not have shows unstyled there; that is the honest
-  picture of what v4 offered, not a regression.
+  and a new pod, an agent's report, a secret shown once, a trace with its waterfall, log lines with a
+  paused tail), rendered with `tools/shots.mjs scenario shots.json` from the same files on v4 and on
+  v5 in the same session: both themes, 1440 and 400 px, a full screen at 1500 px, 400 px with a
+  coarse pointer, 200% zoom, greyscale, keyboard focus. 53 composed pairs in `compare/` (natural
+  size, side by side; palette-encoded keeping the 256 most frequent colours of each image exactly,
+  so grounds, inks and series are exact and at most 1.2% of pixels, antialiasing, move to a near
+  colour; 6.6 MB). All were rendered again after the restart: the images left by the first session
+  were older than its compositions (the charts image said "auth" was brought forward; the composition
+  had been changed to "search"). The v4 side renders v5 markup with v4's CSS and chart, so a class v4
+  does not have shows unstyled there (the waterfall, the log lines); that is the honest picture of
+  what v4 offered, not a regression.
 - **Measurements**: hit areas, covered controls, drawn boxes reached by a neighbour and links
   inside sentences (`shots.mjs`, extended for m20), reserved against drawn chart height (a page
   served over HTTP with data held 600 ms), layout shift and every speed budget with
   `tools/speed.mjs` (corrected for M4), contrast as rendered (`check.mjs`), and `tools/mutants.mjs`.
+  After the restart, every composition at 400 px with a coarse pointer, both themes: 0 hit areas
+  under 44 px, 0 controls covered at their centre, 0 drawn boxes reached by a neighbour (dashboard 77
+  areas, charts 55, long table 37, traces 28, claims 23, monitor 20, logs 15, states 10, secret 4,
+  dialog 2); one link inside a sentence, listed (the claims page's sub-line naming the monitor the
+  report is about: a secondary path, not the report's main one, which is reading and confirming
+  claims); no sideways overflow at 400, 1440, 1500 px or 200% zoom; smallest
+  text 11 px (`micro`).
 - **Machine**: 4 cores shared with other jobs; the load average is recorded beside every number
-  below. It was between 8 and 17 for the whole session, so by the harness's own rule (M4) no
-  timing in this document can pass or fail a budget: they are printed and compared before against
-  after in the same session, and layout shift (which does not depend on speed) is judged.
+  below. It was between 8 and 26 across both sessions, so by the harness's own rule (M4) no timing in
+  this document can pass or fail a budget: they are printed and compared before against after in the
+  same session, alternating in blocks, and layout shift (which does not depend on speed) is judged.
 
 ## Blockers
 
@@ -56,8 +73,11 @@ checkout-api-…b2d84 2.4 cores" while Other reaches 2.8. v5: the three largest 
 36: v4 says "highest: …3742c 2.9" with the new pod hidden in Other at 3.3; v5 says "highest: Other,
 checkout-api-7d9f8c6b5-new01 3.3 cores", the note says so and offers the recolour. The round trip and
 the new pod are also controls in the Chart preview ("Without the three largest", "Add a pod larger
-than the rest"). Unit test of the rule (node, scratch): 36 series by rank, filter out the top 3, clear
-it: slots 1 to 8 identical before and after.
+than the rest"). Rule as code, measured again after the restart with `assignSeries` taken verbatim
+from each version's Chart preview (node; 36 series by rank, filter out the three largest, clear the
+filter, then a pod larger than all 36): v5 slots 1 to 8 identical before and after, the new pod in
+Other and every slot unchanged; v4 slots 1 to 3 held by the 9th to 11th largest after the round trip,
+which is the review's image 01 reproduced from the code alone.
 
 ### B2. Chart height on touch phones
 
@@ -69,13 +89,13 @@ the readout no longer takes its own line below 400 px (one line beside the zoom 
 answers m4), and the legend note is one line per fact, cut to fit, counted in `--legend-notes`. Other
 adds two legend rows (its own and the action row). The fixture sets both properties per panel.
 
-**Shows it.** Reserved against drawn height, fixture served over HTTP, data held 600 ms, every chart:
-1440 px fine pointer, 366/366, 491/491, 559/559, 559/559, 491/491, 210/210; 400 px coarse,
-486/486, 711/711, 819/819, 819/819, 711/711, 290/290 (v4 reserved 384, 509, 534, 534 and 254 against
-496, 721, 820, 820, 300). Layout shift with the page loaded at 400 px, coarse, scrolled to a chart,
-data 800 ms late, one run each, load 9.1 to 9.5 on 4 cores: v4 0.053, 0.062, **0.086**, 0.074,
-**0.520** (routes, services, pods, pods-all, backtest); v5 0.0000, 0.0000, 0.0000, 0.0000, 0.0038.
-The 20-run figures are in "Speed" below. `speed.mjs` now has a phone layout
+**Shows it.** Reserved against drawn height, fixture served over HTTP, data held 600 ms, every chart,
+measured again after the restart: 1440 px fine pointer 369/369, 499/499, 569/569, 569/569, 499/499,
+211/211; 400 px coarse 490/490, 720/720, 830/830, 830/830, 720/720, 292/292 (v4 reserved 384, 509, 534,
+534, 509 and 254 against 496, 721, 820, 820, 721 and 300). Layout shift with the page loaded at 400 px,
+coarse, scrolled to a chart, data 800 ms late, 20 runs alternating with v4, load 10 to 26 on 4 cores
+(layout shift is judged at any load): v4 p75 0.053 (routes), 0.062 (services), **0.301** (pods),
+0.074 (pods-all), **0.698** (backtest); v5 0.0000 on all five. Table in "Speed" below. `speed.mjs` now has a phone layout
 (`fixtures/speed-phone.json`, 400 x 800, coarse, touch) with a "loaded scrolled to" row per chart.
 
 The legend toggle's cost is answered under "Speed".
@@ -114,7 +134,9 @@ each slot's hue within 22° across themes. Validator (`dataviz/scripts/validate_
 | Band, chroma, 3:1 on ground and sunken (and raised in dark) | pass | pass |
 
 v4 for comparison: all pairs failed at deutan 1.8 / normal 6.5 (light) and 1.4 / 7.1 (dark), and
-light slots 2 to 5 were one grey (luminance ratios 1.00 to 1.01).
+light slots 2 to 5 were one grey (luminance ratios 1.00 to 1.01). Every figure in this table was measured again after the
+restart with the same validator (adjacent, each dash group `--pairs all`, all eight `--pairs all`,
+dark against `#121212`) and came out the same.
 
 **Shows it.** `compare/v5-charts-grey-1440-light.png` and dark: the eight-series chart and five
 routes ending within 41 ms, in greyscale; v5's lines alternate light and dark and 5 to 8 are dashed,
@@ -193,7 +215,7 @@ whether any preview or screen needs an inline style; Screen reader names "not ev
 | After an action, with undo | `vz-done` (Button; rule in States): what is now true and Undo, in place, same height, focus to Undo |
 | Sections | `vz-section` (heading and content `space-3` apart), `vz-sections` and `vz-split` columns `space-8` apart; a Section component with README and preview |
 | Where a menu opens | `vz-menu-anchor`: under its button, left edges aligned, `data-align="end"` and `data-flip` when there is no room; a bottom sheet with a coarse pointer below 640 px; `vz-menu-note` and a confirming button inside (G3) |
-| Empty or error at the plot's height | `.vz-chart > .vz-empty` at the plot's height; the chart's `setError` keeps the reserved height |
+| Empty or error at the plot's height | `.vz-chart > .vz-empty` at the plot's height. An error after a result was drawn (`setError`) lies over the plot at its height and the legend keeps the previous result's names and figures, inert (changed after the restart: the first version emptied the legend under "Showing the previous query", see below) |
 | Time-range field | `vz-range` in a `fieldset.vz-field`: two typed mono times in the system's form, the zone stated, never the locale picker |
 | Row-actions trigger | `td.vz-row-actions` with a quiet small "Actions…" button opening the row's menu |
 
@@ -246,38 +268,181 @@ script.
 | m20 `shots.mjs` measure | Reports links inside sentences, controls covered at their centre and drawn boxes reached by a neighbour; skips only what is invisible or behind a modal. |
 | Tells | Middle dots no longer sit against marks (claim provenance parts are spaced; rule in Words); an agent's line in a timeline has the agent's rule as its mark, and an agent's banner has no mark of its own, so no "▬ \|" or "– \|"; the ⌘↵ chip is gone from buttons (rule: shortcuts in menus and tooltips); the roll-call of admired products and the aphoristic principle titles are rewritten as plain statements; the Cover is the product, not colour blocks. |
 
+## Found after the restart
+
+Inventory against the review, then every claim re-measured. Six claims did not hold in the work as
+left; each is fixed, imaged and, where a check could see it, guarded.
+
+| What was claimed | What the images and measures showed | Fix | Shows it |
+|---|---|---|---|
+| m12: the legend's focus ring is round the whole row | The ring was an outline on the `tr`; the first cell is positioned (sticky), so it painted over the outline and the ring showed only beside the figures (first session's `compare/v5-charts-1440-light.png`, "search" row) | The ring is drawn by the cells (`box-shadow` in `focus` on every cell, plus the left side on the first and the right side on the last); the same for a waterfall row. `check.mjs` part 2 fails if a row-control's ring is not drawn by its cells (mutant N10) | `compare/v5-charts-1440-*` (the "search" row), `compare/v5-traces-keyboard-1440-*` |
+| m6, B2: with a coarse pointer the waiting line lies over the strip, never over the plot | The strip grows to `control-touch` (44 px) on touch, but the chart still drew the plot `space-6` (24 px) from its top, so the waiting line's ground covered the top 20 px of data: on the 400 px dashboard the catalog line was hidden from 09:16 to 10:00 | The plot's top is the strip's height, read from `--strip` (Chart README, "The strip above the plot"). The SVG's height was already the strip plus the plot, so no reserved height changed | `compare/v5-dashboard-400-*`, "Request rate by service" (v5 left: line hidden under "Waiting for 2 of 6 shards") |
+| M6: an error after a result was drawn keeps the panel's height | It did, as an empty space: the legend was emptied under a head that said "Showing the previous query" and its age, so the head described nothing on screen (a Stale data blocker by the rubric), and 8 reserved legend rows were blank (550 px at 400 px) | The message lies over the plot at its height (the plot stays laid out, hidden, so nothing moves and the next result draws at once; the first version also could not redraw after an error, because it read the hidden plot's width as 0); the legend keeps the previous result's names and figures and is inert. The head's words are now true of what is shown. `shots.mjs` skips inert controls | `compare/v5-states-*`, `compare/v5-dashboard-*` ("Request rate by service, being edited") |
+| m9: the reviewer's seven surviving mutants are caught | R10 (`ink-muted` on `pressed` in the legend) survived: the audit chose Other in every chart before forcing a press, and Other's count is the only muted legend text, so the muted-on-pressed pairing never rendered | A press pass on the previews as they open, before anything is chosen. R10 now fails with "28 series #6b6b6b on #d6d6d6 3.67:1" | Mutants table below |
+| G13: the row whose detail is shown is `rule` with an `ink` edge | In a folded table the fill was on the cells, so a chosen or hovered folded row was filled in patches with ground between them ("Slowest traces" at 1440 in a half column) | In the folded form the row carries the hover, chosen and pressed fill and its cells are transparent (Table README) | `compare/v5-traces-*` |
+| Images match the compositions | The 42 images predated the last edits to the compositions | All 53 re-rendered from the files as they are | `compare/` |
+
+Also corrected: the dashboard's error panel was titled "Error ratio by service" over request-rate data
+(it showed nothing, so it did not matter before; now that the legend stays it would be a figure under
+the wrong title): it is now "Request rate by service, being edited". A key-value name now sits on its
+value's baseline (the 400 px monitor's "Query" sat above its query well). "updated just now" no
+longer sets the words "just now" in mono.
+
 ## `check.mjs`: what it checks now, and its mutants
 
 Rewritten in four parts (header of `tools/check.mjs`): token pairings and the palette as a palette;
 the component CSS parsed as rules (so a reformat cannot misfire and an override anywhere is found);
-a rendered audit of all 28 previews (every preview but the Cover) in both themes at rest, with legend rows chosen, a row brought
-forward, Other opened, then under a forced hover and a forced press, measuring every text against the
-fill actually behind it and every swatch and line against its ring or surface; and the literal lint,
-which now covers angles, non-geometric percentages, unitless weights, line heights and scales, HTML
-`<style>` and `style=""`, and requires a reason after `token-lint-ignore`. `tools/mutants.mjs`
-applies each mutant to a copy in a temporary folder and runs the check there; the source tree is
-never edited.
+a rendered audit of all 30 previews (every preview but the Cover) in both themes, first as they open
+under a forced press (added after the restart: this is the pass that catches R10), then at rest with
+legend rows chosen, a row brought forward and Other opened, then under a forced hover and a forced
+press, measuring every text against the fill actually behind it and every swatch, line and waterfall
+bar against its ring or surface; and the literal lint, which now covers angles, non-geometric
+percentages, unitless weights, line heights, line clamps and scales, HTML `<style>` and `style=""`,
+and requires a reason after `token-lint-ignore`. Part 2 also fails a row that is one control (a legend
+row, a waterfall span) whose focus ring is not drawn by its cells. New pairings: status marks on
+`rule` and `pressed` (a failed span or a status in the row whose detail is shown), `ink-muted` on
+`pressed` (a waterfall bar in a pressed row). `tools/mutants.mjs` applies each mutant to a copy in a
+temporary folder and runs the check there; the source tree is never edited.
 
-MUTANTS_TABLE
+`node tools/mutants.mjs` after the restart, on a copy in the session scratchpad (never the tree), run
+01:48:00 to 01:59:35 UTC with the 1-minute load at 10.09 to 7.28 on 4 cores (timing does not
+affect the result). **All 30 mutants are caught and the harmless reformatting passes.** R1 to R18 are
+the v4 review's sixteen (R1 to R8 caught then; R9 to R17 its seven survivors, with "literal deg, %
+and unitless values" split into R14, R15 and R16; R18 the misfire); N1 to N8 are the first session's; N9 to N13 were added after the restart, for the
+ring and the two new components. R10 survived the first session's check: it is caught by the
+press pass on the previews as opened, added after the restart.
+
+| Mutant | What was broken | Expected | Result | First line check.mjs printed |
+| R1 | swatch ring removed | caught | caught | FAIL  .vz-swatch has lost its ground ring (0 0 0 var(--stroke) var(--ground)) |
+| R2 | pressed equal to hover (light) | caught | caught | FAIL  pressed beside hover [light]  1.00 < 1.1  (a press must differ from hover) |
+| R3 | series-4 back to v3 #eda100 (light) | caught | caught | FAIL  series-4 on ground [light]  2.17 < 3  (chart series and its swatch) |
+| R4 | crosshair dot edge to rule | caught | caught | FAIL  .vz-plot .vz-dot[data-series] stroke var(--rule) (line 295): the crosshair dot keeps its ground edge |
+| R5 | status-info equal to blue (light) | caught | caught | FAIL  status-info too close to blue [light]: a status must not look like the primary action |
+| R6 | two near-identical neighbours (series-3 a copy of series-2, light) | caught | caught | FAIL  series-2 beside series-3 [light]  lightness step 1.01 < 1.3 (neighbours alternate darker and lighter) |
+| R7 | a literal 3px | caught | caught | LITERAL length  src/components.css:589  3px |
+| R8 | series-other near white (light) | caught | caught | FAIL  series-other on ground [light]  1.23 < 3  (edge of the Other band, a switched-off swatch on any row, a line stepped back) |
+| R9 | swatch ring overridden on hover: tr:hover .vz-swatch { box-shadow: none } | caught | caught | FAIL  .vz-table.vz-legend-table tr:hover .vz-swatch sets box-shadow: none (line 589): the swatch must keep its ground ring (0 0 0 var(--stroke) var(-- |
+| R10 | ink-muted on pressed in the legend (the pressed override removed) | caught | caught | FAIL  rendered press, as opened: text "28 series" #6b6b6b on #d6d6d6 3.67:1 < 4.5  light Chart <span.vz-series-rest> |
+| R11 | ink-muted on rule in the legend (the chosen override removed) | caught | caught | FAIL  rendered at rest: text "28 series" #6b6b6b on #e4e4e4 4.19:1 < 4.5  light Chart <span.vz-series-rest> |
+| R12 | the plot filled with hover on hover | caught | caught | FAIL  .vz-plot:hover sets background (line 589): a chart has no fill of its own; series are only checked on ground and raised |
+| R13 | series-8 set to status-critical (light) | caught | caught | FAIL  series-8 [light] is 0.0 from status-critical (< 8): a series must not look like a state or an action |
+| R14 | a literal angle (deg) | caught | caught | LITERAL angle  src/components.css:589  45deg |
+| R15 | a literal percentage | caught | caught | LITERAL percentage  src/components.css:589  37% |
+| R16 | a literal unitless weight | caught | caught | LITERAL unitless  src/components.css:589  font-weight: 600 |
+| R17 | an opaque scrim (light) | caught | caught | FAIL  scrim [light] alpha 1 outside 0.30–0.75: the page must stay recognisable and the dialog must stand off it |
+| R18 | harmless: the swatch rule reformatted onto two lines (v4 misfired here) | passes | passes |  |
+| N1 | swatch ring removed on a pressed row only | caught | caught | FAIL  .vz-table.vz-legend-table tbody tr[data-key]:active .vz-swatch sets box-shadow: none (line 589): the swatch must keep its ground ring (0 0 0 var |
+| N2 | neighbours at one lightness (series-2 as dark as series-1, light) | caught | caught | FAIL  series-1 beside series-2 [light]  lightness step 1.18 < 1.3 (neighbours alternate darker and lighter) |
+| N3 | slot 7 drawn solid (its dash removed) | caught | caught | FAIL  [data-series="7"] has no --pattern: slots 5 to 8 must be dashed, the second channel beside colour |
+| N4 | lines that step back drawn in rule (too faint to follow) | caught | caught | FAIL  rendered at rest: series line #e4e4e4 on #ffffff 1.27:1 < 3  light Chart <path> |
+| N5 | a breakpoint that is not a token (800px) | caught | caught | FAIL  condition "@container (max-width: 799px)" (line 589) uses 799px, which is not a breakpoint token (640, 1200px) |
+| N6 | token-lint-ignore without a reason | caught | caught | LITERAL ignore-without-reason  src/components.css:589  token-lint-ignore |
+| N7 | a series in the dark theme below 3:1 on rule | caught | caught | FAIL  series-1 on ground [dark]  2.19 < 3  (chart series and its swatch) |
+| N8 | chosen legend row text in ink-muted | caught | caught | FAIL  rendered at rest: text "POST /v2/orders" #6b6b6b on #e4e4e4 4.19:1 < 4.5  light Chart <span.vz-series-name> |
+| N9 | a waterfall bar drawn in rule (too faint to read as a span) | caught | caught | FAIL  rendered press, as opened: waterfall bar #e4e4e4 on #d6d6d6 1.14:1 < 3  light Waterfall <span.vz-waterfall-bar> |
+| N10 | the legend row's ring back to an outline on the row (painted under its first cell) | caught | caught | FAIL  the row of .vz-series has no focus ring drawn by its cells (td, first and last cell, box-shadow in focus): a keyboard user cannot see which row  |
+| N11 | a matched search term in ink-muted (4.19:1 on its rule fill) | caught | caught | FAIL  rendered press, as opened: text "pool" #6b6b6b on #e4e4e4 4.19:1 < 4.5  light Log <mark.vz-match> |
+| N12 | "3 spans inside" in ink-muted (3.67:1 when its row is pressed) | caught | caught | FAIL  rendered press, as opened: text "3 spans inside, 1 failed" #6b6b6b on #d6d6d6 3.67:1 < 4.5  light Waterfall <span.vz-waterfall-inside> |
+| N13 | a literal line count for a cut log message | caught | caught | LITERAL unitless  src/components.css:589  line-clamp: 4 |
 
 ## Speed
 
-SPEED_TABLE
+Measured here, on the system's fixture page (a floor, not the application), after the restart, with
+the v5 harness for both versions: v4's fixture built from commit `f1c399a`, v5's from this tree.
+Reference setup: Chromium headless, CPU 4x, Fast 4G. **Alternating**: four rounds of v4 desktop, v5
+desktop, v4 phone, v5 phone, 5 runs each, so before and after shared the load; 20 runs per version and
+layout, merged (`speed/v4-desktop.json`, `v5-desktop.json`, `v4-phone.json`, `v5-phone.json` keep every
+run with the load at its start; the scenarios are `speed/compare-desktop.json` and `compare-phone.json`,
+the rows both fixtures have). The first session's 20-run v4 desktop set was replaced by this one.
+
+**The machine was never quiet**: the 1-minute load average was 10 to 26 on 4 cores and the calibration
+task took 359 to 887 ms against about 100 ms idle, so by the harness's rule every timing row is "not
+judged" either way. Layout shift does not depend on speed and is judged. Timings are printed so the
+direction can be read; a pass needs a quiet machine.
+
+**Desktop, 1440 x 900, fine pointer** (4 + 4 blocks of 5 runs, alternating; load at run start v4 13.9 to 22.6, v5 12.6 to 24.5 on 4 cores; calibration task v4 425, 579, 681, 439 ms, v5 535, 593, 805, 382 ms, about 100 ms idle)
+
+| Row | Budget | v4 p75 (median, worst) | v5 p75 (median, worst) | Load, median v4 / v5 | Judged? |
+|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 18 (17, 49) | 21 (16, 69) | 17.8 / 17.5 | not judged (load > cores) |
+| Typing in the query editor | 50 ms | 42 (20, 229) | 46 (20, 270) | 17.8 / 17.1 | not judged (load > cores) |
+| Crosshair, 3 series | 50 ms | 44 (30, 87) | 63 (28, 136) | 18.0 / 17.1 | not judged (load > cores) |
+| Crosshair, 36 series | 50 ms | 40 (34, 136) | 40 (35, 166) | 18.0 / 17.1 | not judged (load > cores) |
+| Crosshair, 200 series | 50 ms | 37 (29, 94) | 41 (35, 149) | 18.0 / 17.1 | not judged (load > cores) |
+| Legend row toggle, 36 series | 100 ms | 92 (71, 308) | 70 (58, 74) | 18.0 / 17.1 | not judged (load > cores) |
+| Legend row toggle, 200 series | 100 ms | 136 (105, 468) | 57 (48, 102) | 18.0 / 17.1 | not judged (load > cores) |
+| Response to paint, 36 series | 100 ms | 34 (24, 106) | 72 (43, 199) | 18.3 / 16.5 | not judged (load > cores) |
+| Response to paint, 200 series | 100 ms | 31 (23, 103) | 40 (23, 113) | 18.3 / 16.5 | not judged (load > cores) |
+| Layout shift, load and run | 0.05 | 0.0004 (0.0004, 0.0005) | 0.0004 (0.0004, 0.0005) | 18.3 / 16.5 | judged: v5 within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0003 (0.0003, 0.0003) | 0.0002 (0.0002, 0.0002) | 18.3 / 17.1 | judged: v5 within |
+| Worst interaction (Event Timing) | 200 ms | 248 (160, 816) | 168 (112, 360) | 18.3 / 16.5 | not judged (load > cores) |
+
+**Phone, 400 x 800, coarse pointer and touch** (4 + 4 blocks of 5 runs, alternating; load at run start v4 12.2 to 25.6, v5 10.4 to 23.1 on 4 cores; calibration task v4 606, 626, 884, 434 ms, v5 887, 762, 441, 359 ms, about 100 ms idle)
+
+| Row | Budget | v4 p75 (median, worst) | v5 p75 (median, worst) | Load, median v4 / v5 | Judged? |
+|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 36 (18, 124) | 29 (19, 116) | 19.7 / 18.9 | not judged (load > cores) |
+| Typing in the query editor | 50 ms | 35 (29, 288) | 45 (27, 105) | 19.7 / 18.9 | not judged (load > cores) |
+| Crosshair by touch drag, 36 series | 50 ms | 52 (49, 111) | 63 (52, 204) | 19.7 / 18.3 | not judged (load > cores) |
+| Legend row toggle, 36 series | 100 ms | 79 (68, 334) | 84 (71, 197) | 19.7 / 18.3 | not judged (load > cores) |
+| Legend row toggle, 200 series | 100 ms | 87 (79, 119) | 78 (57, 216) | 19.7 / 18.3 | not judged (load > cores) |
+| Response to paint, 36 series | 100 ms | 33 (26, 71) | 44 (28, 69) | 19.7 / 18.3 | not judged (load > cores) |
+| Response to paint, 200 series | 100 ms | 24 (22, 169) | 26 (21, 37) | 19.7 / 18.3 | not judged (load > cores) |
+| Layout shift, load and run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 19.7 / 18.3 | judged: v5 within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.3014 (0.0859, 0.3014) | 0.0000 (0.0000, 0.0000) | 19.6 / 19.3 | judged: v5 within |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.0530 (0.0530, 0.0530) | 0.0000 (0.0000, 0.0000) | 19.6 / 19.3 | judged: v5 within |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.0623 (0.0623, 0.0623) | 0.0000 (0.0000, 0.0000) | 19.6 / 19.3 | judged: v5 within |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.0736 (0.0736, 0.1563) | 0.0000 (0.0000, 0.0000) | 19.6 / 19.3 | judged: v5 within |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.6981 (0.6217, 0.8532) | 0.0000 (0.0000, 0.0000) | 19.6 / 19.3 | judged: v5 within |
+| Worst interaction (Event Timing) | 200 ms | 128 (112, 336) | 160 (104, 352) | 19.7 / 17.8 | not judged (load > cores) |
+
+What the numbers say, and what they do not:
+
+- **Layout shift, judged: v5 is within budget everywhere; v4 was not on a phone.** Loaded at 400 px
+  with a coarse pointer, scrolled to a chart, data 800 ms late: v4 0.053 to 0.698 at the 75th
+  percentile on all five charts (the backtest worst, at 0.85), v5 0.0000 on all five. This is B2. The
+  reserved against drawn heights behind it, measured with every data response held 600 ms
+  (`fixtures` page over HTTP): v5 at 1440 px 369/369, 499/499, 569/569, 569/569, 499/499, 211/211; at 400
+  px coarse 490/490, 720/720, 830/830, 830/830, 720/720, 292/292. v4 matched on desktop and reserved
+  384, 509, 534, 534, 509, 254 against 496, 721, 820, 820, 721, 300 on the phone.
+- **The legend toggle, B2's second half and the review's request.** Desktop p75 at 36 series 92 to
+  70 ms, at 200 series 136 to 57 ms (medians 71 to 58 and 105 to 48; v4's worst 468 ms, v5's 102). On
+  the phone the 200-series toggle went from 87 to 78 ms and the 36-series stayed level (79, 84), with
+  v5's worst runs higher (197, 216 ms against 334, 119): under this load the phone rows do not
+  separate. The change is structural (a toggle sets `display` on the series' paths and the rows'
+  attributes, recomputes the axis from numbers already held, and redraws the plot only if the axis or
+  the direct labels change), so its cost no longer grows with the series count: v4 grew 92 to 136 ms
+  from 36 to 200 series, v5 70 to 57.
+- **Response to paint, 36 series, is slower in v5** (desktop p75 34 to 72 ms, median 24 to 43; phone
+  p75 33 to 44). Checked directly, as a counterfactual: the same data redrawn by each version's chart
+  on its own fixture page, alternating, CPU 4x, 120 draws each (`setData` to the end of the painted
+  frame), load 11 to 13: 36 series v4 median 41.8, v5 51.7 ms; 200 series v4 88.4, v5 55.9 ms. Tuning
+  step tried: v5 with the dashes of slots 5 to 8 switched off, load 9.5 to 10.6: 36 series v4 44.9, v5
+  48.6 ms; 200 series v4 89.4, v5 52.3 ms. So about half of the 36-series difference is drawing four
+  dashed lines (the second channel M1 asked for), the rest is within the run-to-run spread of v4
+  itself (41.8 against 44.9); at 200 series v5 is 33 to 37 ms faster. Not tuned further: every figure
+  is under the 100 ms budget at the median and p75 even on this machine.
+- **Typing and crosshair rows** move by a few milliseconds in both directions between the two
+  versions with worst runs over 100 ms in both; nothing in v5 changed the editor or the crosshair
+  path. They are not evidence either way at this load.
+- **Not measured in this comparison**: the rows only v5's fixture has (one panel to a table and back,
+  which replaced v4's page-wide switch). `fixtures/speed.json` and `speed-phone.json` measure them on
+  v5 alone.
 
 ## The flow screens' system gaps (`flows/REVISION.md`)
 
 | Gap | Taken? |
 |---|---|
-| G1 skip link takes 32 px | Taken: `.vz-skip:not(:focus)` is visually hidden and takes no space; on focus it is placed over the nav. |
+| G1 skip link takes 32 px | Taken: `.vz-skip:not(:focus)` is visually hidden and takes no space; on focus it is placed over the nav. Every v4 side in `compare/` starts its nav 32 px lower than the v5 side. |
 | G2 page state | Taken (m1). |
 | G3 menu anatomy and anchoring | Taken (M6: `vz-menu-anchor`, `vz-menu-note`, a confirming `vz-controls`). |
 | G4 `vz-help` a flex row | Taken: one run of text, the mark inline. |
-| G5 trace waterfall | Not taken: a waterfall needs its own design pass (the question, the presence test, a 2,000-span trace, the critical path, nesting, collapse) and the method's eight steps; a half-specified component would be built twice. The Chart README now says not to build it from Chart. |
-| G6 log line | Not taken, for the same reason (levels, wrap or scroll, match highlight, live tail). |
+| G5 trace waterfall | Taken (after the restart; the first session had declined it as needing its own design pass, which it got): **Waterfall** (`project/components/Waterfall/`). A treegrid in a table: spans in start order, indented by depth; Took, Own (length less the time covered by spans inside) and Starts at; the bar as `--at`/`--len` fractions of the trace on one scale, `ink-muted`, and `ink` with a strong name where a span's own time is a tenth of the trace or more (lightness and weight, never a series or status colour); a failed span has the critical mark, and a collapsed span says "3 spans inside, 1 failed" so collapsing never hides a failure; collapse with a toggle, a trace over 200 spans opens collapsed except the paths to the spans in `ink`; the name is the span's own target (the detail under the table, `aria-selected`); one tab stop with arrow keys; the narrow form puts the bar on its own full-width line so every bar keeps one scale. `compare/v5-traces-*` (v4 side: the same markup, unstyled). |
+| G6 log line | Taken: **Log** (`project/components/Log/`). Time with milliseconds as the key; the level as a word, with the status mark for error and warn only, dropped as a column when the search names one level; the message wraps in mono keeping its line breaks (never a sideways scroll: the end of a line is often the point) and is cut after `clamp-lines` (a new token, 4) with "Show all 31 lines" opening it in place; a matched term is `vz-match` (weight on `rule`, like a diff insertion); the live tail is held while the person reads, with a real count ("Show 214 newer lines") and the meta saying "paused at 15:16:02"; the narrow form keeps the message at full width and size. `compare/v5-logs-*`, `compare/v5-logs-line-open-1440-light.png`. |
 | G7 folded label's space swallowed | Taken: the `data-label` prefix has its own margin and normal word spacing. |
 | G8 long axis unit off the page | Taken: a unit wider than the axis gutter starts at the chart's left edge. |
-| G9 a 2.5 step printed "3" | Taken: ticks carry exactly their step's decimals. |
-| G10 textarea | Taken: `textarea.vz-input`. |
+| G9 a 2.5 step printed "3" | Taken: ticks carry exactly their step's decimals. Measured with each version's own formatter (node): v5 prints a 2.5 step as 0.0 2.5 5.0 7.5 10.0 and a 0.25 step as 0.00 0.25 0.50 0.75 1.00; v4 printed 0 3 5 8 10 and 0.0 0.3 0.5 0.8 1.0. |
+| G10 textarea | Taken: `textarea.vz-input` (three lines tall at rest, grows by hand; `body` size with a coarse pointer). |
 | G11 outbound message | Not taken: its look belongs to the phone and chat products; the content form the flows use (`vz-kv`, `vz-diff`) is right. |
 | G12 a link styled as a button underlined | Taken: `.vz-button` has no underline. |
 | G13 the row whose detail is shown | Taken: `aria-current`/`aria-selected` rows on `rule` with an `ink` edge on the key. |
@@ -293,8 +458,13 @@ are `space-8` apart), `vz-secret-row` (the well takes the whole line), untoned b
 `row` tall on touch, and the chart's foot is one line. New: `vz-text`, `vz-secondary`, `vz-phrase`,
 `vz-cut`, `vz-done`, `vz-section`, `vz-sections`, `vz-notice-group`, `vz-nav-end`, `vz-menu-anchor`,
 `vz-menu-note`, `vz-range`, `vz-row-actions`, `vz-dialog-text`, `vz-text-form`, `vz-details`,
-`vz-sr`, `vz-mark[data-state="agent"]`, `textarea.vz-input`, `data-fold="wide"`. Chart API
-additions: `toggle`, `setError`, markers' `agent`, `--legend-notes`.
+`vz-sr`, `vz-mark[data-state="agent"]`, `textarea.vz-input`, `data-fold="wide"`; after the restart,
+`vz-waterfall` (with `vz-waterfall-span`, `-name`, `-inside`, `-time`, `-bar`, `-scale`, `vz-tree-toggle`,
+`vz-tree-gap`), `vz-log` (with `vz-log-level`, `-msg`, `-text`, `-tail`) and `vz-match`; the token
+`clamp-lines`. Chart API additions: `toggle`, `setError` (and `data-error` on the chart while it holds),
+markers' `agent`, `--legend-notes`. Behaviour changed under the same names after the restart: a folded
+table's row, not its cells, carries its fill; `vz-kv` aligns names to their value's baseline; a chart's
+plot starts under `--strip`.
 
 ## Migration for the flow screens and the app
 
@@ -307,6 +477,11 @@ additions: `toggle`, `setError`, markers' `agent`, `--legend-notes`.
 5. Replace hand-set paragraph margins with `vz-text`/`vz-secondary`, sections with `vz-section`.
 6. Acknowledge, Silence, Confirm: replace the button in place with `vz-done` after the action.
 7. Remove `⌘↵` chips from buttons. Remove the G1 to G4, G7, G10, G12 to G14 work-arounds (`flow-*`).
+   Screen 9's waterfall becomes `vz-waterfall` (`flow-indent` is `aria-level`, `flow-bar` is
+   `vz-waterfall-bar` with `--at`/`--len` as fractions, not percentages, `flow-scale` is
+   `vz-waterfall-scale`, `data-slow` is `data-heavy`, decided by own time); screen 10's lines become
+   `vz-log` (`flow-wrap` is `vz-log-msg`, the level a column or a caption, "Show 214 newer lines" in
+   `vz-log-tail`).
 8. Series colours changed in both themes; images of charts must be regenerated.
 
 ## Disagreements, and what was not done
@@ -330,7 +505,16 @@ additions: `toggle`, `setError`, markers' `agent`, `--legend-notes`.
   not as silence: on this machine that means no timing in v5 is judged at all. The numbers are
   printed with their load so the reviewer can weigh them; a quiet machine is needed to judge them.
 - **Stacked charts** are declared out of scope rather than specified (M2).
-- **G5, G6, G11** above.
+- **G11** above (an outbound message's look belongs to the phone and chat products).
+- **The waterfall's bars take an inline style**, `--at` and `--len`, against the rubric's "does any
+  preview need an inline style". They are data (a span's start and length as fractions of the trace),
+  written by whatever draws the rows, as a chart writes its SVG coordinates; no design value can be
+  written there (the lint reads `style=""` as CSS and passes only bare numbers in custom properties).
+  The alternative, a script in the system that reads `data-start` and `data-took` and sets the same
+  properties, moves the same numbers into a dependency every screen would need.
+- **The 200-span collapse rule and the live tail's once-a-second batching are specified, not
+  measured**: the preview has 13 spans and a static tail. They need the application's own data to
+  measure.
 - Not checked: a screen reader by ear, Safari and Firefox (the table's scroll edge uses a scroll
   timeline), real touch hardware, enlarged text as distinct from zoom. `reference.html` was rebuilt
   but not re-imaged as one picture; its parts are in the compositions.
@@ -339,11 +523,13 @@ additions: `toggle`, `setError`, markers' `agent`, `--legend-notes`.
 
 Tokens and CSS: `project/tokens.json` (version 5), `src/components.css`; generated `bundle.css`,
 `dist/`. Rules: `project/README.md`, `project/method.md`, `project/review.md`; `README.md`.
-Components: every README and preview touched above; new `project/components/Section/`. Tools:
+Components: every README and preview touched above; new `project/components/Section/`,
+`Waterfall/` and `Log/`. Tools:
 `tools/css.mjs` (new), `build.mjs`, `check.mjs`, `mutants.mjs` (new), `shots.mjs`, `speed.mjs`,
 `reference.mjs`. Fixture: `fixtures/build.mjs`, `speed.json`, `speed-phone.json` (new), `README.md`.
-This folder: `compositions/`, `shots.json`, `compare/` (42 before/after pairs), `speed/` (scenarios
-and the raw results with their loads), this file.
+This folder: `compositions/` (`traces.html` and `logs.html` carry the Waterfall and Log previews'
+rows unchanged, so screen and component show the same trace), `shots.json`, `compare/` (53 before/after pairs), `speed/` (scenarios and the raw
+results of every block with their loads), this file.
 
 Reproduce: `node tools/build.mjs && node tools/reference.mjs && node fixtures/build.mjs && node
 tools/check.mjs && node tools/mutants.mjs && node tools/shots.mjs scenario reviews/system-v5/shots.json

@@ -1,7 +1,7 @@
 // Teeth for check.mjs: break each property it guards, on a copy, and confirm the check fails; then confirm a harmless reformatting passes.
 //   node tools/mutants.mjs [workDir]      (default: a folder in the system temp directory; the source tree is never touched)
 // Prints one row per mutant: what was broken, whether check.mjs caught it, and the first line it printed. Exits non-zero if any mutant
-// survives or the harmless one is refused. The first sixteen are the v4 review's (reviews/system-v4/review.md, "check.mjs mutants").
+// survives or the harmless one is refused. R1 to R18 are the v4 review's (reviews/system-v4/review.md, "check.mjs mutants"); N1 to N13 are v5's.
 import { cpSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir, loadavg, cpus } from 'node:os'
 import { join } from 'node:path'
@@ -40,6 +40,12 @@ const M = [
   ['N6', 'token-lint-ignore without a reason', append('.vz-panel-title { margin-top: 3px; } /* token-lint-ignore */')],
   ['N7', 'a series in the dark theme below 3:1 on rule', tok('series-1', 'dark', '#1f4f7a')],
   ['N8', 'chosen legend row text in ink-muted', append('.vz-table.vz-legend-table tr[aria-selected="true"] td { color: var(--ink-muted); }')],
+  // v5, after the restart: the R10 survivor's cause, the legend ring, and the Waterfall and Log components
+  ['N9', 'a waterfall bar drawn in rule (too faint to read as a span)', append('.vz-waterfall-bar { background: var(--rule); }')],
+  ['N10', 'the legend row\'s ring back to an outline on the row (painted under its first cell)', css('.vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td:first-child {', '.vz-table.vz-legend-table tr:has(.vz-series:focus-visible) { outline: var(--stroke) solid var(--focus); }\n.vz-legend-unused td:first-child {')],
+  ['N11', 'a matched search term in ink-muted (4.19:1 on its rule fill)', append('.vz-match { color: var(--ink-muted); }')],
+  ['N12', '"3 spans inside" in ink-muted (3.67:1 when its row is pressed)', append('.vz-waterfall-inside { color: var(--ink-muted); }')],
+  ['N13', 'a literal line count for a cut log message', append('.vz-log-text { -webkit-line-clamp: 4; }')],
 ]
 const load = loadavg().map((x) => x.toFixed(2)).join(' '), rows = []
 let bad = 0

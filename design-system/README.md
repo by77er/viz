@@ -4,7 +4,7 @@ The ground truth for how viz looks and behaves. Design changes are reviewed agai
 
 | Path | Contents |
 |---|---|
-| `project/tokens.json` | Every value: colours in both themes, type styles, spacing, radii, the one shadow, sizes, the one angle, the two breakpoints, the inline-number scale. The single source. |
+| `project/tokens.json` | Every value: colours in both themes, type styles, spacing, radii, the one shadow, sizes, the one angle, the two breakpoints, the inline-number scale, the lines a log message shows before it is cut. The single source. |
 | `project/README.md` | The rules: colour, type, space and shape, states, motion, words, iconography, layout. |
 | `project/method.md` | How to design a change: the question, the presence test, build order, hard rules. |
 | `project/review.md` | The review process and rubric. |
@@ -15,7 +15,7 @@ The ground truth for how viz looks and behaves. Design changes are reviewed agai
 | `fixtures/` | The fixture dashboard the speed budgets are measured on: a JSON specification, a seeded data generator (3, 8, 36 and 200 series, a 7-day backtest, a 30-row table) and a page built from the system's components. |
 | `tools/css.mjs` | The generation of the shipped CSS from the tokens and `src/components.css`, shared by `build.mjs` and `check.mjs`. |
 | `tools/build.mjs` | Generates `project/components/bundle.css`, `dist/tokens.css`, `dist/viz.css`, `dist/viz-chart.js` (the reference chart) and `dist/fonts/`. |
-| `tools/check.mjs` | Tokens (contrast of every pairing in both themes; the series palette as a palette: lightness steps, colour-vision separation within each dash group, distance from status and action colours; press against hover and chosen; the scrim), component CSS read as CSS (the swatch ring, the dot edge, no fill on a chart, slots 5 to 8 dashed, breakpoints are tokens), a rendered audit of every preview in both themes at rest, hovered and pressed (text against the fill behind it, series against their surface), and a lint for literal colours, lengths, durations, opacity, angles, percentages and weights, including `<style>` and `style=""` in HTML. Pass paths to lint other code; `--no-render` skips the audit. |
+| `tools/check.mjs` | Tokens (contrast of every pairing in both themes; the series palette as a palette: lightness steps, colour-vision separation within each dash group, distance from status and action colours; press against hover and chosen; the scrim), component CSS read as CSS (the swatch ring, the dot edge, no fill on a chart, slots 5 to 8 dashed, the ring round a row that is one control drawn by its cells, breakpoints are tokens), a rendered audit of every preview in both themes as opened and pressed, then at rest, hovered and pressed with legend rows chosen (text against the fill behind it, series and waterfall bars against their surface), and a lint for literal colours, lengths, durations, opacity, angles, percentages, weights and line clamps, including `<style>` and `style=""` in HTML. Pass paths to lint other code; `--no-render` skips the audit. |
 | `tools/mutants.mjs` | Breaks each property `check.mjs` guards on a copy in a temporary folder (never the tree) and confirms the check fails; confirms a harmless reformatting passes. Run it after changing `check.mjs`. |
 | `tools/reference.mjs` | Builds `dist/reference.html`: every component in both themes on one page. A component left out of its order is appended. |
 | `tools/shots.mjs` | Captures a view in both themes at 1440 and 400 px, composes before/after images, and runs a scenario file: hover, pressed and focus on a selector, waiting after N ms, a coarse pointer, 200% zoom, greyscale, with hit areas, overflow and smallest text measured, and controls covered at their centre, drawn boxes reached by a neighbour's hit area and links inside sentences reported. |
@@ -92,7 +92,8 @@ pull request description by commit, so it stays valid after merge:
   sentence, the harness, the rubric, missing pieces).
 - `reviews/system-v5/response.md`: **v5, not yet reviewed.** Every v4 finding, what changed,
   where, and the image or measurement that shows it; the 16 system gaps from the flow screens'
-  second revision; what was not done. Before and after images in `reviews/system-v5/compare/`.
+  second revision (Waterfall, Log and the textarea among them); what was not done. Before and after
+  images in `reviews/system-v5/compare/`, speed before and after in `reviews/system-v5/speed/`.
 
 ## Not done yet
 
@@ -100,8 +101,9 @@ pull request description by commit, so it stays valid after merge:
 - Components are CSS classes with HTML previews; there is no React component package.
 - The web app (`app/`) and the flow screens (`flows/`) are on v4; migration notes are in
   `reviews/system-v4/CHANGES.md` and `reviews/system-v5/response.md` ("Migration").
-- Trace waterfall, log line, an outbound message, stacked and bar charts and heatmaps are not
-  specified; the Chart component says not to build them from it.
+- An outbound message (push, text, chat), stacked and bar charts and heatmaps are not specified; the
+  Chart component says not to build them from it. A trace's spans (Waterfall) and log lines (Log) are
+  their own components since v5.
 - The budgets have been measured only on the system's own fixture page (a floor), on a shared
   machine whose load stayed above its core count, so the harness reports every timing row as
   "not judged"; layout shift is judged and within budget at both layouts. The application has

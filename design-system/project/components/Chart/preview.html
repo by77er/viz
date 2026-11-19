@@ -31,7 +31,7 @@
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta"><span class="vz-panel-note">Showing the previous query</span><span>· <span data-range>09:16 to 15:16</span></span><span>· updated <span class="vz-qty">48 s</span> ago</span></span></div>
-    <p class="vz-panel-desc">An error after the chart was drawn: the message takes the plot's place at the plot's height, and the legend keeps the previous result's height.</p>
+    <p class="vz-panel-desc">An error after the chart was drawn: the message lies over the plot at its height, and the legend keeps the previous result's names and figures, which is what the head's "Showing the previous query" and age describe.</p>
     <div class="vz-panel-body"><div class="vz-chart" data-demo="s8" data-view="demo-error" data-error-title="The query could not run" data-error-text="Unexpected ) at character 41. A range such as [5m] is missing after the selector." data-error-action="Go to character 41" style="--legend-rows:8;--legend-notes:1"></div></div>
   </section>
 </div>
@@ -152,14 +152,14 @@ if (!window.vzChart) (function () {
   function vzChart(root, spec) {
     const view = root.dataset.view || 'view', small = root.dataset.size === 'sm'
     root.innerHTML = '<svg class="vz-plot" tabindex="0" role="group" aria-roledescription="chart"></svg><div class="vz-chart-foot"><div class="vz-readout" aria-hidden="true"></div><span class="vz-sr" role="status"></span><div class="vz-controls" data-size="sm"><button class="vz-button" data-size="sm" data-zoom="in">Zoom in</button><button class="vz-button" data-size="sm" data-zoom="out">Zoom out</button></div></div><div class="vz-table-wrap"><table class="vz-table vz-legend-table" role="table"><thead></thead><tbody></tbody></table></div><div class="vz-legend-note"></div>'
-    const svg = root.querySelector('svg'), readout = root.querySelector('.vz-readout'), live = root.querySelector('.vz-sr'), thead = root.querySelector('thead'), tbody = root.querySelector('tbody'), note = root.querySelector('.vz-legend-note')
+    const svg = root.querySelector('svg'), readout = root.querySelector('.vz-readout'), live = root.querySelector('.vz-sr'), thead = root.querySelector('thead'), tbody = root.querySelector('tbody'), note = root.querySelector('.vz-legend-note'), legendWrap = root.querySelector('.vz-table-wrap')
     let all = [], full = null, version = 0
     const st = { t0: 0, t1: 0, filter: null, filterId: 0, picked: new Set(), pickOrder: [], cursor: null, py: null, sort: { col: 'rank', dir: -1 }, open: 0, brush: null, focusRow: 0, emph: null, error: null }
     const ctx = document.createElement('canvas').getContext('2d')
     const widths = new Map(), measure = (text, font) => { const k = font + '\u0000' + text; let w = widths.get(k); if (w == null) { ctx.font = font; w = ctx.measureText(text).width; widths.set(k, w) } return w }
     let g = null, cache = null, lastW = 0, lastH = 0, tok = null, liveTimer = 0, cursorWas = null; const sizes = { legendW: 0, readW: 0 }
     const tokens = () => { if (tok) return tok; const cs = getComputedStyle(root), n = (p) => parseFloat(cs.getPropertyValue(p)) || 0, s = (p) => cs.getPropertyValue(p).trim()
-      return (tok = { axis: n('--axis'), gutter: n('--label-gutter'), stroke: n('--stroke'), sp: (k) => n('--space-' + k), micro: s('--text-micro'), small: s('--text-small'), data: s('--text-data'), label: s('--text-label'), microLh: n('--text-micro-lh'), smallLh: n('--text-small-lh') }) }
+      return (tok = { axis: n('--axis'), gutter: n('--label-gutter'), stroke: n('--stroke'), sp: (k) => n('--space-' + k), micro: s('--text-micro'), small: s('--text-small'), data: s('--text-data'), label: s('--text-label'), microLh: n('--text-micro-lh'), smallLh: n('--text-small-lh'), strip: n('--strip') }) }
     function setSpec(next) { spec = next; all = spec.series.map((s) => ({ ...s, key: key(s.labels) })); full = { t0: spec.t0, t1: spec.t0 + (all[0].values.length - 1) * spec.step }; st.t0 = full.t0; st.t1 = full.t1; st.cursor = null; version++ }
     setSpec(spec)
 
@@ -185,7 +185,7 @@ if (!window.vzChart) (function () {
 
     /* Layout of the plot for a set of visible series: axis, direct labels, x and y. */
     function layout(m, vis) {
-      const t = tokens(), W = lastW, HT = lastH, L = t.axis, T = t.sp(6), B = t.sp(4) + t.sp(1), plotH = HT - T - B, div = m.unit.div
+      const t = tokens(), W = lastW, HT = lastH, L = t.axis, T = t.strip, B = t.sp(4) + t.sp(1), plotH = HT - T - B, div = m.unit.div
       const ax = valueTicks(dataMax(m, vis) / div, spec.threshold && spec.threshold.value / div, plotH, t.microLh, m.unit.binary), y = (v) => T + plotH * (1 - v / div / ax.top)
       // Direct labels: two or more series, 640px of chart or more, not a small chart, every coloured line reaching the right edge, every label within two label heights of its own line end.
       let labels = null; const lineH = t.smallLh
@@ -245,9 +245,10 @@ if (!window.vzChart) (function () {
     /* Full draw: geometry, data, range or filter changed. */
     function draw() {
       const W = svg.clientWidth, HT = svg.clientHeight; if (!W) return; lastW = W; lastH = HT; tok = null; sizes.legendW = tbody.parentElement.clientWidth || W; sizes.readW = readout.clientWidth || W // every size is read before anything is written
-      root.querySelector(':scope > .vz-empty')?.remove(); svg.hidden = false; root.querySelector('.vz-chart-foot > .vz-controls').style.visibility = ''
-      if (st.error) return showError()
+      root.querySelector(':scope > .vz-empty')?.remove(); root.removeAttribute('data-error'); legendWrap.inert = false
+      if (st.error) st.cursor = null
       const m = model(); g = layout(m, visibleSet(m)); drawPlot(g); legend(); legendState(); cursor(); describe()
+      if (st.error) showError()
       const r = root.closest('.vz-panel')?.querySelector('[data-range]'); if (r) r.textContent = stamp(st.t0, g.long) + ' to ' + stamp(st.t1, g.long)
       root.querySelector('[data-zoom="out"]').disabled = st.t0 <= full.t0 && st.t1 >= full.t1; root.querySelector('[data-zoom="in"]').disabled = m.n <= 4
       textForm()
@@ -366,10 +367,13 @@ if (!window.vzChart) (function () {
       for (const k of spec.markers || []) lines.push(`${k.agent && !/^Agent:/.test(k.label) ? 'Agent: ' : ''}${k.label}.`)
       el.innerHTML = '<ul>' + lines.map((l) => `<li>${esc(l)}</li>`).join('') + '</ul>'
     }
+    /* An error after a result was drawn. The message lies over the plot, at its height (the plot stays laid out under it, hidden, so nothing
+       moves and the next result draws at once). The legend keeps the previous result's names and figures, which is what "Showing the previous
+       query" and the age in the head describe; it is inert, because there is no plot for its rows to change. */
     function showError() {
-      svg.hidden = true; root.querySelector('.vz-chart-foot > .vz-controls').style.visibility = 'hidden'; g = null; let e = root.querySelector(':scope > .vz-empty'); if (!e) { e = document.createElement('div'); e.className = 'vz-empty'; root.prepend(e) }
-      e.setAttribute('role', 'alert'); e.innerHTML = `<p class="vz-empty-title"><span class="vz-mark" data-state="critical"></span>${esc(st.error.title)}</p><p>${esc(st.error.text)}</p>` + (st.error.action ? `<div class="vz-controls"><button class="vz-button" data-size="sm">${esc(st.error.action)}</button></div>` : '')
-      readout.innerHTML = ''; tbody.innerHTML = ''; thead.innerHTML = ''; note.innerHTML = ''
+      root.setAttribute('data-error', ''); legendWrap.inert = true; readout.innerHTML = ''; live.textContent = ''
+      const e = document.createElement('div'); e.className = 'vz-empty'; e.setAttribute('role', 'alert'); root.prepend(e)
+      e.innerHTML = `<p class="vz-empty-title"><span class="vz-mark" data-state="critical"></span>${esc(st.error.title)}</p><p>${esc(st.error.text)}</p>` + (st.error.action ? `<div class="vz-controls"><button class="vz-button" data-size="sm">${esc(st.error.action)}</button></div>` : '')
     }
 
     const indexAt = (e) => { const r = svg.getBoundingClientRect(); return Math.max(0, Math.min(g.m.n - 1, Math.round((e.clientX - r.left - g.L) / g.plotW * (g.m.n - 1)))) }
@@ -409,7 +413,7 @@ if (!window.vzChart) (function () {
       setFilter(f) { st.filter = f; st.filterId++; draw() },
       /* A new result for the same view: the chart is kept, its data replaced. Colours, chosen rows and sort order survive. */
       setData(next) { setSpec(next); st.error = null; cache = null; draw() },
-      /* An error after a result was drawn: the message takes the plot's place at the plot's height; the legend's reserved height holds. */
+      /* An error after a result was drawn: the message lies over the plot at its height; the legend keeps the previous result's figures. */
       setError(err) { st.error = err; draw() },
       text() { const id = root.dataset.textForm; return id ? document.getElementById(id)?.textContent : '' } }
   }

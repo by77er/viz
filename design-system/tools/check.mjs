@@ -9,8 +9,8 @@
 //      legend rows chosen, under a forced hover and a forced press. Every piece of text is measured against the fill actually behind it
 //      (4.5:1), and every series swatch and line against its ring or its surface (3:1). This is what a person sees, so an override anywhere
 //      in the CSS cannot slip past it.
-//   4. Source lint: no literal colours, lengths, durations, opacity, angles, non-geometric percentages or unitless weights, line heights and
-//      scales in component CSS. In .html, <style> blocks and style="" attributes are CSS; elsewhere in .html, .js and .ts colours are linted
+//   4. Source lint: no literal colours, lengths, durations, opacity, angles, non-geometric percentages or unitless weights, line heights,
+//      line clamps and scales in component CSS. In .html, <style> blocks and style="" attributes are CSS; elsewhere in .html, .js and .ts colours are linted
 //      everywhere and lengths and durations inside quoted strings. A line with `token-lint-ignore: <reason>` is skipped; the reason is required.
 // The mutants this is tested against, and which check catches each: tools/mutants.mjs (run it after changing this file).
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -68,6 +68,10 @@ const pairs = [
   ['ink', ['pressed'], 4.5, 'label of a pressed button, segment, menu row, legend row'],
   ['ink-secondary', ['pressed'], 4.5, "second part of a pressed legend row, a pressed menu row's shortcut"],
   ['focus', ['pressed'], 3, 'focus ring on a pressed control'],
+  // v5, Waterfall and Log: a status mark in the row whose detail is shown (rule) or under a press (a failed span, an error line); a span's bar
+  // in a pressed row (ink-muted, and ink where the time went).
+  ...['status-critical', 'status-ok', 'status-info', 'status-warn-edge'].map((c) => [c, ['rule', 'pressed'], 3, 'status mark in a chosen or pressed row']),
+  ['ink-muted', ['pressed'], 3, 'a waterfall bar in a pressed row'],
 ]
 for (const [fg, bgs, floor, why, only] of pairs) for (const bg of bgs) for (const th of only ?? themes) {
   const r = ratio(v(fg, th), v(bg, th)); checked++
@@ -125,6 +129,10 @@ const lastCompound = (sel) => sel.split(/[\s>+~]+/).filter(Boolean).pop() ?? ''
   checked++; if (!base) fail(`.vz-swatch has lost its ground ring (${RING})`) }
 { let ok = false; for (const r of rules) for (const s of r.sel) if (s === '.vz-plot .vz-dot[data-series]') for (const [p, val] of r.decls) if (p === 'stroke') { checked++; if (val === 'var(--ground)') ok = true; else fail(`${s} stroke ${val} (line ${r.line}): the crosshair dot keeps its ground edge`) }
   checked++; if (!ok) fail('.vz-plot .vz-dot[data-series] has lost its ground edge') }
+// A row that is one control (a legend row, a span in a waterfall) shows its focus ring round the whole row, drawn by the cells: an outline on the
+// row is painted under its positioned first cell (v4's legend ring showed only beside the figures).
+for (const btn of ['.vz-series', '.vz-waterfall-span']) { checked++; const ring = rules.filter((r) => r.sel.some((x) => x.includes(`:has(${btn}:focus-visible)`) && /\btd(:first-child|:last-child)?$/.test(x)) && r.decls.some(([p, val]) => p === 'box-shadow' && /var\(--focus\)/.test(val)))
+  if (ring.length < 3) fail(`the row of ${btn} has no focus ring drawn by its cells (td, first and last cell, box-shadow in focus): a keyboard user cannot see which row is focused`) }
 // Slots 5 to 8 are told from 1 to 4 by their dash where hue and lightness repeat: each must carry a pattern, and lines must draw it.
 for (const i of [5, 6, 7, 8]) { checked++; if (!rules.some((r) => r.sel.includes(`[data-series="${i}"]`) && r.decls.some(([p]) => p === '--pattern'))) fail(`[data-series="${i}"] has no --pattern: slots 5 to 8 must be dashed, the second channel beside colour`) }
 { checked++; if (!rules.some((r) => r.sel.includes('.vz-plot .vz-line[data-series]') && r.decls.some(([p, val]) => p === 'stroke-dasharray' && /var\(--pattern/.test(val)))) fail('.vz-plot .vz-line[data-series] does not draw --pattern: dashed slots would be drawn solid') }
@@ -145,10 +153,6 @@ async function audit() {
   const browser = await chromium.launch(), page = await browser.newPage({ viewport: { width: 1200, height: 900 } }), cdp = await page.context().newCDPSession(page)
   page.on('pageerror', (e) => fail(`audit page error: ${e.message}`))
   await page.setContent(html, { waitUntil: 'load' }); await page.waitForTimeout(200)
-  // states the previews do not show at rest: a chosen legend row (so the others are off), and Other opened
-  await page.evaluate(() => { const charts = [...document.querySelectorAll('.vz-chart')]; for (const c of charts) { const tr = c.querySelector('tbody tr[data-key]'); if (c.vz && tr) c.vz.toggle(tr.dataset.key); if (c.vz && c.querySelector('tbody tr[data-key="other"]')) c.vz.toggle('other'); c.querySelector('[data-more]')?.click() }
-    // and a row brought forward, so the lines that step back are measured too
-    for (const c of charts.filter((x) => x.querySelectorAll('tbody tr[data-key]').length > 3).slice(0, 2)) c.querySelectorAll('tbody tr[data-key] .vz-series')[1]?.dispatchEvent(new FocusEvent('focusin', { bubbles: true })) })
   const measure = (pass) => page.evaluate((pass) => {
     const out = [], parse = (c) => { const m = /rgba?\(([^)]+)\)/.exec(c || ''); if (!m) return null; const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number); return { r: p[0], g: p[1], b: p[2], a: p[3] ?? 1 } }
     const L = (c) => { const f = (x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4 }; return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b) }
@@ -163,6 +167,7 @@ async function audit() {
       if (!svgText && el.closest('svg')) {
         if (el.matches('.vz-line')) { const s = parse(cs.stroke), bg = bgOf(el.closest('svg')); if (s && R(s, bg) < 3) out.push(`${pass}: series line ${hex(s)} on ${hex(bg)} ${R(s, bg).toFixed(2)}:1 < 3  ${where(el)}`) }
         continue }
+      if (el.matches('.vz-waterfall-bar')) { const c = parse(cs.backgroundColor), bg = bgOf(el.parentElement); if (c && R(c, bg) < 3) out.push(`${pass}: waterfall bar ${hex(c)} on ${hex(bg)} ${R(c, bg).toFixed(2)}:1 < 3  ${where(el)}`); continue }
       if (el.matches('.vz-swatch')) { // the mark is its drawn edge where it has one (dashed slots, Other's band edges), else its fill
         const side = ['Top', 'Left'].find((k) => cs[`border${k}Style`] !== 'none' && parseFloat(cs[`border${k}Width`]) > 0), fill = parse(cs.backgroundColor), c = side ? parse(cs[`border${side}Color`]) : fill && fill.a > 0.99 ? fill : null
         const ring = /(rgba?\([^)]*\)) 0px 0px 0px (\d+(?:\.\d+)?)px(?! inset)/.exec(cs.boxShadow), inset = /(rgba?\([^)]*\)) 0px 0px 0px [\d.]+px inset/.exec(cs.boxShadow)
@@ -175,14 +180,18 @@ async function audit() {
       if (ratio < 4.5) out.push(`${pass}: text "${el.textContent.trim().slice(0, 24)}" ${hex(fg)} on ${hex(bg)} ${ratio.toFixed(2)}:1 < 4.5  ${where(el)}`)
     }
     return out }, pass)
-  const results = [...await measure('at rest')]
+  // The previews as they open, under a forced press: nothing chosen yet, so a press on a row whose text is muted (Other's count) is measured.
   await cdp.send('DOM.enable'); await cdp.send('CSS.enable')
-  const { root: doc } = await cdp.send('DOM.getDocument', { depth: -1 }), { nodeIds } = await cdp.send('DOM.querySelectorAll', { nodeId: doc.nodeId, selector: 'tr, button, a, summary, label, [role^="menuitem"], .vz-plot, .vz-sort' })
-  for (const [name, states] of [['hover', ['hover']], ['press', ['hover', 'active']]]) {
+  const forced = async (selector, states, pass) => { const { root: doc } = await cdp.send('DOM.getDocument', { depth: -1 }), { nodeIds } = await cdp.send('DOM.querySelectorAll', { nodeId: doc.nodeId, selector })
     for (const nodeId of nodeIds) await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: states })
-    results.push(...await measure(name))
-    for (const nodeId of nodeIds) await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] })
-  }
+    const out = await measure(pass); for (const nodeId of nodeIds) await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] }); return out }
+  const results = [...await forced('tr, button, a, summary, label, [role^="menuitem"], .vz-plot, .vz-sort', ['hover', 'active'], 'press, as opened')]
+  // states the previews do not show at rest: a chosen legend row (so the others are off), and Other opened
+  await page.evaluate(() => { const charts = [...document.querySelectorAll('.vz-chart')]; for (const c of charts) { const tr = c.querySelector('tbody tr[data-key]'); if (c.vz && tr) c.vz.toggle(tr.dataset.key); if (c.vz && c.querySelector('tbody tr[data-key="other"]')) c.vz.toggle('other'); c.querySelector('[data-more]')?.click() }
+    // and a row brought forward, so the lines that step back are measured too
+    for (const c of charts.filter((x) => x.querySelectorAll('tbody tr[data-key]').length > 3).slice(0, 2)) c.querySelectorAll('tbody tr[data-key] .vz-series')[1]?.dispatchEvent(new FocusEvent('focusin', { bubbles: true })) })
+  results.push(...await measure('at rest'))
+  for (const [name, states] of [['hover', ['hover']], ['press', ['hover', 'active']]]) results.push(...await forced('tr, button, a, summary, label, [role^="menuitem"], .vz-plot, .vz-sort', states, name))
   await browser.close()
   const uniq = [...new Set(results)]; checked += 3
   for (const r of uniq) fail('rendered ' + r)
@@ -204,7 +213,7 @@ const cssRules = [
   ['opacity', /\bopacity\s*:/g],
   ['angle', /(?<![\w-])-?\d*\.?\d+(?:deg|turn|rad|grad)\b/g],
   ['percentage', /(?<![\w-])\d*\.?\d+%/g],
-  ['unitless', /\bfont-weight\s*:\s*\d+|\bline-height\s*:\s*(?!1\s*[;}]|1$|normal|var)[\d.]+|\bscale\s*\(\s*-?[\d.]+|\bz-index\s*:\s*(?!-?[0-9]{1,2}\s*[;}]|-?[0-9]{1,2}$)\d+/g],
+  ['unitless', /\bline-clamp\s*:\s*\d+|\bfont-weight\s*:\s*\d+|\bline-height\s*:\s*(?!1\s*[;}]|1$|normal|var)[\d.]+|\bscale\s*\(\s*-?[\d.]+|\bz-index\s*:\s*(?!-?[0-9]{1,2}\s*[;}]|-?[0-9]{1,2}$)\d+/g],
 ]
 const GEOMETRY = new Set(['0%', '50%', '100%']) // geometry, not a design value
 let hits = 0
