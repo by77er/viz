@@ -51,7 +51,10 @@ describe('measurements in workerd', () => {
       const s = performance.now()
       const r = await flushTenant(env, timed, tenant, shardName, { maxSegments: 1 })
       const wall = performance.now() - s
-      expect(r).toMatchObject({ status: 'ok', recordedThrough: 4 * (i + 1) })
+      expect(r).toMatchObject({ status: 'ok', awaitingLog: true, segments: [{ seqLo: 4 * i + 1, outcome: 'admitted' }] })
+      // Not timed: the ledger's log catches up (its alarm), and a run records the segment.
+      await ledger.drain()
+      expect(await flushTenant(env, timed, tenant, shardName, { maxSegments: 1 })).toMatchObject({ status: 'ok', recordedThrough: 4 * (i + 1), awaitingLog: false })
       flushes.push({
         segment_bytes: segmentBytes[i],
         rows: r.segments[0]!.files[0]!.rows,

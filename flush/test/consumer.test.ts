@@ -3,7 +3,15 @@ import { env } from 'cloudflare:workers'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { type FlushMessage, PENDING_MARKER_PREFIX, Shard, pendingMarkerKey } from '../../shard/src/shard'
 import { consumeDeadLetters, consumeFlushBatch, engine, listDeadLetters, retryDelaySeconds, shardsFromPoolMaps, sweepPending, type FlushResult } from '../src/index'
-import { T0, append, breakLedgerLog, dataKeys, healLedgerLog, liveKeys, read, Sent, someSamples, stream } from './helpers'
+import { T0, append, breakLedgerLog, dataKeys, flushSettled, healLedgerLog, liveKeys, read, Sent, someSamples, stream } from './helpers'
+
+/**
+ * A flush that runs until the shard has been told what the ledger logged, the ledger's drain
+ * (its alarm) run at once in between: what the consumer sees once the log has caught up. The
+ * ledger drains only when asked in this suite (vitest.config.ts); a plain run whose units are
+ * not logged yet ends `awaitingLog` and is retried (tested below on its own).
+ */
+const settled = (tenant: string, shard: string): Promise<FlushResult> => flushSettled(env, engine, tenant, shard)
 
 /** Seal notifications of this file's shards, captured instead of sent (the queue is bound in stack/). */
 const proto = Shard.prototype as unknown as { announce(msg: FlushMessage): Promise<void> }
@@ -48,9 +56,8 @@ describe('flush queue consumer', () => {
     const b = await sealed('qb')
     expect(announced).toEqual([a.msg, b.msg])
     let runs = 0
-    const { flushTenant } = await import('../src/flush')
     const batch = batchOf([a.msg, b.msg, a.msg, a.msg])
-    const r = await deliver(batch, { flush: (t, s) => (runs++, flushTenant(env, engine, t, s)) })
+    const r = await deliver(batch, { flush: (t, s) => (runs++, settled(t, s)) })
     expect(runs).toBe(2)
     expect(r.outcomes.map((o) => [o.tenant, o.messages, o.action])).toEqual([[a.tenant, 3, 'done'], [b.tenant, 1, 'done']])
     expect(r.acked).toHaveLength(4)
@@ -64,7 +71,7 @@ describe('flush queue consumer', () => {
 
   it('a redelivered message after success changes nothing', async () => {
     const a = await sealed('qr')
-    await deliver(batchOf([a.msg]))
+    expect((await deliver(batchOf([a.msg]), { flush: settled })).outcomes[0]).toMatchObject({ action: 'done' })
     const keys = await dataKeys(a.tenant)
     const version = (await a.ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: 1 })).version
     for (let i = 0; i < 3; i++) {
@@ -91,7 +98,7 @@ describe('flush queue consumer', () => {
     expect(await liveKeys(a.ledger)).toEqual([])
     expect(await a.shard.pendingSegments(a.tenant)).toHaveLength(1)
 
-    const second = await deliver(batchOf([a.msg], [2]))
+    const second = await deliver(batchOf([a.msg], [2]), { flush: settled })
     expect(second.outcomes[0]).toMatchObject({ action: 'done' })
     expect(second.outcomes[0]!.result!.segments[0]!.files.every((f) => f.put === 'exists')).toBe(true)
     expect(await a.shard.pendingSegments(a.tenant)).toEqual([])
@@ -108,6 +115,15 @@ describe('flush queue consumer', () => {
   })
 
   it('retries while the ledger has admitted the unit but not logged it, and is done once it has', async () => {
+    // The ledger writes its log in the background: a run whose unit is not logged yet is retried.
+    const q = await sealed('ql0')
+    const before = await deliver(batchOf([q.msg]))
+    expect(before.outcomes[0]).toMatchObject({ action: 'again', why: 'awaiting_log' })
+    expect(before.acked).toEqual([])
+    await q.ledger.drain()
+    expect((await deliver(batchOf([q.msg], [2]))).outcomes[0]).toMatchObject({ action: 'done' })
+    expect((await q.shard.describe(q.tenant))!.recordedThrough).toBe(1)
+    // And while its log cannot be written at all, for as long as that lasts.
     const a = await sealed('ql')
     await breakLedgerLog(a.ledger)
     const first = await deliver(batchOf([a.msg]))
@@ -127,7 +143,7 @@ describe('flush queue consumer', () => {
   it('calls onFlushed after a run that changed something, and retries the group if it throws', async () => {
     const a = await sealed('qh')
     const seen: string[] = []
-    const ok = await deliver(batchOf([a.msg]), { onFlushed: (r) => void seen.push(`${r.tenant}:${r.segments.length}:${r.changed}`) })
+    const ok = await deliver(batchOf([a.msg]), { flush: settled, onFlushed: (r) => void seen.push(`${r.tenant}:${r.segments.length}:${r.changed}`) })
     expect(ok.outcomes[0]!.action).toBe('done')
     expect(seen).toEqual([`${a.tenant}:1:true`])
     const b = await sealed('qh2')
@@ -139,7 +155,7 @@ describe('flush queue consumer', () => {
   it('writes a message that can never be flushed to the dead letters at once, where it can be listed', async () => {
     const a = await sealed('qd')
     const queue = `viz-flush-${a.tenant}`
-    const r = await deliver(batchOf([{ tenant: '../etc', shard: 'x' }, 'garbage', a.msg, { tenant: a.tenant }], [], queue))
+    const r = await deliver(batchOf([{ tenant: '../etc', shard: 'x' }, 'garbage', a.msg, { tenant: a.tenant }], [], queue), { flush: settled })
     expect(r.acked).toHaveLength(4)
     expect(r.retried).toEqual([])
     expect(r.outcomes.map((o) => o.tenant)).toEqual([a.tenant]) // the good one was still flushed
@@ -214,7 +230,7 @@ describe('sweep', () => {
 
     // The messages are consumed; the next sweep finds the markers, asks once, and the
     // shards clear them; after that the sweep costs nothing again.
-    await deliver(batchOf([a.msg, b.msg]))
+    await deliver(batchOf([a.msg, b.msg]), { flush: settled })
     const after = counting()
     expect(await sweepPending(after.env, { olderThanMs: 0 })).toEqual({ markers: 2, shardsAsked: 2, deferred: 0, enqueued: [], failed: [], unsent: 0 })
     expect(await sweepPending(after.env, { olderThanMs: 0 })).toEqual({ markers: 0, shardsAsked: 0, deferred: 0, enqueued: [], failed: [], unsent: 0 })
@@ -267,7 +283,7 @@ describe('review R-11(b): maintenance only after a flush that changed something'
   it('a duplicate delivery that finds nothing does not ask for maintenance', async () => {
     const a = await sealed('r11-dup')
     const seen: FlushResult[] = []
-    const first = await deliver(batchOf([a.msg]), { onFlushed: (r) => void seen.push(r) })
+    const first = await deliver(batchOf([a.msg]), { flush: settled, onFlushed: (r) => void seen.push(r) })
     expect(first.outcomes[0]!.action).toBe('done')
     expect(seen).toHaveLength(1)
     // The same message again (at-least-once): nothing pending, nothing written, nothing recorded.
@@ -278,11 +294,11 @@ describe('review R-11(b): maintenance only after a flush that changed something'
 
   it('a redelivery after the request for maintenance failed asks again, although it changes nothing', async () => {
     const a = await sealed('r11-redo')
-    const bad = await deliver(batchOf([a.msg]), { onFlushed: () => { throw new Error('queue down') } })
+    const bad = await deliver(batchOf([a.msg]), { flush: settled, onFlushed: () => { throw new Error('queue down') } })
     expect(bad.outcomes[0]).toMatchObject({ action: 'again', why: 'exception: queue down' })
     // The flush itself completed; the retry finds nothing to do, but it is a redelivery.
     const seen: string[] = []
-    const retry = await deliver(batchOf([a.msg], [2]), { onFlushed: (r) => void seen.push(r.tenant) })
+    const retry = await deliver(batchOf([a.msg], [2]), { flush: settled, onFlushed: (r) => void seen.push(r.tenant) })
     expect(retry.outcomes[0]!.action).toBe('done')
     expect(retry.outcomes[0]!.result!.segments).toEqual([])
     expect(seen).toEqual([a.tenant])
@@ -353,7 +369,7 @@ describe('flush messages carry a version', () => {
     expect(await listDeadLetters(env, queue)).toEqual([])
     expect(await a.shard.pendingSegments(a.tenant)).toHaveLength(1)
     // Version 1, spelt out or not, is flushed.
-    const ok = await deliver(batchOf([{ ...a.msg, v: 1 }, a.msg], [], queue), { flush: (t, s) => (runs.push(t), flushTenant(env, engine, t, s)) })
+    const ok = await deliver(batchOf([{ ...a.msg, v: 1 }, a.msg], [], queue), { flush: (t, s) => (runs.push(t), settled(t, s)) })
     expect(runs).toEqual([a.tenant])
     expect(ok.acked).toHaveLength(2)
   })

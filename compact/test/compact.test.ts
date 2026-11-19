@@ -249,6 +249,7 @@ describe('compactStep', () => {
     // Once the expired inputs are purged, nothing can ever list the outputs: the sweep deletes them.
     const j = env as unknown as JanitorEnv
     expect((await sweepOrphans(j, t.tenant, { now: Date.now() + 25 * HOUR })).deleted).toEqual([])
+    await t.ledger.drain() // the removal is deletable once it is logged (the ledger's alarm)
     await purgeTenant(j, t.tenant, { graceMs: 0 })
     expect((await sweepOrphans(j, t.tenant, { now: Date.now() + 25 * HOUR })).deleted.sort()).toEqual(outputs.sort())
   })
@@ -390,7 +391,8 @@ describe('review R-2: compaction outputs and concurrent deleters', () => {
     const listed = await liveKeys(t.ledger)
     expect(listed).toEqual([...leftover].sort())
     expect(await exists(listed), 'listed outputs exist in R2').toEqual([true, true])
-    // After the delete grace the inputs go; the rows are still in an object.
+    // After the delete grace (and once the replace is logged) the inputs go; the rows are still in an object.
+    await t.ledger.drain()
     await purgeTenant(janitorEnv, t.tenant, { graceMs: 0 })
     expect(await exists(inputs)).toEqual(inputs.map(() => false))
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
@@ -411,7 +413,8 @@ describe('review R-2: compaction outputs and concurrent deleters', () => {
     expect(o.deleted).toEqual([])
     expect(await liveKeys(t.ledger)).toEqual(leftover)
     expect(await exists(leftover)).toEqual([true, true])
-    await purgeTenant(janitorEnv, t.tenant, { graceMs: 0 })
+    await t.ledger.drain()
+    expect((await purgeTenant(janitorEnv, t.tenant, { graceMs: 0 })).deleted).toHaveLength(8)
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
   })
 
@@ -458,8 +461,8 @@ describe('review R-2: compaction outputs and concurrent deleters', () => {
     // Inputs live: kept, a year on.
     expect((await sweepOrphans(janitorEnv, t.tenant, later)).deleted).toEqual([])
     // Inputs expired (logged) but not yet purged: their objects exist, so still kept.
-    await t.ledger.expire({ table: 'metric_samples', beforeDay: '2026-11-19' })
-    await t.ledger.expire({ table: 'metric_series', beforeDay: '2026-11-19' })
+    await t.ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay: '2026-11-19' })
+    await t.ledger.drain()
     const kept = await sweepOrphans(janitorEnv, t.tenant, later)
     expect(kept.deleted).toEqual([])
     // Purged: no step can ever make the leftover live, so it goes.

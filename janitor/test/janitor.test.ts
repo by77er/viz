@@ -132,8 +132,10 @@ describe('expire and purge', () => {
     const out = engine.select({ sampleFiles: await fetch(oldSamples.files.map((f) => f.key)), seriesFiles: await fetch(oldSeries.files.map((f) => f.key)), tailBatches: [] }, [], 0, 253_402_300_799_999)
     expect(canonOf(out)).toEqual(t.sent.canon())
 
-    // After the grace (by the ledger's clock) they go, in one pass, and the tombstones with them.
+    // After the grace (by the ledger's clock), once the removal is logged, they go, in one
+    // pass, and the tombstones with them.
     await sleep(120)
+    await t.ledger.drain()
     const purged = await purgeTenant(env, t.tenant, { graceMs: 100 })
     expect(purged.deleted.sort()).toEqual(oldKeys.sort())
     expect(purged.waiting).toBe(0)
@@ -151,7 +153,8 @@ describe('expire and purge', () => {
     expect(doomed).toHaveLength(4)
     await breakLedgerLog(t.ledger)
     expect((await expireTenant(env, t.tenant, T0)).removed.sort()).toEqual(doomed)
-    expect(await t.ledger.outboxDepth()).toBe(2)
+    // Both tables leave in ONE change (review R-5), which the log has not got.
+    expect(await t.ledger.outboxDepth()).toBe(1)
     await sleep(20)
     expect(await purgeTenant(env, t.tenant, { graceMs: 0 })).toEqual({ deleted: [], waiting: 4 })
     expect(await exists(doomed)).toEqual([true, true, true, true])
@@ -165,6 +168,7 @@ describe('expire and purge', () => {
   it('stops at maxKeys and continues on the next run', async () => {
     const t = await tenantWith('j4', 4, () => 40)
     await expireTenant(env, t.tenant, T0)
+    await t.ledger.drain() // the removal is deletable once it is logged (the ledger's alarm)
     const first = await purgeTenant(env, t.tenant, { graceMs: 0, maxKeys: 3 })
     expect(first.deleted).toHaveLength(3)
     const second = await purgeTenant(env, t.tenant, { graceMs: 0 })
@@ -258,8 +262,8 @@ describe('orphan sweep', () => {
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
     // The inputs expire and are purged: now nothing can ever list the outputs, and they go.
     // The age floor still applies: a day later, not at once. Live files and the unknown name never.
-    await t.ledger.expire({ table: 'metric_samples', beforeDay: '2026-11-19' })
-    await t.ledger.expire({ table: 'metric_series', beforeDay: '2026-11-19' })
+    await t.ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay: '2026-11-19' })
+    await t.ledger.drain() // the removal is deletable once it is logged (the ledger's alarm)
     expect((await purgeTenant(env, t.tenant, { graceMs: 0 })).deleted.sort()).toEqual(live)
     expect((await sweepOrphans(env, t.tenant)).kept.map((k) => k.why).sort()).toEqual(['unknown_name', 'young', 'young'])
     // The flush files' grace alone does not lift the age floor of a compaction output (twice a step's deadline).
