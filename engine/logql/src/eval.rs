@@ -103,7 +103,7 @@ impl Grid {
 
 pub(crate) fn required_clauses(stages: &[Stage]) -> Vec<Vec<String>> {
     let mut out = Vec::new();
-    for s in stages {
+    for s in crate::pipeline::order_stages(stages) {
         match s {
             Stage::LineFilter(f) => match f.op {
                 LineFilterOp::Contains => {
@@ -153,12 +153,17 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
     let ms = crate::source::compile_matchers(&e.matchers)?;
     let mut err: Option<Error> = None;
     let req = SelectRequest { matchers: &e.matchers, start_ns: start, end_ns: end, required: &required };
-    let trim = |entries: &mut Vec<(i64, u64, usize, String)>| {
-        if fwd {
-            entries.sort_by_key(|x| (x.0, x.1));
-        } else {
-            entries.sort_by_key(|x| (std::cmp::Reverse(x.0), std::cmp::Reverse(x.1)));
-        }
+    // Entries that share a timestamp are ordered by their stream's labels, then by arrival,
+    // so that the limit does not depend on the order streams are read in.
+    let trim = |entries: &mut Vec<(i64, u64, usize, String)>, keys: &Vec<Vec<(String, String)>>| {
+        entries.sort_by(|a, b| {
+            let o = a.0.cmp(&b.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(a.1.cmp(&b.1));
+            if fwd {
+                o
+            } else {
+                o.reverse()
+            }
+        });
         entries.truncate(limit);
     };
     src.select(&req, &mut |labels, row| {
@@ -186,13 +191,13 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
         seq += 1;
         entries.push((row.ts_ns, seq, idx, line.into_owned()));
         if entries.len() >= limit.saturating_mul(2).max(1024) {
-            trim(&mut entries);
+            trim(&mut entries, &key_list);
         }
     })?;
     if let Some(e) = err.take() {
         return Err(e);
     }
-    trim(&mut entries);
+    trim(&mut entries, &key_list);
     let mut streams: Vec<StreamOut> = Vec::new();
     let mut slot: HashMap<usize, usize> = HashMap::new();
     for (ts, _, idx, line) in entries {
@@ -425,7 +430,9 @@ pub(crate) fn eval_range(
     let mut keys: Vec<_> = series.into_iter().collect();
     keys.sort_by(|a, b| a.0.cmp(&b.0));
     for (labels, mut samples) in keys {
-        samples.sort_by_key(|x| x.0);
+        // By time; samples that share a timestamp in a fixed order (by value), so that sums
+        // and first/last do not depend on the order rows arrive in.
+        samples.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         let mut vals = vec![None; grid.n];
         let mut any = false;
         for (i, slot) in vals.iter_mut().enumerate() {

@@ -172,7 +172,8 @@ pub fn compare(a: &Val, op: BinOp, b: &Val) -> bool {
         return compare(b, flipped, a);
     }
     let Some(ord) = order(a, b) else {
-        return false;
+        // NaN is unequal to every number (IEEE 754), and unordered.
+        return op == BinOp::Neq && a.num().is_some() && b.num().is_some();
     };
     match op {
         BinOp::Eq => ord == Ordering::Equal,

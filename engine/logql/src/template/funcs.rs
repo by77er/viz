@@ -30,7 +30,84 @@ const NAMES: &[&str] = &[
     "nindent", "repeat", "replace", "substr", "title", "trim", "trimAll", "trimPrefix", "trimSuffix", "trunc", "upper", "urlencode",
     "urldecode", "contains", "hasPrefix", "hasSuffix", "add", "addf", "ceil", "div", "divf", "float64", "floor", "int", "max", "maxf",
     "min", "minf", "mul", "mulf", "mod", "round", "sub", "subf", "count", "regexReplaceAll", "regexReplaceAllLiteral",
+    // Go's `strings` functions under their Go names (accepted by Loki, not in its documentation)
+    "ToLower", "ToUpper", "Replace", "Trim", "TrimLeft", "TrimRight", "TrimPrefix", "TrimSuffix", "TrimSpace",
 ];
+
+/// A decimal `m * 10^e`, for `addf`, `subf`, `mulf` and `divf`, which compute in decimal
+/// rather than binary floating point (division to 16 decimal places), so that
+/// `20.2 / 5.25` gives 3.8476190476190477 as it does in Loki.
+#[derive(Clone, Copy)]
+struct Dec {
+    m: i128,
+    e: i32,
+}
+
+impl Dec {
+    fn from_f64(f: f64) -> Option<Dec> {
+        if !f.is_finite() {
+            return None;
+        }
+        if f == 0.0 {
+            return Some(Dec { m: 0, e: 0 });
+        }
+        let s = format!("{f:e}");
+        let (mant, exp) = s.split_once('e')?;
+        let exp: i32 = exp.parse().ok()?;
+        let neg = mant.starts_with('-');
+        let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
+        let m: i128 = digits.parse().ok()?;
+        Some(Dec { m: if neg { -m } else { m }, e: exp - (digits.len() as i32 - 1) })
+    }
+    fn to_f64(self) -> f64 {
+        format!("{}e{}", self.m, self.e).parse().unwrap_or(f64::NAN)
+    }
+    fn align(a: Dec, b: Dec) -> Option<(i128, i128, i32)> {
+        let e = a.e.min(b.e);
+        let sa = 10i128.checked_pow((a.e - e) as u32)?;
+        let sb = 10i128.checked_pow((b.e - e) as u32)?;
+        Some((a.m.checked_mul(sa)?, b.m.checked_mul(sb)?, e))
+    }
+    fn add(a: Dec, b: Dec) -> Option<Dec> {
+        let (x, y, e) = Dec::align(a, b)?;
+        Some(Dec { m: x.checked_add(y)?, e })
+    }
+    fn sub(a: Dec, b: Dec) -> Option<Dec> {
+        let (x, y, e) = Dec::align(a, b)?;
+        Some(Dec { m: x.checked_sub(y)?, e })
+    }
+    fn mul(a: Dec, b: Dec) -> Option<Dec> {
+        Some(Dec { m: a.m.checked_mul(b.m)?, e: a.e.checked_add(b.e)? })
+    }
+    /// Rounded half away from zero to 16 decimal places.
+    fn div(a: Dec, b: Dec) -> Option<Dec> {
+        if b.m == 0 {
+            return None;
+        }
+        // q = a.m * 10^(a.e - b.e + 16) / b.m, as an integer count of 10^-16.
+        let k = a.e - b.e + 16;
+        let (num, den) = if k >= 0 { (a.m.checked_mul(10i128.checked_pow(k as u32)?)?, b.m) } else { (a.m, b.m.checked_mul(10i128.checked_pow((-k) as u32)?)?) };
+        let q = num / den;
+        let r = num % den;
+        let q = if 2 * r.abs() >= den.abs() { q + if (num < 0) != (den < 0) { -1 } else { 1 } } else { q };
+        Some(Dec { m: q, e: -16 })
+    }
+}
+
+fn dec_fold(args: &[V], init: Option<f64>, op: fn(Dec, Dec) -> Option<Dec>, float_op: fn(f64, f64) -> f64) -> f64 {
+    let vals: Vec<f64> = args.iter().map(to_f64).collect();
+    let (mut acc, rest) = match init {
+        Some(i) => (i, &vals[..]),
+        None => (vals[0], &vals[1..]),
+    };
+    for &v in rest {
+        acc = match (Dec::from_f64(acc), Dec::from_f64(v)) {
+            (Some(a), Some(b)) => op(a, b).map(Dec::to_f64).unwrap_or_else(|| float_op(acc, v)),
+            _ => float_op(acc, v),
+        };
+    }
+    acc
+}
 
 pub fn exists(name: &str) -> bool {
     NAMES.contains(&name)
@@ -679,19 +756,43 @@ pub fn call(name: &str, args: &[V], ctx: &FnCtx<'_>) -> Result<V, CallError> {
             let it = args.iter().map(to_i64);
             V::Int(if name == "max" { it.max().unwrap_or(0) } else { it.min().unwrap_or(0) })
         }
-        "addf" => V::Float(args.iter().map(to_f64).sum()),
+        "addf" => V::Float(dec_fold(args, Some(0.0), Dec::add, |a, b| a + b)),
         "mulf" => {
             want_at_least(name, args, 1)?;
-            V::Float(args.iter().map(to_f64).product())
+            V::Float(dec_fold(args, None, Dec::mul, |a, b| a * b))
         }
-        "subf" | "divf" => {
+        "subf" => {
             want_at_least(name, args, 1)?;
-            let mut acc = to_f64(&args[0]);
-            for a in &args[1..] {
-                let b = to_f64(a);
-                acc = if name == "subf" { acc - b } else { acc / b };
-            }
-            V::Float(acc)
+            V::Float(dec_fold(args, None, Dec::sub, |a, b| a - b))
+        }
+        "divf" => {
+            want_at_least(name, args, 1)?;
+            V::Float(dec_fold(args, None, Dec::div, |a, b| a / b))
+        }
+        "ToLower" | "ToUpper" | "TrimSpace" => {
+            want(name, args, 1)?;
+            let x = s(&args[0])?;
+            str_v(match name {
+                "ToLower" => x.to_lowercase(),
+                "ToUpper" => x.to_uppercase(),
+                _ => x.trim().to_string(),
+            })
+        }
+        "Trim" | "TrimLeft" | "TrimRight" | "TrimPrefix" | "TrimSuffix" => {
+            want(name, args, 2)?;
+            let (x, cut) = (s(&args[0])?, s(&args[1])?);
+            str_v(match name {
+                "Trim" => x.trim_matches(|c| cut.contains(c)),
+                "TrimLeft" => x.trim_start_matches(|c| cut.contains(c)),
+                "TrimRight" => x.trim_end_matches(|c| cut.contains(c)),
+                "TrimPrefix" => x.strip_prefix(cut).unwrap_or(x),
+                _ => x.strip_suffix(cut).unwrap_or(x),
+            })
+        }
+        "Replace" => {
+            want(name, args, 4)?;
+            let (x, old, new, n) = (s(&args[0])?, s(&args[1])?, s(&args[2])?, int(&args[3])?);
+            str_v(if n < 0 { x.replace(old, new) } else { x.replacen(old, new, n as usize) })
         }
         "maxf" | "minf" => {
             want_at_least(name, args, 1)?;

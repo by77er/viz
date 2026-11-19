@@ -120,7 +120,7 @@ pub fn selectors(query: &str, start_ns: i64, end_ns: i64, step_ns: i64) -> Resul
     let opts = Options { max_steps: usize::MAX, ..Options::default() };
     let pushable = |stages: &[ast::Stage]| -> Vec<ast::LineFilter> {
         let mut out = Vec::new();
-        for s in stages {
+        for s in pipeline::order_stages(stages) {
             match s {
                 ast::Stage::LineFilter(f) => out.push(f.clone()),
                 ast::Stage::LineFormat(_) | ast::Stage::Unpack | ast::Stage::Decolorize => break,

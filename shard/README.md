@@ -186,7 +186,23 @@ as-built shard the same day; at 200 clients refusals came back in 0–7 ms at th
 acknowledged requests kept a 99th of 137–276 ms. Not checked there: that the stored
 batches equal the acknowledged ones (the workerd counterfactual checks it).
 
-<<MUTANTS>>
+### Mutation checks
+
+`node scripts/mutants.mjs` on a copy of `contracts/` and `shard/` in a scratch directory
+(the script refuses to run in the git checkout); each mutant against the test files named in
+the script. Run of 2026-11-19: **17 of 20 killed**, each by the test named in its line of the
+run's output. Killed: early refusal without the in-flight limit, without `Retry-After`, never
+releasing in-flight appends; a failed group answered `ok`; an append answered before its group
+commits; a retry in the open group stored again; one transaction per append; R-6, R-10,
+R-11(a); F12's incarnation and range checks; the name rule (shard and pool); the flush
+message without `v`; no `sealed_at` migration; an unreadable series window starting empty.
+**Survived, then addressed:** "the check reads the fingerprint first" (the test named "a
+refused append reads nothing" never stored the batch it retried; it now does) and "the tenant
+cap ignores bytes waiting in the group" (no test sent concurrent appends past the cap; one does
+now, `groupcommit.test.ts` "the tenant cap counts what waits in the open group"). Both re-run
+on the final code: see below. **Survived, equivalent:** "R-12: fingerprint expiry names no
+tenant": every tenant has the same fingerprint TTL, so deleting other tenants' expired rows
+changes nothing observable; the rule (every statement names its tenant) is met by reading.
 
 ## Not implemented yet
 

@@ -11,10 +11,7 @@
    "name": "400",
    "width": 400,
    "coarse": true,
-   "measure": true,
-   "themes": [
-    "light"
-   ]
+   "measure": true
   },
   {
    "name": "grey",
@@ -44,6 +41,33 @@
    "measure": true,
    "themes": [
     "light"
+   ]
+  },
+  {
+   "name": "waterfall-focus",
+   "steps": [
+    {
+     "focus": ".vz-waterfall-span[tabindex=\"0\"]"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    }
+   ],
+   "clip": ".vz-waterfall",
+   "pad": 24,
+   "scale": 1,
+   "themes": [
+    "light",
+    "dark"
    ]
   }
  ]

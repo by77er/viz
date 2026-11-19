@@ -11,10 +11,7 @@
    "name": "400",
    "width": 400,
    "coarse": true,
-   "measure": true,
-   "themes": [
-    "light"
-   ]
+   "measure": true
   },
   {
    "name": "grey",
@@ -50,6 +47,16 @@
    "name": "many-1440",
    "url": "flows/dist/5-new-monitor.html#many",
    "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "many-400",
+   "url": "flows/dist/5-new-monitor.html#many",
+   "width": 400,
+   "coarse": true,
    "measure": true,
    "themes": [
     "light"

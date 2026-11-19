@@ -84,7 +84,8 @@ pub struct Template {
 #[derive(Debug, Clone, PartialEq)]
 enum T {
     Dot,
-    Field(String),
+    /// A field; `true` when it directly follows the previous operand (`.a.b`, `$x.f`).
+    Field(String, bool),
     Var(String),
     Ident(String),
     Str(String),
@@ -152,7 +153,8 @@ fn lex_action(src: &str, base: usize) -> Result<Vec<(T, usize)>, String> {
                 while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] >= 0x80) {
                     j += 1;
                 }
-                out.push((T::Field(src[s..j].to_string()), pos));
+                let attached = i > 0 && matches!(out.last(), Some((T::Field(..) | T::Var(_) | T::RParen, _))) && !b[i - 1].is_ascii_whitespace();
+                out.push((T::Field(src[s..j].to_string(), attached), pos));
                 i = j;
             }
             b'$' => {
@@ -347,7 +349,7 @@ impl P<'_> {
 
     fn fields(&mut self) -> Vec<String> {
         let mut out = Vec::new();
-        while let Some(T::Field(f)) = self.peek().cloned() {
+        while let Some(T::Field(f, true)) = self.peek().cloned() {
             out.push(f);
             self.i += 1;
         }
@@ -361,7 +363,7 @@ impl P<'_> {
         self.i += 1;
         let r = match t {
             T::Dot => (Arg::Dot, ".".to_string()),
-            T::Field(f) => {
+            T::Field(f, _) => {
                 let mut fs = vec![f];
                 fs.extend(self.fields());
                 let text = fs.iter().map(|f| format!(".{f}")).collect::<String>();
@@ -852,11 +854,12 @@ impl Exec<'_, '_> {
             return self.call(name, args, c);
         }
         if c.args.len() > 1 || final_.is_some() {
-            let what = match first {
-                Arg::Field(_) | Arg::Var(..) => "can't give argument to non-function",
-                _ => "can't give argument to non-function",
-            };
-            return Err(self.err_at(c.pos, &c.text, &format!("{what} {}", c.text.split(' ').next().unwrap_or(""))));
+            if let Arg::Field(fs) = first {
+                let text = fs.iter().map(|x| format!(".{x}")).collect::<String>();
+                let last = fs.last().map(String::as_str).unwrap_or("");
+                return Err(self.err_at(c.pos, &text, &format!("{last} is not a method but has arguments")));
+            }
+            return Err(self.err_at(c.pos, &c.text, &format!("can't give argument to non-function {}", c.text.split(' ').next().unwrap_or(""))));
         }
         self.arg(first, dot, c)
     }
@@ -879,7 +882,7 @@ impl Exec<'_, '_> {
         }
         let fc = funcs::FnCtx { line: self.ctx.line, ts_ns: self.ctx.ts_ns, now_ns: self.ctx.now_ns };
         funcs::call(name, &args, &fc).map_err(|e| match e {
-            funcs::CallError::Msg(m) => self.err_at(c.pos, &c.text, &m),
+            funcs::CallError::Msg(m) => self.err_at(c.pos, name, &m),
             funcs::CallError::Calling(m) => self.err_at(c.pos, &c.text, &format!("error calling {name}: {m}")),
         })
     }

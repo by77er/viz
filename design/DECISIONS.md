@@ -969,3 +969,54 @@ wrote a file. Every name in use already fits the rule, so nothing written change
 
 **Would change if.** Pool names have to carry characters outside the set (then (a), as a
 new key format version).
+
+## D39. The ruler reaches the engine over the query HTTP API with a service key that control issues; notifications go to a destination set in control, read over the Durable Object binding
+
+**Decision.** Until viz-query exports an RPC entrypoint, the ruler evaluates through the
+Prometheus HTTP API it already serves (`QUERY` service binding, `/api/v1/query`, `/query_range`,
+and `/plan` for save-time validation) and writes recording rules through Remote Write
+(`INGEST`). Both authenticate with a **service key**: an ordinary API key named
+`service:viz-ruler/<shard>`, scopes `read` and `write` fixed by `contracts/control.ts`, which the
+tenant's `Tenant` object issues to the Ruler object over its Durable Object binding
+(`serviceKey`) and the ruler keeps in its SQLite. Each request rotates it; a refused key is
+replaced only when it is older than KV propagation (3 minutes) and at most every 5 minutes; a
+key a person disabled is not replaced. Every engine call of one Ruler object passes one gate
+that admits a single call at a time. The tenant's default notification destination (webhook
+URL, `alertmanager` or plain `json` body, write-only signing secret) is a control setting; the
+notifier reads it over the same binding (`notificationTarget`) at most once a minute while it
+has work, keeps a copy in its SQLite, and offers it as the reserved receiver `viz:default`.
+
+**Alternatives.** (a) An RPC entrypoint on viz-query taking the tenant as an argument (the
+ruler contract's `EVALUATOR.evaluate(tenant, requests)`): the right end state, but query/ could
+not be changed here (README of ruler, "Needed changes"). (b) The ruler writes its own
+`key:` record into KV: a second writer of the key store, a key the tenant cannot see or revoke.
+(c) A shared internal secret plus a tenant header that query trusts from service bindings:
+query takes the tenant only from the key, and changing that is a query change and a weaker
+rule. (d) The tenant pastes a `read` key into the monitors API: a manual step for every tenant,
+and a credential in a request body. For the destination: (e) control publishes it to KV, as it
+does retention and pool maps: the signing secret would sit in a namespace every viz Worker
+reads. (f) The ruler's own notifier config only (it existed): then control's `notifications`
+setting stays inert, and a person sets alerting up in two places. For the six-connection
+budget: (g) let groups due together query concurrently (up to `maxConcurrentGroups`, 4).
+
+**Why.** (a) is not available today and (b)–(d) give up either "the tenant comes only from a
+credential" or "keys belong to control". A service key keeps both: query, ingest and edge see
+an ordinary key and take the tenant from it; control lists it, audits each issue, and a person
+can disable it. The binding to `Tenant` is how the gateway already provisions tenants, and the
+ruler takes the tenant from its own object name, never from a request. Reading the destination
+over the binding keeps the secret in two objects' storage instead of KV, and a stored copy keeps
+routing unchanged during a control outage. One call in flight: a service-bound callee spends
+from its caller's six connections (AGENTS.md, spike S1), and one query of viz-query can open
+several at once (ledger, then shards and leaves in parallel), so concurrency in the ruler would
+only queue inside the platform; (g) is what the gate replaces.
+
+**Cost.** A batch of N expressions is N HTTP requests in sequence, not one plan with shared
+scans (DESIGN §7): a group's tick takes the sum of its queries' latencies, about 0.1–0.3 s each
+(modelled from the deploy trial's query latency), so a 1,000-rule group would need minutes and
+hit `groupTimeoutMs` (120 s). A rotation per refused key, and a stored bearer key per rule shard.
+Recording rules land through ingest's normal path, with its quotas.
+
+**Would change if.** viz-query exports an RPC entrypoint (`ruler/README.md`, "Needed changes"):
+then `EVALUATOR` is bound, the HTTP path and the service key's `read` scope go, and a group is
+one call. If the platform's connection limit for service-bound callees turns out not to be
+shared (only the self-binding case was measured), the gate can admit more.

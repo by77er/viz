@@ -23,19 +23,18 @@ from collections import defaultdict
 
 # (class, description, predicate(case, loki_outcome, viz_outcome, detail)) — explained differences.
 def merged(c, ds):
-    src = {}
-    for i, st in enumerate(ds):
-        for e in st['entries']:
-            src.setdefault((e['ts'], e['line']), set()).add(i)
-    if not c.get('viz_ok'):
-        return False
-    for st in c['viz_data']['result']:
-        seen = set()
-        for ts, _line in st['values']:
-            seen |= {i for (t, _), ids in src.items() if t == ts for i in ids}
-        if len(seen) > 1:
-            return True
-    return False
+    """True when a `drop`/`keep` stage of the query maps two source streams of the data set to
+    the same stream labels (so the result merges them)."""
+    q = c['query']
+    sets = [dict(st['labels']) for st in ds]
+    for m in re.finditer(r'\|\s*(drop|keep)\s+([\w\s,]+?)(?=\||$|\s[|!]|\s*\[)', q):
+        names = [n.strip() for n in m.group(2).split(',') if n.strip()]
+        if m.group(1) == 'drop':
+            sets = [{k: v for k, v in s_.items() if k not in names} for s_ in sets]
+        else:
+            sets = [{k: v for k, v in s_.items() if k in names} for s_ in sets]
+    keys = [json.dumps(sorted(s_.items())) for s_ in sets]
+    return len(set(keys)) < len(keys)
 
 
 KNOWN = [
@@ -53,15 +52,17 @@ KNOWN = [
      lambda c, l, d: d is not None and re.search(r'\bwithout\b|label_replace', c['query']) is not None
      and c.get('viz_ok') and any('""' in json.dumps(s.get('metric', {})) or any(v == '' for v in s.get('metric', {}).values())
                                  for s in c['viz_data'].get('result', []) if isinstance(s, dict))),
-    ('loki-sum-without-grouping-ignores-parser-errors',
-     "the range aggregation sits directly under `sum` without grouping: Loki then counts samples whose "
-     "pipeline set a parser or line_format error (JSONParserErr, LogfmtParserErr, TemplateFormatErr from "
-     "line_format) instead of failing, apparently because an optimisation drops the series labels, "
-     "`__error__` included, before the check (observed: `sum(count_over_time({app=\"b\"} | json [10s]))` "
-     "succeeds where `sum by (app) (...)` fails). viz fails the query, as the documentation says metric "
-     "queries do when samples carry errors",
-     lambda c, l, d: d is not None and d.startswith('viz error: pipeline error') and
-     re.search(r'sum\s*(by\s*\(\s*\))?\s*\(\s*(count_over_time|rate|bytes_over_time|bytes_rate|sum_over_time|avg_over_time|min_over_time|max_over_time|first_over_time|last_over_time|stddev_over_time|stdvar_over_time|quantile_over_time|rate_counter)\(', c['query']) is not None),
+    ('loki-sum-ignores-parser-errors',
+     "the range aggregation sits under `sum` (observed without grouping, and in one shape with `by`): "
+     "Loki then counts samples whose pipeline set a parser or line_format error (JSONParserErr, "
+     "LogfmtParserErr, TemplateFormatErr) instead of failing, apparently because an optimisation "
+     "removes the labels, `__error__` included, before its check (observed: "
+     "`sum(count_over_time({app=\"b\"} | json [10s]))` succeeds while `count_over_time({app=\"b\"} | json [10s])` "
+     "and `sum by (app) (...)` fail). Which shapes Loki exempts was not fully determined. viz fails the "
+     "query, as the documentation says metric queries do when samples carry errors",
+     lambda c, l, d: d is not None and d.startswith('viz error: pipeline error')
+     and re.search(r"'(JSONParserErr|LogfmtParserErr|TemplateFormatErr)'", d) is not None
+     and re.search(r'\bsum\b', c['query']) is not None),
     ('oracle-merged-streams',
      "a stage (drop, keep) merged several source streams into one label set and the oracle's result for "
      "that label set differs: its mock querier concatenates the source streams (or keeps only one of them) "

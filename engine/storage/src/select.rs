@@ -177,8 +177,12 @@ pub fn select_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
     // 1. Resolve series from the lake.
     let (mut names, mut sids, mut labels) = (Vec::<ByteArray>::new(), Vec::<i64>::new(), Vec::<ByteArray>::new());
     for (fi, f) in input.series_files.iter().enumerate() {
-        let r = pq::open(f, Table::MetricSeries, fi)?;
+        let (r, src) = pq::open(f, Table::MetricSeries, fi)?;
         for g in 0..r.num_row_groups() {
+            // A row group the caller did not fetch holds no series this read needs.
+            if !src.has_row_group(r.metadata().row_group(g)) {
+                continue;
+            }
             if opts.prune_row_groups {
                 if let (Some(want), Some((lo, hi))) = (name_eq, bytes_stats(r.metadata().row_group(g).column(0).statistics())) {
                     if want.as_bytes() < lo || want.as_bytes() > hi {
@@ -245,10 +249,16 @@ pub fn select_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
         want_names.sort_unstable();
         want_names.dedup();
         let (mut ts, mut val) = (Vec::<i64>::new(), Vec::<f64>::new());
+        let (mut runs, mut spans) = (Vec::<(usize, usize, u32)>::new(), Vec::<(usize, usize)>::new());
         for (fi, f) in input.sample_files.iter().enumerate() {
-            let r = pq::open(f, Table::MetricSamples, fi)?;
+            let (r, src) = pq::open(f, Table::MetricSamples, fi)?;
             for g in 0..r.num_row_groups() {
                 let md = r.metadata().row_group(g);
+                // A row group the caller did not fetch holds no row this read needs (the
+                // caller chose it with `RowGroupIndex::may_hold`).
+                if !src.has_row_group(md) {
+                    continue;
+                }
                 if opts.prune_row_groups {
                     if let Some((lo, hi)) = i64_stats(md.column(2).statistics()) {
                         if hi < min_ts || lo > max_ts {
@@ -269,7 +279,8 @@ pub fn select_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
                 let n = pq::group_rows(&r, g, fi)?;
                 let rg = r.get_row_group(g).map_err(pq::perr(Some(fi)))?;
                 pq::read_col::<Int64Type>(&*rg, 1, n, fi, &mut sids)?;
-                let mut loaded = false;
+                // The runs of rows that belong to a selected series: [start, end) and its slot.
+                runs.clear();
                 let mut i = 0;
                 while i < n {
                     let mut j = i + 1;
@@ -277,20 +288,45 @@ pub fn select_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
                         j += 1;
                     }
                     if let Some(Some(a)) = known.get(&sids[i]) {
-                        if !loaded {
-                            pq::read_col::<Int64Type>(&*rg, 2, n, fi, &mut ts)?;
-                            pq::read_col::<DoubleType>(&*rg, 3, n, fi, &mut val)?;
-                            loaded = true;
-                        }
-                        let acc = &mut accs[*a as usize];
-                        for k in i..j {
-                            if ts[k] >= min_ts && ts[k] <= max_ts {
-                                acc.ts.push(ts[k]);
-                                acc.values.push(val[k]);
-                            }
-                        }
+                        runs.push((i, j, *a));
                     }
                     i = j;
+                }
+                if runs.is_empty() {
+                    continue;
+                }
+                // Decode `ts` and `value` only for those runs (pages between them are
+                // skipped undecoded), or, with pruning off, for every row.
+                spans.clear();
+                if opts.prune_row_groups {
+                    for &(a, b, _) in &runs {
+                        match spans.last_mut() {
+                            Some((_, end)) if *end == a => *end = b,
+                            _ => spans.push((a, b)),
+                        }
+                    }
+                } else {
+                    spans.push((0, n));
+                }
+                pq::read_runs::<Int64Type>(&*rg, 2, &spans, fi, &mut ts)?;
+                pq::read_runs::<DoubleType>(&*rg, 3, &spans, fi, &mut val)?;
+                // Row `k` of span `s` is at `base(s) + k - spans[s].0` in `ts`/`val`, where
+                // `base(s)` is the length of the spans before it. Every run lies in one span.
+                let (mut span, mut base) = (0usize, 0usize);
+                for &(a, b, slot) in &runs {
+                    while spans[span].1 <= a {
+                        base += spans[span].1 - spans[span].0;
+                        span += 1;
+                    }
+                    let at = base + (a - spans[span].0);
+                    let acc = &mut accs[slot as usize];
+                    for k in at..at + (b - a) {
+                        let t = ts[k];
+                        if t >= min_ts && t <= max_ts {
+                            acc.ts.push(t);
+                            acc.values.push(val[k]);
+                        }
+                    }
                 }
             }
         }

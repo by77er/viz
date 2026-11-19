@@ -302,15 +302,16 @@ describe('rebuild reproduces exactly the state of a live ledger', () => {
     await l.addUnit(unit(1, 1, [file('a1', { index: big(1) }), file('a2', { index: big(2) })]))
     await l.addUnit(unit(2, 2, [file('b1', { index: big(3) }), file('b2', { index: big(4) })]))
     await l.addUnit(unit(3, 3, [file('c1', { index: big(5) }), file('c2', { index: big(6) })]))
+    // The checkpoint at the end of the drain (version 4) cannot be written, so it supersedes
+    // nothing: whatever checkpoint the drain took after [1..3] would stay and be used.
+    await breakR2(l, (key) => key.includes('/ckpt-000000000004'))
     await l.drain()
     const inc = await incarnationOf(l)
     expect((await readSegments(tenant)).filter((s) => s.ledgerIncarnation === inc).map((s) => [s.first, s.last])).toEqual([[0, 0], [1, 3], [4, 4]])
     const ckpts = (await listAll(`${logPrefix(tenant)}${inc}/ckpt-`)).map((key) => (parseLedgerLogKey(key) as { version: number }).version)
-    expect(ckpts).toEqual([4])
-    // With the newest checkpoint unreadable the rebuild starts from whatever older one there
-    // is (none, here: the base) and must still come back exactly.
+    expect(ckpts).toEqual([]) // none after [1..3]: it does not end at the committed version
+    // The rebuild starts from the base and must come back exactly.
     const live = await dumpState(l)
-    await env.BUCKET.put(`${env.CELL}/${ledgerCheckpointKey(tenant, inc, 4)}`, 'not a checkpoint\n')
     const result: RebuildResult = await runInDurableObject(l, async (i: Ledger, state) => {
       await state.storage.deleteAll()
       return i.rebuildFromLog()

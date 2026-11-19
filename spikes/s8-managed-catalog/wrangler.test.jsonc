@@ -1,0 +1,11 @@
+{
+  // Test build: the same Worker, with a simulated bucket. The catalog is the in-memory test
+  // double in test/mock-catalog.ts, handed to the code as its fetch.
+  "name": "viz-spike-s8-managed-catalog-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "durable_objects": { "bindings": [{ "name": "COMMITTER", "class_name": "Committer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Committer"] }],
+  "vars": { "CATALOG_URI": "https://catalog.invalid/acct/viz-lake", "WAREHOUSE": "acct_viz-lake", "BUCKET_NAME": "viz-lake" }
+}

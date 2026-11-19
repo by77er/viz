@@ -37,11 +37,18 @@ const BASE = `http://127.0.0.1:${PORT}`
 export const TENANT = 'viz-app-e2e'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * 200 when the gateway and the three backends this script serves (ingest, query, control)
+ * answer. The gateway's /healthz also asks ruler and MCP, which this local stack does not
+ * include, and then answers 503 with each backend's state: that counts as up when those three are.
+ */
 async function up() {
   try {
     const res = await fetch(`${BASE}/healthz`)
-    await res.arrayBuffer()
-    return res.status
+    const text = await res.text()
+    if (res.status !== 503) return res.status
+    const b = JSON.parse(text).backends ?? {}
+    return ['ingest', 'query', 'control'].every((k) => b[k]?.ok) ? 200 : 503
   } catch {
     return 0
   }

@@ -129,6 +129,18 @@ const MUTANTS = [
     name: 'read_dashboard lists panels in structure in layout order, not the order the text uses',
     changes: [['src/tools/dashboards.ts', 'const ordered = panelOrder(panels).map((i) => ({ p: panels[i]!, i }))', 'const ordered = panels.map((p, i) => ({ p, i }))']],
   },
+  {
+    name: '`validate_query` does not ask the query service for its plan (the estimate is the series count alone)',
+    changes: [['src/tools/validate.ts', 'if (performance.now() < s.deadline) {\n        s.usage.upstreamCalls++\n        const p = await s.query.plan(', 'if (false) {\n        s.usage.upstreamCalls++\n        const p = await s.query.plan(']],
+  },
+  {
+    name: '`validate_query` drops the refusal the plan foresees',
+    changes: [['src/tools/validate.ts', 'if (plan.refusal) findings.push(', 'if (plan.refusal && false) findings.push(']],
+  },
+  {
+    name: '`/healthz` says ok whatever is bound',
+    changes: [['src/index.ts', "const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER'] as const).filter((b) => !env[b])", 'const missing: string[] = []']],
+  },
 ]
 
 const only = process.argv.slice(2).map(Number)
@@ -150,7 +162,7 @@ for (const [i, m] of MUTANTS.entries()) {
     }
     const report = join(out, `m${n}.json`)
     try {
-      execFileSync('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${report}`], { cwd: root, stdio: 'ignore', timeout: 600_000 })
+      execFileSync('npx', ['vitest', 'run', '--maxWorkers=2', '--reporter=json', `--outputFile=${report}`], { cwd: root, stdio: 'ignore', timeout: 600_000 })
     } catch {
       /* a failing suite is what we want */
     }

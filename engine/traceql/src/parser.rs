@@ -236,18 +236,19 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// Spanset operators and arithmetic between pipelines, by precedence: every spanset
-    /// operator (`&&`, `||` and the structural ones) shares one level and is
-    /// left-associative, as Tempo evaluates them (`{a} || {b} && {c}` is `({a} || {b}) && {c}`);
-    /// then `+ -` < `* / %` < `^`.
+    /// Spanset operators and arithmetic between pipelines, by precedence (Tempo's, as
+    /// observed): `&&` and `||` share the lowest level, left-associative
+    /// (`{a} || {b} && {c}` is `({a} || {b}) && {c}`); the structural operators bind tighter
+    /// (`{a} || {b} > {c}` is `{a} || ({b} > {c})`) and are left-associative among
+    /// themselves; then `+ -` < `* / %` < `^`.
     fn binary(&mut self, min: u8) -> Result<Node, Error> {
         self.enter()?;
         let mut lhs = self.atom()?;
         loop {
             let pos = self.pos();
             let (prec, op): (u8, Option<Result<SpansetOp, BinOp>>) = match self.peek() {
-                Tok::OrOr => (3, Some(Ok(SpansetOp::Or))),
-                Tok::AndAnd => (3, Some(Ok(SpansetOp::And))),
+                Tok::OrOr => (2, Some(Ok(SpansetOp::Or))),
+                Tok::AndAnd => (2, Some(Ok(SpansetOp::And))),
                 Tok::Desc => (3, Some(Ok(SpansetOp::Descendant))),
                 Tok::Anc => (3, Some(Ok(SpansetOp::Ancestor))),
                 Tok::Gt if lhs.spanset_like() => (3, Some(Ok(SpansetOp::Child))),
@@ -541,25 +542,22 @@ impl<'a> Parser<'a> {
 
     // ---------------------------------------------------------------- field expressions
 
+    /// `&&` and `||` share one precedence level and associate to the left, as Tempo
+    /// evaluates them: `{ a || b && c }` is `{ (a || b) && c }` (README, "Differential run").
     fn field_or(&mut self) -> Result<FieldExpr, Error> {
         self.enter()?;
-        let mut lhs = self.field_and()?;
-        while matches!(self.peek(), Tok::OrOr) {
-            self.next();
-            let rhs = self.field_and()?;
-            lhs = FieldExpr::Binary(BinOp::Or, Box::new(lhs), Box::new(rhs));
-        }
-        self.depth -= 1;
-        Ok(lhs)
-    }
-
-    fn field_and(&mut self) -> Result<FieldExpr, Error> {
         let mut lhs = self.field_cmp()?;
-        while matches!(self.peek(), Tok::AndAnd) {
+        loop {
+            let op = match self.peek() {
+                Tok::OrOr => BinOp::Or,
+                Tok::AndAnd => BinOp::And,
+                _ => break,
+            };
             self.next();
             let rhs = self.field_cmp()?;
-            lhs = FieldExpr::Binary(BinOp::And, Box::new(lhs), Box::new(rhs));
+            lhs = FieldExpr::Binary(op, Box::new(lhs), Box::new(rhs));
         }
+        self.depth -= 1;
         Ok(lhs)
     }
 

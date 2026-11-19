@@ -212,7 +212,26 @@ again is harmless), and a removal that was committed but never logged is not res
 because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 tests).
 
 
-<<MUTANTS>>
+## Mutation checks
+
+`node scripts/mutants.mjs` on a copy of `contracts/` and `ledger/` in a scratch directory
+(the script refuses to run in the git checkout: AGENTS.md); each mutant against the test files
+named in the script, the source restored after each.
+
+**Run 1** (2026-11-19, the code before the segment-log review's fixes): **32 of 33 killed.**
+The sixteen contracts-v2 mutants (patterns updated for the code as it now reads), and the
+segment log's: F11 (a start commits without waiting for its base: killed only by the test
+added for it, "if the base cannot be written, nothing commits"), F10, rows deleted before the
+PUT, no `If-None-Match`, other bytes taken as written, the drain deleting rows beyond its
+segment, a logged mark moving another incarnation's stream, a checkpoint for a segment that
+does not end at the committed version (killed by the test added for it, a drain over 4 MiB),
+a rebuild accepting a gap, a rebuild skipping an unreadable segment, R-3 (the start inside
+`blockConcurrencyWhile`; an unbounded wait), R-5, R-8, the name rule, the alarm left after a
+drain. **Survived:** the recorded bounds not made durable before the PUT: workerd tests
+cannot crash between a local commit and its durability; it is right by reading.
+
+**Run 2** (the final code, with the review's fixes and their mutants): in progress when this
+was written; its results replace this paragraph.
 
 ## Not implemented
 

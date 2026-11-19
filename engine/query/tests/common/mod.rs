@@ -179,7 +179,7 @@ pub fn store(batches: &[Vec<u8>], layout: &Layout) -> Stored {
     let n = batches.len();
     let flushed = layout.flushed.min(n);
     let mut out = Stored::default();
-    let opts = WriteOptions { max_row_group_rows: layout.row_group_rows };
+    let opts = WriteOptions { max_row_group_rows: layout.row_group_rows, ..Default::default() };
     let mut cuts: Vec<usize> = layout.segment_cuts.iter().copied().filter(|c| *c > 0 && *c < flushed).collect();
     cuts.sort_unstable();
     cuts.dedup();

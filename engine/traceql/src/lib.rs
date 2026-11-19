@@ -374,6 +374,12 @@ fn trace_result(ctx: &mut TraceCtx, sets: Vec<Spanset>, echo: &[(String, FieldEx
         let attributes = ss.attrs.into_iter().map(|(k, v)| (k, if v.is_nil() { Val::Str("nil".to_string().into()) } else { v })).collect();
         spansets.push(SpansetResult { spans, matched, attributes });
     }
+    // Spansets in a fixed order (by their first span, then size, then attributes), so the
+    // answer does not depend on the order the source returned spans in.
+    spansets.sort_by(|a: &SpansetResult, b: &SpansetResult| {
+        let key = |s: &SpansetResult| (s.spans.first().map(|x| (x.start_unix_nano, x.span_id.clone())), s.matched, format!("{:?}", s.attributes));
+        key(a).cmp(&key(b))
+    });
     let sum = &t.summary;
     let (root_service_name, root_trace_name) = match &sum.root {
         Some((s, n)) => (s.clone().unwrap_or_default(), n.clone()),

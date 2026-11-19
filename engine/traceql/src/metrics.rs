@@ -198,8 +198,9 @@ fn is_duration(e: &FieldExpr) -> bool {
     }
 }
 
-/// Quantile from log2 buckets: rank `ceil(p·N)` clamped to `[1, N]`, then exponential
-/// interpolation inside the bucket that holds it.
+/// Quantile from log2 buckets (observed behaviour): rank `ceil(p·N)` clamped to `[1, N]`;
+/// the bucket that holds it is interpolated exponentially between the previous non-empty
+/// bucket's bound (half its own bound for the first one) and its own bound.
 pub fn quantile(p: f64, hist: &HashMap<u32, u64>) -> f64 {
     let total: u64 = hist.values().sum();
     if total == 0 {
@@ -215,13 +216,17 @@ pub fn quantile(p: f64, hist: &HashMap<u32, u64>) -> f64 {
         rank = total as f64;
     }
     let mut cum = 0u64;
+    let mut prev: Option<f64> = None;
     for k in keys {
         let c = hist.get(&k).copied().unwrap_or(0);
+        let upper = k as f64;
+        let lower = prev.unwrap_or(upper - 1.0);
         if (cum + c) as f64 >= rank {
             let frac = (rank - cum as f64) / c as f64;
-            return 2f64.powf(k as f64 - 1.0 + frac);
+            return 2f64.powf(lower + frac * (upper - lower));
         }
         cum += c;
+        prev = Some(upper);
     }
     0.0
 }
@@ -304,15 +309,17 @@ impl<'q> Leaf<'q> {
                         }
                     }
                     Acc::Min(m) => {
-                        if let Some(x) = arg_val.as_ref().and_then(metric_value) {
-                            if m[k].is_nan() || x < m[k] {
+                        // NaN values are skipped, so the result does not depend on order.
+                        if let Some(x) = arg_val.as_ref().and_then(metric_value).filter(|x| !x.is_nan()) {
+                            // -0.0 is below 0.0 here, so equal zeros do not depend on order.
+                            if m[k].is_nan() || x < m[k] || (x == m[k] && x.is_sign_negative() && !m[k].is_sign_negative()) {
                                 m[k] = x;
                             }
                         }
                     }
                     Acc::Max(m) => {
-                        if let Some(x) = arg_val.as_ref().and_then(metric_value) {
-                            if m[k].is_nan() || x > m[k] {
+                        if let Some(x) = arg_val.as_ref().and_then(metric_value).filter(|x| !x.is_nan()) {
+                            if m[k].is_nan() || x > m[k] || (x == m[k] && m[k].is_sign_negative() && !x.is_sign_negative()) {
                                 m[k] = x;
                             }
                         }

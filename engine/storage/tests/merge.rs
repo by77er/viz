@@ -107,7 +107,7 @@ proptest! {
         for (i, b) in bytes.iter().enumerate() {
             seg.push(b);
             if groups[i] || i + 1 == bytes.len() {
-                for f in encode_segment_with(&seg, &WriteOptions { max_row_group_rows: cap_in }).unwrap() {
+                for f in encode_segment_with(&seg, &WriteOptions { max_row_group_rows: cap_in, ..Default::default() }).unwrap() {
                     let e = by_day.entry(f.day.clone()).or_default();
                     match f.table { Table::MetricSamples => e.0.push(f.bytes), Table::MetricSeries => e.1.push(f.bytes) }
                 }
@@ -120,7 +120,7 @@ proptest! {
         prop_assert_eq!(by_day.len(), want.len());
         for (((day, (samples, series)), (day_no, want_rows)), one) in by_day.iter().zip(&want).zip(single.chunks(2)) {
             prop_assert_eq!(day, &viz_storage::day::format_day(*day_no));
-            let opts = WriteOptions { max_row_group_rows: cap_out };
+            let opts = WriteOptions { max_row_group_rows: cap_out, ..Default::default() };
             let s: Vec<&[u8]> = samples.iter().map(|v| v.as_slice()).collect();
             let out = merge_files_with(Table::MetricSamples, &s, &opts).unwrap();
             let got = read_samples(&out.bytes);

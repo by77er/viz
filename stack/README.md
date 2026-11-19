@@ -96,14 +96,14 @@ retried). `noteFlushed`'s write is best effort, because its message carries the 
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npx vitest run --maxWorkers=2    # 40 tests in workerd, 8 files (soak: 400 steps)
+npx vitest run --maxWorkers=2    # 41 tests in workerd, 8 files (soak: 400 steps)
 npm run soak                     # the soak with 3,000 steps
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
 node tools/hyparquet_check.mjs   # 4 checks agree
 ```
 
-Last run, 2026-11-19: **40 passed, 0 failed**; `tsc --noEmit` clean.
+Last run, 2026-11-19: **41 passed, 0 failed**; `tsc --noEmit` clean.
 
 ### Wiring for the ledger's background log (2026-11-19)
 
@@ -129,6 +129,26 @@ one flush run to record changed with it, the way production gets there:
   everything. AGENTS.md wants an alarm deleted when there is nothing to do; the ledger now
   does that (`ledger/test/segments.test.ts`, "a drain that writes everything deletes the
   alarm").
+
+### Leftovers stop keeping the sweep due (review S-6 of `design/reviews/segment-log-and-compaction.md`)
+
+`maintainTenant` used to keep the orphan sweep due for as long as the sweep kept any object
+for a reason other than an unjudgeable name, so a leftover that only the ledger or a shard
+could ever settle (a flush file of a unit that will never be reported, a stream the ledger
+never saw) woke an idle tenant's ledger and listed its prefix every day for ever. Now the
+sweep stays due only while the youngest such object (`OrphanResult.waitingSince`, janitor) is
+younger than `stalledAfterMs` (default seven days); after that only a write makes it due
+again. `test/cron.test.ts`, "review S-6": failed before the change (the marker kept
+`sweep: true`), passes after; the leftover is kept, never deleted.
+
+`scripts/mutants.mjs`: six patterns for ledger, shard and edge code no longer matched the code
+after refactors (they would have printed NOT APPLIED) and were updated on 2026-11-19: the
+pending marker never removed, the series window saved on every append, a rebuilt ledger
+forgetting precedence, `expire` and `replace` recording no tombstone, an unreadable limits
+record meaning no limit. **Those six were not re-run** (this script needs the whole tree
+copied to a scratch directory, and time ran out); their patterns now apply (`--check`-style
+reading by the storage-path engineer). Related but not identical mutants in `ledger/`,
+`shard/` and `edge/`'s own scripts were run on 2026-11-19.
 
 ### Triggers (`test/auto.test.ts`, `test/triggers.test.ts`)
 

@@ -213,6 +213,8 @@ logrun('LOG_teeth_retry_new_bounds', 'segment log teeth: a retried drain takes e
 // review S-1 (design/reviews/segment-log-and-compaction.md): a rollback to the first-layout
 // release on segment storage, then a roll-forward; then a ledger storage loss
 logrun('LOG_S1_rollback', 'review S-1, as built: one rollback to the first-layout ledger and back, one ledger loss, retention, compaction, registration logged before writes', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 1, maxExp: 1, maxJobs: 1 }, 'violated')
+logrun('LOG_S1_rollback_I1', 'review S-1, as built, carried through to acknowledged-row loss', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 0, maxExp: 0, maxJobs: 1 }, 'violated', ['I1_AckedIsDurable'])
+logrun('LOG_S1_rollback_I11', 'review S-1, as built, carried through to a listed file with no object (a removal the first-layout drain logged, purged, then undone by the rebuild)', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 0, maxExp: 1, maxJobs: 1 }, 'violated', ['I11_LiveFilesReadable'])
 logrun('LOG_S1_heal', 'review S-1 with fix (b): on roll-forward an outbox that does not continue the segment log starts a new incarnation from SQLite; same bounds', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, rbFix: 'heal', maxLL: 1, maxComp: 1, maxExp: 1, maxJobs: 1 })
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation

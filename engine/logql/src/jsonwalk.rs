@@ -183,15 +183,22 @@ impl<'a> W<'a> {
                 return Err(E_MAL);
             }
             self.i += 1;
-            let full = if prefix.is_empty() { key.to_string() } else { format!("{prefix}_{key}") };
+            // A key that is empty or only whitespace adds no segment to the flattened name.
+            let full = if key.trim().is_empty() {
+                prefix.to_string()
+            } else if prefix.is_empty() {
+                key.to_string()
+            } else {
+                format!("{prefix}_{key}")
+            };
             match self.value()? {
                 Scalar::Str(v) => {
-                    if !key.is_empty() {
+                    if !full.is_empty() {
                         f(&full, v.into_owned());
                     }
                 }
                 Scalar::Raw(r) => {
-                    if !key.is_empty() {
+                    if !full.is_empty() {
                         f(&full, r.to_string());
                     }
                 }

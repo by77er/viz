@@ -10,6 +10,7 @@
 #   SMOKE_KEY              optional: an API key with write and read scopes, for the data check
 #   VIZ_WASM_PREBUILT=1    use the .wasm modules already in place (CI: built and tested by the checks)
 #   VIZ_SKIP_NPM_CI=1      use node_modules as they are (a shared checkout where others are working)
+#   VIZ_STAGE_EXPIRES_AT   a stage only: ISO time after which its ruler stops evaluating by itself
 #
 # Steps: build both WASM engines; npm ci in each deployed component; resources; configure;
 # release (upload every Worker, then promote callees first); smoke test through the public
@@ -84,7 +85,9 @@ node deploy/resources.mjs ensure ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 note "resources: present"
 
 step "configure"
-node deploy/configure.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" > /dev/null
+EXPIRES_ARGS=()
+if [ -n "${VIZ_STAGE_EXPIRES_AT:-}" ]; then EXPIRES_ARGS=(--expires "$VIZ_STAGE_EXPIRES_AT"); fi
+node deploy/configure.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} ${EXPIRES_ARGS[@]+"${EXPIRES_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" > /dev/null
 note "configure: deploy/generated/$TARGET"
 
 step "release: upload, then promote"

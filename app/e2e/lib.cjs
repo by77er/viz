@@ -119,9 +119,26 @@ const REAL_PORT = Number(process.env.VIZ_REAL_PORT || 8851)
 const REAL = `http://127.0.0.1:${REAL_PORT}`
 const REAL_KEYS = path.join(ROOT, 'real/.wrangler/keys.json')
 
+/**
+ * Whether the real stack answers: the gateway's /healthz is 200, or 503 only because ruler and
+ * MCP, which real/wrangler.jsonc does not include, do not answer (real/stack.mjs, `up`).
+ */
+async function realUp(base = REAL) {
+  try {
+    const res = await fetch(`${base}/healthz`)
+    const text = await res.text()
+    if (res.status === 200) return true
+    if (res.status !== 503) return false
+    const b = JSON.parse(text).backends || {}
+    return ['ingest', 'query', 'control'].every((k) => b[k] && b[k].ok)
+  } catch {
+    return false
+  }
+}
+
 /** Make sure the real stack is up and seeded; returns a function that stops it if this call started it. */
 async function ensureRealStack() {
-  if ((await ping(`${REAL}/healthz`)) === 200 && fs.existsSync(REAL_KEYS)) return () => {}
+  if ((await realUp()) && fs.existsSync(REAL_KEYS)) return () => {}
   const { spawnSync } = require('node:child_process')
   const run = (...args) => {
     const r = spawnSync(process.execPath, [path.join(ROOT, 'real/stack.mjs'), ...args, '--port', String(REAL_PORT)], { stdio: 'inherit' })
@@ -190,5 +207,5 @@ async function axe(page, label, check) {
 module.exports = {
   chromium, ROOT, APP, MOCK, T0, T1, Q_RATE, Q_CPU, Q_P95, Q_MANY, Q_BAD, url, TOKENS, tokenValue, tokenRgb, seriesHex, allowedColours,
   makeChecker, startServers, setMockDelay, setMockFailure, overflow, axe, ping, waitFor,
-  REAL, ensureRealStack, realKeys, realKv, startPreview, startMock, contextWithKey,
+  REAL, realUp, ensureRealStack, realKeys, realKv, startPreview, startMock, contextWithKey,
 }

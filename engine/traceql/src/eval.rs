@@ -561,27 +561,45 @@ pub fn aggregate(op: AggOp, arg: Option<&FieldExpr>, ctx: &mut TraceCtx, spans: 
     }
     let all_int = vals.iter().all(|v| matches!(v, Val::Int(_)));
     let all_dur = vals.iter().all(|v| matches!(v, Val::Duration(_)));
+    // Sums are exact (i128 for integers, Shewchuk partials for floats), so the value does
+    // not depend on span order.
+    let exact = |vals: &[Val]| {
+        let mut s = crate::metrics::ExactSum::default();
+        for v in vals {
+            if let Some(x) = v.num() {
+                s.add(x);
+            }
+        }
+        s.value()
+    };
     match op {
         AggOp::Sum => {
             if all_int || all_dur {
-                let mut s: i64 = 0;
+                let mut s: i128 = 0;
                 for v in &vals {
                     if let Val::Int(x) | Val::Duration(x) = v {
-                        s = s.saturating_add(*x);
+                        s += *x as i128;
                     }
                 }
-                if all_dur {
-                    Val::Duration(s)
-                } else {
-                    Val::Int(s)
+                match i64::try_from(s) {
+                    Ok(s) if all_dur => Val::Duration(s),
+                    Ok(s) => Val::Int(s),
+                    Err(_) => Val::Float(s as f64),
                 }
             } else {
-                Val::Float(vals.iter().filter_map(|v| v.num()).sum())
+                Val::Float(exact(&vals))
             }
         }
         AggOp::Avg => {
-            let s: f64 = vals.iter().filter_map(|v| v.num()).sum();
-            let a = s / vals.len() as f64;
+            let a = if all_int || all_dur {
+                let s: i128 = vals.iter().map(|v| match v {
+                    Val::Int(x) | Val::Duration(x) => *x as i128,
+                    _ => 0,
+                }).sum();
+                s as f64 / vals.len() as f64
+            } else {
+                exact(&vals) / vals.len() as f64
+            };
             if all_dur {
                 Val::Duration(a as i64)
             } else {
@@ -591,10 +609,19 @@ pub fn aggregate(op: AggOp, arg: Option<&FieldExpr>, ctx: &mut TraceCtx, spans: 
         AggOp::Min | AggOp::Max => {
             let mut best = vals[0].clone();
             for v in &vals[1..] {
+                let neg_zero = |x: &Val| matches!(x, Val::Float(f) if *f == 0.0 && f.is_sign_negative());
                 let better = match crate::value::order(v, &best) {
                     Some(std::cmp::Ordering::Less) => op == AggOp::Min,
                     Some(std::cmp::Ordering::Greater) => op == AggOp::Max,
-                    _ => false,
+                    // Equal values: -0.0 counts as the smaller, and an int beats an equal
+                    // float, so the result does not depend on order.
+                    Some(std::cmp::Ordering::Equal) => {
+                        (op == AggOp::Min && neg_zero(v) && !neg_zero(&best))
+                            || (op == AggOp::Max && neg_zero(&best) && !neg_zero(v))
+                            || (matches!(v, Val::Int(_)) && matches!(best, Val::Float(_)))
+                    }
+                    // NaN never wins.
+                    None => matches!(best, Val::Float(f) if f.is_nan()),
                 };
                 if better {
                     best = v.clone();

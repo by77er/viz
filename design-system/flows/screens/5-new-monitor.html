@@ -5,48 +5,52 @@
     <div><h1 class="vz-page-title">New monitor</h1><p class="vz-page-sub">From the query you ran in Explore at 15:09. Nothing is saved, and nobody is told, until you press Save monitor.</p></div>
   </header>
   <div class="vz-split">
-    <form class="vz-stack" onsubmit="return false" aria-label="Rule">
+    <div><form class="vz-stack" onsubmit="return false" aria-label="Rule">
       <label class="vz-field"><span class="vz-label">Name</span><input class="vz-input" id="name" value="cart error rate"><span class="vz-help">What the page and the message will be called. No other monitor has this name.</span></label>
       <div class="vz-field"><span class="vz-label">Query</span>
         <div class="vz-query" data-unless="many">sum(rate(http_requests_total{service="cart",status=~"5.."}[5m]))
   / sum(rate(http_requests_total{service="cart"}[5m]))</div>
         <div class="vz-query" data-when="many">sum by (pod) (rate(http_requests_total{service="cart",status=~"5.."}[5m]))
   / sum by (pod) (rate(http_requests_total{service="cart"}[5m]))</div>
-        <p class="vz-help" data-unless="many"><span>Returns 1 series, a ratio. Its value now is 0.0040, which is <span class="vz-qty">0.40%</span>.</span></p>
-        <p class="vz-help" data-error data-when="many"><span class="vz-mark" data-state="warn"></span><span>Returns 36 series, one per pod. The rule fires for each pod separately: up to 36 pages at once. To watch cart as a whole, remove "by (pod)".</span></p>
+        <span class="vz-help" data-unless="many">Returns 1 series, a ratio. Its value now is 0.0040, which is <span class="vz-qty">0.40%</span>.</span>
+        <span class="vz-help" data-error data-when="many"><span class="vz-mark" data-state="warn"></span>Returns 36 series, one per pod. The rule fires for each pod separately: up to 36 pages at once. To watch cart as a whole, remove "by (pod)".</span>
         <div class="vz-controls"><a class="vz-link" href="#">Edit the query in Explore</a></div></div>
-      <div class="vz-controls" style="align-items:flex-start">
+      <div class="vz-controls">
         <label class="vz-field"><span class="vz-label">Fires when the value is</span><select class="vz-select" id="op"><option>above</option><option>below</option></select></label>
-        <label class="vz-field" style="width:calc(var(--overlay-min) / 2)"><span class="vz-label">Threshold</span><input class="vz-input" id="threshold" data-mono value="1%" data-unless="error"><input class="vz-input" id="threshold-bad" data-mono value="1%5" aria-invalid="true" aria-describedby="threshold-help" data-when="error"></label>
-        <label class="vz-field" style="width:calc(var(--overlay-min) / 2)"><span class="vz-label">For at least</span><input class="vz-input" id="for" data-mono value="10 min"></label>
-        <label class="vz-field" style="width:calc(var(--overlay-min) / 2)"><span class="vz-label">Check every</span><input class="vz-input" id="every" data-mono value="1 min"></label>
+        <label class="vz-field"><span class="vz-label">Threshold</span><input class="vz-input" id="threshold" data-mono size="8" value="1%" data-unless="error"><input class="vz-input" id="threshold-bad" data-mono size="8" value="1%5" aria-invalid="true" aria-describedby="threshold-help" data-when="error"></label>
+        <label class="vz-field"><span class="vz-label">For at least</span><input class="vz-input" id="for" data-mono size="8" value="10 min"></label>
+        <label class="vz-field"><span class="vz-label">Check every</span><input class="vz-input" id="every" data-mono size="8" value="1 min"></label>
       </div>
-      <p class="vz-help" data-unless="error">The query returns a ratio: 1% is 0.01. Durations are accepted in any form and shown as "10 min".</p>
-      <p class="vz-help" data-error id="threshold-help" data-when="error"><span class="vz-mark" data-state="critical"></span><span>Threshold "1%5" is not a number. Write a number, with % if you mean a percentage: 1% or 0.01.</span></p>
+      <span class="vz-help" data-unless="error">The query returns a ratio: 1% is 0.01. Durations are accepted in any form and shown as "10 min".</span>
+      <span class="vz-help" data-error id="threshold-help" data-when="error"><span class="vz-mark" data-state="critical"></span>Threshold "1%5" is not a number. Write a number, with % if you mean a percentage: 1% or 0.01.</span>
       <label class="vz-field"><span class="vz-label">If the query returns nothing</span><select class="vz-select" id="nodata"><option>Keep the last state</option><option>Fire</option><option>Resolve</option></select><span class="vz-help">Nothing comes back when cart stops sending, as well as when it has no traffic.</span></label>
-      <div class="vz-field"><span class="vz-label">Notify</span>
-        <div class="vz-controls"><select class="vz-select" id="route" aria-label="Who" style="width:auto"><option>storefront on-call, and #storefront-alerts</option><option>payments on-call, and #payments-alerts</option><option>platform on-call, and #platform-alerts</option><option>data platform, #data-alerts only</option></select>
+      <div class="vz-field"><span class="vz-label" id="notify">Notify</span>
+        <div class="vz-controls"><select class="vz-select" id="route" aria-labelledby="notify"><option>storefront on-call, and #storefront-alerts</option><option>payments on-call, and #payments-alerts</option><option>platform on-call, and #platform-alerts</option><option>data platform, #data-alerts only</option></select>
           <div class="vz-segmented" role="group" aria-label="How"><button type="button" aria-pressed="true">Page and message</button><button type="button" aria-pressed="false">Message only</button></div></div>
-        <p class="vz-help"><span>Lee is storefront on-call until Thu 19 Nov, 09:00. <a class="vz-link" href="12-routes.html">Who is notified</a></span></p></div>
-      <label class="vz-field"><span class="vz-label">Message</span><input class="vz-input" id="message" value="More than 1% of cart requests are failing. Check the last cart deploy and the session cache first." placeholder="What is wrong and what to check first"><span class="vz-help">Sent in the page and the message, under the name and the value.</span></label>
+        <span class="vz-help">Lee is storefront on-call until Thu 19 Nov, 09:00.</span>
+        <div class="vz-controls"><a class="vz-link" href="12-routes.html">Who is notified</a></div></div>
+      <label class="vz-field"><span class="vz-label">Message</span><textarea class="vz-input" id="message" rows="3" placeholder="What is wrong and what to check first">More than 1% of cart requests are failing. Check the last cart deploy and the session cache first.</textarea><span class="vz-help">Sent in the page and the message, under the name and the value.</span></label>
       <label class="vz-field"><span class="vz-label">Runbook link</span><input class="vz-input" id="runbook" data-mono value="https://wiki.acme.example/runbooks/cart-errors"></label>
       <label class="vz-check"><input type="checkbox" checked>Start an agent's investigation when it fires</label>
       <label class="vz-check"><input type="checkbox">Send a test page to storefront on-call when saved</label>
       <div class="vz-controls"><button class="vz-button" data-tone="blue" type="submit">Save monitor</button><button class="vz-button" data-quiet type="button">Cancel</button></div>
-    </form>
+    </form></div>
     <div>
       <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">If this rule had existed</h2><span class="vz-panel-meta"><span data-range>11 Nov 15:16 to 18 Nov 15:16</span><span>· 5 min max</span></span></div>
         <p class="vz-panel-desc" data-unless="many error">It would have fired twice in the last <span class="vz-qty">7 d</span>: on Sat 14 Nov at 05:51 for <span class="vz-qty">5 min</span>, and on Mon 16 Nov at 20:16 for <span class="vz-qty">20 min</span>. The value was above 1% for <span class="vz-qty">15 min</span> and <span class="vz-qty">30 min</span>; both times someone was paged for cart.</p>
         <p class="vz-panel-desc" data-when="error">Shown for the last valid threshold, 1%. Fix the threshold to see it change.</p>
         <p class="vz-panel-desc" data-when="many">36 pods, the 8 highest coloured. Firing per pod, it would have fired 15 times, on 10 of the 36 pods, in the last <span class="vz-qty">7 d</span>.</p>
-        <div class="vz-panel-body"><div class="vz-chart" id="backtest" data-view="new-monitor-backtest" data-size="sm"></div></div></section>
-      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">What it costs to run</h2></div>
+        <div class="vz-panel-body"><div class="vz-chart" id="backtest" data-view="new-monitor-backtest" data-size="sm" style="--legend-rows:1;--legend-notes:0"></div></div></section>
+      <section class="vz-section"><h2 class="vz-section-title">What it costs to run</h2>
         <dl class="vz-kv"><dt>Reads</dt><dd>the last <span class="vz-qty">5 min</span>, from memory, every <span class="vz-qty">1 min</span></dd><dt>Cost class</dt><dd>tail: no object reads</dd><dt>Estimate</dt><dd>under $0.01 a month. An estimate, not a bill.</dd></dl></section>
     </div>
   </div>
 </main>
 <script>
 (function () { const st = flowState(), el = document.getElementById('backtest')
+  // The chart reserves its height from its last result (Chart, "Reserved height"): 36 pods are 8 coloured rows, Other and its action row,
+  // and two note lines (the label every pod shares, and how the colours were chosen).
+  if (st === 'many') { el.style.setProperty('--legend-rows', 10); el.style.setProperty('--legend-notes', 2) }
   const spec = st === 'many' ? flows.backtestByPod() : flows.backtest()
   el.vz = vzChart(el, { ...spec, threshold: { value: 1, label: '1% threshold' } }) })()
 </script>

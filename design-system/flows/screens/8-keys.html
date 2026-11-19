@@ -9,53 +9,56 @@
 
   <div class="vz-stack">
     <p class="vz-table-caption">3 of 3 keys. Never used first, then by last use.</p>
-    <div class="vz-table-wrap"><table class="vz-table" data-fold role="table">
-      <thead><tr role="row"><th role="columnheader" class="vz-label">Name</th><th role="columnheader" class="vz-label" data-priority="1">Last used</th><th role="columnheader" class="vz-label">Can</th><th role="columnheader" class="vz-label">Key</th><th role="columnheader" class="vz-label">Samples written, 24 h</th><th role="columnheader" class="vz-label">Created</th><th role="columnheader" class="vz-label">Actions</th></tr></thead>
+    <div class="vz-table-wrap"><table class="vz-table" data-fold role="table" aria-label="Keys">
+      <thead><tr role="row"><th role="columnheader" class="vz-label">Name</th><th role="columnheader" class="vz-label">Last used</th><th role="columnheader" class="vz-label">Can</th><th role="columnheader" class="vz-label">Key</th><th role="columnheader" class="vz-label">Samples written, 24 h</th><th role="columnheader" class="vz-label">Created</th><th role="columnheader" class="vz-label" data-priority="1"><span class="vz-sr">Actions</span></th></tr></thead>
       <tbody>
-        <tr role="row"><td role="cell" data-key>staging collectors</td><td role="cell" data-priority="1"><span class="vz-status" data-state="warn" data-unless="arrived"><span>Never used</span></span><span class="vz-status" data-state="ok" data-when="arrived"><span>just now</span></span></td><td role="cell" data-label="Can">Write</td><td role="cell" data-label="Key"><span class="vz-qty">viz_9f…c3d1</span></td><td role="cell" data-label="Samples, 24 h"><span data-unless="arrived">none</span><span data-when="arrived" class="vz-qty">2,408</span></td><td role="cell" data-label="Created"><span class="vz-qty">14 min</span> ago, by you</td><td role="cell"><button class="vz-button" data-quiet aria-haspopup="menu">Rename or revoke…</button></td></tr>
-        <tr role="row"><td role="cell" data-key>prod collectors</td><td role="cell" data-priority="1"><span class="vz-status" data-state="ok"><span><span class="vz-qty">4 s</span> ago</span></span></td><td role="cell" data-label="Can">Write</td><td role="cell" data-label="Key"><span class="vz-qty">viz_k7…4f2a</span></td><td role="cell" data-label="Samples, 24 h">5.76 billion</td><td role="cell" data-label="Created">12 Mar, by Sam</td><td role="cell"><button class="vz-button" data-quiet aria-haspopup="menu">Rename or revoke…</button></td></tr>
-        <tr role="row"><td role="cell" data-key>grafana</td><td role="cell" data-priority="1"><span class="vz-status" data-state="ok"><span><span class="vz-qty">1 min</span> ago</span></span></td><td role="cell" data-label="Can">Read</td><td role="cell" data-label="Key"><span class="vz-qty">viz_p2…9c1e</span></td><td role="cell" data-label="Samples, 24 h">reads only</td><td role="cell" data-label="Created">2 Apr, by Dana</td><td role="cell"><span class="flow-pop"><button class="vz-button" data-quiet aria-haspopup="menu" aria-expanded="false" data-go="menu" data-unless="menu">Rename or revoke…</button><button class="vz-button" data-quiet aria-haspopup="menu" aria-expanded="true" data-go="" data-when="menu">Rename or revoke…</button>
-          <div class="vz-menu" role="menu" aria-label="grafana" data-when="menu"><button role="menuitem" tabindex="0" data-autofocus>Rename</button><div role="separator"></div><button role="menuitem" tabindex="-1" data-go="revoke">Revoke key…</button></div></span></td></tr>
+        <tr role="row"><td role="cell" data-key>staging collectors</td><td role="cell"><span class="vz-status" data-state="warn" data-unless="arrived"><span>Never used</span></span><span class="vz-status" data-state="ok" data-when="arrived"><span>just now</span></span></td><td role="cell" data-label="Can">Write</td><td role="cell" data-label="Key"><span class="vz-qty">viz_9f…c3d1</span></td><td role="cell" data-label="Samples, 24 h"><span data-unless="arrived">none</span><span data-when="arrived" class="vz-qty">2,408</span></td><td role="cell" data-label="Created"><span class="vz-qty">14 min</span> ago, by you</td><td role="cell" class="vz-row-actions" data-priority="1"><button class="vz-button" data-quiet data-size="sm" aria-haspopup="menu" aria-label="Actions for staging collectors">Actions…</button></td></tr>
+        <tr role="row"><td role="cell" data-key>prod collectors</td><td role="cell"><span class="vz-status" data-state="ok"><span><span class="vz-qty">4 s</span> ago</span></span></td><td role="cell" data-label="Can">Write</td><td role="cell" data-label="Key"><span class="vz-qty">viz_k7…4f2a</span></td><td role="cell" data-label="Samples, 24 h">5.76 billion</td><td role="cell" data-label="Created">12 Mar, by Sam</td><td role="cell" class="vz-row-actions" data-priority="1"><button class="vz-button" data-quiet data-size="sm" aria-haspopup="menu" aria-label="Actions for prod collectors">Actions…</button></td></tr>
+        <tr role="row"><td role="cell" data-key>grafana</td><td role="cell"><span class="vz-status" data-state="ok"><span><span class="vz-qty">1 min</span> ago</span></span></td><td role="cell" data-label="Can">Read</td><td role="cell" data-label="Key"><span class="vz-qty">viz_p2…9c1e</span></td><td role="cell" data-label="Samples, 24 h">reads only</td><td role="cell" data-label="Created">2 Apr, by Dana</td><td role="cell" class="vz-row-actions" data-priority="1"><span class="vz-menu-anchor"><button class="vz-button" data-quiet data-size="sm" aria-haspopup="menu" aria-expanded="false" aria-controls="grafana-menu" aria-label="Actions for grafana" data-go="menu" data-unless="menu">Actions…</button><button class="vz-button" data-quiet data-size="sm" aria-haspopup="menu" aria-expanded="true" aria-controls="grafana-menu" aria-label="Actions for grafana" data-go="" data-when="menu">Actions…</button>
+          <div class="vz-menu" role="menu" id="grafana-menu" aria-label="grafana" data-align="end" data-open data-when="menu"><button role="menuitem" tabindex="0" data-autofocus>Rename</button><div role="separator"></div><button role="menuitem" tabindex="-1" data-go="revoke">Revoke key…</button></div></span></td></tr>
       </tbody></table></div>
   </div>
 
-  <section class="vz-panel" style="max-width:var(--measure)" data-unless="arrived"><div class="vz-panel-head"><h2 class="vz-panel-title">Waiting for staging collectors</h2><span class="vz-panel-meta"><span>checked <span class="vz-qty">3 s</span> ago</span></span></div>
-    <p class="vz-panel-desc">Nothing has arrived with this key yet. Save the key in /etc/viz/key on the sender, and point its Prometheus at viz:</p>
-    <div class="vz-query">remote_write:
+  <div class="vz-start" data-unless="arrived">
+    <h2 class="vz-section-title">Waiting for staging collectors</h2>
+    <p>Nothing has arrived with this key yet.</p>
+    <ol class="vz-steps">
+      <li><p>Save the key in /etc/viz/key on the sender, and point its Prometheus at viz:</p><div class="vz-query">remote_write:
   - url: https://vis.bitcru.sh/api/v1/write
-    authorization: { credentials_file: /etc/viz/key }</div>
-    <div class="vz-controls"><button class="vz-button" data-size="sm">Copy</button></div>
-    <div class="vz-progress" data-unmeasured><div class="vz-progress-text"><span role="status">No samples received yet. Checked <span class="vz-qty">3 s</span> ago; the first usually arrive within <span class="vz-qty">10 s</span> of the first request.</span></div></div></section>
-  <section class="vz-panel" style="max-width:var(--measure)" data-when="arrived"><div class="vz-panel-head"><h2 class="vz-panel-title">staging collectors is sending</h2><span class="vz-panel-meta"><span>updated just now</span></span></div>
-    <p class="vz-panel-desc">The first samples arrived at 15:16: 2,408 samples in 214 series from 2 senders.</p>
+    authorization: { credentials_file: /etc/viz/key }</div><div class="vz-controls"><button class="vz-button" data-size="sm">Copy</button></div></li>
+      <li><p>Wait for the first sample.</p><div class="vz-progress" data-unmeasured><div class="vz-progress-text"><span role="status">No samples received yet. Checked <span class="vz-qty">3 s</span> ago; the first usually arrive within <span class="vz-qty">10 s</span> of the first request.</span></div></div></li>
+    </ol>
+  </div>
+  <section class="vz-section" data-when="arrived"><h2 class="vz-section-title">staging collectors is sending</h2>
+    <p class="vz-text">The first samples arrived at 15:16: 2,408 samples in 214 series from 2 senders.</p>
     <ul class="vz-links"><li><a class="vz-link" href="#">See them in Explore</a></li></ul></section>
 </main>
 
-<div class="vz-scrim" data-when="new">
+<div class="vz-scrim" data-scrim data-when="new">
   <div class="vz-dialog" role="dialog" aria-modal="true" aria-labelledby="new-t">
     <h2 class="vz-dialog-title" id="new-t">New key</h2>
-    <p class="flow-said">The key is shown once, right after this. Keep it somewhere safe before you close the next window.</p>
-    <label class="vz-field"><span class="vz-label">Name</span><input class="vz-input" value="ingest-eu" data-autofocus><span class="vz-help">Name it after the sender or tool that will hold it.</span></label>
-    <div class="vz-field"><span class="vz-label">Can</span><div class="vz-segmented" role="group" aria-label="Can"><button aria-pressed="true">Write data</button><button aria-pressed="false">Read data</button></div></div>
+    <p class="vz-dialog-text">The key is shown once, right after this. Keep it somewhere safe before you close the next window.</p>
+    <label class="vz-field"><span class="vz-label">Name</span><input class="vz-input" id="key-name" value="ingest-eu" data-autofocus><span class="vz-help">Name it after the sender or tool that will hold it.</span></label>
+    <div class="vz-field"><span class="vz-label" id="can">Can</span><div class="vz-segmented" role="group" aria-labelledby="can"><button aria-pressed="true">Write data</button><button aria-pressed="false">Read data</button></div></div>
     <div class="vz-dialog-actions"><button class="vz-button" data-quiet data-go="">Cancel</button><button class="vz-button" data-tone="blue" data-go="secret">Create key</button></div>
   </div></div>
 
-<div class="vz-scrim" data-when="secret saved error">
+<div class="vz-scrim" data-scrim data-when="secret saved error">
   <div class="vz-dialog" role="dialog" aria-modal="true" aria-labelledby="sec-t" data-secret="viz_k7Qm2xVbT9cLr8Hn3pWe8d1b">
     <h2 class="vz-dialog-title" id="sec-t">Save the key for "ingest-eu"</h2>
     <div class="vz-secret">
       <div class="vz-secret-row"><output class="vz-query vz-secret-value" aria-label="Write key"></output><button class="vz-button" data-size="sm" data-act="reveal">Reveal</button><button class="vz-button" data-size="sm" data-act="copy">Copy key</button></div>
       <div class="vz-notice" role="alert" data-when="error"><span class="vz-mark" data-state="critical"></span><p>Could not copy: this browser did not allow it. Select the key and copy it by hand.</p><div class="vz-controls"><button class="vz-button" data-size="sm" data-act="reveal-select">Reveal and select it</button><button class="vz-button" data-size="sm" data-quiet>Dismiss</button></div></div>
-      <p class="vz-help" data-error><span class="vz-mark" data-state="warn"></span><span>This is the only time the key is shown. viz keeps a hash of it and cannot show it again.</span></p>
+      <p class="vz-help" data-error><span class="vz-mark" data-state="warn"></span>This is the only time the key is shown. viz keeps a hash of it and cannot show it again.</p>
       <label class="vz-check"><input type="checkbox" data-act="saved">I have saved the key</label>
     </div>
     <div class="vz-dialog-actions"><button class="vz-button" data-quiet data-act="discard" data-go="">Discard this key</button><button class="vz-button" data-tone="blue" data-act="done" data-go="" disabled>Done</button></div>
   </div></div>
 
-<div class="vz-scrim" data-when="revoke">
+<div class="vz-scrim" data-scrim data-when="revoke">
   <div class="vz-dialog" role="dialog" aria-modal="true" aria-labelledby="rev-t">
     <h2 class="vz-dialog-title" id="rev-t">Revoke the key "grafana"?</h2>
-    <p class="flow-said">Grafana stops being able to read acme-prod at once, and its dashboards show errors. This cannot be undone; a new key can be made.</p>
+    <p class="vz-dialog-text">Grafana stops being able to read acme-prod at once, and its dashboards show errors. This cannot be undone; a new key can be made.</p>
     <div class="vz-dialog-actions"><button class="vz-button" data-quiet data-go="" data-autofocus>Cancel</button><button class="vz-button" data-tone="red" data-go="">Revoke key</button></div>
   </div></div>
 <script>

@@ -11,10 +11,7 @@
    "name": "400",
    "width": 400,
    "coarse": true,
-   "measure": true,
-   "themes": [
-    "light"
-   ]
+   "measure": true
   },
   {
    "name": "grey",
@@ -38,16 +35,6 @@
    ]
   },
   {
-   "name": "400",
-   "url": "flows/dist/4-monitor.html#",
-   "width": 400,
-   "coarse": true,
-   "measure": true,
-   "themes": [
-    "dark"
-   ]
-  },
-  {
    "name": "400-hit-areas",
    "url": "flows/dist/4-monitor.html#",
    "width": 400,
@@ -65,8 +52,10 @@
    "coarse": true,
    "measure": true,
    "themes": [
-    "light"
-   ]
+    "light",
+    "dark"
+   ],
+   "height": 800
   },
   {
    "name": "ack-400",
@@ -114,6 +103,15 @@
    "url": "flows/dist/4-monitor.html#nodata",
    "width": 400,
    "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "silence-menu-1440",
+   "url": "flows/dist/4-monitor.html#silence-menu",
+   "scale": 1,
    "measure": true,
    "themes": [
     "light"

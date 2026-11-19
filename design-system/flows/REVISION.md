@@ -1,4 +1,64 @@
-# Flow screens, revision 2: what changed and why
+# Flow screens: revisions
+
+Newest first. Each revision says what changed, why, how it was checked, and what it did not do. Only
+`design-system/flows/` was edited in each; nothing here claims a review verdict.
+
+## v5: the screens moved onto design system v5
+
+Input: design system v5 (`reviews/system-v5/response.md`, not yet reviewed), which answered the
+v4 review (`reviews/system-v4/review.md`) and the 16 system gaps listed under revision 2 below. The
+screens of revision 2 depended on v4 behaviour v5 changed (a chart's height on touch, series told
+apart by hue alone, links inside sentences) and drew their own waterfall and log lines. This
+revision moves every screen onto v5's components and tokens, removes every work-around v5 made
+unnecessary, and keeps the content, the clock (Wed 18 Nov 2026, 15:16) and the incident. The
+system itself (`src/`, `project/`, `tools/`, `dist/`), `reviews/` and `app/` were not edited.
+
+### How it was done
+
+1. Read v5's rules, rubric, method, tokens, response and the Chart, Waterfall, Log, Section,
+   Button, Menu, Timeline, Table, Field, Claim and Notice components; listed every place in the
+   screens that used a v4 class, a `flow-*` work-around or an inline style.
+2. Rewrote the screens against v5 (below), one at a time, rendering each at 1440 and at 400 px with
+   a coarse pointer after each change and fixing what the images and the measure showed (round 1:
+   eight findings, listed under "Found while imaging").
+3. Re-imaged every screen and state with `tools/shots.mjs` (`node build.mjs --shots`): 1440 and 400
+   in both themes, the same data and states as the v4 images. The v4 "before" images were rendered
+   in the same session by the same `shots.mjs`, from the v4 screens on v4's own CSS and chart (a
+   copy of v4's `dist/` as reviewed, checksum-identical in four independent copies, kept in the
+   session's scratch area; a v4 image re-rendered this way matched the stored v4 image to within
+   palette encoding: 174 of 1.3 million pixels differ by more than 30 of 765). Pairs are in
+   `compare-v5/`.
+4. Measured touch targets, overflow and layout shift (below), and ran `tools/check.mjs` on the flows.
+
+### What changed, by screen group
+
+| Screens | v4 | v5 |
+|---|---|---|
+| All | `build.mjs` carried 12 lines of work-around CSS (`flow-pop`, `flow-menu-note`, `flow-indent`, `flow-bar`, `flow-scale`, `flow-wrap`, `flow-said`, the skip link's position); a nav spacer and the tenant's colour as inline styles; page state lines as a mark in an inline-styled span with a non-breaking space | `build.mjs` adds only state switching (`body` margin, `[hidden]`). The nav's right group starts with `vz-nav-end`. State lines are one run of text, the mark first, times as `<time class="vz-qty">` scaled to the heading. Help lines are one run (no wrapper spans). Paragraphs are `vz-text` / `vz-secondary` / `vz-dialog-text`. Regions that hold no chart or table (History, Rule, Related, About this report, Checks, the page and message on 11, Sent, If nobody acknowledges, What it costs to run) are `vz-section`s, not panels, as Section and Panel now say. The middle dot appears only in panel meta and legend names |
+| 2, 4, 5, 6, 7, 9, 10 (charts) | Charts reserved no height before data (on a phone the page shifted when data landed); hue told series apart where direct labels were missing | Every chart sets `--legend-rows` and `--legend-notes` from its last result (3 and 1 for routes and dependencies, 2 and 0 for p99/p50, 1 and 0 for one series, 10 and 2 for 36 pods), so it reserves its drawn height on every pointer; measured below. v5's palette (lightness stagger, slots 5 to 8 dashed), legend emphasis and the nearest-series readout come with the chart. The agent's marker is a v5 agent marker (`agent: true`: "Agent:" and the agent's rule, G15). The log rate's unit is written in full, "lines/min" (G8). The products error figure reads "< 0.1" in the Routes table, as v5's legend now prints it, so table and legend agree |
+| 4 Monitor, 11 Notifications | Acknowledge and Silence replaced by loose text and a button; Silence menu anchored by a work-around; notice outside the header; agent banner with its own mark; links inside timeline sentences already moved, but escalation and sent lines used the no-state dash | Acknowledge and Silence are replaced in place by `vz-done` ("Acknowledged by you at 15:16" with Undo; "Silenced until 16:16 by you" with End silence). The Silence menu is `vz-menu-anchor` with `vz-menu-note` and the yellow confirm inside it; with a coarse pointer below 640 px it is a sheet at the foot of the screen. The failed acknowledgement is a Notice in a `vz-notice-group` under the controls that started it. The agent banner has no mark of its own; the agent's history line has the agent mark and "Read the report" standing under it. Escalations and notifications sent take the info bar (G16). On 11, the in-sentence link to the monitor is replaced by a standalone "Open the monitor to acknowledge it" in the head |
+| 9 Traces | A folding table with hand-made bars (`flow-bar`, `flow-indent`, `flow-scale`); the chosen trace in the list had no mark | **Waterfall**: a treegrid with Took, Own and Starts at, bars as `--at`/`--len` fractions, the two payments-db spans in `ink` with strong names because their own time is a tenth of the trace or more (the root's own time is 26 ms), a collapse toggle on the root, one tab stop with arrow keys, and the chosen span's detail under the table with "Logs from this span" (the flow's main path, standalone). The trace is the screen's own 8 spans; own times are computed in `fixture.js` (`--facts`). The chosen trace in Slowest traces is drawn (`aria-current`: `rule` fill, `ink` edge; G13). Folded cells are `vz-num` with labels again (G7) |
+| 10 Logs | A folding table with `flow-wrap`; "Show 214 newer lines" as a button row above the table | **Log**: time with milliseconds as the key, the message wrapping in mono and cut after four lines if longer, the level stated once in the caption because the search names one level ("all at error"), the strip `vz-log-tail` holding the count, "Paused while you read" and "Show 214 newer lines"; the meta says "paused at 15:16:02" |
+| 6 Investigation, 7 Proposed change | Provenance parts separated by " · "; sub-lines held links to the monitor and the investigation; `flow-said` paragraphs; Apply replaced by Restore and a link; notices outside their controls | Provenance parts are spaced, no separator. No link inside a sentence on 6; 7's link to the investigation is a standalone "Read the investigation" in the head. Apply is replaced in place by `vz-done` ("Applied as revision 15", Restore revision 14). Notices sit under the control that started the action. Diff rows say "Changes and Goroutines", not "Changes · Goroutines" |
+| 1 Dashboards, 3 Monitors, 8 Keys, 12 Who is notified | Search and threshold fields sized by inline styles; Keys' waiting panel narrowed by an inline style; row actions "Rename or revoke…"; first-run "New key" a button; at 400 px a status in a kept column was cut ("Above 500", "Orders faili", "Never usec"), in v4 as well | No inline style: the search has a visible label ("Search by name, service or owner"; Field: the label is always visible) and sits with the Whose choice in the list's own controls, both fields sized by the input's `size` attribute. Monitors folds below 1200 px (`data-fold="wide"`) with thresholds as `vz-phrase` pairs. Keys' row menu is "Actions…" in `td.vz-row-actions`, a menu anchored at its end; the waiting block is a FirstRun block (`vz-start`, measure wide); dialogs use `vz-dialog-text`. First-run "New key" is a link drawn as a button (G12). The status columns that were cut fold into the first place under the key; Keys' and Silences' actions are the kept column, so they sit on the key line |
+| 5 New monitor | Message a one-line input; inline field widths; "Who is notified" inside a help sentence | Message is a `textarea.vz-input` (G10); fields sized by `size`; the help line is plain text and "Who is notified" is a standalone link under it; the form is one `vz-stack` in its own column (a `vz-split` column is a column of sections and would space fields `space-8` apart) |
+
+### Found while imaging, and fixed
+
+| Seen | Cause | Fix |
+|---|---|---|
+| "They add up to1,284 req/sand1.69%errors" (Routes caption) | v5's `vz-table-caption` is a flex row, so the spaces around a `vz-qty` collapse | The caption's words in one span (system gap G17) |
+| Fields in New monitor 32 px apart, help lines 13 px further | The form was itself a `vz-split` column (gap `space-8`); `p.vz-help` keeps the browser's paragraph margins | Form wrapped in its own column; `span.vz-help`, as the Field preview uses (G18) |
+| "Above 500", "Orders faili", "Never usec" at 400 px (also in v4's images) | A status does not wrap, and a kept column is `keep` (26%) wide | State and Last used fold first under the key (G19) |
+| "Actions…" cut at the right edge at 400 px | `td.vz-row-actions { width: 0 }` in the folded form | The actions cell is the kept column (G20) |
+| A folded line indented by 24 px | The gutter after a right-aligned column applies in the folded form too | Right-aligned columns placed last, or the state column before the figures (G21) |
+| "End silence" with a 43.8 px touch area | A small button on a folded row's last line: the table wrap clips its 44 px area | On the key line, as the kept column |
+| Keys at 400 px measured 0 hit areas (v4's Keys measures 0 with v5's tool too) | `shots.mjs` takes the first `.vz-scrim` in the page for the open dialog, even a hidden one, and measures only inside it | A dialog's scrim class is set only while it is shown (`data-scrim`; G24) |
+| The row menu at 400 px drawn at the foot of a 1,900 px page | A menu is a sheet across the bottom of the screen with a coarse pointer; a page-tall capture puts the screen's bottom at the page's | Menu states at 400 px imaged at a phone's height, 800 px |
+
+MEASUREMENTS-V5
+
+## Revision 2, on v4: what changed and why
 
 Input: `reviews/flows-v1/review.md` (reject: 6 blockers, 11 majors, 12 ranked missing flows),
 answered on design system v4 as it stood on 18 Nov 2026 (`reviews/system-v4/CHANGES.md`, its
@@ -9,7 +69,7 @@ Images are in `shots/` (100, `<screen>-<state>-<theme>.png`, palette-encoded wit
 colour exact), before/after pairs of the eight v1 screens in `compare/` (24), measurements in
 `measurements.txt`. The one incident and its figures are in `REVIEW-INPUT.md`.
 
-## How it was done
+### How it was done
 
 1. Fixed one clock (Wed 18 Nov 2026, 15:16, the reference chart's own "now") and one incident,
    wrote the chart data as a seeded fixture with every stated figure pinned (`fixture.js`), and
@@ -40,7 +100,7 @@ overlapped**; smallest text 11 px (`micro`, chart axes); no sans text in tabular
 `node tools/check.mjs flows/screens`: contrast 240/240 pairings pass, **literal values 0** in 12
 files (0 in 14 with `build.mjs` and `fixture.js`).
 
-## Blockers
+### Blockers
 
 | Finding | What changed | Images |
 |---|---|---|
@@ -51,7 +111,7 @@ files (0 in 14 with `build.mjs` and `fixture.js`).
 | **B5** Series below 3:1 or unreadable without colour | v4's re-stepped palette; direct labels at each line's end on every chart 640 px or wider; one route keeps one colour on both dashboard charts (ranked the same). In greyscale the lines are told apart by their labels and positions | `2-dashboard-grey-light`, `4-monitor-grey-light`, `6-investigation-grey-light` |
 | **B6** No focus, error, loading, empty or partial state | Every screen has a focus image and an error image; plus: Monitor acknowledged, silenced, Silence menu, acknowledge failed, query failing, no data; New monitor invalid threshold and 36 series; Dashboards with no dashboards (no data) and no match; Investigation running and failed; Keys new key, shown once, saved, copy failed, revoke, first data; Dashboard panel not updating and waiting on a longer range; an empty panel | `*-focus-light`, `*-error-*`, and the state list in `README.md` |
 
-## Majors
+### Majors
 
 | Finding | What changed | Images |
 |---|---|---|
@@ -74,7 +134,7 @@ edge (and only appears inside the menu); Settings is current on Keys; the tenant
 link; the one-option select is now text in the sub-line; minutes are "min" everywhere. Not
 re-checked: the 2 px baseline of a status with no state in a table row.
 
-## Missing flows from the review's ranked list
+### Missing flows from the review's ranked list
 
 | # | Missing flow | Now |
 |---|---|---|
@@ -89,7 +149,7 @@ re-checked: the 2 px baseline of a status with no state in a table row.
 "Respond to an alert" is now flow 1 in `README.md`, and Monitor is designed phone first: its
 400 px images were the ones judged first in each round.
 
-## System gaps found
+### System gaps found
 
 Each is worked around inside `flows/` with the nearest existing component; nothing in the system
 was edited. Classes named `flow-*` are the work-arounds.
@@ -113,7 +173,7 @@ was edited. Classes named `flow-*` are the work-arounds.
 | G15 | Chart marker words cannot carry the agent's left rule | The agent's "slow since 12:58" on a chart | The word starts "Agent:" |
 | G16 | No mark for "a notification was sent" or "escalated" in the Timeline vocabulary | Escalation rows | The no-state dash |
 
-## Depending on v4 behaviour its review rejected
+### Depending on v4 behaviour its review rejected
 
 The v4 review (`reviews/system-v4/review.md`, reject) arrived while this revision was being
 finished; the system is being revised to v5. Re-image these on v5:
@@ -135,7 +195,7 @@ finished; the system is being revised to v5. Re-image these on v5:
   page sub-lines of 6, 7 and 11 (back to the monitor or the investigation); 6 and 11 also have the
   same link standalone, 7 does not.
 
-## Still not designed
+### Still not designed
 
 - **Explore**, and what arrives there from "Open the query in Explore", "Edit the query in
   Explore" and "Edit the search in Explore"; the "Make a monitor" entry from a panel.

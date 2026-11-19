@@ -25,6 +25,11 @@ const MUTANTS = [
   ['control health probes the OpenAPI document again', "  control: '/healthz',", "  control: '/api/v1/control/openapi.json',"],
   ['bootstrap answers a schema_too_new refusal with 500', '    if (/^schema_too_new/.test(message)) {', '    if (false) {'],
   ['a throwing backend crashes the gateway', 'res = await env[BINDING[backend]].fetch(req)\n  } catch (e) {', 'res = await env[BINDING[backend]].fetch(req)\n  } catch (e) {\n    throw e'],
+  ['monitors prefix matches /api/v1/monitorsx', 'path.startsWith(`${MONITORS_ROOT}/`)', 'path.startsWith(MONITORS_ROOT)'],
+  ['/mcp matched as a prefix (/mcpx, /mcp/x reach the agent surface)', 'if (path === MCP_PATH || path === AGENT_ROOT', 'if (path.startsWith(MCP_PATH) || path === AGENT_ROOT'],
+  ['agent prefix matches /api/v1/agents', 'path.startsWith(`${AGENT_ROOT}/`)', 'path.startsWith(AGENT_ROOT)'],
+  ['the ruler is left out of /healthz', "const names: Backend[] = ['ingest', 'query', 'control', 'ruler', 'mcp']", "const names: Backend[] = ['ingest', 'query', 'control', 'mcp']"],
+  ['the ruler\'s paths go to the query service (both speak the Prometheus API)', "  if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'ruler'", "  if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'query'"],
 ]
 
 // It edits gateway/src/index.ts in place: run it in a copy outside any git work tree
@@ -49,7 +54,7 @@ try {
     const dir = mkdtempSync(join(tmpdir(), 'viz-mutant-'))
     const out = join(dir, 'report.json')
     try {
-      execFileSync('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${out}`], { cwd: DEPLOY_DIR, stdio: 'ignore', timeout: 600_000 })
+      execFileSync('npx', ['vitest', 'run', '--maxWorkers=2', '--reporter=json', `--outputFile=${out}`], { cwd: DEPLOY_DIR, stdio: 'ignore', timeout: 600_000 })
     } catch {
       // Only a test that ran and failed kills a mutant. A suite that crashed, hung or wrote no
       // report gave no result: reported as such and counted as not killed (rerun it).

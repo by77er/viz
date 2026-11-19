@@ -3,13 +3,14 @@
 <main class="vz-page" id="main">
   <header class="vz-page-head">
     <div><h1 class="vz-page-title">Proposed change to checkout-api</h1>
-      <p class="vz-page-state" data-unless="applied"><span><span class="vz-mark" style="vertical-align:middle"></span>&nbsp; Not applied. Proposed by an agent at 13:16</span></p>
-      <p class="vz-page-state" data-when="applied"><span><span class="vz-mark" data-state="ack" style="vertical-align:middle"></span>&nbsp; Applied by you at 15:16, as revision 15</span></p>
-      <p class="vz-page-sub">Written by an agent after its <a class="vz-link" href="6-investigation.html">investigation into slow checkout</a>, finished at 13:09. <span data-unless="applied">The dashboard is at revision 14; nothing has been changed yet.</span><span data-when="applied">2 of the 3 changes were applied; the Goroutines panel was kept.</span></p></div>
+      <p class="vz-page-state" data-unless="applied"><span class="vz-mark"></span>Not applied. Proposed by an agent at <time class="vz-qty" datetime="2026-11-18T13:16">13:16</time></p>
+      <p class="vz-page-state" data-when="applied"><span class="vz-mark" data-state="ack"></span>Applied by you at <time class="vz-qty" datetime="2026-11-18T15:16">15:16</time>, as revision 15</p>
+      <p class="vz-page-sub">Written by an agent after its investigation into slow checkout, finished at 13:09. <span data-unless="applied">The dashboard is at revision 14; nothing has been changed yet.</span><span data-when="applied">2 of the 3 changes were applied; the Goroutines panel was kept.</span></p></div>
+    <div class="vz-controls"><a class="vz-link" href="6-investigation.html">Read the investigation</a></div>
   </header>
 
   <article class="vz-claim">
-    <p class="vz-claim-by">Agent's proposal · 3 changes, each taken or left on its own · <span class="vz-status" data-unless="applied">Not reviewed</span><span class="vz-status" data-state="ack" data-when="applied">Reviewed by you at 15:16</span></p>
+    <p class="vz-claim-by"><span>Agent's proposal, 3 changes, each taken or left on its own</span><span class="vz-status" data-unless="applied">Not reviewed</span><span class="vz-status" data-state="ack" data-when="applied">Reviewed by you at 15:16</span></p>
     <ul class="vz-changes">
       <li class="vz-change">
         <label class="vz-check" data-unless="applied"><input type="checkbox" checked id="change-1"><span><span class="vz-change-sign" aria-hidden="true">+</span> Add panel "Dependency latency, p99"</span></label>
@@ -20,7 +21,7 @@
           <div><span class="vz-label">After</span><span>Row 3: <ins>Dependency latency, p99</ins>, full width, above Routes</span>
             <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Dependency latency, p99</h2><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· today's data</span></span></div>
               <p class="vz-panel-desc">Time checkout-api waits on each thing it calls. A rise here before a rise in checkout's latency points at the dependency.</p>
-              <div class="vz-panel-body"><div class="vz-chart" id="newpanel" data-view="proposal-deps" data-size="sm"></div></div></section></div>
+              <div class="vz-panel-body"><div class="vz-chart" id="newpanel" data-view="proposal-deps" data-size="sm" style="--legend-rows:3;--legend-notes:1"></div></div></section></div>
         </div>
       </li>
       <li class="vz-change">
@@ -37,15 +38,16 @@
         <span class="vz-status" data-when="applied"><span><span class="vz-change-sign" aria-hidden="true">−</span> Remove panel "Goroutines": not applied, the panel was kept</span></span>
         <p class="vz-change-why">Why: nobody has opened it in 90 days, and it has returned no data since the runtime upgrade on 2 Nov.</p>
         <div class="vz-diff">
-          <div><span class="vz-label">Before</span><span>Row 4: Changes · Goroutines, no data since 2 Nov</span></div>
-          <div><span class="vz-label">After</span><span>Row 4: Changes · <del>Goroutines</del></span></div>
+          <div><span class="vz-label">Before</span><span>Row 4: Changes and Goroutines, no data since 2 Nov</span></div>
+          <div><span class="vz-label">After</span><span>Row 4: Changes and <del>Goroutines</del></span></div>
         </div>
-        <p class="vz-help" data-error><span class="vz-mark" data-state="warn"></span><span>The runbook <a class="vz-link" href="#">Checkout latency</a> links to this panel, in step 3. Not selected: tick it to remove the panel anyway.</span></p>
+        <p class="vz-help" data-error><span class="vz-mark" data-state="warn"></span>The runbook <a class="vz-link" href="#">Checkout latency</a> links to this panel, in step 3. Not selected: tick it to remove the panel anyway.</p>
       </li>
     </ul>
   </article>
 
-  <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Checks</h2><span class="vz-panel-meta"><span>run at 13:16 against revision 14</span></span></div>
+  <section class="vz-section"><h2 class="vz-section-title">Checks</h2>
+    <p class="vz-secondary">Run at 13:16 against revision 14.</p>
     <div class="vz-stack">
       <span class="vz-status" data-state="ok">The new panel's query runs and returns 3 series</span>
       <span class="vz-status" data-state="ok">The dashboard is valid with any of the 3 changes</span>
@@ -54,12 +56,14 @@
       <div class="vz-field"><span class="vz-label">Query for the new panel</span><div class="vz-query">histogram_quantile(0.99, sum by (le, dependency) (rate(db_client_duration_seconds_bucket{service="checkout-api"}[5m])))</div></div>
     </div></section>
 
-  <div class="vz-stack" data-unless="applied">
-    <div class="vz-controls"><button class="vz-button" data-tone="blue" data-go="applied">Apply 2 changes</button><button class="vz-button">Decline the proposal</button></div>
-    <p class="flow-said">Applying creates revision 15; you can restore revision 14 at any time. Declining tells the agent the proposal was declined and changes nothing.</p>
-    <div class="vz-notice" role="alert" data-when="failed"><span class="vz-mark" data-state="critical"></span><p>Could not apply at 15:16: the server did not answer. Nothing was changed; revision 14 is still current.</p><div class="vz-controls"><button class="vz-button" data-size="sm" data-go="applied">Try again</button><button class="vz-button" data-size="sm" data-quiet data-go="">Dismiss</button></div></div>
+  <div class="vz-stack">
+    <div class="vz-notice-group">
+      <div class="vz-controls" data-unless="applied"><button class="vz-button" data-tone="blue" data-go="applied">Apply 2 changes</button><button class="vz-button">Decline the proposal</button></div>
+      <div class="vz-controls" data-when="applied"><span class="vz-done"><span class="vz-status" data-state="ack">Applied as revision 15</span><button class="vz-button" data-size="sm" data-go="" data-autofocus>Restore revision 14</button></span><a class="vz-link" href="2-dashboard.html">Open the dashboard</a></div>
+      <div class="vz-notice" role="alert" data-when="failed"><span class="vz-mark" data-state="critical"></span><p>Could not apply at 15:16: the server did not answer. Nothing was changed; revision 14 is still current.</p><div class="vz-controls"><button class="vz-button" data-size="sm" data-go="applied">Try again</button><button class="vz-button" data-size="sm" data-quiet data-go="">Dismiss</button></div></div>
+    </div>
+    <p class="vz-secondary" data-unless="applied">Applying creates revision 15; you can restore revision 14 at any time. Declining tells the agent the proposal was declined and changes nothing.</p>
   </div>
-  <div class="vz-controls" data-when="applied"><button class="vz-button" data-go="">Restore revision 14</button><a class="vz-link" href="2-dashboard.html">Open the dashboard</a></div>
 </main>
 <script>
 (function () { const el = document.getElementById('newpanel'); el.vz = vzChart(el, { ...flows.deps(), markers: [flows.markers.deploy] }) })()

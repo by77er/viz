@@ -94,7 +94,7 @@ def compare_search(viz, tem, echo):
         a, b = vt[tid], tt[tid]
         for f in ("root", "start", "dur", "stats"):
             if a[f] != b[f]:
-                kinds.append(("meta_" + f, (a[f], b[f])))
+                kinds.append(("meta_" + f, (tid, a[f], b[f])))
         ka = Counter((set_key(s), s["matched"]) for s in a["sets"])
         kb = Counter((set_key(s), s["matched"]) for s in b["sets"])
         if ka != kb:
@@ -205,7 +205,18 @@ def index_datasets(datasets):
                 roots[t] += 1
             events[sp["span_id"]] = len(sp["events"])
             links[sp["span_id"]] = len(sp["links"])
-        DATA[i] = {"roots": roots, "events": events, "links": links, "spans_of": spans_of}
+        parent = {sp["span_id"]: sp["parent_span_id"] for sp in ds["spans"]}
+        connected = {}
+        for sid in parent:
+            cur, steps, ok = sid, 0, True
+            while parent.get(cur):
+                if parent[cur] not in parent or steps > len(parent):
+                    ok = False
+                    break
+                cur, steps = parent[cur], steps + 1
+            connected[sid] = ok
+        trace_of = {sp["span_id"]: sp["trace_id"].lstrip("0") for sp in ds["spans"]}
+        DATA[i] = {"roots": roots, "events": events, "links": links, "spans_of": spans_of, "connected": connected, "trace_of": trace_of}
 
 
 def differing(viz, tem):
@@ -353,6 +364,145 @@ def _echo_event(case, kinds, viz, tem):
     return all(k == "echo_value" and d[0] in keys for k, d in kinds)
 
 
+@rule("tempo_metrics_intrinsic_arithmetic")
+def _metrics_arith(case, kinds, viz, tem):
+    # In metrics queries Tempo ignores a filter condition that does arithmetic on the
+    # duration intrinsic: `{ duration * 1 > 200ms } | count_over_time()` counted all 212
+    # spans of a data set where `{ duration > 200ms }` counted 98 (and viz, and an
+    # independent count in Python, 98). Search queries are not affected.
+    return case["kind"] != "search" and re.search(r"(?<![\w.])(span:)?duration\s*[-+*/%^]", case["query"]) is not None
+
+
+@rule("tempo_sum_missing_value")
+def _sum_missing(case, kinds, viz, tem):
+    # Tempo's sum_over_time treats a span that lacks the attribute as NaN and restarts the
+    # sum after it: buckets [7, missing, 1] give 1 and [3, missing] give no sample, while
+    # avg/min/max_over_time skip the missing value (probe in README). viz sums the values
+    # that exist. Only queries with sum_over_time.
+    return case["kind"] != "search" and "sum_over_time" in case["query"]
+
+
+@rule("tempo_negation_pushdown_metrics")
+def _neg_m(case, kinds, viz, tem):
+    # As tempo_negation_pushdown, in a metrics query: Tempo's series are a subset of viz's.
+    if case["kind"] == "search" or not has_negation(case["query"]):
+        return False
+    a, b = norm_metrics(viz), norm_metrics(tem)
+    return all(lab in a and set(b[lab]) <= set(a[lab]) for lab in b)
+
+
+@rule("unrooted_structure_metrics")
+def _unrooted_m(case, kinds, viz, tem):
+    # As unrooted_structure, for metrics queries with structural operators over data sets
+    # with unconnected spans or several roots in a trace (the per-span check is not
+    # possible from metrics output).
+    if case["kind"] == "search" or not any(op in re.sub(r'"[^"]*"', "", case["query"]) for op in STRUCT_OPS):
+        return False
+    d = DATA[case["dataset"]]
+    return any(not c for c in d["connected"].values()) or any(n > 1 for n in d["roots"].values())
+
+
+@rule("tempo_zero_span_ids")
+def _zero_ids(case, kinds, viz, tem):
+    # Tempo returned spans whose spanID is all zeros (no generated span has that id): it
+    # loses span ids when `span:id` appears in a disjunction.
+    return case["kind"] == "search" and any(s["spanID"] == "0" * 16 for t in tem.get("traces") or [] for ss in t.get("spanSets") or [] for s in ss.get("spans") or [])
+
+
+@rule("tempo_avg_negative_int")
+def _avg_neg(case, kinds, viz, tem):
+    # Tempo's spanset avg() over integers reads negative values as unsigned 64-bit: over
+    # n = {-1000000, ...} it reported 2.635e18 where the mean is -285613, and
+    # (2^64·k + sum)/count reproduces its values. The query must average an int key.
+    return re.search(r"\bavg\((?:\.|span\.)(n|retries|http\.status_code)\)", case["query"]) is not None
+
+
+@rule("infinite_average")
+def _inf_avg(case, kinds, viz, tem):
+    # A bucket holding ±Inf: viz's exact sum gives ±Inf for avg_over_time; Tempo's running
+    # mean turns it into NaN (Inf - Inf) and drops the sample. Every differing viz value
+    # must be infinite.
+    if case["kind"] == "search" or "avg_over_time" not in case["query"]:
+        return False
+    a, b = norm_metrics(viz), norm_metrics(tem)
+    for lab in set(a) | set(b):
+        va, vb = a.get(lab, {}), b.get(lab, {})
+        for t in set(va) | set(vb):
+            x, y = va.get(t), vb.get(t)
+            if x == y or (x is not None and y is not None and fclose(x, y)):
+                continue
+            if x is None or not math.isinf(x):
+                return False
+    return True
+
+
+@rule("event_link_values_metrics")
+def _events_m(case, kinds, viz, tem):
+    # As event_link_values, in a metrics query whose filters combine event or link fields
+    # with `||`, arithmetic or negation.
+    ev, lk = scoped_event_or_link(case["query"])
+    return case["kind"] != "search" and (ev or lk) and re.search(r"\|\||!\(|[-+*/%]", case["query"]) is not None
+
+
+@rule("tempo_meta_missing")
+def _meta_missing(case, kinds, viz, tem):
+    # Tempo leaves trace metadata out of some results (rootTraceName empty, durationMs 0
+    # after `coalesce()` or with trace-level conditions); viz always fills it from the
+    # trace summary. Every difference must be a metadata field that Tempo left empty.
+    def empty(k, d):
+        if k == "meta_dur":
+            return d[2] == 0
+        if k == "meta_root":
+            return d[2][1] == "" and d[1][1] != ""
+        return False
+    return bool(kinds) and all(empty(k, d) for k, d in kinds)
+
+
+@rule("ambiguous_root_metrics")
+def _root_metrics(case, kinds, viz, tem):
+    # As ambiguous_root, for metrics queries that read a root field over a data set with
+    # traces that have several root spans.
+    d = DATA[case["dataset"]]
+    return case["kind"] != "search" and any(f in case["query"] for f in ROOT_FIELDS) and any(n > 1 for n in d["roots"].values())
+
+
+@rule("tempo_union_structural_metrics")
+def _union_m(case, kinds, viz, tem):
+    return case["kind"] != "search" and any(op in case["query"] for op in UNION_OPS)
+
+
+STRUCT_OPS = (">>", "<<", ">", "<", "~")
+
+
+@rule("unrooted_structure")
+def _unrooted(case, kinds, viz, tem):
+    # Structural operators over spans that are not connected to a root span (their parent,
+    # or an ancestor's parent, is missing from the trace) or over traces with several root
+    # spans. Tempo numbers such spans inconsistently (it kept some orphans and dropped
+    # others in negated operators); viz leaves unconnected spans out of every structural
+    # operator (contracts/TRACES.md). Every differing span must be unconnected or in a
+    # trace with more than one root.
+    if case["kind"] != "search" or not any(op in re.sub(r'"[^"]*"', "", case["query"]) for op in STRUCT_OPS):
+        return False
+    d = DATA[case["dataset"]]
+    traces, spans = differing(viz, tem)
+    if not traces:
+        return False
+    odd = {d["trace_of"][x] for x, ok in d["connected"].items() if not ok} | {t for t, n in d["roots"].items() if n > 1}
+    return all(t in odd for t in traces)
+
+
+def kind_explained(case, k, detail):
+    """Differences explained one at a time (a case may mix several)."""
+    d = DATA[case["dataset"]]
+    if k == "meta_root":
+        return "ambiguous_root" if d["roots"][detail[0]] > 1 else None
+    if k == "echo_value":
+        keys = set(EVENT_KEY.findall(case["query"])) | {"event:name", "event:timeSinceStart", "link:spanID", "link:traceID"}
+        return "echo_event_choice" if detail[0] in keys else None
+    return None
+
+
 def classify(case, kinds, viz, tem):
     for name, f in RULES:
         try:
@@ -360,6 +510,23 @@ def classify(case, kinds, viz, tem):
                 return name
         except Exception:
             pass
+    # Composite: every remaining difference explained individually, the rest by one rule.
+    names, rest = set(), []
+    for k, dt in kinds:
+        n = kind_explained(case, k, dt)
+        if n:
+            names.add(n)
+        else:
+            rest.append((k, dt))
+    if not rest and names:
+        return "+".join(sorted(names))
+    if rest and len(rest) < len(kinds):
+        for name, f in RULES:
+            try:
+                if f(case, rest, viz, tem):
+                    return "+".join(sorted(names | {name}))
+            except Exception:
+                pass
     return None
 
 

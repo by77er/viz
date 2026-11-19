@@ -203,12 +203,38 @@ a person for review instead of describing it in text.
 | `retention` | `{ metric_samples_days, metric_5m_days?, metric_1h_days?, log_days?, trace_days? }`, 1 to 3650 days, coarser tiers not shorter than finer ones. Shortening needs `confirmShorter: true` | `retention:<tenant>`, the value as is |
 | `limits` | `{ active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency }`, any subset. `LIMIT_CEILINGS` (JSON, operator) caps them | `limits:<tenant>`, the value as is |
 | `pool` | `{ pool, slots, spread }`. The pool must be `tenant/<this tenant>` or the shared pool of `DEFAULT_POOL` | `pool:<tenant>` → `{ pool, slots, spread, epoch }` |
-| `notifications` | `{ email[], webhookUrl }`. Stored and validated; nothing acts on it | no |
+| `notifications` | `{ email[], webhookUrl, webhookFormat, sendResolved, webhookSecret }`. `webhookFormat` is `alertmanager` (default) or `json` (`viz.notification/v1`); `webhookSecret` (16–512 characters) is **write-only**: kept in `tenant_meta`, never in the value, so no read, list or audit entry holds it; the value shows `webhookSecretSetAt` instead. Left out, the secret is kept while `webhookUrl` is unchanged and dropped when it changes; `null` removes it. The ruler's notifier sends to this webhook as its receiver `viz:default` (below). `email` is stored, not acted on | no: read over the binding (`notificationTarget`), so the secret is not in KV |
 
 **Pool map.** The first map gets the shared map's epoch plus one; raising `spread` bumps
 the epoch. Everything else (another pool, another slot count, a smaller spread) is refused
 with 409 `pool-change-unsupported`, because it needs the drain-and-handover protocol of
 DESIGN §4.1, which is out of scope here.
+
+### The service surface (`contracts/control.ts`, decision D39)
+
+Two RPCs on `Tenant`, reachable only through the Durable Object binding (viz-ruler binds it by
+`script_name`, as the gateway does for `provision`); no HTTP route leads to them. Both answer
+`not_provisioned` for an object bound to another tenant or not provisioned, `schema_too_new`
+when a newer release holds the storage, and carry `v: 1` (formats `rpc.notification-target`,
+`rpc.service-key`, golden files under `test/golden/formats/`).
+
+- **`notificationTarget(tenant)`** → `{ version, target: { url, format, sendResolved, secret } | null }`:
+  the `notifications` section as the notifier needs it, secret included. The secret is given
+  only while the stored value's `webhookSecretSetAt` equals the time it was set, so a value an
+  older release rewrote without the field leaves requests unsigned rather than signed with a
+  secret nobody set for that URL. Read only.
+- **`serviceKey(tenant, service, instance)`** → a key `viz_<keyId>_<secret>` named
+  `service:<service>/<instance>` with the scopes the contract fixes (`viz-ruler`: `read`,
+  `write`). Created on the first call, rotated on every later one (the previous secret ends at
+  once, revocation generation bumped), one audit entry `key.service` by `system:viz-ruler`. It
+  is an ordinary key: listed, and a person can disable it (then the call answers `disabled` and
+  issues nothing until it is enabled) or delete it (the next call issues a new one). Names
+  starting with `service:` are refused for keys a person creates (422), so a person's key can
+  never be taken over by a rotation. Counts against the tenant's key cap.
+
+No schema migration: the secret is a row of the existing `tenant_meta` table (k
+`notifications.webhookSecret`), and the `notifications` value only gains optional fields, which
+a release that does not know them shows as they are; schema version stays 2.
 
 ### Audit log
 
@@ -307,8 +333,9 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
   proposals that create a dashboard (the same caller and spec get the open proposal back)
   and applying any proposal twice (409 `proposal-closed` says `applied` and `appliedNumber`).
 - **Editing a key's name or scopes**; create a new key instead.
-- **Notifications** are stored only. **Rule definitions**, which DESIGN §3.1 lists under
-  `Tenant`, are not here.
+- **Email notifications** are stored only (the webhook is used by the ruler's notifier, above).
+  **Rule definitions**, which DESIGN §3.1 lists under `Tenant`, are not here.
+- **A test notification** when the webhook is saved, and a check that the URL answers.
 - **Grafana import** over HTTP (the dashboard package has the importer).
 - Rate limiting, metrics about this API, pruning of the audit log.
 - **Deployment.** Nothing here has run on Cloudflare, and it is not wired into `stack/` or `app/`.
@@ -317,15 +344,15 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 92 tests in 14 files, in workerd (at most 2 workers)
+npm test             # 100 tests in 15 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 58 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
+npm run mutants      # 65 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
 Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 75 s
 on a shared machine (75 s on a cold cache with the load average above 6). Last run
-2026-11-19: 92 of 92 pass, `tsc` clean.
+2026-11-20: 100 of 100 pass, `tsc` clean.
 
 What the tests establish:
 
@@ -386,6 +413,19 @@ What the tests establish:
   and a 403 `missing-scope` on each of the other 29 routes. `mayApply` is right for six
   kinds of key with `agentsMayApply` off and on, and each key's dry-run `PATCH` is applied
   (200) exactly when `mayApply` is true and proposed (202) otherwise.
+- **The service surface** (`service.test.ts`, 8 tests). Notifications: format stored; the
+  secret appears in no settings read, list, audit entry, key list or KV record (all KV keys and
+  values are read); a dry run stores nothing; the secret is kept when the value read is sent
+  back, dropped when the URL changes, removed with null, and five malformed values are 422;
+  a value rewritten without `webhookSecretSetAt` gives `secret: null`; `notificationTarget`
+  answers only for the bound tenant. Service keys: issued with exactly the contract's scopes,
+  accepted by edge's `authenticate` for `read` and `write` with this tenant, listed as
+  `service:viz-ruler/0` by `system:viz-ruler`, no secret readable anywhere; a second call
+  rotates (the first key 401 at edge, its KV record gone, one key row, two audit entries); a
+  disabled key answers `disabled` with every table unchanged; a deleted one is issued again;
+  `service:` names are refused for persons; another tenant, an unknown service (also
+  `toString`) and four malformed instances are refused with every table unchanged. The ruler's
+  own tests (`ruler/test/wiring.test.ts`) use this real object too.
 - **Health** (`http.test.ts`). `GET /healthz` without a credential is 200 `ok`, `HEAD` 200,
   `POST` 405; 503 naming `TENANT` or `CONFIG` when that binding is missing; only that path.
 - **Settings and audit** (`settings.test.ts`, 8 tests). KV shapes for retention, limits and
@@ -528,6 +568,13 @@ first run, before a container restart, did not report, so this is their only res
 | 56 | Migration 2 declared forward-only (`readableFrom: 2`) | compat (3) |
 | 57 | Released migration 2 edited in place (the column is not added) | isolation, compat, creation, dashboards, durability, proposals, scopes, settings (32) |
 | 58 | `/healthz` not served (or behind a credential) | http (1) |
+| 59 | service: `notificationTarget` answers for any tenant | MUTANTS_59 |
+| 60 | service: `serviceKey` issues for any tenant | MUTANTS_60 |
+| 61 | service: the webhook secret stored in the settings value (reads and audit carry it) | MUTANTS_61 |
+| 62 | service: a webhook secret follows the webhook to a new URL | MUTANTS_62 |
+| 63 | service: a service key a person disabled is replaced | MUTANTS_63 |
+| 64 | service: a rotation keeps the previous secret live | MUTANTS_64 |
+| 65 | service: a person may create a key under the reserved `service:` prefix | MUTANTS_65 |
 
 Mutants 36–40 break `contracts/schema.ts`, the runner every component shares; they are run
 here because this suite tests it most fully.

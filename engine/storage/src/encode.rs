@@ -100,7 +100,7 @@ pub fn encode_segment_with(batches: &[&[u8]], opts: &WriteOptions) -> Result<Vec
         let day_rows = &rows[start..end];
         let day_str = format_day(day);
 
-        let mut w = FileWriter::new(Table::MetricSamples)?;
+        let mut w = FileWriter::new(Table::MetricSamples, opts)?;
         for chunk in day_rows.chunks(cap) {
             let n: Vec<ByteArray> = chunk.iter().map(|r| names[r.rank as usize].clone()).collect();
             let sid: Vec<i64> = chunk.iter().map(|r| series[order[r.rank as usize] as usize].series_id).collect();
@@ -126,7 +126,7 @@ pub fn encode_segment_with(batches: &[&[u8]], opts: &WriteOptions) -> Result<Vec
             smax.push(day_rows[j - 1].ts);
             i = j;
         }
-        let mut w = FileWriter::new(Table::MetricSeries)?;
+        let mut w = FileWriter::new(Table::MetricSeries, opts)?;
         let mut at = 0;
         while at < sn.len() {
             let to = (at + cap).min(sn.len());

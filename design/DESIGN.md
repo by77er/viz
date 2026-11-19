@@ -75,7 +75,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Ruler` | Durable Object, one per tenant rule shard | Rule ticks (one batch evaluation per group), alert state machine, acknowledgements, backtests, hands transitions to the notifier. Serves the Prometheus `/api/v1/rules` and `/api/v1/alerts` shapes and viz's `/api/v1/monitors` | every rule interval |
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
-| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool), audit log; publishes what the data path needs to KV. Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object |
+| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool, notifications), audit log; publishes what the data path needs to KV; issues service keys to the ruler and gives it the default notification destination over its binding (`contracts/control.ts`, D39). Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object; the ruler asks it when it has no key and at most once a minute while notifying |
 | `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth | per request |
 | `mcp` | Worker | The agent surface: a stateless MCP server and the same tools as JSON under `/api/v1/agent/…`; no Durable Object (§8, D25–D27) | per agent call |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
@@ -410,7 +410,16 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   cents, per thousand rules per month.
 - **Notifications** use a transactional outbox with deterministic ids. Grouping, inhibition
   and silences keep Alertmanager's semantics. A sweeper re-arms missed rulers, and a
-  dead-man's-switch alert is built in.
+  dead-man's-switch alert is built in. A tenant's default destination is set in the control
+  plane (webhook URL, Alertmanager's JSON or viz's plain `viz.notification/v1`, a write-only
+  signing secret); the notifier reads it over the `Tenant` binding and offers it as the
+  receiver `viz:default` (D39). Bodies are built once, at the decision, and every attempt
+  sends the same bytes under the same `Idempotency-Key`.
+- **As built, until query exports an RPC entrypoint** (D39), a tick sends its group's
+  expressions to viz-query's Prometheus HTTP API one at a time (one engine call in flight per
+  `Ruler` object: a service-bound callee shares its caller's six connections), recording rules
+  write through Remote Write, and both authenticate with a service key the tenant's control
+  plane issues (`service:viz-ruler/<shard>`, visible and revocable there).
 - **Anomaly detection** is statistics first. An *anomaly rule* is a rule kind
   (`contracts/rules.ts`, version 2): each tick the ruler feeds every series of one PromQL
   expression to that series' detector, through the same batch call as other rules, and the
@@ -445,7 +454,8 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   also the accessible view.
 - **Agent tools.** A stateless MCP endpoint (its own Worker, `mcp/`; D25, D26) with
   scoped, tenant-bound credentials: API keys today, with OAuth a seam not yet built.
-  Thirteen tools: search telemetry, describe a metric, validate a query, run a query,
+  Thirteen tools: search telemetry, describe a metric, validate a query (with the query
+  service's own plan: files, bytes, scan bound, refusal), run a query,
   search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
   list and get monitors, annotate (refused until an annotation store exists). Results are
   compact text within a token budget, with tenant text fenced as data, and the same page as

@@ -1,8 +1,8 @@
 /**
  * The test Worker's main module: the gateway itself as the default export, the REAL control
  * plane's Tenant object (so /api/v1/bootstrap is tested against control/'s `provision`), and
- * three fake backends reached through service bindings to this same Worker, as the gateway
- * reaches viz-ingest, viz-query and viz-control in production.
+ * five fake backends reached through service bindings to this same Worker, as the gateway
+ * reaches viz-ingest, viz-query, viz-control, viz-ruler and viz-mcp in production.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import control from '../../../control/src/index'
@@ -62,5 +62,15 @@ export class FakeControl extends WorkerEntrypoint<Cloudflare.Env> {
   fetch(req: Request) {
     if (new URL(req.url).pathname === '/healthz') return control.fetch!(req as never, this.env as never, this.ctx)
     return echo('control', req)
+  }
+}
+export class FakeRuler extends WorkerEntrypoint {
+  fetch(req: Request) {
+    return echo('ruler', req)
+  }
+}
+export class FakeMcp extends WorkerEntrypoint {
+  fetch(req: Request) {
+    return echo('mcp', req)
   }
 }

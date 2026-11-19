@@ -1,0 +1,19 @@
+# Known failures of the Loki test-table oracle (tests/conformance.rs), one per line:
+# <table>:<source line>[:variant] # why
+#
+# Invalid UTF-8 in the input. viz takes lines and queries as Rust strings, which are valid
+# UTF-8 by construction (contracts/LOGS.md requires UTF-8 lines); the oracle's bytes arrive
+# here already replaced by U+FFFD, so Loki's handling of the raw byte cannot be reproduced.
+ParseTestCases:1658 # regex matcher holding invalid UTF-8: Loki rejects it, viz sees U+FFFD
+Test_jsonParser_Parse:137 # invalid UTF-8 byte in a JSON string value (Loki maps it to a space)
+TestLogfmtParser_parse:1218:non-strict # invalid UTF-8 byte in a logfmt value
+TestLogfmtParser_parse:1377:non-strict # invalid UTF-8 byte in a logfmt key (Loki skips the key)
+TestLogfmtParser_parse:1377:strict # invalid UTF-8 byte in a logfmt key (Loki: "invalid key")
+TestLogfmtParser_keepEmpty:1498 # invalid UTF-8 byte in a logfmt value
+TestLogfmtParser_keepEmpty:1506 # invalid UTF-8 byte in a logfmt value
+#
+# Labels with an empty name. Loki's internal label builder holds one for `{" ": {" ": "bar"}}`;
+# its HTTP responses never carry one (observed: `{"":"e"}` gives no label), and neither does viz.
+Test_jsonParser_Parse:88 # whitespace key and subkey: Loki's builder holds a label named ""
+Test_jsonParser_Parse:99 # whitespace key, empty subkey: label named ""
+Test_jsonParser_Parse:110 # empty key and subkey: label named ""

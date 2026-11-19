@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { getSchema } from '../../dashboard/src/index.ts'
+import { createWorker, health } from '../src/index'
 import { BASE, type Harness, type Key, NOW, controlCall, createDashboard, example, harness, makeKey, mcp, newTenant, reset, rest, telemetry, type TestTenant } from './helpers'
 import { monitorView } from './fake/services'
 import { dataRegions } from '../src/untrusted'
@@ -129,6 +130,42 @@ describe('validate_query', () => {
     expect(g.structured.data.items.map((x: any) => x.code)).toContain('rate-on-gauge')
     const le = await rest(h, agent.key, 'validate_query', { expr: 'histogram_quantile(0.9, sum by (route) (rate(http_server_request_duration_seconds_bucket[5m])))' })
     expect(le.structured.data.items.map((x: any) => x.code)).toContain('histogram-without-le')
+  })
+
+  it('the cost estimate includes the query service\'s own plan (/api/v1/plan): one call with the caller\'s credential, nothing run', async () => {
+    const calls = h.prom.calls.length
+    const r = await rest(h, agent.key, 'validate_query', { expr: 'sum by (service) (rate(http_server_requests_total{env="prod"}[5m]))', from: 'now-1h' })
+    ok(r)
+    const mine = h.prom.calls.slice(calls)
+    expect(mine.filter((c) => c.path === '/api/v1/plan').map((c) => c.tenant)).toEqual([t.tenant])
+    expect(mine.some((c) => c.path === '/api/v1/query' || c.path === '/api/v1/query_range')).toBe(false)
+    expect(r.structured.estimate.plan).toMatchObject({ execution: 'single', filesToRead: 0, bytesToRead: 0, seriesEstimate: expect.any(Number), refused: null })
+    expect(r.structured.estimate.plan.seriesEstimate).toBeGreaterThan(0)
+    expect(r.text).toMatch(/Plan \(the query service's own, from one ledger read; rows still in the shards are not counted\): single execution; 0 file\(s\) to read of 0 listed \(0 skipped\), 0 bytes, up to 0 samples to decode, about \d+ series; within the limits\./)
+  })
+
+  it('a refusal the plan foresees is a warning; a query service without the endpoint leaves the series estimate, with a note', async () => {
+    h.prom.options.planRefusals = { http_server_requests_total: 'query exceeded limit max_files: 2,345 data files to read, the limit is 2,000. Narrow the time range.' }
+    try {
+      const r = await rest(h, agent.key, 'validate_query', { expr: 'rate(http_server_requests_total[5m])', from: 'now-30d' })
+      ok(r)
+      expect(r.structured.valid).toBe(true)
+      expect(r.structured.data.items.find((x: any) => x.code === 'would-be-refused').message).toMatch(/max_files/)
+      expect(r.structured.estimate.plan.refused).toBe('execution')
+    } finally {
+      delete h.prom.options.planRefusals
+    }
+    h.prom.options.noPlan = true
+    try {
+      const r = await rest(h, agent.key, 'validate_query', { expr: 'rate(http_server_requests_total[5m])' })
+      ok(r)
+      expect(r.structured.estimate.plan).toBeNull()
+      expect(r.structured.estimate.series).toBeGreaterThan(0)
+      expect(r.structured.estimate.planNote).toMatch(/not available/)
+      expect(r.text).toMatch(/^Plan: the query service's plan is not available/m)
+    } finally {
+      delete h.prom.options.noPlan
+    }
   })
 
   it('TraceQL and LogQL are not available yet', async () => {
@@ -353,5 +390,17 @@ describe('the REST surface', () => {
     expect(b.text).toBe(a.text)
     const strip = (x: any) => ({ ...x, usage: undefined })
     expect(strip(b.structured)).toEqual(strip(a.structured))
+  })
+})
+
+describe('/healthz', () => {
+  it('200 with the key store and the three services bound, 503 naming what is missing, no credential needed', async () => {
+    const fetcher = { fetch: async () => new Response('x') }
+    const all = { CONFIG: {} as KVNamespace, QUERY: fetcher, CONTROL: fetcher, RULER: fetcher }
+    const res = await createWorker().fetch!(new Request(`${BASE}/healthz`) as never, all as never, {} as never)
+    expect([res.status, await res.text()]).toEqual([200, 'ok\n'])
+    const without = health(new Request(`${BASE}/healthz`), { ...all, RULER: undefined, QUERY: undefined })
+    expect([without.status, await without.text()]).toEqual([503, 'missing binding: QUERY, RULER\n'])
+    expect(health(new Request(`${BASE}/healthz`, { method: 'POST' }), all).status).toBe(405)
   })
 })

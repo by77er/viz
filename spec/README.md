@@ -530,10 +530,21 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
 - **Fix.** Register before accepting writes (F1's fix, applied to `shard.ts`): then an
   unregistered stream has no acknowledged rows and need not be asked, and a stream the shard
   does not hold is answered `incarnation_mismatch(0)`, never `ok`. **Refusing without
-  re-registering is not enough:** `LIVE_impl_F6_refuse_only` reaches a state from which no
-  query ever completes (the tenant sends nothing more to that shard, nothing recreates the
-  stream, the ledger keeps naming the lost incarnation); with registration the refusing shard
-  re-registers and the next plan names the new incarnation (`LIVE_impl_F6_fixed`).
+  re-registering is not enough:** with refusal alone (`LIVE_impl`) a state is reachable from
+  which no query ever completes (the tenant sends nothing more to that shard, nothing recreates
+  the stream, the ledger keeps naming the lost incarnation); with registration the refusing
+  shard re-registers and the next plan names the new incarnation (`LIVE_impl_F6_fixed`).
+- **Status at 6488856 (= 6ee76c8): (a) fixed, (b) not.** `shard.ts` `tailRead` now refuses
+  an incarnation it does not hold (review R-10), but still answers `ok`/empty to incarnation
+  0, which is what the coordinator sends for a stream the ledger has not registered, and
+  registration is still lazy. `F6b_impl_now` and the as-built peel (`IMPL_1_as_built`,
+  `IMPL_2_assume_F3`) find (b) at 11 steps: a query plans before the stream's first unit is
+  admitted → the unit is admitted and logged → the shard loses its storage → "incarnation 0,
+  above 0" is `ok`, nothing → batch 0, safe in a file the plan predates, is missing from that
+  query's answer (I4). One wrong answer, not lost data; silent. Rare (a shard storage loss
+  inside one query's window, on a stream's first unit). And the refusal of (a) without
+  re-registration is the liveness gap above, now in the code (`LIVE_impl`). Both go with
+  registration before writes (`IMPL_3_fix_F6b`, `LIVE_impl_F6_fixed`).
 
 ### F10 (major in the plan as it stood; fixed during this work: `contracts/LEDGER-LOG.md`, `ledger.ts`) — A retried drain writes an overlapping segment; a strict rebuild then refuses the log
 

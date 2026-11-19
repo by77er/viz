@@ -150,6 +150,67 @@ export const MUTANTS = [
     edits: one('bench/nab.ts', "if (det) { tp++; if (w[i]! > best[win]!) best[win] = w[i]! } else fn++", "if (det) { tp++; best[win] = best[win]! + w[i]! } else fn++"),
     tests: ['test/nab-scorer.test.ts'],
   },
+  // The SMD scorer (bench/smd.ts)
+  {
+    name: 'SMD windows: half-width w instead of floor(w / 2)',
+    edits: one('bench/smd.ts', 'const h = Math.floor(w / 2)', 'const h = w'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: 'SMD windows: width not divided among the segments',
+    edits: one('bench/smd.ts', 'const w = Math.floor((fraction * nTest) / segments.length)', 'const w = Math.floor(fraction * nTest)'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: 'SMD segments: dimensions read as 0-based',
+    edits: one('bench/smd.ts', 'interp.filter((r) => r.dims.includes(dim))', 'interp.filter((r) => r.dims.includes(dim - 1))'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: "SMD don't care: machine segments that list the dimension excluded too",
+    edits: one('bench/smd.ts', 'const others = machineSegments.filter((m) => !seriesSegs.some((s) => overlaps(m, s)))', 'const others = machineSegments'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: "SMD rows: don't-care spans not applied",
+    edits: one('bench/smd.ts', 'for (const [a, b] of dontCare) for (let i = a; i <= b; i++) if (!rows.inWindow[i]) rows.window[i] = -2', 'void dontCare'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: 'SMD rows: NAB probation applied inside the test half',
+    edits: one('bench/smd.ts', 'const rows = sweepRows(file, 0)', 'const rows = sweepRows(file)'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: 'SMD runs: a run begun in the history counted as an onset at the first test row',
+    edits: one('bench/smd.ts', 'out.push(Math.max(s - nHistory, -1), i - 1 - nHistory)', 'out.push(Math.max(s - nHistory, 0), i - 1 - nHistory)'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: 'SMD machine view: touching runs not merged into one alarm',
+    edits: one('bench/smd.ts', 'return mergeSpans(spans, true).flat()', 'return mergeSpans(spans).flat()'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: 'SMD event metric: tolerance not applied after the segment end',
+    edits: one('bench/smd.ts', 'if (lo < onsets.length && onsets[lo]! <= e + tol) {', 'if (lo < onsets.length && onsets[lo]! <= e) {'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: "SMD event metric: onsets in don't-care spans counted as false",
+    edits: one('bench/smd.ts', 'else if (spanIndex(dc, i) >= 0) c.ignored++', 'else if (spanIndex(dc, i) >= 0 && false) c.ignored++'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: 'SMD bootstrap: machines resampled without replacement (every weight 1)',
+    edits: one('bench/smd.ts', 'for (let j = 0; j < units; j++) w[Math.floor(r() * units)]! += 1', 'for (let j = 0; j < units; j++) w[j]! += 1'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
+  {
+    name: 'SMD normalisation: the null score not subtracted',
+    edits: one('bench/smd.ts', 'return (100 * (r - n)) / (k * tpWeight - n)', 'return (100 * r) / (k * tpWeight)'),
+    tests: ['test/smd-scorer.test.ts'],
+  },
 ]
 
 /** A throw-away copy of the component: sources copied, node_modules and NAB data linked (read only). */

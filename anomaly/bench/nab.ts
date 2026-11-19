@@ -131,13 +131,15 @@ export interface SweepRows {
   nWindows: number
 }
 
-/** sweeper.py calcSweepScore, without the weights (applied in `weighted`). */
-export function sweepRows(file: NabFile): SweepRows {
+/**
+ * sweeper.py calcSweepScore, without the weights (applied in `weighted`). `prob` is NAB's
+ * probationary length unless given (not NAB: the SMD harness passes its history length).
+ */
+export function sweepRows(file: NabFile, prob = probationaryLength(file.stamps.length)): SweepRows {
   const n = file.stamps.length
   const window = new Int32Array(n)
   const inWindow = new Uint8Array(n)
   const unweighted = new Float64Array(n)
-  const prob = probationaryLength(n)
   let cur = -1 // current window id
   let curRight = -1
   let curWidth = 0

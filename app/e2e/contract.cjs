@@ -199,7 +199,7 @@ async function main() {
   const started = []
   const { check, failed, results } = lib.makeChecker()
   // ---- the real stack
-  if ((await up(`${REAL}/healthz`)) !== 200) {
+  if (!(await lib.realUp(REAL))) {
     const s = spawnSync(process.execPath, [path.join(ROOT, 'real/stack.mjs'), 'start', '--port', String(REAL_PORT)], { stdio: 'inherit' })
     if (s.status !== 0) throw new Error('could not start the real stack')
     started.push(() => spawnSync(process.execPath, [path.join(ROOT, 'real/stack.mjs'), 'stop'], { stdio: 'inherit' }))

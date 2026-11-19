@@ -11,10 +11,7 @@
    "name": "400",
    "width": 400,
    "coarse": true,
-   "measure": true,
-   "themes": [
-    "light"
-   ]
+   "measure": true
   },
   {
    "name": "grey",
@@ -28,7 +25,7 @@
    "name": "focus",
    "steps": [
     {
-     "focus": "header a"
+     "focus": "main a"
     }
    ],
    "clip": "header",

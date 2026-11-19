@@ -397,7 +397,7 @@ that fix were run and killed.
 By the storage-path engineer, after the review; the reviewer has not seen these. Mutants were
 applied to a copy of the tree in a scratch directory, never the checkout; results, with the
 test that caught each, are in `ledger/README.md`, `shard/README.md` and `edge/README.md`.
-Suites green on the real tree when written (`vitest --maxWorkers=2`): ledger 87, shard 56,
+Suites green on the real tree when written (`vitest --maxWorkers=2`): ledger 87, shard 55,
 edge 62, stack 41; tsc clean.
 
 | # | Disposition | What was done | Shown by |

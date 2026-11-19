@@ -197,8 +197,12 @@ the *logged* watermark). Under §3.3 that takes three releases:
 
 As built (`LEDGER-LOG.md`, "Rollout"), steps 1 and 2 ship together, because no ledger had
 reached production: that release is forward-only, and any deployment that ran the first
-layout cannot be rolled back below it (stuck, not lost, §9). Once a ledger is in production,
-the next log format change takes the three steps.
+layout cannot be rolled back below it. The boundary is in the storage (schema migration 2 of
+`ledger.Ledger`, `readableFrom` 2, §2.3), which versioned older code refuses; code from before
+versioning cannot read it, so the release record must refuse that rollback (§6). If it
+happens anyway, the roll-forward heals the incarnation from SQLite, and a rebuild before then
+refuses the mixed incarnation (stuck, not lost, §9; review `design/reviews/segment-log-and-compaction.md`
+S-1). Once a ledger is in production, the next log format change takes the three steps.
 
 Within the segment format: `LedgerChange.removed` stays `string[]`. The `{ key, table }`
 pairs the plan wants are a **new** field beside it (for example `removedFiles`), not a new

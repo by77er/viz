@@ -11,10 +11,7 @@
    "name": "400",
    "width": 400,
    "coarse": true,
-   "measure": true,
-   "themes": [
-    "light"
-   ]
+   "measure": true
   },
   {
    "name": "grey",
@@ -95,6 +92,17 @@
    "themes": [
     "light"
    ]
+  },
+  {
+   "name": "menu-400",
+   "url": "flows/dist/8-keys.html#menu",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ],
+   "height": 800
   },
   {
    "name": "arrived-1440",

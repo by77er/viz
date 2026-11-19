@@ -16,7 +16,7 @@
  *     every attempt, and one processed notification at a de-duplicating receiver;
  *   - one engine call in flight per Ruler object (the six-connection budget).
  */
-import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearAuthCache } from '../../edge/src/auth'
@@ -132,7 +132,7 @@ describe('rule evaluation through the query API, with a service key from control
   it('a refused key is kept while KV may still be propagating, replaced after; a key a person disabled stops evaluation, and enabling it resumes', async () => {
     const s = await provisioned('rot')
     s.w.evaluate = () => vec([{ service: 'checkout' }, 1])
-    expect((await call(s.monitors.auth, 'POST', '/api/v1/monitors', THRESHOLD)).status).toBe(201)
+    expect((await call(s.monitors.auth, 'POST', '/api/v1/monitors', { ...THRESHOLD, interval: '20s' })).status).toBe(201)
     await tick(s)
     const [first] = await serviceKeys(s)
     // A person disables the ruler's key in the control plane.
@@ -143,6 +143,13 @@ describe('rule evaluation through the query API, with a service key from control
     expect(rule.health).toBe('err')
     expect(rule.lastError).toMatch(/^unauthorized: /)
     expect((await serviceKeys(s))[0]!.prefix).toBe(first!.prefix) // still inside the grace: nothing asked
+    // Evicted (what is in memory about earlier requests is gone): the key's stored age alone
+    // keeps the ruler from asking control while KV may still be propagating.
+    await evictDurableObject(s.ruler)
+    await tick(s)
+    await tick(s)
+    rule = ok(await s.ruler.rules(s.tenant)).rules[0]!
+    expect(rule.lastError, 'a refused key younger than the propagation grace is kept').toMatch(/^unauthorized: /)
     // Old enough that KV propagation is not the reason, and past the minimum interval between requests to control.
     world.now += Math.max(PROPAGATION_GRACE_MS, REISSUE_MIN_INTERVAL_MS)
     await tick(s)
@@ -213,9 +220,9 @@ describe('rule evaluation through the query API, with a service key from control
   })
 
   it('/healthz: 200 with the production bindings, 503 naming a missing one, no credential needed', async () => {
-    const res = await worker.fetch(new Request('https://ruler.internal/healthz'), env as never, {} as never)
+    const res = await worker.fetch(new Request('https://ruler.internal/healthz') as never, env as never)
     expect([res.status, await res.text()]).toEqual([200, 'ok\n'])
-    const without = health(new Request('https://ruler.internal/healthz'), { ...(env as never), TENANT: undefined, QUERY: undefined })
+    const without = health(new Request('https://ruler.internal/healthz'), { ...(env as unknown as Record<string, unknown>), TENANT: undefined, QUERY: undefined } as never)
     expect([without.status, await without.text()]).toEqual([503, 'missing binding: TENANT, QUERY\n'])
     expect(health(new Request('https://ruler.internal/healthz', { method: 'POST' }), env as never).status).toBe(405)
   })

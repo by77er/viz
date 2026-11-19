@@ -356,7 +356,7 @@ proptest! {
     fn flush_matches_reference(batches in arb_batches(6), cap in 1usize..9) {
         let bytes: Vec<Vec<u8>> = batches.iter().map(|b| b.bytes()).collect();
         let refs: Vec<&[u8]> = bytes.iter().map(|b| b.as_slice()).collect();
-        let files = encode_segment_with(&refs, &WriteOptions { max_row_group_rows: cap }).unwrap();
+        let files = encode_segment_with(&refs, &WriteOptions { max_row_group_rows: cap, ..Default::default() }).unwrap();
         let want = reference_samples(&batches);
         prop_assert_eq!(files.len(), want.len() * 2);
         for (pair, (day, rows)) in files.chunks(2).zip(&want) {
@@ -378,7 +378,7 @@ proptest! {
             prop_assert_eq!(got, want_series);
         }
         // Deterministic: same input, same bytes.
-        prop_assert_eq!(encode_segment_with(&refs, &WriteOptions { max_row_group_rows: cap }).unwrap(), files);
+        prop_assert_eq!(encode_segment_with(&refs, &WriteOptions { max_row_group_rows: cap, ..Default::default() }).unwrap(), files);
     }
 }
 

@@ -45,7 +45,8 @@
   const depsAgent = () => ({ unit: 'ms', agg: 'max', ...agent, series: [{ labels: dep('payments-db'), values: paymentsA }, { labels: dep('inventory'), values: inventoryA }, { labels: dep('cache'), values: cacheA }] })
   // Error log lines per minute from checkout-api, 6 min mean. 1,300 now: 212.4 req/s x 9.8% + 842.6 req/s x 0.1%, in lines a minute.
   const logRate = walk(six.t0, six.step, six.n, [[T(9, 16), 2], [T(13, 4), 3], [T(13, 10), 330], [T(13, 40), 960], [T(14, 30), 1240], [T(15, 16), 1290]], { noise: 0.08, seed: 41, pins: [[T(15, 16), 1300]] })
-  const logs = () => ({ unit: '/min', agg: 'mean', ...six, series: [{ labels: { service: 'checkout-api', level: 'error' }, values: logRate }] })
+  // v5 places a unit wider than the axis gutter from the chart's left edge (G8), so the unit is written in full.
+  const logs = () => ({ unit: 'lines/min', agg: 'mean', ...six, series: [{ labels: { service: 'checkout-api', level: 'error' }, values: logRate }] })
   const logLines = Math.round(logRate.reduce((a, b) => a + b, 0) * 6) // lines in the range: the rate times the 6 min step
   // The backtest is the system's own fixture (vzChartDemos.backtest: cart error ratio, 7 d at 5 min max). The spans here are when the
   // rule as set (above 1% for at least 10 min) would have been firing: 10 min after each crossing until the value fell back.
@@ -60,8 +61,18 @@
       series.push({ labels: { service: 'cart', pod: 'cart-6c8d9f7b4-' + id }, values: base.map((v, i) => +(v * k * (0.9 + 0.2 * ((i * (p + 3)) % 7) / 7)).toFixed(3)) }) }
     return { ...b, spans: [], series }
   }
+  // Trace 4bf9…4736 (screen 9), 15:14:52: start and length of each span in ms from the trace's start. checkout-api calls each dependency
+  // itself (as the dependency chart and the agent's query say), so every span but the root is at depth 1. Own time is a span's length less
+  // the time covered by the spans inside it; a span whose own time is a tenth of the trace or more is drawn in ink (Waterfall).
+  const trace = (() => {
+    const spans = [[1, 0, 'checkout-api: POST /v2/orders', 0, 1204], [2, 1, 'auth: verify session', 4, 18], [3, 1, 'cart: load cart', 24, 37], [4, 1, 'inventory: reserve items', 63, 118],
+      [5, 1, 'payments-db: SELECT payment_intents', 184, 702], [6, 1, 'payments-db: UPDATE payment_intents', 888, 255], [7, 1, 'orders-db: INSERT orders', 1146, 34], [8, 1, 'queue: publish order.created', 1182, 14]]
+      .map(([id, parent, name, start, took]) => ({ id, parent, name, start, took }))
+    for (const s of spans) s.own = s.took - spans.filter((k) => k.parent === s.id).reduce((a, k) => a + k.took, 0) // no two children overlap here
+    return { id: '4bf9…4736', took: 1204, spans }
+  })()
   const T0 = { T, MIN, NOW }
-  root.flows = { ...T0, latency, errors, traceDurations, deps, depsAgent, logs, logLines, backtest, backtestByPod,
-    markers: { deploy: { t: T(9, 41), label: 'Deploy 09:41' }, above: { t: T(13, 2), label: 'Above 13:02' }, fired: { t: T(13, 7), label: 'Fired 13:07' }, slow: { t: T(12, 58), label: 'Agent: slow since 12:58' }, trace: { t: T(15, 14), label: 'This trace 15:14' } },
+  root.flows = { ...T0, latency, errors, traceDurations, deps, depsAgent, logs, logLines, backtest, backtestByPod, trace,
+    markers: { deploy: { t: T(9, 41), label: 'Deploy 09:41' }, above: { t: T(13, 2), label: 'Above 13:02' }, fired: { t: T(13, 7), label: 'Fired 13:07' }, slow: { t: T(12, 58), label: 'slow since 12:58', agent: true }, trace: { t: T(15, 14), label: 'This trace 15:14' } },
     firing: (label = 'Firing since 13:07') => ({ from: T(13, 7), to: NOW, label }) }
 })(typeof window !== 'undefined' ? window : globalThis)

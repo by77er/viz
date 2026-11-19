@@ -18,6 +18,10 @@ const fail = (status: number, errorType: string, error: string) => ({ status, bo
 export interface PromOptions {
   /** Return this error (HTTP 422, execution) for a query whose text contains the key. */
   errors?: Record<string, string>
+  /** `/api/v1/plan`: refuse (in `refusal`, as the query service does before fetching) a query whose text contains the key. */
+  planRefusals?: Record<string, string>
+  /** `/api/v1/plan` answers 404, as a query service from before the endpoint does. */
+  noPlan?: boolean
   /** Return these warnings with every successful query. */
   warnings?: string[]
   /** Delay every query (ms), or a query whose text contains the key. */
@@ -118,6 +122,20 @@ function answer(path: string, params: URLSearchParams, storage: FakeStorage, now
         for (const [k, msg] of Object.entries(opts.errors ?? {})) if (q.includes(k)) return fail(422, 'execution', msg)
         const data = path === '/api/v1/query' ? queryInstant(storage, q, timeOf(params.get('time'), nowSec)) : queryRange(storage, q, timeOf(params.get('start'), nowSec), timeOf(params.get('end'), nowSec), stepOf(params.get('step')))
         return ok(data, opts.warnings)
+      }
+      case '/api/v1/plan': {
+        // The shape of query/src/coordinator.ts QueryPlan. The fake has no lake files, so the
+        // file and byte counts are 0; the series estimate is the series of the metrics named.
+        if (opts.noPlan) return fail(404, 'not_found', 'not found')
+        const q = params.get('query') ?? ''
+        queryRange(storage, q, timeOf(params.get('start'), nowSec), timeOf(params.get('end'), nowSec), stepOf(params.get('step') ?? '60')) // parse errors as the real one: 400 bad_data
+        const named = storage.all().filter((s) => q.includes(s.labels.__name__ ?? '\u0000'))
+        const refusal = Object.entries(opts.planRefusals ?? {}).find(([k]) => q.includes(k))
+        return ok({
+          execution: named.length === 0 ? 'none' : 'single', splitReason: named.length === 0 ? '' : 'the query fits in one place', leaves: 0, ledgerVersion: 1,
+          filesListed: 0, filesSkipped: 0, filesToRead: 0, bytesToRead: 0, scanSamples: 0, seriesEstimate: named.length,
+          refusal: refusal ? { errorType: 'execution', error: refusal[1] } : null,
+        })
       }
       case '/api/v1/labels': {
         const names = new Set<string>()

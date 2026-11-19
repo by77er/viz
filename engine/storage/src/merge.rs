@@ -36,8 +36,8 @@ pub fn merge_files_with(table: Table, inputs: &[&[u8]], opts: &WriteOptions) -> 
 pub fn merge_files_shared(table: Table, inputs: &[Bytes], opts: &WriteOptions) -> Result<EncodedFile> {
     let cap = opts.max_row_group_rows.max(1);
     match table {
-        Table::MetricSamples => merge_samples(inputs, cap),
-        Table::MetricSeries => merge_series(inputs, cap),
+        Table::MetricSamples => merge_samples(inputs, cap, opts),
+        Table::MetricSeries => merge_series(inputs, cap, opts),
     }
 }
 
@@ -145,11 +145,11 @@ impl Ord for Head {
     }
 }
 
-fn merge_samples(inputs: &[Bytes], cap: usize) -> Result<EncodedFile> {
+fn merge_samples(inputs: &[Bytes], cap: usize, opts: &WriteOptions) -> Result<EncodedFile> {
     let mut cursors = Vec::with_capacity(inputs.len());
     let mut heap = BinaryHeap::with_capacity(inputs.len());
     for (index, f) in inputs.iter().enumerate() {
-        let reader = pq::open_shared(f.clone(), Table::MetricSamples, index)?;
+        let (reader, _) = pq::open_shared(f.clone(), Table::MetricSamples, index)?;
         let mut c = Cursor { index, reader, next_group: 0, names: vec![], sid: vec![], ts: vec![], val: vec![], pos: 0, row: 0, prev: None };
         if c.fill()? {
             heap.push(c.take()?);
@@ -158,7 +158,7 @@ fn merge_samples(inputs: &[Bytes], cap: usize) -> Result<EncodedFile> {
     }
 
     // The merged file is about as large as its inputs together (smaller if rows repeat).
-    let mut w = FileWriter::with_capacity(Table::MetricSamples, inputs.iter().map(|f| f.len()).sum::<usize>() + (64 << 10))?;
+    let mut w = FileWriter::with_capacity(Table::MetricSamples, inputs.iter().map(|f| f.len()).sum::<usize>() + (64 << 10), opts)?;
     let mut days = DayCheck(None);
     let (mut names, mut sid, mut ts, mut val) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut pending: Option<Head> = None;
@@ -199,7 +199,7 @@ fn merge_samples(inputs: &[Bytes], cap: usize) -> Result<EncodedFile> {
     w.finish(days.day()?)
 }
 
-fn merge_series(inputs: &[Bytes], cap: usize) -> Result<EncodedFile> {
+fn merge_series(inputs: &[Bytes], cap: usize, opts: &WriteOptions) -> Result<EncodedFile> {
     struct Row {
         name: ByteArray,
         sid: i64,
@@ -212,7 +212,7 @@ fn merge_series(inputs: &[Bytes], cap: usize) -> Result<EncodedFile> {
     let mut rows: Vec<Row> = Vec::new();
     let (mut names, mut sids, mut labels, mut mins, mut maxs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (index, f) in inputs.iter().enumerate() {
-        let r = pq::open_shared(f.clone(), Table::MetricSeries, index)?;
+        let (r, _) = pq::open_shared(f.clone(), Table::MetricSeries, index)?;
         let mut row = 0u64;
         let first = rows.len();
         for g in 0..r.num_row_groups() {
@@ -258,7 +258,7 @@ fn merge_series(inputs: &[Bytes], cap: usize) -> Result<EncodedFile> {
     if on.is_empty() {
         return Err(Error::Empty);
     }
-    let mut w = FileWriter::new(Table::MetricSeries)?;
+    let mut w = FileWriter::new(Table::MetricSeries, opts)?;
     let mut at = 0;
     while at < on.len() {
         let to = (at + cap).min(on.len());

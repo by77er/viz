@@ -96,10 +96,48 @@ node ../design-system/tools/shots.mjs compare <before> <after> <compare>
 python3 e2e/encode-review-images.py ../design-system/reviews/<change>   # palette-encode, keeps token colours exact
 ```
 
+This change's images (what it alters on screen, below) are taken by `e2e/real-api-shots.cjs`
+through `shots.mjs` scenarios, before and after on the same mock and the same failures:
+
+```sh
+node e2e/real-api-shots.cjs <before app dir with dist/> <after app dir with dist/> reviews/real-api
+node ../design-system/tools/shots.mjs compare reviews/real-api/before reviews/real-api/after reviews/real-api/compare
+python3 e2e/encode-review-images.py reviews/real-api
+```
+
 `shots.mjs` can only open a URL, so `e2e/vite.shots.config.ts` adds a script to the dev page
 (never to a build) that opens the time picker, the command palette or the settings dialog when
 the URL carries `#shot=timepicker|palette|settings`. `e2e/states.cjs` takes the images
 `shots.mjs` cannot: waiting states, focus rings, pressed and hover, and the coarse-pointer view.
+
+### What this change alters on screen, for design review
+
+No new component, token or style: `src/app.css` and `design-system/` are untouched. The text
+inside existing components changes, and one button's action:
+
+- **Error state** (`vz-empty`): the line that says who answered ("The API answered bad_data
+  with HTTP 400." only for the API's own error; "The answer was HTTP 503 with no API error in
+  it." otherwise), the advice by kind (a missing, refused or read-less key; a step too small
+  for the range; each limit; PromQL viz does not run; the time limit; a busy API with its
+  tries), and the button: "Open settings" for a key, "Use the automatic step" for too many
+  points (it clears the step and runs), "Go to character N" now also on the viz API (from the
+  editor's parser), else "Run the query again".
+- **Waiting line** (`vz-progress`): while a busy answer is retried, "The API is busy (HTTP
+  503). Asking again in 1 s." or "The API is limiting requests (HTTP 429). …".
+- **Warnings banner** (`vz-banner`): "The API sent a warning with this result, so it may be
+  incomplete: …" before the API's words.
+- **Shell banner** (`vz-banner`): "The API needs an API key." / "The API did not accept the
+  API key." / "The API key in settings cannot read metrics." instead of one sentence about
+  rejected credentials.
+
+Images: `reviews/real-api/compare/real-api-<state>-<1440|400>-<light|dark>.png` (before on
+the left: the app at commit `060d3bd`; after on the right), with the separate images in
+`before/` and `after/`, for nine states: a parse error, no key (401), a key without the read
+scope (403), an unknown key (401), the time limit (503 `timeout`), busy with `Retry-After: 1`
+(the waiting line at 0.7 s), the platform's 503 after four tries (the error state), a step too
+small (400) and a warning. Both themes, 1440 and 400 px. **Not reviewed yet**: no expert
+design review was held in this session; the change is not ready to merge until one is
+(AGENTS.md, "Design changes", 5).
 
 ## Stack
 
@@ -341,8 +379,10 @@ older than edge's one-hour acceptance window), as `query/test/wrangler.jsonc` do
 are real (local): segments are sealed and flushed to Parquet, so queries read lake files and
 shard tails. **`wrangler dev` reloads when the source of the components changes**, so the
 "real API" is the working tree of `query/`, `edge/`, `control/` and the rest as they are at
-that moment, other engineers' edits in progress included (one such edit, a new cost header,
-appeared while this change was being checked).
+that moment, other engineers' edits in progress included (two appeared while this change was
+being checked: a new cost header, and a gateway `/healthz` that also asks the ruler and MCP
+backends, which this local stack does not include; `real/stack.mjs` and `e2e/lib.cjs` now
+count the stack as up when ingest, query and control answer).
 
 ## Mock and real API
 
@@ -481,7 +521,7 @@ on port 8851.
 | `node e2e/contract.cjs` | 82 of 82 checks pass: 59 requests to both, compared, 22 of them value by value, and the limits-record refusal (one wording difference, reported, not failed: the mock's "aggregation "limitk" (not implemented …)" against the real "limitk / limit_ratio aggregations") |
 | `node e2e/real.cjs` | 28 of 28 checks pass on the real API (one page error is expected and checked for: the PromQL linter's stack overflow on a 5,000-term query) |
 | axe-core 4.14 | 0 serious or critical violations in 16 runs (5 in `run.cjs`, 8 in `design.cjs`, 3 in `fixes.cjs`) |
-| `MUTANTS=real node e2e/mutants.cjs` | MUTANTS_REAL_RESULT |
+| `MUTANTS=real node e2e/mutants.cjs` | first run 23 of 25 killed; the 2 survivors answered with tests (one found a bug, fixed) and re-run with a new mutant: 26 of 26 killed (table below) |
 | `MUTANTS=fixes node e2e/mutants.cjs`, `node e2e/mutants.cjs` | not re-run in this change; their results below are from the changes that wrote them |
 
 Changed checks in this change (none deleted): `e2e/errors.cjs` tests the 1, 2, 4 s retries
@@ -552,6 +592,50 @@ restyling and were fixed: the query well and the editor inside it were both scro
 with nothing focusable by axe's rules.
 
 ### Mutants
+
+**This change** (`MUTANTS=real node e2e/mutants.cjs`, results in
+`e2e/measurements/mutants-real.txt`): one property broken at a time in a copy of the app in
+the session's scratch area (never in the checkout), the copy rebuilt, the unit tests and
+`e2e/errors.cjs` run. First run: 25 mutants, **23 killed, 2 survived**. Both survivors were
+answered with a test, and those two and one mutant added for the bug the second test found
+were run again alone: **26 of 26 killed**.
+
+| Mutant | Caught by |
+|---|---|
+| parser: a number is scaled by multiplying by a power of ten below 1 (inexact) | the parser's properties against `JSON.parse` and `Number`; the real API's and the mock's bodies; the alignment property |
+| parser: digits past 2^53 are computed, not read by `Number()` | the parser's properties; `readNumber` against `Number` |
+| parser: "+Inf" is read as NaN | the parser's properties and fixed bodies |
+| parser: a sample cut in two by the network loses its first character | the property over bodies cut anywhere |
+| parser: an escaped quote in a label value ends the metric object early | the parser's properties |
+| parser: a time that is not a JSON number is accepted | **survived the first run**: no test fed a leading zero (`01`) through the compact path. Now killed by the check that `01`, `00`, `-01`, `0123`, `.5`, `5.`, `1.e3` and `-` are refused as `JSON.parse` refuses them, compact and spaced |
+| parser: the body text the JSON form reads is the first piece only (the lazy join) | the property that the text is the body, cut anywhere |
+| alignment: a gap is 0, not NaN | alignment and gap tests; `e2e/errors.cjs` page checks |
+| alignment: the grid tolerance is a fraction of a step | **survived the first run**: the test used a 0.1 s step, which at this epoch stays within 1e-6 of a step (9.5e-7 at worst), so it could not tell. Now killed by the same test at 2 ms and 1 ms steps, which also found that the grid's point count used a 1e-9-of-a-step margin and could drop the last point of a millisecond step (fixed: the count uses the same 5 µs) |
+| alignment: the grid's points are counted with 1e-9 of a step | the millisecond-step test (added with the fix above) |
+| window: computed in fractional seconds | the window property (`lib.test.ts`) |
+| chart: a NaN gap reaches the renderer as a value | the downsampling tests |
+| statistics: a NaN gap counts as a value | the statistics tests |
+| errors: the API's time limit (503 `timeout`) is retried as if busy | the kinds of every real answer; retry rules; `e2e/errors.cjs` (not retried) |
+| errors: `Retry-After` is ignored | the delay tests; `e2e/errors.cjs` (asked again in 1 s, 10 s) |
+| errors: retries ignore the 60 s stop | the retry rules |
+| errors: the waiting line does not say the API is busy | `e2e/errors.cjs` |
+| errors: a refused key is told to change the query | the advice tests; `e2e/errors.cjs` |
+| errors: the button of a refused key runs the query again instead of opening Settings | `e2e/errors.cjs` |
+| errors: `Retry-After` as an HTTP date is not read | `parseRetryAfter` tests |
+| warnings: the banner does not say the result may be incomplete | `e2e/errors.cjs` |
+| autocomplete: lookups are not bounded by the page's time range | the lookup-window test (`promClient.test.ts`) |
+| errors: a step too small for the range is advised as a change to the query | the kinds and the step advice tests |
+| errors: every limit is advised as "narrow the time range" | the limit advice test |
+| errors: a 401 with no key set says the key was refused | the key advice test; `e2e/errors.cjs` (no key) |
+| errors: an answer that is not the API's is reported as "the API answered" | `e2e/errors.cjs` (the platform's 503) |
+
+The full "caught by" lists are in the results file. What the mutation run does not cover:
+the mock's own changes, which the contract test checks against the real API instead: run
+against the mock as it stood at the restart (commit `6488856`; HTTP only, the limits-record
+case left out), it passes 27 of 80 checks and fails on `Vary`, the set of cost headers, the
+timestamps of the fractional-start and 1.5 ms cases, and the status of the sub-millisecond
+step, the 0.9817 s step and 11,000 steps; and the shell's banner wording (checked by
+`e2e/real.cjs`, not by a mutant).
 
 **The review fixes** (`MUTANTS=fixes node e2e/mutants.cjs`, results in
 `e2e/measurements/mutants-fixes.txt`): one property broken at a time, the app rebuilt, the

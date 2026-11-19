@@ -38,7 +38,7 @@ export interface Deps {
 
 const unavailableQuery = (): QueryClient => {
   const no = async () => ({ ok: false as const, status: 503, errorType: 'unavailable', error: 'The query service is not connected to this deployment.' })
-  return { instant: no, range: no, labelNames: no, labelValues: no, series: no, metadata: no }
+  return { instant: no, range: no, labelNames: no, labelValues: no, series: no, metadata: no, plan: no }
 }
 
 const defaults: Required<Pick<Deps, 'query' | 'control' | 'monitors'>> = {
@@ -48,6 +48,19 @@ const defaults: Required<Pick<Deps, 'query' | 'control' | 'monitors'>> = {
 }
 
 export const MCP_PATH = '/mcp'
+
+/**
+ * `GET /healthz`, without a credential (the gateway asks it through its service binding and
+ * never forwards the path): 200 `ok` when the Worker has the key store and the three services
+ * it calls, 503 naming what is missing. It calls none of them: without a credential there is
+ * nothing it may ask.
+ */
+export function health(req: Request, env: Env): Response {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('method not allowed\n', { status: 405, headers: { Allow: 'GET, HEAD' } })
+  const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER'] as const).filter((b) => !env[b])
+  const body = missing.length === 0 ? 'ok\n' : `missing binding: ${missing.join(', ')}\n`
+  return new Response(req.method === 'HEAD' ? null : body, { status: missing.length === 0 ? 200 : 503, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } })
+}
 
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/
 
@@ -85,7 +98,7 @@ export function createWorker(deps: Deps = {}): ExportedHandler<Env> {
     async fetch(req, env): Promise<Response> {
       const url = new URL(req.url)
       const path = url.pathname.replace(/\/+$/, '') || '/'
-      if (path === '/healthz') return new Response('ok')
+      if (path === '/healthz') return health(req, env)
       const isMcp = path === MCP_PATH
       if (!isMcp && path !== REST_PREFIX && !path.startsWith(REST_PREFIX + '/')) return problem(404, 'not-found', 'No such route.', `MCP is at ${MCP_PATH}; JSON at ${REST_PREFIX}.`)
       if (!originAllowed(req, env)) return problem(403, 'origin-not-allowed', 'Requests from this browser origin are not accepted.', 'Call from a server, or ask the operator to add the origin to ALLOWED_ORIGINS.')

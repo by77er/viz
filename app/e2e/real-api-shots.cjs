@@ -24,7 +24,11 @@ const q = (s) => encodeURIComponent(s)
 /** The key the app sends (Settings, in localStorage), then a reload so it is used from the start. */
 const key = (k) => ({ eval: `localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: '${k}' })); setTimeout(() => location.reload(), 50)` })
 const fail = (kind, count) => ({ eval: `fetch('${MOCK}/__mock/fail?kind=${kind}&count=${count}')` })
-const states = (name, steps) => [1440, 400].map((width) => ({ name: `${name}-${width}`, width, steps }))
+// Every state starts by clearing the mock's queued failures: the app before this change does
+// not retry, so failures queued for one state (four `platform` answers) would otherwise be
+// answered to the next state's queries. The clearing step runs before the key's reload.
+const clear = { eval: `fetch('${MOCK}/__mock/fail?count=0')` }
+const states = (name, steps) => [1440, 400].map((width) => ({ name: `${name}-${width}`, width, steps: [clear, { wait: 200 }, ...steps] }))
 const STATES = [
   // A parse error: the API gives no position; the editor's parser does (after).
   ...states('parse-error', [key('e2e-read'), { wait: 2500 }]).map((s) => ({ ...s, url: `/explore?q=${q(lib.Q_BAD)}&${W}` })),

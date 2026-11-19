@@ -253,6 +253,7 @@ impl<'a> Parser<'a> {
                         Ok(Node::Metric(MetricExpr::LabelReplace { inner: Box::new(inner), dst, replacement, src, regex }, pos))
                     }
                     "approx_topk" => Err(Error::Unsupported("approx_topk (probabilistic aggregation) is not implemented".into())),
+                    "variants" => Err(Error::Unsupported("variants(...) of (...) (multi-variant queries) is not implemented".into())),
                     _ => Err(self.unexpected()),
                 }
             }
@@ -587,9 +588,9 @@ impl<'a> Parser<'a> {
         }
         let s = self.string()?;
         match op {
-            LineFilterOp::Match | LineFilterOp::NotMatch => {
-                crate::goregex::compile_unanchored(&s, true).map_err(|e| self.err_at(pos, format!("invalid regex {s:?}: {e}")))?;
-            }
+            // Line-filter regexes are compiled when the query runs (Loki's parser accepts
+            // `|~ "error\\"` and fails at execution).
+            LineFilterOp::Match | LineFilterOp::NotMatch => {}
             LineFilterOp::Pattern | LineFilterOp::NotPattern => {
                 crate::pattern::Pattern::parse(&s, false).map_err(|e| self.err_at(pos, e))?;
             }
@@ -799,7 +800,7 @@ impl<'a> Parser<'a> {
             Tok::Unit(t) => {
                 let Some(op) = cmp else { return Err(self.unexpected()) };
                 self.next();
-                if let Some(d) = parse_go_duration(&t) {
+                if let Some(d) = parse_go_duration(&t).or_else(|| crate::text::parse_prom_duration(&t)) {
                     return Ok(LabelFilter::Duration { name, op, value: d });
                 }
                 if let Some(b) = parse_bytes(&t) {

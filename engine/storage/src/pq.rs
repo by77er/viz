@@ -3,6 +3,7 @@
 //! (non-Arrow) API.
 use crate::error::{Error, Result};
 use crate::json;
+pub use crate::sparse::Source;
 use bytes::Bytes;
 use parquet::basic::{Compression, ConvertedType, Encoding, Repetition, Type as PhysicalType};
 use parquet::column::reader::get_typed_column_reader;
@@ -71,16 +72,27 @@ pub struct EncodedFile {
     pub index: String,
 }
 
-/// Writer settings. The default is the contract's 100,000-row cap.
+/// Data-page row cap (contracts/TABLES.md): small pages let a reader that knows which rows
+/// it wants skip whole pages of `ts` and `value` without decompressing them (data page v2
+/// headers carry their row counts).
+pub const PAGE_ROWS: usize = 20_000;
+
+/// Writer settings. The default is the contract's layout: row groups of at most 100,000
+/// rows, data pages of at most [`PAGE_ROWS`] rows, no column index.
 #[derive(Debug, Clone)]
 pub struct WriteOptions {
     /// Maximum rows per row group. Values below 1 are treated as 1.
     pub max_row_group_rows: usize,
+    /// Maximum rows per data page. Values below 1 are treated as 1.
+    pub page_rows: usize,
+    /// Write the Parquet column index (per-page min/max). The offset index is always
+    /// written (the `parquet` crate's default).
+    pub column_index: bool,
 }
 
 impl Default for WriteOptions {
     fn default() -> Self {
-        WriteOptions { max_row_group_rows: MAX_ROW_GROUP_ROWS }
+        WriteOptions { max_row_group_rows: MAX_ROW_GROUP_ROWS, page_rows: PAGE_ROWS, column_index: false }
     }
 }
 
@@ -98,14 +110,26 @@ pub struct RowGroupIndex {
     /// Exact smallest / largest `ts` (for `metric_series`: min of `min_ts`, max of `max_ts`).
     pub min_ts: i64,
     pub max_ts: i64,
+    /// `series_id` of the row group's first and last row (`"sid":[first,last]`). Rows are
+    /// sorted by `(metric_name, series_id)`, so the row group holds only keys between
+    /// `(min_name, first)` and `(max_name, last)`. `None` in fragments written before
+    /// 2026-11-19 (contracts/TABLES.md): a reader then knows only the name range.
+    pub sid: Option<(i64, i64)>,
 }
 
 /// The index fragment stored with a file's ledger row.
 ///
-/// JSON form: `{"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_name":"..","max_name":"..","min_ts":N,"max_ts":N},..]}`
+/// JSON form: `{"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_name":"..","max_name":"..","min_ts":N,"max_ts":N,"sid":[N,N]},..],"foot":[N,N]}`.
+/// `sid` and `foot` were added on 2026-11-19 (additive within version 1: a reader that
+/// does not know them ignores them, and a reader that does treats their absence as
+/// "unknown").
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileIndex {
     pub row_groups: Vec<RowGroupIndex>,
+    /// Offset and length of everything after the last row group: the offset index, the
+    /// column index if any, the footer metadata and the closing 8 bytes. With it and a
+    /// row group's `off`/`len`, a reader can range-read a file without reading its end first.
+    pub foot: Option<(u64, u64)>,
 }
 
 impl FileIndex {
@@ -119,9 +143,17 @@ impl FileIndex {
             json::write_string(&mut s, &g.min_name);
             s.push_str(",\"max_name\":");
             json::write_string(&mut s, &g.max_name);
-            s.push_str(&format!(",\"min_ts\":{},\"max_ts\":{}}}", g.min_ts, g.max_ts));
+            s.push_str(&format!(",\"min_ts\":{},\"max_ts\":{}", g.min_ts, g.max_ts));
+            if let Some((a, b)) = g.sid {
+                s.push_str(&format!(",\"sid\":[{a},{b}]"));
+            }
+            s.push('}');
         }
-        s.push_str("]}");
+        s.push(']');
+        if let Some((o, l)) = self.foot {
+            s.push_str(&format!(",\"foot\":[{o},{l}]"));
+        }
+        s.push('}');
         s
     }
 
@@ -141,9 +173,21 @@ impl FileIndex {
             Some(json::Value::String(s)) => Ok(s.clone()),
             _ => Err(bad(k)),
         };
+        // An optional pair of integers: absent is `None`; present and malformed is an error
+        // (a fragment that does not parse keeps its file whole, never a guess).
+        let pair = |g: &json::Value, k: &str| -> Result<Option<(i64, i64)>> {
+            match g.get(k) {
+                None => Ok(None),
+                Some(json::Value::Array(a)) => match a.as_slice() {
+                    [json::Value::Int(x), json::Value::Int(y)] => Ok(Some((*x, *y))),
+                    _ => Err(bad(k)),
+                },
+                Some(_) => Err(bad(k)),
+            }
+        };
         let mut row_groups = Vec::with_capacity(rg.len());
         for g in rg {
-            row_groups.push(RowGroupIndex {
+            let r = RowGroupIndex {
                 rows: uint(g, "rows")?,
                 offset: uint(g, "off")?,
                 length: uint(g, "len")?,
@@ -151,9 +195,80 @@ impl FileIndex {
                 max_name: text(g, "max_name")?,
                 min_ts: int(g, "min_ts")?,
                 max_ts: int(g, "max_ts")?,
-            });
+                sid: pair(g, "sid")?,
+            };
+            r.offset.checked_add(r.length).ok_or_else(|| bad("off"))?;
+            row_groups.push(r);
         }
-        Ok(FileIndex { row_groups })
+        let foot = match pair(&v, "foot")? {
+            None => None,
+            Some((o, l)) => {
+                let (o, l) = (u64::try_from(o).map_err(|_| bad("foot"))?, u64::try_from(l).map_err(|_| bad("foot"))?);
+                o.checked_add(l).ok_or_else(|| bad("foot"))?;
+                Some((o, l))
+            }
+        };
+        Ok(FileIndex { row_groups, foot })
+    }
+}
+
+impl RowGroupIndex {
+    /// Whether the row group may hold a row of metric `name` whose `series_id` lies in one
+    /// of `sids` (sorted, disjoint, inclusive intervals). Exact for the sort order
+    /// `(metric_name, series_id)`: a row group holds only keys between
+    /// `(min_name, first)` and `(max_name, last)`. Without `sid` (an older fragment) only the
+    /// name range is known. Statistics that contradict the sort order (`first > last` with
+    /// one name) prove nothing, and the row group is kept.
+    pub fn may_hold(&self, name: &[u8], sids: &[(i64, i64)]) -> bool {
+        let (lo_name, hi_name) = (self.min_name.as_bytes(), self.max_name.as_bytes());
+        if name < lo_name || name > hi_name {
+            return false;
+        }
+        let (mut lo, mut hi) = (i64::MIN, i64::MAX);
+        if let Some((first, last)) = self.sid {
+            if name == lo_name {
+                lo = first;
+            }
+            if name == hi_name {
+                hi = last;
+            }
+            if lo > hi {
+                return true;
+            }
+        }
+        // The first interval that ends at or after `lo` starts at or before `hi`?
+        let i = sids.partition_point(|(_, b)| *b < lo);
+        sids.get(i).is_some_and(|(a, _)| *a <= hi)
+    }
+
+    /// Whether the row group's time span overlaps `[min_ts, max_ts]`.
+    pub fn overlaps(&self, min_ts: i64, max_ts: i64) -> bool {
+        self.min_ts <= max_ts && self.max_ts >= min_ts
+    }
+}
+
+impl FileIndex {
+    /// The byte ranges to fetch so that the engine can read row groups `groups` of this
+    /// file: those row groups and the footer, as `(offset, length)`, sorted, with ranges
+    /// less than `gap` bytes apart joined into one (a range read costs about one round
+    /// trip whatever its size below 1 MB, so a few wasted bytes beat another read).
+    /// `None` when the fragment has no `foot` (written before 2026-11-19): read the whole file.
+    pub fn byte_ranges(&self, groups: &[usize], gap: u64) -> Option<Vec<(u64, u64)>> {
+        let foot = self.foot?;
+        let mut r: Vec<(u64, u64)> = groups.iter().filter_map(|g| self.row_groups.get(*g)).map(|g| (g.offset, g.length)).collect();
+        r.push(foot);
+        r.sort_unstable();
+        let mut out: Vec<(u64, u64)> = Vec::with_capacity(r.len());
+        for (o, l) in r {
+            match out.last_mut() {
+                Some((po, pl)) if o <= (*po + *pl).saturating_add(gap) => {
+                    let end = (*po + *pl).max(o + l);
+                    *pl = end - *po;
+                }
+                _ => out.push((o, l)),
+            }
+        }
+        Some(out)
     }
 }
 
@@ -176,7 +291,8 @@ fn schema(table: Table) -> Arc<Type> {
     Arc::new(Type::group_type_builder("schema").with_fields(fields).build().expect("static schema"))
 }
 
-fn props(table: Table) -> Arc<WriterProperties> {
+fn props(table: Table, opts: &WriteOptions) -> Arc<WriterProperties> {
+    let page_rows = opts.page_rows.max(1);
     let delta = |b: parquet::file::properties::WriterPropertiesBuilder, col: &str| {
         b.set_column_dictionary_enabled(ColumnPath::from(col), false)
             .set_column_encoding(ColumnPath::from(col), Encoding::DELTA_BINARY_PACKED)
@@ -184,10 +300,13 @@ fn props(table: Table) -> Arc<WriterProperties> {
     let mut b = WriterProperties::builder()
         .set_writer_version(WriterVersion::PARQUET_2_0)
         .set_compression(Compression::SNAPPY)
-        .set_statistics_enabled(EnabledStatistics::Chunk)
+        .set_statistics_enabled(if opts.column_index { EnabledStatistics::Page } else { EnabledStatistics::Chunk })
         // Exact min/max in the footer, so they can be compared with the index fragment.
         .set_statistics_truncate_length(None)
         .set_data_page_size_limit(256 * 1024)
+        // The row cap is checked once per write batch, so the batch must not exceed it.
+        .set_data_page_row_count_limit(page_rows)
+        .set_write_batch_size(page_rows.min(1024))
         .set_created_by("viz-storage".to_string())
         // Declare the sort order in every row group, for readers that can use it.
         .set_sorting_columns(Some(
@@ -234,15 +353,15 @@ pub(crate) struct FileWriter {
 }
 
 impl FileWriter {
-    pub fn new(table: Table) -> Result<FileWriter> {
-        FileWriter::with_capacity(table, 0)
+    pub fn new(table: Table, opts: &WriteOptions) -> Result<FileWriter> {
+        FileWriter::with_capacity(table, 0, opts)
     }
 
     /// A writer whose output buffer starts with room for `capacity` bytes, so a caller
     /// that knows roughly how large the file will be avoids the buffer doubling (and
     /// existing twice while it does).
-    pub fn with_capacity(table: Table, capacity: usize) -> Result<FileWriter> {
-        let w = SerializedFileWriter::new(Vec::with_capacity(capacity), schema(table), props(table)).map_err(perr(None))?;
+    pub fn with_capacity(table: Table, capacity: usize, opts: &WriteOptions) -> Result<FileWriter> {
+        let w = SerializedFileWriter::new(Vec::with_capacity(capacity), schema(table), props(table, opts)).map_err(perr(None))?;
         Ok(FileWriter { table, w, index: FileIndex::default(), rows: 0, min_ts: i64::MAX, max_ts: i64::MIN })
     }
 
@@ -253,9 +372,9 @@ impl FileWriter {
     /// Write one non-empty row group.
     pub fn write_group(&mut self, g: Group<'_>) -> Result<()> {
         let e = perr(None);
-        let (names, lo, hi) = match &g {
-            Group::Samples { names, ts, .. } => (*names, *ts, *ts),
-            Group::Series { names, min_ts, max_ts, .. } => (*names, *min_ts, *max_ts),
+        let (names, lo, hi, sids) = match &g {
+            Group::Samples { names, ts, series_id, .. } => (*names, *ts, *ts, *series_id),
+            Group::Series { names, min_ts, max_ts, series_id, .. } => (*names, *min_ts, *max_ts, *series_id),
         };
         let n = names.len();
         if n == 0 {
@@ -304,6 +423,7 @@ impl FileWriter {
             max_name: name(&names[n - 1])?,
             min_ts,
             max_ts,
+            sid: Some((sids[0], sids[n - 1])),
         });
         self.rows += n as u64;
         self.min_ts = self.min_ts.min(min_ts);
@@ -314,6 +434,9 @@ impl FileWriter {
     pub fn finish(mut self, day: String) -> Result<EncodedFile> {
         self.w.finish().map_err(perr(None))?;
         let bytes = std::mem::take(self.w.inner_mut());
+        // Everything after the last row group (4: after the leading magic of a file with none).
+        let end = self.index.row_groups.iter().map(|g| g.offset + g.length).max().unwrap_or(4);
+        self.index.foot = Some((end, (bytes.len() as u64).saturating_sub(end)));
         Ok(EncodedFile {
             table: self.table,
             day,
@@ -326,16 +449,23 @@ impl FileWriter {
     }
 }
 
-pub(crate) type Reader = SerializedFileReader<Bytes>;
+pub(crate) type Reader = SerializedFileReader<Source>;
 
-/// Open a whole file held in memory and check it has `table`'s schema.
-pub(crate) fn open(bytes: &[u8], table: Table, index: usize) -> Result<Reader> {
+/// Open a file held in memory (whole, or a sparse file container: `crate::sparse`) and
+/// check it has `table`'s schema. Returns the reader and what it holds.
+pub(crate) fn open(bytes: &[u8], table: Table, index: usize) -> Result<(Reader, Source)> {
     open_shared(Bytes::copy_from_slice(bytes), table, index)
 }
 
 /// [`open`] without the copy, for a caller that already holds the file as `Bytes`.
-pub(crate) fn open_shared(bytes: Bytes, table: Table, index: usize) -> Result<Reader> {
-    let r = SerializedFileReader::new(bytes).map_err(perr(Some(index)))?;
+pub(crate) fn open_shared(bytes: Bytes, table: Table, index: usize) -> Result<(Reader, Source)> {
+    let src = Source::from_bytes(bytes, Some(index))?;
+    let r = open_source(src.clone(), table, index)?;
+    Ok((r, src))
+}
+
+fn open_source(src: Source, table: Table, index: usize) -> Result<Reader> {
+    let r = SerializedFileReader::new(src).map_err(perr(Some(index)))?;
     let descr = r.metadata().file_metadata().schema_descr();
     let want = table.columns();
     if descr.num_columns() != want.len() {
@@ -364,6 +494,37 @@ pub(crate) fn read_col<T: DataType>(rg: &dyn RowGroupReader, col: usize, n: usiz
     }
     if out.len() != n {
         return Err(Error::Parquet { index: Some(index), message: format!("column {col}: expected {n} values, read {}", out.len()) });
+    }
+    Ok(())
+}
+
+/// Read rows `runs` (sorted, disjoint `[start, end)` row ranges) of column `col` of a row
+/// group into `out` (cleared first), in order. Rows between runs are skipped: a data page
+/// that holds none of the runs' rows is passed over without being decompressed (its v2
+/// header carries its row count), so a read of a few series decodes a few pages.
+pub(crate) fn read_runs<T: DataType>(rg: &dyn RowGroupReader, col: usize, runs: &[(usize, usize)], index: usize, out: &mut Vec<T::T>) -> Result<()> {
+    let e = perr(Some(index));
+    out.clear();
+    let mut r = get_typed_column_reader::<T>(rg.get_column_reader(col).map_err(&e)?);
+    let mut pos = 0usize;
+    for &(a, b) in runs {
+        if a > pos {
+            let skipped = r.skip_records(a - pos).map_err(&e)?;
+            if skipped != a - pos {
+                return Err(Error::Parquet { index: Some(index), message: format!("column {col}: expected to skip {} rows, skipped {skipped}", a - pos) });
+            }
+        }
+        let want = out.len() + (b - a);
+        while out.len() < want {
+            let (got, _, _) = r.read_records(want - out.len(), None, None, out).map_err(&e)?;
+            if got == 0 {
+                break;
+            }
+        }
+        if out.len() != want {
+            return Err(Error::Parquet { index: Some(index), message: format!("column {col}: rows {a}..{b}: read {} values short", want - out.len()) });
+        }
+        pos = b;
     }
     Ok(())
 }

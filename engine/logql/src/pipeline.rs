@@ -369,25 +369,46 @@ fn is_error_filter(s: &Stage) -> bool {
     matches!(s, Stage::LabelFilter(LabelFilter::Matcher(m)) if m.name == ERROR)
 }
 
-/// Within each run of consecutive label-filter stages, filters on `__error__` run last
-/// (observed in Loki: `| __error__="" | status > 0` drops lines whose `status` does not
-/// convert, as `| status > 0 | __error__=""` does).
+/// The order stages run in, as observed in Loki:
+///
+/// * within each run of consecutive label-filter stages, filters on `__error__` run last
+///   (`| __error__="" | status > 0` drops lines whose `status` does not convert, as
+///   `| status > 0 | __error__=""` does);
+/// * a line filter written after `decolorize` sees the line as it was before `decolorize`
+///   (unless a `line_format` or `unpack` comes between them): `| decolorize |= "\u001b"`
+///   keeps coloured lines.
 pub fn order_stages(stages: &[Stage]) -> Vec<&Stage> {
     let mut out: Vec<&Stage> = Vec::with_capacity(stages.len());
+    let mut barrier = 0; // just after the last line_format / unpack
     let mut i = 0;
     while i < stages.len() {
-        if !matches!(stages[i], Stage::LabelFilter(_)) {
-            out.push(&stages[i]);
-            i += 1;
-            continue;
+        match &stages[i] {
+            Stage::LineFilter(_) => {
+                match out[barrier..].iter().position(|s| matches!(s, Stage::Decolorize)) {
+                    Some(p) => out.insert(barrier + p, &stages[i]),
+                    None => out.push(&stages[i]),
+                }
+                i += 1;
+            }
+            Stage::LabelFilter(_) => {
+                let mut j = i;
+                while j < stages.len() && matches!(stages[j], Stage::LabelFilter(_)) {
+                    j += 1;
+                }
+                out.extend(stages[i..j].iter().filter(|s| !is_error_filter(s)));
+                out.extend(stages[i..j].iter().filter(|s| is_error_filter(s)));
+                i = j;
+            }
+            Stage::LineFormat(_) | Stage::Unpack => {
+                out.push(&stages[i]);
+                barrier = out.len();
+                i += 1;
+            }
+            _ => {
+                out.push(&stages[i]);
+                i += 1;
+            }
         }
-        let mut j = i;
-        while j < stages.len() && matches!(stages[j], Stage::LabelFilter(_)) {
-            j += 1;
-        }
-        out.extend(stages[i..j].iter().filter(|s| !is_error_filter(s)));
-        out.extend(stages[i..j].iter().filter(|s| is_error_filter(s)));
-        i = j;
     }
     out
 }

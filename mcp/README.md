@@ -80,7 +80,7 @@ the scopes for are not listed. `admin` is not honoured here: give agent keys exp
 |---|---|---|
 | `search_telemetry` | read | Metrics matching words (name, help), with type, unit, series in the last hour, label cardinalities; entity values (`service="checkout"`) and the metrics carrying them; near spellings |
 | `describe_metric` | read | One metric: type and unit (metadata, else inferred from the name), labels with distinct counts and top values, sample series, example PromQL; near names when unknown |
-| `validate_query` | read | Syntax with offset/line/column and a caret; result type; metric and label names checked against this tenant's own (did-you-mean); `rate()` on a gauge; `histogram_quantile` without `le`; cost estimate from series counts (the query is not run). TraceQL and LogQL: not available yet |
+| `validate_query` | read | Syntax with offset/line/column and a caret; result type; metric and label names checked against this tenant's own (did-you-mean); `rate()` on a gauge; `histogram_quantile` without `le`; cost estimate from series counts, and the query service's own plan (`/api/v1/plan`: execution, files to read of those listed, bytes, the scan bound, a series estimate, and the refusal a limit would give, shown as the warning `would-be-refused`); the query is not run. TraceQL and LogQL: not available yet |
 | `query` | read | PromQL over a range or at an instant. Default: a digest per series (last, min, max, mean, trend, outliers, gaps), most important first, completeness stated, Explore link. `table` (24 buckets, TSV) and `series` (every point, paged) on request |
 | `search_dashboards` | dashboards:read | Dashboards with intent, tags, panels, revision, last change and by whom (person or agent) |
 | `get_dashboard` | dashboards:read | `outline` (default), `spec` (JSON by JSON Pointer, with the revision to write against), or `resolved` (fragments expanded, variables substituted) |
@@ -145,6 +145,15 @@ warning unknown-metric: No metric named "http_server_request_total" has data in 
 selector {__name__="http_server_request_total",service="checkout"}: 0 series
 ```
 ````
+Since the query service's plan is asked as well, the header gains one line after the estimate;
+against the fake query service, which has no lake files, it reads
+`Plan (the query service's own, from one ledger read; rows still in the shards are not counted):
+single execution; 0 file(s) to read of 0 listed (0 skipped), 0 bytes, up to 0 samples to decode,
+about 56 series; within the limits.` (`tools.test.ts` holds this form), and
+`structuredContent.estimate.plan` carries the numbers. A query service that answers the plan
+with an error (an older release has no `/api/v1/plan`) leaves the series-count estimate and says
+`Plan: the query service's plan is not available (…)`. On Cloudflare, see `deploy/README.md`,
+"Trial 2".
 A syntax error instead (`sum(rate(…[5m])`, one parenthesis short) gives
 `error syntax: 1:60: parse error: unexpected end of input in aggregation, expected ")" or ","`
 with the line and a caret under column 60, and `"position": {"offset": 59, "line": 1, "column": 60}`.
@@ -444,32 +453,33 @@ with a deadline and partial results; the budget hook.
 - **Usage signals** (views, last viewed) for `search_dashboards`: not tracked anywhere.
 - **Images**, MCP Apps (`ui://`), `subscriptions/listen`, completions, logging.
 - **Dashboard deep links**: the app has only Explore, so links are Explore links per query.
-- **A cost estimate in bytes**: `validate_query` estimates from series counts and an assumed
-  15 s spacing. The query service now has a plan-only endpoint (`/api/v1/plan` in
-  `query/src/index.ts`: files, bytes, scan bound, split, refusal), added after this surface
-  was built; `QueryClient` does not call it yet.
-- **Deployment**: never deployed; `wrangler.jsonc` is the production shape (service
-  bindings `QUERY`, `CONTROL`, `RULER`; KV `CONFIG`), not wired into `stack/`.
+- **Bytes for rows still in the shards**: `validate_query`'s plan comes from one ledger read,
+  so what the shards hold (the recent tail) is not in its file and byte counts; the series-count
+  estimate (15 s spacing assumed) covers it only roughly.
+- **Production deployment**: the pipeline deploys viz-mcp (`deploy/workers.json`, after
+  viz-query, viz-control and viz-ruler, whose names `deploy/configure.mjs` gives the bindings
+  `QUERY`, `CONTROL`, `RULER`), behind the gateway's `/mcp` and `/api/v1/agent/*`. It has run
+  on Cloudflare only as a staged trial, since destroyed (`deploy/README.md`, "Trial 2").
 
 ## Verification
 
 ```
 npm install
-npm test               # 179 tests in 9 files, in workerd (at most 2 workers)
+npm test               # 182 tests in 9 files, in workerd (npx vitest run --maxWorkers=2)
 npx tsc --noEmit       # clean
-npm run mutants        # 23 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
+npm run mutants        # 26 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md); vitest with at most 2 workers
 npm run conformance    # the official conformance suite against wrangler dev on 127.0.0.1:8921
 npm run measure        # read_dashboard tokens and wall time per example and budget
 npm run spike:libs     # the library check above (3 tests)
 ```
 
 Measured here: vitest 5.1.1 in workerd, TypeScript 5.9, Node 22.23, wrangler 4. The suite
-takes about 35–75 s on a shared machine. Last run 2026-11-19: 179 of 179 pass, `tsc` clean.
+takes about 25–75 s on a shared machine. Last run 2026-11-20: 182 of 182 pass, `tsc` clean.
 
 | File | Tests | What |
 |---|---|---|
 | `protocol.test.ts` | 20 | Raw JSON-RPC on the 2025 path (initialize for three revisions, an unknown revision, initialized, ping, tools/list byte-stable and scope-filtered, tools/call, tool errors as `isError`, argument errors with did-you-mean, resources incl. the template, prompts, -32601, -32700, -32600, 405 for GET/DELETE, 401 for missing/wrong/altered keys, Origin); the official SDK v1 client (2025) and v2 client (2026-07-28) doing everything |
-| `tools.test.ts` | 32 | Every tool's paths against the fake query service and ruler and the REAL control plane imported from `control/`: matches, entities, near names, not-available-yet, positions and carets, suggestions, rate-on-gauge, histogram without `le`, digest/instant/scalar/table/series, no data, service errors with positions, the series limit, the deadline, dashboards in three views, paging across the control plane's pages, revisions, schema pages that reassemble exactly, monitors with and without scope and binding, annotate, the REST surface, MCP and REST giving identical results |
+| `tools.test.ts` | 35 | Every tool's paths against the fake query service and ruler and the REAL control plane imported from `control/`: matches, entities, near names, not-available-yet, positions and carets, suggestions, rate-on-gauge, histogram without `le`, digest/instant/scalar/table/series, no data, service errors with positions, the series limit, the deadline, dashboards in three views, paging across the control plane's pages, revisions, schema pages that reassemble exactly, monitors with and without scope and binding, annotate, the REST surface, MCP and REST giving identical results; `validate_query`'s plan (one `/api/v1/plan` call with the caller's tenant, its numbers in text and structure, nothing run; a refusal the plan foresees is the warning `would-be-refused`; a query service without the endpoint leaves the series estimate with a note); `/healthz` (200 with the four bindings, 503 naming missing ones, 405) |
 | `examples.test.ts` | 10 | The three `dashboard/examples` dashboards via `read_dashboard`: each fits 2,000 tokens, breaching panels first in text and structure; CRIT/failed/not-available panels; narrowing by panels and variables; deadline (returns in under 2 s with 3 s queries); ≤ 3 in flight with the limit at 3 and every query run once; the panel limit; the measurements below |
 | `write.test.ts` | 15 | Dry runs write nothing for agent, agent-with-apply and person keys (control-plane snapshot unchanged); preview with data; the wrong metric caught with its near name; schema errors with suggestions; stale base; new specs; sanitized copies; proposals with named changes; base required; invalid refused unwritten; a new dashboard proposed (held by the control plane, nothing created, a retry returns the same proposal with nothing stored, an invalid spec refused unwritten, an agent with the apply scope refused by the control plane, a person applies, `list_revisions` names both); agents refused for apply and create with nothing written and no proposal made behind their back; apply sends no dry run: a refusal sends no write and a person's apply exactly one `PATCH`; a person applies; `agentsMayApply` lets an agent apply; no apply tool exists |
 | `e2e.test.ts` | 1 | The scripted agent task over MCP (below) |

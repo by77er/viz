@@ -16,6 +16,7 @@ changes no component: everything it needs from one is under "Needed changes".
 | `load.mjs` | Steady write and read load with a cutover report (used by the trial) |
 | `gateway/` | `viz-gateway`, the Worker on `vis.bitcru.sh`, and its tests |
 | `stage/` | The one shim a staged deployment needs (queue names, see "Needed changes" 1) |
+| `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
 | `resources.json` | KV namespace ids by title (not secret; rewritten by `resources.mjs`) |
 | `generated/` | Build output: configs, manifests, release records. Git-ignored |
@@ -31,13 +32,14 @@ push to main
             2. acknowledgements: dispatch input + "Migration:" trailers of every commit since
                the release serving now (read from the version tag on Cloudflare)
             3. deploy/deploy.sh
-                 npm ci (deploy/, stack/, control/, query/)
+                 npm ci (deploy/, stack/, control/, query/, ruler/, mcp/)
                  resources.mjs ensure       R2 viz-lake, KV viz-config, queues viz-flush, viz-maint,
                                             viz-flush-dlq, viz-maint-dlq
                  configure.mjs              generated/production/*.jsonc + manifest.json
                  release.mjs deploy         plan → refuse unacknowledged migrations (exit 3)
                                             phase 1: upload every Worker (serves nothing)
-                                            phase 2: promote viz-ingest, viz-control, viz-query, viz-gateway
+                                            phase 2: promote viz-ingest, viz-control, viz-query, viz-ruler,
+                                                     viz-mcp, viz-gateway
                  smoke.mjs                  /healthz until the new release answers; Remote Write +
                                             query with SMOKE_KEY
                  on smoke failure           no migration in the release → roll back to the previous
@@ -55,15 +57,18 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
                        vis.bitcru.sh (Workers custom domain; no DNS record is created by hand)
                                    │
                               viz-gateway  ── routes by path, adds x-viz-route, nothing else
-              ┌────────────────────┼────────────────────────┬───────────────────────┐
-     service binding INGEST   service binding QUERY    service binding CONTROL   TENANT (DO, by script_name)
-              │                    │                        │                     only for /api/v1/bootstrap
-         viz-ingest            viz-query               viz-control
-   edge (fetch), Shard, Ledger,   Leaf DOs; SHARD and      Tenant DO
-   Flush, 4 queue consumers,      LEDGER bound from        (keys, dashboards,
-   hourly cron                    viz-ingest by            settings)
-                                  script_name
-              └──────── R2 viz-lake, KV viz-config (shared by all three), queues ────────┘
+     ┌───────────────┬─────────────┼──────────────┬─────────────────┬──────────────┬──────────────────────┐
+  INGEST           QUERY         CONTROL          RULER             MCP          TENANT (DO, by script_name)
+     │               │             │                │                 │          only for /api/v1/bootstrap
+ viz-ingest      viz-query    viz-control       viz-ruler          viz-mcp
+ edge, Shard,    Leaf DOs;    Tenant DO         Ruler, Notifier,   stateless; QUERY, CONTROL,
+ Ledger, Flush,  SHARD and    (keys,            RulerIndex DOs;    RULER service bindings,
+ 4 consumers,    LEDGER from  dashboards,       QUERY, INGEST      each call with the caller's
+ hourly cron     viz-ingest   settings)         service bindings,  own key
+                                                TENANT (control's
+                                                Tenant) by script_name;
+                                                cron */15
+     └──── R2 viz-lake, KV viz-config (ingest, query, control, ruler and mcp read it), queues ────┘
 ```
 
 | Path | Goes to | Notes |
@@ -73,14 +78,16 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 | `POST /api/v1/push` | viz-ingest | routed as asked; edge does not serve it yet (404 from edge) |
 | `/api/v1/query`, `/query_range`, `/labels`, `/series`, `/metadata`, `/api/v1/label/*`, `/api/v1/status/*` | viz-query | |
 | `/api/v1/control`, `/api/v1/control/*` | viz-control | |
-| `GET /healthz` | the gateway | asks each backend's own `GET /healthz` through its service binding (ingest, query, control; none is public, since the gateway answers `/healthz` itself); 200 `healthy` or 503 naming the backend |
+| `GET /api/v1/rules`, `GET /api/v1/alerts`, `/api/v1/monitors`, `/api/v1/monitors/*` | viz-ruler | Prometheus' rule and alert reads, and the monitors API (monitors, groups, rule files, backtest, detectors, notifier config, silences): `ruler/src/http.ts` `ROUTES`. `/api/v2/alerts` (Alertmanager ingestion) is not served |
+| `/mcp` (exactly), `/api/v1/agent`, `/api/v1/agent/*` | viz-mcp | MCP over Streamable HTTP, and the same tools as JSON. `/mcp/` and `/mcp/x` are 404 at the gateway |
+| `GET /healthz` | the gateway | asks each backend's own `GET /healthz` through its service binding (ingest, query, control, ruler, mcp; none is public, since the gateway answers `/healthz` itself); 200 `healthy` or 503 naming the backend. The ruler's and mcp's say 503 when a binding they need is missing |
 | `POST /api/v1/bootstrap` | the gateway | exists only while the one-time secret is set ("Bootstrap") |
 | anything else | the gateway | 404, JSON listing the entry points. No web UI and no page: the UI comes later, through design review |
 
 The gateway is transparent: the incoming `Request` is handed to the backend as it arrived
 (method, URL with query string, headers, body stream) and the backend's `Response` comes back
 with its status, status text and every header, body streamed, plus `x-viz-route:
-ingest|query|control|health|bootstrap|gateway`. A backend that throws becomes a retryable
+ingest|query|control|ruler|mcp|health|bootstrap|gateway`. A backend that throws becomes a retryable
 502 with `Retry-After: 1`.
 
 **Six connections.** Spike S1 (`spikes/s1-fanout-r2/README.md`, measured on Cloudflare,
@@ -96,6 +103,18 @@ Worker itself: an ingest request makes one `Shard.append` per slot the tenant's 
 only through `Leaf` Durable Objects (its coordinator "never touches R2"), each of which has
 its own six. The only way to hit the shared limit is a request with more than six
 simultaneous subrequests from the Worker, which neither path makes.
+
+The two Workers added later are different. **viz-ruler** is called through the gateway only
+for its API (one or a few Durable Object calls per request), but its rule ticks run in `Ruler`
+Durable Objects, each with its own six, and call viz-query through a service binding, which
+then spends from the Ruler object's six; one query can itself open several connections (the
+ledger, then shards and leaves in parallel). So the ruler lets **one engine call per Ruler
+object be in flight at a time** (`ruler/src/engine.ts`, decision D39), and its webhooks go out
+from the `Notifier`, another object. **viz-mcp** behind the gateway shares the gateway
+request's six with everything it calls: `read_dashboard` runs up to six queries at once
+(`MCP_LIMITS.maxParallel`), and their own fan-out then queues inside the platform rather than
+failing (the measured behaviour of spike S1 is waiting, not errors). Not measured for mcp; see
+"Known risks".
 
 ## Releases: upload, then promote
 
@@ -144,9 +163,13 @@ production names (`viz-ingest@v2`), also for a stage. Per `contracts/COMPATIBILI
 release that changes a class's lifecycle should contain nothing else.
 
 **The first production deploy is such a release**: viz-ingest, viz-control and viz-query go
-from no migration to `v1`. Start it by hand: Actions → Deploy → Run workflow on `main`, with
-`acknowledge_migrations` = `viz-ingest@v1 viz-control@v1 viz-query@v1` (or put the three
-trailers on the merge commit).
+from no migration to `v1`, and viz-ruler from none to `v2` (its config has two steps, `v1`
+`Ruler` and `Notifier`, `v2` `RulerIndex`; the gate compares the newest tag, and `wrangler
+deploy` applies both). viz-mcp and viz-gateway have no Durable Object class. Start it by hand:
+Actions → Deploy → Run workflow on `main`, with `acknowledge_migrations` =
+`viz-ingest@v1 viz-control@v1 viz-query@v1 viz-ruler@v2` (or put the four trailers on the merge
+commit). Measured in Trial 2: without them the release is refused, exit 3, before anything is
+uploaded, and the refusal lists exactly these four.
 
 ## Release record
 
@@ -226,8 +249,8 @@ that happens, dispatch it again.
    `production`, which GitHub creates on first use; add protection rules to it if a person
    should approve each deploy.
 2. **First deploy**: run the Deploy workflow on `main` with `acknowledge_migrations` =
-   `viz-ingest@v1 viz-control@v1 viz-query@v1` (see above). It creates `viz-lake`,
-   `viz-config` and the four queues, deploys the four Workers and attaches `vis.bitcru.sh`.
+   `viz-ingest@v1 viz-control@v1 viz-query@v1 viz-ruler@v2` (see above). It creates `viz-lake`,
+   `viz-config` and the four queues, deploys the six Workers and attaches `vis.bitcru.sh`.
    Without `SMOKE_KEY` the smoke test checks health only.
 3. **First tenant**, from a machine with the two Cloudflare variables set and `npm ci` done
    in `deploy/`:
@@ -529,14 +552,14 @@ None of these were made here; 3 was made since in query/, and 4 in control/ and 
 
 | Worker | Why not |
 |---|---|
-| viz-ruler | Its `EVALUATOR` and `SINK` service bindings do not exist yet, so every rule would report `health: err` (`ruler/README.md`, "Not implemented") |
-| viz-publisher | Nothing triggers it: no queue consumer, no cron, no nudge from the ledger (`publisher/README.md`) |
-| viz-mcp | Binds viz-ruler, which is not deployed; never deployed (`mcp/README.md`, "Not implemented") |
+| viz-publisher | Not wired in yet: it reads the ledger's segments and is nudged by the maintenance run, but stack/ does not bind `PUBLISHER`, so nothing would reach it. When ingest binds it, it deploys **before** viz-ingest (callees first) |
 
-`configure.mjs` still generates their configs on every run (so a binding they need that the
-deployment lacks is caught early), and `workers.json` records the reasons. Deploying one
-later is `"deploy": true` plus its place in the order; viz-ruler and viz-mcp would also need
-their migrations acknowledged. The UI (`app/`, `design-system/`) is not part of this
+`configure.mjs` still generates its config on every run (so a binding it needs that the
+deployment lacks is caught early), and `workers.json` records the reason. viz-ruler and
+viz-mcp are deployed since Trial 2 (below): viz-ruler after viz-control, viz-query and
+viz-ingest, which it calls; viz-mcp after viz-ruler; the gateway last. A test
+(`test/configure.test.mjs`) fails if any deployed Worker binds one that is not deployed
+before it. The UI (`app/`, `design-system/`) is not part of this
 deployment and nothing here needs it: the gateway has no page and no static assets.
 
 ## Not implemented
