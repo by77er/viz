@@ -8,7 +8,7 @@ it is given, so it runs unchanged in WASM, natively and in a deterministic simul
 Builds for the host and for `wasm32-unknown-unknown`.
 
 ```
-CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2           # 49 tests
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2           # 68 tests (19 in tests/otel.rs)
 CARGO_TARGET_DIR=$PWD/target cargo build --release --target wasm32-unknown-unknown
 node tools/hyparquet_check.mjs      # independent reader (after cargo test --test export)
 cargo run --release --example independent -- DIR && python3 tools/independent_check.py DIR   # PyArrow and DuckDB
@@ -342,6 +342,37 @@ unchanged: below the 3× bar as the engine reads, and 40 remaining bits collide)
 
 ## Spans and logs: verification and measurements
 
+**Mutants (2026-11-19)**, `python3 tools/mutants.py otel` on a scratch copy (the shared tree
+untouched, the copy deleted), each against `tests/otel.rs`: **16 of 17 killed** on the first
+run. The survivor, "span flags written even when zero", lived because the generator almost
+never produced flags 0; the generator now does half the time, and the mutant is killed
+(`spans_flush_and_read_back`). The PyArrow check would also have caught it ("flags null when
+zero").
+
+| Mutant | Killed by |
+|---|---|
+| spans sorted by `span_name` before `service_name` (a sort key out of order) | `spans_flush_and_read_back` |
+| logs sorted by `stream_id` before `service_name` | `logs_flush_and_read_back` |
+| a residual bool attribute dropped | `spans_flush_and_read_back` |
+| a non-string `service.name` dropped instead of kept residual | `promoted_columns_hold_exactly_their_keys`, `spans_flush_and_read_back` |
+| the earlier of duplicate spans wins | `spans_flush_and_read_back` |
+| duplicate log rows kept | `logs_flush_and_read_back` |
+| spans partitioned by two-hour windows | `partitions_split_at_hour_and_day_boundaries`, `spans_flush_and_read_back` |
+| `trace_index` takes the latest root | `fragments_merge_as_the_contract_says`, `spans_flush_and_read_back` |
+| `trace_index` error count counts every non-unset span | `spans_flush_and_read_back` |
+| span flags written even when zero | `spans_flush_and_read_back` (after the generator fix) |
+| span fragment `min_dur` over starts | `spans_flush_and_read_back` |
+| log fragment `sid` last = first | `logs_flush_and_read_back` |
+| log fragment stream's last row group not advanced | `logs_flush_and_read_back` |
+| `line` written in 1 MiB pieces (pages over 1 MiB) | `line_pages_are_at_most_one_mib` |
+| `stream_id` hashed differently from `series_id` (labels reversed) | `stream_id_is_series_id` |
+| decode accepts an all-zero `trace_id` | `span_decoder_refuses_each_rule` |
+| decode accepts unsorted attributes | `span_decoder_refuses_each_rule` |
+
+The mutants of `edge` (tenant from the body, partial success miscounted, `stream_id` rules, a
+dropped attribute, and 15 more) are in `edge/README.md`: 19 of 19 killed.
+
+
 ```
 CARGO_PROFILE_DEV_DEBUG=0 cargo test -j 2 --test otel -- --test-threads 2           # 19 tests
 node ../../edge/scripts/otel-corpus.mjs CORPUS SEED 2                               # edge decodes protobufjs-encoded requests
@@ -373,8 +404,8 @@ against values computed in Python.
 **Cross-language read-back** (2026-11-19, seeds 1 to 5, scale 2: 9,420 spans in 300 traces a
 seed and 28,414 log rows, from 86 OTLP traces requests and 515 OTLP logs and Loki push
 requests, protobuf and JSON, including retries, clamped ends, orphan spans, a 65,536-byte
-attribute, an 8,192-byte span name, a 256 KiB line): `readback` **0 failures** in 37,558 to
-41,207 checks a seed; TraceQL **60 of 60** answers identical a seed (30 queries, all
+attribute, an 8,192-byte span name, a 256 KiB line): `readback` **0 failures** in 37,677 to
+41,327 checks a seed (every edge batch also re-encodes to the same bytes); TraceQL **60 of 60** answers identical a seed (30 queries, all
 non-empty; files, and files with pruning); LogQL **36 of 36** identical a seed (18 queries, 17
 or 18 non-empty; files with fragment pruning off and on). PyArrow and DuckDB **0 failures** in
 253,606 to 274,915 checks a seed. One finding, written into `contracts/TRACES.md`: merged

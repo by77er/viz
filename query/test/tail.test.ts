@@ -361,6 +361,27 @@ describe('a series whose split key is not its id', () => {
       else expect(res.headers.get('X-Viz-Series-Reads')).toBe('id-range')
     }
     expect(reread).toBeGreaterThan(0)
+    // One such series alone: the part its id is in sees it as foreign and has no stray of its
+    // own (its readers answer from their first read); the split still runs again.
+    const at2 = at + 600_000
+    await write(w.a, [
+      { labels: { __name__: 'one_typed_total', __type__: 'counter', job: 'j', i: 't' }, samples: Array.from({ length: 10 }, (_, i) => [at2 + i * 15_000, i] as [number, number]) },
+      ...Array.from({ length: 6 }, (_, k) => ({ labels: { __name__: 'one_typed_total', job: 'j', i: `u${k}` }, samples: Array.from({ length: 10 }, (_, i) => [at2 + i * 15_000, k * i] as [number, number]) })),
+    ])
+    await sealAll(w)
+    await flushAll(w)
+    await discardAll(w)
+    const q2 = { query: 'sum by (job) (rate(one_typed_total[1m]))', start: sec(at2 + 60_000), end: sec(at2 + 120_000), step: '15' }
+    delete hooks.forceLeaves
+    const want2 = await (await api(w.a.key, '/api/v1/query_range', q2)).text()
+    let reread2 = 0
+    for (const n of [2, 3, 4, 5, 6, 7]) {
+      hooks.forceLeaves = n
+      const res = await api(w.a.key, '/api/v1/query_range', q2)
+      expect(await res.text(), `${n} leaves, one typed series`).toBe(want2)
+      if (res.headers.get('X-Viz-Series-Reads') === 'id-range,name-time') reread2++
+    }
+    expect(reread2).toBeGreaterThan(0)
     // Without such a series, the readers keep to their id ranges.
     hooks.forceLeaves = 3
     const plain = await api(w.a.key, '/api/v1/query_range', { ...q, query: 'sum(rate(typed_total{__type__=""}[1m]))' })

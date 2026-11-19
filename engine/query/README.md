@@ -229,6 +229,18 @@ group of at most six files' worth of its part) while gathering, or one selector'
 evaluation. The coordinator weighs the stopped leaves (see `query/` README, "Split
 execution"). What remains, inside `viz_storage::select`, is in "Not implemented".
 
+### Foreign series in a split extract (2026-11-19, ABI 5)
+
+`split::Extract::foreign`: the series some range selects whose `series_id` is in the part's
+range but whose split key is another part's. A reader that reads the series files by its id
+range cannot see its own strays (series of its part whose id lies elsewhere); each of them is a
+foreign series of the part its id is in, so if no part reports one there is none, and the
+query Worker then trusts id-range reads (`query/README.md`, D59). `tests/series_ranges.rs`
+(property and two directed tests) and `examples/series_ranges.rs` (the measurement: at
+1,000,000 series over 32 parts, 640.7 MiB and 36.4 s of reader CPU by name and time, 82.5 MiB
+and 9.9 s by id range, identical extracts). Mutant (scratch copy): `foreign` never counted,
+**killed** by `a_series_whose_key_is_not_its_id_is_foreign_to_the_part_its_id_is_in`.
+
 ### The label calls over parts (2026-11-19)
 
 `src/meta.rs` (`label_names_part`, `label_values_part`, `series_part`, `MetaPart`), for

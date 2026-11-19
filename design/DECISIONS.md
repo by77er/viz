@@ -1994,3 +1994,33 @@ metadata)` cannot recognise.
 
 **Would change if.** The per-tenant setting is built (this list becomes its default); users
 mostly select by pod (then (b)); or Loki's documented default changes.
+
+## D59. Split parts read their `series_id` range of the series files too, and the split runs again with whole series files if any part sees a series whose key is not its id
+
+**Decision.** When a split's key is the `series_id` of every series that carries no
+`__type__`/`__unit__` (D54's "the shards can cut"), its readers read the series files by the
+part's id range (`part_plan`), as they read the sample files (D41). Every reader counts the
+series it sees whose id is in its range but whose key is another part's (`foreign`, ABI 5); if
+any part of the split saw one, the coordinator drops the answers and runs the split again with
+the series files read by name and time.
+
+**Alternatives.** (a) Keep reading series files by name and time (every part reads every
+series file). (b) Read by id range only when the key leaves nothing out (`without` empty), where
+no series can be foreign: almost never for a `rate` under an aggregation, which leaves out
+`__type__`/`__unit__`. (c) Read by id range and ignore the check, as no ingest path adds
+`__type__` today. (d) Each part asks its neighbours for its strays.
+
+**Why (measured here, native, `engine/query/examples/series_ranges.rs`, load 8 to 9).** At
+1,000,000 series over 32 parts (a series file of ten row groups) the parts read 640.7 MiB of
+series files and spent 36.4 s of reader CPU by name and time, 82.5 MiB and 9.9 s by id range,
+with identical extracts; at 100,000 series (one row group a file) nothing changed, so (a) only
+costs where splits are already expensive. (c) answers wrong for a tenant whose clients send
+`__type__` (a part misses its own series whose id lies elsewhere: shown in
+`tests/series_ranges.rs`). The check is exact because every such series is seen by the reader of
+the part its id is in. (d) is a second round of calls for a case that is rare.
+
+**Cost of it.** A split over series that carry `__type__`/`__unit__` reads twice (once by id
+range, then whole). Readers parse the labels of the series they see either way.
+
+**Would change if.** The split key stops leaving out `__type__`/`__unit__` (then nothing is
+foreign), or series files are written per part (then the check is moot).

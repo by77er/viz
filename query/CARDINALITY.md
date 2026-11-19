@@ -324,9 +324,14 @@ Worker against staged shards with a 20 MB tail, with the shards' CPU from the an
    id range of each sample file. The layout is unchanged; the fragment gained the bounds
    (written by flush and by compaction). Single-series reads at 100,000 series answer. Left:
    the coordinator resolves only when the series files of the window fit `maxFetchBytes`
-   (about 120,000 series over an hour); split parts still read every series file whole
-   (most of their bytes now); a selection spread over the id space reads every row group
-   until the sort key clusters a label (D19); pages are skipped in memory, not fetched.
+   (about 120,000 series over an hour); a selection spread over the id space reads every row
+   group until the sort key clusters a label (D19); pages are skipped in memory, not fetched.
+   **Split parts read their id range of the series files too since 2026-11-19 (ABI 5, D59)**,
+   with a check that falls back to the series files read by name and time when a series' key
+   is not its id: measured natively at 1,000,000 series over 32 parts, 640.7 MiB of series
+   files read and 36.4 s of reader CPU became 82.5 MiB and 9.9 s, identical extracts; at
+   100,000 series a series file is one row group and nothing changes (`query/README.md`,
+   "Measurements").
 3. **A series-only read for the label endpoints: built, in one place and over leaves
    (2026-11-19).** Label names, values and series come from series files and tail series
    tables, never samples; "in the range" is decided per file. Over leaves when the series files

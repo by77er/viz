@@ -32,6 +32,7 @@ import {
   type LedgerChange,
   type LedgerJanitorRpc,
   type LiveFile,
+  type LoggedWatermark,
   PRECEDENCE_PER_VERSION,
   SHARD_NAME,
   type OrphanCheck,
@@ -39,6 +40,7 @@ import {
   type LedgerRpc,
   type Plan,
   type PlanRequest,
+  type RegisterResult,
   type ReplaceRequest,
   type ReplaceResult,
   type StreamRef,
@@ -168,6 +170,15 @@ export interface LogStatus {
   stateLimitBytes: number
   /** A checkpoint being written in parts (format 2), if any: its version, how far it is, and its parts so far. */
   checkpoint: { version: number; phase: 'files' | 'tombstones' | 'manifest'; parts: number; files: number; tombstones: number; bytes: number } | null
+  /**
+   * Registrations committed but not yet logged (D57): while there are any, a shard refuses the
+   * writes of those new streams. With `pendingSince`, what an operator alerts on when the log
+   * cannot be written (review m-1): a stuck or failing drain shows here as registrations that
+   * wait, not only as a growing `pending`.
+   */
+  registrationsPending: number
+  /** When the oldest change still in the outbox was committed (Unix ms), or null. */
+  pendingSince: number | null
 }
 
 /**
@@ -787,15 +798,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
 
   // ───────────────────────────── LedgerRpc ─────────────────────────────
 
-  async registerStream(ref: StreamRef): Promise<{ version: number; previousIncarnation: number | null }> {
+  async registerStream(ref: StreamRef): Promise<RegisterResult> {
     const g = this.gate()
     if (g) await g
     const problem = refProblem(ref)
     if (problem) throw new Error(`ledger: ${problem}`)
     const known = this.stream(ref.shard)
     if (known && known.incarnation === ref.incarnation) {
-      // Idempotent: a retried registration gets the answer the first one got.
-      return { version: this.version(), previousIncarnation: known.previousIncarnation }
+      // Idempotent: a retried registration gets the answer the first one got, and whether it
+      // is logged by now (D57): derived from the outbox, never stored (review B-1).
+      return { version: this.version(), previousIncarnation: known.previousIncarnation, logged: this.registrationLogged(ref.shard, ref.incarnation) }
     }
     // Incarnations are ordered (a larger number is newer). A lower one is a stale shard or a
     // late message; registering it would rewind the watermark of the live stream. The
@@ -805,7 +817,61 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     }
     const version = this.ctx.storage.transactionSync(() => this.register(ref, known))
     this.afterCommit()
-    return { version, previousIncarnation: known?.incarnation ?? null }
+    // Only committed: its change is in the outbox until a segment holding it is written.
+    return { version, previousIncarnation: known?.incarnation ?? null, logged: false }
+  }
+
+  /**
+   * Registrations committed but not yet logged, by shard: the incarnations a `register_stream`
+   * change still in the outbox names. One read of the outbox (a drain cycle of rows; more while
+   * the drain is stuck), parsing only registration changes. Outbox rows leave only with the
+   * segment that holds them (`segmentWritten`) or with a new incarnation, whose base is in R2
+   * before it commits (`startIncarnation`); and every release writes and drains the same
+   * outbox. So a committed registration that no row names is in the logged prefix, whatever
+   * release committed or drained it: nothing here can be left stale by a rollback (D57;
+   * review B-1).
+   */
+  private pendingRegistrations(): Map<string, Set<number>> {
+    const out = new Map<string, Set<number>>()
+    for (const r of this.ctx.storage.sql.exec(`SELECT body FROM outbox WHERE instr(body, '"kind":"register_stream"') > 0`)) {
+      const c = JSON.parse(r.body as string) as LedgerChange
+      if (c.kind !== 'register_stream' || !c.watermark) continue
+      let set = out.get(c.watermark.shard)
+      if (!set) out.set(c.watermark.shard, (set = new Set()))
+      set.add(c.watermark.incarnation)
+    }
+    return out
+  }
+
+  /** Is this stream's committed registration of `incarnation` in the logged prefix? (The caller has checked it is the committed one.) */
+  private registrationLogged(shard: string, incarnation: number): boolean {
+    // A logged unit of the incarnation proves it at once: the log is a prefix of versions, and
+    // a unit's version is above its stream's registration (`logged` moves only for the
+    // stream's current incarnation, and is reset to 0 by a registration).
+    const r = this.ctx.storage.sql.exec(`SELECT logged FROM stream WHERE shard = ? AND incarnation = ?`, shard, incarnation).toArray()[0]
+    if (r && (r.logged as number) > 0) return true
+    return !this.pendingRegistrations().get(shard)?.has(incarnation)
+  }
+
+  /**
+   * Every stream with its logged watermark and its logged incarnation (contracts/ledger.ts
+   * `LoggedWatermark`), as one synchronous read. The outbox is read only if some stream's
+   * logged watermark is 0 (otherwise every registration is proven logged by a logged unit).
+   */
+  private loggedStreams(): LoggedWatermark[] {
+    const rows = this.ctx.storage.sql.exec(`SELECT shard, incarnation, logged, prev_incarnation FROM stream ORDER BY shard`).toArray()
+    const pending = rows.some((r) => (r.logged as number) === 0) ? this.pendingRegistrations() : new Map<string, Set<number>>()
+    return rows.map((r): LoggedWatermark => {
+      const shard = r.shard as string
+      const incarnation = r.incarnation as number
+      const seq = r.logged as number
+      const prev = r.prev_incarnation as number | null
+      const waiting = pending.get(shard)
+      // The committed incarnation if its registration is logged; else the one registered
+      // before it, if that registration is logged; else 0 (unknown, and low is the safe side).
+      const loggedIncarnation = seq > 0 || !waiting?.has(incarnation) ? incarnation : prev !== null && !waiting.has(prev) ? prev : 0
+      return { shard, incarnation, seq, loggedIncarnation }
+    })
   }
 
   /** Inside a transaction: create the stream, or replace its incarnation and restart at 0. */
@@ -1000,13 +1066,10 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     return result
   }
 
-  async loggedWatermarks(): Promise<Watermark[]> {
+  async loggedWatermarks(): Promise<LoggedWatermark[]> {
     const g = this.gate()
     if (g) await g
-    return this.ctx.storage.sql
-      .exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)
-      .toArray()
-      .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))
+    return this.loggedStreams()
   }
 
   // ───────────────────────────── LedgerJanitorRpc ─────────────────────────────
@@ -1074,10 +1137,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     // No await: the three answers describe one instant.
     const live = keys.filter((k) => this.liveFile(k) !== null)
     const tombstoned = keys.filter((k) => sql.exec(`SELECT 1 AS x FROM tombstone WHERE key = ?`, k).toArray().length > 0)
-    const logged = sql
-      .exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)
-      .toArray()
-      .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))
+    const logged = this.loggedStreams()
     return { live, tombstoned, logged }
   }
 
@@ -1614,6 +1674,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const first = ready ? this.meta('seg_first') : null
     const last = ready ? this.meta('seg_last') : null
     const ck = ready ? this.checkpointRow() : null
+    let registrationsPending = 0
+    if (ready) for (const set of this.pendingRegistrations().values()) registrationsPending += set.size
+    const oldest = ready ? sql.exec(`SELECT body FROM outbox ORDER BY version LIMIT 1`).toArray()[0] : undefined
     return {
       phase: this.refusal ? 'refused' : this.corrupt ? 'corrupt' : this.stuck ? 'stuck' : this.needsStart ? 'starting' : 'ready',
       ledgerIncarnation: ready ? this.meta('incarnation') : null,
@@ -1630,6 +1693,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       stateBytes: ready ? (this.meta('state_bytes') ?? 0) : 0,
       stateLimitBytes: this.stateMaxBytes,
       checkpoint: ck ? { version: ck.version, phase: ck.phase, parts: ck.parts, files: ck.files, tombstones: ck.tombstones, bytes: ck.bytes } : null,
+      registrationsPending,
+      pendingSince: oldest ? ((JSON.parse(oldest.body as string) as LedgerChange).at ?? null) : null,
     }
   }
 

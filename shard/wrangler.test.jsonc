@@ -1,0 +1,20 @@
+{
+  // Tests only: the shard with its tenants' ledgers in the same script, as in viz-ingest
+  // (stack/wrangler.jsonc), so registration before writes (D57) runs against the real ledger.
+  // Also the releases before D57 of both, for rollback and skew tests. Not deployed.
+  "name": "viz-shard-test",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARD", "class_name": "Shard" },
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "SHARD_PREREG", "class_name": "ShardPrereg" },
+      { "name": "LEDGER_PREREG", "class_name": "LedgerPrereg" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger", "ShardPrereg", "LedgerPrereg"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  "vars": { "CELL": "cell-0" }
+}

@@ -172,7 +172,7 @@ pub fn arb_entry() -> impl Strategy<Value = SpanEntry<String>> {
 pub fn arb_span(n_entries: u32) -> impl Strategy<Value = Span<String>> {
     (
         (0..n_entries, 1u8..5, 1u8..9, prop_oneof![2 => Just(0u8), 3 => 1u8..9], -2 * 3_600_000_000_000i64..2 * 3_600_000_000_000, prop_oneof![Just(0i64), 0..10_000_000_000i64]),
-        (any::<u32>(), prop::array::uniform3(prop_oneof![3 => Just(0u32), 1 => any::<u32>()]), 0u8..6, 0u8..3),
+        (prop_oneof![Just(0u32), any::<u32>()], prop::array::uniform3(prop_oneof![3 => Just(0u32), 1 => any::<u32>()]), 0u8..6, 0u8..3),
         (prop_oneof![2 => Just(String::new()), 2 => "[A-Z /{}]{1,12}", 1 => "\\PC{1,8}"], arb_text(), arb_text(), arb_attrs(7)),
         (prop::collection::vec((0..10_000_000_000i64, arb_text(), arb_json_list()), 0..3), prop::collection::vec((1u8..9, 1u8..9, arb_text(), arb_json_list()), 0..3)),
     )

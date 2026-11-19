@@ -1,7 +1,8 @@
-import { TENANT_ID, type Table, type Watermark } from '../../contracts/ledger'
+import { TENANT_ID, type LoggedWatermark, type Table } from '../../contracts/ledger'
 import { COMPACTION_INPUTS_META, DEFAULT_POLICY, decodeCompactionInputs } from '../../compact/src/compact'
 import type { Ledger } from '../../ledger/src/ledger'
 import type { Publisher } from '../../publisher/src/publisher'
+import type { EnsureStreamResult } from '../../shard/src/shard'
 
 /**
  * Retention and physical deletion for one tenant. Three stateless jobs; the state they
@@ -17,8 +18,12 @@ import type { Publisher } from '../../publisher/src/publisher'
  *                  snapshot references the file, its grace passed.
  *   sweepOrphans   deletes objects under the tenant's data prefix that the ledger has
  *                  never listed and never will (a flush or compaction that failed after
- *                  its PUT): a flush file once its stream's LOGGED watermark covers it, a
- *                  compaction output once one of its inputs is gone for good.
+ *                  its PUT): a flush file once its stream's LOGGED watermark covers it or a
+ *                  newer incarnation's registration is LOGGED, a compaction output once one
+ *                  of its inputs is gone for good. A flush file of the incarnation the ledger
+ *                  names that waits past the grace makes it ask that stream's shard
+ *                  (`ensureStream`): a shard that lost the stream starts and registers a fresh
+ *                  one, after which the file is dead (spec F16; D57).
  *
  * No job writes an object, and deletes go to R2 as one request per thousand keys.
  */
@@ -34,7 +39,27 @@ export interface JanitorEnv {
    * ledger's rules alone, as before the publisher existed.
    */
   PUBLISHER?: PublisherGateNamespace
+  /**
+   * The shards (D57). The orphan sweep asks a shard about a stream whose flush files wait for a
+   * unit that may never come (`ensureStream`). Absent: it does not ask, and those files wait
+   * for the tenant's next write to that shard (spec F16, the leak this closes).
+   */
+  SHARD?: ShardGateNamespace
 }
+
+/** What the janitor asks of a shard (shard/src/shard.ts): `ensureStream`. */
+export interface ShardGate {
+  ensureStream(tenant: string): Promise<EnsureStreamResult>
+}
+
+/** The shards' namespace, as far as the janitor uses it: a shard is `idFromName(its exact name)`. */
+export interface ShardGateNamespace {
+  idFromName(name: string): DurableObjectId
+  get(id: DurableObjectId): ShardGate
+}
+
+/** How long the sweep waits for a shard's `ensureStream` (which may wait up to its own registration timeout, 5 s). */
+export const SHARD_GATE_TIMEOUT_MS = 10_000
 
 /** What the janitor asks of the cell's publisher: its deletion hand-off (publisher/src/publisher.ts). */
 export type PublisherGate = Pick<Publisher, 'safeToDelete' | 'acknowledgeDeleted'>
@@ -269,6 +294,12 @@ export interface OrphanResult {
    */
   kept: { key: string; why: 'young' | 'pending_unit' | 'unknown_stream' | 'unknown_name' | 'inputs_remain' | 'unknown_inputs'; detail?: string }[]
   /**
+   * Shards asked about a stream whose flush files wait past the grace for a unit (D57; spec F16),
+   * once per stream per run: what each answered, or why it could not (a shard of a release
+   * before D57 has no `ensureStream`: review m-6). Their files are judged again by a later run.
+   */
+  ensured: { shard: string; incarnation?: number; registered?: boolean; error?: string }[]
+  /**
    * When the youngest object kept for something a write or time can still change (`young`,
    * `pending_unit`, `unknown_stream`, `inputs_remain`) was uploaded; absent when there is none.
    * Lets the caller stop sweeping for objects that have waited too long (review S-6).
@@ -281,21 +312,28 @@ export interface OrphanResult {
  * has reached its range (a unit for that range is answered as a replay and adds no file),
  * and not if the ledger has a newer incarnation of the stream whose registration is LOGGED
  * (a lower one is then refused for good). Anything else may be the files of a unit that is
- * about to be reported.
+ * about to be reported. (contracts/ledger.ts `orphanCheck`.)
  *
- * `orphanCheck` reports each stream's COMMITTED incarnation with the logged watermark of that
- * incarnation. A registration that is committed but not logged can be rolled back by a
- * rebuild, after which a late `addUnit` of the older incarnation is admitted again
- * (spec/README.md F15). The log is a prefix of versions and a unit's version is above its
- * stream's registration, so a logged watermark above 0 for the newer incarnation proves the
- * registration is logged; at 0 this keeps the file.
+ * `orphanCheck` reports each stream's COMMITTED incarnation, the logged watermark of that
+ * incarnation and (D57) `loggedIncarnation`, the newest incarnation whose registration is in
+ * the logged prefix. Only the logged one counts: a registration that is committed but not
+ * logged can be rolled back by a rebuild, after which a late `addUnit` of the older
+ * incarnation is admitted again (spec/README.md F15). A ledger before D57 sends no
+ * `loggedIncarnation`; then a newer incarnation counts only once its logged watermark is above
+ * 0 (the log is a prefix of versions and a unit's version is above its stream's registration,
+ * so that proves the registration is logged), as D30 built it.
+ *
+ * `w` is the stream as the ledger reports it, by its exact name (D38 makes `_` stand for `/`
+ * in a key, so the match is one-to-one).
  */
-function flushFileState(m: RegExpExecArray, logged: Watermark[]): 'dead' | 'pending_unit' | 'unknown_stream' {
-  const [, shard, inc, , seqHi] = m
+function flushFileState(m: RegExpExecArray, logged: LoggedWatermark[]): { state: 'dead' | 'pending_unit' | 'unknown_stream'; w?: LoggedWatermark } {
+  const [, shard, incText, , seqHiText] = m
+  const inc = Number(incText)
   const w = logged.find((x) => x.shard.replaceAll('/', '_') === shard)
-  if (!w) return 'unknown_stream'
-  if (w.incarnation > Number(inc)) return w.seq > 0 ? 'dead' : 'pending_unit'
-  return w.incarnation === Number(inc) && w.seq >= Number(seqHi) ? 'dead' : 'pending_unit'
+  if (!w) return { state: 'unknown_stream' }
+  if (w.incarnation === inc && w.seq >= Number(seqHiText)) return { state: 'dead', w }
+  const newer = w.loggedIncarnation !== undefined ? w.loggedIncarnation > inc : w.incarnation > inc && w.seq > 0
+  return { state: newer ? 'dead' : 'pending_unit', w }
 }
 
 /** Fault-injection points (tests). A hook that runs other work stands for a concurrent job at that point. */
@@ -313,7 +351,9 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
   // An age floor for compaction outputs. It is NOT what makes deleting one safe (that is the
   // inputs rule below); it only keeps the sweep off objects a step wrote moments ago.
   const compactGraceMs = Math.max(graceMs, 2 * (opts.maxCompactStepMs ?? DEFAULT_POLICY.maxStepMs))
-  const out: OrphanResult = { listed: 0, deleted: [], kept: [] }
+  const out: OrphanResult = { listed: 0, deleted: [], kept: [], ensured: [] }
+  /** Streams to ask their shard about (exact shard names), after the deletions. */
+  const ask = new Set<string>()
 
   // 1. List first, with each object's metadata (a compaction output's inputs). Whatever is
   //    written after this is not a candidate in this run, and an object missing from this
@@ -336,14 +376,14 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
   for (let i = 0; i < objects.length; i += 1000) {
     const chunk = objects.slice(i, i + 1000)
     const inputsOf = new Map<string, Awaited<ReturnType<typeof decodeCompactionInputs>>>()
-    const ask = new Set(chunk.map((o) => o.key))
+    const keysToCheck = new Set(chunk.map((o) => o.key))
     for (const o of chunk) {
       if (!COMPACTED_FILE.test(o.key)) continue
       const d = await decodeCompactionInputs(o.key, o.inputs)
       inputsOf.set(o.key, d)
-      if ('inputs' in d) for (const k of d.inputs) if (!present.has(k)) ask.add(k)
+      if ('inputs' in d) for (const k of d.inputs) if (!present.has(k)) keysToCheck.add(k)
     }
-    const check = await ledger.orphanCheck([...ask])
+    const check = await ledger.orphanCheck([...keysToCheck])
     const live = new Set(check.live)
     const known = new Set([...check.live, ...check.tombstoned]) // tombstoned keys go through purgeTenant
     const doomed: string[] = []
@@ -352,9 +392,15 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
       const age = now - o.uploaded
       const flush = FLUSH_FILE.exec(o.key)
       if (flush) {
-        const state = flushFileState(flush, check.logged)
-        if (state !== 'dead') out.kept.push({ key: o.key, why: state })
-        else if (age < graceMs) out.kept.push({ key: o.key, why: 'young' })
+        const { state, w } = flushFileState(flush, check.logged)
+        if (state !== 'dead') {
+          out.kept.push({ key: o.key, why: state })
+          // A file of the incarnation the ledger names, waiting past the grace for its unit: the
+          // flush that wrote it may have died with the stream (the shard lost its storage), and
+          // then nothing makes the ledger hear of a newer incarnation until the tenant writes to
+          // that shard again. Ask the shard (spec F16).
+          if (state === 'pending_unit' && w && w.incarnation === Number(flush[2]) && age >= graceMs) ask.add(w.shard)
+        } else if (age < graceMs) out.kept.push({ key: o.key, why: 'young' })
         else doomed.push(o.key)
       } else if (COMPACTED_FILE.test(o.key)) {
         // `replace` admits an output only with EVERY input live. An input that is not live
@@ -375,6 +421,22 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
     await opts.hooks?.beforeDelete?.(doomed)
     if (doomed.length > 0) await env.BUCKET.delete(doomed)
     out.deleted.push(...doomed)
+  }
+  // 3. Ask each such stream's shard to hold a registered stream: one holding the stream changes
+  //    nothing; one that lost it starts a fresh incarnation and registers it, which makes the
+  //    old incarnation's files dead once that registration is logged, at a later run. Failures
+  //    keep the files and go on (a shard of a release before D57 has no `ensureStream`).
+  if (env.SHARD) {
+    for (const shard of [...ask].sort()) {
+      try {
+        const r = await within(env.SHARD.get(env.SHARD.idFromName(shard)).ensureStream(tenant), SHARD_GATE_TIMEOUT_MS, `shard ${shard}`)
+        out.ensured.push({ shard, incarnation: r.incarnation, registered: r.registered })
+      } catch (e) {
+        const why = (e instanceof Error ? e.message : String(e)).slice(0, 300)
+        console.error(`janitor: could not ask shard ${shard} about ${tenant}'s stream (${why}); its flush files are kept`)
+        out.ensured.push({ shard, error: why })
+      }
+    }
   }
   const uploaded = new Map(objects.map((o) => [o.key, o.uploaded]))
   for (const k of out.kept) {

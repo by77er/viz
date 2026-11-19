@@ -82,6 +82,9 @@ node tools/check.mjs          # load proof and size report, in Node
   binding's) throws `EngineLoadError`, whose message starts with `ENGINE_LOAD_PREFIX`
   (so it is recognisable after an RPC boundary). The query Worker answers it with 500:
   retrying in the same deployment cannot help (`query/test/http.test.ts`).
+- **ABI version 5** (2026-11-19; was 4): `viz_q_extract`'s answer gained `u64 foreign` after
+  `strays` (series in the part's id range whose key is another part's: query/ D59). Built
+  against `engine/storage` as it was at 07:23 UTC (`src/*.rs` SHA-256 `66398f8443a2e765…`).
 - **ABI version 4** (2026-11-19; was 3): `viz_q_meta_part` was added (the label endpoints
   over leaves, `query/README.md`); no other operation changed. Built against `engine/storage`
   as it was at 06:41 UTC (`src/*.rs` concatenated in name order, SHA-256 `f55f874a7f4df43c…`;
@@ -173,6 +176,11 @@ copied into linear memory, which agrees with the native figure in
 `engine/query/README.md` (20.2 MiB of heap above the inputs). Through the Worker, with
 24 small files instead of 2 and the last ten minutes in two tail batches, the same query
 peaked at 21.6 MiB (`query/README.md`, "Measurements").
+
+### 2026-11-19: foreign series in the extract (ABI 5)
+
+Rebuilt with `./build.sh` (`-j 2`): **3,165,021 bytes, 988,820 gzip**, SHA-256
+`c4d7080a69911196…`. `node tools/check.mjs`: every check passes.
 
 ### 2026-11-19: the label endpoints over leaves (ABI 4)
 

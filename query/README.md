@@ -134,6 +134,7 @@ password of Basic auth.
 | `X-Viz-Rpc-Bytes` | bytes of a split query that crossed RPC: extracts, tail parts, leaf answers |
 | `X-Viz-Leaf-Peak-Wasm-Bytes`, `X-Viz-Leaf-Max-Samples` | the largest engine memory a split leaf reported, and the most samples one held |
 | `X-Viz-Leaf-Reruns` | split leaves run again after stopping at their share of the budget |
+| `X-Viz-Series-Reads` | how a split's readers read the series files (ABI 5): `id-range` (each part its `series_id` range), `name-time` (by name and time: the key leaves out a label series carry), `id-range,name-time` (a part saw a series whose key is not its id, so the split ran again by name and time) |
 | `X-Viz-Pruning` | how the files were chosen: `fragments` (name and time, byte ranges from the index fragments), `series` (matchers resolved against the series files first: only row groups holding a selected series were read), `series-only` (a label endpoint: series files and the tail, no sample file) |
 
 ## What is implemented
@@ -398,7 +399,17 @@ one-place limits. `X-Viz-Execution` and `X-Viz-Split-Reason` say which and why.
    `series_id` range with the footer (`partPlan`), and extracts; only if the extract reports a
    series of its part outside that range (a "stray": its key leaves out a label it carries)
    does it ask the engine what the part's series need (`samplePlan` with the part) and read
-   what was not covered, in a second round, before extracting again. When the split key leaves out a label other than
+   what was not covered, in a second round, before extracting again. **Since ABI 5 the
+   series files too are read by the part's id range** when the coordinator asks
+   (`seriesByPart`: the key is the id of every series without `__type__`/`__unit__`, D59). A
+   part then cannot see a series of its own whose id lies elsewhere; but that series is seen
+   by the part its id is in, which counts it as **foreign** (in its id range, key elsewhere).
+   If any part reports a foreign series the coordinator drops the answers and runs the split
+   again with the series files read by name and time (`X-Viz-Series-Reads`). It pays where a
+   series file has several row groups (more than 100,000 series of a metric per shard per
+   unit): measured natively at 1,000,000 series over 32 parts, the series-file bytes the parts
+   read fell from 640.7 to 82.5 MiB and their CPU from 36.4 to 9.9 s, identical extracts; at
+   100,000 series (one row group a file) nothing changed ("Measurements"). When the split key leaves out a label other than
    `__type__`/`__unit__` (a relabelled or unpinned name, which most series carry, so the
    part's series are spread over every id), the sample files wait for the series files
    instead. A request without fragments (a coordinator of an earlier release) reads whole
@@ -514,8 +525,9 @@ fails the call (503, the RPC throws twice).
   `absent` over raw series, binary operators between vectors below an aggregation,
   aggregations inside subqueries, a selector outside every aggregation) still run in one
   place and are bounded by one isolate. Partials travel in the engine's binary form, not
-  Arrow IPC. Readers read every series file of the range by name and time, so every part
-  reads them ("Needed changes", 2). A tail that fits the coordinator is cut by part there;
+  Arrow IPC. Readers read every series file of under 100,000 series of a metric whole (one row
+  group), so every part reads them ("Needed changes", 2); larger files are read by id range
+  (ABI 5). A tail that fits the coordinator is cut by part there;
   the shards cut it by key only when it does not fit, and only for split keys that are the
   `series_id` (not for `without` labels series commonly carry, such as `__name__` or a
   `label_replace` target, nor when a series carries `__type__`/`__unit__`: refused).
@@ -592,6 +604,23 @@ fails the call (503, the RPC throws twice).
 All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node 22.23,
 workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing in this
 section ran on Cloudflare (the Worker itself did, in two staged trials: `deploy/README.md`).
+
+**After the series files read by id range (2026-11-19, ABI 5; 07:27 to 07:28 UTC, load average
+6.8 to 7.6):** `npx vitest run --maxWorkers=2`: **110 tests, all passing** in 13 files (91 s),
+against `viz_query.wasm` rebuilt at ABI 5 (SHA-256 `c4d7080a…`, against `engine/storage` as it
+was at 07:23, `src/*.rs` SHA-256 `66398f84…`: another engineer had changed it since 06:41);
+`npx tsc --noEmit`: clean; `check.mjs` passes. Changed: `tail.test.ts`'s series whose key is not
+its id now also checks the lake: over 2, 3 and 5 parts, and with one such series alone over 2 to
+7 (the part its id is in answers from its first read), the split runs again by name and time
+for some part count (`X-Viz-Series-Reads: id-range,name-time`) and every answer equals one
+place's; without such a series the readers keep to their id ranges. `engine/query`
+`tests/series_ranges.rs` (3, release profile): with no foreign series the id range of the
+series files changes no extract (property, 48 cases, and 4,000 series in row groups of 500 over
+8 parts, where the plans are ranges), and a `__type__` series is foreign to the part its id is
+in, read either way, while read by id range some part lists fewer series. **What the query suite
+cannot show:** a flush writes row groups of 100,000 rows, so no workerd world here has a series
+file of several row groups, and readers there read every series file whole either way; the
+missed series that the fallback guards against is shown in the engine test.
 
 **After the label endpoints over leaves and `limit` (2026-11-19, ABI 4; 06:44 to 06:46 UTC,
 load average 5.0 to 7.6):** `npx vitest run --maxWorkers=2`: **110 tests, all passing** in 13
@@ -932,6 +961,27 @@ behavioural cache test would need two objects whose keys differ only in their ha
 the write path never produces.
 
 ### Measurements
+
+#### Split parts and the series files (2026-11-19, ABI 5)
+
+`engine/query/examples/series_ranges.rs` (`cargo run -j 2 --release --example series_ranges --
+100000 1000000`). **Measured here, native** x86-64, one thread, 07:11 to 07:13 UTC at a load
+average of 8.0 to 9.0: the workload of `examples/pruning.rs` (`x{job, namespace, pod}`, 60 s), the
+full-metric `sum by (job)(rate(x[5m]))` over the parts the Worker would use, every part's extract
+both ways on the same files, required identical.
+
+| | series files | way | series-file GETs | series-file bytes (all parts) | sample-file bytes | CPU, all parts | peak heap |
+|---|---|---|---:|---:|---:|---:|---:|
+| 100,000 series, an hour, 7 parts | 7 files, 13.98 MiB, 1 row group each | by name and time | 49 | 97.8 MiB | 22.7 MiB | 2,457 ms | 321 MiB |
+| | | by id range | 49 | 97.8 MiB | 22.7 MiB | 2,362 ms | 321 MiB |
+| 1,000,000 series, one unit, 32 parts | 1 file, 20.02 MiB, 10 row groups | by name and time | 64 | **640.7 MiB** | 25.8 MiB | **36,366 ms** | 571 MiB |
+| | | by id range | 60 | **82.5 MiB** | 25.8 MiB | **9,926 ms** | 521 MiB |
+
+Identical rows both ways in both cases. It pays only where a series file has several row groups,
+which is where splits are expensive; below 100,000 series of a metric per file it changes
+nothing (the same reads). On Cloudflare the bytes are R2 or Cache API reads per part and the CPU
+is the parts' readers (modelled: CPU x 1 to 8, CARDINALITY.md "Native and WASM"); **experiment
+that settles it:** a split over a staged tenant with 1,000,000 series in one shard's unit.
 
 #### The label endpoints over leaves (2026-11-19)
 

@@ -45,6 +45,10 @@ await build({
     name: 'workers-stub',
     setup(b) {
       b.onResolve({ filter: /^cloudflare:/ }, (a) => ({ path: a.path, namespace: 'stub' }))
+      // Only MAX_BATCH_BYTES is needed from the shard module: its contract value (BATCH.md), so
+      // the bundle does not depend on the shard's other code.
+      b.onResolve({ filter: /shard\/src\/shard$/ }, () => ({ path: 'shard', namespace: 'shard-stub' }))
+      b.onLoad({ filter: /.*/, namespace: 'shard-stub' }, () => ({ contents: 'export const MAX_BATCH_BYTES = 1_048_576', loader: 'js' }))
       b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export const env = {}', loader: 'js' }))
     },
   }],

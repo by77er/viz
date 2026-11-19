@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
-import { SHARD_NAME } from '../../contracts/ledger'
+import { SHARD_NAME, TENANT_ID } from '../../contracts/ledger'
+import type { Ledger } from '../../ledger/src/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 import { SeriesWindow, UnreadableSketch } from './sketch'
 import {
@@ -20,9 +21,12 @@ export { TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailF
  * Lifecycle of a batch:  append → (seal) → [flush Worker writes Parquet] → recorded → discard
  *
  *   append    refused at once when the shard is over its in-flight limit (nothing is read or
- *             written for it); otherwise it joins the open GROUP, and is answered after the
- *             group's single SQLite transaction has committed (the runtime holds the answer
- *             until that write is durable)
+ *             written for it), and, in registration mode `logged` (D57), when the stream is
+ *             new and the tenant's ledger has not yet answered its registration as LOGGED
+ *             (`registering`: the registration runs in the background, nothing waits for it);
+ *             otherwise it joins the open GROUP, and is answered after the group's single
+ *             SQLite transaction has committed (the runtime holds the answer until that write
+ *             is durable)
  *   seal      fixes a contiguous range of batches as a segment; the boundary is durable,
  *             and a `{tenant, shard}` message for the flush queue is written with it
  *   recorded  the tenant's ledger has admitted the segment's files AND logged that to R2: the
@@ -79,6 +83,28 @@ export interface ShardConfig {
   maxGroupBytes: number
   /** A filtered tail read examines at most this many stored bytes per call; the rest is its next page (D48). */
   tailScanMaxBytes: number
+  /**
+   * Registration before writes (D57; spec/README.md "Proposed fixes", R2). `logged`: an append
+   * to a stream the tenant's ledger has not yet answered as registered AND logged is refused
+   * at once (`backpressure`, scope `registering`) while the registration runs in the
+   * background; a stream that already holds acknowledged rows (made by a release before D57,
+   * or in `lazy` mode) keeps accepting while it is confirmed. `lazy`: appends as before D57
+   * (the ledger first hears of a stream from its first flush). Tail reads that name a lost
+   * stream, and `ensureStream`, register in either mode. The Worker var `SHARD_REGISTRATION`
+   * (`logged` or `lazy`), when set, overrides this (shard/README.md, "Rollout").
+   */
+  registration: 'lazy' | 'logged'
+  /** `Retry-After` of a `registering` refusal: this, plus up to as much again of jitter. */
+  registerRetryAfterMs: number
+  /** A registration the ledger has not answered as logged is asked again after this, doubling up to `registerBackoffMaxMs`. */
+  registerBackoffMs: number
+  registerBackoffMaxMs: number
+  /** One registration call waits at most this long for the ledger (whose start alone may hold it 2 s). */
+  registerTimeoutMs: number
+  /** Registration calls in flight at once, per shard, over all tenants (review m-5: a shard has six outbound connections). */
+  maxRegistrations: number
+  /** A stream that has waited this long for its registration to be logged is reported (error log, `stats`; review m-1). */
+  registerAlertMs: number
 }
 
 export const DEFAULT_CONFIG: ShardConfig = {
@@ -99,6 +125,13 @@ export const DEFAULT_CONFIG: ShardConfig = {
   groupWindowMs: 0,
   maxGroupBytes: 4 << 20,
   tailScanMaxBytes: TAIL_SCAN_MAX_BYTES,
+  registration: 'lazy',
+  registerRetryAfterMs: 500,
+  registerBackoffMs: 250,
+  registerBackoffMaxMs: 30_000,
+  registerTimeoutMs: 5_000,
+  maxRegistrations: 4,
+  registerAlertMs: 60_000,
 }
 
 /**
@@ -138,6 +171,19 @@ export const SHARD_SCHEMA: SchemaSpec = {
       for (const s of V1) sql.exec(s)
       if (!columnsOf(sql, 'segment').has('sealed_at')) sql.exec(`ALTER TABLE segment ADD COLUMN sealed_at INTEGER NOT NULL DEFAULT 0`)
     },
+  }, {
+    // ADDITIVE (readableFrom 1): `stream.registered` is the incarnation whose registration the
+    // tenant's ledger answered as logged (D57), 0 before. The release before ignores it, inserts
+    // its streams with 0, and never changes a stream row's incarnation, so a value this release
+    // wrote stays true under it, and its 0 is only conservative: a stream holding acknowledged
+    // rows is accepted whatever the column says, and one holding none is registered first.
+    // Nothing relies on the older release maintaining it (COMPATIBILITY.md §2.3; review B-1).
+    version: 2,
+    name: 'stream.registered: the incarnation whose registration the ledger answered as logged (D57)',
+    readableFrom: 1,
+    up: (sql) => {
+      if (!columnsOf(sql, 'stream').has('registered')) sql.exec(`ALTER TABLE stream ADD COLUMN registered INTEGER NOT NULL DEFAULT 0`)
+    },
   }],
 }
 
@@ -159,11 +205,17 @@ export interface FlushMessage {
 /**
  * Bindings a shard uses if they are there. Without `FLUSH_QUEUE` nobody is told about a
  * seal (tests of the shard alone, and callers that poll `pendingSegments`). Without
- * `CONFIG` no pending marker is kept, so the hourly sweep cannot find this shard.
+ * `CONFIG` no pending marker is kept, so the hourly sweep cannot find this shard. Without
+ * `LEDGER` (the tenants' ledgers, `idFromName(tenant)`) nothing is registered: appends are
+ * lazy whatever the mode, and a tail read naming a lost stream is answered as before D57.
  */
 export interface ShardEnv {
   FLUSH_QUEUE?: Queue<FlushMessage>
   CONFIG?: KVNamespace
+  /** Added with D57. In viz-ingest the ledger is a class of the same script. */
+  LEDGER?: DurableObjectNamespace<Ledger>
+  /** `logged` or `lazy`: the registration mode, overriding `ShardConfig.registration` (shard/README.md, "Rollout"). */
+  SHARD_REGISTRATION?: string
 }
 
 /**
@@ -199,8 +251,16 @@ export type AppendResult =
    * `overload`: the shard has more appends in flight than it may take (refused before
    * anything was read or written), or its storage belongs to a newer release; a caller
    * that does not know this scope treats it like the others (backpressure).
+   * `registering` (added 2026-11-19, D57): the stream is new (first use, or the shard lost its
+   * storage) and the tenant's ledger has not yet answered its registration as logged. The
+   * registration runs in the background; nothing was stored or counted, and nothing waited for
+   * the ledger. Expected for about a second per new stream. Like `overload` it is the system
+   * catching up, not the tenant over a limit: edge answers it 503 with `Retry-After`, never
+   * 429 (Remote Write senders must retry 5xx and may drop 429: review M-2). A shard sends it
+   * only in registration mode `logged`, which a deployment turns on only once every edge that
+   * may run maps it (shard/README.md, "Rollout").
    */
-  | { status: 'backpressure'; scope: 'tenant' | 'shard' | 'overload'; retryAfterMs: number }
+  | { status: 'backpressure'; scope: 'tenant' | 'shard' | 'overload' | 'registering'; retryAfterMs: number }
   | { status: 'stale_epoch'; epoch: number }
   /** The payload is over the batch size cap. Nothing was stored; a retry of the same bytes cannot succeed. */
   | { status: 'too_large'; maxBytes: number }
@@ -240,9 +300,13 @@ export type TailResult =
   /** The shard has discarded rows above the watermark it was asked about (for a paged read: on any page). Re-read the ledger. */
   | { status: 'stale_watermark'; incarnation: number; discardedThrough: number }
   /**
-   * The stream was recreated (storage loss), or the shard holds no stream for this tenant
-   * while the caller names an incarnation (0 when the shard has none). The ledger must
-   * register the new incarnation.
+   * The stream was recreated (storage loss), or the shard held no stream for this tenant while
+   * the caller names an incarnation. In the second case (D57) the shard first starts a fresh
+   * stream, newer than the one named, and registers it with the tenant's ledger (one call,
+   * awaited up to `registerTimeoutMs`; the rest in the background), and names it here, so the
+   * next plan names it and a query can finish after a storage loss (spec F6, `LIVE_impl`). It
+   * holds nothing acknowledged: read from 0 it is empty. 0 only from a shard without a
+   * `LEDGER` binding, or of a release before D57.
    */
   | { status: 'incarnation_mismatch'; incarnation: number }
   /**
@@ -270,8 +334,18 @@ export type RecordedResult =
   | { status: 'not_contiguous'; recordedThrough: number }
   | { status: 'incarnation_mismatch'; incarnation: number }
 
+/** What `ensureStream` answers (added 2026-11-19, D57). */
+export interface EnsureStreamResult {
+  /** The stream's incarnation now: the one the shard holds, or the fresh one it started. 0 only without a `LEDGER` binding and no stream. */
+  incarnation: number
+  /** The tenant's ledger has answered this incarnation's registration as logged. */
+  registered: boolean
+}
+
 interface Stream {
   incarnation: number
+  /** The tenant's ledger has answered this incarnation's registration as logged (`stream.registered`). */
+  registered: boolean
   epoch: number
   nextSeq: number
   sealedThrough: number
@@ -304,6 +378,39 @@ export interface ShardStats {
   refusedOverload: number
   inFlight: number
   pendingBytes: number
+  /** Appends refused `registering` (D57). */
+  refusedRegistering: number
+  /** Registration calls this instance made to ledgers. */
+  registerCalls: number
+  /** Streams waiting for their registration to be logged, and how long the longest has waited (ms; 0 if none). A wait over `registerAlertMs` is also an error log line (review m-1). */
+  registering: number
+  registeringForMs: number
+}
+
+/**
+ * A stream's registration while the ledger has not answered it as logged. Memory only, a
+ * schedule: what must be registered is `stream.registered`, rebuilt in `load`.
+ */
+interface Registration {
+  incarnation: number
+  /** When this instance began waiting for it (the alert's clock: an eviction restarts it). */
+  since: number
+  attempts: number
+  /** The next call is not made before this (backoff). While a call is in flight: when the alarm tries again if that call is lost with the instance. */
+  at: number
+  inFlight: Promise<boolean> | null
+  lastError: string | null
+  reported: boolean
+}
+
+/** `p`, or a rejection after `ms`; the timer never outlives the call. */
+async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms) })])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /**
@@ -338,10 +445,18 @@ export class Shard extends DurableObject<ShardEnv> {
   private groupTimer: ReturnType<typeof setTimeout> | null = null
   private inFlight = 0
   private pendingBytes = 0
-  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0 }
+  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0, refusedRegistering: 0, registerCalls: 0 }
+  /** The tenants' ledgers (`env.LEDGER`). A field so that a test can put an older release's ledger behind it. */
+  protected ledgerNs: DurableObjectNamespace<Ledger> | undefined
+  /** Registrations not yet answered as logged, by tenant (a schedule, rebuilt in `load`). */
+  private regs = new Map<string, Registration>()
+  /** Registration calls in flight, and calls waiting for one of the `maxRegistrations` slots. */
+  private regSlots = 0
+  private regWaiters: (() => void)[] = []
 
   constructor(ctx: DurableObjectState, env: ShardEnv) {
     super(ctx, env ?? {})
+    this.ledgerNs = env?.LEDGER
     // contracts/TABLES.md: a shard is named `{pool}/{slot}` with `SHARD_NAME`, or its flush
     // files' keys could name another stream. An object addressed otherwise serves nothing.
     if (ctx.id.name !== undefined && !SHARD_NAME.test(ctx.id.name)) throw new Error(`shard: name ${JSON.stringify(ctx.id.name.slice(0, 140))} does not match SHARD_NAME`)
@@ -381,6 +496,7 @@ export class Shard extends DurableObject<ShardEnv> {
         .one()
       const s: Stream = {
         incarnation: r.incarnation as number,
+        registered: r.registered === r.incarnation,
         epoch: r.epoch as number,
         nextSeq: Math.max(agg.max_seq as number, r.sealed_through as number) + 1,
         sealedThrough: r.sealed_through as number,
@@ -393,6 +509,20 @@ export class Shard extends DurableObject<ShardEnv> {
       this.streams.set(tenant, s)
       this.totalBytes += s.bufferedBytes
       if (agg.fp_from !== null) this.fingerprintsFrom.set(tenant, agg.fp_from as number)
+    }
+    // Registrations to finish: every new stream (it holds nothing, so it can take no write
+    // until it is registered) whose registration the ledger has not answered as logged. A call
+    // in flight when the instance went is made again by the alarm. A stream from before D57
+    // (rows, never confirmed) is confirmed when it is next written to or `ensureStream`ed.
+    const at = Date.now()
+    for (const [tenant, r] of this.regs) {
+      const s = this.streams.get(tenant)
+      if (!s || s.registered || s.incarnation !== r.incarnation) this.regs.delete(tenant)
+    }
+    if (this.ledgerNs) {
+      for (const [tenant, s] of this.streams) {
+        if (!s.registered && s.nextSeq === 1 && !this.regs.has(tenant)) this.regs.set(tenant, this.newRegistration(s.incarnation, at))
+      }
     }
     // Series windows as last saved. Ids seen since the last save are not in them: after an
     // eviction the count is low by at most `seriesPersistMs` worth of new series.
@@ -441,20 +571,45 @@ export class Shard extends DurableObject<ShardEnv> {
     return { count: e.w.count(), exact: e.w.exact, windowMs: this.cfg.seriesWindowMs }
   }
 
-  private stream(tenant: string, epoch: number): Stream {
-    let s = this.streams.get(tenant)
-    if (!s) {
-      // A new incarnation is created only when no stream row exists: first use, or after
-      // storage loss. It never repeats, so sequence numbers are never silently reused.
-      const incarnation = newIncarnation(Date.now(), Math.random())
-      this.ctx.storage.sql.exec(
-        `INSERT INTO stream (tenant, incarnation, epoch, sealed_through, recorded_through, discarded_through) VALUES (?, ?, ?, 0, 0, 0)`,
-        tenant, incarnation, epoch,
-      )
-      s = { incarnation, epoch, nextSeq: 1, sealedThrough: 0, recordedThrough: 0, discardedThrough: 0, bufferedBytes: 0, unsealedBytes: 0, oldestUnsealedAt: null }
-      this.streams.set(tenant, s)
-    }
+  /**
+   * A new stream: first use, or after storage loss. A new incarnation is created only when no
+   * stream row exists, and never repeats, so sequence numbers are never silently reused. It is
+   * not registered yet. `above`: an incarnation the ledger is known to have (a tail read names
+   * it), which the new one must exceed even if the clock stepped back (spec S5).
+   */
+  private createStream(tenant: string, epoch: number, above = 0): Stream {
+    const floor = Number.isSafeInteger(above + 1) ? above + 1 : 0
+    const incarnation = Math.max(newIncarnation(Date.now(), Math.random()), floor)
+    this.ctx.storage.sql.exec(
+      `INSERT INTO stream (tenant, incarnation, epoch, sealed_through, recorded_through, discarded_through, registered) VALUES (?, ?, ?, 0, 0, 0, 0)`,
+      tenant, incarnation, epoch,
+    )
+    const s: Stream = { incarnation, registered: false, epoch, nextSeq: 1, sealedThrough: 0, recordedThrough: 0, discardedThrough: 0, bufferedBytes: 0, unsealedBytes: 0, oldestUnsealedAt: null }
+    this.streams.set(tenant, s)
     return s
+  }
+
+  /** The registration mode in force: the Worker var if set, else the stored configuration. */
+  private mode(): 'lazy' | 'logged' {
+    const v = this.env.SHARD_REGISTRATION
+    return v === 'logged' || v === 'lazy' ? v : this.cfg.registration === 'logged' ? 'logged' : 'lazy'
+  }
+
+  /**
+   * Whether an append to this stream may join a group. `lazy`: always. `logged`: once the
+   * ledger has answered its registration as logged, or if the stream already holds
+   * acknowledged rows (a release before D57, or `lazy` mode, made it: refusing it would remove
+   * no exposure, and it is confirmed in the background). A stream that holds none is never
+   * written to before its registration is logged (D57).
+   */
+  private accepts(s: Stream): boolean {
+    return this.mode() === 'lazy' || s.registered || s.nextSeq > 1
+  }
+
+  private registeringRefusal(): AppendResult {
+    this.counters.refusedRegistering++
+    const ms = this.cfg.registerRetryAfterMs
+    return { status: 'backpressure', scope: 'registering', retryAfterMs: ms + Math.floor(Math.random() * ms) }
   }
 
   /** Streams currently holding bytes; the denominator of the fair share. */
@@ -473,7 +628,10 @@ export class Shard extends DurableObject<ShardEnv> {
 
   /** In-memory load counters since this instance started, for tests and operators. */
   async stats(): Promise<ShardStats> {
-    return { ...this.counters, inFlight: this.inFlight, pendingBytes: this.pendingBytes }
+    const now = Date.now()
+    let longest = 0
+    for (const r of this.regs.values()) longest = Math.max(longest, now - r.since)
+    return { ...this.counters, inFlight: this.inFlight, pendingBytes: this.pendingBytes, registering: this.regs.size, registeringForMs: longest }
   }
 
   async append(req: AppendRequest): Promise<AppendResult> {
@@ -506,6 +664,18 @@ export class Shard extends DurableObject<ShardEnv> {
 
     // Checked before anything else about the payload, and before a stream is created for it.
     if (bytes > this.cfg.maxBatchBytes) return { status: 'too_large', maxBytes: this.cfg.maxBatchBytes }
+
+    // Registration before writes (D57). Before any quota, metering or group, and with no await:
+    // a refused append is stored nowhere, counted nowhere, and waits for nothing (D37's bound
+    // stays what it was; review M-1). The registration runs in the background (`kick`), at most
+    // one call per stream at a time and none during its backoff, whatever the senders do.
+    if (this.mode() === 'logged') {
+      const s = known ?? this.createStream(req.tenant, req.epoch)
+      if (!s.registered) {
+        this.kick(req.tenant)
+        if (!this.accepts(s)) return this.registeringRefusal()
+      }
+    }
     // What this tenant holds, including what is waiting in the open group.
     let waiting = 0
     for (const p of this.group) if (p.req.tenant === req.tenant) waiting += p.bytes
@@ -592,7 +762,13 @@ export class Shard extends DurableObject<ShardEnv> {
         const touched = new Set<string>()
         for (const p of group) {
           const { req } = p
-          const s = this.stream(req.tenant, req.epoch)
+          // `logged` mode created the stream before the append joined (and only a stream that
+          // accepts joins); `lazy` creates it here, with its first batch, as before D57.
+          const s = this.streams.get(req.tenant) ?? (this.mode() === 'lazy' ? this.createStream(req.tenant, req.epoch) : null)
+          if (!s || !this.accepts(s)) {
+            out.push(this.registeringRefusal())
+            continue
+          }
           if (req.epoch > s.epoch) {
             s.epoch = req.epoch
             sql.exec(`UPDATE stream SET epoch = ? WHERE tenant = ?`, s.epoch, req.tenant)
@@ -848,7 +1024,18 @@ export class Shard extends DurableObject<ShardEnv> {
       // No stream here. A caller that names one (an incarnation the ledger registered) is
       // told the shard does not hold it, so the loss shows instead of an empty tail (review
       // R-10); one that names none (0) and so expects nothing gets nothing.
-      if (incarnation !== 0) return { status: 'incarnation_mismatch', incarnation: 0 }
+      if (incarnation !== 0) {
+        if (!this.ledgerNs) return { status: 'incarnation_mismatch', incarnation: 0 }
+        // D57: the shard lost the stream the plan names. Refusing alone would refuse every
+        // later query for as long as the ledger names the lost stream, which is until the
+        // tenant writes here again (spec F6, `LIVE_impl`). So: start a fresh stream (the row
+        // first, before any await, so concurrent reads are answered with the same one), newer
+        // than the one named, register it, and name it. The next plan names it; read from 0 it
+        // is empty, which is right: it holds nothing acknowledged.
+        const fresh = this.createStream(tenant, 0, incarnation)
+        await this.register(tenant)
+        return { status: 'incarnation_mismatch', incarnation: this.streams.get(tenant)?.incarnation ?? fresh.incarnation }
+      }
       const empty: TailResult = { status: 'ok', incarnation: 0, through: aboveSeq, batches: [] }
       return opts === undefined ? empty : { ...empty, page: { v: TAIL_READ_VERSION, next: null, scannedBatches: 0, scannedBytes: 0 } }
     }
@@ -928,6 +1115,164 @@ export class Shard extends DurableObject<ShardEnv> {
     return { status: 'ok', incarnation: s.incarnation, through, batches, page }
   }
 
+  /**
+   * What an append does before it is accepted, without a batch (D57): the tenant's stream in
+   * this shard exists (a fresh incarnation if the shard holds none) and its registration is
+   * asked of the ledger once (awaited, up to `registerTimeoutMs`), unless already confirmed;
+   * the rest goes on in the background. For the janitor, which needs a shard that lost a stream
+   * to start and register a fresh one so the old incarnation's files can be judged dead (spec
+   * F16), and for a map change or a new tenant, which can register every new slot before
+   * senders write to it (review m-4). Holds no payload; not bounded by D37.
+   */
+  async ensureStream(tenant: string): Promise<EnsureStreamResult> {
+    if (this.refusal) this.refused()
+    if (typeof tenant !== 'string' || !TENANT_ID.test(tenant)) throw new Error('shard: tenant id must match [A-Za-z0-9_-]{1,64}')
+    let s = this.streams.get(tenant)
+    if (!this.ledgerNs) return { incarnation: s?.incarnation ?? 0, registered: s?.registered ?? false }
+    s ??= this.createStream(tenant, 0)
+    if (!s.registered) await this.register(tenant)
+    const now = this.streams.get(tenant) ?? s
+    return { incarnation: now.incarnation, registered: now.registered }
+  }
+
+  // ───────────────────────────── registration (D57) ─────────────────────────────
+
+  private newRegistration(incarnation: number, now: number): Registration {
+    return { incarnation, since: now, attempts: 0, at: now, inFlight: null, lastError: null, reported: false }
+  }
+
+  /** The registration schedule of this stream's incarnation. */
+  private registration(tenant: string, s: Stream): Registration {
+    let r = this.regs.get(tenant)
+    if (!r || r.incarnation !== s.incarnation) this.regs.set(tenant, (r = this.newRegistration(s.incarnation, Date.now())))
+    return r
+  }
+
+  /** Start a registration call for this stream if none is in flight and its backoff is over. Never waits. */
+  private kick(tenant: string): void {
+    const s = this.streams.get(tenant)
+    if (!this.ledgerNs || !s || s.registered) return
+    const r = this.registration(tenant, s)
+    if (r.inFlight === null && r.at <= Date.now()) void this.register(tenant)
+  }
+
+  /**
+   * One registration call for this stream (single-flight: a caller during a call gets that
+   * call's answer). Resolves true once the ledger has answered it as logged; never throws.
+   */
+  private register(tenant: string): Promise<boolean> {
+    const s = this.streams.get(tenant)
+    if (!s) return Promise.resolve(false)
+    if (s.registered) return Promise.resolve(true)
+    const ns = this.ledgerNs
+    if (!ns) return Promise.resolve(false)
+    const r = this.registration(tenant, s)
+    if (r.inFlight) return r.inFlight
+    const call = this.callLedger(tenant, r, ns).finally(() => {
+      if (r.inFlight === call) r.inFlight = null
+    })
+    r.inFlight = call
+    this.ctx.waitUntil(call)
+    return call
+  }
+
+  private async callLedger(tenant: string, r: Registration, ns: DurableObjectNamespace<Ledger>): Promise<boolean> {
+    const name = this.ctx.id.name ?? ''
+    // If this call is lost with the instance, the alarm makes it again after this (set before
+    // the call: the runtime sends nothing out until the alarm's write is durable).
+    r.at = Date.now() + this.cfg.registerTimeoutMs + this.cfg.registerBackoffMs
+    await this.arm().catch(() => undefined)
+    let logged = false
+    await this.acquire()
+    try {
+      r.attempts++
+      this.counters.registerCalls++
+      const ledger = ns.get(ns.idFromName(tenant))
+      try {
+        const answer = await within(ledger.registerStream({ shard: name, incarnation: r.incarnation }), this.cfg.registerTimeoutMs, `the ledger of ${tenant}`)
+        // A ledger of a release before D57 sends no `logged`: not logged (contracts/ledger.ts).
+        logged = answer.logged === true
+        r.lastError = logged ? null : 'registered, not yet logged'
+      } catch (e) {
+        r.lastError = (e instanceof Error ? e.message : String(e)).slice(0, 300)
+        await this.lowerThanLedger(tenant, r, ledger)
+      }
+    } finally {
+      this.release()
+    }
+    if (logged) this.confirm(tenant, r.incarnation)
+    else this.backoff(tenant, r)
+    await this.arm().catch(() => undefined)
+    return logged
+  }
+
+  /** The ledger answered this incarnation's registration as logged: remember it (one row write), and stop scheduling it. */
+  private confirm(tenant: string, incarnation: number): void {
+    const s = this.streams.get(tenant)
+    if (!s || s.incarnation !== incarnation) return
+    if (!s.registered) {
+      this.ctx.storage.sql.exec(`UPDATE stream SET registered = ? WHERE tenant = ? AND incarnation = ?`, incarnation, tenant, incarnation)
+      s.registered = true
+    }
+    if (this.regs.get(tenant)?.incarnation === incarnation) this.regs.delete(tenant)
+  }
+
+  private backoff(tenant: string, r: Registration): void {
+    const now = Date.now()
+    r.at = now + Math.min(this.cfg.registerBackoffMaxMs, this.cfg.registerBackoffMs * 2 ** Math.min(20, Math.max(0, r.attempts - 1)))
+    if (!r.reported && now - r.since >= this.cfg.registerAlertMs && this.regs.get(tenant) === r) {
+      r.reported = true
+      const s = this.streams.get(tenant)
+      console.error(
+        `shard ${this.ctx.id.name ?? ''}: the registration of ${tenant}'s stream ${r.incarnation} has not been logged by its ledger after ${Math.round((now - r.since) / 1000)} s ` +
+          `(${r.attempts} calls; last: ${r.lastError ?? 'none'}); ${s && s.nextSeq > 1 ? 'it keeps accepting (it holds rows from before D57)' : 'its writes are refused until it is'}`,
+      )
+    }
+  }
+
+  /**
+   * S5 (spec/README.md): the ledger refuses an incarnation lower than its own for good, which
+   * after a storage loss across a clock step back is this new stream's. A stream that holds
+   * nothing acknowledged (never registered, no batch) can start again above the ledger's
+   * incarnation, read from `loggedWatermarks()`, without losing anything (review m-7). One
+   * that holds rows (made before D57) cannot be renumbered; it stays refused by the ledger and
+   * is reported, as before D57.
+   */
+  private async lowerThanLedger(tenant: string, r: Registration, ledger: DurableObjectStub<Ledger>): Promise<void> {
+    const name = this.ctx.id.name ?? ''
+    const s = this.streams.get(tenant)
+    if (!s || s.registered || s.incarnation !== r.incarnation || s.nextSeq !== 1) return
+    let theirs: number | undefined
+    try {
+      theirs = (await within(ledger.loggedWatermarks(), this.cfg.registerTimeoutMs, `the ledger of ${tenant}`)).find((w) => w.shard === name)?.incarnation
+    } catch {
+      return // the ledger cannot say: try the registration again later
+    }
+    if (theirs === undefined || theirs <= r.incarnation || !Number.isSafeInteger(theirs + 1)) return // some other failure
+    // Judged again after the await: still the same new stream, still holding nothing.
+    if (this.streams.get(tenant) !== s || s.registered || s.incarnation !== r.incarnation || s.nextSeq !== 1 || this.group.some((p) => p.req.tenant === tenant)) return
+    const fresh = theirs + 1
+    this.ctx.storage.sql.exec(`UPDATE stream SET incarnation = ?, registered = 0 WHERE tenant = ? AND incarnation = ?`, fresh, tenant, s.incarnation)
+    console.error(`shard ${name}: ${tenant}'s new stream ${s.incarnation} is below the ledger's ${theirs} (a clock that stepped back across a storage loss: spec S5); it holds nothing acknowledged, so it starts again as ${fresh}`)
+    s.incarnation = fresh
+    this.regs.set(tenant, this.newRegistration(fresh, Date.now()))
+  }
+
+  /** A slot among `maxRegistrations` registration calls in flight (review m-5). */
+  private acquire(): Promise<void> {
+    if (this.regSlots < Math.max(1, this.cfg.maxRegistrations)) {
+      this.regSlots++
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve) => this.regWaiters.push(resolve))
+  }
+
+  private release(): void {
+    const next = this.regWaiters.shift()
+    if (next) next() // the slot passes to the next call
+    else this.regSlots--
+  }
+
   /** Per-stream state, for the ledger, for tests and for operators. */
   async describe(tenant: string): Promise<(Stream & { totalBytes: number }) | null> {
     if (this.refusal) this.refused()
@@ -956,6 +1301,8 @@ export class Shard extends DurableObject<ShardEnv> {
     }
     if (!this.marked && this.env.CONFIG && this.anyPending()) due = Math.min(due, Date.now() + this.cfg.notifyRetryMs)
     for (const at of this.fingerprintsFrom.values()) due = Math.min(due, at + this.cfg.fingerprintTtlMs)
+    // A registration's next call (or the deadline of one in flight): the same one alarm (D57).
+    for (const r of this.regs.values()) due = Math.min(due, r.at)
     const current = await this.ctx.storage.getAlarm()
     if (due === Infinity) {
       if (current !== null) await this.ctx.storage.deleteAlarm()
@@ -1011,6 +1358,10 @@ export class Shard extends DurableObject<ShardEnv> {
     }
     // 4. Seals made above, and anything a previous attempt could not send.
     await this.deliver()
+    // 5. Registrations whose backoff is over, or whose call was lost with an instance (D57).
+    //    Each call holds a slot of `maxRegistrations` and waits at most `registerTimeoutMs`.
+    const due = [...this.regs].filter(([, r]) => r.inFlight === null && r.at <= now).map(([tenant]) => this.register(tenant))
+    if (due.length > 0) await Promise.allSettled(due)
     await this.arm()
   }
 }

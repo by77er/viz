@@ -21,6 +21,8 @@
 //                 neighbour drawn over it), a control's hit area over another control's words, or two words of different elements
 //                 drawn over each other (v6 review, B1: pod names drawn over the CPU figures);
 //   key-width     a key in a folded table narrower than key-min of its row (v6 review, B1: 87 px of a 368 px row);
+//   align         a table column of bare numbers (one unit, in its head) whose figures or head do not end at the cell's right edge, as
+//                 rendered (v7 review, M2: "Memory, MiB" and "Restarts" left-aligned);
 //   stale         dist/ not what the build makes of the tree: dist/viz.css, and the fixture page's inlined CSS (v6 review, m6).
 // And, on the compositions at 1500 px:
 //   figure        an element marked data-figure="<chart id>|<series label value>|last|min|max" that does not show what that chart's model
@@ -152,6 +154,18 @@ function audit({ coarse, words }) {
   // a state in a kept column wraps between words (v5 review, B2.2; mutant Y17), as rendered: never nowrap in a folded table
   for (const st of document.querySelectorAll('table[data-fold] [data-priority="1"] .vz-status')) { const t = st.closest('table'); if (!shown(st) || cs(t).display !== 'block') continue
     if (/^(nowrap|pre)$/.test(cs(st).whiteSpace) || /nowrap/.test(cs(st).textWrapMode ?? '')) { out.push(['guard', `${name(st)} in a kept column of a folded table does not wrap (white-space: ${cs(st).whiteSpace}): a long state is cut or pushes the row wider (v5 review, B2.2)`]); break } }
+  // align (v7 review, M2): in a table laid out as a table, a column whose body cells all hold a bare number (one unit, named in its head)
+  // is right-aligned, as rendered: every cell's figures, and its head's words, end at the cell's right edge (Type: "right-aligned in a
+  // column of one unit"). A column whose cells carry their own units ("912 ms", "1.3%") is mixed and left-aligned by the same rule.
+  { const BARE = /^[<>]?\s?[−-]?[\d,]*\.?\d+(\s?to\s?[<>]?\s?[−-]?[\d,]*\.?\d+)?$/, rng = document.createRange(), right = (c) => { const r = c.getBoundingClientRect(), st = cs(c); return r.right - (parseFloat(st.paddingRight) || 0) - (parseFloat(st.borderRightWidth) || 0) }
+    const ends = (c) => { rng.selectNodeContents(c); const rs = [...rng.getClientRects()].filter((x) => x.width > 0); return rs.length ? Math.max(...rs.map((x) => x.right)) : null }
+    let said = 0
+    for (const t of document.querySelectorAll('table')) { if (!shown(t) || cs(t).display !== 'table' || said > 3) continue
+      const rows = [...t.tBodies].flatMap((b) => [...b.rows]).filter((r) => shown(r) && ![...r.cells].some((c) => c.colSpan > 1)), n = Math.max(0, ...rows.map((r) => r.cells.length))
+      for (let i = 0; i < n; i++) { const cells = rows.map((r) => r.cells[i]).filter((c) => c && shown(c) && c.textContent.trim())
+        if (cells.length < 2 || !cells.every((c) => BARE.test(c.textContent.trim().replace(/\s+/g, ' ')))) continue
+        const head = t.tHead?.rows[0]?.cells[i], off = [...cells, ...(head && head.textContent.trim() && shown(head) ? [head] : [])].map((c) => [c, right(c) - (ends(c) ?? right(c))]).filter(([, d]) => d > 1.5)
+        if (off.length) { said++; out.push(['align', `the column "${(head?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 24)}" of ${name(t)} holds bare numbers of one unit but ${off.length} of its cells do not end at their right edge ("${off[0][0].textContent.trim().slice(0, 16)}" ${Math.round(off[0][1])} px short): numbers of one unit are right-aligned`]) } } } }
   // key width (v6 review, B1): in a folded table, every key is at least key-min of its row (the whole row when it has its line to
   // itself), so a name keeps a readable, tappable width at every width, zoom and pointer
   for (const t of document.querySelectorAll('table[data-fold]')) { if (!shown(t) || cs(t).display !== 'block') continue
