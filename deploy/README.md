@@ -270,10 +270,12 @@ called by the deploy. Jobs: `discover` (runs `deploy/ci/matrix.mjs` on the check
 traceql, wasm, wasm-query), and `typescript` (per component: `npm ci`, `npx tsc --noEmit`,
 `npm test`; the WASM artifact for flush, compact, janitor, stack, query, engine/wasm).
 Components not in the checkout are skipped with a notice: on `main` today that is `app/`
-and `design-system/` (and `app/` also needs `design-system/`). Two test files import from
-directories that may be absent and are excluded, with a warning, when they are:
-`query/test/http.test.ts` (imports `app/src/api/client.ts`) and `stack/test/e2e.test.ts`
-(imports hyparquet from `bench/node_modules`, so `bench/` is `npm ci`'d for stack).
+and `design-system/` (and `app/` also needs `design-system/`). One test file imports from a
+directory that may be absent and is excluded, with a warning, when it is:
+`stack/test/e2e.test.ts` (imports hyparquet from `bench/node_modules`, so `bench/` is
+`npm ci`'d for stack). Each exclusion names the import that justifies it, and
+`test/matrix.test.mjs` fails once the file no longer contains it (commit 587f3df, which
+also dropped the exclusion of `query/test/http.test.ts`: it no longer imports `app/`).
 Actions are pinned to full commit SHAs (checkout v7.0.1, setup-node v7.1.0, cache v6.1.0,
 upload-artifact v7.0.2, download-artifact v8.0.2; SHAs read from the tags through the Go
 module proxy and cross-checked against GitHub's tag pages). Rust comes from the runner's
@@ -294,13 +296,14 @@ All measured here unless it says Cloudflare.
   right token twice, six wrong tokens, expired, body and query string, GET, malformed
   secret, a second token for a provisioned tenant, and storage a newer release holds (a
   `viz_schema` row at version 99: 503 with `Retry-After`, no key, storage unchanged)), then
-  `node --test`, 21 tests (configure
+  `node --test`, 22 tests (configure
   against the real component configs, the migration gate, acknowledgement parsing, the
   Remote Write body decoded by snappyjs and protobufjs, the CI matrix with and without
   `app/`, `design-system/` and `bench/`, and the health path `workers.json` records for each
   backend equal to the one the gateway asks, read from `gateway/src/index.ts`; that test
   fails against the `workers.json` that still named control's OpenAPI document).
-  Re-run 2026-11-19: 55 and 21 pass; `npx tsc --noEmit` clean.
+  Re-run 2026-11-19: 55 and 22 pass (one matrix test added since by 587f3df); `npx tsc
+  --noEmit` clean.
 - `npx tsc --noEmit` in deploy/: clean. It covers the gateway and the stage queue-name
   mapping, not `stage/ingest.ts`: typing that file means type-checking the whole write path
   (stack/, ledger/, …), which is their CI job's business and was mid-edit by others while this
@@ -332,14 +335,11 @@ All measured here unless it says Cloudflare.
 - `wrangler deploy --dry-run` of all four generated production configs: bundles (viz-ingest
   2,642.54 KiB / 799.96 KiB gzip, viz-control 303.48 / 58.00, viz-query 2,625.71 / 824.97,
   viz-gateway 7.15 / 2.75).
-- The CI exclusion, on a copy of the sources without `app/` (as main will be): query's
-  `npx tsc --noEmit` fails with 4 errors, all in `test/http.test.ts` (`Cannot find module
-  '../../app/src/api/client'`); with the `tsconfig.ci.json` the workflow writes, it is clean.
-- The same copy, `npx vitest run --exclude test/http.test.ts` in query/: the other 7 test
-  files ran (no import error). In that copy 10 of 45 tests failed for reasons inside
-  `query/` and `engine/` that other engineers were changing at the time (for example
-  `engine.test.ts` expects 12 exports and the rebuilt module has 22); that is their work in
-  progress, not the exclusion.
+- The CI exclusion as first built (query's `test/http.test.ts`, then importing `app/`), on a
+  copy of the sources without `app/`: query's `npx tsc --noEmit` failed with 4 errors, all in
+  that file, and was clean with the `tsconfig.ci.json` the workflow writes. That exclusion
+  has since been removed (above); the `tsconfig.ci.json` mechanism is unchanged and now
+  serves stack's exclusion only.
 - actionlint 1.7.12 (built from source through the Go module proxy) with shellcheck 0.11.0
   on both workflows: no findings. shellcheck on `deploy.sh`: clean.
 - The workflows themselves have not run: this checkout has no GitHub remote access. What
@@ -478,7 +478,7 @@ right after the trial for 23:10–23:50 UTC, returned no rows for the `viz-trial
 
 ## Needed changes in components
 
-None of these were made here; 4 was made since, in control/ and the gateway.
+None of these were made here; 3 was made since in query/, and 4 in control/ and the gateway.
 
 1. **`stack/src/index.ts`: queue names are hard-coded.** `handleQueue` compares
    `batch.queue` with the literals `viz-flush` and `viz-maint` (`FLUSH_QUEUE_NAME`,
@@ -497,10 +497,8 @@ None of these were made here; 4 was made since, in control/ and the gateway.
    Worker that declares the var, and `configure.mjs` prints the disagreement on every run.
    Wanted: one source for the shared pool (a contract constant or a KV record), and a test
    config for stack/ separate from the one production is generated from.
-3. **`query/test/http.test.ts` imports `app/src/api/client.ts`.** On a checkout without
-   `app/` (main, until the UI lands) query's typecheck and tests fail. CI excludes that one
-   file when `app/` is absent and says so in a warning. Wanted: the client as a contract,
-   or a copy owned by query's tests.
+3. **`query/test/http.test.ts` imported `app/src/api/client.ts`.** Done in `query/`: the test
+   has its own client, and CI no longer excludes it (commit 587f3df).
 4. **`control/`: no health route.** Done: control serves `GET /healthz` without a credential,
    as ingest and query do (200 `ok` when the Worker runs with its `TENANT` and `CONFIG`
    bindings, 503 naming a missing one; it asks no Durable Object or KV), and the gateway
