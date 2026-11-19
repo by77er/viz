@@ -168,7 +168,7 @@ licence is MIT OR Apache-2.0):
 | "`wrangler secret put` creates a new version of the Worker and deploys it immediately." "If using gradual deployments, instead use the `wrangler versions secret put` command": it "will only create a new version of the Worker, that can then be deployed using `wrangler versions deploy`" | [Secrets](https://developers.cloudflare.com/workers/configuration/secrets/); [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/) ("This action creates a new version of the Worker and deploys it immediately") | `versions secret put`, never `secret put`: nothing is deployed outside phase 2 |
 | `versions secret put` patches the **newest** version (`PATCH …/versions/latest` with the secret in `env`), tags it with `--tag` and `--message`, reads the value from stdin when stdin is not a terminal, and fails (10222) on a Worker with no version | wrangler source, `src/versions/secrets/put.ts` and `index.ts` | Runs right after viz-control's upload, once the newest version is checked to be that upload; the new version must then list the secret and carry this release's `VIZ_RELEASE`; it is tagged with the release |
 | `secret put` is refused (10214, 10215) while the newest version is not the deployed one, "to prevent accidental deployment when using Worker versions and secrets together"; on a Worker that does not exist it creates one whose code is `export default { fetch() {} }`, answering yes by itself in CI | wrangler source, `src/secret/index.ts` | Not used here. (`bootstrap.mjs` uses it on the gateway, which exists by then) |
-| "Secrets are never deleted by deployments"; wrangler uploads with `keep_bindings: ["secret_text", "secret_key"]`, which the API calls "binding types to keep from previous_upload"; an `inherit` binding's version "Defaults to "latest"" | [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/); [API: upload a version](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create/); wrangler source | Once made, the key rides along on every later version and the deploy only checks it is there. That uploads inherit from the newest version is read into "previous_upload", not stated, and not measured ("Known risks") |
+| "secrets are never deleted by deployments"; wrangler uploads with `keep_bindings: ["secret_text", "secret_key"]`, which the API calls "binding types to keep from previous_upload"; an `inherit` binding's version "Defaults to "latest"" | [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/); [API: upload a version](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create/); wrangler source | Once made, the key rides along on every later version and the deploy only checks it is there. That uploads inherit from the newest version is read into "previous_upload", not stated, and not measured ("Known risks") |
 | The API lists "the names of secrets bound to a Worker script" (from which version is not said); a version's `resources.bindings` list secrets by name and type | [API: list secrets](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/list/); the version API (read back on Cloudflare in Trial 3 for `VIZ_SCHEMAS`) | Presence is judged by name only: on the version to be promoted, and, for the refusal below, in the secret list and the serving versions |
 | The rollback documentation says nothing about secrets. wrangler's `rollback` handles an API error 10220 ("The following secrets have changed") by asking and retrying with `force`; `versions deploy`, which `release.mjs` rolls back with, does not | [Rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/); wrangler source, `src/versions/rollback/index.ts` | Nothing special. Whether a rollback to a version without the key is refused is not known ("Known risks") |
 
@@ -222,7 +222,7 @@ The new key goes on that release's upload exactly as a first one would, the reco
 `rotated`, and every registered client must register again. A failed smoke test rolls back as for
 any release, to versions that carry the old key (so the old registrations work again; see "Known
 risks" for whether Cloudflare allows that rollback). A name the deploy does not generate is
-refused, exit 3, before anything happens. The workflow has no input for this yet ("Needed
+refused, exit 3, before anything is uploaded. The workflow has no input for this yet ("Needed
 changes").
 
 **Never shown.** The value exists in the deploy process's memory and in the pipe to wrangler's
@@ -342,8 +342,9 @@ fails with an error naming the migrations or classes and the instruction to fix 
 that commit. That builds new versions of old code and goes through the same migration gate,
 which refuses if the old config lacks a migration that is now applied.
 
-A rollback restores versions: code, bindings and vars. It does not restore routes, crons or
-queue consumers (not versioned), nor data.
+A rollback restores versions: code, bindings and vars, and the secrets each version carries (a
+version from before viz-control's generated key has none: "Known risks"). It does not restore
+routes, crons or queue consumers (not versioned), nor data.
 
 ## When a deploy fails
 
@@ -437,6 +438,57 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 
 All measured here unless it says Cloudflare.
 
+- **Generated secrets (viz-control's `OAUTH_CLIENT_KEY`, 2026-11-19).** Not run on Cloudflare:
+  nothing was deployed for this change. `node --test test/secrets.test.mjs`: **9 of 9**, through
+  the real `release.mjs` `deploy` and `plan`, with `lib/wrangler.mjs` spawning a fake wrangler as
+  a real child process (`test/fake-wrangler.mjs`: it records every argv, the bytes it got on stdin
+  and whether any environment variable held them) and the Cloudflare API answered by a stubbed
+  `fetch` from the same state (any other request: 400; the token is a dummy). The tests: the
+  value is 43 base64url characters from 32 CSPRNG bytes, never twice the same; **absent**: one
+  `versions secret put` on the version phase 1 uploaded, value on stdin, before anything is
+  promoted, and the keyed version (this release's `VIZ_RELEASE` and tag) is what serves and what
+  the record names; **present**: no put, and the new version inherits the same value; **a failed
+  put** stops the release with nothing promoted, and what the fake echoed back (the value) is in
+  neither the log nor the error; **set now but missing from the upload**: exit 3, nothing put or
+  promoted; **the newest version is not this release's**: exit 3, nothing put or promoted;
+  **rotation** only when named (a new value; an unknown name refused, exit 3, with no wrangler
+  call at all); **a first deploy**: `wrangler deploy` of viz-control, then the put, then
+  `versions deploy` of the keyed version, then the gateway; **plan**: "would be created" or
+  "kept", and no wrangler call. In every run that made or kept a value, it is checked to be in no
+  argv, no wrangler environment, no log line, no file under `generated/`, and not in this
+  process's environment. The whole suite afterwards (with the other engineers' changes of the
+  day): `npx vitest run --maxWorkers=2` **95 of 95**; `node --test --test-concurrency=2
+  'test/*.test.mjs'` **45 of 46**: the one failure is `configure.test.mjs` "stack/wrangler.test.jsonc
+  differs … only by the publisher binding and the test main", which also failed before this change
+  (stack's config gained `LEDGER_STATE_MAX_BYTES` that its test config lacks: stack/'s business, in
+  progress). `npx tsc --noEmit` clean. `bash -n deploy.sh` clean; shellcheck is not installed here
+  now, so `deploy.sh`'s new lines were not linted.
+- `node scripts/mutants-secrets.mjs` in a copy of `deploy/` in a scratch directory (node_modules
+  linked), after the copy's suite passed unmutated: **17 of 17 killed**, first run. The copy's
+  sources were equal to the shared tree's afterwards, and the copy was deleted.
+
+  | Mutant | Killed by (tests failing) |
+  |---|---|
+  | always regenerate: a key that is set is replaced | present: left alone; set now but missing from the upload (2) |
+  | skip when absent: a missing key is never created | absent; a failed put; the newest version is not this release's; a first deploy (4) |
+  | the value on the command line | absent; a failed put; rotation; a first deploy (4) |
+  | the value in wrangler's environment | the same four |
+  | the value in the log | the same four |
+  | wrangler's output not scrubbed when the put fails | a failed put (1) |
+  | a failed put ignored, the upload promoted anyway | a failed put (1) |
+  | fail-closed dropped: a key set now but missing from the upload is replaced | set now but missing from the upload (1) |
+  | the newest-version check dropped | the newest version is not this release's (1) |
+  | a constant value instead of the CSPRNG | the generated value (1) |
+  | a short value (8 random bytes) | the generated value; absent; a failed put; rotation; a first deploy (5) |
+  | plan: a missing key reported as kept | plan (1) |
+  | phase 1: the upload promoted instead of the keyed version | absent; rotation (2) |
+  | phase 2: a new viz-control keeps serving the version without the key | a first deploy (1) |
+  | plan mode puts the secret | plan (1) |
+  | an unknown name to rotate is ignored | rotation (1) |
+  | `lib/wrangler.mjs`: the value not written to stdin | absent; a failed put; rotation; a first deploy (4) |
+
+  `scripts/mutants-release.mjs` was not re-run: its patterns are in code this change did not
+  touch, and it refuses to start while `configure.test.mjs` has the failure above.
 - `cd deploy && npm test`: vitest in workerd, 3 files, 55 tests (gateway routing for every
   listed path and 11 that must 404; method, headers and a 3 MiB body byte-for-byte; a
   request body that is still being written; 12 status codes with status text, `Retry-After`,
@@ -805,6 +857,16 @@ right after the trial for 23:10–23:50 UTC, returned no rows for the `viz-trial
 
 ## Needed changes in components
 
+From the generated OAuth key (D53; none made here):
+
+- **`.github/workflows/deploy.yml`: an input to rotate a generated secret** (`rotate_secrets`,
+  passed to `deploy.sh` as `VIZ_ROTATE_SECRETS`), so a rotation can run in CI rather than from a
+  workstation ("Worker secrets the deploy generates", Rotation).
+- **`control/README.md` "Needed changes" 9**: the deploy now generates `OAUTH_CLIENT_KEY`; that
+  item's owner can mark the key part done. Its other part, `PUBLIC_URL` equal for viz-control and
+  viz-mcp, is not enforced by the deploy: both component configs say `https://vis.bitcru.sh`, which
+  is right for production and wrong for a stage (whose gateway is on workers.dev).
+
 From Trial 2 and the ruler (none made here):
 
 - **`query/src/index.ts`: an RPC entrypoint (`QueryService`) for the ruler**, so a group's tick
@@ -886,9 +948,28 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   it but never does it.
 - **Alerting** on a failed deploy beyond the failed job and its summary.
 - **The workflows have not run on GitHub** (see above).
+- **Generated secrets on Cloudflare.** Never run there: the inheritance of the key by later
+  uploads, the put on a version that serves nothing, and rollbacks across the release that
+  created the key are modelled by the fake, not measured ("Known risks" has the experiment).
+- **Rotation without a deploy, or with overlap.** A rotation is a release; control verifies under
+  one key only, so every registered client is invalidated at once. No workflow input yet.
 
 ## Known risks
 
+- **Rollback across the release that created (or rotated) the OAuth key** (D53). The versions
+  restored do not carry the key (or carry the old one). Not documented, not measured: whether
+  `versions deploy` of such a version is refused (wrangler's own `rollback` handles an API error
+  10220, "secrets have changed", by asking; `release.mjs` uses `versions deploy`, which does not),
+  and, if allowed, which value serves (secondary sources say a rollback keeps the current secret
+  values). If refused, the automatic rollback of that one release fails loudly and the new release
+  keeps serving; if allowed, `/oauth/register` answers 503 until the next deploy. And whether the
+  next deploy then keeps the key depends on uploads inheriting from the newest version, which is
+  read from the documentation, not measured; if they inherit from the deployed version instead, it
+  either refuses (exit 3, the key seen in the secret list) or makes a new key, which only clients
+  that registered while the rolled-back release served would notice. **Experiment**: on a stage,
+  deploy R0 without the key, R1 (creates it), `release.mjs rollback` to R0's record, then R2;
+  record whether the rollback is refused (10220), what `/oauth/register` answers, and whether R2
+  keeps or creates the key. Cost: three releases of a stage, cents.
 - **Reading the schemas runs component code in Node.** `lib/schemas.mjs` evaluates the bundle of
   the spec modules (and what they import) in a `vm` context; a spec module that does more than
   define values at load time (a top-level call to a platform API) makes configure fail, loudly.
