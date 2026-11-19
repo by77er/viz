@@ -305,7 +305,7 @@ function lokiBody(streams, json) {
 const T0 = BigInt(Date.UTC(2026, 10, 18, 22, 30)) * 1_000_000n // 2026-11-18T22:30Z: hours and a day boundary
 const HOUR = 3_600_000_000_000n
 const limits = {
-  ...E.DEFAULT_LIMITS, maxSpans: 1e7, maxLogRecords: 1e7, maxDecompressedBytes: 1 << 30,
+  ...E.DEFAULT_LIMITS, maxSpans: 1e7, maxLogRecords: 1e7, maxDecompressedBytes: 1 << 30, maxDecodedBytes: 1 << 30, maxJsonTokens: 1 << 30,
   spanAcceptBackMs: 1e13, spanAcceptAheadMs: 1e13, logAcceptBackMs: 1e13, logAcceptAheadMs: 1e13,
 }
 const NOW_MS = Number((T0 + 4n * HOUR) / 1_000_000n)

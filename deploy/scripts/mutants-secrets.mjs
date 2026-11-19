@@ -4,7 +4,8 @@
 // text replacement; `node --test test/secrets.test.mjs` must fail with it. The file is restored
 // after every mutant, also on failure.
 //
-//   node scripts/mutants-secrets.mjs        (from deploy/, in a COPY outside any git work tree)
+//   node scripts/mutants-secrets.mjs [text]   (from deploy/, in a COPY outside any git work tree;
+//                                              with text, only the mutants whose name contains it)
 //
 // The copy needs only deploy/ with node_modules linked: the test brings its own fake wrangler and
 // fake Cloudflare API, and writes its manifest under the copy's generated/.
@@ -29,7 +30,9 @@ const MUTANTS = [
   ['phase 1: the upload is promoted instead of the keyed version', 'release.mjs', '          secretActions.push(...s.actions)\n          uploaded[step.name] = s.versionId\n', '          secretActions.push(...s.actions)\n'],
   ['phase 2: a new viz-control keeps serving the version without the key', 'release.mjs', '          if (s.versionId !== uploaded[step.name]) {', '          if (false) {'],
   ['plan mode puts the secret', 'release.mjs', '  const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)\n',
-    "  const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)\n  for (const step of plan.steps) for (const v of live[step.name]?.versions ?? []) await ensureSecrets({ worker: step.name, versionId: v.version_id, specs: specs.filter((s) => s.worker === step.name), now: [], rotate, release: manifest.release, tag: 'x', message: 'x', api: SECRET_API }).catch(() => {})\n"],
+    // Since D69 an ensureSecrets call without this run's VIZ_DEPLOY_RUN is refused before any put (the first form of this
+    // mutant became equivalent), so the plan puts directly, as a careless change would.
+    "  const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)\n  for (const sc of secrets) if (sc.action === 'create') await wrangler(['versions', 'secret', 'put', sc.name, '--name', sc.worker], { input: 'p'.repeat(43), quiet: true }).catch(() => {})\n"],
   ['an unknown name to rotate is ignored instead of refused', 'release.mjs', '  const refusals = [...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs)]', '  const refusals = [...plan.problems, ...floors.problems]'],
   ['lib/wrangler.mjs: the value is not written to stdin', 'lib/wrangler.mjs', '    if (input !== undefined) child.stdin.end(input)', '    if (input !== undefined) child.stdin.end()'],
   // review of D53 (design/reviews/d44-d52-d53-d60.md)
@@ -76,8 +79,10 @@ if (base.failed) {
   console.error(`the unmutated tests fail (${base.detail}); fix that first`)
   process.exit(1)
 }
+const only = process.argv[2]
+const chosen = MUTANTS.filter(([name]) => !only || name.includes(only))
 let killed = 0
-for (const [name, file, from, to] of MUTANTS) {
+for (const [name, file, from, to] of chosen) {
   const path = join(DEPLOY_DIR, file)
   const original = readFileSync(path, 'utf8')
   if (original.split(from).length !== 2) {
@@ -94,5 +99,5 @@ for (const [name, file, from, to] of MUTANTS) {
   if (r.failed) killed++
   console.log(`${r.failed ? 'KILLED  ' : r.crashed ? 'NO RUN  ' : 'SURVIVED'}  ${name}${r.detail ? `  ← ${r.detail}` : ''}`)
 }
-console.log(`${killed} of ${MUTANTS.length} killed`)
-process.exit(killed === MUTANTS.length ? 0 : 1)
+console.log(`${killed} of ${chosen.length} killed`)
+process.exit(killed === chosen.length ? 0 : 1)
