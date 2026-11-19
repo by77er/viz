@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BASE62, CREDENTIAL_LAYOUT, OAUTH_LIMITS, credentialExpiresAt } from '../../contracts/oauth'
 import worker from '../src/index'
 import { introspectFor } from '../src/introspection'
-import { EXPIRY_GRACE_MS, credentialExpired, credentialTagValid, expiryChars, mintCredential, oauthConfig } from '../src/oauth'
+import { credentialExpired, credentialTagValid, expiryChars, mintCredential, oauthConfig } from '../src/oauth'
 import { CHECK_BUDGET_MS, LIMITERS, SKIP_AFTER_FAILURE_MS, WORKERS_EGRESS, resetLimiterState, sourceKeys, sourceNetwork } from '../src/ratelimit'
 import type { Tenant } from '../src/tenant'
 import { B62 } from '../src/util'
@@ -343,11 +343,14 @@ describe('layout 2: the expiry a credential carries, under its tag (contracts/oa
     expect(credentialExpiresAt('not a credential')).toBeNull()
   })
 
-  it(`the Worker refuses a credential only once its expiry and ${EXPIRY_GRACE_MS / 1000} s more have passed`, async () => {
+  it('the Worker refuses a credential only once its expiry and 60 s more have passed', async () => {
     const { tenant } = await newTenant('grace')
     const l = limited({})
-    const almost = await mintCredential('access', tenant, KEY, Date.now() - EXPIRY_GRACE_MS + 5_000)
-    const past = await mintCredential('access', tenant, KEY, Date.now() - EXPIRY_GRACE_MS - 60_000)
+    // Whole minutes, so the encoding adds nothing: one expired less than a minute ago, one more than a minute ago.
+    const minute = Math.floor(Date.now() / 60_000) * 60_000
+    const almost = await mintCredential('access', tenant, KEY, minute)
+    const past = await mintCredential('access', tenant, KEY, minute - 60_000)
+    expect(credentialExpiresAt(almost)).toBe(minute)
     expect(credentialExpired(almost)).toBe(false)
     expect(credentialExpired(past)).toBe(true)
     // Not past it: the object is asked (and knows no such token).

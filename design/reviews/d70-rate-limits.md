@@ -371,3 +371,83 @@ Unreproduced and labelled as such:
 ## Row for design/REVIEW.md's index
 
 | `reviews/d70.md` | Rate limits in front of OAuth (D70): the Rate Limiting binding keys (source, client, tenant, bearer, bearer tenant), failing open, the exact per-grant refresh limit, the `too_many_requests` / `rate_limited` refusal, on the development branch at `3cbabb8` | 1 blocker (B-1: anyone holding one dead credential of a tenant spends its tenant-wide budgets — the per-client key is the unverified presented `client_id`, revocation has no narrower key, tags never expire — denying all its agents token refresh, revocation and `/mcp` in a location at 5 req/s (50 for `/mcp`), and Python-SDK clients then discard their tokens; reproduced), 2 majors (M-1: the source limit counts genuine credentials and every Worker-hosted MCP client shares `2a06:98c0:3600::103`, reproduced at unit level; M-2: "required before public exposure" is enforced nowhere and a release turns OAuth on without layer 1), 8 minors (m-1: 3 s/2 s added per request during a limiter brownout, reproduced; m-2: absent bindings fail open silently despite "it logs"). Layer 2 (exact per-grant limit), the refusal shape for the TS SDK, the contract's additivity and the measured numbers held | Open |
+
+## Dispositions (2026-11-19, by the builder of the fixes)
+
+D70 was rewritten (`design/DECISIONS.md`; it says it replaces the first version), and D44 was
+amended for the credential format. The code is in `control/src/{ratelimit,oauth-http,introspection,
+oauth,ops-oauth,index}.ts` and `contracts/oauth.ts`. The review's reproductions are turned into
+regression tests in `control/test/ratelimit-review.test.ts`, in which the victim is served. Against
+the code this review read, 8 of its 12 tests fail. The 4 that pass there are:
+- the review's own R3 numbers, now below the fuse, which the change of ratio fixes;
+- the header-less key, recorded and not changed;
+- the two release skews.
+
+Against the fixed code, all 12 pass. Mutants of each fix were run on a scratch copy
+(`control/README.md`, "Mutation checks" 114–135 and 146–165): 42 of 42 killed. In the first run
+40 of 41 were killed: the survivor, "no grace", exposed a test that derived its inputs from the
+constant under test, and was killed once that test was fixed; one mutant was added after the run
+began and run on its own. The full control suite passes, 183 of 183, with `tsc` clean, and `mcp/`'s
+`tsc` and its OAuth suite, 15 of 15. Nothing was run on Cloudflare.
+
+- **B-1, fixed** (no format version; a layout of version 1). The measures:
+  - **Expiry in the credential.** Codes and tokens carry their expiry in the 27 characters before
+    the tag (`contracts/oauth.ts`, layout 2: marker, expiry in minutes, 22 random characters). The
+    Worker refuses one past it before any limit and any object, at the token endpoint, revocation and
+    introspection.
+  - **The credential first.** The narrow key on token and revoke is the presented credential itself
+    (`OAUTH_RL_CREDENTIAL`, a SHA-256 prefix), asked first. There is no per-client key: a verified
+    one would still be spent with a public client id (R1b).
+  - **Fuses.** The tenant keys stay as fuses near one object's measured capacity: 6,000 and 30,000
+    a minute proposed, against 300 and 3,000.
+  - **What a dead credential can spend now.** One spends at most its own allowance of a fuse.
+    Spending a fuse takes 1,200 (token) or 25 (introspection) distinct unexpired credentials.
+  - **Old credentials.** Previous-release (layout 1) credentials are served until they expire. The
+    previous release's checks accept layout 2 (both skews tested).
+  - **The negative cache was not built**: D70 alternative (i) says why. The residual is a client the
+    tenant approved farming credentials, in D70 and the README's Known risks.
+  - **Regression evidence**: R1, R1b, R2 and R3 (expired tokens) are tests in which the victim is
+    served.
+- **M-1, fixed.** Token and revoke count a network only for requests they refuse by themselves (no
+  credential with the tag, malformed, or expired), after reading them. A genuine credential is never
+  counted by network.
+  - Registration and the authorization page keep counting before the body. They do not count
+    `2a06:98c0:3600::103` at all: verified on the headers page, 2026-11-19, modified 2026-11-15.
+  - Brokers' egress and the Workers address are recorded in D70 and Known risks.
+  - Regression evidence: R4 is a test in which a genuine refresh from the Workers address, and from
+    a network whose budget made-up credentials spent, is served.
+- **M-2, control side fixed; the gate is still a deploy change.**
+  - An absent or failing binding is logged once per isolate.
+  - `/healthz` lists each limiter (`bound`, `absent`, `skipped`) and whether `OAUTH_CLIENT_KEY` is
+    set.
+  - The gate is restated precisely in `control/README.md`, "Needed changes elsewhere" 3: configure
+    refuses a production viz-control config without the six bindings; `lib/secrets.mjs` refuses to put
+    `OAUTH_CLIENT_KEY` on such a version; a stage may skip only with a flag; tests listed. It is needed
+    before any production release that carries `OAUTH_CLIENT_KEY`.
+- **m-1, fixed.** One 100 ms budget per request, and a failed binding is skipped by the isolate for
+  10 s.
+  - Measured here (local workerd, limiters that never answer): refreshes 105, 129 and 14 ms;
+    introspections 104, 105 and 2 ms; against 3,035 and 2,005 ms before.
+  - `limit()` latency on Cloudflare is still unmeasured.
+- **m-2, fixed** with M-2. The `namespace_id` collision stays with the deploy's id allocation (Needed
+  changes 2).
+- **m-3, corrected.**
+  - "A refusal spends nothing" now says the narrower keys asked before it have counted the request.
+  - A preflight of the authorization page is no longer counted (tested), and neither is a method an
+    endpoint does not serve.
+  - The "bypassing route" sentence now names a same-zone Worker's `x-real-ip` and a service binding.
+  - The SDK sentence says the Python SDK discards tokens on any non-200 refresh.
+- **m-4, recorded.** Neither the gateway nor control reads `x-real-ip` (checked). A same-zone Worker
+  can still choose the source key, and so evade or spend a chosen network's registration and
+  authorization budget. Since M-1 it cannot refuse a refresh. Internal service-binding callers share
+  `none`. Both are in D70 and Known risks.
+- **m-5, fixed.** Proposed per-token limit 1,200 a minute (20 a second). The bearer fuse is 30,000
+  a minute: 10 times 50 grants at 1 a second.
+- **m-6, fixed.** IPv6 is also counted per /48 (`OAUTH_RL_SOURCE_48`, 1,200 a minute, after the
+  /64), tested.
+- **m-7, fixed in D70**: 3,300 row writes a minute per tenant, about 4.75 million a day, about $4.75
+  a day, and 432,000 rotated rows kept a day.
+- **m-8, fixed on control's side.**
+  - D70 and the README state the assumption.
+  - A control test fails if `control/wrangler.jsonc` or `mcp/wrangler.jsonc` sets `placement`.
+  - A configure check is a deploy needed change (4).

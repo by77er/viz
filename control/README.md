@@ -371,10 +371,13 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
   `<vzc1|vza1|vzr1>.<tenant>.<43 base62>`; the tenant is in clear so the server can find the
   tenant's object, which then holds only the hash, so a credential edited to name another tenant
   matches nothing there).
-- **The 43 characters are 27 random ones and a 16-character tag** (`contracts/oauth.ts`
+- **The 43 characters are a 27-character body and a 16-character tag** (`contracts/oauth.ts`
   `CREDENTIAL_TAG`): HMAC-SHA-256 under a key derived by HKDF from `OAUTH_CLIENT_KEY` (its own
-  salt, so not the registration key itself), over prefix, tenant and random part, each of the
-  first 16 bytes as `BASE62[byte % 62]` (about 95 bits; the random part is about 160). The
+  salt, so not the registration key itself), over prefix, tenant and body, each of the first 16
+  bytes as `BASE62[byte % 62]` (about 95 bits). Since the review of D70 the body is layout 2: the
+  marker `e`, the credential's expiry in 4 characters, and 22 random ones (about 131 bits); the
+  Worker refuses one past its expiry like a made-up one ("Rate limits in front of OAuth", 0).
+  Layout 1, issued before, is 27 random characters (about 160 bits) and still served. The
   token endpoint, revocation and `OAuthIntrospection` check it in the Worker, before any tenant's
   object is asked: a made-up credential, for a tenant that exists or not, reaches no object and
   writes nothing (review of D44, M-2). The tag makes nothing valid; the object's hash does.
@@ -1018,7 +1021,9 @@ What the tests establish:
 ### Rate limits in front of OAuth (D70)
 
 **Runs after the review's fixes** (2026-11-19, `npx tsc --noEmit && npx vitest run --maxWorkers=2`
-in `control/`): `tsc` clean; @@FULL@@. 31 of the tests are D70's:
+in `control/`): `tsc` clean; 183 of 183 in 21 files, 46 s, with the machine's load average about 7–9
+from other builders' runs; the count includes the settings tests another builder is changing. 31
+of the tests are D70's:
 - `ratelimit.test.ts`: 19;
 - `ratelimit-review.test.ts`: 12;
 - `oauth-cost.test.ts`: 1, which measures as well as tests.
@@ -1157,31 +1162,35 @@ Cloudflare.
 that change's; 22 of 22 mutants were killed.
 
 **What each OAuth endpoint costs, measured here** (`test/oauth-cost.test.ts`; local workerd, one test
-file, sequential; three runs before this change, on the unchanged tree, and three after; the machine's
-load average 4–8; Worker plus object, not Cloudflare). Rows are as the object's SQLite counts them
+file, sequential; three runs before D70, on the unchanged tree, three after its first version, the
+machine's load average 4–8, and three after the review's fixes, load average 8.6–9.4; Worker plus
+object, not Cloudflare). Rows are as the object's SQLite counts them
 (`rowsWritten`, indexes included); each `setAlarm` or `deleteAlarm` is billed as a row written too.
 
-| Per request | n | Before: ms (3 runs) | After: ms (3 runs) | Objects | Rows | Alarm writes | KV writes |
-|---|---|---|---|---|---|---|---|
-| `POST /oauth/register` | 100 | 0.18–0.22 | 0.22–0.41 | 0 | 0 | 0 | 0 |
-| `GET /oauth/authorize` (the page) | 100 | 0.23–0.26 | 0.25–0.52 | 0 | 0 | 0 | 0 |
-| `/oauth/token`, made-up code (no tag) | 100 | 0.16–0.20 | 0.28–0.33 | 0 | 0 | 0 | 0 |
-| approve (control API, a person's admin key) | 40 | 11.70–25.48 | 12.43–14.10 | not counted (the API's path) | 17.1 | 2 | 1 |
-| `/oauth/token`, code exchange | 40 | 6.08–8.10 | 5.83–6.40 | 1 | 9 | 2 | 0 |
-| `/oauth/token`, refresh | 20 | 5.75–7.85 | 4.30–8.35 | 1 | 9 | 2 | 0 |
-| `/oauth/revoke`, live access token | 20 | 3.20–4.80 | 2.65–3.55 | 1 | 1 | 2 | 0 |
-| `/oauth/token`, rotated refresh token again (ends the grant) | 20 | 14.10–28.80 | 9.65–31.00 | 1 | 18.1 | 2 | 2 |
-| `/oauth/revoke`, live refresh token (ends the grant) | 20 | 19.65–23.10 | 10.65–17.10 | 1 | 17.1 | 2 | 2 |
-| `/oauth/token`, replay of a genuine refresh token, grant ended | 20 | 1.10–2.10 | 1.00–1.65 | 1 | 0 | 0 | 0 |
-| `/oauth/revoke`, replay of a genuine token, grant ended | 20 | 0.85–1.45 | 0.95–1.20 | 1 | 0 | 0 | 0 |
-| introspection, live token (the entrypoint's logic) | 20 | 0.90–1.50 | 0.90–1.35 | 1 | 0 | 0 | 0 |
-| introspection, live token (through the `OAUTH` binding) | 20 | 1.40–3.15 | 1.60–1.75 | 1 | 0 | 0 | 0 |
-| introspection, replay of a genuine token, grant ended | 20 | 0.80–1.45 | 0.75–1.80 | 1 | 0 | 0 | 0 |
-| register with the source limit asked and allowing (miniflare's binding) | 100 | | 2.13–3.96 | 0 | 0 | 0 | 0 |
-| register refused by the source limit (miniflare's binding) | 100 | | 0.62–0.99 | 0 | 0 | 0 | 0 |
+| Per request | n | Before D70: ms (3 runs) | D70 first version: ms (3 runs) | After the review's fixes: ms (3 runs) | Objects | Rows | Alarm writes | KV writes |
+|---|---|---|---|---|---|---|---|---|
+| `POST /oauth/register` | 100 | 0.18–0.22 | 0.22–0.41 | 0.32–0.38 | 0 | 0 | 0 | 0 |
+| `GET /oauth/authorize` (the page) | 100 | 0.23–0.26 | 0.25–0.52 | 0.27–0.32 | 0 | 0 | 0 | 0 |
+| `/oauth/token`, made-up code (no tag) | 100 | 0.16–0.20 | 0.28–0.33 | 0.27–0.37 | 0 | 0 | 0 | 0 |
+| approve (control API, a person's admin key) | 40 | 11.70–25.48 | 12.43–14.10 | 12.55–27.60 | not counted (the API's path) | 17.1 | 2 | 1 |
+| `/oauth/token`, code exchange | 40 | 6.08–8.10 | 5.83–6.40 | 6.38–8.63 | 1 | 9 | 2 | 0 |
+| `/oauth/token`, refresh | 20 | 5.75–7.85 | 4.30–8.35 | 3.70–7.45 | 1 | 9 | 2 | 0 |
+| `/oauth/revoke`, live access token | 20 | 3.20–4.80 | 2.65–3.55 | 2.35–7.15 | 1 | 1 | 2 | 0 |
+| `/oauth/token`, rotated refresh token again (ends the grant) | 20 | 14.10–28.80 | 9.65–31.00 | 10.15–17.10 | 1 | 18.1 | 2 | 2 |
+| `/oauth/revoke`, live refresh token (ends the grant) | 20 | 19.65–23.10 | 10.65–17.10 | 9.65–20.35 | 1 | 17.1 | 2 | 2 |
+| `/oauth/token`, replay of a genuine refresh token, grant ended | 20 | 1.10–2.10 | 1.00–1.65 | 1.60–3.30 | 1 | 0 | 0 | 0 |
+| `/oauth/revoke`, replay of a genuine token, grant ended | 20 | 0.85–1.45 | 0.95–1.20 | 0.80–1.15 | 1 | 0 | 0 | 0 |
+| introspection, live token (the entrypoint's logic) | 20 | 0.90–1.50 | 0.90–1.35 | 0.95–1.35 | 1 | 0 | 0 | 0 |
+| introspection, live token (through the `OAUTH` binding) | 20 | 1.40–3.15 | 1.60–1.75 | 1.20–1.45 | 1 | 0 | 0 | 0 |
+| introspection, replay of a genuine token, grant ended | 20 | 0.80–1.45 | 0.75–1.80 | 0.50–0.70 | 1 | 0 | 0 | 0 |
+| register with the source limit asked and allowing (miniflare's binding) | 100 | | 2.13–3.96 | 2.15–4.29 | 0 | 0 | 0 | 0 |
+| register refused by the source limit (miniflare's binding) | 100 | | 0.62–0.99 | 0.61–0.88 | 0 | 0 | 0 | 0 |
 
-The "after" runs have no bindings but those two rows (as a deployment without them); the refresh
-row includes the per-grant count, one read. The limiter rows are miniflare's implementation, which
+The two "after" columns have no bindings but those two rows (as a deployment without them); the
+refresh row includes the per-grant count, one read; since the review's fixes, every row with a
+genuine credential also decodes its expiry (four characters, no I/O). A "replay" row's credential is
+dead but not yet expired, so it still reaches its object; an expired one is refused in the Worker
+like a made-up one (`test/ratelimit.test.ts`). The limiter rows are miniflare's implementation, which
 writes a SQLite row per allowed call: an upper bound here, not what Cloudflare's locally cached count
 costs. The ranges overlap before and after; the machine is shared, so differences under about 2x are
 noise.
@@ -1404,41 +1413,45 @@ insert, then retried, yields one dashboard and one entry.
 
 | # | Mutant | Caught by (tests failing) |
 |---|---|---|
-| 114 | rate limit (D70): the source limit is not asked | oauth-cost, ratelimit (5) |
-| 115 | rate limit (D70): the token endpoint reads its body before the source limit | oauth-review, ratelimit (2) |
+| 114 | rate limit (D70): registration and the authorization page do not ask the source limit | oauth-cost, ratelimit, ratelimit-review (8) |
+| 115 | rate limit (D70): registration reads its body before the source limit | oauth-review, ratelimit (2) |
 | 116 | rate limit (D70): an IPv6 source is counted by its whole address, not its /64 | ratelimit (1) |
-| 117 | rate limit (D70): the source is taken from `X-Forwarded-For`, a header the client writes | oauth-cost, ratelimit (4) |
-| 118 | rate limit (D70): the token endpoint counts a credential before its tag is checked (a made-up one spends the tenant's budget) | ratelimit (1) |
-| 119 | rate limit (D70): the token endpoint has no per-client limit | ratelimit (1) |
-| 120 | rate limit (D70): the tenant is asked before the client (a looping client spends its tenant's budget) | ratelimit (1) |
-| 121 | rate limit (D70): the token endpoint has no per-tenant limit | ratelimit (1) |
-| 122 | rate limit (D70): revocation is not limited per tenant | ratelimit (1) |
-| 123 | rate limit (D70): introspection has no per-token limit | ratelimit (1) |
-| 124 | rate limit (D70): introspection has no per-tenant limit | ratelimit (1) |
-| 125 | rate limit (D70): introspection counts a token before its tag is checked (a made-up one spends the tenant's budget) | ratelimit (1) |
+| 117 | rate limit (D70): the source is taken from `X-Forwarded-For`, a header the client writes | oauth-cost, ratelimit, ratelimit-review (7) |
+| 118 | rate limit (D70): the token endpoint counts a credential before its tag is checked (a made-up one spends the tenant's fuse) | ratelimit, ratelimit-review (6) |
+| 119 | rate limit (D70) B-1: the narrow key at the token endpoint is the presented `client_id` again | ratelimit-review (2) |
+| 120 | rate limit (D70) B-1: the tenant fuse is asked before the credential (one credential spends it) | ratelimit, ratelimit-review (5) |
+| 121 | rate limit (D70): the token endpoint and revocation have no per-tenant fuse | ratelimit (3) |
+| 122 | rate limit (D70) B-1: revocation has no per-token key (each request a fresh one) | ratelimit, ratelimit-review (2) |
+| 123 | rate limit (D70): introspection has no per-token limit | ratelimit (3) |
+| 124 | rate limit (D70): introspection has no per-tenant fuse | ratelimit (2) |
+| 125 | rate limit (D70): introspection counts a token before its tag is checked (a made-up one spends the tenant's fuse) | ratelimit, ratelimit-review (5) |
 | 126 | rate limit (D70): a bearer over its limit is told its token is inactive (the client discards it) | ratelimit (1) |
-| 127 | rate limit (D70): a limiter that fails, fails closed | ratelimit (2) |
-| 128 | rate limit (D70): an absent limiter fails closed | isolation, forged-cost, golden, oauth-cost, oauth-review, oauth, ratelimit, settings (56) |
-| 129 | rate limit (D70): a limiter call has no time limit (a hung limiter hangs every OAuth request) | ratelimit (1) |
-| 130 | rate limit (D70): the refusal carries no `Retry-After` | ratelimit (7) |
-| 131 | rate limit (D70): the refusal uses an error code clients do not know (`rate_limited`) | ratelimit (7) |
-| 132 | rate limit (D70): refreshes per grant are not limited in the object | ratelimit (2) |
-| 133 | rate limit (D70): the per-grant limit is checked after the presented token is spent | ratelimit (1) |
-| 134 | rate limit (D70): the per-grant limit is checked before reuse detection (a rotated token at the limit no longer ends the grant) | ratelimit (1) |
-| 135 | rate limit (D70): the per-grant limit counts every grant of the tenant (one loop refuses the others) | oauth-cost, ratelimit (3) |
+| 127 | rate limit (D70): a limiter that fails, fails closed | ratelimit, ratelimit-review (4) |
+| 128 | rate limit (D70): an absent limiter fails closed | forged-cost, golden, isolation, oauth, oauth-cost, oauth-review, ratelimit, ratelimit-review, settings (70) |
+| 129 | rate limit (D70): a limiter call has no time limit (a hung limiter hangs every OAuth request) | ratelimit, ratelimit-review (3) |
+| 130 | rate limit (D70): the refusal carries no `Retry-After` | ratelimit (8) |
+| 131 | rate limit (D70): the refusal uses an error code clients do not know (`rate_limited`) | ratelimit (8) |
+| 132 | rate limit (D70): refreshes per grant are not limited in the object | ratelimit (3) |
+| 133 | rate limit (D70): the per-grant limit is checked after the presented token is spent | ratelimit (2) |
+| 134 | rate limit (D70): the per-grant limit is checked before reuse detection (a rotated token at the limit no longer ends the grant) | ratelimit (2) |
+| 135 | rate limit (D70): the per-grant limit counts every grant of the tenant (one loop refuses the others) | oauth-cost, ratelimit (4) |
 
-**114–135** (rate limits in front of OAuth, D70; positions 116–137 in `scripts/mutants.mjs`, whose
-order runs two ahead of this table's numbers since before this change) were run on 2026-11-19 in a
-copy of `control/`, `contracts/`, `edge/src`, `shard/src`, `ruler/src`, `mcp/src` and `dashboard/`
-in a scratch directory outside git, after its unmutated suite passed 161 of 161 there
-(`node scripts/mutants.mjs "rate limit (D70)"`): **22 of 22 killed, first run.** Most are caught by
-`ratelimit.test.ts` alone, as expected of new behaviour; the source-limit mutants also fail
-`oauth-cost.test.ts`'s limiter rows, and "reads its body before the source limit" also fails the m-2
-body-cap test in `oauth-review.test.ts`. "A limiter call has no time limit" is killed by the test's
-own 30 s timeout, the hung check never answering. Afterwards the copy's `control/src`, `control/test`
-and `contracts/` were compared with the worktree's: equal, but for `src/ops-settings.ts` and
-`test/settings.test.ts`, which another builder changed in the worktree after the copy was taken, and
-`scripts/mutants.mjs`, to which they appended. 1–113 were not re-run in this change.
+**114–135** (rate limits in front of OAuth, D70) were first run with D70's first version (22 of 22
+killed). After its review, 114–129 were rewritten for the code as changed (the keys, the order, the
+budget) and 146–165 added below; 130–135 (the refusal and layer 2) are unchanged. Positions in
+`scripts/mutants.mjs` are now the table's numbers (counted by evaluating the list); the review's
+mutants were appended after 136–145 so that no other mutant moved. All 42 were run on 2026-11-19 in
+a copy of `control/`, `contracts/`, `edge/src`, `shard/src`, `ruler/src`, `mcp/src` (and
+`mcp/wrangler.jsonc`), `janitor/src`, `compact/src`, `flush/src` and `dashboard/` in a scratch
+directory outside git, after its unmutated suite passed 183 of 183 there (`node scripts/mutants.mjs
+"rate limit (D70"`, with the machine's load average 6–10 from other builders' runs): **40 of 41
+killed in the first run.** The survivor was 158 ("no grace"): the test computed its two
+credentials' expiries from `EXPIRY_GRACE_MS` itself, so with the constant at 0 its inputs moved
+with it. The test now uses whole-minute expiries fixed in the test (one 0–60 s ago, one 60–120 s ago).
+Run again: **killed**. 129 ("no time limit"), added after the run began, was run on its own:
+**killed**. So **42 of 42**. Afterwards the copy's `control/src` and `contracts/` were compared with
+the worktree's: equal; `control/test` differed only in that grace test, which was copied in before
+the second run. 1–113 and 136–145 were not re-run in this change.
 
 | # | Mutant | Caught by (tests failing) |
 |---|---|---|
@@ -1471,6 +1484,32 @@ second run of each against `settings.test.ts` alone, with the same results. Afte
 that, only the description of `PUT /settings/{section}` in `src/openapi.ts` (and the generated
 `openapi.json`) changed; no mutant touches it, and the suite passed again. 1–30, 32–93 and
 98–135 were not re-run.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 146 | rate limit (D70) m-6: no /48 key (one host's routed /48 is 65,536 budgets) | ratelimit (2) |
+| 147 | rate limit (D70) M-1: the token endpoint counts every request's network again, genuine credentials included | ratelimit, ratelimit-review (2) |
+| 148 | rate limit (D70) M-1: revocation counts genuine tokens by network | ratelimit, ratelimit-review (2) |
+| 149 | rate limit (D70) M-1: the Workers address is counted (anyone on Workers refuses every Worker-hosted client) | ratelimit, ratelimit-review (2) |
+| 150 | rate limit (D70) M-1: a request the token endpoint refuses by itself is not counted by network | ratelimit, ratelimit-review (2) |
+| 151 | rate limit (D70) m-3: a CORS preflight of the authorization page is counted | ratelimit (1) |
+| 152 | rate limit (D70) B-1: the bearer fuse is asked before the token | ratelimit (1) |
+| 153 | rate limit (D70) B-1: an expired code or refresh token is not refused at the token endpoint | ratelimit, ratelimit-review (4) |
+| 154 | rate limit (D70) B-1: an expired token is not refused at revocation | ratelimit, ratelimit-review (3) |
+| 155 | rate limit (D70) B-1: an expired access token is not refused at introspection | ratelimit, ratelimit-review (3) |
+| 156 | rate limit (D70) B-1: credentials are minted without an expiry (layout 1) | ratelimit, ratelimit-review (8) |
+| 157 | rate limit (D70) B-1: the expiry is rounded down (the Worker could refuse a live credential early) | ratelimit (3) |
+| 158 | rate limit (D70) B-1: no grace for a Worker clock ahead of the object's | ratelimit (1) |
+| 159 | rate limit (D70) B-1: an access token carries its issue time as its expiry (refused a minute after issue) | ratelimit (1) |
+| 160 | rate limit (D70) m-1: each check gets its own budget (a request's waits add up) | ratelimit (1) |
+| 161 | rate limit (D70) m-1: a failed binding is not skipped (every request waits for it) | ratelimit, ratelimit-review (3) |
+| 162 | rate limit (D70) m-1: the budget is 1 s, as before the review | ratelimit-review (1) |
+| 163 | rate limit (D70) M-2: an absent limiter is logged on every request | ratelimit (1) |
+| 164 | rate limit (D70) M-2: an absent limiter is not logged | ratelimit (1) |
+| 165 | rate limit (D70) M-2: `/healthz` does not report the limiters | ratelimit (2) |
+
+**146–165** (the review of D70, `design/reviews/d70-rate-limits.md`: each undoes one fix of B-1, M-1,
+M-2, m-1, m-3 or m-6) ran in the same run as 114–135, above.
 
 ## Known risks
 
