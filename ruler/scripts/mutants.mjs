@@ -87,7 +87,8 @@ export const MUTANTS = [
   },
   {
     name: 'memory ahead of storage (adopt the new alert state before the transaction commits)',
-    edits: one('src/ruler.ts', '    if (staged.some((s) => s.result.dirty.size > 0)) {\n      const t = this.tenant\n', '    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)\n    if (staged.some((s) => s.result.dirty.size > 0)) {\n      const t = this.tenant\n'),
+    // Pattern brought up to date (the anomaly change added `|| s.anomaly?.changed === true`).
+    edits: one('src/ruler.ts', '    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {\n      const t = this.tenant\n', '    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)\n    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {\n      const t = this.tenant\n'),
     tests: ['test/exactly-once.test.ts'],
   },
   {
@@ -347,7 +348,8 @@ export const MUTANTS = [
   },
   {
     name: 'a refusing Ruler runs its tick from the alarm (and so drops the alarm the newer release needs)',
-    edits: one('src/ruler.ts', "    if (refused) {\n      // Keep the alarm for the release that owns this storage; touch nothing else.\n      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)\n      return\n    }\n    await this.tick()", '    await this.tick()'),
+    // Pattern brought up to date (the stage deadline now sits between the refusal and the tick).
+    edits: one('src/ruler.ts', "    if (refused) {\n      // Keep the alarm for the release that owns this storage; touch nothing else.\n      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)\n      return\n    }\n    // A staged trial past its deadline", '    // A staged trial past its deadline'),
     tests: ['test/compat.test.ts'],
   },
   {

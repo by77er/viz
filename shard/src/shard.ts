@@ -20,7 +20,9 @@ import { SeriesWindow, UnreadableSketch } from './sketch'
  *             until that write is durable)
  *   seal      fixes a contiguous range of batches as a segment; the boundary is durable,
  *             and a `{tenant, shard}` message for the flush queue is written with it
- *   recorded  the tenant's ledger has admitted the segment's files
+ *   recorded  the tenant's ledger has admitted the segment's files AND logged that to R2: the
+ *             caller passes the ledger's `loggedWatermarks()`, never `addUnit`'s committed
+ *             watermark, which a ledger that loses its storage can lose (spec F8)
  *   discard   payloads are dropped after a short retention; `discarded_through` is the fence
  */
 
@@ -778,7 +780,9 @@ export class Shard extends DurableObject<ShardEnv> {
   }
 
   /**
-   * The ledger has admitted every file of segments up to `throughSeq`. Must extend the
+   * The ledger has admitted every file of segments up to `throughSeq`, and that admission is
+   * in its R2 log: `throughSeq` must come from the ledger's `loggedWatermarks()`, never from
+   * `addUnit`'s answer (spec F8; the shard discards what is recorded). Must extend the
    * recorded prefix exactly at a segment boundary; anything else is refused unchanged.
    */
   async recorded(tenant: string, incarnation: number, throughSeq: number): Promise<RecordedResult> {

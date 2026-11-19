@@ -12,10 +12,10 @@ authority on what is visible. It implements `LedgerRpc`, `LedgerAdminRpc` and
 | `src/index.ts` | Worker entry; exports the class |
 | `scripts/mutants.mjs` | Mutation check (runs only on a copy outside the git checkout) |
 | `test/ledger.test.ts` | 39 tests: units, replay, registration, plan, replace, expire, names, the log's contents |
-| `test/segments.test.ts` | 21 tests of the segment log: crashes, exact rebuild, checkpoints, the first layout, starting an incarnation, F10/F11, readers |
-| `test/compat.test.ts` | 7 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8) |
-| `test/tombstone.test.ts`, `test/precedence.test.ts` | 7 and 5 tests |
-| `bench/` | The counterfactual in workerd: this ledger against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`) |
+| `test/segments.test.ts` | 27 tests of the segment log: crashes, exact rebuild, checkpoints, the first layout, a rollback across this release, starting an incarnation, F10/F11, the size limit, readers |
+| `test/compat.test.ts` | 8 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8) |
+| `test/tombstone.test.ts`, `test/precedence.test.ts` | 8 and 5 tests |
+| `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`), and what a checkpoint costs (`checkpoint.bench.test.ts`) |
 
 Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`);
 optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (default 256).
@@ -56,9 +56,26 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   overwritten. A failed PUT backs off 1 s doubling to 60 s. A change committed while a
   segment is in flight goes in the next one. At most 16 segments per alarm. A drain that
   leaves nothing pending deletes the alarm.
-- **Checkpoints.** After every 256 segments, when the segment just written ends at the
-  committed version, the drain also writes `ckpt-{version}.jsonl`: the whole state at that
-  version, read in the same synchronous step that fixed the segment's bounds.
+- **A stuck log says so** (review S-1). A fault (an object with other bytes at a segment's
+  key, a recorded segment whose rows are gone, an outbox that does not continue the written
+  log) stops the drain: `logStatus()` answers phase `stuck` with the reason, nothing more
+  counts as logged, the alarm retries every 60 s. The one fault with a known cause heals
+  itself: an outbox that does not continue the log in an incarnation whose prefix also
+  holds first-layout objects is what a rollback to the release that drains the first layout
+  leaves after the roll-forward. SQLite holds every committed change, so the ledger starts
+  a new incarnation from SQLite, its base in R2 first (the fix the protocol model checked).
+  For any other, an operator repairs R2 or calls `restartFromSqlite()`, which does the same.
+- **Checkpoints.** After at least 256 segments AND once the segments written since the
+  last checkpoint (or the base) are as large as it, when the segment just written ends at
+  the committed version, the drain also writes `ckpt-{version}.jsonl`: the whole state at
+  that version, read in the same synchronous step that fixed the segment's bounds. Then the
+  older checkpoints of the incarnation are deleted (review S-2).
+- **The state is bounded** (review S-2). `meta.state_bytes` estimates the state as a base
+  would hold it (each live file's key and index fragment plus 256 bytes), kept with every
+  mutation and recomputed exactly at every start and checkpoint. `addUnit` answers `full`
+  (`{ status, stateBytes, limitBytes }`, nothing changed, retryable) once it would pass
+  16 MiB (`STATE_MAX_BYTES`, `LEDGER_STATE_MAX_BYTES`); `replace` and `expire` are never
+  refused, so compaction and retention make room.
 - **`loggedWatermarks`.** Per stream, the watermark as of the last change in a written
   segment. Shards may discard only up to it.
 - **Starting an incarnation** (a new tenant, storage loss, or storage still on the first
@@ -70,12 +87,18 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   contiguous and strictly decoded; or the first layout, `base.json` and one object per
   change) or from SQLite (first layout). The new incarnation's **base segment is written to
   R2 before SQLite commits the incarnation** (spec F11): if it cannot be written, nothing
-  commits and nothing is served.
+  commits and nothing is served. With no log in R2 at all it starts empty only if the
+  tenant has no data objects either; otherwise its log is not where it looks and it refuses
+  (`stuck`), so no sweep runs against an empty live set (review S-5). A log that cannot be
+  rebuilt from (a gap, a corrupt or unsupported object, segments and first-layout objects in
+  one incarnation) is `stuck` too, never partly replayed.
 - **Storage that is not new and has no incarnation** (a schema version row and no
   `meta.incarnation`) is refused, never rebuilt over.
-- **Versioned storage** (`contracts/COMPATIBILITY.md` §2, D24): `ledger.Ledger` version 1
-  through `contracts/schema.ts`; it adopts the pre-versioning schema unchanged and adds
-  `prec`/`prec_lo` to objects from before D22. Storage of a newer release is refused on
+- **Versioned storage** (`contracts/COMPATIBILITY.md` §2, D24): `ledger.Ledger` through
+  `contracts/schema.ts`. Version 1 adopts the pre-versioning schema unchanged and adds
+  `prec`/`prec_lo` to objects from before D22. Version 2 (the segment log; `state_bytes`)
+  is **forward-only** (`readableFrom` 2): versioned code that knows only version 1 refuses
+  this storage instead of draining the first layout into it (review S-1). Storage of a newer release is refused on
   every entry point with `schema_too_new`, writing nothing, the alarm re-armed. Readers of
   the log refuse an unknown segment `v`, header `kind`, change `v` or change `kind`, in both
   layouts (`unsupportedLedgerChange`, `decodeLedgerSegment`).
@@ -85,8 +108,12 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   the drain's backoff, the last error and counters for `logStatus`. Storage is the truth.
 
 `LedgerAdminRpc`: `drain()` → `{ written }`, `outboxDepth()`, `rebuildFromLog()` (on empty
-storage only), `logStatus()` (phase, incarnation, version, logged-through, pending, the
-segment in flight, segments since the last checkpoint, alarm, last error, write times).
+storage only; waits for a drain in flight). Also on the class: `logStatus()` (phase,
+incarnation, version, logged-through, pending, the segment in flight, segments since the last
+checkpoint, alarm, last error, write times, `stuck`, `stateBytes` and the limit) and
+`restartFromSqlite()` (a new incarnation from this object's own committed state; waits for a
+drain in flight). A drain of an incarnation that has since been replaced changes nothing
+(review S-7).
 
 ## Rebuild: what it guarantees
 
@@ -98,8 +125,10 @@ segment in flight, segments since the last checkpoint, alarm, last error, write 
 - A `(ledgerIncarnation, version)` pair is never used for two different changes, and an
   incarnation number never for two histories (its base is in R2 first).
 - It refuses, and the object serves nothing, if R2 cannot be read, the log has a gap or
-  overlap, a segment is corrupt or of an unknown version or kind, or a change does not fit
-  the state before it. An unreadable checkpoint is passed over for an older one or the base.
+  overlap, a segment is corrupt or of an unknown version or kind, an incarnation holds both
+  layouts, there is no log but there are data objects, or a change does not fit the state
+  before it. An unreadable checkpoint is passed over for the base (older checkpoints are
+  deleted once a newer one is written).
 - Changes committed but not yet in a segment are lost (one drain cycle). An unlogged unit
   must be re-sent (the shard still holds its rows; flush notices the watermark went back).
 
@@ -112,13 +141,13 @@ segments a rebuild reads; a reset during a rebuild starts it again (progress is 
 
 ```
 npm install
-npx vitest run --maxWorkers=2     # 79 tests in workerd, 5 files
+npx vitest run --maxWorkers=2     # 87 tests in workerd, 5 files
 npx tsc --noEmit                  # clean
 node scripts/mutants.mjs          # on a copy outside the git checkout (see the script)
 npm run bench                     # the workerd counterfactual (bench/)
 ```
 
-Last run, 2026-11-19 on the shared machine (load average 5 to 23): **79 passed, 0 failed**;
+Last run, 2026-11-19 on the shared machine (load average 5 to 23): **87 passed, 0 failed**;
 `tsc --noEmit` clean. Before that run the suite failed 4 rebuild tests by timeout: they take
 1–3 s alone and over 20 s while other suites run, and the default limit is 5 s; the
 configuration now allows 60 s (`vitest.config.ts`). The crash property test
@@ -187,8 +216,12 @@ because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 te
 
 ## Not implemented
 
-- **Pruning the log.** No segment, checkpoint or old incarnation is ever deleted from R2
-  (LEDGER-LOG.md, "Truncation").
+- **A state larger than 16 MiB** (review S-2). The full fix: the base and checkpoints
+  written as many lines across several drains from a snapshot (or from rows that record the
+  version that added and removed them), and a rebuild that streams them into SQLite instead
+  of building the state in memory; plans that page. Until then the limit refuses new files.
+- **Pruning the log.** No segment or old incarnation is ever deleted from R2; superseded
+  checkpoints are (LEDGER-LOG.md, "Truncation").
 - **Keeping rebuild progress.** A reset during a rebuild starts it again from the newest
   checkpoint.
 - **The alert** the design asks for when a stream changes incarnation (the boundary is
@@ -208,6 +241,15 @@ because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 te
   first append of the stream, the ledger records it, flush stops being the registrar, and
   query treats a registered incarnation with watermark 0 as empty. That touches shard,
   ledger, flush and query; it is described here, not built.
+- **The state limit is modelled, not measured on Cloudflare.** 16 MiB of estimated state
+  assumes about four copies of it in memory at a checkpoint's peak against a 128 MB isolate.
+  A tenant that reaches it gets `full` until compaction or retention make room; flush treats
+  `full` as an answer it does not know and retries (fail closed), so its shards fill and its
+  senders get 429. Nothing alerts on it except the error log and `logStatus`.
+- **The release record must mark this release forward-only** for code from before schema
+  versioning, which cannot read the version row. If it does not and such a rollback happens,
+  the roll-forward heals it (above); a storage loss in the rollback window leaves the tenant
+  `stuck` (refused, not lost) until an operator repairs R2.
 - **One change is one SQLite value**, capped at 2 MB on Cloudflare (training knowledge, not
   checked here). A 2,000-file unit is about 1.4 MB; a `replace` with several thousand
   outputs would not commit.
@@ -230,7 +272,11 @@ because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 te
   flush's engineer (`flush/src/flush.ts` `writeSegment`); the shard side is in `shard/`.
 - **publisher**: read segments and the first layout. Done by the publisher's engineer
   (`publisher/src/log.ts`, `design/UPGRADES.md` §7 item 2).
-- **shard, flush, query**: registration before writes, for F6 (above).
+- **shard, flush, query**: registration before writes, for F6 (above). F6(b) (a tail read
+  for incarnation 0 answered `ok` and empty under lazy registration) is open, documented.
+- **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (latest 2, compat 2) in the release record
+  and refuse a rollback below it (COMPATIBILITY.md §6; `deploy/` "Needed changes" 7).
+- **flush** may handle `full` explicitly (today it retries it as unknown, which is safe).
 
 ## Contract issues
 

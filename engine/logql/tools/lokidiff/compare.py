@@ -22,6 +22,22 @@ import sys
 from collections import defaultdict
 
 # (class, description, predicate(case, loki_outcome, viz_outcome, detail)) — explained differences.
+def merged(c, ds):
+    src = {}
+    for i, st in enumerate(ds):
+        for e in st['entries']:
+            src.setdefault((e['ts'], e['line']), set()).add(i)
+    if not c.get('viz_ok'):
+        return False
+    for st in c['viz_data']['result']:
+        seen = set()
+        for ts, _line in st['values']:
+            seen |= {i for (t, _), ids in src.items() if t == ts for i in ids}
+        if len(seen) > 1:
+            return True
+    return False
+
+
 KNOWN = [
     ('oracle-merged-streams-unsorted',
      "a stage (drop, keep, label_format) merged several source streams into one label set; the oracle's "
@@ -37,6 +53,26 @@ KNOWN = [
      lambda c, l, d: d is not None and re.search(r'\bwithout\b|label_replace', c['query']) is not None
      and c.get('viz_ok') and any('""' in json.dumps(s.get('metric', {})) or any(v == '' for v in s.get('metric', {}).values())
                                  for s in c['viz_data'].get('result', []) if isinstance(s, dict))),
+    ('loki-sum-without-grouping-ignores-parser-errors',
+     "the range aggregation sits directly under `sum` without grouping: Loki then counts samples whose "
+     "pipeline set a parser or line_format error (JSONParserErr, LogfmtParserErr, TemplateFormatErr from "
+     "line_format) instead of failing, apparently because an optimisation drops the series labels, "
+     "`__error__` included, before the check (observed: `sum(count_over_time({app=\"b\"} | json [10s]))` "
+     "succeeds where `sum by (app) (...)` fails). viz fails the query, as the documentation says metric "
+     "queries do when samples carry errors",
+     lambda c, l, d: d is not None and d.startswith('viz error: pipeline error') and
+     re.search(r'sum\s*(by\s*\(\s*\))?\s*\(\s*(count_over_time|rate|bytes_over_time|bytes_rate|sum_over_time|avg_over_time|min_over_time|max_over_time|first_over_time|last_over_time|stddev_over_time|stdvar_over_time|quantile_over_time|rate_counter)\(', c['query']) is not None),
+    ('oracle-merged-streams',
+     "a stage (drop, keep) merged several source streams into one label set and the oracle's result for "
+     "that label set differs: its mock querier concatenates the source streams (or keeps only one of them) "
+     "instead of merging them by time, and applies the limit in that order. Checked per case: some viz "
+     "result stream holds entries of two or more source streams",
+     lambda c, l, d, ds=None: d is not None and ds is not None and l.get('loki') is not None
+     and l['loki']['resultType'] == 'streams' and merged(c, ds)),
+    ('loki-topk-ties-nondeterministic',
+     "topk/bottomk under another operation: Loki picks among equal values nondeterministically (the same "
+     "query over the same data gave 8 distinct results in 10 runs), so which series survive differs",
+     lambda c, l, d: d is not None and re.search(r'\b(topk|bottomk)\b', c['query']) is not None),
 ]
 
 
@@ -137,7 +173,8 @@ def compare(q, instant, loki, viz, forward=True):
 
 
 def main():
-    cases = json.load(open(sys.argv[1]))['cases']
+    f = json.load(open(sys.argv[1]))
+    cases, datasets = f['cases'], f['datasets']
     loki = {c['id']: c for c in json.load(open(sys.argv[2]))['cases']}
     show = int(sys.argv[sys.argv.index('--show') + 1]) if '--show' in sys.argv else 20
     counts = defaultdict(int)
@@ -158,7 +195,7 @@ def main():
         if v == 'mismatch':
             cls = None
             for name, _desc, pred in KNOWN:
-                if pred(c, l, detail):
+                if pred(c, l, detail) if name != 'oracle-merged-streams' else pred(c, l, detail, datasets[c['dataset']]):
                     cls = name
                     break
             if cls:

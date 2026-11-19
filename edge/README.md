@@ -288,7 +288,19 @@ default; a pool map naming a pool with `_` is 503 and nothing is stored (D38); R
 over the active-series limit is 400 and the existing series are written, also at the limit
 (R-4).
 
-<<MUTANTS>>
+**Mutation check of 2026-11-19** (`node scripts/mutants.mjs` on a copy of `contracts/`,
+`shard/` and `edge/` in a scratch directory; each mutant against the whole suite): **41 of
+43 killed.** The eight added here and the test that failed for each: R-4 answered 429 again
+(limit.test "Remote Write: 400 (not retried)…"); R-9 tenant ids not checked (overload.test
+"…R-9"); overload answered 429, and overload without the shard's `Retry-After` (overload.test
+"Remote Write and OTLP get 503 with Retry-After…"); no refusal before decoding, and an
+overload not remembered (overload.test "…refused before its body is read or decoded"); a pool
+outside `POOL_NAME` used (overload.test "a pool map naming a pool outside POOL_NAME…"). **Two
+survive, both equivalent:** "2xx on shard error" (mutant 10) and "a shard status edge does not
+know counts as stored" each remove one of the layers that refuse a failed or unknown append;
+the last check of `appendAll` ("only `ok` counts as stored; anything not handled above
+refuses the request") still answers 503, so behaviour does not change. The property has no
+single point of failure; a mutant removing every layer at once was not run.
 
 ### Decode throughput
 

@@ -475,14 +475,19 @@ impl Pipeline {
                     }
                     let mut err = None;
                     for (name, path) in params {
-                        let v = match crate::jsonwalk::get(&line, path) {
-                            Ok(v) => v.unwrap_or_default(),
-                            Err(e) => {
-                                err.get_or_insert(e);
-                                String::new()
+                        match crate::jsonwalk::get(&line, path) {
+                            Ok(Some(v)) => labels.add_parsed(name, &v),
+                            // Absent (or unreadable) values become empty labels, unless a label
+                            // of that name already exists.
+                            other => {
+                                if let Err(e) = other {
+                                    err.get_or_insert(e);
+                                }
+                                if !labels.has(name) {
+                                    labels.add_parsed(name, "");
+                                }
                             }
-                        };
-                        labels.add_parsed(name, &v);
+                        }
                     }
                     if let Some(e) = err {
                         labels.set_error(ERR_JSON, Some(e));

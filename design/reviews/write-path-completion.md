@@ -391,3 +391,24 @@ that fix were run and killed.
   share a key name (pools `a/b` and `a_b`); the orphan sweep would then judge a file by the
   wrong stream. Not reachable with the pool names in use. Needs a contract change (an
   injective name, or no `_` in pool names): `janitor/README.md`, "Contract issues".
+
+### ledger/, shard/, edge/ (2026-11-19)
+
+By the storage-path engineer, after the review; the reviewer has not seen these. Mutants were
+applied to a copy of the tree in a scratch directory, never the checkout; results, with the
+test that caught each, are in `ledger/README.md`, `shard/README.md` and `edge/README.md`.
+Suites green on the real tree when written (`vitest --maxWorkers=2`): ledger 87, shard 56,
+edge 62, stack 41; tsc clean.
+
+| # | Disposition | What was done | Shown by |
+|---|---|---|---|
+| R-3 | **Fixed** (D36) | Starting an incarnation runs outside `blockConcurrencyWhile`; requests wait at most 2 s and are refused as retryable (`ledger_unavailable`); a failed start is retried by the alarm; the log is in segments with checkpoints, so a rebuild reads one checkpoint and the segments after it. Progress of a rebuild is not kept across a reset. Measured on Cloudflare (the experiment the review asked for): 5,008 changes from 104 segments rebuilt in 5.4 s; 608 first-layout objects took 28.7 s, which inside `blockConcurrencyWhile` is at the reset limit (`spikes/s4-ledger-scale/README.md`) | `ledger/test/segments.test.ts`, "while a rebuild is slow, the object keeps answering…", "a start that fails … is retried by the alarm". Mutants: the start inside `blockConcurrencyWhile`, an unbounded wait: killed |
+| R-4 | **Fixed** (D21 rewritten) | Remote Write over the active-series limit is answered 400 with the limit and the refused counts; the series the tenant has are written; OTLP unchanged (`partial_success`) | `edge/test/limit.test.ts` "Remote Write: 400 (not retried)…". Mutant: 429 again, killed |
+| R-5 | **Fixed** (contract change: `ExpireRequest.tables`) | `expire({ tables })` removes every named table's old days in one transaction and one change; `janitor/src/janitor.ts` passes both tables | `ledger/test/ledger.test.ts` "removes a samples file and its series file in ONE change…". Mutant: only the first table expired, killed |
+| R-6 | **Fixed** | `pendingTenants` stops believing in the marker before deleting it; a failed re-put leaves it unbelieved and arms the alarm | `shard/test/review.test.ts` (the reviewer's test, ported). Mutant: killed |
+| R-8 | **Fixed** | `fileProblem` requires a key under `{cell}/data/{table}/tenant={tenant}/day={day}/` with no further `/` | `ledger/test/ledger.test.ts` "refuses a key that is not under this tenant's prefix…". Mutant: killed |
+| R-9 | **Fixed** | A key record whose tenant is not a `TENANT_ID` authenticates nobody | `edge/test/overload.test.ts` "…R-9". Mutant: killed |
+| R-10 | **Fixed** | A tail read naming an incarnation of a stream the shard does not hold answers `incarnation_mismatch` (incarnation 0); naming none (0) still gets an empty `ok` (spec F6(b), open) | `shard/test/shard.test.ts`. Mutant: killed |
+| R-11(a) | **Fixed** | `SeriesWindow.add` says whether it changed anything; only then is the window marked for saving | `shard/test/groupcommit.test.ts` "review R-11…". Mutant: killed |
+| R-12 (shard, ledger parts) | **Fixed** | Fingerprint expiry names its tenant. The ledger's R2 PUT is off the acknowledgement path (D36). The queue send of a sealing group (and once per marker period a KV write) still precedes that group's answers: not R2; measured within S3's numbers; recorded in `shard/README.md`, "Known risks" | The tenant clause's mutant survives as equivalent (every tenant has the same TTL, so deleting other tenants' expired rows changes nothing observable); the rule is met by reading |
+| Also | | Early refusal and group commit (D37), measured on Cloudflare (`spikes/s3-ingest-throughput/README.md`); pool and shard names (D38, contract change in `contracts/TABLES.md` and `contracts/ledger.ts`); the flush message carries `v` | `shard/test/groupcommit.test.ts`, `shard/test/pool.test.ts`, `edge/test/overload.test.ts`, `ledger/test/ledger.test.ts` |

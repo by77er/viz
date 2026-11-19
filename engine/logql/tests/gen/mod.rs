@@ -268,7 +268,13 @@ fn offset(rng: &mut Rng) -> String {
 
 fn log_range_agg(rng: &mut Rng) -> String {
     let op = *rng.pick(&["count_over_time", "rate", "bytes_over_time", "bytes_rate"]);
-    format!("{op}({} {} [{}]{})", selector(rng), pipeline(rng), range(rng), offset(rng))
+    let mut p = pipeline(rng);
+    // Parsers set `__error__` on lines they cannot read, which fails a metric query; most
+    // generated metric queries filter those out so that their values get compared.
+    if !p.contains("__error__") && rng.chance(70) {
+        p.push_str(r#" | __error__="""#);
+    }
+    format!("{op}({} {p} [{}]{})", selector(rng), range(rng), offset(rng))
 }
 
 fn unwrap_agg(rng: &mut Rng) -> String {
