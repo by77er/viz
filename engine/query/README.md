@@ -290,7 +290,9 @@ passed, `min_by_group_over_signed_zeros_regression` and the two split properties
 `canon_max` `+0`), and every mutant of the table below was checked NOT to be applied: each
 mutant's original text is in the source exactly once and its mutated text is not (mutants
 35 and, in `query/`, 19 and 39 have mutated text that is a substring of unmutated code).
-The read path's WASM module rebuilt from that source has the same SHA-256 as before. Seven are property tests. The
+The read path's WASM module rebuilt from that source has the same SHA-256 as before.
+After `examples/cardinality.rs` was added (no file under `src/` or `tests/` changed),
+`cargo test` again at 02:00 to 02:04 UTC (load average 7): 47 passed, the example built. Seven are property tests. The
 references of the invariance tests (and of `query/`'s fixtures) are `viz-promql` over its
 in-memory source **with this crate's aggregations** (`reference_range`), since every
 evaluation here uses them; with that change all 37 earlier tests pass unchanged.
