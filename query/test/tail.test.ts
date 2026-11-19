@@ -22,7 +22,7 @@ import { type TenantLimits, clearLimitsCache } from '../src/config'
 import { hooks } from '../src/coordinator'
 import { leafHooks } from '../src/leaf'
 import { cutById, seriesIdsOf, splitKeyRange, tailEstimate, tailFilter, tailHooks, type TailRead } from '../src/tail'
-import { QUERIES, type Query, type Tenant, type World, api, cost, expected, ingest, run, shardOf, workload, world, write } from './world'
+import { QUERIES, type Query, type Tenant, type World, api, cost, discardAll, expected, flushAll, ingest, run, sealAll, shardOf, workload, world, write } from './world'
 
 const sec = (ms: number): string => String(ms / 1000)
 const rateSumBy = QUERIES.find((q) => q.id === 'rate-sum-by')!
@@ -326,15 +326,10 @@ describe('a series whose split key is not its id', () => {
     const want = await one.text()
     expect(one.status, want).toBe(200)
     let refused = 0
-    let reread = 0
     for (const n of [2, 3, 5]) {
       hooks.forceLeaves = n
       const cut = await api(w.a.key, '/api/v1/query_range', q)
       expect(await cut.text(), `${n} leaves, cut here`).toBe(want)
-      // Readers asked to read their id range of the series files saw a series whose key is not
-      // its id: the split ran again with the series files read by name and time (ABI 5).
-      if (cut.headers.get('X-Viz-Series-Reads') === 'id-range,name-time') reread++
-      else expect(cut.headers.get('X-Viz-Series-Reads')).toBe('id-range')
       hooks.tailCap = 1
       const rest = await api(w.a.key, '/api/v1/query_range', q)
       const body = await rest.text()
@@ -347,6 +342,24 @@ describe('a series whose split key is not its id', () => {
       delete hooks.tailCap
     }
     expect(refused).toBeGreaterThan(0)
+    // In the lake: readers asked to read their id range of the series files see a series whose
+    // key is not its id, and the split runs again with the series files read by name and time
+    // (ABI 5). The answer is exact either way.
+    await sealAll(w)
+    await flushAll(w)
+    await discardAll(w)
+    delete hooks.forceLeaves
+    const lake = await (await api(w.a.key, '/api/v1/query_range', q)).text()
+    expect(lake).toBe(want)
+    let reread = 0
+    for (const n of [2, 3, 5]) {
+      hooks.forceLeaves = n
+      const res = await api(w.a.key, '/api/v1/query_range', q)
+      expect(await res.text(), `${n} leaves, lake`).toBe(want)
+      expect(res.headers.get('X-Viz-Execution')).toBe('split')
+      if (res.headers.get('X-Viz-Series-Reads') === 'id-range,name-time') reread++
+      else expect(res.headers.get('X-Viz-Series-Reads')).toBe('id-range')
+    }
     expect(reread).toBeGreaterThan(0)
     // Without such a series, the readers keep to their id ranges.
     hooks.forceLeaves = 3

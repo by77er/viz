@@ -783,7 +783,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       c.cost.seriesReads = 'id-range,name-time'
       r = await runSplit(c, spec, ranges, series, samples, L, tailFor, false)
     }
-    if (r.status === 'foreign') throw new ApiError('internal', 'split readers saw foreign series reading series files by name and time')
+    if (r.status === 'foreign') throw new ApiError('internal', 'a split ran by name and time came back as if read by id range')
     if (r.status === 'missing') {
       refused(`file ${r.key}`, `data file ${r.key} is listed by the ledger but is not in R2`)
       return { again: true }
@@ -1318,7 +1318,7 @@ async function runSplit<T>(
   }
   // A part read its id range of the series files and some part saw a series of another part
   // there: that part may have missed one of its own (its id is elsewhere). Not merged.
-  if (foreign > 0) return { status: 'foreign', count: foreign }
+  if (seriesByPart && foreign > 0) return { status: 'foreign', count: foreign }
   checkDeadline(c)
   const limits: QueryLimits = { ...c.limits, maxSamples: qSamples, maxSeries: qSeries, maxStepPoints: L * c.limits.maxStepPoints }
   const t0 = performance.now()
