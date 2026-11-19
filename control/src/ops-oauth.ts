@@ -203,7 +203,8 @@ export async function prepareApprove(t: Tenant, body: unknown): Promise<ApproveP
   const registration = request ? await verifyClientId(t.oauth.clientKey, request.client_id) : null
   const grantId = `g_${randomId(22)}`
   const clientKey = t.oauth.clientKey
-  const code = clientKey === null ? null : await mintCredential('code', t.tenant, clientKey)
+  // The code's expiry as its body carries it (D70): from now; the row's, from the approval's own clock a moment later, is the same or later.
+  const code = clientKey === null ? null : await mintCredential('code', t.tenant, clientKey, Date.now() + OAUTH_LIFETIMES.codeSeconds * 1000)
   const key = mintKey()
   return { request, registration, grantId, code, key, sealed: code === null ? '' : await seal(code, key.secret, sealAad(t.tenant, grantId)) }
 }
@@ -455,8 +456,9 @@ async function issue(t: Tenant, g: GrantRow, presented: string, sealed: string, 
   if (secret === null) return fail('invalid_grant', 'This grant cannot issue tokens; approve the application again.')
   const clientKey = t.oauth.clientKey
   if (clientKey === null) return fail('invalid_grant', 'This deployment cannot issue tokens now (no OAUTH_CLIENT_KEY).')
-  const access = await mintCredential('access', t.tenant, clientKey)
-  const refresh = await mintCredential('refresh', t.tenant, clientKey)
+  // Each carries the expiry its row gets (D70: the Worker refuses it once that has passed).
+  const access = await mintCredential('access', t.tenant, clientKey, now + OAUTH_LIFETIMES.accessSeconds * 1000)
+  const refresh = await mintCredential('refresh', t.tenant, clientKey, now + OAUTH_LIFETIMES.refreshSeconds * 1000)
   const [sa, sr] = await Promise.all([seal(access, secret, aad), seal(refresh, secret, aad)])
   const stored = t.transaction(() => {
     // Revoked while the crypto ran (a reuse, a person, the alarm): issue nothing.

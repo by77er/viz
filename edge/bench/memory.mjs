@@ -6,6 +6,7 @@
 //   node bench/memory.mjs --dump DIR         write each case's body to DIR, measure nothing
 //   MEM_SRC=/copy/of/src node bench/memory.mjs   measure another copy of src/ (a before/after pair)
 //   MEM_MIB=2 node bench/memory.mjs          hostile bodies of 2 MiB instead of 4
+//   node bench/memory.mjs --check            exit 1 if a hostile case's heap peaks above 16 MiB
 //
 // Each case runs in a fresh process (Node) or a fresh workerd (one isolate), with V8's
 // `--expose-gc --trace-gc`: a forced GC before the request gives the baseline, a forced GC after
@@ -20,8 +21,8 @@
 // shapes of review M-3 and the ones found while fixing it), realistic ones with protobufjs in the
 // shape of an instrumented HTTP service (bench/otel.mjs) at about 8,192 items (8,200), the OpenTelemetry
 // Collector batch processor's default `send_batch_size` (training knowledge, not verified here).
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -183,6 +184,11 @@ const args = process.argv.slice(2)
 const wantNode = !args.includes('--workerd') || args.includes('--node')
 const wantWorkerd = !args.includes('--node') || args.includes('--workerd')
 const asJson = args.includes('--json')
+// --check: exit 1 if a hostile case's heap peaks above 16 MiB (Node or workerd): the decode
+// limits' "bytes allocated" test, for mutants a status cannot see (bench/README of mutants).
+const check = args.includes('--check')
+const CHECK_MIB = 16
+let failures = 0
 const dumpAt = args.indexOf('--dump')
 const dump = dumpAt >= 0 ? args.splice(dumpAt, 2)[1] : null
 const filters = args.filter((a) => !a.startsWith('--'))
@@ -207,6 +213,14 @@ for (const [name, path, json, snappy, make] of cases) {
   const spec = { path, json, snappy, now: NOW }
   const n = wantNode ? runNode(bundlePath, bodyFile, spec) : null
   const w = wantWorkerd ? await runWorkerd(dir, bundlePath, bodyFile, spec, port++) : null
+  if (check && !name.startsWith('realistic')) {
+    for (const [where, x] of [['Node', n], ['workerd', w]]) {
+      if (x && (x.error || x.peak > CHECK_MIB)) {
+        failures++
+        console.error(`CHECK FAILED  ${name} (${where}): ${x.error ? x.error.slice(0, 120) : `peak ${x.peak.toFixed(1)} MiB > ${CHECK_MIB}`}`)
+      }
+    }
+  }
   if (asJson) {
     console.log(JSON.stringify({ name, bodyBytes: body.length, node: n, workerd: w }))
     continue
@@ -218,4 +232,8 @@ for (const [name, path, json, snappy, make] of cases) {
   const size = body.length >= MiB ? `${(body.length / MiB).toFixed(2)} MiB` : `${(body.length / 1024).toFixed(0)} KiB`
   const dec = (n && !n.error ? n : {}).decoded
   console.log(`| ${name} | ${size} | ${outcome}, ${rows} rows, ${rej} refused | ${dec == null ? '–' : `${(dec / MiB).toFixed(2)} MiB`} | ${f(n)} | ${n && !n.error ? n.arrayBuffersMiB.toFixed(1) : '–'} | ${f(w)} | ${n && !n.error ? n.ms.toFixed(0) : '–'} |`)
+}
+if (check) {
+  console.log(failures ? `${failures} hostile case(s) over ${CHECK_MIB} MiB` : `every hostile case under ${CHECK_MIB} MiB`)
+  process.exit(failures ? 1 : 0)
 }

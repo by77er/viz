@@ -1,6 +1,8 @@
 import {
   ADMIN_IMPLIES,
+  BASE62,
   CLIENT_ID,
+  CREDENTIAL_LAYOUT,
   CREDENTIAL_PREFIX,
   CREDENTIAL_TAG,
   type ClientRegistration,
@@ -10,6 +12,7 @@ import {
   OAUTH_LIMITS,
   OAUTH_SCOPES,
   type OAuthScope,
+  credentialExpiresAt,
 } from '../../contracts/oauth'
 import { sha256Hex } from '../../dashboard/src/index.ts'
 import { B62, randomId } from './util'
@@ -137,13 +140,44 @@ async function tagOf(secret: string, body: string): Promise<string> {
   return out
 }
 
+/** Layout 2's expiry characters for `expiresAtMs`: whole minutes since the epoch, rounded up, so never earlier than the object's expiry (contracts/oauth.ts `CREDENTIAL_LAYOUT`). */
+export function expiryChars(expiresAtMs: number): string {
+  const { expiryEpochMs, expiryUnitMs, expiryChars: n } = CREDENTIAL_LAYOUT
+  // Out of range (before the epoch, or after 2054): the nearest end; past the far end the Worker never refuses it early.
+  let v = Math.min(62 ** n - 1, Math.max(0, Math.ceil((expiresAtMs - expiryEpochMs) / expiryUnitMs)))
+  let out = ''
+  for (let i = 0; i < n; i++) {
+    out = BASE62[v % 62] + out
+    v = Math.floor(v / 62)
+  }
+  return out
+}
+
 /**
- * A new code, access token or refresh token for `tenant`: `<prefix>.<tenant>.<random 27><tag 16>`
- * (contracts/oauth.ts). `secret`: `OAUTH_CLIENT_KEY`, which the tag is made with.
+ * A new code, access token or refresh token for `tenant`, expiring at `expiresAtMs` (what the
+ * tenant's object stores for it): `<prefix>.<tenant>.<body 27><tag 16>` (contracts/oauth.ts), the
+ * body in layout 2 (`e`, the expiry, 22 random characters). `secret`: `OAUTH_CLIENT_KEY`, which the
+ * tag is made with. `layout: 1` makes the body the previous release made (27 random characters),
+ * for the tests that serve such credentials.
  */
-export async function mintCredential(kind: CredentialKind, tenant: string, secret: string): Promise<string> {
-  const body = `${CREDENTIAL_PREFIX[kind]}.${tenant}.${randomId(CREDENTIAL_TAG.randomChars)}`
+export async function mintCredential(kind: CredentialKind, tenant: string, secret: string, expiresAtMs: number, layout: 1 | 2 = 2): Promise<string> {
+  const inner = layout === 1 ? randomId(CREDENTIAL_TAG.randomChars) : `${CREDENTIAL_LAYOUT.marker}${expiryChars(expiresAtMs)}${randomId(CREDENTIAL_LAYOUT.randomChars)}`
+  const body = `${CREDENTIAL_PREFIX[kind]}.${tenant}.${inner}`
   return body + (await tagOf(secret, body))
+}
+
+/** How long after a credential's encoded expiry the Worker still lets it through: the Worker's clock may run ahead of the object's that minted it. */
+export const EXPIRY_GRACE_MS = 60_000
+
+/**
+ * Whether a credential is past the expiry its layout 2 body carries (plus `EXPIRY_GRACE_MS`): the
+ * tenant's object refuses it too, so the Worker may refuse it first, without counting it against
+ * any limit or asking any object (D70). False for layout 1, which carries no expiry. Only for a
+ * credential whose tag `credentialTagValid` accepted: the tag covers the expiry.
+ */
+export function credentialExpired(credential: string, now: number = Date.now()): boolean {
+  const at = credentialExpiresAt(credential)
+  return at !== null && at + EXPIRY_GRACE_MS <= now
 }
 
 /**

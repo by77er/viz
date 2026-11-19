@@ -2,6 +2,10 @@
 // run the tests that should notice, expect them to FAIL, restore the source.
 //   node scripts/mutants.mjs [part] [substring of a mutant name]      (from stack/)
 //   MUTANT_FILES=compact/,janitor/ node scripts/mutants.mjs all          only mutants in those files
+//   node scripts/mutants.mjs --check [part] [substring]                 check mode: list every mutant
+//     whose pattern does not occur in its file (NOT APPLIED) or occurs more than once (only the
+//     first is mutated); applies nothing, runs no test, writes nothing, so it may run in the
+//     checkout. Exits 1 if any pattern does not apply.
 // Parts: trigger, signals, compaction, precedence, deletion, limit, review, publication, gateway. Paths are
 // relative to the root of the tree the script sits in.
 //
@@ -14,7 +18,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
-if (existsSync(`${ROOT}.git`)) {
+const ARGS = process.argv.slice(2)
+const CHECK = ARGS.includes('--check')
+if (!CHECK && existsSync(`${ROOT}.git`)) {
   console.error(`mutants: ${ROOT} is a git checkout. Run this on a copy in a scratch directory (AGENTS.md, Evidence).`)
   process.exit(2)
 }
@@ -152,7 +158,7 @@ const mutants = [
   ['precedence', 'the policy ignores live files without a partner', 'compact/src/compact.ts', T.compact,
     "...strays.filter((x) => x.day === day)]", "]"],
   ['precedence', 'a rebuilt ledger forgets precedence (everything ranks by key)', 'ledger/src/ledger.ts', T.ledgerPrec,
-    "      s.files.set(f.key, { ...listed, unit })", "      s.files.set(f.key, { ...listed, precedence: 0, precedenceLow: 0, unit })"],
+    "        this.loadFile(asListed(listed, listed.precedenceLow, listed.precedence), unit)", "        this.loadFile(asListed(listed, 0, 0), unit)"],
 
   // ── Part 3: retention and physical deletion ──
   ['deletion', 'deletable before the removal is logged', 'ledger/src/ledger.ts', T.ledger,
@@ -170,20 +176,19 @@ const mutants = [
   ['deletion', 'replace records no tombstone', 'ledger/src/ledger.ts', T.janitor,
     "      const gone = inputs.map((f) => ({ key: f.key, table: f.table }))\n      this.bury(gone)\n", "      const gone = inputs.map((f) => ({ key: f.key, table: f.table }))\n"],
   ['deletion', 'the orphan sweep ignores pending units', 'janitor/src/janitor.ts', T.janitor,
-    "  return w.incarnation === Number(inc) && w.seq >= Number(seqHi) ? 'dead' : 'pending_unit'", "  return 'dead'"],
+    "  if (w.incarnation === inc && w.seq >= Number(seqHiText)) return { state: 'dead', w }", "  if (w.incarnation <= inc) return { state: 'dead', w }"],
   ['deletion', 'the orphan sweep takes an unknown stream for a dead one', 'janitor/src/janitor.ts', T.janitor,
-    "  if (!w) return 'unknown_stream'", "  if (!w) return 'dead'"],
+    "  if (!w) return { state: 'unknown_stream' }", "  if (!w) return { state: 'dead' }"],
   ['deletion', 'the orphan sweep judges by the committed watermark', 'ledger/src/ledger.ts', T.janitor,
-    "      .exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)\n      .toArray()\n      .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))\n    return { live, tombstoned, logged }",
-    "      .exec(`SELECT shard, incarnation, watermark AS logged FROM stream ORDER BY shard`)\n      .toArray()\n      .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))\n    return { live, tombstoned, logged }"],
+    "`SELECT shard, incarnation, logged, prev_incarnation FROM stream ORDER BY shard`", "`SELECT shard, incarnation, watermark AS logged, prev_incarnation FROM stream ORDER BY shard`"],
   ['deletion', 'the orphan sweep deletes live and tombstoned objects', 'janitor/src/janitor.ts', T.janitor,
     "      if (known.has(o.key)) continue\n", ''],
   ['deletion', 'a compaction output\'s age floor is only the flush files\' grace', 'janitor/src/janitor.ts', T.janitor,
     "  const compactGraceMs = Math.max(graceMs, 2 * (opts.maxCompactStepMs ?? DEFAULT_POLICY.maxStepMs))", "  const compactGraceMs = graceMs"],
   ['deletion', 'series files are not expired', 'janitor/src/janitor.ts', T.janitor,
-    "ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay })", "ledger.expire({ tables: ['metric_samples'], beforeDay })"],
+    "ledger.expire({ tables: [...METRIC_TABLES], beforeDay })", "ledger.expire({ tables: ['metric_samples'], beforeDay })"],
   ['deletion', 'retention keeps one day too few', 'janitor/src/janitor.ts', T.janitor,
-    "  const cutoff = now - policy.metric_samples_days * DAY_MS", "  const cutoff = now - (policy.metric_samples_days - 1) * DAY_MS"],
+    "  const cutoff = now - days * DAY_MS", "  const cutoff = now - (days - 1) * DAY_MS"],
   ['deletion', 'retention is due at every midnight (idle tenants wake daily)', 'stack/src/maintain.ts', T.triggers,
     "  if (days.length > 0 && expired.keepDays !== null) due.push(Date.parse(`${days[0]}T00:00:00Z`) + (expired.keepDays + 1) * DAY_MS)", "  if (days.length > 0) due.push((Math.floor(now / DAY_MS) + 1) * DAY_MS)"],
   ['deletion', 'retention is due a day before the oldest day expires', 'stack/src/maintain.ts', T.triggers,
@@ -254,7 +259,7 @@ const mutants = [
   ['review', 'F14: a replace answer this code does not know is taken for a conflict', 'compact/src/compact.ts', T.compact,
     "  if (r.status === 'conflict') return {", "  if (r.status !== 'ok') return {"],
   ['review', 'F15: a newer incarnation counts before its registration is logged', 'janitor/src/janitor.ts', T.janitorUnit,
-    "return w.seq > 0 ? 'dead' : 'pending_unit'", "return 'dead'"],
+    "  const newer = w.loggedIncarnation !== undefined ? w.loggedIncarnation > inc : w.incarnation > inc && w.seq > 0", "  const newer = w.incarnation > inc"],
   ['review', 'F12: flush reads a segment unbound to its incarnation and range', 'flush/src/flush.ts', T.flushUnit,
     "c.shard.readSegment(c.tenant, seg.seqLo, seg.incarnation, seg.seqHi)", "c.shard.readSegment(c.tenant, seg.seqLo)"],
   ['review', 'F12: a refused bound read is not reported as an incarnation change', 'flush/src/flush.ts', T.flushUnit,
@@ -354,15 +359,36 @@ const mutants = [
     'if (signal !== null && signalEnabled(env, signal)) {', 'if (signal !== null) {'],
 ]
 
-const [part, only] = process.argv.slice(2)
+const [part, only] = ARGS.filter((a) => a !== '--check')
 // MUTANT_FILES=compact/,janitor/ runs only the mutants of files under those prefixes.
 const files = process.env.MUTANT_FILES ? process.env.MUTANT_FILES.split(',') : null
+const selected = (p, name, file) =>
+  (!part || part === 'all' || p === part) && (!only || name.includes(only)) && (!files || files.some((f) => file.startsWith(f)))
+
+if (CHECK) {
+  let stale = 0
+  let checked = 0
+  for (const [p, name, file, , from, to] of mutants) {
+    if (!selected(p, name, file)) continue
+    checked++
+    const path = ROOT + file
+    const n = existsSync(path) ? readFileSync(path, 'utf8').split(from).length - 1 : -1
+    if (n <= 0 || from === to) {
+      stale++
+      const why = n < 0 ? `${file} does not exist` : n === 0 ? `pattern not found in ${file}` : 'the replacement equals the pattern'
+      console.log(`NOT APPLIED  [${p}] ${name} (${why})`)
+    } else if (n > 1) {
+      console.log(`AMBIGUOUS    [${p}] ${name} (${n} matches in ${file}; the first is mutated)`)
+    }
+  }
+  console.log(stale === 0 ? `${checked} mutant(s) checked: every pattern applies` : `${checked} mutant(s) checked: ${stale} pattern(s) do not apply`)
+  process.exit(stale === 0 ? 0 : 1)
+}
+
 let survived = 0
 const tally = {}
 for (const [p, name, file, [cwd, cmd], from, to] of mutants) {
-  if (part && part !== 'all' && p !== part) continue
-  if (only && !name.includes(only)) continue
-  if (files && !files.some((f) => file.startsWith(f))) continue
+  if (!selected(p, name, file)) continue
   const path = ROOT + file
   const original = readFileSync(path, 'utf8')
   tally[p] ??= { killed: 0, survived: 0 }

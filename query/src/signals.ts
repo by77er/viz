@@ -6,16 +6,18 @@
  * their index fragments and read through the leaf pool, at most six reads per leaf call;
  * shards are asked for their tail strictly after the plan and above its watermarks, and a
  * refusal sends the query back to the ledger (`readTails`). The engine (`SignalEngine` of
- * `contracts/engine.ts`) evaluates in one place, under the tenant's byte, file and row caps;
- * a query that does not fit one place is refused (422), never cut short (README, "Traces and
- * logs": split execution is not built for them).
+ * `contracts/engine.ts`) evaluates in one place, under the tenant's byte, file and row caps
+ * and the bytes the engine may hold decoded (`maxDecodedBytes`); a query that does not fit one
+ * place is refused (422), never cut short (README, "Traces and logs": split execution is not
+ * built for them).
  *
  *   logs     plan(logs, hull of the selectors) → file plans by stream list and time → files ‖ tail → engine
- *   search   plan(trace_index, window) → fragments ‖ tail → the traces overlapping the window,
- *            their hull and hours → plan(spans, hull) at the same version → files → engine
- *   by ID    plan(trace_index, hint or all time) → the row groups whose trace id range holds
- *            the id ‖ tail → the trace's hull and hours → plan(spans, hull), files of those
- *            hours only → engine
+ *   search   plan(trace_index, window ± traceMarginMs) → fragments ‖ tail → the traces
+ *            overlapping the window, their hull and hours, cut to the margin → plan(spans, hull)
+ *            at the same version → files → engine (spans outside the margin dropped)
+ *   by ID    plan(trace_index, hint ± margin, or all time) → the row groups whose trace id range
+ *            holds the id ‖ tail → the trace's hull and hours → plan(spans, hull), files of
+ *            those hours only → engine
  *   metrics  span-local plans read the spans that start in the window; others as search
  *   tags     plan(spans, window) → files ‖ tail → engine
  *
@@ -26,7 +28,8 @@ import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledge
 import type { SignalFilePlan } from '../../contracts/engine'
 import { ApiError, type Context, MAX_REFUSALS, MAX_VERSION_RETRIES, MissingFile, type Planned, checkDeadline, fetchFiles, hooks, inPrecedenceOrder, plannedBytes, readTails, reserveBytes, tooMuch } from './coordinator'
 import { signalByte, signalShards } from './shards'
-import { msRange } from './sigparams'
+import type { SignalBudget } from '../../engine/wasm-query/js/index'
+import { MAX_NS, NS_PER_MS, msRange } from './sigparams'
 
 /** The span and log tables (contracts/TRACES.md, LOGS.md), by the names the ledger stores files under. */
 export type SignalTable = 'spans' | 'trace_index' | 'logs'
@@ -75,20 +78,28 @@ const planned = (f: FileEntry, p: SignalFilePlan): Planned => ({ f, read: p.read
 /** Whether the index fragments prune (a test turns it off to show that the answers do not change). */
 const pruning = (): boolean => hooks.signalPruning !== false
 
-/** The refusals before anything is fetched: files, bytes and rows from the ledger and the fragments. */
-function capsBeforeFetch(c: Context, rounds: Round[], rowsLimit: number, rowsName: 'max_spans' | 'max_log_rows'): void {
+/**
+ * The refusals before anything is fetched: files and bytes of every round so far from the
+ * ledger, and rows from the fragments. `rowRounds` are the rounds whose rows count against
+ * `rowsLimit` together (a trace query's `trace_index` round and its `spans` round are checked
+ * each on its own: a fragment is not a span).
+ */
+function capsBeforeFetch(c: Context, rounds: Round[], rowsLimit: number, rowsName: 'max_spans' | 'max_log_rows', rowRounds: Round[] = rounds): void {
   const files = rounds.reduce((a, r) => a + r.files.length, 0)
   const bytes = rounds.reduce((a, r) => a + r.bytes, 0)
-  const rows = rounds.reduce((a, r) => a + r.rows, 0)
+  const rows = rowRounds.reduce((a, r) => a + r.rows, 0)
   c.cost.filesListed = rounds.reduce((a, r) => a + r.listed, 0)
   c.cost.filesSkipped = c.cost.filesListed - files
-  c.cost.scanRows = rows
+  c.cost.scanRows = rounds.reduce((a, r) => a + r.rows, 0)
   if (files > c.limits.maxFiles) throw new ApiError('execution', `query exceeded limit max_files: ${files} data files to read, the limit is ${c.limits.maxFiles}. Narrow the time range.`)
   if (bytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the data files in range', bytes)
   if (rows > rowsLimit) {
     throw new ApiError('execution', `query exceeded limit ${rowsName}: the data files in range hold ${rows} rows the query would decode, the limit is ${rowsLimit}. Narrow the time range, or select fewer streams.`)
   }
 }
+
+/** What an engine call may hold (`maxDecodedBytes`, README "Memory"), and for traces the spans that are its data. */
+const budget = (c: Context, bound?: { lo: bigint; hi: bigint }): SignalBudget => (bound ? { maxBytes: c.limits.maxDecodedBytes, bound } : { maxBytes: c.limits.maxDecodedBytes })
 
 /** A query's re-plan bookkeeping, as for metrics: each shard or missing file may send it back to the ledger `MAX_REFUSALS` times. */
 function refusals(): { refused: (who: string, why: string) => void; known: Map<string, number> } {
@@ -169,7 +180,7 @@ export interface LogQuery {
 /** Loki's `query_range` / `query`: the `data` object as the engine wrote it. */
 export async function logQuery(c: Context, q: LogQuery): Promise<string> {
   const plan = c.engine.lqPlan(q.kind, q.query, q.startNs, q.endNs, q.stepNs)
-  if (plan.selectors.length === 0) return engineCall(c, () => c.engine.lqQuery([], [], q.query, { ...q, maxRows: c.limits.maxLogRows, maxSeries: c.limits.maxSeries, maxSteps: c.limits.maxSteps }).json)
+  if (plan.selectors.length === 0) return engineCall(c, () => c.engine.lqQuery([], [], q.query, { ...q, maxRows: c.limits.maxLogRows, maxSeries: c.limits.maxSeries, maxSteps: c.limits.maxSteps }, budget(c)).json)
   // The hull of the selectors' half-open ranges.
   const lo = plan.selectors.reduce((a, s) => (BigInt(s.start) < a ? BigInt(s.start) : a), BigInt(plan.selectors[0]!.start))
   const hi = plan.selectors.reduce((a, s) => (BigInt(s.end) > a ? BigInt(s.end) : a), BigInt(plan.selectors[0]!.end)) - 1n
@@ -190,7 +201,7 @@ export async function logQuery(c: Context, q: LogQuery): Promise<string> {
       if (!files || !tails) continue
       checkDeadline(c)
       const out = engineCall(c, () =>
-        c.engine.lqQuery(files, tails, q.query, { ...q, maxRows: c.limits.maxLogRows, maxSeries: c.limits.maxSeries, maxSteps: c.limits.maxSteps }),
+        c.engine.lqQuery(files, tails, q.query, { ...q, maxRows: c.limits.maxLogRows, maxSeries: c.limits.maxSeries, maxSteps: c.limits.maxSteps }, budget(c)),
       )
       c.cost.rowsDecoded = out.rows
       return out.json
@@ -228,33 +239,58 @@ export async function logLabels(c: Context, kind: 'names' | 'values' | 'series',
 // ───────────────────────────────── traces ─────────────────────────────────
 
 /**
- * One ledger version of `trace_index` (over `window`) and `spans` (over the hull the first
- * round finds), with the first round's files and the tail read in between. `second` gets the
- * fragments and the tail and says which span hull (and hours) to read, or null for nothing.
+ * The span starts a trace query's data is cut to (D62): its window widened by the tenant's
+ * `traceMarginMs` on both sides, within what storage holds. A span of a found trace that starts
+ * inside it is read; one that starts outside it is not part of the answer, with pruning on or
+ * off alike (the engine drops it before de-duplication).
+ */
+export function traceBound(c: Context, window: { lo: bigint; hi: bigint }): { lo: bigint; hi: bigint } {
+  const margin = BigInt(c.limits.traceMarginMs) * NS_PER_MS
+  const lo = window.lo - margin
+  const hi = window.hi + margin
+  return { lo: lo < 0n ? 0n : lo, hi: hi > MAX_NS ? MAX_NS : hi }
+}
+
+/**
+ * One ledger version of `trace_index` and `spans` for a search, a metrics query that needs
+ * whole traces, or a trace by ID (D62):
+ *
+ *   1. `plan(trace_index, bound)`, where `bound` is the window widened by `traceMarginMs`; the
+ *      row groups whose fragments overlap the bound (and, by ID, whose trace-id range holds
+ *      the id); with the tail, the engine finds the traces whose extent, merged over every
+ *      fragment and tail span inside the bound, overlaps the window, and the hull of those
+ *      extents cut to the bound (`tqExtent`);
+ *   2. `plan(spans, hull)` at the same version (else start again); the span row groups whose
+ *      starts overlap the hull (by ID, only the hours the fragments name);
+ *   3. the engine call, with the bound: every span of a found trace that starts inside the bound
+ *      has been read, and the engine drops every span that starts outside it.
+ *
+ * With pruning off, both tables are read whole over the bound: the same answer.
  */
 async function traceRounds<T>(
   c: Context,
   window: { lo: bigint; hi: bigint },
+  bound: { lo: bigint; hi: bigint },
   id: Uint8Array | undefined,
-  finish: (spanFiles: Uint8Array[], tails: Uint8Array[]) => T,
+  finish: (spanFiles: Uint8Array[], tails: Uint8Array[], bound: { lo: bigint; hi: bigint }) => T,
   empty: () => T,
 ): Promise<T> {
   const rf = refusals()
   const have = new Map<string, Uint8Array>()
   for (let attempt = 1; attempt <= MAX_VERSION_RETRIES * (MAX_REFUSALS + 1); attempt++) {
     checkDeadline(c)
-    const w = msRange(window.lo, window.hi)
-    const first = await planTable(c, 'trace_index', w.minTs, w.maxTs)
+    const b = msRange(bound.lo, bound.hi)
+    const first = await planTable(c, 'trace_index', b.minTs, b.maxTs)
     c.cost.ledgerVersion = first.version
     if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
-    const r1 = round(first.files, pruning() ? c.engine.tqFilePlan('trace_index', first.files.map((f) => f.index), window.lo, window.hi, id) : null)
+    const r1 = round(first.files, pruning() ? c.engine.tqFilePlan('trace_index', first.files.map((f) => f.index), bound.lo, bound.hi, id) : null)
     capsBeforeFetch(c, [r1], c.limits.maxSpans, 'max_spans')
     const [indexFiles, tails] = await Promise.all([fetchRound(c, r1, have, rf.refused), readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf)])
     if (!indexFiles || !tails) continue
-    const ext = engineCall(c, () => c.engine.tqExtent(indexFiles, tails, window.lo, window.hi, id))
+    const ext = engineCall(c, () => c.engine.tqExtent(indexFiles, tails, window.lo, window.hi, id, { bound }))
     if (ext.traces === 0 || ext.lo === undefined || ext.hi === undefined) return empty()
-    // Every span of every trace found lies in its hull (a span starts within its trace's extent).
-    const hull = pruning() ? { lo: BigInt(ext.lo), hi: BigInt(ext.hi) } : { lo: 0n, hi: (1n << 63n) - 1n }
+    // Every span of every trace found that starts inside the bound starts inside its hull.
+    const hull = pruning() ? { lo: BigInt(ext.lo), hi: BigInt(ext.hi) } : bound
     const h = msRange(hull.lo, hull.hi)
     const second = await planTable(c, 'spans', h.minTs, h.maxTs)
     if (second.version !== first.version || second.ledgerIncarnation !== first.ledgerIncarnation) continue
@@ -264,14 +300,14 @@ async function traceRounds<T>(
     const r2 = round(candidates, pruning() ? c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi) : null)
     r2.listed = second.files.length
     const tailBytes = tails.reduce((a, b) => a + b.byteLength, 0)
-    capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans')
+    capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans', [r2])
     if (r1.bytes + r2.bytes + tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the data files in range plus the unflushed tail', r1.bytes + r2.bytes + tailBytes)
     const release = reserveBytes(r2.bytes)
     try {
       const spanFiles = await fetchRound(c, r2, have, rf.refused)
       if (!spanFiles) continue
       checkDeadline(c)
-      return finish(spanFiles, tails)
+      return finish(spanFiles, tails, bound)
     } finally {
       release()
     }
@@ -300,12 +336,14 @@ export interface TraceSearch {
 /** Tempo's `/api/search` body. */
 export async function traceSearch(c: Context, q: TraceSearch): Promise<string> {
   const plan = c.engine.tqPlan('search', q.query, q.startNs, q.endNs, 0n)
-  const run = (files: Uint8Array[], tails: Uint8Array[]) => {
-    const out = engineCall(c, () => c.engine.tqSearch(files, tails, q.query, { limit: q.limit, spss: q.spss, startNs: q.startNs, endNs: q.endNs, maxSpans: c.limits.maxSpans }))
+  const window = { lo: BigInt(plan.lo), hi: BigInt(plan.hi) }
+  const bound = traceBound(c, window)
+  const run = (files: Uint8Array[], tails: Uint8Array[], b: { lo: bigint; hi: bigint }) => {
+    const out = engineCall(c, () => c.engine.tqSearch(files, tails, q.query, { limit: q.limit, spss: q.spss, startNs: q.startNs, endNs: q.endNs, maxSpans: c.limits.maxSpans }, budget(c, b)))
     c.cost.rowsDecoded = out.spans
     return out.json
   }
-  return traceRounds(c, { lo: BigInt(plan.lo), hi: BigInt(plan.hi) }, undefined, run, () => run([], []))
+  return traceRounds(c, window, bound, undefined, run, () => run([], [], bound))
 }
 
 export interface TraceMetrics {
@@ -320,14 +358,18 @@ export interface TraceMetrics {
 export async function traceMetrics(c: Context, q: TraceMetrics): Promise<string> {
   const plan = c.engine.tqPlan(q.instant ? 'instant' : 'range', q.query, q.startNs, q.endNs, q.stepNs)
   const req = { instant: q.instant, startNs: BigInt(plan.start!), endNs: BigInt(plan.end!), stepNs: BigInt(plan.step!), maxSpans: c.limits.maxSpans, maxSeries: c.limits.maxTraceSeries, maxPoints: c.limits.maxTracePoints }
-  const run = (files: Uint8Array[], tails: Uint8Array[]) => {
-    const out = engineCall(c, () => c.engine.tqMetrics(files, tails, q.query, req))
+  const run = (files: Uint8Array[], tails: Uint8Array[], b?: { lo: bigint; hi: bigint }) => {
+    const out = engineCall(c, () => c.engine.tqMetrics(files, tails, q.query, req, budget(c, b)))
     c.cost.rowsDecoded = out.spans
     return out.json
   }
   const window = { lo: BigInt(plan.lo), hi: BigInt(plan.hi) }
-  if (plan.complete) return traceRounds(c, window, undefined, run, () => run([], []))
-  return spansIn(c, window, run)
+  if (plan.complete) {
+    const bound = traceBound(c, window)
+    return traceRounds(c, window, bound, undefined, run, () => run([], [], bound))
+  }
+  // Span-local: the spans that start in the window are the data; nothing else is cut.
+  return spansIn(c, window, (files, tails) => run(files, tails))
 }
 
 /** The spans that start in `window` (one ledger plan of `spans`) and the tail, to `finish`. */
@@ -357,22 +399,25 @@ async function spansIn<T>(c: Context, window: { lo: bigint; hi: bigint }, finish
 
 /** Tempo's `/api/traces/<id>` (v1) or `/api/v2/traces/<id>` body; null when the trace is not found. */
 export async function traceById(c: Context, id: Uint8Array, version: 1 | 2, startNs: bigint | null, endNs: bigint | null): Promise<string | null> {
-  const window = { lo: startNs ?? 0n, hi: endNs ?? (1n << 63n) - 1n }
+  // Without a hint, all time: the whole trace. With one, the hint widened by the margin, as for
+  // a search (Tempo documents that a range "can result in … partial results").
+  const window = { lo: startNs ?? 0n, hi: endNs ?? MAX_NS }
+  const bound = startNs === null && endNs === null ? { lo: 0n, hi: MAX_NS } : traceBound(c, window)
   c.cost.pruning = pruning() ? 'hours' : 'off'
-  const run = (files: Uint8Array[], tails: Uint8Array[]) => {
-    const out = engineCall(c, () => c.engine.tqTrace(files, tails, id, version, c.limits.maxSpans))
+  const run = (files: Uint8Array[], tails: Uint8Array[], b: { lo: bigint; hi: bigint }) => {
+    const out = engineCall(c, () => c.engine.tqTrace(files, tails, id, version, c.limits.maxSpans, budget(c, b)))
     c.cost.rowsDecoded = out.spans
     return out.json
   }
-  return traceRounds(c, window, id, run, () => null)
+  return traceRounds(c, window, bound, id, run, () => null)
 }
 
 /** Tempo's tag names (`/api/search/tags`, `/api/v2/search/tags`) over the spans that start in the window. */
 export async function traceTags(c: Context, version: 1 | 2, scope: string, startNs: bigint, endNs: bigint, limit: number): Promise<string> {
-  return spansIn(c, { lo: startNs, hi: endNs }, (files, tails) => engineCall(c, () => c.engine.tqTags(files, tails, version, scope, startNs, endNs, limit, c.limits.maxSpans)))
+  return spansIn(c, { lo: startNs, hi: endNs }, (files, tails) => engineCall(c, () => c.engine.tqTags(files, tails, version, scope, startNs, endNs, limit, c.limits.maxSpans, budget(c))))
 }
 
 /** Tempo's tag values (`/api/search/tag/<tag>/values`, `/api/v2/search/tag/<tag>/values`). */
 export async function traceTagValues(c: Context, version: 1 | 2, tag: string, q: string, startNs: bigint, endNs: bigint, limit: number): Promise<string> {
-  return spansIn(c, { lo: startNs, hi: endNs }, (files, tails) => engineCall(c, () => c.engine.tqTagValues(files, tails, version, tag, q, startNs, endNs, limit, c.limits.maxSpans)))
+  return spansIn(c, { lo: startNs, hi: endNs }, (files, tails) => engineCall(c, () => c.engine.tqTagValues(files, tails, version, tag, q, startNs, endNs, limit, c.limits.maxSpans, budget(c))))
 }

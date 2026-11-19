@@ -21,7 +21,7 @@
  */
 import type { LogReadPlan, Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData, SignalEngine, SignalFilePlan, TraceReadPlan } from '../../../contracts/engine'
 
-export const ABI_VERSION = 6
+export const ABI_VERSION = 7
 
 /** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
 export interface QueryLimits {
@@ -214,8 +214,40 @@ export function sparseFile(size: number, segments: { offset: number; bytes: Uint
   return out
 }
 
-/** The PromQL operations and, since ABI 6, the span and log ones (`contracts/engine.ts` `SignalEngine`). */
+/**
+ * What a span or log call may hold, and (traces) which spans are its data. ABI 7, not yet in
+ * `contracts/engine.ts` `SignalEngine` (README, "Contract issues"): an optional last argument of
+ * the span and log operations, so a caller of the contract's shape still works.
+ */
+export interface SignalBudget {
+  /**
+   * Bytes of decoded rows (and of the answer) the call may hold; past it, an `execution` error
+   * whose limit is `max_decoded_bytes`. Counted by the engine as it decodes: per row a fixed
+   * overhead and the length of every string it holds, a span's resource once per distinct
+   * resource of the call (`../src/sigfiles.rs` `Mem`). Default `DEFAULT_SIGNAL_BYTES`.
+   */
+  maxBytes?: number
+  /**
+   * Traces: a span whose start lies outside `[lo, hi]` (nanoseconds, inclusive) is not part of
+   * the call's data; it is dropped as it is read, before de-duplication, so what the call sees
+   * does not depend on what else outside the bound was read. `tqExtent` cuts fragments, tail
+   * spans, the hull and the hours to it. Default: all time.
+   */
+  bound?: { lo: bigint; hi: bigint }
+}
+
+/** The default of `SignalBudget.maxBytes` (query/src/config.ts `maxDecodedBytes` sets the Worker's). */
+export const DEFAULT_SIGNAL_BYTES = 40 << 20
+
+/** The PromQL operations and, since ABI 6, the span and log ones (`contracts/engine.ts` `SignalEngine`; ABI 7 adds `SignalBudget`). */
 export interface QueryEngine extends SignalEngine {
+  tqExtent(indexFiles: Uint8Array[], tailBatches: Uint8Array[], lo: bigint, hi: bigint, traceId?: Uint8Array, budget?: SignalBudget): { traces: number; lo?: string; hi?: string; hours: number[] }
+  tqSearch(spanFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { limit: number; spss: number; startNs: bigint; endNs: bigint; maxSpans: number }, budget?: SignalBudget): { json: string; spans: number; traces: number }
+  tqMetrics(spanFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { instant: boolean; startNs: bigint; endNs: bigint; stepNs: bigint; maxSpans: number; maxSeries: number; maxPoints: number }, budget?: SignalBudget): { json: string; spans: number; traces: number }
+  tqTrace(spanFiles: Uint8Array[], tailBatches: Uint8Array[], traceId: Uint8Array, version: 1 | 2, maxSpans: number, budget?: SignalBudget): { json: string | null; spans: number }
+  tqTags(spanFiles: Uint8Array[], tailBatches: Uint8Array[], version: 1 | 2, scope: string, lo: bigint, hi: bigint, limit: number, maxSpans: number, budget?: SignalBudget): string
+  tqTagValues(spanFiles: Uint8Array[], tailBatches: Uint8Array[], version: 1 | 2, tag: string, q: string, lo: bigint, hi: bigint, limit: number, maxSpans: number, budget?: SignalBudget): string
+  lqQuery(logFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { kind: 'range' | 'instant'; startNs: bigint; endNs: bigint; stepNs: bigint; limit: number; direction: 'forward' | 'backward'; maxRows: number; maxSeries: number; maxSteps: number }, budget?: SignalBudget): { json: string; rows: number }
   /** What to fetch before evaluating: merged, clamped ranges. `startMs === endMs` plans an instant query. */
   plan(promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): FetchRange[]
   /** `contracts/engine.ts` `selectors`: one entry per selector, unmerged. */
@@ -640,41 +672,54 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     return req
   }
 
-  const signals: SignalEngine = {
+  /** `u64 max_bytes` (ABI 7). */
+  const maxBytes = (req: Request, b: SignalBudget | undefined): Request => req.u64(limit('maxBytes', b?.maxBytes ?? DEFAULT_SIGNAL_BYTES))
+  /** `i64 bound_lo, i64 bound_hi` (ABI 7); all time by default. */
+  const bound = (req: Request, b: SignalBudget | undefined): Request => {
+    const lo = b?.bound?.lo ?? I64_MIN
+    const hi = b?.bound?.hi ?? I64_MAX
+    if (lo > hi) throw new RangeError('engine: bound.lo is after bound.hi')
+    return req.i64(nanos('bound.lo', lo)).i64(nanos('bound.hi', hi))
+  }
+  /** `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi`. */
+  const spanBudget = (req: Request, maxSpans: number, b: SignalBudget | undefined): Request => bound(maxBytes(req.u64(limit('maxSpans', maxSpans)), b), b)
+
+  const signals: Pick<QueryEngine, keyof SignalEngine> = {
     tqPlan: (kind, query, startNs, endNs, stepNs) => {
       const k = kind === 'search' ? 0 : kind === 'range' ? 1 : 2
       return call('viz_q_tq_plan', new Request().u8(k).i64(nanos('start', startNs)).i64(nanos('end', endNs)).i64(nanos('step', stepNs)).str(query), json<TraceReadPlan>)
     },
     tqFilePlan: (table, indexes, lo, hi, id) =>
       call('viz_q_tq_file_plan', traceId(new Request().u64(BigInt(RANGE_GAP)).u8(table === 'spans' ? 0 : 1).i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).strs(indexes), json<SignalFilePlan[]>),
-    tqExtent: (indexFiles, tailBatches, lo, hi, id) => call('viz_q_tq_extent', traceId(new Request().i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).files(indexFiles).files(tailBatches), json<{ traces: number; lo?: string; hi?: string; hours: number[] }>),
-    tqSearch: (files, tails, query, q) =>
-      call('viz_q_tq_search', new Request().u64(limit('maxSpans', q.maxSpans)).count('limit', q.limit).count('spss', q.spss).i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).str(query).files(files).files(tails), counted),
-    tqMetrics: (files, tails, query, q) =>
+    tqExtent: (indexFiles, tailBatches, lo, hi, id, budget) =>
+      call('viz_q_tq_extent', bound(traceId(new Request().i64(nanos('lo', lo)).i64(nanos('hi', hi)), id), budget).files(indexFiles).files(tailBatches), json<{ traces: number; lo?: string; hi?: string; hours: number[] }>),
+    tqSearch: (files, tails, query, q, budget) =>
+      call('viz_q_tq_search', spanBudget(new Request(), q.maxSpans, budget).count('limit', q.limit).count('spss', q.spss).i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).str(query).files(files).files(tails), counted),
+    tqMetrics: (files, tails, query, q, budget) =>
       call(
         'viz_q_tq_metrics',
-        new Request().u64(limit('maxSpans', q.maxSpans)).u64(limit('maxSeries', q.maxSeries)).u64(limit('maxPoints', q.maxPoints)).u8(q.instant ? 1 : 0)
+        spanBudget(new Request(), q.maxSpans, budget).u64(limit('maxSeries', q.maxSeries)).u64(limit('maxPoints', q.maxPoints)).u8(q.instant ? 1 : 0)
           .i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).i64(nanos('step', q.stepNs)).str(query).files(files).files(tails),
         counted,
       ),
-    tqTrace: (files, tails, id, version, maxSpans) => {
+    tqTrace: (files, tails, id, version, maxSpans, budget) => {
       if (!(id instanceof Uint8Array) || id.byteLength !== 16) throw new RangeError('engine: a trace id is 16 bytes')
-      return call('viz_q_tq_trace', new Request().u8(version).raw(id).u64(limit('maxSpans', maxSpans)).files(files).files(tails), (payload) => {
+      return call('viz_q_tq_trace', spanBudget(new Request().u8(version).raw(id), maxSpans, budget).files(files).files(tails), (payload) => {
         const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
         return { spans: Number(dv.getBigUint64(1, true)), json: payload[0] === 1 ? text.decode(payload.subarray(9)) : null }
       })
     },
-    tqTags: (files, tails, version, scope, lo, hi, n, maxSpans) =>
-      call('viz_q_tq_tags', new Request().u8(version).str(scope).i64(nanos('lo', lo)).i64(nanos('hi', hi)).count('limit', n).u64(limit('maxSpans', maxSpans)).files(files).files(tails), textOf),
-    tqTagValues: (files, tails, version, tag, q, lo, hi, n, maxSpans) =>
-      call('viz_q_tq_tag_values', new Request().u8(version).str(tag).str(q).i64(nanos('lo', lo)).i64(nanos('hi', hi)).count('limit', n).u64(limit('maxSpans', maxSpans)).files(files).files(tails), textOf),
+    tqTags: (files, tails, version, scope, lo, hi, n, maxSpans, budget) =>
+      call('viz_q_tq_tags', maxBytes(new Request().u8(version).str(scope).i64(nanos('lo', lo)).i64(nanos('hi', hi)).count('limit', n).u64(limit('maxSpans', maxSpans)), budget).files(files).files(tails), textOf),
+    tqTagValues: (files, tails, version, tag, q, lo, hi, n, maxSpans, budget) =>
+      call('viz_q_tq_tag_values', maxBytes(new Request().u8(version).str(tag).str(q).i64(nanos('lo', lo)).i64(nanos('hi', hi)).count('limit', n).u64(limit('maxSpans', maxSpans)), budget).files(files).files(tails), textOf),
     lqPlan: (kind, query, startNs, endNs, stepNs) =>
       call('viz_q_lq_plan', new Request().u8(kind === 'range' ? 0 : 1).i64(nanos('start', startNs)).i64(nanos('end', endNs)).i64(nanos('step', stepNs)).str(query), json<LogReadPlan>),
     lqFilePlan: (indexes, selectors) => call('viz_q_lq_file_plan', sels(new Request().u64(BigInt(RANGE_GAP)), selectors).strs(indexes), json<SignalFilePlan[]>),
-    lqQuery: (files, tails, query, q) =>
+    lqQuery: (files, tails, query, q, budget) =>
       call(
         'viz_q_lq_query',
-        new Request().u64(limit('maxRows', q.maxRows)).u64(limit('maxSeries', q.maxSeries)).u64(limit('maxSteps', q.maxSteps)).count('limit', q.limit).u8(q.direction === 'forward' ? 1 : 0).u8(q.kind === 'range' ? 0 : 1)
+        maxBytes(new Request().u64(limit('maxRows', q.maxRows)), budget).u64(limit('maxSeries', q.maxSeries)).u64(limit('maxSteps', q.maxSteps)).count('limit', q.limit).u8(q.direction === 'forward' ? 1 : 0).u8(q.kind === 'range' ? 0 : 1)
           .i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).i64(nanos('step', q.stepNs)).str(query).files(files).files(tails),
         (payload) => ({ rows: u64At(new DataView(payload.buffer, payload.byteOffset, payload.byteLength), 0), json: text.decode(payload.subarray(8)) }),
       ),

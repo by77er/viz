@@ -4,9 +4,15 @@
  * grafana.com/docs/loki/latest/reference/loki-http-api/; `CLEANROOM.md`). Times become
  * nanoseconds as `bigint`, from the digits, never through a float.
  *
- *   Loki:  "All epoch values will be interpreted as a Unix timestamp in nanoseconds. A floating
- *          point number is a Unix timestamp with fractions of a second." RFC 3339 too. `step`:
- *          a duration `[0-9]+[smhdwy]` or a float number of seconds.
+ *   Loki:  the current reference says "All epoch values will be interpreted as a Unix timestamp
+ *          in nanoseconds. A floating point number is a Unix timestamp with fractions of a
+ *          second." RFC 3339 too. Its earlier reference (v2.8, archive.grafana.com/docs/loki/
+ *          v2.8.x/api/, "Timestamp formats", read 2026-11-19) is more exact: "An integer with ten
+ *          or fewer digits is interpreted as a Unix timestamp in seconds. More than ten digits
+ *          are interpreted as a Unix timestamp in nanoseconds." viz follows the latter (review
+ *          m-4): the two differ only for integers of ten or fewer digits, which as nanoseconds
+ *          are the first ten seconds of 1970, and as seconds are what a client sending seconds
+ *          means. `step`: a duration `[0-9]+[smhdwy]` or a float number of seconds.
  *   Tempo: `start`/`end` are Unix epoch seconds; the metrics API also takes nanoseconds and
  *          RFC 3339; `step` and `since` are duration strings.
  */
@@ -42,9 +48,9 @@ function rfc3339(name: string, v: string): bigint {
   return ns
 }
 
-/** A Loki time: an integer of nanoseconds, a float of seconds, or RFC 3339. */
+/** A Loki time: an integer of ten or fewer digits is seconds, a longer one nanoseconds; a float of seconds; or RFC 3339. */
 export function lokiTime(name: string, v: string): bigint {
-  const t = /^-?\d+$/.test(v) ? BigInt(v) : /^-?\d+\.\d+$/.test(v) ? decimalSeconds(name, v) : rfc3339(name, v)
+  const t = /^-?\d+$/.test(v) ? (v.replace('-', '').length <= 10 ? BigInt(v) * NS_PER_S : BigInt(v)) : /^-?\d+\.\d+$/.test(v) ? decimalSeconds(name, v) : rfc3339(name, v)
   if (t < 0n || t > MAX_NS) throw bad(name, v, 'within the times storage holds')
   return t
 }

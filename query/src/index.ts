@@ -231,13 +231,22 @@ function splitSpec(c: Context, plan: SplitPlan, query: string, grid: Grid): Spli
 
 export type Handler = (c: Context, params: URLSearchParams, label: string) => Promise<string>
 
-/** How an API answers: Prometheus' and Loki's envelope (`{"status":…}`), or Tempo's bare bodies with plain-text errors. */
-export type Dialect = 'prometheus' | 'tempo'
+/**
+ * How an API answers. `prometheus`: the envelope (`{"status":…}`) for answers and errors.
+ * `loki`: the envelope for answers (Loki's API reference shows `{"status":"success","data":…}`),
+ * errors as plain text with the status code (review m-4: the reference gives no error body;
+ * Loki's troubleshooting page quotes its parse errors as text, and Grafana's Loki client reads
+ * an error body as text when it is not JSON; secondary sources, README "Grafana"). `tempo`:
+ * Tempo's bare bodies, errors as plain text.
+ */
+export type Dialect = 'prometheus' | 'tempo' | 'loki'
 export interface Route {
   handler: Handler
   methods: string[]
   label: string
   dialect?: Dialect
+  /** Tempo's bare answers only: the body's type (default JSON). */
+  contentType?: string
 }
 
 const instant: Handler = async (c, params) => {
@@ -358,7 +367,7 @@ const buildinfo: Handler = async () => JSON.stringify({ version: '0.1.0-viz', re
 
 function route(path: string, env: Env): Route | null {
   if (path.startsWith('/loki/')) return signalEnabled(env, 'logs') ? lokiRoute(path) : null
-  if (/^\/api\/(v2\/)?(traces|search|metrics)(\/|$)/.test(path)) return signalEnabled(env, 'traces') ? tempoRoute(path) : null
+  if (/^\/api\/(v2\/)?(traces|search|metrics)(\/|$)/.test(path) || path === '/api/echo') return signalEnabled(env, 'traces') ? tempoRoute(path) : null
   switch (path) {
     case '/api/v1/query':
       return { handler: instant, methods: ['GET', 'POST'], label: '' }
@@ -401,7 +410,7 @@ function timeout(ms: number, why: string): { promise: Promise<never>; cancel: ()
 async function api(req: Request, env: Env, path: string, corsHeaders: Record<string, string>): Promise<Response> {
   const r = route(path, env)
   if (!r) return failure('not_found', 'not found', corsHeaders)
-  const fail = r.dialect === 'tempo' ? plainFailure : failure
+  const fail = r.dialect === 'tempo' || r.dialect === 'loki' ? plainFailure : failure
   if (!r.methods.includes(req.method)) return fail('method_not_allowed', 'method not allowed', { ...corsHeaders, Allow: r.methods.join(', ') })
 
   const cost = newCost()
@@ -425,7 +434,7 @@ async function api(req: Request, env: Env, path: string, corsHeaders: Record<str
       headers = { ...corsHeaders, ...costHeaders(cost) }
       if (engine.memoryBytes() > RESET_WASM_ABOVE) engine.reset()
     }
-    return r.dialect === 'tempo' ? new Response(data, { status: 200, headers: { ...JSON_TYPE, ...headers } }) : success(data, headers, warnings)
+    return r.dialect === 'tempo' ? new Response(data, { status: 200, headers: { ...(r.contentType ? { 'Content-Type': r.contentType } : JSON_TYPE), ...headers } }) : success(data, headers, warnings)
   } catch (e) {
     // The engine could not be loaded: retrying cannot help, so 500, not a retryable 503.
     if (e instanceof EngineLoadError) {

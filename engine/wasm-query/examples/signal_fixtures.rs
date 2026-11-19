@@ -192,7 +192,7 @@ fn spans_of(batches: &[Vec<u8>]) -> Vec<Rec> {
                 status_message: r.status_message.to_string(),
                 start_unix_nano: r.start as u64,
                 end_unix_nano: r.end as u64,
-                resource: e.resource.iter().map(|a| (a.key.to_string(), av(&a.value))).collect(),
+                resource: e.resource.iter().map(|a| (a.key.to_string(), av(&a.value))).collect::<Vec<_>>().into(),
                 attrs: r.attrs.iter().map(|a| (a.key.to_string(), av(&a.value))).collect(),
                 scope_name: e.scope_name.to_string(),
                 scope_version: e.scope_version.to_string(),

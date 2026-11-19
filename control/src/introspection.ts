@@ -7,7 +7,7 @@ import {
   type TenantOAuthRpc,
   parseCredential,
 } from '../../contracts/oauth'
-import { type OAuthEnv, credentialTagValid, oauthConfig } from './oauth'
+import { type OAuthEnv, credentialExpired, credentialTagValid, oauthConfig } from './oauth'
 import { type RateLimitEnv, limitBearer } from './ratelimit'
 import type { Tenant } from './tenant'
 
@@ -26,9 +26,12 @@ import type { Tenant } from './tenant'
  * - the tenant is the one the token names: there is no tenant argument;
  * - a token not shaped like an access token, or without this deployment's tag, is `inactive` and
  *   reaches no object (M-2);
- * - a tagged token is counted against itself, then against its tenant (src/ratelimit.ts, D70),
- *   before the tenant's object is asked: over either, `rate_limited` and no object. A made-up token
- *   is refused before it counts, so it cannot spend a tenant's budget.
+ * - a tagged token past the expiry its body carries (layout 2, contracts/oauth.ts) is `inactive`
+ *   (`expired`) and reaches no object, and counts against nothing (D70, review B-1);
+ * - any other tagged token is counted against itself, then against its tenant (src/ratelimit.ts,
+ *   D70), before the tenant's object is asked: over either, `rate_limited` and no object. A made-up
+ *   or expired token is refused before it counts, so it cannot spend a tenant's budget, and one
+ *   token spends at most its own allowance of it.
  */
 
 export interface IntrospectionEnv extends OAuthEnv, RateLimitEnv {
@@ -36,6 +39,7 @@ export interface IntrospectionEnv extends OAuthEnv, RateLimitEnv {
 }
 
 const unknown: OAuthIntrospectionResult = { v: 1, status: 'inactive', reason: 'unknown' }
+const expired: OAuthIntrospectionResult = { v: 1, status: 'inactive', reason: 'expired' }
 
 /** The entrypoint's logic, apart from the class so the tests can give it any caller. */
 export async function introspectFor(env: IntrospectionEnv, caller: unknown, token: unknown, resource: unknown): Promise<OAuthIntrospectionResult> {
@@ -43,6 +47,8 @@ export async function introspectFor(env: IntrospectionEnv, caller: unknown, toke
   const cred = typeof token === 'string' ? parseCredential(token) : null
   if (!cred || cred.kind !== 'access' || typeof resource !== 'string') return unknown
   if (!(await credentialTagValid(oauthConfig(env).clientKey, token))) return unknown
+  // Past the expiry the tag vouches for: the object would say the same (D70).
+  if (credentialExpired(token as string)) return expired
   const limited = await limitBearer(env, cred.tenant, token as string)
   if (limited) return limited
   // The one place this picks a tenant's object: the tenant the token names.

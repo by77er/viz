@@ -3,8 +3,11 @@
  * them (read 2026-11-19; `CLEANROOM.md` lists the pages). Behind `QUERY_SIGNALS`.
  *
  * Tempo (grafana.com/docs/tempo/latest/api_docs/): bodies as Tempo answers them (no envelope),
- * errors as plain text. Loki (grafana.com/docs/loki/latest/reference/loki-http-api/):
- * `{"status":"success","data":…}`, errors in the same envelope as the Prometheus API.
+ * errors as plain text; `/api/echo` answers `echo` ("Returns status code 200 and body `echo`
+ * when the query frontend is up and ready to receive requests", read 2026-11-19), which
+ * Grafana's Tempo data source may call to test a connection (training knowledge). Loki
+ * (grafana.com/docs/loki/latest/reference/loki-http-api/): `{"status":"success","data":…}`,
+ * errors as plain text (index.ts `Dialect`).
  */
 import { ApiError } from './coordinator'
 import type { Route } from './index'
@@ -117,6 +120,9 @@ export function tempoRoute(path: string): Route | null {
       return t(metrics(false))
     case '/api/metrics/query':
       return t(metrics(true))
+    case '/api/echo':
+      // Behind the key like every API path: a data source's test then also checks its key.
+      return { ...t(async () => 'echo'), contentType: 'text/plain; charset=utf-8' }
   }
   let m = /^\/api\/(v2\/)?traces\/([^/]+)$/.exec(path)
   if (m) {
@@ -186,7 +192,7 @@ const lokiSeries: Route['handler'] = async (c, params) => {
 
 /** Loki's paths, or null. */
 export function lokiRoute(path: string): Route | null {
-  const l = (handler: Route['handler'], label = ''): Route => ({ handler, methods: ['GET', 'POST'], label, dialect: 'prometheus' })
+  const l = (handler: Route['handler'], label = ''): Route => ({ handler, methods: ['GET', 'POST'], label, dialect: 'loki' })
   switch (path) {
     case '/loki/api/v1/query_range':
       return l(lokiRange)

@@ -107,9 +107,9 @@ export const OAUTH_LIMITS = {
 } as const
 
 /**
- * Refused by a rate limit before anything was read or written (D70): retryable, nothing happened,
- * and a credential presented with the request is not spent. `retryAfterMs`: when to try again.
- * Added 2026-11-19 within version 1 of `TokenResult` and `OAuthIntrospectionResult`
+ * Refused by a rate limit before the tenant's object was asked (D70): retryable, nothing was
+ * written, and a credential presented with the request is not spent. `retryAfterMs`: when to try
+ * again. Added 2026-11-19 within version 1 of `TokenResult` and `OAuthIntrospectionResult`
  * (COMPATIBILITY.md §4, "new statuses that callers already fail closed on": control's own Worker
  * reads the first; the agent surface answers a status it does not know with a retryable 503).
  */
@@ -122,22 +122,49 @@ export interface RateLimited {
 // ---- credentials ----
 
 /**
- * `<prefix>1.<tenant>.<secret>`: the secret is 43 base62 characters. The tenant is
+ * `<prefix>1.<tenant>.<secret>`: the secret is 43 base62 characters (`BASE62`). The tenant is
  * `contracts/ledger.ts` TENANT_ID, which has no `.`. Format version 1 is the `1` in the prefix.
  *
- * The 43 characters are `CREDENTIAL_TAG.randomChars` characters from a CSPRNG (about 160 bits;
- * this is what makes the credential unguessable) followed by a `CREDENTIAL_TAG.tagChars`-character
- * tag: the first 16 bytes of HMAC-SHA-256, under a key derived (HKDF-SHA-256, salt
- * `CREDENTIAL_TAG.salt`) from control's `OAUTH_CLIENT_KEY`, of `<prefix>1.<tenant>.<random>`, each
- * byte as `BASE62[byte % 62]`. The tag lets control refuse a made-up credential in the Worker,
- * before the tenant's object is asked (review of D44, M-2); it does not make a credential valid:
- * only the tenant's object, which holds the SHA-256 of the whole credential, says that. Replacing
- * `OAUTH_CLIENT_KEY` therefore ends every code and token too (a client connects again). Added
- * 2026-11-19, before any release issued a credential.
+ * The 43 characters are a `CREDENTIAL_TAG.randomChars`-character body followed by a
+ * `CREDENTIAL_TAG.tagChars`-character tag: the first 16 bytes of HMAC-SHA-256, under a key derived
+ * (HKDF-SHA-256, salt `CREDENTIAL_TAG.salt`) from control's `OAUTH_CLIENT_KEY`, of
+ * `<prefix>1.<tenant>.<body>`, each byte as `BASE62[byte % 62]`. The tag lets control refuse a
+ * made-up credential in the Worker, before the tenant's object is asked (review of D44, M-2); it
+ * does not make a credential valid: only the tenant's object, which holds the SHA-256 of the whole
+ * credential, says that. Replacing `OAUTH_CLIENT_KEY` therefore ends every code and token too (a
+ * client connects again). Added 2026-11-19, before any release issued a credential.
+ *
+ * The body has two layouts. Every reader of version 1 reads both, because the shape and the tag
+ * are the same: a reader that does not know layout 2 sees 27 opaque characters, as before.
+ * - **Layout 1** (issued by releases before the review of D70): 27 characters from a CSPRNG.
+ * - **Layout 2** (`CREDENTIAL_LAYOUT`, issued since the review of D70, B-1, 2026-11-19): the marker
+ *   `e`, the credential's expiry in 4 characters, and 22 characters from a CSPRNG (about 131 bits;
+ *   with the tag, which only `OAUTH_CLIENT_KEY` can make, this is what makes the credential
+ *   unguessable). The expiry is whole minutes since `CREDENTIAL_LAYOUT.expiryEpochMs`, rounded
+ *   up, base62 with the most significant character first (good until 2054-12): the moment the
+ *   tenant's object stops accepting the credential, or a little later, never earlier. The tag
+ *   covers it, so the Worker can refuse a credential past its expiry before any limit counts it
+ *   and before any object is asked (`credentialExpiresAt`; D70).
+ * A layout 1 body begins with `e` one time in 62 and is then read as layout 2 with an expiry
+ * uniform over 28 years; layout 1 credentials live 30 days at most, so in the month after the
+ * change about 1 in 13,000 of them could be read as expired early (none had been issued in
+ * production when layout 2 began).
  */
 export const OAUTH_CREDENTIAL = /^(vzc|vza|vzr)1\.([A-Za-z0-9_-]{1,64})\.([A-Za-z0-9]{43})$/
 export const CREDENTIAL_PREFIX = { code: 'vzc1', access: 'vza1', refresh: 'vzr1' } as const
+/** `randomChars`: the body's length, the characters before the tag (named before layout 2 put more than randomness in it). */
 export const CREDENTIAL_TAG = { randomChars: 27, tagChars: 16, salt: 'viz.oauth.credential-tag/v1' } as const
+/** The order of base62 digits in a credential's tag and in layout 2's expiry. */
+export const BASE62 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+/** Layout 2 of a credential's body (above): marker, expiry, random characters; 1 + 4 + 22 = `CREDENTIAL_TAG.randomChars`. */
+export const CREDENTIAL_LAYOUT = {
+  marker: 'e',
+  expiryChars: 4,
+  /** 2026-11-01T00:00:00Z. */
+  expiryEpochMs: 1_793_491_200_000,
+  expiryUnitMs: 60_000,
+  randomChars: 22,
+} as const
 export type CredentialKind = keyof typeof CREDENTIAL_PREFIX
 
 export function parseCredential(s: string): { kind: CredentialKind; tenant: string } | null {
@@ -145,6 +172,19 @@ export function parseCredential(s: string): { kind: CredentialKind; tenant: stri
   if (!m) return null
   const kind = m[1] === 'vzc' ? 'code' : m[1] === 'vza' ? 'access' : 'refresh'
   return { kind, tenant: m[2]! }
+}
+
+/**
+ * When a layout 2 credential expires (Unix ms; the object's own expiry or up to a minute later), or
+ * null for a layout 1 credential or a string that is not a credential. Read only after the tag has
+ * been verified: the tag is what makes the expiry the issuer's.
+ */
+export function credentialExpiresAt(s: string): number | null {
+  const m = OAUTH_CREDENTIAL.exec(s)
+  if (!m || m[3]![0] !== CREDENTIAL_LAYOUT.marker) return null
+  let v = 0
+  for (const ch of m[3]!.slice(1, 1 + CREDENTIAL_LAYOUT.expiryChars)) v = v * 62 + BASE62.indexOf(ch)
+  return CREDENTIAL_LAYOUT.expiryEpochMs + v * CREDENTIAL_LAYOUT.expiryUnitMs
 }
 
 /**
@@ -285,10 +325,12 @@ export interface TenantOAuthRpc {
  *   `unauthorized` and reaches no object.
  * - A token that is not shaped like an access token, or does not carry this deployment's tag
  *   (`CREDENTIAL_TAG`), is `inactive` (`unknown`) and reaches no object.
+ * - A token with the tag whose layout 2 expiry has passed (`credentialExpiresAt`) is `inactive`
+ *   (`expired`) and reaches no object (D70).
  * - Results are `IntrospectionResult` (version 1, above) plus `unauthorized` and `rate_limited`
  *   (D70: too many introspections of this token, or of this token's tenant, in this Cloudflare
- *   location; checked after the tag and before the tenant's object, so only a credential this
- *   deployment made counts). Nothing throws for bad input.
+ *   location; checked after the tag and the expiry and before the tenant's object, so only a
+ *   credential this deployment made, not yet expired, counts). Nothing throws for bad input.
  */
 export const OAUTH_INTROSPECTION_ENTRYPOINT = 'OAuthIntrospection'
 

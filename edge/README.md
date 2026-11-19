@@ -601,6 +601,65 @@ sit beside were removed) and three new ones:
 | only HTTP errors get a refusal word (KV and unexpected errors pass bare) | each error path … |
 | a request over the limits (413) is `unavailable`, not `too_large` | each error path …; every refusal word is one the contract lists |
 
+### Decode limits and memory (2026-11-19, review M-3, D71)
+
+```
+npx tsc --noEmit
+npx vitest run --maxWorkers=2                 # test/decode.test.ts is new
+node bench/memory.mjs                         # heap per request, Node and workerd (bodies: bench/bodies.mjs)
+MEM_SRC=/copy/of/old/src node bench/memory.mjs   # the same against another version of src/
+node bench/differential.mjs origin/main       # metrics: same batches as main (live)
+node bench/differential.mjs 530c1cd --seeds 1,2,3   # every signal: same batches as before this change
+node scripts/mutants.mjs decode:              # on a copy outside the git checkout
+```
+
+**Last run** (2026-11-19): `npx vitest run --maxWorkers=2` **SUITE_COUNTS**; `npx tsc --noEmit`
+clean. New: `test/decode.test.ts` (spans, logs, Loki) and `test/decode-metrics.test.ts` (metrics, kept
+apart so it carries over to a tree with metrics only), bodies written by hand in `test/wire.ts`:
+
+- **Each hostile shape is refused, cheaply**, for every path (OTLP traces, logs and metrics in
+  protobuf and JSON, Loki push in protobuf and JSON): a resource, scope, span, event, record,
+  entry, label set or data point of 4N and 8N empty entries or elements (2N and 4N for JSON) is
+  refused with its reason, the valid item after it is stored, and `BUILT` (every entry and element
+  a decoder creates, counted apart from the meters) stays at most N + 64 and the same for both
+  sizes: building stopped at the limit.
+- **At the limit**: an item of exactly 65,536 values is stored with every value (a span of four
+  arrays, a log record's body, a data point of 16 labels, a Loki entry, a Loki label set) and one
+  more is refused; a span of exactly 128 events and 128 links is stored with every one; a resource
+  and its scope are counted together; exactly `maxDecodedBytes` is accepted and a byte less is 413
+  (metrics, spans, logs); exactly `maxJsonTokens` is accepted and one less is 413 (each endpoint).
+- **The rest is still read**: past the limit a body nested 18 deep, a truncated field or invalid
+  UTF-8 (metrics) is still 400; JSON still checks every value's type.
+- **Through the Worker**: each endpoint answers with its status (OTLP `partial_success`, Loki 400)
+  and stores the rest; a resource copied into more series or entries than `maxDecodedBytes` is
+  413 and nothing is stored.
+- `validUtf8` agrees with a fatal `TextDecoder` on 20,000 random byte strings biased to the edges
+  of multi-byte forms (more than 5,000 of them invalid, as the test checks).
+
+**Unchanged answers.** `node bench/differential.mjs origin/main`: **605 of 605 metrics requests
+identical** to `main`'s decoders (batches byte for byte, series ids, counts, refusal reasons):
+`test/fixtures.json` (Remote Write and OTLP, protobufjs and snappyjs), the realistic metrics
+bodies, and 300 random OTLP metrics requests in protobuf and JSON (every AnyValue kind, nested,
+repeated and colliding keys, empty values, NaN, unicode, every temporality, histograms, staleness
+flags; 5,618 points refused for their reasons). `node bench/differential.mjs 530c1cd --seeds
+1,2,3` (the tree before this change): **1,294 of 1,294 identical**, also the realistic traces,
+logs and Loki bodies and `scripts/otel-corpus.mjs`'s 187 requests for three seeds, and 496 copies
+of its protobuf requests with one to three random bytes changed (33 items refused and 118 bodies
+refused whole, with the same reasons and messages before and after).
+
+**Memory**: the table in "Memory per request" (`node bench/memory.mjs`, before with
+`MEM_SRC` at the old sources); `node bench/memory.mjs --check` passes (every hostile case under
+16 MiB, Node and workerd).
+
+**Mutants** (`node scripts/mutants.mjs <subset>` on a copy of `contracts/`, `shard/` and `edge/`
+outside the checkout, after the copy's suite passed SUITE_COPY; each against the whole suite).
+`--check`: all 105 patterns apply. The four older patterns this change moved were re-anchored with
+the same intent (histograms silently dropped; a refused resource counted once; span attributes
+after the third dropped; resource and scope attributes dropped from log metadata).
+
+MUTANT_TABLE
+
+
 ### Decode throughput
 
 `npm run bench`, Node 22 on a shared and noisy development machine; medians of 15 runs,

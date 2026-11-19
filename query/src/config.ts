@@ -114,6 +114,20 @@ export interface TenantLimits extends QueryLimits {
    * of one stream of the same files, at 15 MiB.
    */
   maxLogRows: number
+  /**
+   * Traces and logs: bytes of decoded rows (and of the answer) one engine call may hold, counted
+   * by the engine as it decodes and refused past it (422, `max_decoded_bytes`). This, not the
+   * row caps, is what bounds the isolate's memory: a span's resource or a log line can be
+   * hundreds of KiB and still cost almost nothing as stored (review M-2; README, "Memory").
+   */
+  maxDecodedBytes: number
+  /**
+   * Traces: how far before and after a search's (or a whole-trace metrics query's, or a trace
+   * by ID's hint's) window a found trace's spans are read (D62). A trace whose spans all start
+   * within the margin is answered whole; spans further out are not part of the answer, with
+   * pruning on or off. It costs one `trace_index` read over the window plus twice the margin.
+   */
+  traceMarginMs: number
   /** TraceQL metrics: series in the answer, and points per series (the engine's `Limits`). */
   maxTraceSeries: number
   maxTracePoints: number
@@ -160,6 +174,8 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxMetadataSeries: 200_000,
   maxSpans: 40_000,
   maxLogRows: 60_000,
+  maxDecodedBytes: 40 << 20,
+  traceMarginMs: 2 * 3_600_000,
   maxTraceSeries: 10_000,
   maxTracePoints: 11_000,
   maxTailReadParts: 16,
