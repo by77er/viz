@@ -407,6 +407,27 @@ describe('starting an incarnation (review R-3: never across R2 inside blockConcu
   })
 })
 
+describe('incarnation numbers are never reused (spec F11; protocol model IMPL_PLANNED_fixed, V_IncarnationNotReused)', () => {
+  it('the model\'s trace: a new tenant\'s first unit is admitted and registers its stream, the ledger loses its storage before any drain, and the rebuild takes a NEW number', async () => {
+    // append(b0) → seal → list → read → PUT are the shard and flush; from the ledger's side the trace is:
+    const { tenant, l } = open()
+    const r = await l.addUnit(pair(1, 1)) // admitted, registers the stream (versions 1 and 2), not drained
+    expect(r).toMatchObject({ status: 'ok', version: 2 })
+    const before = await everything(l)
+    expect(await l.outboxDepth()).toBe(2)
+    // What makes the next step safe: the incarnation's base was in R2 before it committed anything.
+    expect((await readSegments(tenant)).map((x) => [x.ledgerIncarnation, x.first, x.last])).toEqual([[before.ledgerIncarnation, 0, 0]])
+    await loseStorage(l) // LEDGER STORAGE LOSS → rebuild from R2
+    const after = await everything(l)
+    expect(after.ledgerIncarnation).toBeGreaterThan(before.ledgerIncarnation)
+    expect(after.watermarks).toEqual([]) // the unlogged registration and unit are gone, as the contract says
+    // The shard still holds 1..1 and re-sends: admitted again, under a pair never used before.
+    const again = await l.addUnit(pair(1, 1))
+    expect(again).toMatchObject({ status: 'ok' })
+    expect(`${after.ledgerIncarnation}/${(again as { version: number }).version}`).not.toBe(`${before.ledgerIncarnation}/${r.status === 'ok' ? r.version : 0}`)
+  })
+})
+
 describe('the drain on its own', () => {
   it('with the default delay, a commit reaches R2 by itself within a second or so, and no alarm is left behind', async () => {
     const { tenant, l } = open()

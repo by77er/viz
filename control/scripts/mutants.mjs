@@ -77,6 +77,20 @@ const mutants = [
   ['versioned: a released migration edited in place (version 1 no longer creates the append-only trigger)', [['src/schema.ts', "CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;\n", '']]],
   ['versioned: the KV key record edge reads changes shape without a format version', [['src/ops-keys.ts', 'const record = { tenant: t.tenant, secretSha256: s.secret_sha256,', 'const record = { v: 1, tenant: t.tenant, secretSha256: s.secret_sha256,']]],
   ['versioned: the list cursor encoding changes without a format version', [['src/util.ts', "return btoa(JSON.stringify(position)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '')", "return btoa(JSON.stringify(position)).replace(/\\+/g, '-').replace(/\\//g, '_')"]]],
+  // ---- scopes for other services, whoami, proposals that create a dashboard, schema version 2 ----
+  ['creation: an agent may apply a proposal that creates a dashboard', [['src/ops-proposals.ts', "  if (!mayApply(t, c)) {\n    throw new Problem(403, 'agents-may-not-apply', 'An agent may not apply a proposal that creates", "  if (false) {\n    throw new Problem(403, 'agents-may-not-apply', 'An agent may not apply a proposal that creates"]]],
+  ['creation: the proposed spec is not validated', [['src/ops-proposals.ts', 'return proposeCreation(t, c, mustValidate(b.spec), message)', 'return proposeCreation(t, c, b.spec as Dashboard, message)']]],
+  ['creation: the stored spec is not validated again when applied', [['src/ops-proposals.ts', 'const spec = mustValidate(JSON.parse(row.spec))', 'const spec = JSON.parse(row.spec) as Dashboard']]],
+  ['creation: a retry stores a second proposal (idempotency removed)', [['src/ops-proposals.ts', 'if (same && isCreation(same)) throw new NoChange(', 'if (false) throw new NoChange(']]],
+  ['creation: an id held by a live dashboard is not checked', [['src/ops-dashboards.ts', "  if (holder === 'live') {", '  if (false) {']]],
+  ['creation: a row an older release rewrote into a change is still read as a creation', [['src/ops-proposals.ts', '=> row.base_number === 0 && row.spec !== null', '=> row.spec !== null']]],
+  ['creation: purging a dashboard deletes an open proposal to create one under its id', [['src/ops-dashboards.ts', " AND NOT (base_number = 0 AND spec IS NOT NULL AND status = 'open')\"", '"']]],
+  ['scopes: control cannot issue the ruler\'s scopes', [['src/routes.ts', ", 'monitors:read', 'monitors:write', 'monitors:ack'] as const", '] as const']]],
+  ['scopes: a monitors scope opens the dashboards API', [['src/routes.ts', "const D_READ: readonly Scope[] = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply']", "const D_READ: readonly Scope[] = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'monitors:read']"]]],
+  ['whoami: mayApply ignores the tenant setting (agents with the scope always may)', [['src/tenant.ts', 'mayApply: mayApply(t, c) } })', "mayApply: c.id.scopes.includes('dashboards:apply') || c.id.scopes.includes('admin') } })"]]],
+  ['versioned: migration 2 declared forward-only (readableFrom 2)', [['src/schema.ts', "      readableFrom: 1,\n      up: (sql) => {\n        if (!columnsOf", "      readableFrom: 2,\n      up: (sql) => {\n        if (!columnsOf"]]],
+  ['versioned: released migration 2 edited in place (the column is not added)', [['src/schema.ts', "if (!columnsOf(sql, 'proposals').has('spec')) sql.exec(V2)", 'void columnsOf']]],
+  ['health: /healthz is not served (or needs a credential)', [['src/index.ts', "      if (new URL(req.url).pathname === '/healthz') return health(req, env)\n", '']]],
 ]
 
 const only = process.argv[2]
