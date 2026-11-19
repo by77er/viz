@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { type Harness, type Key, NOW, controlCall, createDashboard, example, harness, makeKey, mcpClient, newTenant, reset, rest, rpc, snapshot, telemetry, type TestTenant } from './helpers'
 import { CORPUS, IDENT_DASHBOARD, IDENT_METRIC, MARKERS, findMarkers } from './corpus'
-import { monitorView } from './fake/services'
+import { fakeBacktest, fakeOverBudget, monitorView } from './fake/services'
 import { TOOLS } from '../src/registry'
 import { dataRegions } from '../src/untrusted'
 import { dashboardSchema } from '../../dashboard/src/index.ts'
@@ -84,6 +84,17 @@ beforeAll(async () => {
     },
     { view: monitorView({ id: 'mon_e1e1e1e1e1e1e1e1', name: CORPUS[14]!, state: CORPUS[0] as never, expr: CORPUS[20]! }), history: [] },
   ])
+  // Backtests: the corpus in interval labels (names and values), annotations (names and values),
+  // fingerprints, the resolution note and the kind; in an over_budget message; in validation problems.
+  h.ruler.backtests.set(t.tenant, (b) => {
+    if (b.monitor.name === 'evil-budget') return fakeOverBudget(CORPUS.join(' '), { cpu: { modelledMs: 46_200, budgetMs: 20_000 } })
+    if (b.monitor.name === 'evil-invalid') return { status: 422, body: { error: { code: 'invalid', message: CORPUS[0] }, problems: CORPUS.map((c, i) => ({ path: i % 2 ? `monitor.labels.${c}` : c, message: CORPUS[(i + 1) % CORPUS.length]!, fix: CORPUS[(i + 2) % CORPUS.length]! })) } }
+    if (b.monitor.name === 'evil-failed') return { status: 502, body: { error: { code: 'evaluation_failed', message: CORPUS.join(' ') } } }
+    const intervals = CORPUS.map((c, i) => ({ fingerprint: c, labels: { alertname: 'evil', [c]: CORPUS[(i + 3) % CORPUS.length]! }, state: (i % 2 ? 'pending' : 'firing') as 'pending' | 'firing', startMs: (NOW - 7200 + i * 60) * 1000, endMs: (NOW - 7200 + i * 60 + 30) * 1000, open: false, annotations: { summary: c, [CORPUS[(i + 5) % CORPUS.length]!]: CORPUS[(i + 7) % CORPUS.length]!, anomaly: CORPUS[(i + 9) % CORPUS.length]! } }))
+    const body = fakeBacktest(b, intervals, { kind: CORPUS[2] })
+    ;(body.resolution as { note: string }).note = CORPUS.join(' ')
+    return { status: 200, body }
+  })
 })
 
 afterAll(() => {
@@ -170,6 +181,10 @@ const CALLS = (): [string, Record<string, unknown>][] => [
   ['write_dashboard', { spec: { apiVersion: 'viz.dashboard/v1', metadata: { id: 'x', title: CORPUS[1]!.slice(0, 120), intent: CORPUS[13]! }, panels: {}, layout: { kind: 'rows', rows: [] } }, max_tokens: 32000 }],
   ['list_monitors', {}],
   ['get_monitor', { id: 'mon_e0e0e0e0e0e0e0e0', max_tokens: 32000 }],
+  ['backtest_monitor', { monitor: { name: 'evil-ok', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } }, start: 'now-3h', max_tokens: 32000 }],
+  ['backtest_monitor', { monitor: { name: 'evil-ok', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } }, start: 'now-3h', max_tokens: 800 }],
+  ['backtest_monitor', { monitor: { name: 'evil-budget', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } } }],
+  ['backtest_monitor', { monitor: { name: 'evil-invalid', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } }, max_tokens: 32000 }],
   ['get_schema', {}],
   ['annotate', { text: CORPUS[0]! }],
 ]
@@ -216,6 +231,15 @@ describe('the injection corpus through every tool', () => {
     expect(r.status).toBe(200)
     checkText(r.text, 'propose')
     checkStructured(r.structured, 'propose')
+  })
+
+  it('a failed backtest (502): the ruler\'s error, which can quote the query service, is cleaned and fenced', async () => {
+    const r = await rest(h, k.key, 'backtest_monitor', { monitor: { name: 'evil-failed', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } }, max_tokens: 32000 })
+    expect(r.status).toBe(502)
+    expect(r.structured.error.code).toBe('backtest-failed')
+    checkText(r.text, 'backtest_monitor failed')
+    checkStructured(r.structured, 'backtest_monitor failed')
+    expect(findMarkers(r.text).length).toBeGreaterThan(5)
   })
 
   it('resources and prompts', async () => {

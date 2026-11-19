@@ -33,6 +33,9 @@ const V0 = v0 as unknown as Dump & { tenant: string; admin: { id: string }; agen
 const V0_SPEC = JSON.parse(V0.rows.revisions!.find((r) => r.dashboard === 'red' && r.number === 1)!.spec as string)
 const LATEST = TENANT_SCHEMA.migrations.length
 const norm = (sql: string) => sql.replace(/\s+/g, ' ').trim()
+/** Tables a later migration created, empty: what upgraded old storage holds of them (migration 3: OAuth). */
+const ADDED_TABLES = ['oauth_clients', 'oauth_codes', 'oauth_grants', 'oauth_tokens']
+const addedEmpty = (have: Record<string, unknown>): Record<string, never[]> => Object.fromEntries(ADDED_TABLES.filter((t) => !(t in have)).map((t) => [t, []]))
 const withMigration = (m: Omit<Migration, 'version'>): SchemaSpec => ({ ...TENANT_SCHEMA, migrations: [...TENANT_SCHEMA.migrations, { ...m, version: LATEST + 1 }] })
 let n = 0
 const fresh = (label: string) => `${label}-${Date.now().toString(36)}-${n++}`
@@ -81,11 +84,17 @@ describe('versioned storage: opening storage made by other code', () => {
     // Adopted as version 1 (no DDL ran: its statements are IF NOT EXISTS), then migrated on to the latest.
     expect(after.row).toMatchObject({ component: 'control.Tenant', version: LATEST, compat: 1 })
     const kept = withoutVersion(after.dump)
-    // Every row is as it was; migration 2 gave each proposal a NULL spec and changed nothing else.
-    expect(canon(kept.rows)).toEqual(canon({ ...expected.rows, proposals: expected.rows.proposals!.map((r) => ({ ...r, spec: null })) }))
-    // The schema is the old one except for the columns added since, which are those of the latest golden file.
+    // Every row is as it was; migration 2 gave each proposal a NULL spec and changed nothing else;
+    // migration 3 added the OAuth tables, empty.
+    expect(canon(kept.rows)).toEqual(canon({ ...expected.rows, proposals: expected.rows.proposals!.map((r) => ({ ...r, spec: null })), ...addedEmpty(expected.rows) }))
+    // The schema is the old one except for the columns added since, which are those of the latest golden file,
+    // plus the tables and indexes added since, exactly as the latest golden file has them.
     const latest = Object.fromEntries((goldenDir('schema')[`v${LATEST}.json`] as { schema: { name: string; sql: string }[] }).schema.map((s) => [s.name, s.sql]))
-    expect(kept.schema.map((s) => [s.name, norm(s.sql)])).toEqual(V0.schema.map((s) => [s.name, s.name === 'proposals' ? latest.proposals : norm(s.sql)]))
+    const old = new Set(V0.schema.map((s) => s.name))
+    expect(kept.schema.filter((s) => old.has(s.name)).map((s) => [s.name, norm(s.sql)])).toEqual(V0.schema.map((s) => [s.name, s.name === 'proposals' ? latest.proposals : norm(s.sql)]))
+    const added = kept.schema.filter((s) => !old.has(s.name))
+    expect(added.map((s) => s.name).sort()).toEqual(Object.keys(latest).filter((n) => !old.has(n) && n !== 'viz_schema').sort())
+    for (const s of added) expect(norm(s.sql), s.name).toBe(latest[s.name])
     expect(latest.proposals).toBe(norm(V0.schema.find((s) => s.name === 'proposals')!.sql).replace(', PRIMARY KEY (tenant, id))', ', spec TEXT, PRIMARY KEY (tenant, id))'))
 
     // It serves the old data through the real operations.
@@ -132,7 +141,7 @@ describe('versioned storage: opening storage made by other code', () => {
       expect({ version: LATEST, schema: after.schema }).toEqual(goldenDir('schema')[`v${LATEST}.json`])
       const before = withoutVersion(atV).rows
       const added = (r: Record<string, unknown>) => ('spec' in r ? r : { ...r, spec: null })
-      expect(canon(after.dump.rows), `from v${v}: rows`).toEqual(canon({ ...before, proposals: before.proposals!.map(added) }))
+      expect(canon(after.dump.rows), `from v${v}: rows`).toEqual(canon({ ...before, proposals: before.proposals!.map(added), ...addedEmpty(before) }))
 
       // It serves: the old proposal reads as a change to an existing dashboard; a new dashboard can be proposed and applied.
       const adminKeyId = V0.rows.key_secrets!.find((r) => r.key === V0.admin.id)!.key_id as string

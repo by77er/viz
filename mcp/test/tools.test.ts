@@ -394,13 +394,14 @@ describe('the REST surface', () => {
 })
 
 describe('/healthz', () => {
-  it('200 with the key store and the three services bound, 503 naming what is missing, no credential needed', async () => {
+  it('200 with the key store, the three services and control\'s OAuthIntrospection entrypoint bound, 503 naming what is missing, no credential needed', async () => {
     const fetcher = { fetch: async () => new Response('x') }
-    const all = { CONFIG: {} as KVNamespace, QUERY: fetcher, CONTROL: fetcher, RULER: fetcher }
+    const all = { CONFIG: {} as KVNamespace, QUERY: fetcher, CONTROL: fetcher, RULER: fetcher, OAUTH: {} as never }
     const res = await createWorker().fetch!(new Request(`${BASE}/healthz`) as never, all as never, {} as never)
     expect([res.status, await res.text()]).toEqual([200, 'ok\n'])
     const without = health(new Request(`${BASE}/healthz`), { ...all, RULER: undefined, QUERY: undefined })
     expect([without.status, await without.text()]).toEqual([503, 'missing binding: QUERY, RULER\n'])
+    expect(await health(new Request(`${BASE}/healthz`), { ...all, OAUTH: undefined }).text()).toBe('missing binding: OAUTH\n')
     expect(health(new Request(`${BASE}/healthz`, { method: 'POST' }), all).status).toBe(405)
   })
 })

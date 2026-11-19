@@ -10,6 +10,12 @@ declare namespace Cloudflare {
     DEFAULT_POOL?: string
     CONTROL_CAPS?: string
     LIMIT_CEILINGS?: string
+    PUBLIC_URL?: string
+    OAUTH_CLIENT_KEY?: string
+    /** Tests only (vitest.config.ts): control's OAuthIntrospection entrypoint, bound as three callers. */
+    MCP_OAUTH: Service<import('../src/introspection').OAuthIntrospection>
+    RULER_OAUTH: Service<import('../src/introspection').OAuthIntrospection>
+    BARE_OAUTH: Service<import('../src/introspection').OAuthIntrospection>
   }
 }
 

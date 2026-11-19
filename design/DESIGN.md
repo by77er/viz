@@ -75,7 +75,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Ruler` | Durable Object, one per tenant rule shard | Rule ticks (one batch evaluation per group), alert state machine, acknowledgements, backtests, hands transitions to the notifier. Serves the Prometheus `/api/v1/rules` and `/api/v1/alerts` shapes and viz's `/api/v1/monitors` | every rule interval |
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
-| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool, notifications), audit log; publishes what the data path needs to KV; issues service keys to the ruler and gives it the default notification destination over its binding (`contracts/control.ts`, D39). Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object; the ruler asks it when it has no key and at most once a minute while notifying |
+| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool, notifications), audit log; publishes what the data path needs to KV; issues service keys to the ruler and gives it the default notification destination over its binding (`contracts/control.ts`, D39); OAuth grants and tokens (D44), which the agent surface checks through control's `OAuthIntrospection` entrypoint, never through this object's binding. Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object; the ruler asks it when it has no key and at most once a minute while notifying |
 | `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth | per request |
 | `mcp` | Worker | The agent surface: a stateless MCP server and the same tools as JSON under `/api/v1/agent/…`; no Durable Object (§8, D25–D27) | per agent call |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
@@ -450,22 +450,36 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   sends the same bytes under the same `Idempotency-Key`.
 - **As built, until query exports an RPC entrypoint** (D39), a tick sends its group's
   expressions to viz-query's Prometheus HTTP API one at a time (one engine call in flight per
-  `Ruler` object: a service-bound callee shares its caller's six connections), recording rules
-  write through Remote Write, and both authenticate with a service key the tenant's control
-  plane issues (`service:viz-ruler/<shard>`, visible and revocable there). viz-ingest now
-  also exports `RecordedSamples` (`contracts/ingest.ts`, D45): an RPC entrypoint the ruler can
-  bind as `SINK`, authenticated by the binding itself (no key), with the tenant an explicit,
-  validated argument; the ruler's binding is not added yet (`edge/README.md`, "Needed changes").
+  `Ruler` object: a service-bound callee shares its caller's six connections), authenticated
+  with a service key the tenant's control plane issues (`service:viz-ruler/<shard>`, visible
+  and revocable there). Recording rules write through viz-ingest's `RecordedSamples`
+  entrypoint (`contracts/ingest.ts`, D45), which the ruler binds as `SINK`: the binding is the
+  credential (no key), the tenant an explicit, validated argument, and each refusal is handled
+  as the contract says. For one release, a call the entrypoint does not answer by its contract
+  (an ingest release without it, during a rollback or while a deploy propagates) goes through
+  Remote Write with the service key instead (D52); in steady state no write uses the key.
 - **Anomaly detection** is statistics first. An *anomaly rule* is a rule kind
   (`contracts/rules.ts`, version 2): each tick the ruler feeds every series of one PromQL
   expression to that series' detector, through the same batch call as other rules, and the
   flagged series become alerts carrying the detector's sentence and numbers. Detector state
   lives in the ruler's SQLite per (rule, series), written as whole batches per row in the
   transaction that commits the alerts, and is rebuilt from there after eviction; a per-rule
-  series cap and state limits refuse an evaluation rather than drop series. Defaults follow
-  held-out evidence (D33): EWMA, or a static threshold for pages; the robust z-score and the
-  seasonal baseline are opt-in, since with the MAD spread both scored below a static
-  threshold on held-out data; STL, CUSUM and PELT explain changes and do not page. Seasonal
+  series cap and state limits refuse an evaluation rather than drop series. The windows of the
+  robust z-score and the seasonal baseline can be kept as Float64 values in ring blocks on the
+  rule's interval grid (D60), like an SLO's buckets, a tick writing a head row (which lists the
+  blocks, so a missing one is refused, not read as a shorter window) and the block its
+  points fall in: about 18 KB a series at the default window instead of about 50 KB of JSON, 55
+  series a default rule instead of 18. Readers first: the current release reads that form and
+  writes JSON; the release after it is in production writes the blocks. Defaults follow
+  evidence on data they were not chosen on (D33): a rule that does not page uses the robust
+  z-score with a tail-aware spread (the 99th percentile of |x − median| over 1,500 points),
+  which beat EWMA and a static threshold held out on NAB and on a second benchmark of server
+  metrics never used to choose it, where EWMA, the earlier default, fell below the threshold;
+  pages use a static threshold; the seasonal baseline is opt-in, for values wrong for their
+  time of day; with the MAD spread, robust z and the seasonal baseline both scored below a
+  static threshold; STL, CUSUM and PELT explain changes and do not page.
+  Defaults are written out when a rule is saved, so a changed default never changes a stored
+  rule, and a rule saved again keeps the defaults it was stored with. Seasonal
   decomposition, changepoint detection and log-template frequency shifts are scheduled jobs
   (not built). Foundation models in a Container are an opt-in later tier.
 - **SLOs** are a rule kind too (`contracts/rules.ts`, version 4): an objective, a compliance
@@ -505,11 +519,24 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   outliers, threshold state per panel) instead of raw series or screenshots; the digest is
   also the accessible view.
 - **Agent tools.** A stateless MCP endpoint (its own Worker, `mcp/`; D25, D26) with
-  scoped, tenant-bound credentials: API keys today, with OAuth a seam not yet built.
-  Thirteen tools: search telemetry, describe a metric, validate a query (with the query
+  scoped, tenant-bound credentials: API keys, or OAuth 2.1 access tokens (D44) that MCP
+  clients get as the specification describes (protected resource metadata, registration,
+  PKCE S256, resource indicators), from the control plane as authorization server. A person
+  approves each client with a key that holds `admin`; the grant never holds a scope that key
+  lacks, and is backed by an agent key the MCP server acts with downstream, so the client's
+  token never leaves `/mcp`. Control checks the token on every request, so revocation is
+  immediate there; the MCP server asks through a named entrypoint of control that answers only
+  that question and takes the tenant from the token, never through control's `Tenant` objects
+  (review of D44, M-1). A code or token carries a tag made with control's key, so a made-up one
+  is refused in the Worker before any tenant's object is asked, and a request that changes
+  nothing writes nothing (M-2). Until a sign-in exists the consent step is a call to the control
+  API, and only an API key may approve.
+  Fourteen tools: search telemetry, describe a metric, validate a query (with the query
   service's own plan: files, bytes, scan bound, refusal), run a query,
   search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
-  list and get monitors, annotate (refused until an annotation store exists). Results are
+  list and get monitors, backtest a monitor (when it would have fired and resolved, read-only,
+  under the ruler's budgets, refusals passed through with their numbers), annotate (refused
+  until an annotation store exists). Results are
   compact text within a token budget, with tenant text fenced as data, and the same page as
   structured content; each result returns its usage counters, and budgets per identity are
   the caller's to keep (D28). A JSON API (`/api/v1/agent/…`) serves the same tools through
@@ -529,7 +556,15 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
 - **Machines:** opaque prefixed API keys, hashed at rest, scoped, cached at the edge,
   revocable at the shard.
 - **People and agents:** OAuth and OIDC single sign-on; roles plus label-matcher policies
-  applied in the planner.
+  applied in the planner. Built so far: OAuth for agents (MCP clients), with the control
+  plane as authorization server and grants that a person with an admin key approves (D44);
+  sign-in for people, roles and policies are not built. Until sign-in exists, the control
+  plane accepts only API-key identities, and a grant whose approver is not a key ends.
+- **Service-to-service:** a Worker that needs one answer from another binds a named entrypoint
+  that answers only that, with the caller in the binding's `props` (D45; the MCP server's token
+  introspection, review of D44). A Durable Object class of another Worker is bound only where
+  `deploy/workers.json` lists it with why (`binds_classes`), because such a binding reaches every
+  method of every object of the class; today the ruler and the gateway still hold control's.
 - **Isolation:** tenant id comes only from the credential; files are tenant-pure; the ledger
   is per tenant. Cross-tenant reads are an invariant with its own fuzz suite.
 - **Quotas:** enforced in the shard, per tenant; rejection reasons are visible. Byte budgets
@@ -594,7 +629,12 @@ have to change. The deploy records each class's schema version in every release 
 on every Worker version, marks a release forward-only when a class's `readableFrom` is above
 what the release before it knew, and refuses a rollback when any version that ran since the
 target wrote storage the target cannot open (D46; `deploy/README.md`). Format versions are not
-in that check yet.
+in that check yet. Secrets the deploy generates (control's OAuth client key) are put on the
+version a release uploads, before anything is promoted, only when that version lacks them, and
+are never replaced except by a deploy told to (D53). A key seen on the serving version, in the
+secret list, or on a version newer than the serving one (left by a rollback) but missing from
+the upload stops the release rather than being made anew; wrangler runs that get a secret on
+stdin write no debug log and redact request bodies whatever the environment says.
 
 ## 12. Launch scope
 

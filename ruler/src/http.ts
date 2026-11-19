@@ -562,7 +562,7 @@ function backtestAnswer(r: Exclude<Awaited<ReturnType<RulerStub['backtest']>>, {
   if (r.status === 'invalid') throw invalid(r.errors)
   if (r.status === 'failed') throw new ApiError(502, 'evaluation_failed', r.error)
   // Refused, whole: the read is over the backtest budget (or its cost is unknown), or the CPU model's projection is over its budget.
-  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, plan: r.plan, budget: r.budget, memory: r.memory ?? null, cpu: r.cpu ?? null })
+  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, exceeded: r.exceeded ?? null, plan: r.plan, budget: r.budget, memory: r.memory ?? null, cpu: r.cpu ?? null })
   const { status: _s, ...result } = r
   return json(200, result)
 }
@@ -583,8 +583,9 @@ async function backtestMonitor(c: Call): Promise<Response> {
 }
 
 /**
- * What each detector is for, its defaults and the evidence behind them (anomaly/README.md, NAB
- * held-out). The same text is in openapi.json and ruler/README.md; this is the copy the code uses.
+ * What each detector is for, its defaults and the evidence behind them (anomaly/README.md: NAB held
+ * out, SMD with every parameter frozen on NAB; design D33). The same text is in openapi.json and
+ * ruler/README.md; this is the copy the code uses.
  */
 async function detectors(_c: Call): Promise<Response> {
   return json(200, {
@@ -592,7 +593,7 @@ async function detectors(_c: Call): Promise<Response> {
     defaultForPage: DEFAULT_PAGE_DETECTOR,
     monitorDefaults: { ...ANOMALY_MONITOR_DEFAULTS, severity: 'ticket' },
     detectors: Object.values(DETECTOR_GUIDE),
-    source: 'Numenta Anomaly Benchmark, held-out protocol: parameters chosen on one half of the files, scored on the other (anomaly/README.md). Not measured on viz\'s own data.',
+    source: 'Numenta Anomaly Benchmark, held-out protocol: parameters chosen on one half of the files, scored on the other; then the Server Machine Dataset (SMD), with every parameter frozen on NAB before it was fetched (anomaly/README.md). Each evidence line says which: held_out, confirmed or not_confirmed on SMD, or post_hoc (chosen or scored after seeing results). Not measured on viz\'s own data.',
   })
 }
 

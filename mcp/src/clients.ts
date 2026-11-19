@@ -7,7 +7,7 @@ import type { PromMatrix, PromScalar, PromString, PromVector } from '../../contr
  *
  * - `QueryClient`: the Prometheus HTTP API served by `query/` (being finished elsewhere).
  * - `ControlClient`: the tenant control plane's HTTP API, `/api/v1/control/…` (`control/`).
- * - `MonitorsClient`: the ruler's `/api/v1/monitors` (being finished elsewhere).
+ * - `MonitorsClient`: the ruler's `/api/v1/monitors`, and its `/api/v1/monitors/backtest` (read-only).
  *
  * In production each is a service binding (`QUERY`, `CONTROL`, `RULER`); in tests the query
  * service and the ruler are deterministic fakes and the control plane is the real one.
@@ -243,9 +243,116 @@ export interface MonitorDetail {
 
 export type MonitorResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string }
 
+/**
+ * The body of the ruler's `POST /api/v1/monitors/backtest` (ruler/openapi.json `BacktestRequest`),
+ * as this surface sends it: always a monitor document, never a rule-file entry or a tenant.
+ */
+export interface BacktestRequest {
+  monitor: Record<string, unknown>
+  fromMs: number
+  toMs: number
+  /** A Prometheus duration, e.g. "1m". */
+  step: string
+}
+
+/** One span of the backtest (ruler/openapi.json `BacktestInterval`). */
+export interface BacktestIntervalView {
+  fingerprint: string
+  labels: Record<string, string>
+  state: 'pending' | 'firing'
+  startMs: number
+  endMs: number
+  open: boolean
+  noData?: boolean
+  annotations?: Record<string, string>
+}
+
+/**
+ * What this surface reads of the ruler's answer: a subset of `BacktestResult` in
+ * ruler/contracts-proposal/rules.v2.ts (README "Contract issues").
+ */
+export interface BacktestView {
+  fromMs: number
+  toMs: number
+  stepMs: number
+  steps: number
+  intervals: BacktestIntervalView[]
+  summary: { firingCount: number; pendingCount: number; firingMs: number; longestFiringMs: number; clearedCount: number; firingAtEnd: boolean; series: number }
+  resolution: { stepMs: number; liveIntervalMs: number; edgeErrorMs: number; note: string }
+  kind?: 'alert' | 'anomaly' | 'slo'
+  warmup?: { reads: { fromMs: number; toMs: number; stepMs: number }[]; points: number } | null
+  cost?: {
+    scanSamples: number
+    bytesToRead: number
+    queries: number
+    budget: { scanSamples: number; bytesToRead: number }
+    memory?: { peakBytes: number; budgetBytes: number; windowSteps: number[]; queries: number }
+    cpu?: { modelledMs: number; budgetMs: number }
+  }
+}
+
+/** The ruler's 422 `over_budget` (ruler/openapi.json `OverBudget`): refused whole, nothing kept. */
+export interface OverBudgetView {
+  /**
+   * Which budget, as the ruler names it (`HistoryBudget` in contracts/rules.ts: scan_samples, bytes,
+   * queries, memory, cpu; at most 32 characters, as sent); null when the ruler says it was not a
+   * budget of its own; absent from a ruler older than the field.
+   */
+  exceeded?: string | null
+  plan: { scanSamples: number; bytesToRead: number; queries: number } | null
+  budget: { scanSamples: number; bytesToRead: number } | null
+  memory: { peakBytes: number; budgetBytes: number } | null
+  cpu: { modelledMs: number; budgetMs: number } | null
+}
+
+export type BacktestAnswer =
+  | { ok: true; data: BacktestView }
+  | {
+      ok: false
+      status: number
+      /** The ruler's `error.code` (`invalid`, `over_budget`, `evaluation_failed`, …), or this client's (`timeout`, `unavailable`, `too_large`). */
+      code: string
+      /** The ruler's `error.message`. It can quote the query service, so it is untrusted text. */
+      message: string
+      /** 422 `invalid`: each problem with its path in the ruler's field names. */
+      problems?: { path: string; message: string; fix: string }[]
+      /** 422 `over_budget`. */
+      overBudget?: OverBudgetView
+      /** From `Retry-After`, when the ruler sent one (503 `schema_too_new`). */
+      retryAfterSeconds?: number
+    }
+
 export interface MonitorsClient {
   list(filter?: 'all' | 'attention' | 'silenced'): Promise<MonitorResult<MonitorList>>
   get(id: string): Promise<MonitorResult<MonitorDetail>>
+  /** One `POST /api/v1/monitors/backtest`, with the caller's credential. Never retried here. */
+  backtest(req: BacktestRequest, opts?: { signal?: AbortSignal }): Promise<BacktestAnswer>
+}
+
+const obj = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
+const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+/** The numbers of an `over_budget` answer, each kept only when it is a finite number. */
+function overBudgetOf(body: Record<string, unknown>): OverBudgetView {
+  const pick = <K extends string>(v: unknown, keys: readonly K[]): Record<K, number> | null => {
+    const o = obj(v)
+    if (!o) return null
+    const out = {} as Record<K, number>
+    for (const k of keys) {
+      const n = num(o[k])
+      if (n === null) return null
+      out[k] = n
+    }
+    return out
+  }
+  const exceeded = typeof body.exceeded === 'string' ? { exceeded: body.exceeded.slice(0, 32) } : body.exceeded === null ? { exceeded: null } : {}
+  return {
+    ...exceeded,
+    plan: pick(body.plan, ['scanSamples', 'bytesToRead', 'queries'] as const),
+    budget: pick(body.budget, ['scanSamples', 'bytesToRead'] as const),
+    memory: pick(body.memory, ['peakBytes', 'budgetBytes'] as const),
+    cpu: pick(body.cpu, ['modelledMs', 'budgetMs'] as const),
+  }
 }
 
 export function httpMonitorsClient(fetcher: Fetcher, authorization: string, base = 'https://ruler.internal'): MonitorsClient {
@@ -264,5 +371,35 @@ export function httpMonitorsClient(fetcher: Fetcher, authorization: string, base
   return {
     list: (filter = 'all') => get(`/api/v1/monitors?filter=${encodeURIComponent(filter)}`),
     get: (id) => get(`/api/v1/monitors/${encodeURIComponent(id)}`),
+    async backtest(req, opts = {}) {
+      let res: Response
+      let body: Record<string, unknown> | null
+      try {
+        res = await fetcher.fetch(
+          new Request(`${base}/api/v1/monitors/backtest`, {
+            method: 'POST',
+            headers: { Authorization: authorization, Accept: 'application/json', 'Content-Type': 'application/json' },
+            body: JSON.stringify(req),
+            signal: opts.signal ?? null,
+          }),
+        )
+        body = obj(await readJson(res))
+      } catch (e) {
+        const u = unreachable('ruler', e)
+        return { ok: false, status: u.status, code: u.errorType, message: u.error }
+      }
+      if (res.ok && body) return { ok: true, data: body as unknown as BacktestView }
+      const err = obj(body?.error)
+      const code = typeof err?.code === 'string' ? err.code : res.ok ? 'bad_answer' : `http_${res.status}`
+      const message = typeof err?.message === 'string' ? err.message : typeof body?.error === 'string' ? body.error : `The ruler answered ${res.status}.`
+      const out: Extract<BacktestAnswer, { ok: false }> = { ok: false, status: res.ok ? 502 : res.status, code, message }
+      if (code === 'over_budget' && body) out.overBudget = overBudgetOf(body)
+      if (Array.isArray(body?.problems)) {
+        out.problems = (body.problems as unknown[]).map(obj).filter((p): p is Record<string, unknown> => p !== null).map((p) => ({ path: String(p.path ?? ''), message: String(p.message ?? ''), fix: String(p.fix ?? '') }))
+      }
+      const retry = Number(res.headers.get('Retry-After') ?? '')
+      if (Number.isFinite(retry) && retry > 0) out.retryAfterSeconds = Math.ceil(retry)
+      return out
+    },
   }
 }

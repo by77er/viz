@@ -16,6 +16,9 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: './wrangler.test.jsonc' },
       miniflare: {
+        // `TEST_ANOMALY_STATE_WRITE=2 npx vitest run …` runs the suite's Ruler objects with the
+        // `store.anomaly-state` gate on (the next release's writer); unset, the release's own gate.
+        bindings: { TEST_ANOMALY_STATE_WRITE: process.env.TEST_ANOMALY_STATE_WRITE ?? '' },
         serviceBindings: {
           CAPTURE: async (request: Request) => {
             const name = new URL(request.url).pathname.slice(1)

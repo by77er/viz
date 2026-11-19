@@ -71,6 +71,43 @@ CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT
  */
 const V2 = 'ALTER TABLE proposals ADD COLUMN spec TEXT'
 
+/**
+ * Version 3: OAuth for agents (contracts/oauth.ts, decision D44). Four new tables; no existing
+ * table, column or row changes.
+ *
+ *   oauth_clients  registrations a person of this tenant has approved (the client id is public)
+ *   oauth_grants   what a person approved; `key` is the agent key the grant acts with downstream
+ *   oauth_codes    authorization codes, by the SHA-256 of the code; the grant key's secret sealed under it
+ *   oauth_tokens   access and refresh tokens, by the SHA-256 of the token; the same secret sealed under each
+ *
+ * Additive (`readableFrom: 1`, COMPATIBILITY.md §2.3): an older release never reads these tables.
+ * Rolled back to one, OAuth stops (it has no token endpoint and no introspection, so the agent
+ * surface refuses every OAuth token); each grant's key stays an ordinary agent key that expires
+ * with the grant and that a person can see, disable or delete; nothing it acts on is misread.
+ */
+const V3 = `
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  tenant TEXT NOT NULL, id TEXT NOT NULL, client_id TEXT NOT NULL, name TEXT NOT NULL, redirect_uris TEXT NOT NULL,
+  registered_at INTEGER NOT NULL, bound_at INTEGER NOT NULL, bound_by TEXT NOT NULL, last_used_at INTEGER NOT NULL,
+  PRIMARY KEY (tenant, id));
+CREATE UNIQUE INDEX IF NOT EXISTS oauth_clients_client_id ON oauth_clients (tenant, client_id);
+CREATE TABLE IF NOT EXISTS oauth_grants (
+  tenant TEXT NOT NULL, id TEXT NOT NULL, client TEXT NOT NULL, scopes TEXT NOT NULL, resource TEXT NOT NULL, key TEXT,
+  created_at INTEGER NOT NULL, created_by TEXT NOT NULL, expires_at INTEGER NOT NULL, last_used_at INTEGER,
+  revoked_at INTEGER, revoked_by TEXT, revoke_reason TEXT,
+  PRIMARY KEY (tenant, id));
+CREATE INDEX IF NOT EXISTS oauth_grants_open ON oauth_grants (tenant, revoked_at, expires_at);
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  tenant TEXT NOT NULL, hash TEXT NOT NULL, grant_id TEXT NOT NULL, challenge TEXT NOT NULL, redirect_uri TEXT NOT NULL,
+  expires_at INTEGER NOT NULL, used_at INTEGER, sealed TEXT NOT NULL,
+  PRIMARY KEY (tenant, hash));
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  tenant TEXT NOT NULL, hash TEXT NOT NULL, kind TEXT NOT NULL, grant_id TEXT NOT NULL, scopes TEXT NOT NULL,
+  issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, rotated_at INTEGER, sealed TEXT NOT NULL,
+  PRIMARY KEY (tenant, hash));
+CREATE INDEX IF NOT EXISTS oauth_tokens_grant ON oauth_tokens (tenant, grant_id, kind);
+`
+
 export const TENANT_SCHEMA: SchemaSpec = {
   component: 'control.Tenant',
   migrations: [
@@ -83,6 +120,7 @@ export const TENANT_SCHEMA: SchemaSpec = {
         if (!columnsOf(sql, 'proposals').has('spec')) sql.exec(V2)
       },
     },
+    { version: 3, name: 'oauth: clients, grants, codes and tokens for agents', readableFrom: 1, up: (sql) => void sql.exec(V3) },
   ],
 }
 
@@ -112,4 +150,14 @@ export const FORMATS = {
   'rpc.notification-target': 1,
   /** `Tenant.serviceKey` result (contracts/control.ts), read by the ruler: `v` 1. */
   'rpc.service-key': 1,
+  /** OAuth codes, access and refresh tokens handed to clients: `<vzc1|vza1|vzr1>.<tenant>.<43 base62>` (contracts/oauth.ts). */
+  'credential.oauth': 1,
+  /** A client id from registration: `vzk1.<base64url JSON registration>.<base64url HMAC-SHA-256>` (contracts/oauth.ts). */
+  'id.oauth-client': 1,
+  /** The authorization request handle a person approves: base64url of `{ v: 1, client_id, redirect_uri, scope, code_challenge, state, resource }`. */
+  'oauth.request': 1,
+  /** The grant key's secret sealed under a credential, as stored: `s1.<base64url(iv ‖ AES-256-GCM ciphertext and tag)>`. */
+  'oauth.sealed': 1,
+  /** `Tenant.oauthToken`, `oauthRevoke`, `introspectAccessToken` results (contracts/oauth.ts): `v` 1. */
+  'rpc.oauth': 1,
 } as const

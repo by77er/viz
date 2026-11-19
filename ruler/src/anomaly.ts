@@ -31,6 +31,8 @@ import {
   type RulerConfig,
   type ValidationError,
 } from '../contracts-proposal/rules.v2'
+import { ANOMALY_BLOCK, emptyStore, planV2, readV2, WINDOWED, type AnomalyWrite, type StoreMeta } from './anomalystore'
+import { ANOMALY_STATE_WRITE } from './schema'
 import type { Series } from './statemachine'
 import { byteLength, fingerprint, formatDuration, type Labels } from './util'
 
@@ -63,12 +65,18 @@ export function anomalyLimits(cfg: Pick<RulerConfig, 'limits'>): AnomalyLimits {
 /** Default `max_series`. */
 export const DEFAULT_MAX_SERIES = 100
 /**
- * Bytes of series state per `anomaly_state` row. A rule's state is written as
+ * Bytes of series state per `anomaly_state` row of version 1. A rule's state is written as
  * ceil(bytes / ANOMALY_ROW_BYTES) rows per evaluation (whole batches, never a row per series or
- * per sample: AGENTS.md); with the default per-rule limit that is at most 2 rows.
+ * per sample: AGENTS.md); with the default per-rule limit that is at most 2 rows. Version 2 (robust
+ * z and seasonal, `anomalystore.ts`) writes the head and the current block instead.
  */
 export const ANOMALY_ROW_BYTES = 512 * 1024
-/** The stored row format (`anomaly_state.body`), pinned by `test/golden/formats/store.anomaly-state.v1.json`. */
+/**
+ * The row format version 1 (`anomaly_state.body`, `{"v":1,"series":[…]}`), pinned by
+ * `test/golden/formats/store.anomaly-state.v1.json`: what this release writes for every detector
+ * but robust z and seasonal, and for those too while the gate `ANOMALY_STATE_WRITE` is 1. Version 2
+ * is `anomalystore.ts`; this release reads both.
+ */
 export const ANOMALY_STATE_VERSION = 1
 
 // ───────────────────────────── the guide: what each detector is for, and the evidence ─────────────────────────────
@@ -76,16 +84,63 @@ export const ANOMALY_STATE_VERSION = 1
 const EWMA_HELD_OUT = { halfLifePoints: 100, k: 8 }
 
 /**
- * Sources: `anomaly/README.md` "Benchmark: Numenta Anomaly Benchmark", held-out protocol
- * (parameters and threshold chosen on one half of NAB's files, scored on the other, alarm
- * onsets), standard / low-FP / low-FN profiles. Nothing here was measured on viz's own data.
+ * Robust z with the quantile spread at the largest window whose stored state fits the per-series
+ * limit (64 KiB) for any values as JSON (version 1 of `store.anomaly-state`, what this release
+ * writes): 1,500 points, measured at 60.9 KB with the longest number encoding (39.7 bytes a point;
+ * the save-time estimate, 36, would allow 1,781, where such values reach 72 KB and are refused at
+ * run time). As Float64 ring blocks (version 2, design D60, written once the gate is turned on in a
+ * later release) the same window keeps about 18.8 KB a series whatever the values, and up to about
+ * 5,600 points fit.
+ * k 2 and the 99th percentile are the configuration frozen on NAB (anomaly/bench/smd-frozen.json);
+ * only the window differs from it (design D33; ruler/README.md part 8).
+ */
+export const ROBUST_Z_DEFAULTS = { windowPoints: 1500, k: 2, spread: 'quantile', spreadQuantile: 0.99 } as const
+/** The configuration frozen on NAB before SMD was fetched and confirmed there: about 145 KB a series as JSON, over the per-series limit; about 47 KB as ring blocks (version 2, once its writer is on), within it. */
+export const ROBUST_Z_CONFIRMED = { windowPoints: 4000, k: 2, spread: 'quantile', spreadQuantile: 0.99 } as const
+/** Seasonal with the quantile spread: the configuration frozen on NAB and confirmed on SMD. */
+export const SEASONAL_DEFAULTS = { seasons: 1, k: 2, adapt: 'robust', spread: 'quantile', spreadQuantile: 0.99 } as const
+
+const SMD = 'SMD (28 servers, never used to choose anything)'
+
+/**
+ * Sources: `anomaly/README.md` ("Benchmark: Numenta Anomaly Benchmark", held-out protocol:
+ * parameters and threshold chosen on one half of NAB's files, scored on the other, alarm onsets;
+ * "Second benchmark: SMD", every parameter frozen on NAB before SMD was fetched) and, for the
+ * window of 1,500 points, `ruler/tools/anomaly-default/` (README part 8). Scores are NAB's
+ * normalised score, standard / low-FP / low-FN profiles. Nothing here was measured on viz's own
+ * data. These numbers are copied by hand; a change there must be made here.
  */
 export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
+  robust_z: {
+    name: 'robust_z',
+    inRules: true,
+    goodFor: 'The default for rules that do not page (design D33). A value far from the trailing median, in multiples of the 99th percentile of |value − median| over the window: routine spikes set the scale, so they do not alarm. On data never used to choose it (SMD, server metrics) it scored first of twelve, above EWMA and the static threshold.',
+    notFor: 'Paging where false alarms cost most: on SMD its lead over a static threshold in the low-false-positive profile is not significant, and it raised about 12 unmatched alarms per machine-day against the threshold\'s 1.5. Values wrong only for the time of day (seasonal). With spread "mad": heavy-tailed series, where routine spikes score 20+ robust σ.',
+    pageAllowed: true,
+    defaultSeverity: 'ticket',
+    defaults: { ...ROBUST_Z_DEFAULTS },
+    required: [],
+    evidence: {
+      kind: 'held_out',
+      defaultsValidated: true,
+      nab: { standard: 42.6, lowFp: 29.7, lowFn: 55.4 },
+      note: 'Window 1,500 is the largest whose state fits this ruler\'s 64 KiB per series for any values (the window was set by that limit, not by the data); k 2 and the 99th percentile are as frozen on NAB. Held out on NAB 42.6; on SMD 42.5, post hoc (only the 4,000-point window was frozen before SMD was seen; it scored 42.8 there and is refused here for its state, about 145 KB a series). A rule keeps at most 18 series by default (about 55 KB of state each, 1 MiB a rule), and its warm-up is modelled at about 0.35 ms of CPU a point (0.53 s a series). The next release stores the window as Float64 ring blocks (about 18.8 KB a series: 55 series a rule, and the 4,000-point window fits). With spread "mad" the library\'s defaults apply (window 288, k 3.5), as before 2026-11-19; the MAD scored below a static threshold on both benchmarks.',
+      lines: [
+        { kind: 'held_out', data: 'NAB', config: 'quantile spread, window 1,500 (this default), k chosen on each half from 1, 1.5, 2, 3', score: { standard: 42.6, lowFp: 29.7, lowFn: 55.4 }, text: 'Above EWMA (30.1) and the static threshold (21.8) in every profile. The halves chose k 1.5 and 2 (standard), 2 and 2 (low FP); the default is 2, the frozen k. Window recall 66%, event precision 31%.' },
+        { kind: 'post_hoc', data: 'SMD', config: 'quantile spread, window 1,500, k 2 (this default)', score: { standard: 42.5, lowFp: 21.2, lowFn: 50.8 }, text: 'Scored after the frozen results were seen. Over EWMA +32.0 [20.6, 48.1], over the static threshold +26.0 [14.6, 35.1] (standard, 95% machine bootstrap); event F1 0.382 (EWMA 0.206, threshold 0.328); 12.2 unmatched alarm onsets per machine-day.' },
+        { kind: 'confirmed', data: 'SMD', config: 'quantile spread, window 4,000, k 2 (frozen on NAB)', score: { standard: 42.8, lowFp: 23.0, lowFn: 44.0 }, text: 'The pre-registered configuration: generalised by the rule written in advance (over EWMA +32.4 [20.7, 48.7], event F1 0.441). Nameable as params { windowPoints: 4000 }, but its state, about 145 KB a series, is over this ruler\'s per-series limit, so the save is refused unless that limit is raised; then at most 7 series a rule, and modelled at 0.92 ms of CPU a point (3.7 s to warm one series, over the 5 s warm-up budget at 2). As Float64 ring blocks (the next release) about 47 KB, within the limit, 22 series a rule.' },
+        { kind: 'post_hoc', data: 'NAB', config: 'quantile spread, window and k chosen on each half (window 4,000)', score: { standard: 44.8, lowFp: 33.7, lowFn: 52.3 }, text: 'The quantile spread itself was chosen after seeing the MAD results below; SMD was fetched only after it was frozen.' },
+        { kind: 'held_out', data: 'NAB', config: 'quantile spread, window 1,000, k chosen on each half', score: { standard: 39.4, lowFp: 25.6, lowFn: 52.1 }, text: 'A smaller window: 28 series a rule by default (78 as ring blocks, the next release). On SMD (k 2, post hoc) 37.6 / 9.9 / 48.0: below the static threshold (15.5) in the low-false-positive profile.' },
+        { kind: 'held_out', data: 'NAB', config: 'MAD spread (spread "mad"), window 1,000, k 10 chosen on each half', score: { standard: -105.9, lowFp: -282.4, lowFn: -45.6 }, text: 'Below a static threshold: on heavy-tailed series the MAD describes only the bulk.' },
+        { kind: 'confirmed', data: 'SMD', config: 'MAD spread, frozen', score: { standard: -318.2, lowFp: -698.7, lowFn: -190.4 }, text: 'The hypothesis written in advance (the MAD below the static threshold) held; below even a random detector (−68.0).' },
+      ],
+    },
+  },
   ewma: {
     name: 'ewma',
     inRules: true,
-    goodFor: 'The default. A value far from its recent level, on noisy and spiky series: a Gaussian spread is widened by routine spikes, so they do not alarm.',
-    notFor: 'Paging where false alarms are expensive (a static threshold did better there), and values that are wrong only for the time of day (use seasonal).',
+    goodFor: 'A value far from its recent level on noisy, spiky series (a Gaussian spread is widened by routine spikes). It was the default until 2026-11-19, and rules saved then without a detector keep it.',
+    notFor: 'A default, and paging: on data never used to choose it (SMD, server metrics) it scored below a static threshold in every profile, with about 30 unmatched alarms per machine-day. Values wrong only for the time of day (seasonal).',
     pageAllowed: true,
     defaultSeverity: 'ticket',
     defaults: { ...EWMA_HELD_OUT },
@@ -94,14 +149,18 @@ export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
       kind: 'held_out',
       defaultsValidated: true,
       nab: { standard: 30.1, lowFp: 3.9, lowFn: 40.8 },
-      note: 'halfLifePoints 100 and k 8 were chosen on each half of NAB and scored on the other: 30.1 against the static threshold\'s 21.8 (standard profile), recall 59% against 41%, but event precision 22% (most alarms are not at a labelled anomaly). Lower than the threshold in the low-false-positive profile (3.9 vs 5.5) and on NAB\'s artificial anomalies. Validated on NAB only, not on viz\'s own data. The library\'s own defaults (halfLifePoints 30, k 4) scored 0.0 under NAB\'s protocol and are not used.',
+      note: 'halfLifePoints 100 and k 8 were chosen on each half of NAB and scored on the other: 30.1 against the static threshold\'s 21.8. Frozen with them and scored on SMD it fell to 10.4, below the threshold\'s 16.4 in every profile (not confirmed). The library\'s own defaults (halfLifePoints 30, k 4) scored 0.0 under NAB\'s protocol and are not used.',
+      lines: [
+        { kind: 'held_out', data: 'NAB', config: 'half-life 100, k 8 (chosen on both halves)', score: { standard: 30.1, lowFp: 3.9, lowFn: 40.8 }, text: 'Above the static threshold (21.8) in the standard profile, below it in the low-false-positive profile (5.5). Window recall 59%, event precision 22%.' },
+        { kind: 'not_confirmed', data: 'SMD', config: 'half-life 100, k 8 (frozen on NAB)', score: { standard: 10.4, lowFp: -38.4, lowFn: 8.3 }, text: 'The hypothesis written in advance (EWMA above the static threshold) did not hold: below it in every profile (standard −6.0 [−30.9, 10.5], low FP −53.9 [−100.8, −21.9]); event F1 0.206 against 0.328.' },
+      ],
     },
   },
   threshold: {
     name: 'threshold',
     inRules: true,
-    goodFor: 'Paging on a known limit. It is the baseline the other detectors were measured against, and it beat EWMA when false alarms cost most (NAB low-FP profile 5.5 vs 3.9). Hysteresis: fires past `above`, recovers below `recoverAbove`.',
-    notFor: 'Limits nobody can state, and drifting baselines.',
+    goodFor: 'Paging on a known limit, and the default for pages. It is the baseline the others were measured against, and it held up best where false alarms cost most, on both benchmarks. Hysteresis: fires past `above`, recovers below `recoverAbove`.',
+    notFor: 'Limits nobody can state, and drifting baselines; it misses more (event recall 26% on SMD against 62% for robust z).',
     pageAllowed: true,
     defaultSeverity: 'ticket',
     defaults: {},
@@ -110,73 +169,94 @@ export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
       kind: 'held_out',
       defaultsValidated: false,
       nab: { standard: 21.8, lowFp: 5.5, lowFn: 32.7 },
-      note: 'On NAB the level was set from each file\'s first 15% (min/max ± a margin chosen on the other half). Here the author gives the level, so there is no default to validate.',
-    },
-  },
-  robust_z: {
-    name: 'robust_z',
-    inRules: true,
-    goodFor: 'Series whose normal spread is narrow and stable; a sentence in robust standard deviations from the trailing median.',
-    notFor: 'Heavy-tailed or spiky series: there the median absolute deviation describes only the bulk and routine spikes score 20+ robust σ.',
-    pageAllowed: true,
-    defaultSeverity: 'ticket',
-    defaults: {},
-    required: [],
-    evidence: {
-      kind: 'held_out',
-      defaultsValidated: false,
-      nab: { standard: -105.9, lowFp: -282.4, lowFn: -45.6 },
-      note: 'With the MAD spread (the library default, used here) it scored below a static threshold on held-out NAB. A 99th-percentile spread (params.spread "quantile") scored 44.8, but that change was made after seeing these results and is unconfirmed on data it has not seen; it is not a default.',
+      note: 'On both benchmarks the level was set from each series\' history (min/max ± a margin chosen on NAB). Here the author gives the level, so there is no default to validate.',
+      lines: [
+        { kind: 'held_out', data: 'NAB', config: 'level from the first 15% of each file, margin chosen on each half', score: { standard: 21.8, lowFp: 5.5, lowFn: 32.7 }, text: 'Beat EWMA in the low-false-positive profile (5.5 against 3.9).' },
+        { kind: 'confirmed', data: 'SMD', config: 'level from the training half, margin frozen on NAB', score: { standard: 16.4, lowFp: 15.5, lowFn: 19.6 }, text: 'The hypothesis written in advance (the threshold above EWMA in the low-false-positive profile) held. 1.5 unmatched alarm onsets per machine-day (0.5 with the low-FP margin, at 76% precision).' },
+      ],
     },
   },
   seasonal: {
     name: 'seasonal',
     inRules: true,
-    goodFor: 'Values wrong for the time of day or week (4 of 4 phase-wrong artificial anomalies caught against 1 of 4 without it; nyc_taxi). Needs periodMs and several seasons of history.',
-    notFor: 'Paging on NAB-like series in general, and series without a season. A new rule is warmed from `seasons` periods of history when that read fits the warm-up budget; otherwise it warms up live for that long.',
+    goodFor: 'Values wrong for the time of day or week (4 of 4 phase-wrong artificial anomalies caught on NAB against 1 of 4 without it; nyc_taxi). Needs periodMs and a season of history.',
+    notFor: 'Series without a season, and paging. Not better than robust z in aggregate on either benchmark. A daily season at a 1-minute interval keeps about 59 KB of state a series (estimated), near the 64 KiB limit: values that print long reach about 68 KB and are refused at run time; use 5-minute rollups (as ring blocks, the next release: about 34 KB whatever the values).',
     pageAllowed: true,
     defaultSeverity: 'ticket',
-    defaults: {},
+    defaults: { ...SEASONAL_DEFAULTS },
     required: ['periodMs'],
     evidence: {
-      kind: 'held_out',
-      defaultsValidated: false,
-      nab: { standard: -76.4, lowFp: -223.3, lowFn: -26.2 },
-      note: 'With the MAD spread it scored below a static threshold on held-out NAB. With params.spread "quantile" 41.4, post hoc and unconfirmed; not a default.',
+      kind: 'confirmed',
+      defaultsValidated: true,
+      nab: { standard: 41.4, lowFp: 18.8, lowFn: 48.1 },
+      note: 'With spread "quantile", 1 season, k 2: chosen on each half of NAB (the spread itself post hoc), frozen, then 35.5 on SMD, second of twelve (confirmed). On both benchmarks series without a detected period were scored with robust z instead, which a rule cannot do: it needs periodMs. With spread "mad" the library\'s defaults apply (4 seasons, k 4), as before 2026-11-19; the MAD scored below a static threshold on both benchmarks.',
+      lines: [
+        { kind: 'post_hoc', data: 'NAB', config: 'quantile spread, 1 season, k 2, adapt robust (chosen on each half)', score: { standard: 41.4, lowFp: 18.8, lowFn: 48.1 }, text: 'Held out, but the spread was chosen after seeing the MAD results. On the 22 files with a detected season 45.9, against 47.3 for robust z with the quantile spread.' },
+        { kind: 'confirmed', data: 'SMD', config: 'quantile spread, 1 season, k 2, adapt robust (frozen on NAB)', score: { standard: 35.5, lowFp: 21.0, lowFn: 48.6 }, text: 'Generalised by the rule written in advance: over EWMA +25.1 [15.9, 37.6], over the static threshold +19.1 [4.0, 29.9]; event F1 0.330. 478 of 889 series had a daily or weekly season.' },
+        { kind: 'held_out', data: 'NAB', config: 'MAD spread, 1 season, k 9, adapt robust (chosen on each half)', score: { standard: -76.4, lowFp: -223.3, lowFn: -26.2 }, text: 'Below a static threshold in aggregate.' },
+        { kind: 'confirmed', data: 'SMD', config: 'MAD spread, frozen', score: { standard: -382.8, lowFp: -842.2, lowFn: -228.6 }, text: 'The hypothesis written in advance (the MAD below the static threshold) held.' },
+      ],
     },
   },
   cusum: {
     name: 'cusum',
     inRules: true,
     goodFor: 'Explaining a level shift: "mean shifted from A to B at T". Use it for tickets and annotations.',
-    notFor: 'Paging: 1,704 alarm events on held-out NAB and a false alarm every 195 points on pure noise. Severity page is refused.',
+    notFor: 'Paging: 1,704 alarm events on held-out NAB, a false alarm every 195 points on pure noise, about 125 unmatched alarms per machine-day on SMD. Severity page is refused.',
     pageAllowed: false,
     defaultSeverity: 'info',
     defaults: {},
     required: [],
-    evidence: { kind: 'held_out', defaultsValidated: false, nab: { standard: 15.1, lowFp: -51.2, lowFn: 38.8 }, note: 'Below the static threshold in the standard and low-FP profiles; the library calls it an explanation, not a pager.' },
+    evidence: {
+      kind: 'held_out',
+      defaultsValidated: false,
+      nab: { standard: 15.1, lowFp: -51.2, lowFn: 38.8 },
+      note: 'Below the static threshold on held-out NAB (standard and low-FP profiles) and on SMD in every profile; the library calls it an explanation, not a pager.',
+      lines: [
+        { kind: 'held_out', data: 'NAB', config: 'k 1, h 20 (chosen on each half)', score: { standard: 15.1, lowFp: -51.2, lowFn: 38.8 }, text: 'Recall 86%, event precision 15%.' },
+        { kind: 'confirmed', data: 'SMD', config: 'k 1, h 20 (frozen)', score: { standard: -147.6, lowFp: -374.2, lowFn: -71.1 }, text: 'The hypothesis written in advance (CUSUM below the static threshold) held.' },
+      ],
+    },
   },
   stl: {
     name: 'stl',
     inRules: false,
     goodFor: 'A scheduled seasonal decomposition, and explanations from it.',
-    notFor: 'Alarms: its residuals scored -352.2 on held-out NAB. Not available as a rule detector.',
+    notFor: 'Alarms: its residuals scored -352.2 on held-out NAB and -1,065.0 on SMD. Not available as a rule detector.',
     pageAllowed: false,
     defaultSeverity: null,
     defaults: {},
     required: [],
-    evidence: { kind: 'held_out', defaultsValidated: false, nab: { standard: -352.2, lowFp: -795.4, lowFn: -203.5 }, note: 'An explanation, not a pager. Needs a scheduled refit job, which is not built.' },
+    evidence: {
+      kind: 'held_out',
+      defaultsValidated: false,
+      nab: { standard: -352.2, lowFp: -795.4, lowFn: -203.5 },
+      note: 'An explanation, not a pager. Needs a scheduled refit job, which is not built.',
+      lines: [
+        { kind: 'held_out', data: 'NAB', config: 'refit every period on 4 periods, k 9', score: { standard: -352.2, lowFp: -795.4, lowFn: -203.5 }, text: 'Below a static threshold.' },
+        { kind: 'confirmed', data: 'SMD', config: 'the same, frozen', score: { standard: -1065.0, lowFp: -2207.2, lowFn: -683.4 }, text: 'The hypothesis written in advance (STL below the static threshold) held.' },
+      ],
+    },
   },
   pelt: {
     name: 'pelt',
     inRules: false,
     goodFor: 'Annotating where a series changed, offline (exact, 3.3 ms for a week at 5 min).',
-    notFor: 'Online alarms: -123.5 on held-out NAB. Not available as a rule detector.',
+    notFor: 'Online alarms: -123.5 on held-out NAB and -627.4 on SMD. Not available as a rule detector.',
     pageAllowed: false,
     defaultSeverity: null,
     defaults: {},
     required: [],
-    evidence: { kind: 'held_out', defaultsValidated: false, nab: { standard: -123.5, lowFp: -321.3, lowFn: -55.9 }, note: 'An explanation, not a pager.' },
+    evidence: {
+      kind: 'held_out',
+      defaultsValidated: false,
+      nab: { standard: -123.5, lowFp: -321.3, lowFn: -55.9 },
+      note: 'An explanation, not a pager.',
+      lines: [
+        { kind: 'held_out', data: 'NAB', config: 'rolling, minShift 8σ', score: { standard: -123.5, lowFp: -321.3, lowFn: -55.9 }, text: 'Below a static threshold.' },
+        { kind: 'confirmed', data: 'SMD', config: 'the same, frozen', score: { standard: -627.4, lowFp: -1338.5, lowFn: -389.3 }, text: 'The hypothesis written in advance (PELT below the static threshold) held.' },
+      ],
+    },
   },
   burn_rate: {
     name: 'burn_rate',
@@ -187,18 +267,41 @@ export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
     defaultSeverity: null,
     defaults: {},
     required: [],
-    evidence: { kind: 'not_scorable', defaultsValidated: false, nab: null, note: 'Checked against every table of the SRE Workbook chapter, not on NAB (no SLO data).' },
+    evidence: {
+      kind: 'not_scorable',
+      defaultsValidated: false,
+      nab: null,
+      note: 'Checked against every table of the SRE Workbook chapter, not on NAB or SMD (no SLO data).',
+      lines: [{ kind: 'not_scorable', data: 'SRE Workbook', config: 'the workbook\'s four alerts', score: null, text: 'Reproduces every table of the chapter.' }],
+    },
   },
 }
 
-/** The detector the monitors API and rule files use when none is named (design D33). */
-export const DEFAULT_DETECTOR: AnomalyDetector = 'ewma'
 /**
- * With `severity: page` and no detector, the default is the static threshold: on held-out NAB it
- * beat EWMA when false alarms cost most. It needs a level, so such a rule must give one.
+ * The detector the monitors API and rule files use when none is named and the rule does not page
+ * (design D33, which replaces the earlier D33's EWMA): robust z with the quantile spread.
+ */
+export const DEFAULT_DETECTOR: AnomalyDetector = 'robust_z'
+/**
+ * With `severity: page` and no detector, the default is the static threshold: it beat EWMA when
+ * false alarms cost most on both benchmarks, and the quantile spread's lead over it there is not
+ * significant. It needs a level, so such a rule must give one.
  */
 export const DEFAULT_PAGE_DETECTOR: AnomalyDetector = 'threshold'
 export const DEFAULT_SEVERITY: AnomalySeverity = 'ticket'
+/**
+ * What an entry that left a field out was saved as before 2026-11-19 (the earlier D33), where that
+ * differs from today. A rule saved again over a stored one keeps such a stored value
+ * (`parseAnomalySpec`, contracts/rules.ts `AnomalySpecInput`). Fixed: never derived from today's
+ * code, and checked against the stored rules that release wrote (test/fixtures/anomaly/).
+ */
+export const PREVIOUS_DEFAULTS: { detector: AnomalyDetector; params: Record<string, Record<string, AnomalyParamValue>> } = {
+  detector: 'ewma',
+  params: {
+    robust_z: { spread: 'mad', windowPoints: 288, k: 3.5 },
+    seasonal: { spread: 'mad', seasons: 4, k: 4 },
+  },
+}
 const SEVERITIES: AnomalySeverity[] = ['page', 'ticket', 'info']
 
 // ───────────────────────────── parameters ─────────────────────────────
@@ -230,11 +333,35 @@ function libraryDefaults(d: AnomalyDetector): Record<string, AnomalyParamValue> 
   return out
 }
 
-/** Rough stored size of one series' state, for refusing at save what could not be stored. Runtime checks the exact size. */
-export function estimateStateBytes(d: AnomalyDetector, p: Record<string, AnomalyParamValue>, stepMs: number): number {
+/** Base64 characters of `n` Float64 values. */
+const b64Chars = (n: number) => 4 * Math.ceil((8 * n) / 3)
+/** Blocks of `ANOMALY_BLOCK` slots that `slots` consecutive slots can span. */
+const blocksSpanned = (slots: number) => Math.ceil(Math.max(0, slots - 1) / ANOMALY_BLOCK) + 1
+
+/**
+ * Rough stored size of one series' state, for refusing at save what could not be stored. Runtime
+ * checks the exact size. `version`: the `store.anomaly-state` version it will be written in (the
+ * gate, `ANOMALY_STATE_WRITE`); robust z and seasonal are much smaller in version 2. Version 1's
+ * size is also what the CPU and memory models of warm-ups and backtests are calibrated against
+ * (`cpuStateBytes`): the detector's work and heap follow its points, not how they are stored.
+ */
+export function estimateStateBytes(d: AnomalyDetector, p: Record<string, AnomalyParamValue>, stepMs: number, version: 1 | 2 = ANOMALY_STATE_WRITE): number {
   // Labels, the last point and its explanation: the envelope every series carries.
   const envelope = 1200
   const n = (k: string) => (typeof p[k] === 'number' ? (p[k] as number) : 0)
+  if (version === 2 && WINDOWED.has(d)) {
+    // A head entry (the envelope and the detector's scalars) and, per block the window spans, an
+    // entry of `ANOMALY_BLOCK` Float64 values in base64 with its key (`{"k":"<16>","x":"…"}`, and
+    // `"r"` for seasonal's residuals). Independent of the values.
+    if (d === 'robust_z') {
+      const pts = n('windowMs') > 0 ? Math.ceil(n('windowMs') / Math.max(stepMs, 1)) : n('windowPoints')
+      return envelope + 100 + blocksSpanned(pts) * (32 + b64Chars(ANOMALY_BLOCK))
+    }
+    const P = Math.round(n('periodMs') / Math.max(stepMs, 1))
+    const R = Math.max(1, Math.floor(n('seasons'))) * P + 1
+    const Rr = Math.round((n('residualWindowMs') > 0 ? n('residualWindowMs') : Math.max(n('periodMs'), 100 * stepMs)) / Math.max(stepMs, 1)) + 1
+    return envelope + 200 + blocksSpanned(Math.max(R, Rr)) * (39 + 2 * b64Chars(ANOMALY_BLOCK))
+  }
   switch (d) {
     case 'threshold':
       return envelope + 100
@@ -256,6 +383,29 @@ export function estimateStateBytes(d: AnomalyDetector, p: Record<string, Anomaly
       return envelope + 300 + 20 * (R + Rr)
     }
   }
+}
+
+/**
+ * The size the CPU and memory models of warm-ups and backtests price a rule's state at: its version 1
+ * estimate, against which they were calibrated (`history.ts` `CPU`, `MEMORY`). Not the stored size:
+ * robust z and seasonal scan their window at every point however it is stored, and a run holds the
+ * detector's own state in memory, never the stored rows.
+ */
+export function cpuStateBytes(rule: Pick<AnomalyRuleV2, 'anomaly'>, intervalMs: number): number {
+  return estimateStateBytes(rule.anomaly.detector, rule.anomaly.params, intervalMs, 1)
+}
+
+/** The most robust z window points (`windowPoints`) whose estimated state fits `limit` bytes a series, in the version the gate writes. */
+export function maxRobustWindow(limit: number, version: 1 | 2 = ANOMALY_STATE_WRITE): number {
+  let lo = 1
+  let hi = 1_000_000
+  if (estimateStateBytes('robust_z', { windowPoints: lo }, 60_000, version) > limit) return 0
+  while (lo < hi) {
+    const m = Math.ceil((lo + hi) / 2)
+    if (estimateStateBytes('robust_z', { windowPoints: m }, 60_000, version) <= limit) lo = m
+    else hi = m - 1
+  }
+  return lo
 }
 
 const CLASS_ORDER: CostClass[] = ['tail', 'recent', 'rollup']
@@ -282,16 +432,29 @@ export interface ParseContext {
   warn(path: string, message: string, fix: string): void
 }
 
+/** A score from the guide's evidence lines, so that a warning quotes the guide's own numbers (one copy). */
+function evidenceScore(detector: string, data: 'NAB' | 'SMD', config: string, profile: 'standard' | 'lowFp' = 'standard'): number {
+  const line = DETECTOR_GUIDE[detector]?.evidence.lines?.find((l) => l.data === data && l.config.startsWith(config))
+  if (!line?.score) throw new Error(`DETECTOR_GUIDE has no ${data} score for ${detector} "${config}"`)
+  return line.score[profile]
+}
+
 /**
  * The `anomaly` block of a rule-file entry, at `path`. Returns the normalized spec, or null
  * after reporting what is wrong. `labels` are the rule's labels (group labels merged in); the
  * severity label is checked against the block's severity.
+ *
+ * `prior` is the stored rule this entry is saved over (the same group, and the same monitor id, or
+ * the same name and expression: `rules.ts`), if any. A field the entry leaves out keeps the prior's
+ * value when that value was the default of the release that stored it and today's default differs
+ * (`PREVIOUS_DEFAULTS`): saving an unchanged rule again never changes what it does, whatever the
+ * defaults have become since (contracts/rules.ts `AnomalySpecInput`, design D33).
  */
-export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, intervalMs: number, forMs: number, labels: Labels, cfg: RulerConfig): AnomalySpec | null {
+export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, intervalMs: number, forMs: number, labels: Labels, cfg: RulerConfig, prior: Pick<AnomalySpec, 'detector' | 'params'> | null = null): AnomalySpec | null {
   const errors: ValidationError[] = []
   const err = (p: string, message: string, fix: string) => errors.push({ path: p, message, fix })
   if (!isObject(v)) {
-    c.err(path, 'anomaly must be an object', 'Give { "detector": "ewma" } or leave the field out for an ordinary alerting rule.')
+    c.err(path, 'anomaly must be an object', 'Give {} for the default detector, or leave the field out for an ordinary alerting rule.')
     return null
   }
   const FIELDS = ['detector', 'params', 'unit', 'severity', 'max_series', 'given']
@@ -307,10 +470,20 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
   }
 
   let detector: AnomalyDetector
-  if (v.detector === undefined) detector = givenSeverity === 'page' ? DEFAULT_PAGE_DETECTOR : DEFAULT_DETECTOR
-  else if (typeof v.detector !== 'string' || !(ANOMALY_DETECTORS as readonly string[]).includes(v.detector)) {
+  /** Fields left out that keep the stored rule's value (`prior`), for the warning. */
+  const kept: string[] = []
+  if (v.detector === undefined) {
+    detector = givenSeverity === 'page' ? DEFAULT_PAGE_DETECTOR : DEFAULT_DETECTOR
+    // Saved again over a rule stored with the earlier default (EWMA): it stays EWMA, unless the
+    // parameters given are not EWMA's (then the entry describes another detector).
+    const named = isObject(v.params) ? Object.keys(v.params) : []
+    if (prior && givenSeverity !== 'page' && prior.detector !== detector && prior.detector === PREVIOUS_DEFAULTS.detector && named.every((k) => k in libraryDefaults(prior.detector))) {
+      detector = prior.detector
+      kept.push('detector')
+    }
+  } else if (typeof v.detector !== 'string' || !(ANOMALY_DETECTORS as readonly string[]).includes(v.detector)) {
     const guide = typeof v.detector === 'string' ? DETECTOR_GUIDE[v.detector] : undefined
-    err(`${path}.detector`, guide && !guide.inRules ? `"${v.detector}" cannot run in a rule: ${guide.notFor}` : `unknown detector ${JSON.stringify(v.detector)}`, `Use one of ${ANOMALY_DETECTORS.join(', ')}; ewma is the default.`)
+    err(`${path}.detector`, guide && !guide.inRules ? `"${v.detector}" cannot run in a rule: ${guide.notFor}` : `unknown detector ${JSON.stringify(v.detector)}`, `Use one of ${ANOMALY_DETECTORS.join(', ')}; ${DEFAULT_DETECTOR} is the default.`)
     detector = DEFAULT_DETECTOR
   } else detector = v.detector as AnomalyDetector
   const guide = DETECTOR_GUIDE[detector] as DetectorGuide
@@ -374,11 +547,26 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
     else for (const g of v.given as string[]) if (!given.includes(g)) given.push(g)
   }
   given.sort()
+  // The guide's defaults for robust_z and seasonal are the quantile spread's configuration; with
+  // spread "mad" given, the library's own defaults apply, as they did before 2026-11-19.
+  if (given.includes('spread') && params.spread === 'mad') {
+    const lib = libraryDefaults(detector)
+    for (const k of Object.keys(guide.defaults)) if (!given.includes(k) && k in lib) params[k] = lib[k] as AnomalyParamValue
+  }
+  // Saved again over a rule of the same detector: a parameter left out keeps its stored value when
+  // that was the earlier default and today's differs (a rule saved before 2026-11-19 with the MAD).
+  if (prior && prior.detector === detector) {
+    for (const [k, old] of Object.entries(PREVIOUS_DEFAULTS.params[detector] ?? {})) {
+      if (given.includes(k) || prior.params[k] !== old || params[k] === old) continue
+      params[k] = old
+      kept.push(k)
+    }
+  }
 
   // What each detector needs to be meaningful.
   if (detector === 'threshold' && typeof params.above !== 'number' && typeof params.below !== 'number') {
     err(`${path}.params`, 'a threshold needs params.above or params.below', severity === 'page' && v.detector === undefined
-      ? 'With severity "page" and no detector the default is a static threshold, because on held-out NAB it beat EWMA when false alarms cost most (low-FP 5.5 vs 3.9). Give the level (params.above / params.below), or set detector "ewma" and accept more false pages.'
+      ? 'With severity "page" and no detector the default is a static threshold, because it held up best where false alarms cost most (low-FP profile: NAB held out 5.5 vs EWMA 3.9; SMD 15.5 vs EWMA -38.4). Give the level (params.above / params.below), or name another detector and accept more false pages.'
       : 'Give the level the value must not cross, e.g. { "above": 500 }.')
   }
   if (detector === 'seasonal') {
@@ -387,7 +575,7 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
     else if (period < 2 * intervalMs) err(`${path}.params.periodMs`, `a season of ${formatDuration(period)} is less than two evaluations at ${formatDuration(intervalMs)}`, 'Lengthen the season or shorten the group interval.')
   }
   if (severity === 'page' && !guide.pageAllowed) {
-    err(`${path}.severity`, `${detector} may not page: ${guide.notFor}`, 'Use severity "ticket" or "info", or detector "ewma" or "threshold" to page.')
+    err(`${path}.severity`, `${detector} may not page: ${guide.notFor}`, 'Use severity "ticket" or "info", or detector "threshold" (with the level) to page.')
   }
 
   if (errors.length > 0) {
@@ -398,7 +586,19 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
   const history = historyOf(detector, params, intervalMs, cfg)
   const stateBytesPerSeries = estimateStateBytes(detector, params, intervalMs)
   if (stateBytesPerSeries > limits.maxAnomalyStateBytesPerSeries) {
-    c.err(`${path}.params`, `${detector} with these parameters keeps about ${stateBytesPerSeries} bytes of state per series at a ${formatDuration(intervalMs)} interval; the limit is ${limits.maxAnomalyStateBytesPerSeries}`, detector === 'seasonal' ? 'Use a coarser interval (rollups) for long seasons, or fewer seasons.' : 'Use a shorter window.')
+    const confirmed = detector === 'robust_z' && params.spread === 'quantile' && params.windowPoints === ROBUST_Z_CONFIRMED.windowPoints && !(typeof params.windowMs === 'number' && params.windowMs > 0)
+    c.err(
+      `${path}.params`,
+      `${detector} with these parameters keeps about ${stateBytesPerSeries} bytes of state per series at a ${formatDuration(intervalMs)} interval; the limit is ${limits.maxAnomalyStateBytesPerSeries}` +
+        (confirmed ? `. This is the configuration frozen on NAB and confirmed on SMD (${evidenceScore('robust_z', 'SMD', 'quantile spread, window 4,000')}); its window is over this ruler's per-series state limit` : ''),
+      detector === 'seasonal'
+        ? 'Use a coarser interval (rollups) for long seasons, or fewer seasons.'
+        : detector === 'robust_z'
+          ? ANOMALY_STATE_WRITE === 1
+            ? `Use a shorter window: windowPoints ${ROBUST_Z_DEFAULTS.windowPoints}, the default, is the largest whose state fits 65,536 bytes a series for any values (NAB held out ${evidenceScore('robust_z', 'NAB', 'quantile spread, window 1,500')}, SMD ${evidenceScore('robust_z', 'SMD', 'quantile spread, window 1,500')} post hoc). A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries.`
+            : `Use a shorter window: at most ${maxRobustWindow(limits.maxAnomalyStateBytesPerSeries)} points fit ${limits.maxAnomalyStateBytesPerSeries} bytes a series; the default is ${ROBUST_Z_DEFAULTS.windowPoints} (NAB held out ${evidenceScore('robust_z', 'NAB', 'quantile spread, window 1,500')}, SMD ${evidenceScore('robust_z', 'SMD', 'quantile spread, window 1,500')} post hoc). A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries.`
+          : 'Use a shorter window.',
+    )
     return null
   }
   const fits = Math.max(1, Math.floor(limits.maxAnomalyStateBytesPerRule / stateBytesPerSeries))
@@ -412,15 +612,29 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
     return null
   }
 
+  // Kept from the stored rule rather than today's default: said at every such save.
+  if (kept.length > 0) {
+    const what = kept.map((k) => (k === 'detector' ? `detector ${detector}` : `${k} ${JSON.stringify(params[k])}`)).join(', ')
+    const today = kept.includes('detector') ? `${DEFAULT_DETECTOR} with the quantile spread` : kept.map((k) => `${k} ${JSON.stringify(guide.defaults[k] ?? libraryDefaults(detector)[k])}`).join(', ')
+    c.warn(`${path}.${kept.includes('detector') ? 'detector' : 'params'}`, `this rule keeps ${what}, the default when it was saved; a new rule would get ${today} (design D33)`, 'Name them to keep them and silence this warning, or name today\'s values to change the rule (its detector state then starts again).')
+  }
   // Accepted, but against the evidence or likely not what was meant.
-  if (!guide.evidence.defaultsValidated && guide.evidence.nab !== null && guide.evidence.nab.standard < (DETECTOR_GUIDE.threshold as DetectorGuide).evidence.nab!.standard && params.spread !== 'quantile') {
-    c.warn(`${path}.detector`, `${detector} as configured scored below a static threshold on held-out NAB (${guide.evidence.nab.standard} vs 21.8)`, `${guide.evidence.note} Consider ewma, the default.`)
+  const thresholdNab = evidenceScore('threshold', 'NAB', 'level')
+  const thresholdSmd = evidenceScore('threshold', 'SMD', 'level')
+  const defaultNab = evidenceScore('robust_z', 'NAB', 'quantile spread, window 1,500')
+  const defaultSmd = evidenceScore('robust_z', 'SMD', 'quantile spread, window 1,500')
+  if ((detector === 'robust_z' || detector === 'seasonal') && params.spread === 'mad') {
+    c.warn(`${path}.params.spread`, `${detector} with the MAD spread scored below a static threshold on held-out NAB (${evidenceScore(detector, 'NAB', 'MAD spread')} vs ${thresholdNab}) and on SMD (${evidenceScore(detector, 'SMD', 'MAD spread')} vs ${thresholdSmd})`, 'On heavy-tailed series the MAD describes only the bulk, and routine spikes score 20+ robust σ. Leave spread out for the quantile spread.')
   }
-  if ((detector === 'robust_z' || detector === 'seasonal') && params.spread === 'quantile') {
-    c.warn(`${path}.params.spread`, 'the quantile spread is not validated: it was chosen after seeing the NAB results', 'Treat its alerts as provisional until it has been checked on your own data.')
+  if (detector === 'cusum') {
+    c.warn(`${path}.detector`, `cusum scored below a static threshold on held-out NAB (${evidenceScore('cusum', 'NAB', 'k 1')} vs ${thresholdNab}) and on SMD (${evidenceScore('cusum', 'SMD', 'k 1')} vs ${thresholdSmd})`, 'It explains a level shift; use it for tickets and annotations. For alarms, leave the detector out.')
   }
-  if (severity === 'page' && detector === 'ewma') {
-    c.warn(`${path}.severity`, 'on held-out NAB, EWMA was below a static threshold in the low-false-positive profile (3.9 vs 5.5)', 'Page on a static threshold; send EWMA alerts as tickets.')
+  if (detector === 'ewma') {
+    c.warn(`${path}.detector`, `on SMD, data never used to choose it, ewma scored below a static threshold in every profile (${evidenceScore('ewma', 'SMD', 'half-life 100')} vs ${thresholdSmd}; held-out NAB ${evidenceScore('ewma', 'NAB', 'half-life 100')} vs ${thresholdNab})`, `Leave the detector out for robust z with the quantile spread (held-out NAB ${defaultNab}, SMD ${defaultSmd} post hoc); page on a static threshold.`)
+  }
+  if (severity === 'page' && detector !== 'threshold') {
+    const low = detector === 'ewma' ? `EWMA was below a static threshold in the low-false-positive profile on held-out NAB (${evidenceScore('ewma', 'NAB', 'half-life 100', 'lowFp')} vs ${evidenceScore('threshold', 'NAB', 'level', 'lowFp')}) and on SMD (${evidenceScore('ewma', 'SMD', 'half-life 100', 'lowFp')} vs ${evidenceScore('threshold', 'SMD', 'level', 'lowFp')})` : `on SMD, ${detector}'s lead over a static threshold in the low-false-positive profile is not significant, and it raised several times the threshold's unmatched alarms per machine-day`
+    c.warn(`${path}.severity`, low, `Page on a static threshold; send ${detector} alerts as tickets.`)
   }
   if (detector === 'ewma' && typeof params.acceptAfter === 'number' && forMs > params.acceptAfter * intervalMs) {
     c.warn(`${path}.for`, `EWMA accepts a new level after ${params.acceptAfter} anomalous points (${formatDuration(params.acceptAfter * intervalMs)} here), so a level shift may stop being flagged before "for" (${formatDuration(forMs)}) is satisfied`, 'Alarms are onsets: use a short "for" and keep_firing_for to hold the alert.')
@@ -469,6 +683,8 @@ export interface AnomalyRt {
    */
   unreadable: string | null
   rawRows: string[] | null
+  /** What is known of the stored rows (their format, and for version 2 their blocks' sizes): what a tick writes is planned from it. */
+  store: StoreMeta
 }
 
 export function emptyStatus(maxSeries: number): AnomalyRuleStatus {
@@ -476,7 +692,7 @@ export function emptyStatus(maxSeries: number): AnomalyRuleStatus {
 }
 
 export function newAnomalyRt(rule: AnomalyRuleV2): AnomalyRt {
-  return { series: new Map(), json: new Map(), status: emptyStatus(rule.anomaly.maxSeries), pruned: 0, unreadable: null, rawRows: null }
+  return { series: new Map(), json: new Map(), status: emptyStatus(rule.anomaly.maxSeries), pruned: 0, unreadable: null, rawRows: null, store: emptyStore() }
 }
 
 export type AnomalyEval =
@@ -484,7 +700,10 @@ export type AnomalyEval =
       ok: true
       /** The rule's series state after this tick (a new map; `prev` is untouched). */
       next: Map<string, SeriesState>
+      /** Version 1: each series' stored JSON (empty when the rule is written as version 2). */
       json: Map<string, string>
+      /** The rows to write if the tick commits (null for a run over history: `serialize` false). */
+      write: AnomalyWrite | null
       /** Flagged series, for the alert state machine, with the explanation as annotations. */
       flagged: (Series & { annotations: Record<string, string> })[]
       /** Every series the expression returned: what "no data" is decided on. */
@@ -515,13 +734,13 @@ export function detailOf(e: Explanation, score: number, detector: AnomalyDetecto
  * stored form and the size limits at every point; the caller serialises once at the end
  * (`serializeAnomaly`). The detector and everything it decides are the same.
  */
-export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series[], ts: number, intervalMs: number, limits: AnomalyLimits, ruleAnnotations: Record<string, string>, serialize = true): AnomalyEval {
+export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series[], ts: number, intervalMs: number, limits: AnomalyLimits, ruleAnnotations: Record<string, string>, serialize = true, writeVersion: 1 | 2 = ANOMALY_STATE_WRITE): AnomalyEval {
   const spec = rule.anomaly
   const base: AnomalyRuleStatus = { ...emptyStatus(spec.maxSeries), series: series.length, pruned: prev.pruned }
   const refuse = (status: 'series_cap_exceeded' | 'state_limit_exceeded' | 'state_unreadable', message: string): AnomalyEval => ({
     ok: false,
     error: message,
-    status: { ...prev.status, ...base, status, message, stateSeries: prev.series.size, stateBytes: sumBytes(prev.json) },
+    status: { ...prev.status, ...base, status, message, stateSeries: prev.series.size, stateBytes: storedBytes(prev) },
   })
   if (!(ANOMALY_DETECTORS as readonly string[]).includes(spec.detector)) {
     // A stored rule naming a detector this release does not know (a newer release saved it):
@@ -542,6 +761,10 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
   const json = new Map(prev.json)
   const flagged: (Series & { annotations: Record<string, string> })[] = []
   const seen = new Set<string>()
+  // Version 2 for a windowed detector when the gate says so; version 1 JSON otherwise.
+  const v2 = writeVersion === 2 && WINDOWED.has(spec.detector)
+  /** Series whose detector state changed (a new point): what version 2 writes blocks for. */
+  const touched = new Set<string>()
   const counts = { scored: 0, warming: 0, missing: 0, anomalous: 0 }
   let warmingMessage: string | null = null
   let changed = false
@@ -576,7 +799,8 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
         entry = { labels: s.metric, state: r.state, last: { ts, status: p.status === 'warming' ? 'warming' : 'ok', flag: p.status === 'ok' && p.anomalous, value: p.value, score: p.score, explanation: p.anomalous ? (p.explanation ?? null) : null }, seenAt: ts }
       }
       next.set(key, entry)
-      if (serialize) json.set(key, entryJson(key, entry))
+      if (entry.state !== before?.state) touched.add(key)
+      if (serialize && !v2) json.set(key, entryJson(key, entry))
       changed = true
     }
     if (entry.last?.flag) {
@@ -604,15 +828,20 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
     changed = true
   }
   let total = 0
-  for (const [key, j] of serialize ? json : []) {
-    const bytes = byteLength(j)
-    if (bytes > limits.maxAnomalyStateBytesPerSeries) {
-      return refuse('state_limit_exceeded', `state_limit_exceeded: the detector state of one series (${key.slice(0, 120)}) is ${bytes} bytes; the limit is ${limits.maxAnomalyStateBytesPerSeries}. Nothing was scored and no state or alert changed.`)
+  let write: AnomalyWrite | null = null
+  if (serialize) {
+    // Rows in another format than this tick writes (or to renumber) are rewritten at this tick.
+    if (prev.store.version !== null && (prev.store.version !== (v2 ? 2 : 1) || prev.store.rewrite)) changed = true
+    write = (v2 ? planV2(spec.detector, intervalMs, windowMsOf(rule, intervalMs), prev.store, next, touched, false) : null) ?? planV1(fillJson(json, next), prev.store)
+    for (const [key, bytes] of write.perSeries) {
+      if (bytes > limits.maxAnomalyStateBytesPerSeries) {
+        return refuse('state_limit_exceeded', `state_limit_exceeded: the detector state of one series (${key.slice(0, 120)}) is ${bytes} bytes; the limit is ${limits.maxAnomalyStateBytesPerSeries}. Nothing was scored and no state or alert changed.`)
+      }
     }
-    total += bytes
-  }
-  if (total > limits.maxAnomalyStateBytesPerRule) {
-    return refuse('state_limit_exceeded', `state_limit_exceeded: the rule's detector state would be ${total} bytes for ${json.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}. Nothing was scored and no state or alert changed. Lower max_series or aggregate the expression.`)
+    total = write.bytes
+    if (total > limits.maxAnomalyStateBytesPerRule) {
+      return refuse('state_limit_exceeded', `state_limit_exceeded: the rule's detector state would be ${total} bytes for ${next.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}. Nothing was scored and no state or alert changed. Lower max_series or aggregate the expression.`)
+    }
   }
   const status: AnomalyRuleStatus = {
     ...base,
@@ -623,27 +852,77 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
     stateBytes: total,
     pruned: prev.pruned + pruned,
   }
-  return { ok: true, next, json, flagged, present: series, status, changed, pruned }
+  return { ok: true, next, json: write && write.store.version === 2 ? new Map() : json, write, flagged, present: series, status, changed, pruned }
+}
+
+/**
+ * Every row of a rule's state, written whole (a warm-up, a shard move, an import): version 2 for a
+ * windowed detector while the gate is 2, else version 1. `json`: version 1 entries already
+ * serialised, reused.
+ */
+export function fullAnomalyWrite(rule: AnomalyRuleV2, intervalMs: number, series: Map<string, SeriesState>, writeVersion: 1 | 2 = ANOMALY_STATE_WRITE, json: Map<string, string> = new Map()): AnomalyWrite & { json: Map<string, string> } {
+  const v2 = writeVersion === 2 && WINDOWED.has(rule.anomaly.detector) ? planV2(rule.anomaly.detector, intervalMs, windowMsOf(rule, intervalMs), emptyStore(), series, new Set(), true) : null
+  if (v2) return { ...v2, json: new Map() }
+  const filled = fillJson(new Map([...json].filter(([k]) => series.has(k))), series)
+  return { ...planV1(filled, { ...emptyStore(), version: 2 }), json: filled }
 }
 
 /** After a run over history: every series' stored form, within the limits, or why not. */
-export function serializeAnomaly(series: Map<string, SeriesState>, limits: AnomalyLimits): { ok: true; json: Map<string, string>; bytes: number } | { ok: false; error: string } {
-  const json = new Map<string, string>()
-  let total = 0
-  for (const [key, s] of series) {
-    const j = entryJson(key, s)
-    const bytes = byteLength(j)
+export function serializeAnomaly(rule: AnomalyRuleV2, intervalMs: number, series: Map<string, SeriesState>, limits: AnomalyLimits, writeVersion: 1 | 2 = ANOMALY_STATE_WRITE): { ok: true; write: AnomalyWrite; json: Map<string, string>; bytes: number } | { ok: false; error: string } {
+  const write = fullAnomalyWrite(rule, intervalMs, series, writeVersion)
+  for (const [key, bytes] of write.perSeries) {
     if (bytes > limits.maxAnomalyStateBytesPerSeries) return { ok: false, error: `state_limit_exceeded: the detector state of one series (${key.slice(0, 120)}) would be ${bytes} bytes; the limit is ${limits.maxAnomalyStateBytesPerSeries}` }
-    total += bytes
-    json.set(key, j)
   }
-  if (total > limits.maxAnomalyStateBytesPerRule) return { ok: false, error: `state_limit_exceeded: the rule's detector state would be ${total} bytes for ${json.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}` }
-  return { ok: true, json, bytes: total }
+  if (write.bytes > limits.maxAnomalyStateBytesPerRule) return { ok: false, error: `state_limit_exceeded: the rule's detector state would be ${write.bytes} bytes for ${series.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}` }
+  return { ok: true, write, json: write.json, bytes: write.bytes }
 }
 
-function sumBytes(json: Map<string, string>): number {
+/** robust_z's window in ms as the detector computes it for this rule (version 2 drops points it has evicted); null for other detectors. */
+export function windowMsOf(rule: Pick<AnomalyRuleV2, 'anomaly'>, intervalMs: number): number | null {
+  if (rule.anomaly.detector !== 'robust_z') return null
+  const d = DETECTORS.robust_z.defaults as unknown as Record<string, number>
+  const p = rule.anomaly.params
+  const windowMs = typeof p.windowMs === 'number' ? p.windowMs : d.windowMs!
+  const windowPoints = typeof p.windowPoints === 'number' ? p.windowPoints : d.windowPoints!
+  return windowMs > 0 ? windowMs : windowPoints * intervalMs
+}
+
+/** Version 1 entries for every series that has none yet (rows read as version 2, or not serialised). */
+function fillJson(json: Map<string, string>, series: Map<string, SeriesState>): Map<string, string> {
+  for (const [key, s] of series) if (!json.has(key)) json.set(key, entryJson(key, s))
+  return json
+}
+
+/** Version 1 rows of `json`: every row rewritten (and every row of another format deleted first). */
+function planV1(json: Map<string, string>, prev: StoreMeta): AnomalyWrite {
+  const rows = stateRows(json)
+  const perSeries = new Map<string, number>()
+  let bytes = 0
+  for (const [k, j] of json) {
+    const n = byteLength(j)
+    perSeries.set(k, n)
+    bytes += n
+  }
+  return {
+    purge: prev.version === 2 || prev.rewrite,
+    upserts: rows.map((body, chunk) => ({ chunk, body })),
+    deletes: [],
+    deleteFrom: rows.length,
+    store: { ...emptyStore(), version: rows.length > 0 ? 1 : null },
+    bytes,
+    perSeries,
+  }
+}
+
+/** Stored bytes of a rule's state as last committed. */
+function storedBytes(rt: AnomalyRt): number {
+  if (rt.store.version === 2) {
+    let n = 0
+    for (const b of rt.store.rows.values()) n += b
+    return n
+  }
   let n = 0
-  for (const j of json.values()) n += byteLength(j)
+  for (const j of rt.json.values()) n += byteLength(j)
   return n
 }
 
@@ -693,4 +972,37 @@ export function readStateRows(bodies: string[]): { series: Map<string, SeriesSta
     }
   }
   return { series, json }
+}
+
+/**
+ * Rebuild a rule's state from its rows, `{"v":1}` or `{"v":2}` (`chunk` as stored). A row in a
+ * version this code does not read, rows of both versions together, or a version 2 row that is not
+ * what the format says, are refused (COMPATIBILITY.md §3.2): the caller marks the rule
+ * `state_unreadable` and keeps the rows as they are; it never starts the rule cold over them. Rows
+ * of the other format than the next tick writes, or under chunk numbers another release gave them,
+ * are rewritten whole at that tick (`store.rewrite`, or `store.version`).
+ */
+export function readAnomalyRows(rows: { chunk: number; body: string }[]): { series: Map<string, SeriesState>; json: Map<string, string>; store: StoreMeta } | { error: string } {
+  const parsed: { chunk: number; body: Record<string, unknown>; text: string }[] = []
+  const versions = new Set<unknown>()
+  for (const r of rows) {
+    let body: unknown
+    try {
+      body = JSON.parse(r.body)
+    } catch {
+      return { error: 'an anomaly_state row is not JSON' }
+    }
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return { error: 'an anomaly_state row is not a JSON object' }
+    const v = (body as { v?: unknown }).v
+    if (v !== ANOMALY_STATE_VERSION && v !== 2) return { error: `anomaly_state row version ${JSON.stringify(v)} is not 1 or 2` }
+    versions.add(v)
+    parsed.push({ chunk: r.chunk, body: body as Record<string, unknown>, text: r.body })
+  }
+  if (versions.size > 1) return { error: 'anomaly_state holds rows of versions 1 and 2 for one rule' }
+  if (versions.has(2)) {
+    const read = readV2(parsed)
+    return 'error' in read ? read : { ...read, json: new Map() }
+  }
+  const read = readStateRows(rows.map((r) => r.body))
+  return 'error' in read ? read : { ...read, store: { ...emptyStore(), version: rows.length > 0 ? 1 : null } }
 }

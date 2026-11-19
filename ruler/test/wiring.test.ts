@@ -1,10 +1,11 @@
 /**
- * The production wiring (README, "Deployment"): rules evaluated through viz-query's HTTP API,
- * recorded series written through Remote Write, both with the shard's service key from the
- * tenant's control plane; notifications sent to the destination set in control. The callees
- * are fakes behind real service bindings (`FakeQuery`, `FakeIngest` in test/harness.ts) that
- * check the presented key with edge's real `authenticate` and take the tenant from it; the
- * control plane is control's real `Tenant` object.
+ * The production wiring (README, "Deployment"): rules evaluated through viz-query's HTTP API
+ * with the shard's service key from the tenant's control plane; notifications sent to the
+ * destination set in control. The callees are fakes behind real service bindings (`FakeQuery`,
+ * `FakeIngest` in test/harness.ts) that check the presented key with edge's real
+ * `authenticate` and take the tenant from it; the control plane is control's real `Tenant`
+ * object. Recorded samples through viz-ingest's `RecordedSamples` entrypoint are in
+ * `recorded.test.ts`; here, only the Remote Write path of a config without it.
  *
  * Properties held here:
  *   - tenant isolation: every engine and ingest call a tenant's ruler makes carries a key whose
@@ -195,8 +196,9 @@ describe('rule evaluation through the query API, with a service key from control
     expect(saved.status, saved.text).toBe(201)
   })
 
-  it('recording rules write their series through Remote Write with the service key, at the tick time', async () => {
+  it('without a SINK binding (a config from before it), recording rules write their series through Remote Write with the service key, at the tick time', async () => {
     const s = await provisioned('rec')
+    s.w.sinkBinding = null
     s.w.evaluate = () => vec([{ job: 'api' }, 3.5], [{ job: 'web' }, '+Inf'])
     const res = await call(s.monitors.auth, 'PUT', '/api/v1/monitors/groups/rec', { interval: '1m', rules: [{ record: 'job:up:sum', expr: 'sum by (job) (up)' }] })
     expect(res.status, res.text).toBe(200)
@@ -262,6 +264,10 @@ describe('rule evaluation through the query API, with a service key from control
     expect([res.status, await res.text()]).toEqual([200, 'ok\n'])
     const without = health(new Request('https://ruler.internal/healthz'), { ...(env as unknown as Record<string, unknown>), TENANT: undefined, QUERY: undefined } as never)
     expect([without.status, await without.text()]).toEqual([503, 'missing binding: TENANT, QUERY\n'])
+    // Recording rules need a sink: the entrypoint, or Remote Write in a config from before it.
+    const noSink = health(new Request('https://ruler.internal/healthz'), { ...(env as unknown as Record<string, unknown>), SINK: undefined, INGEST: undefined } as never)
+    expect([noSink.status, await noSink.text()]).toEqual([503, 'missing binding: SINK\n'])
+    expect(health(new Request('https://ruler.internal/healthz'), { ...(env as unknown as Record<string, unknown>), INGEST: undefined } as never).status).toBe(200)
     expect(health(new Request('https://ruler.internal/healthz', { method: 'POST' }), env as never).status).toBe(405)
   })
 })

@@ -10,17 +10,31 @@ import { DEPLOY_DIR } from './common.mjs'
 export const WRANGLER = join(DEPLOY_DIR, 'node_modules', '.bin', 'wrangler')
 
 /**
+ * Forced on every run that hands wrangler something on stdin (a secret: `versions secret put`,
+ * bootstrap's `secret put`), whatever the deploy's own environment says. Wrangler 4.164.0 writes
+ * every log level, request bodies included, to a debug log file (`~/.config/.wrangler/logs/`, or
+ * WRANGLER_LOG_PATH) unless WRANGLER_WRITE_LOGS is false, and redacts bodies only while
+ * WRANGLER_LOG_SANITIZE is true: with sanitising off, the secret's PATCH body was in that file
+ * (review of D53, m-10, reproduced with the real wrangler).
+ */
+export const SECRET_RUN_ENV = Object.freeze({ WRANGLER_LOG_SANITIZE: 'true', WRANGLER_WRITE_LOGS: 'false' })
+
+/** The pinned wrangler, unless VIZ_WRANGLER_BIN names another (the tests' fake: test/secrets.test.mjs). */
+const wranglerBin = () => process.env.VIZ_WRANGLER_BIN || WRANGLER
+
+/**
  * Run wrangler. Its output is passed through to stderr (prefixed), so CI logs show it; it is
  * also returned. `input` is written to stdin and never logged.
  */
 export function wrangler(args, { input, quiet = false, label = 'wrangler' } = {}) {
-  if (!existsSync(WRANGLER)) throw new Error(`${WRANGLER} not found: run npm ci in deploy/`)
+  const bin = wranglerBin()
+  if (!existsSync(bin)) throw new Error(`${bin} not found: run npm ci in deploy/`)
   const dir = mkdtempSync(join(tmpdir(), 'viz-wrangler-'))
   const outFile = join(dir, 'output.jsonl')
   return new Promise((resolve, reject) => {
-    const child = spawn(WRANGLER, args, {
+    const child = spawn(bin, args, {
       cwd: DEPLOY_DIR,
-      env: { ...process.env, WRANGLER_OUTPUT_FILE_PATH: outFile, WRANGLER_SEND_METRICS: 'false', CI: process.env.CI ?? 'true', FORCE_COLOR: '0' },
+      env: { ...process.env, WRANGLER_OUTPUT_FILE_PATH: outFile, WRANGLER_SEND_METRICS: 'false', CI: process.env.CI ?? 'true', FORCE_COLOR: '0', ...(input !== undefined ? SECRET_RUN_ENV : {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let out = ''

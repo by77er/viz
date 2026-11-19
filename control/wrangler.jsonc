@@ -11,6 +11,11 @@
   "vars": {
     // Comma-separated origins that may call the API from a browser. Empty: none.
     "CORS_ALLOW_ORIGINS": "https://vis.bitcru.sh",
+    // The public origin (the gateway's): the OAuth issuer, and the base of the one resource
+    // tokens are issued for, <PUBLIC_URL>/mcp (contracts/oauth.ts). The Worker secret
+    // OAUTH_CLIENT_KEY (32+ random characters, set with `wrangler secret put`, never here) signs
+    // client registrations; without it /oauth/register answers 503 and is not advertised.
+    "PUBLIC_URL": "https://vis.bitcru.sh",
     // The shared pool's map, as edge has it; a tenant's first own map gets an epoch above it.
     "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}"
     // Optional: "CONTROL_CAPS": "{\"maxRevisionsPerDashboard\":500}"   (see src/caps.ts)

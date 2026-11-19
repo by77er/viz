@@ -7,15 +7,22 @@
   // edge's key store: `key:<keyId>` → { tenant, secretSha256, scopes, disabled }. Read only.
   // The id is a placeholder; never deploy with it.
   "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
-  // Every call to these carries the caller's own credential; each service enforces tenancy.
+  // Every call to the first three carries the caller's own credential; each service enforces tenancy.
+  // OAUTH is control's OAuthIntrospection entrypoint (contracts/oauth.ts): OAuth access tokens are
+  // checked there on every request, and it answers nothing else. It takes the tenant from the token,
+  // and only a binding whose props name viz-mcp gets an answer. No Durable Object of control's is
+  // bound here: a class binding could call every method of every tenant's object (review of D44, M-1).
   "services": [
     { "binding": "QUERY", "service": "viz-query" },
     { "binding": "CONTROL", "service": "viz-control" },
-    { "binding": "RULER", "service": "viz-ruler" }
+    { "binding": "RULER", "service": "viz-ruler" },
+    { "binding": "OAUTH", "service": "viz-control", "entrypoint": "OAuthIntrospection", "props": { "caller": "viz-mcp" } }
   ],
   "vars": {
     // Base of deep links (the app's Explore view).
     "APP_URL": "https://vis.bitcru.sh",
+    // The public origin: this OAuth resource is <PUBLIC_URL>/mcp, its authorization server is <PUBLIC_URL> (control).
+    "PUBLIC_URL": "https://vis.bitcru.sh",
     // Comma-separated browser origins allowed to call. Empty: none (agents are not browsers).
     "ALLOWED_ORIGINS": ""
     // Optional: "MCP_LIMITS": "{\"maxSeries\":2000,\"maxPanels\":40,\"maxParallel\":6,\"deadlineMs\":10000}"

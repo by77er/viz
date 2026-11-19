@@ -20,11 +20,21 @@
 // (lib/schemas.mjs) into the manifest, and into each version's `VIZ_SCHEMAS` var, where later
 // deploys and rollbacks read what that version knows (contracts/COMPATIBILITY.md §6).
 //
+// Durable Object classes of another Worker (by script_name) are bound only where workers.json
+// lists them under the binding Worker's `binds_classes`: such a binding can call every method of
+// every object of the class, for any tenant.
+//
+// Service bindings to a named entrypoint (`entrypoint`, with the `props` the binding carries,
+// e.g. the ruler's SINK → viz-ingest's RecordedSamples, contracts/ingest.ts, and viz-mcp's OAUTH →
+// viz-control's OAuthIntrospection, contracts/oauth.ts) are kept as the component wrote them; the callee's main module (as deployed: a stage's shim included) must
+// export that name, or the release is refused before anything is uploaded (callee first,
+// contracts/COMPATIBILITY.md §3.3).
+//
 // Writes deploy/generated/<production|stage-NAME>/<worker>.jsonc and manifest.json there.
 // Anything it does not understand (a binding kind, a resource not named viz-…, a script_name
 // that is no Worker of ours, a placeholder id left behind) is an error, not a guess.
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJson, readJsonc, releaseId, stagedName, targetName } from './lib/common.mjs'
 import { SCHEMAS_VAR, readSchemas, schemaSources, schemasVar } from './lib/schemas.mjs'
@@ -39,11 +49,42 @@ export function loadPlan() {
   return { plan: readJson(join(DEPLOY_DIR, 'workers.json')), resources: readJson(join(DEPLOY_DIR, 'resources.json')) }
 }
 
-/** The Worker a `script_name` or `service` means, as deployed (stage applied). */
-function resolveScript(name, plan, stage, where) {
+/** The Worker of deploy/workers.json a `script_name` or `service` means (aliases applied). */
+function canonicalScript(name, plan, where) {
   const canonical = plan.script_aliases?.[name] ?? name
   if (!plan.workers.some((w) => w.name === canonical)) throw new Error(`${where}: refers to "${name}", which is not a Worker in deploy/workers.json`)
-  return stagedName(canonical, stage)
+  return canonical
+}
+
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/
+
+/**
+ * The names a TypeScript or JavaScript module exports, read from its source: `export class|
+ * function|const|let|var X`, `export { X, Y as Z } [from …]`, and `export * from './…'` followed
+ * into the file it names. Enough to check that an entrypoint a binding names exists; not a
+ * parser (a name built at run time, or exported from a package, is not seen).
+ */
+export function exportedNames(file, seen = new Set()) {
+  const names = new Set()
+  if (seen.has(file)) return names
+  seen.add(file)
+  const text = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  for (const m of text.matchAll(/export\s+(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:class|function\*?|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) names.add(m[1])
+  for (const m of text.matchAll(/export\s+(type\s+)?\{([^}]*)\}/g)) {
+    if (m[1]) continue // `export type { … }`: types only
+    for (const part of m[2].split(',')) {
+      const spec = part.trim()
+      if (!spec || spec.startsWith('type ')) continue
+      const name = spec.split(/\s+as\s+/).pop().trim()
+      if (IDENTIFIER.test(name)) names.add(name)
+    }
+  }
+  for (const m of text.matchAll(/export\s+\*\s+from\s+['"](\.{1,2}\/[^'"]+)['"]/g)) {
+    const base = resolve(dirname(file), m[1])
+    const target = [base, `${base}.ts`, `${base}.js`, `${base}.mjs`, join(base, 'index.ts'), join(base, 'index.js')].find((f) => existsSync(f) && statSync(f).isFile())
+    if (target) for (const n of exportedNames(target, seen)) names.add(n)
+  }
+  return names
 }
 
 /** The queue names a config declares: producers, consumers and their dead-letter queues. */
@@ -103,7 +144,7 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
 
   // main: bundle from the component directory. A stage's ingest goes through the shim that
   // maps its prefixed queue names back to the names stack/ compares against.
-  const mainAbs = stage && worker.name === plan.resources.queues_from ? join(DEPLOY_DIR, 'stage', 'ingest.ts') : join(componentDir, cfg.main)
+  const mainAbs = mainOf(worker, cfg, componentDir, plan, stage)
   if (!existsSync(mainAbs)) throw new Error(`${where}: main ${cfg.main} does not exist`)
   out.main = relative(outDir, mainAbs)
 
@@ -140,13 +181,30 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   const crossScript = []
   for (const b of out.durable_objects?.bindings ?? []) {
     if (b.script_name) {
-      b.script_name = resolveScript(b.script_name, plan, stage, `${where} durable_objects ${b.name}`)
+      const at = `${where} durable_objects ${b.name}`
+      // A class binding reaches every method of every object of the class (any tenant): only the
+      // ones workers.json lists, with why, are deployed (review of D44, M-1).
+      const owner = canonicalScript(b.script_name, plan, at)
+      if (!Object.hasOwn(worker.binds_classes ?? {}, `${owner}:${b.class_name}`)) {
+        throw new Error(`${at}: binds ${owner}'s Durable Object class ${b.class_name}, which deploy/workers.json does not list under ${worker.name}'s "binds_classes". Such a binding can call every method of every object of that class, for any tenant; bind a named entrypoint of ${owner} that answers only what ${worker.name} needs (as viz-mcp binds viz-control's OAuthIntrospection), or list it there with why`)
+      }
+      b.script_name = stagedName(owner, stage)
       crossScript.push(`${b.name} → ${b.script_name}:${b.class_name}`)
     }
   }
+  // A binding to a named entrypoint keeps `entrypoint` and `props` as written; configure()
+  // checks that the callee exports the entrypoint.
+  const entrypoints = []
   for (const s of out.services ?? []) {
-    s.service = resolveScript(s.service, plan, stage, `${where} services ${s.binding}`)
-    crossScript.push(`${s.binding} → ${s.service}`)
+    const at = `${where} services ${s.binding}`
+    const callee = canonicalScript(s.service, plan, at)
+    s.service = stagedName(callee, stage)
+    if (s.entrypoint !== undefined) {
+      if (typeof s.entrypoint !== 'string' || !IDENTIFIER.test(s.entrypoint) || s.entrypoint === 'default') throw new Error(`${at}: entrypoint must name an export of ${callee} (or be left out for its default export)`)
+      entrypoints.push({ binding: s.binding, callee, entrypoint: s.entrypoint })
+    }
+    if (s.props !== undefined && (typeof s.props !== 'object' || s.props === null || Array.isArray(s.props))) throw new Error(`${at}: props must be an object (what the binding carries to the callee as ctx.props)`)
+    crossScript.push(`${s.binding} → ${s.service}${s.entrypoint ? `#${s.entrypoint}` : ''}`)
   }
 
   // vars: deployment-wide values where the component declares them; the release; the stage.
@@ -155,6 +213,14 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
     if (k.startsWith('$') || !(k in vars)) continue
     if (vars[k] !== v) warnings.push(`${k}: ${where} has ${vars[k]}; deployed with the deployment-wide ${v}`)
     vars[k] = v
+  }
+  // PUBLIC_URL is the OAuth issuer (viz-control) and the resource's origin (viz-mcp): the two must
+  // be equal, so in production it comes from the deployment's one domain, never from a component.
+  // A stage has no custom domain; there the component's value stays (OAuth is not trialled there).
+  if (!stage && 'PUBLIC_URL' in vars) {
+    const pub = `https://${plan.domain}`
+    if (vars.PUBLIC_URL !== pub) warnings.push(`PUBLIC_URL: ${where} has ${vars.PUBLIC_URL}; deployed with https://<domain>, ${pub}`)
+    vars.PUBLIC_URL = pub
   }
   for (const [k, v] of Object.entries(vars)) {
     if (typeof v !== 'string') continue
@@ -180,6 +246,7 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   return {
     config: out,
     text,
+    mainAbs,
     summary: {
       name: out.name,
       canonical: worker.name,
@@ -193,9 +260,29 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
       migrationTag: dobj.migrationTag,
       schemas,
       crossScript,
+      entrypoints,
       queues: queuesOf(out),
       warnings,
     },
+  }
+}
+
+/** The module a Worker is bundled from, as deployed: a stage's ingest goes through its shim. */
+function mainOf(worker, cfg, componentDir, plan, stage) {
+  return stage && worker.name === plan.resources.queues_from ? join(DEPLOY_DIR, 'stage', 'ingest.ts') : join(componentDir, cfg.main)
+}
+
+/**
+ * Every entrypoint a Worker's bindings name is exported by its callee's main module (`mains`:
+ * canonical Worker name → main module, for the Workers generated so far, callees first).
+ */
+export function checkEntrypoints(workerName, entrypoints, mains) {
+  for (const e of entrypoints) {
+    const main = mains.get(e.callee)
+    if (!main) throw new Error(`${workerName}: ${e.binding} names entrypoint ${e.entrypoint} of ${e.callee}, which is not configured before it (callees first)`)
+    if (!exportedNames(main).has(e.entrypoint)) {
+      throw new Error(`${workerName}: ${e.binding} names entrypoint ${e.entrypoint}, which ${e.callee} (${relative(REPO_ROOT, main)}) does not export: a callee ships an entrypoint before or with its first caller (contracts/COMPATIBILITY.md §3.3)`)
+    }
   }
 }
 
@@ -212,6 +299,8 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   const present = plan.workers.filter((w) => existsSync(join(REPO_ROOT, w.component, 'wrangler.jsonc')))
   const schemas = readSchemas(schemaSources(present))
   const workers = []
+  /** Main module of each Worker configured so far, for the entrypoint check of the ones after it. */
+  const mains = new Map()
   for (const worker of plan.workers) {
     const componentDir = join(REPO_ROOT, worker.component)
     const cfgPath = join(componentDir, 'wrangler.jsonc')
@@ -223,6 +312,8 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       throw new Error(`${worker.component}/wrangler.jsonc not found, and ${worker.name} is to be deployed`)
     }
     const g = generateWorker({ worker, cfg: readJsonc(cfgPath), componentDir, plan, stage, release, ids, outDir, idsOptional, expires, schemas: schemas.filter((s) => s.worker === worker.name), extraVars: extra[worker.name] ?? {} })
+    checkEntrypoints(worker.name, g.summary.entrypoints, mains)
+    mains.set(worker.name, g.mainAbs)
     const file = join(outDir, `${worker.name}.jsonc`)
     const header = `// GENERATED by deploy/configure.mjs from ${worker.component}/wrangler.jsonc for ${targetName(stage)}, release ${release}. Do not edit.\n`
     writeFileSync(file, header + g.text + '\n')

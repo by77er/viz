@@ -174,6 +174,25 @@ const schemas: Record<string, Schema> = {
     },
     ['section', 'version', 'value', 'effective'],
   ),
+  OAuthScope: { enum: ['read', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'monitors:read'], description: 'The scopes an OAuth grant may hold (contracts/oauth.ts OAUTH_SCOPES): those the agent surface checks. Never admin, write, monitors:write or monitors:ack.' },
+  OAuthGrant: obj(
+    {
+      id: str(),
+      status: { enum: ['live', 'suspended', 'revoked', 'expired'], description: 'suspended: its key is disabled, so the resource refuses its tokens until the key is enabled again.' },
+      client: obj({ name: str('The application\'s own name for itself; not verified.'), redirectUris: arr(str()), registeredAt: time() }, ['name', 'redirectUris', 'registeredAt']),
+      scopes: arr(ref('OAuthScope')),
+      resource: str('The audience: the resource its tokens are for (the MCP endpoint).'),
+      approvedBy: ref('Actor'),
+      createdAt: time(),
+      expiresAt: time('The grant ends then, whatever happens.'),
+      lastUsedAt: nullable(time('Last code exchange or refresh.')),
+      key: nullable(obj({ id: str(), name: str('oauth:<grantId>') }, ['id', 'name'])),
+      revokedAt: nullable(time()),
+      revokedBy: nullable(ref('Actor')),
+      revokeReason: nullable(str('person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle, approver-gone or expired.')),
+    },
+    ['id', 'status', 'client', 'scopes', 'resource', 'approvedBy', 'createdAt', 'expiresAt', 'lastUsedAt', 'key', 'revokedAt', 'revokeReason'],
+  ),
   AuditEntry: obj(
     {
       id: str(),
@@ -349,6 +368,33 @@ const operations: Record<string, OpDoc> = {
     ok: [200, 'Entries, newest first', page(ref('AuditEntry'))],
   },
   'GET /audit/{entry}': { summary: 'One audit entry', scopes: ADMIN, ok: [200, 'The entry', ref('AuditEntry')], errors: [404] },
+
+  'POST /oauth/approve': {
+    summary: 'Approve an application\'s OAuth request (the consent step)',
+    description:
+      'The page at /oauth/authorize shows what an application (an MCP client) asks for and a "request" handle. A person approves it here, with a key of kind "key" holding admin (an agent key is refused with 403 approver-not-a-person). The grant holds the scopes asked for (or the subset in "scopes") that the approving key itself holds; admin counts for the dashboards scopes. The answer\'s "redirect" is the application\'s callback with the code, state and iss: open it in the browser that started the connection, within codeExpiresAt. dryRun: true shows exactly what would be granted and issues no code. Bounds per tenant: 50 clients, 50 live grants, 20 approvals an hour (429), and a key per grant counts against the key cap.',
+    scopes: ADMIN,
+    body: obj({ request: str('The handle from /oauth/authorize.'), scopes: arr(ref('OAuthScope')), dryRun }, ['request']),
+    ok: [
+      201,
+      'Approved. The redirect is shown in this response only; null in a dry run.',
+      obj(
+        { outcome: str(), grant: ref('OAuthGrant'), withheld: arr(ref('OAuthScope')), returnsTo: obj({ host: str(), uri: str() }), warnings: arr(str()), redirect: nullable(str('The callback with code, state and iss.')), codeExpiresAt: time(), shownOnce: { type: 'boolean' }, kv: ref('KvState') },
+        ['outcome', 'grant', 'withheld', 'returnsTo', 'warnings', 'redirect'],
+      ),
+    ],
+    errors: [403, 409, 422, 429],
+  },
+  'GET /oauth/grants': { summary: 'List OAuth grants', description: 'What applications may act on this tenant, with which scopes, approved by whom. No credential is ever returned.', scopes: ADMIN, query: { status: 'live (default; includes suspended) or all.', ...PAGING }, ok: [200, 'Grants, oldest first', page(ref('OAuthGrant'))] },
+  'GET /oauth/grants/{grant}': { summary: 'One OAuth grant', scopes: ADMIN, ok: [200, 'The grant', obj({ grant: ref('OAuthGrant') }, ['grant'])], errors: [404] },
+  'POST /oauth/grants/{grant}/revoke': {
+    summary: 'Revoke an OAuth grant',
+    description: 'Ends it now: its tokens and code are deleted and its key removed (from KV too). The resource refuses its tokens from the next request. Revoking an ended grant changes nothing (outcome "unchanged").',
+    scopes: ADMIN,
+    body: obj({ dryRun }),
+    ok: [200, 'Revoked, or unchanged', obj({ outcome: str(), grant: ref('OAuthGrant'), kv: ref('KvState') }, ['outcome', 'grant'])],
+    errors: [404],
+  },
 }
 
 const problem = (description: string): Json => ({ description, content: { 'application/problem+json': { schema: ref('Problem') } } })
@@ -361,6 +407,7 @@ const ERRORS: Record<number, string> = {
   413: 'Too large',
   422: 'Not valid: the body, the dashboard or the setting',
   428: 'baseRevision or If-Match is required',
+  429: 'Too many approvals in the last hour; retry after Retry-After seconds',
   503: 'The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds',
 }
 

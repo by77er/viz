@@ -1,0 +1,15 @@
+{
+  "format": "id.oauth-client",
+  "version": 1,
+  "key": "golden-registration-key-0123456789abcdef",
+  "registration": {
+    "v": 1,
+    "n": "AAAAAAAAAAAAAAAA",
+    "iat": 1800000000,
+    "name": "Golden client",
+    "uris": [
+      "http://127.0.0.1:33418/callback"
+    ]
+  },
+  "clientId": "vzk1.eyJ2IjoxLCJuIjoiQUFBQUFBQUFBQUFBQUFBQSIsImlhdCI6MTgwMDAwMDAwMCwibmFtZSI6IkdvbGRlbiBjbGllbnQiLCJ1cmlzIjpbImh0dHA6Ly8xMjcuMC4wLjE6MzM0MTgvY2FsbGJhY2siXX0.ZL5_CHYKI4-j35GljAgP405IQ7DKbBCNHoeTEZrt7Vs"
+}

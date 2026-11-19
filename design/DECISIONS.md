@@ -721,46 +721,88 @@ first thing to build if tenants hit the cap. (c) No caps: an isolate dies instea
 **Would change if.** Tenants hit the pair cap in practice (build (b), then raise the cap), or a
 report over a window wider than the caps allow is needed (then (a), labelled approximate).
 
-## D33. Anomaly rules page on EWMA or a static threshold; the other detectors explain
+## D33. Anomaly rules that do not page default to robust z with the quantile spread; pages stay on a static threshold; the other detectors explain
 
-**Decision.** An anomaly rule (`contracts/rules.ts`, version 2) that names no detector uses
-EWMA with the parameters chosen on held-out data (half-life 100 points, k 8) and severity
-`ticket`. With `severity: page` and no detector it is a static threshold, and the author must
-give the level. The robust z-score (MAD), the seasonal baseline (MAD) and CUSUM can be named;
-the save then warns with their held-out score, and CUSUM may not page (default `info`). STL and
-PELT are not rule detectors: they are for scheduled jobs and explanations; burn rate is to
-compile to recording rules. The 99th-percentile ("quantile") spread can be chosen, is marked
-unvalidated in the warning and in the guide, and is never a default. The guide, with the kind
-of evidence behind each line (held out, post hoc, not scorable), is served at
-`GET /api/v1/monitors/detectors` from one copy in `ruler/src/anomaly.ts`.
+(Rewritten 2026-11-19. **This replaces the earlier D33**, "Anomaly rules page on EWMA or a static
+threshold; the other detectors explain", which made EWMA the default for rules that do not page and
+marked the quantile spread as unvalidated. Its "would change if" came true: the quantile spread held
+its score on data it had not seen. Its clause that burn rate was to compile to recording rules had
+already been replaced by D42: an SLO is its own rule kind.)
 
-**Alternatives.** (a) The design's first choice: robust z-scores against a seasonal baseline.
-(b) The robust z-score with the quantile spread, the best held-out score among the library's
-detectors (44.8). (c) No default: the author must pick. (d) Static thresholds only, no anomaly
-rules. (e) The library's own EWMA defaults (half-life 30, k 4).
+**Decision.** An anomaly rule (`contracts/rules.ts`, version 2; the text of its defaults changed with
+no version change, since the stored form did not) that names no detector and does not page uses the
+robust z-score with the quantile spread: k 2 times the 99th percentile of |x − median| over the
+trailing 1,500 points, severity `ticket`. With `severity: page` and no detector it is a static
+threshold, and the author gives the level. `robust_z` and `seasonal` named without a spread get the
+quantile spread with the configuration frozen on NAB (robust z as above; seasonal 1 season, k 2,
+adapt robust); `spread: "mad"` gets the library's own defaults, with a warning that quotes both
+benchmarks. EWMA stays nameable, warned with both numbers. CUSUM defaults to `info` and may not
+page; STL and PELT are not rule detectors; burn rate is the SLO rule kind (D42). The window is the
+largest whose stored state fitted the per-series limit (64 KiB) for any values while state was
+stored as JSON; the configuration frozen with a 4,000-point window can be named and is refused at
+save over that limit, with what it is and what fits (once D60's ring blocks are written, in a later
+release, it fits, and is still not the default). Defaults are resolved and written out when a rule is saved, so every rule stored
+before keeps what it was saved with; a rule saved again over a stored one (the same group, and the
+same monitor id, or the same name and expression) keeps, for each field it leaves out, the stored
+value that was the default when it was stored, and the save says so. The guide, served at
+`GET /api/v1/monitors/detectors` from one copy in `ruler/src/anomaly.ts`, labels every number with
+its kind of evidence: held out, confirmed or not confirmed on unseen data, post hoc.
 
-**Why.** On the Numenta Anomaly Benchmark, held out (parameters and threshold chosen on one
-half of the files, scored on the other, alarms as onsets; `anomaly/README.md`), standard
-profile: static threshold 21.8, EWMA 30.1 (window recall 59% against 41%), MAD robust z −105.9,
-MAD seasonal −76.4, STL −352.2, CUSUM 15.1, PELT −123.5. (a) scored below the threshold it is
-meant to beat: on heavy-tailed series the MAD describes only the bulk. (b) was found after
-seeing those results, so its score is optimistic by an unknown amount until confirmed on data
-it has not seen. (e) scored 0.0 under NAB's own protocol. EWMA lost to the threshold in the
-low-false-positive profile (3.9 against 5.5), the profile that matters for waking someone, hence
-the threshold for pages. (c) leaves every author to rediscover this; (d) loses EWMA's recall and
-the seasonal baseline's one strength, values wrong for their time of day (4 of 4 artificial
-daily anomalies against 1 of 4 without it), which stays available with its numbers shown.
+**Alternatives.** (a) Keep EWMA (the earlier D33). (b) The confirmed configuration as frozen, window
+4,000: raise the per-series state limit to about 150 KB, or store the window incrementally (blocks
+of rows, a point appended each tick) and raise the limit for this detector. (c) A window of 1,000
+points (about 37 KB, 28 series a rule). (d) The window in time on 5-minute rollups (4,000 points =
+14 days), which SMD did not test. (e) The window at the edge of the save-time estimate (1,781
+points at 36 bytes a point). (f) Resolve defaults at evaluation, so that every rule follows today's
+defaults. (g) Resolve them afresh at every save, stored rule or not. (h) The quantile spread for
+pages too.
 
-**Cost.** A page needs a level someone can state. EWMA's event precision on NAB was 22%: most
-of its alarms were not at a labelled anomaly, hence `ticket`. The evidence is NAB only (58 files
-of about two weeks each), nothing measured on viz's own data, and half-life 100 and k 8 were the
-largest values of the grid searched, so the optimum may lie beyond it. The guide's numbers are
-copied from `anomaly/README.md` and must be changed with it.
+**Why.** On SMD (28 servers' metrics; every parameter frozen on NAB before SMD was fetched;
+`anomaly/README.md`) the frozen robust z with the quantile spread scored 42.8 (NAB held out 44.8),
+the static threshold 16.4 and EWMA 10.4: robust z − EWMA +32.4 [20.7, 48.7] (95%, machine
+bootstrap), event F1 0.441 against 0.206, which is the earlier D33's condition met by a rule written
+in advance. EWMA did not hold (below the threshold in every profile), so (a) keeps a default that
+failed on data it had not seen. The frozen window needs about 145 KB of state a series, over the
+ruler's 64 KiB. The rule the project lead set: measure, held out on NAB, the largest window that
+fits, and adopt it if it beats EWMA and the threshold held out on NAB and on SMD; else keep EWMA.
+1,500 points is that window by the longest number encoding (39.7 bytes a point; 60.9 KB a series
+with eight labels and an explanation, measured here). Measured here (`ruler/tools/anomaly-default/`):
+NAB held out (window fixed, k chosen on each half) 42.6 / 29.7 / 55.4 (standard / low FP / low FN),
+against EWMA 30.1 / 3.9 / 40.8 and the threshold 21.8 / 5.5 / 32.7; SMD (window 1,500, k 2)
+42.5 / 21.2 / 50.8, +32.0 [20.6, 48.1] over EWMA and +26.0 [14.6, 35.1] over the threshold. The SMD
+figure is **post hoc**: only the 4,000-point window was pre-registered, and k was fixed at the frozen
+2 before the run. (c) scored lower on both (NAB 39.4, SMD 37.6, post hoc) and below the threshold in
+SMD's low-FP profile (9.9 against 15.5). (e) passes the save check, but values that print long reach
+72 KB and are refused at run time. (b) needs a storage change and a larger budget; (d) is untested.
+(f) would change stored rules at the upgrade; (g) would change a rule whenever a pipeline re-applies
+an unchanged rule file. (h): on SMD the quantile spread's low-FP lead over the threshold is not
+significant (+7.5 [−8.8, 19.7] at 4,000 points, +5.7 [−12.4, 19.0] at 1,500) and it raised about
+eight times the threshold's unmatched alarms per machine-day (12.2 against 1.5).
 
-**Would change if.** The quantile spread holds its score on data it has not seen (TSB-AD, or
-incidents labelled on viz's own tenants): then it becomes the default for non-paging rules; a
-wider grid moves EWMA's parameters; viz's own labelled incidents rank the detectors
-differently; or a detector gains a calibrated false-alarm rate that makes it fit to page.
+**Cost.** State: about 55 KB a series as JSON (estimate; 1.4 KB for EWMA), so a default rule keeps
+at most 18 series (1 MiB a rule; it was 100), and a shard holds about 16 such rules at their cap
+(16 MiB). The release that turns on D60's writer (Float64 ring blocks) brings about 18.8 KB a series
+(estimate; 17.8 KB measured here, whatever the values): 55 series a rule.
+CPU, by the D51 model (extrapolated: its robust z prices were calibrated at 3,992 and 11,768 bytes of
+state, here 55,400): 0.35 ms a point, so a warm-up costs 0.53 s a series and the 5 s budget warms
+about 9 series; a rule with more starts cold and warms live (it scores after 20 points; its window is
+full after 25 h at a 1-minute interval). In Node here the per-point cost grew 4.4–5.6 times from 288
+to 1,500 points, the model 4.5 times; it is not measured in workerd at this size. Each tick
+serialises and writes each series' state (whole batches per row: 2 rows and 879 KB a tick at 18
+series, measured); with D60's writer on, the head and the current block (2 rows, 13 KB).
+The 4,000-point configuration: 0.92 ms a point by the same model (3.7 s
+to warm one series), at most 7 series a rule, where its limit is raised; 22 within the default
+limits once D60's ring blocks are written (46.1 KB a series measured here). A rule saved again may keep EWMA indefinitely; each
+such save warns. The evidence is two public benchmarks, nothing measured on viz's own data, and the
+chosen window's SMD score is post hoc.
+
+**Would change if.** viz's own labelled incidents rank the detectors differently; a third benchmark
+contradicts SMD; the window's state can be stored incrementally (then the frozen 4,000 points, or a
+window in time on rollups: D60 does this, read now and written from a later release, where the
+4,000-point window fits; the default stays 1,500 until this decision is taken again, with the
+warm-up of a 4,000-point rule measured in workerd); the CPU model, measured in workerd at 1,500 points, prices warm-ups
+higher (then a smaller window or a larger budget); or a detector gains a calibrated false-alarm rate
+fit to page.
 
 ## D34. The publisher is nudged by the maintenance run and driven by its own alarm; no cron, no queue
 
@@ -1150,7 +1192,7 @@ long as the longest alert window and a ring of about 720 coarse buckets over the
 window, as rows (a head and blocks of 60 and 24 buckets; three rows a tick), warmed from history
 when the rule is new (D43). The alerts are the SRE Workbook's (anomaly/'s `SRE_WORKBOOK_RULES`,
 judged by its `evaluateWindows`), one alert per series and severity (`page`, `ticket`). A window
-counts once 90% of its buckets have data (`min_coverage`). This replaces D33's "burn rate is to
+counts once 90% of its buckets have data (`min_coverage`). This replaces the earlier D33's "burn rate is to
 compile to recording rules".
 
 **Alternatives.** (a) Compile to recording rules, as Sloth and Pyrra do: one recording rule per
@@ -1262,6 +1304,118 @@ not measured on Cloudflare.
 **Would change if.** The plan reports the tail and the series a read returns at each step (then no
 count query); viz-query exports an RPC entrypoint that streams results (then one query per
 read again); or the Durable Object memory limit changes.
+
+## D44. MCP clients connect with OAuth served by control: signed stateless registrations, a person approves with an admin key, each grant is backed by an agent key the resource uses downstream, and every request is checked by control
+
+**Decision.** The control plane is the authorization server for the agent surface's `/mcp`
+(MCP 2026-07-28, "Authorization"; `contracts/oauth.ts`). It publishes RFC 8414 metadata at
+`/.well-known/oauth-authorization-server` and serves `/oauth/register` (RFC 7591),
+`/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (RFC 7009). Public clients only, PKCE
+`S256` only, exact redirect URIs (https, or http on a loopback host), one resource (`<public
+URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 with the
+`WWW-Authenticate` the specification gives.
+
+- **Registration stores nothing.** The client id is the registration (name, redirect URIs,
+  issue time), signed with control's `OAUTH_CLIENT_KEY`. The tenant is not known when a client
+  registers (it registers before anyone signs in), so a client is stored in a tenant only when a
+  person of that tenant approves it; that is where the per-tenant bounds apply (clients, live
+  grants, approvals per hour). A registration nobody approved within 24 h is refused; a bound
+  client with no live grant is deleted after 30 days.
+- **Consent through the control API.** There is no web UI, so `/oauth/authorize` validates the
+  request and answers a plain-text page that says what is asked (client name marked unverified,
+  redirect host, scopes, resource, lifetimes) and how to approve: `POST
+  /api/v1/control/oauth/approve` with the request handle, by a person (kind `key` or `user`, never
+  `agent`) holding `admin`; `dryRun` shows exactly what would be granted. The grant holds the
+  requested scopes the approver's own key holds (admin counts for the dashboards scopes only;
+  `admin`, `write`, `monitors:write|ack` are never grantable), and the grant follows that key
+  afterwards: suspended while it is disabled, ended once it is deleted. The answer carries the
+  redirect with the code, `state` and `iss`, which the person opens. The server never redirects
+  by itself.
+- **A grant is backed by an agent key.** Approval creates an ordinary key `oauth:<grantId>`
+  (kind `agent`, the grant's scopes, expiring with the grant). The resource calls the query
+  service, the control plane and the ruler with that key, never with the client's token. The
+  key's secret is not stored: it is sealed (AES-256-GCM, key derived by HKDF from the credential)
+  under each live code, access token and refresh token, which are themselves stored only as
+  SHA-256. Control unseals it when it validates a token for the resource. The resource asks
+  through `OAuthIntrospection`, a named entrypoint of viz-control (`contracts/oauth.ts`): one
+  method, `introspectAccessToken(token, resource)`, answered only to a binding whose `props.caller`
+  is `viz-mcp`, with the tenant taken from the token. viz-mcp holds no binding to control's
+  `Tenant` class (review of D44, M-1: such a binding reaches every method of every tenant's object,
+  `invoke` with a made-up identity included), and `deploy/configure.mjs` refuses to deploy one.
+- **Every request is checked by control**: audience, expiry, grant and key state. Revocation
+  takes effect at `/mcp` on the next request. Codes are single use (a second use revokes the
+  grant); refresh tokens rotate on every use (presenting a used one revokes the grant).
+- **Credentials name their tenant in clear** (`vza1.<tenant>.<secret>`), so the server can find
+  the tenant's object; that object holds only the credential's SHA-256, so a credential edited to
+  name another tenant matches nothing. Because a forged one can name any string, a `Tenant` object
+  nobody provisioned no longer creates storage when it is constructed: `provision` opens it.
+- **A made-up credential reaches no object** (review of D44, M-2). The secret's 43 characters are
+  27 random ones and a 16-character tag, HMAC-SHA-256 under a key derived by HKDF from
+  `OAUTH_CLIENT_KEY`, over the prefix, tenant and random part. `/oauth/token`, `/oauth/revoke` and
+  `OAuthIntrospection` check the tag in the Worker before any tenant's object is asked; a
+  credential without it gets the answer an unknown one gets. The tag does not make a credential
+  valid (the object's hash does). And a token request or revocation that changed nothing writes
+  nothing: the alarm is re-armed only after a write (each `setAlarm` is billed as a row written).
+  Measured here (local workerd, three runs of 300 sequential forged `/oauth/token` requests against
+  a tenant with a live grant): 1.50–1.69 ms, one object call and two `setAlarm` each before;
+  0.13–0.18 ms, none and none after. The entrypoint costs every `/mcp` request one service-binding
+  hop: a live token's introspection took 1.76–2.42 ms through it against 0.90–1.62 ms on the object
+  directly (measured here; not on Cloudflare).
+- **Only a key approves, until people can be checked.** `Tenant.invoke` accepts only an identity
+  with an API key, which it checks against its own keys whatever the caller says about it; an
+  approver that is not a key is refused, and a grant recorded with one counts as ended (the check
+  fails closed). An approver key's expiry is an alarm deadline.
+
+**Alternatives.** (a) `@cloudflare/workers-oauth-provider` wrapping mcp's `fetch`: grants and
+tokens in KV outside the tenant's object and its audit log, revocation bounded by KV
+propagation, and it still leaves the downstream credential and the tenant-bound consent to
+write. (b) Pass the client's token downstream and teach the query service, control and the ruler
+to accept it: forbidden by the specification (token passthrough), and the token would work
+outside its audience. (c) Keep the downstream key's secret in clear in SQLite, or encrypted under
+one Worker secret: a dump of the object, or one secret, would yield working credentials for
+every grant. (d) Store registrations at registration time: no tenant yet, so a global registry,
+which is either a new Durable Object class (a lifecycle change, its own release) or KV writes
+from unauthenticated requests. (e) Client ID Metadata Documents instead of registration: the
+2026-07-28 revision prefers them and deprecates registration, but they need control to fetch
+arbitrary client URLs (SSRF, caching); not built yet. (f) A pending grant stored at
+`/oauth/authorize`: needs the tenant before anyone has authenticated. (g) Redirect automatically
+from `/oauth/authorize`: open registration makes every redirect URI untrusted, so the server
+would be an open redirector (OAuth 2.1 §7.12.2).
+
+**Why.** The tenant's object already holds keys, the audit log and the rules for agents (D29);
+grants there are tenant-scoped by construction, are revoked in one transaction with their key
+and its KV record, and appear in the audit log. The backing key reuses what every downstream
+service already enforces (scopes, tenancy, liveness) and keeps the token's audience to `/mcp`.
+Sealing means neither a database dump nor a token without control yields the downstream
+credential.
+
+**Alternatives to the tag (review of D44, M-2).** (h) A record per known tenant in KV, checked
+before the object: it stops names nobody provisioned, but not the attack the review measured,
+forged credentials naming a real tenant, and a record published at approval may not have reached
+the location of the code exchange that follows within seconds (KV propagation, and cached misses).
+(i) A negative cache in KV: the same, plus writes driven by unauthenticated requests. (j) A
+Workers Rate Limiting binding as the check: approximate and per Cloudflare location by its
+documentation ("Requests can exceed your configured limit"; "Other Cloudflare locations maintain
+separate counts"), and keyed by the only identifiers an unauthenticated request has (IP, which the
+documentation advises against, or the tenant, which hands the attacker the limit); it bounds a
+source's rate, not what reaches a tenant's object. Still wanted before public exposure, for the
+Worker's own CPU (`control/README.md`, Known risks).
+
+**Cost of the tag.** Replacing `OAUTH_CLIENT_KEY` (D53, by a deploy told to) now also ends every
+code and token: clients connect again and a person approves again, rather than only registering
+again. One HMAC per token, revocation and introspection request in the Worker.
+
+**Would change if.** A sign-in exists (then `/oauth/authorize` shows a consent page to a signed-in
+person and redirects, and the approver check learns to follow a person); Client ID Metadata
+Documents become what clients use (then they replace registration and its signing key); KV
+propagation of a new key record is measured slow enough to break the first downstream call after
+approval (then the resource retries, or control publishes the key earlier); sender-constrained
+tokens (DPoP) become required; or a rotation of `OAUTH_CLIENT_KEY` must keep sessions (then the tag
+key becomes a generated secret of its own, or control verifies tags under two keys).
+
+*Amended 2026-11-19 after the review of D44, D52, D53 and D60 (`reviews/d44-d52-d53-d60.md`, M-1,
+M-2, m-1 to m-3, m-5, m-6): the entrypoint, the tag, no writes on no change, key-only approvers.
+The decision itself stands.*
 
 ## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
 
@@ -1553,6 +1707,134 @@ delays its rule's first evaluation by an interval.
 any read); Cloudflare's measured `cpuTime` for the same runs disagrees with the model by more than
 its margin (then the prices change); or the platform exposes CPU time to the running code.
 
+## D52. The ruler writes recorded samples through `RecordedSamples`, and falls back to Remote Write for one release when the entrypoint does not answer by its contract
+
+**Decision.** The ruler binds viz-ingest's `RecordedSamples` entrypoint as `SINK` (`props: {
+caller: "viz-ruler" }`, D45) and sends every recording-rule flush there with the Ruler object's
+own tenant; no key goes with it (`ruler/src/recorded.ts`). It treats the answer as
+`contracts/ingest.ts` says: `unauthorized`, `invalid` and `series_limit` are reported on the rules
+at once, never retried; `too_large` splits the call by whole batches; `backpressure`, `overloaded`
+and `unavailable` are retried inside the tick, after the hint in the message (at most 5 s, and
+never past the group's budget). A rejection whose message starts with **no** refusal word means
+the entrypoint did not answer by its contract (the viz-ingest release serving the call lacks it,
+or the platform failed the call); then, and only then, the same batches go through Remote Write
+over `INGEST` with the shard's service key, the path of the release before, and the Worker logs
+that it did. `INGEST` stays bound for this purpose for one release.
+
+**Alternatives.** (a) No fallback: a rejection without a refusal word is retried like
+`unavailable` and, after three attempts, the tick's samples are dropped (counted). Promotion is
+callee first (viz-ingest before viz-ruler) and rollback caller first, but both directions of skew
+remain while a deployment propagates, and a rollback leaves Ruler objects on the newer code for up
+to 30 s (deferred code updates) while viz-ingest is already back on a release without the
+entrypoint (contracts/COMPATIBILITY.md §1); every recording rule due in that window would lose a
+tick. (b) Fall back on any rejection: a refusal says the entrypoint exists and decided; sending
+the same samples by Remote Write would bypass its whole-call validation (Remote Write keeps the
+valid part of a request) and double the load on an overloaded shard. (c) Recognise the platform's
+"missing entrypoint" error by its text: not documented, not measured on Cloudflare (workerd
+refuses to start such a binding at all), so it would be a guess; the contract's refusal words are
+the one thing that is promised. (d) Two releases, entrypoint first and the binding later, with
+no fallback: still loses ticks on a rollback across the second release, and the entrypoint
+already shipped with D45. (e) A flag var to switch sinks: vars belong to a version, so a rollback
+restores the old value with the old code; it adds a step and no safety.
+
+**Why.** Recorded samples have no outbox: they are sent inside the tick, and a tick that cannot
+deliver them drops them, so a sink that fails during an ordinary rollback would put a gap in every
+recorded series, which contracts/COMPATIBILITY.md exists to prevent. Re-sending is harmless on both
+paths (one value per series and timestamp), so falling back costs nothing in correctness; the
+service key it uses already exists for queries (D39) and already carries `write`. Falling back
+only when the contract was not followed keeps every contract answer meaningful and keeps the key
+out of steady-state writes.
+
+**Cost.** One more code path for one release, and `INGEST` kept bound. In steady state no write
+uses the key (tested); in a skew window each flush is one failed RPC plus one Remote Write.
+Whether Cloudflare accepts a version whose binding names an entrypoint the serving callee lacks,
+and what such a call returns, is **not measured**: the fallback does not depend on the answer,
+but if the upload is refused, a release adding a new entrypoint and its first caller must ship
+the entrypoint one release earlier (a stage trial settles it: deploy the previous ingest, upload
+this ruler, run a recording rule).
+
+**Would change if.** Every viz-ingest release that may run (the rollback floor and later) has
+`RecordedSamples`: then the fallback and `INGEST` go (callee first, contracts/COMPATIBILITY.md
+§4), and once query has its own entrypoint the ruler holds no key at all; or recorded samples get
+an outbox (then a failed write waits instead of falling back).
+
+## D53. The deploy generates control's OAuth client key once, on the version it uploads for a release, and never replaces it unless a deploy is told to
+
+**Decision.** viz-control's Worker secret `OAUTH_CLIENT_KEY` (the HMAC key that signs OAuth
+client registrations, D44) is made by the deploy, not by a person: 32 bytes from Node's CSPRNG,
+base64url, handed to `wrangler versions secret put` on stdin (`deploy/lib/secrets.mjs`). It is
+put only when the version a release would promote does not carry it. Where: right after phase 1
+uploads viz-control, on that upload (checked to be the newest version, since the command patches
+the newest one), so the keyed version is the release's own code and config and serves nothing
+until phase 2 promotes it in place of the upload. A viz-control that goes out with `wrangler
+deploy` (new, as on the first production deploy, or applying a Durable Object migration) gets it
+on the version just deployed, and the keyed version is deployed before the next Worker. Every
+later upload inherits it. It is replaced only by a deploy run with `VIZ_ROTATE_SECRETS=
+OAUTH_CLIENT_KEY`. If the Worker has it now (its secret list, a serving version, or a version
+newer than every serving one, which a rollback across the release that created the key leaves
+behind) but the upload does not carry it, the release is refused before anything is promoted
+(exit 3) instead of generating a new one. Every wrangler run that gets a value on stdin runs with
+`WRANGLER_LOG_SANITIZE=true` and `WRANGLER_WRITE_LOGS=false`, whatever the deploy's environment
+says. The release record names each such secret and what was done (kept,
+created, rotated), never a value. `release.mjs plan` says it would create the key and changes
+nothing.
+
+**Alternatives.** (a) `wrangler secret put` before phase 1: Cloudflare documents that it "creates
+a new version of the Worker and deploys it immediately"; it deploys outside the release (the
+serving code plus the key, a deployment no record names), wrangler 4.164.0 refuses it with code
+10215 whenever the newest version is not the deployed one (a failed earlier run leaves one), and
+on a Worker that does not exist (the first deploy) it creates a placeholder Worker `export
+default { fetch() {} }` without asking in CI. (b) `wrangler secret put` after phase 2: a second
+deployment of viz-control after promotion, so its Durable Objects move twice, the new release
+serves for a while without the key, and the record names a version that no longer serves. (c)
+`--secrets-file` on `versions upload` or `deploy`: one version with code and key, but the value
+must come from a file (or `/dev/stdin`, platform-dependent) and "process environment values
+override file values". (d) The operator sets it by hand once, as for the bootstrap token: easy
+to forget, and the failure is a silent 503 on `/oauth/register`. (e) Declaring the secret as
+required in control's wrangler config (Cloudflare documents that deploys then fail when it is
+missing): a check, not provisioning, and it would fail the first `wrangler deploy` of viz-control,
+since `versions secret put` needs a version to exist.
+
+**Why.** Cloudflare says to use `wrangler versions secret put` "if using gradual deployments": it
+"will only create a new version of the Worker, that can then be deployed using `wrangler versions
+deploy`" (Workers docs, Secrets, read 2026-11-19). That is exactly the upload-then-promote flow:
+nothing serves early, nothing but the release's code is promoted, a failure stops before phase 2,
+the release record and `previous.json` name versions as they served, and a rollback restores
+versions as for any release. Never generating over a key that exists is what keeps registered
+clients valid; refusing when the evidence disagrees is the fail-closed reading of
+contracts/COMPATIBILITY.md's promise.
+
+**After the review (2026-11-19, `reviews/d44-d52-d53-d60.md`).** m-10: wrangler 4.164.0 writes
+every log level to a debug log file unless `WRANGLER_WRITE_LOGS` is false and redacts request
+bodies only while `WRANGLER_LOG_SANITIZE` is true; with sanitising off in the deploy's
+environment, the key's PATCH body was in that file (reproduced with the real wrangler). Both are
+now forced for runs with stdin, which is what "never in a file" needs. m-9: after a rollback across
+the key's creation, an upload that did not inherit the key was given a new one, silently. Of
+refusing the rollback or detecting it at the next deploy, detecting it was chosen: a rollback is
+the incident tool and must not be blocked by a key, the next deploy has to look anyway, and the
+evidence is cheap (one list call, and one read per version newer than the serving one, none
+normally). The release then stops with exit 3 and names the version that carries the key; the
+operator promotes that release again or replaces the key on purpose. m-11 (another run of the same
+release uploading between the newest-version check and the put) is open (`deploy/README.md`, Known
+risks).
+
+**Cost.** One to three more API reads (after a rollback, one more per version newer than the
+serving one) and, on the release that creates or rotates the key, one more version of viz-control. Not run on Cloudflare: inheritance of secrets by later uploads is
+from wrangler's `keep_bindings: ["secret_text", "secret_key"]` and the API's "keep from
+previous_upload" (taken to mean the newest version, as `inherit` bindings default to "latest"),
+not measured. Whether a deployment of an older version that lacks a secret the serving one has
+is refused (wrangler's rollback command handles an API error 10220, "secrets have changed", by
+asking; `versions deploy`, which the automatic rollback uses, does not) is not documented and
+not measured; if it is, the automatic rollback of the release that created the key fails loudly
+and that release keeps serving. Rotation needs a deploy; there is no dispatch input for it yet.
+
+**Would change if.** A stage shows uploads not inheriting the key, or a rollback refused with
+10220 (then the rollback passes `force` or the key is put before the rollback); control verifies
+registrations under an old and a new key (then rotation can be automatic and overlapping);
+wrangler can upload a version with secrets read from stdin (then code and key go in one version);
+or more generated secrets appear (they join `GENERATED_SECRETS`, and one `versions secret bulk`
+replaces one put per secret).
+
 ## D55. The publisher re-bases a tenant from its newest checkpoint, else its base, streamed into SQLite; a re-base that cannot be read whole publishes nothing
 
 **Decision.** When the publisher meets a ledger incarnation it has no cursor in (a new tenant, a
@@ -1634,3 +1916,75 @@ publisher's CPU limit on Cloudflare (then progress kept across invocations, or a
 "Would change if" says); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
 files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
 part is checked on its own as it arrives, not only the totals at the end).
+
+## D60. Robust z and seasonal windows are stored as Float64 values in ring blocks on the interval grid; readers first: this release reads the format and writes the old one, and writing it turns on in the release after one with this reader has been deployed to production
+
+(Written 2026-11-19. **This replaces the first version of D60** of the same day, which shipped the
+format's writer on together with its reader; the owner chose readers first, as
+contracts/COMPATIBILITY.md §3.3 asks.)
+
+**Decision.** `store.anomaly-state` version 2 (`ruler/src/anomalystore.ts`) keeps the state of a
+robust z or seasonal anomaly rule, in the same `anomaly_state` rows, as a head (every series' labels,
+last outcome and the detector's scalars) and blocks of 60 slots on the rule's interval grid holding
+every series' values there as little-endian Float64 in base64, NaN where a slot holds no point.
+Timestamps are implicit (slot n is the grid's phase + n · interval); a robust z point off the grid,
+and a series with less than half a block of points, are written as explicit (time, value) pairs. A
+tick writes the head and the block its points fall in; a block no series needs any more is deleted,
+or rewritten without the series that left it. The head lists the blocks the rows hold (ranges of
+block numbers) and how many series entries they hold in all; a block row missing or extra, or one
+holding fewer or more entries, is refused when read (`state_unreadable`, rows kept), never read as
+a smaller window (added after the review of D60, m-12, before any release wrote version 2, so the
+format is still version 2). **Readers first**: this release reads versions 1 and 2
+(`ANOMALY_STATE_READS`) and writes version 1; the version gate `ANOMALY_STATE_WRITE` in
+`ruler/src/schema.ts` is 1, and `FORMATS['store.anomaly-state']` follows it. **Writing version 2
+turns on in the release after one with this reader has been deployed to production**, by setting
+that constant to 2 (a code change, so it goes out as a release, never mid-release). That release
+rewrites a rule's version 1 rows as version 2 at its next tick; its save-time estimates, and so the
+series caps, follow the gate (a default robust z rule: 18 series now, 55 then). EWMA, threshold and
+CUSUM stay version 1. The CPU and memory models of warm-ups and backtests price the window by its
+JSON size, against which they were calibrated, whatever is written.
+
+**Alternatives.** (a) Keep JSON (version 1). (b) Float32 values: half the bytes, but scores and
+explanations change. (c) Raw Float64 in a BLOB column or a new table: 8 bytes a slot instead of
+10.7, but a schema change older releases cannot follow without a forward-only migration, and the
+shard-move bundle (`GroupBundle.anomalyState`, strings) would change type. (d) One row per series and
+block: row writes are billed, 100 a tick at 100 series. (e) Explicit timestamps always: 16 bytes a
+point. (f) Compressed JSON: sizes that depend on the values, and CPU at every tick. (g) The whole
+state in binary, rewritten every tick. (h) Forward-only with a schema migration (`readableFrom` its
+own version). (i) Reader and writer in one release, the gate on (the first version of this
+decision). (j) The gate as a Worker var rather than a constant.
+
+**Why.** The window was the cost: about 37 bytes a point as JSON, 39.7 at the longest number
+encoding, so the window was set by the storage (1,500 points, D33) and a default rule holds 18
+series; every tick serialises and rewrites all of it. Float64 keeps the scores bit for bit, which (b)
+does not; with base64 the size is 10.7 bytes a slot whatever the values, so the save-time estimate is
+the stored size up to labels and explanations. Blocks on the interval grid make timestamps free and
+the per-tick write one block for every series, the SLO rings' layout (D42), which (d) and (g) are
+not. (c) would save a quarter of the bytes for a migration and a contract change; base64 inside the
+existing JSON body keeps the table, the column and the bundle. (h) raises the rollback floor of the
+whole ruler for one format. (i) breaks §3.3: the release before reads only version 1, so a rollback
+to it would leave rewritten rules unscored until rolled forward, and the release record, which does
+not carry format versions (D46), would not refuse that rollback. Readers first costs one release,
+and nothing is deployed to production yet. (j) would let one deployment flip it without a release,
+which is exactly the step §3.3 orders; a constant ships in a release, with the release's tests. Measured
+here (workerd, 1,500 points, `ruler/README.md` part 8), what the writer brings: 48.8 KB a series as
+JSON against 17.8 KB as blocks; bytes written a tick 879 KB → 12.7 KB at 18 series, 4.9 MB → 70 KB at
+100; rows a tick 2 → 2 at 18 series, 10 → 2 at 100; CPU a tick 15 → 9 ms at 18 series, 92 → 43 ms at
+100. Scores, alerts and state are the same as with JSON over the anomaly fixtures and a long random
+sequence with gaps, evictions and replays, and the ruler's whole suite passes with the gate in either
+position (tested).
+
+**Cost.** One release in which the reader is shipped and unused but for a rollback, and the caps stay
+JSON's (18 series a default rule). Version 2's reader is tested against rows this code writes with
+the gate on, not against a deployed next release. Once the gate is on: a rollback below this release
+(to one without the reader) leaves rewritten rules `state_unreadable` until rolled forward, and
+nothing in the release tooling refuses it; the head (labels and last outcomes of every series) is
+still rewritten every tick, 13 KB at 18 series and 70 KB at 100; a third row about once an hour when
+a block leaves the window; base64 costs a third more than raw Float64; a seasonal series with few
+points in a block costs a full block; more series a rule means more of them start cold (the warm-up
+budget still warms about 9 at the default window, D51).
+
+**Would change if.** The release record carries format versions (then the rollback tool can refuse a
+rollback below the reader, and the gate can be checked by it); heads grow large enough to matter
+(then labels move to a row of their own, written when the series set changes); or a detector's state
+stops being a window of values on the grid.

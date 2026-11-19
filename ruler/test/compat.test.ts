@@ -247,7 +247,7 @@ describe('versioned storage: upgrade to version 2 (anomaly rules) and 3 (SLO rul
     expect((await alertsOf(stub, tenant, 'Down')).map((a) => a.state)).toEqual(['firing'])
 
     // It serves anomaly rules from there on, and their state survives eviction without a second migration.
-    ok(await stub.saveGroups(tenant, { groups: [{ name: 'a', interval: '1m', rules: [{ alert: 'Latency', expr: 'latency', anomaly: { params: { minPoints: 2, halfLifePoints: 5 } } }] }] }))
+    ok(await stub.saveGroups(tenant, { groups: [{ name: 'a', interval: '1m', rules: [{ alert: 'Latency', expr: 'latency', anomaly: { detector: 'ewma', params: { minPoints: 2, halfLifePoints: 5 } } }] }] }))
     // Groups g and a tick at different offsets: run alarms until a has been evaluated `n` more times.
     const latency = async () => ok(await stub.rules(tenant)).rules.find((r) => r.name === 'Latency')!
     const evaluateA = async (n: number) => {
@@ -281,7 +281,7 @@ describe('versioned storage: upgrade to version 2 (anomaly rules) and 3 (SLO rul
 
   it('Ruler storage at version 2 with anomaly state migrates to version 3 (two empty tables, compat 1) without a row changing, then serves SLO rules from state that survives eviction, and is not migrated twice', async () => {
     const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN })
-    ok(await stub.saveGroups(tenant, { groups: [{ name: 'a', interval: '1m', rules: [{ alert: 'Latency', expr: 'latency', anomaly: { params: { minPoints: 2, halfLifePoints: 5 } } }] }] }))
+    ok(await stub.saveGroups(tenant, { groups: [{ name: 'a', interval: '1m', rules: [{ alert: 'Latency', expr: 'latency', anomaly: { detector: 'ewma', params: { minPoints: 2, halfLifePoints: 5 } } }] }] }))
     w.evaluate = (q, t) => (q.includes('viz_slo_part') ? vec([{ viz_slo_part: 'total' }, 100], [{ viz_slo_part: 'bad' }, 1]) : vec([{ service: 'api' }, 100 + (Math.round(t / MIN) % 5)]))
     for (let i = 0; i < 3; i++) {
       world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)

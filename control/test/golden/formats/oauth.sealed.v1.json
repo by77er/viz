@@ -1,0 +1,9 @@
+{
+  "format": "oauth.sealed",
+  "version": 1,
+  "credential": "vza1.golden.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "aad": "golden/g_AAAAAAAAAAAAAAAAAAAAAA",
+  "plaintext": "the grant key secret, forty base62 chars",
+  "iv": "000000000000000000000000",
+  "sealed": "s1.AAAAAAAAAAAAAAAAcNrHuLP0RP8gWotUT2ZLh3nJQAifzp2dcq5kUVVa_d1Uo-294BSqKA8oTe0ESDvU9jokn_3JuZ0"
+}
