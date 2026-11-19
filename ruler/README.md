@@ -196,7 +196,9 @@ shorter than the step can be missed and firings closer than a step are joined; `
 shorter than the step counts as one step, otherwise it is rounded up to a whole number of
 steps; a step finer than the live interval can show firings live evaluation would not
 have seen; history is read as stored now, not as it was. At most 11,000 steps (Prometheus'
-range limit); a too-long range is refused with the smallest step that would work.
+range limit); a too-long range is refused with the smallest step that would work. Since contract
+version 4 every backtest is planned first and refused whole past a budget, and anomaly and SLO
+rules are backtested too (part 12).
 
 ### 5. Rule files
 
@@ -515,7 +517,7 @@ format `store.warmup` v1) in the save's transaction. At its group's first tick, 
 
 1. **The reads**: an anomaly rule's detector look-back at the interval (`max(minPoints,
    lookbackMs / interval)` points ending one interval before the tick: 20 for EWMA with half-life 10,
-   1,440 for robust z over a day); an SLO rule's fine ring (from the start of the coarse bucket its
+   the window for the robust z-score, `seasons` periods for the seasonal baseline); an SLO rule's fine ring (from the start of the coarse bucket its
    window begins in) and the rest of the compliance window as coarse buckets, each with `$window` at
    its own width. A detector without history (the threshold) is `not_needed`.
 2. **The cost, first**: every read, cut into pieces of at most 11,000 steps, is planned with
@@ -695,12 +697,13 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 331 tests in 20 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (`test/anomaly.bench.ts` runs only under `bench:anomaly`)
+npm test                # 364 tests in 22 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 93 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 115 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests), on a scratch copy; vitest runs with at most 2 workers
 npm run bench           # the measurements below
 npm run bench:anomaly   # anomaly rules in workerd (one worker): the "Anomaly rules" measurements below
+npm run bench:history   # SLO ticks, warm-ups and 7-day backtests in workerd (one worker): the "SLO rules, warm-ups and backtests" measurements below
 ```
 
 `npm run independent` needs Go 1.24 and the modules in `tools/promcheck/go.sum` (they were
@@ -724,9 +727,9 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `yaml.test.ts` | 37 | part 5 |
 | `robust.test.ts` | 15 | registry, sweeper, placement, shard splits and moves |
 | `independent.test.ts` | 2 | captures for `tools/promcheck` |
-| `compat.test.ts` | 16 | versioned storage: schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage; version 1 storage with data upgraded to 2; the previous release still a rollback target |
-| `golden.test.ts` | 4 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation |
-| `wiring.test.ts` | 13 | part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz`; notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
+| `compat.test.ts` | 17 | versioned storage: version 2 storage with anomaly state upgraded to 3 without a row changing, then SLO state surviving eviction; releases knowing 1 or 1–2 still rollback targets; schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage; version 1 storage with data upgraded to 2; the previous release still a rollback target |
+| `golden.test.ts` | 5 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation; the stored SLO rule, its key and per-tick expression, its rows, the warm-up status and the `slo_detail` annotation |
+| `wiring.test.ts` | 14 | warm-ups and backtests ask `/api/v1/plan` (start, end, step) for every read before any `/api/v1/query_range`, and an over-budget backtest fetches nothing; part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz`; notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
 | `slo.test.ts` | 20 | part 10: detection within one bucket of the SRE Workbook's formula for 100% to 0.1% error ratios (never where it says never), the library's table (1, 9, 44 and 217 minutes; 865 and 2,161), agreement with the library's own `burnRate.detect` at every point of 7,320 buckets (sentence included), the strict threshold with exactly representable numbers, coverage; the sentence and every number of `slo_detail` against an independent computation; in the object: one query per tick in the batch, page at the first bad minute and ticket at the fifth routed by severity, the page resolving 30 minutes after the outage; three rows a steady tick; evictions and replayed ticks, and a crash in the commit, giving exactly the state of a pure reference run; refusals (series cap, unpaired parts, a newer release's rows) changing nothing; a shard move; another tenant's rows neither loaded nor touched; validation with paths, fixes and warnings |
 | `history.test.ts` | 10 | parts 11 and 12: an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
 | `anomaly.test.ts` | 22 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide, authorisation, tenant isolation, documented schemas |
