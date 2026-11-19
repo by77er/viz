@@ -1371,16 +1371,24 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       const rules = doc.rules as unknown[]
       const all = allRules(existing.spec)
       const at = typeof id === 'string' ? all.findIndex((r) => r.kind !== 'record' && r.monitor?.id === id) : -1
-      // The document lists the ordinary rules, then the anomaly rules, as they are stored. The rule
-      // goes where it will be stored, so that `ruleIndex` names it in the errors and in the result.
-      const isAnomaly = typeof rule === 'object' && rule !== null && (rule as { anomaly?: unknown }).anomaly !== undefined
-      if (at >= 0 && (all[at]!.kind === 'anomaly') === isAnomaly) {
+      // The document lists the ordinary rules, then the anomaly rules, then the SLO rules, as they
+      // are stored. The rule goes where it will be stored, so that `ruleIndex` names it in the errors
+      // and in the result.
+      const kindOf = (r: unknown): 'alert' | 'anomaly' | 'slo' => {
+        const o = (typeof r === 'object' && r !== null ? r : {}) as { anomaly?: unknown; slo?: unknown }
+        return o.slo !== undefined ? 'slo' : o.anomaly !== undefined ? 'anomaly' : 'alert'
+      }
+      const kind = kindOf(rule)
+      const storedKind = (k: AnyRule['kind']) => (k === 'record' ? 'alert' : k)
+      if (at >= 0 && storedKind(all[at]!.kind) === kind) {
         ruleIndex = at
         rules[at] = rule
       } else {
         if (at >= 0) rules.splice(at, 1)
-        const ordinary = existing.spec.rules.length - (at >= 0 && at < existing.spec.rules.length ? 1 : 0)
-        ruleIndex = isAnomaly ? rules.length : ordinary
+        const removed = (k: 'alert' | 'anomaly' | 'slo') => (at >= 0 && storedKind(all[at]!.kind) === k ? 1 : 0)
+        const ordinary = existing.spec.rules.length - removed('alert')
+        const anomalies = (existing.spec.anomalyRules?.length ?? 0) - removed('anomaly')
+        ruleIndex = kind === 'slo' ? rules.length : kind === 'anomaly' ? ordinary + anomalies : ordinary
         rules.splice(ruleIndex, 0, rule)
       }
       if (group.interval !== undefined && parseDuration(group.interval) !== existing.spec.intervalMs) {
@@ -1482,6 +1490,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     const rt = g.anomaly.get(rule.key)
     const status = rt ? { ...rt.status, maxSeries: rule.anomaly.maxSeries } : emptyStatus(rule.anomaly.maxSeries)
     const w = g.warmup.get(rule.key)
+    if (w?.status === 'pending' && status.status === 'unknown') return { ...status, status: 'warming' as const, message: w.message ?? 'warming from history before the first evaluation', warmup: w }
     return w ? { ...status, warmup: w } : status
   }
 
