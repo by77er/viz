@@ -26,7 +26,8 @@ nyc_taxi), not on NAB in aggregate. **On a second benchmark the choice had never
 spread **generalised** by a rule fixed in advance: robust z 42.8 and seasonal 35.5, first and
 second as on NAB, above the static threshold (16.4) and EWMA (10.4), event F1 0.441 against
 0.328 and 0.206. EWMA did not: it fell below the static threshold. A proposed amendment to D33
-follows the SMD results; the validated window is over the ruler's state limit today.
+follows the SMD results; the validated window is over the ruler's state limit (applied 2026-11-19
+with a window of 1,500 points: D33 as rewritten, `ruler/README.md` part 8).
 
 ## Files
 
@@ -151,6 +152,9 @@ of both kinds from history** (part 11, D43). In short:
   in rules: `ewma`, `threshold`, `robust_z`, `seasonal`, `cusum` (`ANOMALY_DETECTORS`); `stl`,
   `pelt` and `burn_rate` are refused, with the reason (burn rate is its own rule kind, below). Every parameter is resolved and written
   out at save, so a later change of a default here never changes a stored rule.
+- **Superseded 2026-11-19** (the ruler's defaults now follow the SMD confirmation: robust z with
+  the quantile spread, window 1,500, for rules that do not page; design D33 as rewritten,
+  `ruler/README.md` part 8). What follows is the integration as first built.
 - **Defaults follow the held-out results below** (design D33): `ewma` with half-life 100 and
   k 8 (chosen on both folds), not this library's 30 / 4 (0.0 under NAB's protocol);
   `severity: page` with no detector is a static `threshold` (it beat EWMA in the low-FP profile,
@@ -204,8 +208,8 @@ of both kinds from history** (part 11, D43). In short:
   bucket rings in its own storage, and judges the windows with this library's
   `SRE_WORKBOOK_RULES` and `evaluateWindows` (one alert per series and severity, `page` and
   `ticket`). Not compiled to recording rules, and not the incremental `burnRate.detect` (its JSON
-  state would be rewritten every tick); D42 replaces D33's "burn rate is to compile to
-  recording rules". The window sums are the ruler's own (a second implementation of the
+  state would be rewritten every tick), by design D42, which replaced the earlier D33's clause on
+  burn rate. The window sums are the ruler's own (a second implementation of the
   summing), tested to agree with `burnRate.detect` at every point of 7,320 buckets when the
   counts are whole numbers (`ruler/README.md`, `slo.test.ts`). SLO rules are warmed from
   history the same way (their longest alert window and the compliance window).
@@ -714,6 +718,11 @@ the threshold, event F1 0.441 > 0.206). **Seasonal, quantile spread: GENERALISES
   not measured (SMD's labels do not say which anomalies are wrong only for their time of day).
 
 ### Proposed amendment to D33 (for the ruler's owner; not applied)
+
+*Applied 2026-11-19, with a smaller window: design D33 (rewritten) and `ruler/README.md` part 8.
+Items 1–5 were adopted with window 1,500 (the largest whose state fits the ruler's 64 KiB for any
+values; held out on NAB 42.6, SMD 42.5 post hoc, `ruler/tools/anomaly-default/`); the 4,000-point
+configuration can be named and is refused at save over that limit. The text below is as proposed.*
 
 `design/DECISIONS.md` and `ruler/` are not changed here. What the evidence above supports:
 

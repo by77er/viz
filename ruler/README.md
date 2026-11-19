@@ -53,6 +53,8 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `src/rules.ts`, `src/template.ts`, `src/classify.ts`, `src/payload.ts` | Rule-file validation; template subset; cost classification; webhook and Slack bodies |
 | `openapi.json` | OpenAPI 3.1 description of every route (checked against `ROUTES` by `test/http.test.ts`) |
 | `tools/promcheck/` | Go: Prometheus' own code reading what the ruler writes (see parts 2 and 5) |
+| `tools/anomaly-default/` | The evidence for the default anomaly window (part 8, D33): held-out NAB at a fixed window (`nab-window.ts`), SMD post hoc on a scratch copy of `anomaly/` (`smd-window.sh`, `smd-window.patch`), and their output (`out/`) |
+| `test/fixtures/anomaly/` | Anomaly rules as the release before the 2026-11-19 defaults stored them (the upgrade tests) |
 | `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden; `FakeQuery` and `FakeIngest` entrypoints (edge's real `authenticate`, tenant from the key), `FakeRecordedSamples` (viz-ingest's entrypoint as a caller sees it: caller from `props`, tenant and batch ids validated, one value per series and time) and control's real `Tenant` for the production wiring |
 | `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`); the config adds `HOST`, which reads workerd's CPU time, its resident memory and the load average in Node |
 | `test/slo.bench.ts` | SLO tick, warm-up and 7-day backtest measurements in workerd (`npm run bench:history`) |
@@ -283,7 +285,7 @@ one evaluation, the stored form), `src/rules.ts` (the `anomaly` block of a rule-
 - alert: CheckoutLatencyAnomaly
   expr: sum by (service) (rate(http_request_duration_ms_sum{service="checkout"}[5m]))
   keep_firing_for: 10m
-  anomaly: { detector: ewma, unit: ms, max_series: 20 }   # all optional
+  anomaly: { unit: ms, max_series: 18 }   # all optional: robust z with the quantile spread
 ```
 
 Through the monitors API, `query` plus `anomaly: { detector?, params?, unit?, severity?,
@@ -296,19 +298,109 @@ Unknown parameters, wrong types, `stepMs` (the interval is the step) and impossi
 refused with a path and a fix. The save answers the expression's cost class and the detector's
 `history` (tick class, cold-start class, look-back, points before scoring).
 
-**Defaults follow the evidence** (decision D33; the guide is `DETECTOR_GUIDE` in
-`src/anomaly.ts`, served at `GET /api/v1/monitors/detectors`; numbers from
-`anomaly/README.md`, held-out NAB, standard profile, nothing measured on viz's own data):
+**Defaults follow the evidence** (decision D33, rewritten 2026-11-19: it replaces the earlier D33,
+whose default was EWMA). The guide is `DETECTOR_GUIDE` in `src/anomaly.ts`, served at
+`GET /api/v1/monitors/detectors`; every number in it carries the kind of evidence behind it
+(`evidence.lines`, `EvidenceKind` in `contracts-proposal/rules.v2.ts`): **held out** (chosen on one
+half of NAB, scored on the other), **confirmed** or **not confirmed** on unseen data (frozen on NAB
+before SMD was fetched, scored on SMD once, judged by a rule written in advance), or **post hoc**
+(chosen or scored after seeing the results it is compared with). Numbers from `anomaly/README.md`
+and, for the window of 1,500 points, from `tools/anomaly-default/` (below). Scores are NAB's
+normalised score, standard profile unless marked; nothing is measured on viz's own data.
 
-| Detector | In rules | Default | Held-out NAB | What the guide says |
-|---|---|---|---|---|
-| `ewma` | yes | **the default**: half-life 100, k 8 (chosen on held-out folds; the library's own 30 / 4 scored 0.0), severity `ticket` | 30.1 (threshold 21.8) | validated on NAB only; below the threshold in the low-FP profile, so `ticket` |
-| `threshold` | yes | **with `severity: page` and no detector** (the author gives `above` / `below`) | 21.8; low-FP 5.5 vs EWMA 3.9 | the baseline; best where false alarms cost most |
-| `robust_z` | yes, with a warning | none (MAD spread) | −105.9 | below a static threshold; the quantile spread (44.8) is post hoc, warned as unvalidated, never a default |
-| `seasonal` | yes, with a warning | none; needs `periodMs` | −76.4 | below a static threshold in aggregate; the only one that sees phase-wrong values |
-| `cusum` | yes, with a warning; **may not page** | severity `info` | 15.1 | an explanation ("mean shifted from A to B at T"), not a pager |
-| `stl`, `pelt` | **refused** | | −352.2, −123.5 | explanations for scheduled jobs, not pagers |
-| `burn_rate` | **refused** | | not scorable on NAB | SLOs are to compile to recording rules (not built) |
+| Detector | In rules | Default | NAB | SMD | What the guide says |
+|---|---|---|---|---|---|
+| `robust_z` | yes | **the default for rules that do not page**: quantile spread (99th percentile of \|x − median\|), window 1,500, k 2, severity `ticket`; with `spread: mad` given, the library's defaults (window 288, k 3.5), warned | 42.6 held out (window 1,500); 44.8 post hoc (window chosen, 4,000); MAD −105.9 held out | 42.5 **post hoc** (window 1,500); 42.8 confirmed (window 4,000, frozen); MAD −318.2 confirmed below the threshold | first on both benchmarks; not for pages; MAD only on request |
+| `threshold` | yes | **with `severity: page` and no detector** (the author gives `above` / `below`) | 21.8; low-FP 5.5 (EWMA 3.9) | 16.4 confirmed; low-FP 15.5 (EWMA −38.4) | the baseline; best where false alarms cost most |
+| `ewma` | yes, with a warning | the default **until 2026-11-19**: rules saved then keep it | 30.1 held out (half-life 100, k 8) | 10.4 **not confirmed**: below the threshold in every profile | not a default, not a pager |
+| `seasonal` | yes | needs `periodMs`; without a spread, the quantile spread's frozen configuration (1 season, k 2, adapt robust); `spread: mad`: the library's (4 seasons, k 4), warned | 41.4 post hoc (spread chosen after the MAD results); MAD −76.4 | 35.5 confirmed; MAD −382.8 | values wrong for their time of day |
+| `cusum` | yes, with a warning; **may not page** | severity `info` | 15.1 | −147.6 confirmed below the threshold | an explanation ("mean shifted from A to B at T"), not a pager |
+| `stl`, `pelt` | **refused** | | −352.2, −123.5 | −1,065.0, −627.4 | explanations for scheduled jobs, not pagers |
+| `burn_rate` | **refused** | | not scorable | not scorable | an SLO is its own rule kind: part 10, decision D42 |
+
+**The window, and how it was chosen.** The configuration frozen on NAB and confirmed on SMD has a
+window of 4,000 points: about 145 KB of state a series, over the per-series limit (64 KiB). The rule
+set for this change: measure, held out on NAB with `anomaly/`'s protocol, the largest window that
+fits (and 1,000), and adopt it if it beats EWMA and the static threshold held out on NAB and on SMD;
+otherwise keep EWMA.
+
+- *Largest that fits.* The save-time estimate (`estimateStateBytes`, 36 bytes a point) would allow
+  1,781 points. Measured here (`node --experimental-strip-types`, the library and the stored entry's
+  shape): 18.7 bytes a point for integers, 29.4 for rates, 35.5 for 17-digit ratios and 39.7 for the
+  longest form a value prints in (`-0.0000012345678901234567`); at 1,781 points those reach 72 KB and
+  the run-time check refuses the rule (`state_limit_exceeded`). **1,500** is the largest round window
+  whose longest-printing state, with eight labels and an explanation, fits: 60.9 KB, 4.6 KB to spare
+  (pinned by a test, "the default window fits ... for any values").
+- *NAB, held out* (`tools/anomaly-default/nab-window.ts`: `anomaly/bench/nab-run.ts`'s held-out
+  protocol copied verbatim, `nab.ts` and `adapters.ts` imported unchanged and checked against the
+  hashes the freeze pinned; the window fixed, k chosen on each half from 1, 1.5, 2, 3; measured
+  here). The same script first reproduces the published rows exactly: threshold 21.84, EWMA 30.14,
+  robust z quantile 44.76 (standard).
+
+  | window | standard | low FP | low FN | k chosen (standard; low FP) | window recall / event precision |
+  |---|---|---|---|---|---|
+  | 1,500 | **42.64** | **29.71** | **55.38** | 1.5 and 2; 2 and 2 | 66% / 31% |
+  | 1,000 | 39.36 | 25.62 | 52.07 | 1.5 and 2; 2 and 2 | 65% / 29% |
+  | EWMA (published) | 30.14 | 3.92 | 40.80 | | 59% / 22% |
+  | threshold (published) | 21.84 | 5.49 | 32.74 | | 41% / 24% |
+
+- *SMD, post hoc* (`tools/anomaly-default/smd-window.sh`: `anomaly/`'s own SMD harness on a scratch
+  copy, one configuration added by `smd-window.patch`; library, adapters, scorer and frozen file byte
+  for byte, so the harness's integrity checks pass; k fixed at the frozen 2 before the run; every
+  published row came out unchanged beside the new one; 200 s of detector runs, measured here):
+  window 1,500: **42.5 / 21.2 / 50.8**; over EWMA +32.0 [20.6, 48.1], over the threshold +26.0
+  [14.6, 35.1] (standard, 95% machine bootstrap); low FP over the threshold +5.7 [−12.4, 19.0] (not
+  significant); event P / R / F1 28% / 63% / 0.382; 12.2 unmatched onsets per machine-day; without
+  the don't-care rule 39.2 / 14.8 / 48.6. Window 1,000 (already in `anomaly/README.md`, post hoc):
+  37.6 / 9.9 / 48.0, below the threshold's 15.5 in the low-FP profile. Output:
+  `tools/anomaly-default/out/`.
+- *Verdict.* 1,500 beats EWMA and the threshold held out on NAB in every profile and on SMD in the
+  standard profile (and in the other two, point estimates): it is the default. Its SMD score is
+  post hoc: only the 4,000-point window was pre-registered.
+
+**What it costs.** About 55 KB of state a series (estimate) against EWMA's 1.4 KB: a default rule's
+`max_series` falls to **18** (1 MiB a rule; the save warns), and a shard holds about 16 such rules at
+their cap. CPU, by the D51 model (part 14; its robust z price was calibrated at 3,992 and 11,768
+bytes of state, so this is an extrapolation): 1.5 + 3 + 0.0063 × 55,400 = **354 µs a point**, 0.53 s
+to warm one series; the 5 s warm-up budget warms about 9 series, and a rule with more starts cold
+(it scores after 20 points; its window is full after 25 h at a 1-minute interval). In Node here, one
+point at a time from state as warm-ups feed it, the cost grew 4.4–5.6 times from 288 to 1,500 points
+(the model: 4.5 times) and 13–17 times to 4,000 (the model: 11.7 times): for the 4,000-point window
+the model may under-price by up to about 1.5 times, its whole margin. Not measured in workerd.
+
+**The 4,000-point configuration stays nameable.** `params: { windowPoints: 4000 }` is refused at
+save with what it is and what fits: "robust_z with these parameters keeps about 145400 bytes of state
+per series at a 1m interval; the limit is 65536. This is the configuration frozen on NAB and
+confirmed on SMD (42.8); its window is over this ruler's per-series state limit", fix "Use a shorter
+window: windowPoints 1500, the default, is the largest whose state fits 65,536 bytes a series for any
+values (NAB held out 42.6, SMD 42.5 post hoc). A longer window needs the operator to raise
+RulerLimits.maxAnomalyStateBytesPerSeries." With that limit raised it is accepted, at most 7 series a
+rule (1 MiB), and priced by the D51 model at 1.5 + 3 + 0.0063 × 145,400 = **921 µs a point**: 3.7 s
+to warm one series, so the 5 s warm-up budget warms one, and a 1-day backtest of 7 series (4,000 +
+1,440 points each) is modelled at 35 s, over the 20 s backtest budget.
+
+**Existing rules: nothing changes.** Defaults are resolved and written out when a rule is saved
+(`AnomalySpec.params`, the stored group's JSON), never resolved at evaluation, so the stored form is
+the same and the contract version did not change; a release before this one reads rules saved after
+it (robust z and the quantile spread are known to it). Checked against storage the release before
+this change wrote: `test/fixtures/anomaly/before-2026-11-19.json` is the stored group that release's
+own `parseRuleFile` (commit 50a3232, bundled and run in Node before any edit) produced for three
+entries leaving fields out (no detector; `robust_z` without a spread; `seasonal` without a spread).
+Installed as that release left it and evicted, each rule's state and last score after 24 ticks
+equal a batch run of the library with the stored parameters: EWMA (half-life 100, k 8) for the
+first, the MAD for the other two. **Saved again**, the same entry would otherwise be resolved with
+today's defaults: a pipeline re-applying an unchanged rule file, or a client re-sending a monitor
+with `anomaly: {}`, would switch EWMA to robust z. So a save over a stored anomaly rule (the same
+group, and the same monitor id, or, without one, the only rule with the same name and expression)
+keeps, for each field the entry leaves out, the stored value that was the default when it was stored
+(`PREVIOUS_DEFAULTS`: detector `ewma`; for robust z the MAD, window 288, k 3.5; for seasonal the MAD,
+4 seasons, k 4; pinned against the fixture by a test), and warns: "this rule keeps detector ewma, the
+default when it was saved; a new rule would get robust_z with the quantile spread (design D33)". The
+re-saved fixture keeps its keys and state. Naming the detector or a parameter changes it; a parameter
+the stored detector does not have (e.g. `windowPoints` over an EWMA rule) means another detector, and
+today's default applies. A monitor renamed through `PUT /api/v1/monitors/{id}` is still matched by
+its id. A monitor moved to another interval is a new rule in another group (its state starts again)
+and takes today's defaults.
 
 **Each tick.** The anomaly rules of a group are evaluated in the group's batch call, after its
 other rules (`RuleGroup.anomalyRules`, kept out of `rules` so that an older release never runs one
@@ -343,7 +435,7 @@ another detector.
 
 | Bound | Default (`RulerLimits`) | Beyond it |
 |---|---|---|
-| Series per rule (`max_series`) | 100, or fewer when 100 series' estimated state would not fit the per-rule limit (the save warns: CUSUM 49, robust z 89); at most `maxAnomalySeriesPerRule` 1,000 | the evaluation is refused, `series_cap_exceeded` with the count; nothing is scored, no state row or alert changes; never a silent drop |
+| Series per rule (`max_series`) | 100, or fewer when 100 series' estimated state would not fit the per-rule limit (the save warns: CUSUM 49; robust z 18 at the default window of 1,500 points, 89 at 288); at most `maxAnomalySeriesPerRule` 1,000 | the evaluation is refused, `series_cap_exceeded` with the count; nothing is scored, no state row or alert changes; never a silent drop |
 | State of one series | 65,536 B | at save from the estimate (e.g. a weekly season at a 10 s interval); at run time `state_limit_exceeded`, nothing changes |
 | State of one rule | 1,048,576 B | the same |
 | State of one ruler object | 16 MiB, summed at save as estimate × `max_series` over all its anomaly rules | the save is refused with the rule's path: state is held in memory between ticks (parsed and as JSON, about 3 bytes of heap per stored byte) |
@@ -843,6 +935,14 @@ data names the tenant.
   Shard count never shrinks; there is no merge of under-used shards.
 - **`ALERTS` / `ALERTS_FOR_STATE`** are defined (`syntheticSeries`) but not written;
   **staleness markers**; **LogQL / TraceQL rules** (and so LogQL / TraceQL SLIs).
+- **Anomaly defaults (part 8, D33):** the frozen 4,000-point window within the default limits (it
+  needs the window stored incrementally, or a larger per-series limit); a CPU calibration of robust z
+  in workerd at 1,500 or 4,000 points (the D51 price is extrapolated from 288); a per-series check at
+  save that uses the longest number encoding (the estimate is 36 bytes a point for robust z, the
+  longest encoding 39.7, so a window above about 1,600 can pass the save and be refused at run time;
+  likewise a daily seasonal rule at a 1-minute interval, estimated 59 KB, measured up to 68 KB); the
+  MCP `backtest` tool's description still says the default is EWMA (`mcp/src/tools/backtest.ts`,
+  outside this component); the published design page was not regenerated.
 - **Anomaly rules (part 8):** the cross-series detector; STL refits and PELT as scheduled jobs; a
   placement that knows the per-object state budget (a save over it is refused, not moved to
   another shard); state written less often than every tick (each tick costs at least one row per
@@ -882,10 +982,12 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 381 tests in 23 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
+npm test                # 387 tests in 23 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 145 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 157 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint + 12 for the anomaly defaults of D33), on a scratch copy; vitest runs with at most 2 workers
+node --experimental-strip-types tools/anomaly-default/nab-window.ts   # held-out NAB at windows 1,000 and 1,500 (about 1 minute; needs anomaly/bench/fetch-nab.sh)
+VIZ_SCRATCH=<scratch> bash tools/anomaly-default/smd-window.sh        # SMD at window 1,500, post hoc, on a scratch copy of anomaly/ (about 5 minutes; needs anomaly/bench/fetch-smd.sh)
 npm run bench           # the measurements below
 npm run bench:anomaly   # anomaly rules in workerd (one worker): the "Anomaly rules" measurements below
 npm run bench:history   # SLO ticks, warm-ups and 7-day backtests in workerd (one worker; run each `B.` case alone with -t, and MINIFLARE_WORKERD_V8_FLAGS=--max-old-space-size=128 for the heap limit): the "SLO rules, warm-ups and backtests" and "Streaming" measurements below
@@ -920,12 +1022,11 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `slo.test.ts` | 20 | part 10: detection within one bucket of the SRE Workbook's formula for 100% to 0.1% error ratios (never where it says never), the library's table (1, 9, 44 and 217 minutes; 865 and 2,161), agreement with the library's own `burnRate.detect` at every point of 7,320 buckets (sentence included), the strict threshold with exactly representable numbers, coverage; the sentence and every number of `slo_detail` against an independent computation; in the object: one query per tick in the batch, page at the first bad minute and ticket at the fifth routed by severity, the page resolving 30 minutes after the outage; three rows a steady tick; evictions and replayed ticks, and a crash in the commit, giving exactly the state of a pure reference run; refusals (series cap, unpaired parts, a newer release's rows) changing nothing; a shard move; another tenant's rows neither loaded nor touched; validation with paths, fixes and warnings |
 | `history.test.ts` | 20 | parts 11–14: a backtest priced over its CPU budget refused after reading one window, with the projection the allowed run then costs exactly (RPC and HTTP 422 `cpu`); a run stopped before the first window whose series take it over; a warm-up refused by its CPU budget (also below the model's base) starting cold at once; an SLO backtest's evaluated part priced apart from its warm-up part; two warm-ups in one alarm: the second waits for the next alarm (no attempt, through an eviction), then equals the library's state; two groups in one late alarm do not both spend the budget;  windowed backtests across hundreds of boundaries equal to one window and to live evaluation (anomaly and SLO); the memory refusal before any plan or fetch (an SLO's rings over a small budget; 1,000 series of SLO state at the default budget, over HTTP); a warm-up refused by its memory budget; a window holding more points than sized for; an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
 | `recorded.test.ts` | 7 | part 15, through the production wiring with the entrypoint behind a real service binding (`FakeRecordedSamples`: caller from `props`, tenant and batch ids validated, one value per series and time): two tenants in one isolate each write with their own tenant as the argument and only their own batches, `+Inf` and `NaN` kept as text, no Remote Write; a rule reading the recorded series in the same tick sees it written (the entrypoint takes 60 ms to resolve); a refusal reported on the rule after one call; `unauthorized` (a binding naming `viz-mcp`), `invalid`, `series_limit`: one call each, no retry, no Remote Write, counted; `overloaded` then `backpressure` with a 300 ms hint: three calls at least 280 ms apart, written; `unavailable` once retried at once; three `unavailable`: given up, reported, counted; `too_large`: split by whole batches until each fits, a batch too large alone reported while the others are written; an ingest release without the entrypoint (`OLD_SINK`): the same samples by Remote Write with the service key, one log line without the key, nothing dropped, and after it the entrypoint again with no Remote Write; a crash in the commit after the write: the replay sends the identical batches, one row per series and time, one hand-off |
-| `anomaly.test.ts` | 22 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide, authorisation, tenant isolation, documented schemas |
+| `anomaly.test.ts` | 28 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide and its evidence kinds, authorisation, tenant isolation, documented schemas; the defaults across the 2026-11-19 change (D33): rules stored by the release before (`test/fixtures/anomaly/`) evaluate as stored (EWMA, the MAD) after the upgrade, saved again they keep their stored defaults, key and state, a renamed monitor stays EWMA, a new rule gets robust z, the 4,000-point configuration refused and nameable, `PREVIOUS_DEFAULTS` pinned to the fixture, the default window's longest-printing state under the per-series limit |
 
 The first seven files held the 123 tests that existed before this task; all still pass.
 Checked by per-file count (unchanged except `bench.test.ts`, which gained the two
-batch-form runs: 125 in those files now); the test bodies were not diffed against the
-earlier commit, because git was not used in this task. Repeating the
+batch-form runs: 125 in those files now). Repeating the
 randomized files (`ack`, `backtest`, `robust`, `monitors`, `exactly-once`) six times gave
 six passes.
 
@@ -1063,8 +1164,8 @@ the new "dryRun on every write" test.
 | 65 | anomaly: loading detector state does not name the tenant | anomaly: "every statement on detector state names the tenant …" (**survived the first run**: the injected foreign row reused a series key of this tenant, so it was overwritten on load; the test now gives it a key of its own and checks the series count after load; then killed) |
 | 66 | anomaly: the alert does not carry the detector's sentence | anomaly: "only the anomalous series fires; the receiver gets the library's sentence …" |
 | 67 | anomaly: the `severity` label not set from `anomaly.severity` | anomaly: "… severity routes" (+2 more) |
-| 68 | anomaly: the default EWMA uses the library's parameters (30 / 4) instead of the held-out ones | anomaly: "… severity routes" (+3 more, including the monitors API defaults) |
-| 69 | anomaly: `severity: page` without a detector defaults to EWMA, not the static threshold | anomaly: "… severity routes" (+1 more) |
+| 68 | anomaly: the ruler's evidence-based defaults dropped (the library's own: EWMA 30 / 4, and since D33's rewrite robust z with the MAD) | anomaly: "… severity routes" (+3 more, including the monitors API defaults; re-run and killed in the D33 change) |
+| 69 | anomaly: `severity: page` without a detector gets the non-paging default (EWMA, robust z since D33's rewrite), not the static threshold | anomaly: "… severity routes" (+1 more) |
 | 70 | anomaly: CUSUM may page | anomaly: "problems come back in the monitor's own field names …" |
 | 71 | anomaly: no per-series state limit at run time | anomaly: "a series whose state outgrows the per-series limit at run time is refused …" |
 | 72 | anomaly: no per-object state budget at save | anomaly: "the anomaly rules of one object may reserve at most maxAnomalyStateBytesPerObject …" |
@@ -1141,6 +1242,30 @@ the new "dryRun on every write" test.
 | 143 | entrypoint, fallback: Remote Write whenever INGEST is bound (the entrypoint never used) | recorded: "each tenant's samples go out with its own tenant as the argument …" (+2 more) |
 | 144 | entrypoint, duplicates: a replayed tick names its batches by wall-clock time (not the same batch again) | recorded: "each tenant's samples …"; "a crash after the samples were written, before the tick committed …" |
 | 145 | entrypoint, health: /healthz does not count a missing sink | wiring: "/healthz: 200 with the production bindings, 503 naming a missing one …" |
+| 146 | default (D33): flipped back to EWMA | anomaly: "an anomaly monitor is query + anomaly; its defaults follow the evidence …" (+2 more) |
+| 147 | default (D33): robust z without a spread defaults to the MAD | anomaly: same (+2 more) |
+| 148 | default (D33): seasonal without a spread defaults to the MAD | anomaly: "GET /monitors/detectors: …" (+2 more, including "saved again unchanged …") |
+| 149 | upgrade: a stored rule that named no detector is resolved at evaluation (today's default runs instead of the stored EWMA) | anomaly: "a rule stored without a detector before the change still evaluates as EWMA after the upgrade …" |
+| 150 | upgrade: today's defaults merged over the stored parameters at evaluation (a stored MAD rule runs the quantile spread) | anomaly: "only the anomalous series fires …" (+3 more) |
+| 151 | upgrade: a rule saved again takes today's defaults (the stored rule is not consulted) | anomaly: "saved again unchanged, a stored rule keeps the defaults it was stored with …" (+1 more, the monitors API one) |
+| 152 | upgrade: a rule saved again keeps the stored detector but takes today's parameter defaults | anomaly: "saved again unchanged …" |
+| 153 | upgrade: a monitor saved again is matched by name, not by its id (renamed, it takes today's default) | anomaly: "through the monitors API: a monitor stored as EWMA … even renamed, stays EWMA …" |
+| 154 | default window: 1,781 points (the save-time estimate's edge) instead of 1,500 | anomaly: "an anomaly monitor is query + anomaly …" (+2 more) |
+| 155 | evidence: the default window's SMD score labelled confirmed (it is post hoc) | anomaly: "GET /monitors/detectors: … the default window's SMD score is post hoc …" |
+| 156 | the 4,000-point configuration: refused without saying what it is | anomaly: "the 4,000-point configuration confirmed on SMD stays nameable …" |
+| 157 | `PREVIOUS_DEFAULTS`: robust z's earlier k wrong (3 instead of 3.5) | anomaly: "saved again unchanged …" (+1 more, the fixture pin) |
+
+**Anomaly-default mutants 146–157** (D33 replaced; `VIZ_SCRATCH=<scratch> node scripts/mutants.mjs
+68 69 146 … 157`, on a scratch copy): **14 of 14 killed on the first run** (68 and 69 renamed, their
+patterns unchanged); the copy deleted, shared tree unchanged. The three asked for: the default flipped
+back to EWMA (146), the spread defaulting to the MAD (147, 148), and an old rule changing behaviour on
+upgrade (149, resolved at evaluation; 150, parameters merged at evaluation; 151–153, a save over the
+stored rule). 148 was first only caught indirectly: the seasonal defaults were compared with the
+constant itself, so a literal check was added before the run. All 157 patterns were checked to match
+the source exactly once (reading the list without running the script). Mutants 1–67, 70–145 were not
+re-run in this change; the whole suite (387) passes. One accidental full run was started (importing
+`scripts/mutants.mjs` runs it); it was stopped after mutant 15 and its copy deleted: it ran on a
+scratch copy, never on the shared tree.
 
 **Recorded-samples mutants 131–145** (part 15; `VIZ_SCRATCH=<scratch> node scripts/mutants.mjs 131
 … 145`, on a scratch copy): **15 of 15 killed on the first run**; the copy deleted, shared tree
@@ -1584,6 +1709,13 @@ Outside `ruler/`; not made here.
    `contracts/rules.ts` version 3 (`WebhookConfig.format`, `JsonNotification`,
    `CONTROL_RECEIVER`), copied to `contracts-proposal/rules.ts` (identical apart from import
    paths, checked with `diff`).
+   For the anomaly defaults of D33 (2026-11-19): `contracts/rules.ts` doc text only (the
+   anomaly section's preamble, `AnomalySpecInput.detector` and `.params`: the new defaults, that
+   rules stored before keep theirs, and what a save over a stored rule keeps), with no version
+   change because the stored form did not change; copied to `contracts-proposal/rules.ts` the same
+   way. The guide's evidence lines (`EvidenceKind`, `EvidenceLine`, `DetectorGuide.evidence.lines`
+   and the value `confirmed` of `evidence.kind`) are additive, in the proposal
+   (`contracts-proposal/rules.v2.ts`), like the rest of `DetectorGuide`.
 
 Recorded here because this component may not edit `contracts/`. The proposal is
 `contracts-proposal/rules.v2.ts`: it re-exports the adopted contract and marks each
@@ -1670,6 +1802,13 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
     single global object)" and "jump-hash placement of whole groups (vs. a stored map)".
 
 ## Risks
+
+- **The anomaly default (D33, 2026-11-19) rests on two public benchmarks**, and the chosen
+  window's SMD score is post hoc (only the 4,000-point window was pre-registered). A default rule
+  watches at most 18 series and warms at most about 9 within the warm-up CPU budget (modelled, the
+  model extrapolated from 288 points); beyond that it warms live for up to a day at 1-minute
+  intervals. Rules saved again keep EWMA indefinitely, with a warning at each save, while EWMA fell
+  below a static threshold on SMD.
 
 - **Serial evaluation through HTTP** (part 9, until "Needed changes" 1): a group's tick takes
   the sum of its queries' latencies. At 0.1–0.3 s a query (modelled from the deploy trial's
