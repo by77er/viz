@@ -412,6 +412,24 @@ describe('a limiter that fails lets the request through (fails open, D70), says 
   }, 30_000)
 })
 
+describe('one budget per request (review m-1)', () => {
+  it('a binding that hangs takes the whole request\'s budget: the next binding of that request is not asked, and is tried by the next request', async () => {
+    const { admin } = await newTenant('rlbudget')
+    const c = await connect(admin)
+    const calls = { credential: 0, tenant: 0 }
+    const l = limited({
+      OAUTH_RL_CREDENTIAL: { limit: () => (calls.credential++, new Promise(() => {})) },
+      OAUTH_RL_TENANT: { limit: () => (calls.tenant++, new Promise(() => {})) },
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const r = await l.refresh(c.clientId, c.refresh)
+    expect(r.status).toBe(200)
+    expect(calls).toEqual({ credential: 1, tenant: 0 })
+    expect((await l.refresh(c.clientId, r.body.refresh_token)).status).toBe(200)
+    expect(calls).toEqual({ credential: 1, tenant: 1 })
+  })
+})
+
 describe('/healthz reports each limiter (review M-2, m-2)', () => {
   it('bound or absent, one line each after "ok", and whether OAuth can issue anything; an absent limiter is not a 503', async () => {
     const some = limited({ OAUTH_RL_SOURCE: env.RL_TEST_SOURCE, OAUTH_RL_BEARER: env.RL_TEST_BEARER })
