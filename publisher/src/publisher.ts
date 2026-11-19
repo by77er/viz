@@ -1365,6 +1365,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const pending = (detail: string): TenantLog => ({ tenant, status: 'deferred', detail, incarnation: step.incarnation, layout: 'segments', base: null, start: target, changes: [] })
     if (!complete) return pending(`re-base in steps: its added files are being written ahead of its commit (version ${target})`)
     if (budget.finishing !== null && budget.finishing !== tenant) return pending(`re-base in steps: written ahead, committed at a later publish (one per publish)`)
+    // The commit costs in proportion to the files it adds (their `live` rows, from the stage): it starts
+    // only within the budget, so it never comes on top of a publish's worth of staging or writing.
+    if (budget.finishing !== tenant && budget.work >= cfg.maxRebaseFilesPerPublish) return pending(`re-base in steps: written ahead, committed at the next publish (this one's budget is spent)`)
     if (!(await this.aheadIntact(store, step))) return pending(`re-base in steps: manifests written ahead were missing or changed; written again`)
     budget.finishing = tenant
     // Committed at `target`. When the changes after its start were read by an earlier publish, more

@@ -518,9 +518,13 @@ As built (2026-11-19, `query/README.md` "Traces and logs", D62): the query Worke
 Tempo's and Loki's HTTP APIs behind `QUERY_SIGNALS` (off by default). The adversarial review of
 the first version (`design/reviews/signals-end-to-end.md`) rejected it: a found trace's spans
 outside the window were never read (M-1), and the caps bounded rows and compressed bytes, not
-memory (M-2). Both are fixed as D62 now describes (rewritten 2026-11-19), with the review's
-inputs as tests; `QUERY_SIGNALS` stays off until D62 is reviewed again and the Cloudflare and
-Grafana runs of `query/README.md` ("Traces and logs", "What remains before the flag") have run.
+memory (M-2). Both were fixed as D62 describes, with the review's inputs as tests. The re-review
+(`design/reviews/signals-end-to-end-r2.md`, approve with changes) found the budget missing from the
+Loki label calls (R2-M1) and charged after the fact for derived structures and answers (R2-M2), the
+margin's cost larger than stated (R2-M3) and trace by ID refused for ordinary tenants (R2-M4a);
+all four are fixed as D62's second rewrite (2026-11-19) describes, with its reproductions as tests.
+`QUERY_SIGNALS` stays off until the re-review's narrow re-check of those four, and the Cloudflare
+and Grafana runs of `query/README.md` ("Traces and logs", "What remains before the flag").
 The write side of stage 2
 (D63) flushes and lists the `spans`, `trace_index` and `logs` tables, and tail reads choose
 batches by signal (`signals`) and, given a time range, skip span and log batches whose time
@@ -534,7 +538,7 @@ ingest and query Workers (`stack/README.md`, "Through the gateway"); answers equ
 engines' in-memory ones over whole corpora through edge, flush and the ledger are query's own
 end-to-end test (`query/test/signals.e2e.test.ts`). The engines (`engine/traceql`,
 `engine/logql`, clean-room, D35, D40, D50) are linked into the read path's one WASM module
-(`engine/wasm-query`, ABI 7), which reads the files `engine/storage` writes and the span and log
+(`engine/wasm-query`, ABI 8), which reads the files `engine/storage` writes and the span and log
 tail batches through the engines' read seams. The seam with the tail is the metrics one (§2):
 one ledger version per query, tails strictly after the plan and above its watermarks, refusals
 re-planned. Every read sends its signal to the shards (`signals`), asks only its signal's shards
@@ -544,35 +548,47 @@ another signal refuses the query, never misread).
 
 - **A trace the answer names is whole within a margin** (D62). A search, a TraceQL metrics
   query that needs whole traces, and trace by ID with a time hint read `trace_index` over the
-  window widened by the tenant's `traceMarginMs` (2 h) on each side (the bound); the engine
-  merges every fragment and tail span inside the bound per trace, finds the traces whose extent
-  overlaps the window, and gives the hull of their extents; the `spans` files of the hull are
-  read at the same ledger version, and the engine drops every span that starts outside the
-  bound before de-duplication. Every trace the answer names is evaluated over exactly its spans
+  window widened by the tenant's `traceMarginMs` (2 h) on each side (the bound); the engine finds
+  the traces whose extent, merged over their pieces in the bound (fragments and tail spans),
+  overlaps the window, in passes over the pieces' id and time columns that hold the window's
+  traces and the ids of those after it, not every trace of the bound; it gives their hull and the
+  ranges their pieces cover; the `spans` row groups that overlap those ranges are read at the
+  same ledger version (a long trace costs the flush units its far pieces lie in, not the hull),
+  and the engine drops every span that starts outside the bound before de-duplication. Measured
+  ceilings (here): a one-minute search answers at 72 traces a second in a window that ended hours
+  ago, and holds nothing for the margin in a window that ends now. Every trace the answer names is evaluated over exactly its spans
   that start inside the bound, wherever they were flushed and with pruning on or off: all of
   them when the trace lies within the margin of the window; a longer trace is answered from its
   part inside the bound, deterministically. A trace's summary is computed from its spans
   (`trace_index` counts are upper bounds: a retried span is counted twice). Metrics queries
-  whose pipeline is span-local read only the spans that start in the window. Structural operators
-  are evaluated per trace in one place.
+  whose pipeline is span-local, tag names and tag values read only the spans that start in the
+  window, cut before de-duplication (D62; review of D72 m-2): what lies outside the window cannot
+  change their answers. Structural operators are evaluated per trace in one place.
 - **Trace by ID:** the `trace_index` row groups whose trace-id range (from the index fragment)
   holds the id are read, over all time without a hint and over the hint and the margin with one;
   the trace's fragments name its extent and the `spans` hours that hold it, and only those hours'
-  files are read, their row groups chosen by time. Without a time hint every day is planned
-  (newest-first waves are not built). Inside an hour a flush unit's row group is decoded whole to
-  find the trace (the bloom filters are not used yet; measured: the cost of a call is the hour's
-  spans, not the trace's).
-- **Memory is bounded by bytes** (D62). The engine counts what each span or log call holds (rows,
-  a span's resource once per distinct resource, metric series' points, the answer four times)
-  against the tenant's `maxDecodedBytes` (32 MiB) and refuses past it (422). The row caps
-  (`maxSpans` 18,000, `maxLogRows` 30,000) are checked from the fragments before any fetch and
-  are derived from the budget and the memory a realistic row takes. Split execution by trace-id
-  hash, partial results with a cursor, and pushing predicates to sorted and promoted columns
-  are not built. A span or log query reads the signal's whole tail under `maxFetchBytes`,
-  whatever its window: a tenant with four or more span or log shards near their seal size is
-  refused (modelled). The shard can now skip span and log batches outside a read's time range
+  files are read, their row groups chosen by the trace's pieces. Inside them a flush unit's row
+  group is decoded whole to find the trace (the bloom filters are not used yet): the cost of a
+  call is the unit's spans, but only the trace's are held and counted against `maxSpans`, so a
+  large unit does not refuse it (R2-M4a). Without a time hint every day is planned (newest-first
+  waves are not built): modelled, every uncompacted `trace_index` file is read whole and a
+  compacted one by a row group of up to 2 MiB, so `maxFetchBytes` refuses a hintless lookup past
+  about 8 days of compacted retention above about 2.7 spans a second (D62, "Cost of it").
+- **Memory is bounded by bytes, charged before each thing is made** (D62). The engine charges what
+  each span or log call holds (rows, a span's resource once per distinct resource) and what it
+  derives as it grows (metric series with every point, histogram buckets and one output series
+  per bucket or quantile, tag and label sets, LogQL label sets from `regexp` or `label_format`,
+  trace extents), against the tenant's `maxDecodedBytes` (32 MiB), the Loki label calls included,
+  and the answer four times before it is written; it refuses (422) before the thing that would
+  pass the budget is made. A call's peak WASM memory is then the budget plus what it was handed
+  plus a constant measured under 12 MiB (it reached 0.1 to 0.9 GB on a few hundred rows before).
+  The row caps (`maxSpans` 18,000, `maxLogRows` 30,000) count rows held and are checked from the
+  fragments before any fetch (trace by ID by bytes). Split execution by trace-id hash, partial
+  results with a cursor, and pushing predicates to sorted and promoted columns are not built. A
+  span or log query sends its range to the shards, which skip span and log batches outside it
   (D72; measured here: a one-hour query takes 2.3 MB instead of 18.7 MB from an eight-hour span
-  tail, 11.7 MB with the trace margin), but the query does not send the range yet.
+  tail, 11.7 MB with the trace margin); a backlog over `maxFetchBytes` inside one range is still
+  refused.
 - **Tables and engine:** the `spans` and `trace_index` tables are specified in
   `contracts/TRACES.md` and written by `engine/storage`; flush writes them (stage 2, D63).
 - **Logs:** row groups are chosen from each file's stream list and times; rows of streams no
@@ -581,7 +597,8 @@ another signal refuses the query, never misread).
   (compaction writes it inside the file, D65) is not read by the query path (it would skip row
   groups for line filters such as `|=`; not built); split execution and partial results with
   a cursor are not built either. Labels and series come from the fragments'
-  stream lists without reading data where the lists exist.
+  stream lists without reading data where the lists exist, under the byte budget; past it they
+  are refused, never cut short (Loki's API documents no `limit` for them).
 
 ### 6.5 Cost visibility
 

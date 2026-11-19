@@ -211,7 +211,7 @@ describe('the upgrade to D67, re-bases capped per publish', () => {
       await p.configure({ maxRebaseFilesPerPublish: c.cap, maxRebasesPerPublish: 100 })
       const upgrade: unknown[] = []
       for (let i = 0; ; i++) {
-        expect(i).toBeLessThan(c.tenants + 2)
+        expect(i).toBeLessThan(c.tenants * 10 + 2)
         t0 = Date.now()
         const r = await p.publish(ts)
         const s = summary(r, t0, Date.now())

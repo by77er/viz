@@ -147,11 +147,12 @@ export class TestPublisher extends Publisher {
     return this.probe
   }
 
-  private opCut: { left: number; reached: () => void; seen: string[] } | null = null
+  private opCut: { left: number; reached: () => void; seen: string[]; match: RegExp | null } | null = null
   private async beforeOp(op: string, key: string): Promise<void> {
     const c = this.opCut
     if (!c) return
     c.seen.push(`${op} ${key}`)
+    if (c.match && !c.match.test(`${op} ${key}`)) return
     if (--c.left > 0) return
     this.opCut = null
     c.reached()
@@ -159,22 +160,20 @@ export class TestPublisher extends Publisher {
   }
 
   /**
-   * The `n`-th R2 operation of any kind (1: the next) from now waits for ever: `reached` resolves there
-   * with the operations seen up to it, and the test resets the object (`abortNow`), as the platform
-   * does when an invocation runs out of CPU. If the invocation ends first, `reached` never resolves.
+   * Arms a cut: the `n`-th R2 operation (1: the next) from now, of any kind or of those whose
+   * `"{op} {key}"` matches `match`, by whatever invocation of this object makes it (a test's run, or
+   * the platform retrying an alarm that failed), waits for ever. Resolves, with the operations seen up
+   * to it, when it is reached; the test then resets the object (`abortNow`), as the platform does when
+   * an invocation runs out of CPU.
    */
-  async cutAtOp(n: number): Promise<void> {
-    this.opCut = { left: n, reached: () => {}, seen: [] }
-  }
-  /** Resolves with the operations seen when the cut armed by `cutAtOp` is reached; null at once if none is armed (it was reached already). */
-  async cutReached(): Promise<string[] | null> {
-    const c = this.opCut
-    if (!c) return null
+  async cutAt(n: number, match?: string): Promise<string[]> {
     return new Promise<string[]>((resolve) => {
+      const c = { left: n, seen: [] as string[], reached: () => {}, match: match ? new RegExp(match) : null }
       c.reached = () => resolve(c.seen)
+      this.opCut = c
     })
   }
-  /** Whether a cut armed by `cutAtOp` is still waiting to be reached (disarms it). */
+  /** Whether a cut armed by `cutAt` is still waiting to be reached (disarms it). */
   async disarmCut(): Promise<boolean> {
     const armed = this.opCut !== null
     this.opCut = null

@@ -2,7 +2,8 @@
  * Filtered, paged tail reads (CARDINALITY.md "What is left" 1; D48): the shard's side.
  *
  * A shard stores each acknowledged batch as the bytes `edge` sent (contracts/BATCH.md, `VZB1`).
- * Appends never look inside them. A FILTERED tail read does: for each stored batch above the
+ * An append reads only the header, and of a span or log batch the entry table's lengths and its
+ * time column (`batchTimeBounds`, D72). A FILTERED tail read reads more: for each stored batch above the
  * caller's watermark it reads the series table and the row arrays, keeps the series that match
  * (metric names, exact label values, a range of `series_id`) and the rows of those series in the
  * time range, and writes them out as a new `VZB1` batch: the series entries' bytes as stored,
@@ -20,6 +21,14 @@ export const TAIL_READ_VERSION = 1
 export const TAIL_PAGE_MAX_BYTES = 16 * 1024 * 1024
 /** One call examines at most this many stored bytes; the rest is the next page's. */
 export const TAIL_SCAN_MAX_BYTES = 32 * 1024 * 1024
+/**
+ * One call considers at most this many stored batches, skipped ones included; the rest is the next
+ * page's (review of D72, M-1: a batch skipped by its time bounds costs no payload read, but its
+ * index entries are still read, so their number is bounded too). Measured here (local workerd,
+ * bench/skipread.node.mjs): about 0.1 KB of pages and 0.4 µs per skipped batch, so this many cost
+ * about 3 MB and 13 ms at most.
+ */
+export const TAIL_SCAN_MAX_BATCHES = 32_768
 
 /**
  * What a filtered tail read keeps. Every field is optional; what is absent does not filter. A row
@@ -41,11 +50,12 @@ export const TAIL_SCAN_MAX_BYTES = 32 * 1024 * 1024
  * contracts/BATCH.md "Tail reads of spans and log records by time"): the shard records each span
  * or log batch's time bounds once, at append (`batchTimeBounds`: the floor in milliseconds of its
  * smallest and largest span `start` or log `ts`). A filtered read with a time range skips a span
- * or log batch whose bounds lie wholly outside `[minTs, maxTs]`, without reading it, and returns
- * every other one whole, as before. A batch without bounds (written before schema 3, or by the
- * release before it, or one the shard could not walk) is kept by every time range. So a caller
- * that needs every span starting (or log record stamped) in `[lo, hi]` nanoseconds passes
- * `minTs = floor(lo / 10⁶)`, `maxTs = floor(hi / 10⁶)` and gets every batch that holds one.
+ * or log batch whose bounds lie wholly outside `[minTs, maxTs]`, deciding from an index of the
+ * bounds without reading the batch from storage (review of D72, M-1), and returns every other one
+ * whole, as before. A batch without bounds (written before schema 3, or by the release before it,
+ * or one the walk does not accept) is kept by every time range. So a caller that needs every span
+ * starting (or log record stamped) in `[lo, hi]` nanoseconds passes `minTs = floor(lo / 10⁶)`,
+ * `maxTs = floor(hi / 10⁶)` and gets every batch that holds one.
  */
 export interface TailFilter {
   /** Keep only batches whose signal byte is one of these (1 metrics, 2 spans, 3 log records). */
@@ -185,20 +195,28 @@ const NS_PER_MS = 1_000_000n
  *
  * Read without decoding the batch: the entry table is walked by its length fields
  * (contracts/BATCH.md, "Spans, signal 2", "Log records, signal 3") to find the one fixed-width
- * column, which is then scanned as pairs of u32 (exact, no float). Null for a metric batch, a
- * batch of another signal, an empty one, and any batch whose lengths do not lead to a whole
- * column inside it, or that holds a time outside `0 … 2^63 − 1`: such a batch is stored without
- * bounds and every time range keeps it. It never throws: an append is never refused for it.
+ * column, which is then scanned as pairs of u32 (exact, no float). Only the layout BATCH.md
+ * defines is walked: `flags` and `reserved` zero (a later layout says so there, or by a new magic
+ * or signal: BATCH.md "The one layout a shard reads"), at least one entry, zero padding before and
+ * after the `entry` column (review of D72, m-1). Null for a metric batch, a batch of another
+ * signal or layout, an empty one, and any batch whose lengths do not lead to a whole column
+ * inside it, or that holds a time outside `0 … 2^63 − 1`: such a batch is stored without bounds
+ * and every time range keeps it. It never throws: an append is never refused for it.
+ *
+ * Cost: linear in the entry table and the column, paid once per append (review of D72, m-4; see
+ * bench/walk.node.mjs and shard/README.md for the measurements).
  */
 export function batchTimeBounds(payload: Uint8Array): { minTs: number; maxTs: number } | null {
   const signal = batchSignal(payload)
   if (signal !== 2 && signal !== 3) return null
   const len = payload.length
   const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+  // Flags and reserved: a layout this code does not know (BATCH.md: a later one signals itself here).
+  if (payload[5] !== 0 || payload[6] !== 0 || payload[7] !== 0) return null
   const n = dv.getUint32(8, true)
   const entries = dv.getUint32(12, true)
   // Every row takes more than 8 bytes, every entry more than 8: anything larger cannot be walked.
-  if (n === 0 || n > len / 8 || entries > len / 8) return null
+  if (n === 0 || entries === 0 || n > len / 8 || entries > len / 8) return null
   let p = 16
   const skip16 = (): boolean => {
     if (p + 2 > len) return false
@@ -239,10 +257,16 @@ export function batchTimeBounds(payload: Uint8Array): { minTs: number; maxTs: nu
     }
     if (p > len) return null
   }
-  // Every column starts at a multiple of 8: `entry` u32[n], then (spans) trace_id 16n, span_id 8n,
-  // parent_span_id 8n, then `start` i64[n]; (logs) `ts` i64[n] straight after `entry`.
+  // Every column starts at a multiple of 8 after zero padding: `entry` u32[n], then (spans)
+  // trace_id 16n, span_id 8n, parent_span_id 8n, then `start` i64[n]; (logs) `ts` i64[n] straight
+  // after `entry`. Padding that is not zero is a layout this code does not know.
   const at8 = (x: number) => Math.ceil(x / 8) * 8
-  let col = at8(at8(p) + 4 * n)
+  const entryAt = at8(p)
+  const entryEnd = entryAt + 4 * n
+  let col = at8(entryEnd)
+  if (col > len) return null
+  for (let i = p; i < entryAt; i++) if (payload[i] !== 0) return null
+  for (let i = entryEnd; i < col; i++) if (payload[i] !== 0) return null
   if (signal === 2) col += 32 * n
   if (col + 8 * n > len) return null
   // The smallest and largest value, compared as (high, low) u32 pairs: exact for every i64.

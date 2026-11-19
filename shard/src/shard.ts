@@ -4,10 +4,10 @@ import type { Ledger } from '../../ledger/src/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 import { SeriesWindow, UnreadableSketch } from './sketch'
 import {
-  TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailPage, type TailReadOptions, UnreadableBatch, batchTimeBounds, compileFilter, decodeCursor,
-  encodeCursor, filterBatch, fnv64,
+  type CompiledFilter, TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, type TailPage, type TailReadOptions, UnreadableBatch, batchTimeBounds,
+  compileFilter, decodeCursor, encodeCursor, filterBatch, fnv64,
 } from './tail'
-export { TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange } from './tail'
+export { TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange } from './tail'
 
 /**
  * A pooled shard: the write-ahead log for several tenants in one Durable Object.
@@ -83,6 +83,8 @@ export interface ShardConfig {
   maxGroupBytes: number
   /** A filtered tail read examines at most this many stored bytes per call; the rest is its next page (D48). */
   tailScanMaxBytes: number
+  /** A filtered tail read considers at most this many stored batches per call, skipped ones included (review of D72, M-1). */
+  tailScanMaxBatches: number
   /**
    * Registration before writes (D61; spec/README.md "Proposed fixes", R2). `logged`: an append
    * to a stream the tenant's ledger has not yet answered as registered AND logged is refused
@@ -125,6 +127,7 @@ export const DEFAULT_CONFIG: ShardConfig = {
   groupWindowMs: 0,
   maxGroupBytes: 4 << 20,
   tailScanMaxBytes: TAIL_SCAN_MAX_BYTES,
+  tailScanMaxBatches: TAIL_SCAN_MAX_BATCHES,
   registration: 'lazy',
   registerRetryAfterMs: 500,
   registerBackoffMs: 250,
@@ -191,16 +194,46 @@ export const SHARD_SCHEMA: SchemaSpec = {
     // (no backfill), and so do rows the release before writes (it names its columns and never
     // rewrites a row's other columns): this release relies on nothing it does not write itself,
     // and its only use of the columns is to skip a batch, never to keep one. Nullable, no default.
+    //
+    // `batch_time` (review of D72, M-1): `ADD COLUMN` puts the two columns after the payload in
+    // each record, so reading them from the row walks every overflow page of the payload. A read
+    // decides from this index instead (`tailPage`, `INDEXED BY`), which holds the bounds without
+    // the payload. PARTIAL: only rows with bounds have an entry, so a span or log append writes one
+    // more row (billed) and a metric append none. SQLite maintains it for every writer, the release
+    // before included (its rows have NULL bounds: no entry, kept by every range), so it can never
+    // disagree with the row it indexes. Built here over rows that all have NULL bounds: it reads
+    // each row's header, not its payload, and writes no entry.
     version: 3,
-    name: 'batch.min_ts, batch.max_ts: a span or log batch\'s time bounds, NULL when unknown (D72)',
+    name: 'batch.min_ts, batch.max_ts: a span or log batch\'s time bounds, NULL when unknown, and their index batch_time (D72)',
     readableFrom: 1,
     up: (sql) => {
       const have = columnsOf(sql, 'batch')
       if (!have.has('min_ts')) sql.exec(`ALTER TABLE batch ADD COLUMN min_ts INTEGER`)
       if (!have.has('max_ts')) sql.exec(`ALTER TABLE batch ADD COLUMN max_ts INTEGER`)
+      sql.exec(`CREATE INDEX IF NOT EXISTS batch_time ON batch (tenant, seq, min_ts, max_ts) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL`)
     },
   }],
 }
+
+/**
+ * True for a batch `b` that a read's time range skips (D72): it has bounds, and they lie wholly
+ * outside the range. Decided from the partial index `batch_time` alone, which holds the bounds
+ * without the payload (review of D72, M-1: in the row they follow the payload, so reading them
+ * there reads every overflow page of it; measured in shard/bench/skipread.node.mjs). Arguments:
+ * the tenant, the range's `minTs`, its `maxTs`. `INDEXED BY` because SQLite's planner does not
+ * pick a covering index by itself here (review M-1), and it fails the statement, never silently
+ * reads the rows, if the index is missing.
+ */
+const SKIPPED_BY_BOUNDS = `EXISTS (SELECT 1 FROM batch AS t INDEXED BY batch_time WHERE t.tenant = ? AND t.seq = b.seq
+  AND t.min_ts IS NOT NULL AND t.max_ts IS NOT NULL AND (t.max_ts < ? OR t.min_ts > ?))`
+
+/**
+ * A filtered tail read with a time range: the batches `seq BETWEEN ? AND ?` of one tenant that the
+ * range does not skip (`SKIPPED_BY_BOUNDS`), in order. Arguments: tenant, first seq, last seq, then
+ * `SKIPPED_BY_BOUNDS`'s. `payload IS NOT NULL` is left to the caller. Exported for the plan test.
+ */
+export const TIMED_TAIL_SQL = `SELECT b.seq AS seq, b.rows AS rows, b.payload AS payload FROM batch AS b
+  WHERE b.tenant = ? AND b.seq BETWEEN ? AND ? AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`
 
 /**
  * The format version of `FlushMessage` (contracts/COMPATIBILITY.md §3.1: a JSON message
@@ -250,7 +283,7 @@ export interface AppendRequest {
   rows: number
   /**
    * The `series_id` of every entry of the batch's series table, in table order
-   * (contracts/BATCH.md, "Active series"). The shard does not parse batches; it only checks
+   * (contracts/BATCH.md, "Active series"). For this the shard reads only the header: it checks
    * that the length equals the header's `n_series`. Without it the batch is not metered.
    */
   seriesIds?: BigInt64Array
@@ -329,8 +362,11 @@ export type TailResult =
    * filter keeps of batch `seq` alone are `bytes`, more than the page may hold: nothing is
    * returned, never a truncated batch. Ask again with a larger `maxBytes` (up to
    * `TAIL_PAGE_MAX_BYTES`, which one stored batch never exceeds) or a narrower filter.
+   * `last` (added with the review of D72, n-1; absent from a shard before it): true when no batch
+   * after `seq`, up to `through`, can hold a row this read keeps by its time bounds, so `bytes`
+   * completes the read; false when one may (or when the shard did not look that far).
    */
-  | { status: 'page_limit'; seq: number; bytes: number; maxBytes: number }
+  | { status: 'page_limit'; seq: number; bytes: number; maxBytes: number; last?: boolean }
   /** Options or a cursor this shard refuses (malformed, or a cursor of another read). Not retryable as is. */
   | { status: 'invalid'; reason: string }
   /** Options or a cursor of a version this shard does not read (COMPATIBILITY.md §3.2). */
@@ -1045,7 +1081,9 @@ export class Shard extends DurableObject<ShardEnv> {
    * only the signals it names; the series fields select metric rows only, and a span or log batch
    * the read admits is returned whole. The time range selects metric rows, and (D72) span and
    * log batches whole by the bounds recorded at append: one wholly outside the range is skipped,
-   * one without bounds is kept. A metrics read should pass
+   * decided from the index `batch_time` without reading its payload, and one without bounds is
+   * kept. One call considers at most `tailScanMaxBatches` batches, skipped ones included, and
+   * examines at most `tailScanMaxBytes` of them (review of D72, M-1). A metrics read should pass
    * `signals: [1]`: a shard of an earlier release ignores the field and refuses (throws) on a
    * span or log batch, so a caller must also read only its signal's shards by name.
    */
@@ -1110,19 +1148,21 @@ export class Shard extends DurableObject<ShardEnv> {
     let scannedBytes = 0
     let next: number | null = null
     // Row by row from SQLite (nothing is awaited here), so the page holds what it returns and
-    // one stored batch, not the tail. With a time range, a batch whose recorded bounds lie wholly
-    // outside it (a span or log batch, D72) is skipped here, its payload never read; a batch
-    // without bounds (a metric batch, or one stored before schema 3 or by the release before) is
-    // always read, and `filterBatch` decides as before. A skipped batch is not examined: it counts
-    // in neither `scannedBatches` nor `scannedBytes`.
+    // one stored batch, not the tail. One call considers the batches `from … upto`, at most
+    // `tailScanMaxBatches` of them, and examines at most `tailScanMaxBytes` of those; the rest is
+    // the next page's (D48; review of D72, M-1). With a time range, a span or log batch whose
+    // recorded bounds lie wholly outside it (D72) is skipped in SQL, decided from the index
+    // `batch_time` (`TIMED_TAIL_SQL`), never from the row: its payload is not read. A batch without
+    // bounds (a metric batch, or one stored before schema 3 or by the release before) has no entry
+    // there and is always read; `filterBatch` decides as before. A skipped batch is not examined: it
+    // counts in neither `scannedBatches` nor `scannedBytes`.
+    const upto = Math.min(through, from + Math.max(1, this.cfg.tailScanMaxBatches) - 1)
     const rows = f.timed
-      ? this.ctx.storage.sql.exec(
-        `SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL
-           AND (min_ts IS NULL OR max_ts IS NULL OR (max_ts >= ? AND min_ts <= ?)) ORDER BY seq`,
-        tenant, from, through, Math.max(f.minTs, Number.MIN_SAFE_INTEGER), Math.min(f.maxTs, Number.MAX_SAFE_INTEGER),
-      )
-      : this.ctx.storage.sql.exec(`SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL ORDER BY seq`, tenant, from, through)
+      ? this.ctx.storage.sql.exec(TIMED_TAIL_SQL, tenant, from, upto, ...this.skipArgs(tenant, f))
+      : this.ctx.storage.sql.exec(`SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL ORDER BY seq`, tenant, from, upto)
     for (const r of rows) {
+      // (Checked here, not in `TIMED_TAIL_SQL`: there it would read every row's record, skipped ones too.)
+      if (r.payload === null) continue
       const seq = r.seq as number
       if (scannedBytes >= this.cfg.tailScanMaxBytes) {
         next = seq
@@ -1141,13 +1181,15 @@ export class Shard extends DurableObject<ShardEnv> {
       }
       if (!kept) continue
       if (bytes + kept.bytes.byteLength > limit) {
-        if (batches.length === 0) return { status: 'page_limit', seq, bytes: kept.bytes.byteLength, maxBytes: limit }
+        if (batches.length === 0) return { status: 'page_limit', seq, bytes: kept.bytes.byteLength, maxBytes: limit, last: this.lastKept(tenant, f, seq, through) }
         next = seq
         break
       }
       batches.push({ seq, rows: kept.rows, payload: kept.bytes })
       bytes += kept.bytes.byteLength
     }
+    // The call's batches ended before the tail's: the next page starts after them.
+    if (next === null && upto < through) next = upto + 1
     const page: TailPage = {
       v: TAIL_READ_VERSION,
       next: next === null ? null : encodeCursor({ inc: s.incarnation, above: aboveSeq, through, seq: next, ...binding }),
@@ -1155,6 +1197,28 @@ export class Shard extends DurableObject<ShardEnv> {
       scannedBytes,
     }
     return { status: 'ok', incarnation: s.incarnation, through, batches, page }
+  }
+
+  /** The arguments of `SKIPPED_BY_BOUNDS`: the tenant, then the read's range as SQL integers. */
+  private skipArgs(tenant: string, f: CompiledFilter): [string, number, number] {
+    return [tenant, Math.max(f.minTs, Number.MIN_SAFE_INTEGER), Math.min(f.maxTs, Number.MAX_SAFE_INTEGER)]
+  }
+
+  /**
+   * `page_limit`'s `last` (review of D72, n-1): true when no batch after `seq`, up to `through`, can
+   * hold a row this read keeps by its time bounds, so the batch's bytes complete the read. Without
+   * a time range only `through` itself is last. With one, the batches after `seq` the range does
+   * not skip are looked for in the index (no payload is read), at most `tailScanMaxBatches` of them:
+   * false when one is found, or when the look stops before `through`.
+   */
+  private lastKept(tenant: string, f: CompiledFilter, seq: number, through: number): boolean {
+    if (seq >= through) return true
+    if (!f.timed) return false
+    const upto = Math.min(through, seq + Math.max(1, this.cfg.tailScanMaxBatches))
+    const kept = this.ctx.storage.sql
+      .exec(`SELECT b.seq AS seq FROM batch AS b WHERE b.tenant = ? AND b.seq > ? AND b.seq <= ? AND NOT ${SKIPPED_BY_BOUNDS} LIMIT 1`, tenant, seq, upto, ...this.skipArgs(tenant, f))
+      .toArray()
+    return kept.length === 0 && upto === through
   }
 
   /**

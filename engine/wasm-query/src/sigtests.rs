@@ -487,8 +487,10 @@ fn r2_m2_a_metric_answer_is_charged_before_it_is_written() {
 
 #[test]
 fn r2_m2_tag_values_are_charged_as_the_set_grows() {
-    // 500 spans with their own 60 KB value (107.7 MiB before).
-    let rows: Vec<_> = (1..=500u64).map(|i| (id16(i), [1u8; 8], None, T0 + i as i64 * 1_000_000, T0 + i as i64 * 1_000_000 + 1000, vec![("blob".to_string(), format!("{i}{}", "x".repeat(60_000)))])).collect();
+    // 500 spans with their own 60 KB value (107.7 MiB before), all of one trace: the set grows
+    // while every span of the trace is still held (with a trace per span, the spans are let go as
+    // the set grows, and the set's charge would not change the peak).
+    let rows: Vec<_> = (1..=500u64).map(|i| (id16(1), i.to_be_bytes(), None, T0 + i as i64 * 1_000_000, T0 + i as i64 * 1_000_000 + 1000, vec![("blob".to_string(), format!("{i}{}", "x".repeat(60_000)))])).collect();
     let files: Vec<Vec<u8>> = rows.chunks(10).flat_map(|c| span_files(&spans_of(c)).0.into_iter().map(|f| f.bytes)).collect();
     let w = W::default().u8(2).item(b"span.blob").item(b"").i64(T0).i64(T0 + 60 * MIN).u32(0).u64(18_000).u64(BUDGET).files(&files).files(&[]);
     let (r, held) = peak(|| run(traces::do_tq_tag_values, w));
@@ -553,6 +555,13 @@ fn r2_m1_the_label_calls_have_a_budget_and_refuse_past_it_before_they_hold_it() 
     let files = fat_streams(300);
     let (r, held) = labels_call(2, "", &files, BUDGET);
     eprintln!("PEAK r2_m1_the_label_calls_have_a_budget_and_refuse_past_it_before_they_hold_it r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
+    assert_eq!(limit_name(&r), "limit max_decoded_bytes");
+    assert!(held <= BUDGET + SLACK, "held {held}");
+    // 100 streams: their label sets fit (24 MB), their answer charged four times (95 MB) does
+    // not, and is refused before it is written (113 MiB and a 200 before).
+    let hundred = fat_streams(100);
+    let (r, held) = labels_call(2, "", &hundred, BUDGET);
+    eprintln!("PEAK r2_m1 series of 100: {held} bytes, {}", limit_name(&r));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
     // Names keep only the names: they answer, in little memory, however fat the values.
@@ -728,4 +737,54 @@ fn d72_m2_span_local_calls_cut_to_their_window_before_de_duplication() {
     assert_eq!(values(&both), values(&only));
     assert_eq!(count(&both), count(&only));
     assert!(count(&both).unwrap().contains("\"value\":1"), "{:?}", count(&both));
+}
+
+#[test]
+fn r2_m3_log_query_lets_go_of_label_sets_no_kept_entry_refers_to() {
+    // Structured metadata with a value per line (a trace id) makes each line its own label set.
+    // A log query with a limit keeps `limit` entries; it held every label set to the end before,
+    // uncounted (measured: 30,000 realistic rows, 36 MiB of WASM against 24 MiB charged).
+    let labels = vec![("job".to_string(), "a".to_string())];
+    let streams = vec![LogStream { stream_id: otel::stream_id(&labels), labels }];
+    let rows: Vec<LogRow<String>> = (0..30_000)
+        .map(|i| LogRow { entry: 0, ts: T0 + i as i64, observed_ts: 0, trace_id: [0; 16], span_id: [0; 8], flags: 0, severity_number: 0, line: format!("line {i}"), severity_text: String::new(), metadata: vec![("trace".to_string(), format!("{i:0>200}"))] })
+        .collect();
+    let b = otel::encode_logs(&streams, &rows).expect("log batch");
+    let w = W::default().u64(1_000_000).u64(BUDGET).u64(10_000).u64(11_000).u32(100).u8(0).u8(0).i64(T0).i64(T0 + 60 * MIN).i64(60_000_000_000).item(br#"{job="a"}"#).files(&[]).files(&[b]);
+    let (r, held) = peak(|| run(logs::do_lq_query, w));
+    eprintln!("PEAK r2_m3_log_query_lets_go_of_label_sets_no_kept_entry_refers_to: {held} bytes, {}", limit_name(&r));
+    assert!(r.is_ok(), "{r:?}");
+    assert!(held <= BUDGET + SLACK, "held {held}");
+}
+
+#[test]
+fn r2_m2_tag_names_search_answers_and_kept_log_lines_are_charged_before_they_grow() {
+    // Tag names: 500 spans of one trace, each with 120 keys of its own of 500 bytes (60 KB): the set
+    // of names grows while every record is held.
+    let rows: Vec<_> = (1..=500u64).map(|i| (id16(1), i.to_be_bytes(), None, T0 + i as i64 * 1_000_000, T0 + i as i64 * 1_000_000 + 1000, (0..120).map(|k| (format!("{i}-{k}-{}", "k".repeat(490)), "v".to_string())).collect())).collect();
+    let files: Vec<Vec<u8>> = rows.chunks(10).flat_map(|c| span_files(&spans_of(c)).0.into_iter().map(|f| f.bytes)).collect();
+    let w = W::default().u8(1).item(b"").i64(T0).i64(T0 + 60 * MIN).u32(0).u64(18_000).u64(BUDGET).files(&files).files(&[]);
+    let (r, held) = peak(|| run(traces::do_tq_tags, w));
+    eprintln!("PEAK r2_m2 tag names: {held} bytes, {}", limit_name(&r));
+    assert_eq!(limit_name(&r), "limit max_decoded_bytes");
+    assert!(held <= BUDGET + SLACK, "held {held}");
+    // A search whose answer echoes a 60 KB attribute of each of 500 spans of one trace: the spans
+    // fit, the answer (30 MB, four times) does not, and is refused before it is written.
+    let rows: Vec<_> = (1..=500u64).map(|i| (id16(1), i.to_be_bytes(), None, T0 + i as i64 * 1_000_000, T0 + i as i64 * 1_000_000 + 1000, vec![("blob".to_string(), format!("{i}{}", "x".repeat(60_000)))])).collect();
+    let files: Vec<Vec<u8>> = rows.chunks(10).flat_map(|c| span_files(&spans_of(c)).0.into_iter().map(|f| f.bytes)).collect();
+    let q = br#"{ span.blob != "" }"#;
+    let w = W::default().u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u32(20).u32(1000).i64(T0 - 5 * MIN).i64(T0 + 60 * MIN).item(q).files(&files).files(&[]);
+    let (r, held) = peak(|| run(traces::do_tq_search, w));
+    eprintln!("PEAK r2_m2 search answer: {held} bytes, {}", limit_name(&r));
+    assert_eq!(limit_name(&r), "limit max_decoded_bytes");
+    assert!(held <= BUDGET + SLACK, "held {held}");
+    // A log query keeps up to max(2 x limit, 1024) lines while it reads: 150 lines of 200 KB fit as
+    // rows (30 MB), their copies kept for the answer do not.
+    let fat: Vec<String> = (0..150).map(|i| format!("{}{i}", "x".repeat(200_000))).collect();
+    let b = log_batch(&fat);
+    let w = W::default().u64(1_000_000).u64(BUDGET).u64(10_000).u64(11_000).u32(100).u8(0).u8(0).i64(T0).i64(T0 + 60 * MIN).i64(60_000_000_000).item(br#"{job="a"}"#).files(&[]).files(&[b]);
+    let (r, held) = peak(|| run(logs::do_lq_query, w));
+    eprintln!("PEAK r2_m2 log lines kept: {held} bytes, {}", limit_name(&r));
+    assert_eq!(limit_name(&r), "limit max_decoded_bytes");
+    assert!(held <= BUDGET + SLACK, "held {held}");
 }

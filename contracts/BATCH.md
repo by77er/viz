@@ -1,8 +1,11 @@
 # Batch format `VZB1`
 
 One batch is one acknowledged unit of ingest for one tenant: the payload of
-`Shard.append`. `edge` encodes it; shards never look inside; the engine decodes it for
-flush and for tail reads. All integers little-endian.
+`Shard.append`. `edge` encodes it; the engine decodes it for flush and for tail reads. A
+shard stores it as sent and reads inside it for three things only: the header (the signal
+byte and `n_series`), the metric rows a filtered tail read keeps (D48), and, at append, the
+time column of a span or log batch ("Tail reads of spans and log records by time", D72).
+All integers little-endian.
 
 | `signal` | Rows | Status |
 |---|---|---|
@@ -75,7 +78,7 @@ Rules:
 
 `Shard.append` takes, next to the batch, `seriesIds`: the `series_id` of every entry of
 the batch's series table, in table order, as a `BigInt64Array`. `edge` already has them.
-The shard does not parse batches; it checks only that the array's length equals the
+For this the shard reads only the header: it checks that the array's length equals the
 header's `n_series` (answering `invalid` if not) and uses the ids to count the stream's
 **active series**: distinct ids seen in a sliding window of one hour, kept as two
 half-hour buckets (so a series stays active for 30 to 60 minutes after its last sample).
@@ -357,36 +360,64 @@ chooses batches by this byte (`TailFilter.signals`, `shard/src/tail.ts`): a metr
 `signals: [1]`, a span or log read `[2]` or `[3]`, and gets those batches whole; with a time
 range, only those whose time bounds overlap it (next section).
 
-## Tail reads of spans and log records by time (added 2026-11-19, D72)
+## Tail reads of spans and log records by time (added 2026-11-19, D72; revised after its review)
 
 A shard records, once, when it appends a span or log batch, the batch's **time bounds**: the
 floor, in Unix milliseconds, of its smallest and largest span `start` (signal 2) or log `ts`
-(signal 3), the same floor the ledger takes of a file's nanosecond bounds (D63). It reads them
-from the batch as stored (the entry table's length fields lead to the one column) without
-decoding it, and keeps them in the batch's row. The batch format does not change: nothing here
-is in the bytes `edge` sends, and the bounds are the shard's own, never sent to a reader.
+(signal 3), the same floor the ledger takes of a file's nanosecond bounds (D63). It finds that
+one column by walking the entry table's length fields, without decoding the batch, and keeps the
+bounds with the batch. The batch format does not change: nothing here is in the bytes `edge`
+sends, and the bounds are the shard's own, never sent to a reader.
+
+**The one layout a shard reads, and how a later one must say so.** This walk is the only place a
+shard reads the layout of signals 2 and 3. It accepts exactly the layout this file defines up to
+that column: magic `VZB1`, signal 2 or 3, **`flags` 0 and `reserved` 0** (offsets 5 to 7), at
+least one entry, and zero padding before and after the `entry` column. A batch with anything
+else there gets **no bounds**, and every time range keeps it; it is still stored and
+acknowledged (an append is never refused for its bounds). So a revision of signal 2 or 3 that
+changes the entry table (to carry, say, `schema_url` or the resource's
+`dropped_attributes_count`) or the columns before `start` or `ts` **must signal itself in the
+header**: a new magic, a new signal number, or a non-zero `flags` or `reserved` byte. Signalled
+so, it needs no shard release first: a shard of this release keeps such batches by every range.
+Unsignalled, a shard would record bounds from the wrong bytes and skip batches holding rows in
+range; such a change must update the shard first, as every other reader of the layout
+(COMPATIBILITY §3.3).
 
 A filtered tail read (`TailReadOptions` `v` 1, `shard/src/tail.ts`) with a time range
 `[minTs, maxTs]` (inclusive milliseconds) returns a span or log batch it admits **whole**, as
-before, when the batch's bounds overlap the range (`max ≥ minTs` and `min ≤ maxTs`), and skips it,
-without reading it, when they do not. A batch **without bounds** is kept by every time range:
-one stored before this, one appended by a shard of the release before (which ignores the
-bounds), and one whose lengths the shard could not follow (it is still stored: an append is never
-refused for its bounds). Metric rows are filtered by time as before, one by one. Pages, cursors,
-`through`, the discard fence and every refusal are as before (D48); a skipped batch is not
-examined, so it counts in neither `scannedBatches` nor `scannedBytes`, and a `page_limit` names
-only a batch the read keeps. The time range is part of the filter a cursor is bound to.
+before, when the batch's bounds overlap the range (`max ≥ minTs` and `min ≤ maxTs`), and skips it
+when they do not. **Deciding reads the bounds, not the batch**: a skipped batch's payload is not
+read from storage. A batch **without bounds** is kept by every time range: one stored before
+this, one appended by a shard of the release before (which ignores the bounds), and one the walk
+does not accept (above). Metric rows are filtered by time as before, one by one.
+
+**Pages** (D48, with one addition). One call examines at most `TAIL_SCAN_MAX_BYTES` (32 MiB) of
+stored batches, as before, and now also considers at most `TAIL_SCAN_MAX_BATCHES` (32,768)
+batches, skipped ones included; the rest is the next page's, through `page.next`, which may name
+a batch the read then skips. A page can therefore hold no batch and still continue the read (as
+under D48 when a filter kept nothing). A skipped batch is not examined: it counts in neither
+`scannedBatches` nor `scannedBytes`. `through`, cursors, the discard fence and every refusal are
+as before; the time range is part of the filter a cursor is bound to. A `page_limit` names only
+a batch the read keeps, and carries **`last`** (added with this revision): `true` when no batch
+after it, up to `through`, can hold a row the read keeps by its time bounds, so that its `bytes`
+plus what the read holds is the whole answer; `false` when one may. A shard of an earlier release
+sends no `last` (read it as unknown).
 
 **What a caller passes.** A reader that needs every span starting (or record stamped) in the
 nanosecond range `[lo, hi]` passes `minTs = floor(lo / 10⁶)` and `maxTs = floor(hi / 10⁶)`:
 a row at `t ∈ [lo, hi]` has `floor(t / 10⁶)` in `[minTs, maxTs]` and in its batch's bounds, so
 its batch is returned. A trace query passes the bound it reads spans in (its window widened by
 `traceMarginMs`, D62), never the window alone. A batch is returned whole, so it can hold rows
-outside the range; the reader still selects rows.
+outside the range; the reader still selects rows. `minTs > maxTs` is refused (`invalid`): a
+reader whose range is empty reads no tail at all.
 
-**Release skew.** A shard of the release before ignores the time range for span and log batches
-and returns every batch of the signal, as before; a caller cannot tell from the answer whether
-batches were skipped, and needs no change for it (the rows it selects are the same).
+**What skipping can change, and release skew.** Skipping drops only batches with no row inside
+the range. A reader whose answer depends on rows outside the range can therefore see a
+difference: a later copy of a span (same `trace_id` and `span_id`) that starts outside the range
+hides an earlier copy inside it only if its batch is read. A reader must drop rows outside the
+range before it de-duplicates them (query does, D62; review of D72, m-2); then a shard of the
+release before, which ignores the range for span and log batches and returns every batch of the
+signal, gives the same answer, and a caller needs no change for skew.
 
 ## Routing (signals 2 and 3)
 

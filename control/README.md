@@ -1179,9 +1179,68 @@ hangs is served within the budget, logged once, skipped for 10 s and shown `skip
 failed write is logged once and the isolate still remembers; without `CONFIG` only the isolate
 refuses; keys carry the prefix and the tenant and never the credential.
 
-@@COST@@
+**What each OAuth endpoint costs, round 2** (`test/oauth-cost.test.ts` as changed; local workerd, one
+test file, sequential, three runs, the machine's load average 7.2–7.4; Worker plus object, not
+Cloudflare; no rate-limit bindings but in the last two rows; counts per request). The first replay
+of a dead credential reaches its object once and the Worker lists it (one KV write); every later
+replay is answered from the isolate's memory (no I/O) or, in a new isolate, from one KV read, and
+reaches no object. A live token at introspection, and each refresh, read the list once (a live
+access token then not again in that isolate for a minute). The rotated token presented again reads
+nothing: its own refresh a moment before left it remembered as not listed.
 
-@@MUT@@
+| Per request | n | ms (3 runs) | Objects | Rows | Alarm writes | Object KV writes | Worker KV reads | Worker KV writes |
+|---|---|---|---|---|---|---|---|---|
+| `register` | 100 | 0.29–0.39 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `authorize page` | 100 | 0.21–0.31 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `token: forged code (no tag)` | 100 | 0.15–0.33 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `approve (control API, admin key)` | 40 | 9.50–11.35 | 0 | 17.1 | 2 | 1 | 0 | 0 |
+| `token: code exchange` | 40 | 3.90–4.88 | 1 | 9 | 2 | 0 | 0 | 0 |
+| `introspection: live token (entrypoint logic)` | 20 | 1.85–2.25 | 1 | 0 | 0 | 0 | 1 | 0 |
+| `introspection: live token (through the OAUTH binding)` | 20 | 1.55–2.00 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `token: refresh` | 20 | 4.50–6.05 | 1 | 9 | 2 | 0 | 1 | 0 |
+| `revoke: live access token` | 20 | 5.60–8.75 | 1 | 1 | 2 | 0 | 1 | 1 |
+| `token: rotated refresh token presented again (ends the grant; listed)` | 20 | 11.80–15.55 | 1 | 18.05 | 2 | 2 | 0 | 1 |
+| `token: first replay of a genuine refresh token whose grant ended (listed)` | 20 | 3.85–4.35 | 1 | 0 | 0 | 0 | 1 | 1 |
+| `token: replay of a listed refresh token (this isolate)` | 20 | 0.20–0.25 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `token: replay of a listed refresh token (a new isolate: read from KV)` | 20 | 1.00–1.20 | 0 | 0 | 0 | 0 | 1 | 0 |
+| `revoke: live refresh token (ends the grant; listed)` | 20 | 9.95–11.50 | 1 | 17.05 | 2 | 2 | 1 | 1 |
+| `revoke: replay of a listed token (this isolate)` | 20 | 0.10–0.20 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `introspection: first replay of a genuine token whose grant ended (listed)` | 20 | 3.95–4.30 | 1 | 0 | 0 | 0 | 1 | 1 |
+| `introspection: replay of a listed token (this isolate)` | 20 | 0.00–0.05 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `register, source limit asked and allowing` | 100 | 2.43–4.36 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `register, refused by the source limit` | 100 | 0.70–0.83 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+**Brownout, round 2** (`test/ratelimit-review.test.ts` R5: every limiter hangs; local workerd, three
+runs, load average about 8): the first refresh took 59–64 ms (its credential check's 50 ms share,
+and the fuse not asked), then 3–7 ms; introspections 56–58 ms, then 2–3 ms. After round 1 they were
+105–129 and 104–105 ms, then 14 and 2.
+
+**Mutants, round 2** (2026-11-19, in a copy of `control/` and `contracts/` from the shared tree and
+`dashboard edge engine janitor ledger mcp ruler shard compact flush` at the commit then current, in a
+scratch directory outside git, `node_modules` linked; its unmutated suite passed 213 of 213, and 214
+of 214 after the test added below; the machine's load average 3–9 from other builders). Run: the
+whole D70 set, `node scripts/mutants.mjs "rate limit (D70"` (66: 114–135, 146–165 and this round's
+166–189), and `"review M-2"` (7), because this round moved code those mutate.
+- Eight anchors no longer matched the source and were re-anchored before the run: 107, 128, 153,
+  154, 160 (now "each check gets the whole budget, not its share"), 164 (moved with this round's
+  edits), and **102 and 103, which had not matched since round 1**: their anchors named the token
+  endpoint and revocation as they were before `refusedHere` existed, so they would have been
+  reported `NOT APPLIED` and were not run then (1–113 were not re-run in round 1). All eight were run.
+- **65 of 66 killed in the first pass. 122 survived** ("revocation has no per-token key"): its old
+  killers revoked a dead token 13 times, which the list now stops after one request, so nothing
+  exercised the per-token key at revocation. The key still matters for a token that is not dead: a
+  test now revokes a live token 13 times as another client (nothing changes, so it is never listed)
+  and expects `[200 × 3, 429 × 10]`. Run again: **killed** (`ratelimit-review`). So **66 of 66**.
+- **7 of 7** of the review of D44's M-2 group killed.
+- The run was stopped once after 14 mutants (the machine was slow and the background limit is two
+  hours), the copy restored from the shared tree and checked green, and resumed with a skip count
+  added to the copy's script only; no mutant was run twice except 122.
+- The script's report named a failing file only if its name had no digit, so kills in
+  `ratelimit-review-r2` were counted but not always named in the first two parts; the regex is fixed
+  (`[a-z0-9-]+`), and the table names what the later parts printed.
+- Afterwards the copy's `control/src`, `control/test` and `contracts/oauth.ts` were compared with the
+  shared tree: equal (only `scripts/mutants.mjs` differs, by the skip count). Not re-run this round:
+  1–101, 104–106, 108–113, 136–145.
 
 **Runs after the review's fixes** (2026-11-19, `npx tsc --noEmit && npx vitest run --maxWorkers=2`
 in `control/`): `tsc` clean; 183 of 183 in 21 files, 46 s, with the machine's load average about 7–9
@@ -1584,7 +1643,7 @@ insert, then retried, yields one dashboard and one entry.
 | 119 | rate limit (D70) B-1: the narrow key at the token endpoint is the presented `client_id` again | ratelimit-review (2) |
 | 120 | rate limit (D70) B-1: the tenant fuse is asked before the credential (one credential spends it) | ratelimit, ratelimit-review (5) |
 | 121 | rate limit (D70): the token endpoint and revocation have no per-tenant fuse | ratelimit (3) |
-| 122 | rate limit (D70) B-1: revocation has no per-token key (each request a fresh one) | ratelimit, ratelimit-review (2) |
+| 122 | rate limit (D70) B-1: revocation has no per-token key (each request a fresh one) | ratelimit, ratelimit-review (2); round 2: **survived** the first pass, killed after a test was added: ratelimit-review (1) |
 | 123 | rate limit (D70): introspection has no per-token limit | ratelimit (3) |
 | 124 | rate limit (D70): introspection has no per-tenant fuse | ratelimit (2) |
 | 125 | rate limit (D70): introspection counts a token before its tag is checked (a made-up one spends the tenant's fuse) | ratelimit, ratelimit-review (5) |
@@ -1664,7 +1723,7 @@ that, only the description of `PUT /settings/{section}` in `src/openapi.ts` (and
 | 157 | rate limit (D70) B-1: the expiry is rounded down (the Worker could refuse a live credential early) | ratelimit (3) |
 | 158 | rate limit (D70) B-1: no grace for a Worker clock ahead of the object's | ratelimit (1) |
 | 159 | rate limit (D70) B-1: an access token carries its issue time as its expiry (refused a minute after issue) | ratelimit (1) |
-| 160 | rate limit (D70) m-1: each check gets its own budget (a request's waits add up) | ratelimit (1) |
+| 160 | rate limit (D70) m-1: each check gets its own budget (a request's waits add up). Since round 2: each check gets the whole budget, not its share (a slow check is not the one blamed) | ratelimit (1); round 2: ratelimit, ratelimit-review-r2 (4) |
 | 161 | rate limit (D70) m-1: a failed binding is not skipped (every request waits for it) | ratelimit, ratelimit-review (3) |
 | 162 | rate limit (D70) m-1: the budget is 1 s, as before the review | ratelimit-review (1) |
 | 163 | rate limit (D70) M-2: an absent limiter is logged on every request | ratelimit (1) |
@@ -1672,7 +1731,46 @@ that, only the description of `PUT /settings/{section}` in `src/openapi.ts` (and
 | 165 | rate limit (D70) M-2: `/healthz` does not report the limiters | ratelimit (2) |
 
 **146–165** (the review of D70, `design/reviews/d70-rate-limits.md`: each undoes one fix of B-1, M-1,
-M-2, m-1, m-3 or m-6) ran in the same run as 114–135, above.
+M-2, m-1, m-3 or m-6) ran in the same run as 114–135, above. All of 114–135 and 146–165 ran again in
+round 2 with 166–189 ("Mutants, round 2", under "Rate limits in front of OAuth (D70)" in
+"Verification"): 65 of 66, then 66 of 66.
+
+**166–189** (the second review of D70, `design/reviews/d70-rate-limits-r2.md`: each undoes one fix of
+R2-M1, R2-M2 or m-2, or one property of the list of dead credentials), 2026-11-19: **24 of 24
+killed** in the round 2 run.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 166 | R2-M1: a wider key is asked after a narrower one was skipped (the fuse alone counts a dead credential again) | ratelimit, ratelimit-review-r2 (7) |
+| 167 | R2 m-2: an expired refresh token or code is counted against its network again | ratelimit, ratelimit-review-r2 (2) |
+| 168 | R2 m-2: an expired token at revocation is counted against its network again | ratelimit, ratelimit-review-r2 (2) |
+| 169 | R2-M2: the token endpoint does not consult the list | deadlist, oauth-cost, ratelimit, ratelimit-review, ratelimit-review-r2 (8) |
+| 170 | R2-M2: revocation does not consult the list | oauth-cost, ratelimit, ratelimit-review, ratelimit-review-r2 (5) |
+| 171 | R2-M2: introspection does not consult the list | oauth-cost, ratelimit-review-r2 (2) |
+| 172 | R2-M2: the token endpoint does not list a refresh token its object calls dead | deadlist, oauth-cost, ratelimit-review-r2 (6) |
+| 173 | R2-M2: revocation ignores the object's `dead` (a stock replayed at `/oauth/revoke` is never listed) | deadlist, golden, oauth-cost, ratelimit, ratelimit-review, ratelimit-review-r2 (7) |
+| 174 | R2-M2: introspection does not list a token its object calls dead | deadlist, oauth-cost, ratelimit-review-r2 (5) |
+| 175 | R2-M2: introspection lists a suspended or wrong-audience token (it would not come back) | deadlist (1) |
+| 176 | R2-M2: the token endpoint lists a refresh token on any error (one refused for its scope or resource would never work again) | deadlist, oauth (2) |
+| 177 | R2-M2: the object calls a live token dead when another client revokes it | deadlist, oauth, ratelimit-review (3) |
+| 178 | R2-M2: the object never says a revoked token is dead | deadlist, golden, oauth-cost, oauth-review, ratelimit, ratelimit-review, ratelimit-review-r2 (9) |
+| 179 | R2-M2: a listed credential's KV record never expires | golden, ratelimit-review-r2, rules (3) |
+| 180 | R2-M2: the list forgets a credential before the Worker's expiry check refuses it (no grace) | deadlist, golden, ratelimit-review-r2 (3) |
+| 181 | R2-M2: a credential with less than KV's 60 s left is written anyway | deadlist (1) |
+| 182 | R2-M2: no once-per-isolate guard on writes (concurrent replays write each) | deadlist (1) |
+| 183 | R2-M2: the isolate ignores what it already knows is dead (every replay reads KV) | deadlist, oauth-cost (6) |
+| 184 | R2-M2: a credential KV did not list is read again on every request | deadlist (1) |
+| 185 | R2-M2: the isolate's memory of credentials is unbounded | deadlist (1) |
+| 186 | R2-M2: a failed KV read fails closed (every credential refused as listed) | deadlist (2) |
+| 187 | R2-M2: a KV read has no time limit (a hung KV hangs every token request and `/mcp` call) | deadlist (1) |
+| 188 | R2-M2: a failed KV read is not skipped (every request waits for KV again) | deadlist (2) |
+| 189 | R2-M2: the grant view's refresh count counts every grant of the tenant | ratelimit-review-r2 (1) |
+
+Re-anchored in round 2 and run (each killed): 102, 103 (stale since round 1, above), 107, 128, 153,
+154, 160, 164. 102: forged-cost, oauth-cost, oauth-review, ratelimit, ratelimit-review,
+ratelimit-review-r2 (9); 103: forged-cost, oauth-review, ratelimit (5); 107: oauth-review (1); 128:
+eleven files (95); 153 and 154: ratelimit, ratelimit-review, ratelimit-review-r2 (4 each); 164:
+ratelimit (1).
 
 ## Known risks
 

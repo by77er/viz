@@ -653,9 +653,19 @@ pub(crate) fn do_tq_search(mut r: Req<'_>) -> Res<Vec<u8>> {
     let ts = traces(&files, &tails, &mut budget)?;
     let n = ts.len();
     let req = SearchRequest { limit, spans_per_spanset: spss, start_unix_nano: start.max(0) as u64, end_unix_nano: end.max(0) as u64 };
-    let out = viz_traceql::search(&MemSource::new(ts), q, &req).map_err(tq_err)?;
-    // The answer's exact length, charged before it is written.
+    // The results kept (spans and the values they echo) are charged as they are made, against
+    // what the budget leaves once the spans are held; then the answer's exact length, before it is
+    // written.
     budget.mem.help = "Narrow the time range, or lower limit or spss.";
+    let mut meter = viz_traceql::metrics::Meter::new(budget.mem.left());
+    let out = viz_traceql::search_with(&MemSource::new(ts), q, &req, &mut meter).map_err(|e| match e {
+        viz_traceql::Error::Memory { used, .. } => {
+            budget.mem.stage = "the traces and spans its answer lists";
+            budget.mem.refusal(budget.mem.used.saturating_add(used))
+        }
+        e => tq_err(e),
+    })?;
+    budget.mem.charge_for("the traces and spans its answer lists", meter.used)?;
     budget.mem.charge_answer(out.json_len())?;
     Ok(counts(&budget, n, out.to_json()))
 }

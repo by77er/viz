@@ -295,30 +295,51 @@ async function queries(which = 'all') {
     out.push(await q('load: loki count_over_time by job, 1 h', 's10-load', `/loki/api/v1/query_range?query=${enc('sum by (job) (count_over_time({namespace="prod"}[5m]))')}&start=${NS(now - H)}&end=${NS(now)}&step=300`, 2))
     out.push(await q('load: traceql rate, 1 h', 's10-load', `/api/metrics/query_range?q=${enc('{ } | rate()')}&start=${SEC(now - H)}&end=${SEC(now)}&step=300s`, 2))
   }
+  if (which === 'load2') {
+    // A trace the client recorded (its first span: start time and id), and windows around it.
+    const files = readdirSync(join(STATE, 'results')).filter((f) => f.startsWith('heavy2-')).sort()
+    const h2 = JSON.parse(readFileSync(join(STATE, 'results', files.at(-1)), 'utf8'))
+    const rec = h2.find((v) => v.gen === 'traces').results.flatMap((r) => r.records ?? []).find((r) => r.status === 200 && r.info)
+    const st = Number(BigInt(rec.info.startNs) / 1_000_000n)
+    const now = Date.now()
+    out.push(await q('load2: search { } last hour, limit 20', 's10-load2', `/api/search?q=${enc('{ }')}&limit=20`, 3))
+    out.push(await q('load2: search filter, 10 s window', 's10-load2', `/api/search?q=${enc('{ resource.service.name = "svc-3" && span.http.response.status_code = 200 }')}&limit=20&start=${SEC(st - 5000)}&end=${SEC(st + 5000)}`, 3))
+    out.push(await q('load2: search { } 2 s window', 's10-load2', `/api/search?q=${enc('{ }')}&limit=20&start=${SEC(st)}&end=${SEC(st + 2000)}`, 3))
+    out.push(await q('load2: trace by id, no hint', 's10-load2', `/api/traces/${rec.info.traceId}`, 3, 200))
+    out.push(await q('load2: trace by id, hint', 's10-load2', `/api/v2/traces/${rec.info.traceId}?start=${SEC(st - 60_000)}&end=${SEC(st + 60_000)}`, 3, 200))
+    out.push(await q('load2: traceql rate, 1 h', 's10-load2', `/api/metrics/query_range?q=${enc('{ } | rate()')}&start=${SEC(now - H)}&end=${SEC(now)}&step=300s`, 2))
+    out.push(await q('load2: traceql rate, 10 s', 's10-load2', `/api/metrics/query_range?q=${enc('{ } | rate() by (resource.service.name)')}&start=${SEC(st - 5000)}&end=${SEC(st + 5000)}&step=1s`, 2))
+    out.push(await q('load2: loki {job="app-3"} 10 s, limit 100', 's10-load2', `/loki/api/v1/query_range?query=${enc('{job="app-3"}')}&start=${NS(st - 5000)}&end=${NS(st + 5000)}&limit=100`, 3))
+    out.push(await q('load2: loki {job="app-3"} last hour', 's10-load2', `/loki/api/v1/query_range?query=${enc('{job="app-3"}')}&limit=100`, 2))
+    out.push(await q('load2: loki labels', 's10-load2', `/loki/api/v1/labels`, 2, 300))
+    out.push(await q('load2: loki label values job', 's10-load2', `/loki/api/v1/label/job/values`, 2, 300))
+  }
   mark(`queries-${which}`, t0, Date.now())
   console.log(save(`queries-${which}`, out))
 }
 
 /** D62's margin experiment: the same narrow search on s10-load at traceMarginMs 0, 1 h, 2 h (KV limits:<tenant>). */
-async function margin(windowStartMs, windowMs = 2000) {
+async function margin(windowStartMs, windowMs = 2000, tenant = 's10-load', traceId = null) {
   // Only the stage's own namespace (viz-s10-config), only the key limits:s10-load; deleted after.
   const kvId = Object.entries(JSON.parse(readFileSync(join(STATE, 'ids.json'), 'utf8')).kv).find(([, t]) => t === `viz-${STAGE}-config`)[0]
   const out = []
   const path = `/api/search?q=${encodeURIComponent('{ }')}&limit=20&start=${SEC(windowStartMs)}&end=${SEC(windowStartMs + windowMs)}`
   for (const m of [null, 0, H, 2 * H]) {
     if (m === null) {
-      out.push({ margin: 'default (2 h, no record)', ...(await q('margin default', 's10-load', path, 3)) })
+      out.push({ margin: 'default (2 h, no record)', ...(await q('margin default', tenant, path, 3)) })
+      if (traceId) out.push({ margin: 'default (2 h, no record)', ...(await q('margin default, trace by id + hint', tenant, `/api/v2/traces/${traceId}?start=${SEC(windowStartMs - 60_000)}&end=${SEC(windowStartMs + 60_000)}`, 2, 200)) })
       continue
     }
     const body = JSON.stringify({ traceMarginMs: m })
-    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${kvId}/values/${encodeURIComponent('limits:s10-load')}`, { method: 'PUT', headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'text/plain' }, body })
+    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${kvId}/values/${encodeURIComponent(`limits:${tenant}`)}`, { method: 'PUT', headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'text/plain' }, body })
     if (!res.ok) throw new Error(`KV put: ${res.status}`)
     await sleep(75_000) // KV propagation (up to 60 s) and the query's 30 s limits cache
-    out.push({ margin: m, ...(await q(`margin ${m / H} h`, 's10-load', path, 3)) })
+    out.push({ margin: m, ...(await q(`margin ${m / H} h`, tenant, path, 3)) })
+    if (traceId) out.push({ margin: m, ...(await q(`margin ${m / H} h, trace by id + hint`, tenant, `/api/v2/traces/${traceId}?start=${SEC(windowStartMs - 60_000)}&end=${SEC(windowStartMs + 60_000)}`, 2, 200)) })
   }
-  const del = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${kvId}/values/${encodeURIComponent('limits:s10-load')}`, { method: 'DELETE', headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } })
-  console.log(`limits:s10-load deleted: ${del.status}`)
-  console.log(save('margin', out))
+  const del = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${kvId}/values/${encodeURIComponent(`limits:${tenant}`)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } })
+  console.log(`limits:${tenant} deleted: ${del.status}`)
+  console.log(save(`margin-${tenant}`, out))
 }
 
 /** D71 on Cloudflare: edge/bench/bodies.mjs's hostile bodies (dumped by bench/memory.mjs --dump into STATE/hostile), and two oversized ones. */
@@ -423,6 +444,35 @@ async function r2list() {
   console.log(f)
 }
 
+/** A local copy of the bucket's Iceberg metadata and of some tenants' data files, for readback.py. */
+async function fetchCopy(tenants, outDir) {
+  const bucket = `viz-${STAGE}-lake`
+  const keys = []
+  let cursor
+  for (;;) {
+    const p = new URLSearchParams({ per_page: '1000' })
+    if (cursor) p.set('cursor', cursor)
+    const j = await cfm.cf('GET', `/r2/buckets/${bucket}/objects?${p}`)
+    for (const o of j.result ?? []) keys.push(o.key)
+    cursor = j.result_info?.cursor
+    if (!cursor || !j.result_info?.is_truncated) break
+  }
+  const want = keys.filter((k) => /^cell-0\/iceberg\/(spans|trace_index|logs)\//.test(k) || tenants.some((t) => k.includes(`/tenant=${t}/`) && /^cell-0\/data\/(spans|trace_index|logs)\//.test(k)))
+  let bytes = 0
+  const queue = [...want]
+  await Promise.all(Array.from({ length: 6 }, async () => {
+    for (let k = queue.shift(); k !== undefined; k = queue.shift()) {
+      const res = await cfm.cf('GET', `/r2/buckets/${bucket}/objects/${encodeURIComponent(k)}`, undefined, { raw: true })
+      if (!res.ok) throw new Error(`GET ${k}: ${res.status}`)
+      const b = new Uint8Array(await res.arrayBuffer())
+      mkdirSync(join(outDir, k, '..'), { recursive: true })
+      writeFileSync(join(outDir, k), b)
+      bytes += b.length
+    }
+  }))
+  console.log(`fetched ${want.length} objects, ${(bytes / 2 ** 20).toFixed(2)} MiB, into ${outDir}`)
+}
+
 const [cmd, ...rest] = process.argv.slice(2)
 const flag = (k) => {
   const i = rest.indexOf(`--${k}`)
@@ -437,9 +487,10 @@ else if (cmd === 'heavy') await heavy(flag('variants')?.split(',') ?? undefined,
 else if (cmd === 'qdata') await qdata()
 else if (cmd === 'fat') await fat()
 else if (cmd === 'queries') await queries(flag('which') ?? 'all')
-else if (cmd === 'margin') await margin(Number(flag('start')), Number(flag('window') ?? 2000))
+else if (cmd === 'margin') await margin(Number(flag('start')), Number(flag('window') ?? 2000), flag('tenant') ?? 's10-load', flag('trace') ?? null)
 else if (cmd === 'hostile') await hostile()
 else if (cmd === 'metrics') await metrics()
 else if (cmd === 'filepoll') await filepoll(flag('file'), Number(flag('max') ?? 25))
 else if (cmd === 'r2list') await r2list()
+else if (cmd === 'fetch') await fetchCopy(flag('tenants').split(','), flag('out'))
 else throw new Error(`unknown command ${cmd}`)

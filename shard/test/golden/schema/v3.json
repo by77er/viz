@@ -7,6 +7,11 @@
       "sql": "CREATE UNIQUE INDEX batch_fp ON batch (tenant, fingerprint)"
     },
     {
+      "type": "index",
+      "name": "batch_time",
+      "sql": "CREATE INDEX batch_time ON batch (tenant, seq, min_ts, max_ts) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL"
+    },
+    {
       "type": "table",
       "name": "batch",
       "sql": "CREATE TABLE batch ( tenant TEXT NOT NULL, seq INTEGER NOT NULL, fingerprint TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, at INTEGER NOT NULL, payload BLOB, min_ts INTEGER, max_ts INTEGER, PRIMARY KEY (tenant, seq))"

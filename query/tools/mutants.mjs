@@ -850,6 +850,56 @@ const MUTANTS = [
     find: " || path === '/api/echo') return",
     replace: ') return',
   },
+  // ── the re-review of D62 (design/reviews/signals-end-to-end-r2.md) and the review of D72's query side ──
+  {
+    name: 'R2-M1: the Loki label calls get no budget (the engine\'s default is used)',
+    tests: ['test/review-r2.test.ts'],
+    file: 'src/signals.ts',
+    find: 'inPrecedenceOrder(fromFragments).map((f) => f.index), files, tails, budget(c)))',
+    replace: 'inPrecedenceOrder(fromFragments).map((f) => f.index), files, tails))',
+  },
+  {
+    name: 'R2-M3: spans are planned over the hull again (the extent\'s ranges are not passed)',
+    tests: ['test/review-r2.test.ts', 'test/completeness.test.ts'],
+    file: 'src/signals.ts',
+    find: "c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi, undefined, ranges)",
+    replace: "c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi)",
+  },
+  {
+    name: 'R2-m5: a search refused for its margin advises narrowing the time range (no attribution)',
+    tests: ['test/review-r2.test.ts'],
+    file: 'src/signals.ts',
+    find: '    if (!id) spanRows(c, window, candidates, r2)\n',
+    replace: '    if (!id && r2.rows > c.limits.maxSpans) throw new ApiError(\'execution\', `query exceeded limit max_spans: the data files in range hold ${r2.rows} rows the query would decode, the limit is ${c.limits.maxSpans}. Narrow the time range.`)\n',
+  },
+  {
+    name: 'R2-M4a: trace by ID is checked by the rows of its row groups before the fetch again',
+    tests: ['test/review-r2.test.ts'],
+    file: 'src/signals.ts',
+    find: "capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans', [], hintless ? HELP.allTime : HELP.bound(c))",
+    replace: "capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans', [r2], hintless ? HELP.allTime : HELP.bound(c))",
+  },
+  {
+    name: 'D72 m-3: an empty range is sent to the shards (minTs > maxTs)',
+    tests: ['test/review-r2.test.ts'],
+    file: 'src/signals.ts',
+    find: '  if (bound.lo > bound.hi) {\n    c.cost.shardsAsked = 0\n    return []\n  }\n',
+    replace: '',
+  },
+  {
+    name: 'D72: a trace query sends the shards its window, not its bound',
+    tests: ['test/completeness.test.ts', 'test/signals.test.ts'],
+    file: 'src/signals.ts',
+    find: "readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, bound)",
+    replace: "readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, window)",
+  },
+  {
+    name: 'D72: a span or log read sends no range (the whole tail, as before D72)',
+    tests: ['test/signals.test.ts'],
+    file: 'src/signals.ts',
+    find: 'rf.refused, msRange(bound.lo, bound.hi), c.limits.maxFetchBytes - lakeBytes, signalByte(signal))',
+    replace: 'rf.refused, {}, c.limits.maxFetchBytes - lakeBytes, signalByte(signal))',
+  },
 ]
 
 function run(cmd, args, opts = {}) {

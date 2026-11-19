@@ -65,16 +65,16 @@ node tools/check.mjs          # load proof and size report, in Node
 | Binding call (`SignalEngine`) | C ABI operation | What it does |
 |---|---|---|
 | `tqPlan(kind, query, start, end, step)` | `viz_q_tq_plan` | What a TraceQL query reads, from its text: whether every span of a candidate trace is needed (`complete`: search, structural operators, `span:childCount`, trace-level intrinsics, pipelines that are not span-local), the window of span starts or trace extents, and a metrics request as Tempo's frontend aligns it (`viz_traceql::align_request`) |
-| `tqFilePlan(table, fragments, lo, hi, traceId?)` | `viz_q_tq_file_plan` | Per `spans` file the row groups whose span starts overlap `[lo, hi]`; per `trace_index` file those whose fragments overlap it and, with an id, whose `[min_tid, max_tid]` holds it; byte ranges with the footer (as `filePlan`) |
-| `tqExtent(indexFiles, tail, lo, hi, traceId?, budget?)` | `viz_q_tq_extent` | The traces whose extent overlaps the window (or the one id), from `trace_index` fragments merged per trace and the tail's spans, inside the bound (ABI 7): how many, the hull of their extents cut to the bound, and the `spans` hours holding them |
+| `tqFilePlan(table, fragments, lo, hi, traceId?, ranges?)` | `viz_q_tq_file_plan` | Per `spans` file the row groups whose span starts overlap `[lo, hi]` (and, ABI 8, one of `ranges`: a trace query's pieces); per `trace_index` file those whose fragments overlap it and, with an id, whose `[min_tid, max_tid]` holds it; byte ranges with the footer (as `filePlan`) |
+| `tqExtent(indexFiles, tail, lo, hi, traceId?, budget?)` | `viz_q_tq_extent` | The traces whose extent overlaps the window (or the one id), from the `trace_index` fragments and tail spans inside the bound (ABI 7): how many, the hull of their extents, the `spans` hours holding them and (ABI 8) the ranges their pieces cover, all cut to the bound. ABI 8 finds them in passes over the id and time columns, holding the window's traces and the ids after the window, not every trace of the bound (D62 2.) |
 | `tqSearch(spanFiles, tail, query, req)` | `viz_q_tq_search` | Tempo's `/api/search` body (`viz_traceql::search`) over the spans read; spans decoded and traces |
-| `tqMetrics(spanFiles, tail, query, req)` | `viz_q_tq_metrics` | Tempo's `/api/metrics/query_range` or `/query` body; a span-local plan keeps only the spans that start in the window (after de-duplication) |
-| `tqTrace(spanFiles, tail, id, version, maxSpans)` | `viz_q_tq_trace` | One trace as OTLP JSON in Tempo's form (`{"batches":[…]}`; v2 `{"trace":…}`), or null |
-| `tqTags`, `tqTagValues` | `viz_q_tq_tags`, `viz_q_tq_tag_values` | Tag names (v1 `tagNames`, v2 `scopes`) and values (v1 strings, v2 `{type, value}`; a `q` filter through `viz_traceql::matching_spansets`) of the spans that start in the window |
+| `tqMetrics(spanFiles, tail, query, req)` | `viz_q_tq_metrics` | Tempo's `/api/metrics/query_range` or `/query` body; a span-local plan keeps only the spans that start in the window (ABI 8: cut before de-duplication, the window is its bound); series, buckets and the answer charged as they are made (`viz_traceql::metrics::Meter`) |
+| `tqTrace(spanFiles, tail, id, version, maxSpans)` | `viz_q_tq_trace` | One trace as OTLP JSON in Tempo's form (`{"batches":[…]}`; v2 `{"trace":…}`), or null; ABI 8 passes over other traces' spans before decoding them, so `maxSpans` counts the trace's own; each span's text is charged before it is written |
+| `tqTags`, `tqTagValues` | `viz_q_tq_tags`, `viz_q_tq_tag_values` | Tag names (v1 `tagNames`, v2 `scopes`) and values (v1 strings, v2 `{type, value}`; a `q` filter through `viz_traceql::matching_spansets`) of the spans that start in the window (ABI 8: cut before de-duplication; the sets charged as they grow, the answer by its exact length first) |
 | `lqPlan(kind, query, start, end, step)` | `viz_q_lq_plan` | `viz_logql::selectors`: matchers and half-open ranges per selector; an instant log query is `bad_data` |
 | `lqFilePlan(fragments, selectors)` | `viz_q_lq_file_plan` | Per `logs` file the row groups some selector reads: by time, and by the fragment's stream list (labels matched with Go's dialect, as LogQL does) when it has one, else by `service_name` bounds |
 | `lqQuery(logFiles, tail, query, req)` | `viz_q_lq_query` | Loki's `data` object (`viz_logql::query_range` / `query_instant`); rows of streams no selector matches, or outside every selector's range, are dropped before they are held |
-| `lqLabels(kind, name, selectors, start, end, fragments, logFiles, tail)` | `viz_q_lq_labels` | Loki's `/labels`, `/label/<name>/values`, `/series` arrays, from the fragments' stream lists, the `labels` and `ts` columns of files without one, and the tail |
+| `lqLabels(kind, name, selectors, start, end, fragments, logFiles, tail, budget?)` | `viz_q_lq_labels` | Loki's `/labels`, `/label/<name>/values`, `/series` arrays, from the fragments' stream lists, the `labels` and `ts` columns of files without one, and the tail; ABI 8: under `budget.maxBytes` (texts read, what is kept, the answer), refused past it, never cut |
 
 - **One logical view, wherever rows live.** Spans and log rows are rebuilt as the contracts'
   logical views (`contracts/TRACES.md` "Logical view", `contracts/LOGS.md` §3) from Parquet
@@ -86,11 +86,14 @@ node tools/check.mjs          # load proof and size report, in Node
 - **Strict about signals.** A span operation fed a log or metric batch, or a log operation fed
   anything but signal 3, is an `internal` error: the decoders check the header.
 - **Limits**: `max_spans`, `max_rows` bound the rows held (files and tail; since ABI 7 a span
-  outside the call's bound, or a log row no selector reads, is decoded, dropped and not
-  counted); `max_bytes` bounds the bytes of what is held and of the answer (ABI 7, below); past
-  any of them, an `execution` error naming the limit (the binding's `QueryError.limit`).
-  TraceQL's series and points limits and LogQL's steps and series are passed per call, and a
-  metric query's series must also fit what the byte budget leaves.
+  outside the call's bound, or a log row no selector reads, is read, dropped and not counted;
+  since ABI 8 also a span of another trace than trace by ID's, and a span-local call's bound is
+  its window); `max_bytes` bounds the bytes of what is held, of what the evaluation derives from
+  it and of the answer, each charged BEFORE it is made (ABI 8; ABI 7 charged derived series per
+  point and the answer once written, and the label calls not at all: review r2, R2-M1, R2-M2);
+  past any of them, an `execution` error naming the limit (the binding's `QueryError.limit`), with
+  a text that names what was being made and what would help. TraceQL's series and points limits
+  and LogQL's steps and series are passed per call.
 - **Existing operations are byte-compatible.** No request or answer of ABI 5 changed;
   `tools/check.mjs` passes unchanged. The ABI number moved to 6 because operations were added
   (a binding of one version refuses a module of the other, as for ABI 3 and 4).
@@ -180,10 +183,40 @@ node tools/check.mjs          # load proof and size report, in Node
   sessions are gone and the next `gatherAdd` fails (`internal`), so the query Worker's
   leaves never reset their engine while a session is open.
 
+### Traces and logs, ABI 8 (2026-11-19: the re-review of D62, R2)
+
+The changes are D62's second rewrite (`design/DECISIONS.md`) and `query/README.md` "The re-review";
+`contracts/engine.ts` was changed first. What this crate does differently:
+- `sigfiles::Mem` refuses BEFORE a charge passes the budget, releases what is let go, and carries
+  a stage and a help text per call, so a refusal says what was being made and what would help.
+- `viz_traceql::metrics::Meter` (in `engine/traceql`, `Limits::max_bytes`) and `viz_logql::Meter`
+  (`engine/logql`, `Options::max_bytes`) charge the evaluations' derived structures as they grow;
+  this crate passes them what its budget leaves once the rows are held, and maps their
+  `Error::Memory` to `max_decoded_bytes`.
+- The label calls take `max_bytes` (request layout: after `end_ns`).
+- `viz_q_tq_extent` reads `trace_index` projected to its id and time columns (and `hours` in the
+  last pass) and returns `ranges`; `viz_q_tq_file_plan` takes them.
+- Span reads decide from a span's trace id and start, before decoding it, whether it is part of the
+  call's data; trace by ID and the span-local calls use it (the trace's spans; the window).
+- Answers of search, metrics, tags and labels are charged by their exact length before they are
+  written (`json_len` in `engine/traceql`; a length pass here).
+
+**Tested natively** (`cargo test -j 2 --lib`, `src/sigtests.rs`, 22 tests): the review's
+reproductions with a heap counter around each call (a `#[global_allocator]` in the test binary
+that counts this thread's bytes): every refused call peaked within the budget (32 MiB) plus 8 MiB
+beyond its request, on the 64-bit target (structures are smaller on wasm32). Peaks measured
+(bytes beyond the request): `/series` of 300 fat streams 31.5 M (refused), `/labels` 11.5 M;
+histogram 2.5 M and quantiles 2.1 M (refused before their series exist); `rate() by` 10.7 M
+(refused at the answer); tag values 32.7 M (refused); the LogQL `label_format` query 32.6 M
+(refused); the extent pass at 12 traces/s 3.6 M (answers); trace by ID in a 20,000-span row group
+2.4 M (answers). In WASM, through the binding with the reviewer's scripts: `query/README.md` "The
+re-review". `tools/check.mjs` passes; the module is ABI 8.
+
 ## What is not implemented
 
 - **Traces and logs** (ABI 6): column projection by the TraceQL plan's columns (every span is
-  decoded whole, every attribute held: the main memory cost); the trace id bloom filters and a
+  decoded whole, every attribute held: the main memory cost; the tag calls hold whole records for
+  their keys or one value); the trace id bloom filters and a
   page-level read for trace by ID (a row group is decoded whole to find one trace); split
   execution (partials) for TraceQL or LogQL; the logs token filter (no builder exists); a
   streaming LogQL source (every row a query reads is held until it is evaluated); nested-set
@@ -400,10 +433,10 @@ because this binding is where they become visible to TypeScript.
 5. **`Engine` cannot be implemented by one module any more.** The write half lives in
    `engine/wasm` and the query half here; `QueryEngine` in `js/index.ts` is the interface
    this binding satisfies. The contract should be split the same way.
-7. **Closed 2026-11-19: `contracts/engine.ts` now has `SignalBudget` and the budget argument; the binding imports it.** (Was: `SignalEngine` has no budget or bound, ABI 7.) The binding adds the optional last
-   argument `SignalBudget` and redeclares the seven operations in `QueryEngine`; the exact text
-   the contract needs is in `query/README.md`, "Contract issues", 11 (another builder held
-   `contracts/engine.ts` when this was built).
+7. **Closed 2026-11-19: `contracts/engine.ts` has `SignalBudget`, the budget argument and (ABI 8,
+   changed in the contract before this module) `lqLabels`' budget, `tqExtent`'s `ranges` and
+   `tqFilePlan`'s `ranges`; the binding imports them, and `QueryEngine` no longer redeclares the
+   span and log operations.** (Was: `SignalEngine` had no budget or bound, ABI 7.)
 6. **`FileEntry.index` is "opaque to the ledger"**, and now has a second consumer (the
    query planner, through `scanRows`). Its format is still only `FileIndex` in
    `engine/storage`; a version bump there must keep `scan_rows` returning "unknown" for

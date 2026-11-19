@@ -22,7 +22,7 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'c
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { dataKeyPrefix, type FileEntry, type FlushUnit, type LedgerTable, type SignalTable } from '../../contracts/ledger'
-import { CURSORS_KEY } from '../src/iceberg'
+import { CURSORS_KEY, type AnyPartition, type ManifestEntryRecord, type ManifestListRecord } from '../src/iceberg'
 import type { PublishResult } from '../src/publisher'
 import { dumpOf, install, type Dump } from './storage'
 import {
@@ -45,6 +45,7 @@ import {
   mirror,
   pairUnit,
   publisher,
+  readAvroKey,
   readMetadata,
   readerView,
   type LedgerStub,
@@ -186,9 +187,25 @@ async function alarmRuns(p: PublisherStub, limit = 40): Promise<PublishResult[]>
 const workOf = (r: PublishResult) =>
   r.tenants.reduce((n, t) => n + (t.step ? t.step.staged + t.step.written : t.rebase ? t.rebase.files + t.rebase.tombstones : 0), 0)
 
+/**
+ * Every ADDED entry of a table's current snapshot carries the snapshot id of the manifest-list row
+ * that lists its manifest (`added_snapshot_id`): the snapshot that added it. Manifests written ahead of
+ * a commit carry the id the commit then takes.
+ */
+async function addedBySnapshot(cell: string, table: LedgerTable): Promise<void> {
+  const meta = await readMetadata(cell, table)
+  const snap = meta.snapshots.find((x) => x['snapshot-id'] === meta['current-snapshot-id'])!
+  for (const m of await readAvroKey<ManifestListRecord>(keyOf(snap['manifest-list']))) {
+    for (const e of await readAvroKey<ManifestEntryRecord<AnyPartition>>(keyOf(m.manifest_path))) {
+      if (e.status === 1) expect(e.snapshot_id, `${table}: ${m.manifest_path}`).toBe(m.added_snapshot_id)
+    }
+  }
+}
+
 /** Every table of two cells as a reader sees it, equal; every table of `p` verified; each tenant's files the ledger's. */
 async function sameAsTwin(cell: string, twin: string, p: PublisherStub, ts: string[]): Promise<void> {
   for (const table of ALL) expect(await readerView(cell, table), table).toEqual(await readerView(twin, table))
+  for (const table of ALL) await addedBySnapshot(cell, table)
   for (const table of ALL) expect((await p.verify(table)).ok, `verify ${table}`).toBe(true)
   for (const t of ts) for (const table of ALL) expect((await icebergLive(cell, table)).filter((k) => k.includes(`/tenant=${t}/`)), `${t} ${table}`).toEqual(await liveKeys(t, table))
   expect(await p.steps()).toEqual({})
@@ -322,33 +339,48 @@ describe('an invocation cut off at every R2 operation of a re-base in steps', ()
     let runs = 0
     let last: { done: number; target: number | null; written: Record<string, string[] | string>; tables: string[] } = { done: 0, target: null, written: {}, tables: [] }
     let committed = await versions()
+    let lastMark = JSON.stringify([await p.steps(), committed])
+    const places: Record<string, number> = {}
     while ((await p.pending()).length > 0) {
       expect(runs, 'alarm runs').toBeLessThan(600)
       runs++
       const s = await p.schedule()
       expect(s.due.publish, 'a publish is due, after a cut too').toBeDefined()
       expect(s.alarm, 'and the alarm is set').not.toBeNull()
-      await p.cutAtOp(k)
-      const reached = p.cutReached().then(
-        (seen) => (seen === null ? ('none' as const) : ('cut' as const)),
+      // A publish of the pending tenants, as the alarm makes (called directly: the platform retries an
+      // alarm run that was reset, and its retry would take the next cut out of order).
+      let at = ''
+      // Counted: the operations that stage, write or commit (part reads, every PUT and HEAD, metadata reads), not the listings every publish repeats.
+      const reached = p.cutAt(k, String.raw`^(put |head |get .*(/ckpt-\d+-[^/]+/\d+\.jsonl|\.metadata\.json)$)`).then(
+        (seen) => {
+          at = seen.at(-1) ?? ''
+          return 'cut' as const
+        },
         () => 'gone' as const,
       )
-      const run = runDurableObjectAlarm(p).then(
+      const run = p.publish(await p.pending()).then(
         () => 'done' as const,
         () => 'failed' as const,
       )
       const first = await Promise.race([reached, run])
-      expect(first, 'the cut was armed for this run').not.toBe('none')
       if (first === 'cut') {
         expect(await p.abortNow().then(() => 'returned', () => 'reset')).toBe('reset')
         await run
         p = publisher(cell)
         cuts++
-        k++
+        // The next cut: the first counted operation again if this one left durable progress (so the
+        // next counted operation of the sequence is the one cut), else the one after it.
+        const mark = JSON.stringify([await p.steps(), await versions()])
+        k = mark === lastMark ? k + 1 : 1
+        lastMark = mark
+        // Where it was cut: reading a checkpoint part, writing a manifest ahead, or committing.
+        const where = /ckpt-\d+-[^/]+\/\d+\.jsonl$/.test(at) ? 'part' : /^put .*-a\d+-[0-9a-f]+\.avro$/.test(at) ? 'ahead' : /^(put|head) .*\.metadata\.json$/.test(at) ? 'commit' : 'other'
+        places[where] = (places[where] ?? 0) + 1
       } else {
-        expect(await run).toBe('done')
-        await p.disarmCut()
+        expect(first).toBe('done')
+        expect(await p.disarmCut()).toBe(true)
         k = 1
+        lastMark = JSON.stringify([await p.steps(), await versions()])
       }
       // Nothing committed is lost: every metadata version stays.
       const now = await versions()
@@ -370,8 +402,9 @@ describe('an invocation cut off at every R2 operation of a re-base in steps', ()
         last = { done: kept.done, target: kept.target, written: kept.written, tables: kept.tables }
       }
     }
-    console.log(`CUTS ${JSON.stringify({ runs, cuts })}`)
+    console.log(`CUTS ${JSON.stringify({ runs, cuts, places })}`)
     expect(cuts).toBeGreaterThan(30)
+    for (const where of ['part', 'ahead', 'commit']) expect(places[where], `cuts while ${where}`).toBeGreaterThan(0)
     await sameAsTwin(cell, twin, p, ts)
   })
 })
@@ -538,18 +571,20 @@ describe('a table rebuilt from R2 in steps after a lost storage', () => {
     for (let i = 0; i < 10 && (await whole.publish(ts)).tenants.some((x) => x.status === 'deferred'); i++);
     await steps.configure({ maxRebaseFilesPerPublish: 2, ...QUIET })
 
-    // Capped, cut off at every R2 operation of each publish in turn.
+    // Capped, cut off at each R2 operation in turn (listings aside): the next cut is at the first
+    // such operation again after a cut that left durable progress, else at the one after.
     let p = steps
     let k = 1
     let cuts = 0
     let publishes = 0
     const progress: Record<string, number> = {}
+    const markOf = async (q: PublisherStub) => JSON.stringify([await q.rebuilds(), (await rebuilt(q)).tbl])
+    let lastMark = await markOf(p)
     for (;;) {
-      expect(publishes, 'publishes').toBeLessThan(300)
+      expect(publishes, 'publishes').toBeLessThan(400)
       publishes++
-      await p.cutAtOp(k)
-      const reached = p.cutReached().then(
-        (seen) => (seen === null ? ('none' as const) : ('cut' as const)),
+      const reached = p.cutAt(k, '^(get|head|put) ').then(
+        () => 'cut' as const,
         () => 'gone' as const,
       )
       const run = p.publish(ts).then(
@@ -557,17 +592,19 @@ describe('a table rebuilt from R2 in steps after a lost storage', () => {
         () => null,
       )
       const first = await Promise.race([reached, run])
-      expect(first, 'the cut was armed for this publish').not.toBe('none')
       if (first === 'cut') {
         expect(await p.abortNow().then(() => 'returned', () => 'reset')).toBe('reset')
         await run
         p = publisher(`${cell}~steps`)
         cuts++
-        k++
+        const mark = await markOf(p)
+        k = mark === lastMark ? k + 1 : 1
+        lastMark = mark
       } else {
         await p.disarmCut()
         k = 1
-        const r = first === 'gone' || first === 'none' ? await run : first
+        lastMark = await markOf(p)
+        const r = first === 'gone' ? await run : first
         expect(r).not.toBeNull()
         if (!r!.tenants.some((x: { status: string }) => x.status === 'deferred')) break
         // Within its budget: a rebuilding publish reads no tenant.

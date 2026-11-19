@@ -586,17 +586,52 @@ before the flag".
 
 ### What remains before the flag
 
-1. **A second review of D62** (the review asks for one after the fixes). Not done.
+1. **A narrow re-check of R2-M1 to R2-M4(a)** by the re-reviewer (`design/reviews/signals-end-to-end-r2.md`
+   asks for one, not a full re-review). The fixes, with their evidence: "The re-review", below. Not done.
 2. **A Cloudflare trial** (nothing here ran on Cloudflare): the margin's `trace_index` reads
    (a search over a tenant with S span shards and uncompacted recent hours, at `traceMarginMs`
-   0, 1 and 2 hours: files read, bytes, wall time), and the memory of the review's inputs in a
-   real 128 MB isolate (`X-Viz-Wasm-Memory-Bytes` against the figures under "Memory").
-3. **A Grafana run** against a staged deployment ("Grafana", below). Not done.
-4. **The contract**: `contracts/engine.ts` does not have this module's `SignalBudget` yet
-   ("Contract issues", 11); another builder held the file. Nothing breaks without it (the binding
-   adds an optional argument), but the contract does not describe the call.
-5. **The tail's limit** ("The tail") is a usability limit, not a safety one: it refuses, it never
-   misanswers. It may be accepted for a first release; the fix is in `shard/`.
+   0, 1 and 2 hours: files read, bytes, wall time, and the extent call's time at 10 to 70 traces a
+   second), and the peak memory of every call type in a real 128 MB isolate
+   (`X-Viz-Wasm-Memory-Bytes` against "Memory" below, the review's inputs and the per-call table).
+3. **A Grafana run** against a staged deployment ("Grafana", below), with the gateway routing
+   `/api/echo` (R2-m4; "Needed changes elsewhere", 5). Not done.
+4. ~~The contract~~: done. `contracts/engine.ts` has `SignalBudget` (ABI 7) and, changed before the
+   code this time (R2-m2), its widening for ABI 8.
+5. **The tail's limit** ("The tail") is now only a backlog of more than `maxFetchBytes` inside one
+   query's range (D72); it refuses, it never misanswers.
+
+The re-reviewer's verdict says the flag must not go on merely because the trial and the Grafana
+run pass: neither exercises R2-M1 or R2-M2. With them fixed and tested (below), the order is 1,
+then 2 and 3.
+
+### The re-review (R2) and the review of D72's query side (2026-11-19)
+
+`design/reviews/signals-end-to-end-r2.md`: approve with changes, 0 blockers, 4 majors, 5 minors;
+`design/reviews/d72-shard-bounds.md`: m-2 and m-3 against this Worker's half of D72. Dispositions
+(D62, rewritten a second time, has the decisions; "Memory", "Completeness" and "The tail" below
+the details). Numbers are **measured here**, Node 22 through the binding with the reviewer's own
+scripts (copied to this work's scratch area, the planner mirror updated: `qe/r3/`), and workerd
+through the Worker (`test/review-r2.test.ts`); peaks are WASM memory of a fresh engine instance.
+Nothing ran on Cloudflare.
+
+| Finding | Disposition | Before → after |
+|---|---|---|
+| **R2-M1** label calls without a budget | **Fixed.** `lqLabels` takes the budget (contract first); the engine charges each label text read from a file (released after it), keeps only what the call lists (names for `/labels`, values for `/label/<n>/values`, label sets for `/series`), each charged when first kept, and charges the answer's exact length four times before writing it. Past it 422, never a cut list: Loki's HTTP API reference (read 2026-11-19, **verified**) lists no `limit` for these calls. | `/series`, 100 and 300 fat streams: 200 at **113.3 / 399.1 MiB** → 422 at **33.8 / 36.1 MiB** (workerd: 113.3 MiB, 200 → 29.7 MiB, 422); `/labels` of the 300: 200 at 16.6 MiB; one label's 300 values: 200 at 25.6 MiB |
+| **R2-M2** derived structures charged after | **Fixed.** TraceQL (`viz_traceql::metrics::Meter`, `Limits::max_bytes`): a group's key, accumulator and output series (one per quantile) charged when the group is made; a histogram's output series (every point) when the group first sees the bucket; buckets and exact-sum partials as they grow; arithmetic's series; the answer's exact length (`json_len`) before it is written. Tag names and values charged as the sets grow, answers written by length first. LogQL (`viz_logql::Meter`, `Options::max_bytes`): each label set its pipeline makes, samples, points, an estimate for the vector operations; a log query's entries and label sets released when its `limit` cuts them. | histogram 8 × 60 × 11,000: **513.7 → 2.9 MiB** (422 before and after; now before the series exist); 100 quantiles: **869.8 → 2.9 MiB**; `rate() by` 60 groups: **65 → 11.9 MiB** (422 at the answer); tag values 500 × 60 KB: **107.7 → 35.6 MiB**; LogQL `label_format`: **200 at 221.4 MiB → 422 at 33.9 MiB** |
+| **R2-M2** the README's "at most the budget plus what was fetched" | **Corrected** ("Memory"): the peak is the budget, plus what the call was handed, plus a constant measured under 12 MiB, per call type. | |
+| **R2-M3a** the extent pass held every trace of the bound | **Fixed.** Passes over the pieces' id and time columns: the window's traces and the ids after the window are held, then the traces straddling the window, then their hull, hours and ranges. | one-minute search, 12 traces/s, margin 2 h: **422 → 721 traces at 7.4 MiB**; ceiling measured: 72 traces/s answered (42.6 MiB, 5.7 MiB of `trace_index` handed in); a window ending at the data's end holds no margin ids (2.1 to 5.5 MiB). At 6 traces/s the extent call took 464 ms and 15.1 MiB before, 414 ms and 4.6 MiB after |
+| **R2-M3b** one long trace stretched the span read to the hull | **Fixed.** `tqExtent` returns the ranges the found traces' pieces cover; `spans` row groups are chosen by them (`tqFilePlan` `ranges`). A long trace costs the flush units over its far pieces' minutes. | 5 spans/s, a child 1 h 50 min out: **39,002 rows, 15 files, 422 → 9,002 rows, 5 files, 200**; workerd at a tenth of the scale with `maxSpans` 1,800: 422 → 200 |
+| **R2-M3** refusals advising what cannot help | **Fixed.** A search over `maxSpans` whose window's own files fit says the margin is what does not fit and what would help; the extent call's refusal while it holds the ids after the window names `traceMarginMs` and a window ending nearer now. | |
+| **R2-M3** the margin's cost in D62 | **Stated** in D62 "Cost of it" and DESIGN §6.4: the ceilings above, the passes' CPU, a unit per far piece; the 2-hour margin is kept (D62 "Why"). | |
+| **R2-M4(a)** trace by ID refused above 18,000 spans a row group | **Fixed.** The engine passes over other traces' spans before decoding them (only the trace's are held and counted); the planner checks trace by ID by bytes, not by the rows of other traces. | 20,000-span unit: **422 before fetch → 200 at 3.4 MiB** (workerd: 422 → 200, 20,000 spans read, one held) |
+| **R2-M4(b)** hintless trace by ID reads every uncompacted `trace_index` file | **Stated, not fixed** (D62 "Cost of it", modelled): 2,000 files after about 14 days uncompacted at one span shard; compacted, one ≤ 2 MiB row group a day, so `maxFetchBytes` refuses above about 2.7 spans/s past about 8 days of retention. The refusal says to send `start` and `end`. A newest-first read that stops at the trace was not built: it changes "without a hint, the whole trace" into "within the margin of its newest piece" (a D62 change for its owner to choose). | |
+| **R2-m1** retention edge | **Stated** in D62 "Cost of it": a trace found only through an expired day's fragments is not found; span-local metrics and tags still see its spans. Expiring `trace_index` by `max_end`'s day is the janitor's and the ledger's, not done. | |
+| **R2-m2** contract after code | **Fixed this time**: `contracts/engine.ts` was changed and type-checked in every importing component before any code (snapshotted alone in `514828c`); patch `qe/01-contract.patch`. | |
+| **R2-m3** cap derivation on search only | **Measured** per call type ("Memory", the per-call table). Two findings from it were fixed: tags and tag values held 2.5 KiB a span against 1.7 charged (now 0.2 KiB less held, and 256 bytes more charged per span kept as a record); a log query over rows with per-line structured metadata held a label set per line to the end (now let go when `limit` cuts its entries). | |
+| **R2-m4** `/api/echo` 404 at the gateway | **Open, not this component** ("Needed changes elsewhere", 5). | |
+| **R2-m5** refusal texts | **Fixed** for every span and log refusal: each names what was being held or read and what would help, never "select fewer metrics by name" or "narrow the time range" where it cannot help (hintless trace by ID: send `start`/`end`; the margin: as above; trace by ID's own size: "cannot be answered in one place"). | |
+| **D72 m-3** `minTs > maxTs` | **Fixed.** An empty range (a Loki `query_range` with `start == end`) reads no tail. | workerd test: 200 (503 on every retry with the range sent) |
+| **D72 m-2** skipping changed span-local answers | **Fixed by option (a)**: tags, tag values and span-local metrics are cut to their window before de-duplication, as trace queries are cut to their bound (D62 3.). | workerd test: the same answers whether the later copy's batch is skipped or read; it failed on the code before (tags `[]`) |
 
 ### Endpoints
 
@@ -642,22 +677,28 @@ times per shard at most, then 503; never an empty or partial tail). One place ev
   widened by `traceMarginMs` on each side. `plan(trace_index, bound)`; the row groups whose
   fragments overlap the bound; with the tail, the engine merges per trace every fragment and
   tail span inside the bound, finds the traces whose merged extent overlaps the window, and gives
-  the hull of their extents cut to the bound (`tqExtent`); `plan(spans, hull)`, which must be at
-  the same ledger version (else the query starts again); the span row groups whose starts
-  overlap the hull; the engine call with the bound, which drops every span that starts outside
-  it before de-duplication. A trace's summary (root, duration, per-service counts) is computed
+  the hull of their extents cut to the bound and the ranges their pieces cover (`tqExtent`, in
+  passes that hold the window's traces and the ids after it: R2-M3a); `plan(spans, hull)`, which
+  must be at the same ledger version (else the query starts again); the span row groups whose
+  starts overlap one of the ranges (R2-M3b); the engine call with the bound, which drops every
+  span that starts outside it before de-duplication. A trace's summary (root, duration, per-service counts) is computed
   from its spans, as the engine's in-memory source computes it (`trace_index` counts are upper
   bounds, a span retried into two units counted twice; they are used only to plan).
 - **Span-local metrics** (`{…} | rate() by (…)` without structural operators or trace-level
   intrinsics): `plan(spans, window)` only, and the engine keeps the spans that start in the
-  window, after de-duplication.
+  window, cut BEFORE de-duplication (their window is their bound: review of D72, m-2; before, a
+  later copy outside the window hid an earlier one inside it, so skipping a batch could change
+  the answer).
 - **Trace by ID.** `plan(trace_index, bound)`: all time without `start`/`end`, the hint widened
   by the margin with them; only the row groups whose `[min_tid, max_tid]` holds the id (from the
   fragment, before any read); the trace's fragments (and its tail spans) inside the bound give
-  its extent and its `spans` hours; `plan(spans, extent)` and of those files only the ones whose
-  hour the fragments name (a flush writes one `spans` file per hour, so a file's hour is that of
-  its `minTs`), their row groups by time; the engine call with the bound.
-- **Tags and tag values**: `plan(spans, window)`, the spans that start in the window.
+  its extent, its `spans` hours and its ranges; `plan(spans, extent)` and of those files only the
+  ones whose hour the fragments name (a flush writes one `spans` file per hour, so a file's hour
+  is that of its `minTs`), their row groups by the ranges; no row check before the fetch (other
+  traces' rows are read and passed over, never held: R2-M4a), the bytes are; the engine call with
+  the bound, holding and counting only the trace's spans.
+- **Tags and tag values**: `plan(spans, window)`, the spans that start in the window, cut before
+  de-duplication (as span-local metrics).
 
 ### Which shard holds which signal
 
@@ -696,16 +737,18 @@ metrics query of a tenant with a span or log stream registered would have failed
 Checked before anything is fetched, from the ledger's sizes and the fragments' row counts:
 `maxFiles` (both rounds of a trace query together), `maxFetchBytes` (files; then files plus the
 tail, as for metrics), and **`maxSpans` (18,000) / `maxLogRows` (30,000)** on the rows of the row
-groups a query reads (for a trace query, its `spans` rows only: a fragment is not a span, and
-the engine holds one extent per trace found in `trace_index` under the byte budget, 192 bytes
-each; before, the fragments counted against `maxSpans`, which over the margin's five hours would
-refuse a tenant with more than about one trace a second). The engine checks the row caps again on the rows it HOLDS, the
-tail's included (`max_spans`, `max_rows`: 422 naming the limit); a span outside the query's
-bound, or a log row no selector reads, is decoded and dropped and counts nothing (since ABI 7;
-before, every row decoded counted). **What bounds memory is `maxDecodedBytes` (32 MiB)**,
-counted by the engine ("Memory"). TraceQL: `maxTraceSeries` (10,000), `maxTracePoints` (11,000
-per series); LogQL: `maxSeries`, `maxSteps`; a metric query's series must also fit what the byte
-budget leaves (48 bytes a point). The isolate's byte budget applies as for metrics. A query over
+groups a query reads (for a search or whole-trace metrics query, its `spans` rows only: a
+fragment is not a span, and the engine holds what it finds in `trace_index` under the byte
+budget, 64 bytes an id; trace by ID: no rows, only files and bytes, since a row group holds
+other traces' spans the engine never holds, R2-M4a). The engine checks the row caps again on the
+rows it HOLDS, the tail's included (`max_spans`, `max_rows`: 422 naming the limit); a span outside
+the query's bound (a span-local call's bound is its window), a span of another trace than trace
+by ID's, or a log row no selector reads, is read and passed over and counts nothing (ABI 7 and 8;
+before, every row decoded counted). **What bounds memory is `maxDecodedBytes` (32 MiB)**, charged
+by the engine before each thing is made ("Memory"), for every call, the label calls included.
+TraceQL: `maxTraceSeries` (10,000), `maxTracePoints` (11,000 per series); LogQL: `maxSeries`,
+`maxSteps`; a metric query's series, buckets and points must also fit what the byte budget leaves.
+Every refusal says what was being held and what would make the query fit (R2-m5). The isolate's byte budget applies as for metrics. A query over
 a cap is refused (422); split execution is not built for traces and logs, so one isolate is the
 bound (D62).
 
@@ -812,22 +855,57 @@ queries, the review's four and the two with the `name` intrinsic, equal the engi
 span with the 2-hour margin; with a 1-hour margin the four that depend on the child 1 h 50 min
 after the window differ, as the bound says. In workerd, `test/completeness.test.ts` (below).
 
-### The tail (review m-3)
+**The margin's cost (re-review R2-M3, 2026-11-19).** Two costs the first fix did not state, both
+reproduced and fixed (D62 2., "Why" and "Cost of it"):
+- *Every trace of the bound was held* (an extent of 192 bytes plus 32 an hour each), so a one-minute
+  search was refused at about 10 traces a second whatever its window. `tqExtent` now reads the
+  pieces' id and time columns in passes and holds only the window's traces and, while it looks
+  for traces that straddle the window, the ids of those with a piece after it (64 bytes each).
+  Measured (`qe/r3/extent-ceiling.mjs`, single-span traces, a one-minute window two hours before
+  the data's end): 12, 24, 48 and 72 traces/s answer at 7.4, 12.8, 23.3 and 42.6 MiB of WASM
+  (5.7 MiB of `trace_index` handed in at 72) and 0.5 to 1.6 s; the same window at the data's end
+  holds no margin ids (2.4 to 5.5 MiB, 0.1 to 0.5 s). The charge reaches the budget at about 72
+  traces/s (modelled beyond the 72 measured).
+- *One long trace stretched the span read to the hull.* `tqExtent` now also returns the ranges its
+  found traces' pieces cover, and `spans` row groups are chosen by them: a long trace costs the
+  span files over its far pieces' minutes (one unit per span shard), not every unit between.
+  The review's case: 39,002 rows in 15 files, refused, against 9,002 rows in 5 files, answered.
+- *Refusals.* A search whose window's own files fit `maxSpans` but whose found traces' far pieces
+  do not is refused with a text that says the margin is what does not fit (a shorter window helps
+  only if it leaves those traces out; a smaller `traceMarginMs` reads less around them); the extent
+  call's refusal while it holds the ids after the window says that a shorter window does not help
+  and a window ending nearer now does.
+The default margin stays 2 hours (D62 "Why" (g)). Completeness is unchanged: every answer of
+`test/completeness.test.ts` and `search-hull2.mjs` is the same, pruning on and off.
 
-A span or log read gets the signal's whole tail, whatever its window: the shard returns a span
-or log batch whole to any filter that admits its signal, and its time fields select metric rows
-only (`shard/src/tail.ts` `filterBatch`; D63). **The window is not sent**: it would change
-nothing in this shard release, and the shard's contract says the time fields are for metric rows.
-What changed here: tail rows outside the query (spans outside its bound, log rows no selector
-reads) are dropped by the engine before they are held, so they cost no row of `maxSpans` or
-`maxLogRows` and no byte of the budget (`test/signals.test.ts`, "the ones outside the query do
-not"). What is left, **a usability limit** (modelled, not measured): the tail's bytes count
-against `maxFetchBytes` (16 MiB) whatever the window. A shard seals at 4 MiB or 10 minutes and
-holds at most 64 MiB a tenant, so a tenant whose spread S is 4 or more, with segments near the
-seal size, has 16 MiB or more of span (or log) tail and every trace (or log) query is refused
-422 `max_fetch_bytes`, even one over last week. It refuses; it never answers in part. The fix
-belongs to `shard/` ("Needed changes elsewhere", 4): time bounds per span and log batch, kept at
-append, so that a filter's window skips whole batches.
+### The tail (review m-3; D72)
+
+Since D72 (2026-11-19) a span or log read sends the shards the range its engine call selects rows
+in, each end floored to the millisecond (`readSignalTail`, the change `shard/README.md` "Needed
+changes elsewhere" asked for, taken in here): a trace query its bound (the window widened by the
+margin, never the window alone: a found trace's tail spans in the margin must come back), a
+span-local call (tags, tag values, span-local metrics) its window, a log query its selectors'
+hull, a label call its range. The shard skips span and log batches whose recorded time bounds lie
+outside it and returns every other batch whole (`contracts/BATCH.md`, "Tail reads of spans and log
+records by time"); a shard of the release before ignores the range and returns them all. Either
+way the engine selects the same rows:
+- trace queries drop spans outside their bound before de-duplication (D62);
+- span-local calls drop spans outside their window before de-duplication (review of D72, m-2; before
+  this change they de-duplicated first, so a later copy of a span outside the window hid an earlier
+  one inside it only when its batch was read: tags `[]` from a shard of the release before against
+  `["first.copy", "service.name"]` from the new one; `test/review-r2.test.ts` › m-2);
+- an empty range reads no tail (review of D72, m-3: a Loki `query_range` with `start == end` gave
+  `minTs > maxTs`, which the shard refuses `invalid`, and the query was 503 on every retry;
+  `test/review-r2.test.ts` › m-3).
+
+Tail rows outside the query cost no row of `maxSpans` or `maxLogRows` and no byte of the budget
+(`test/signals.test.ts`, "the ones outside the query do not"; a search days before the data now
+takes no tail byte at all). What is left, **a usability limit** (modelled, not measured on
+Cloudflare): the tail inside a query's range counts against `maxFetchBytes` (16 MiB), so a backlog
+of more than that inside one range (five hours of spans for a one-hour search, with the margin) is
+refused 422 `max_fetch_bytes`. It refuses; it never answers in part. Measured by the shard's
+engineer (D72, local workerd, an eight-hour tail): a one-hour span-local read 18.7 → 2.3 MB, a
+search with the 2-hour margin 18.7 → 11.7 MB, logs 16.8 → 2.1 MB.
 
 ### `trace_index` counts (compaction's open item)
 
@@ -1013,19 +1091,20 @@ were run again (the reads around them changed), 53, 86 and 96 name the new signa
 ## Not implemented
 
 - **Traces and logs, what is left** ("Traces and logs"; D62): the flag itself ("What remains
-  before the flag": a second review, a Cloudflare trial, a Grafana run, the contract); split
+  before the flag": the re-review's narrow re-check, a Cloudflare trial, a Grafana run); split
   execution (a query over `maxSpans`, `maxLogRows`, `maxDecodedBytes`, `maxFetchBytes` or
   `maxFiles` is refused, never split or answered in part); traces longer than `traceMarginMs`
-  answered whole (they are answered from their part inside the margin); a span or log tail read
-  by window (the shard has no time bounds for those batches: "The tail"); the logs token filter
+  answered whole (they are answered from their part inside the margin); the logs token filter
   (written by compaction, not read here); `/api/status/buildinfo` for Tempo and
   `/loki/api/v1/status/buildinfo` (not documented as needed by Grafana; training knowledge says
-  Grafana's Tempo source may read the first); a histogram TraceQL metric's buckets in the memory
-  count (a point is charged 48 bytes; a histogram point holds a map of buckets: not measured);
-  partial results with a cursor; newest-first day waves for trace by ID without a time
-  hint (every day is planned at once, under the caps); the trace id bloom filters and page reads
-  inside an hour (trace by ID decodes the hour's row group); projection by the TraceQL plan's
-  columns; tag-based search (`tags`, `minDuration`,
+  Grafana's Tempo source may read the first); partial results with a cursor; newest-first day
+  waves for trace by ID without a time hint (every day is planned at once, under the caps:
+  D62 "Cost of it" states where that refuses, R2-M4(b)); expiring `trace_index` by the day of its
+  fragments' last end (R2-m1; retention is the janitor's); the trace id bloom filters and page
+  reads inside a unit (trace by ID decodes the unit's row group, holding only the trace's spans);
+  projection by the TraceQL plan's columns (the tag calls hold whole records for their keys or
+  values); an exact count of what LogQL's vector operations hold (they run on viz-promql and are
+  charged by an estimate, D62 1.); tag-based search (`tags`, `minDuration`,
   `maxDuration`), Tempo's `q` and span pruning on trace by ID, `Accept: application/protobuf`,
   exemplars, Loki's `interval`, live tail, volume, patterns and the index stats endpoints; the
   plan-only endpoint for these queries; cost headers specific to them beyond `X-Viz-Scan-Rows`
@@ -2026,13 +2105,10 @@ the whole path). What is left, for its owners:
    deployment whose publisher does not read these tables yet). Still open: what remains before
    either flag is set in production is listed in `deploy/README.md` ("Needed changes in
    components", stage 3), and "What remains before the flag" above.
-4. **`shard/` (review m-3)**: time bounds per span and log batch (the smallest start and largest
-   end of its spans, or of its log records' `ts`), kept at append, so that a filter's `minTs` and
-   `maxTs` skip whole span and log batches that lie outside them (D63 alternative (e) at batch
-   granularity, which D63's "Would change if" names). Then this Worker sends a trace query's
-   bound and a log query's selector hull, and the tail stops counting against `maxFetchBytes`
-   whatever the window. Needs the filter's meaning for signals 2 and 3 written in the shard's
-   contract first (time fields would then select batches, not only metric rows).
+4. **Done by `shard/` (D72), and taken in here (2026-11-19).** The shard records each span and
+   log batch's time bounds at append and skips batches outside a read's range; this Worker sends
+   the range ("The tail"), with the two corrections the review of D72 asked for (m-2, m-3). Was:
+   **`shard/` (review m-3)**: time bounds per span and log batch, kept at append.
 5. **The gateway (`deploy/gateway/`, review m-4)**: route `GET /api/echo` to viz-query, exactly,
    like the other Tempo paths (this Worker answers it behind `QUERY_SIGNALS`).
 
@@ -2134,6 +2210,11 @@ signal field is in `shard/src/tail.ts`, with the rest of the shard's RPC (item 5
 10. **The cardinality report reads `metric_series` directly** (`engine/query`
     `catalog.rs`), as `contracts/TABLES.md` defines the table; storage has no
     series-only read.
+12. **Closed 2026-11-19, contract first (review r2, R2-m2): ABI 8.** `contracts/engine.ts` was changed and
+    type-checked in every component that imports it before any code: `SignalBudget`'s widened
+    meaning, `lqLabels`' budget, `tqExtent`'s `ranges`, `tqFilePlan`'s `ranges`, and `maxSpans`
+    counting rows held. All additive (optional). The binding's `QueryEngine` no longer redeclares
+    the span and log operations.
 11. **Closed 2026-11-19: `contracts/engine.ts` has `SignalBudget` and the budget argument** (the text below was applied as written). Was: **`SignalEngine` has no budget or bound** (2026-11-19, D62, the review's M-1 and M-2).
     `contracts/engine.ts` was being edited by another builder, so it was not changed here; the
     binding (`engine/wasm-query/js/index.ts`) adds an optional last argument, `SignalBudget`, to
@@ -2214,10 +2295,23 @@ New with split execution, each with its alternative:
   its window and four more hours by default; for a tenant with many span shards and
   uncompacted recent hours that is tens of extra R2 reads (modelled). If it costs too much the
   default goes down (a tenant can set `traceMarginMs`, 0 being the window-only answer).
-- **The engine's charge is an estimate checked after decoding a row**, not an allocator count: a
-  single row (up to edge's 256 KiB entry limit, and its decoded copies) is held before it is
-  charged. The answer of trace by ID is charged as written, so it can pass the budget by one
-  span's text before the refusal.
+- **The engine's charge is an estimate, not an allocator count.** Every structure is charged before
+  it is made, at or above the growth measured on the shapes tested (the native tests count the heap
+  around each call; "Memory"), but one row is decoded before it is charged (up to edge's 256 KiB
+  entry limit), a shape whose overhead per string is larger could hold more than it is charged,
+  and LogQL's vector operations are charged by an estimate (their inputs' size once more per
+  operation, twice for `label_replace`), not counted. The constant above the budget and the inputs
+  was measured under 12 MiB in WASM; it is modelled for a real isolate until the trial.
+- **The margin's ceilings** (measured here, not on Cloudflare): a one-minute search in a window
+  that ended two hours or more ago is refused at about 72 traces a second (the ids after the
+  window); a tenant whose long traces have pieces in many flush units of the margin reads those
+  units, and is refused with a text that says so. The extent call decodes `trace_index`'s id and
+  time columns up to three times (0.4 to 1.6 s here at 6 to 72 traces/s, Node; Cloudflare's CPU
+  not measured).
+- **Charges leave little room for answers at the caps.** At 18,000 realistic spans (30.6 MiB
+  charged) an answer of more than about 0.7 MB (charged four times) is refused: a three-quantile
+  query by span name over an hour at 15 s was charged 35.8 MiB and is refused at the default
+  budget. Before, the same answer was charged after it was written, and refused too.
 - **Shards are told apart by name** while shards of an earlier release (no signal filter) may
   answer: a metric pool named `…/traces` or `…/logs` would have its reads refused (never misread);
   since stage 3 edge refuses a pool map naming one, so such a pool is neither written nor read.
