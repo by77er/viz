@@ -61,7 +61,7 @@ const label = (c) => `${c.w}${c.coarse ? ' coarse' : ''}${c.zoom ? ' at 200%' : 
 function audit({ coarse, words }) {
   const out = [], vw = document.documentElement.clientWidth, cs = (e) => getComputedStyle(e)
   const name = (e) => { if (!e || e.nodeType !== 1) return String(e); const t = (e.getAttribute('aria-label') || e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 32); return `<${e.tagName.toLowerCase()}${e.id ? '#' + e.id : ''}${typeof e.className === 'string' && e.className ? '.' + e.className.trim().split(/\s+/).join('.') : ''}>${t ? ' "' + t + '"' : ''}` }
-  const shown = (e) => { for (let x = e; x && x.nodeType === 1; x = x.parentElement) { const s = cs(x); if (s.display === 'none' || s.visibility === 'hidden' && x === e) return false } return e.getClientRects().length > 0 }
+  const shown = (e) => { for (let x = e; x && x.nodeType === 1; x = x.parentElement) { const s = cs(x); if (s.display === 'none' || s.visibility === 'hidden' && x === e) return false } return e.getClientRects().length > 0 && (!e.checkVisibility || e.checkVisibility()) } // checkVisibility: not inside a closed <details> (content-visibility: hidden)
   const hiddenText = (e) => e.closest('.vz-sr, .vz-skip:not(:focus), [hidden], [aria-hidden="true"]:not(svg), dialog:not([open]), template, script, style, title')
   const clips = (e) => { const s = cs(e); return s.overflowX !== 'visible' || s.overflowY !== 'visible' }
   const scrolls = (e) => /(auto|scroll)/.test(cs(e).overflowX)
@@ -110,12 +110,12 @@ function audit({ coarse, words }) {
   // holds it, or one it holds). Found anything else, the word is drawn over that element (a name run out of its cell over the figures)
   // or under it (a cell drawn over the name): either way it cannot be read there, and a tap there goes elsewhere. A hit area with
   // nothing drawn (a control's ::after) that reaches over another control's words is reported too; over plain words it is not (a tap
-  // there still reaches a control, and a 44 px target may lie over a label). Overlays (open menus, dialogs, floating notices, tooltips)
-  // lie over the page by design; while a modal dialog is open only its own words are checked. And, independent of hit testing (words
+  // there still reaches a control, and a 44 px target may lie over a label). Overlays (open menus, dialogs, floating notices, tooltips,
+  // a waiting line over its region's strip) lie over the page by design; while a modal dialog is open only its own words are checked. And, independent of hit testing (words
   // that take no pointer events), two words of different elements whose boxes overlap by more than a third of the smaller.
   if (words) {
     const modal = document.querySelector('dialog:modal') ?? [...document.querySelectorAll('.vz-scrim')].find((x) => x.getClientRects().length && cs(x).visibility === 'visible')
-    const overlay = (e) => e?.closest?.('.vz-menu, .vz-dialog, .vz-notice[data-floating], .vz-tooltip, dialog')
+    const overlay = (e) => e?.closest?.('.vz-menu, .vz-dialog, .vz-notice[data-floating], .vz-tooltip, dialog, .vz-panel .vz-progress') // a waiting line lies over its region's strip of words by design (Panel)
     const control = (e) => e?.closest?.('a[href], button, input, select, textarea, summary, [role^="menuitem"], [role="tab"], label')
     const clipOf = new Map(), clipBox = (el) => { if (clipOf.has(el)) return clipOf.get(el); let b
       const p = el.parentElement && el !== document.body ? clipBox(el.parentElement) : [-Infinity, -Infinity, Infinity, Infinity]

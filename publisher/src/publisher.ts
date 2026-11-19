@@ -32,7 +32,23 @@ import {
   type TableMetadata,
 } from './iceberg'
 import { PUBLISHER_SCHEMA } from './schema'
-import { cursorCompare, inBatches, listTenants, readTenantLog, replayAt, type Cursor, type LogStatus, type Store, type TenantLog } from './log'
+import {
+  R2_CONNECTIONS,
+  Slots,
+  cursorCompare,
+  holding,
+  inBatches,
+  listTenants,
+  readTenantLog,
+  replayAt,
+  type BaseInfo,
+  type BaseSink,
+  type Cursor,
+  type LogStatus,
+  type Store,
+  type StoreObject,
+  type TenantLog,
+} from './log'
 
 /**
  * The jobs the publisher's one alarm serves (design/DECISIONS.md D34). Each deadline is a row
@@ -116,29 +132,54 @@ export interface R2Ops {
   delete: number
 }
 
-/** Counts R2 operations, so a publish can report what it cost. */
+/**
+ * Counts R2 operations, so a publish can report what it cost, and holds every one to a slot of
+ * one `Slots` of `R2_CONNECTIONS`: the readers of all tenants, the checkpoint parts read ahead
+ * and the commit's writes never have more than six in flight together. A GET keeps its slot
+ * until its body has been read.
+ */
 class CountingBucket implements Store {
   readonly ops: R2Ops = { list: 0, get: 0, head: 0, put: 0, delete: 0 }
-  constructor(private readonly bucket: R2Bucket) {}
-  get(key: string) {
+  readonly slots = new Slots(R2_CONNECTIONS)
+  constructor(private readonly bucket: Store) {}
+  private async held<T>(op: () => Promise<T>): Promise<T> {
+    const release = await this.slots.take()
+    try {
+      return await op()
+    } finally {
+      release()
+    }
+  }
+  async get(key: string): Promise<StoreObject | null> {
     this.ops.get++
-    return this.bucket.get(key)
+    const release = await this.slots.take()
+    try {
+      const o = await this.bucket.get(key)
+      if (!o) {
+        release()
+        return null
+      }
+      return holding(o, release)
+    } catch (e) {
+      release()
+      throw e
+    }
   }
   head(key: string) {
     this.ops.head++
-    return this.bucket.head(key)
+    return this.held(() => this.bucket.head(key))
   }
   list(options: R2ListOptions) {
     this.ops.list++
-    return this.bucket.list(options)
+    return this.held(() => this.bucket.list(options))
   }
   put(key: string, value: string | Uint8Array, options?: R2PutOptions) {
     this.ops.put++
-    return this.bucket.put(key, value, options) as Promise<R2Object | null>
+    return this.held(() => this.bucket.put(key, value, options))
   }
   delete(keys: string | string[]) {
     this.ops.delete += Array.isArray(keys) ? keys.length : 1
-    return this.bucket.delete(keys)
+    return this.held(() => this.bucket.delete(keys))
   }
 }
 
@@ -150,6 +191,8 @@ export interface TenantReport {
   detail?: string
   /** Version named by a `gap`. */
   gapAt?: number
+  /** A re-base: the state it started from (a checkpoint or the base) and what reading it took. */
+  rebase?: BaseInfo
   /** The cursor each table is at after this publish. */
   cursors: Partial<Record<Table, Cursor>>
 }
@@ -202,16 +245,30 @@ export interface VerifyResult {
 }
 
 interface TablePlan {
+  /** Files to add and keys to remove, of tenants read from a cursor: as many as the changes read. */
   adds: { tenant: string; entry: FileEntry }[]
   removes: { tenant: string; key: string }[]
   /** Removed from the ledger before they were ever published. */
   transient: { tenant: string; key: string }[]
+  /**
+   * Re-based tenants. Their state at the cursor is in `stage` (the checkpoint or base, then the
+   * changes read after it), and what they add and remove is `stage` against `live`, in SQL: a
+   * re-base never holds a tenant's files in memory, however many it has.
+   */
+  staged: string[]
   cursors: Map<string, Cursor>
   problems: Map<string, string>
 }
 
 /** A conditional write lost, or SQLite was found behind R2. The caller starts over. */
 class Conflict extends Error {}
+
+/** What the stage refuses of a base or checkpoint (a file listed twice): the log object is corrupt. */
+export class BaseRefused extends Error {
+  constructor(why: string) {
+    super(`ledger log: ${why}`)
+  }
+}
 
 /**
  * R2 holds metadata or a cursors object written by a newer publisher than this code
@@ -307,6 +364,16 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   /** Called after each step of a commit. Tests override it to stop or pause there. */
   protected async step(_name: CommitStep, _table: Table): Promise<void> {}
+
+  /** The bucket under the counting, slot-holding store. Tests wrap it to watch or disturb R2 traffic. */
+  protected bucket(): Store {
+    return this.env.BUCKET
+  }
+
+  /** Random bytes for snapshot ids, file tags, table uuids and Avro sync markers. Tests fix them to compare two publications byte for byte. */
+  protected random(n: number): Uint8Array {
+    return crypto.getRandomValues(new Uint8Array(n))
+  }
 
   // ───────────────────────────── storage ─────────────────────────────
 
@@ -498,7 +565,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   private runMaintenance(tables: Table[], sweep: boolean): Promise<void> {
     return this.serial(async () => {
       const cfg = this.config()
-      const store = new CountingBucket(this.env.BUCKET)
+      const store = new CountingBucket(this.bucket())
       for (const table of tables) {
         try {
           await this.expireWithRetries(store, cfg, table)
@@ -586,7 +653,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   private async publishNow(requested?: string[]): Promise<PublishResult> {
     const t0 = this.now()
     const cfg = this.config()
-    const store = new CountingBucket(this.env.BUCKET)
+    const store = new CountingBucket(this.bucket())
     let conflicts = 0
     // The tenants being worked on, so that a failure can leave them pending for the alarm.
     let working: string[] = requested ?? []
@@ -624,6 +691,22 @@ export class Publisher extends DurableObject<PublisherEnv> {
     requested: string[] | undefined,
     working: (names: string[]) => void,
   ): Promise<Omit<PublishResult, 'conflicts' | 'ops' | 'ms'>> {
+    // `stage` holds what one attempt's re-bases read, and nothing else may read it: empty it
+    // before (an evicted attempt may have left rows) and after.
+    this.sql.exec(`DELETE FROM stage`)
+    try {
+      return await this.attemptStaged(store, cfg, requested, working)
+    } finally {
+      this.sql.exec(`DELETE FROM stage`)
+    }
+  }
+
+  private async attemptStaged(
+    store: CountingBucket,
+    cfg: PublisherConfig,
+    requested: string[] | undefined,
+    working: (names: string[]) => void,
+  ): Promise<Omit<PublishResult, 'conflicts' | 'ops' | 'ms'>> {
     const names = [...new Set(requested ?? [...(await listTenants(store, this.cell)), ...this.pendingTenants()])].sort()
     working(names)
     const reports = new Map<string, TenantReport>()
@@ -633,20 +716,23 @@ export class Publisher extends DurableObject<PublisherEnv> {
       else reports.set(t, { tenant: t, status: 'invalid', detail: 'tenant id must match [A-Za-z0-9_-]{1,64}', cursors: {} })
     }
 
-    // Read each tenant's log once, from the lowest cursor any table has for it.
+    // Read each tenant's log once, from the lowest cursor any table has for it. A re-base
+    // streams its state into `stage`.
+    const sink = this.stageSink()
     const logs = await inBatches(valid, FANOUT, (tenant) => {
       let from: Cursor | null = null
       for (const table of TABLE_NAMES) {
         const c = this.cursorOf(table, tenant)
-        if (!c) return readTenantLog(store, this.cell, tenant, null, cfg.maxChangesPerTenant)
+        if (!c) return readTenantLog(store, this.cell, tenant, null, cfg.maxChangesPerTenant, sink)
         if (!from || cursorCompare(c, from) < 0) from = c
       }
-      return readTenantLog(store, this.cell, tenant, from, cfg.maxChangesPerTenant)
+      return readTenantLog(store, this.cell, tenant, from, cfg.maxChangesPerTenant, sink)
     })
     for (const log of logs) {
       const r: TenantReport = { tenant: log.tenant, status: log.status, cursors: {} }
       if (log.detail) r.detail = log.detail
       if (log.gapAt !== undefined) r.gapAt = log.gapAt
+      if (log.base) r.rebase = log.base
       reports.set(log.tenant, r)
     }
 
@@ -668,12 +754,37 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /**
+   * Where a re-base puts what it reads: `stage`, a batch per transaction. Each file's statistics
+   * are computed here, once, so a commit can write manifests and `live` rows from SQLite alone.
+   */
+  private stageSink(): BaseSink {
+    const sql = this.sql
+    return {
+      reset: (tenant) => void sql.exec(`DELETE FROM stage WHERE tenant = ?`, tenant),
+      files: (tenant, files) =>
+        this.ctx.storage.transactionSync(() => {
+          for (const f of files) {
+            const n = sql.exec(
+              `INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, stats) VALUES (?, ?, 0, ?, ?, ?, ?, ?)`,
+              tenant, f.table, f.key, f.day, f.rows, f.bytes, JSON.stringify(statsFor(f.table, f)),
+            ).rowsWritten
+            if (n === 0) throw new BaseRefused(`${f.key} is listed twice`)
+          }
+        }),
+      tombstones: (tenant, tombstones) =>
+        this.ctx.storage.transactionSync(() => {
+          for (const t of tombstones) sql.exec(`INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, stats) VALUES (?, ?, 1, ?, '', 0, 0, '')`, tenant, t.table, t.key)
+        }),
+    }
+  }
+
+  /**
    * What one table has to change to reflect the logs: the NET difference between what is
    * published for each tenant and that tenant's live set after the changes read. A file
    * added and removed inside the changes read appears in neither list.
    */
   private plan(table: Table, logs: TenantLog[]): TablePlan {
-    const plan: TablePlan = { adds: [], removes: [], transient: [], cursors: new Map(), problems: new Map() }
+    const plan: TablePlan = { adds: [], removes: [], transient: [], staged: [], cursors: new Map(), problems: new Map() }
     for (const log of logs) {
       if (log.status === 'no_log' || log.status === 'no_base' || log.status === 'cursor_ahead') continue
       const tenant = log.tenant
@@ -682,56 +793,120 @@ export class Publisher extends DurableObject<PublisherEnv> {
         plan.problems.set(tenant, `cursor of ${table} is at incarnation ${cursor.ledgerIncarnation}, R2 has ${log.incarnation}`)
         continue
       }
-      const published = new Set(this.sql.exec(`SELECT key FROM live WHERE tbl = ? AND tenant = ?`, table, tenant).toArray().map((r) => r.key as string))
       const rebase = !cursor || cursor.ledgerIncarnation < log.incarnation
-      // key -> the entry to add, or null if the file is already published.
-      const work = new Map<string, FileEntry | null>()
-      let start: number
-      if (rebase) {
-        // A new ledger incarnation: its base is the whole live set it starts from.
-        if (!log.base) continue
-        for (const f of log.base.added) if (f.table === table) work.set(f.key, published.has(f.key) ? null : f)
-        start = log.base.version
-      } else {
-        for (const k of published) work.set(k, null)
-        start = (cursor as Cursor).version
+      // A new ledger incarnation: its base (or newest checkpoint) is the whole live set it starts
+      // from, in `stage`. Without one, a re-base has nothing to start from.
+      if (rebase && !log.base) continue
+      const r = rebase ? this.planStaged(table, tenant, log, log.base as BaseInfo) : this.planFromCursor(table, tenant, log, cursor as Cursor)
+      if ('problem' in r) {
+        // Refuse rather than guess: nothing of this tenant moves until the log makes sense.
+        plan.problems.set(tenant, r.problem)
+        continue
       }
-      const dropped: string[] = []
-      let problem: string | null = null
-      let last = start
+      if (rebase) plan.staged.push(tenant)
+      for (const entry of r.adds) plan.adds.push({ tenant, entry })
+      for (const key of r.removes) plan.removes.push({ tenant, key })
+      for (const key of r.transient) plan.transient.push({ tenant, key })
+      const next: Cursor = { ledgerIncarnation: log.incarnation, version: r.last }
+      if (!cursor || cursorCompare(next, cursor) !== 0) plan.cursors.set(tenant, next)
+    }
+    return plan
+  }
+
+  private published(table: Table, tenant: string, key: string): boolean {
+    return this.sql.exec(`SELECT 1 FROM live WHERE tbl = ? AND tenant = ? AND key = ?`, table, tenant, key).toArray().length > 0
+  }
+
+  private staged(table: Table, tenant: string, key: string): boolean {
+    return this.sql.exec(`SELECT 1 FROM stage WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, tenant, table, key).toArray().length > 0
+  }
+
+  /**
+   * A tenant read from its cursor: the published files it changes, looked up one by one. Memory
+   * is what the changes read touch, never the tenant's published set.
+   */
+  private planFromCursor(table: Table, tenant: string, log: TenantLog, cursor: Cursor): { adds: FileEntry[]; removes: string[]; transient: string[]; last: number } | { problem: string } {
+    // Keys the changes touched that are live after them: the entry to add, or null if published.
+    const work = new Map<string, FileEntry | null>()
+    // Published keys the changes removed (and, if in `work` too, added again).
+    const gone = new Set<string>()
+    const live = (k: string) => work.has(k) || (!gone.has(k) && this.published(table, tenant, k))
+    const start = cursor.version
+    const dropped: string[] = []
+    let problem: string | null = null
+    let last = start
+    for (const c of log.changes) {
+      if (c.version <= start) continue
+      for (const r of c.removedFiles) {
+        // `removed` holds keys of every table; `removedFiles` says which (from the ledger, or
+        // from the key layout for a log written before it). A removal of this table's file that
+        // is not live here, or of a live file as another table's, means the log and the
+        // publication disagree.
+        const isLive = live(r.key)
+        if (isLive && (r.table === null || r.table === table)) {
+          if (work.has(r.key)) work.delete(r.key)
+          else gone.add(r.key)
+          dropped.push(r.key)
+        } else if (isLive) problem = `change ${c.version} removes ${r.key} as a ${r.table} file; it is live in ${table}`
+        else if (r.table === table) problem = `change ${c.version} removes ${r.key}, which is not live at version ${c.version - 1}`
+      }
+      for (const f of c.added) {
+        if (f.table !== table) continue
+        if (live(f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
+        work.set(f.key, this.published(table, tenant, f.key) ? null : f)
+      }
+      if (problem) break
+      last = c.version
+    }
+    if (problem) return { problem }
+    const adds: FileEntry[] = []
+    for (const [, entry] of work) if (entry) adds.push(entry)
+    return {
+      adds,
+      removes: [...gone].filter((k) => !work.has(k)),
+      transient: dropped.filter((k) => !work.has(k) && !this.published(table, tenant, k)),
+      last,
+    }
+  }
+
+  /**
+   * A re-based tenant: the changes read after its starting state are applied to `stage`, which
+   * then holds its live set at the new cursor. What it adds and removes is left in SQLite for
+   * the commit (`stage` against `live`); only the keys the changes removed are listed here.
+   */
+  private planStaged(table: Table, tenant: string, log: TenantLog, base: BaseInfo): { adds: FileEntry[]; removes: string[]; transient: string[]; last: number } | { problem: string } {
+    const sql = this.sql
+    const start = base.version
+    const dropped: string[] = []
+    let problem: string | null = null
+    let last = start
+    this.ctx.storage.transactionSync(() => {
       for (const c of log.changes) {
         if (c.version <= start) continue
         for (const r of c.removedFiles) {
-          // `removed` holds keys of every table; `removedFiles` says which (from the ledger, or
-          // from the key layout for a log written before it). A removal of this table's file that
-          // is not live here, or of a live file as another table's, means the log and the
-          // publication disagree.
-          if (work.has(r.key) && (r.table === null || r.table === table)) {
-            work.delete(r.key)
+          const isLive = this.staged(table, tenant, r.key)
+          if (isLive && (r.table === null || r.table === table)) {
+            sql.exec(`DELETE FROM stage WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, tenant, table, r.key)
             dropped.push(r.key)
-          } else if (work.has(r.key)) problem = `change ${c.version} removes ${r.key} as a ${r.table} file; it is live in ${table}`
+          } else if (isLive) problem = `change ${c.version} removes ${r.key} as a ${r.table} file; it is live in ${table}`
           else if (r.table === table) problem = `change ${c.version} removes ${r.key}, which is not live at version ${c.version - 1}`
         }
         for (const f of c.added) {
           if (f.table !== table) continue
-          if (work.has(f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
-          work.set(f.key, published.has(f.key) ? null : f)
+          if (this.staged(table, tenant, f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
+          else {
+            sql.exec(
+              `INSERT INTO stage (tenant, tbl, tomb, key, day, rows, bytes, stats) VALUES (?, ?, 0, ?, ?, ?, ?, ?)`,
+              tenant, table, f.key, f.day, f.rows, f.bytes, JSON.stringify(statsFor(table, f)),
+            )
+          }
         }
         if (problem) break
         last = c.version
       }
-      if (problem) {
-        // Refuse rather than guess: nothing of this tenant moves until the log makes sense.
-        plan.problems.set(tenant, problem)
-        continue
-      }
-      for (const [, entry] of work) if (entry) plan.adds.push({ tenant, entry })
-      for (const k of published) if (!work.has(k)) plan.removes.push({ tenant, key: k })
-      for (const k of dropped) if (!published.has(k) && !work.has(k)) plan.transient.push({ tenant, key: k })
-      const next: Cursor = { ledgerIncarnation: log.incarnation, version: last }
-      if (!cursor || cursorCompare(next, cursor) !== 0) plan.cursors.set(tenant, next)
-    }
-    return plan
+    })
+    if (problem) return { problem }
+    return { adds: [], removes: [], transient: dropped.filter((k) => !this.staged(table, tenant, k) && !this.published(table, tenant, k)), last }
   }
 
   // ───────────────────────────── commit ─────────────────────────────
@@ -1128,7 +1303,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     this.guard()
     const out = await this.serial(async () => {
       const cfg = this.config()
-      const store = new CountingBucket(this.env.BUCKET)
+      const store = new CountingBucket(this.bucket())
       const expired = {} as Record<Table, number>
       const swept = {} as Record<Table, { marked: number; deleted: number }>
       for (const table of TABLE_NAMES) {
@@ -1174,7 +1349,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     this.guard()
     const out = await this.serial(async () => {
       const cfg = this.config()
-      const store = new CountingBucket(this.env.BUCKET)
+      const store = new CountingBucket(this.bucket())
       const out = {} as Record<Table, { marked: number; deleted: number }>
       for (const table of TABLE_NAMES) out[table] = await this.sweepTable(store, cfg, table)
       this.afterSweep(cfg)
@@ -1296,7 +1471,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   private async verifyNow(table: Table, options: { cursors?: 'state' | 'snapshot'; checkObjects?: boolean }): Promise<VerifyResult> {
     const cfg = this.config()
-    const store = new CountingBucket(this.env.BUCKET)
+    const store = new CountingBucket(this.bucket())
     const state = this.state(table)
     const result: VerifyResult = {
       ok: false, table, metadataVersion: 0, stateVersion: state.version, snapshotId: null, files: 0, tenants: 0,

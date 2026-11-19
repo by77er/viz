@@ -216,7 +216,8 @@ export function tailEstimate(reads: TailRead[]): { bytes: number; series: number
     )
     bytes += r.bytes + r.overBytes
     if (r.complete) continue
-    const left = Math.max(0, r.through - r.above - r.scannedBatches) + 1
+    // (The batch that did not fit is in `overBytes`, and not in `scannedBatches`.)
+    const left = Math.max(0, r.through - r.above - r.scannedBatches - (r.overBytes > 0 ? 1 : 0))
     const avg = r.scannedBatches > 0 ? r.scannedBytes / r.scannedBatches : 1 << 20
     const ratio = r.scannedBytes > 0 ? Math.min(1, (r.bytes + r.overBytes) / r.scannedBytes) : 1
     bytes += Math.ceil(left * avg * ratio)

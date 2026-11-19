@@ -184,8 +184,10 @@ describe('query and query_range', () => {
     expect(n('Bytes-Read')).toBeGreaterThan(1000)
     expect(n('Shards-Asked')).toBe(2)
     expect(n('Shard-Calls')).toBe(2)
-    expect(n('Tail-Batches')).toBeGreaterThanOrEqual(2)
+    // The shards keep only this query's metric and window of their tails (D48).
+    expect(n('Tail-Batches')).toBeGreaterThanOrEqual(1)
     expect(n('Tail-Bytes')).toBeGreaterThan(1000)
+    expect(res.headers.get('X-Viz-Tail-Mode')).toBe('filtered')
     expect(n('Series-Loaded')).toBe(8)
     expect(n('Samples-Loaded')).toBeGreaterThan(8 * 80)
     expect(n('Scan-Samples')).toBeGreaterThan(0)

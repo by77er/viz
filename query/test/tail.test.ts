@@ -422,9 +422,9 @@ describe('the filter a read sends (tailFilter)', () => {
     const b = encodeBatch([{ __name__: 'm', i: '1' }, { __name__: 'm', i: '2' }], [{ series: 0, ts: 1, bits: 0n }, { series: 1, ts: 1, bits: 0n }])
     expect(seriesIdsOf([b, b]).size).toBe(2)
     const read: TailRead = { status: 'ok', shard: 's', incarnation: 1, above: 10, through: 30, batches: [{ seq: 11, payload: b }], bytes: b.byteLength, paged: true, complete: false, overBytes: 0, calls: 1, scannedBatches: 10, scannedBytes: 10 * b.byteLength }
-    // 20 batches left of the 30 above the watermark, each like the 10 seen, of which a tenth was kept.
+    // 10 batches left of the 20 above the watermark, each like the 10 seen, of which a tenth was kept.
     const est = tailEstimate([read])
-    expect(est.bytes).toBe(b.byteLength + Math.ceil(20 * b.byteLength * 0.1))
+    expect(est.bytes).toBe(b.byteLength + Math.ceil(10 * b.byteLength * 0.1))
     expect(est.series).toBe(Math.ceil((2 * est.bytes) / b.byteLength))
     expect(tailEstimate([{ ...read, complete: true }])).toEqual({ bytes: b.byteLength, series: 2 })
   })
