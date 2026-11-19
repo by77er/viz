@@ -214,22 +214,27 @@ describe('caps: refused before anything is fetched, or by the engine as it decod
     }
   })
 
-  it('max_spans and max_rows as the engine decodes: the tail counts too', async () => {
+  it('max_spans and max_rows as the engine decodes: the rows it holds from the tail count, the ones outside the query do not', async () => {
     const fx = SEEDS[0]!
     const w = await world()
-    await load(w, w.a, fx)
-    // Above what the files hold, below files plus tail: the fragments pass it, the engine refuses.
-    const probe = await call(w.a.key, pick(fx, 'metrics/0'))
-    const lakeSpans = cost(probe, 'Scan-Rows')
-    const probeLogs = await call(w.a.key, pick(fx, 'loki/0/'))
-    const lakeRows = cost(probeLogs, 'Scan-Rows')
-    expect(cost(probe, 'Rows-Decoded')).toBeGreaterThan(lakeSpans)
-    await env.CONFIG.put(`limits:${w.a.name}`, JSON.stringify({ maxSpans: lakeSpans + 1, maxLogRows: lakeRows + 1 }))
+    // Every batch in the tail, nothing flushed: the fragments hold no row, so only the engine can refuse.
+    await loadSignal(w, w.a, 'traces', { ...fx.spans, units: [], lake: 0 })
+    await loadSignal(w, w.a, 'logs', { ...fx.logs, units: [], lake: 0 })
+    await env.CONFIG.put(`limits:${w.a.name}`, JSON.stringify({ maxSpans: 1, maxLogRows: 1 }))
     clearLimitsCache()
-    for (const [prefix, name] of [['metrics/0', 'max_spans'], ['loki/0/', 'max_rows']] as const) {
+    for (const [prefix, name] of [['metrics/0', 'max_spans'], ['search/0/', 'max_spans'], ['loki/2/', 'max_rows']] as const) {
       const res = await call(w.a.key, pick(fx, prefix))
       const text = await res.text()
-      expect([prefix, res.status, text.includes(name)]).toEqual([prefix, 422, true])
+      expect([prefix, res.status, text.includes(name), cost(res, 'Scan-Rows')]).toEqual([prefix, 422, true, 0])
+    }
+    // The same tail, under the same caps, read by queries that hold none of it (review m-3: the
+    // tail is read whole, but what lies outside the query costs no row): a log selector that no
+    // stream matches, and a search whose window, widened by the margin, ends days before the data.
+    const logs = { ...pick(fx, 'loki/2/'), params: pick(fx, 'loki/2/').params.map(([k, v]): [string, string] => [k, k === 'query' ? '{service_name="no-such-service"}' : v]) }
+    const early = { ...pick(fx, 'search/0/'), params: pick(fx, 'search/0/').params.map(([k, v]): [string, string] => [k, k === 'start' || k === 'end' ? String(Number(v) - 7 * 86_400) : v]) }
+    for (const c of [logs, early]) {
+      const res = await call(w.a.key, c)
+      expect([c.id, res.status, cost(res, 'Rows-Decoded') > 0]).toEqual([c.id, 200, true])
     }
   })
 })

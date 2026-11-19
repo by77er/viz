@@ -1,6 +1,6 @@
 import { CLIENT_ID, OAUTH_LIFETIMES, OAUTH_LIMITS, OAUTH_SCOPES, type OAuthScope, type TenantOAuthRpc, type TokenRequest, parseCredential } from '../../contracts/oauth'
-import { type AuthzRequest, CODE_CHALLENGE, type OAuthEnv, callback, canonicalResource, credentialTagValid, displayName, encodeRequest, isLoopback, oauthConfig, parseScope, redirectProblem, sameResource, signRegistration, verifyClientId, type OAuthConfig } from './oauth'
-import { type RateLimitEnv, type Refusal, limitRevoke, limitSource, limitToken } from './ratelimit'
+import { type AuthzRequest, CODE_CHALLENGE, type OAuthEnv, callback, canonicalResource, credentialExpired, credentialTagValid, displayName, encodeRequest, isLoopback, oauthConfig, parseScope, redirectProblem, sameResource, signRegistration, verifyClientId, type OAuthConfig } from './oauth'
+import { type RateLimitEnv, type Refusal, limitCredential, limitSource } from './ratelimit'
 import type { Tenant } from './tenant'
 import { randomId } from './util'
 
@@ -23,11 +23,15 @@ import { randomId } from './util'
  * object is asked: a made-up one costs a tenant's object nothing (review of D44, M-2). Nothing here
  * logs a request parameter, and no error body repeats a credential.
  *
- * Rate limits (src/ratelimit.ts, D70): the four endpoints below the metadata count each request
- * against the client's network before the body is read; the token endpoint and revocation then
- * count a credential carrying the tag against its client and tenant before the tenant's object is
- * asked. A refusal is 429 `too_many_requests` with `Retry-After`, and nothing was read, changed or
- * spent. The metadata (static, cacheable) and CORS preflights are not counted.
+ * Rate limits (src/ratelimit.ts, D70 as rewritten after its review): registration and the
+ * authorization page count each request against the client's network before the body is read. The
+ * token endpoint and revocation count a credential that carries the tag and has not expired
+ * against itself, then its tenant, before the tenant's object is asked; a request they refuse by
+ * themselves (no credential with the tag, or one past its expiry) counts against the client's
+ * network instead, and a genuine credential never does (review M-1). A refusal is 429
+ * `too_many_requests` with `Retry-After`; nothing was changed and no credential was spent. The
+ * metadata (static, cacheable), CORS preflights and requests with a method an endpoint does not
+ * serve are not counted.
  */
 
 export interface OAuthHttpEnv extends OAuthEnv, RateLimitEnv {
@@ -36,8 +40,8 @@ export interface OAuthHttpEnv extends OAuthEnv, RateLimitEnv {
 
 export const OAUTH_PATHS = new Set(['/.well-known/oauth-authorization-server', '/oauth/register', '/oauth/authorize', '/oauth/token', '/oauth/revoke'])
 
-/** The endpoints a client's network is counted at (D70). */
-const LIMITED_PATHS = new Set(['/oauth/register', '/oauth/authorize', '/oauth/token', '/oauth/revoke'])
+/** The endpoints whose every request is counted against the client's network before anything else, and the methods they serve (D70). */
+const SOURCE_FIRST: Record<string, string[] | undefined> = { '/oauth/register': ['POST'], '/oauth/authorize': ['GET', 'HEAD'] }
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -54,10 +58,13 @@ const oauthError = (status: number, error: string, description: string, extra: R
 
 /**
  * A rate-limit refusal (D70). RFC 6749 §5.2 has no code for it; `too_many_requests` is the one the
- * MCP TypeScript SDK's own authorization server sends with 429 at these four endpoints, and its
- * client maps it to `TooManyRequestsError`, keeping the client's credentials. An unknown code would
- * be read as a server error, after which that client drops the refresh and starts a new
- * authorization (a person approves again); `invalid_grant` would make it discard its tokens.
+ * MCP TypeScript SDK's own authorization server sends with 429 at these four endpoints, and that
+ * SDK's client maps it to `TooManyRequestsError`, keeping the client's credentials. An unknown code
+ * would be read as a server error, after which that client drops the refresh and starts a new
+ * authorization (a person approves again); `invalid_grant` would make it discard its tokens. The
+ * Python SDK (`mcp` 2.3.0) discards its tokens on any refresh answer that is not 200, so for its
+ * clients no refusal of a live refresh is safe: the limits are set so that a live client is not
+ * refused by anyone but itself (review of D70, B-1).
  */
 const tooMany = (why: string, retryAfterS: number, outcome: string): Response =>
   oauthError(429, 'too_many_requests', `${why} ${outcome} Retry after ${retryAfterS} s.`, { 'Retry-After': String(retryAfterS) })
@@ -303,32 +310,47 @@ async function authorize(req: Request, cfg: OAuthConfig): Promise<Response> {
 
 // ---- token and revocation ----
 
+/**
+ * A token or revocation request the Worker refuses by itself, before any object (no credential with
+ * the tag, or one past its expiry): counted against the client's network, the only thing such a
+ * request has (D70, review M-1). Over it, 429; otherwise `answer`.
+ */
+async function refusedHere(req: Request, env: OAuthHttpEnv, answer: Response): Promise<Response> {
+  const limited = await limitSource(env, req)
+  return limited ? tooMany(limited.why, limited.retryAfterS, 'Nothing was changed.') : answer
+}
+
+const unknownGrant = () => oauthError(400, 'invalid_grant', 'The credential is unknown, expired or revoked.')
+
 async function token(req: Request, env: OAuthHttpEnv): Promise<Response> {
   if (req.method !== 'POST') return json(405, { error: 'invalid_request', error_description: 'Use POST.' }, { Allow: 'POST, OPTIONS' })
   // Public clients only: a client that authenticates is one this server never registered.
-  if (req.headers.has('Authorization')) return oauthError(401, 'invalid_client', 'This server issues no client secrets: send client_id in the body and no Authorization header.', { 'WWW-Authenticate': 'Basic realm="viz-oauth"' })
+  if (req.headers.has('Authorization')) return refusedHere(req, env, oauthError(401, 'invalid_client', 'This server issues no client secrets: send client_id in the body and no Authorization header.', { 'WWW-Authenticate': 'Basic realm="viz-oauth"' }))
   const form = await readForm(req)
-  if (form instanceof Response) return form
-  if (form.client_secret !== undefined || form.client_assertion !== undefined) return oauthError(401, 'invalid_client', 'This server issues no client secrets.', { 'WWW-Authenticate': 'Basic realm="viz-oauth"' })
-  if (form.client_id === undefined) return oauthError(400, 'invalid_request', 'client_id is required.')
-  if (!CLIENT_ID.test(form.client_id)) return oauthError(401, 'invalid_client', 'client_id is not one this server issued.', { 'WWW-Authenticate': 'Basic realm="viz-oauth"' })
+  if (form instanceof Response) return refusedHere(req, env, form)
+  if (form.client_secret !== undefined || form.client_assertion !== undefined) return refusedHere(req, env, oauthError(401, 'invalid_client', 'This server issues no client secrets.', { 'WWW-Authenticate': 'Basic realm="viz-oauth"' }))
+  if (form.client_id === undefined) return refusedHere(req, env, oauthError(400, 'invalid_request', 'client_id is required.'))
+  if (!CLIENT_ID.test(form.client_id)) return refusedHere(req, env, oauthError(401, 'invalid_client', 'client_id is not one this server issued.', { 'WWW-Authenticate': 'Basic realm="viz-oauth"' }))
   const grantType = form.grant_type
-  if (grantType !== 'authorization_code' && grantType !== 'refresh_token') return oauthError(400, 'unsupported_grant_type', 'grant_type must be authorization_code or refresh_token.')
+  if (grantType !== 'authorization_code' && grantType !== 'refresh_token') return refusedHere(req, env, oauthError(400, 'unsupported_grant_type', 'grant_type must be authorization_code or refresh_token.'))
   const presented = grantType === 'authorization_code' ? form.code : form.refresh_token
-  if (presented === undefined) return oauthError(400, 'invalid_request', `${grantType === 'authorization_code' ? 'code' : 'refresh_token'} is required.`)
+  if (presented === undefined) return refusedHere(req, env, oauthError(400, 'invalid_request', `${grantType === 'authorization_code' ? 'code' : 'refresh_token'} is required.`))
   const cred = parseCredential(presented)
-  if (!cred || cred.kind !== (grantType === 'authorization_code' ? 'code' : 'refresh')) return oauthError(400, 'invalid_grant', 'The credential is unknown, expired or revoked.')
+  if (!cred || cred.kind !== (grantType === 'authorization_code' ? 'code' : 'refresh')) return refusedHere(req, env, unknownGrant())
   // Not made by this deployment: the same answer, and no tenant's object is asked.
-  if (!(await credentialTagValid(oauthConfig(env).clientKey, presented))) return oauthError(400, 'invalid_grant', 'The credential is unknown, expired or revoked.')
-  // A credential this deployment made: counted against its client and its tenant before the object (D70).
-  const limited = await limitToken(env, cred.tenant, form.client_id)
+  if (!(await credentialTagValid(oauthConfig(env).clientKey, presented))) return refusedHere(req, env, unknownGrant())
+  // Made by it, and past the expiry the tag vouches for: the object would say the same (D70).
+  if (credentialExpired(presented)) return refusedHere(req, env, unknownGrant())
+  // A credential this deployment made and that has not expired: counted against itself, then its
+  // tenant, before the object (D70). Never against the network it came from (review M-1).
+  const limited = await limitCredential(env, cred.tenant, presented)
   if (limited) return tooMany(limited.why, limited.retryAfterS, 'Nothing was issued, and the credential you sent was not used.')
   const request: TokenRequest = { grant_type: grantType, client_id: form.client_id }
   for (const k of ['code', 'redirect_uri', 'code_verifier', 'refresh_token', 'resource', 'scope'] as const) if (form[k] !== undefined) request[k] = form[k]
   const r = await tenantStub(env, cred.tenant).oauthToken(cred.tenant, request)
   if (r.status === 'ok') return json(200, r.tokens)
   if (r.status === 'error') return oauthError(r.error === 'invalid_client' ? 401 : 400, r.error, r.description)
-  if (r.status === 'not_provisioned') return oauthError(400, 'invalid_grant', 'The credential is unknown, expired or revoked.')
+  if (r.status === 'not_provisioned') return unknownGrant()
   if (r.status === 'rate_limited') {
     // The exact limit in the tenant's object (D70): this grant's refreshes in the last minute.
     const why = `This grant was given ${OAUTH_LIMITS.refreshesPerGrantPerMinute} refresh tokens in the last minute, the most it may have.`
@@ -341,15 +363,17 @@ async function token(req: Request, env: OAuthHttpEnv): Promise<Response> {
 async function revoke(req: Request, env: OAuthHttpEnv): Promise<Response> {
   if (req.method !== 'POST') return json(405, { error: 'invalid_request', error_description: 'Use POST.' }, { Allow: 'POST, OPTIONS' })
   const form = await readForm(req)
-  if (form instanceof Response) return form
-  if (form.token === undefined) return oauthError(400, 'invalid_request', 'token is required.')
-  if (form.client_id === undefined) return oauthError(400, 'invalid_request', 'client_id is required.')
+  if (form instanceof Response) return refusedHere(req, env, form)
+  if (form.token === undefined) return refusedHere(req, env, oauthError(400, 'invalid_request', 'token is required.'))
+  if (form.client_id === undefined) return refusedHere(req, env, oauthError(400, 'invalid_request', 'client_id is required.'))
   const cred = parseCredential(form.token)
-  // RFC 7009 §2.2: an invalid token is not an error. One this deployment did not make reaches no object.
-  if (!cred || cred.kind === 'code' || !(await credentialTagValid(oauthConfig(env).clientKey, form.token))) return json(200, null)
-  // A token this deployment made: counted against its tenant before the object (D70). Refused, it
-  // stays as it was (RFC 7009 §2.2.1 says the same of a 503); a person can also revoke the grant.
-  const limited = await limitRevoke(env, cred.tenant)
+  // RFC 7009 §2.2: an invalid token is not an error. One this deployment did not make reaches no
+  // object, nor does one past its expiry (D70; a refresh token's expiry is also its grant's idle end).
+  if (!cred || cred.kind === 'code' || !(await credentialTagValid(oauthConfig(env).clientKey, form.token)) || credentialExpired(form.token)) return refusedHere(req, env, json(200, null))
+  // A token this deployment made: counted against itself, then its tenant, before the object
+  // (D70). Refused, it stays as it was (RFC 7009 §2.2.1 says the same of a 503); a person can also
+  // revoke the grant.
+  const limited = await limitCredential(env, cred.tenant, form.token)
   if (limited) return tooMany(limited.why, limited.retryAfterS, 'Nothing was revoked.')
   const r = await tenantStub(env, cred.tenant).oauthRevoke(cred.tenant, form.token, form.client_id)
   if (r.status === 'schema_too_new') return oauthError(503, 'temporarily_unavailable', 'A deployment is in progress; retry.', { 'Retry-After': String(Math.ceil(r.retryAfterMs / 1000)) })
@@ -365,8 +389,10 @@ export async function serveOAuth(req: Request, env: OAuthHttpEnv): Promise<Respo
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(405, { error: 'invalid_request' }, { Allow: 'GET, HEAD, OPTIONS' })
       return new Response(req.method === 'HEAD' ? null : JSON.stringify(metadata(cfg)), { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=300', ...CORS } })
     }
-    // Every limited endpoint, first thing: the client's network (D70). Before the body is read.
-    if (LIMITED_PATHS.has(path)) {
+    // Registration and the authorization page, first thing: the client's network (D70). Before the
+    // body is read, and only for the method each serves. (The token endpoint and revocation count a
+    // request's network only when they refuse it by themselves: review M-1.)
+    if (SOURCE_FIRST[path]?.includes(req.method)) {
       const limited = await limitSource(env, req)
       if (limited) return path === '/oauth/authorize' ? pageTooMany(limited) : tooMany(limited.why, limited.retryAfterS, 'Nothing was read or changed.')
     }

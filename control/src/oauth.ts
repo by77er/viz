@@ -9,6 +9,7 @@ import {
   type CredentialKind,
   OAUTH_CREDENTIAL,
   OAUTH_DEFAULT_SCOPES,
+  OAUTH_LIFETIMES,
   OAUTH_LIMITS,
   OAUTH_SCOPES,
   type OAuthScope,
@@ -153,14 +154,19 @@ export function expiryChars(expiresAtMs: number): string {
   return out
 }
 
+/** A kind's lifetime from issue (contracts/oauth.ts `OAUTH_LIFETIMES`), in ms. */
+export const lifetimeMs = (kind: CredentialKind): number =>
+  (kind === 'code' ? OAUTH_LIFETIMES.codeSeconds : kind === 'access' ? OAUTH_LIFETIMES.accessSeconds : OAUTH_LIFETIMES.refreshSeconds) * 1000
+
 /**
  * A new code, access token or refresh token for `tenant`, expiring at `expiresAtMs` (what the
- * tenant's object stores for it): `<prefix>.<tenant>.<body 27><tag 16>` (contracts/oauth.ts), the
- * body in layout 2 (`e`, the expiry, 22 random characters). `secret`: `OAUTH_CLIENT_KEY`, which the
- * tag is made with. `layout: 1` makes the body the previous release made (27 random characters),
- * for the tests that serve such credentials.
+ * tenant's object stores for it; by default the kind's lifetime from now):
+ * `<prefix>.<tenant>.<body 27><tag 16>` (contracts/oauth.ts), the body in layout 2 (`e`, the expiry,
+ * 22 random characters). `secret`: `OAUTH_CLIENT_KEY`, which the tag is made with. `layout: 1`
+ * makes the body the previous release made (27 random characters), for the tests that serve such
+ * credentials.
  */
-export async function mintCredential(kind: CredentialKind, tenant: string, secret: string, expiresAtMs: number, layout: 1 | 2 = 2): Promise<string> {
+export async function mintCredential(kind: CredentialKind, tenant: string, secret: string, expiresAtMs: number = Date.now() + lifetimeMs(kind), layout: 1 | 2 = 2): Promise<string> {
   const inner = layout === 1 ? randomId(CREDENTIAL_TAG.randomChars) : `${CREDENTIAL_LAYOUT.marker}${expiryChars(expiresAtMs)}${randomId(CREDENTIAL_LAYOUT.randomChars)}`
   const body = `${CREDENTIAL_PREFIX[kind]}.${tenant}.${inner}`
   return body + (await tagOf(secret, body))

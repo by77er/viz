@@ -170,7 +170,7 @@ it('what each OAuth endpoint costs: time, objects reached, rows, alarms and KV w
   // ---- the limiters themselves (D70), as miniflare implements them: a Durable Object with SQLite on
   // disk per call, so this is an upper bound for local workerd, not what Cloudflare's locally cached
   // count costs. Limits large enough not to refuse, except where a refusal is what is measured.
-  const lim = { ...e, OAUTH_RL_SOURCE: env.RL_TEST_SOURCE, OAUTH_RL_CLIENT: env.RL_TEST_TENANT, OAUTH_RL_TENANT: env.RL_TEST_TENANT, OAUTH_RL_BEARER: env.RL_TEST_TENANT, OAUTH_RL_BEARER_TENANT: env.RL_TEST_TENANT }
+  const lim = { ...e, OAUTH_RL_SOURCE: env.RL_TEST_SOURCE, OAUTH_RL_SOURCE_48: env.RL_TEST_TENANT, OAUTH_RL_CREDENTIAL: env.RL_TEST_TENANT, OAUTH_RL_TENANT: env.RL_TEST_TENANT, OAUTH_RL_BEARER: env.RL_TEST_TENANT, OAUTH_RL_BEARER_TENANT: env.RL_TEST_TENANT }
   const sendFrom = async (path: string, init: RequestInit, from: string) => {
     const res = await worker.fetch!(new Request(`${ORIGIN}${path}`, { ...init, headers: { ...(init.headers as Record<string, string>), 'CF-Connecting-IP': from } }) as never, lim as never, {} as ExecutionContext)
     await res.arrayBuffer()
