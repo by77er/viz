@@ -7,9 +7,10 @@ import type { Actor, Identity } from './identity'
 import { auditOps } from './ops-audit'
 import { dashboardOps } from './ops-dashboards'
 import { expireProposals, proposalOps } from './ops-proposals'
-import { keyOps, newKey, purgeStaleSecrets } from './ops-keys'
-import { purgeDashboards } from './ops-dashboards'
-import { settingsOps } from './ops-settings'
+import { issueServiceKey, keyOps, newKey, purgeStaleSecrets } from './ops-keys'
+import { mayApply, purgeDashboards } from './ops-dashboards'
+import { notificationTarget, settingsOps } from './ops-settings'
+import { SERVICE_INSTANCE, SERVICE_KEYS, type NotificationTargetResult, type ServiceKeyResult, type TenantServiceRpc } from '../../contracts/control'
 import { type OpInput, type OpName, type OpResult, routeOf } from './routes'
 import { TENANT_SCHEMA } from './schema'
 import { randomId } from './util'
@@ -49,7 +50,9 @@ export class NoChange extends Rollback {}
 
 
 const OPS: Record<OpName, Op> = {
-  whoami: (_t, c) => ({ status: 200, body: { tenant: c.id.tenant, subject: c.id.subject, kind: c.id.kind, name: c.id.name ?? null, scopes: c.id.scopes } }),
+  // mayApply: whether this caller's direct dashboard writes take effect (rather than being refused or
+  // turned into proposals), so a client can know without a dry run. Depends on the tenant's settings.
+  whoami: (t, c) => ({ status: 200, body: { tenant: c.id.tenant, subject: c.id.subject, kind: c.id.kind, name: c.id.name ?? null, scopes: c.id.scopes, mayApply: mayApply(t, c) } }),
   ...keyOps,
   ...dashboardOps,
   ...proposalOps,
@@ -70,7 +73,7 @@ const OPS: Record<OpName, Op> = {
  * - One alarm, at the earliest of: a proposal expiring, a deleted dashboard due for
  *   purging, an unpublished outbox row. Absent when there is none.
  */
-export class Tenant extends DurableObject<TenantEnv> {
+export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc {
   /** Replaceable in tests to make KV fail. Never state. */
   kv: KVNamespace
   caps: Caps
@@ -320,6 +323,32 @@ export class Tenant extends DurableObject<TenantEnv> {
       this.run('DELETE FROM key_usage WHERE tenant = ? AND hour < ?', this.tenant, Math.floor(now / 3_600_000) - 48)
     })
     return { accepted, unknown }
+  }
+
+  // ---- the service surface (contracts/control.ts): reachable only through the binding ----
+
+  /** The tenant's default notification destination, secret included. Read only. */
+  async notificationTarget(tenant: string): Promise<NotificationTargetResult> {
+    const refused = this.refusal()
+    if (refused) return refused
+    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }
+    return notificationTarget(this)
+  }
+
+  /** Issue (create or rotate) a service's key. The scopes are the contract's; the caller names only the service and its instance. */
+  async serviceKey(tenant: string, service: string, instance: string): Promise<ServiceKeyResult> {
+    const refused = this.refusal()
+    if (refused) return refused
+    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }
+    if (!Object.hasOwn(SERVICE_KEYS, service)) return { v: 1, status: 'invalid', message: `unknown service ${JSON.stringify(String(service).slice(0, 40))}` }
+    if (typeof instance !== 'string' || !SERVICE_INSTANCE.test(instance)) return { v: 1, status: 'invalid', message: 'instance must be 1 to 4 digits' }
+    const out = this.ctx.storage.transactionSync(() => issueServiceKey(this, Date.now(), service as keyof typeof SERVICE_KEYS, instance))
+    if (out.status !== 'ok') return out
+    const scheduled = this.schedule()
+    await this.drain()
+    await scheduled
+    await this.schedule()
+    return out
   }
 
   /** Run one operation of the HTTP API for an identity the Worker has established. */

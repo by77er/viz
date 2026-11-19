@@ -1,3 +1,5 @@
+import { POOL_NAME } from '../../contracts/ledger'
+
 /**
  * Shard pools and routing.
  *
@@ -63,9 +65,21 @@ export function slotFor(map: PoolMap, tenant: string, routingKey: string): numbe
 /** Durable Object name for a slot. The epoch is not part of it: the object outlives map changes. */
 export const shardName = (map: PoolMap, slot: number): string => `${map.pool}/${slot}`
 
-/** A pool holding exactly one tenant. Dedicated and pooled tenants share every code path. */
+/**
+ * Whether a pool name may be used: `POOL_NAME` (contracts/TABLES.md, "Object keys"). A flush
+ * file's key writes the shard name with `/` as `_`; only names without `_` make that
+ * one-to-one, so two streams of a tenant can never share a key's shard part.
+ */
+export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && POOL_NAME.test(pool)
+
+/**
+ * A pool holding exactly one tenant. Dedicated and pooled tenants share every code path.
+ * Tenant ids may contain `_`, pool names may not: it becomes `-`, so two tenants whose ids
+ * differ only there share their "dedicated" objects (each in its own streams, as in any
+ * pool; their keys stay apart, being under their own `tenant=` prefixes).
+ */
 export const dedicatedPool = (tenant: string, slots: number, epoch: number): PoolMap => ({
-  pool: `tenant/${tenant}`,
+  pool: `tenant/${tenant.replaceAll('_', '-')}`,
   slots,
   spread: slots,
   epoch,

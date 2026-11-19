@@ -1,8 +1,21 @@
 // Mutation check: break one behaviour at a time, run the suite, expect it to FAIL, restore.
 //   node scripts/mutants.mjs [substring of a mutant's name]
 // A mutant is [name, [[file, from, to], ...]]; every replacement must apply or the mutant counts as not killed.
+//
+// It edits the sources in place (here and in ../contracts), so run it from control/ in a COPY
+// of the repository outside any git work tree (AGENTS.md: a mutant caught in a commit ships).
+// The copy needs control/ (with node_modules), contracts/, edge/src, shard/src, ruler/src,
+// mcp/src and dashboard/{src,examples,schema,package.json}. It refuses to run in a work tree.
 import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
+
+try {
+  execSync('git rev-parse --is-inside-work-tree', { stdio: 'pipe' })
+  console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see the header of this file).')
+  process.exit(2)
+} catch {
+  // Not a work tree (or no git): a copy. Go on.
+}
 
 const INVOKE_TENANT_CHECK = "if (this.tenant === '' || id.tenant !== this.tenant) throw new Problem(401, 'unauthenticated', 'The credential is not usable.', 'Use a key of a provisioned tenant.')"
 const FROM_QUERY = [
@@ -77,6 +90,28 @@ const mutants = [
   ['versioned: a released migration edited in place (version 1 no longer creates the append-only trigger)', [['src/schema.ts', "CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;\n", '']]],
   ['versioned: the KV key record edge reads changes shape without a format version', [['src/ops-keys.ts', 'const record = { tenant: t.tenant, secretSha256: s.secret_sha256,', 'const record = { v: 1, tenant: t.tenant, secretSha256: s.secret_sha256,']]],
   ['versioned: the list cursor encoding changes without a format version', [['src/util.ts', "return btoa(JSON.stringify(position)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '')", "return btoa(JSON.stringify(position)).replace(/\\+/g, '-').replace(/\\//g, '_')"]]],
+  // ---- scopes for other services, whoami, proposals that create a dashboard, schema version 2 ----
+  ['creation: an agent may apply a proposal that creates a dashboard', [['src/ops-proposals.ts', "  if (!mayApply(t, c)) {\n    throw new Problem(403, 'agents-may-not-apply', 'An agent may not apply a proposal that creates", "  if (false) {\n    throw new Problem(403, 'agents-may-not-apply', 'An agent may not apply a proposal that creates"]]],
+  ['creation: the proposed spec is not validated', [['src/ops-proposals.ts', 'return proposeCreation(t, c, mustValidate(b.spec), message)', 'return proposeCreation(t, c, b.spec as Dashboard, message)']]],
+  ['creation: the stored spec is not validated again when applied', [['src/ops-proposals.ts', 'const spec = mustValidate(JSON.parse(row.spec))', 'const spec = JSON.parse(row.spec) as Dashboard']]],
+  ['creation: a retry stores a second proposal (idempotency removed)', [['src/ops-proposals.ts', 'if (same && isCreation(same)) throw new NoChange(', 'if (false) throw new NoChange(']]],
+  ['creation: an id held by a live dashboard is not checked', [['src/ops-dashboards.ts', "  if (holder === 'live') {", '  if (false) {']]],
+  ['creation: a row an older release rewrote into a change is still read as a creation', [['src/ops-proposals.ts', '=> row.base_number === 0 && row.spec !== null', '=> row.spec !== null']]],
+  ['creation: purging a dashboard deletes an open proposal to create one under its id', [['src/ops-dashboards.ts', " AND NOT (base_number = 0 AND spec IS NOT NULL AND status = 'open')\"", '"']]],
+  ['scopes: control cannot issue the ruler\'s scopes', [['src/routes.ts', ", 'monitors:read', 'monitors:write', 'monitors:ack'] as const", '] as const']]],
+  ['scopes: a monitors scope opens the dashboards API', [['src/routes.ts', "const D_READ: readonly Scope[] = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply']", "const D_READ: readonly Scope[] = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'monitors:read']"]]],
+  ['whoami: mayApply ignores the tenant setting (agents with the scope always may)', [['src/tenant.ts', 'mayApply: mayApply(t, c) } })', "mayApply: c.id.scopes.includes('dashboards:apply') || c.id.scopes.includes('admin') } })"]]],
+  ['versioned: migration 2 declared forward-only (readableFrom 2)', [['src/schema.ts', "      readableFrom: 1,\n      up: (sql) => {\n        if (!columnsOf", "      readableFrom: 2,\n      up: (sql) => {\n        if (!columnsOf"]]],
+  ['versioned: released migration 2 edited in place (the column is not added)', [['src/schema.ts', "if (!columnsOf(sql, 'proposals').has('spec')) sql.exec(V2)", 'void columnsOf']]],
+  ['health: /healthz is not served (or needs a credential)', [['src/index.ts', "      if (new URL(req.url).pathname === '/healthz') return health(req, env)\n", '']]],
+  // 59–65: the service surface (contracts/control.ts) and the notification settings it serves.
+  ['service: notificationTarget answers for any tenant (the tenant check dropped)', [['src/tenant.ts', "    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }\n    return notificationTarget(this)", "    if (this.tenant === '') return { v: 1, status: 'not_provisioned' }\n    return notificationTarget(this)"]]],
+  ['service: serviceKey issues for any tenant (the tenant check dropped)', [['src/tenant.ts', "    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }\n    if (!Object.hasOwn(SERVICE_KEYS, service))", "    if (this.tenant === '') return { v: 1, status: 'not_provisioned' }\n    if (!Object.hasOwn(SERVICE_KEYS, service))"]]],
+  ['service: the webhook secret is stored in the settings value (so reads and the audit log carry it)', [['src/ops-settings.ts', 'return { value: { email: email as string[], webhookUrl, webhookFormat: format, sendResolved: o.sendResolved !== false, webhookSecretSetAt: setAt }, secret }', 'return { value: { email: email as string[], webhookUrl, webhookFormat: format, sendResolved: o.sendResolved !== false, webhookSecretSetAt: setAt, ...(typeof secret === \'string\' ? { webhookSecret: secret } : {}) } as NotificationsValue, secret }']]],
+  ['service: a webhook secret follows the webhook to a new URL', [['src/ops-settings.ts', '} else if (webhookUrl !== null && webhookUrl === before.webhookUrl && before.webhookSecretSetAt !== null) {', '} else if (webhookUrl !== null && before.webhookSecretSetAt !== null) {']]],
+  ['service: a service key a person disabled is replaced (access the tenant withdrew comes back)', [['src/ops-keys.ts', "  if (row && row.disabled === 1) return { v: 1, status: 'disabled', name }\n", '']]],
+  ['service: a rotation keeps the previous secret live', [['src/ops-keys.ts', "  t.run('DELETE FROM key_secrets WHERE tenant = ? AND key = ?', t.tenant, row.id)\n  bumpRevocation(t, now)\n  const { keyId, secret } = mint()", "  bumpRevocation(t, now)\n  const { keyId, secret } = mint()"]]],
+  ['service: a person may create a key under the reserved service: prefix', [['src/ops-keys.ts', '  if (name.startsWith(SERVICE_KEY_PREFIX)) {', '  if (name.startsWith(SERVICE_KEY_PREFIX) && false) {']]],
 ]
 
 const only = process.argv[2]
@@ -96,24 +131,32 @@ for (const [name, edits] of mutants) {
     writeFileSync(file, current.replace(from, to))
   }
   let failed = false
+  let noResult = false
   let detail = ''
   if (applied) {
     try {
       // The generated document must follow its source, as it would in a real change.
       if (edits.some(([file]) => file === 'src/openapi.ts')) execSync('node scripts/gen-openapi.mjs', { stdio: 'pipe' })
-      execSync('npx vitest run --maxWorkers=2', { stdio: 'pipe', env: { ...process.env, NO_COLOR: '1' } })
+      execSync('npx vitest run --maxWorkers=2', { stdio: 'pipe', timeout: 900_000, env: { ...process.env, NO_COLOR: '1' } })
     } catch (e) {
-      failed = true
       const out = String(e.stdout ?? '') + String(e.stderr ?? '')
       const tests = /Tests\s+(\d+) failed/.exec(out)
       const files = [...new Set([...out.matchAll(/FAIL\s+(test\/[a-z]+\.test\.ts)/g)].map((m) => m[1].replace('test/', '').replace('.test.ts', '')))]
-      detail = tests ? `${tests[1]} failed: ${files.join(', ')}` : 'suite did not run'
+      // Only a test that ran and failed kills a mutant. A suite that crashed, hung or was
+      // killed gave no result: reported as such and counted as not killed (rerun it).
+      if (tests) {
+        failed = true
+        detail = `${tests[1]} failed: ${files.join(', ')}`
+      } else noResult = true
     }
   }
   for (const [file, text] of originals) writeFileSync(file, text)
   if (edits.some(([file]) => file === 'src/openapi.ts')) execSync('node scripts/gen-openapi.mjs', { stdio: 'pipe' })
   if (!applied) {
     console.log(`NOT APPLIED  ${name}`)
+    survived++
+  } else if (noResult) {
+    console.log(`NO RESULT    ${name}  (the suite did not finish; rerun)`)
     survived++
   } else if (failed) console.log(`killed       ${name}  [${detail}]`)
   else {

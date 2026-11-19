@@ -1,1 +1,2 @@
-{ "name": "viz-spike-s2", "private": true, "type": "module", "dependencies": { "hyparquet": "1.33.1", "hyparquet-writer": "0.18.0", "hyparquet-compressors": "*" } }
+{
+  "license": "Apache-2.0", "name": "viz-spike-s2", "private": true, "type": "module", "dependencies": { "hyparquet": "1.33.1", "hyparquet-writer": "0.18.0", "hyparquet-compressors": "*" } }

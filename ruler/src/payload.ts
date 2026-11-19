@@ -1,5 +1,5 @@
-/** Notification bodies: Alertmanager's webhook JSON (version "4") and a Slack incoming-webhook message. */
-import type { WebhookPayload } from '../contracts-proposal/rules'
+/** Notification bodies: Alertmanager's webhook JSON (version "4"), viz's plain JSON (`viz.notification/v1`) and a Slack incoming-webhook message. */
+import type { JsonNotification, WebhookPayload } from '../contracts-proposal/rules'
 import { rfc3339, type Labels } from './util'
 
 export interface PayloadAlert {
@@ -9,6 +9,8 @@ export interface PayloadAlert {
   status: 'firing' | 'resolved'
   startsAt: number
   endsAt: number | null
+  /** The sample value at the transition (the plain JSON form carries it). */
+  value?: number
 }
 
 export interface PayloadGroup {
@@ -53,6 +55,37 @@ export function webhookPayload(g: PayloadGroup, alerts: PayloadAlert[], maxAlert
       startsAt: rfc3339(a.startsAt),
       endsAt: a.endsAt === null ? ZERO_TIME : rfc3339(a.endsAt),
       generatorURL: '',
+      fingerprint: a.fingerprint,
+    })),
+  }
+}
+
+/**
+ * viz's plain webhook body (contracts/rules.ts `JsonNotification`, contract version 3). Built
+ * once, when the notification is decided, and stored in the outbox: every attempt sends the
+ * same bytes under the same `idempotencyKey`. Nothing secret is in it: not the URL, not the
+ * signing secret, not a credential.
+ */
+export function jsonPayload(g: PayloadGroup, alerts: PayloadAlert[], idempotencyKey: string, maxAlerts = 0): JsonNotification {
+  const all = ordered(alerts)
+  const shown = maxAlerts > 0 ? all.slice(0, maxAlerts) : all
+  return {
+    version: 'viz.notification/v1',
+    idempotencyKey,
+    status: all.some((a) => a.status === 'firing') ? 'firing' : 'resolved',
+    receiver: g.receiver,
+    groupKey: g.groupKey,
+    groupLabels: g.groupLabels,
+    externalURL: g.externalUrl,
+    truncatedAlerts: all.length - shown.length,
+    alerts: shown.map((a) => ({
+      status: a.status,
+      name: a.labels.alertname ?? '',
+      labels: a.labels,
+      annotations: a.annotations,
+      startsAt: rfc3339(a.startsAt),
+      endsAt: a.endsAt === null ? null : rfc3339(a.endsAt),
+      value: a.value !== undefined && Number.isFinite(a.value) ? a.value : null,
       fingerprint: a.fingerprint,
     })),
   }

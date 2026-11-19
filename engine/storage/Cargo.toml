@@ -1,6 +1,7 @@
 [package]
 name = "viz-storage"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2021"
 description = "viz storage engine: VZB1 batches, Parquet flush files, select and compaction merge. No I/O."
 publish = false

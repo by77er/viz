@@ -15,6 +15,17 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
+// It edits sources in place: run it in a copy outside any git work tree (AGENTS.md: a mutant
+// caught in a commit ships). The copy needs mcp/ (with node_modules), control/{src,openapi.json},
+// dashboard/{src,examples,schema,package.json}, edge/src and contracts/, which the tests import.
+try {
+  execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, stdio: 'pipe' })
+  console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see above).')
+  process.exit(2)
+} catch {
+  // Not a work tree (or no git): a copy. Go on.
+}
+
 /** Each change is [file, exact text (must occur once), replacement]. */
 const MUTANTS = [
   {
@@ -22,8 +33,11 @@ const MUTANTS = [
     changes: [['src/index.ts', `const id = await identify(req, env, control ? (a: string) => make.control(env, a)! : null)`, `const id = { ...(await identify(req, env, control ? (a: string) => make.control(env, a)! : null)), ...(req.headers.get('X-Viz-Tenant') ? { tenant: req.headers.get('X-Viz-Tenant')! } : {}) }`]],
   },
   {
-    name: 'Agent apply allowed: the dry-run verdict "would become a proposal" is not refused',
-    changes: [['src/tools/write.ts', `if (id && dry.status === 202) refuseApply('Agents may not apply changes in this tenant.')`, `void 0`]],
+    name: 'Agent apply allowed: whoami\'s mayApply is not consulted before writing',
+    changes: [
+      ['src/tools/write.ts', "if (s.id.mayApply === false) refuseApply(", 'if (false) refuseApply('],
+      ['src/tools/write.ts', "if (s.id.mayApply !== true) refuseApply(", 'if (false) refuseApply('],
+    ],
   },
   {
     name: 'Dry run writes: the control-plane check is sent without dryRun',
@@ -103,6 +117,30 @@ const MUTANTS = [
     name: 'Unknown metric names not checked in the write preview (no did-you-mean)',
     changes: [['src/tools/common.ts', 'for (const sel of selectorsOf(parsePromQL(rq.expr).ast)) {', 'for (const sel of [] as ReturnType<typeof selectorsOf>) {']],
   },
+  {
+    name: 'No answer on mayApply (an older control release, or edge\'s fallback) is taken as yes',
+    changes: [['src/tools/write.ts', "if (s.id.mayApply !== true) refuseApply(", 'if (false) refuseApply(']],
+  },
+  {
+    name: 'A proposed new dashboard is sent as a direct create',
+    changes: [['src/tools/write.ts', "s.control.call('POST', '/proposals', { body: { spec: candidate,", "s.control.call('POST', '/dashboards', { body: { spec: candidate,"]],
+  },
+  {
+    name: 'read_dashboard lists panels in structure in layout order, not the order the text uses',
+    changes: [['src/tools/dashboards.ts', 'const ordered = panelOrder(panels).map((i) => ({ p: panels[i]!, i }))', 'const ordered = panels.map((p, i) => ({ p, i }))']],
+  },
+  {
+    name: '`validate_query` does not ask the query service for its plan (the estimate is the series count alone)',
+    changes: [['src/tools/validate.ts', 'if (performance.now() < s.deadline) {\n        s.usage.upstreamCalls++\n        const p = await s.query.plan(', 'if (false) {\n        s.usage.upstreamCalls++\n        const p = await s.query.plan(']],
+  },
+  {
+    name: '`validate_query` drops the refusal the plan foresees',
+    changes: [['src/tools/validate.ts', 'if (plan.refusal) findings.push(', 'if (plan.refusal && false) findings.push(']],
+  },
+  {
+    name: '`/healthz` says ok whatever is bound',
+    changes: [['src/index.ts', "const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER'] as const).filter((b) => !env[b])", 'const missing: string[] = []']],
+  },
 ]
 
 const only = process.argv.slice(2).map(Number)
@@ -124,28 +162,30 @@ for (const [i, m] of MUTANTS.entries()) {
     }
     const report = join(out, `m${n}.json`)
     try {
-      execFileSync('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${report}`], { cwd: root, stdio: 'ignore', timeout: 600_000 })
+      execFileSync('npx', ['vitest', 'run', '--maxWorkers=2', '--reporter=json', `--outputFile=${report}`], { cwd: root, stdio: 'ignore', timeout: 600_000 })
     } catch {
       /* a failing suite is what we want */
     }
     let r
+    let noResult = false
     try {
       r = JSON.parse(readFileSync(report, 'utf8'))
     } catch {
       // The suite did not finish (it hung or timed out): reported as such, never as killed.
       r = { numFailedTests: 0, testResults: [] }
+      noResult = true
     }
     const failedFiles = r.testResults.filter((f) => f.status === 'failed').map((f) => f.name.replace(/^.*\/test\//, '').replace('.test.ts', ''))
     const failedTests = r.numFailedTests
-    rows.push({ n, name: m.name, killed: failedTests > 0, failedTests, by: failedFiles.join(', ') })
-    console.log(`${n}\t${failedTests > 0 ? 'KILLED' : 'SURVIVED'}\t${failedTests} failing\t${failedFiles.join(', ')}\t${m.name}`)
+    rows.push({ n, name: m.name, killed: failedTests > 0, noResult, failedTests, by: failedFiles.join(', ') })
+    console.log(`${n}\t${failedTests > 0 ? 'KILLED' : noResult ? 'NO RESULT (rerun)' : 'SURVIVED'}\t${failedTests} failing\t${failedFiles.join(', ')}\t${m.name}`)
   } finally {
     for (const [path, text] of originals) writeFileSync(path, text)
   }
 }
 rmSync(out, { recursive: true, force: true })
 console.log('\n| # | Mutant | Caught by (failing tests) |\n|---|---|---|')
-for (const r of rows) console.log(`| ${r.n} | ${r.name} | ${r.killed ? `${r.by} (${r.failedTests})` : '**SURVIVED**'} |`)
+for (const r of rows) console.log(`| ${r.n} | ${r.name} | ${r.killed ? `${r.by} (${r.failedTests})` : r.noResult ? '**NO RESULT**' : '**SURVIVED**'} |`)
 const survived = rows.filter((r) => !r.killed)
 console.log(`\n${rows.length - survived.length} of ${rows.length} killed.`)
 process.exit(survived.length ? 1 : 0)

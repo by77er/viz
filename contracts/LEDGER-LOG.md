@@ -1,10 +1,13 @@
 # The ledger's change log: segments
 
-Status: **built** (`ledger/src/ledger.ts`, 2026-11-18). It replaces the first layout, one R2
-object per change, which made every mutation wait for its own R2 write and limited a ledger
-to about one flush unit per second (`spikes/s4-ledger-scale/`). Measurements before and after
-are in `ledger/README.md`. Two findings of the protocol model (`spec/README.md`, F10 and
-F11) are fixed in this text; the plan before them is in git history.
+Status: **built** (`ledger/src/ledger.ts`, 2026-11-18; revised 2026-11-19 after the review
+`design/reviews/segment-log-and-compaction.md`: checkpoint policy, the size limit, refusal of
+mixed layouts, the forward-only boundary). It replaces the first layout, one R2 object per
+change, which made every mutation wait for its own R2 write and limited a ledger to about one
+flush unit per second. Measured before and after on Cloudflare in
+`spikes/s4-ledger-scale/README.md` ("Re-run after the segment log"); decision D36. Two
+findings of the protocol model (`spec/README.md`, F10 and F11) are fixed in this text; the
+plan before them is in git history.
 
 ## What changes
 
@@ -66,20 +69,46 @@ ledger/tenant={tenant}/{ledgerIncarnation}/seg-{firstVersion:012}-{lastVersion:0
   `If-None-Match` finds it identical. (Taking "every pending row" again would write an
   overlapping segment, which a strict rebuild refuses: `spec/README.md` F10.)
 - A failed write leaves rows and record in place and re-arms the alarm with backoff (1 s
-  doubling to 60 s). An existing object with other bytes, or a record whose rows are gone,
-  stops the drain: nothing is overwritten, `logStatus()` reports it, the alarm retries
-  every 60 s, and `loggedWatermarks()` stops advancing, so shards keep their rows.
+  doubling to 60 s). An existing object with other bytes, a record whose rows are gone, or an
+  outbox that does not continue the written log stops the drain: nothing is overwritten,
+  `logStatus()` reports phase `stuck` and why, the alarm retries every 60 s, and
+  `loggedWatermarks()` stops advancing, so shards keep their rows. One such case is healed
+  at once: the outbox does not continue the log AND the incarnation's prefix holds
+  first-layout objects, the signature of a rollback to the release that drains the first
+  layout (below, "Versions"). SQLite holds every committed change, so the ledger starts a new
+  incarnation from SQLite, its base in R2 first, and loses nothing a shard was told (the
+  protocol model checks this fix, `spec/README.md`). Otherwise an operator repairs R2 or calls
+  `restartFromSqlite()`, which does the same.
 - While a drain is in flight new mutations keep committing; they go in the next segment.
 
 ## Checkpoints
 
-- After every 256 segments of an incarnation, the drain also writes
+- After at least 256 segments of an incarnation, **and** once the segments written since
+  the last checkpoint (or the base) are at least as large as it, the drain also writes
   `ckpt-{version:012}.jsonl`: a header of kind `viz.ledger.checkpoint` and one line, a
   `base`-kind change holding the whole state at `version`, which is the `lastVersion` of the
   segment just written. The state is read in the same synchronous step that fixes that
-  segment's bounds, so it is exactly the state at that version.
+  segment's bounds, so it is exactly the state at that version. Tying checkpoints to the
+  log's volume, not to the write rate, keeps their R2 bytes at most those of the log
+  (review S-2: every 256 segments would have written tens of GB a day for a busy tenant).
+- Once a checkpoint is written, the older checkpoints of the incarnation are deleted.
 - A checkpoint is only an accelerator for a rebuild. Nothing else reads it, and a log with
   no checkpoint, or with a bad one, rebuilds from the base.
+
+## Size
+
+The base and every checkpoint are the whole state as one JSON line, built in one synchronous
+step, and a rebuild holds the state as objects. So the state is bounded: `addUnit` answers
+`full` (nothing changed, retryable) once the state, estimated as each live file's key and
+index fragment plus 448 bytes (which matches what a checkpoint writes), would exceed 16 MiB
+(`STATE_MAX_BYTES`; about 15,800 files of S4's shape). `replace` and `expire` are never
+refused, so compaction and retention make room. Measured in workerd (2026-11-19,
+`ledger/bench/checkpoint.bench.test.ts`, a shared machine at load 14–16): a checkpoint is
+8.3 MB at 8,000 files, 33 MB at 32,000 and 105 MB at 100,000, its synchronous part
+0.17–0.26 s, 0.7–1.0 s and 2.5–3.3 s. The limit itself is modelled (about four copies of the
+state in memory at the peak, against a 128 MB isolate), not measured on Cloudflare. Lifting it needs the base and checkpoints
+written as many lines across several steps and a rebuild that streams into SQLite instead of
+building the state in memory: not built (`ledger/README.md`, "Not implemented").
 
 ## Logged
 
@@ -96,10 +125,12 @@ first outbox row". It lags the committed watermark by up to one drain cycle.
 - **On a new incarnation** every outbox row is dropped in the transaction that commits the
   incarnation: a rebuilt ledger has none, and a ledger converted from the first layout has
   their effect in the new base, which is already in R2.
-- **R2 log objects** are never deleted by the ledger. A segment or checkpoint of an
-  incarnation below its newest checkpoint is needed only by readers whose cursor is below
-  that checkpoint, and an old incarnation only by readers that have not re-based on a newer
-  one. Deleting those (when every reader's cursor is past them) is not built.
+- **Checkpoints** are deleted once a newer checkpoint of their incarnation is written (only
+  the ledger's rebuild reads them).
+- **Other R2 log objects** are never deleted by the ledger. A segment of an incarnation below
+  its newest checkpoint is needed only by readers whose cursor is below that checkpoint, and
+  an old incarnation only by readers that have not re-based on a newer one. Deleting those
+  (when every reader's cursor is past them) is not built.
 - What shards may discard (up to `loggedWatermarks()`) and what the janitor may delete
   (tombstones whose removing version is below the first outbox row) follow from "logged"
   above and do not change.
@@ -108,7 +139,10 @@ first outbox row". It lags the committed watermark by up to one drain cycle.
 
 Each incarnation uses one layout. A reader lists `{incarnation}/seg-` (one key is enough):
 any segment means segments; otherwise the incarnation is in the first layout (`base.json`
-and `{version}.json`, read as before). Both present is corrupt.
+and `{version}.json`, read as before). Both present is corrupt, and is checked, not assumed:
+`{version}.json` keys sort before `base.json`, `ckpt-` and `seg-`, so the first key under the
+incarnation's prefix says whether any is there. The ledger's rebuild refuses such an
+incarnation (phase `stuck`), never replays one layout and skips the other (review S-1).
 
 - **Rebuild** (the ledger, on storage with no incarnation): take the newest incarnation in
   R2. In the first layout, replay `base.json` and its changes as before. With segments,
@@ -117,7 +151,9 @@ and `{version}.json`, read as before). Both present is corrupt.
   end + 1, decode each strictly, and replay. A gap, a corrupt object or an unsupported one
   refuses the rebuild: the object serves nothing rather than a guess. Then a new
   incarnation starts, with its base segment. Changes committed but not yet in a segment
-  when storage was lost are lost, as before; the window is one drain cycle.
+  when storage was lost are lost, as before; the window is one drain cycle. With NO log in
+  R2 the ledger starts empty only if the tenant has no data objects either; otherwise the log
+  is not where it looks (a changed cell, a wrong bucket) and it refuses (review S-5).
 - **The publisher** keeps a cursor `(ledgerIncarnation, version)`. On a newer incarnation it
   re-bases from that incarnation's base (first line of the first segment). Otherwise it
   lists with `startAfter: ledgerSegmentsStartingAfter(tenant, incarnation, version)`, which
@@ -126,8 +162,12 @@ and `{version}.json`, read as before). Both present is corrupt.
   incarnation's first segment and find the one with `first ≤ version + 1 ≤ last`; if none, it
   is a gap. It applies the changes above the cursor, in order, and advances only over whole
   segments. A gap, a corrupt or an unsupported segment stops that tenant before it; it is
-  never skipped. The exact change to `publisher/src/log.ts` is in `ledger/README.md`,
-  "Needed changes".
+  never skipped. (Built: `publisher/src/log.ts`, `publisher/README.md`.) A new incarnation's
+  base can be behind the last segment of the incarnation before it: a PUT in flight when an
+  instance died can land after the rebuild listed (review S-8). So a publisher re-bases on a
+  new incarnation by replacing its state with the base, never by assuming the base extends
+  its cursor; versions of such a late segment recur in the new incarnation with other
+  content.
 - Readers verify each segment against its key (`decodeLedgerSegment(body, parseLedgerLogKey(key))`).
 
 ## Versions
@@ -144,10 +184,15 @@ and `{version}.json`, read as before). Both present is corrupt.
   release. COMPATIBILITY.md §3.3 and §7 ask for two releases (readers first) where an older
   release could be rolled back to; on 2026-11-18 no release of the ledger had reached
   production (the account's Worker list had no `viz-ingest`), so there was none. Any
-  deployment that ran the first layout (the trial stage) crosses a forward-only boundary:
-  rolling it back below this release leaves its ledgers unable to rebuild from R2 until
-  rolled forward (stuck, not lost: COMPATIBILITY.md §9). The publisher must read segments
-  before it is deployed (it is not deployed yet).
+  deployment that ran the first layout (the trial stage) crosses a forward-only boundary.
+  The boundary is in the storage: schema migration 2 (`ledger.Ledger`) has `readableFrom`
+  2, so versioned code that knows only version 1 refuses this storage (`schema_too_new`).
+  Code from before versioning cannot read a version row; keeping it out is the release
+  record's job (COMPATIBILITY.md §6; `deploy/` must mark this release forward-only). If such
+  a rollback happens anyway, it drains per-change objects into a segment incarnation and
+  tells shards they are logged; after the roll-forward the drain heals it from SQLite (Drain,
+  above), and a rebuild before that refuses the mixed incarnation: stuck, not lost (review
+  S-1). The publisher reads segments (built).
 
 ## What callers see
 
@@ -172,11 +217,15 @@ and `{version}.json`, read as before). Both present is corrupt.
 
 - A ledger admits at least 50 units per second on Cloudflare with eight writers, and
   `addUnit` answers in under 20 ms at the median: `spikes/s4-ledger-scale/README.md`.
+  **Measured 2026-11-19** (three 20 s runs): 234–422 units per second, met; median 16, 21
+  and 31 ms, met in one run of three. A rebuild of 5,008 changes from 104 segments took
+  5.4 s.
 - Under injected crashes between commit, segment write and row deletion, replaying the
   segments reproduces the committed state up to the last written segment, and no shard is
-  ever told to discard past it: `ledger/test/segments.test.ts`.
+  ever told to discard past it: `ledger/test/segments.test.ts`. Shown, with mutants of each
+  rule (`ledger/README.md`).
 - A fresh object with empty storage reconstructs exactly the state of a live one:
-  `ledger/test/segments.test.ts`.
+  `ledger/test/segments.test.ts`. Shown, also from checkpoints and past an unreadable one.
 - The publisher and an independent reader see the same table before and after the change
-  of log format: not shown; it needs the publisher's reader (`ledger/README.md`, "Needed
-  changes").
+  of log format: not shown here. The publisher now reads both layouts
+  (`publisher/README.md`, "Reading the log"); the comparison is the publisher's to show.

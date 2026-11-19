@@ -1,4 +1,4 @@
-import type { SchemaSpec } from '../../contracts/schema'
+import { columnsOf, type SchemaSpec } from '../../contracts/schema'
 
 /**
  * The `Tenant` object's storage, versioned (contracts/COMPATIBILITY.md §2).
@@ -56,9 +56,34 @@ CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
 `
 
+/**
+ * Version 2: a proposal may create a dashboard. Such a proposal is a row of `proposals`
+ * with `base_number` 0, `base_revision` '', `changes` '[]', `dashboard` = the new id, and
+ * the whole proposed spec in the new nullable column `spec` (NULL on every other row).
+ *
+ * Additive (`readableFrom: 1`, COMPATIBILITY.md §2.3): release 1 never reads or writes the
+ * column, and every path of release 1 that meets such a row fails closed rather than acting
+ * on it: list and decline treat it as a proposal with no changes; get, apply and edit answer
+ * 404 (no dashboard of that id, or no revision 0 when one has appeared); expiry closes it.
+ * An edit by release 1 (possible only once a dashboard of that id exists) rewrites the row
+ * as an ordinary proposal with `base_number` ≥ 1, which this code then reads as one: a row
+ * is a creation only while `base_number` is 0 AND `spec` is set. README, "Versioned storage".
+ */
+const V2 = 'ALTER TABLE proposals ADD COLUMN spec TEXT'
+
 export const TENANT_SCHEMA: SchemaSpec = {
   component: 'control.Tenant',
-  migrations: [{ version: 1, name: 'the schema as it stood when versioning began', readableFrom: 1, up: (sql) => void sql.exec(V1) }],
+  migrations: [
+    { version: 1, name: 'the schema as it stood when versioning began', readableFrom: 1, up: (sql) => void sql.exec(V1) },
+    {
+      version: 2,
+      name: 'proposals.spec: proposals that create a dashboard',
+      readableFrom: 1,
+      up: (sql) => {
+        if (!columnsOf(sql, 'proposals').has('spec')) sql.exec(V2)
+      },
+    },
+  ],
 }
 
 /**
@@ -83,4 +108,8 @@ export const FORMATS = {
   'cursor.list': 1,
   /** A dashboard revision id (`revisionOf`, the ETag): content hash of the canonical spec. */
   'id.revision': 1,
+  /** `Tenant.notificationTarget` result (contracts/control.ts), read by the ruler's notifier: `v` 1. */
+  'rpc.notification-target': 1,
+  /** `Tenant.serviceKey` result (contracts/control.ts), read by the ruler: `v` 1. */
+  'rpc.service-key': 1,
 } as const

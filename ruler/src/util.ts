@@ -149,3 +149,14 @@ export function resolveObjectName(presented: string | undefined, stored: string 
   if (stored !== undefined && stored !== presented) return ''
   return presented
 }
+
+/**
+ * Whether a staged trial's deadline (`VIZ_STAGE_EXPIRES_AT`, ISO 8601, set by
+ * deploy/configure.mjs --expires) has passed. Unset (production): never. Unparseable: expired,
+ * so a typo stops the trial rather than letting it run on.
+ */
+export function stageExpired(expiresAt: string | undefined, nowMs: number): boolean {
+  if (expiresAt === undefined || expiresAt === '') return false
+  const at = Date.parse(expiresAt)
+  return !Number.isFinite(at) || nowMs >= at
+}

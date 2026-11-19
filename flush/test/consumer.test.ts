@@ -1,7 +1,7 @@
 import { createExecutionContext, createMessageBatch, getQueueResult, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { type FlushMessage, PENDING_MARKER_PREFIX, Shard, pendingMarkerKey } from '../../shard/src/shard'
+import { FLUSH_MESSAGE_VERSION, type FlushMessage, PENDING_MARKER_PREFIX, Shard, pendingMarkerKey } from '../../shard/src/shard'
 import { consumeDeadLetters, consumeFlushBatch, engine, listDeadLetters, retryDelaySeconds, shardsFromPoolMaps, sweepPending, type FlushResult } from '../src/index'
 import { T0, append, breakLedgerLog, dataKeys, flushSettled, healLedgerLog, liveKeys, read, Sent, someSamples, stream } from './helpers'
 
@@ -47,7 +47,7 @@ async function sealed(prefix: string, sent = new Sent()) {
   const s = stream(prefix)
   await append(s.shard, s.tenant, someSamples(s.tenant, T0, 24), sent)
   await s.shard.seal(s.tenant)
-  return { ...s, sent, msg: { tenant: s.tenant, shard: s.shardName } }
+  return { ...s, sent, msg: { v: FLUSH_MESSAGE_VERSION, tenant: s.tenant, shard: s.shardName } }
 }
 
 describe('flush queue consumer', () => {
@@ -224,9 +224,9 @@ describe('sweep', () => {
     const c = counting()
     const r = await sweepPending(c.env)
     expect(r).toMatchObject({ markers: 2, shardsAsked: 2 })
-    expect(c.calls.messages).toEqual([{ v: 1, ...b.msg }])
+    expect(c.calls.messages).toEqual([b.msg])
     // With no age threshold both are due.
-    expect((await sweepPending(c.env, { olderThanMs: 0 })).enqueued.sort((x, y) => (x.tenant < y.tenant ? -1 : 1))).toEqual([a.msg, b.msg].sort((x, y) => (x.tenant < y.tenant ? -1 : 1)).map((m) => ({ v: 1, ...m })))
+    expect((await sweepPending(c.env, { olderThanMs: 0 })).enqueued.sort((x, y) => (x.tenant < y.tenant ? -1 : 1))).toEqual([a.msg, b.msg].sort((x, y) => (x.tenant < y.tenant ? -1 : 1)))
 
     // The messages are consumed; the next sweep finds the markers, asks once, and the
     // shards clear them; after that the sweep costs nothing again.
@@ -248,7 +248,7 @@ describe('sweep', () => {
     await env.CONFIG.put(`pool:${a.tenant}`, JSON.stringify({ pool, slots: 2, spread: 2, epoch: 1 }))
     expect(await shardsFromPoolMaps({ CONFIG: env.CONFIG, DEFAULT_POOL: JSON.stringify({ pool: 'shared/x', slots: 1, spread: 1, epoch: 1 }) })).toEqual(expect.arrayContaining([`${pool}/0`, `${pool}/1`, 'shared/x/0']))
     const full = await sweepPending(c.env, { olderThanMs: 0, full: true })
-    expect(full.enqueued).toEqual([{ v: 1, ...a.msg }])
+    expect(full.enqueued).toEqual([a.msg])
     expect(full.shardsAsked).toBeGreaterThanOrEqual(2)
     await env.CONFIG.delete(`pool:${a.tenant}`)
   })

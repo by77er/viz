@@ -79,3 +79,19 @@ edges, and draft 3.1 amends the text for each:
 These amendments are text. They have not been re-reviewed, and the protocol now has enough
 moving parts (streams, incarnations, epochs, outbox) that the Quint model in
 `VERIFICATION.md` is the next real check, not another reading.
+
+## Reviews of the built system (2026-11-19)
+
+Each review was done by someone who did not build what they reviewed and was not given the
+authors' reasoning. The full findings and dispositions live with each review; this is the
+index.
+
+| Review | Scope | Findings | Disposition |
+|---|---|---|---|
+| `reviews/write-path-completion.md` | The completed write path (snapshot of the first full build) | 0 blockers, 4 majors (R-1 retention fallback, R-2 adopted output swept, R-3 unbounded rebuild under `blockConcurrencyWhile`, R-4 429 at the series limit), 8 minors | All fixed, each with a test that failed before; R-2 by decision D30. Dispositions appended to the review |
+| `spec/README.md` (protocol model) | Two independent models of the write and read protocol, checked against the invariants | F1–F15; F13, F14 critical (compaction), F11 incarnation reuse, F12 flush bound to an incarnation, F15 sweep | F11–F15 fixed and re-checked: no counterexample to the 10 safety invariants within bounds (up to 31 steps, about 19 M states). Open: F6(b)/F1 (an unregistered stream's tail after a shard loss reads empty; needs registration before writes), F8 |
+| `reviews/segment-log-and-compaction.md` | The ledger's batched segment log and the compaction redesign (D30), on the pull-request snapshot | 0 blockers, 2 majors (S-1 rollback then roll-forward stops the log and a rebuild skips per-change objects; S-2 whole-state checkpoints), 7 minors; D30 and F15 found safe | S-1 and S-2 being fixed before the first merge to `main`; the model reproduced S-1 and checked one fix |
+| Automated review on pull request #1 (`nest-projects/review`) | The first pull request to `main` | Stale lockfiles; a ledger snapshotted mid-change; a mutation-testing mutant captured by a snapshot; a genuine overflow in `anomaly`; `COMPATIBILITY.md` §3.6 claiming the segment log was built; a CI exclusion that hid query's HTTP tests; design text behind the code; protocol changes without their review | Each fixed in the branch; `AGENTS.md` gained "mutate a copy" and "snapshot only what is green"; the review above was run because of it |
+
+Design reviews of the interface are kept under `design-system/reviews/` (design system v4:
+rejected; v5: under review; flow screens: revised and awaiting review on v5).

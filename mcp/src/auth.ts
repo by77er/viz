@@ -16,8 +16,13 @@ import type { ControlClient } from './clients'
  *    key therefore stops here at once, whatever edge's 60 s cache says.
  *
  * Kind: identities through this surface are `agent` unless the key says otherwise. Control
- * keys carry their own kind; a credential with no kind (control unreachable, or a key
- * control does not know the scopes of) is an `agent`, the most restricted kind.
+ * keys carry their own kind; a credential with no kind (control unreachable, or a control
+ * release that does not know the key's scopes) is an `agent`, the most restricted kind.
+ *
+ * mayApply: the control plane's own answer to "would this caller's direct dashboard write
+ * take effect?" (`whoami`), so `write_dashboard` needs no dry run to find out. Null when the
+ * answer did not come (edge fallback, or a control release from before the field); callers
+ * treat null as "no".
  *
  * OAuth seam: an OAuth branch (Client ID Metadata Documents, workers-oauth-provider) goes
  * here and returns the same `Identity`, mapping the grant to tenant, subject, kind and
@@ -38,6 +43,8 @@ export interface Identity {
   kind: 'agent' | 'key' | 'user'
   name: string | null
   scopes: string[]
+  /** Whether direct dashboard writes by this caller take effect, as the control plane says; null when it did not say. */
+  mayApply: boolean | null
   /** Where `kind` and `scopes` came from. */
   source: 'control' | 'edge'
 }
@@ -80,17 +87,19 @@ export async function identify(req: Request, env: AuthEnv, control: ((authorizat
   const base = { tenant: principal.tenant, keyId: principal.keyId }
   if (control) {
     const who = await control(authorization).call('GET', '/whoami')
-    const b = who.body as { tenant?: unknown; subject?: unknown; kind?: unknown; name?: unknown; scopes?: unknown } | null
+    const b = who.body as { tenant?: unknown; subject?: unknown; kind?: unknown; name?: unknown; scopes?: unknown; mayApply?: unknown } | null
     if (who.status === 200 && b && b.tenant === principal.tenant && typeof b.subject === 'string' && Array.isArray(b.scopes)) {
       const kind = b.kind === 'key' || b.kind === 'user' ? b.kind : 'agent'
-      return { ...base, subject: b.subject, kind, name: typeof b.name === 'string' ? b.name : null, scopes: b.scopes.map(String), source: 'control' }
+      const mayApply = typeof b.mayApply === 'boolean' ? b.mayApply : null
+      return { ...base, subject: b.subject, kind, name: typeof b.name === 'string' ? b.name : null, scopes: b.scopes.map(String), mayApply, source: 'control' }
     }
     if (who.status === 401) throw unauthenticated('The API key is disabled, expired or deleted.')
-    // 403 `no-scopes`: a key whose scopes the control plane does not know (e.g. only
-    // `monitors:read`); anything else: the control plane is unavailable. Either way the key is
-    // valid at edge, so read with edge's scopes as the most restricted kind.
+    // 403 `no-scopes`: a control release that knows none of the key's scopes (the control
+    // plane issues every scope this surface checks, so only an older release during a deploy);
+    // anything else: the control plane is unavailable. Either way the key is valid at edge, so
+    // read with edge's scopes as the most restricted kind, which may not apply.
   }
-  return { ...base, subject: `key:${principal.keyId}`, kind: 'agent', name: null, scopes: principal.scopes, source: 'edge' }
+  return { ...base, subject: `key:${principal.keyId}`, kind: 'agent', name: null, scopes: principal.scopes, mayApply: null, source: 'edge' }
 }
 
 /** True when `id` holds every scope in `all`. `admin` is not honoured here: agents get explicit scopes. */

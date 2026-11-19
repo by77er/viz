@@ -73,12 +73,23 @@ export interface LiveFile extends FileEntry {
  * incarnation lower than the one it has registered.
  */
 export interface StreamRef {
+  /** The shard's Durable Object name: matches `SHARD_NAME`. */
   shard: string
   incarnation: number
 }
 
 /** Tenant ids are `[A-Za-z0-9_-]{1,64}` everywhere: they appear in object keys unescaped. */
 export const TENANT_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+/**
+ * Shard names (`{pool}/{slot}`, contracts/TABLES.md "Object keys"): segments of
+ * `[A-Za-z0-9-]` joined by `/`, at most 128 characters. No `_`, so a flush file's key, which
+ * writes the shard name with `/` replaced by `_`, names exactly one stream: `_` there always
+ * stands for `/`. The ledger refuses a stream named otherwise (`invalid`).
+ */
+export const SHARD_NAME = /^(?=.{1,128}$)[A-Za-z0-9-]+(?:\/[A-Za-z0-9-]+)*$/
+/** Pool names: as `SHARD_NAME`, at most 120 characters, so `{pool}/{slot}` is a shard name for any slot below 4,096. */
+export const POOL_NAME = /^(?=.{1,120}$)[A-Za-z0-9-]+(?:\/[A-Za-z0-9-]+)*$/
 
 /** Everything one sealed segment produced. Admitted atomically or not at all. */
 export interface FlushUnit extends StreamRef {
@@ -88,7 +99,12 @@ export interface FlushUnit extends StreamRef {
 }
 
 export type AddUnitResult =
-  /** Admitted, or already admitted earlier (idempotent replay). */
+  /**
+   * Admitted, or already admitted earlier (idempotent replay). `watermark` is the COMMITTED
+   * watermark: the change may not be in the ledger's R2 log yet (contracts/LEDGER-LOG.md), and a
+   * ledger that loses its storage comes back without it. It must never be passed to a shard's
+   * `recorded`: only `loggedWatermarks()` may (spec F8).
+   */
   | { status: 'ok'; version: number; watermark: number }
   /** `seqLo` is not `watermark + 1` for this stream. Nothing changed. */
   | { status: 'not_contiguous'; watermark: number }
@@ -96,6 +112,14 @@ export type AddUnitResult =
   | { status: 'incarnation_mismatch'; incarnation: number }
   /** The unit itself is unacceptable (a key already belongs to another unit, an empty unit). Nothing changed. */
   | { status: 'invalid'; reason: string }
+  /**
+   * The ledger already holds as much state as it can write as one base or checkpoint and
+   * rebuild within one isolate (`stateBytes` of `limitBytes`, estimated; LEDGER-LOG.md "Size").
+   * Nothing changed. Retryable: compaction and retention shrink the state; if it persists the
+   * tenant needs splitting. Added 2026-11-19 (review S-2); a caller that does not know it
+   * fails closed and retries (COMPATIBILITY.md §3.2).
+   */
+  | { status: 'full'; stateBytes: number; limitBytes: number }
 
 /*
  * Replay rules. A retried unit is `ok` whenever the stream's watermark is already at or past

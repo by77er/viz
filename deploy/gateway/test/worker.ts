@@ -1,10 +1,11 @@
 /**
  * The test Worker's main module: the gateway itself as the default export, the REAL control
  * plane's Tenant object (so /api/v1/bootstrap is tested against control/'s `provision`), and
- * three fake backends reached through service bindings to this same Worker, as the gateway
- * reaches viz-ingest, viz-query and viz-control in production.
+ * five fake backends reached through service bindings to this same Worker, as the gateway
+ * reaches viz-ingest, viz-query, viz-control, viz-ruler and viz-mcp in production.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
+import control from '../../../control/src/index'
 
 export { default } from '../src/index'
 export { Tenant } from '../../../control/src/tenant'
@@ -34,7 +35,7 @@ async function echo(name: string, req: Request): Promise<Response> {
     return new Response(ts.readable, { headers: { 'x-fake-backend': name, 'Content-Type': 'text/plain' } })
   }
   if (url.pathname.endsWith('/__fake/throw')) throw new Error('fake backend failure')
-  if (url.pathname === '/healthz' || url.pathname === '/api/v1/control/openapi.json') return new Response('ok', { headers: { 'x-fake-backend': name } })
+  if (url.pathname === '/healthz') return new Response('ok', { headers: { 'x-fake-backend': name } })
   // Default: describe the request exactly.
   let bytes = 0
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', req.body ? await new Response(req.body).arrayBuffer().then((b) => ((bytes = b.byteLength), b)) : new ArrayBuffer(0)))
@@ -56,8 +57,20 @@ export class FakeQuery extends WorkerEntrypoint {
     return echo('query', req)
   }
 }
-export class FakeControl extends WorkerEntrypoint {
+/** Echoes like the others, except `/healthz`, which is control's real health route (control/src/index.ts) on this Worker's bindings. */
+export class FakeControl extends WorkerEntrypoint<Cloudflare.Env> {
   fetch(req: Request) {
+    if (new URL(req.url).pathname === '/healthz') return control.fetch!(req as never, this.env as never, this.ctx)
     return echo('control', req)
+  }
+}
+export class FakeRuler extends WorkerEntrypoint {
+  fetch(req: Request) {
+    return echo('ruler', req)
+  }
+}
+export class FakeMcp extends WorkerEntrypoint {
+  fetch(req: Request) {
+    return echo('mcp', req)
   }
 }

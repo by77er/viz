@@ -2,7 +2,8 @@
  * Alertmanager's configuration model: validation of the notifier config document, the
  * routing tree, matchers, inhibition rules and silence matching. Pure; no storage.
  */
-import { RECEIVER_LABEL, type InhibitRuleInput, type NotifierConfigInput, type ReceiverSummary, type RouteInput, type SilenceInput, type SilenceMatcher, type ValidationError } from '../contracts-proposal/rules.v2'
+import type { NotificationTarget, WebhookFormat } from '../../contracts/control'
+import { CONTROL_RECEIVER, RECEIVER_LABEL, type InhibitRuleInput, type NotifierConfigInput, type ReceiverSummary, type RouteInput, type SilenceInput, type SilenceMatcher, type ValidationError } from '../contracts-proposal/rules.v2'
 import { LABEL_NAME_RE, labelValue, parseDuration, type Labels } from './util'
 
 export interface Matcher {
@@ -38,6 +39,8 @@ export interface Integration {
   channel: string | null
   /** Signs outbound requests (`signature.ts`). Never returned by any RPC. */
   secret: string | null
+  /** Webhooks: the body (`payload.ts`). Slack: always its own. */
+  format: WebhookFormat
 }
 
 export interface InhibitRule {
@@ -221,7 +224,29 @@ function httpUrl(c: Ctx, v: unknown, path: string): string {
   return ''
 }
 
-export function compileConfig(input: unknown): { ok: true; config: CompiledConfig } | { ok: false; errors: ValidationError[] } {
+/** The receiver standing for control's destination (contracts/rules.ts `CONTROL_RECEIVER`): one webhook, or none. */
+export function controlIntegrations(target: NotificationTarget | null): Integration[] {
+  if (!target) return []
+  return [{ key: 'webhook[0]', kind: 'webhook', url: target.url, sendResolved: target.sendResolved, maxAlerts: 0, channel: null, secret: target.secret, format: target.format === 'json' ? 'json' : 'alertmanager' }]
+}
+
+/**
+ * Compile the tenant's notifier config, with the destination set in control
+ * (`control`, contracts/control.ts) added as the receiver `CONTROL_RECEIVER`. No own config:
+ * the whole config is `route: { receiver: CONTROL_RECEIVER }` with Alertmanager's default
+ * timers, or nothing at all when control has no destination either (`null`).
+ */
+export function effectiveConfig(own: unknown | null, control: NotificationTarget | null): CompiledConfig | null {
+  if (own === null || own === undefined) {
+    if (!control) return null
+    const compiled = compileConfig({ route: { receiver: CONTROL_RECEIVER }, receivers: [] }, control)
+    return compiled.ok ? compiled.config : null
+  }
+  const compiled = compileConfig(own, control)
+  return compiled.ok ? compiled.config : null
+}
+
+export function compileConfig(input: unknown, control: NotificationTarget | null = null): { ok: true; config: CompiledConfig } | { ok: false; errors: ValidationError[] } {
   const c = new Ctx()
   if (!isObject(input)) return { ok: false, errors: [{ path: '', message: 'config must be an object', fix: 'Send { "route": {...}, "receivers": [...] }.' }] }
   const doc = input as unknown as NotifierConfigInput & Record<string, unknown>
@@ -229,12 +254,13 @@ export function compileConfig(input: unknown): { ok: true; config: CompiledConfi
     if (!['route', 'receivers', 'inhibit_rules', 'external_url', 'delivery'].includes(k)) c.err(k, `unknown field "${k}"`, 'Supported: route, receivers, inhibit_rules, external_url, delivery.')
   }
   const receivers = new Map<string, Integration[]>()
-  if (!Array.isArray(doc.receivers) || doc.receivers.length === 0) c.err('receivers', 'at least one receiver is required', 'Add a receiver with a webhook_configs or slack_configs entry.')
+  if (!Array.isArray(doc.receivers)) c.err('receivers', 'receivers must be a list', `List the receivers; a route may also name "${CONTROL_RECEIVER}", the webhook set in the control plane's notification settings.`)
   else if (doc.receivers.length > 64) c.err('receivers', 'more than 64 receivers', 'Remove unused receivers.')
   else {
     doc.receivers.forEach((r: unknown, i: number) => {
       const p = `receivers[${i}]`
       if (!isObject(r) || typeof r.name !== 'string' || r.name === '') return c.err(`${p}.name`, 'receiver name is required', 'Name the receiver.')
+      if (r.name === CONTROL_RECEIVER) return c.err(`${p}.name`, `"${CONTROL_RECEIVER}" is reserved: it is the webhook set in the control plane's notification settings`, `Choose another name, or route to "${CONTROL_RECEIVER}" without defining it.`)
       if (receivers.has(r.name)) return c.err(`${p}.name`, `receiver "${r.name}" is defined twice`, 'Receiver names must be unique.')
       for (const k of Object.keys(r)) if (!['name', 'webhook_configs', 'slack_configs'].includes(k)) c.err(`${p}.${k}`, `unsupported receiver field "${k}"`, 'Supported integrations: webhook_configs, slack_configs.')
       const list: Integration[] = []
@@ -248,14 +274,17 @@ export function compileConfig(input: unknown): { ok: true; config: CompiledConfi
         if (typeof max !== 'number' || !Number.isInteger(max) || max < 0) c.err(`${path}.max_alerts`, 'max_alerts must be a non-negative integer', 'Use 0 for no limit.')
         if (cfg.secret !== undefined && (typeof cfg.secret !== 'string' || cfg.secret.length > 512)) c.err(`${path}.secret`, 'secret must be a string of at most 512 characters', 'Give the shared secret the receiver verifies the signature with.')
         else if (typeof cfg.secret === 'string' && cfg.secret !== '' && cfg.secret.length < 16) c.err(`${path}.secret`, 'secret is shorter than 16 characters', 'Use a random secret of at least 16 characters.')
-        list.push({ key: `webhook[${j}]`, kind: 'webhook', url: httpUrl(c, cfg.url, `${path}.url`), sendResolved: cfg.send_resolved !== false, maxAlerts: typeof max === 'number' ? max : 0, channel: null, secret: typeof cfg.secret === 'string' && cfg.secret !== '' ? cfg.secret : null })
+        if (cfg.format !== undefined && cfg.format !== 'alertmanager' && cfg.format !== 'json') c.err(`${path}.format`, 'format must be "alertmanager" or "json"', '"alertmanager" sends Alertmanager\'s webhook JSON (version 4); "json" sends viz.notification/v1.')
+        list.push({ key: `webhook[${j}]`, kind: 'webhook', url: httpUrl(c, cfg.url, `${path}.url`), sendResolved: cfg.send_resolved !== false, maxAlerts: typeof max === 'number' ? max : 0, channel: null, secret: typeof cfg.secret === 'string' && cfg.secret !== '' ? cfg.secret : null, format: cfg.format === 'json' ? 'json' : 'alertmanager' })
       })
       each(r.slack_configs, 'slack_configs', (cfg, path, j) => {
-        list.push({ key: `slack[${j}]`, kind: 'slack', url: httpUrl(c, cfg.api_url, `${path}.api_url`), sendResolved: cfg.send_resolved === true, maxAlerts: 0, channel: typeof cfg.channel === 'string' ? cfg.channel : null, secret: null })
+        list.push({ key: `slack[${j}]`, kind: 'slack', url: httpUrl(c, cfg.api_url, `${path}.api_url`), sendResolved: cfg.send_resolved === true, maxAlerts: 0, channel: typeof cfg.channel === 'string' ? cfg.channel : null, secret: null, format: 'alertmanager' })
       })
       receivers.set(r.name, list)
     })
   }
+  // Always present, after the tenant's own: the default destination set in the control plane (no integration when none is set).
+  receivers.set(CONTROL_RECEIVER, controlIntegrations(control))
   const root = compileRoute(c, doc.route, 'route', null, 0, new Set(receivers.keys()), { routes: 0 })
   const inhibit: InhibitRule[] = []
   if (doc.inhibit_rules !== undefined) {

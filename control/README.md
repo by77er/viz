@@ -15,7 +15,7 @@ data path never calls it.
 | `src/tenant.ts` | `Tenant`: opening (and migrating) storage, the mutation wrapper (one transaction: change + audit row + KV outbox), dry run, the outbox drain, the alarm, `provision`, `resolveKey`, `recordUsage` |
 | `src/ops-keys.ts` | Keys: create, list, disable/enable, rotate, delete; the KV records |
 | `src/ops-dashboards.ts` | Dashboards and revisions: create, get, list/search, patch, revert, delete/restore, owner, caps |
-| `src/ops-proposals.ts` | Proposed changes: create, list, review against the current revision, edit, apply (whole or part), decline, expire |
+| `src/ops-proposals.ts` | Proposed changes: create, list, review against the current revision, edit, apply (whole or part), decline, expire; proposals that create a dashboard |
 | `src/ops-settings.ts` | Settings: general, retention, limits, pool, notifications |
 | `src/ops-audit.ts` | The audit log's two read routes |
 | `src/openapi.ts`, `openapi.json` | OpenAPI 3.1, written next to the handlers, generated to JSON, held equal to the route table by a test |
@@ -41,9 +41,16 @@ giving `identify` a second branch that returns `kind: 'user'`; no handler change
   ignored. The object refuses an identity whose tenant is not the one it is bound to, and
   re-checks the key on every call.
 - **Scopes**: `admin`, `dashboards:read`, `dashboards:write`, `dashboards:apply`, plus edge's
-  `write` and `read`. `admin` is accepted wherever any scope is. Keys, settings and the
-  audit log need `admin`. `dashboards:write` may propose and dry-run; `dashboards:apply` may
-  change dashboards and apply proposals.
+  `write` and `read`, and the ruler's `monitors:read`, `monitors:write`, `monitors:ack`
+  (`ruler/src/http.ts` `Scope`; mcp's `list_monitors` and `get_monitor` need
+  `monitors:read`). A key can be created with any of them; each service checks its own
+  literally, and here the others reach only `whoami`. `admin` is accepted wherever any of
+  this API's scopes is. Keys, settings and the audit log need `admin`. `dashboards:write`
+  may propose and dry-run; `dashboards:apply` may change dashboards and apply proposals.
+- **`GET /whoami`** answers for any scope: tenant, subject, kind, name, scopes, and
+  `mayApply`: whether this caller's direct dashboard writes take effect (false without
+  `dashboards:apply` or `admin`, and for an agent while `agentsMayApply` is false), so a
+  client such as mcp knows without a dry run.
 - **Kind.** A key is created as `key` or `agent`. Every mutation stores
   `{ subject, kind, name }`, so the UI can say "by an agent" or "by Dana". There is no
   `user` identity yet; in the tests "Dana" is a key named Dana.
@@ -150,6 +157,40 @@ revision, plus a message.
   agent's direct patch becomes a proposal, and its create, revert, delete and restore are
   refused with 403 `agents-may-not-apply`.
 
+**Proposals that create a dashboard** (`POST /proposals` with `{ spec, message }`). The same
+flow for a dashboard that does not exist yet, so an agent can put a new dashboard in front of
+a person for review instead of describing it in text.
+
+- **Proposing** needs `dashboards:write`. The spec is validated with the dashboard package's
+  `validate` (422 `invalid-dashboard`, each error with its pointer and suggestion, exactly as
+  `validate` reports it), and its id must be free: 409 `dashboard-exists` (live) or
+  `dashboard-deleted` (restorable). Size caps and the per-id cap of open proposals apply.
+  Nothing else is written: no dashboard, no revision. The proposal is `kind: "create"`,
+  `dashboard` = the id it would create, `baseRevision` "" and `baseNumber` 0, no `changes`;
+  the spec is in the full view, not in lists.
+- **Review** (`GET /proposals/{id}`) validates the stored spec again and checks the id
+  against the tenant as it is now: `exists`, `reasons`, the one-line summary, and the
+  revision it would become (number 1) with lint. `current` is null.
+- **Apply** is whole (no `changes`, no `baseRevision`; 422 otherwise) and needs the right
+  to create dashboards directly: `dashboards:apply` (or `admin`) and, for an agent,
+  `agentsMayApply`. So an agent key is refused with 403 `agents-may-not-apply` whatever its
+  scopes, its own proposal or another agent's, unlike a change, which an agent with the
+  apply scope may apply for another. The spec is validated again; the dashboard is created by
+  the same code as `POST /dashboards`, its revision 1 of kind `apply` with the proposal and
+  proposer recorded, and the person who applied it as creator. One audit entry,
+  `proposal.apply`, with `created: true`.
+- **Idempotent.** The same caller proposing the same spec (same `revisionOf`) while its
+  proposal is open gets that proposal back: 200 `outcome: "unchanged"`, nothing written,
+  no audit entry, whatever the message says. Another caller, or another spec, is another
+  proposal. Applying twice, or two applies at once, creates one dashboard and one revision;
+  the second is 409 `proposal-closed` with `appliedNumber`. Once one proposal for an id is
+  applied, another for the same id reviews as `exists: true` and is refused with 409
+  `dashboard-exists`.
+- **Edit** (`PUT /proposals/{id}` with `spec`) by the proposer or anyone who may apply:
+  validated, same id (422 otherwise); `ops`/`changes` are refused, as `spec` is for a change.
+  Decline and expiry are as for any proposal. Purging a deleted dashboard deletes its
+  proposals but keeps an open proposal to create one under that id.
+
 ### Settings
 
 `GET /settings`, `GET /settings/{section}`, `PUT /settings/{section}` with
@@ -162,12 +203,38 @@ revision, plus a message.
 | `retention` | `{ metric_samples_days, metric_5m_days?, metric_1h_days?, log_days?, trace_days? }`, 1 to 3650 days, coarser tiers not shorter than finer ones. Shortening needs `confirmShorter: true` | `retention:<tenant>`, the value as is |
 | `limits` | `{ active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency }`, any subset. `LIMIT_CEILINGS` (JSON, operator) caps them | `limits:<tenant>`, the value as is |
 | `pool` | `{ pool, slots, spread }`. The pool must be `tenant/<this tenant>` or the shared pool of `DEFAULT_POOL` | `pool:<tenant>` → `{ pool, slots, spread, epoch }` |
-| `notifications` | `{ email[], webhookUrl }`. Stored and validated; nothing acts on it | no |
+| `notifications` | `{ email[], webhookUrl, webhookFormat, sendResolved, webhookSecret }`. `webhookFormat` is `alertmanager` (default) or `json` (`viz.notification/v1`); `webhookSecret` (16–512 characters) is **write-only**: kept in `tenant_meta`, never in the value, so no read, list or audit entry holds it; the value shows `webhookSecretSetAt` instead. Left out, the secret is kept while `webhookUrl` is unchanged and dropped when it changes; `null` removes it. The ruler's notifier sends to this webhook as its receiver `viz:default` (below). `email` is stored, not acted on | no: read over the binding (`notificationTarget`), so the secret is not in KV |
 
 **Pool map.** The first map gets the shared map's epoch plus one; raising `spread` bumps
 the epoch. Everything else (another pool, another slot count, a smaller spread) is refused
 with 409 `pool-change-unsupported`, because it needs the drain-and-handover protocol of
 DESIGN §4.1, which is out of scope here.
+
+### The service surface (`contracts/control.ts`, decision D39)
+
+Two RPCs on `Tenant`, reachable only through the Durable Object binding (viz-ruler binds it by
+`script_name`, as the gateway does for `provision`); no HTTP route leads to them. Both answer
+`not_provisioned` for an object bound to another tenant or not provisioned, `schema_too_new`
+when a newer release holds the storage, and carry `v: 1` (formats `rpc.notification-target`,
+`rpc.service-key`, golden files under `test/golden/formats/`).
+
+- **`notificationTarget(tenant)`** → `{ version, target: { url, format, sendResolved, secret } | null }`:
+  the `notifications` section as the notifier needs it, secret included. The secret is given
+  only while the stored value's `webhookSecretSetAt` equals the time it was set, so a value an
+  older release rewrote without the field leaves requests unsigned rather than signed with a
+  secret nobody set for that URL. Read only.
+- **`serviceKey(tenant, service, instance)`** → a key `viz_<keyId>_<secret>` named
+  `service:<service>/<instance>` with the scopes the contract fixes (`viz-ruler`: `read`,
+  `write`). Created on the first call, rotated on every later one (the previous secret ends at
+  once, revocation generation bumped), one audit entry `key.service` by `system:viz-ruler`. It
+  is an ordinary key: listed, and a person can disable it (then the call answers `disabled` and
+  issues nothing until it is enabled) or delete it (the next call issues a new one). Names
+  starting with `service:` are refused for keys a person creates (422), so a person's key can
+  never be taken over by a rotation. Counts against the tenant's key cap.
+
+No schema migration: the secret is a row of the existing `tenant_meta` table (k
+`notifications.webhookSecret`), and the `notifications` value only gains optional fields, which
+a release that does not know them shows as they are; schema version stays 2.
 
 ### Audit log
 
@@ -182,6 +249,12 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 ### HTTP
 
 - JSON under `/api/v1/control/…`; `GET /api/v1/control/openapi.json` needs no credential.
+- **`GET /healthz`** (and `HEAD`), outside the API and without a credential, as viz-ingest
+  and viz-query serve it: what the gateway's `/healthz` calls through its service binding
+  (the gateway never forwards `/healthz`, so it is not public). 200 `ok` when the Worker runs
+  with its `TENANT` and `CONFIG` bindings; 503 naming a missing one; 405 for other methods. It
+  calls no Tenant object and no KV: without a credential there is no tenant to ask, and a
+  probe object would be storage of its own to migrate on every release.
 - Errors are problem details (`application/problem+json`) with `code` and `fix`.
 - Lists return `items` and `next`, an opaque cursor.
 - `ETag` on dashboard reads and writes; `If-Match: "<revision>"` instead of `baseRevision`.
@@ -206,7 +279,21 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 - **Storage.** The constructor opens SQLite with `openSchema(ctx.storage, TENANT_SCHEMA)`
   (`contracts/schema.ts`). Version 1 is the schema exactly as the code before versioning
-  created it, so such storage is adopted without a row changing. A newer release's storage
+  created it, so such storage is adopted without a row changing.
+  **Version 2** adds one nullable column, `proposals.spec`, for proposals that create a
+  dashboard (`readableFrom: 1`, additive: the previous release stays a valid rollback
+  target, and `schemaRelease` is `{ latest: 2, compat: 1 }`). A creation is a row with
+  `base_number` 0 and `spec` set; both conditions, because a release that does not know the
+  column may rewrite the row. What release 1 does with such a row, read from its handlers
+  (not run; see "Known risks"): lists it as a proposal with no changes; shows it with no
+  review; declines and expires it. While no dashboard has the id, apply and edit answer 404
+  (no such dashboard). Once one has, get and apply answer 404 (they look for revision 0),
+  and an edit by the proposer turns the row into an ordinary proposal with `base_number` ≥ 1,
+  which this release reads as one (tested by writing such a row). It never creates a
+  dashboard from it. Migration 2
+  needs the first versioned release to be the rollback floor (COMPATIBILITY.md §6); no
+  control from before versioning was ever deployed (the trial in `deploy/README.md` was
+  deleted, production has not been deployed), so that holds. A newer release's storage
   is served when its `compat` allows this code; otherwise the object **refuses**: every route
   answers 503 `schema-too-new` with `Retry-After: 30` (also through `identify`, so a valid key
   is never turned into a 401), `resolveKey` and `recordUsage` return the `schema_too_new`
@@ -237,14 +324,18 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 - **A caller of `recordUsage`.** The shard does not know which key a batch came from.
 - **A reader of `revocation:<tenant>`**, and of every `limits` and `retention` field except
   `active_series` and `metric_samples_days`.
-- **Proposals to create or delete a dashboard**; accepting the rest of a proposal after a
-  partial apply; extending a proposal's expiry.
+- **Proposals to delete a dashboard**; accepting the rest of a proposal after a partial
+  apply; extending a proposal's expiry; an owner on a proposal that creates a dashboard
+  (set it after applying, `PUT …/owner`).
 - **Pruning old revisions.** A dashboard at its revision cap has to be copied to a new id.
 - **Idempotency keys.** A retry after a lost response is refused (name taken, dashboard
-  exists, stale revision) rather than recognised as the same request.
+  exists, stale revision) rather than recognised as the same request. The exceptions are
+  proposals that create a dashboard (the same caller and spec get the open proposal back)
+  and applying any proposal twice (409 `proposal-closed` says `applied` and `appliedNumber`).
 - **Editing a key's name or scopes**; create a new key instead.
-- **Notifications** are stored only. **Rule definitions**, which DESIGN §3.1 lists under
-  `Tenant`, are not here.
+- **Email notifications** are stored only (the webhook is used by the ruler's notifier, above).
+  **Rule definitions**, which DESIGN §3.1 lists under `Tenant`, are not here.
+- **A test notification** when the webhook is saved, and a check that the URL answers.
 - **Grafana import** over HTTP (the dashboard package has the importer).
 - Rate limiting, metrics about this API, pruning of the audit log.
 - **Deployment.** Nothing here has run on Cloudflare, and it is not wired into `stack/` or `app/`.
@@ -253,14 +344,15 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 74 tests in 12 files, in workerd
+npm test             # 100 tests in 15 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 45 mutants, all killed (node scripts/mutants.mjs versioned: runs the 10 of versioning)
+npm run mutants      # 65 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
-Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 27 s
-on a shared machine.
+Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 75 s
+on a shared machine (75 s on a cold cache with the load average above 6). Last run
+2026-11-19: 100 of 100 pass, `tsc` clean.
 
 What the tests establish:
 
@@ -291,17 +383,63 @@ What the tests establish:
   one on an untouched panel: clean, applied, both edits kept); rebase by editing; edit then
   apply; decline; expiry; an agent applying its own proposal, with and without the apply
   scope, after editing someone else's, and with `agentsMayApply` on.
+- **Proposals that create a dashboard** (`creation.test.ts`, 11 tests). An agent proposes
+  a new dashboard: 202, nothing created; listed without the spec, shown with it; the review
+  gives revision 1 and the summary; a dry-run apply equals the real one and writes nothing; a
+  person applies: the spec is the dashboard, revision 1 of kind `apply` names the proposal,
+  approver and proposer, one audit entry each for create and apply. *Authorisation*: an agent
+  key with the apply scope is refused (403 `agents-may-not-apply`) for its own proposal and
+  another agent's, an agent without it and a write-only person get 403 `missing-scope`, with
+  and without `dryRun`, and a snapshot of the tenant is unchanged; with `agentsMayApply` the
+  agent may, and `whoami` says so before and after. *Validation*: an enum error, a misspelt
+  key, a missing intent and three non-specs are refused with exactly the errors the
+  dashboard package's `validate` gives (pointer and suggestion included); a missing message,
+  an empty one, and unknown fields are 422; an id held by a live or a deleted dashboard is
+  409; edits are validated, keep the id and take only a spec; a change takes no spec; a
+  stored spec made invalid underneath is shown with its errors and refused on apply.
+  *Idempotency*: proposing the same spec again (also with another message, also as a dry
+  run) returns the same proposal with no audit entry, while another caller or another spec
+  makes a new one; two applies sent together give one 200 and one 409 `proposal-closed` with
+  `appliedNumber`, then a retry the same 409, and there is one dashboard, one revision, one
+  apply entry; once one of two proposals for an id is applied the other reviews as
+  `exists` and is refused with 409 and nothing changed. Also: edit, decline, expiry, a
+  creation row rewritten by a release without the column read as a change, and a purge that
+  keeps an open proposal to create a dashboard under the purged id.
+- **Scopes and whoami** (`scopes.test.ts`, 4 tests). The scopes the ruler checks (read from
+  `ruler/src/http.ts`: its `Scope` type and every route) and mcp's (`mcp/src/auth.ts`) are all
+  in `SCOPES`. A key with each monitors scope is created, published to KV with it, and
+  accepted by edge's `authenticate` for that scope (as the ruler calls it) and refused (403)
+  for the others; unknown scopes are 422. A key with all three monitors scopes gets `whoami`
+  and a 403 `missing-scope` on each of the other 29 routes. `mayApply` is right for six
+  kinds of key with `agentsMayApply` off and on, and each key's dry-run `PATCH` is applied
+  (200) exactly when `mayApply` is true and proposed (202) otherwise.
+- **The service surface** (`service.test.ts`, 8 tests). Notifications: format stored; the
+  secret appears in no settings read, list, audit entry, key list or KV record (all KV keys and
+  values are read); a dry run stores nothing; the secret is kept when the value read is sent
+  back, dropped when the URL changes, removed with null, and five malformed values are 422;
+  a value rewritten without `webhookSecretSetAt` gives `secret: null`; `notificationTarget`
+  answers only for the bound tenant. Service keys: issued with exactly the contract's scopes,
+  accepted by edge's `authenticate` for `read` and `write` with this tenant, listed as
+  `service:viz-ruler/0` by `system:viz-ruler`, no secret readable anywhere; a second call
+  rotates (the first key 401 at edge, its KV record gone, one key row, two audit entries); a
+  disabled key answers `disabled` with every table unchanged; a deleted one is issued again;
+  `service:` names are refused for persons; another tenant, an unknown service (also
+  `toString`) and four malformed instances are refused with every table unchanged. The ruler's
+  own tests (`ruler/test/wiring.test.ts`) use this real object too.
+- **Health** (`http.test.ts`). `GET /healthz` without a credential is 200 `ok`, `HEAD` 200,
+  `POST` 405; 503 naming `TENANT` or `CONFIG` when that binding is missing; only that path.
 - **Settings and audit** (`settings.test.ts`, 8 tests). KV shapes for retention, limits and
   pool; the published pool map is accepted by `shard/src/pool`'s routing; the refused pool
-  changes. Audit completeness: each of the 16 mutating routes is called once (the test
+  changes. Audit completeness: each of the 17 mutating routes is called once (the test
   fails if the route table gains one it does not call) and adds exactly one entry; its dry
   run, every read, and refused or unchanged writes add none. Every non-GET method on the
   audit routes is 405, and `UPDATE` and `DELETE` on the table fail inside the object.
 - **Tenant isolation** (`isolation.test.ts`, 6 tests). Tenant A holds one of everything,
   each carrying a marker string. Tenant B, with an admin key and an all-scopes agent key:
-  112 calls covering every id-bearing route with each of A's ids return 404; 82 list,
-  search, filter and stolen-cursor queries return only B's things; all 29 routes refuse
-  `tenant` in the query and the body; 232 unauthenticated or wrong-secret calls return
+  calls covering every id-bearing route with each of A's ids (A now also holds a proposal to
+  create a dashboard) return 404; 82 list, search, filter and stolen-cursor queries return
+  only B's things; all 30 routes refuse `tenant` in the query and the body; 240
+  unauthenticated or wrong-secret calls return
   401; and a fast-check fuzz of 400 random combinations of route, ids (A's, B's, guessed,
   hostile strings), queries, headers and bodies never returns a 2xx for an id of A's.
   After each part a snapshot of A (keys, dashboards, specs, revisions, proposals and their
@@ -324,14 +462,21 @@ What the tests establish:
   parameters and `dryRun` agree per operation; every `$ref` resolves; five response
   schemas' required fields are present in real responses. Full response validation against
   the schemas is not done.
-- **Versioned storage** (`compat.test.ts`, 9 tests). A fresh object records `control.Tenant`
-  version 1, and its schema equals `test/golden/schema/v1.json`; applying migrations 1..N to
-  empty storage gives the golden schema of N; version 1 equals the `sqlite_master` of the
+- **Versioned storage** (`compat.test.ts`, 11 tests). A fresh object records `control.Tenant`
+  version 2 with `compat` 1, and its schema equals `test/golden/schema/v2.json` (v1 plus the
+  nullable `proposals.spec`); applying migrations 1..N to empty storage gives the golden
+  schema of N, for N = 1 and 2; version 1 equals the `sqlite_master` of the
   pre-versioning code (`test/fixtures/storage-v0.json`, a dump with 3 keys, 2 dashboards and 3
   revisions, a proposal, 2 settings and 10 audit entries, made by that code). That dump,
-  installed into an object and opened by this code, is adopted as version 1 with every row
-  unchanged, serves its keys, dashboards, settings and audit log, takes a write, and is not
-  migrated again after eviction. Storage migrated by a simulated release N+1 with a breaking
+  installed into an object and opened by this code, is adopted as version 1 and migrated to
+  2 with every row unchanged except a NULL `spec` on its proposal (the schema is the old one
+  plus that column), serves its keys, dashboards, settings and audit log, takes a write, and
+  is not migrated again after eviction. Upgrade: the same data at version 1 is migrated to 2
+  by the real class, every row kept, its old proposal read as a change, a new dashboard
+  proposed and applied on it, and not migrated again after eviction. Rollback target: the
+  previous release's runner (migrations 1 only) opens storage this release wrote, with a
+  proposal to create a dashboard in it, at version 2 with nothing changed; every migration
+  is `readableFrom: 1`. Storage migrated by a simulated release N+1 with a breaking
   migration is refused: four HTTP routes answer 503 `schema-too-new` with `Retry-After: 30`,
   the three RPCs refuse, the alarm re-arms itself, and a dump of every table (version row
   included) is identical before and after. Storage of an N+1 with an additive migration
@@ -350,58 +495,90 @@ What the tests establish:
 ### Mutation checks
 
 `scripts/mutants.mjs` applies each change on its own, runs the suite and restores the
-files. All 45 make at least one test fail; the last column names the test files that failed.
-The script runs vitest with at most 2 workers. Mutants 36–45 were run on the final code
-(`node scripts/mutants.mjs versioned:`, 10 of 10 killed); 1–35 were last run as a set before
-this change, and their patterns were checked to still match.
+files; the last column names the test files that failed and, in brackets, how many tests.
+It runs vitest with at most 2 workers, counts a mutant as killed only when a test ran and
+failed (a suite that crashed or hung is reported as `NO RESULT` and counts as not killed),
+and refuses to run inside a git work tree: run it from `control/` in a copy of the
+repository (its header lists what the copy needs).
 
-| # | Mutant | Caught by |
+**59–65** (the service surface, this change) were run on 2026-11-19 in a copy in a scratch
+directory (`node scripts/mutants.mjs "service:"`): **7 of 7 killed**; the copy was taken from
+the shared tree after its suite passed 100 of 100. 1–58 were not re-run in this change.
+
+**All 58 were run as one set on the final code on 2026-11-19, in a copy in a scratch
+directory whose unmutated suite was first checked green (92 of 92): 58 of 58 killed.**
+Afterwards the copy's `control/src`, `contracts/schema.ts` and `openapi.json` were compared
+with the shared tree byte for byte: equal. 46–58 are this change's (proposals that create a
+dashboard, scopes for other services, `whoami`, schema version 2, the health route); their
+first run, before a container restart, did not report, so this is their only result.
+
+| # | Mutant | Caught by (tests failing) |
 |---|---|---|
-| 1 | Tenant taken from a request parameter (`?tenant=`) | isolation, rules |
-| 2 | The same, and the Tenant object trusting the tenant it is told | isolation, rules |
-| 3 | Secret stored in clear | keys and every other file |
-| 4 | List returning the stored secret material | keys |
-| 5 | Base-revision check skipped on patch | dashboards, http, property, settings |
-| 6 | Apply without the apply scope | openapi, proposals |
-| 7 | Agent self-apply allowed | proposals |
-| 8 | Proposal applied against a moved dashboard without the rebase check | proposals |
-| 9 | Mutation not atomic with its audit row: a failure part-way, then a retry, leaves a change with no entry | durability, dashboards, keys, proposals, settings |
-| 10 | KV written before the transaction commits | durability, keys, rules, settings |
-| 11 | Soft-deleted dashboard still listed | dashboards, durability, isolation |
-| 12 | Dry run commits | dashboards, keys, proposals, settings |
-| 13 | A mutation without an audit row, structural guard removed | settings |
-| 14 | Disabled key still accepted by the Tenant object | keys |
-| 15 | Disabled key published to KV as enabled | keys |
-| 16 | Old secret kept in KV after a rotation without overlap | keys, durability |
-| 17 | Revocation generation not bumped on disable | keys, durability |
-| 18 | Key deleted without its name as confirmation | keys |
-| 19 | Last admin key may be disabled or deleted | keys |
-| 20 | Usage accepted for another tenant | keys |
-| 21 | Rebase check ignores edits made underneath | proposals |
-| 22 | Expired proposal can still be applied | proposals |
-| 23 | Partial apply applies every change | proposals |
-| 24 | Proposer not recorded on the applied revision | proposals |
-| 25 | An agent with the apply scope may write directly | proposals |
-| 26 | `If-Match` ignored | dashboards |
-| 27 | Revision cap not enforced | dashboards |
-| 28 | Tenant byte cap not enforced | dashboards |
-| 29 | Pool epoch not bumped when spread grows | settings |
-| 30 | Pool slot-count change not refused | settings |
-| 31 | Shortening retention needs no confirmation | settings |
-| 32 | A statement that does not name the tenant | rules |
-| 33 | Alarm left set when there is nothing to do | dashboards, durability, proposals |
-| 34 | CORS answers any origin | http |
-| 35 | A route without documentation | openapi |
-| 36 | Runner: storage a newer release wrote is opened although it is not readable (refusal removed) | compat |
-| 37 | Runner: newer storage that IS readable is refused (`compat` ignored) | compat |
-| 38 | Runner: opening newer, readable storage lowers its version | compat |
-| 39 | Runner: migrations not in one transaction (a failing step leaves half a migration) | compat |
-| 40 | Runner: the new version is not recorded (every open migrates again) | compat |
-| 41 | `Tenant` serves storage a newer release wrote (its refusal ignored) | compat |
-| 42 | A refusing `Tenant` lets its alarm lapse | compat |
-| 43 | A released migration edited in place (version 1 no longer creates the append-only trigger) | compat, settings |
-| 44 | The KV key record edge reads changes shape without a format version | golden, keys |
-| 45 | The list cursor encoding changes without a format version | golden |
+| 1 | Tenant taken from a request parameter (`?tenant=`) | isolation, rules (3) |
+| 2 | The same, and the Tenant object trusting the tenant it is told | isolation, rules (3) |
+| 3 | Secret stored in clear | isolation, compat, creation, dashboards, durability, golden, http, keys, openapi, property, proposals, scopes, settings (68) |
+| 4 | List returning the stored secret material | keys (2) |
+| 5 | Base-revision check skipped on patch | dashboards, http, property, settings (6) |
+| 6 | Apply without the apply scope | creation, openapi, proposals (3) |
+| 7 | Agent self-apply allowed | proposals (1) |
+| 8 | Proposal applied against a moved dashboard without the rebase check | proposals (1) |
+| 9 | Mutation not atomic with its audit row: a failure part-way, then a retry, leaves a change with no entry | creation, dashboards, durability, keys, proposals, scopes, settings (11) |
+| 10 | KV written before the transaction commits | durability, keys, rules, settings (4) |
+| 11 | Soft-deleted dashboard still listed | dashboards, durability, isolation (3) |
+| 12 | Dry run commits | creation, dashboards, keys, proposals, scopes, settings (9) |
+| 13 | A mutation without an audit row, structural guard removed | settings (2) |
+| 14 | Disabled key still accepted by the Tenant object | keys (2) |
+| 15 | Disabled key published to KV as enabled | golden, keys (2) |
+| 16 | Old secret kept in KV after a rotation without overlap | durability, keys (2) |
+| 17 | Revocation generation not bumped on disable | durability, golden, keys (4) |
+| 18 | Key deleted without its name as confirmation | keys (1) |
+| 19 | Last admin key may be disabled or deleted | keys (1) |
+| 20 | Usage accepted for another tenant | keys (1) |
+| 21 | Rebase check ignores edits made underneath | proposals (1) |
+| 22 | Expired proposal can still be applied | creation, proposals (2) |
+| 23 | Partial apply applies every change | proposals (1) |
+| 24 | Proposer not recorded on the applied revision | proposals (3) |
+| 25 | An agent with the apply scope may write directly | creation, proposals, scopes (3) |
+| 26 | `If-Match` ignored | dashboards (3) |
+| 27 | Revision cap not enforced | dashboards (1) |
+| 28 | Tenant byte cap not enforced | dashboards (1) |
+| 29 | Pool epoch not bumped when spread grows | settings (1) |
+| 30 | Pool slot-count change not refused | settings (1) |
+| 31 | Shortening retention needs no confirmation | settings (1) |
+| 32 | A statement that does not name the tenant | rules (1) |
+| 33 | Alarm left set when there is nothing to do | dashboards, durability, proposals (4) |
+| 34 | CORS answers any origin | http (1) |
+| 35 | A route without documentation | openapi (2) |
+| 36 | Runner: storage a newer release wrote is opened although it is not readable (refusal removed) | compat (1) |
+| 37 | Runner: newer storage that IS readable is refused (`compat` ignored) | compat (2) |
+| 38 | Runner: opening newer, readable storage lowers its version | compat (2) |
+| 39 | Runner: migrations not in one transaction (a failing step leaves half a migration) | compat (1) |
+| 40 | Runner: the new version is not recorded (every open migrates again) | compat (6) |
+| 41 | `Tenant` serves storage a newer release wrote (its refusal ignored) | compat (1) |
+| 42 | A refusing `Tenant` lets its alarm lapse | compat (1) |
+| 43 | A released migration edited in place (version 1 no longer creates the append-only trigger) | compat, settings (3) |
+| 44 | The KV key record edge reads changes shape without a format version | golden, keys (2) |
+| 45 | The list cursor encoding changes without a format version | golden (1) |
+| 46 | Creation: an agent may apply a proposal that creates a dashboard | creation (1) |
+| 47 | Creation: the proposed spec is not validated | creation (1) |
+| 48 | Creation: the stored spec is not validated again when applied | creation (1) |
+| 49 | Creation: a retry stores a second proposal (idempotency removed) | creation (1) |
+| 50 | Creation: an id held by a live dashboard is not checked | creation, dashboards, settings (4) |
+| 51 | Creation: a row an older release rewrote into a change is still read as a creation | creation (1) |
+| 52 | Creation: purging a dashboard deletes an open proposal to create one under its id | creation (1) |
+| 53 | Scopes: control cannot issue the ruler's scopes | openapi, scopes (4) |
+| 54 | Scopes: a monitors scope opens the dashboards API | openapi, scopes (2) |
+| 55 | `whoami`: `mayApply` ignores the tenant setting (an agent with the scope always may) | creation, scopes (2) |
+| 56 | Migration 2 declared forward-only (`readableFrom: 2`) | compat (3) |
+| 57 | Released migration 2 edited in place (the column is not added) | isolation, compat, creation, dashboards, durability, proposals, scopes, settings (32) |
+| 58 | `/healthz` not served (or behind a credential) | http (1) |
+| 59 | service: `notificationTarget` answers for any tenant | service (1) |
+| 60 | service: `serviceKey` issues for any tenant | service (1) |
+| 61 | service: the webhook secret stored in the settings value (reads and audit carry it) | service (2) |
+| 62 | service: a webhook secret follows the webhook to a new URL | service (1) |
+| 63 | service: a service key a person disabled is replaced | service (1) |
+| 64 | service: a rotation keeps the previous secret live | service (1) |
+| 65 | service: a person may create a key under the reserved `service:` prefix | service (1) |
 
 Mutants 36–40 break `contracts/schema.ts`, the runner every component shares; they are run
 here because this suite tests it most fully.
@@ -430,9 +607,19 @@ insert, then retried, yields one dashboard and one entry.
   (training knowledge). Rapid changes to one key or setting would then fail in the drain
   and be retried by the alarm 30 s later, in order. Local KV does not enforce the limit, so
   this path is tested only with a KV that fails entirely.
-- **Two agents can approve each other.** The rule is that an agent may not apply its own
-  proposal; an agent with the apply scope may apply another's. Do not give agents
-  `dashboards:apply` until that is wanted.
+- **Two agents can approve each other's changes.** The rule is that an agent may not apply
+  its own proposal; an agent with the apply scope may apply another's change. (Not a
+  proposal that creates a dashboard: that needs `agentsMayApply`, as a direct create does.)
+  Do not give agents `dashboards:apply` until that is wanted.
+- **Release 1 against a proposal that creates a dashboard was not run.** That the previous
+  release fails closed on such a row ("Versioned storage" above) rests on reading its
+  handlers. What is tested: its runner opens version 2 storage unchanged, and this release
+  reads a row release 1 would have rewritten as a change.
+- **The health route is shallow.** It proves the Worker runs with its bindings, not that a
+  `Tenant` object or KV answers; a KV or Durable Object outage shows only in real requests.
+- **Scopes for other services are issued here, checked there.** A key with `monitors:ack`
+  is created without this component knowing whether the ruler is deployed; a scope renamed
+  in the ruler or mcp is caught by `scopes.test.ts`, which reads their source.
 - **`admin` is total.** An admin key can create a key of any scope and kind, set
   `agentsMayApply`, and raise the tenant's own limits unless `LIMIT_CEILINGS` is set. An
   agent with `admin` can therefore get around the agent rules. On a hosted deployment
@@ -446,7 +633,7 @@ insert, then retried, yields one dashboard and one entry.
   purge the specs are gone and the entries point at nothing.
 - **Three round trips per request**: a KV read (cached by edge's code for 60 s per isolate)
   and two Durable Object calls. Not measured.
-- **Edge's verifier is called once per known scope** until one fits (up to six SHA-256
+- **Edge's verifier is called once per known scope** until one fits (up to nine SHA-256
   computations), because its signature insists on a scope. See "Needed changes".
 - **Clock.** Expiry, overlap and purge use the object's `Date.now()`.
 - **The first own pool map moves the tenant's writes** from the shared pool to the new one
@@ -457,7 +644,8 @@ insert, then retried, yields one dashboard and one entry.
 
 ## Needed changes
 
-Things outside this directory that this component needs or exposes. None were made.
+Things outside this directory that this component needs or exposes. Only the gateway part of 7
+(in `deploy/gateway`) and 8's §3.1 were made.
 
 1. **`edge/src/auth.ts`**: `authenticate`'s `scope` is typed `'write' | 'read'` and is
    mandatory. The control plane needs to verify a key without naming a scope, and to ask for
@@ -477,12 +665,11 @@ Things outside this directory that this component needs or exposes. None were ma
    supply the `dashboardStates` hook from the query layer.
 7. **Readers of the KV records** (edge, shard routing, janitor, query) should check a `v`
    field, absent meaning 1, and refuse a newer one (`design/UPGRADES.md` §7); only then can
-   this component bump a record's version. **deploy/gateway**: `provision` now throws
-   `schema_too_new` during a rollback across a forward-only release; the bootstrap route
-   should answer 503 rather than 500 for it.
-8. **`design/DESIGN.md` §3.1** says of `Tenant` "reads are cached" and lists rule
-   definitions; neither is true of this implementation. §9's "revocable at the shard" is
-   still open.
+   this component bump a record's version. (**deploy/gateway**, done: the bootstrap route
+   answers 503 with `Retry-After` when `provision` throws `schema_too_new`, tested.)
+8. **`design/DESIGN.md`**: §3.1's `Tenant` row now says what this implementation holds (no
+   read cache, no rule definitions: rule groups are the ruler's), done. §9's "revocable at
+   the shard" is still open.
 
 ## Contract issues
 

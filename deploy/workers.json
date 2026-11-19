@@ -1,11 +1,18 @@
 {
-  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers. Promotion follows this order; rollback goes the other way.",
+  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them). Promotion follows this order; rollback goes the other way.",
   "domain": "vis.bitcru.sh",
-  "observability": { "enabled": true, "head_sampling_rate": 0.01 },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.01
+  },
   "durable_objects_code_update": "deferred 30s",
   "resources": {
-    "kv": { "CONFIG": "viz-config" },
-    "r2": ["viz-lake"],
+    "kv": {
+      "CONFIG": "viz-config"
+    },
+    "r2": [
+      "viz-lake"
+    ],
     "queues_from": "viz-ingest"
   },
   "shared_vars": {
@@ -20,27 +27,48 @@
     "viz-stack": "viz-ingest"
   },
   "workers": [
-    { "name": "viz-ingest", "component": "stack", "deploy": true, "health": "/healthz" },
-    { "name": "viz-control", "component": "control", "deploy": true, "health": "/api/v1/control/openapi.json" },
-    { "name": "viz-query", "component": "query", "deploy": true, "health": "/healthz" },
-    { "name": "viz-gateway", "component": "deploy/gateway", "deploy": true, "public": true, "health": "/healthz" },
+    {
+      "name": "viz-ingest",
+      "component": "stack",
+      "deploy": true,
+      "health": "/healthz"
+    },
+    {
+      "name": "viz-control",
+      "component": "control",
+      "deploy": true,
+      "health": "/healthz"
+    },
+    {
+      "name": "viz-query",
+      "component": "query",
+      "deploy": true,
+      "health": "/healthz"
+    },
     {
       "name": "viz-ruler",
       "component": "ruler",
-      "deploy": false,
-      "reason": "Not wired to real engines: its EVALUATOR and SINK service bindings do not exist yet (ruler/wrangler.jsonc), so every rule would report health: err."
+      "deploy": true,
+      "health": "/healthz"
+    },
+    {
+      "name": "viz-mcp",
+      "component": "mcp",
+      "deploy": true,
+      "health": "/healthz"
+    },
+    {
+      "name": "viz-gateway",
+      "component": "deploy/gateway",
+      "deploy": true,
+      "public": true,
+      "health": "/healthz"
     },
     {
       "name": "viz-publisher",
       "component": "publisher",
       "deploy": false,
-      "reason": "Nothing triggers it: publisher/README.md lists no queue consumer, no cron handler and no nudge from the ledger; the Worker entry only exports the class."
-    },
-    {
-      "name": "viz-mcp",
-      "component": "mcp",
-      "deploy": false,
-      "reason": "Binds viz-ruler (service RULER), which is not deployed, and its query tools would reach rules that cannot evaluate; mcp/wrangler.jsonc says it was never deployed and mcp has no README yet."
+      "reason": "Not wired in yet: the publisher reads the ledger's segments and is nudged by the maintenance run, but stack/ does not bind PUBLISHER, so nothing would reach it. When ingest binds it, it deploys before viz-ingest (callees first)."
     }
   ]
 }

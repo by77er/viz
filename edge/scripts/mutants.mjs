@@ -1,7 +1,21 @@
 // Mutation check: break one behaviour at a time, run the suite, expect it to FAIL, restore.
-//   node scripts/mutants.mjs
+//   node scripts/mutants.mjs [substring of a mutant name]      (from edge/, in a COPY)
+//   node scripts/mutants.mjs --check                            only check that every pattern applies
+//
+// AGENTS.md (Evidence): mutants are applied to a COPY in a scratch area, never in place in the
+// shared checkout. The script refuses to run inside a git checkout: copy `contracts/`,
+// `shard/` and `edge/` (with links to their node_modules) elsewhere and run it there.
 import { execSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = fileURLToPath(new URL('../../', import.meta.url))
+const check = process.argv[2] === '--check'
+if (!check && existsSync(`${ROOT}.git`)) {
+  console.error(`mutants: ${ROOT} is a git checkout. Run this on a copy in a scratch directory (AGENTS.md, Evidence).`)
+  process.exit(2)
+}
+process.chdir(`${ROOT}edge`)
 
 const mutants = [
   ['tenant taken from a header', 'src/index.ts',
@@ -60,9 +74,26 @@ const mutants = [
   ['OTLP point attribute job/instance not renamed', 'src/otlp.ts', "return name === 'job' ? 'exported_job' : name === 'instance' ? 'exported_instance' : name", 'return name'],
   ['too_large from a shard treated as success', 'src/route.ts', "const tooLarge = results.filter((r) => r.status === 'too_large')", 'const tooLarge = [] as typeof results'],
   ['no re-split after too_large', 'src/route.ts', ';({ results, batches } = await attempt(env, map, tenant, c, cap, limit))\n', ''],
+  // review fixes, early refusal, compatibility, names (2026-11-19)
+  ['R-4: Remote Write answers 429 for new series over the limit', 'src/index.ts',
+    "    return text(400, `${limitMessage(outcome.limited)}; ${outcome.rows} samples written${also}`, written)",
+    "    return text(429, `${limitMessage(outcome.limited)}; ${outcome.rows} samples written${also}`, { ...written, 'Retry-After': '60' })"],
+  ['R-9: a key record with a tenant id outside TENANT_ID authenticates', 'src/auth.ts',
+    "  if (typeof r.tenant !== 'string' || !TENANT_ID.test(r.tenant)) return null", "  if (typeof r.tenant !== 'string' || r.tenant === '') return null"],
+  ['an overloaded shard is answered 429 (which senders may not retry) instead of 503', 'src/index.ts',
+    "    return render(503, 'ingest shard is overloaded; retry the whole request'", "    return render(429, 'ingest shard is overloaded; retry the whole request'"],
+  ['an overload refusal does not carry the shard\'s Retry-After', 'src/index.ts',
+    "    return render(503, 'ingest shard is overloaded; retry the whole request', { 'Retry-After': retryAfter(outcome.retryAfterMs) })",
+    "    return render(503, 'ingest shard is overloaded; retry the whole request', { 'Retry-After': '1' })"],
+  ['no early refusal before decoding', 'src/route.ts', '  if (hot.size === 0) return null\n', '  return null\n'],
+  ['an overload refusal is not remembered', 'src/route.ts',
+    "      if (last.status === 'backpressure' && (last as { scope: string }).scope === 'overload') noteOverload(map, slot, last.retryAfterMs)\n", ''],
+  ['a shard status edge does not know counts as stored', 'src/route.ts', "      if (!KNOWN.has(last.status)) return { status: 'error' }\n", ''],
+  ['names: a pool map whose pool is outside POOL_NAME is used', 'src/route.ts',
+    '  if (!validPoolName(m.pool)) return null', "  if (typeof m.pool !== 'string' || m.pool === '') return null"],
 ]
 
-const only = process.argv[2]
+const only = check ? undefined : process.argv[2]
 let survived = 0
 for (const [name, file, from, to] of mutants) {
   if (only && !name.includes(only)) continue
@@ -72,6 +103,7 @@ for (const [name, file, from, to] of mutants) {
     survived++
     continue
   }
+  if (check) continue
   writeFileSync(file, original.replace(from, to))
   let failed = false
   let detail = ''
@@ -87,5 +119,6 @@ for (const [name, file, from, to] of mutants) {
   if (!failed) survived++
   console.log(`${failed ? 'KILLED  ' : 'SURVIVED'}  ${name}${detail ? `  ← ${detail}` : ''}`)
 }
-console.log(survived === 0 ? 'all mutants killed' : `${survived} mutant(s) survived`)
+if (check) console.log(survived === 0 ? `all ${mutants.length} patterns apply` : `${survived} pattern(s) do not apply`)
+else console.log(survived === 0 ? 'all mutants killed' : `${survived} mutant(s) survived or not applied`)
 process.exit(survived === 0 ? 0 : 1)

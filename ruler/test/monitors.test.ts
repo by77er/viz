@@ -85,7 +85,8 @@ describe('creating a monitor: validation with a path and a fix, dry run, cost cl
     expect(problems.map((p) => p.path).sort()).toEqual(['colour', 'condition.op', 'condition.threshold', 'name', 'noData', 'notify', 'runbookUrl', 'startInvestigation'])
     for (const p of problems) expect(p.fix.length, p.path).toBeGreaterThan(8)
     expect(problems.find((p) => p.path === 'condition.threshold')!.fix).toMatch(/a ratio of 1% is 0\.01/) // review M11
-    expect(problems.find((p) => p.path === 'notify')!.fix).toBe('Use one of: default, payments-oncall.')
+    // viz:default is the destination set in the control plane (contracts/rules.ts CONTROL_RECEIVER).
+    expect(problems.find((p) => p.path === 'notify')!.fix).toBe('Use one of: default, payments-oncall, viz:default.')
     expect((await list()).total).toBe(0)
   })
 

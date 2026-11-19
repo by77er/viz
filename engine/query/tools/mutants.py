@@ -4,18 +4,52 @@ restore the file, and report which tests failed.
 
     python3 tools/mutants.py            # all mutants
     python3 tools/mutants.py 3 7        # only these
+    VIZ_MUTANTS_DIR=<dir> python3 …     # where the scratch tree goes
 
 A mutant is KILLED if at least one test fails, SURVIVED if the suite passes, and a BUILD
 ERROR is reported separately (it proves nothing). The unmutated suite is run first.
 Property tests run with VIZ_PROPTEST_CASES=8 to keep a run short; the corpus test is
 left out unless a mutant names it. engine/storage is never mutated here (it is another
 component's source); storage-side faults are emulated in the adapter.
-"""
-import os, re, subprocess, sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "src")
-PROMQL = os.path.join(ROOT, "..", "promql", "src")
+NOTHING IN THE SHARED TREE IS WRITTEN (AGENTS.md, "Tests must have teeth": others commit
+and snapshot the tree while this runs, and a mutant applied in place once reached a pull
+request). The script copies `engine/query` and `engine/promql` (the crates mutants touch)
+into a scratch tree, links `engine/storage` there, builds in the scratch tree's own
+target directory, and mutates only the copies. `VIZ_MUTANTS_DIR` chooses where the
+scratch tree goes (default: a new temporary directory). At the end it compares the shared
+tree's copies of the mutated files with their state at the start.
+"""
+import hashlib, os, re, shutil, subprocess, sys, tempfile
+
+SHARED = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # read, never written
+ENGINE = os.path.dirname(SHARED)
+
+
+def scratch_tree():
+    base = os.environ.get("VIZ_MUTANTS_DIR")
+    if base:
+        os.makedirs(base, exist_ok=True)
+    top = tempfile.mkdtemp(prefix="viz-query-mutants-", dir=base)
+    ignore = shutil.ignore_patterns("target", "target-*")
+    for crate in ("query", "promql"):
+        shutil.copytree(os.path.join(ENGINE, crate), os.path.join(top, "engine", crate), ignore=ignore, symlinks=True)
+    os.symlink(os.path.join(ENGINE, "storage"), os.path.join(top, "engine", "storage"))
+    return top
+
+
+# Set by `setup()`, never at import: importing this module (to read MUTANTS) copies nothing.
+TOP = ROOT = SRC = PROMQL = None
+ENV = None
+
+
+def setup():
+    global TOP, ROOT, SRC, PROMQL, ENV
+    TOP = scratch_tree()
+    ROOT = os.path.join(TOP, "engine", "query")
+    SRC = os.path.join(ROOT, "src")
+    PROMQL = os.path.join(ROOT, "..", "promql", "src")
+    ENV = dict(os.environ, CARGO_TARGET_DIR=os.path.join(TOP, "target"), VIZ_PROPTEST_CASES="8")
 SELECT = "let found = viz_storage::select(self.input, &ms, min_ts_ms, max_ts_ms).map_err(|e| self.fail(QueryError::from_storage(e)))?;"
 HANDOVER = "Ok(found.into_iter().map(|s| Series { labels: s.labels, ts: s.ts, values: s.values }).collect())"
 
@@ -102,20 +136,35 @@ MUTANTS = [
      "        if guard && (rest || m & 1 == 1) {", "        if false && guard && (rest || m & 1 == 1) {"),
 ]
 
-ENV = dict(os.environ, CARGO_TARGET_DIR=os.path.join(ROOT, "target"), VIZ_PROPTEST_CASES="8")
 TESTS = ["--test", "api", "--test", "invariance", "--test", "limits", "--test", "plan", "--test", "staleness", "--test", "split", "--lib"]
 
 
 def run():
-    p = subprocess.run(["cargo", "test", "--offline", "--no-fail-fast"] + TESTS, cwd=ROOT, env=ENV, capture_output=True, text=True)
+    # -j 2 and two test threads: the machine is shared (AGENTS.md).
+    p = subprocess.run(["cargo", "test", "--offline", "--no-fail-fast", "-j", "2"] + TESTS + ["--", "--test-threads", "2"], cwd=ROOT, env=ENV, capture_output=True, text=True)
     out = p.stdout + p.stderr
     failed = sorted(set(re.findall(r"^test (\S+) \.\.\. FAILED", out, re.M)))
     build_error = "could not compile" in out
     return p.returncode, failed, build_error
 
 
+def shared_path(file):
+    return os.path.join(ENGINE, "promql", "src", file[len("PROMQL/"):]) if file.startswith("PROMQL/") else os.path.join(SHARED, "src", file)
+
+
+def fingerprint():
+    h = hashlib.sha256()
+    for f in sorted({m[1] for m in MUTANTS}):
+        h.update(f.encode())
+        h.update(open(shared_path(f), "rb").read())
+    return h.hexdigest()[:16]
+
+
 def main():
     only = [int(a) for a in sys.argv[1:]]
+    setup()
+    print(f"scratch tree: {TOP} (copies of engine/query and engine/promql, a link to engine/storage)")
+    before = fingerprint()
     code, failed, be = run()
     if code != 0:
         print("the unmutated suite does not pass:", failed, "(build error)" if be else "")
@@ -148,6 +197,8 @@ def main():
     code, failed, be = run()
     print("\nsource restored; unmutated suite:", "passes" if code == 0 else f"FAILS {failed}")
     print(f"{survived} mutant(s) not killed")
+    after = fingerprint()
+    print(f"shared tree, files the mutants touch: {before} before, {after} after" + (" (unchanged)" if before == after else " (CHANGED: by someone else; this script writes only to the scratch tree)"))
     sys.exit(1 if survived or code else 0)
 
 

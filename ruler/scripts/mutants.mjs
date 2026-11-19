@@ -1,9 +1,15 @@
 // Mutation checks (AGENTS.md, "Tests must have teeth").
 //
-// Each mutant breaks one property in the source, on purpose. The script applies it, runs
-// the named test files, requires at least one test to fail, and restores the source.
+// Each mutant breaks one property in the source, on purpose. The script copies the component
+// (and the sibling sources it imports: contracts/, edge/src/, anomaly/src/, control/src/,
+// dashboard/src/) to a fresh scratch
+// directory, applies the mutant to the COPY, runs the named test files there, requires at least
+// one test to fail, and deletes the copy at the end. The shared tree is only read: others commit
+// and snapshot it while this runs (AGENTS.md, Evidence), and the script checks at the end that
+// every file it mutated is byte-identical in the shared tree to what it was at the start.
 // A mutant that survives, or whose pattern no longer matches the source, is printed and
 // makes the script exit non-zero: a stale pattern is a check that silently stopped running.
+// The scratch directory is $VIZ_SCRATCH if set, else the system temporary directory.
 //
 // A mutant is one or more edits: { file, find, replace }. `find` must occur exactly once.
 // Kills are read from vitest's JSON report, not from its console output.
@@ -13,12 +19,14 @@
 //   node scripts/mutants.mjs --list     print the list
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/** The component in the shared tree: read, never written. */
+const source = join(dirname(fileURLToPath(import.meta.url)), '..')
+const repo = join(source, '..')
 
 const one = (file, find, replace) => [{ file, find, replace }]
 
@@ -79,7 +87,8 @@ export const MUTANTS = [
   },
   {
     name: 'memory ahead of storage (adopt the new alert state before the transaction commits)',
-    edits: one('src/ruler.ts', '    if (staged.some((s) => s.result.dirty.size > 0)) {\n      const t = this.tenant\n', '    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)\n    if (staged.some((s) => s.result.dirty.size > 0)) {\n      const t = this.tenant\n'),
+    // Pattern brought up to date (the anomaly change added `|| s.anomaly?.changed === true`).
+    edits: one('src/ruler.ts', '    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {\n      const t = this.tenant\n', '    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)\n    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {\n      const t = this.tenant\n'),
     tests: ['test/exactly-once.test.ts'],
   },
   {
@@ -339,7 +348,8 @@ export const MUTANTS = [
   },
   {
     name: 'a refusing Ruler runs its tick from the alarm (and so drops the alarm the newer release needs)',
-    edits: one('src/ruler.ts', "    if (refused) {\n      // Keep the alarm for the release that owns this storage; touch nothing else.\n      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)\n      return\n    }\n    await this.tick()", '    await this.tick()'),
+    // Pattern brought up to date (the stage deadline now sits between the refusal and the tick).
+    edits: one('src/ruler.ts', "    if (refused) {\n      // Keep the alarm for the release that owns this storage; touch nothing else.\n      await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)\n      return\n    }\n    // A staged trial past its deadline", '    // A staged trial past its deadline'),
     tests: ['test/compat.test.ts'],
   },
   {
@@ -372,9 +382,208 @@ export const MUTANTS = [
     edits: one('src/registry.ts', 'hash64(`viz-ruler-index\\n${tenant}`)', 'hash64(`viz-ruler-index/2\\n${tenant}`)'),
     tests: ['test/golden.test.ts'],
   },
+
+  // ───────────── anomaly rules (60–80) ─────────────
+  {
+    name: 'anomaly: series beyond max_series are dropped silently (the first max_series are scored) instead of refusing the evaluation',
+    edits: one('src/anomaly.ts', '  if (series.length > spec.maxSeries) {\n', '  if (series.length > spec.maxSeries) series = series.slice(0, spec.maxSeries)\n  if (false) {\n'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: detector state is never written to SQLite (memory only)',
+    edits: one('src/ruler.ts', 'for (const { rule, anomaly } of staged) if (anomaly?.changed) this.writeAnomalyState(g.spec.name, rule.key, anomaly.json)', 'void staged'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the constructor does not rebuild detector state from SQLite',
+    edits: one('src/ruler.ts', '      rt.series = read.series\n      rt.json = read.json\n      rt.status = { ...rt.status, stateSeries', '      rt.status = { ...rt.status, stateSeries'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: a replayed tick advances each detector again (per-series replay guard removed)',
+    edits: one('src/anomaly.ts', 'if (before?.last && before.last.ts >= ts) {', 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: state rows of a newer release are scored over (the rule starts cold) instead of refused',
+    edits: one('src/anomaly.ts', 'if (prev.unreadable !== null) {', 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: loading detector state does not name the tenant',
+    edits: one('src/ruler.ts', 'FROM anomaly_state WHERE tenant = ? ORDER BY grp, rule_key, chunk', 'FROM anomaly_state WHERE ? IS NOT NULL ORDER BY grp, rule_key, chunk'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the alert does not carry the detector\'s sentence',
+    edits: one('src/anomaly.ts', '        annotations[ANOMALY_ANNOTATION] = e.text\n', ''),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the severity label is not set from anomaly.severity (routing by severity breaks)',
+    edits: one('src/rules.ts', 'const ruleLabels = { ...labels, severity: spec.severity }', 'const ruleLabels = { ...labels }'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the default EWMA uses the library\'s parameters (half-life 30, k 4: 0.0 on NAB) instead of the held-out ones',
+    edits: one('src/anomaly.ts', '{ ...libraryDefaults(detector), ...guide.defaults }', '{ ...libraryDefaults(detector) }'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: severity page without a detector defaults to EWMA, not the static threshold',
+    edits: one('src/anomaly.ts', "detector = givenSeverity === 'page' ? DEFAULT_PAGE_DETECTOR : DEFAULT_DETECTOR", 'detector = DEFAULT_DETECTOR'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: CUSUM may page',
+    edits: one('src/anomaly.ts', "if (severity === 'page' && !guide.pageAllowed) {", 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: no per-series state limit at run time',
+    edits: one('src/anomaly.ts', 'if (bytes > limits.maxAnomalyStateBytesPerSeries) {', 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: no per-object state budget at save',
+    edits: one('src/ruler.ts', 'const budget = anomalyLimits(this.cfg).maxAnomalyStateBytesPerObject', 'const budget = Infinity'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: a row per series (state rows of one byte, so every series gets its own)',
+    edits: one('src/ruler.ts', 'const rows = stateRows(json)', 'const rows = stateRows(json, 1)'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: state carried over an interval change (the detector\'s step changed)',
+    edits: one('src/ruler.ts', 'if (kept.has(key) && old.spec.intervalMs === spec.intervalMs)', 'if (kept.has(key))'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the rule key leaves out the detector and parameters (state carried into another detector)',
+    edits: one('src/anomaly.ts', "return `${expr}\\u0000${spec.detector}\\u0000${JSON.stringify(params)}`", 'return expr'),
+    tests: ['test/anomaly.test.ts', 'test/golden.test.ts'],
+  },
+  {
+    name: 'anomaly: a missing (NaN) point clears the series\' flag (a gap treated as a recovery)',
+    edits: one('src/anomaly.ts', "{ ...before.last, ts, status: 'missing' }", "{ ...before.last, ts, status: 'missing', flag: false }"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: migration 2 declared breaking (readableFrom 2: the previous release is no longer a rollback target)',
+    edits: one('src/schema.ts', "      name: 'anomaly rules: per-(rule, chunk) detector state',\n      readableFrom: 1,", "      name: 'anomaly rules: per-(rule, chunk) detector state',\n      readableFrom: 2,"),
+    tests: ['test/compat.test.ts'],
+  },
+  {
+    name: 'anomaly, through the monitors API: write without scope (as mutant 29)',
+    edits: one('src/http.ts', 'const principal = await authenticate(req, env.CONFIG, def.scope as never)', "const principal = await authenticate(req, env.CONFIG, (def.method === 'GET' ? def.scope : 'monitors:read') as never)"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly, through the monitors API: tenant from the query string (as mutant 31)',
+    edits: one('src/http.ts', 'new Call(req, env, principal.tenant,', "new Call(req, env, url.searchParams.get('tenant') ?? principal.tenant,"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly, through the monitors API: tenant from a header (as mutant 32)',
+    edits: one('src/http.ts', 'new Call(req, env, principal.tenant,', "new Call(req, env, req.headers.get('X-Scope-OrgID') ?? principal.tenant,"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: a stored rule naming a detector this release does not know is run anyway',
+    edits: one('src/anomaly.ts', 'if (!(ANOMALY_DETECTORS as readonly string[]).includes(spec.detector)) {', 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+
+  // ───────────── production wiring (82–93): query and ingest over HTTP with a service key, control's destination ─────────────
+  {
+    name: 'wiring, tenant isolation: one service credential shared by every Ruler object of the isolate (tenant B evaluates with tenant A\'s key)',
+    edits: [
+      { file: 'src/ruler.ts', find: 'const ABORT_GRACE_MS = 25\n', replace: 'const ABORT_GRACE_MS = 25\nlet sharedCredential: ServiceCredential | null = null\n' },
+      { file: 'src/ruler.ts', find: 'this.credentialRt ??= new ServiceCredential({', replace: 'this.credentialRt = sharedCredential ??= new ServiceCredential({' },
+    ],
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, tenant isolation: the notifier keeps one control destination for the isolate (tenant B\'s alerts go to tenant A\'s webhook)',
+    edits: [
+      { file: 'src/notifier.ts', find: 'export const CONTROL_REFRESH_MS = 60_000\n', replace: 'export const CONTROL_REFRESH_MS = 60_000\nlet lastTarget: NotificationTargetResult | null = null\n' },
+      { file: 'src/notifier.ts', find: '      r = await this.controlTarget()\n', replace: '      r = lastTarget ??= await this.controlTarget()\n' },
+    ],
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, no secret in bodies: the plain JSON body carries the receiver URL (as externalURL)',
+    edits: one('src/notifier.ts', ": d.integration.format === 'json' ? jsonPayload(group, alerts, idem, cap)", ": d.integration.format === 'json' ? jsonPayload({ ...group, externalUrl: d.integration.url }, alerts, idem, cap)"),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, no secret in what is stored and shown: a delivery error keeps the URL it quotes',
+    edits: one('src/notifier.ts', ".replace(/[a-z][a-z0-9+.-]*:\\/\\/[^\\s\"'<>]*/gi, '<url>')", ''),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, no secret in logs: each delivery is logged with its URL',
+    edits: one('src/notifier.ts', '        const res = await this.fetcher()(row.url, {', "        console.log('notifier: delivering', row.receiver, row.integration, row.url)\n        const res = await this.fetcher()(row.url, {"),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, no secret in logs: the service key is logged when issued',
+    edits: one('src/credential.ts', "      case 'ok':\n", "      case 'ok':\n        console.info('ruler: service key issued', r.name, r.key)\n"),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, retries: the JSON body is rebuilt for each attempt (an attempt counter in it), so a retry is not the same notification',
+    edits: one('src/notifier.ts', '          body: row.body,\n', "          body: row.body.replace('{\"version\"', `{\"attempt\":${row.attempts},\"version\"`),\n"),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, retries: the JSON body names another key than the Idempotency-Key header',
+    edits: one('src/notifier.ts', "jsonPayload(group, alerts, idem, cap)", "jsonPayload(group, alerts, hash64(`${idem}#body`), cap)"),
+    tests: ['test/wiring.test.ts', 'test/golden.test.ts'],
+  },
+  {
+    name: 'wiring, six connections: four engine calls in flight per Ruler object',
+    edits: one('src/engine.ts', 'export const ENGINE_CALLS_IN_FLIGHT = 1', 'export const ENGINE_CALLS_IN_FLIGHT = 4'),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, six connections: a gate per evaluator instead of one per object',
+    edits: one('src/ruler.ts', 'return q ? httpEngine(q, this.credential(), this.engineGate) : null', 'return q ? httpEngine(q, this.credential(), new Gate(ENGINE_CALLS_IN_FLIGHT)) : null'),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, credential: a refused key is replaced at once (a rotation, and an audit entry, per 401 while KV propagates)',
+    edits: one('src/credential.ts', 'now - stored.issuedAt >= PROPAGATION_GRACE_MS', 'now - stored.issuedAt >= 0'),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, control destination: a tenant config may define viz:default itself (shadowing the control plane\'s destination)',
+    edits: one('src/amconfig.ts', '      if (r.name === CONTROL_RECEIVER) return c.err(', '      if (r.name === CONTROL_RECEIVER && false) return c.err('),
+    tests: ['test/wiring.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0
+
+/**
+ * A throw-away copy of the component and of what it imports from its siblings, at the same
+ * relative paths; node_modules is linked (read only). Mutants are applied here and only here.
+ */
+function makeCopy() {
+  const base = process.env.VIZ_SCRATCH ?? tmpdir()
+  mkdirSync(base, { recursive: true })
+  const dir = mkdtempSync(join(base, 'ruler-mutants-'))
+  // control/src and dashboard/src: the tests bind control's real Tenant object (test/harness.ts), which imports the dashboard package.
+  for (const d of ['contracts', 'edge/src', 'anomaly/src', 'control/src', 'control/openapi.json', 'dashboard/src']) cpSync(join(repo, d), join(dir, d), { recursive: true })
+  const skip = new Set(['node_modules', '.capture', '.wrangler'].map((d) => join(source, d)))
+  cpSync(source, join(dir, 'ruler'), { recursive: true, filter: (p) => ![...skip].some((s) => p === s || p.startsWith(`${s}/`)) })
+  symlinkSync(join(source, 'node_modules'), join(dir, 'ruler', 'node_modules'), 'dir')
+  return dir
+}
+const copy = process.argv.includes('--list') ? null : makeCopy()
+/** Where the tests run: the copy. */
+const root = copy ? join(copy, 'ruler') : source
 
 /** `npm run independent`: killed when a Go check fails (or the capture itself fails). */
 function runIndependent() {
@@ -419,6 +628,9 @@ if (process.argv.includes('--list')) {
 const only = process.argv.slice(2).map(Number).filter((n) => n > 0)
 let bad = 0
 let killed = 0
+/** Every shared-tree file a mutant edits, as it was before the run: checked unchanged at the end. */
+const sharedAtStart = new Map()
+for (const m of MUTANTS) for (const e of m.edits) if (!sharedAtStart.has(e.file)) sharedAtStart.set(e.file, readFileSync(join(source, e.file), 'utf8'))
 for (const [i, m] of MUTANTS.entries()) {
   if (only.length > 0 && !only.includes(i + 1)) continue
   const originals = new Map()
@@ -461,5 +673,14 @@ for (const [i, m] of MUTANTS.entries()) {
   if (!dead) console.log(r.out.split('\n').slice(-25).join('\n'))
 }
 const total = only.length || MUTANTS.length
-console.log(`\n${killed} killed, ${bad} survived or not applied, of ${total}`)
-process.exit(bad === 0 ? 0 : 1)
+if (copy) rmSync(copy, { recursive: true, force: true })
+let touched = 0
+for (const [file, text] of sharedAtStart) {
+  if (readFileSync(join(source, file), 'utf8') !== text) {
+    // Someone else changed it meanwhile, or a bug wrote here: either way, say so.
+    console.log(`shared tree: ${file} changed during the run (this script never writes there; check who did)`)
+    touched++
+  }
+}
+console.log(`\n${killed} killed, ${bad} survived or not applied, of ${total}; mutants applied in a scratch copy, deleted; shared tree ${touched === 0 ? 'unchanged' : `changed in ${touched} file(s)`}`)
+process.exit(bad === 0 && touched === 0 ? 0 : 1)

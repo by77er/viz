@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { type Harness, type Key, NOW, controlCall, createDashboard, example, grantScope, harness, makeKey, mcpClient, newTenant, reset, rest, rpc, snapshot, telemetry, type TestTenant } from './helpers'
+import { type Harness, type Key, NOW, controlCall, createDashboard, example, harness, makeKey, mcpClient, newTenant, reset, rest, rpc, snapshot, telemetry, type TestTenant } from './helpers'
 import { CORPUS, IDENT_DASHBOARD, IDENT_METRIC, MARKERS, findMarkers } from './corpus'
 import { monitorView } from './fake/services'
 import { TOOLS } from '../src/registry'
@@ -70,8 +70,7 @@ beforeAll(async () => {
   spec.layout.rows[0].title = CORPUS[20]!.slice(0, 120)
   await createDashboard(t.admin, spec, CORPUS[16]!.slice(0, 500))
 
-  k = await makeKey(t.admin, ['read', 'dashboards:read', 'dashboards:write'], { kind: 'agent', name: CORPUS[3]!.slice(0, 80) })
-  await grantScope(t, k, 'monitors:read')
+  k = await makeKey(t.admin, ['read', 'dashboards:read', 'dashboards:write', 'monitors:read'], { kind: 'agent', name: CORPUS[3]!.slice(0, 80) })
   person = await makeKey(t.admin, ['dashboards:read', 'dashboards:apply'], { kind: 'key', name: CORPUS[17]!.slice(0, 80) })
   const base = (await controlCall(t.admin, 'GET', `/dashboards/${IDENT_DASHBOARD}`)).body.revision
   const p = await controlCall(k.key, 'POST', `/dashboards/${IDENT_DASHBOARD}/proposals`, { message: CORPUS[12]!.slice(0, 500), baseRevision: base, changes: [{ name: 'evil', reason: CORPUS[4]!.slice(0, 500), ops: [{ op: 'replace', path: '/metadata/title', value: CORPUS[9]!.slice(0, 120) }] }] })

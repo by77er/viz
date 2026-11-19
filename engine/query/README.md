@@ -18,7 +18,8 @@ cargo test --test corpus -- --nocapture                     # upstream corpus th
 cargo build --release --target wasm32-unknown-unknown       # the library
 (cd wasm && cargo build --release --target wasm32-unknown-unknown) && node tools/wasm_check.mjs
 cargo run --release --example bench                         # the benchmark
-python3 tools/mutants.py                                    # mutation check (edits src/ in place: build nothing else meanwhile)
+cargo run -j 2 --release --example cardinality -- 10000 100000 1000000   # high cardinality (query/CARDINALITY.md)
+python3 tools/mutants.py                                    # mutation check, on a scratch copy (never edits this tree)
 ```
 
 ```rust
@@ -282,7 +283,16 @@ All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 
 `cargo test`: **47 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
 plan 5, prune 3, split 8, staleness 5), run on 2026-11-18 with `-j 2` and two test threads
-on a machine with a load average of 6 to 20 (6 min). Seven are property tests. The
+on a machine with a load average of 6 to 20 (6 min), and again on 2026-11-19 from 00:43 to
+00:49 UTC after a container restart (load average 1.0 at the start, 10.7 at the end): 47
+passed, `min_by_group_over_signed_zeros_regression` and the two split properties included.
+`src/agg.rs` was checked to be the correct version (`canon_min` keeps `-0` on a tie,
+`canon_max` `+0`), and every mutant of the table below was checked NOT to be applied: each
+mutant's original text is in the source exactly once and its mutated text is not (mutants
+35 and, in `query/`, 19 and 39 have mutated text that is a substring of unmutated code).
+The read path's WASM module rebuilt from that source has the same SHA-256 as before.
+After `examples/cardinality.rs` was added (no file under `src/` or `tests/` changed),
+`cargo test` again at 02:00 to 02:04 UTC (load average 7): 47 passed, the example built. Seven are property tests. The
 references of the invariance tests (and of `query/`'s fixtures) are `viz-promql` over its
 in-memory source **with this crate's aggregations** (`reference_range`), since every
 evaluation here uses them; with that change all 37 earlier tests pass unchanged.
@@ -476,7 +486,18 @@ Stack needed at depth 100, measured with `examples/stack_probe.rs` and
 ### 6. Mutation check
 
 `python3 tools/mutants.py` applies one source change at a time, runs the suite (property
-tests at 8 cases, corpus left out), restores the file, and reports the failing tests. It
+tests at 8 cases, corpus left out, `-j 2`, two test threads), restores the file, and
+reports the failing tests. **Since 2026-11-19 it works on a scratch copy**: it copies
+`engine/query` and `engine/promql` into a new temporary directory (`VIZ_MUTANTS_DIR` picks
+where), links `engine/storage`, builds there with its own target directory, and never
+writes to the shared tree; at the end it compares the shared copies of the mutated files
+with their state at the start. (Before, it edited `src/` in place, and a CI snapshot taken
+during a run tested mutant 36; see `min_by_group_over_signed_zeros_regression`.) First run
+in that mode, 2026-11-19 01:54 to 02:00 UTC (load average 7 to 9), mutants 32, 36 and 40:
+**3 of 3 killed** (36 by `min_by_group_over_signed_zeros_regression` and
+`signed_zeros_give_the_same_bits_in_any_order`); the unmutated suite passed before and
+after; the shared files hashed the same before and after. The other 38 were not re-run:
+no file under `src/` changed since the in-place run that killed all 41. It
 confirms first that the unmutated suite passes and tells a failing test from a build
 error. **41 of 41 mutants were killed** (31 before split execution, all re-run where the
 source they mutate changed; 10 new for split execution and exact aggregation, run on
@@ -731,6 +752,11 @@ the module; `internal` is a fourth error type.
 
 - **Split execution reads whole files per part** (see "Split execution": `L`-fold reads and
   `series_id` decodes). Fine for a few parts; the fix is row-group reads by key range.
+- **The cardinality merge is quadratic in parts.** `Summary::merge` rebuilds its hash maps
+  for every part it merges: measured natively at 1,000,000 unique label values, 5.3 s over 8
+  parts and 18.6 s over 32, 280 to 288 MiB. The query Worker's caps keep it far below that
+  (`maxCardinalityPairs` 400,000); a streaming merge of sorted summaries is the fix
+  (`query/CARDINALITY.md`).
 - **`catalog.rs` reads a format storage owns.** If `metric_series` changes, both readers
   must; `split_equals_one_place` would catch a divergence for queries.
 - **Exact sums are wider than floats.** A partial's sum of values spread over many powers
@@ -805,7 +831,8 @@ wasm/             whole-engine cdylib (size probe, load proof)
 patches/          web-time, js-sys, wasm-bindgen stand-ins for a glue-free module
 tools/wasm_check.mjs   loads the module with an empty import object and runs queries
 tools/wasm_sizes.mjs   code size by crate from an unstripped build
-tools/mutants.py       mutation check
+tools/mutants.py       mutation check (on a scratch copy)
+examples/cardinality.rs  high cardinality: storage, the cardinality report and a query at 10k, 100k, 1M series
 ```
 
 The crate has its own `[workspace]` table so that it builds standalone next to its

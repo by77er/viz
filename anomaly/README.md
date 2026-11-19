@@ -2,8 +2,9 @@
 
 Pure TypeScript detectors for the viz ruler (design §7, research 08 §4). No I/O, no clock, no
 randomness: callers pass time, history and state. Runs in Workers, Durable Objects and Node;
-ESM; no runtime dependencies. Nothing here is wired into the ruler yet (another engineer is
-changing `ruler/`); "Integration" says what the ruler needs to do.
+ESM; no runtime dependencies. The ruler runs the single-series detectors as **anomaly rules**
+(`contracts/rules.ts`, contract version 2; `ruler/src/anomaly.ts`); "Integration" says how, and
+what of the plan below was built differently.
 
 Every number below was **measured on this machine** (Node 22.23, Linux, shared with other
 sessions' processes) unless it says otherwise. Nothing was deployed or run on Cloudflare.
@@ -129,76 +130,71 @@ the fields themselves (`value`, `reference`, `referenceLabel`, `deviations`, `sp
 Tests check that the numbers in the text are the computed ones (value = point.value,
 reference = point.expected, deviations = point.score; PELT's means are the segment means).
 
-## Integration (what the ruler needs)
+## Integration (built in the ruler)
 
-**Rule shape** (proposed; not in `contracts/rules.ts`): an alerting rule with
-`anomaly: { detector, params }` next to `expr`. `expr` yields the series to score at the
-detector's resolution (for a seasonal rule, a rollup-resolution expression such as
-`sum by (service) (rate(http_requests_total[1h]))`); counters go through `rate()`/`increase()`.
+The ruler imports this library (`ruler/src/anomaly.ts`, no copy) and evaluates **anomaly rules**:
+an alerting rule-file entry with an `anomaly` block, or a monitor with `query` and `anomaly`
+(`ruler/README.md`, part 8, has the whole of it, the tests and the mutants). In short:
 
-**At save time**: `need = DETECTORS[d].history(params, stepMs)`, then
-`classify(need, group.intervalMs, { hotWindowMs, recentWindowMs })` (same thresholds and names as
-`ruler/src/classify.ts`) gives the **tick class** (what each evaluation reads: `tail` for every
-incremental detector) and the **cold-start class** (`rollup` for robust z at 1 day, seasonal,
-burn rate). Show both; budget for the cold start.
-
-**Each tick, per (rule, series)**:
-
-```ts
-const r = DETECTORS[d].detect({ ts: Float64Array.of(tickMs), values: Float64Array.of(v) }, { ...params, stepMs: intervalMs, unit }, state)
-state = r.state                     // keep in memory
-const p = r.points[0]
-```
-
-- `p.status === 'ok' && p.anomalous` → the series is returned by the rule at this tick
-  (sample value `p.value`); the ruler's state machine applies `for` / `keep_firing_for` as for
-  any rule. Annotations: `description = p.explanation.text`, and the structured explanation as
-  JSON in one annotation (300–600 bytes, under the 4,096-byte cap).
-- not anomalous, `warming`, or `summary.status === 'not_enough_history'` → not returned;
-  surface `summary.message` on the rule's status ("warming: needs 2 previous weeks").
-- `missing` → no sample: the ruler's no-data policy applies (a gap is not a recovery).
-- Event detectors (CUSUM, PELT) flag one point per change: give such rules `keep_firing_for`
-  (e.g. 30m) so a notification goes out, or treat them as annotations, not pages.
-- Burn rate: put `explanation.facts.severity` (`page` / `ticket`) in a label for routing. The
-  detector reports the most severe firing rule per point, which is the workbook's "alert
-  suppression" between the four conditions.
-- Threshold: hysteresis is inside the detector; `for` still debounces onset.
-- Cross-series: one instant vector per tick, `detectGroup(membersFromVector(v, (l) => l.pod))`;
-  each outlier member is an alert series.
-
-**State to persist.** State changes every tick; writing it every tick is the research's
-anti-pattern E (a row per series per tick; about $43 per 1,000 one-minute series-months at
-$1/M rows — modelled, not measured). Keep it in memory and write all of a rule's states as
-one row at the heartbeat (5 minutes, like cursors). Measured sizes (`bench/cpu.ts`): EWMA 116
-B, CUSUM 655 B, robust z (288 points) 9.4 KB, seasonal weekly at 1 h 15.7 KB, seasonal daily at
-5 min 26.8 KB, burn rate 13.5 KB at 5-minute buckets and 67 KB at 1-minute buckets, STL model
-5.7 KB (daily at 5 min). Split rows to stay under the 2 MB SQLite value limit.
-
-**After eviction or for a new series**: read `need.lookbackMs` of history at
-`need.resolutionMs` and call `detect(history ++ newPoints, params, null)` (or replay the gap
-since the persisted state's `lastTs` onto that state). Incremental ≡ batch is property-tested,
-so a rebuilt detector produces exactly what one that never stopped would have.
-
-**Batch detectors as scheduled jobs** (design: a Workflow): STL refit per period (measured 34
-ms CPU for 8 days at 5 min, 13 ms for 8 weeks at 1 h) writes the model into the rule's state;
-seasonality detection (≤ 1 ms) re-run weekly picks `periodMs`; PELT over a day (0.35 ms) for
-annotations.
-
-**Burn rate, cheaply**: compile an SLO into recording rules for the seven window ratios (as
-Sloth and Pyrra do) and call `evaluateWindows` with those seven numbers each tick: no state.
+- **Rule shape** (`contracts/rules.ts`, contract version 2, additive): `anomaly: { detector,
+  params, unit, severity, max_series }` next to `expr`, which is the series to watch. Detectors
+  in rules: `ewma`, `threshold`, `robust_z`, `seasonal`, `cusum` (`ANOMALY_DETECTORS`); `stl`,
+  `pelt` and `burn_rate` are refused, with the reason. Every parameter is resolved and written
+  out at save, so a later change of a default here never changes a stored rule.
+- **Defaults follow the held-out results below** (design D33): `ewma` with half-life 100 and
+  k 8 (chosen on both folds), not this library's 30 / 4 (0.0 under NAB's protocol);
+  `severity: page` with no detector is a static `threshold` (it beat EWMA in the low-FP profile,
+  5.5 against 3.9); `cusum` defaults to `info` and may not page. A rule naming robust z or
+  seasonal with the MAD spread is saved with a warning that quotes its held-out score; the
+  quantile spread is accepted with a warning that it is post hoc and unconfirmed. The guide
+  is served at `GET /api/v1/monitors/detectors`.
+- **At save**: `history(params, intervalMs)` and `classify` give the tick and cold-start classes
+  (`AnomalyHistory`, shown to the author with the rule's cost); the rule's cost class is the
+  larger of the expression's and the detector's tick class.
+- **Each tick**: one point per series, `detect([point], params, state)` from in-memory state, as
+  planned. `ok && anomalous` → the series is the rule's result, with the sentence in the
+  `anomaly` annotation (and `description` when the author wrote none) and the numbers as
+  `AnomalyDetail` JSON in `anomaly_detail`; `warming` → not returned, the rule's status says
+  "warming" with `summary.message`; `missing` → not scored and the previous flag kept (a gap is
+  not a recovery). `for`, `keep_firing_for`, no-data policies, the hand-off and the notifier are
+  the alerting rule's, unchanged.
+- **State, built differently from this README's earlier plan**, which was to keep state in
+  memory and write it at the heartbeat (5 minutes). The ruler writes it **every tick, in the transaction that commits the tick's alerts**, as whole
+  batches per row (all of a rule's series in rows of at most 512 KiB; never a row per series or
+  per sample), because state must be rebuilt from SQLite alone and a replayed tick must
+  reproduce its outcome: a heartbeat write would lose up to five minutes of points at an
+  eviction. Measured in workerd: one row per rule per tick for EWMA, threshold and CUSUM at 100
+  series, 2 for robust z, 4 to 6 for seasonal (`ruler/README.md`, measurements).
+- **Not built: warming from history.** A new or reset rule warms live (`minPoints` evaluations),
+  and the save warns when that is longer than a day. Reading `need.lookbackMs` through the
+  engine's range query at a cold start is the next step (contract issue 1 below).
+- **Bounds.** A per-rule series cap (`max_series`, default 100 or what fits the per-rule state
+  limit): above it the evaluation is refused (`series_cap_exceeded`), nothing is scored and no
+  alert changes. State limits per series, per rule and per object (the object's is checked at
+  save from `stateBytesPerSeries × max_series`, because state lives in memory between ticks).
+- **Measured here (workerd, local)**, in the ruler's Durable Object under the vitest pool
+  (`npm run bench:anomaly` in `ruler/`; load average 17–21 on 4 shared cores): one batch call of
+  this library costs in workerd what it costs in Node (ms CPU per 1,000 points: EWMA 0.26 against
+  0.14 here, robust z 3.2 against 3.6, seasonal daily 10.3 against 9.8, the rest within 10%). In
+  the ruler's per-tick path the cost is serialising each series' state, as "one tick through JSON
+  state" below predicted, without the parse: EWMA 10–17 ms per 1,000 points, robust z 100–111,
+  seasonal daily 197–209; a whole tick of a 100-series EWMA rule costs about 1–1.5 ms CPU more
+  than an empty one (`ruler/README.md`, "Anomaly rules" under Measurements).
+- **Not wired**: burn rate (to compile to recording rules), cross-series, STL refits and PELT as
+  scheduled jobs.
 
 ### Contract issues
 
-1. `Evaluator.instant` returns `PromVector | PromScalar`; anomaly rules need history. Either
-   add `range(promql, startMs, endMs, stepMs): Promise<PromMatrix>` (the engine already has
-   `queryRange`) or allow `PromMatrix` from instant subqueries.
-2. `RuleCost` has one class; anomaly rules have a tick class and a cold-start class.
-3. No rule field for `anomaly: { detector, params }`, and no per-(rule, series) state storage.
-4. `RuleStatus` cannot say "warming".
-5. `DESIGN.md` §7 and `DECISIONS.md` were not edited (this task was limited to `anomaly/`).
-   They should gain: robust z-scores and seasonal bands need a tail-aware spread on
-   heavy-tailed series (measured below); alarms are onsets; detector state is a cache rebuilt
-   from history; STL is refit on a schedule with the stored model scored per tick.
+Resolved by contract version 2 (`contracts/rules.ts`, "anomaly rules"): the rule field (3), the
+per-(rule, series) state (3, ruler storage), the two classes (2: `AnomalyHistory.tick` and
+`coldStart`, with `RuleCost` the larger of the expression's and the tick class) and "warming"
+(4: `AnomalyRuleStatus`). `DESIGN.md` §7 and `DECISIONS.md` (D33) now say what the evidence
+below supports (5). Still open:
+
+1. Warming from history needs the ruler to read `lookbackMs` at `resolutionMs` through a range
+   query (`RangeEvaluator`, which the ruler already has for backtests) at a cold start; not done.
+2. The guide's numbers in `ruler/src/anomaly.ts` are copied from this README; a change here must
+   be made there too (no test ties them).
 
 ## How it was verified
 
@@ -509,11 +505,12 @@ A performance finding on the way: in this V8, `x ** 3` in STL's LOESS weights co
   the detectors here would apply to per-template counts, but nothing reads templates.
 - **Tier 2** foundation models; **MSTL** (several seasonalities at once), Holt-Winters, BOCPD;
   quantile sketches (DDSketch) as baselines — the seasonal baseline keeps raw values.
-- **Wiring into the ruler** (rule field, state rows, range queries): "Integration" and
-  "Contract issues" describe it; `ruler/` was not touched.
-- **A workerd run**: `src/` is checked to use no Node API, and the bundle runs in a bare
-  `node:vm` context with `Date.now`/`Math.random` poisoned, but no test runs inside workerd
-  (that would add wrangler and workerd as dependencies).
+- **In the ruler**: warming from history (range reads at a cold start), burn-rate and
+  cross-series rules, scheduled STL refits and PELT runs ("Integration").
+- **A workerd run of this package's own tests**: `src/` is checked to use no Node API and the
+  bundle runs in a bare `node:vm` context with `Date.now`/`Math.random` poisoned. The detectors
+  do run in workerd inside the ruler (its tests and `npm run bench:anomaly`), but this package's
+  property tests run in Node only.
 - **TSB-AD** or any second benchmark: the quantile-spread result is unconfirmed on data it did
   not see. NAB's own Python runner was not run end to end (its `sweeper.py` was; its runner
   needs the old detector stack); the TypeScript port reproduces all 45 published numbers.
@@ -531,10 +528,12 @@ A performance finding on the way: in this V8, `x ** 3` in STL's LOESS weights co
   is still the MAD the design names.
 - **CUSUM false alarms**: 195 points between false alarms on iid noise with estimated
   parameters; autocorrelated metrics alarm far more often.
-- **State write cost** if persisted per tick (see Integration). Seasonal state at 5-minute
-  resolution with k = 4 is 27 KB per series: weekly seasonality belongs on 1-hour rollups.
+- **State write cost.** The ruler persists state every tick, as whole batches per row (one row
+  per rule per tick at 100 EWMA series; 6 for 100 daily seasonal series, whose state is 27 KB
+  each): weekly seasonality belongs on 1-hour rollups.
 - **Cold start**: seasonal rules need k periods of rollups (35 days for weekly, k = 4) or they
   stay `warming`; robust z over a day reads a day of history on every cold start (`rollup`).
+  The ruler does not read history at a cold start yet, so these rules warm live for that long.
 - **Incremental ≡ batch holds only with an explicit `stepMs`** (an inferred step depends on the
   first batch).
 - **Floating-point limits**: values beyond ±1e150 and timestamps beyond ±8.64e15 ms are

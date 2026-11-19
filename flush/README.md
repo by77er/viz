@@ -9,12 +9,15 @@ that the tenant's ledger lists (`design/DESIGN.md` §4.3). It keeps no state.
 | `src/keys.ts` | `dataFileKey`: object keys exactly per `contracts/TABLES.md` |
 | `src/index.ts` | The Worker: `Flush` entrypoint (RPC `flushTenant(tenant, shardName)`; `POST /flush`; `queue`), one engine per isolate |
 | `src/consumer.ts` | `consumeFlushBatch`: the flush queue's consumer; `consumeDeadLetters`, `listDeadLetters` |
-| `src/sweep.ts` | `sweepPending`: re-enqueue streams whose segments are still pending, found through KV markers; `shardsFromPoolMaps` |
-| `test/flush.test.ts` | 20 tests in workerd against the real `Shard` and `Ledger` objects and a simulated R2 |
-| `test/consumer.test.ts` | 11 tests of the consumer, the dead-letter path and the sweep |
+| `src/sweep.ts` | `sweepPending`: re-enqueue streams whose segments are still pending, found through KV markers, at most `maxShards` per sweep; `shardsFromPoolMaps`, `rotation` |
+| `src/formats.ts` | `FORMATS` and `READS`: the formats flush writes and reads, by version (contracts/COMPATIBILITY.md §3.1) |
+| `test/flush.test.ts` | 21 tests in workerd against the real `Shard` and `Ledger` objects and a simulated R2, one of them the protocol model's F12 |
+| `test/consumer.test.ts` | 18 tests of the consumer, the dead-letter path, the sweep, and the review's R-11(b) and R-12 |
+| `test/golden.test.ts`, `test/golden/` | 5 tests: golden files of every format written, and the readers' refusals |
+| `test/helpers.ts` | Test fixtures shared with `compact/`, `janitor/` and `stack/`: `flushSettled`, ledger fault injection, an independent reader of the ledger's log |
 | `test/read.ts` | A reference read path ("what would a query see now?") used by these tests and by `stack/` |
 | `test/measure.test.ts` | Local timings (1 test) |
-| `scripts/mutants.mjs` | Mutation check |
+| `scripts/mutants.mjs` | Mutation check (run on a copy of the tree, never in the checkout) |
 
 Bindings: `SHARD`, `LEDGER` (Durable Object namespaces), `BUCKET` (R2), `CELL` (default `cell-0`).
 For now the shard and ledger classes ship in this script so the tests use the real objects.
@@ -23,8 +26,15 @@ For now the shard and ledger classes ship in this script so the tests use the re
 
 For each pending segment of the tenant in that shard, in sequence order:
 
-1. `shard.readSegment` — the segment's batches. Refused (`segment_incomplete`) if the shard
-   no longer holds every batch of a segment it lists.
+1. `shard.readSegment(tenant, seqLo, incarnation, seqHi)` — the segment's batches, **bound to
+   the incarnation and range the segment was listed with**: the shard answers null unless its
+   stream is still that incarnation and the segment exactly that range. After a storage loss a
+   shard reuses sequence numbers in a new incarnation, and an unbound read would file the new
+   incarnation's rows under the old one's name: permanent duplicates, and a loss that is not
+   visible as one (the protocol model's F12). A null read whose stream has changed incarnation
+   stops the run (`shard_incarnation_changed`); the next run flushes the new incarnation under
+   its own name. Refused (`segment_incomplete`) if the shard no longer holds every batch of a
+   segment it lists.
 2. `engine.encodeSegment` — one `metric_samples` and one `metric_series` file per UTC day.
 3. For each file: SHA-256, then the key
    `{cell}/data/{table}/tenant={tenant}/day={day}/L0-{shard}-{incarnation}-{seqLo}-{seqHi}-{hash8}.parquet`
@@ -53,8 +63,10 @@ Every answer is handled explicitly:
 | `addUnit` → `incarnation_mismatch`, ledger's incarnation is **lower** | `ledger.registerStream` with the shard's incarnation, then `addUnit` once more; a second mismatch stops with `incarnation_mismatch` |
 | `addUnit` → `incarnation_mismatch`, ledger's incarnation is **higher** | stop: `stale_incarnation` (the shard reported an old stream; registering it would be refused) |
 | `addUnit` → `invalid` | stop: `invalid_unit`, with the ledger's reason |
+| `readSegment` → null, the stream now another incarnation | stop: `shard_incarnation_changed` (F12) |
 | `recorded` → `incarnation_mismatch` | stop: `shard_incarnation_changed` |
 | `recorded` → `not_contiguous` | stop: `shard_not_contiguous` |
+| an `addUnit` or `recorded` status this code does not know (a newer ledger or shard) | throws: fail closed, the caller retries; never taken for success |
 | R2 or an object throws | the exception propagates; the caller retries the run |
 
 A stop is `status: 'error'` with `reason` and `detail` (HTTP 409 on the fetch route). It
@@ -82,7 +94,9 @@ never acknowledges the shard for the segment it stopped on.
 Nobody calls `flushTenant` by hand any more (tests still may).
 
 1. **The seal notification.** A shard that seals a segment puts `{ tenant, shard }` on the
-   flush queue (`shard/README.md`, "Flush triggering"; why a Queue: `DECISIONS.md` D18).
+   flush queue (`shard/README.md`, "Flush triggering"; why a Queue: `DECISIONS.md` D18). The
+   message format is `queue.flush` v1; `v` absent means 1 (the shard writes none, the sweep
+   writes `v: 1`).
 2. **The consumer** (`consumeFlushBatch`, the `queue` handler of this Worker and of
    `stack/`). Messages of one batch that name the same (tenant, shard) are **one** run.
    A group is acknowledged only when its run ended `ok` with nothing left to do. Otherwise
@@ -91,18 +105,45 @@ Nobody calls `flushTenant` by hand any more (tests still may).
    are acknowledged, so a group never multiplies. Delivery is at-least-once and flush is
    idempotent: a redelivery after success finds no pending segment and writes nothing.
    `awaitingLog` is the case `contracts/LEDGER-LOG.md` makes normal: the unit is admitted,
-   the ledger's log has not caught up, the shard was told nothing new; the retry (or the
-   sweep) finishes it.
+   the ledger's log has not caught up (it drains about 200 ms after a commit), the shard was
+   told nothing new; the retry, 5 s later, finishes it.
+   - **Versions** (contracts/COMPATIBILITY.md §3.2): a message whose `v` is not 1 is retried
+     with the same backoff, never flushed on a guess and never dead-lettered (a newer release
+     wrote it; one that reads it will be running again). That holds even when the rest of
+     the body looks invalid.
+   - **Maintenance is asked for only when a run changed something** (review R-11(b)):
+     `onFlushed` (the stack's `noteFlushed`, which enqueues a maintenance run) is called after
+     a run with `changed: true` (it admitted a unit, created an object, or saw a segment it
+     handled become recorded), whatever its status, and after ANY run of a group with a
+     redelivered message (`attempts > 1`): an earlier delivery may have changed things and
+     failed before or inside `onFlushed`. A duplicate delivery that finds nothing asks for
+     nothing. If `onFlushed` throws, the group is retried. Nothing is lost if a request is
+     still missed: the run's changes are in the ledger, and the stack's hourly cron enqueues
+     every tenant whose maintenance marker is due (`stack/src/maintain.ts`).
 3. **Dead letters, visibly.** After `max_retries` the queue moves a message to the
-   dead-letter queue, whose consumer (`consumeDeadLetters`) writes each one to R2 as
-   `{cell}/dead-letters/{queue}/{time}-{id}.json` and logs an error; `listDeadLetters`
-   reads them back. A message that is not a `{tenant, shard}` at all is written there at
-   once. A dead letter loses nothing: the segments are still pending in the shard.
+   dead-letter queue, whose consumer (`consumeDeadLetters`) writes the whole batch to R2 as
+   **one** object, `{cell}/dead-letters/{queue}/{time}-{first id}.json` =
+   `{"v":2,"letters":[…]}` (format `r2.dead-letters` v2; review R-12: one PUT per invocation,
+   never one per message), logs an error per message, and acknowledges them; if the write
+   fails, every message of the batch is retried, none acknowledged. `listDeadLetters` reads
+   both versions (v1 was one letter per object, no `v`) and refuses an unknown one by name. A
+   version-1 message that is not a `{tenant, shard}` at all is written there at once, all
+   such messages of a batch in one object. A dead letter loses nothing: the segments are
+   still pending in the shard.
 4. **The sweep** (`sweepPending`, called by the hourly cron in `stack/`). It lists the
    `flush-pending:<shard>` keys in KV, asks only those shards for
    `pendingTenants(olderThanMs)` (default 10 minutes) and sends a message per stream
    found. No marker means no Durable Object is woken and no message is sent; a shard
-   that is asked and has nothing pending removes its marker. `{ full: true }` is the
+   that is asked and has nothing pending removes its marker. **One shard that throws does not
+   stop the others** (review R-7): shards are asked six at a time with `Promise.allSettled`,
+   a failure is reported (`failed`) and logged, and found streams are sent in batches of 100
+   as soon as there are enough, so what was found is sent even if a later step fails. **At
+   most `maxShards` (500) shards per sweep**: Cloudflare documents 10,000 subrequests per
+   invocation on the Paid plan, a subrequest being any request to an R2, KV or D1 service
+   (developers.cloudflare.com/workers/platform/limits/, read 2026-11-18; whether a Durable
+   Object call counts is not stated, so it is assumed to). With more marked shards a window
+   of 500 consecutive names (sorted, wrapping) moves on by 500 each hour, so ceil(n / 500)
+   hourly crons visit every marked shard, with no state kept. `{ full: true }` is the
    operator's variant for when a marker itself may be lost: it also asks every shard
    named by a pool map in KV (`pool:<tenant>`) and by `DEFAULT_POOL`. **Limitation:** a
    shard that only an older version of a map named (a renamed pool, a reduced slot
@@ -112,15 +153,18 @@ Nobody calls `flushTenant` by hand any more (tests still may).
 
 Per sealed segment: one PUT per file (two per UTC day the segment covers), no GET unless a
 PUT is refused as existing (then one HEAD each), and on the ledger's side one change
-(`addUnit`; today one more PUT, which the caller waits for). Measured locally: see below.
+(`addUnit`), which the ledger answers on commit and writes to R2 later in a batch
+(`contracts/LEDGER-LOG.md`); a second run (the retry of `awaitingLog`) then tells the shard.
+Measured locally: see below.
 
 On Cloudflare (`spikes/s5-r2-writes/`, measured 2026-11-18): a write of up to 1 MB costs
 0.17–0.26 s at the median and up to 0.6 s at the tail, conditional or not, and writes share
 the six-in-flight limit with reads. A one-day segment's two files (about 0.3 MB together
 here) go out together, at most six PUTs in flight per run (`writeSegment` waits for each
-group of six): about 0.25 s; the ledger's change is one more write from its Durable Object
-(0.17–0.21 s median) until its log is batched. **Modelled: about 0.4–0.5 s per segment as
-built (up to about 1.2 s at the tail), about 0.25 s once the ledger's log is batched.** The
+group of six): about 0.25 s; `addUnit` is a Durable Object round trip and a SQLite commit,
+no R2 write since the log is batched (its time on Cloudflare is being re-measured in
+`spikes/s4-ledger-scale/rerun/`). **Modelled: about 0.25–0.3 s per segment (up to about 0.7 s
+at the tail)**, plus a second, cheaper run about 5 s later to record it in the shard. The
 segments of one run go in sequence, because each unit must extend the watermark.
 
 ## Not implemented
@@ -144,11 +188,20 @@ segments of one run go in sequence, because each unit must extend the watermark.
 ```
 (cd ../engine/wasm && ./build.sh)       # the tests import ../engine/wasm/js/viz_engine.wasm
 npm install
-npm test            # 32 tests in workerd, 3 files: flush.test.ts 20, consumer.test.ts 11, measure.test.ts 1
-npx tsc --noEmit    # clean
-node scripts/mutants.mjs            # 18 mutants against test/flush.test.ts
+npx vitest run --maxWorkers=2   # 45 tests in workerd, 4 files: flush 21, consumer 18, golden 5, measure 1
+npx tsc --noEmit                # clean
+# mutants, from a COPY of the tree (the scripts refuse a git checkout):
+node scripts/mutants.mjs            # 20 mutants against test/flush.test.ts
 node scripts/mutants.mjs --stack    # the same mutants against ../stack's end-to-end suite
 ```
+
+Last run 2026-11-19 against the real tree, with the ledger draining its log asynchronously:
+45 of 45, tsc clean. The suite pins `LEDGER_DRAIN_DELAY_MS` to 60 s (`vitest.config.ts`), as
+`ledger/` does: the ledger drains only when a test asks (`drain()`, or `flushSettled`, which
+runs flush, the drain and flush again until `awaitingLog` is false, as the queue's retry does),
+so what one run sees of the logged watermark never depends on when an alarm runs. Tests that
+mean "a run as one delivery sees it" assert `awaitingLog: true` and `recordedThrough: 0`
+after one run, and the recording after the drain.
 
 What the tests establish (each on a fresh tenant and shard):
 
@@ -174,11 +227,30 @@ What the tests establish (each on a fresh tenant and shard):
   **`invalid`**, and an existing object with the same size and other bytes, another size,
   or identical bytes but no stored checksum.
 - **Entry points**: RPC `Flush.flushTenant`, `POST /flush` (200, 400, 404, 405, 409).
+- **F12** (the model's trace `F12_impl_read_unbound`): the worker lists segment `inc 1, 1..1`;
+  the shard then loses its storage and seals a new batch as `inc 2, 1..1`; the run stops with
+  `shard_incarnation_changed`, nothing of incarnation 2 is filed under incarnation 1, and the
+  next run files it under its own name, read back exactly. Fails without the bound read (the
+  run ends `ok` with the new batch admitted as `inc 1`; shown on a copy, 2026-11-19).
+- **Consumer**: one run per (tenant, shard) per batch; the retry carrier and its backoff;
+  `awaiting_log` retried until the log catches up, with the log healthy and with it broken;
+  junk dead-lettered at once in one object; versions (`v` absent or 1 flushed; `v: 2`, `{v: 2}`
+  and `v: 'x'` all retried, none flushed, none dead-lettered).
+- **R-11(b)**: a duplicate delivery that finds nothing does not ask for maintenance; a
+  redelivery after the request failed asks again although it changes nothing; a run that
+  admitted something and then stopped with an error still asks.
+- **R-12**: the dead-letter consumer makes ONE PUT for five letters, all listed back; if that
+  write fails every message is retried and none acknowledged; junk on the flush queue is one
+  PUT per batch.
+- **Sweep** (R-7's tests are in `stack/test/cron.test.ts`): no marker, no wake; only streams
+  pending long enough; a marker cleared once nothing is pending; `full` finds a shard whose
+  marker was lost.
 
 ### Mutation checks
 
-`scripts/mutants.mjs` applies one change to the source, runs `test/flush.test.ts`, and
-restores the file. **18 of 18 killed.** The first six are the ones the task named.
+`scripts/mutants.mjs` applies one change to the source of a copy of the tree, runs
+`test/flush.test.ts`, and restores the file. **20 of 20 killed** (2026-11-19, on a copy in the
+scratch area). The first six are the ones the task named.
 
 | # | Mutant | A test that fails |
 |---|---|---|
@@ -200,10 +272,16 @@ restores the file. **18 of 18 killed.** The first six are the ones the task name
 | 16 | Shard never told `recorded` | turns each sealed segment into one unit… |
 | 17 | Shard told `recorded` before the unit is reported | converges after a crash between addUnit and recorded… |
 | 18 | One unit per file instead of one per segment | turns each sealed segment into one unit… |
+| 19 | F12: a segment read unbound to its incarnation and range | spec F12: … the new incarnation's batch is not filed under the old one |
+| 20 | F12: a refused bound read not reported as an incarnation change | same |
 
-Against the end-to-end suite in `stack/` alone, 8 of the 18 are killed (1, 2, 5, 9, 10, 16,
-17, 18). The other ten need states that suite does not construct (a squatting object, a
-ledger behind or ahead, a recreated shard), which is what `test/flush.test.ts` is for.
+The consumer's, the sweep's and the formats' mutants (R-7, R-11(b), R-12, versions, goldens)
+are in `stack/scripts/mutants.mjs`; results in `stack/README.md`.
+
+Against the end-to-end suite in `stack/` alone, 8 of the first 18 were killed (1, 2, 5, 9, 10,
+16, 17, 18; not re-run since). The others need states that suite does not construct (a
+squatting object, a ledger behind or ahead, a recreated shard), which is what
+`test/flush.test.ts` is for.
 
 ### Measurements (local workerd under vitest, 1 ms timers; not Cloudflare)
 
@@ -233,6 +311,15 @@ SHA-256 of 272 KB and the RPC serialisation of 4 MB are in the "rest" line.
 | fetching: 2 plans, 4 R2 GETs, 1 `tailRead` | 13–30 ms |
 | WASM linear memory | 33.0 MB |
 | `select` of one metric (100 series, 24,000 samples), same inputs | 7–23 ms |
+
+## Contract issues
+
+- **`v` belongs in `FlushMessage`** (`shard/src/shard.ts`, owned by the shard). Flush types it
+  locally as `VersionedFlushMessage = FlushMessage & { v?: number }`. The shard writes no `v`,
+  which reads as 1, so nothing is wrong on the wire; the type should move.
+- **Key names are not one-to-one with streams** (`contracts/TABLES.md`: a shard's `/` becomes
+  `_`). See `janitor/README.md`, "Contract issues": the orphan sweep cannot always tell which
+  stream a flush file belongs to when pool names collide that way.
 
 ## Known risks
 

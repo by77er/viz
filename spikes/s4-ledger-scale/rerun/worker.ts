@@ -19,6 +19,8 @@ export { Ledger as LedgerAsBuilt } from '../../../ledger/bench/asbuilt/ledger'
 export class Ledger extends Current {
   async wipe(): Promise<void> {
     await this.ctx.storage.deleteAll()
+    // Durable before the reset: an abort discards writes that are not yet confirmed.
+    await this.ctx.storage.sync()
     this.ctx.abort('storage wiped by the S4 spike')
   }
 }
@@ -122,26 +124,96 @@ export default {
     }
     if (u.pathname === '/rebuild') {
       const tenant = u.searchParams.get('tenant')!
+      const stub = () => env.LEDGER.get(env.LEDGER.idFromName(tenant))
+      const all = { table: 'metric_samples' as const, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER }
+      // A plan, waiting through `ledger_unavailable` (an incarnation starting) and through a
+      // stub broken by the reset; any other error is reported, not thrown.
+      const planWait = async (limitMs: number) => {
+        const t0 = Date.now()
+        let refusals = 0
+        let other: string | null = null
+        for (;;) {
+          try {
+            return { plan: await stub().plan(all), ms: Date.now() - t0, refusals, other }
+          } catch (e) {
+            const m = String(e)
+            if (m.includes('ledger_unavailable')) refusals++
+            else other ??= m.slice(0, 300)
+          }
+          if (Date.now() - t0 > limitMs) return { plan: null, ms: Date.now() - t0, refusals, other }
+          await new Promise((r) => setTimeout(r, 20))
+        }
+      }
+      const before = await planWait(120_000)
+      if (!before.plan) return Response.json({ error: 'not serving before the wipe', ...before }, { status: 500 })
+      await stub().drain()
+      const status = await stub().logStatus()
+      await stub().wipe().catch(() => undefined) // the object resets itself
+      const after = await planWait(120_000)
+      if (!after.plan) return Response.json({ error: 'not rebuilt after 120 s', ...after }, { status: 500 })
+      const same = JSON.stringify(after.plan.files) === JSON.stringify(before.plan.files) && JSON.stringify(after.plan.watermarks) === JSON.stringify(before.plan.watermarks) && after.plan.version === before.plan.version
+      return Response.json({ tenant, ms: after.ms, refusals: after.refusals, other_error: after.other, files: after.plan.files.length, same, version: after.plan.version, incarnation: after.plan.ledgerIncarnation, segments_before: status.segmentsSinceCheckpoint, rebuilt: await stub().logStatus() })
+    }
+    if (u.pathname === '/agree') {
+      // The counterfactual's precondition: the same workload (one writer, `units` units, in
+      // order) on both ledgers gives the same state, and each reads the other's output: the
+      // ledger as built now, started with empty storage on the AS-BUILT tenant, rebuilds from
+      // the as-built ledger's first-layout log and must list exactly what that ledger lists.
+      const units = q('units', 40)
+      const run = Date.now().toString(36)
+      const ta = `s4-agree-a-${run}`
+      const tb = `s4-agree-b-${run}`
+      const a = await env.WRITER.get(env.WRITER.idFromName(`${ta}-w0`)).run('asbuilt', ta, 0, 600, 2, units)
+      const b = await env.WRITER.get(env.WRITER.idFromName(`${tb}-w0`)).run('segments', tb, 0, 600, 2, units)
+      const norm = (p: { files: { key: string }[] }, t: string) => p.files.map((f) => ({ ...f, key: f.key.replace(`tenant=${t}/`, 'tenant=T/') }))
+      const out: Record<string, unknown> = { units, asbuilt: a.status, segments: b.status }
+      for (const table of ['metric_samples', 'metric_series'] as const) {
+        const range = { table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER }
+        const pa = await ledgerOf(env, 'asbuilt', ta).plan(range)
+        const pb = await ledgerOf(env, 'segments', tb).plan(range)
+        const rebuilt = await env.LEDGER.get(env.LEDGER.idFromName(ta)).plan(range) // empty storage: rebuilds from ta's log
+        out[table] = {
+          files: pa.files.length,
+          same_workload_same_state: JSON.stringify(norm(pa, ta)) === JSON.stringify(norm(pb, tb)) && JSON.stringify(pa.watermarks) === JSON.stringify(pb.watermarks) && pa.version === pb.version,
+          rebuilt_from_asbuilt_log_equal: JSON.stringify(rebuilt.files) === JSON.stringify(pa.files) && JSON.stringify(rebuilt.watermarks) === JSON.stringify(pa.watermarks) && rebuilt.version === pa.version,
+          rebuilt_incarnation: rebuilt.ledgerIncarnation,
+        }
+      }
+      return Response.json(out)
+    }
+    if (u.pathname === '/replay1') {
+      // A tenant written by the AS-BUILT ledger (one R2 object per change): the time until the
+      // ledger as built now, on empty storage, first answers a plan, i.e. replays that log one
+      // GET per change, six at a time: the as-built ledger's own rebuild path.
+      const tenant = u.searchParams.get('tenant')!
+      const want = await ledgerOf(env, 'asbuilt', tenant).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
       const ledger = env.LEDGER.get(env.LEDGER.idFromName(tenant))
-      const before = await ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
-      await ledger.drain()
-      await ledger.wipe().catch(() => undefined) // the object resets itself
       const t0 = Date.now()
       let refusals = 0
-      let after
+      let got
       for (;;) {
         try {
-          after = await ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
+          got = await ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
           break
         } catch (e) {
-          if (!String(e).includes('ledger_unavailable')) throw e
+          if (!String(e).includes('ledger_unavailable')) return Response.json({ error: String(e).slice(0, 300), refusals }, { status: 500 })
           refusals++
         }
-        if (Date.now() - t0 > 120_000) return Response.json({ error: 'not rebuilt after 120 s', refusals }, { status: 500 })
+        if (Date.now() - t0 > 300_000) return Response.json({ error: 'not rebuilt after 300 s', refusals }, { status: 500 })
       }
-      const ms = Date.now() - t0
-      const same = after.files.length === before.files.length && JSON.stringify(after.watermarks) === JSON.stringify(before.watermarks)
-      return Response.json({ tenant, ms, refusals, files: after.files.length, same, version: after.version, incarnation: after.ledgerIncarnation })
+      return Response.json({ tenant, changes: want.version, ms: Date.now() - t0, refusals, files: got.files.length, same: JSON.stringify(got.files) === JSON.stringify(want.files) && JSON.stringify(got.watermarks) === JSON.stringify(want.watermarks), status: await ledger.logStatus() })
+    }
+    if (u.pathname === '/purge') {
+      // Teardown: delete every object of this spike's bucket, 1,000 per call, so the bucket can be deleted.
+      let deleted = 0
+      for (let i = 0; i < 20; i++) {
+        const page = await (env as unknown as { BUCKET: R2Bucket }).BUCKET.list({ limit: 1000 })
+        if (page.objects.length === 0) break
+        await (env as unknown as { BUCKET: R2Bucket }).BUCKET.delete(page.objects.map((o) => o.key))
+        deleted += page.objects.length
+      }
+      const left = (await (env as unknown as { BUCKET: R2Bucket }).BUCKET.list({ limit: 1 })).objects.length
+      return Response.json({ deleted, empty: left === 0 })
     }
     if (u.pathname === '/status') return Response.json(await env.LEDGER.get(env.LEDGER.idFromName(u.searchParams.get('tenant')!)).logStatus())
     return new Response('not found', { status: 404 })

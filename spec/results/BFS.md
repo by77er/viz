@@ -37,7 +37,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `DESIGN_4_fix_F10` DESIGN.md 3.1 + LEDGER-LOG.md + baseFirst, reg, drainRetrySame; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I11_LiveFilesReadable in 15 steps | 159,186 | 541,393 | 15 | 6.4 s | 6.9e-10 |
 | `DESIGN_5_assume_F3` DESIGN.md 3.1 + LEDGER-LOG.md + baseFirst, reg, drainRetrySame, noRetryAcrossLoss; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I11_LiveFilesReadable in 15 steps | 153,781 | 531,509 | 15 | 5.1 s | 6.4e-10 |
 | `DESIGN_6_fix_F2` DESIGN.md 3.1 + LEDGER-LOG.md + baseFirst, reg, drainRetrySame, noRetryAcrossLoss, sweep; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I11_LiveFilesReadable in 17 steps (unexpected) | 498,251 | 1,882,799 | 17 | 20.8 s | 6.7e-9 |
-| `DESIGN_7_fix_F15` DESIGN.md 3.1 + LEDGER-LOG.md + baseFirst, reg, drainRetrySame, noRetryAcrossLoss, sweep, sweepIncLogged; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I11_LiveFilesReadable in 22 steps (unexpected) | 6,455,777 | 27,637,913 | 22 | 351.2 s | 0.0000011 |
+| `DESIGN_7_fix_F15` DESIGN.md 3.1 + LEDGER-LOG.md + baseFirst, reg, drainRetrySame, noRetryAcrossLoss, sweep, sweepIncLogged; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | stopped: memory bound: stopped at 19,000,001 states; every state reachable in at most 23 steps checked, no violation | 19,000,001 | 85,164,706 | 23 | 1595.1 s | 0.0000098 |
 | `F1_registration_rolled_back` F1: registration committed, not logged; ledger rebuild forgets the stream (design reg, others fixed) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 5 steps | 153 | 242 | 5 | 0 s | 6.3e-16 |
 | `F2_sweeper_spec_I1` F2: orphan sweeper as DESIGN §4.3 states it; ledger rebuild | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 25 steps | 1,850,080 | 9,279,230 | 25 | 86.5 s | 9.3e-8 |
 | `F2_sweeper_spec_grace` F2: same sweeper deletes a removed file under a running query (missing read as empty) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 25 steps | 748,957 | 3,770,844 | 25 | 50.6 s | 1.5e-8 |
@@ -45,25 +45,73 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `F10_segments_overlap` F10 (LEDGER-LOG.md): drain PUTs v1..vk, dies before deleting the rows, a change commits, the retry PUTs v1..vk+1 | LOG_SegmentsDisjoint | **violated** LOG_SegmentsDisjoint in 11 steps | 2,679 | 7,684 | 11 | 0.2 s | 1.9e-13 |
 | `F10_rebuild_refuses` F10: same, then the ledger loses its storage: a strict replay refuses the log | AV_RebuildSucceeds | **violated** AV_RebuildSucceeds in 12 steps | 8,452 | 27,646 | 12 | 0.4 s | 1.9e-12 |
 | `F11_incarnation_reused` F11 (LEDGER-LOG.md): base is an ordinary first change; two ledger losses before it is drained | V_IncarnationNotReused | **violated** V_IncarnationNotReused in 2 steps | 6 | 5 | 2 | 0 s | 9.8e-19 |
-| `IMPL_1_as_built` as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts); every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I3_NoDuplicates in 12 steps | 89,878 | 266,384 | 12 | 6 s | 2.2e-10 |
-| `IMPL_2_assume_F3` as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts) + noRetryAcrossLoss; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I3_NoDuplicates in 13 steps | 76,785 | 262,685 | 13 | 5 s | 1.6e-10 |
-| `IMPL_3_fix_F12` as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts) + noRetryAcrossLoss, readBound; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I4_NoGapAtSeam in 13 steps | 74,727 | 259,616 | 13 | 4.5 s | 1.5e-10 |
-| `IMPL_4_fix_F6` as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts) + noRetryAcrossLoss, readBound, unknownStream, reg; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I11_LiveFilesReadable in 17 steps | 475,730 | 1,777,986 | 17 | 30.1 s | 6.1e-9 |
-| `F6_impl_unknown_stream` F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 13 steps | 38,134 | 124,931 | 13 | 1.9 s | 3.9e-11 |
-| `F12_impl_read_unbound` F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss) | I3_NoDuplicates | **violated** I3_NoDuplicates in 13 steps | 38,236 | 124,013 | 13 | 1.6 s | 4e-11 |
-| `F13_impl_comp_adopts_old_output` F13: compaction adopts an earlier step's output ("exists"); the sweeper judges it by the earlier upload | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 19 steps | 126,732 | 632,727 | 19 | 7.7 s | 4.4e-10 |
-| `F14_impl_comp_conflict_delete` F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 25 steps | 83,106 | 367,604 | 25 | 6.7 s | 1.9e-10 |
-| `IMPL_PLANNED_fixed` As built with the fixes above (F6, F12, F13/F14, F3 assumed), and the ledger log replaced by the PLANNED segments of LEDGER-LOG.md; ledger loss, compaction | all safety | **violated** V_IncarnationNotReused in 7 steps | 758 | 1,819 | 7 | 0.2 s | 1.6e-14 |
+| `IMPL_1_as_built` code at 6488856 (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts); every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I4_NoGapAtSeam in 11 steps | 56,177 | 160,816 | 11 | 5.8 s | 8.6e-11 |
+| `IMPL_2_assume_F3` code at 6488856 (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts) + noRetryAcrossLoss; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I4_NoGapAtSeam in 11 steps | 29,837 | 95,793 | 11 | 5 s | 2.4e-11 |
+| `IMPL_3_fix_F6b` code at HEAD + F3 assumed + registration before writes, logged (F1/F6 fix in shard.ts); every action, every safety property | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 19 steps checked, no violation | 4,000,002 | 18,439,007 | 19 | 336 s | 4.3e-7 |
+| `F6_impl_unknown_stream` F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 11 steps | 12,978 | 37,719 | 11 | 0.5 s | 4.6e-12 |
+| `F6b_impl_now` F6(b) in the code at HEAD: tailRead still answers ok/empty to incarnation 0, which the coordinator sends for a stream the ledger has not registered (lazy registration) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 11 steps | 14,978 | 46,021 | 11 | 2 s | 6.1e-12 |
+| `F12_impl_read_unbound` F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss) | I3_NoDuplicates | **violated** I3_NoDuplicates in 13 steps | 40,478 | 127,244 | 13 | 2.4 s | 4.4e-11 |
+| `F13_impl_comp_adopts_old_output` F13: compaction adopts an earlier step's output ("exists"); the sweeper judges it by the earlier upload | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 19 steps | 132,735 | 624,728 | 19 | 8.4 s | 4.8e-10 |
+| `F14_impl_comp_conflict_delete` F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 21 steps | 41,961 | 143,700 | 21 | 2.8 s | 4.8e-11 |
+| `F15_sweeper_trusts_unlogged_registration` F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 17 steps | 518,127 | 2,018,428 | 17 | 29.4 s | 7.3e-9 |
+| `IMPL_PLANNED_fixed` As built with the fixes above (F6, F12, F13/F14, F15, F3 assumed), but the segment log as LEDGER-LOG.md stated it at the start of this work; ledger loss, compaction | all safety | **violated** V_IncarnationNotReused in 7 steps | 758 | 1,819 | 7 | 0.1 s | 1.6e-14 |
+
+## D30: the compaction fix as built (compact.ts + janitor.ts)
+
+| experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
+|---|---|---|---|---|---|---|---|
+| `D30_F13` F13's bounds (code of 2026-11-18, 1 compaction, sweeper on) with D30 | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 23 steps checked, no violation | 6,000,001 | 35,521,718 | 23 | 336.1 s | 9.8e-7 |
+| `D30_F13x` F13's bounds with D30, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 25 steps checked, no violation | 6,000,001 | 36,290,689 | 25 | 324.1 s | 9.8e-7 |
+| `D30_F14x` F14's bounds (two compaction steps at once, retention, ledger loss) with D30, the sweeper ON (F14 had it off), ≤ 2 sweep runs, the ledger log as built (two-step start) | all safety | stopped: memory bound: stopped at 19,000,001 states; every state reachable in at most 31 steps checked, no violation | 19,000,001 | 127,029,162 | 31 | 2186.8 s | 0.0000098 |
+| `D30_F15x` F15's bounds (amended protocol, 2 flush Workers, shard loss + ledger loss) with D30's sweeper, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,003 states; every state reachable in at most 23 steps checked, no violation | 6,000,003 | 31,828,222 | 23 | 324.8 s | 9.8e-7 |
+| `D30_teeth_not_live_only` D30 teeth: an input counts as gone when it is merely not live (its object may still exist) | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 27 steps | 406,920 | 1,822,925 | 27 | 24.7 s | 4.5e-9 |
+| `D30_teeth_absent_only` D30 with the live test dropped (absent from the listing alone): expected to hold, since an object is deleted only once its key can never be live | all safety | stopped: memory bound: stopped at 6,000,002 states; every state reachable in at most 31 steps checked, no violation | 6,000,002 | 33,756,569 | 31 | 277.7 s | 9.8e-7 |
+| `D30_teeth_read_first` D30 teeth: the sweep reads the ledger BEFORE it lists R2 | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 25 steps | 247,867 | 1,035,235 | 25 | 10.2 s | 1.7e-9 |
+| `D30_teeth_newer_unlogged` D30 teeth: a newer incarnation kills old flush files as soon as it is committed (no logged-watermark > 0 test); F15's bounds | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 15 steps | 198,438 | 691,325 | 15 | 12.9 s | 1.1e-9 |
+| `D30_teeth_conflict_delete` D30 teeth: the step deletes its outputs on conflict again (F14 back); sweeper on | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 21 steps | 122,006 | 462,856 | 21 | 6.2 s | 4e-10 |
+| `D30_teeth_purge_unlogged` D30 teeth: purge deletes a removed file before its removal is logged | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 14 steps | 1,127 | 3,383 | 14 | 0.1 s | 3.4e-14 |
+| `W_leak_behind_lost_flush` F16 witness: an unlisted compaction output kept because an input is an unlisted flush file of an incarnation its shard lost, which the sweep keeps (D30 + log as built, ledger loss + shard loss, compaction) | W_NoLeakBehindLostFlush | **violated** W_NoLeakBehindLostFlush in 19 steps | 819,601 | 3,332,054 | 19 | 71.4 s | 1.8e-8 |
+
+## The ledger segment log as built
+
+| experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
+|---|---|---|---|---|---|---|---|
+| `LOG_as_built` IMPL_PLANNED_fixed's bounds with the segment log as built (base PUT before the commit, two-step start, F10 fix, tombstones in the base) and the code at HEAD; F3 assumed; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,002 states; every state reachable in at most 22 steps checked, no violation | 6,000,002 | 32,503,444 | 22 | 336.3 s | 9.8e-7 |
+| `LOG_as_built_2LL` as LOG_as_built, two ledger losses (F11 needed two), compaction, one flush Worker; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 25 steps checked, no violation | 6,000,001 | 31,998,907 | 25 | 275.4 s | 9.8e-7 |
+| `LOG_as_built_3LL` as LOG_as_built, three ledger losses, no compaction, one flush Worker; ≤ 2 sweep runs | all safety | holds (exhaustive) | 3,386,220 | 22,143,834 | 45 | 167.1 s | 3.1e-7 |
+| `LOG_as_built_faults` as LOG_as_built, + retention + shard loss, registration logged before writes (so F6(b) does not mask the log); ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 20 steps checked, no violation | 6,000,001 | 27,425,236 | 20 | 230.2 s | 9.8e-7 |
+| `LOG_teeth_commit_first` segment log teeth: the incarnation commits before its base is in R2 (the plan before F11) | V_IncarnationNotReused | **violated** V_IncarnationNotReused in 7 steps | 693 | 1,638 | 7 | 0.1 s | 1.3e-14 |
+| `LOG_teeth_retry_new_bounds` segment log teeth: a retried drain takes every pending row (F10) | AV_RebuildSucceeds | **violated** AV_RebuildSucceeds in 16 steps | 160,162 | 817,710 | 16 | 9.1 s | 7e-10 |
+| `LOG_S1_rollback` review S-1, as built: one rollback to the first-layout ledger and back, one ledger loss, retention, compaction, registration logged before writes; ≤ 2 sweep runs | all safety | **violated** I5_DiscardOnlyLogged in 14 steps | 30,553 | 105,857 | 14 | 3.6 s | 2.5e-11 |
+| `LOG_S1_heal` review S-1 with fix (b): on roll-forward an outbox that does not continue the segment log starts a new incarnation from SQLite; same bounds; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 23 steps checked, no violation | 6,000,001 | 29,063,372 | 23 | 330.6 s | 9.8e-7 |
 
 ## Amended protocol (expect none; exhaustive)
 
 | experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
 |---|---|---|---|---|---|---|---|
+| `A_retries_faults` client retries + two flush Workers, ledger loss + shard loss | all safety | stopped: memory bound: stopped at 4,000,004 states; every state reachable in at most 21 steps checked, no violation | 4,000,004 | 18,992,755 | 21 | 241.7 s | 4.3e-7 |
+| `A_maintenance_faults` compaction (2 steps at once) + retention + ledger loss + shard loss, no client retry | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 22 steps checked, no violation | 4,000,002 | 16,708,394 | 22 | 216.1 s | 4.3e-7 |
+| `A_3batches` 3 batches, ledger loss + shard loss, no client retry | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 21 steps checked, no violation | 4,000,002 | 17,738,142 | 21 | 166.4 s | 4.3e-7 |
+| `A_2shards` 2 shards, ledger loss + shard loss + compaction, no client retry | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 18 steps checked, no violation | 4,000,002 | 15,538,809 | 18 | 152.2 s | 4.3e-7 |
+| `A_2tenants` 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss, no client retry | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 18 steps checked, no violation | 4,000,002 | 18,169,174 | 18 | 222.4 s | 4.3e-7 |
 
-## Liveness: AG EF query-done
+## Liveness: AG EF query-done, or every object live (no leak)
 
 | experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
 |---|---|---|---|---|---|---|---|
+| `LIVE_amended` amended protocol, ledger loss + shard loss + compaction (1 send per batch) | AG EF done | stopped: memory bound: stopped at 3,000,001 states (depth 29); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,001 | 12,002,784 | 29 | 188.3 s | 2.4e-7 |
+| `LIVE_amended_ll` amended protocol, ledger loss, compaction, no shard loss (1 send per batch) | AG EF done | stopped: memory bound: stopped at 3,000,002 states (depth 36); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,002 | 15,730,125 | 36 | 371.4 s | 2.4e-7 |
+| `LIVE_amended_sl` amended protocol, shard loss, no ledger loss, no compaction (1 send per batch) | AG EF done | holds (exhaustive) | 162,812 | 640,662 | 38 | 24.5 s | 7.2e-10 |
+| `LIVE_design` DESIGN as written, ledger loss + shard loss (1 send per batch) | AG EF done | **violated** LIVE_QueryCanComplete in 5 steps | 1,124,318 | 4,573,766 | 36 | 98.6 s | 3.4e-8 |
+| `LIVE_impl_V1` code of 2026-11-18 (tailRead ok/empty for a lost stream), ledger loss + shard loss, no compaction (1 send per batch) | AG EF done | holds (exhaustive) | 233,906 | 924,430 | 40 | 24.3 s | 1.5e-9 |
+| `LIVE_impl` code at HEAD: tailRead refuses an incarnation it lost, but nothing re-registers the stream; shard loss (1 send per batch) | AG EF done | **violated** LIVE_QueryCanComplete in 8 steps | 43,849 | 160,307 | 34 | 6.7 s | 5.2e-11 |
+| `LIVE_impl_F6_fixed` code at HEAD + F6 fixed completely (register before writes, so a refusing shard re-registers); ledger loss + shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 688,379 | 2,776,255 | 42 | 77.4 s | 1.3e-8 |
+| `LEAK_D30_maintenance` no leak, D30 + log as built: compaction (2 steps at once), retention of every file, ledger loss, no client retry; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,002 states (depth 31); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,002 | 16,323,879 | 31 | 319.6 s | 2.4e-7 |
+| `LEAK_D30_shardloss` no leak, D30 + log as built: shard loss, ledger loss, retention of every file, compaction, no client retry; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,002 states (depth 32); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,002 | 14,725,070 | 32 | 286.2 s | 2.4e-7 |
+| `LEAK_V1_shardloss` no leak, the rules before D30 (age-swept outputs, committed newer incarnation): same bounds as LEAK_D30_shardloss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,001 states (depth 32); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,001 | 14,861,377 | 32 | 284.7 s | 2.4e-7 |
+| `LEAK_D30_ll` no leak, D30 + log as built: compaction, retention (2 removals), ledger loss, no shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | holds (exhaustive) | 1,640,059 | 10,097,949 | 56 | 172.4 s | 7.3e-8 |
+| `LEAK_D30_sl` no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,090,381 | 6,619,573 | 52 | 130.1 s | 3.2e-8 |
+| `LEAK_V1_sl` no leak, the rules before D30: same bounds as LEAK_D30_sl; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,226,068 | 7,552,989 | 53 | 135.9 s | 4.1e-8 |
 
 ## Counterexamples
 
@@ -569,35 +617,6 @@ Violates `I11_LiveFilesReadable`.
 16. LEDGER STORAGE LOSS -> rebuild from R2
 17. addUnit(s0 inc 1 1..1) admitted
 
-### DESIGN_7_fix_F15
-
-DESIGN.md 3.1 + LEDGER-LOG.md + baseFirst, reg, drainRetrySame, noRetryAcrossLoss, sweep, sweepIncLogged; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property
-
-Violates `I11_LiveFilesReadable`.
-
-1. registerStream(s0, inc 1)
-2. ledger drain: PUT segment v1..v1
-3. registration logged -> s0 accepts writes
-4. append(b0 -> s0) seq 1
-5. seal(s0, ..1)
-6. append(b1 -> s0) seq 2
-7. seal(s0, ..2)
-8. flush: pendingSegments(s0) -> inc 1 1..1
-9. flush: pendingSegments(s0) -> inc 1 2..2
-10. flush readSegment(s0 inc 1 1..1)
-11. flush PUT L0(s0 inc1 1..1)
-12. addUnit(s0 inc 1 1..1) admitted
-13. flush readSegment(s0 inc 1 2..2)
-14. flush PUT L0(s0 inc1 2..2)
-15. addUnit(s0 inc 1 2..2) admitted
-16. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
-17. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0)
-18. compact crash (L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0))
-19. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
-20. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0)
-21. orphan sweep: delete L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0)
-22. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2) step0)) committed
-
 ### F1_registration_rolled_back
 
 F1: registration committed, not logged; ledger rebuild forgets the stream (design reg, others fixed)
@@ -747,46 +766,7 @@ Violates `V_IncarnationNotReused`.
 
 ### IMPL_1_as_built
 
-as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts); every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property
-
-Violates `I3_NoDuplicates`.
-
-1. append(b0 -> s0) seq 1
-2. seal(s0, ..1)
-3. flush: pendingSegments(s0) -> inc 1 1..1
-4. flush readSegment(s0 inc 1 1..1)
-5. SHARD STORAGE LOSS(s0)
-6. append(b0 -> s0) seq 1 [retry]
-7. flush PUT L0(s0 inc1 1..1)
-8. addUnit(s0 inc 1 1..1) admitted (registers the stream)
-9. query: plan (L0(s0 inc1 1..1); wm s0:inc1@1)
-10. query: tailRead(s0, inc 1, above 1) = incarnation_mismatch(2) -> re-plan
-11. query: tailRead(s0, inc 2, above 0) = ok b0
-12. query: read files, merge -> b0x2
-
-### IMPL_2_assume_F3
-
-as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts) + noRetryAcrossLoss; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property
-
-Violates `I3_NoDuplicates`.
-
-1. append(b0 -> s0) seq 1
-2. seal(s0, ..1)
-3. flush: pendingSegments(s0) -> inc 1 1..1
-4. SHARD STORAGE LOSS(s0)
-5. append(b1 -> s0) seq 1
-6. seal(s0, ..1)
-7. flush readSegment(s0 inc 1 1..1) [rows of inc 2]
-8. flush PUT L0(s0 inc1 1..1)
-9. addUnit(s0 inc 1 1..1) admitted (registers the stream)
-10. query: plan (L0(s0 inc1 1..1); wm s0:inc1@1)
-11. query: tailRead(s0, inc 1, above 1) = incarnation_mismatch(2) -> re-plan
-12. query: tailRead(s0, inc 2, above 0) = ok b1
-13. query: read files, merge -> b1x2
-
-### IMPL_3_fix_F12
-
-as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts) + noRetryAcrossLoss, readBound; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property
+code at 6488856 (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts); every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property
 
 Violates `I4_NoGapAtSeam`.
 
@@ -797,36 +777,28 @@ Violates `I4_NoGapAtSeam`.
 5. flush PUT L0(s0 inc1 1..1)
 6. query: plan (no files; wm s0:-)
 7. addUnit(s0 inc 1 1..1) admitted (registers the stream)
-8. ledger drain: PUT change v1..v1
-9. ledger drain: delete outbox rows v1..v1, advance logged
-10. ledger drain: PUT change v2..v2
-11. SHARD STORAGE LOSS(s0)
-12. query: tailRead(s0, inc 0, above 0) = ok nothing
-13. query: read files, merge -> nothing
+8. ledger drain: PUT segment v1..v2
+9. SHARD STORAGE LOSS(s0)
+10. query: tailRead(s0, inc 0, above 0) = ok nothing
+11. query: read files, merge -> nothing
 
-### IMPL_4_fix_F6
+### IMPL_2_assume_F3
 
-as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts) + noRetryAcrossLoss, readBound, unknownStream, reg; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property
+code at 6488856 (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts) + noRetryAcrossLoss; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property
 
-Violates `I11_LiveFilesReadable`.
+Violates `I4_NoGapAtSeam`.
 
-1. registerStream(s0, inc 1)
-2. ledger drain: PUT change v1..v1
-3. registration logged -> s0 accepts writes
-4. append(b0 -> s0) seq 1
-5. seal(s0, ..1)
-6. flush: pendingSegments(s0) -> inc 1 1..1
-7. flush: pendingSegments(s0) -> inc 1 1..1
-8. flush readSegment(s0 inc 1 1..1)
-9. flush PUT L0(s0 inc1 1..1)
-10. flush crash (s0 inc 1 1..1)
-11. flush readSegment(s0 inc 1 1..1)
-12. SHARD STORAGE LOSS(s0)
-13. registerStream(s0, inc 2)
-14. flush PUT L0(s0 inc1 1..1)
-15. orphan sweep: delete L0(s0 inc1 1..1)
-16. LEDGER STORAGE LOSS -> rebuild from R2
-17. addUnit(s0 inc 1 1..1) admitted
+1. append(b0 -> s0) seq 1
+2. seal(s0, ..1)
+3. flush: pendingSegments(s0) -> inc 1 1..1
+4. flush readSegment(s0 inc 1 1..1)
+5. flush PUT L0(s0 inc1 1..1)
+6. query: plan (no files; wm s0:-)
+7. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+8. ledger drain: PUT segment v1..v2
+9. SHARD STORAGE LOSS(s0)
+10. query: tailRead(s0, inc 0, above 0) = ok nothing
+11. query: read files, merge -> nothing
 
 ### F6_impl_unknown_stream
 
@@ -841,12 +813,28 @@ Violates `I4_NoGapAtSeam`.
 5. flush PUT L0(s0 inc1 1..1)
 6. query: plan (no files; wm s0:-)
 7. addUnit(s0 inc 1 1..1) admitted (registers the stream)
-8. ledger drain: PUT change v1..v1
-9. ledger drain: delete outbox rows v1..v1, advance logged
-10. ledger drain: PUT change v2..v2
-11. SHARD STORAGE LOSS(s0)
-12. query: tailRead(s0, inc 0, above 0) = ok nothing
-13. query: read files, merge -> nothing
+8. ledger drain: PUT segment v1..v2
+9. SHARD STORAGE LOSS(s0)
+10. query: tailRead(s0, inc 0, above 0) = ok nothing
+11. query: read files, merge -> nothing
+
+### F6b_impl_now
+
+F6(b) in the code at HEAD: tailRead still answers ok/empty to incarnation 0, which the coordinator sends for a stream the ledger has not registered (lazy registration)
+
+Violates `I4_NoGapAtSeam`.
+
+1. append(b0 -> s0) seq 1
+2. seal(s0, ..1)
+3. flush: pendingSegments(s0) -> inc 1 1..1
+4. flush readSegment(s0 inc 1 1..1)
+5. flush PUT L0(s0 inc1 1..1)
+6. query: plan (no files; wm s0:-)
+7. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+8. ledger drain: PUT segment v1..v2
+9. SHARD STORAGE LOSS(s0)
+10. query: tailRead(s0, inc 0, above 0) = ok nothing
+11. query: read files, merge -> nothing
 
 ### F12_impl_read_unbound
 
@@ -912,23 +900,43 @@ Violates `I11_LiveFilesReadable`.
 10. flush readSegment(s0 inc 1 2..2)
 11. flush PUT L0(s0 inc1 2..2)
 12. addUnit(s0 inc 1 2..2) admitted
-13. ledger drain: PUT change v1..v1
-14. ledger drain: delete outbox rows v1..v1, advance logged
-15. ledger drain: PUT change v2..v2
-16. ledger drain: delete outbox rows v2..v2, advance logged
-17. ledger drain: PUT change v3..v3
-18. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
-19. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
-20. expire L0(s0 inc1 1..1)
-21. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
-22. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
-23. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) = conflict, output deleted
-24. LEDGER STORAGE LOSS -> rebuild from R2
-25. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
+13. ledger drain: PUT segment v1..v3
+14. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+15. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+16. expire L0(s0 inc1 1..1)
+17. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+18. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+19. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) = conflict, output deleted
+20. LEDGER STORAGE LOSS -> rebuild from R2
+21. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
+
+### F15_sweeper_trusts_unlogged_registration
+
+F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild
+
+Violates `I11_LiveFilesReadable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush: pendingSegments(s0) -> inc 1 1..1
+8. flush readSegment(s0 inc 1 1..1)
+9. flush PUT L0(s0 inc1 1..1)
+10. flush crash (s0 inc 1 1..1)
+11. flush readSegment(s0 inc 1 1..1)
+12. SHARD STORAGE LOSS(s0)
+13. registerStream(s0, inc 2)
+14. flush PUT L0(s0 inc1 1..1)
+15. orphan sweep: delete L0(s0 inc1 1..1)
+16. LEDGER STORAGE LOSS -> rebuild from R2
+17. addUnit(s0 inc 1 1..1) admitted
 
 ### IMPL_PLANNED_fixed
 
-As built with the fixes above (F6, F12, F13/F14, F3 assumed), and the ledger log replaced by the PLANNED segments of LEDGER-LOG.md; ledger loss, compaction
+As built with the fixes above (F6, F12, F13/F14, F15, F3 assumed), but the segment log as LEDGER-LOG.md stated it at the start of this work; ledger loss, compaction
 
 Violates `V_IncarnationNotReused`.
 
@@ -939,3 +947,287 @@ Violates `V_IncarnationNotReused`.
 5. flush PUT L0(s0 inc1 1..1)
 6. addUnit(s0 inc 1 1..1) admitted (registers the stream)
 7. LEDGER STORAGE LOSS -> rebuild from R2 (nothing of this incarnation in R2: incarnation number reused)
+
+### D30_teeth_not_live_only
+
+D30 teeth: an input counts as gone when it is merely not live (its object may still exist)
+
+Violates `I11_LiveFilesReadable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush readSegment(s0 inc 1 1..1)
+10. flush PUT L0(s0 inc1 1..1)
+11. addUnit(s0 inc 1 1..1) admitted
+12. flush: pendingSegments(s0) -> inc 1 2..2
+13. flush readSegment(s0 inc 1 2..2)
+14. flush PUT L0(s0 inc1 2..2)
+15. addUnit(s0 inc 1 2..2) admitted
+16. ledger drain: delete outbox rows v1..v1, advance logged
+17. ledger drain: PUT segment v2..v3
+18. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+19. expire L0(s0 inc1 1..1)
+20. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+21. orphan sweep: list L0(s0 inc1 1..1), L0(s0 inc1 2..2), L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+22. orphan sweep: orphanCheck -> doomed L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+23. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
+24. ledger start: PUT base segment of incarnation 2
+25. ledger start: commit incarnation 2, serve
+26. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
+27. orphan sweep: delete L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+
+### D30_teeth_read_first
+
+D30 teeth: the sweep reads the ledger BEFORE it lists R2
+
+Violates `I11_LiveFilesReadable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush readSegment(s0 inc 1 1..1)
+10. flush PUT L0(s0 inc1 1..1)
+11. addUnit(s0 inc 1 1..1) admitted
+12. flush: pendingSegments(s0) -> inc 1 2..2
+13. flush readSegment(s0 inc 1 2..2)
+14. flush PUT L0(s0 inc1 2..2)
+15. ledger drain: delete outbox rows v1..v1, advance logged
+16. orphan sweep: orphanCheck first
+17. addUnit(s0 inc 1 2..2) admitted
+18. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+19. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+20. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
+21. ledger drain: PUT segment v2..v4
+22. ledger drain: delete outbox rows v2..v4, advance logged
+23. purge: delete L0(s0 inc1 2..2)
+24. orphan sweep: list -> doomed L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+25. orphan sweep: delete L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+
+### D30_teeth_newer_unlogged
+
+D30 teeth: a newer incarnation kills old flush files as soon as it is committed (no logged-watermark > 0 test); F15's bounds
+
+Violates `I11_LiveFilesReadable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. SHARD STORAGE LOSS(s0)
+9. registerStream(s0, inc 2)
+10. flush PUT L0(s0 inc1 1..1)
+11. orphan sweep: list L0(s0 inc1 1..1)
+12. orphan sweep: orphanCheck -> doomed L0(s0 inc1 1..1)
+13. LEDGER STORAGE LOSS -> rebuild from R2
+14. addUnit(s0 inc 1 1..1) admitted
+15. orphan sweep: delete L0(s0 inc1 1..1)
+
+### D30_teeth_conflict_delete
+
+D30 teeth: the step deletes its outputs on conflict again (F14 back); sweeper on
+
+Violates `I11_LiveFilesReadable`.
+
+1. append(b0 -> s0) seq 1
+2. seal(s0, ..1)
+3. append(b1 -> s0) seq 2
+4. seal(s0, ..2)
+5. flush: pendingSegments(s0) -> inc 1 1..1
+6. flush readSegment(s0 inc 1 1..1)
+7. flush PUT L0(s0 inc1 1..1)
+8. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+9. flush: pendingSegments(s0) -> inc 1 2..2
+10. flush readSegment(s0 inc 1 2..2)
+11. flush PUT L0(s0 inc1 2..2)
+12. addUnit(s0 inc 1 2..2) admitted
+13. ledger drain: PUT segment v1..v3
+14. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+15. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+16. expire L0(s0 inc1 1..1)
+17. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+18. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+19. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) = conflict, output deleted
+20. LEDGER STORAGE LOSS -> rebuild from R2
+21. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
+
+### D30_teeth_purge_unlogged
+
+D30 teeth: purge deletes a removed file before its removal is logged
+
+Violates `I11_LiveFilesReadable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. addUnit(s0 inc 1 1..1) admitted
+10. ledger drain: delete outbox rows v1..v1, advance logged
+11. ledger drain: PUT segment v2..v2
+12. expire L0(s0 inc1 1..1)
+13. purge: delete L0(s0 inc1 1..1)
+14. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
+
+### LOG_teeth_commit_first
+
+segment log teeth: the incarnation commits before its base is in R2 (the plan before F11)
+
+Violates `V_IncarnationNotReused`.
+
+1. append(b0 -> s0) seq 1
+2. seal(s0, ..1)
+3. flush: pendingSegments(s0) -> inc 1 1..1
+4. flush readSegment(s0 inc 1 1..1)
+5. flush PUT L0(s0 inc1 1..1)
+6. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+7. LEDGER STORAGE LOSS -> rebuild from R2 (nothing of this incarnation in R2: incarnation number reused)
+
+### LOG_teeth_retry_new_bounds
+
+segment log teeth: a retried drain takes every pending row (F10)
+
+Violates `AV_RebuildSucceeds`.
+
+1. append(b0 -> s0) seq 1
+2. seal(s0, ..1)
+3. append(b1 -> s0) seq 2
+4. seal(s0, ..2)
+5. flush: pendingSegments(s0) -> inc 1 1..1
+6. flush: pendingSegments(s0) -> inc 1 2..2
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+10. flush readSegment(s0 inc 1 2..2)
+11. flush PUT L0(s0 inc1 2..2)
+12. ledger drain: PUT segment v1..v2
+13. addUnit(s0 inc 1 2..2) admitted
+14. ledger drain crash after PUT
+15. ledger drain: PUT segment v1..v3
+16. LEDGER STORAGE LOSS -> rebuild from R2 REFUSED (log not contiguous), start incarnation 2
+
+### LOG_S1_rollback
+
+review S-1, as built: one rollback to the first-layout ledger and back, one ledger loss, retention, compaction, registration logged before writes; ≤ 2 sweep runs
+
+Violates `I5_DiscardOnlyLogged`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. addUnit(s0 inc 1 1..1) admitted
+10. ledger drain: delete outbox rows v1..v1, advance logged
+11. RELEASE ROLLBACK: the first-layout ledger runs on segment storage
+12. ledger first-layout drain: PUT change v2 as a per-change object
+13. ledger drain: delete outbox rows v2..v2, advance logged
+14. recorded(s0, ..1)
+
+### LIVE_design
+
+DESIGN as written, ledger loss + shard loss (1 send per batch)
+
+Violates `LIVE_QueryCanComplete`. from the last state of the trace no continuation completes the query.
+
+1. registerStream(s0, inc 1)
+2. SHARD STORAGE LOSS(s0)
+3. ledger drain: PUT segment v1..v1
+4. registerStream(s0, inc 2)
+5. LEDGER STORAGE LOSS -> rebuild from R2
+
+### LIVE_impl
+
+code at HEAD: tailRead refuses an incarnation it lost, but nothing re-registers the stream; shard loss (1 send per batch)
+
+Violates `LIVE_QueryCanComplete`. from the last state of the trace no continuation completes the query.
+
+1. append(b0 -> s0) seq 1
+2. append(b1 -> s0) seq 2
+3. seal(s0, ..2)
+4. flush: pendingSegments(s0) -> inc 1 1..2
+5. flush readSegment(s0 inc 1 1..2)
+6. SHARD STORAGE LOSS(s0)
+7. flush PUT L0(s0 inc1 1..2)
+8. addUnit(s0 inc 1 1..2) admitted (registers the stream)
+
+### LEAK_D30_sl
+
+no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)
+
+Violates `LIVE_NoLeak`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc1 1..2) (sweep keeps it).
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. append(b1 -> s0) seq 2
+6. seal(s0, ..2)
+7. flush: pendingSegments(s0) -> inc 1 1..2
+8. flush readSegment(s0 inc 1 1..2)
+9. SHARD STORAGE LOSS(s0)
+10. flush PUT L0(s0 inc1 1..2)
+11. flush crash (s0 inc 1 1..2)
+
+### LEAK_V1_sl
+
+no leak, the rules before D30: same bounds as LEAK_D30_sl; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)
+
+Violates `LIVE_NoLeak`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc1 1..2) (sweep keeps it).
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. append(b1 -> s0) seq 2
+6. seal(s0, ..2)
+7. flush: pendingSegments(s0) -> inc 1 1..2
+8. flush readSegment(s0 inc 1 1..2)
+9. SHARD STORAGE LOSS(s0)
+10. flush PUT L0(s0 inc1 1..2)
+11. flush crash (s0 inc 1 1..2)
+
+### W_leak_behind_lost_flush
+
+F16 witness: an unlisted compaction output kept because an input is an unlisted flush file of an incarnation its shard lost, which the sweep keeps (D30 + log as built, ledger loss + shard loss, compaction)
+
+Violates `W_NoLeakBehindLostFlush`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush: pendingSegments(s0) -> inc 1 2..2
+10. flush readSegment(s0 inc 1 1..1)
+11. flush PUT L0(s0 inc1 1..1)
+12. addUnit(s0 inc 1 1..1) admitted
+13. flush readSegment(s0 inc 1 2..2)
+14. SHARD STORAGE LOSS(s0)
+15. flush PUT L0(s0 inc1 2..2)
+16. addUnit(s0 inc 1 2..2) admitted
+17. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+18. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
+19. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))

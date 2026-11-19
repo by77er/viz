@@ -39,8 +39,19 @@ export interface Cfg {
   delLogged: boolean // a removed file is deleted only once its removal is logged
   missingErr: boolean // a planned file that is missing / has other bytes is an error -> re-plan (else read as empty)
   keying: 'content' | 'inm' | 'overwrite' // (h) flush keys: content hash; deterministic + If-None-Match; deterministic + overwrite
-  sweep: 'off' | 'spec' | 'impl' | 'any' // orphan sweeper rule (see sweep())
+  sweep: 'off' | 'spec' | 'impl' | 'inputs' | 'any' // orphan sweeper rule (see the sweeper action)
   sweepIncLogged: boolean // with 'impl': "the ledger has a newer incarnation" counts only once that registration is logged
+  sweepSteps: boolean // the sweep as janitor.ts runs it: list R2, then ONE ledger read, then one delete per doomed key, separate steps (false: one atomic step)
+  sweepAge: boolean // with 'inputs': keep the age floor (an object is a candidate only if its uploader was no longer in flight when listed); false = no clock at all
+  purgeSteps: boolean // purge as janitor.ts runs it: delete the object, then (separately) forget the tombstone (false: one atomic step)
+  startSteps: boolean // with baseFirst: a ledger start is two steps, PUT the base, then commit; nothing is served in between, and storage can be lost again in between
+  maxSweeps: number // with sweepSteps: orphan sweep runs started in total (a sweep is periodic; this bounds the state space); 99 = unbounded
+  sweepGone: 'both' | 'notLive' | 'absent' // with 'inputs': an input is gone for good if absent from the listing AND not live (janitor.ts) / only not live / only absent
+  sweepOrder: 'listFirst' | 'readFirst' // with sweepSteps: list R2 before the ledger read (janitor.ts) / read the ledger first, then list
+  sweepNewerLogged: boolean // with 'inputs': a newer incarnation makes an old flush file dead only if it has a logged watermark > 0 (F15 fix)
+  maxRB: number // review S-1: release rollbacks to the first-layout ledger while storage is in segments, each later rolled forward (per ledger)
+  rbFix: 'none' | 'heal' // S-1 as built / fix (b): on roll-forward, an outbox that does not continue the segment log starts a new incarnation from SQLite
+  goal: 'query' | 'clean' | 'cleanComp' // liveness goal: the query completes / every object in R2 is live (no object leaks: I11's no-leak half)
   reg: 'design' | 'logged' | 'impl' // stream registration: before writes (committed) / before writes (logged) + repeat / lazily by flush (as built)
   query: 'design' | 'impl' // ask only streams in the plan / also every pool shard, unregistered streams from 0 (coordinator.ts)
   unknownStream: 'empty' | 'refuse' // tailRead for a stream the shard does not hold: ok+empty (shard.ts) / incarnation_mismatch
@@ -84,6 +95,7 @@ export interface FileRec {
   v: number
   key: number // interned object key
   name: string
+  ins: number[] // compaction output: its inputs (R2 metadata `viz-inputs`)
 }
 const fileKeys = new Map<string, number>()
 export const FILES: FileRec[] = []
@@ -98,12 +110,12 @@ function keyId(k: string): number {
   }
   return id
 }
-export function fileId(t: number, rows: number[], comp: boolean, v: number, key: string, name: string): number {
+export function fileId(t: number, rows: number[], comp: boolean, v: number, key: string, name: string, ins: number[] = []): number {
   const k = `${t}|${rows.join('.')}|${comp ? 1 : 0}|${v}|${key}`
   let id = fileKeys.get(k)
   if (id === undefined) {
     id = FILES.length
-    FILES.push({ t, rows, comp, v, key: keyId(key), name })
+    FILES.push({ t, rows, comp, v, key: keyId(key), name, ins })
     fileKeys.set(k, id)
   }
   return id
@@ -147,11 +159,28 @@ export interface Led {
   dr: number[] | null // a drain whose PUT has happened and whose delete transaction has not
   pl: number[] | null // drainRetrySame: bounds of the last attempted segment
   b: Snap // base: the state this incarnation started from (in R2 iff baseInR2)
-  tb: number[][] // tombstones [file, index of the removing change in h, or -1: replayed from R2]
+  tb: number[][] // tombstones [file, index of the removing change in h, or -1: replayed from R2, 1 once a purge run has deleted its object]
   nC: number
   nE: number
   nL: number
   ru: number // ghost: this incarnation number was used before (versions reused)
+  st: number // startSteps: 0 serving; 1 storage lost, state replayed, base not yet PUT; 2 base PUT, not committed. Nothing is served while st > 0
+  mx: number // ghost (startSteps): the highest ledger incarnation number with a base in R2
+  // review S-1 (only with maxRB > 0; absent otherwise)
+  rb?: number // the first-layout release runs on this storage: 1 (as built: nothing heals on roll-forward), 2 (with fix (b))
+  pc?: number[] // changes the first-layout drain wrote as per-change objects into this segment incarnation's prefix
+  lt?: number // `logged_through` + 1 as the segment drain knows it (only the segment drain moves it)
+  ft?: number // 1: the drain stopped for good (LogFault: the outbox does not continue the segment log)
+  nRB?: number
+}
+
+/** One run of janitor.ts sweepOrphans (sweepSteps). */
+export interface Sw {
+  t: number
+  ph: number // 0 listed; 1 ledger read done, deleting
+  ls: number[][] // the listing: [key, file (bytes), 1 if old enough when listed]
+  dm: number[] // doomed files (by their listed bytes), still to delete
+  rd: Pick<Led, 'fi' | 'tb' | 'wm' | 'lg'> | null // sweepOrder 'readFirst': the ledger read, taken before the listing
 }
 
 export interface Job {
@@ -205,6 +234,8 @@ export interface St {
   nSL: number
   nQ: number
   cN: number // compaction steps started (ids for compKey 'unique'; never reused)
+  sw: Sw | null // the orphan sweep in progress (sweepSteps)
+  nSw: number // orphan sweep runs started (sweepSteps)
 }
 
 // ------------------------------------------------------------------ helpers
@@ -240,11 +271,15 @@ export function init(c: Cfg): St {
     L: range(c.nt).map(() => ({
       li: 1, dn: 0, fi: [], wm: range(c.ns).map(() => [0, 0]), lg: range(c.ns).map(() => 0), ex: [],
       h: [], o0: 0, sg: [], dr: null, pl: null, b: freshSnap(c.ns), tb: [], nC: 0, nE: 0, nL: 0, ru: 0,
+      st: 0, mx: c.startSteps && c.baseFirst ? 1 : 0,
+      ...(c.maxRB > 0 ? { rb: 0, pc: [], lt: 0, ft: 0, nRB: 0 } : {}),
     })),
     q: idleQ(),
     nSL: 0,
     nQ: 0,
     cN: 0,
+    sw: null,
+    nSw: 0,
   }
 }
 
@@ -259,11 +294,19 @@ function cp(s: St): St {
     obj: aa(s.obj),
     L: s.L.map((L) => ({
       li: L.li, dn: L.dn, fi: L.fi, wm: aa(L.wm), lg: L.lg.slice(), ex: L.ex, h: L.h.slice(), o0: L.o0, sg: L.sg.slice(),
-      dr: L.dr, pl: L.pl, b: L.b, tb: L.tb, nC: L.nC, nE: L.nE, nL: L.nL, ru: L.ru,
+      dr: L.dr, pl: L.pl, b: L.b, tb: L.tb, nC: L.nC, nE: L.nE, nL: L.nL, ru: L.ru, st: L.st, mx: L.mx,
+      ...(L.pc ? { rb: L.rb, pc: L.pc, lt: L.lt, ft: L.ft, nRB: L.nRB } : {}),
     })),
     q: { st: s.q.st, t: s.q.t, fi: s.q.fi, wm: s.q.wm, nd: s.q.nd, tl: s.q.tl, mu: s.q.mu, ex: s.q.ex, ln: s.q.ln.slice(), rs: s.q.rs, dup: s.q.dup, miss: s.q.miss, leak: s.q.leak },
     nSL: s.nSL, nQ: s.nQ, cN: s.cN,
+    sw: s.sw ? { t: s.sw.t, ph: s.sw.ph, ls: s.sw.ls, dm: s.sw.dm, rd: s.sw.rd } : null,
+    nSw: s.nSw,
   }
+}
+
+/** The ledger serves nothing: its rebuild refused, or (startSteps) a new incarnation is starting. */
+function off(L: Led): boolean {
+  return L.dn === 1 || L.st > 0
 }
 
 function segLo(x: Strm, hi: number): number {
@@ -305,7 +348,10 @@ function replay(L: Led, strict: boolean): { sn: Snap; upTo: number; refused: boo
   let sn: Snap = { fi: [...L.b.fi], wm: L.b.wm.map((x) => [...x]), ex: [...L.b.ex], tb: L.b.tb }
   let next = 0
   const removed: number[] = []
-  for (const [lo, hi] of segsInKeyOrder(L)) {
+  // S-1: the segment rebuild never reads per-change objects. While the first-layout release runs
+  // with fix (b) in place, its roll-forward will put them in a new base, so they count as durable.
+  const segs = L.rb === 2 && L.pc!.length ? [...L.sg, ...L.pc!.filter((k) => !L.sg.some((g) => g[0]! <= k && k <= g[1]!)).map((k) => [k, k])].sort(cmpArr) : segsInKeyOrder(L)
+  for (const [lo, hi] of segs) {
     if (lo! > next) return { sn, upTo: next, refused: true, removed }
     if (lo! < next && strict) return { sn, upTo: next, refused: true, removed }
     for (let k = Math.max(lo!, next); k <= hi!; k++) {
@@ -372,7 +418,7 @@ function flushFile(c: Cfg, t: number, rows: number[], v: number, sh: number, inc
 function compFile(c: Cfg, t: number, ins: number[], jobId: number): number {
   const rows = sortU(ins.flatMap((f) => FILES[f]!.rows))
   const key = `C${ins.join('.')}${c.compKey === 'unique' ? `@${jobId}` : ''}`
-  return fileId(t, rows, true, 1, key, `L1(${ins.map((f) => FILES[f]!.name).join('+')}${c.compKey === 'unique' ? ` step${jobId - 100}` : ''})`)
+  return fileId(t, rows, true, 1, key, `L1(${ins.map((f) => FILES[f]!.name).join('+')}${c.compKey === 'unique' ? ` step${jobId - 100}` : ''})`, ins)
 }
 
 function inFlightPlan(s: St, t: number, key: number): boolean {
@@ -457,7 +503,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       // the shard registers when a write for the stream arrives, or (fix F6) when a query asks for it
       const wanted = range(c.nb).some((b) => T(c, b) === t && R(c, b) === sh && s.sent[b]! < c.maxSend) ||
         (c.unknownStream === 'refuse' && s.q.st === 1 && s.q.t === t && has(s.q.nd, sh))
-      if (c.reg !== 'impl' && x.i === 0 && !L.dn && wanted) {
+      if (c.reg !== 'impl' && x.i === 0 && !off(L) && wanted) {
         const ns = cp(s)
         const y = ns.sh[sh]![t]!
         ns.incN[sh]![t]! += 1
@@ -466,12 +512,12 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
         if (c.reg === 'design') y.rg = 1 // answered after the commit
         emit(`registerStream(${tag}, inc ${y.i})`, ns)
       }
-      if (c.reg === 'logged' && x.i > 0 && !x.rg && durableWm(L)[sh]![0] === x.i) {
+      if (c.reg === 'logged' && x.i > 0 && !x.rg && !off(L) && durableWm(L)[sh]![0] === x.i) {
         const ns = cp(s)
         ns.sh[sh]![t]!.rg = 1
         emit(`registration logged -> ${tag} accepts writes`, ns)
       }
-      if (c.reg === 'logged' && x.i > 0 && !L.dn && L.wm[sh]![0]! < x.i) {
+      if (c.reg === 'logged' && x.i > 0 && !off(L) && L.wm[sh]![0]! < x.i) {
         // fix F1: the shard repeats its (idempotent) registration when the ledger does not know it
         const ns = cp(s)
         regCommit(ns.L[t]!, sh, x.i)
@@ -479,7 +525,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       }
       // fix F6, as built (lazy registration): a tail read naming an incarnation the shard no
       // longer holds makes the shard create the stream and register it, so the next plan names it
-      if (c.unknownStream === 'refuse' && c.f6Register && c.reg === 'impl' && x.i === 0 && !L.dn &&
+      if (c.unknownStream === 'refuse' && c.f6Register && c.reg === 'impl' && x.i === 0 && !off(L) &&
         s.q.st === 1 && s.q.t === t && has(s.q.nd, sh) && s.q.wm[sh]![0] !== 0) {
         const ns = cp(s)
         const y = ns.sh[sh]![t]!
@@ -498,7 +544,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
         emit(`seal(${tag}, ..${y.se})`, ns)
       }
       // ------------------------------------------ Shard.recorded(inc, loggedWatermarks()) — flush step 5-6, or the sweep
-      if (!L.dn) {
+      if (!off(L)) {
         const w = c.recAt === 'logged' ? (L.wm[sh]![0] === x.i ? L.lg[sh]! : 0) : wmOf(L.wm, sh, x.i)
         if (w > x.re && has(x.bo, w) && w <= x.se) {
           const ns = cp(s)
@@ -598,7 +644,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       ns.jobs[ji]!.ph = 2
       emit(`flush PUT ${FILES[j.f]!.name}`, ns)
     }
-    if ((j.ph === 2 || j.ph === 4) && !L.dn) {
+    if ((j.ph === 2 || j.ph === 4) && !off(L)) {
       // ledger.addUnit (ledger.ts), as flush.ts report() handles its answers
       const ns = cp(s)
       const nL = ns.L[j.t]!
@@ -631,7 +677,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       }
       emit(label, ns)
     }
-    if (j.ph === 3 && !L.dn) {
+    if (j.ph === 3 && !off(L)) {
       // flush.ts: the shard was recreated -> registerStream(its incarnation), then addUnit once more
       const ns = cp(s)
       const nL = ns.L[j.t]!
@@ -652,8 +698,64 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
     const L = s.L[t]!
     const tt = c.nt > 1 ? ` t${t}` : ''
     if (L.dn) continue
+    const steps = c.startSteps && c.baseFirst
+    if (L.st > 0) {
+      // ledger.ts startIncarnation, as two steps: the base segment is PUT (If-None-Match) BEFORE
+      // SQLite commits the incarnation, and every request waits in gate() until the commit.
+      const ns = cp(s)
+      const nL = ns.L[t]!
+      if (L.st === 1) {
+        if (nL.li <= nL.mx) nL.ru = 1 // a base for a number R2 already has: the number is reused
+        nL.mx = Math.max(nL.mx, nL.li)
+        nL.st = 2
+        emit(`ledger${tt} start: PUT base segment of incarnation ${nL.li}`, ns)
+      } else {
+        nL.st = 0
+        emit(`ledger${tt} start: commit incarnation ${nL.li}, serve`, ns)
+      }
+    }
+    // review S-1: a rollback to the first-layout release, and the roll-forward after it
+    if (L.pc && L.st === 0) {
+      if (!L.rb && L.nRB! < c.maxRB && !L.dr) {
+        const ns = cp(s)
+        const nL = ns.L[t]!
+        nL.rb = c.rbFix === 'heal' ? 2 : 1
+        nL.nRB! += 1
+        emit(`RELEASE ROLLBACK${tt}: the first-layout ledger runs on segment storage`, ns)
+      }
+      if (L.rb && !L.dr) {
+        const ns = cp(s)
+        const nL = ns.L[t]!
+        nL.rb = 0
+        const broken = nL.pl ? nL.pl[0]! < nL.o0 : nL.o0 !== nL.lt
+        if (c.rbFix === 'heal' && broken) {
+          // fix (b): SQLite holds the whole committed state; a new incarnation's base carries it
+          const tomb = nL.tb.map((x) => x[0]!).filter((f) => !has(nL.fi, f))
+          Object.assign(nL, {
+            li: Math.max(nL.mx, nL.li) + 1, mx: Math.max(nL.mx, nL.li) + 1, lg: nL.wm.map((w) => w[1]), h: [], o0: 0, sg: [], dr: null, pl: null,
+            b: { fi: [...nL.fi], wm: nL.wm.map((x) => [...x]), ex: [...nL.ex], tb: c.baseTombstones ? tomb : [] }, tb: nL.tb.map((x) => [x[0]!, -1]),
+            pc: [], lt: 0, ft: 0,
+          })
+          emit(`RELEASE ROLL-FORWARD${tt}: the outbox does not continue the segment log -> new incarnation ${nL.li} from SQLite`, ns)
+        } else emit(`RELEASE ROLL-FORWARD${tt}`, ns)
+      }
+    }
+    if (L.rb === 0 && L.ft === 0 && !L.dr && L.o0 < L.h.length && (L.pl ? L.pl[0]! < L.o0 : L.o0 !== L.lt)) {
+      // ledger.ts nextSegment: the outbox does not continue the log (or a recorded segment lost its rows)
+      const ns = cp(s)
+      ns.L[t]!.ft = 1
+      emit(`ledger${tt} drain: LogFault, the outbox does not continue the segment log; the drain stops for good`, ns)
+    }
+    if (L.rb && !L.dr && L.o0 < L.h.length) {
+      // the first-layout drain: one object per change, {version}.json, in this incarnation's prefix
+      const ns = cp(s)
+      const nL = ns.L[t]!
+      if (!nL.pc!.includes(nL.o0)) nL.pc = [...nL.pc!, nL.o0]
+      nL.dr = [nL.o0, nL.o0]
+      emit(`ledger${tt} first-layout drain: PUT change v${nL.o0 + 1} as a per-change object`, ns)
+    }
     // drain step 1: PUT the pending changes to R2 (one object per change, or one segment)
-    if (!L.dr && L.o0 < L.h.length) {
+    if (!L.rb && !L.ft && !L.dr && L.o0 < L.h.length && !(L.pc && (L.pl ? L.pl[0]! < L.o0 : L.o0 !== L.lt))) {
       let lo = L.o0
       let hi = c.log === 'perChange' ? L.o0 : L.h.length - 1
       if (c.drainRetrySame && L.pl) [lo, hi] = [L.pl[0]!, L.pl[1]!]
@@ -676,29 +778,35 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       }
       nL.o0 = Math.max(nL.o0, hi + 1)
       nL.dr = null
-      nL.pl = null
+      if (!L.rb) nL.pl = null // the first-layout release neither reads nor clears the recorded bounds
+      if (L.pc && !L.rb) nL.lt = hi + 1 // segmentWritten sets logged_through; the first layout does not
       emit(`ledger${tt} drain: delete outbox rows v${lo + 1}..v${hi + 1}, advance logged`, ns)
       // the isolate dies (or the PUT's answer is lost) before that transaction
       const ns2 = cp(s)
       ns2.L[t]!.dr = null
       emit(`ledger${tt} drain crash after PUT`, ns2)
     }
-    // ledger storage loss + rebuild from R2 (new ledger incarnation)
-    if (L.nL < c.maxLL) {
+    // ledger storage loss + rebuild from R2 (new ledger incarnation). With startSteps a loss
+    // before the new base is PUT changes nothing (the storage held nothing yet), so it is skipped.
+    if (L.nL < c.maxLL && L.st !== 1 && !L.rb) {
       const ns = cp(s)
       const nL = ns.L[t]!
       const r = replay(nL, c.rebuild === 'strict')
       const inR2 = baseInR2(c, nL)
       const sn = inR2 ? r.sn : { fi: [...nL.b.fi], wm: nL.b.wm.map((x) => [...x]), ex: [...nL.b.ex], tb: nL.b.tb }
-      const newLi = inR2 ? nL.li + 1 : nL.li // planned log without base-first: R2's newest incarnation is the previous one
+      // as built: max(newest incarnation in R2, the storage's own) + 1; the lost storage has none
+      // planned log without base-first: R2's newest incarnation is the previous one
+      const newLi = steps ? nL.mx + 1 : inR2 ? nL.li + 1 : nL.li
       const tomb = sortU([...(c.baseTombstones ? nL.b.tb : []), ...(inR2 ? r.removed : [])]).filter((f) => !has(sn.fi, f))
       Object.assign(nL, {
         li: newLi, dn: r.refused && inR2 ? 1 : 0, fi: sn.fi, wm: sn.wm, lg: sn.wm.map((w) => w[1]), ex: sn.ex,
         h: [], o0: 0, sg: [], dr: null, pl: null, b: { fi: [...sn.fi], wm: sn.wm.map((x) => [...x]), ex: [...sn.ex], tb: c.baseTombstones ? tomb : [] },
-        tb: tomb.map((f) => [f, -1]), nL: nL.nL + 1, ru: nL.ru || (!inR2 && nL.h.length > 0 ? 1 : 0),
+        tb: tomb.map((f) => [f, -1]), nL: nL.nL + 1, ru: nL.ru || (!inR2 && nL.h.length > 0 ? 1 : 0), st: steps && !(r.refused && inR2) ? 1 : 0,
+        ...(nL.pc ? { pc: [], lt: 0, ft: 0 } : {}),
       })
-      emit(`LEDGER${tt} STORAGE LOSS -> rebuild from R2${r.refused && inR2 ? ' REFUSED (log not contiguous)' : ''}${inR2 ? '' : ' (nothing of this incarnation in R2: incarnation number reused)'}`, ns)
+      emit(`LEDGER${tt} STORAGE LOSS -> rebuild from R2${r.refused && inR2 ? ' REFUSED (log not contiguous)' : ''}${inR2 ? '' : ' (nothing of this incarnation in R2: incarnation number reused)'}${steps ? `, start incarnation ${newLi}` : ''}`, ns)
     }
+    if (L.st > 0) continue // nothing else is served while an incarnation starts
     // compaction step: plan, GET two live inputs, merge
     if (s.cj.length < c.maxCJobs && L.nC < c.maxComp && (c.compKey !== 'unique' || s.cN < c.maxCSteps)) {
       for (let a = 0; a < L.fi.length; a++) {
@@ -729,10 +837,24 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       }
     }
     // janitor purgeTenant: ledger.deletable (removal logged, grace passed, not live) -> R2 delete -> forget
-    for (const [f, k] of L.tb) {
+    for (const [f, k, d] of L.tb) {
       if (live(L, f!)) continue
+      if (c.purgeSteps && d === 1) {
+        // forget(keys), after the delete returned (a later purge run deletes again first)
+        const ns = cp(s)
+        ns.L[t]!.tb = ns.L[t]!.tb.filter((x) => x[0] !== f)
+        emit(`purge${tt}: forget ${FILES[f!]!.name}`, ns)
+      }
       if (c.delLogged && !(k! < L.o0)) continue // k = -1 (replayed) counts as logged
       if (c.delGrace && inFlightPlan(s, t, FILES[f!]!.key)) continue
+      if (c.purgeSteps) {
+        if (d === 1 && !s.obj.some((o) => o[0] === FILES[f!]!.key)) continue // deleting again changes nothing
+        const ns = cp(s)
+        r2delete(ns, FILES[f!]!.key)
+        ns.L[t]!.tb = ns.L[t]!.tb.map((x) => (x[0] === f ? [f!, k!, 1] : x))
+        emit(`purge${tt}: delete ${FILES[f!]!.name}`, ns)
+        continue
+      }
       const ns = cp(s)
       r2delete(ns, FILES[f!]!.key)
       ns.L[t]!.tb = ns.L[t]!.tb.filter((x) => x[0] !== f)
@@ -757,7 +879,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       ns.cj[ci]!.ph = 1
       emit(`compact PUT ${name}`, ns)
     }
-    if (cj.ph === 1 && !L.dn) {
+    if (cj.ph === 1 && !off(L)) {
       const ns = cp(s)
       const nL = ns.L[cj.t]!
       const missing = cj.ins.filter((f) => !live(nL, f))
@@ -786,44 +908,82 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
     }
   }
 
-  // ------------------------------------------------ orphan sweeper (one object at a time)
-  if (c.sweep !== 'off') {
+  // ------------------------------------------------ orphan sweeper
+  if (c.sweep !== 'off' && !c.sweepSteps) {
+    // one object at a time, the listing, the ledger read and the delete in one atomic step
     for (const [k, f, up] of s.obj) {
-      const F = FILES[f!]!
-      const L = s.L[F.t]!
-      if (L.dn || liveKey(L, k!)) continue
-      let ok = false
-      if (c.sweep === 'any') ok = true
-      else if (c.sweep === 'spec') {
-        // DESIGN §4.3: unreferenced AND its sequence range is below the stream's logged watermark
-        ok = !F.comp && F.rows.every((r) => { const [sh, , inc, q] = ROWS[r]!; return L.wm[sh!]![0] === inc && q! <= L.lg[sh!]! })
-      } else {
-        // janitor.ts sweepOrphans: not live, not tombstoned; flush file dead by the LOGGED watermark
-        // (or a newer incarnation); compaction output by age. Age is untimed here: the object's
-        // uploader is no longer in flight (that is what the age rule establishes).
-        if (L.tb.some((x) => FILES[x[0]!]!.key === k)) continue
-        if (up !== -1) continue
-        if (F.comp) ok = true
-        else {
-          const [sh, , inc] = ROWS[F.rows[0]!]!
-          const hi = Math.max(...F.rows.map((r) => ROWS[r]![3]!))
-          // janitor.ts flushFileState: dead if the ledger has a newer incarnation of the stream
-          // (orphanCheck reports the COMMITTED incarnation), or the same one logged past the range
-          const newer = (c.sweepIncLogged ? durableWm(L)[sh!]![0]! : L.wm[sh!]![0]!) > inc!
-          ok = newer || (L.wm[sh!]![0] === inc && L.lg[sh!]! >= hi)
-        }
-      }
-      if (!ok) continue
+      const L = s.L[FILES[f!]!.t]!
+      if (off(L)) continue
+      if (!doomed(c, L, k!, f!, up === -1, (key) => s.obj.some((o) => o[0] === key))) continue
       const ns = cp(s)
       r2delete(ns, k!)
-      emit(`orphan sweep: delete ${F.name}`, ns)
+      emit(`orphan sweep: delete ${FILES[f!]!.name}`, ns)
+    }
+  }
+  if (c.sweep !== 'off' && c.sweepSteps) {
+    // janitor.ts sweepOrphans: 1. list the tenant's prefix (keys, metadata, upload time);
+    // 2. ONE ledger read (orphanCheck) about the listed keys and the inputs absent from the
+    // listing; 3. delete the doomed keys. Separate steps; the run can stop at any point.
+    const w = s.sw
+    // the age flag matters only to a rule with an age floor; elsewhere it is not state
+    const aged = c.sweep === 'impl' || c.sweepAge
+    const listing = (t: number) => s.obj.filter((o) => FILES[o[1]!]!.t === t).map((o) => [o[0]!, o[1]!, !aged || o[2] === -1 ? 1 : 0])
+    const judge = (L: Pick<Led, 'fi' | 'tb' | 'wm' | 'lg'>, ls: number[][]) =>
+      ls.filter((x) => doomed(c, L as Led, x[0]!, x[1]!, x[2] === 1, (key) => ls.some((y) => y[0] === key))).map((x) => x[1]!)
+    if (!w && s.nSw < c.maxSweeps) {
+      for (let t = 0; t < c.nt; t++) {
+        if (c.sweepOrder === 'readFirst') {
+          // the (wrong) other order: one ledger read, then the listing, judged together
+          const L = s.L[t]!
+          if (off(L) || !s.obj.some((o) => FILES[o[1]!]!.t === t)) continue
+          const ns = cp(s)
+          ns.sw = { t, ph: 2, ls: [], dm: [], rd: { fi: L.fi, tb: L.tb, wm: L.wm.map((x) => [...x]), lg: L.lg.slice() } }
+          if (c.maxSweeps < 99) ns.nSw++ // 99 = unbounded: not counted, so not state
+          emit(`orphan sweep${c.nt > 1 ? ` t${t}` : ''}: orphanCheck first`, ns)
+          continue
+        }
+        const ls = listing(t)
+        if (ls.length === 0) continue
+        const ns = cp(s)
+        ns.sw = { t, ph: 0, ls, dm: [], rd: null }
+        if (c.maxSweeps < 99) ns.nSw++ // 99 = unbounded: not counted, so not state
+        emit(`orphan sweep${c.nt > 1 ? ` t${t}` : ''}: list ${ls.map((x) => FILES[x[1]!]!.name).join(', ')}`, ns)
+      }
+    } else if (w) {
+      {
+        const ns = cp(s)
+        ns.sw = null
+        emit('orphan sweep: stops', ns)
+      }
+      const L = s.L[w.t]!
+      if (w.ph === 0 && !off(L)) {
+        const dm = judge(L, w.ls)
+        const ns = cp(s)
+        ns.sw = dm.length ? { t: w.t, ph: 1, ls: [], dm, rd: null } : null
+        emit(`orphan sweep: orphanCheck -> ${dm.length ? `doomed ${dm.map((f) => FILES[f]!.name).join(', ')}` : 'nothing to delete'}`, ns)
+      }
+      if (w.ph === 2) {
+        const dm = judge(w.rd!, listing(w.t))
+        const ns = cp(s)
+        ns.sw = dm.length ? { t: w.t, ph: 1, ls: [], dm, rd: null } : null
+        emit(`orphan sweep: list -> ${dm.length ? `doomed ${dm.map((f) => FILES[f]!.name).join(', ')}` : 'nothing to delete'}`, ns)
+      }
+      if (w.ph === 1) {
+        for (const f of w.dm) {
+          const ns = cp(s)
+          r2delete(ns, FILES[f]!.key)
+          const dm = without(w.dm, f)
+          ns.sw = dm.length ? { t: w.t, ph: 1, ls: [], dm, rd: null } : null
+          emit(`orphan sweep: delete ${FILES[f]!.name}`, ns)
+        }
+      }
     }
   }
 
   // ------------------------------------------------ query (coordinator.ts gather / readTail)
   if (s.q.st !== 1 && s.nQ < c.maxQ) {
     for (let t = 0; t < c.nt; t++) {
-      if (s.L[t]!.dn) continue
+      if (off(s.L[t]!)) continue
       const ns = cp(s)
       ns.q = plan(c, ns, t, null)
       ns.nQ++
@@ -841,7 +1001,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
         ns.q.tl = sortU([...ns.q.tl, ...r.rows])
         if (r.learn) ns.q.ln[sh] = r.learn
         emit(`query: tailRead(s${sh}, ${r.what}) = ok ${r.rows.length ? r.rows.map((x) => `b${ROWS[x]![4]}`).join(',') : 'nothing'}`, ns)
-      } else if (canRefuse && !s.L[q.t]!.dn) {
+      } else if (canRefuse && !off(s.L[q.t]!)) {
         const ns = cp(s)
         const keep = { ...ns.q, ln: [...ns.q.ln] }
         if (r.learn) keep.ln[sh] = r.learn
@@ -852,7 +1012,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
     if (q.nd.length === 0) {
       const unread = q.fi.filter((f) => !readable(s, f))
       if (unread.length > 0 && c.missingErr) {
-        if (canRefuse && !s.L[q.t]!.dn) {
+        if (canRefuse && !off(s.L[q.t]!)) {
           const ns = cp(s)
           ns.q = plan(c, ns, q.t, { ...ns.q })
           emit(`query: ${FILES[unread[0]!]!.name} missing -> re-plan`, ns)
@@ -872,6 +1032,49 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       }
     }
   }
+}
+
+/**
+ * The sweeper's verdict on one listed object (key `k`, listed bytes `f`), at one ledger read.
+ * `old`: its uploader was no longer in flight when it was listed (the untimed age rule);
+ * `present`: the key was in the listing.
+ */
+function doomed(c: Cfg, L: Led, k: number, f: number, old: boolean, present: (key: number) => boolean): boolean {
+  const F = FILES[f]!
+  if (liveKey(L, k)) return false
+  if (c.sweep === 'any') return true
+  if (c.sweep === 'spec') {
+    // DESIGN §4.3: unreferenced AND its sequence range is below the stream's logged watermark
+    return !F.comp && F.rows.every((r) => { const [sh, , inc, q] = ROWS[r]!; return L.wm[sh!]![0] === inc && q! <= L.lg[sh!]! })
+  }
+  if (L.tb.some((x) => FILES[x[0]!]!.key === k)) return false // tombstoned keys are purge's
+  const [sh, , inc] = ROWS[F.rows[0]!]!
+  const hi = Math.max(...F.rows.map((r) => ROWS[r]![3]!))
+  if (c.sweep === 'inputs') {
+    // janitor.ts sweepOrphans since D30. A compaction output is doomed when one of its inputs
+    // (R2 metadata `viz-inputs`) is absent from the listing AND not live in this read. A flush
+    // file is doomed when its stream's LOGGED watermark covers it, or the ledger's (committed)
+    // incarnation of the stream is newer and has a logged watermark above 0 (F15 fix). The age
+    // floor is kept only with `sweepAge` (the code keeps one; it is not what makes this safe).
+    if (c.sweepAge && !old) return false
+    if (F.comp) {
+      return F.ins.some((i) => {
+        const k = FILES[i]!.key
+        return c.sweepGone === 'notLive' ? !liveKey(L, k) : c.sweepGone === 'absent' ? !present(k) : !present(k) && !liveKey(L, k)
+      })
+    }
+    const w = L.wm[sh!]!
+    return (w[0]! > inc! && (!c.sweepNewerLogged || L.lg[sh!]! > 0)) || (w[0] === inc && L.lg[sh!]! >= hi)
+  }
+  // 'impl', janitor.ts before D30: flush file dead by the LOGGED watermark (or a newer
+  // incarnation); compaction output by age. Age is untimed here: the object's uploader is no
+  // longer in flight (that is what the age rule establishes).
+  if (!old) return false
+  if (F.comp) return true
+  // flushFileState: dead if the ledger has a newer incarnation of the stream (orphanCheck
+  // reports the COMMITTED incarnation), or the same one logged past the range
+  const newer = (c.sweepIncLogged ? durableWm(L)[sh!]![0]! : L.wm[sh!]![0]!) > inc!
+  return newer || (L.wm[sh!]![0] === inc && L.lg[sh!]! >= hi)
 }
 
 type TailR = { kind: 'ok'; rows: number[]; what: string; learn: number } | { kind: 'refused'; why: string; what: string; learn: number }
@@ -998,6 +1201,28 @@ export const PROPS: Record<string, Prop> = {
       return g.every((x, i) => i === 0 || g[i - 1]![1]! < x[0]!)
     }),
   },
+  /**
+   * Witness for F16 (no-leak half of I11 under D30): a compaction output nobody lists whose input
+   * is a flush file nobody lists, of an incarnation its shard no longer holds, that the sweep
+   * keeps. That flush file is deleted only once its stream logs a unit of a newer incarnation,
+   * i.e. only if the tenant writes to that shard again; until then the output is kept too.
+   */
+  W_NoLeakBehindLostFlush: {
+    name: 'W_NoLeakBehindLostFlush',
+    holds: (c, s) => !s.obj.some(([k, f]) => {
+      const F = FILES[f!]!
+      const L = s.L[F.t]!
+      const tomb = (key: number) => L.tb.some((x) => FILES[x[0]!]!.key === key)
+      if (!F.comp || liveKey(L, k!) || tomb(k!)) return false
+      const present = (key: number) => s.obj.some((o) => o[0] === key)
+      return F.ins.some((i) => {
+        const X = FILES[i]!
+        if (X.comp || !present(X.key) || liveKey(L, X.key) || tomb(X.key)) return false
+        const [sh, , inc] = ROWS[X.rows[0]!]!
+        return s.sh[sh!]![X.t]!.i !== inc && !doomed(c, L, X.key, i, true, present)
+      })
+    }),
+  },
   /** A rebuild from R2 never refuses (the ledger stays available). */
   AV_RebuildSucceeds: { name: 'AV_RebuildSucceeds', holds: (_c, s) => s.L.every((L) => !L.dn) },
   /** §4.3: "a rebuilt ledger starts a new ledger incarnation, so versions are never reused". */
@@ -1009,3 +1234,26 @@ export const SAFETY = ['I1_AckedIsDurable', 'I3_NoDuplicates', 'I4_NoGapAtSeam',
 
 /** For the liveness check: the query has completed. */
 export const queryDone = (s: St): boolean => s.q.st === 2
+
+/**
+ * For the no-leak check (I11, second half): every object in R2 is live in its tenant's ledger,
+ * so nothing is left for purge or the orphan sweep. AG EF clean: from every reachable state
+ * some continuation deletes (or makes live) every object nobody lists; a state from which none
+ * does holds an object that is never deleted.
+ */
+export const clean = (s: St): boolean => s.obj.every((o) => liveKey(s.L[FILES[o[1]!]!.t]!, o[0]!))
+
+/** As `clean`, for compaction outputs only (what D30 changed; flush files leak alike under both rules). */
+export const cleanComp = (s: St): boolean => s.obj.every((o) => !FILES[o[1]!]!.comp || liveKey(s.L[FILES[o[1]!]!.t]!, o[0]!))
+
+export const goalOf = (c: Cfg): ((s: St) => boolean) => (c.goal === 'clean' ? clean : c.goal === 'cleanComp' ? cleanComp : queryDone)
+
+/** The objects of a state that no ledger lists, with what the sweeper would say about each now. */
+export function orphans(c: Cfg, s: St): string[] {
+  return s.obj.filter((o) => !liveKey(s.L[FILES[o[1]!]!.t]!, o[0]!)).map((o) => {
+    const L = s.L[FILES[o[1]!]!.t]!
+    const tomb = L.tb.some((x) => FILES[x[0]!]!.key === o[0])
+    const d = doomed(c, L, o[0]!, o[1]!, true, (key) => s.obj.some((x) => x[0] === key))
+    return `${FILES[o[1]!]!.name}${tomb ? ' (tombstoned)' : d ? ' (sweep would delete it)' : ' (sweep keeps it)'}`
+  })
+}

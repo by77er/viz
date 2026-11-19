@@ -28,7 +28,8 @@ const file = (key: string, over: Partial<FileEntry> = {}): FileEntry => {
 }
 /** A flush unit as flush makes it: one samples and one series file, named like flush names them. */
 const unit = (shard: string, seqLo: number, seqHi: number, ts = T0): FlushUnit => ({
-  shard, incarnation: 900, seqLo, seqHi,
+  // `shard` is written as in a key (`p_0`); the stream is named with `/` (contracts/TABLES.md, SHARD_NAME).
+  shard: shard.replaceAll('_', '/'), incarnation: 900, seqLo, seqHi,
   files: [
     file(`d/metric_samples/L0-${shard}-900-${seqLo}-${seqHi}-aaaaaaaa.parquet`, { minTs: ts }),
     file(`d/metric_series/L0-${shard}-900-${seqLo}-${seqHi}-bbbbbbbb.parquet`, { minTs: ts, table: 'metric_series' }),
@@ -129,6 +130,6 @@ describe('file precedence', () => {
   it('refuses a unit with more files than a version has precedence values', async () => {
     const { l } = open()
     const files = Array.from({ length: P + 1 }, (_, i) => file(`d/metric_samples/k${i}`))
-    expect(await l.addUnit({ shard: 'p_0', incarnation: 900, seqLo: 1, seqHi: 1, files })).toMatchObject({ status: 'invalid' })
+    expect(await l.addUnit({ shard: 'p/0', incarnation: 900, seqLo: 1, seqHi: 1, files })).toMatchObject({ status: 'invalid', reason: expect.stringMatching(/at most 4096 files/) })
   })
 })

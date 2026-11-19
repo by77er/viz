@@ -102,6 +102,23 @@ describe('KV records edge reads', () => {
     expect(r.headers.get('Retry-After')).toBe('30')
   })
 
+  it('a pool map naming a pool outside POOL_NAME is refused (503) and nothing is stored: its shards\' key encoding would not be one-to-one (contracts/TABLES.md)', async () => {
+    const t = await tenant()
+    const bad: PoolMap = { ...t.map, pool: `ovl_${t.tenant}` }
+    await env.CONFIG.put(`pool:${t.tenant}`, JSON.stringify(bad))
+    clearCaches()
+    const r = await postWrite(t.key, series(1))
+    expect(r.status).toBe(503)
+    expect(await r.text()).toMatch(/pool map is invalid/)
+    // The shard the bad map names would serve nothing anyway; the good map's shard holds nothing.
+    expect(await tailOfSlot(bad, 0, t.tenant).then(() => 'served', (e: Error) => e.message)).toMatch(/SHARD_NAME/)
+    expect((await tailOfSlot(t.map, 0, t.tenant)).samples).toEqual([])
+    await setPool(t.tenant, t.map)
+    clearCaches()
+    expect((await postWrite(t.key, series(1))).status).toBe(204)
+    expect((await tailOfSlot(t.map, 0, t.tenant)).samples).toHaveLength(1)
+  })
+
   it('a pool map or limits record of a newer version is refused (503) unless this isolate holds the last good one; a limit is never loosened to the default', async () => {
     const t = await tenant()
     await env.CONFIG.put(`pool:${t.tenant}`, JSON.stringify({ ...t.map, v: 2 }))

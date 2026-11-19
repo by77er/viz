@@ -1,7 +1,8 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { type FlushMessage, PENDING_MARKER_PREFIX, Shard, pendingMarkerKey } from '../src/shard'
+import { FLUSH_MESSAGE_VERSION, type FlushMessage, PENDING_MARKER_PREFIX, Shard, pendingMarkerKey } from '../src/shard'
+import { expectGolden } from './golden'
 
 /**
  * The seal notification. The transport is one method, `announce`; these tests replace it
@@ -48,7 +49,9 @@ describe('a seal causes a flush', () => {
     await put(s, 'a', 'f2')
     expect(sent).toEqual([])
     await put(s, 'a', 'f3') // 300 bytes: seals tenant a only
-    expect(sent).toEqual([{ tenant: 'a', shard: name }])
+    expect(sent).toEqual([{ v: 1, tenant: 'a', shard: name }])
+    // The message's format, pinned (contracts/COMPATIBILITY.md §8): what flush/src/consumer.ts reads.
+    expectGolden(`formats/queue.flush.v${FLUSH_MESSAGE_VERSION}.json`, { format: 'queue.flush', version: FLUSH_MESSAGE_VERSION, onSeal: JSON.stringify(sent[0]).replace(name, '<shard>') })
     expect(await s.pendingSegments('a')).toHaveLength(1)
     expect(await outbox(s)).toEqual([])
     // More appends below the threshold announce nothing more.
@@ -62,11 +65,11 @@ describe('a seal causes a flush', () => {
     await put(s, 'a', 'f1')
     expect(sent).toEqual([])
     await runDurableObjectAlarm(s)
-    expect(sent).toEqual([{ tenant: 'a', shard: name }])
+    expect(sent).toEqual([{ v: 1, tenant: 'a', shard: name }])
     await put(s, 'b', 'f1')
     await s.configure({ sealAgeMs: 3_600_000 })
     await s.seal('b')
-    expect(sent).toEqual([{ tenant: 'a', shard: name }, { tenant: 'b', shard: name }])
+    expect(sent).toEqual([{ v: 1, tenant: 'a', shard: name }, { v: 1, tenant: 'b', shard: name }])
     // Sealing a stream with nothing unsealed is not a seal.
     await s.seal('b')
     expect(sent).toHaveLength(2)
@@ -97,7 +100,7 @@ describe('a seal causes a flush', () => {
     await runInDurableObject(s, (_i, state) => state.storage.sql.exec(`UPDATE notify SET due = 0 WHERE tenant = 'a'`))
     await runInDurableObject(s, (_i, state) => state.storage.setAlarm(Date.now()))
     await runDurableObjectAlarm(s)
-    expect(sent).toEqual([{ tenant: 'a', shard: name }])
+    expect(sent).toEqual([{ v: 1, tenant: 'a', shard: name }])
     expect(await outbox(s)).toEqual([])
   })
 })

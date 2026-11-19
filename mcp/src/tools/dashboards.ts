@@ -4,6 +4,7 @@ import {
   type PanelDigest,
   ID_PATTERN,
   canonicalJson,
+  panelOrder,
   renderDigest,
 } from '../../../dashboard/src/index.ts'
 import { CURSOR_ARG, MAX_TOKENS_ARG, TIME_ARG, VARIABLES_ARG, isoOf } from '../args'
@@ -243,17 +244,6 @@ export const listRevisions: ToolDef = {
 
 // ---- read_dashboard ----
 
-/** The order renderDigest uses (dashboard/src/digest.ts `importance`), so structured output lists the same panels as the text. */
-function importance(p: PanelDigest): number {
-  if (p.state === 'crit') return 0
-  if (p.state === 'warn') return 1
-  if (p.state === 'info') return 2
-  if (p.outliers > 0) return 3
-  if (p.noData) return 4
-  if (p.worst && p.worst !== 'ok') return 5
-  return p.kind === 'text' ? 7 : 6
-}
-
 export const READ_DEFAULT_TOKENS = 2000
 
 export const readDashboard: ToolDef = {
@@ -340,9 +330,9 @@ export const readDashboard: ToolDef = {
     const inner = Math.floor((budget - header.length - DATA_NOTICE.length - 1 - FENCE_OVERHEAD - footerReserve) / 4)
     const offset = c?.o ?? 0
     const format = (args.format as 'markdown' | 'tsv' | undefined) ?? 'markdown'
-    const rendered = renderDigest(digest, { format, maxTokens: Math.max(0, inner), cursor: `o:${offset}` })
-    // renderDigest's own continuation line names its internal cursor; ours replaces it outside the data block.
-    const body = rendered.text.replace(/^_Truncated: .*_\n?/gm, '').replace(/^# truncated\t.*\n?/gm, '')
+    // No continuation line from the package: it would name its internal cursor; ours goes outside the data block.
+    const rendered = renderDigest(digest, { format, maxTokens: Math.max(0, inner), cursor: `o:${offset}`, continuation: false })
+    const body = rendered.text
     const nextOffset = rendered.cursor ? Number(rendered.cursor.slice(2)) : null
     const cursor = nextOffset !== null ? cursorFor(nextOffset) : null
     let text = header + DATA_NOTICE + '\n' + fenced(body)
@@ -350,7 +340,8 @@ export const readDashboard: ToolDef = {
     else if (rendered.truncated) text += 'Truncated: some series were left out of a panel to fit max_tokens.\n'
     if (text.length > budget) text = text.slice(0, budget)
 
-    const ordered = panels.map((p, i) => ({ p, i })).sort((a, b) => importance(a.p) - importance(b.p) || a.i - b.i)
+    // The order the text was written in (the package's own), so the structure lists the same panels.
+    const ordered = panelOrder(panels).map((i) => ({ p: panels[i]!, i }))
     // Panels this page consumed: the cursor moves past a panel shown cut to fit, so it is listed (marked cut).
     const consumed = (nextOffset ?? runs.length) - Math.min(offset, runs.length)
     const shown = ordered.slice(offset, offset + consumed).map(({ p, i }, j) => {

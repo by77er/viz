@@ -1,6 +1,7 @@
 import { env, exports } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { type Env, ENTRYPOINTS, handle, routeOf } from '../src/index'
+import control from '../../../control/src/index'
+import { type Env, ENTRYPOINTS, HEALTH_PATHS, handle, routeOf } from '../src/index'
 
 const BASE = 'https://vis.bitcru.sh'
 const call = (path: string, init?: RequestInit) => exports.default.fetch(new Request(`${BASE}${path}`, init))
@@ -33,6 +34,17 @@ describe('routing', () => {
     ['/api/v1/control', 'control'],
     ['/api/v1/control/keys', 'control'],
     ['/api/v1/control/dashboards/d1/revisions/3', 'control'],
+    ['/api/v1/rules', 'ruler'],
+    ['/api/v1/alerts', 'ruler'],
+    ['/api/v1/monitors', 'ruler'],
+    ['/api/v1/monitors/mon_0123456789abcdef', 'ruler'],
+    ['/api/v1/monitors/mon_0123456789abcdef/acknowledge', 'ruler'],
+    ['/api/v1/monitors/notifier', 'ruler'],
+    ['/api/v1/monitors/groups/payments', 'ruler'],
+    ['/mcp', 'mcp'],
+    ['/api/v1/agent', 'mcp'],
+    ['/api/v1/agent/tools/validate_query', 'mcp'],
+    ['/api/v1/agent/resources/read', 'mcp'],
   ]
 
   it.each(table)('%s goes to %s, with x-viz-route', async (path, backend) => {
@@ -46,7 +58,11 @@ describe('routing', () => {
     expect(seen.url).toBe(`${BASE}${path}?a=1&b=two`)
   })
 
-  const notFound = ['/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/v1/logs', '/healthz/x', '/app']
+  const notFound = [
+    '/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/v1/logs', '/healthz/x', '/app',
+    // near misses of the ruler's and mcp's prefixes
+    '/api/v1/monitorsx', '/api/v1/monitor', '/api/v1/rules/x', '/api/v1/alerts/x', '/api/v1/rulesx', '/mcpx', '/mcp/', '/mcp/x', '/api/v1/agents', '/api/v1/agentx', '/api/v2/alerts',
+  ]
   it.each(notFound)('%s is a JSON 404 listing the entry points, not a page', async (path) => {
     const res = await call(path)
     expect(res.status).toBe(404)
@@ -155,22 +171,42 @@ describe('health', () => {
     const body = (await res.json()) as { status: string; release: string; backends: Record<string, { ok: boolean; status: number }> }
     expect(body.status).toBe('healthy')
     expect(body.release).toBe('test')
-    expect(Object.keys(body.backends).sort()).toEqual(['control', 'ingest', 'query'])
+    expect(Object.keys(body.backends).sort()).toEqual(['control', 'ingest', 'mcp', 'query', 'ruler'])
     for (const b of Object.values(body.backends)) expect(b).toMatchObject({ ok: true, status: 200 })
   })
 
   it('is unhealthy (503) and names the backend when one fails or throws', async () => {
     const down = { fetch: async () => new Response('down', { status: 500 }) } as unknown as Fetcher
     const throws = { fetch: async () => { throw new Error('gone') } } as unknown as Fetcher
-    for (const [name, bad] of [['ingest', down], ['control', throws]] as const) {
+    for (const [name, bad] of [['ingest', down], ['control', throws], ['ruler', down], ['mcp', throws]] as const) {
       const e = { ...env, [name.toUpperCase()]: bad } as unknown as Env
       const res = await handle(new Request(`${BASE}/healthz`), e)
       expect(res.status).toBe(503)
       const body = (await res.json()) as { status: string; backends: Record<string, { ok: boolean }> }
       expect(body.status).toBe('unhealthy')
       expect(body.backends[name]!.ok).toBe(false)
-      for (const other of ['ingest', 'query', 'control'].filter((n) => n !== name)) expect(body.backends[other]!.ok).toBe(true)
+      for (const other of ['ingest', 'query', 'control', 'ruler', 'mcp'].filter((n) => n !== name)) expect(body.backends[other]!.ok).toBe(true)
     }
+  })
+
+  it('asks each backend its own /healthz; control\'s is control\'s real route, which fails when a binding of its is missing', async () => {
+    expect(HEALTH_PATHS).toEqual({ ingest: '/healthz', query: '/healthz', control: '/healthz', ruler: '/healthz', mcp: '/healthz' })
+    const asked: string[] = []
+    const recording = { fetch: (req: Request) => (asked.push(new URL(req.url).pathname), env.CONTROL.fetch(req)) } as unknown as Fetcher
+    const res = await handle(new Request(`${BASE}/healthz`), { ...env, CONTROL: recording } as unknown as Env)
+    expect(res.status).toBe(200)
+    expect(asked).toEqual(['/healthz'])
+    // control's own route answers (control/src/index.ts, run here on this Worker's bindings), without a credential
+    const direct = await env.CONTROL.fetch(new Request('https://gateway.internal/healthz'))
+    expect([direct.status, await direct.text()]).toEqual([200, 'ok\n'])
+    // and it is not the OpenAPI document any more: the old probe would have needed none of control's bindings
+    const misconfigured = await control.fetch!(new Request('https://gateway.internal/healthz') as never, { ...env, TENANT: undefined } as never, {} as ExecutionContext)
+    expect(misconfigured.status).toBe(503)
+    const broken = { fetch: (req: Request) => control.fetch!(req as never, { ...env, TENANT: undefined } as never, {} as ExecutionContext) } as unknown as Fetcher
+    const unhealthy = await handle(new Request(`${BASE}/healthz`), { ...env, CONTROL: broken } as unknown as Env)
+    expect(unhealthy.status).toBe(503)
+    const body = (await unhealthy.json()) as { backends: Record<string, { ok: boolean; status: number }> }
+    expect(body.backends.control).toMatchObject({ ok: false, status: 503 })
   })
 
   it('refuses methods other than GET and HEAD', async () => {

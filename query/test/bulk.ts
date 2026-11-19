@@ -24,6 +24,7 @@ export class Bulk {
     readonly origin: number,
     readonly intervalMs: number,
     readonly n = N_SERIES,
+    readonly labels: (i: number) => Record<string, string> = bulkLabels,
   ) {
     this.value = new Float64Array(n)
   }
@@ -43,7 +44,7 @@ export class Bulk {
 
   /** The next `scrapes` scrapes as Remote Write series. */
   series(scrapes: number): WSeries[] {
-    const out: WSeries[] = Array.from({ length: this.n }, (_, i) => ({ labels: bulkLabels(i), samples: [] }))
+    const out: WSeries[] = Array.from({ length: this.n }, (_, i) => ({ labels: this.labels(i), samples: [] }))
     for (let s = 0; s < scrapes; s++) this.scrape((i, ts, v) => out[i]!.samples.push([ts, v]))
     return out
   }
@@ -52,7 +53,7 @@ export class Bulk {
   batch(scrapes: number): Uint8Array {
     const rows: Row[] = []
     for (let s = 0; s < scrapes; s++) this.scrape((i, ts, v) => rows.push({ series: i, ts, bits: bitsOf(v) }))
-    return encodeBatch(Array.from({ length: this.n }, (_, i) => bulkLabels(i)), rows)
+    return encodeBatch(Array.from({ length: this.n }, (_, i) => this.labels(i)), rows)
   }
 }
 

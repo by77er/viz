@@ -34,8 +34,21 @@ const schemas: Record<string, Schema> = {
     additionalProperties: true,
   },
   Actor: obj({ subject: str('e.g. key:k_…'), kind: { enum: ['user', 'agent', 'key', 'system'] }, name: nullable(str()) }, ['subject', 'kind', 'name']),
-  Identity: obj({ tenant: str(), subject: str(), kind: { enum: ['user', 'agent', 'key'] }, name: nullable(str()), scopes: arr(ref('Scope')) }, ['tenant', 'subject', 'kind', 'scopes']),
-  Scope: { enum: ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'write', 'read'] },
+  Identity: obj(
+    {
+      tenant: str(),
+      subject: str(),
+      kind: { enum: ['user', 'agent', 'key'] },
+      name: nullable(str()),
+      scopes: arr(ref('Scope')),
+      mayApply: { type: 'boolean', description: 'Whether this caller\'s direct dashboard writes (create, patch, revert, delete, restore, owner, and applying a proposal that creates a dashboard) take effect, rather than being refused or turned into a proposal. False without dashboards:apply (or admin), and for an agent while the tenant\'s agentsMayApply is false.' },
+    },
+    ['tenant', 'subject', 'kind', 'scopes', 'mayApply'],
+  ),
+  Scope: {
+    enum: ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'write', 'read', 'monitors:read', 'monitors:write', 'monitors:ack'],
+    description: 'admin and dashboards:* are checked by this API; write and read by ingest and the query service; monitors:* by the ruler. Each service checks its own scopes; any scope reaches GET /whoami here.',
+  },
   Key: obj(
     {
       id: str(),
@@ -113,7 +126,8 @@ const schemas: Record<string, Schema> = {
   Proposal: obj(
     {
       id: str(),
-      dashboard: str(),
+      kind: { enum: ['patch', 'create'], description: 'patch: named changes to an existing dashboard. create: a whole new dashboard, applied whole; baseRevision is "" and baseNumber 0, changes is empty.' },
+      dashboard: str('The dashboard changed, or for kind create the id of the dashboard it creates.'),
       status: { enum: ['open', 'applied', 'declined', 'expired'] },
       message: str(),
       by: ref('Actor'),
@@ -128,12 +142,15 @@ const schemas: Record<string, Schema> = {
       declineReason: nullable(str()),
       appliedNumber: nullable({ type: 'integer' }),
       appliedChanges: nullable(arr(str())),
+      spec: { type: 'object', description: 'Kind create, when one proposal is shown: the proposed viz.dashboard/v1 spec.' },
     },
-    ['id', 'dashboard', 'status', 'message', 'by', 'createdAt', 'expiresAt', 'baseRevision', 'baseNumber', 'changes'],
+    ['id', 'kind', 'dashboard', 'status', 'message', 'by', 'createdAt', 'expiresAt', 'baseRevision', 'baseNumber', 'changes'],
   ),
   Review: obj(
     {
-      current: obj({ revision: str(), number: { type: 'integer' } }),
+      kind: { enum: ['create'], description: 'Present for a proposal that creates a dashboard.' },
+      current: nullable(obj({ revision: str(), number: { type: 'integer' } })),
+      exists: { type: 'boolean', description: 'Kind create: a dashboard (live or deleted) holds the id now, so it cannot be applied.' },
       moved: { type: 'boolean', description: 'The dashboard has changed since the proposal\'s base revision.' },
       needsRebase: { type: 'boolean', description: 'It moved and the changes no longer fit: an op fails, the result is invalid, or a change touches something edited since.' },
       reasons: arr(str()),
@@ -144,7 +161,7 @@ const schemas: Record<string, Schema> = {
     },
     ['current', 'moved', 'needsRebase', 'summary'],
   ),
-  ProposalResult: obj({ outcome: { enum: ['proposed', 'edited'] }, proposal: ref('Proposal'), review: ref('Review'), dryRun: { type: 'boolean' } }, ['outcome', 'proposal', 'review']),
+  ProposalResult: obj({ outcome: { enum: ['proposed', 'edited', 'unchanged'] }, proposal: ref('Proposal'), review: ref('Review'), dryRun: { type: 'boolean' } }, ['outcome', 'proposal', 'review']),
   Setting: obj(
     {
       section: { enum: ['general', 'retention', 'limits', 'pool', 'notifications'] },
@@ -182,7 +199,7 @@ interface OpDoc {
   errors?: number[]
 }
 
-const ANY = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'write', 'read']
+const ANY = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'write', 'read', 'monitors:read', 'monitors:write', 'monitors:ack']
 const ADMIN = ['admin']
 const D_READ = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply']
 const D_WRITE = ['admin', 'dashboards:write', 'dashboards:apply']
@@ -191,7 +208,7 @@ const page = (item: Schema, extra: Record<string, Schema> = {}): Schema => obj({
 const PAGING = { limit: '1 to 200, default 50.', cursor: 'The "next" of the previous page.' }
 
 const operations: Record<string, OpDoc> = {
-  'GET /whoami': { summary: 'Who the credential is', scopes: ANY, ok: [200, 'The caller', ref('Identity')] },
+  'GET /whoami': { summary: 'Who the credential is', description: 'Tenant, subject, kind, name, scopes, and mayApply: whether direct dashboard writes by this caller take effect.', scopes: ANY, ok: [200, 'The caller', ref('Identity')] },
 
   'GET /keys': { summary: 'List API keys', description: 'Never includes a secret. lastUsedAt and samples24h are null until the data path reports usage.', scopes: ADMIN, query: PAGING, ok: [200, 'Keys, oldest first', page(ref('Key'))] },
   'POST /keys': {
@@ -278,7 +295,15 @@ const operations: Record<string, OpDoc> = {
     errors: [404, 409, 413, 422, 428],
   },
 
-  'GET /proposals': { summary: 'List proposals', scopes: D_READ, query: { status: 'open (default), applied, declined, expired or all.', dashboard: 'Only this dashboard.', ...PAGING }, ok: [200, 'Proposals, newest first', page(ref('Proposal'))] },
+  'GET /proposals': { summary: 'List proposals', scopes: D_READ, query: { status: 'open (default), applied, declined, expired or all.', dashboard: 'Only this dashboard (or, for kind create, the id it would create).', ...PAGING }, ok: [200, 'Proposals, newest first', page(ref('Proposal'))] },
+  'POST /proposals': {
+    summary: 'Propose a new dashboard',
+    description: 'A whole viz.dashboard/v1 spec for a person to review and apply. It is validated (422 invalid-dashboard with each error) and its id must be free (409 dashboard-exists or dashboard-deleted). Nothing is created until it is applied, which needs the right to create dashboards directly (see whoami mayApply). The same caller sending the same spec again while its proposal is open gets that proposal back: 200, outcome "unchanged", nothing written.',
+    scopes: D_WRITE,
+    body: obj({ spec: { type: 'object', description: 'viz.dashboard/v1' }, message: str('Why, for the reviewer.'), dryRun }, ['spec', 'message']),
+    ok: [202, 'Stored. 200 with outcome "unchanged" when this caller already has the same proposal open.', ref('ProposalResult')],
+    errors: [409, 413, 422],
+  },
   'GET /proposals/{proposal}': {
     summary: 'One proposal, reviewed against the current revision',
     description: 'For an open proposal, "review" is recomputed against the dashboard as it is now.',
@@ -288,15 +313,15 @@ const operations: Record<string, OpDoc> = {
   },
   'PUT /proposals/{proposal}': {
     summary: 'Edit an open proposal',
-    description: 'Replaces its changes with ones that apply to the current revision, which also rebases it. The proposer, or anyone who may apply.',
+    description: 'Replaces its changes with ones that apply to the current revision, which also rebases it; for a proposal of kind create, replaces its spec (same id). The proposer, or anyone who may apply.',
     scopes: D_WRITE,
-    body: obj({ message: str(), changes: arr(ref('Change')), ops: arr(ref('PatchOp')), reason: str(), dryRun }),
+    body: obj({ message: str(), changes: arr(ref('Change')), ops: arr(ref('PatchOp')), reason: str(), spec: { type: 'object', description: 'Kind create only: the whole new spec.' }, dryRun }),
     ok: [200, 'Edited', ref('ProposalResult')],
     errors: [403, 404, 409, 422],
   },
   'POST /proposals/{proposal}/apply': {
     summary: 'Apply a proposal, whole or in part',
-    description: 'Creates a normal revision attributed to the caller, with the proposer recorded. "changes" selects a subset by name. Refused with 409 needs-rebase when the dashboard moved and the changes no longer fit, and with 403 self-apply for an agent applying its own proposal unless agentsMayApply is true.',
+    description: 'Creates a normal revision attributed to the caller, with the proposer recorded. "changes" selects a subset by name. Refused with 409 needs-rebase when the dashboard moved and the changes no longer fit, and with 403 self-apply for an agent applying its own proposal unless agentsMayApply is true. A proposal of kind create is applied whole (no "changes", no base revision) and makes revision 1 of the new dashboard; it needs the right to create dashboards directly, so an agent is refused with 403 agents-may-not-apply unless agentsMayApply is true, and 409 dashboard-exists when the id was taken meanwhile. Applying twice is 409 proposal-closed, with appliedNumber.',
     scopes: D_APPLY,
     ifMatch: true,
     body: obj({ changes: arr(str()), message: str(), baseRevision: str('The revision the reviewer looked at; refused if it is no longer current.'), dryRun }),
@@ -309,7 +334,7 @@ const operations: Record<string, OpDoc> = {
   'GET /settings/{section}': { summary: 'One settings section', scopes: ADMIN, ok: [200, 'The section', ref('Setting')], errors: [404] },
   'PUT /settings/{section}': {
     summary: 'Replace a settings section',
-    description: 'general: {agentsMayApply, proposalTtlDays}. retention: {metric_samples_days, metric_5m_days, metric_1h_days, log_days, trace_days} (shortening needs confirmShorter). limits: {active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency}. pool: {pool, slots, spread}; only a first map or a larger spread is accepted, and the epoch is bumped. notifications: {email, webhookUrl} (stored, not yet acted on).',
+    description: 'general: {agentsMayApply, proposalTtlDays}. retention: {metric_samples_days, metric_5m_days, metric_1h_days, log_days, trace_days} (shortening needs confirmShorter). limits: {active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency}. pool: {pool, slots, spread}; only a first map or a larger spread is accepted, and the epoch is bumped. notifications: {email, webhookUrl, webhookFormat (alertmanager|json), sendResolved, webhookSecret (write-only: never returned; null removes it; left out it is kept while webhookUrl is unchanged)}; the response shows webhookSecretSetAt instead of the secret. The ruler notifier sends to webhookUrl as its receiver viz:default (contracts/control.ts); email is stored, not acted on.',
     scopes: ADMIN,
     body: obj({ value: { type: 'object' }, version: { type: 'integer', description: 'If sent, the write is refused unless this is the current version.' }, confirmShorter: { type: 'boolean' }, dryRun }, ['value']),
     ok: [200, 'Applied (or unchanged)', { allOf: [ref('Setting'), obj({ outcome: str(), kv: ref('KvState') })] }],

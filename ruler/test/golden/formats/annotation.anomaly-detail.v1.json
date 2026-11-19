@@ -1,0 +1,15 @@
+{
+ "format": "annotation.anomaly-detail",
+ "version": 1,
+ "labels": {
+  "service": "checkout",
+  "severity": "ticket",
+  "alertname": "LatencyAnomaly"
+ },
+ "annotations": {
+  "summary": "checkout latency",
+  "anomaly": "160 ms is 64.2 standard deviations above the exponentially weighted mean (half-life 5 minutes) (99.9 ms)",
+  "anomaly_detail": "{\"v\":1,\"detector\":\"ewma\",\"kind\":\"deviation\",\"direction\":\"above\",\"value\":160,\"reference\":99.90432824158925,\"referenceLabel\":\"the exponentially weighted mean (half-life 5 minutes)\",\"score\":64.16073073231486,\"at\":4102445342247,\"facts\":{\"halfLifePoints\":5,\"k\":4,\"pointsSeen\":9},\"deviations\":64.16073073231486,\"spread\":0.9366425705021353,\"spreadLabel\":\"exponentially weighted standard deviation\"}",
+  "description": "160 ms is 64.2 standard deviations above the exponentially weighted mean (half-life 5 minutes) (99.9 ms)"
+ }
+}

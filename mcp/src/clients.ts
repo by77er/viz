@@ -35,6 +35,26 @@ export interface RangeOptions extends QueryOptions {
   end?: number
 }
 
+/**
+ * What the query service says a query would read and how it would run, without running it
+ * (`/api/v1/plan` in query/src/index.ts, its `QueryPlan`): one ledger read; no shard, leaf
+ * or R2 object is touched, so rows still in the shards' tails are not in it.
+ */
+export interface QueryPlanView {
+  execution: 'single' | 'split' | 'none'
+  splitReason: string
+  leaves: number
+  ledgerVersion: number
+  filesListed: number
+  filesSkipped: number
+  filesToRead: number
+  bytesToRead: number
+  scanSamples: number
+  seriesEstimate: number
+  /** The refusal the query would get before anything is fetched (a limit), or null. */
+  refusal: { errorType: string; error: string } | null
+}
+
 /** The Prometheus HTTP API. Times are Unix seconds, as in that API. */
 export interface QueryClient {
   instant(expr: string, time: number, opts?: QueryOptions): Promise<Result<PromData>>
@@ -43,6 +63,8 @@ export interface QueryClient {
   labelValues(name: string, match: string[], opts?: RangeOptions): Promise<Result<string[]>>
   series(match: string[], opts?: RangeOptions): Promise<Result<Record<string, string>[]>>
   metadata(metric?: string, opts?: QueryOptions): Promise<Result<Record<string, { type: string; help: string; unit: string }[]>>>
+  /** `/api/v1/plan` over a range (seconds), as `query_range` would run it. */
+  plan(expr: string, start: number, end: number, step: number, opts?: QueryOptions): Promise<Result<QueryPlanView>>
 }
 
 /** Bytes of a downstream response this Worker will read before giving up. */
@@ -134,6 +156,7 @@ export function httpQueryClient(fetcher: Fetcher, authorization: string, base = 
     labelValues: (name, match, opts) => call('GET', `/api/v1/label/${encodeURIComponent(name)}/values`, range(matches(match), opts), opts),
     series: (match, opts) => call('GET', '/api/v1/series', range(matches(match), opts), opts),
     metadata: (metric, opts) => call('GET', '/api/v1/metadata', new URLSearchParams(metric ? { metric } : {}), opts),
+    plan: (expr, start, end, step, opts) => call('POST', '/api/v1/plan', new URLSearchParams({ query: expr, start: String(start), end: String(end), step: String(step) }), opts),
   }
 }
 

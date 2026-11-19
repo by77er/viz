@@ -113,6 +113,17 @@ describe('cardinality', () => {
       expect([split.res.headers.get('X-Viz-Execution'), cost(split.res, 'Split-Leaves')]).toEqual(['split', n])
     }
     delete hooks.forceLeaves
+    // Counted over leaves by itself once the series files hold more series than
+    // cardinalitySplitAboveSeries (an estimate from the files' rows; the tail is on top).
+    const est = cost(one.res, 'Series-Estimate')
+    expect(est).toBeGreaterThan(0)
+    await setLimits(w.a, { cardinalitySplitAboveSeries: est })
+    const at = await get<Tsdb>(w.a, '/api/v1/status/tsdb', { ...window, limit: '5' })
+    expect([at.res.headers.get('X-Viz-Execution'), JSON.stringify(at.body)]).toEqual(['single', text])
+    await setLimits(w.a, { cardinalitySplitAboveSeries: Math.max(1, Math.floor(est / 3)) })
+    const over = await get<Tsdb>(w.a, '/api/v1/status/tsdb', { ...window, limit: '5' })
+    expect([over.res.headers.get('X-Viz-Execution'), cost(over.res, 'Split-Leaves'), JSON.stringify(over.body)]).toEqual(['split', Math.ceil(est / Math.max(1, Math.floor(est / 3))), text])
+    await setLimits(w.a, null)
     // The default limit is 10, and limit cuts every list.
     const ten = await get<Tsdb>(w.a, '/api/v1/status/tsdb', window)
     expect(ten.body.seriesCountByLabelValuePair).toHaveLength(10)

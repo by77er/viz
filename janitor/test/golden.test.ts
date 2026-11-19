@@ -39,6 +39,9 @@ describe('golden formats this component reads', () => {
     const tenant = `golden-j-${Date.now().toString(36)}`
     const inputs = [`${env.CELL}/data/metric_samples/tenant=${tenant}/day=2026-11-18/L0-p_0-1-1-1-0a0a0a0a.parquet`, `${env.CELL}/data/metric_series/tenant=${tenant}/day=2026-11-18/L0-p_0-1-1-1-1a1a1a1a.parquet`]
     const key = compactedKey({ cell: env.CELL, table: 'metric_samples', tenant, day: '2026-11-18', level: 2, inputs16: await inputsHash16(inputs), sha256Hex: 'f'.repeat(64) })
+    // The tenant's ledger exists before any of its objects does, as in production: a ledger
+    // with no log refuses to start empty over a tenant's data objects (review S-5).
+    await env.LEDGER.get(env.LEDGER.idFromName(tenant)).plan({ table: 'metric_samples', minTs: 0, maxTs: 0 })
     await env.BUCKET.put(key, 'x', { customMetadata: { [COMPACTION_INPUTS_META]: JSON.stringify({ v: 2, inputs }) } })
     const r = await sweepOrphans(env, tenant, { graceMs: 0, maxCompactStepMs: 0, now: Date.now() + 365 * 86_400_000 })
     expect(r.deleted).toEqual([])

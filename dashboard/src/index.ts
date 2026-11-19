@@ -11,7 +11,7 @@ export { canonicalJson, deepEqual, parsePointer, pointer, escapeToken, unescapeT
 export { resolve, type ResolveOptions, type ResolvedDashboard, type ResolvedPanel, type ResolvedQuery, type ResolvedLayout, type ResolvedRowItem } from './resolve.ts'
 export { findVariables, substitute, escapeRegex, escapeString, isSafeBare, BUILTIN_VARIABLES, type Binding, type VarRef, type RefContext, type BuiltinVariable } from './expr.ts'
 export {
-  digestPanel, digestDashboard, renderDigest, thresholdState, robustZ, formatNumber,
+  digestPanel, digestDashboard, renderDigest, panelOrder, thresholdState, robustZ, formatNumber,
   type DigestOptions, type PanelDigest, type SeriesDigest, type Trend, type DashboardDigest, type RenderOptions, type RenderedDigest, type PromData,
 } from './digest.ts'
 export { fromGrafana, type ImportResult, type ImportWarning } from './grafana.ts'

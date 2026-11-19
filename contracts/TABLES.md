@@ -8,7 +8,9 @@ Rules common to every table:
   label order); strings escaped as in RFC 8785. (RFC 8785 itself orders keys by UTF-16
   code unit; viz does not.)
 - A file's `index` (`FileEntry.index` in `ledger.ts`) is produced and read only by the
-  engine; its format is `FileIndex` in `engine/storage`.
+  engine (the publisher also reads `rg[].off`, `min_name`, `max_name` for Iceberg
+  statistics); its format is `FileIndex` in `engine/storage`, summarised in "The index
+  fragment" below.
 
 Parquet, format v2 data pages, snappy for now (zstd once the WASM build is proven).
 Every file holds exactly one tenant and one UTC day.
@@ -25,6 +27,10 @@ Every file holds exactly one tenant and one UTC day.
 - Sort order: `metric_name`, `series_id`, `ts`. Within one file `(series_id, ts)` is unique:
   when a flush sees duplicates, the row from the highest batch sequence wins.
 - Row groups: at most 100,000 rows in flush files. Statistics on, per row group.
+- Data pages: at most 20,000 rows (the `parquet` crate's default, stated 2026-11-19; every
+  file written so far already has it). The offset index (page locations) is written; no
+  column index. Readers must not require either: they let a reader skip pages it does not
+  need without decompressing them, and nothing more.
 
 ## `metric_series`
 
@@ -42,6 +48,11 @@ One row per series present in the file's day.
 - A `metric_samples` file is only readable together with the `metric_series` file written
   in the same flush unit or compaction; the ledger always lists them together.
 - (Promoted label columns come later; `labels` is the source of truth.)
+- **"In the range" is decided per file** by readers that list series without reading
+  samples (the label endpoints and the cardinality report): a series is in `[start, end]`
+  if one of its rows has `[min_ts, max_ts]` overlapping it, or a tail row of it lies in it.
+  A series with samples in one file on both sides of the window and none inside counts as
+  in it, as Prometheus decides per block. (Stated 2026-11-19.)
 
 ## Object keys
 
@@ -50,6 +61,15 @@ One row per series present in the file's day.
 ```
 
 - `level` is 0 for flush files. `shard` is the shard name with `/` replaced by `_`.
+- **Pool and shard names** (`POOL_NAME`, `SHARD_NAME` in `contracts/ledger.ts`) are segments
+  of `[A-Za-z0-9-]` joined by `/`: a pool name at most 120 characters, a shard name
+  (`{pool}/{slot}`) at most 128. They never contain `_`, so the replacement above is
+  one-to-one: two streams of a tenant can never write keys with the same shard part, and a
+  key's shard part names exactly one stream (the orphan sweep judges a flush file by it).
+  A pool map naming another pool is refused where it is read (edge: 503); a shard object
+  addressed by another name serves nothing; the ledger answers `invalid` to a unit of a
+  stream named otherwise and refuses to register it. (Added 2026-11-19; every name in use
+  already fits, so nothing written before changes.)
 - `hash8` is the first 8 hex characters of the SHA-256 of the file bytes.
 - Files are written with `If-None-Match: *`.
 
@@ -81,6 +101,43 @@ Compaction outputs have no stream, so their names carry what they were made from
   Key order means nothing here: keys sort as text (`…-10-12-…` before `…-2-9-…`). (This
   replaces an earlier rule, "the one later in key order wins", which let an older write
   win from a stream's tenth sequence number on and was not defined across a compaction.)
+
+## The index fragment
+
+`FileEntry.index`, compact JSON, one entry per row group in file order:
+
+```
+{"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_name":S,"max_name":S,"min_ts":N,"max_ts":N,"sid":[N,N]},…],"foot":[N,N]}
+```
+
+- `off`, `len`: byte offset of the row group's first page and the length of its column
+  chunks, which are contiguous. `min_name`, `max_name`: exact, byte order. `min_ts`,
+  `max_ts`: exact (`metric_series`: over the `min_ts` and `max_ts` columns).
+- `sid`: the `series_id` of the row group's **first and last row**. With the sort order, a
+  row group holds only keys `(metric_name, series_id)` between `(min_name, sid[0])` and
+  `(max_name, sid[1])`: a series of name `n` can be in it only if `min_name ≤ n ≤ max_name`,
+  and `series_id ≥ sid[0]` when `n = min_name`, `series_id ≤ sid[1]` when `n = max_name`.
+- `foot`: offset and length of everything after the last row group (offset index, footer
+  metadata, the closing length and magic), so a reader can range-read the footer and the
+  row groups it needs at once, without first reading the end of the file.
+- **Versioning.** `sid` and `foot` were added on 2026-11-19, additively within version 1
+  (COMPATIBILITY.md §3.1, §4): a reader that does not know them ignores them (the engine's
+  reader before this change, and the publisher, do); a reader that knows them treats their
+  absence as "unknown" (prune by name and time only, read the whole file); a fragment in
+  which either is malformed does not parse, and its file is read whole, never skipped.
+  Files written before 2026-11-19 keep fragments without them until compaction rewrites
+  them. The integers are 64-bit: a JavaScript reader must not read `sid` as a number.
+- Cost: about 50 bytes a row group and 20 a file of ledger state (`LEDGER-LOG.md`, the
+  16 MiB state cap).
+
+### Reading part of a file
+
+A reader that knows which series it needs (it has resolved its matchers against the
+`metric_series` files, or it owns a range of `series_id`s) may fetch, of a
+`metric_samples` file, only `foot` and the row groups whose key range can hold one of
+those series and whose `[min_ts, max_ts]` overlaps its time range. It must fall back to the
+whole file when the fragment has no `foot`. The same holds for `metric_series` files by
+name. Nothing about the files changes for a reader that reads them whole.
 
 ## Per-file statistics reported to the ledger
 

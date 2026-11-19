@@ -75,14 +75,14 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Ruler` | Durable Object, one per tenant rule shard | Rule ticks (one batch evaluation per group), alert state machine, acknowledgements, backtests, hands transitions to the notifier. Serves the Prometheus `/api/v1/rules` and `/api/v1/alerts` shapes and viz's `/api/v1/monitors` | every rule interval |
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
-| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool), audit log; publishes what the data path needs to KV. Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object |
+| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool, notifications), audit log; publishes what the data path needs to KV; issues service keys to the ruler and gives it the default notification destination over its binding (`contracts/control.ts`, D39). Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object; the ruler asks it when it has no key and at most once a minute while notifying |
 | `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth | per request |
 | `mcp` | Worker | The agent surface: a stateless MCP server and the same tools as JSON under `/api/v1/agent/…`; no Durable Object (§8, D25–D27) | per agent call |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
 | `jobs` | Workflows | Compaction, rollups, retention, orphan sweep, scrubbing, investigations. As built, compaction, retention and deletion are a per-tenant maintenance run on a queue (§5.2) | scheduled or triggered |
 | Heavy worker | Container (fronted by a Durable Object) | The same engine for work that exceeds isolate limits | on demand |
 
-Supporting services: Queues (ledger → publisher, notification fan-out), KV (API-key and
+Supporting services: Queues (seals → flush, maintenance, notification fan-out), KV (API-key and
 shard-map cache, read stale-tolerantly), Cache API (accelerator only), AI Gateway, Secrets
 Store, and later Dynamic Workers for tenant-supplied adapter code.
 
@@ -126,10 +126,12 @@ Draft 2 hashed by series id, which sent every request to every shard and made ev
 tail-read every shard. Shard count per tenant is bounded to tens; beyond that a tenant is
 split across cells.
 
-Measured on Cloudflare (`spikes/s3-ingest-throughput/`): one shard saturates at roughly
-230–290 requests per second whatever the batch size, and took 133,000 samples per second
-when requests carried 2,000 series. Plan for 200 requests per second per shard, and expect
-senders to batch.
+Measured on Cloudflare (`spikes/s3-ingest-throughput/`): one shard as first built
+saturated at roughly 230–340 requests per second whatever the batch size, and took 133,000
+samples per second when requests carried 2,000 series. With early refusal and group commit
+(D37) the same shard acknowledged 864–1,056 requests per second at 64 clients, with a 99th
+percentile under 150 ms (2026-11-19, three 10-second runs). Plan for 500 requests per second
+per shard, and expect senders to batch.
 
 The shard map has an **epoch**, owned by the ledger. Every write carries the epoch it was
 routed with; a shard rejects a stale epoch and `edge` refetches. A map change takes effect
@@ -149,7 +151,11 @@ until then. No key is ever accepted by two shards.
    identical batch twice, and every reader and writer de-duplicates on the row key, so a
    retry that was split differently and stored again is invisible in results and removed
    at flush (`contracts/BATCH.md`).
-4. At its bounds the shard answers 429 with `Retry-After`. It never acknowledges and drops.
+4. At its bounds the shard refuses with `Retry-After` and never acknowledges and drops: a
+   full buffer (the tenant's or the shard's) is 429; too much in flight is refused before
+   anything is read or written and answered 503, which every sender retries, and `edge`
+   then refuses that tenant's requests before decoding them until the wait has passed
+   (D37).
 5. Timestamps outside the **accept window** (per signal, configurable; for example one hour
    back and five minutes ahead for metrics) are rejected with a reason.
 
@@ -187,16 +193,29 @@ wakes no object and sends nothing.
 Every step is idempotent and keyed by a **stream**: `(shard, tenant, incarnation)`.
 Sequence numbers, seals, units, watermarks, discard marks and fingerprints are all per
 stream, so one tenant's ledger being slow never blocks another tenant in the same shard
-and nothing crosses tenants. A shard that loses its storage registers a new incarnation with
-the ledger before it accepts writes; the ledger records the boundary and raises an alert,
-because rows between the old watermark and the loss are gone and that must be visible.
+and nothing crosses tenants. A shard that loses its storage starts a new incarnation; the
+ledger records the boundary when flush registers it, because rows between the old
+watermark and the loss are gone and that must be visible. (As built, registration happens
+at the new incarnation's first flush, not before it accepts writes, and no alert is raised:
+until then a query that names the old incarnation is refused, and a shard that gets no new
+writes is refused indefinitely. Registering before the first write closes that; it is not
+built. `ledger/README.md`, "Known risks".)
 
-**Ledger durability.** The ledger commits its transaction and appends the change to its R2
-log through an outbox. (As built, it waits for that R2 write before answering, which a
-measurement on Cloudflare showed limits it to about one unit per second; the write is
-moving to batched background segments.) It tells a shard to discard only what has been both committed and
-logged. A rebuilt ledger starts a new ledger incarnation, so versions are never reused, and
-periodic checkpoints bound rebuild time. The orphan sweeper deletes an object only if the
+**Ledger durability** (D36, `contracts/LEDGER-LOG.md`). The ledger commits each change to
+SQLite together with an outbox row and answers; it does not wait for R2. Its alarm writes
+the pending changes as one immutable segment per drain, about 0.2 s after the first unlogged
+commit, and only then deletes those rows and advances each stream's *logged* watermark. A
+shard is told to discard only what is logged, so the loss of the ledger's storage can cost
+the changes of one drain cycle, never a row a shard has discarded. A rebuilt ledger starts a
+new ledger incarnation, whose base segment is in R2 before it commits anything, so an
+incarnation number is never used for two histories and versions are never reused.
+Checkpoints, taken once the log since the last one is as large as it, bound a rebuild, which
+runs outside `blockConcurrencyWhile`: requests meanwhile wait at most 2 s and are refused as
+retryable. Because a base or checkpoint is the whole state in one piece, a ledger's state is
+bounded (16 MiB, about 15,800 files): above it `addUnit` answers `full`, retryably, until
+compaction or retention makes room (`contracts/LEDGER-LOG.md`, "Size").
+Measured on Cloudflare: 234–422 units per second with eight writers, and a rebuild of
+5,008 changes in 5.4 s (`spikes/s4-ledger-scale/`). The orphan sweeper deletes an object only if the
 ledger neither lists nor tombstones it and it can never be listed: a flush file once its
 stream's *logged* watermark covers its sequence range, or once a newer incarnation of the
 stream has a logged unit (so its registration is logged); a compaction output once one of
@@ -278,8 +297,11 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
 ### 5.3 Iceberg publication
 
 The publisher applies ledger changes to the cell's Iceberg tables every few minutes, only
-when something changed. The queue is only a nudge: changes are applied strictly in ledger
-version order per tenant, and anything missing is read from the ledger's R2 log. A removed
+when something changed. As built (D34), each tenant's maintenance run nudges the cell's
+publisher, which publishes from its own alarm a couple of minutes later; an idle cell has no
+alarm and nothing calls it. The nudge is only that: changes are applied strictly in ledger
+version order per tenant, read from the ledger's R2 log (segments, in whole segments; a hole
+or a segment it cannot read stops that tenant there, never skipped). A removed
 file is physically deleted only after the removal is published and every snapshot that
 referenced it has expired. Each snapshot points at an object
 recording which ledger version of each tenant it reflects. A scrubber checks continuously
@@ -323,10 +345,16 @@ with label-based access rules. A caller cannot omit it.
 - A leaf receives a split: a set of row groups **and** the tail rows for the same key range.
   It merges them, removes duplicates on `(series, timestamp)`, and only then evaluates. A
   `rate()` window that straddles lake and tail is therefore computed over one ordered stream.
-- Leaves return partial aggregates as Arrow IPC. Sum, count, min and max decompose exactly;
-  `avg` travels as sum and count; `topk` is per split then merged. Splits are key ranges, so
-  all rows of a series reach one leaf whichever shards they came through. Approximate quantiles are
-  opt-in and labelled.
+- Leaves return partial aggregates (D31). As built: a query whose selectors all sit inside
+  decomposable aggregations is split over `L` leaves, each owning a range of series keys, so
+  all rows of a series reach one leaf whichever shards they came through; leaves pull their
+  part's rows from reader leaves (one call per group of at most six files) and the
+  coordinator cuts the tail by part. Every aggregation is exact and order-independent (exact
+  sums rounded once; `avg` as sum and count; `topk` per part then merged), so a split answer
+  is byte-identical to one place. Partials travel in the engine's own binary form, not Arrow
+  IPC. `L` covers both the samples (scan bound) and the series (estimated from the series
+  files) at three quarters of one isolate's limits. Queries that do not decompose run in one
+  place. Approximate quantiles are not built.
 - A tail read is a filtered scan over a shard's unsealed and unflushed segments. Segments
   are bounded by seal size, so the shard needs no query engine and no second index. Shards
   keep recorded segments for a short bounded time, and a refused split is retried on its
@@ -364,7 +392,10 @@ is pinned near the bucket so that hits concentrate.
 ### 6.5 Cost visibility
 
 Bytes to scan and shards touched are known after planning. They are returned with every
-result, limited per tenant, and exposed to agents through `validate_query`.
+result, limited per tenant, and exposed to agents through `validate_query`. As built, the
+query Worker returns them as `X-Viz-*` headers on every answer, and `/api/v1/plan` returns
+what a query would read (files, bytes, scan bound, series estimate, split and leaves, the
+refusal it would get) from one ledger read, touching no shard, leaf or R2 object.
 
 ## 7. Monitors
 
@@ -379,11 +410,29 @@ result, limited per tenant, and exposed to agents through `validate_query`.
   cents, per thousand rules per month.
 - **Notifications** use a transactional outbox with deterministic ids. Grouping, inhibition
   and silences keep Alertmanager's semantics. A sweeper re-arms missed rulers, and a
-  dead-man's-switch alert is built in.
-- **Anomaly detection** is statistics first: robust z-scores against a seasonal baseline
-  from rollups, and burn-rate SLO alerts, inside the rule tick; seasonal decomposition,
-  changepoint detection and log-template frequency shifts as scheduled jobs. Foundation
-  models in a Container are an opt-in later tier.
+  dead-man's-switch alert is built in. A tenant's default destination is set in the control
+  plane (webhook URL, Alertmanager's JSON or viz's plain `viz.notification/v1`, a write-only
+  signing secret); the notifier reads it over the `Tenant` binding and offers it as the
+  receiver `viz:default` (D39). Bodies are built once, at the decision, and every attempt
+  sends the same bytes under the same `Idempotency-Key`.
+- **As built, until query exports an RPC entrypoint** (D39), a tick sends its group's
+  expressions to viz-query's Prometheus HTTP API one at a time (one engine call in flight per
+  `Ruler` object: a service-bound callee shares its caller's six connections), recording rules
+  write through Remote Write, and both authenticate with a service key the tenant's control
+  plane issues (`service:viz-ruler/<shard>`, visible and revocable there).
+- **Anomaly detection** is statistics first. An *anomaly rule* is a rule kind
+  (`contracts/rules.ts`, version 2): each tick the ruler feeds every series of one PromQL
+  expression to that series' detector, through the same batch call as other rules, and the
+  flagged series become alerts carrying the detector's sentence and numbers. Detector state
+  lives in the ruler's SQLite per (rule, series), written as whole batches per row in the
+  transaction that commits the alerts, and is rebuilt from there after eviction; a per-rule
+  series cap and state limits refuse an evaluation rather than drop series. Defaults follow
+  held-out evidence (D33): EWMA, or a static threshold for pages; the robust z-score and the
+  seasonal baseline are opt-in, since with the MAD spread both scored below a static
+  threshold on held-out data; STL, CUSUM and PELT explain changes and do not page. Burn-rate
+  SLO alerts are to compile to recording rules; seasonal decomposition, changepoint detection
+  and log-template frequency shifts are scheduled jobs (not built). Foundation models in a
+  Container are an opt-in later tier.
 - **Agentic monitors** are a natural-language objective with a deterministic guard and a
   budget. They run as a Workflow when a rule fires, an anomaly is detected, a schedule
   comes due or a person asks. They use the same read-only, tenant-scoped tools as external
@@ -405,7 +454,8 @@ result, limited per tenant, and exposed to agents through `validate_query`.
   also the accessible view.
 - **Agent tools.** A stateless MCP endpoint (its own Worker, `mcp/`; D25, D26) with
   scoped, tenant-bound credentials: API keys today, with OAuth a seam not yet built.
-  Thirteen tools: search telemetry, describe a metric, validate a query, run a query,
+  Thirteen tools: search telemetry, describe a metric, validate a query (with the query
+  service's own plan: files, bytes, scan bound, refusal), run a query,
   search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
   list and get monitors, annotate (refused until an annotation store exists). Results are
   compact text within a token budget, with tenant text fenced as data, and the same page as
@@ -435,6 +485,9 @@ result, limited per tenant, and exposed to agents through `validate_query`.
   tenant's limit, counting exactly up to 4,096 series per half-hour bucket and with a
   HyperLogLog (1.6% standard error) and a Bloom filter (about 1% of new series pass as
   known) above that.
+- **Cardinality on the read path:** reported exactly, with caps sized to the isolate (D32);
+  what a metric with 10,000, 100,000 and 1,000,000 series costs to store, count and query,
+  and where each limit bites, is in `query/CARDINALITY.md`.
 
 ## 10. Targets
 
@@ -442,7 +495,7 @@ Hypotheses until the read-slice spike measures them.
 
 | Path | Target |
 |---|---|
-| Ingest acknowledgement | p50 < 80 ms, p99 < 500 ms. Measured on Cloudflare: 60 ms and 113–340 ms below shard saturation |
+| Ingest acknowledgement | p50 < 80 ms, p99 < 500 ms. Measured on Cloudflare: 60 ms and 113–340 ms below shard saturation as first built; with group commit and early refusal, 30–71 ms and 86–276 ms from 1 to 200 clients per shard (2026-11-19) |
 | Time to queryable | p99 < 10 s |
 | Dashboard refresh, warm partials | p50 < 300 ms |
 | First load, 24 h on compacted days | p95 < 1.5 s |
@@ -483,7 +536,9 @@ every format that crosses a release boundary carries a version; readers deploy b
 writers; changes expand, then contract; a release with a breaking migration is
 forward-only. `design/UPGRADES.md` has the inventory of formats, the verified platform
 facts, the rollback rules and what each component still has to change. As built, control,
-the ruler and the publisher follow it; the write path does not yet.
+the ruler, the publisher, and on the write path the ledger, the shard and edge follow it,
+as do the flush and maintenance messages; `UPGRADES.md` §7 lists what the others still
+have to change.
 
 ## 12. Launch scope
 
@@ -503,7 +558,9 @@ the ruler and the publisher follow it; the write path does not yet.
 | Per-minute wakes bill as continuous duration | Measured not to: a wake bills 20–40 ms (`spikes/s0-do-billing/`, first hour; 24-hour read pending) |
 | First-load query latency on flat rows | Read-slice spike before any PromQL breadth; chunk-blob rows are the fallback |
 | PromQL compliance is a long tail | Port from the reference with the upstream corpus; publish the supported subset |
-| **The ledger admits about one flush unit per second** (measured, `spikes/s4-ledger-scale/`): each change waits on its own R2 write, and an R2 write takes about 0.4 s | Not yet fixed. Answer after the SQLite commit; write the change log in batched segments in the background; shards keep discarding only up to the logged watermark |
+| ~~The ledger admits about one flush unit per second~~ (measured, `spikes/s4-ledger-scale/`) | **Fixed** (D36): it answers after the SQLite commit and logs in batched background segments; 234–422 units per second with eight writers, measured on Cloudflare 2026-11-19 |
+| A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6) | Not fixed. Register a new incarnation with the ledger before the shard accepts its first write (spec F1), across shard, ledger, flush and query |
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
+| A tenant's ledger holds at most 16 MiB of state, about 15,800 live files (a base or checkpoint is the whole state in one piece; review S-2) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. Lifting it needs checkpoints written in pieces and a rebuild that streams into SQLite: not built |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |

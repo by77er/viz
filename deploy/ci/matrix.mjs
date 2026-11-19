@@ -41,7 +41,7 @@ export const TS = [
 ]
 
 /** Rust crates: `cargo test -j 2` in each. */
-export const RUST = ['engine/storage', 'engine/promql', 'engine/query', 'engine/traceql', 'engine/wasm', 'engine/wasm-query']
+export const RUST = ['engine/storage', 'engine/promql', 'engine/query', 'engine/traceql', 'engine/logql', 'engine/wasm', 'engine/wasm-query']
 
 /** The WASM modules other jobs need, and the scripts that build them. */
 export const WASM = [

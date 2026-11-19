@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import { type Harness, type Key, controlCall, createDashboard, example, harness, makeKey, newTenant, reset, rest, setAgentsMayApply, snapshot, telemetry, type TestTenant } from './helpers'
+import { type Harness, type Key, controlCall, controlFetcher, createDashboard, example, harness, makeKey, newTenant, reset, rest, setAgentsMayApply, snapshot, telemetry, type TestTenant } from './helpers'
+import { httpControlClient } from '../src/clients'
 
 /**
  * write_dashboard against the REAL control plane: dry runs write nothing and preview the
@@ -136,10 +137,35 @@ describe('propose', () => {
     expect(await snapshot(t)).toBe(before)
   })
 
-  it('cannot propose a new dashboard (the control plane has no create proposals yet)', async () => {
-    const r = await rest(h, agent.key, 'write_dashboard', { spec: example('k8s_node_overview', 'k8s_copy'), mode: 'propose' })
-    expect(r.status).toBe(409)
-    expect(r.structured.error.code).toBe('propose-needs-existing')
+  it('proposes a new dashboard: held by the control plane, nothing created; a retry returns the same proposal; only a person applies it', async () => {
+    const spec = example('k8s_node_overview', 'k8s_proposed')
+    const r = await rest(h, agent.key, 'write_dashboard', { spec, mode: 'propose', message: 'A node view for on-call' })
+    expect(r.status, r.text).toBe(200)
+    expect(r.text).toMatch(/Outcome: proposal p_[A-Za-z0-9]{22} created to add this dashboard; a person reviews it and applies it whole/)
+    expect(r.structured.proposal).toMatchObject({ kind: 'create', status: 'open', existing: false })
+    const pid = r.structured.proposal.id
+    expect(pid).toMatch(/^p_[A-Za-z0-9]{22}$/)
+    expect((await controlCall(t.admin, 'GET', '/dashboards/k8s_proposed')).status).toBe(404)
+    const held = (await controlCall(t.admin, 'GET', `/proposals/${pid}`)).body
+    expect(held.proposal).toMatchObject({ kind: 'create', dashboard: 'k8s_proposed', by: { kind: 'agent', name: 'writer agent' }, message: 'A node view for on-call' })
+    expect(held.proposal.spec).toEqual(spec)
+    // an agent retrying after a lost answer gets the same proposal, and nothing new is stored
+    const before = await snapshot(t)
+    const again = await rest(h, agent.key, 'write_dashboard', { spec, mode: 'propose' })
+    expect(again.structured.proposal).toMatchObject({ id: pid, existing: true })
+    expect(again.text).toMatch(/already has proposal p_[A-Za-z0-9]{22} open/)
+    expect(await snapshot(t)).toBe(before)
+    // an invalid spec is refused before anything is asked of the control plane
+    const bad = structuredClone(spec)
+    delete bad.metadata.intent
+    expect((await rest(h, agent.key, 'write_dashboard', { spec: bad, mode: 'propose' })).structured.error.code).toBe('invalid-dashboard')
+    expect(await snapshot(t)).toBe(before)
+    // agents cannot apply it (the agent surface has no tool for it; the control plane refuses an agent key)
+    expect((await controlCall(agentApply.key, 'POST', `/proposals/${pid}/apply`)).body.code).toBe('agents-may-not-apply')
+    const applied = await controlCall(person.key, 'POST', `/proposals/${pid}/apply`)
+    expect(applied.status).toBe(200)
+    const revs = await rest(h, agent.key, 'list_revisions', { id: 'k8s_proposed' })
+    expect(revs.text).toMatch(/#1 [0-9a-f]{12} \| .* \| key Dana \| apply \| proposal p_[A-Za-z0-9]{22} by agent writer agent/)
   })
 })
 
@@ -186,6 +212,28 @@ describe('apply', () => {
     // Without the apply scope it is still refused, before anything is asked of the control plane.
     const noScope = await rest(h, (await makeKey(t2.admin, ['read', 'dashboards:read', 'dashboards:write'], { kind: 'agent' })).key, 'write_dashboard', { id: 'service_red', mode: 'apply', base_revision: base, ops: addPanelOps(GOOD) })
     expect(noScope.structured.error.code).toBe('apply-refused')
+  })
+
+  it('apply asks the control plane nothing first: whoami\'s mayApply decides, so a refusal sends no write and an apply sends one', async () => {
+    const seen: string[] = []
+    const recording = harness({
+      deps: {
+        control: (_e, auth) => {
+          const real = httpControlClient(controlFetcher, auth)
+          return { call: (method, path, opts) => (seen.push(`${method} ${path}${(opts?.body as any)?.dryRun ? ' dryRun' : ''}`), real.call(method, path, opts)) }
+        },
+      },
+    })
+    for (const [k2, v] of h.prom.storages) recording.prom.storages.set(k2, v)
+    const base = await revisionOf('service_red')
+    const refused = await rest(recording, agentApply.key, 'write_dashboard', { id: 'service_red', mode: 'apply', base_revision: base, ops: addPanelOps(GOOD) })
+    expect(refused.structured.error.code).toBe('apply-refused')
+    expect(refused.text).toMatch(/Agents may not apply changes in this tenant/)
+    expect(seen.filter((x) => !x.startsWith('GET '))).toEqual([])
+    seen.length = 0
+    const ok = await rest(recording, person.key, 'write_dashboard', { id: 'service_red', mode: 'apply', base_revision: base, ops: [{ op: 'replace', path: '/metadata/title', value: 'Service RED, again' }] })
+    expect(ok.status, ok.text).toBe(200)
+    expect(seen.filter((x) => !x.startsWith('GET '))).toEqual(['PATCH /dashboards/service_red'])
   })
 
   it('the agent surface offers no way to apply a proposal', async () => {

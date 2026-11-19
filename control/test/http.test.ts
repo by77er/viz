@@ -70,6 +70,27 @@ describe('HTTP surface', () => {
     expect(other.headers.get('Access-Control-Allow-Origin')).toBe('https://b.example')
   })
 
+  it('GET /healthz answers without a credential, outside the API, as viz-ingest and viz-query do; 503 when a binding is missing', async () => {
+    const at = (method: string, e: unknown = env, path = '/healthz') => worker.fetch!(new Request(`https://control.internal${path}`, { method }) as never, e as never, {} as ExecutionContext)
+    const ok = await at('GET')
+    expect(ok.status).toBe(200)
+    expect(await ok.text()).toBe('ok\n')
+    expect(ok.headers.get('Cache-Control')).toBe('no-store')
+    expect((await at('HEAD')).status).toBe(200)
+    const post = await at('POST')
+    expect(post.status).toBe(405)
+    expect(post.headers.get('Allow')).toBe('GET, HEAD')
+    // It asks no Tenant object and no KV, so it cannot be used to probe tenants; a missing binding is a 503 that says which.
+    const noTenant = await at('GET', { ...env, TENANT: undefined })
+    expect(noTenant.status).toBe(503)
+    expect(await noTenant.text()).toContain('TENANT')
+    expect((await at('GET', { ...env, CONFIG: undefined })).status).toBe(503)
+    // Only that exact path: the API's own namespace has no health route, and a credentialed route still needs one.
+    expect((await at('GET', env, '/api/v1/control/healthz')).status).toBe(404)
+    expect((await at('GET', env, '/healthz/x')).status).toBe(404)
+    expect((await at('GET', env, '/api/v1/control/whoami')).status).toBe(401)
+  })
+
   it('state hook: null unless the deployment supplies dashboard states, and then only for the caller\'s tenant and page', async () => {
     const t = await newTenant()
     await createDashboard(t.admin, 'red')

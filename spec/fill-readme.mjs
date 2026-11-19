@@ -105,16 +105,27 @@ const shortB = (s) => s
   .replace(/^expire( t\d)? (.*)$/, 'expire($2)')
   .replace(/^purge( t\d)?: delete (.*)$/, 'purge($2)')
   .replace(/^orphan sweep: delete (.*)$/, 'sweep($1)')
-  .replace(/^LEDGER( t\d)? STORAGE LOSS -> rebuild from R2(.*)$/, (_m, t, x) => `LEDGER-LOSS+rebuild${x.includes('REFUSED') ? ' REFUSED' : x.includes('reused') ? ' (incarnation reused)' : ''}`)
+  .replace(/^orphan sweep( t\d)?: list (.*)$/, 'sweepList')
+  .replace(/^orphan sweep( t\d)?: orphanCheck first$/, 'sweepRead')
+  .replace(/^orphan sweep: orphanCheck -> doomed (.*)$/, 'sweepRead→doomed $1')
+  .replace(/^orphan sweep: list -> doomed (.*)$/, 'sweepList→doomed $1')
+  .replace(/^orphan sweep: (orphanCheck|list) -> nothing to delete$/, 'sweep: nothing')
+  .replace(/^orphan sweep: stops$/, 'sweepStops')
+  .replace(/^purge( t\d)?: forget (.*)$/, 'forget($2)')
+  .replace(/^ledger( t\d)? start: PUT base segment of incarnation (\d+)$/, 'start: PUT base(inc $2)')
+  .replace(/^ledger( t\d)? start: commit incarnation (\d+), serve$/, 'start: commit(inc $2)')
+  .replace(/^LEDGER( t\d)? STORAGE LOSS -> rebuild from R2(.*)$/, (_m, t, x) => `LEDGER-LOSS+rebuild${x.includes('REFUSED') ? ' REFUSED' : x.includes('reused') ? ' (incarnation reused)' : ''}${/start incarnation (\d+)/.test(x) ? ` → inc ${/start incarnation (\d+)/.exec(x)[1]}` : ''}`)
   .replace(/^SHARD STORAGE LOSS\(s\d\)$/, 'SHARD-LOSS')
 const bres = (r) => (r.verdict === 'violated' ? `**${r.violated}** violated` : r.verdict === 'holds' ? 'holds (exhaustive)' : `stopped (memory bound): ${r.note}`)
 const bfsTraceTable = (kind) => ['| Experiment | Checked | Result | Steps | Distinct states | Time | Shortest counterexample |', '|---|---|---|---|---|---|---|',
   ...bfs.filter((r) => r.kind === kind).map((r) => `| \`${r.name}\` ${r.label} | ${r.props.length > 3 ? 'all safety' : r.props.join(', ')} | ${bres(r)} | ${r.trace ? r.trace.length : ''} | ${n(r.states)} | ${r.seconds} s | ${r.trace ? r.trace.map(shortB).join(' → ') : ''} |`)].join('\n')
 out.BFS_TEETH = bfsTraceTable('teeth')
 out.BFS_FINDINGS = bfsTraceTable('finding')
+out.BFS_D30 = bfsTraceTable('d30')
+out.BFS_LOG = bfsTraceTable('log')
 const bounds = (c) => `${c.nt} tenant${c.nt > 1 ? 's' : ''}, ${c.ns} shard${c.ns > 1 ? 's' : ''}, ${c.nb} batches × ≤ ${c.maxSend} sends, ≤ ${c.maxJobs} flush Workers and ≤ ${c.maxCJobs} compaction steps at once, ${c.variants} encoder output${c.variants > 1 ? 's' : ''}, ≤ ${c.maxComp} compaction / ${c.maxExp} retention / ${c.maxLL} ledger loss / ${c.maxSL} shard loss, ${c.maxQ} quer${c.maxQ > 1 ? 'ies' : 'y'}${c.liveness ? ', unbounded refusals' : `, ≤ ${c.maxRestarts} refusals`}`
 out.BFS_AMENDED = ['| Run | Bounds | Checked | Result | Distinct states | Transitions | Depth | Wall time | P(collision) |', '|---|---|---|---|---|---|---|---|---|',
-  ...bfs.filter((r) => r.kind === 'amended' || r.kind === 'liveness').map((r) => `| \`${r.name}\` ${r.label} | ${bounds(r.cfg)} | ${r.kind === 'liveness' ? 'AG EF query done' : 'all safety'} | ${bres(r)}${r.trace ? ` in ${r.trace.length} steps` : ''} | ${n(r.states)} | ${n(r.transitions)} | ${r.depth} | ${r.seconds} s | ${r.collisionProb} |`)].join('\n')
+  ...bfs.filter((r) => r.kind === 'amended' || r.kind === 'liveness').map((r) => `| \`${r.name}\` ${r.label} | ${bounds(r.cfg)} | ${r.kind === 'liveness' ? (r.cfg.goal === 'clean' ? 'AG EF no leak' : r.cfg.goal === 'cleanComp' ? 'AG EF no leaked compaction output' : 'AG EF query done') : 'all safety'} | ${bres(r)}${r.trace ? ` in ${r.trace.length} steps${r.cfg.goal && r.cfg.goal !== 'query' && r.note ? `; ${r.note.replace(/^.*unlisted then: /, 'left: ')}` : ''}` : ''} | ${n(r.states)} | ${n(r.transitions)} | ${r.depth} | ${r.seconds} s | ${r.collisionProb} |`)].join('\n')
 const total = [...tlc, ...bfs].reduce((a, r) => a + (r.seconds ?? 0), 0)
 out.TOTAL = `${Math.round(total / 60)} minutes of wall time in total (sum over all runs recorded in results/)`
 

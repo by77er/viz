@@ -59,6 +59,8 @@ export interface Cost {
   filesRead: number
   /** Upper bound, from the row groups' row counts, on the lake samples the engine decodes. */
   scanSamples: number
+  /** Series the query loads, estimated from the series files before anything is fetched (`seriesEstimate`). */
+  seriesEstimate: number
   /** Bytes of data files handed to the engine. */
   bytesRead: number
   /** Reads answered by the Cache API instead of R2. */
@@ -95,9 +97,15 @@ export interface Cost {
 }
 
 export const newCost = (): Cost => ({
-  ledgerVersion: 0, planAttempts: 0, filesListed: 0, filesSkipped: 0, filesRead: 0, scanSamples: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, leafCalls: 0,
+  ledgerVersion: 0, planAttempts: 0, filesListed: 0, filesSkipped: 0, filesRead: 0, scanSamples: 0, seriesEstimate: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, leafCalls: 0,
   leavesUsed: 0, leafRounds: 0, shardsAsked: 0, shardCalls: 0, tailBatches: 0, tailBytes: 0, seriesLoaded: 0, samplesLoaded: 0, engineMs: 0, wasmMemoryBytes: 0,
   execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0,
+})
+
+/** The plan-only answer's fields that come from what was recorded so far. */
+const planOf = (c: Context): Omit<QueryPlan, 'execution' | 'splitReason'> => ({
+  leaves: 0, ledgerVersion: c.cost.ledgerVersion, filesListed: c.cost.filesListed, filesSkipped: c.cost.filesSkipped, filesToRead: 0, bytesToRead: 0,
+  scanSamples: c.cost.scanSamples, seriesEstimate: c.cost.seriesEstimate, refusal: null,
 })
 
 /**
@@ -421,10 +429,100 @@ const tooMuch = (c: Context, what: string, bytes: number): ApiError =>
   )
 
 /**
+ * How many series a query loads, summed over its reads as `max_series` counts them,
+ * estimated from the series files before anything is fetched. `rows` is, per file, the
+ * rows of the row groups the reads touch (`scanRows`; `null` when the fragment does not
+ * parse, then the file's rows). A `metric_series` file holds one row per series.
+ *
+ * Different shards hold different series, so shards add up. Within a shard, files that
+ * cover the same time hold different series (segments cut by size while one scrape
+ * arrives) and files of different times repeat them (segments cut by time), so a shard
+ * counts as its largest sum over files that overlap one file in time. A compaction output
+ * holds every shard's series of its span: the estimate is at least the largest. Row groups
+ * hold every metric of a file, so for a small metric among large ones this is high; it is
+ * low when a shard's segments are shorter than a scrape interval, and a series only in the
+ * tail is not in it. Used to decide a split and its size, never to refuse.
+ */
+export function seriesEstimate(files: Pick<FileEntry, 'key' | 'rows' | 'minTs' | 'maxTs'>[], rows: (number | null)[]): number {
+  const perShard = new Map<string, { minTs: number; maxTs: number; n: number }[]>()
+  let merged = 0
+  files.forEach((f, i) => {
+    const n = rows[i] ?? f.rows
+    const m = /\/L0-(.+)-\d+-\d+-\d+-[0-9a-f]{8}\.parquet$/.exec(f.key)
+    if (!m) merged = Math.max(merged, n)
+    else perShard.set(m[1]!, [...(perShard.get(m[1]!) ?? []), { minTs: f.minTs, maxTs: f.maxTs, n }])
+  })
+  let flush = 0
+  for (const list of perShard.values()) {
+    list.sort((a, b) => a.minTs - b.minTs)
+    let most = 0
+    for (const f of list) {
+      let sum = 0
+      for (const g of list) {
+        if (g.minTs > f.maxTs) break
+        if (g.maxTs >= f.minTs) sum += g.n
+      }
+      most = Math.max(most, sum)
+    }
+    flush += most
+  }
+  return Math.max(flush, merged)
+}
+
+/**
+ * Leaves for a split query: enough that each holds at most three quarters of one
+ * isolate's `maxSamples` (`samples`: scan bound plus tail) AND of its `maxSeries`
+ * (`series`: `seriesEstimate`), at least 2, at most `maxLeaves` and the pool.
+ */
+export function leafCount(limits: Pick<TenantLimits, 'maxSamples' | 'maxSeries' | 'maxLeaves'>, pool: number, samples: number, series: number): number {
+  const need = Math.max(2, Math.ceil(samples / (0.75 * limits.maxSamples)), Math.ceil(series / (0.75 * limits.maxSeries)))
+  return Math.min(need, Math.max(1, Math.min(limits.maxLeaves, pool)))
+}
+
+/**
+ * The refusal a query gets from the ledger's numbers alone, before any file or shard is
+ * read: split queries against the query-wide caps, one place against one isolate's.
+ */
+function refusalBeforeFetch(c: Context, splitting: boolean, scan: number, files: number, bytes: number): ApiError | null {
+  const narrow = 'Narrow the time range, or select fewer metrics by name.'
+  if (splitting) {
+    if (scan > c.limits.maxQueryScanSamples) return new ApiError('execution', `query exceeded limit max_query_scan_samples: the data files in range hold ${scan} samples the query would decode, the limit is ${c.limits.maxQueryScanSamples}. ${narrow}`)
+    if (files > c.limits.maxQueryFiles) return new ApiError('execution', `query exceeded limit max_query_files: ${files} data files to read, the limit is ${c.limits.maxQueryFiles}. Narrow the time range.`)
+    if (bytes > c.limits.maxQueryFetchBytes) return new ApiError('execution', `query exceeded limit max_query_fetch_bytes: the ${files} data files in range are ${bytes} bytes, the limit is ${c.limits.maxQueryFetchBytes}. ${narrow}`)
+    return null
+  }
+  if (scan > c.limits.maxScanSamples) return new ApiError('execution', `query exceeded limit max_scan_samples: the data files in range hold ${scan} samples the query would decode, the limit is ${c.limits.maxScanSamples}. ${narrow}`)
+  if (files > c.limits.maxFiles) return new ApiError('execution', `query exceeded limit max_files: ${files} data files to read, the limit is ${c.limits.maxFiles}. Narrow the time range.`)
+  if (bytes > c.limits.maxFetchBytes) return tooMuch(c, `the ${files} data files in range`, bytes)
+  return null
+}
+
+/** What `/api/v1/plan` answers: what a query would read and how it would run, without running it. */
+export interface QueryPlan {
+  /** `single`, `split`, or `none` (no selector: nothing is read). */
+  execution: 'single' | 'split' | 'none'
+  /** Why one place (empty for a split). */
+  splitReason: string
+  /** Leaves a split would use (from the lake alone: the tail is not read here). */
+  leaves: number
+  ledgerVersion: number
+  filesListed: number
+  filesSkipped: number
+  filesToRead: number
+  bytesToRead: number
+  scanSamples: number
+  seriesEstimate: number
+  /** The refusal the query would get before anything is fetched, or null. */
+  refusal: { errorType: string; error: string } | null
+}
+
+/**
  * Everything the engine needs for `ranges` (the merged fetch plan), from one ledger
  * version: the files the ranges can touch and every shard's rows above its watermark.
  * Calls `evaluate` with it and returns its result. `reads` are the reads evaluation will
  * make (one per selector, unmerged): they size the scan before anything is fetched.
+ * With `explain`, stops after the ledger read and returns what the query would do
+ * (no shard, leaf or R2 is touched).
  */
 /** A query that decomposes, with what the split path needs. */
 export interface SplitSpec<T> {
@@ -436,8 +534,9 @@ export interface SplitSpec<T> {
   done: (out: { json: string; stats: QueryStats }) => T
 }
 
-export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRange[], evaluate: (input: ScanInput) => T, split?: SplitSpec<T>): Promise<T> {
+export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRange[], evaluate: (input: ScanInput) => T, split?: SplitSpec<T>, explain?: (p: QueryPlan) => T): Promise<T> {
   // No selector (`1 + 1`, `time()`): nothing to read, and no reason to wake anything.
+  if (ranges.length === 0 && explain) return explain({ ...planOf(c), execution: 'none', splitReason: 'the query reads no data' })
   if (ranges.length === 0) return timed(c, evaluate, { seriesFiles: [], sampleFiles: [], tailBatches: [] })
   const minTs = Math.min(...ranges.map((r) => r.minTs))
   const maxTs = Math.max(...ranges.map((r) => r.maxTs))
@@ -477,17 +576,24 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       c.cost.filesListed = listed.length
       c.cost.filesSkipped = listed.length - wanted.length
       const lakeBytesAll = wanted.reduce((a, f) => a + f.bytes, 0)
-      if (split && (hooks.forceLeaves !== undefined || scan > c.limits.splitAboveSamples || lakeBytesAll > c.limits.maxFetchBytes || wanted.length > c.limits.maxFiles)) {
+      // How many series? From the series files' row groups, also known before any fetch:
+      // a query over many series with few samples each needs leaves as much as one with many samples.
+      const seriesEst = seriesEstimate(series, c.engine.scanRows(series.map((f) => f.index), reads))
+      c.cost.seriesEstimate = seriesEst
+      const splitting =
+        split !== undefined &&
+        (hooks.forceLeaves !== undefined || scan > c.limits.splitAboveSamples || seriesEst > c.limits.splitAboveSeries || lakeBytesAll > c.limits.maxFetchBytes || wanted.length > c.limits.maxFiles)
+      const refusal = refusalBeforeFetch(c, splitting, scan, wanted.length, lakeBytesAll)
+      if (explain) {
+        const leaves = splitting ? (hooks.forceLeaves ?? leafCount(c.limits, leafPoolSize(c.env), scan, seriesEst)) : 0
+        const why = split === undefined ? c.cost.splitReason : splitting ? '' : 'the query fits in one place'
+        return explain({ ...planOf(c), execution: splitting ? 'split' : 'single', splitReason: why, leaves, filesToRead: wanted.length, bytesToRead: lakeBytesAll, refusal: refusal && { errorType: refusal.errorType, error: refusal.message } })
+      }
+      if (split && splitting) {
         // ── Split execution: leaves read and evaluate parts of the series; only the tail is held here. ──
         c.cost.execution = 'split'
         c.cost.splitReason = ''
-        if (scan > c.limits.maxQueryScanSamples) {
-          throw new ApiError('execution', `query exceeded limit max_query_scan_samples: the data files in range hold ${scan} samples the query would decode, the limit is ${c.limits.maxQueryScanSamples}. Narrow the time range, or select fewer metrics by name.`)
-        }
-        if (wanted.length > c.limits.maxQueryFiles) throw new ApiError('execution', `query exceeded limit max_query_files: ${wanted.length} data files to read, the limit is ${c.limits.maxQueryFiles}. Narrow the time range.`)
-        if (lakeBytesAll > c.limits.maxQueryFetchBytes) {
-          throw new ApiError('execution', `query exceeded limit max_query_fetch_bytes: the ${wanted.length} data files in range are ${lakeBytesAll} bytes, the limit is ${c.limits.maxQueryFetchBytes}. Narrow the time range, or select fewer metrics by name.`)
-        }
+        if (refusal) throw refusal
         const shards = await shardsOf(c, snap.watermarks)
         c.cost.shardsAsked = shards.length
         const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))
@@ -509,7 +615,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
         c.cost.tailBatches = tailBatches.length
         c.cost.tailBytes = tailBytes
         checkDeadline(c)
-        const r = await runSplit(c, split, ranges, series, samples, tailBatches, scan + Math.ceil(tailBytes / 20))
+        const r = await runSplit(c, split, ranges, series, samples, tailBatches, scan + Math.ceil(tailBytes / 20), seriesEst)
         if (r.status === 'missing') {
           refused(`file ${r.key}`, `data file ${r.key} is listed by the ledger but is not in R2`)
           continue
@@ -520,18 +626,9 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
         c.cost.execution = 'single'
         c.cost.splitReason = 'the query fits in one place'
       }
-      if (scan > c.limits.maxScanSamples) {
-        throw new ApiError(
-          'execution',
-          `query exceeded limit max_scan_samples: the data files in range hold ${scan} samples the query would decode, the limit is ${c.limits.maxScanSamples}. Narrow the time range, or select fewer metrics by name.`,
-        )
-      }
-      if (wanted.length > c.limits.maxFiles) {
-        throw new ApiError('execution', `query exceeded limit max_files: ${wanted.length} data files to read, the limit is ${c.limits.maxFiles}. Narrow the time range.`)
-      }
-      // Known before anything is fetched: the ledger has every file's size.
-      const lakeBytes = wanted.reduce((a, f) => a + f.bytes, 0)
-      if (lakeBytes > c.limits.maxFetchBytes) throw tooMuch(c, `the ${wanted.length} data files in range`, lakeBytes)
+      // Known before anything is fetched: the scan bound, the files and their sizes.
+      if (refusal) throw refusal
+      const lakeBytes = lakeBytesAll
       if (reserved === 0) {
         if (inFlightBytes > 0 && inFlightBytes + lakeBytes > (hooks.isolateBudgetBytes ?? ISOLATE_BUDGET_BYTES)) throw new ApiError('unavailable', 'the query service is busy; retry')
         reserved = Math.max(lakeBytes, 1)
@@ -634,9 +731,10 @@ async function runSplit<T>(
   samples: FileEntry[],
   tails: Uint8Array[],
   estimate: number,
+  seriesEst: number,
 ): Promise<{ status: 'ok'; out: { json: string; stats: QueryStats } } | { status: 'missing'; key: string }> {
   const pool = leafPoolSize(c.env)
-  const L = hooks.forceLeaves ?? Math.min(Math.max(2, Math.ceil(estimate / (0.75 * c.limits.maxSamples))), Math.max(1, Math.min(c.limits.maxLeaves, pool)))
+  const L = hooks.forceLeaves ?? leafCount(c.limits, pool, estimate, seriesEst)
   c.cost.splitLeaves = L
   // The query's budget, and each leaf's share of it (never more than one isolate may hold).
   const qSamples = Math.min(c.limits.maxQuerySamples, L * c.limits.maxSamples)
@@ -797,7 +895,13 @@ export async function cardinality(c: Context, start: number, end: number, lookba
     c.cost.bytesRead = bytes
     const pool = leafPoolSize(c.env)
     const rows = files.reduce((a, f) => a + f.rows, 0)
-    const L = hooks.forceLeaves ?? (bytes > c.limits.maxFetchBytes ? Math.min(Math.max(2, Math.ceil(rows / 250_000)), Math.max(1, Math.min(c.limits.maxLeaves, pool))) : 1)
+    // Series in the window, from the series files alone (tail series come on top).
+    const est = seriesEstimate(files, files.map(() => null))
+    c.cost.seriesEstimate = est
+    const per = c.limits.cardinalitySplitAboveSeries
+    const L =
+      hooks.forceLeaves ??
+      (bytes > c.limits.maxFetchBytes || est > per ? Math.min(Math.max(2, Math.ceil(rows / 250_000), Math.ceil(est / per)), Math.max(1, Math.min(c.limits.maxLeaves, pool))) : 1)
     let summaries: Uint8Array[]
     if (L === 1) {
       c.cost.execution = 'single'

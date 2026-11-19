@@ -1,6 +1,7 @@
 [package]
 name = "viz-query"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2021"
 description = "viz query engine: PromQL (viz-promql) over lake files and shard tails (viz-storage), with limits and fetch planning. No I/O."
 publish = false

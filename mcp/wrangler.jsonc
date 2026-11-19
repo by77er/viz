@@ -1,5 +1,6 @@
 {
-  // The production shape. Never deployed from here; see README "Not implemented".
+  // The production shape; deploy/configure.mjs generates the deployed config from it (deploy/workers.json:
+  // after viz-query, viz-control and viz-ruler, before viz-gateway, which routes /mcp and /api/v1/agent/* here).
   "name": "viz-mcp",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",

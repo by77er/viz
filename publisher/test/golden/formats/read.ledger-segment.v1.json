@@ -1,0 +1,120 @@
+{
+ "format": "read.ledger-segment",
+ "version": 1,
+ "note": "Written by ledger/src/ledger.ts through publisher/test/segments.test.ts (writeScenario). Bytes as the ledger wrote them; only \"at\" differs between runs.",
+ "tenant": "segfix",
+ "objects": {
+  "ledger/tenant=segfix/1/ckpt-000000000005.jsonl": "{\"v\":1,\"kind\":\"viz.ledger.checkpoint\",\"tenant\":\"segfix\",\"ledgerIncarnation\":1,\"firstVersion\":5,\"lastVersion\":5,\"changes\":1}\n{\"ledgerIncarnation\":1,\"version\":5,\"at\":1795050540757,\"kind\":\"base\",\"added\":[{\"table\":\"metric_samples\",\"day\":\"2026-11-10\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"bytes\":64,\"rows\":10,\"minTs\":1794268800000,\"maxTs\":1794268800999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794268800000,\\\"max_ts\\\":1794268800999}]}\",\"precedence\":8192,\"precedenceLow\":8192},{\"table\":\"metric_samples\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L1-day1.parquet\",\"bytes\":100,\"rows\":20,\"minTs\":1794355200000,\"maxTs\":1794355260999,\"level\":1,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355200000,\\\"max_ts\\\":1794355200999}]}\",\"precedence\":16384,\"precedenceLow\":12288},{\"table\":\"metric_series\",\"day\":\"2026-11-10\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794268800000,\"maxTs\":1794268800999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794268800000,\\\"max_ts\\\":1794268800999}]}\",\"precedence\":8193,\"precedenceLow\":8193},{\"table\":\"metric_series\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794355200000,\"maxTs\":1794355200999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355200000,\\\"max_ts\\\":1794355200999}]}\",\"precedence\":12289,\"precedenceLow\":12289},{\"table\":\"metric_series\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794355260000,\"maxTs\":1794355260999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355260000,\\\"max_ts\\\":1794355260999}]}\",\"precedence\":16385,\"precedenceLow\":16385}],\"removed\":[],\"watermarks\":[{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":3}],\"previousIncarnations\":[],\"tombstones\":[{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"table\":\"metric_samples\",\"version\":5,\"at\":1795050540753},{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"table\":\"metric_samples\",\"version\":5,\"at\":1795050540753}],\"units\":[{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"shard\":\"pool/0\",\"incarnation\":7001,\"seqLo\":1,\"seqHi\":1},{\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"shard\":\"pool/0\",\"incarnation\":7001,\"seqLo\":1,\"seqHi\":1},{\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"shard\":\"pool/0\",\"incarnation\":7001,\"seqLo\":2,\"seqHi\":2},{\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"shard\":\"pool/0\",\"incarnation\":7001,\"seqLo\":3,\"seqHi\":3}]}\n",
+  "ledger/tenant=segfix/1/seg-000000000000-000000000000.jsonl": "{\"v\":1,\"kind\":\"viz.ledger.segment\",\"tenant\":\"segfix\",\"ledgerIncarnation\":1,\"firstVersion\":0,\"lastVersion\":0,\"changes\":1}\n{\"ledgerIncarnation\":1,\"version\":0,\"at\":1795050540631,\"kind\":\"base\",\"added\":[],\"removed\":[],\"watermarks\":[],\"previousIncarnations\":[],\"tombstones\":[],\"units\":[]}\n",
+  "ledger/tenant=segfix/1/seg-000000000001-000000000003.jsonl": "{\"v\":1,\"kind\":\"viz.ledger.segment\",\"tenant\":\"segfix\",\"ledgerIncarnation\":1,\"firstVersion\":1,\"lastVersion\":3,\"changes\":3}\n{\"ledgerIncarnation\":1,\"version\":1,\"at\":1795050540650,\"kind\":\"register_stream\",\"added\":[],\"removed\":[],\"watermark\":{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":0}}\n{\"ledgerIncarnation\":1,\"version\":2,\"at\":1795050540651,\"kind\":\"add_unit\",\"added\":[{\"table\":\"metric_samples\",\"day\":\"2026-11-10\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"bytes\":64,\"rows\":10,\"minTs\":1794268800000,\"maxTs\":1794268800999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794268800000,\\\"max_ts\\\":1794268800999}]}\",\"precedence\":8192,\"precedenceLow\":8192},{\"table\":\"metric_series\",\"day\":\"2026-11-10\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794268800000,\"maxTs\":1794268800999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794268800000,\\\"max_ts\\\":1794268800999}]}\",\"precedence\":8193,\"precedenceLow\":8193}],\"removed\":[],\"watermark\":{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":1},\"unit\":{\"seqLo\":1,\"seqHi\":1}}\n{\"ledgerIncarnation\":1,\"version\":3,\"at\":1795050540692,\"kind\":\"add_unit\",\"added\":[{\"table\":\"metric_samples\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"bytes\":64,\"rows\":10,\"minTs\":1794355200000,\"maxTs\":1794355200999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355200000,\\\"max_ts\\\":1794355200999}]}\",\"precedence\":12288,\"precedenceLow\":12288},{\"table\":\"metric_series\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794355200000,\"maxTs\":1794355200999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355200000,\\\"max_ts\\\":1794355200999}]}\",\"precedence\":12289,\"precedenceLow\":12289}],\"removed\":[],\"watermark\":{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":2},\"unit\":{\"seqLo\":2,\"seqHi\":2}}\n",
+  "ledger/tenant=segfix/1/seg-000000000004-000000000004.jsonl": "{\"v\":1,\"kind\":\"viz.ledger.segment\",\"tenant\":\"segfix\",\"ledgerIncarnation\":1,\"firstVersion\":4,\"lastVersion\":4,\"changes\":1}\n{\"ledgerIncarnation\":1,\"version\":4,\"at\":1795050540733,\"kind\":\"add_unit\",\"added\":[{\"table\":\"metric_samples\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"bytes\":64,\"rows\":10,\"minTs\":1794355260000,\"maxTs\":1794355260999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355260000,\\\"max_ts\\\":1794355260999}]}\",\"precedence\":16384,\"precedenceLow\":16384},{\"table\":\"metric_series\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794355260000,\"maxTs\":1794355260999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355260000,\\\"max_ts\\\":1794355260999}]}\",\"precedence\":16385,\"precedenceLow\":16385}],\"removed\":[],\"watermark\":{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":3},\"unit\":{\"seqLo\":3,\"seqHi\":3}}\n",
+  "ledger/tenant=segfix/1/seg-000000000005-000000000005.jsonl": "{\"v\":1,\"kind\":\"viz.ledger.segment\",\"tenant\":\"segfix\",\"ledgerIncarnation\":1,\"firstVersion\":5,\"lastVersion\":5,\"changes\":1}\n{\"ledgerIncarnation\":1,\"version\":5,\"at\":1795050540753,\"kind\":\"replace\",\"added\":[{\"table\":\"metric_samples\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L1-day1.parquet\",\"bytes\":100,\"rows\":20,\"minTs\":1794355200000,\"maxTs\":1794355260999,\"level\":1,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355200000,\\\"max_ts\\\":1794355200999}]}\",\"precedence\":16384,\"precedenceLow\":12288}],\"removed\":[\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\"],\"removedFiles\":[{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"table\":\"metric_samples\"},{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"table\":\"metric_samples\"}]}\n",
+  "ledger/tenant=segfix/1/seg-000000000006-000000000007.jsonl": "{\"v\":1,\"kind\":\"viz.ledger.segment\",\"tenant\":\"segfix\",\"ledgerIncarnation\":1,\"firstVersion\":6,\"lastVersion\":7,\"changes\":2}\n{\"ledgerIncarnation\":1,\"version\":6,\"at\":1795050540788,\"kind\":\"expire\",\"added\":[],\"removed\":[\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"cell-0/data/metric_series/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\"],\"removedFiles\":[{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"table\":\"metric_samples\"},{\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"table\":\"metric_series\"}]}\n{\"ledgerIncarnation\":1,\"version\":7,\"at\":1795050540800,\"kind\":\"add_unit\",\"added\":[{\"table\":\"metric_samples\",\"day\":\"2026-11-12\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet\",\"bytes\":64,\"rows\":10,\"minTs\":1794441600000,\"maxTs\":1794441600999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794441600000,\\\"max_ts\\\":1794441600999}]}\",\"precedence\":28672,\"precedenceLow\":28672},{\"table\":\"metric_series\",\"day\":\"2026-11-12\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794441600000,\"maxTs\":1794441600999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794441600000,\\\"max_ts\\\":1794441600999}]}\",\"precedence\":28673,\"precedenceLow\":28673}],\"removed\":[],\"watermark\":{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":4},\"unit\":{\"seqLo\":4,\"seqHi\":4}}\n",
+  "ledger/tenant=segfix/2/seg-000000000007-000000000007.jsonl": "{\"v\":1,\"kind\":\"viz.ledger.segment\",\"tenant\":\"segfix\",\"ledgerIncarnation\":2,\"firstVersion\":7,\"lastVersion\":7,\"changes\":1}\n{\"ledgerIncarnation\":2,\"version\":7,\"at\":1795050541024,\"kind\":\"base\",\"added\":[{\"table\":\"metric_samples\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L1-day1.parquet\",\"bytes\":100,\"rows\":20,\"minTs\":1794355200000,\"maxTs\":1794355260999,\"level\":1,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355200000,\\\"max_ts\\\":1794355200999}]}\",\"precedence\":16384,\"precedenceLow\":12288},{\"table\":\"metric_samples\",\"day\":\"2026-11-12\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet\",\"bytes\":64,\"rows\":10,\"minTs\":1794441600000,\"maxTs\":1794441600999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794441600000,\\\"max_ts\\\":1794441600999}]}\",\"precedence\":28672,\"precedenceLow\":28672},{\"table\":\"metric_series\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794355200000,\"maxTs\":1794355200999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355200000,\\\"max_ts\\\":1794355200999}]}\",\"precedence\":12289,\"precedenceLow\":12289},{\"table\":\"metric_series\",\"day\":\"2026-11-11\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794355260000,\"maxTs\":1794355260999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794355260000,\\\"max_ts\\\":1794355260999}]}\",\"precedence\":16385,\"precedenceLow\":16385},{\"table\":\"metric_series\",\"day\":\"2026-11-12\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794441600000,\"maxTs\":1794441600999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794441600000,\\\"max_ts\\\":1794441600999}]}\",\"precedence\":28673,\"precedenceLow\":28673}],\"removed\":[],\"watermarks\":[{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":4}],\"previousIncarnations\":[],\"tombstones\":[{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"table\":\"metric_samples\",\"version\":5,\"at\":1795050540753},{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"table\":\"metric_samples\",\"version\":5,\"at\":1795050540753},{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"table\":\"metric_samples\",\"version\":6,\"at\":1795050540788},{\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet\",\"table\":\"metric_series\",\"version\":6,\"at\":1795050540788}],\"units\":[{\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet\",\"shard\":\"pool/0\",\"incarnation\":7001,\"seqLo\":4,\"seqHi\":4},{\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet\",\"shard\":\"pool/0\",\"incarnation\":7001,\"seqLo\":2,\"seqHi\":2},{\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet\",\"shard\":\"pool/0\",\"incarnation\":7001,\"seqLo\":3,\"seqHi\":3},{\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet\",\"shard\":\"pool/0\",\"incarnation\":7001,\"seqLo\":4,\"seqHi\":4}]}\n",
+  "ledger/tenant=segfix/2/seg-000000000008-000000000008.jsonl": "{\"v\":1,\"kind\":\"viz.ledger.segment\",\"tenant\":\"segfix\",\"ledgerIncarnation\":2,\"firstVersion\":8,\"lastVersion\":8,\"changes\":1}\n{\"ledgerIncarnation\":2,\"version\":8,\"at\":1795050541036,\"kind\":\"add_unit\",\"added\":[{\"table\":\"metric_samples\",\"day\":\"2026-11-12\",\"key\":\"cell-0/data/metric_samples/tenant=segfix/day=2026-11-12/L0-pool_0-7001-5-5.parquet\",\"bytes\":64,\"rows\":10,\"minTs\":1794441660000,\"maxTs\":1794441660999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794441660000,\\\"max_ts\\\":1794441660999}]}\",\"precedence\":32768,\"precedenceLow\":32768},{\"table\":\"metric_series\",\"day\":\"2026-11-12\",\"key\":\"cell-0/data/metric_series/tenant=segfix/day=2026-11-12/L0-pool_0-7001-5-5.parquet\",\"bytes\":64,\"rows\":3,\"minTs\":1794441660000,\"maxTs\":1794441660999,\"level\":0,\"index\":\"{\\\"v\\\":1,\\\"rg\\\":[{\\\"rows\\\":10,\\\"off\\\":4,\\\"len\\\":50,\\\"min_name\\\":\\\"cpu\\\",\\\"max_name\\\":\\\"up\\\",\\\"min_ts\\\":1794441660000,\\\"max_ts\\\":1794441660999}]}\",\"precedence\":32769,\"precedenceLow\":32769}],\"removed\":[],\"watermark\":{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":5},\"unit\":{\"seqLo\":5,\"seqHi\":5}}\n"
+ },
+ "stages": [
+  {
+   "name": "two units in one segment",
+   "objects": [
+    "ledger/tenant=segfix/1/seg-000000000000-000000000000.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000001-000000000003.jsonl"
+   ],
+   "cursor": {
+    "ledgerIncarnation": 1,
+    "version": 3
+   },
+   "live": {
+    "metric_samples": [
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet",
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet"
+    ],
+    "metric_series": [
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet",
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet"
+    ]
+   }
+  },
+  {
+   "name": "a unit, then a compaction and its checkpoint",
+   "objects": [
+    "ledger/tenant=segfix/1/ckpt-000000000005.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000000-000000000000.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000001-000000000003.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000004-000000000004.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000005-000000000005.jsonl"
+   ],
+   "cursor": {
+    "ledgerIncarnation": 1,
+    "version": 5
+   },
+   "live": {
+    "metric_samples": [
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet",
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L1-day1.parquet"
+    ],
+    "metric_series": [
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-10/L0-pool_0-7001-1-1.parquet",
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet",
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet"
+    ]
+   }
+  },
+  {
+   "name": "retention and a unit in one segment",
+   "objects": [
+    "ledger/tenant=segfix/1/ckpt-000000000005.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000000-000000000000.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000001-000000000003.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000004-000000000004.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000005-000000000005.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000006-000000000007.jsonl"
+   ],
+   "cursor": {
+    "ledgerIncarnation": 1,
+    "version": 7
+   },
+   "live": {
+    "metric_samples": [
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L1-day1.parquet",
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet"
+    ],
+    "metric_series": [
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet",
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet",
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet"
+    ]
+   }
+  },
+  {
+   "name": "storage loss: a new incarnation, then a unit",
+   "objects": [
+    "ledger/tenant=segfix/1/ckpt-000000000005.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000000-000000000000.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000001-000000000003.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000004-000000000004.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000005-000000000005.jsonl",
+    "ledger/tenant=segfix/1/seg-000000000006-000000000007.jsonl",
+    "ledger/tenant=segfix/2/seg-000000000007-000000000007.jsonl",
+    "ledger/tenant=segfix/2/seg-000000000008-000000000008.jsonl"
+   ],
+   "cursor": {
+    "ledgerIncarnation": 2,
+    "version": 8
+   },
+   "live": {
+    "metric_samples": [
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-11/L1-day1.parquet",
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet",
+     "cell-0/data/metric_samples/tenant=segfix/day=2026-11-12/L0-pool_0-7001-5-5.parquet"
+    ],
+    "metric_series": [
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-2-2.parquet",
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-11/L0-pool_0-7001-3-3.parquet",
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-12/L0-pool_0-7001-4-4.parquet",
+     "cell-0/data/metric_series/tenant=segfix/day=2026-11-12/L0-pool_0-7001-5-5.parquet"
+    ]
+   }
+  }
+ ]
+}

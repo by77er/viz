@@ -124,19 +124,22 @@ without a streaming merge.
 ## R2 operations and time per merge
 
 For n input pairs: 2n GETs (six in flight), **2 PUTs in parallel** (never more than six
-requests in flight from one step), and one ledger change (`replace`; today one more PUT on
-the ledger's side). A conflict adds one DELETE request for both outputs. Locally a step
-takes 20–150 ms for test-sized inputs and 0.8–1.2 s of merge at the budget.
+requests in flight from one step), and one ledger change (`replace`). The ledger answers
+`replace` when its SQLite transaction commits and writes the change to R2 later, batched with
+whatever else is pending (`contracts/LEDGER-LOG.md`), so no R2 write of the ledger's is on the
+step's path. A conflict costs nothing more: the step deletes nothing. Locally a step takes
+20–150 ms for test-sized inputs and 0.8–1.2 s of merge at the budget.
 
 Estimated on Cloudflare, modelled from measured parts: reads 0.05 s each (`spikes/s1-fanout-r2/`),
 writes 0.17–0.26 s at the median up to 1 MB and 0.56 s for 8 MB, 0.6 s and 1 s at the tail
 (`spikes/s5-r2-writes/`), and production CPU about twice this sandbox's wall time for the
 engine (`DECISIONS.md` D5). A merge at the budget (8 pairs, 16 MB): reads ⌈16/6⌉ × 0.05 =
 0.15 s, merge 1.6–2.4 s, two PUTs in parallel 0.3–0.6 s (outputs up to about 15 MB, more
-at the tail), `replace` 0.17–0.26 s until the ledger's log is batched: **about 2–3.5 s per
-merge at the budget; about 0.5–0.8 s for a small hourly merge** (two small PUTs and the
-ledger's write). Not measured on Cloudflare; the experiment that settles it is a merge run
-in a deployed Worker (`design/VERIFICATION.md` §4).
+at the tail), `replace` one Durable Object round trip and a SQLite commit (tens of
+milliseconds, modelled; the batched log's `addUnit` time on Cloudflare is being re-measured in
+`spikes/s4-ledger-scale/rerun/`): **about 2–3.5 s per merge at the budget; about 0.3–0.6 s for
+a small hourly merge** (two small PUTs). Not measured on Cloudflare; the experiment that
+settles it is a merge run in a deployed Worker (`design/VERIFICATION.md` §4).
 
 ## Not implemented
 
@@ -155,15 +158,17 @@ in a deployed Worker (`design/VERIFICATION.md` §4).
 
 ```
 (cd ../engine/wasm && ./build.sh)
-npm ci && npm test       # 24 tests in workerd, 3 files
-npx tsc --noEmit         # clean
+npm ci && npx vitest run --maxWorkers=2    # 24 tests in workerd, 3 files
+npx tsc --noEmit                           # clean
 ```
 
-Last run (2026-11-19) against a stable copy of the committed `ledger/`, `shard/`, `edge/` and
-`contracts/` (snapshot `dc2a1c3`), because `ledger/` was being changed by another engineer at the
-time (asynchronous log drain): 24 of 24, tsc clean. The tests drain the ledger explicitly where
-they need its log (`flushSettled`, `changesOf`), so they hold for either ledger; the run
-against the real tree is recorded below once `ledger/` is green.
+Last run 2026-11-19 against the real tree, with the ledger draining its log asynchronously
+(`contracts/LEDGER-LOG.md`): 24 of 24, tsc clean. The suite pins `LEDGER_DRAIN_DELAY_MS` to 60 s
+(`vitest.config.ts`), as `ledger/` does, and drains the ledger where a test needs something
+logged (`flushSettled` in `flush/test/helpers.ts`, `changesOf`, and `drain()` before a purge, since
+a removal is deletable only once logged), so no assertion depends on when the ledger's alarm
+happens to run. The R-2/F13/F14 tests were shown to fail before D30 against a stable copy of the
+ledger of that time (snapshot `dc2a1c3`); the failures are quoted in the table.
 
 | Test | What it asserts |
 |---|---|
@@ -216,8 +221,9 @@ object (§3.2).
   delete its outputs when the ledger did not know them; after a ledger rebuild that undid an
   unlogged removal, an identical step could then commit the deleted objects (a live file with
   no object). Steps now delete nothing, and the sweep deletes an output only once an input is
-  gone for good. Shown by the interleaving test "spec F14" (fails before the change). Not yet
-  re-checked by the model; its owner has been asked to model this rule.
+  gone for good. Shown by the interleaving test "spec F14" (fails before the change). The
+  model checks the rule within the bounds F13, F14 and F15 were found at (`spec/README.md`, C1
+  and C2): bounded, not exhaustive.
 - **Leftover outputs cost storage until an input is purged.** A crashed or conflicted step's
   outputs stay until an input of theirs is purged (its delete grace, then the next orphan
   sweep, at most daily), or as long as their inputs stay live (a retry adopts them). Bounded by

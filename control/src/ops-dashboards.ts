@@ -146,7 +146,7 @@ function requireApply(t: Tenant, c: Ctx, what: string): void {
   if (c.id.kind !== 'agent' || !(c.id.scopes.includes('dashboards:apply') || c.id.scopes.includes('admin'))) {
     throw new Problem(403, 'missing-scope', `To ${what} needs the dashboards:apply scope.`, 'Use a key with dashboards:apply, or propose a patch to an existing dashboard for someone else to apply.', { required: ['admin', 'dashboards:apply'] })
   }
-  throw new Problem(403, 'agents-may-not-apply', `An agent may not ${what} directly in this tenant.`, 'Propose the change instead (POST /api/v1/control/dashboards/{dashboard}/proposals) and let a person apply it, or have an admin set the general setting "agentsMayApply" to true.')
+  throw new Problem(403, 'agents-may-not-apply', `An agent may not ${what} directly in this tenant.`, `Propose it instead (${what === 'create a dashboard' ? 'POST /api/v1/control/proposals with the spec' : 'POST /api/v1/control/dashboards/{dashboard}/proposals'}) and let a person apply it, or have an admin set the general setting "agentsMayApply" to true.`)
 }
 
 /** The revision the caller says it is working from: `baseRevision` in the body, or `If-Match`. */
@@ -291,24 +291,55 @@ const create: Op = (t, c) => {
   const owner = str(b.owner, 'owner', { max: 80, optional: true }) ?? null
   const message = str(b.message, 'message', { min: 0, max: 500, optional: true }) ?? 'Created'
   const id = spec.metadata.id
-  const existing = t.one<{ deleted_at: number | null }>('SELECT deleted_at FROM dashboards WHERE tenant = ? AND id = ?', t.tenant, id)
-  if (existing) {
-    throw existing.deleted_at === null
-      ? new Problem(409, 'dashboard-exists', `A dashboard with id "${id}" already exists.`, 'Patch the existing dashboard, or choose another /metadata/id.')
-      : new Problem(409, 'dashboard-deleted', `A deleted dashboard still holds the id "${id}".`, `Restore it (POST /api/v1/control/dashboards/${id}/restore), or choose another /metadata/id.`)
+  const { summary, ...rev } = insertDashboard(t, c.actor, c.now, spec, { owner, message, kind: 'create' })
+  t.audit(c.actor, c.now, 'dashboard.create', 'dashboard', id, null, { ...rev, owner, message })
+  return { status: 201, body: { dashboard: dashboardView(loadDashboard(t, id)), ...rev, summary, lint: lint(spec), ...(permitted ? {} : { permitted: false }) }, headers: etag(rev.revision) }
+}
+
+/** Whether a dashboard, live or deleted (and so restorable), already holds this id. */
+export function idHolder(t: Tenant, id: string): 'live' | 'deleted' | null {
+  const row = t.one<{ deleted_at: number | null }>('SELECT deleted_at FROM dashboards WHERE tenant = ? AND id = ?', t.tenant, id)
+  return !row ? null : row.deleted_at === null ? 'live' : 'deleted'
+}
+
+/** 409 when the id is taken. `proposal`: the caller is proposing or applying a creation, and the fix says what to do then. */
+export function requireFreeId(t: Tenant, id: string, proposal = false): void {
+  const holder = idHolder(t, id)
+  if (holder === 'live') {
+    throw new Problem(409, 'dashboard-exists', `A dashboard with id "${id}" already exists.`, proposal ? `Decline this proposal and propose the difference as a change to the existing dashboard (POST /api/v1/control/dashboards/${id}/proposals), or propose under another /metadata/id.` : 'Patch the existing dashboard, or choose another /metadata/id.')
   }
+  if (holder === 'deleted') {
+    throw new Problem(409, 'dashboard-deleted', `A deleted dashboard still holds the id "${id}".`, `Restore it (POST /api/v1/control/dashboards/${id}/restore), or choose another /metadata/id.`)
+  }
+}
+
+/** The one line a creation contributes to a diff summary. */
+export const createdSummary = (spec: Dashboard): string[] => [`+ dashboard ${spec.metadata.id} "${spec.metadata.title}" (${Object.keys(spec.panels).length} panels)`]
+
+/**
+ * Insert a new dashboard and its revision 1. Shared by a direct create and by applying a
+ * proposal that creates one, so both refuse the same things. Caller is inside a transaction.
+ */
+export function insertDashboard(
+  t: Tenant,
+  actor: Actor,
+  now: number,
+  spec: Dashboard,
+  meta: { owner: string | null; message: string; kind: 'create' | 'apply'; proposal?: string; proposedBy?: Actor },
+): { number: number; revision: string; summary: string[] } {
+  const id = spec.metadata.id
+  requireFreeId(t, id, meta.proposal !== undefined)
   if (t.one<{ n: number }>('SELECT COUNT(*) AS n FROM dashboards WHERE tenant = ?', t.tenant)!.n >= t.caps.maxDashboards) {
     throw new Problem(409, 'too-many-dashboards', `This tenant already has ${t.caps.maxDashboards} dashboards, the most it may have.`, 'Delete dashboards that are no longer needed.')
   }
-  const by = JSON.stringify(c.actor)
+  const by = JSON.stringify(actor)
   t.run(
     "INSERT INTO dashboards (tenant, id, head, revision, title, intent, tags, owner, panel_count, created_at, created_by, updated_at, updated_by) VALUES (?, ?, 0, '', '', '', '[]', ?, 0, ?, ?, ?, ?)",
-    t.tenant, id, owner, c.now, by, c.now, by,
+    t.tenant, id, meta.owner, now, by, now, by,
   )
-  const summary = [`+ dashboard ${id} "${spec.metadata.title}" (${Object.keys(spec.panels).length} panels)`]
-  const rev = commitRevision(t, c.actor, c.now, { id, head: 0 }, spec, summary, { kind: 'create', message })
-  t.audit(c.actor, c.now, 'dashboard.create', 'dashboard', id, null, { ...rev, owner, message })
-  return { status: 201, body: { dashboard: dashboardView(loadDashboard(t, id)), ...rev, summary, lint: lint(spec), ...(permitted ? {} : { permitted: false }) }, headers: etag(rev.revision) }
+  const summary = createdSummary(spec)
+  const rev = commitRevision(t, actor, now, { id, head: 0 }, spec, summary, { kind: meta.kind, message: meta.message, proposal: meta.proposal, proposedBy: meta.proposedBy })
+  return { ...rev, summary }
 }
 
 const get: Op = (t, c) => {
@@ -434,7 +465,8 @@ const revision: Op = (t, c) => {
 export function purgeDashboards(t: Tenant, actor: Actor, now: number): void {
   for (const d of t.all<DashRow>(`SELECT ${DASH_COLUMNS} FROM dashboards WHERE tenant = ? AND deleted_at IS NOT NULL AND purge_at <= ?`, t.tenant, now)) {
     t.run('DELETE FROM revisions WHERE tenant = ? AND dashboard = ?', t.tenant, d.id)
-    t.run('DELETE FROM proposals WHERE tenant = ? AND dashboard = ?', t.tenant, d.id)
+    // Proposals for the dashboard go with it, except an open proposal to create one under this id: it waited for the id to be free.
+    t.run("DELETE FROM proposals WHERE tenant = ? AND dashboard = ? AND NOT (base_number = 0 AND spec IS NOT NULL AND status = 'open')", t.tenant, d.id)
     t.run('DELETE FROM dashboards WHERE tenant = ? AND id = ?', t.tenant, d.id)
     t.audit(actor, now, 'dashboard.purge', 'dashboard', d.id, { number: d.head, revision: d.revision, deletedAt: iso(d.deleted_at) }, null)
   }

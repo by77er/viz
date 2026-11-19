@@ -7,6 +7,9 @@
  *   /api/v1/query, /query_range, /labels, /label/…, /series,
  *   /metadata, /status/…                                        → QUERY   (viz-query)
  *   /api/v1/control, /api/v1/control/…                          → CONTROL (viz-control)
+ *   /api/v1/rules, /api/v1/alerts, /api/v1/monitors,
+ *   /api/v1/monitors/…                                          → RULER   (viz-ruler)
+ *   /mcp, /api/v1/agent, /api/v1/agent/…                        → MCP     (viz-mcp)
  *   /healthz                                                    → this Worker: asks each backend's health route
  *   /api/v1/bootstrap (POST)                                    → this Worker: first key of a tenant, only while
  *                                                                 the one-time secret VIZ_BOOTSTRAP is set
@@ -21,6 +24,8 @@ export interface Env {
   INGEST: Fetcher
   QUERY: Fetcher
   CONTROL: Fetcher
+  RULER: Fetcher
+  MCP: Fetcher
   /** control's Tenant Durable Object, bound by script_name. Used only by /api/v1/bootstrap. */
   TENANT: DurableObjectNamespace
   /**
@@ -33,13 +38,19 @@ export interface Env {
   VIZ_RELEASE?: string
 }
 
-export type Backend = 'ingest' | 'query' | 'control'
+export type Backend = 'ingest' | 'query' | 'control' | 'ruler' | 'mcp'
 export type Route = Backend | 'health' | 'bootstrap'
 
 const INGEST_PATHS = new Set(['/api/v1/write', '/api/v1/push', '/v1/metrics'])
 const QUERY_PATHS = new Set(['/api/v1/query', '/api/v1/query_range', '/api/v1/labels', '/api/v1/series', '/api/v1/metadata'])
 const QUERY_PREFIXES = ['/api/v1/label/', '/api/v1/status/']
 const CONTROL_ROOT = '/api/v1/control'
+/** The ruler's Prometheus-compatible reads, and the monitors API with everything under it (ruler/src/http.ts ROUTES). */
+const RULER_PATHS = new Set(['/api/v1/rules', '/api/v1/alerts'])
+const MONITORS_ROOT = '/api/v1/monitors'
+/** The MCP endpoint (exactly; mcp/src/index.ts MCP_PATH) and the JSON agent API with everything under it. */
+const MCP_PATH = '/mcp'
+const AGENT_ROOT = '/api/v1/agent'
 
 /** Which handler a path goes to, or null for 404. Exact paths, except the three prefixes. */
 export function routeOf(path: string): Route | null {
@@ -48,14 +59,18 @@ export function routeOf(path: string): Route | null {
   if (INGEST_PATHS.has(path)) return 'ingest'
   if (QUERY_PATHS.has(path) || QUERY_PREFIXES.some((p) => path.startsWith(p))) return 'query'
   if (path === CONTROL_ROOT || path.startsWith(`${CONTROL_ROOT}/`)) return 'control'
+  if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'ruler'
+  if (path === MCP_PATH || path === AGENT_ROOT || path.startsWith(`${AGENT_ROOT}/`)) return 'mcp'
   return null
 }
 
-/** The health route each backend serves without a credential. control has none of its own; see deploy/README.md. */
+/** The health route each backend serves without a credential, reached only through its service binding. */
 export const HEALTH_PATHS: Record<Backend, string> = {
   ingest: '/healthz',
   query: '/healthz',
-  control: '/api/v1/control/openapi.json',
+  control: '/healthz',
+  ruler: '/healthz',
+  mcp: '/healthz',
 }
 
 export const ENTRYPOINTS = {
@@ -70,10 +85,12 @@ export const ENTRYPOINTS = {
     'GET /api/v1/status/buildinfo',
   ],
   control: ['/api/v1/control/… (OpenAPI: GET /api/v1/control/openapi.json)'],
+  ruler: ['GET /api/v1/rules', 'GET /api/v1/alerts', '/api/v1/monitors, /api/v1/monitors/… (monitors, groups, rule files, notifier, silences)'],
+  mcp: ['POST /mcp (Model Context Protocol, Streamable HTTP)', '/api/v1/agent, /api/v1/agent/… (the same tools as JSON)'],
   health: ['GET /healthz'],
 }
 
-const BINDING: Record<Backend, keyof Pick<Env, 'INGEST' | 'QUERY' | 'CONTROL'>> = { ingest: 'INGEST', query: 'QUERY', control: 'CONTROL' }
+const BINDING: Record<Backend, keyof Pick<Env, 'INGEST' | 'QUERY' | 'CONTROL' | 'RULER' | 'MCP'>> = { ingest: 'INGEST', query: 'QUERY', control: 'CONTROL', ruler: 'RULER', mcp: 'MCP' }
 const HEALTH_TIMEOUT_MS = 5_000
 const TENANT_ID = /^[A-Za-z0-9_-]{1,64}$/ // contracts/ledger.ts TENANT_ID
 
@@ -119,7 +136,7 @@ async function probe(env: Env, backend: Backend): Promise<{ ok: boolean; status:
 
 async function health(req: Request, env: Env): Promise<Response> {
   if (req.method !== 'GET' && req.method !== 'HEAD') return json(405, { error: 'method not allowed' }, 'health', { Allow: 'GET, HEAD' })
-  const names: Backend[] = ['ingest', 'query', 'control']
+  const names: Backend[] = ['ingest', 'query', 'control', 'ruler', 'mcp']
   const results = await Promise.all(names.map((b) => probe(env, b)))
   const backends = Object.fromEntries(names.map((b, i) => [b, results[i]]))
   const healthy = results.every((r) => r.ok)
@@ -199,6 +216,11 @@ async function bootstrap(req: Request, env: Env, now: number): Promise<Response>
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     if (/already provisioned/.test(message)) return json(409, { error: 'this tenant already has keys; create further keys through /api/v1/control/keys' }, 'bootstrap')
+    // control's storage for this tenant was written by a newer release (contracts/COMPATIBILITY.md §2.4):
+    // nothing was created, and the same call works once that release serves the object again.
+    if (/^schema_too_new/.test(message)) {
+      return json(503, { error: 'a newer release holds this tenant\'s control-plane storage (a deploy or rollback is in progress); nothing was created; retry' }, 'bootstrap', { 'Retry-After': '30' })
+    }
     console.error('gateway: provision failed', message)
     return json(500, { error: 'provisioning failed; nothing was created' }, 'bootstrap')
   }

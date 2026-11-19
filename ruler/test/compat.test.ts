@@ -12,13 +12,13 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { describeSchema, type Migration, openSchema, schemaRelease, type SchemaSpec } from '../../contracts/schema'
+import { canOpen, describeSchema, type Migration, openSchema, schemaRelease, type SchemaSpec } from '../../contracts/schema'
 import { indexName } from '../src/registry'
 import { INDEX_SCHEMA, NOTIFIER_SCHEMA, RULER_SCHEMA } from '../src/schema'
 import { apiKey, call } from './api'
 import { expectGolden, goldenDir } from './golden'
 import { tenantWorld, world } from './harness'
-import { MIN, newTenant, notifierStub, ok, rulerStub, runNotifierUntil, setup, vec } from './helpers'
+import { alertsOf, MIN, newTenant, notifierStub, ok, rulerStub, runNotifierUntil, setup, vec } from './helpers'
 import v0 from './fixtures/storage/v0.json'
 import { type Dump, dumpOf, install, replaceWith, schemaRow, withoutVersion } from './storage'
 
@@ -102,10 +102,16 @@ describe('versioned storage: storage written by the pre-versioning release', () 
       notifier: await runInDurableObject(notifier, (_i, s) => look(s)),
       index: await runInDurableObject(index, (_i, s) => look(s)),
     }
+    // Adopted as version 1, then migrated to the latest: every later migration is additive
+    // (`compat` stays 1, so the pre-versioning-era release 1 may still open it) and adds only
+    // empty tables; no row the old release wrote changes.
+    const SPECS = { ruler: RULER_SCHEMA, notifier: NOTIFIER_SCHEMA, index: INDEX_SCHEMA }
     for (const name of ['ruler', 'notifier', 'index'] as const) {
       const after = seen[name]
-      expect(after.row, name).toMatchObject({ version: 1, compat: 1 })
-      expect(canon(after.dump.rows), name).toEqual(canon(V0[name].rows))
+      expect(after.row, name).toMatchObject({ version: SPECS[name].migrations.length, compat: 1 })
+      const added = Object.keys(after.dump.rows).filter((t) => !(t in V0[name].rows))
+      for (const t of added) expect(after.dump.rows[t], `${name}: table ${t} added by a later migration`).toEqual([])
+      expect(canon(Object.fromEntries(Object.entries(after.dump.rows).filter(([t]) => !added.includes(t)))), name).toEqual(canon(V0[name].rows))
     }
 
     // It keeps working: the next tick changes nothing (still down), and the two notifications the old
@@ -133,11 +139,13 @@ describe('versioned storage: newer storage', () => {
     const { tenant, stub } = await setup()
     ok(await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Down', expr: 'up == 0' }] }] }))
     const before = await runInDurableObject(stub, (_i, s) => {
-      expect(openSchema(s.storage, breaking(RULER_SCHEMA))).toMatchObject({ status: 'ok', version: 2, compat: 2 })
+      const next = RULER_SCHEMA.migrations.length + 1
+      expect(openSchema(s.storage, breaking(RULER_SCHEMA))).toMatchObject({ status: 'ok', version: next, compat: next })
       return dumpOf(s)
     })
     await evictDurableObject(stub)
-    const refused = { status: 'schema_too_new', component: 'ruler.Ruler', found: 2, compat: 2, known: 1, retryAfterMs: 30_000 }
+    const known = RULER_SCHEMA.migrations.length
+    const refused = { status: 'schema_too_new', component: 'ruler.Ruler', found: known + 1, compat: known + 1, known, retryAfterMs: 30_000 }
     expect(await stub.rules(tenant)).toEqual(refused)
     expect(await stub.health(tenant)).toEqual(refused)
     expect(await stub.configure(tenant, { heartbeatMs: 0 })).toEqual(refused)
@@ -205,8 +213,63 @@ describe('versioned storage: newer storage', () => {
     world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
     const seen = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), alerts: s.storage.sql.exec('SELECT acked_by FROM alert WHERE tenant = ?', tenant).toArray(), reopen: openSchema(s.storage, next) }))
-    expect(seen.row).toMatchObject({ version: 2, compat: 1 })
+    expect(seen.row).toMatchObject({ version: RULER_SCHEMA.migrations.length + 1, compat: 1 })
     expect(seen.alerts).toEqual([{ acked_by: null }])
     expect(seen.reopen).toMatchObject({ status: 'ok', migrated: [] })
+  })
+})
+
+describe('versioned storage: upgrade to version 2 (anomaly rules)', () => {
+  it('Ruler storage at version 1 with data migrates to version 2 (one empty table, compat 1), keeps every row and alert, serves anomaly rules, survives eviction and is not migrated twice', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN })
+    ok(await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Down', expr: 'up == 0' }] }] }))
+    w.evaluate = (q, t) => (q === 'up == 0' ? vec([{ __name__: 'up', instance: 'a' }, 0]) : vec([{ service: 'api' }, 100 + (Math.round(t / MIN) % 5)]))
+    world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    // The same storage as release 1 (migration 1 only) would have left it: no anomaly_state, version 1.
+    const v1 = await runInDurableObject(stub, (_i, s) => {
+      const d = dumpOf(s)
+      return {
+        schema: d.schema.filter((x) => x.tbl_name !== 'anomaly_state'),
+        rows: Object.fromEntries(Object.entries(d.rows).filter(([t]) => t !== 'anomaly_state').map(([t, rs]) => [t, t === 'viz_schema' ? rs.map((r) => ({ ...r, version: 1, compat: 1 })) : rs])),
+      }
+    })
+    expect(v1.schema.map((x) => x.name)).not.toContain('anomaly_state')
+    await install(stub, v1)
+    const after = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(dumpOf(s)) }))
+    expect(after.row).toMatchObject({ version: 2, compat: 1 })
+    expect(after.dump.rows.anomaly_state).toEqual([])
+    expect(canon(Object.fromEntries(Object.entries(after.dump.rows).filter(([t]) => t !== 'anomaly_state')))).toEqual(canon(withoutVersion(v1).rows))
+    expect((await alertsOf(stub, tenant, 'Down')).map((a) => a.state)).toEqual(['firing'])
+
+    // It serves anomaly rules from there on, and their state survives eviction without a second migration.
+    ok(await stub.saveGroups(tenant, { groups: [{ name: 'a', interval: '1m', rules: [{ alert: 'Latency', expr: 'latency', anomaly: { params: { minPoints: 2, halfLifePoints: 5 } } }] }] }))
+    // Groups g and a tick at different offsets: run alarms until a has been evaluated `n` more times.
+    const latency = async () => ok(await stub.rules(tenant)).rules.find((r) => r.name === 'Latency')!
+    const evaluateA = async (n: number) => {
+      for (let seen = 0, last = (await latency()).lastEvaluationMs; seen < n; ) {
+        world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+        expect(await runDurableObjectAlarm(stub)).toBe(true)
+        const at = (await latency()).lastEvaluationMs
+        if (at !== last) [seen, last] = [seen + 1, at]
+      }
+    }
+    await evaluateA(4)
+    const before = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), state: s.storage.sql.exec('SELECT body FROM anomaly_state WHERE tenant = ?', tenant).toArray() }))
+    expect(before.state).toHaveLength(1)
+    await evictDurableObject(stub)
+    expect(await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), reopen: openSchema(s.storage, RULER_SCHEMA) }))).toMatchObject({ row: before.row, reopen: { status: 'ok', migrated: [] } })
+    // The state is back; how the last evaluation went is not stored (as for every rule's health) until the next one.
+    const status = ok(await stub.rules(tenant)).rules.find((r) => r.name === 'Latency')!.anomaly!
+    expect([status.stateSeries, status.status]).toEqual([1, 'unknown'])
+    await evaluateA(1)
+    expect((await latency()).anomaly).toMatchObject({ status: 'ok', stateSeries: 1, scored: 1 })
+  })
+
+  it('a release that knows only migration 1 may open version 2 (its compat is 1): the previous release stays a rollback target', () => {
+    const release = schemaRelease(RULER_SCHEMA)
+    expect(release).toMatchObject({ component: 'ruler.Ruler', latest: 2, compat: 1 })
+    expect(RULER_SCHEMA.migrations[1]).toMatchObject({ version: 2, readableFrom: 1 })
+    expect(canOpen(1, { version: release.latest, compat: release.compat })).toBe(true)
   })
 })

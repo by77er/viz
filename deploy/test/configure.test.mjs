@@ -1,5 +1,6 @@
 // node --test deploy/test/: configure.mjs, without the network.
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { configure, durableObjectsOf, generateWorker, loadPlan, queuesOf } from '../configure.mjs'
@@ -50,7 +51,7 @@ test('a stage prefixes every Worker and resource and uses workers.dev for the ga
   const g = gen('viz-gateway', 'trial').config
   assert.equal(g.workers_dev, true)
   assert.equal(g.routes, undefined)
-  assert.deepEqual(g.services.map((s) => s.service).sort(), ['viz-trial-control', 'viz-trial-ingest', 'viz-trial-query'])
+  assert.deepEqual(g.services.map((s) => s.service).sort(), ['viz-trial-control', 'viz-trial-ingest', 'viz-trial-mcp', 'viz-trial-query', 'viz-trial-ruler'])
   assert.equal(g.durable_objects.bindings[0].script_name, 'viz-trial-control')
   const i = gen('viz-ingest', 'trial').config
   assert.deepEqual(queuesOf(i).sort(), ['viz-trial-flush', 'viz-trial-flush-dlq', 'viz-trial-maint', 'viz-trial-maint-dlq'])
@@ -109,7 +110,46 @@ test('stage names that would overlap production are refused; names must start vi
 
 test('configure writes every config and a manifest in dependency order', () => {
   const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
-  assert.deepEqual(m.order, ['viz-citest-ingest', 'viz-citest-control', 'viz-citest-query', 'viz-citest-gateway'])
+  assert.deepEqual(m.order, ['viz-citest-ingest', 'viz-citest-control', 'viz-citest-query', 'viz-citest-ruler', 'viz-citest-mcp', 'viz-citest-gateway'])
   assert.deepEqual(m.resources.r2, ['viz-citest-lake'])
   assert.ok(m.workers.filter((w) => !w.deploy).every((w) => w.reason))
+})
+
+test('the health path recorded for each backend is the one the gateway asks through its binding', () => {
+  // gateway/src/index.ts HEALTH_PATHS, read from the source (it is TypeScript for workerd).
+  const src = readFileSync(join(REPO_ROOT, 'deploy', 'gateway', 'src', 'index.ts'), 'utf8')
+  const block = /export const HEALTH_PATHS[^=]*= \{([^}]*)\}/.exec(src)[1]
+  const asked = Object.fromEntries([...block.matchAll(/(\w+): '([^']+)'/g)].map((m) => [m[1], m[2]]))
+  assert.deepEqual(Object.keys(asked).sort(), ['control', 'ingest', 'mcp', 'query', 'ruler'])
+  for (const [backend, path] of Object.entries(asked)) assert.equal(worker(`viz-${backend}`).health, path, `viz-${backend}`)
+})
+
+test('every service a Worker binds is deployed before it, and resolves to a deployed Worker of the same stage', () => {
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+  for (const w of m.workers.filter((x) => x.deploy)) {
+    for (const edge of w.crossScript) {
+      const callee = edge.split('→')[1].trim().split(':')[0]
+      assert.ok(callee.startsWith('viz-citest-'), `${w.name}: ${edge}`)
+      assert.ok(m.order.indexOf(callee) >= 0, `${w.name} binds ${callee}, which is not deployed`)
+      assert.ok(m.order.indexOf(callee) < m.order.indexOf(w.name), `${w.name} binds ${callee}, which must deploy first`)
+    }
+  }
+  const ruler = m.workers.find((w) => w.canonical === 'viz-ruler')
+  assert.deepEqual(ruler.crossScript.sort(), ['INGEST → viz-citest-ingest', 'QUERY → viz-citest-query', 'TENANT → viz-citest-control:Tenant'])
+  const mcp = m.workers.find((w) => w.canonical === 'viz-mcp')
+  assert.deepEqual(mcp.crossScript.sort(), ['CONTROL → viz-citest-control', 'QUERY → viz-citest-query', 'RULER → viz-citest-ruler'])
+  const gateway = m.workers.find((w) => w.canonical === 'viz-gateway')
+  assert.ok(gateway.crossScript.includes('RULER → viz-citest-ruler') && gateway.crossScript.includes('MCP → viz-citest-mcp'))
+})
+
+test('--expires sets the stage deadline in every Worker; production refuses one', () => {
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, expires: '2026-11-20T06:00:00Z' })
+  assert.equal(m.expires, '2026-11-20T06:00:00Z')
+  for (const w of m.workers.filter((x) => x.deploy)) {
+    const cfg = JSON.parse(readFileSync(join(REPO_ROOT, w.config), 'utf8').replace(/^\/\/.*\n/, ''))
+    assert.equal(cfg.vars.VIZ_STAGE_EXPIRES_AT, '2026-11-20T06:00:00Z', w.name)
+  }
+  assert.throws(() => configure({ release: 'r1', idsOptional: true, quiet: true, expires: '2026-11-20T06:00:00Z' }), /stage only/)
+  assert.throws(() => configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, expires: 'tomorrow' }), /ISO 8601/)
+  configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
 })

@@ -1,0 +1,10 @@
+{
+  "format": "rpc.notification-target",
+  "version": 1,
+  "result": {
+    "v": 1,
+    "status": "ok",
+    "version": 1,
+    "target": { "url": "https://hooks.example.com/alerts?token=abc", "format": "json", "sendResolved": false, "secret": "whsec-0123456789abcdef-SECRET" }
+  }
+}

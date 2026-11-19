@@ -3,5 +3,6 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   plugins: [cloudflareTest({ wrangler: { configPath: './wrangler.jsonc' } })],
-  test: { testTimeout: 60_000 },
+  // At most two workers: the machine is shared (AGENTS.md).
+  test: { testTimeout: 60_000, maxWorkers: 2 },
 })

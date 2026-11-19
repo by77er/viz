@@ -1,3 +1,4 @@
+import type { QueryPlanView } from '../clients'
 import { CURSOR_ARG, MAX_TOKENS_ARG, TIME_ARG, formatDuration } from '../args'
 import { budgetOf, type Item } from '../page'
 import { COUNTER_FUNCTIONS, FUNCTIONS, type Node, PromQLSyntaxError, parsePromQL, selectorText, selectorsOf, typeName, walk } from '../promql'
@@ -80,6 +81,9 @@ export const validateQuery: ToolDef = {
     }
 
     const estimate: { selector: string; series: number | null; note?: string }[] = []
+    /** The query service's own plan (`/api/v1/plan`): files, bytes, scan bound, series, refusal. Null when it could not be had. */
+    let plan: QueryPlanView | null = null
+    let planNote: string | null = null
     if (ast) {
       if (type === 'matrix') findings.push({ severity: 'warning', code: 'range-vector', message: 'The result is a range vector: it can be queried only as an instant query, not over a range.' })
       if (type === 'string') findings.push({ severity: 'warning', code: 'string-result', message: 'The result is a string literal.' })
@@ -150,6 +154,16 @@ export const validateQuery: ToolDef = {
         else estimate.push({ selector: sel, series: x.value.data.length })
       })
       if (sels.length > toCount.length) estimate.push({ selector: `(${sels.length - toCount.length} more selectors not counted)`, series: null })
+      // The query service's plan: what it would read (lake files and bytes, the scan bound, a
+      // series estimate) and whether a limit would refuse it, from one ledger read. Not run.
+      if (performance.now() < s.deadline) {
+        s.usage.upstreamCalls++
+        const p = await s.query.plan(expr, r.start, r.end, r.step, { timeout: Math.max(0.001, (s.deadline - performance.now()) / 1000) })
+        if (p.ok) {
+          plan = p.data
+          if (plan.refusal) findings.push({ severity: 'warning', code: 'would-be-refused', message: `The query service would refuse this query over ${rangeText(r)} before reading anything: ${plan.refusal.error}` })
+        } else planNote = `the query service's plan is not available (${clean(p.error, { max: MAX.error })})`
+      } else planNote = "the query service's plan was not asked: the call reached its deadline"
     }
 
     const steps = Math.floor((r.end - r.start) / r.step) + 1
@@ -180,6 +194,11 @@ export const validateQuery: ToolDef = {
       (ast
         ? `Estimate (series API only; the query was not run) over ${rangeText(r)}: ${series} series touched (largest selector ${largest}), ${steps} step(s), up to ${series * steps} output points before aggregation, about ${samples} samples to read assuming ${ASSUMED_SCRAPE_SECONDS}s spacing; cost class ${cls}.\n`
         : '') +
+      (plan
+        ? `Plan (the query service's own, from one ledger read; rows still in the shards are not counted): ${plan.execution === 'none' ? 'reads nothing' : `${plan.execution} execution${plan.execution === 'split' ? ` over ${plan.leaves} leaves` : ''}`}; ${plan.filesToRead} file(s) to read of ${plan.filesListed} listed (${plan.filesSkipped} skipped), ${plan.bytesToRead} bytes, up to ${plan.scanSamples} samples to decode, about ${plan.seriesEstimate} series; ${plan.refusal ? `refused: ${plan.refusal.errorType}` : 'within the limits'}.\n`
+        : planNote
+          ? `Plan: ${planNote}.\n`
+          : '') +
       (ast && largest > 5000 ? `High cardinality: aggregate (sum by (...)) or add topk(); step ${formatDuration(r.step)}.\n` : '')
     return pagedResult({
       tool: this.name,
@@ -190,7 +209,16 @@ export const validateQuery: ToolDef = {
       items,
       offset: c?.o ?? 0,
       pinned: pinRange(r),
-      meta: { valid, resultType: type, estimate: { series, steps, outputPoints: series * steps, samples, assumedScrapeSeconds: ASSUMED_SCRAPE_SECONDS, class: cls, ran: false }, range: { start: r.start, end: r.end, step: r.step } },
+      meta: {
+        valid,
+        resultType: type,
+        estimate: {
+          series, steps, outputPoints: series * steps, samples, assumedScrapeSeconds: ASSUMED_SCRAPE_SECONDS, class: cls, ran: false,
+          plan: plan ? { execution: plan.execution, leaves: plan.leaves, filesListed: plan.filesListed, filesSkipped: plan.filesSkipped, filesToRead: plan.filesToRead, bytesToRead: plan.bytesToRead, scanSamples: plan.scanSamples, seriesEstimate: plan.seriesEstimate, refused: plan.refusal ? plan.refusal.errorType : null } : null,
+          ...(planNote ? { planNote } : {}),
+        },
+        range: { start: r.start, end: r.end, step: r.step },
+      },
     })
   },
 }

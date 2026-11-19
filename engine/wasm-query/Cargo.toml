@@ -4,6 +4,7 @@
 [package]
 name = "viz-engine-wasm-query"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2021"
 description = "viz query engine for WebAssembly: a C ABI over viz-query (plan, PromQL evaluation, select, metadata, file pruning). No I/O."
 publish = false

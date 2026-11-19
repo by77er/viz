@@ -43,7 +43,8 @@ KV layout:
 of `A-Z a-z 0-9 _ -`), sent as `Authorization: Bearer <key>` or as the password of HTTP
 Basic (any username). The SHA-256 of the secret is compared with the stored hash without
 an early exit, and is computed even when the key id is unknown. The tenant is the one in
-the key record; nothing in the request can change it. Records are cached in memory for
+the key record; nothing in the request can change it. A record whose tenant id does not
+match `TENANT_ID` authenticates nobody (review R-9): its rows could never be flushed or read. Records are cached in memory for
 60 s and unknown key ids for 10 s. 401 for a missing, malformed, unknown, wrong, disabled
 or unreadable key; 403 for a key without `write`. Nothing logs or echoes a credential.
 
@@ -101,7 +102,8 @@ are counted in `partial_success`, with the reasons in `error_message`.
   cannot change which shard a sender's rows go to.
 - **Whole-request retry.** Unchanged and re-verified: any refused or failed append gives
   429 or 503 for the whole request; `partial_success` and Remote Write's 400 are only for
-  rows rejected by validation.
+  rows a retry would not fix: rejected by validation, or new series over the active-series
+  limit.
 
 **Routing and append.** The routing key of a series is `job=<job>\0instance=<instance>`.
 Rows are grouped by `slotFor(map, tenant, key)`, each slot gets its batches in arrival
@@ -116,9 +118,12 @@ shared pool.
 |---|---|---|
 | Everything appended | 204, `X-Prometheus-Remote-Write-Samples-Written` | 200, empty `ExportMetricsServiceResponse` in the request's encoding |
 | Some rows invalid, the rest appended | 400 with counts and reasons, plus the written-count header | 200 with `partial_success` |
-| Any slot answers backpressure | 429, `Retry-After` in seconds, for the whole request | same |
+| Any slot's buffer is full (`backpressure`, scope `tenant` or `shard`) | 429, `Retry-After` in seconds, for the whole request | same |
+| Any slot is overloaded (`backpressure`, scope `overload`), or every slot of the tenant refused so within its `Retry-After` | 503 with the shard's `Retry-After` (senders must retry 5xx); in the second case before the body is read or decoded | same |
+| New series over the active-series limit | 400 naming the limit (below); the rest is written | 200 with `partial_success` |
+| A shard status this code does not know, a newer key record, pool map or limits record | 503 with `Retry-After`; never counted as stored, never authenticated on a guess | same |
 | `stale_epoch` | map refetched once and the request re-routed; otherwise 503 with `Retry-After` | same |
-| Shard error or no pool | 503 with `Retry-After` | same |
+| Shard error, no pool, or a pool map naming a pool outside `POOL_NAME` (D38) | 503 with `Retry-After` | same |
 | Malformed body | 400 with a short reason | 400, body is a `Status` in the request's encoding |
 | Too large | 413 | 413 |
 
@@ -141,7 +146,7 @@ again and de-duplicated on read, as with any retry. The sender is told:
 
 | Protocol | Answer |
 |---|---|
-| Remote Write | **429**, `Retry-After: 60`, `X-Prometheus-Remote-Write-Samples-Written`, and a body naming the limit, the shard's share, the active count, how many new series and samples were refused and how many were written |
+| Remote Write | **400** (not retried by senders), `X-Prometheus-Remote-Write-Samples-Written`, and a body naming the limit, the shard's share, the active count, how many new series and samples were refused and how many were written. Not 429: a sender that retries 429 would resend the same new series for ever and fall behind on the series it has (review R-4; D21 rewritten) |
 | OTLP | **200** with `partial_success`: `rejected_data_points` includes the refused points and `error_message` carries the same text |
 
 Why the shard returns ids and `edge` filters, rather than `edge` splitting batches per
@@ -156,8 +161,9 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
   are ignored. zstd is refused with 415.
 - OTLP traces and logs, OTLP/gRPC.
 - Per-tenant limits: `INGEST_LIMITS` applies to every tenant of the deployment.
-- Rate limiting at the edge. Quotas are the shard's job; the edge only relays its
-  backpressure.
+- Rate limiting at the edge. Quotas are the shard's job; the edge relays its backpressure
+  and, while every shard of a tenant is inside an overload `Retry-After`, refuses that
+  tenant's requests before decoding (an isolate-local hint, not a limit).
 - Key revocation faster than the 60 s cache, and any tooling to create keys.
 - Metrics about the edge itself (rejections by reason, bytes per tenant).
 
@@ -165,13 +171,14 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
 
 ```
 npm install
-npm test            # 55 tests in 7 files, in workerd, against the real Shard
-npm run typecheck   # clean
-npm run mutants     # 35 mutants, all killed (26 original + 9 for contracts v2); re-run 2026-11-18 after
-                    # mutant 35's pattern was updated for the series-limit change: 35 of 35
+npx vitest run --maxWorkers=2   # 62 tests in 8 files, in workerd, against the real Shard
+npm run typecheck               # clean
+node scripts/mutants.mjs        # 43 mutants, on a copy outside the git checkout (the script refuses to run in it)
 npm run bench       # decode throughput, in Node
 npm run fixtures    # regenerate test/fixtures.json with protobufjs + snappyjs
 ```
+
+Last run, 2026-11-19: **62 passed, 0 failed**; `tsc --noEmit` clean.
 
 What the tests establish:
 
@@ -270,6 +277,31 @@ the file. Every one makes at least one test fail.
 | 34 | `too_large` from a shard treated as success |
 | 35 | No re-split after `too_large` |
 
+**Review fixes, early refusal, compatibility, names** (`test/overload.test.ts`, 7 tests;
+`test/limit.test.ts`). An overloaded shard gives Remote Write and OTLP 503 with
+`Retry-After`, stores nothing, and the retry after it clears is stored once; once every shard
+of the tenant has refused, the next request is refused before its body is read; a status
+edge does not know is 503, never 2xx; a key record with a tenant id outside `TENANT_ID`
+authenticates nobody (R-9); key records, pool maps and limits records of a newer `v` are
+503 unless this isolate holds the last good value, and a limit is never loosened to the
+default; a pool map naming a pool with `_` is 503 and nothing is stored (D38); Remote Write
+over the active-series limit is 400 and the existing series are written, also at the limit
+(R-4).
+
+**Mutation check of 2026-11-19** (`node scripts/mutants.mjs` on a copy of `contracts/`,
+`shard/` and `edge/` in a scratch directory; each mutant against the whole suite): **41 of
+43 killed.** The eight added here and the test that failed for each: R-4 answered 429 again
+(limit.test "Remote Write: 400 (not retried)…"); R-9 tenant ids not checked (overload.test
+"…R-9"); overload answered 429, and overload without the shard's `Retry-After` (overload.test
+"Remote Write and OTLP get 503 with Retry-After…"); no refusal before decoding, and an
+overload not remembered (overload.test "…refused before its body is read or decoded"); a pool
+outside `POOL_NAME` used (overload.test "a pool map naming a pool outside POOL_NAME…"). **Two
+survive, both equivalent:** "2xx on shard error" (mutant 10) and "a shard status edge does not
+know counts as stored" each remove one of the layers that refuse a failed or unknown append;
+the last check of `appendAll` ("only `ok` counts as stored; anything not handled above
+refuses the request") still answers 503, so behaviour does not change. The property has no
+single point of failure; a mutant removing every layer at once was not run.
+
 ### Decode throughput
 
 `npm run bench`, Node 22 on a shared and noisy development machine; medians of 15 runs,
@@ -327,7 +359,8 @@ Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, 
 Issues 1 to 5 are **resolved in contracts v2** and implemented here (see "Contracts v2"
 above): a stated batch size and `too_large`; label byte rules and limits; UTF-8 byte order;
 OTLP routing labels with `exported_job` / `exported_instance`; retryable statuses instead
-of `partial_success` for a failed shard. Issues 6 and 7 stand. The original list:
+of `partial_success` for a failed shard. Issue 6 stands; issue 7 is resolved for overload.
+The original list:
 
 1. **`BATCH.md`: "one batch per shard slot" cannot always hold.** Cloudflare documents a
    2 MB cap on a value in a SQLite-backed Durable Object, and the shard stores a batch as
@@ -355,4 +388,6 @@ of `partial_success` for a failed shard. Issues 6 and 7 stand. The original list
 7. **`Shard.append` reports `retryAfterMs: 1000` always**, and failures other than
    backpressure and `stale_epoch` arrive as exceptions. The edge maps every exception to
    503 with `Retry-After: 1`; an overloaded shard and a permanently failing one look the
-   same to the sender.
+   same to the sender. *Resolved for overload* (2026-11-19): the shard refuses early with
+   scope `overload` and a real, jittered `Retry-After`, which edge passes through with 503;
+   exceptions (an unreachable or reset object) are still 503 with `Retry-After: 1`.

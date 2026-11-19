@@ -2,182 +2,187 @@
 
 The tenant ledger: one SQLite Durable Object per tenant (the tenant is the object's name).
 It holds the tenant's live data files and one watermark per shard stream, and is the only
-authority on what is visible. It implements `LedgerRpc` and `LedgerAdminRpc` from `contracts/ledger.ts` (v2).
+authority on what is visible. It implements `LedgerRpc`, `LedgerAdminRpc` and
+`LedgerJanitorRpc` from `contracts/ledger.ts`, and the change log of
+`contracts/LEDGER-LOG.md` (decision D36).
 
 | File | Contents |
 |---|---|
-| `src/ledger.ts` | `Ledger`: register, add unit, plan, replace, expire, logged watermarks, outbox drain, rebuild |
+| `src/ledger.ts` | `Ledger`: register, add unit, plan, replace, expire, logged watermarks, tombstones, the segment drain, starting an incarnation, rebuild |
 | `src/index.ts` | Worker entry; exports the class |
-| `scripts/mutants.mjs` | Mutation check for the contracts v2 behaviour |
-| `test/ledger.test.ts` | 38 tests, run inside the Workers runtime with a simulated R2 bucket |
-| `test/tombstone.test.ts` | 7 tests of the tombstone surface |
-| `test/precedence.test.ts` | 5 tests of file precedence |
+| `scripts/mutants.mjs` | Mutation check (runs only on a copy outside the git checkout) |
+| `test/ledger.test.ts` | 39 tests: units, replay, registration, plan, replace, expire, names, the log's contents |
+| `test/segments.test.ts` | 27 tests of the segment log: crashes, exact rebuild, checkpoints, the first layout, a rollback across this release, starting an incarnation, F10/F11, the size limit, readers |
+| `test/compat.test.ts` | 8 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8) |
+| `test/tombstone.test.ts`, `test/precedence.test.ts` | 8 and 5 tests |
+| `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`), and what a checkpoint costs (`checkpoint.bench.test.ts`) |
 
-Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`).
+Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`);
+optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (default 256).
 
 ## What is implemented
 
-- **One transaction per change.** Each mutation changes the live set, bumps the version and
-  puts the `LedgerChange` in an outbox inside one `transactionSync`.
+- **One transaction per change, answered at the commit.** Each mutation changes the live
+  set, bumps the version and puts the `LedgerChange` in the `outbox` table in one
+  `transactionSync`, sets the alarm if none is set, and answers. Nothing waits for R2.
 - **`addUnit`.** Admitted only if the stream is registered with that incarnation and
-  `seqLo === watermark + 1`. All files and the watermark move together. Every file is
-  validated, and every key checked against the live set, before anything is written.
-  - A shard never seen before is registered by its first unit (`seqLo === 1`); any other
-    unit from an unknown shard gets `not_contiguous` with watermark 0.
-  - **Replay rule (v2).** Any unit with `seqHi <= watermark` for the registered incarnation
-    gets `ok` and changes nothing, whether or not its files are still live (they may have
-    been compacted or expired) and whatever files it names: the rows through `seqHi` are
-    already in listed files. A unit that straddles the watermark gets `not_contiguous`.
-  - **`invalid` (v2).** A malformed stream reference or sequence range, a malformed file, a
-    key repeated inside the unit, an empty unit, or a key that is already live elsewhere
-    returns `{ status: 'invalid', reason }`. Nothing is admitted and nothing throws. The
-    unit is judged before the stream, so an invalid unit is `invalid` even where a valid
-    one would be a replay.
-- **`registerStream`.** Idempotent for the same incarnation, and a retry gets the same
-  `previousIncarnation` as the first call. A **higher** incarnation replaces the old one,
-  resets the watermark and the logged watermark to 0 and returns the old incarnation.
-  Files of the old incarnation stay live. A **lower** incarnation is refused (v2:
-  incarnations are ordered): `registerStream` throws, `addUnit` answers
-  `incarnation_mismatch` with the registered one, and nothing changes.
-- **`plan`.** Files of one table overlapping the inclusive range, **in ascending
-  precedence** (below), all watermarks, ledger incarnation and version, read with no
-  `await` in between.
-- **`replace`.** Swaps iff every key in `remove` is live; otherwise `conflict` with the
-  missing keys. A retry of a swap that already happened (every output live, no input live)
-  gets `ok` with the current version; anything else is judged as a new request. A malformed
-  request, a key in both lists, or an output key that is already live returns
-  `{ status: 'invalid', reason }`.
-- **`expire`.** Removes files of the table with `day < beforeDay`, returns the keys. If
-  nothing matches, no version is used and nothing is logged.
-- **Change log.** `drain` writes outbox rows to R2 at
-  `{CELL}/` + `ledgerLogKey(tenant, ledgerIncarnation, version)`, lowest version first, and
-  deletes a row only after its write returned. A failed write stops the drain there, so the
-  log has no hole below its highest object. It runs after every mutation and from an alarm
-  that is set with every mutation and re-set while writes fail. A mutation succeeds whether
-  or not R2 is reachable.
-- **`loggedWatermarks`.** Per stream, the highest watermark whose change is in R2. It is a
-  separate column, advanced only by the drain.
-- **Ledger incarnation.** Starts at 1 and is one more than the highest incarnation in R2.
-  Each incarnation first writes, at `{CELL}/` + `ledgerBaseKey(tenant, incarnation)`, a
-  **`base` `LedgerChange`** and nothing but that shape: `kind: 'base'`, `added` = the whole
-  live set as `FileEntry` objects, `removed: []`, `watermarks` = every stream, and
-  `version` = the version the incarnation starts from (its first change is `version + 1`).
-  This happens before the object serves anything, for a brand-new tenant too.
-- **`add_unit` changes carry `unit: { seqLo, seqHi }`.** Replay checks it against the
-  watermark and fails on a mismatch instead of inferring `seqLo`.
-- **Tenant ids** must match `TENANT_ID` (`[A-Za-z0-9_-]{1,64}`); an object addressed by any
-  other name refuses every call and writes nothing.
-- **Rebuild.** `rebuildFromLog()` and the automatic path on start, below.
-- **No in-memory state.** Every method reads SQLite. The only non-derived field is a
-  promise that serialises drains.
+  `seqLo === watermark + 1`; all files and the watermark move together. A shard never seen
+  is registered by its first unit (`seqLo === 1`); any other unit of an unknown shard gets
+  `not_contiguous` with watermark 0. **Replay rule:** a unit with `seqHi <= watermark` gets
+  `ok` and changes nothing; one that straddles the watermark gets `not_contiguous`.
+  **`invalid`:** a malformed stream reference, range or file, a key repeated in the unit, an
+  empty unit, more than 4,096 files, a key already live, a key outside
+  `{cell}/data/{table}/tenant={tenant}/day={day}/` (review R-8), or a shard name outside
+  `SHARD_NAME` (`contracts/TABLES.md`; D38). The unit is judged before the stream.
+- **`registerStream`.** Idempotent for the same incarnation; a higher one replaces it,
+  resets watermark and logged mark to 0 and returns the old one; a lower one is refused
+  (an exception: the contract's return type has no refusal). A bad shard name throws.
+- **`plan`.** Files of one table overlapping the range, in ascending precedence, with every
+  watermark, the ledger incarnation and the version, read with no `await` in between.
+- **`replace`.** Swaps iff every input is live; otherwise `conflict` with the missing keys
+  (or `blocking` keys, below). A retried swap that already happened is `ok`.
+- **`expire`.** `{ table }` or `{ tables }` (review R-5, a contract change): every named
+  table's files of days before `beforeDay` leave in ONE change, so a samples file and its
+  series file leave together. Nothing to remove uses no version.
+- **The change log** (`contracts/LEDGER-LOG.md`). The drain (the alarm, about 200 ms after
+  the first unlogged commit; a commit also starts one when one is due, because under
+  continuous load the runtime delivers the alarm only when the object is idle) takes the
+  pending rows from the lowest version up to 4 MiB, records the segment's bounds in `meta`
+  and waits for that to be durable, PUTs `seg-{first}-{last}.jsonl` with `If-None-Match: *`,
+  and then, in one transaction, deletes those rows, advances each stream's `logged` mark
+  (only for the incarnation that set it) and clears the record. A retry writes exactly the
+  recorded segment (spec F10). An object already at that key counts as written only if its
+  bytes are identical; anything else stops the drain (`logStatus().lastError`), never
+  overwritten. A failed PUT backs off 1 s doubling to 60 s. A change committed while a
+  segment is in flight goes in the next one. At most 16 segments per alarm. A drain that
+  leaves nothing pending deletes the alarm.
+- **A stuck log says so** (review S-1). A fault (an object with other bytes at a segment's
+  key, a recorded segment whose rows are gone, an outbox that does not continue the written
+  log) stops the drain: `logStatus()` answers phase `stuck` with the reason, nothing more
+  counts as logged, the alarm retries every 60 s. The one fault with a known cause heals
+  itself: an outbox that does not continue the log in an incarnation whose prefix also
+  holds first-layout objects is what a rollback to the release that drains the first layout
+  leaves after the roll-forward. SQLite holds every committed change, so the ledger starts
+  a new incarnation from SQLite, its base in R2 first (the fix the protocol model checked).
+  For any other, an operator repairs R2 or calls `restartFromSqlite()`, which does the same.
+- **Checkpoints.** After at least 256 segments AND once the segments written since the
+  last checkpoint (or the base) are as large as it, when the segment just written ends at
+  the committed version, the drain also writes `ckpt-{version}.jsonl`: the whole state at
+  that version, read in the same synchronous step that fixed the segment's bounds. Then the
+  older checkpoints of the incarnation are deleted (review S-2).
+- **The state is bounded** (review S-2). `meta.state_bytes` estimates the state as a base
+  would hold it (each live file's key and index fragment plus 448 bytes, calibrated against
+  checkpoints written), kept with every
+  mutation and recomputed exactly at every start and checkpoint. `addUnit` answers `full`
+  (`{ status, stateBytes, limitBytes }`, nothing changed, retryable) once it would pass
+  16 MiB (`STATE_MAX_BYTES`, `LEDGER_STATE_MAX_BYTES`); `replace` and `expire` are never
+  refused, so compaction and retention make room.
+- **`loggedWatermarks`.** Per stream, the watermark as of the last change in a written
+  segment. Shards may discard only up to it.
+- **Starting an incarnation** (a new tenant, storage loss, or storage still on the first
+  log layout) runs **outside `blockConcurrencyWhile`** (review R-3): the constructor only
+  opens SQLite. While it runs every request waits at most 2 s and is then refused with
+  `ledger_unavailable` (retryable); `logStatus` answers meanwhile. A failed start is retried
+  by the alarm every 5 s. The state comes from R2 (the newest incarnation: newest readable
+  checkpoint, else the base at the head of its first segment, then every later segment,
+  contiguous and strictly decoded; or the first layout, `base.json` and one object per
+  change) or from SQLite (first layout). The new incarnation's **base segment is written to
+  R2 before SQLite commits the incarnation** (spec F11): if it cannot be written, nothing
+  commits and nothing is served. With no log in R2 at all it starts empty only if the
+  tenant has no data objects either; otherwise its log is not where it looks and it refuses
+  (`stuck`), so no sweep runs against an empty live set (review S-5). A log that cannot be
+  rebuilt from (a gap, a corrupt or unsupported object, segments and first-layout objects in
+  one incarnation) is `stuck` too, never partly replayed.
+- **Storage that is not new and has no incarnation** (a schema version row and no
+  `meta.incarnation`) is refused, never rebuilt over.
+- **Versioned storage** (`contracts/COMPATIBILITY.md` §2, D24): `ledger.Ledger` through
+  `contracts/schema.ts`. Version 1 adopts the pre-versioning schema unchanged and adds
+  `prec`/`prec_lo` to objects from before D22. Version 2 (the segment log; `state_bytes`)
+  is **forward-only** (`readableFrom` 2): versioned code that knows only version 1 refuses
+  this storage instead of draining the first layout into it (review S-1). Storage of a newer release is refused on
+  every entry point with `schema_too_new`, writing nothing, the alarm re-armed. Readers of
+  the log refuse an unknown segment `v`, header `kind`, change `v` or change `kind`, in both
+  layouts (`unsupportedLedgerChange`, `decodeLedgerSegment`).
+- **Tenant ids** must match `TENANT_ID`; an object addressed by another name refuses
+  everything.
+- **In memory** only hints: whether a start is running, the alarm time this object set,
+  the drain's backoff, the last error and counters for `logStatus`. Storage is the truth.
 
-`LedgerAdminRpc`: `drain()` returns `{ written }`, `outboxDepth()`, `rebuildFromLog()`
-(returns the contract's fields plus `source`, `changesReplayed`, `files`, `streams`).
+`LedgerAdminRpc`: `drain()` → `{ written }`, `outboxDepth()`, `rebuildFromLog()` (on empty
+storage only; waits for a drain in flight). Also on the class: `logStatus()` (phase,
+incarnation, version, logged-through, pending, the segment in flight, segments since the last
+checkpoint, alarm, last error, write times, `stuck`, `stateBytes` and the limit) and
+`restartFromSqlite()` (a new incarnation from this object's own committed state; waits for a
+drain in flight). A drain of an incarnation that has since been replaced changes nothing
+(review S-7).
 
-## Rebuild: what it does and does not guarantee
+## Rebuild: what it guarantees
 
-When the object starts on storage that has no ledger incarnation (first use, or storage
-loss), it lists R2. With no log it starts incarnation 1, empty. Otherwise it takes the
-highest incarnation in R2, loads its `base` change (an incarnation with log objects but
-no base is an error), applies its changes in version order, writes a `base` for a new
-incarnation, and only then commits SQLite. The base holds no per-file unit references and
-no `previousIncarnation`: after a rebuild those are only known for changes replayed from
-the log, and nothing depends on them any more (the replay rule is the watermark).
-`rebuildFromLog()` does the same on demand and refuses unless files, streams and outbox are
-all empty.
+- The live files (with index fragments, precedence and unit), streams (with previous
+  incarnation), tombstones and version equal the state after the last change in a written
+  segment. Tested by comparison with a second object of the same tenant that has empty
+  storage and reads the same R2 log (`LedgerReplica` in the tests), and after storage loss.
+- No watermark comes back lower than a logged watermark any shard was ever given.
+- A `(ledgerIncarnation, version)` pair is never used for two different changes, and an
+  incarnation number never for two histories (its base is in R2 first).
+- It refuses, and the object serves nothing, if R2 cannot be read, the log has a gap or
+  overlap, a segment is corrupt or of an unknown version or kind, an incarnation holds both
+  layouts, there is no log but there are data objects, or a change does not fit the state
+  before it. An unreadable checkpoint is passed over for the base (older checkpoints are
+  deleted once a newer one is written).
+- Changes committed but not yet in a segment are lost (one drain cycle). An unlogged unit
+  must be re-sent (the shard still holds its rows; flush notices the watermark went back).
 
-It guarantees:
+**Checkpoint cost, before and after review S-2** (measured here, in local workerd,
+`bench/checkpoint.bench.test.ts`, 2026-11-19, two runs; the machine was shared, load average
+14–16; local workerd does not enforce the 128 MB isolate limit; peak RSS of the largest process
+803 MB at 100,000 files). S4-shaped files (an index fragment of about 460 characters):
 
-- The live files (with index fragments), watermarks and stream incarnations equal the state
-  after the last change that reached R2.
-- No watermark comes back lower than the `loggedWatermarks` value any shard was ever given.
-- A `(ledgerIncarnation, version)` pair is never reused. The version continues from the
-  last logged one, so logged versions form one sequence without a hole across incarnations.
-- It fails, and the object serves nothing, if R2 cannot be read, the log has a hole, or a
-  change does not fit the state before it. It never serves a partial ledger.
+| Live files | Checkpoint | Synchronous part (state, JSON, body, bytes) | Drain that writes one | Next drain, before | Next drain, after |
+|---|---|---|---|---|---|
+| 8,000 | 8.3 MB | 165–262 ms | 0.41–0.72 s | the same again every 256 segments | 32–46 ms: none until the log since is 8.3 MB |
+| 32,000 | 33.3 MB | 0.70–0.96 s | 1.9–2.3 s | as above | 10–24 ms |
+| 100,000 | 104.6 MB | 2.5–3.3 s | 5.9–7.8 s | as above (and, on Cloudflare, over the isolate's memory) | 14–19 ms; and now refused before it gets there |
 
-It does not guarantee:
+After: `addUnit` answered `full` at 12,000 files when units carried 4,000 files each (the
+limit is about 15,800 such files), with the estimate at 12.7 MB. A checkpoint now costs R2 at
+most what the log since the last one did, instead of the whole state every 256 segments; older
+checkpoints are deleted. What did not change: a checkpoint, a base and a rebuild still hold
+the whole state at once, which is why the limit exists.
 
-- **Changes committed but not yet logged are lost.** An unlogged unit must be re-sent (the
-  shard still holds those rows, since it may discard only up to the logged watermark, but
-  it may believe they are recorded: the flush side has to notice the watermark went back).
-  An unlogged `replace` leaves its inputs live and its outputs orphaned; an unlogged
-  `expire` brings files back. A plan handed out at an unlogged version has no counterpart
-  in the new incarnation, and the bare version number is used again there.
-- **Bounded time.** One R2 read per change since the incarnation started, 6 at a time,
-  inside `blockConcurrencyWhile`, which the runtime limits to about 30 seconds. There are no
-  periodic checkpoints; a base is written only when an incarnation starts. A long-lived
-  incarnation will need them.
-- It does not look at data files in R2 and does not check that listed files exist.
+**Time.** Measured on Cloudflare (`spikes/s4-ledger-scale/`, 2026-11-19): 5,008 changes in
+104 segments, no checkpoint, rebuilt in 5.4 s; a base of 5,000 files alone in 2.8–3.5 s; the
+first layout, 608 per-change objects, in 28.7 s. A checkpoint every 256 segments bounds the
+segments a rebuild reads; a reset during a rebuild starts it again (progress is not kept).
 
-## Tests
+## How it was verified
 
 ```
 npm install
-npm test          # 50 tests in workerd, 3 files
-npm run typecheck
+npx vitest run --maxWorkers=2     # 87 tests in workerd, 5 files
+npx tsc --noEmit                  # clean
+node scripts/mutants.mjs          # on a copy outside the git checkout (see the script)
+npm run bench                     # the workerd counterfactual (bench/)
 ```
 
-Last run: 50 passed, 0 failed; `tsc --noEmit` clean. R2 failure is
-injected by swapping the object's bucket for one whose `put` throws for chosen keys.
+Last run, 2026-11-19 on the shared machine (load average 5 to 23): **87 passed, 0 failed**;
+`tsc --noEmit` clean. Before that run the suite failed 4 rebuild tests by timeout: they take
+1–3 s alone and over 20 s while other suites run, and the default limit is 5 s; the
+configuration now allows 60 s (`vitest.config.ts`). The crash property test
+(`segments.test.ts`) runs three seeds of 70 random steps with failed and half-failed PUTs,
+evictions and storage losses, and checks after every loss that the rebuilt state equals the
+committed state at the last written segment and that no shard was told more was logged.
 
-Covered: gap, overlap, off-by-one, replay, a different unit below the watermark, stream
-independence; a unit with one duplicate or malformed key admits nothing and answers `invalid`;
-the replay rule (any unit at or below the watermark, also after compaction and expiry);
-a lower stream incarnation refused; the `base` change's exact shape and key; tenant ids;
-unit contiguity checked during replay from `unit.seqLo`; a reader rebuilding the live set
-from one incarnation's base and changes; registration,
-auto-registration and the storage-loss handshake; plan range and table filtering, and 50
-plans interleaved with 25 adds each seeing files, watermark and version that agree; replace
-success, conflict, retry and duplicate output; expire; log contents per kind; logged lagging
-committed while R2 is down and catching up from the alarm; a stuck version holding back
-later ones; a change written twice; per-tenant prefixes; eviction with and without a
-pending outbox; rebuild after storage loss (automatic and explicit), a rebuild of a rebuilt
-ledger, the unlogged tail being lost, a log with a hole.
-
-### Mutation checks
-
-Each mutation was applied to `src/ledger.ts` alone, the suite run, and the source restored.
-
-**Contracts v2** (`node scripts/mutants.mjs`, run after the v2 changes): **16 of 16 killed.**
-A lower stream incarnation registered; an empty unit admitted; a live key not answered
-`invalid`; a malformed file throwing instead of `invalid`; a unit below the watermark not a
-replay; a unit straddling the watermark taken as one; the base entry not of kind `base`;
-the base without watermarks; `add_unit` without `unit`; replay not checking the unit range;
-tenant ids not validated; `replace` answering `ok` for a live output; a retried `replace`
-not recognised; `drain` returning a bare number; plus two of the original properties again
-(`loggedWatermarks` returning the committed watermark; the contiguity check dropped).
-
-**The table below is from before the contracts v2 changes and was not re-run after them**
-as a whole (M1 and M3 are the two re-run above). M7 and M14 no longer describe the code: a
-duplicate key now returns `invalid`, and "any unit at or below the watermark counts as a
-replay" is now the contract's rule rather than a mutant.
-
-| # | Mutation | Result | A test that fails |
-|---|---|---|---|
-| M1 | drop the `seqLo === watermark + 1` check | killed (3 tests) | admits units that extend the watermark and refuses a gap or an overlap |
-| M2 | `replace` ignores missing inputs | killed (3) | reports a conflict, listing the missing inputs, and changes nothing |
-| M3 | `loggedWatermarks` returns the committed watermark | killed (4) | reports a watermark as logged only once its change is in R2 |
-| M4 | `expire` does not write to the outbox | killed (4) | removes whole days of one table, strictly before the day given |
-| M5 | `plan` does not filter by table | killed (8) | returns only files of the table that overlap the inclusive range |
-| M6 | `addUnit` ignores the stream incarnation | killed (3) | performs the storage-loss handshake |
-| M7 | no duplicate-key check before writing | killed (1), weakly | admits nothing when one file key belongs to another unit |
-| M8 | M7 plus `addUnit` writes outside a transaction | killed (1) | same test, on the state assertion: two of the unit's files became live |
-| M9 | drain treats a failed R2 write as written | killed (4) | reports a watermark as logged only once its change is in R2 |
-| M10 | drain takes the newest outbox row first | killed (1) | never writes a later change before an earlier one |
-| M11 | rebuild keeps the old ledger incarnation | killed (4) | never repeats a (ledger incarnation, version), and versions keep counting up |
-| M12 | re-registration keeps the old watermark | killed (3) | performs the storage-loss handshake |
-| M13 | `plan` tests containment instead of overlap | killed (1) | returns only files of the table that overlap the inclusive range |
-| M14 | any unit at or below the watermark counts as a replay | killed (3) | does not mistake a different unit below the watermark for a replay |
-| M15 | rebuild ignores removals | killed (2) | reproduces the live set and the watermarks after storage loss |
-| M16 | `replace` writes its outbox row after the transaction instead of inside it | **survived** | none |
-| M17 | no drain after a commit (alarm only) | killed (19) | writes one change per version, in order, describing each mutation |
-
-M7 is killed only by the error message: with the check removed, the primary key on
-`file.key` still rejects the insert and the transaction rolls back. M16 survives because
-the tests cannot crash the object between two synchronous statements; with no `await`
-between them the runtime commits both together anyway. So "the outbox row is in the same
-transaction" is true by reading the code, not by test.
+**Counterfactual, measured in local workerd** (`bench/admission.bench.test.ts`, results in
+`bench/results/`): the same workload against the as-built ledger and this one must end in
+the same state, and each log must rebuild to it, before times are compared; R2 latency is
+injected. Eight writers, 400 units, no injected latency: 63.7 units/s and 120 ms median for
+the as-built ledger, 200.7 units/s and 34 ms for this one; with 250 ms injected per PUT, this
+one admitted 1,600 units at 212.5 units/s and 34 ms median in two segments. **Measured on
+Cloudflare** (`spikes/s4-ledger-scale/`, 2026-11-19, n = 3, 20 s runs, eight writers):
+234–422 units/s, median 16–31 ms, against 1.7–3.3 units/s and 2.3–4.1 s for the as-built
+ledger the same day; the two ledgers agreed on a fixed workload and this one rebuilt the
+as-built ledger's log exactly.
 
 ## Precedence (which file wins a duplicate sample)
 
@@ -203,6 +208,7 @@ merge that would jump over an overlapping file of another stream refused, one ov
 non-overlapping file allowed; precedence kept across a rebuild, also from a stripped log;
 the 4,096-file limit. Mutants: `stack/scripts/mutants.mjs precedence`.
 
+
 ## Tombstones (physical deletion)
 
 Proposed contract addition, implemented here (`contracts/ledger.ts`, the marked block;
@@ -223,37 +229,103 @@ the tombstones of every removal in that log (their objects may already be gone; 
 again is harmless), and a removal that was committed but never logged is not restored,
 because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 tests).
 
+
+## Mutation checks
+
+`node scripts/mutants.mjs` on a copy of `contracts/` and `ledger/` in a scratch directory
+(the script refuses to run in the git checkout: AGENTS.md); each mutant against the test files
+named in the script, the source restored after each.
+
+**Run 1** (2026-11-19, the code before the segment-log review's fixes): **32 of 33 killed.**
+The sixteen contracts-v2 mutants (patterns updated for the code as it now reads), and the
+segment log's: F11 (a start commits without waiting for its base: killed only by the test
+added for it, "if the base cannot be written, nothing commits"), F10, rows deleted before the
+PUT, no `If-None-Match`, other bytes taken as written, the drain deleting rows beyond its
+segment, a logged mark moving another incarnation's stream, a checkpoint for a segment that
+does not end at the committed version (killed by the test added for it, a drain over 4 MiB),
+a rebuild accepting a gap, a rebuild skipping an unreadable segment, R-3 (the start inside
+`blockConcurrencyWhile`; an unbounded wait), R-5, R-8, the name rule, the alarm left after a
+drain. **Survived:** the recorded bounds not made durable before the PUT: workerd tests
+cannot crash between a local commit and its durability; it is right by reading.
+
+**Run 2** (2026-11-19, the final code, with the segment-log review's fixes): **43 of 46
+killed.** The 33 above again, and: S-1 (a rebuild skipping first-layout objects; the rollback
+signature not healed from SQLite; a log fault not reported as stuck; an outbox that may skip
+versions; storage readable by code that knows only version 1), S-2 (no limit; checkpoints
+every N segments whatever the log's size; superseded checkpoints kept; `expire` not shrinking
+the estimate), S-5 (starting empty over data objects), S-9 (`deletable` counting a recorded
+but unwritten segment as logged): each killed by the test named for it above. One mutant of
+run 1, "a checkpoint for a segment that does not end at the committed version", survived run
+2 at first: deleting superseded checkpoints had hidden the bad one from its test. The test now
+makes the newer checkpoint's write fail, and the mutant was killed on re-run. **Survived (3):**
+the recorded bounds not made durable before the PUT (untestable here, as above); and the two
+S-7 guards (`rebuildFromLog` waiting for a drain in flight; `segmentWritten` ignoring a
+replaced incarnation): each covers the other, and no test empties storage in place while a
+drain is in flight, so S-7 is right by reading, not by test.
+
 ## Not implemented
 
-- **Periodic checkpoints** and any pruning of old log objects or old incarnations.
-- **The alert** the design asks for when a stream changes incarnation. The boundary is
-  recorded (`register_stream` change, `previousIncarnation`); nothing is raised.
-- **Callers.** `flush/` calls `addUnit`, `registerStream`, `plan` and `loggedWatermarks`.
-  `compact/` calls `replace`; `janitor/` calls `expire` and the tombstone methods.
-  There is still no publisher. No notification is sent to the
-  publisher; the R2 log is the only output.
-- **Conditional writes** (`If-None-Match`) on log and base objects. One object per tenant
-  and identical bytes on rewrite make them unnecessary today.
-- **Load.** Nothing was run under load or on Cloudflare. Plan latency with 300k files and
-  1,000 units a minute (S4 in the verification plan) are unmeasured.
+- **A state larger than 16 MiB** (review S-2). The full fix: the base and checkpoints
+  written as many lines across several drains from a snapshot (or from rows that record the
+  version that added and removed them), and a rebuild that streams them into SQLite instead
+  of building the state in memory; plans that page. Until then the limit refuses new files.
+- **Pruning the log.** No segment or old incarnation is ever deleted from R2; superseded
+  checkpoints are (LEDGER-LOG.md, "Truncation").
+- **Keeping rebuild progress.** A reset during a rebuild starts it again from the newest
+  checkpoint.
+- **The alert** the design asks for when a stream changes incarnation (the boundary is
+  recorded as a `register_stream` change with `previousIncarnation`; nothing is raised).
+- **Paging `plan`**, and plans that reference consolidated partition indexes instead of
+  carrying every index fragment (S4: 5.8 MB at 7,000 files).
+- **Registration before the first write** (spec F1); see the F6 risk below.
 
 ## Known risks
 
-- **The log write is on the request path.** Each mutation waits for its R2 write (or its
-  failure) before answering. With R2 slow, `addUnit` is slow; it does not fail.
-- **A broken log bricks a lost ledger.** If storage is lost and the log has a hole, the
-  object refuses to start until someone repairs R2. That is deliberate, and has no tooling.
-- **A replay answers `ok` for files the ledger does not list.** By the v2 replay rule a
-  unit at or below the watermark is `ok` whatever keys it names. A caller that wrote
-  different bytes for an already-admitted range has orphaned those objects; only the
-  orphan sweeper (not built) would remove them.
-- **Keys are unique only among live files.** A key removed by `replace` or `expire` could be
-  admitted again. Keys contain a content hash and a sequence range, so this needs a caller bug.
-- **A refused lower incarnation is an exception**, not a status, in `registerStream`
-  (the contract's return type has no refusal).
-- **Size.** `base.json` and each change are single JSON objects built in memory; plans
-  return every matching file in one RPC result. No paging anywhere.
-- **Clock.** `LedgerChange.at` is `Date.now()` and is not used for ordering.
+- **F6, liveness after a shard's storage loss.** A shard that lost its storage starts a
+  new incarnation, but the ledger hears of it only when flush registers it at that
+  incarnation's first flush. Until then a query names the old incarnation and the shard
+  answers `incarnation_mismatch`; a shard that gets no new writes is never flushed, so the
+  refusal lasts indefinitely. Closing it needs registration before writes (spec F1): the
+  shard registers its new incarnation with each tenant's ledger before acknowledging the
+  first append of the stream, the ledger records it, flush stops being the registrar, and
+  query treats a registered incarnation with watermark 0 as empty. That touches shard,
+  ledger, flush and query; it is described here, not built.
+- **The state limit is modelled, not measured on Cloudflare.** 16 MiB of estimated state
+  assumes about four copies of it in memory at a checkpoint's peak against a 128 MB isolate.
+  A tenant that reaches it gets `full` until compaction or retention make room; flush treats
+  `full` as an answer it does not know and retries (fail closed), so its shards fill and its
+  senders get 429. Nothing alerts on it except the error log and `logStatus`.
+- **The release record must mark this release forward-only** for code from before schema
+  versioning, which cannot read the version row. If it does not and such a rollback happens,
+  the roll-forward heals it (above); a storage loss in the rollback window leaves the tenant
+  `stuck` (refused, not lost) until an operator repairs R2.
+- **One change is one SQLite value**, capped at 2 MB on Cloudflare (training knowledge, not
+  checked here). A 2,000-file unit is about 1.4 MB; a `replace` with several thousand
+  outputs would not commit.
+- **The drain shares the object's thread.** Encoding a segment of up to 4 MiB of JSON and
+  deleting its rows runs between requests; at 422 units/s on Cloudflare the median stayed at
+  16 ms, but large changes (S4's 2,000-file units) leave the log 9 s behind.
+- **A broken log stops a lost ledger.** A gap, a foreign object or an unreadable segment
+  makes the rebuild refuse; the tenant is unavailable until someone repairs R2. Deliberate;
+  there is no repair tooling.
+- **A replay answers `ok` for files the ledger does not list** (the v2 replay rule); a
+  caller that wrote different bytes for an admitted range leaves orphans for the sweep.
+- **Keys are unique only among live files**: a removed key could be admitted again (needs a
+  caller bug; keys carry a content hash and a range).
+- **A refused lower incarnation is an exception** in `registerStream`.
+- **Clock.** `LedgerChange.at` and tombstone ages use `Date.now()`; nothing orders by them.
+
+## Needed changes elsewhere
+
+- **flush**: pass the listed incarnation and `seqHi` to `readSegment` (spec F12). Done by
+  flush's engineer (`flush/src/flush.ts` `writeSegment`); the shard side is in `shard/`.
+- **publisher**: read segments and the first layout. Done by the publisher's engineer
+  (`publisher/src/log.ts`, `design/UPGRADES.md` §7 item 2).
+- **shard, flush, query**: registration before writes, for F6 (above). F6(b) (a tail read
+  for incarnation 0 answered `ok` and empty under lazy registration) is open, documented.
+- **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (latest 2, compat 2) in the release record
+  and refuse a rollback below it (COMPATIBILITY.md §6; `deploy/` "Needed changes" 7).
+- **flush** may handle `full` explicitly (today it retries it as unknown, which is safe).
 
 ## Contract issues
 

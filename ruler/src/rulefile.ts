@@ -7,7 +7,7 @@
  * an integer. Everything else (unknown fields included) goes through unchanged so that
  * validation reports it with its path.
  */
-import type { RuleGroup, RuleV2, ValidationError } from '../contracts-proposal/rules.v2'
+import type { AnomalyRuleV2, RuleGroup, RuleV2, ValidationError } from '../contracts-proposal/rules.v2'
 import { formatDuration } from './util'
 import { core, parseYaml, toYaml, YamlError, type YamlNode } from './yaml'
 
@@ -57,8 +57,9 @@ export function importRuleFile(yaml: string): { ok: true; file: unknown } | { ok
 
 export interface ExportOptions {
   /**
-   * Keep viz's own fields (`no_data*`, `monitor`). With false the output is a file
-   * Prometheus loads, and `dropped` lists what was left out.
+   * Keep viz's own fields (`no_data*`, `monitor`) and anomaly rules. With false the output is a
+   * file Prometheus loads, and `dropped` lists what was left out: an anomaly rule is left out
+   * whole, because without its detector it would be an alerting rule that fires for every series.
    */
   extensions: boolean
 }
@@ -93,6 +94,33 @@ export function ruleFileDocument(groups: RuleGroup[], opts: ExportOptions): { fi
       }
       return rule
     })
+    // Anomaly rules come after the group's other rules, as they are stored and evaluated.
+    for (const r of (g.anomalyRules ?? []) as AnomalyRuleV2[]) {
+      if (!opts.extensions) {
+        dropped.push(`${g.name}/${r.name}: anomaly rule (${r.anomaly.detector})`)
+        continue
+      }
+      const rule: Record<string, unknown> = { alert: r.name, expr: r.expr }
+      if (r.forMs > 0) rule.for = formatDuration(r.forMs)
+      if (r.keepFiringForMs > 0) rule.keep_firing_for = formatDuration(r.keepFiringForMs)
+      // The severity label is written once, in the anomaly block.
+      const { severity: _s, ...labels } = r.labels
+      if (Object.keys(labels).length > 0) rule.labels = labels
+      if (Object.keys(r.annotations).length > 0) rule.annotations = r.annotations
+      if (r.noData) {
+        rule.no_data = r.noData.mode
+        if (r.noData.mode === 'alerting') rule.no_data_for = formatDuration(r.noData.forMs)
+        if (r.noData.expr !== null) rule.no_data_expr = r.noData.expr
+      }
+      if (r.monitor) rule.monitor = r.monitor
+      // Every parameter, defaults included, so re-importing the file under a later release with
+      // other defaults still means the same rule; `given` keeps which ones the author chose.
+      const a = r.anomaly
+      const block: Record<string, unknown> = { detector: a.detector, params: a.params, given: a.given, severity: a.severity, max_series: a.maxSeries }
+      if (a.unit !== '') block.unit = a.unit
+      rule.anomaly = block
+      ;(group.rules as unknown[]).push(rule)
+    }
     return group
   })
   return { file: { groups: out }, dropped }

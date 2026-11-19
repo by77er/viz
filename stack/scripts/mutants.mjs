@@ -1,6 +1,7 @@
 // Mutation check for the automatic write path: break one property at a time in the source,
 // run the tests that should notice, expect them to FAIL, restore the source.
 //   node scripts/mutants.mjs [part] [substring of a mutant name]      (from stack/)
+//   MUTANT_FILES=compact/,janitor/ node scripts/mutants.mjs all          only mutants in those files
 // Parts: trigger, compaction, precedence, deletion, limit, review. Paths are relative to the
 // root of the tree the script sits in.
 //
@@ -49,7 +50,7 @@ const mutants = [
   ['trigger', 'a seal on age (alarm) is not announced', 'shard/src/shard.ts', T.shardTrigger,
     "    // 4. Seals made above, and anything a previous attempt could not send.\n    await this.deliver()\n", ''],
   ['trigger', 'the shard never removes its pending marker', 'shard/src/shard.ts', T.shardTrigger,
-    "      else this.setMarked(false)", "      else await this.env.CONFIG.put(key, '{}')"],
+    "      this.setMarked(false)\n      await this.env.CONFIG.delete(key)\n", "      this.setMarked(false)\n"],
   ['trigger', 'the pending marker is not written at a seal', 'shard/src/shard.ts', T.shardTrigger,
     "        await this.env.CONFIG.put(pendingMarkerKey(name), JSON.stringify({ since: now }))\n        this.setMarked(true)", "        this.setMarked(true)"],
   ['trigger', 'pendingTenants lists recorded segments too', 'shard/src/shard.ts', T.shardTrigger,
@@ -71,7 +72,9 @@ const mutants = [
   ['trigger', 'a flush does not ask for maintenance', 'stack/src/maintain.ts', T.triggers,
     "  await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant: result.tenant, wrote: true })\n}", "}"],
   ['trigger', 'the orphan sweep stays due after a sweep that found nothing (idle tenants wake daily)', 'stack/src/maintain.ts', T.triggers,
-    "    sweep = orphans.kept.some((k) => k.why !== 'unknown_name' && k.why !== 'unknown_inputs')", "    sweep = true"],
+    "    sweep = orphans.waitingSince !== undefined && Date.now() - orphans.waitingSince < stalledAfterMs", "    sweep = true"],
+  ['trigger', 'S-6: a leftover that waits on the ledger keeps the sweep due for ever', 'stack/src/maintain.ts', ['stack', `npx vitest run ${W} test/cron.test.ts`],
+    "    sweep = orphans.waitingSince !== undefined && Date.now() - orphans.waitingSince < stalledAfterMs", "    sweep = orphans.waitingSince !== undefined"],
   ['trigger', 'the maintenance message after a flush does not say it wrote', 'stack/src/maintain.ts', T.triggers,
     "  await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant: result.tenant, wrote: true })", "  await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant: result.tenant })"],
   ['trigger', 'the marker written after a flush does not say the sweep is needed', 'stack/src/maintain.ts', T.triggers,
@@ -128,7 +131,7 @@ const mutants = [
   ['precedence', 'the policy ignores live files without a partner', 'compact/src/compact.ts', T.compact,
     "...strays.filter((x) => x.day === day)]", "]"],
   ['precedence', 'a rebuilt ledger forgets precedence (everything ranks by key)', 'ledger/src/ledger.ts', T.ledgerPrec,
-    "      files.set(f.key, { ...listed, unit })", "      files.set(f.key, { ...listed, precedence: 0, precedenceLow: 0, unit })"],
+    "      s.files.set(f.key, { ...listed, unit })", "      s.files.set(f.key, { ...listed, precedence: 0, precedenceLow: 0, unit })"],
 
   // ── Part 3: retention and physical deletion ──
   ['deletion', 'deletable before the removal is logged', 'ledger/src/ledger.ts', T.ledger,
@@ -142,9 +145,9 @@ const mutants = [
   ['deletion', 'the janitor deletes every tombstone without asking what is deletable', 'janitor/src/janitor.ts', T.janitor,
     "    const keys = batch.tombstones.map((t) => t.key)", "    const keys = (await ledger.removedSince(0)).map((t) => t.key)"],
   ['deletion', 'expire records no tombstone', 'ledger/src/ledger.ts', T.janitor,
-    "      this.bury(removed.map((key) => ({ key, table: req.table })))\n", ''],
+    "      if (gone.length === 0) return null\n      this.bury(gone)\n", "      if (gone.length === 0) return null\n"],
   ['deletion', 'replace records no tombstone', 'ledger/src/ledger.ts', T.janitor,
-    "      this.bury(inputs.map((f) => ({ key: f.key, table: f.table })))\n", ''],
+    "      const gone = inputs.map((f) => ({ key: f.key, table: f.table }))\n      this.bury(gone)\n", "      const gone = inputs.map((f) => ({ key: f.key, table: f.table }))\n"],
   ['deletion', 'the orphan sweep ignores pending units', 'janitor/src/janitor.ts', T.janitor,
     "  return w.incarnation === Number(inc) && w.seq >= Number(seqHi) ? 'dead' : 'pending_unit'", "  return 'dead'"],
   ['deletion', 'the orphan sweep takes an unknown stream for a dead one', 'janitor/src/janitor.ts', T.janitor,
@@ -157,9 +160,9 @@ const mutants = [
   ['deletion', 'a compaction output\'s age floor is only the flush files\' grace', 'janitor/src/janitor.ts', T.janitor,
     "  const compactGraceMs = Math.max(graceMs, 2 * (opts.maxCompactStepMs ?? DEFAULT_POLICY.maxStepMs))", "  const compactGraceMs = graceMs"],
   ['deletion', 'series files are not expired', 'janitor/src/janitor.ts', T.janitor,
-    "  const series = await ledger.expire({ table: 'metric_series', beforeDay })", "  const series = { removed: [] as string[] }"],
+    "ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay })", "ledger.expire({ tables: ['metric_samples'], beforeDay })"],
   ['deletion', 'retention keeps one day too few', 'janitor/src/janitor.ts', T.janitor,
-    "new Date(now - policy.metric_samples_days * DAY_MS)", "new Date(now - (policy.metric_samples_days - 1) * DAY_MS)"],
+    "  const cutoff = now - policy.metric_samples_days * DAY_MS", "  const cutoff = now - (policy.metric_samples_days - 1) * DAY_MS"],
   ['deletion', 'retention is due at every midnight (idle tenants wake daily)', 'stack/src/maintain.ts', T.triggers,
     "  if (days.length > 0 && expired.keepDays !== null) due.push(Date.parse(`${days[0]}T00:00:00Z`) + (expired.keepDays + 1) * DAY_MS)", "  if (days.length > 0) due.push((Math.floor(now / DAY_MS) + 1) * DAY_MS)"],
   ['deletion', 'retention is due a day before the oldest day expires', 'stack/src/maintain.ts', T.triggers,
@@ -187,7 +190,7 @@ const mutants = [
   ['limit', 'the sketch estimate uses the wrong constant', 'shard/src/sketch.ts', T.shardSeries,
     "  const alpha = 0.7213 / (1 + 1.079 / m)", "  const alpha = 0.8 / (1 + 1.079 / m)"],
   ['limit', 'the series window is saved on every append', 'shard/src/shard.ts', T.shardSeries,
-    "      metered.dirtySince ??= now\n", "      metered.dirtySince ??= now\n      for (const [bucket, data] of metered.w.save()) sql.exec(`INSERT OR REPLACE INTO series_window (tenant, bucket, data) VALUES (?, ?, ?)`, req.tenant, bucket, data)\n"],
+    "      if (metered.w.add(req.seriesIds, req.seriesLimit ?? 0)) metered.dirtySince ??= now\n", "      if (metered.w.add(req.seriesIds, req.seriesLimit ?? 0)) metered.dirtySince ??= now\n      for (const [bucket, data] of metered.w.save()) sql.exec(`INSERT OR REPLACE INTO series_window (tenant, bucket, data) VALUES (?, ?, ?)`, req.tenant, bucket, data)\n"],
   ['limit', 'edge does not leave the refused series out', 'edge/src/route.ts', T.edge,
     "    for (let i = 0; i < c.nSeries; i++) if (refused.has(c.seriesId(i))) skip[i] = 1\n", ''],
   ['limit', 'edge answers 204 although series were refused', 'edge/src/index.ts', T.edge,
@@ -195,7 +198,7 @@ const mutants = [
   ['limit', 'edge sends the whole limit to every shard (no share)', 'edge/src/route.ts', T.edge,
     "Math.ceil(limit / tenantSlots(map, tenant).length)", "limit"],
   ['limit', 'an unreadable limits record means no limit', 'edge/src/route.ts', T.edge,
-    "      if (typeof n === 'number' && Number.isInteger(n) && n >= 0) limit = n\n    } catch {", "      if (typeof n === 'number' && Number.isInteger(n) && n >= 0) limit = n\n      else limit = Infinity\n    } catch {"],
+    "    if (typeof n === 'number' && Number.isInteger(n) && n >= 0) limit = n\n", "    if (typeof n === 'number' && Number.isInteger(n) && n >= 0) limit = n\n    else limit = Infinity\n"],
   ['limit', 'OTLP partial_success does not count the refused points', 'edge/src/index.ts', T.edge,
     "exportResponse(json, c.rejectedTotal + (l?.rows ?? 0), message)", "exportResponse(json, c.rejectedTotal, message)"],
   ['limit', 'edge sends no series ids', 'edge/src/route.ts', T.edge,
@@ -231,6 +234,10 @@ const mutants = [
     "  if (r.status === 'conflict') return {", "  if (r.status !== 'ok') return {"],
   ['review', 'F15: a newer incarnation counts before its registration is logged', 'janitor/src/janitor.ts', T.janitorUnit,
     "return w.seq > 0 ? 'dead' : 'pending_unit'", "return 'dead'"],
+  ['review', 'F12: flush reads a segment unbound to its incarnation and range', 'flush/src/flush.ts', T.flushUnit,
+    "c.shard.readSegment(c.tenant, seg.seqLo, seg.incarnation, seg.seqHi)", "c.shard.readSegment(c.tenant, seg.seqLo)"],
+  ['review', 'F12: a refused bound read is not reported as an incarnation change', 'flush/src/flush.ts', T.flushUnit,
+    "    if (now?.incarnation !== seg.incarnation) throw new Stop('shard_incarnation_changed',", "    if (false) throw new Stop('shard_incarnation_changed',"],
   ['review', 'R-7: one shard that throws stops the flush sweep', 'flush/src/sweep.ts', T.cron,
     "const answers = await Promise.allSettled(group.map(", "const answers = await Promise.all(group.map("],
   ['review', 'R-7: the maintenance sweep waits on the flush sweep', 'stack/src/index.ts', T.cron,
@@ -279,11 +286,14 @@ const mutants = [
 ]
 
 const [part, only] = process.argv.slice(2)
+// MUTANT_FILES=compact/,janitor/ runs only the mutants of files under those prefixes.
+const files = process.env.MUTANT_FILES ? process.env.MUTANT_FILES.split(',') : null
 let survived = 0
 const tally = {}
 for (const [p, name, file, [cwd, cmd], from, to] of mutants) {
   if (part && part !== 'all' && p !== part) continue
   if (only && !name.includes(only)) continue
+  if (files && !files.some((f) => file.startsWith(f))) continue
   const path = ROOT + file
   const original = readFileSync(path, 'utf8')
   tally[p] ??= { killed: 0, survived: 0 }

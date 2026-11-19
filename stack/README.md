@@ -23,6 +23,8 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 | `test/e2e.test.ts` | 6 end-to-end tests that drive flush by hand |
 | `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
 | `test/triggers.test.ts` | 8 tests of the triggers, the maintenance marker, the orphan-sweep flag and the idle deployment |
+| `test/cron.test.ts` | 7 tests: the cron with a failing shard, listing or send (review R-7), the bound on shards per cron, the marker under KV's write rate (R-11(c)), maintenance message versions |
+| `test/golden.test.ts`, `test/golden/` | 3 tests: golden files of the maintenance message and marker, and the marker reader's refusal of an unknown version |
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
 | `test/precedence.property.test.ts` | 6 seeded runs: random rewrites of the same samples always read back as the latest write |
 | `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
@@ -36,10 +38,11 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 |---|---|---|
 | A shard seals a segment (size, or age in its alarm) | `{tenant, shard}` on the flush queue, written with the seal | `shard/` |
 | A flush message is delivered | `flushTenant` for that stream; acknowledged only when everything sealed is recorded; otherwise retried with backoff, then dead-lettered to R2 | `flush/src/consumer.ts` |
-| A flush run ends ok | `{tenant}` on the maintenance queue, and the tenant's maintenance marker exists | `noteFlushed` |
+| A flush run changed something (admitted a unit, created an object, or saw a segment recorded), or a redelivered flush message ran | `{v:1, tenant, wrote:true}` on the maintenance queue, and the tenant's maintenance marker exists. A duplicate delivery that found nothing asks for nothing (review R-11(b)); a request that is still missed is made up by the cron, because every run leaves a marker due at its next work | `noteFlushed`, `flush/src/consumer.ts` |
 | A maintenance message is delivered | `maintainTenant`: retention expire, up to 8 compaction merges, deletion of what the ledger calls deletable, and (at most daily, and only while objects may have been written since the last sweep that found nothing to wait for) the orphan sweep; then the marker is rewritten with the next time anything can be due, or deleted if the tenant has nothing left | `src/maintain.ts` |
-| The cron fires (hourly) | (1) streams of shards with a pending marker whose segments have waited 10 minutes are re-enqueued; (2) tenants whose maintenance marker is due are enqueued | `sweepPending`, `enqueueDue` |
-| A message exhausts its retries | written to `{cell}/dead-letters/{queue}/…json` and logged; the next sweep re-enqueues the work | `consumeDeadLetters` |
+| The cron fires (hourly) | (1) streams of shards with a pending marker whose segments have waited 10 minutes are re-enqueued, at most 500 shards per cron (a window that moves on each hour); (2) tenants whose maintenance marker is due are enqueued. The two sweeps run independently; a shard, a listing or a send that fails stops neither the other sweep nor the rest of its own, and every failure (and every retention record that cannot be read) is logged and fails the invocation after everything else ran (review R-7) | `handleScheduled`, `sweepPending`, `enqueueDue` |
+| A message exhausts its retries | the batch is written to ONE object `{cell}/dead-letters/{queue}/…json` (review R-12) and logged; the next sweep re-enqueues the work | `consumeDeadLetters` |
+| A message of a version this release does not know (`v` other than 1) | retried with backoff, never run and never dead-lettered (contracts/COMPATIBILITY.md §3.2) | `consumeFlushBatch`, `consumeMaintBatch` |
 
 **Idle means free.** Both sweeps read KV only. A shard has a `flush-pending:` key only
 while it has unrecorded segments; a tenant's `maint:` key carries the time it is next due
@@ -60,8 +63,18 @@ policies should enqueue `{tenant}` on the maintenance queue when it changes one.
 
 **The two graces and the step deadline** (defaults; `MAINTENANCE` JSON overrides):
 a removed file's object is deleted 1 h after its removal is logged; an unreferenced flush
-file after 24 h and only below its stream's logged watermark; a compaction step gives up
-after 5 min, and an unreferenced compaction output is deleted after 24 h.
+file after 24 h and only below its stream's logged watermark (or once a newer incarnation
+of its stream has a logged unit); a compaction step gives up after 5 min; an unreferenced
+compaction output is deleted only once one of its inputs is gone for good (not live, its
+object deleted), and not before it is 24 h old (`DECISIONS.md` D30; `janitor/README.md`).
+
+**The marker and KV's write rate** (review R-11(c)). KV takes one write per second per key
+and answers more with 429, advising retries with exponential backoff
+(developers.cloudflare.com/kv/platform/limits/ and …/kv/api/write-key-value-pairs/, read
+2026-11-19). Two maintenance runs of one tenant can finish within a second (a flush's
+message and the cron's, in different batches). A run writes its marker only if it changed,
+and retries a refused write after 1 s, 2 s and 4 s before failing (then the message is
+retried). `noteFlushed`'s write is best effort, because its message carries the same facts.
 
 ## Not implemented
 
@@ -74,7 +87,8 @@ after 5 min, and an unreferenced compaction output is deleted after 24 h.
   step function (see `compact/README.md`).
 - **Alerting** on dead letters; they are written to R2 and to the error log only.
 - **Concurrency limits** on maintenance (two messages for one tenant in different batches
-  run two maintenance runs; each step is safe to run twice, it is only wasted work).
+  run two maintenance runs; each step is safe to run twice, it is only wasted work. Before
+  D30 that was not true together with the orphan sweep: review R-2).
 - Nothing was deployed to Cloudflare. Queue delivery, cron and KV metadata are miniflare's.
 
 ## How it was verified
@@ -82,12 +96,63 @@ after 5 min, and an unreferenced compaction output is deleted after 24 h.
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npm test                         # 30 tests in workerd, 6 files (soak: 400 steps)
+npx vitest run --maxWorkers=2    # 41 tests in workerd, 8 files (soak: 400 steps)
 npm run soak                     # the soak with 3,000 steps
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
 node tools/hyparquet_check.mjs   # 4 checks agree
 ```
+
+Last run, 2026-11-19: **41 passed, 0 failed**; `tsc --noEmit` clean.
+
+### Wiring for the ledger's background log (2026-11-19)
+
+The ledger now answers at its SQLite commit and logs to R2 in segments about 200 ms later
+(`contracts/LEDGER-LOG.md`, D36), so a flush run that admits units usually ends
+`awaitingLog` and the flush queue's retry is what tells the shard `recorded`. The script's
+bindings did not change (the drain delay is the ledger's default). The tests that expected
+one flush run to record changed with it, the way production gets there:
+
+- `test/world.ts` `flushAll` and `drainLedger`: flush through the `Flush` entrypoint; while a
+  run ends `awaitingLog`, run the ledger's drain (what its alarm does; inside the object, so a
+  drain failing on a broken log is a result, not an unhandled rejection) and flush again, at
+  most five times. `test/compaction.property.test.ts` and the hooked runs of `e2e.test.ts`
+  use `flushSettled` (`flush/test/helpers.ts`), the same loop.
+- `test/e2e.test.ts` `loggedUnits` reads the change log as segments (`decodeLedgerSegment`,
+  each checked against its key) instead of one object per change; the concurrent-flush test
+  settles the units the concurrent runs admitted before it asks a later run to find nothing.
+- `test/triggers.test.ts`: the simulated queue redelivers a retried message at once, where
+  the real one waits `retryDelaySeconds` (5 s at least); before a redelivery the drain of that
+  tenant's ledger runs, as the wait would have let it. The idle test drains each ledger before
+  each settling maintenance run (a removal is deletable once it is logged).
+- The idle test then found a ledger alarm left behind after an explicit drain had written
+  everything. AGENTS.md wants an alarm deleted when there is nothing to do; the ledger now
+  does that (`ledger/test/segments.test.ts`, "a drain that writes everything deletes the
+  alarm").
+
+### Leftovers stop keeping the sweep due (review S-6 of `design/reviews/segment-log-and-compaction.md`)
+
+`maintainTenant` used to keep the orphan sweep due for as long as the sweep kept any object
+for a reason other than an unjudgeable name, so a leftover that only the ledger or a shard
+could ever settle (a flush file of a unit that will never be reported, a stream the ledger
+never saw) woke an idle tenant's ledger and listed its prefix every day for ever. Now the
+sweep stays due only while the youngest such object (`OrphanResult.waitingSince`, janitor) is
+younger than `stalledAfterMs` (default seven days); after that only a write makes it due
+again. `test/cron.test.ts`, "review S-6": failed before the change (the marker kept
+`sweep: true`), passes after; the leftover is kept, never deleted.
+
+`scripts/mutants.mjs`: six patterns for ledger, shard and edge code no longer matched the code
+after refactors (they would have printed NOT APPLIED) and were updated on 2026-11-19: the
+pending marker never removed, the series window saved on every append, a rebuilt ledger
+forgetting precedence, `expire` and `replace` recording no tombstone, an unreadable limits
+record meaning no limit. Run again on a copy of the tree in a scratch directory
+(2026-11-19): all six **killed**, four through this script (shard trigger and series tests,
+the ledger's precedence test, edge's limit test) and the two tombstone mutants against
+`ledger/test/tombstone.test.ts` ("replace and expire record what they removed…"), because in
+the copy the janitor suite could not import control's golden file (its baseline failed there,
+so it could not judge them). With them, the `trigger` part's six sweep mutants, including a
+new one for S-6 ("a leftover that waits on the ledger keeps the sweep due for ever", killed by
+`cron.test.ts` "review S-6"): 6 of 6 killed.
 
 ### Triggers (`test/auto.test.ts`, `test/triggers.test.ts`)
 
@@ -195,6 +260,32 @@ end each tenant's R2 prefix is exactly its ledger's live set, all level 2. Two e
 3,000-step runs in this review (before the precedence change) also held, as did the
 previous engineer's three. `npm test` runs 400 steps (about 20 s).
 
+**Run of 2026-11-19** (after the write-path review's fixes: D30's compaction-output rule, F12,
+F15, R-7, R-11(b)/(c), R-12; the ledger draining its log in the background at its default
+200 ms; run alone among this engineer's jobs, on a machine loaded by others, load average
+about 11 on 4 cores): `SOAK_STEPS=3000 npx vitest run --maxWorkers=1 test/soak.test.ts`, seed
+20261118: 3,000 steps, **every invariant held at every step**; 666 s; peak memory 1,004 MB for
+the whole process tree, 568 MB for the largest process (sampled every 3 s). 901 acknowledged
+requests (193 repeats), 584 segments admitted through 1,297 delivered flush messages (508
+retried, injected failures and `awaiting_log`), 510 merges, 15 conflicts and 32 more under a
+concurrent retention, 30 crashed steps, 3,440 files expired, 8,508 objects purged, 134 orphans
+deleted (each checked against its rule when deleted, compaction outputs against D30's inputs
+rule), 100 evictions, 57 ledger-log outages, 59 old-plan readers verified, 0 dead letters.
+
+**Run of 2026-11-19, final code of the storage-path work** (the segment-log review's fixes:
+the stuck and self-healing log, the state limit, checkpoints by log volume, no empty start over
+data, the stalled-leftover rule; early refusal and group commit; the name rule; run alone among
+this engineer's jobs, machine load average 12–14 from others):
+`SOAK_STEPS=3000 npx vitest run --maxWorkers=1 test/soak.test.ts`, seed 20261118: 3,000
+steps, **every invariant held at every step**; 367 s; peak memory 996 MB for the process tree
+and 563 MB for the largest process (sampled every 3 s, threads not counted twice). 881
+acknowledged requests (180 repeats), 586 segments admitted through 1,427 delivered flush
+messages (535 retried), 391 merges, 4 conflicts and 12 more under a concurrent retention, 26
+crashed steps, 1,724 files expired, 5,214 objects purged, 66 orphans deleted, 106 evictions,
+58 ledger-log outages, 60 old-plan readers verified, 0 dead letters. An earlier 3,000-step run
+the same night, before the review's fixes, also held (228 s); its memory figure for the whole
+tree was wrong (the sampler summed threads) and is not reported.
+
 **What failed during development.** In this review, one 3,000-step run passed every
 step and then failed its final sanity check that every tenant still has rows: a maintenance
 run with a policy clock three days ahead had expired all of one tenant's data after its
@@ -216,6 +307,56 @@ notice, and restored. Last run, on the final code of this review: **73 of 73 kil
 test (cargo failures are now reported by test name). The previous engineer's 57 were also
 re-run unchanged before this review's changes: 57 of 57. `flush/scripts/mutants.mjs`: 18 of
 18 on the final code; `edge/scripts/mutants.mjs`: 35 of 35.
+
+**Run of 2026-11-19 (the write-path review's fixes in compact, janitor, flush and this
+script's cron and maintenance).** On a copy of the tree in a scratch area (the script refuses a
+git checkout), `MUTANT_FILES=compact/,janitor/,flush/,stack/ node scripts/mutants.mjs all`:
+**74 of 74 killed** (trigger 12, compaction 11, precedence 3, deletion 10, review 38), every
+one by a named test. Baseline first: every suite the mutants run was green unmutated on that
+copy. The 36 mutants in `shard/`, `ledger/`, `edge/` and `engine/` were not run (their owners').
+Two patterns were updated for code that had changed (series files not expired: one `expire`
+for both tables; retention one day short: `retentionCutoffDay`), and two F12 mutants added.
+`flush/scripts/mutants.mjs`, same copy: 20 of 20. Since D30 two rows of the table below read
+differently: a conflicted step's outputs being left behind is intended, and the mutant is "a
+conflicted step deletes its outputs" (killed by compact: conflict); "a compaction output is an
+orphan as soon as a flush file would be" is now "a compaction output's age floor is only the
+flush files' grace" (killed by janitor: true orphans).
+
+| Part | Mutant (review part) | Killed by |
+|---|---|---|
+| review | R-1: an unreadable retention record falls back to the default | janitor: retention policy |
+| review | R-1: no record is refused instead of meaning the default | janitor: retention policy |
+| review | R-1: a retention record of an unknown version is read | janitor: retention policy |
+| review | R-1: a refusal is not written to the marker | stack golden: queue.maint and kv.maint-marker |
+| review | R-1: a refused tenant is not looked at again within the hour | stack golden: same |
+| review | **R-2/F13: the sweep ignores a compaction output's inputs (age only)** | compact: conflict (the sweep deletes the outputs while the expired inputs remain) |
+| review | R-2: a tombstoned input whose object is still there counts as gone | compact: conflict |
+| review | R-2: a live input whose object is missing counts as gone | janitor: a live input whose object is missing |
+| review | R-2: the inputs record is not checked against the key | compact golden: reader refusals |
+| review | R-2: an inputs record of an unknown version is read | janitor golden: a newer record keeps the object |
+| review | R-2: inputs outside the output's tenant and day are accepted | compact golden: reader refusals |
+| review | R-2: outputs are written without their inputs record | compact: conflict |
+| review | F14: a `replace` answer this code does not know is taken for a conflict | compact: fails closed on an unknown answer |
+| review | **F15: a newer incarnation counts before its registration is logged** | janitor: spec F15 |
+| review | **F12: flush reads a segment unbound to its incarnation and range** | flush: spec F12 |
+| review | F12: a refused bound read is not reported as an incarnation change | flush: spec F12 |
+| review | **R-7: one shard that throws stops the flush sweep** | stack cron: shards before and after a failing one |
+| review | R-7: the maintenance sweep waits on the flush sweep | stack cron: a listing that fails stops only its own sweep |
+| review | R-7: no bound on the shards asked per cron | stack cron: at most maxShards per cron |
+| review | R-7: the window of shards never moves on | stack cron: same |
+| review | **R-11(b): maintenance after every run, changed or not** | flush consumer: a duplicate delivery asks for nothing |
+| review | R-11(b): a redelivery after a failed request does not ask again | flush consumer: a redelivery asks again |
+| review | R-11(b): a run that admitted something and then stopped does not ask | flush consumer: a run that admitted and stopped still asks |
+| review | R-11(b): a flush never reports a change | flush consumer: onFlushed after a run that changed something |
+| review | **R-11(c): the marker write is not retried** | stack cron: two runs that finish together both succeed |
+| review | R-11(c): an unchanged marker is written again | stack cron: an unchanged marker is not written |
+| review | **R-12: one dead-letter object per message** | flush consumer: ONE object for the whole batch |
+| review | R-12: a batch whose dead-letter write failed is acknowledged | flush consumer: every message retried |
+| review | versions: a flush message of an unknown version is flushed / is dead-lettered (2) | flush consumer: v absent or 1 is flushed, any other retried |
+| review | versions: a maintenance message of an unknown version is run | stack cron: v absent or 1 runs, any other retried |
+| review | versions: a marker of an unknown version is acted on by the run / by the cron (2) | stack golden: reader refusals |
+| review | versions: a dead-letter object of an unknown version is read as version 1 | flush golden: r2.dead-letters |
+| review | encoding: the flush message, the marker lose their version; `inputs16` with another separator; a flush key with nine hex digits (4) | the golden test of each format |
 
 | Part | Mutant | Killed by |
 |---|---|---|

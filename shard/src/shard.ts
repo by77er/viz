@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { SHARD_NAME } from '../../contracts/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 import { SeriesWindow, UnreadableSketch } from './sketch'
 
@@ -19,7 +20,9 @@ import { SeriesWindow, UnreadableSketch } from './sketch'
  *             until that write is durable)
  *   seal      fixes a contiguous range of batches as a segment; the boundary is durable,
  *             and a `{tenant, shard}` message for the flush queue is written with it
- *   recorded  the tenant's ledger has admitted the segment's files
+ *   recorded  the tenant's ledger has admitted the segment's files AND logged that to R2: the
+ *             caller passes the ledger's `loggedWatermarks()`, never `addUnit`'s committed
+ *             watermark, which a ledger that loses its storage can lose (spec F8)
  *   discard   payloads are dropped after a short retention; `discarded_through` is the fence
  */
 
@@ -130,8 +133,17 @@ export const SHARD_SCHEMA: SchemaSpec = {
   }],
 }
 
+/**
+ * The format version of `FlushMessage` (contracts/COMPATIBILITY.md §3.1: a JSON message
+ * carries an integer `v`; an absent `v`, as messages before this field were sent, means 1).
+ * flush/src/consumer.ts retries a message of a version it does not know.
+ */
+export const FLUSH_MESSAGE_VERSION = 1
+
 /** What a shard puts on the flush queue when it seals a segment (binding `FLUSH_QUEUE`). */
 export interface FlushMessage {
+  /** Always written by this shard (`FLUSH_MESSAGE_VERSION`); optional in the type because messages sent before it existed lack it. */
+  v?: number
   tenant: string
   shard: string
 }
@@ -304,6 +316,9 @@ export class Shard extends DurableObject<ShardEnv> {
 
   constructor(ctx: DurableObjectState, env: ShardEnv) {
     super(ctx, env ?? {})
+    // contracts/TABLES.md: a shard is named `{pool}/{slot}` with `SHARD_NAME`, or its flush
+    // files' keys could name another stream. An object addressed otherwise serves nothing.
+    if (ctx.id.name !== undefined && !SHARD_NAME.test(ctx.id.name)) throw new Error(`shard: name ${JSON.stringify(ctx.id.name.slice(0, 140))} does not match SHARD_NAME`)
     this.refusal = refusalOf(openSchema(ctx.storage, SHARD_SCHEMA))
     if (this.refusal) {
       // COMPATIBILITY.md §2.4: read nothing else, write nothing, keep the alarm coming back.
@@ -665,7 +680,7 @@ export class Shard extends DurableObject<ShardEnv> {
     for (const r of sql.exec(`SELECT tenant, due FROM notify WHERE due <= ? ORDER BY tenant`, now).toArray()) {
       const tenant = r.tenant as string
       try {
-        await this.announce({ tenant, shard: name })
+        await this.announce({ v: FLUSH_MESSAGE_VERSION, tenant, shard: name })
         // `due` is part of the key: a seal that happened during the send keeps its own row.
         sql.exec(`DELETE FROM notify WHERE tenant = ? AND due = ?`, tenant, r.due)
       } catch {
@@ -765,7 +780,9 @@ export class Shard extends DurableObject<ShardEnv> {
   }
 
   /**
-   * The ledger has admitted every file of segments up to `throughSeq`. Must extend the
+   * The ledger has admitted every file of segments up to `throughSeq`, and that admission is
+   * in its R2 log: `throughSeq` must come from the ledger's `loggedWatermarks()`, never from
+   * `addUnit`'s answer (spec F8; the shard discards what is recorded). Must extend the
    * recorded prefix exactly at a segment boundary; anything else is refused unchanged.
    */
   async recorded(tenant: string, incarnation: number, throughSeq: number): Promise<RecordedResult> {

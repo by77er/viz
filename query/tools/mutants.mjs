@@ -5,22 +5,57 @@
  *
  *   node tools/mutants.mjs            all mutants
  *   node tools/mutants.mjs 3 7        only mutants 3 and 7
+ *   VIZ_MUTANTS_DIR=<dir> node …      where to build the scratch tree (default: a new temp dir)
+ *
+ * NOTHING IN THE SHARED TREE IS EVER WRITTEN (AGENTS.md, "Tests must have teeth": others
+ * commit and snapshot the tree while this runs, and a mutant applied in place once reached
+ * a pull request). The tool builds a scratch tree first: copies of `query/`,
+ * `engine/query` and `engine/wasm-query` (the directories mutants touch and the module a
+ * Rust mutant rebuilds), and symbolic links to everything else (other components,
+ * `query/node_modules`), so relative imports resolve as in the real tree. Mutants are
+ * applied to the copies and the suite runs there. At the end the files a mutant would
+ * touch are hashed in the shared tree and compared with their hashes at the start.
  *
  * For each mutant the test files named in its `tests` run first (the tests written for
  * that property). If they pass, the WHOLE suite runs before the mutant is called a
  * survivor. A mutant that no test catches is printed as SURVIVED and the script exits 1;
  * one that does not type-check is INVALID. `--all` runs the whole suite for every mutant.
- * Mutants in Rust rebuild the WASM module (engine/wasm-query/build.sh) before and after.
- * The source is restored even if the script is interrupted.
+ * Mutants in Rust rebuild the copy's WASM module (its `build.sh`) before and after.
+ * The copy's source is restored even if the script is interrupted.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/** The shared tree: read, never written. */
+const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
+const COPIED = ['query', 'engine/query', 'engine/wasm-query']
+const SKIP = /(^|\/)(node_modules|target|\.wrangler)(\/|$)/
+
+/** A scratch tree: COPIED are copies, everything else is a link into the shared tree. */
+function scratchTree(dir) {
+  mkdirSync(join(dir, 'engine'), { recursive: true })
+  for (const top of readdirSync(repo)) {
+    if (top === '.git' || top === 'query' || top === 'engine') continue
+    symlinkSync(join(repo, top), join(dir, top))
+  }
+  for (const e of readdirSync(join(repo, 'engine'))) {
+    if (!COPIED.includes(`engine/${e}`)) symlinkSync(join(repo, 'engine', e), join(dir, 'engine', e))
+  }
+  for (const c of COPIED) cpSync(join(repo, c), join(dir, c), { recursive: true, filter: (src) => !SKIP.test(src.slice(join(repo, c).length)) })
+  symlinkSync(join(repo, 'query/node_modules'), join(dir, 'query/node_modules'))
+  return join(dir, 'query')
+}
+
+const scratch = process.env.VIZ_MUTANTS_DIR ? (mkdirSync(process.env.VIZ_MUTANTS_DIR, { recursive: true }), mkdtempSync(join(process.env.VIZ_MUTANTS_DIR, 'tree-'))) : mkdtempSync(join(tmpdir(), 'viz-query-mutants-'))
+/** `query/` in the scratch tree: every write below goes here. */
+const root = scratchTree(scratch)
 const rel = (p) => join(root, p)
+const shared = (p) => join(repo, 'query', p)
+console.log(`scratch tree: ${scratch} (copies of ${COPIED.join(', ')}; links to the rest)`)
 
 const MUTANTS = [
   {
@@ -45,11 +80,11 @@ const MUTANTS = [
     replace: "await authenticate(req, env.CONFIG, 'write').catch((e) => { if (e.status === 403) return authenticate(req, env.CONFIG, 'read'); throw e })",
   },
   {
-    name: 'The tail is skipped (only the lake is read)',
+    name: 'The tail is skipped (no shard is read: only the lake, for queries, split queries and the cardinality report)',
     tests: ['test/invariance.test.ts'],
     file: 'src/coordinator.ts',
-    find: 'const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))',
-    replace: "const tails: Tail[] = shards.map(() => ({ status: 'ok', batches: [], bytes: 0 }))",
+    find: '  const stub = c.env.SHARD.get(c.env.SHARD.idFromName(shard))\n',
+    replace: "  if (shard) return { status: 'ok', batches: [], bytes: 0 }\n  const stub = c.env.SHARD.get(c.env.SHARD.idFromName(shard))\n",
   },
   {
     name: '`stale_watermark` is ignored (the shard’s refusal is treated as an empty tail)',
@@ -170,7 +205,7 @@ const MUTANTS = [
     name: 'max_fetch_bytes is not enforced',
     tests: ['test/limits.test.ts'],
     file: 'src/coordinator.ts',
-    find: "if (lakeBytes > c.limits.maxFetchBytes) throw tooMuch(c, `the ${wanted.length} data files in range`, lakeBytes)",
+    find: '  if (bytes > c.limits.maxFetchBytes) return tooMuch(c, `the ${files} data files in range`, bytes)\n',
     replace: '',
     alsoFind: "if (lakeBytes + tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + tailBytes)",
     alsoReplace: '',
@@ -179,8 +214,8 @@ const MUTANTS = [
     name: 'max_scan_samples is not enforced',
     tests: ['test/limits.test.ts'],
     file: 'src/coordinator.ts',
-    find: 'if (scan > c.limits.maxScanSamples) {',
-    replace: 'if (scan > Infinity) {',
+    find: 'if (scan > c.limits.maxScanSamples) return',
+    replace: 'if (scan > Infinity) return',
   },
   {
     name: 'The isolate’s byte budget is not enforced',
@@ -207,12 +242,11 @@ const MUTANTS = [
     name: 'The refusal bound is ignored for one more attempt: after the retries are used up the query answers from what it has',
     tests: ['test/fence.test.ts'],
     file: 'src/coordinator.ts',
-    find: 'if (n > MAX_REFUSALS) throw new ApiError(\'unavailable\', `${why}, and the ledger does not catch up; retry later`)',
-    replace: 'if (n > MAX_REFUSALS) giveUp = true',
-    alsoFind: '      if (again) continue\n',
-    alsoReplace: '      if (again && !giveUp) continue\n',
-    alsoFind2: '  let reserved = 0\n  try {\n    for (let attempt = 1; ; attempt++) {',
-    alsoReplace2: '  let reserved = 0\n  let giveUp = false\n  try {\n    for (let attempt = 1; ; attempt++) {',
+    // The closure of one-place `gather` (the cardinality report has its own).
+    find: "    if (n > MAX_REFUSALS) throw new ApiError('unavailable', `${why}, and the ledger does not catch up; retry later`)\n  }\n  let reserved = 0\n",
+    replace: '    if (n > MAX_REFUSALS) giveUp = true\n  }\n  let reserved = 0\n  let giveUp = false\n',
+    alsoFind: '      if (again) continue\n\n      const tailBatches',
+    alsoReplace: '      if (again && !giveUp) continue\n\n      const tailBatches',
   },
   // ── split execution and the cardinality report ──
   {
@@ -292,6 +326,48 @@ const MUTANTS = [
     find: "      return failure('internal', 'the query engine could not be loaded', headers)",
     replace: "      return failure('unavailable', 'the query engine could not be loaded', { ...headers, 'Retry-After': '1' })",
   },
+  {
+    name: 'A query over many series is not split by its series estimate (only samples, bytes and files decide)',
+    tests: ['test/split.test.ts'],
+    file: 'src/coordinator.ts',
+    find: ' || seriesEst > c.limits.splitAboveSeries',
+    replace: '',
+  },
+  {
+    name: 'Leaves are sized from samples alone (a split query over many series gets too few leaves)',
+    tests: ['test/split.test.ts'],
+    file: 'src/coordinator.ts',
+    find: ', Math.ceil(series / (0.75 * limits.maxSeries)))',
+    replace: ')',
+  },
+  {
+    name: 'The series estimate counts one file per shard (size-cut segments of one span hold different series)',
+    tests: ['test/split.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '        if (g.maxTs >= f.minTs) sum += g.n\n',
+    replace: '        if (g === f) sum += g.n\n',
+  },
+  {
+    name: 'The plan-only answer leaves out the refusal the query would get',
+    tests: ['test/split.test.ts'],
+    file: 'src/coordinator.ts',
+    find: 'refusal: refusal && { errorType: refusal.errorType, error: refusal.message } })',
+    replace: 'refusal: null })',
+  },
+  {
+    name: 'The plan-only endpoint reads the tail before answering (wakes every shard)',
+    tests: ['test/split.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '      const refusal = refusalBeforeFetch(c, splitting, scan, wanted.length, lakeBytesAll)\n',
+    replace: '      const refusal = refusalBeforeFetch(c, splitting, scan, wanted.length, lakeBytesAll)\n      if (explain) await Promise.all((await shardsOf(c, snap.watermarks)).map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))\n',
+  },
+  {
+    name: 'The cardinality report ignores its series estimate (one place whatever the series, until the files pass maxFetchBytes)',
+    tests: ['test/cardinality.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '(bytes > c.limits.maxFetchBytes || est > per ?',
+    replace: '(bytes > c.limits.maxFetchBytes ?',
+  },
 ]
 
 function run(cmd, args, opts = {}) {
@@ -334,6 +410,13 @@ function apply(source, m) {
 const whole = process.argv.includes('--all')
 const only = process.argv.slice(2).filter((a) => a !== '--all').map(Number)
 const chosen = MUTANTS.map((m, i) => ({ ...m, n: i + 1 })).filter((m) => only.length === 0 || only.includes(m.n))
+
+const fingerprint = () => {
+  const h = createHash('sha256')
+  for (const f of [...new Set(chosen.map((m) => m.file))].sort()) h.update(f).update(existsSync(shared(f)) ? readFileSync(shared(f)) : '')
+  return h.digest('hex').slice(0, 16)
+}
+const before = fingerprint()
 
 // Every mutant must apply to the source as it is, before anything runs.
 for (const m of chosen) apply(readFileSync(rel(m.file), 'utf8'), m)
@@ -395,4 +478,6 @@ for (const m of chosen) {
   }
 }
 console.log(`\n${chosen.length - survived} of ${chosen.length} mutants killed`)
+const after = fingerprint()
+console.log(`shared tree, files the mutants touch: ${before} before, ${after} after${before === after ? ' (unchanged)' : ' (CHANGED: by someone else; this tool writes only to the scratch tree)'}`)
 process.exit(survived ? 1 : 0)

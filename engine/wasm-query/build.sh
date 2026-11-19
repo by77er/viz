@@ -5,7 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export CARGO_TARGET_DIR="$PWD/target"
-cargo build --release --target wasm32-unknown-unknown
+# Two jobs unless told otherwise: the machine is shared (AGENTS.md).
+cargo build -j "${CARGO_BUILD_JOBS:-2}" --release --target wasm32-unknown-unknown
 cp target/wasm32-unknown-unknown/release/viz_query_engine.wasm js/viz_query.wasm
 raw=$(wc -c < js/viz_query.wasm)
 gz=$(gzip -9 -c js/viz_query.wasm | wc -c)

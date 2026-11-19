@@ -9,7 +9,7 @@ compaction) encodes and merges Parquet and must not carry the PromQL parser and 
 tables; the read path evaluates PromQL and does not need the Parquet writer.
 
 ```
-./build.sh                    # release, fat LTO, 1 codegen unit, opt-level 3, panic=abort, +simd128,+bulk-memory
+./build.sh                    # release, fat LTO, 1 codegen unit, opt-level 3, panic=abort, +simd128,+bulk-memory; -j 2 (CARGO_BUILD_JOBS overrides)
 node tools/check.mjs          # load proof and size report, in Node
 (cd ../../query && npm test)  # the binding's tests run in workerd, in query/test/engine.test.ts
 ```
@@ -184,7 +184,12 @@ and `query/test/cardinality.test.ts` (5 tests), and natively, below the ABI, by
 
 `node tools/check.mjs`: **12 of 12 checks pass**: no imports, the export list, an empty import
 object, a query whose every point is checked, the marker's bits, eight kinds of bad query
-with no trap.
+with no trap. Re-run on 2026-11-19 at 00:50 UTC after a container restart (load average
+about 7), on a module rebuilt from the committed source: 12 of 12, and the rebuilt module's
+SHA-256 (`2b3132a41bd9e0cf…`) equals the one built before the restart, so the module the
+query tests load carried no mutant. Nothing in this crate changed since; the query Worker's
+new behaviour on 2026-11-19 (series-sized splits, `/api/v1/plan`) uses existing calls
+(`scanRows` over series files).
 
 The rule behind `scanRows` is tested in `engine/query` (`tests/prune.rs`, 3 tests, one a
 property over the 106-query pool: skipping files never changes a result, and the row

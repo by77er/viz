@@ -13,14 +13,16 @@ to find design and implementation bugs before more code is written on top of the
 | `bfs/model.ts` | Second model, written independently, at the granularity of the implementation's methods (`shard.ts`, `ledger.ts`, `flush.ts`, `compact.ts`, `janitor.ts`, `query/coordinator.ts`), including the PLANNED segment log of `contracts/LEDGER-LOG.md` and two tenants. |
 | `bfs/check.ts` | Explicit-state breadth-first model checker for it (TypeScript, no dependencies); also checks liveness as AG EF on the whole state graph. |
 | `bfs/run.ts` | Its experiments; writes `results/bfs/*.json` and `results/BFS.md`. |
+| `bfs/replay.ts` | Replays a recorded counterexample step by step against another configuration and says where it stops; writes `results/REPLAY.md`. |
 | `fill-readme.mjs` | Regenerates every result table in this README from `results/` (`--write`). |
-| `results/RESULTS.md`, `results/BFS.md` | Every experiment with states, depth, time and every counterexample step by step. |
+| `results/RESULTS.md`, `results/BFS.md`, `results/REPLAY.md` | Every experiment with states, depth, time and every counterexample step by step; the replays. |
 
 ```
 npm install
 npm run check          # everything: typecheck, Quint tests, explicit-state checker, TLC, simulation; then the tables here
 npm run check:quick    # typecheck, Quint tests, explicit-state guard-off + findings, TLC guard-off + design-as-written (~30 min)
-npm run check:bfs      # explicit-state checker only;   node bfs/run.ts <name|teeth|finding|amended|liveness> ...
+npm run check:bfs      # explicit-state checker only;   node bfs/run.ts <name|teeth|finding|d30|log|amended|liveness> ...
+node bfs/replay.ts     # the recorded F13, F14, F15 and IMPL_PLANNED traces against the code as built
 npm run check:tlc      # TLC only;                      node experiments.mjs <name|teeth|literal|witness|fixed> ...
 npm run test:quint     # the Quint scenario tests
 ```
@@ -28,22 +30,35 @@ npm run test:quint     # the Quint scenario tests
 Requirements: Node 22 (it runs `bfs/*.ts` directly) and Java 17. The first `quint verify`
 downloads Apalache 0.62.4 (which bundles TLC) into `~/.quint`; that needs network access once.
 Every run is capped for a shared machine: the explicit-state checker keeps its frontier on
-disk (`build/`), runs under `--max-old-space-size=1024` and stops at 19 million states
-(it says so in its result; none of the runs below hit that bound); TLC gets `-Xmx900m` and a
-400 MB off-heap fingerprint set, and two workers. Run TLC and the explicit-state checker one
-after the other, not together.
+disk (`build/`, compressed), runs under `--max-old-space-size=1024` and stops at 19 million
+states, or at a lower bound a row names; a run that stops says so and reports the depth up to
+which every state was checked. TLC gets `-Xmx900m`, a 400 MB off-heap fingerprint set and two
+workers. Run TLC and the explicit-state checker one after the other, not together.
 
 ## Which protocol is checked
 
-- **The ledger's change log.** Both models check the PLANNED log of `contracts/LEDGER-LOG.md`:
+- **The ledger's change log.** Both models check the batched log of `contracts/LEDGER-LOG.md`:
   a mutation answers after its SQLite commit, changes reach R2 later, and shards discard only
   up to the LOGGED watermark. `viz.qnt` abstracts the log as an outbox written to R2 a prefix
-  at a time. `bfs/model.ts` models it literally: a drain PUTs one segment holding every pending
-  change, then deletes those outbox rows and advances `logged` in one transaction, and can die
-  between the two; the rebuild lists the segments in key order and replays them. The as-built
-  log (one object per change, `ledger.ts` `drainNow`) is the `log: 'perChange'` setting of
-  `bfs/model.ts` and is used for the "as built" runs. Both are checked; the README says which
-  for every run.
+  at a time. `bfs/model.ts` models it literally: a drain PUTs one segment holding the pending
+  changes, then deletes those outbox rows and advances `logged` in one transaction, and can die
+  between the two; the rebuild lists the segments in key order and replays them strictly.
+  When this work started the segment log was PLANNED and `ledger.ts` wrote one object per
+  change (`log: 'perChange'` in the model). The "as written" runs check the plan as it stood
+  then, which is where F10 and F11 come from. During this work LEDGER-LOG.md adopted both fixes
+  and `ledger.ts` was rebuilt on segments; the "as built" runs follow the new code
+  (`drainRetrySame`, `baseFirst`, `baseTombstones`).
+- **The compaction fix as built (D30, 2026-11-19).** `compact.ts` and `janitor.ts` fixed F13,
+  F14 and F15 differently from the model's proposal (step-unique keys): output keys are
+  unchanged, each output carries its inputs as R2 metadata `viz-inputs`, a step never deletes
+  an output, and the orphan sweep deletes an unreferenced output only when one of its inputs is
+  absent from its listing and not live in its one ledger read; a newer incarnation kills old
+  flush files only once it has a logged watermark above 0. The `d30` runs check that rule
+  as the code runs it: the sweep is three kinds of step (list R2; one `orphanCheck`; one delete
+  per doomed key) that any other step can come between, **with no clock at all** (no age
+  floor, which the code keeps but says is not what makes it safe), purge is delete then forget,
+  and the ledger's start is two steps (base segment PUT, then commit, nothing served in
+  between, storage can be lost again in between). Configuration `D30` in `bfs/run.ts`.
 - **Design text vs. code.** "As written" runs take `design/DESIGN.md` (draft 3.1) and
   `contracts/LEDGER-LOG.md` literally. "As built" runs (explicit-state checker only) follow
   the code read on 2026-11-18: lazy stream registration by `flush.ts`, the coordinator asking
@@ -81,9 +96,9 @@ differ only by those extra steps, and the amended protocol passes in both.
 | Client | `append(b)`: send or re-send any batch, also after a success (the acknowledgement may have been lost); first sends in batch order (symmetry). | DESIGN §4.2 |
 | Shard stream `(shard, tenant, incarnation)` | `append` (durable, dedup on fingerprint), `seal`, `recorded(inc, through)` (only at a segment boundary, only with the ledger's `loggedWatermarks()`), `discard` (alarm step 2: moves the fence), `fingerprintsExpire` (alarm step 3, nondeterministic), `SHARD STORAGE LOSS` (every stream of the shard; a new incarnation on next use), registration handshake `registerStream` → `registration logged` → accepts writes, `reRegister` (fix F1). | `shard/src/shard.ts` `append`, `sealStream`, `recorded`, `alarm`, `stream`, `tailRead` |
 | Flush Worker (≤ 2 at once, any number of attempts) | `pendingSegments` → `readSegment` + encode (1 or 2 encoder outputs) → `PUT` (content-addressed, If-None-Match; or deterministic key, or overwrite) → `addUnit` → on `incarnation_mismatch` with an older ledger incarnation: `registerStream` → `addUnit` once more; a crash between any two steps. Two Workers can hold the same segment. | `flush/src/flush.ts` `flushTenant`, `writeSegment`, `report` |
-| Ledger (one per tenant) | `registerStream`, `addUnit` (contiguous, atomic, idempotent replay, unknown stream admitted only at `seqLo = 1`), `replace` (inputs-live check, replay rule), `expire` (whole file), versions, tombstones, `loggedWatermarks`, `deletable`, `orphanCheck`, the change log (drain PUT, drain commit, drain crash between them), `LEDGER STORAGE LOSS` → rebuild from R2 into a new ledger incarnation. | `contracts/ledger.ts`, `contracts/LEDGER-LOG.md`, `ledger/src/ledger.ts` |
-| Compaction (≤ 1 or 2 steps at once) | read two live inputs → PUT the output → `replace`; on `conflict` delete the output unless it is live (as built); crash at any point. | `compact/src/compact.ts` `compactStep` |
-| Physical deletion | `purge`: `deletable` (removal logged, grace passed = no query in flight holds a plan naming it, not live) → R2 delete → `forget`. `orphan sweep` under one of four rules (below). | `janitor/src/janitor.ts`, DESIGN §4.3, §5.2 |
+| Ledger (one per tenant) | `registerStream`, `addUnit` (contiguous, atomic, idempotent replay, unknown stream admitted only at `seqLo = 1`), `replace` (inputs-live check, replay rule), `expire` (whole file), versions, tombstones, `loggedWatermarks`, `deletable`, `orphanCheck`, the change log (drain PUT, drain commit, drain crash between them), `LEDGER STORAGE LOSS` → rebuild from R2 into a new ledger incarnation; as built (`startSteps`) the start is two steps, PUT the base segment, then commit, with every request gated in between and a second loss possible in between. | `contracts/ledger.ts`, `contracts/LEDGER-LOG.md`, `ledger/src/ledger.ts` |
+| Compaction (≤ 1 or 2 steps at once) | read two live inputs → PUT the output (an existing object with the same key is adopted, keeping its uploader) → `replace`; on `conflict` delete the output unless it is live (before D30) or delete nothing (D30); crash at any point. | `compact/src/compact.ts` `compactStep` |
+| Physical deletion | `purge`: `deletable` (removal logged, grace passed = no query in flight holds a plan naming it, not live) → R2 delete → `forget` (one step, or two with `purgeSteps`). `orphan sweep` under one of five rules (DESIGN §4.3 as written, `janitor.ts` before D30, D30, and two teeth), as one atomic step or (`sweepSteps`) as `janitor.ts` runs it: list, one `orphanCheck`, one delete per doomed key. | `janitor/src/janitor.ts`, DESIGN §4.3, §5.2 |
 | Query (one at a time) | `plan` (files + watermarks at one ledger version), then one `tailRead` per shard as separate later steps in any order, then read the planned files and merge. `stale_watermark`, `incarnation_mismatch` and a missing planned file restart from a fresh plan. As built, the coordinator also asks every pool shard the ledger has not registered, from sequence 0, and remembers incarnations it has learned across re-plans. | DESIGN §2.3, §6.1, §6.2; `query/src/coordinator.ts` `gather`, `readTail` |
 
 Shard and ledger crash/restart need no action of their own: both models' state is exactly the
@@ -105,6 +120,7 @@ multi-step interaction is a sequence of separate steps, and any of them can be a
 | `AV_RebuildSucceeds` | A rebuild from R2 never refuses (otherwise the tenant's ledger serves nothing, for ever). | `bfs` |
 | `V_IncarnationNotReused` | DESIGN §4.3: "a rebuilt ledger starts a new ledger incarnation, so versions are never reused". | `bfs` |
 | `LIVE_QueryCanComplete` | **Liveness.** AG EF (query done) on the complete state graph, with refusals unbounded: from every reachable state the query can still complete. In a finite graph this plus strong fairness implies every query completes; a violation is a state from which no schedule completes it (refusals for ever). | `bfs` |
+| `LIVE_NoLeak` | **Liveness, I11's no-leak half.** AG EF (every object in R2 is live) on the complete graph, with retention allowed to remove any file and no query: from every reachable state some continuation deletes, or makes live, every object no ledger lists. A violation is an object that nothing will ever delete. `LIVE_NoLeakComp` is the same for compaction outputs only (what D30 changed). | `bfs` |
 | `L1_StreamRegistered`, `L2_NoRestart`, `L2_NoRefusal` | Liveness proxies (safety properties): the ledger knows every stream that accepts writes; no query attempt is refused. | as named |
 
 ### Abstracted away
@@ -209,6 +225,17 @@ query). Breadth-first search stops at the shortest violation; the next run adds 
 that finding and searches again, until a run passes. Findings found that way are then isolated
 one at a time against the amended protocol (the `F…` rows).
 
+In short. **Design as written** (`DESIGN_1`–`7`): F11 (2 steps) → with it fixed, F1 (5) → F10
+(6) → F2 (15, through a retention removal; still the shortest after F3 is assumed away) →
+with the as-built sweeper, F15 (17) → with every fix: no violation among the 19 million states
+reachable in at most 23 steps (the run stopped at the memory bound, so this is bounded-depth,
+not complete). **Code as built** (`IMPL_1`–`5`): F6(b) (11 steps) → with F6 fixed, F15 (17) →
+with F15 fixed, and again with step-unique compaction keys: no violation among the 6 million
+states reachable in at most 20 steps (bounded). F13 and F14 need more than 20 steps once
+registration precedes writes, so they do not appear there; their own runs below show them (19
+and 21 steps with the code's lazy registration). F3 and F12 are shadowed by shorter findings in
+the peel and isolated below.
+
 <!-- BEGIN BFS_FINDINGS -->
 | Experiment | Checked | Result | Steps | Distinct states | Time | Shortest counterexample |
 |---|---|---|---|---|---|---|
@@ -255,7 +282,71 @@ The same idea in `viz.qnt` (DESIGN as written, `literal_*`; TLC):
 | `literal_all` DESIGN 3.1 as written, all actions, all safety invariants | Safety | violated | 5 | 243 | register(inc 1) → append(b0) → LEDGER-LOSS+REBUILD → plan → done |
 <!-- END TLC_LITERAL -->
 
-### 2b. The amended protocol, exhaustive
+### 2b. The compaction fix (D30) and the segment log, as built (2026-11-19)
+
+**D30** (`compact.ts`, `janitor.ts` at 6488856, unchanged at 6ee76c8; configuration `D30`):
+the sweep is modelled as `janitor.ts` runs it, three kinds of step any other step can come
+between (list the tenant's objects with their `viz-inputs`; one `orphanCheck`; one delete
+per doomed key), with **no clock**: no age floor at all, so nothing rests on an upload time.
+Purge is delete, then forget. A compaction step adopts an existing object with its old
+uploader and never deletes anything. Results (every safety property, shortest counterexample
+first; "stopped" = every state reachable in at most that many steps was checked):
+
+<!-- BEGIN BFS_D30 -->
+<!-- END BFS_D30 -->
+
+- **F13, F14 and F15 no longer occur.** At F14's bounds (two compaction steps at once,
+  retention, ledger loss, the sweeper on, which F14's own run had off) no state reachable in
+  31 steps violates anything (19 million states); F14's trace is 21 steps. F13's exact bounds
+  (client retries, two flush Workers): 23 steps clean; its trace is 19. F15's bounds: 23
+  steps clean; its trace is 17. Bounded depth, not exhaustive: each run stopped at its state
+  cap (the machine's load average was 15–23 on 4 cores during this pass).
+- **The recorded traces, replayed** (`results/REPLAY.md`): F13's and F15's stop at the sweep
+  step, which D30 does not allow (the adopted output's inputs are live and present; the newer
+  incarnation's logged watermark is 0); F14's runs to its end with `conflict` deleting
+  nothing, and step A's `replace` lists a file whose object exists.
+- **Each part of the rule is load-bearing** (teeth, each a counterexample): the step deleting
+  on conflict again (F14, 21 steps, with the sweeper on); a newer incarnation counting before
+  it has a logged unit (F15, 15 steps — shorter than F15's 17 because no age rule has to pass:
+  the sweep judges the flush Worker's file dead, a rebuild rolls the registration back, the
+  Worker's `addUnit` makes the file live, the sweep deletes it); "gone" meaning only "not
+  live" (27 steps: the input's removal is unlogged, the sweep judges, a rebuild brings the
+  input back, the identical step commits, the sweep deletes the live output); purge before the
+  removal is logged (14). The order "list, then read the ledger" is load-bearing too
+  (`D30_teeth_read_first`, 25 steps, no rebuild needed: the sweep reads the ledger before an
+  input is admitted, the input is then admitted, compacted, the removal logged and purged; the
+  listing taken afterwards shows the input absent, and the stale read says the output is not
+  live: a live output is deleted). `janitor.ts` lists first, and its comment says why. The live test is not: with "absent from the listing" alone the
+  rule still holds (`D30_teeth_absent_only`), because an object is deleted only once its key
+  can never be live; `janitor.ts` keeps both, which costs nothing.
+- **Leaks (I11's no-leak half):** see `LEAK_*` in 2c and the finding **F16**.
+
+**The segment log as built** (`LEDGER-LOG.md`, `ledger.ts` `startIncarnation`): the start is
+two steps (PUT the base segment with If-None-Match, then commit; every request waits in
+between; storage can be lost again in between), numbered max(newest in R2, the storage's own)
++ 1. Review S-1 (`design/reviews/segment-log-and-compaction.md`) is modelled as two more
+steps, a rollback to the first-layout ledger (whose drain writes `{version}.json` objects into
+the segment incarnation's prefix and advances `logged`, but not `logged_through`) and the
+roll-forward (`maxRB`, `rbFix`).
+
+<!-- BEGIN BFS_LOG -->
+<!-- END BFS_LOG -->
+
+- **V_IncarnationNotReused and every other property hold**: **exhaustively** with three
+  ledger losses (`LOG_as_built_3LL`: 2 batches with retries, one flush Worker, no compaction,
+  3.4 million states, depth 45); at IMPL_PLANNED_fixed's bounds (22 steps clean) and with two
+  ledger losses and compaction (25 steps clean); the 7-step reuse of the plan as it
+  stood (F11) is gone (`results/REPLAY.md`). With the base committed before it is in R2 the
+  reuse comes back at once (`LOG_teeth_commit_first`, 7 steps), and a retried drain that takes
+  new bounds makes the rebuild refuse (`LOG_teeth_retry_new_bounds`, F10).
+- **S-1 is confirmed by the model** (`LOG_S1_rollback`): after a rollback the first-layout
+  drain logs a change only as a per-change object, flush tells the shard `recorded` through it,
+  and the segment rebuild would not read it: I5 fails in 14 steps (what the shard discarded is
+  above what a rebuild keeps), the first step of the review's data loss. With fix (b) (on
+  roll-forward an outbox that does not continue the segment log starts a new incarnation from
+  SQLite) it holds (`LOG_S1_heal`).
+
+### 2c. The amended protocol, exhaustive
 
 `AMENDED` (`bfs/run.ts`) = DESIGN + LEDGER-LOG as written + the fixes for F1 (registration
 logged before writes, repeated when the ledger does not know the stream), F2 (sweeper as in
@@ -374,7 +465,7 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   be listed by THIS step. Delete them, unless the ledger … knows them" (live or tombstoned).
   Output keys are a hash of the input keys and of the bytes, so two steps with the same inputs
   write the same object, and steps "can run … twice at once".
-- **Trace** (`F14_impl_comp_conflict_delete`, 25 steps): units for batches 0 and 1 admitted and
+- **Trace** (`F14_impl_comp_conflict_delete`, 21 steps): units for batches 0 and 1 admitted and
   logged → two compaction steps read the same two inputs → retention expires input 1
   (committed, not yet logged) → both steps PUT the same output → step B's `replace` is
   `conflict`; the output is neither live nor tombstoned, so B deletes it → the ledger loses its
@@ -389,14 +480,19 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   not this one; the model follows the current code.)
 - **Fix (smallest).** A fresh step id in compaction output keys, so no two steps ever share an
   object; a step then deletes on conflict only objects no other step can make live. Modelled
-  as `compKey: 'unique'` (a never-reused step id); `IMPL_6`, `DESIGN_7` and the `A_*` runs check it.
+  as `compKey: 'unique'` (a never-reused step id); `DESIGN_7` and the `A_*` runs check it.
+- **Status: fixed in code by D30** (`DECISIONS.md`), not by step-unique keys: a step deletes
+  nothing, and the sweep deletes an output only once an input is absent and not live. Checked
+  in 2b (`D30_F14x`: 31 steps clean, sweeper on; the trace replays to its end without a
+  violation; `D30_teeth_conflict_delete` brings it back). Code test: `compact/test/compact.test.ts`
+  "spec F14".
 
 ### F12 (major, code: `shard/src/shard.ts` with lazy registration) — A flush that spans a shard storage loss files the new incarnation's rows under the old one
 
 - **Code.** `pendingSegments` labels segments with the current incarnation; `readSegment(tenant,
   seqLo)` takes no incarnation and returns whichever stream holds that `seqLo` now; `flush.ts`
   checks only the count and the sequence numbers.
-- **Trace** (`F12_impl_read_unbound`, 13 steps; the same as peel step `IMPL_2`): batch 0
+- **Trace** (`F12_impl_read_unbound`, 13 steps): batch 0
   acknowledged and sealed; a flush Worker lists `inc 1, 1..1` → the shard loses its storage →
   batch 1 arrives, incarnation 2, seq 1, sealed → the Worker's `readSegment(tenant, 1)` returns
   batch 1, which it encodes as `inc 1 1..1` → `addUnit(inc 1, 1..1)` is admitted (and registers
@@ -410,6 +506,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   `incarnation_mismatch` (guard (o): 2.5 M states, no counterexample).
 - **Fix.** `readSegment(tenant, incarnation, seqLo, seqHi)` returns null unless the stream has
   that incarnation and exactly that segment (`readBound`).
+- **Status: fixed in code** (`shard.ts` `readSegment(tenant, seqLo, incarnation, seqHi)`,
+  used so by `flush.ts`; code tests "spec F12" in `shard/test/review.test.ts` and
+  `flush/test/flush.test.ts`). The as-built configuration has `readBound`.
 
 ### F6 (major, code: `shard/src/shard.ts`, and lazy registration) — `tailRead` answers "ok, nothing" for a stream the shard no longer holds
 
@@ -421,8 +520,8 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   is admitted and logged → the shard loses its storage → the tail read "inc 1, above 0" gets
   `ok`, nothing → the query completes without batch 0 (I4), though batch 0 is safe in a file
   the plan predates.
-- **(b) As built, an unregistered stream** (`F6_impl_unknown_stream`, 13 steps; peel step
-  `IMPL_3`): the stream's first segment is flushed but not yet admitted when the query plans,
+- **(b) As built, an unregistered stream** (`F6_impl_unknown_stream`, 11 steps; the shortest
+  violation of the code as built, peel step `IMPL_1`): the stream's first segment is flushed but not yet admitted when the query plans,
   so the plan has no watermark for that shard and the coordinator asks it with incarnation 0
   → the unit is admitted and logged → the shard loses its storage → "incarnation 0, above 0"
   gets `ok`, nothing → batch 0 missed (I4). The shard cannot tell "never held this tenant"
@@ -431,12 +530,23 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
 - **Fix.** Register before accepting writes (F1's fix, applied to `shard.ts`): then an
   unregistered stream has no acknowledged rows and need not be asked, and a stream the shard
   does not hold is answered `incarnation_mismatch(0)`, never `ok`. **Refusing without
-  re-registering is not enough:** `LIVE_impl_F6_refuse_only` reaches a state from which no
-  query ever completes (the tenant sends nothing more to that shard, nothing recreates the
-  stream, the ledger keeps naming the lost incarnation); with registration the refusing shard
-  re-registers and the next plan names the new incarnation (`LIVE_impl_F6_fixed`).
+  re-registering is not enough:** with refusal alone (`LIVE_impl`) a state is reachable from
+  which no query ever completes (the tenant sends nothing more to that shard, nothing recreates
+  the stream, the ledger keeps naming the lost incarnation); with registration the refusing
+  shard re-registers and the next plan names the new incarnation (`LIVE_impl_F6_fixed`).
+- **Status at 6488856 (= 6ee76c8): (a) fixed, (b) not.** `shard.ts` `tailRead` now refuses
+  an incarnation it does not hold (review R-10), but still answers `ok`/empty to incarnation
+  0, which is what the coordinator sends for a stream the ledger has not registered, and
+  registration is still lazy. `F6b_impl_now` and the as-built peel (`IMPL_1_as_built`,
+  `IMPL_2_assume_F3`) find (b) at 11 steps: a query plans before the stream's first unit is
+  admitted → the unit is admitted and logged → the shard loses its storage → "incarnation 0,
+  above 0" is `ok`, nothing → batch 0, safe in a file the plan predates, is missing from that
+  query's answer (I4). One wrong answer, not lost data; silent. Rare (a shard storage loss
+  inside one query's window, on a stream's first unit). And the refusal of (a) without
+  re-registration is the liveness gap above, now in the code (`LIVE_impl`). Both go with
+  registration before writes (`IMPL_3_fix_F6b`, `LIVE_impl_F6_fixed`).
 
-### F10 (major, planned contract: `contracts/LEDGER-LOG.md`) — A retried drain writes an overlapping segment; a strict rebuild then refuses the log
+### F10 (major in the plan as it stood; fixed during this work: `contracts/LEDGER-LOG.md`, `ledger.ts`) — A retried drain writes an overlapping segment; a strict rebuild then refuses the log
 
 - **Text.** "Segments of one incarnation never overlap and never leave a gap" and "A failed
   write leaves the rows in place … Because the key is derived from the versions it holds and
@@ -453,8 +563,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   reader that skipped versions it already has would be right; the contract says it need not.)
 - **Fix (one sentence).** *Before its PUT a drain records the segment's `[first, last]` in
   SQLite; a retry writes exactly that segment again before taking newer rows* (modelled as
-  `drainRetrySame`; passes). Or: readers skip versions already applied after checking the
-  bodies agree, and the contract says segments may overlap.
+  `drainRetrySame`; passes). **Status:** LEDGER-LOG.md now says exactly this, and `ledger.ts`
+  `nextSegment`/`drainNow` implement it (bounds in `meta`, `storage.sync()` before the PUT,
+  a record whose rows are gone stops the drain). Checked by reading; the as-built runs model it.
 
 ### F13 (major, code: `compact.ts` + `janitor.ts`) — A compaction step adopts an old output that the sweeper deletes by its old upload time
 
@@ -472,6 +583,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   false.
 - **Fix.** As F14: a step-unique key, so a step never relies on an object another step wrote
   (or re-PUT unconditionally, which resets the upload time).
+- **Status: fixed in code by D30**: no deletion depends on an upload time. Checked in 2b with no
+  clock at all (`D30_F13`, `D30_F13x`; the trace stops at its sweep step). Code tests:
+  `compact/test/compact.test.ts`, review R-2.
 
 ### F15 (major, rare; code: `janitor.ts` `flushFileState`, `contracts/ledger.ts` `orphanCheck`) — The sweeper calls an old incarnation dead on a registration that is not yet logged
 
@@ -491,8 +605,13 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   Worker 2, which read the segment before the loss, has still to report. Rare.
 - **Fix.** Count a newer incarnation only once its registration is logged (`orphanCheck`
   returns, per stream, the incarnation as of the logged prefix). Modelled as
-  `sweepIncLogged`; `DESIGN_7` and `IMPL_5`/`IMPL_6` check it. It also surfaced in the as-built
-  peel (`IMPL_4`, 17 steps).
+  `sweepIncLogged`; `DESIGN_7` checks it.
+- **Status: fixed in code** (`janitor.ts` `flushFileState`): a newer incarnation counts only
+  once its logged watermark is above 0, which proves its registration is logged (a unit's
+  version is above its stream's registration and the log is a prefix). Checked in 2b
+  (`D30_F15x`, 23 steps clean, no clock); without the "> 0" the finding comes back in 15
+  steps with no age rule needed (`D30_teeth_newer_unlogged`). Code test:
+  `janitor/test/janitor.test.ts` "spec F15". Cost: F16 (b).
 
 ### F4 (major, unstated assumption) — "A missing planned file is an error that re-plans" is load-bearing and not in the text
 
@@ -538,7 +657,7 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   `flush.ts` correctly uses `loggedWatermarks()`. Rename it `committedWatermark` or drop it, and
   say on `Shard.recorded` that its only legitimate source is `loggedWatermarks()`.
 
-### F11 (minor, planned contract) — Without `base.json` a ledger incarnation number can be reused
+### F11 (minor in the plan as it stood; fixed during this work) — Without `base.json` a ledger incarnation number can be reused
 
 - LEDGER-LOG.md: "The first change of an incarnation is its base. There is no separate
   `base.json`." The base then reaches R2 only with the first drain. Trace
@@ -546,8 +665,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   drain → R2 holds nothing of that incarnation, so the restarted ledger takes the same number
   and re-issues the same versions with other content. DESIGN §4.3's "versions are never reused"
   fails. Only in-memory comparisons are affected (the coordinator's two-plan check, plan
-  caches); the publisher reads only R2. **Fix:** keep "the base is in R2 before the incarnation
-  commits anything" (as built).
+  caches); the publisher reads only R2. **Fix:** "the base is in R2 before the incarnation
+  commits anything". **Status:** LEDGER-LOG.md now requires the base segment to be written
+  alone before the incarnation commits or serves anything, and `ledger.ts` does so.
 
 ### F9 (minor) — A ledger rebuild can undo retention
 
@@ -557,19 +677,20 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
 
 ## Implementation / model mismatches
 
-Read-only comparison of the model's actions with the code as of 2026-11-18 evening
-(`shard/src/shard.ts` 612 lines, `ledger/src/ledger.ts` 800 lines; `flush.ts`,
-`compact.ts`, `janitor.ts`, `query/src/coordinator.ts` where they decide behaviour). The
-"as built" configuration of the explicit-state model (`IMPL` in `bfs/run.ts`) encodes the
-code's choice for every row marked *modelled*.
+Read-only comparison of the model's actions with the code, first as of 2026-11-18 evening
+(`IMPL_V1` in `bfs/run.ts`), then as of commit 6488856 on 2026-11-19 (`IMPL`; the protocol
+paths are unchanged at 6ee76c8: the later diffs to `ledger.ts`, `shard.ts` and
+`coordinator.ts` add shard-name validation, an alarm deletion, a flush-message version and
+query splitting/explain). Rows say which version they describe. `IMPL` encodes the code's
+choice for every row marked *modelled*.
 
 ### `shard/src/shard.ts`
 
 | # | Code | Model / design | Consequence |
 |---|---|---|---|
 | S1 | `stream()` creates a stream (new incarnation) on the first `append` and never tells the ledger; the stream is registered later by `flush.ts` (first unit with `seqLo = 1`, or `registerStream` after `incarnation_mismatch`). | Design: register before accepting writes (§4.3). Modelled both ways (`reg: 'impl'` / `'design'` / `'logged'`). | Mostly safe for a fixed map because the coordinator also asks every pool shard the ledger does not know, from incarnation 0 (experiment (k) shows the gap otherwise); but a shard storage loss turns that read into F6(b), and lazy registration makes F12 possible. |
-| S2 | `tailRead` for a tenant with no stream returns `ok`, empty, echoing the caller's incarnation. | Must refuse when the caller names an incarnation (`unknownStream`); with registration before writes an unregistered stream is never asked. | **F6** (a) and (b) (modelled). |
-| S3 | `pendingSegments` labels segments with the *current* incarnation; `readSegment(tenant, seqLo)` takes no incarnation and returns the current stream's rows. | A read bound to `(incarnation, seqLo, seqHi)` (`readBound`). | **F12** (modelled). |
+| S2 | `tailRead` for a tenant with no stream. On 2026-11-18: `ok`, empty, echoing the caller's incarnation. **At 6488856** (review R-10): `incarnation_mismatch(0)` when the caller names an incarnation, still `ok`/empty for incarnation 0. | `unknownStream: 'refuse'` answers exactly so (ok to incarnation 0). With registration before writes an unregistered stream is never asked. | **F6** (a) fixed; **F6(b) remains** while registration is lazy (`F6b_impl_now`); and nothing re-registers a stream the shard lost, so a query naming it is refused until the tenant writes to that shard again (`LIVE_impl`). |
+| S3 | `pendingSegments` labels segments with the *current* incarnation. On 2026-11-18 `readSegment(tenant, seqLo)` took no incarnation. **At HEAD** `readSegment(tenant, seqLo, incarnation, seqHi)` returns null unless the stream is that incarnation and the segment exactly that range, and `flush.ts` passes both. | `readBound`. | **F12** fixed (code tests: `shard/test/review.test.ts`, `flush/test/flush.test.ts` "spec F12"). |
 | S4 | `recorded(tenant, inc, through)` trusts its caller; the only caller (`flush.ts`) passes `loggedWatermarks()`. Boundary check: `through > recordedThrough`, a segment starts at `recordedThrough + 1`, one ends at `through`, `through ≤ sealedThrough`. | Same (`recorded` step reads the logged watermark). | Matches. The contract hazard is F8. |
 | S5 | Incarnation = `Date.now() × 1024 + random(1024)`. | A counter that never repeats. | The ledger and `flush.ts` rely on "larger is newer" (refuse lower, register higher). A clock step back across a storage loss gives a lower number: the ledger refuses it for ever (fails closed, not modelled). |
 | S6 | Fingerprints are deleted `fingerprintTtlMs` (15 min) after the batch's first append, only once its payload is discarded; a retry does not refresh the timer. | `fingerprintsExpire` moves the forgotten prefix to the discard mark; `fpHorizon` = no retry after that. | Matches; the retry horizon must be counted from the first send. (e) is what happens otherwise. |
@@ -582,21 +703,21 @@ code's choice for every row marked *modelled*.
 
 | # | Code | Model / design | Consequence |
 |---|---|---|---|
-| L1 | Change log: one R2 object per change, drained lowest version first, outbox row deleted and `logged` advanced (incarnation-checked) only after its PUT. The mutation awaits one drain attempt, but answers `ok` even if R2 failed. | `log: 'perChange'` (as built). The PLANNED segments of LEDGER-LOG.md are `log: 'segments'`. | As built, "logged" is the version prefix (F7 satisfied) and a retried PUT rewrites the same key, so F10 cannot happen; it appears with the planned segments. |
+| L1 | Change log: at the start of this work one R2 object per change; now segments (`nextSegment`, `drainNow`, `segmentWritten`): bounds recorded and synced before the PUT, a retry writes exactly them, `logged` advanced (incarnation-checked) and rows deleted in one transaction after the PUT; mutations answer after the commit. | `log: 'segments'`, `drainRetrySame`. | Matches. "Logged" is the version prefix (F7 satisfied); F10 fixed. A record whose rows are gone stops the drain for good (fails closed; `loggedWatermarks` stops, shards keep rows): not modelled. |
 | L2 | `addUnit` for an unknown shard registers it in the same transaction when `seqLo = 1`; different incarnation → `incarnation_mismatch`; `seqHi ≤ watermark` → `ok` replay; `seqLo ≠ watermark + 1` → `not_contiguous`; a live key → `invalid`. | Same. | Matches. `AddUnitResult.watermark` is the committed one (F8). |
 | L3 | `registerStream`: same incarnation is a no-op, a lower one throws, a higher one resets watermark and `logged` to 0 and keeps `prev_incarnation`. | Same. | Matches. DESIGN §4.3 "the ledger records the boundary and raises an alert" is only `prev_incarnation`: no loss interval, no alert (not modelled). |
 | L4 | `replace`: replay rule, `conflict` on a missing input, `invalid` on a live output; since this evening also `conflict` with `blocking` on overlapping precedence ranges. | Same except `blocking` (not modelled). | A `blocking` conflict sends `compact.ts` down the same delete-on-conflict path as F14. |
 | L5 | Tombstones written in the removing transaction; `deletable` = removing version below the first unlogged version, older than `minAgeMs` by the ledger's clock, key not live; `forget` after the delete. | `purge` with `delLogged` + `delGrace` + not live. | Matches. Grace is time; the model assumes it exceeds every query (DESIGN 1 h vs 30 s query timeout). |
-| L6 | `orphanCheck`: live keys, tombstoned keys and `logged` watermarks in one synchronous read; the incarnation it reports per stream is the *committed* one. | `sweep: 'impl'` (`sweepIncLogged: false`). | Fixes F2 in code (DESIGN §4.3's sentence was not updated); the committed incarnation is **F15**. |
-| L7 | Rebuild replays only the NEWEST ledger incarnation (`base.json` + its changes), strictly (`version + 1` or throw); tombstones are rebuilt only from that incarnation's changes; `base.json` is PUT before the SQLite commit. | Same (`rebuild: 'strict'`, `baseFirst`). | Tombstones of removals made before the last rebuild are dropped: those objects are left to the orphan sweeper (flush files by logged watermark, compaction outputs by age). With strict replay and the planned segments, F10 makes the rebuild throw, and `init()` then leaves the object serving nothing. |
+| L6 | `orphanCheck`: live keys, tombstoned keys and `logged` watermarks in one synchronous read; the incarnation it reports per stream is the *committed* one, with that incarnation's logged watermark (reset to 0 by a registration). | `sweep: 'impl'` (`sweepIncLogged: false`) before D30; `sweep: 'inputs'` (`sweepNewerLogged`) now. | Fixes F2 in code (DESIGN §4.3's sentence was not updated). The committed incarnation was **F15**; `janitor.ts` now counts a newer incarnation only when its logged watermark is above 0, which proves its registration is logged (the fix is in the reader, not in `orphanCheck`). |
+| L7 | Rebuild replays only the NEWEST ledger incarnation (checkpoint or base segment, then the segments), strictly (each must start at the previous end + 1, or the rebuild refuses); the base carries tombstones, previous incarnations and unit refs. `startIncarnation`: number = max(newest in R2, the storage's own) + 1; the base segment is PUT (If-None-Match) **before** SQLite commits the incarnation, and every request waits in `gate()` until then; an interrupted start leaves a base-only incarnation in R2, which the next start replays and skips past. | `rebuild: 'strict'`, `baseFirst`, `baseTombstones`, `startSteps` (two steps, nothing served between, a second loss possible between). | Matches. Checkpoints and the conversion from the first layout (`mode 'sqlite'`) are not modelled. |
 | L8 | Versions continue across incarnations (`base.version`); `plan` returns every registered stream and the files of a time range. | Relative versions; whole live set. | No effect on the properties checked. |
 
 ### Other code the model follows
 
 | # | Code | Consequence |
 |---|---|---|
-| C1 | `compact.ts`: output key = hash(input keys) + hash(bytes); `putFile` accepts an existing object with the same hash as written ("exists"); on `conflict` it deletes its outputs unless one is live (tombstones are not consulted). | **F13**, **F14**. |
-| C2 | `janitor.ts` `sweepOrphans`: compaction outputs are judged by the object's upload time only (≥ max(24 h, 2 × 5 min)); a flush file is dead if its stream's logged watermark covers it or the ledger has a newer (committed) incarnation. | F13 (an output adopted by a later step keeps its old upload time); F15. |
+| C1 | `compact.ts`. **First version** (`IMPL_V1`): output key = hash(input keys) + hash(bytes); `putFile` accepts an existing object with the same hash as written ("exists"); on `conflict` the step deleted its outputs unless one was live (later also unless tombstoned). **D30** (6488856): same keys; each output carries its inputs as R2 metadata `viz-inputs` (an adopted object keeps whatever metadata it has: none if written before D30); a step never deletes an output, not on conflict, `too_slow` or an unknown answer. | V1: **F13**, **F14**. D30: `compKey: 'inputs'`, `compConflictDelete: false`; checked in 2b. |
+| C2 | `janitor.ts` `sweepOrphans`. **First version**: compaction outputs deleted by upload age only (≥ max(24 h, 2 × 5 min)); a flush file dead if its stream's logged watermark covers it or the ledger has a newer *committed* incarnation. **D30**: list the prefix (with metadata), then one `orphanCheck` for the listed keys and the absent inputs, then delete; a compaction output is doomed only if not live, not tombstoned, its inputs record readable and one input absent from the listing and not live; a newer incarnation makes old flush files dead only once its logged watermark is above 0; age floors remain (24 h; outputs max(24 h, 2 × `maxStepMs`)) but are not needed for safety. | V1: F13, **F15**. D30: `sweep: 'inputs'`, `sweepSteps`, `sweepAge: false`; checked in 2b with no clock. Leaks: F16. `janitor/README.md` still describes the first version (age rule for outputs). |
 | C3 | `query/src/coordinator.ts`: asks every pool shard plus every registered stream; an unregistered stream is read from 0 at the incarnation the shard names; a learned newer incarnation is kept across re-plans; a missing planned file re-plans (F4 implemented); at most 3 refusals per shard or file, then 503. | Modelled (`query: 'impl'`). The 3-refusal cap turns F5's livelock into an error after 4 attempts. |
 | C4 | `flush.ts`: tells the shard `recorded(loggedWatermarks())`, never the committed watermark (F8 handled by the caller). | Modelled. |
 
@@ -609,11 +730,14 @@ code's choice for every row marked *modelled*.
   rows reach some such states but only sample them.
 - **Two models, one reader.** Both models were written by reading the same design and code.
   Their agreement rules out many encoding slips, not a shared misreading of the text.
-- **Not replayed against the code.** No trace has been executed against `shard.ts`,
-  `ledger.ts` or the Workers. The as-built configuration and the mismatch tables come from
-  reading the code. F6, F12, F13 and F14 should each become a failing integration test
-  (`@cloudflare/vitest-plugin`, `evictDurableObject`, hooks in `flush.ts`/`compact.ts`) before
-  they are fixed.
+- **Replayed against the code: partly, by the components' owners.** The F12 trace is an
+  integration test in `shard/test/review.test.ts` and `flush/test/flush.test.ts` ("spec
+  F12"); F13 (as review R-2) and F14 in `compact/test/compact.test.ts`; F15 in
+  `janitor/test/janitor.test.ts`; F6(a) (review R-10) in `shard/test/shard.test.ts`. Each
+  failed before its fix, according to those READMEs; this pass did not re-run them (the
+  coordinator reports CI green). **F6(b) has no code test**: it is still present at HEAD
+  (`F6b_impl_now`). Within the model, `bfs/replay.ts` re-runs each recorded counterexample
+  against the configuration of the code as built (`results/REPLAY.md`).
 - **Assumed, not fixed.** The amended protocol *assumes* no client retry across a shard
   storage loss (F3), retry horizon < fingerprint TTL, grace period > query lifetime, and (for
   the liveness proxy L2 only) query attempt < `retainRecordedMs`. (e), (g) and F5 show each is

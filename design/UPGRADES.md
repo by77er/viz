@@ -33,8 +33,11 @@ not notice), and no reader defined what to do with a format it had not seen.
 - **Implemented** in `control/` (Tenant), `ruler/` (Ruler, Notifier, RulerIndex) and
   `publisher/` (Publisher, plus its R2 formats and its reading of the ledger log), with
   migration, refusal and golden-format tests and 26 mutants, all killed (§8).
-- **Not yet** in shard, ledger, query, flush, edge, janitor, compact: §7 lists what each must
-  do, in priority order. The ledger and the shard come first; they hold acknowledged data.
+- **Implemented on the write path** (2026-11-19) in `ledger/` (Ledger, its log formats and
+  their readers), `shard/` (Shard, the series-window format, the flush message) and `edge/`
+  (unknown shard statuses, versioned KV records): §7 items 1, 3 and 4, §8.
+- **Not yet, or only in part,** in query, flush, janitor, compact: §7 lists what each must do,
+  in priority order.
 
 ## 2. What the platform does (verified 2026-11-18)
 
@@ -78,7 +81,7 @@ first, or a rollback put the reader back); "newer reader" the opposite. Status c
 | `Ledger` (viz-ingest) | `ledger/src/ledger.ts` `schema()`: `meta` (incarnation, version), `file` (incl. `prec`, `prec_lo`), `stream`, `outbox` (body = `LedgerChange` JSON), `tombstone` | none | the ledger | **dangerous**: `init()` treats "no `meta.incarnation`" as new or lost storage and rebuilds from R2 into a NEW incarnation; a newer layout of `meta` read by older code would re-base every reader and the publisher | an object created before D22 lacks `prec`/`prec_lo`; `IF NOT EXISTS` never adds them, and `plan` fails |
 | `Tenant` (viz-control) | `control/src/schema.ts` | **versioned** (v1) | Tenant | refused unless `compat` allows | migrated in the constructor |
 | `Ruler`, `Notifier`, `RulerIndex` (viz-ruler, not deployed) | `ruler/src/schema.ts`; stored JSON: `rule_group.spec`, `alert.body`, `handoff.updates` (`AlertUpdate[]`), `timeline.body`, `meta.v` (config, cursor), notifier bodies | **versioned** (v1 each) | the objects | refused unless `compat` allows | migrated |
-| `Publisher` (viz-publisher, not deployed) | `publisher/src/schema.ts` | **versioned** (v1) | the publisher | refused unless `compat` allows | migrated |
+| `Publisher` (viz-publisher, not deployed) | `publisher/src/schema.ts` | **versioned** (v2; v2 adds the `due` table, additive) | the publisher | refused unless `compat` allows | migrated |
 | `Leaf` (viz-query) | `query/src/leaf.ts` | stateless: no storage | — | — | — |
 | janitor, compact, flush | functions in viz-ingest | no Durable Object | — | — | — |
 
@@ -89,7 +92,7 @@ first, or a rollback put the reader back); "newer reader" the opposite. Status c
 | Data files `data/{table}/tenant=/day=/L{level}-….parquet` | `contracts/TABLES.md`, `engine/storage` | none in the file (`created_by: viz-storage`, no key-value metadata, no field ids) | flush (L0), compact (L1, L2) | query leaves (engine), compact (engine), external engines via Iceberg | a new or changed column is invisible or misread; nothing in the file says what it is | must read every layout still live, for the whole retention (files are immutable) |
 | Index fragment `FileEntry.index` (in ledger rows and log) | `engine/storage/src/pq.rs` `FileIndex` | **versioned** `{"v":1,…}`; the engine refuses another `v` | flush, compact (engine) | engine; publisher (stats) | engine refuses; publisher leaves the stats out | reads v1 |
 | Ledger change log `ledger/tenant=/{inc}/{version:012}.json`, `base.json` | `contracts/ledger.ts` `LedgerChange`, `ledgerLogKey` | none | ledger (outbox drain) | ledger `rebuildFromLog`, publisher | rebuild applies an unknown `kind` as a plain add/remove; the publisher now refuses it (this work) | tolerates absent `precedence` (derives it): an example of expand done right |
-| **Changing now**: log segments `seg-{first:012}-{last:012}.jsonl`, checkpoints `ckpt-…jsonl` | `contracts/LEDGER-LOG.md`, codec in `contracts/ledger.ts` (contract written by the ledger builder after COMPATIBILITY.md; `ledger/src` not yet switched at the time of writing) | **versioned**: header `v` and `kind`, `v` per change line (absent = 1); `removedFiles` added beside `removed`, not in place of it | ledger | rebuild, publisher | readers refuse an unknown `v` or `kind` and stop there. The ledger reads both layouts and writes segments in one release, accepted as forward-only because no ledger had reached production (LEDGER-LOG.md "Rollout"); a deployment that ran the first layout cannot roll back below it (stuck, not lost) | the publisher does **not** read segments yet (§7) |
+| **Changing now**: log segments `seg-{first:012}-{last:012}.jsonl`, checkpoints `ckpt-…jsonl` | `contracts/LEDGER-LOG.md`, codec in `contracts/ledger.ts` (contract written by the ledger builder after COMPATIBILITY.md; `ledger/src` not yet switched at the time of writing) | **versioned**: header `v` and `kind`, `v` per change line (absent = 1); `removedFiles` added beside `removed`, not in place of it | ledger | rebuild, publisher | readers refuse an unknown `v` or `kind` and stop there. The ledger reads both layouts and writes segments in one release, accepted as forward-only because no ledger had reached production (LEDGER-LOG.md "Rollout"); a deployment that ran the first layout cannot roll back below it (stuck, not lost) | the publisher reads segments (base-first, whole segments, refusing an unknown header `v`/`kind` or change `v`/`kind`/table) and still reads the first layout (`publisher/README.md`, "Reading the log") |
 | Iceberg `iceberg/{table}/metadata/v{N}.metadata.json`, `version-hint.text` | `publisher/src/iceberg.ts` | Iceberg format-version 2; **versioned** viz conventions: property `viz.format-version` (absent = 1) (this work) | publisher | publisher (resync), external engines | the publisher now refuses to commit, rebuild or sweep over newer metadata (this work) | reads it |
 | Manifests, manifest lists (Avro) | `publisher/src/iceberg.ts`, Iceberg v2 field ids | Iceberg's | publisher | publisher, external engines | — | — |
 | `cursors-{snapshot}-{tag}.json` | `publisher/src/publisher.ts` | **versioned** `v: 1` (absent = 1) (this work) | publisher | publisher (resync) | refused (this work) | reads it |
@@ -213,7 +216,9 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
 
 ## 7. Needed changes in components owned by others (priority order)
 
-1. **ledger** (risk: I1/I2, a wrong rebuild re-bases every reader). Version the storage with
+1. **ledger: done** (2026-11-19; `ledger/README.md`, "Versioned storage" in "What is
+   implemented"; `ledger/test/compat.test.ts`, goldens `schema/v1`, `formats/ledger.segment.v1`,
+   `formats/ledger.checkpoint.v1`). What was asked: (risk: I1/I2, a wrong rebuild re-bases every reader). Version the storage with
    `openSchema` (`ledger.Ledger`); migration 1 = today's schema plus `columnsOf` checks that
    add `prec`/`prec_lo` to objects created before D22. Change "storage is new" from "no
    `meta.incarnation`" to "no tables and no `viz_schema`"; storage with a version row and no
@@ -223,16 +228,19 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
    `schema_too_new` from every RPC. The segment log itself already follows COMPATIBILITY
    §3.1–§3.6 on paper (`LEDGER-LOG.md` "Versions"); its one-release rollout is a recorded,
    accepted exception to readers-first.
-2. **publisher (this component, not done here)** (risk: publication stops once the ledger
-   writes segments; external readers see old data, nothing on the ingest path is affected,
-   D15). Read the segment layout as `LEDGER-LOG.md` "Readers of the log" says, before the
-   publisher is ever deployed; the reader already refuses an unknown change `v` or `kind`
-   (`publisher/src/log.ts`), and must do the same for a segment header.
-3. **shard** (risk: I1/I7). Version the storage (`shard.Shard`); migration 1 adds
+2. **publisher: done** (2026-11-19). It reads the segment layout as `LEDGER-LOG.md` "Readers
+   of the log" says, and the first layout for incarnations that use it; an unknown segment
+   header `v` or `kind`, change `v` or `kind`, or file table stops that tenant before the
+   segment (`publisher/src/log.ts`, `publisher/README.md`). Golden: real segment bytes from the
+   ledger (`publisher/test/golden/formats/read.ledger-segment.v1.json`).
+3. **shard: done** (2026-11-19; `shard/README.md`; `shard/test/compat.test.ts`, goldens
+   `schema/v1`, `formats/series-window.v1`, `formats/queue.flush.v1`; the flush message now
+   carries `v`). What was asked: (risk: I1/I7). Version the storage (`shard.Shard`); migration 1 adds
    `segment.sealed_at` where missing (the known gap). The sketch BLOB gets a version byte
    (byte 0 is a kind today; refuse an unknown one instead of reading it as an exact list).
    Under refusal, `append` answers a retryable status (as `backpressure`), never `ok`.
-4. **edge** (risk: I7, I3). Treat any `AppendResult` status it does not know as a failure of
+4. **edge: done** (2026-11-19; `edge/README.md`; `edge/test/overload.test.ts`). What was
+   asked: (risk: I7, I3). Treat any `AppendResult` status it does not know as a failure of
    the whole request (503), never as stored. KV readers check `v` (absent = 1) and refuse a
    newer one (keep the last good value or 503; never authenticate, never loosen a limit). A
    new `VZB` version is encoded only after flush's and query's decoders read it.
@@ -268,7 +276,10 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
 | `contracts/schema.ts` | the runner: `openSchema`, `canOpen`, `schemaRelease`, `columnsOf`, `describeSchema` | `SchemaTooNew`, `SchemaTooNewError` | — | exercised from the three components | 5 runner mutants, run in control |
 | `control/` | `control.Tenant` v1 | 503 `schema-too-new` on every route, `resolveKey`/`recordUsage` statuses, `provision` throws, alarm re-armed | `kv.key`, `kv.revocation`, `kv.settings`, `kv.pool`, `credential.api-key`, `cursor.list`, `id.revision` | `compat.test.ts` (9), `golden.test.ts` (6) | 10 |
 | `ruler/` | `ruler.Ruler`, `ruler.Notifier`, `ruler.RulerIndex` v1 | `Refused` status on every Ruler/Notifier RPC, registry throws, HTTP 503 (`unavailable` in the Prometheus API), alarms re-armed | `rpc.alert-update`, `id.hashes`, `id.idempotency-key`, `id.placement`, `http.webhook`, `file.rules-yaml` | `compat.test.ts` (14), `golden.test.ts` (3) | 9 |
-| `publisher/` | `publisher.Publisher` v1 | every method throws `schema_too_new`; never commits, rebuilds from or sweeps against newer Iceberg metadata; stops (never skips) at a ledger change of unknown `v` or `kind` | `iceberg.metadata` (+ field-id permanence), `iceberg.manifest`, `r2.cursors`, `read.ledger-change` | `compat.test.ts` (9), `golden.test.ts` (5) | 7 |
+| `publisher/` | `publisher.Publisher` v2 (2026-11-19; v1 at the time of this table) | every method throws `schema_too_new`; never commits, rebuilds from or sweeps against newer Iceberg metadata; stops (never skips) at a ledger change of unknown `v` or `kind`, and (since 2026-11-19) at a segment of unknown header `v` or `kind` | `iceberg.metadata` (+ field-id permanence), `iceberg.manifest`, `r2.cursors`, `read.ledger-change`, `read.ledger-segment` | `compat.test.ts` (9, now 15), `golden.test.ts` (5) | 7 (then; see `publisher/README.md` for the current list) |
+| `ledger/` (2026-11-19) | `ledger.Ledger` v2 (v1 adopts the pre-versioning schema and adds `prec`/`prec_lo`; v2, forward-only, marks the segment log) | every method throws `schema_too_new`, the alarm re-armed, nothing written; storage with a version row and no incarnation refused, never rebuilt over; a log it cannot rebuild from is `stuck`, never partly replayed | `ledger.segment`, `ledger.checkpoint`; schema `v1`, `v2` | `compat.test.ts` (8), and the log readers in `segments.test.ts` | 46 run: 43 killed, 3 survive (one untestable, two guards that cover each other; `ledger/README.md`) |
+| `shard/` (2026-11-19) | `shard.Shard` v1 (adopts the pre-versioning schema, adds `segment.sealed_at`) | `append` answers retryable `overload`, never `ok`; every other method throws; alarm re-armed; nothing written. A series-window bucket of an unknown kind or version refuses that tenant's metered appends | `series-window` (format byte), `queue.flush` (`v`); schema `v1` | `compat.test.ts` (9), `trigger.test.ts` | 20 run: 19 killed (2 after new tests), 1 equivalent (`shard/README.md`) |
+| `edge/` (2026-11-19) | — (stateless) | an `AppendResult` status it does not know is 503, never stored; key records, pool maps and limits records of a newer `v` are 503 unless the isolate holds the last good value; a limit is never loosened to the default | — | `overload.test.ts` (7) | 43 run, 41 killed, 2 equivalent (`edge/README.md`) |
 
 Each component's README lists commands, results and the mutants with the test that caught
 each. The pre-versioning storage fixtures (`*/test/fixtures/storage*`) were dumped by the

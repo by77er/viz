@@ -11,7 +11,15 @@ import { fields, int, isRecord, iso } from './util'
  *   retention:<tenant> → { metric_samples_days: N, … }           (janitor/src/janitor.ts)
  *   limits:<tenant>    → { active_series: N, … }                 (edge/src/route.ts)
  *   pool:<tenant>      → { pool, slots, spread, epoch }          (shard/src/pool.ts `PoolMap`)
+ *
+ * `notifications` is not published to KV: its webhook secret must not sit in a namespace every
+ * Worker reads. The ruler asks for it over the Durable Object binding instead
+ * (`Tenant.notificationTarget`, contracts/control.ts). The secret is write-only: it is kept in
+ * `tenant_meta` (k `notifications.webhookSecret`), never in the section's value, so no read,
+ * list or audit entry can carry it; the value records only when it was set
+ * (`webhookSecretSetAt`).
  */
+import type { NotificationTargetResult, WebhookFormat } from '../../contracts/control'
 
 export const SECTIONS = ['general', 'retention', 'limits', 'pool', 'notifications'] as const
 export type Section = (typeof SECTIONS)[number]
@@ -28,8 +36,23 @@ const DEFAULTS: Record<Section, unknown> = {
   retention: { metric_samples_days: 30 },
   limits: { active_series: 1_000_000 },
   pool: null,
-  notifications: { email: [], webhookUrl: null },
+  notifications: { email: [], webhookUrl: null, webhookFormat: 'alertmanager', sendResolved: true, webhookSecretSetAt: null } satisfies NotificationsValue,
 }
+
+/** The `notifications` section as stored. Values written before the webhook fields existed lack them; `notificationsOf` fills the defaults. */
+export interface NotificationsValue {
+  email: string[]
+  webhookUrl: string | null
+  webhookFormat: WebhookFormat
+  sendResolved: boolean
+  /** When the current webhook secret was set (Unix ms); null: requests are not signed. The secret itself is never here. */
+  webhookSecretSetAt: number | null
+}
+
+/** Where the webhook secret is kept: `tenant_meta`, never in a value an API returns. */
+const SECRET_KEY = 'notifications.webhookSecret'
+const SECRET_MIN = 16
+const SECRET_MAX = 512
 
 interface SettingRow {
   section: Section
@@ -151,8 +174,29 @@ function validatePool(t: Tenant, v: Record<string, unknown>, before: PoolValue |
   return { pool: v.pool, slots, spread, epoch: spread === before.spread ? before.epoch : before.epoch + 1 }
 }
 
-function validateNotifications(v: Record<string, unknown>): Record<string, unknown> {
-  const o = fields(v, ['email', 'webhookUrl'], 'notifications value')
+function notificationsOf(raw: unknown): NotificationsValue {
+  const v = (isRecord(raw) ? raw : {}) as Partial<NotificationsValue>
+  return {
+    email: Array.isArray(v.email) ? v.email : [],
+    webhookUrl: typeof v.webhookUrl === 'string' ? v.webhookUrl : null,
+    webhookFormat: v.webhookFormat === 'json' ? 'json' : 'alertmanager',
+    sendResolved: v.sendResolved !== false,
+    webhookSecretSetAt: typeof v.webhookSecretSetAt === 'number' ? v.webhookSecretSetAt : null,
+  }
+}
+
+function storedSecret(t: Tenant): { secret: string; setAt: number } | null {
+  const r = t.one<{ v: string }>('SELECT v FROM tenant_meta WHERE tenant = ? AND k = ?', t.tenant, SECRET_KEY)
+  return r ? (JSON.parse(r.v) as { secret: string; setAt: number }) : null
+}
+
+/**
+ * The value to store, and what to do with the secret. `webhookSecret` is write-only: a string
+ * sets it, null or "" removes it, and leaving it out keeps the stored one, but only while the
+ * URL stays the same (a secret never follows a webhook to a new address).
+ */
+function validateNotifications(v: Record<string, unknown>, before: NotificationsValue, now: number): { value: NotificationsValue; secret: string | null | undefined } {
+  const o = fields(v, ['email', 'webhookUrl', 'webhookFormat', 'sendResolved', 'webhookSecret', 'webhookSecretSetAt'], 'notifications value')
   const email = o.email ?? []
   if (!Array.isArray(email) || email.length > 20 || !email.every((e) => typeof e === 'string' && /^[^\s@]{1,64}@[^\s@]{1,255}$/.test(e))) throw invalid('"email" must be a list of at most 20 addresses.', 'Send e.g. ["oncall@example.com"].', { field: 'email' })
   let webhookUrl: string | null = null
@@ -166,7 +210,49 @@ function validateNotifications(v: Record<string, unknown>): Record<string, unkno
     if (!ok) throw invalid('"webhookUrl" must be an https URL.', 'Send an https:// URL, or null.', { field: 'webhookUrl' })
     webhookUrl = o.webhookUrl as string
   }
-  return { email, webhookUrl }
+  const format = o.webhookFormat ?? 'alertmanager'
+  if (format !== 'alertmanager' && format !== 'json') throw invalid('"webhookFormat" must be "alertmanager" or "json".', '"alertmanager" sends Alertmanager\'s webhook JSON (version 4); "json" sends viz\'s plain form (viz.notification/v1).', { field: 'webhookFormat' })
+  if (o.sendResolved !== undefined && typeof o.sendResolved !== 'boolean') throw invalid('"sendResolved" must be true or false.', 'Send a boolean; the default is true.', { field: 'sendResolved' })
+  // Assigned here; a client that sends back what it read may repeat it, but not choose it.
+  if (o.webhookSecretSetAt !== undefined && o.webhookSecretSetAt !== before.webhookSecretSetAt) {
+    throw invalid('"webhookSecretSetAt" is assigned by viz.', 'Leave it out. Send "webhookSecret" to set or replace the secret, or null to remove it.', { field: 'webhookSecretSetAt' })
+  }
+  let secret: string | null | undefined
+  let setAt: number | null
+  if (o.webhookSecret === null || o.webhookSecret === '') {
+    secret = null
+    setAt = null
+  } else if (o.webhookSecret !== undefined) {
+    if (typeof o.webhookSecret !== 'string' || o.webhookSecret.length < SECRET_MIN || o.webhookSecret.length > SECRET_MAX) {
+      throw invalid(`"webhookSecret" must be a string of ${SECRET_MIN} to ${SECRET_MAX} characters.`, 'Use a random secret the receiver verifies X-Viz-Signature with; it is never shown again.', { field: 'webhookSecret' })
+    }
+    if (webhookUrl === null) throw invalid('"webhookSecret" needs a "webhookUrl".', 'Set the webhook URL in the same request, or leave the secret out.', { field: 'webhookSecret' })
+    secret = o.webhookSecret
+    setAt = now
+  } else if (webhookUrl !== null && webhookUrl === before.webhookUrl && before.webhookSecretSetAt !== null) {
+    secret = undefined // kept
+    setAt = before.webhookSecretSetAt
+  } else {
+    // No URL, or a new one: a secret does not follow a webhook to another address.
+    secret = before.webhookSecretSetAt !== null ? null : undefined
+    setAt = null
+  }
+  return { value: { email: email as string[], webhookUrl, webhookFormat: format, sendResolved: o.sendResolved !== false, webhookSecretSetAt: setAt }, secret }
+}
+
+/**
+ * contracts/control.ts `notificationTarget`: the default destination as the ruler's notifier
+ * needs it, secret included. The secret is used only while the stored value says it is the one
+ * set with it (`webhookSecretSetAt`): a release that rewrites the value without the field (a
+ * rollback) leaves requests unsigned rather than signed with a secret nobody set for that URL.
+ */
+export function notificationTarget(t: Tenant): NotificationTargetResult {
+  const r = row(t, 'notifications')
+  const value = notificationsOf(r ? (JSON.parse(r.value) as unknown) : DEFAULTS.notifications)
+  if (value.webhookUrl === null) return { v: 1, status: 'ok', version: r?.version ?? 0, target: null }
+  const stored = storedSecret(t)
+  const secret = stored !== null && value.webhookSecretSetAt !== null && stored.setAt === value.webhookSecretSetAt ? stored.secret : null
+  return { v: 1, status: 'ok', version: r?.version ?? 0, target: { url: value.webhookUrl, format: value.webhookFormat, sendResolved: value.sendResolved, secret } }
 }
 
 function validateGeneral(v: Record<string, unknown>): General {
@@ -205,8 +291,15 @@ const put: Op = (t, c) => {
   if (section === 'retention') value = validateRetention(b.value, (before ?? DEFAULTS.retention) as Record<string, number>, b.confirmShorter === true)
   else if (section === 'limits') value = validateLimits(t, b.value)
   else if (section === 'pool') value = validatePool(t, b.value, before as PoolValue | null)
-  else if (section === 'notifications') value = validateNotifications(b.value)
-  else value = validateGeneral(b.value)
+  else if (section === 'notifications') {
+    const n = validateNotifications(b.value, notificationsOf(before ?? DEFAULTS.notifications), c.now)
+    value = n.value
+    // In the same transaction as the value; rolled back with it on a dry run. Never in the value or the audit row.
+    if (n.secret === null) t.run('DELETE FROM tenant_meta WHERE tenant = ? AND k = ?', t.tenant, SECRET_KEY)
+    else if (n.secret !== undefined) {
+      t.run('INSERT INTO tenant_meta (tenant, k, v) VALUES (?, ?, ?) ON CONFLICT (tenant, k) DO UPDATE SET v = excluded.v', t.tenant, SECRET_KEY, JSON.stringify({ secret: n.secret, setAt: n.value.webhookSecretSetAt }))
+    }
+  } else value = validateGeneral(b.value)
 
   const text = JSON.stringify(value)
   if (current && current.value === text) throw new NoChange({ status: 200, body: { outcome: 'unchanged', ...view(section, current) } })
