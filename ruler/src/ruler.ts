@@ -1046,7 +1046,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       if (!run.ok) {
         // Refused before anything was evaluated (budget, memory, the engine's plan, the CPU model), or
         // stopped in a window (the rule's own refusal: a series cap, a state limit): nothing is kept.
-        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, message: `${run.refused}; ${run.cpu ? 'nothing was kept' : 'nothing was fetched'} and the rule started cold`, finishedAt: this.now() })
+        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, message: `${run.refused}; ${run.cpu ? 'the rule started cold' : 'nothing was fetched and the rule started cold'}`, finishedAt: this.now() })
         else finish({ ...base, status: 'refused', attempts: job.attempts + 1, message: `${run.failed}; nothing was kept and the rule started cold`, finishedAt: this.now() })
         continue
       }

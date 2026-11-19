@@ -94,6 +94,8 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
   caps: Caps
   /** The tenant this object belongs to, from SQLite; '' until it is provisioned. */
   tenant = ''
+  /** No storage yet (never provisioned): opened, and migrated, by `provision` only. */
+  private unopened = false
   private draining: Promise<boolean> = Promise.resolve(true)
 
   /** What opening storage found (contracts/schema.ts). Anything but `ok` and the object serves nothing and writes nothing. */
@@ -106,6 +108,16 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
     // Versioned storage: migrate, or refuse storage a newer release wrote (contracts/COMPATIBILITY.md §2).
     // Local SQLite only, so holding off other events for it is allowed (AGENTS.md).
     void ctx.blockConcurrencyWhile(async () => {
+      // An object nobody provisioned holds no storage, and opening it writes none: a credential that
+      // merely names a tenant (an OAuth token is `vza1.<tenant>.…`) must not create storage for any
+      // name it likes. Such an object answers "not provisioned" everywhere; `provision` opens it.
+      const empty = ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' LIMIT 1").toArray().length === 0
+      if (empty) {
+        this.unopened = true
+        // Version 0: nothing recorded, nothing to refuse. Nothing reads or writes tables until provision.
+        this.schema = { status: 'ok', component: TENANT_SCHEMA.component, version: 0, compat: 0, known: TENANT_SCHEMA.migrations.length, migrated: [], adopted: false }
+        return
+      }
       this.schema = openSchema(ctx.storage, TENANT_SCHEMA)
       if (this.schema.status !== 'ok') return
       const bound = ctx.storage.sql.exec("SELECT tenant FROM tenant_meta WHERE k = 'bound'").toArray()[0]
@@ -284,6 +296,11 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
    * an HTTP route would have to take a tenant from the request.
    */
   async provision(tenant: string, keyName = 'first admin key'): Promise<{ key: string; id: string }> {
+    if (this.unopened && TENANT_ID.test(tenant)) {
+      // The first write this object ever makes: open (create) its storage now.
+      this.schema = openSchema(this.ctx.storage, TENANT_SCHEMA)
+      this.unopened = false
+    }
     const refused = this.refusal()
     if (refused) throw new SchemaTooNewError(refused)
     if (!TENANT_ID.test(tenant)) throw new Error('tenant id must match [A-Za-z0-9_-]{1,64}')

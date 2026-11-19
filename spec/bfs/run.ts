@@ -293,6 +293,8 @@ for (const [v, what, over, expect] of VARIANTS) {
   propLive(`LIVE_${v}_sl`, `${what}: shard loss (1 send per batch)`, { ...BASE, ...over, maxSend: 1, maxSL: 1 }, 'holds')
   propLive(`LIVE_${v}_llsl`, `${what}: ledger loss + shard loss (1 send per batch)`, { ...BASE, ...over, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
 }
+// F6(b)'s exact bounds (shard loss, no ledger loss: F6b_impl_now) with each variant, I4 only
+for (const [v, what, over] of VARIANTS) prop(`F6b_bounds_${v}`, `F6(b)'s bounds (code as built, shard loss) with ${what}`, { ...BASE, maxSL: 1, ...over }, 'holds', ['I4_NoGapAtSeam'])
 // teeth: each step of the recommended variant, removed alone (R1 is R2 with "logged" removed)
 propLive('LIVE_R2_teeth_no_read_trigger', 'R2 teeth: nothing registers a fresh incarnation on a read (only a write does): shard loss', { ...BASE, ...R2, regOnRead: 'none', maxSend: 1, maxSL: 1 }, 'violated')
 propLive('LIVE_R3_teeth_no_settle', 'R3 teeth: the coordinator does not settle a lost incarnation: shard loss', { ...BASE, ...R3, lostEmpty: false, maxSend: 1, maxSL: 1 }, 'violated')

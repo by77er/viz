@@ -368,6 +368,12 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 - **All state is SQLite.** In memory there is the configuration, the bound tenant (read
   back in the constructor) and a promise that serialises outbox drains. No caches.
+- **An object nobody provisioned writes nothing.** A brand-new object (no tables) is not
+  migrated on construction; `provision` opens its storage. Until then every entry point answers
+  "not provisioned" without touching SQLite. Added with OAuth: an OAuth credential names its
+  tenant in clear, so a forged one could otherwise create storage under any name it chose
+  (tested: three such names through introspection, the token endpoint and revocation leave no
+  table, and no alarm).
 - **Every statement names the tenant** (a test reads the source and checks; the one
   exception reads which tenant the object is bound to).
 - **Mutation, audit row and outbox rows commit in one transaction.** KV is written only
@@ -459,7 +465,7 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 129 tests in 16 files, in workerd (at most 2 workers)
+npm test             # 130 tests in 16 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
 npm run mutants      # 91 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
@@ -467,7 +473,7 @@ npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 
 Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 75 s
 on a shared machine (75 s on a cold cache with the load average above 6). Last run
-2026-11-19: 129 of 129 pass, `tsc` clean.
+2026-11-19: 130 of 130 pass, `tsc` clean.
 
 What the tests establish:
 
@@ -541,7 +547,7 @@ What the tests establish:
   `service:` names are refused for persons; another tenant, an unknown service (also
   `toString`) and four malformed instances are refused with every table unchanged. The ruler's
   own tests (`ruler/test/wiring.test.ts`) use this real object too.
-- **OAuth** (`oauth.test.ts`, 26 tests; helpers in `test/oauth.ts`, an OAuth client speaking to
+- **OAuth** (`oauth.test.ts`, 27 tests; helpers in `test/oauth.ts`, an OAuth client speaking to
   the real Worker). Every threat below is checked in stored state (SQLite rows, KV records,
   introspection), not only by status code.
   *Metadata and registration*: the RFC 8414 document exactly; registration stores nothing, two
@@ -593,6 +599,9 @@ What the tests establish:
   spy), any error body, the audit log, the grants list or the keys list.
   *Rollback*: the previous release's runner opens storage holding grants and tokens at version 3
   and changes nothing.
+  *Unknown tenants*: codes, access and refresh tokens naming three tenants nobody provisioned are
+  refused (`not_provisioned`, `invalid_grant`, revocation 200) and leave those objects with no
+  table and no alarm; provisioning one afterwards works.
   Also in other files: the audit-completeness test now approves and revokes (one entry each,
   dry runs none); tenant A in the isolation test holds a grant and its tokens (B tries A's grant
   id on every route, and the fuzz draws grant ids); golden files for the five new formats
@@ -829,6 +838,9 @@ insert, then retried, yields one dashboard and one entry.
   person approves again). Strict by choice; a grace window would let a copied token through.
 - **OAuth: the tenant id is readable in codes and tokens.** Only their holder, the client acting
   for that tenant, sees them; they are never logged.
+- **OAuth: a forged, well-formed credential costs one Durable Object request** (at `/mcp`,
+  `/oauth/token`, `/oauth/revoke`): the object of the tenant it names is asked, and refuses. It
+  writes nothing (above), but there is no rate limit in front of these paths yet.
 - **OAuth: registration is open and stateless.** Anyone can register any https or loopback
   callback; the person's consent (with the host shown and the name marked unverified) is the
   gate, as with any dynamic registration. Rotating `OAUTH_CLIENT_KEY` invalidates every client

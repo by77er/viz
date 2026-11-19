@@ -87,12 +87,15 @@ describe('protected resource metadata and the 401 challenge', () => {
     expect(none.status).toBe(401)
     expect(none.headers.get('WWW-Authenticate')).toBe(`Bearer realm="viz", resource_metadata="${PRM}", scope="${START}"`)
     const t = await newTenant('chal')
-    for (const bad of [`vza1.${t.tenant}.${'x'.repeat(43)}`, 'viz_nope_nopenopenope', `vza1.nobody.${'y'.repeat(43)}`]) {
+    const ghost = `ghost-${crypto.randomUUID().slice(0, 8)}`
+    for (const bad of [`vza1.${t.tenant}.${'x'.repeat(43)}`, 'viz_nope_nopenopenope', `vza1.${ghost}.${'y'.repeat(43)}`]) {
       const r = await list(bad)
       expect(r.status, bad).toBe(401)
       expect(r.headers.get('WWW-Authenticate')).toMatch(new RegExp(`^Bearer realm="viz", resource_metadata="${PRM}", scope="${START}", error="invalid_token"`))
       expect(JSON.stringify(r.body) + r.headers.get('WWW-Authenticate')).not.toContain(bad.slice(-20))
     }
+    // a token naming a tenant nobody provisioned creates no storage for that name
+    expect(await runInDurableObject(stubOf(ghost), (_i, st) => st.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%'").toArray())).toEqual([])
   })
 })
 

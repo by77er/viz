@@ -30,6 +30,8 @@ describe('house rules, read from the source', () => {
         if (/^INSERT/.test(sql)) expect(sql, `${file}: ${sql}`).toMatch(/\(\s*tenant\b/)
         // The one statement that cannot: reading which tenant this object belongs to.
         else if (sql.includes("FROM tenant_meta WHERE k = 'bound'")) continue
+        // Nor this one: whether the object has any storage at all (an unprovisioned object writes none).
+        else if (sql.startsWith("SELECT name FROM sqlite_master WHERE type = 'table'")) continue
         else expect(sql, `${file}: ${sql}`).toMatch(/\btenant = \?|\$\{where\.join|s\.tenant = \?/)
       }
     }

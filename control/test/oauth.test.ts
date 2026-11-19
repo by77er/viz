@@ -462,6 +462,26 @@ describe('tenant isolation of tokens', () => {
   })
 })
 
+describe('a credential naming a tenant nobody provisioned', () => {
+  it('is refused at every entry point, and creates no storage for that name', async () => {
+    const names = Array.from({ length: 3 }, () => `ghost-${crypto.randomUUID().slice(0, 8)}`)
+    const client = await newClient()
+    for (const ghost of names) {
+      const fake = (p: string) => `${p}.${ghost}.${'a'.repeat(43)}`
+      expect(await introspect(ghost, fake('vza1'))).toEqual({ v: 1, status: 'not_provisioned' })
+      expect((await exchange(client, fake('vzc1'), 'v'.repeat(43))).body.error).toBe('invalid_grant')
+      expect((await refresh(client, fake('vzr1'))).body.error).toBe('invalid_grant')
+      expect((await revokeAtServer(client, fake('vzr1'))).status).toBe(200)
+      const tables = await runInDurableObject(stubOf(ghost), (_i, s) => s.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%'").toArray())
+      expect(tables, ghost).toEqual([])
+      expect(await runDurableObjectAlarm(stubOf(ghost))).toBe(false)
+    }
+    // and provisioning such an object afterwards works as for any new tenant
+    const { key } = await stubOf(names[0]!).provision(names[0]!)
+    expect((await get(key, '/whoami')).body.tenant).toBe(names[0])
+  })
+})
+
 describe('introspection, for the resource', () => {
   it('active: the grant\'s identity and its key for downstream calls, which edge accepts with the grant\'s scopes and which is not the token', async () => {
     const t = await newTenant('intro')

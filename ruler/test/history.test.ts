@@ -102,9 +102,9 @@ async function rig(rules: unknown[], values: Values = (_s, t) => noise(t), opts:
 }
 
 /** What the library computes on its own from no state over the same points, in one batch call. */
-function libraryState(ts: number[], values: number[]) {
+function libraryState(ts: number[], values: number[], halfLifePoints = 10) {
   const det = DETECTORS.ewma as unknown as { detect(s: unknown, p: unknown, st: unknown): { state: unknown } }
-  return det.detect({ ts: Float64Array.from(ts), values: Float64Array.from(values) }, { halfLifePoints: 10, minPoints: 5, k: 8, unit: 'ms', stepMs: MIN }, null).state
+  return det.detect({ ts: Float64Array.from(ts), values: Float64Array.from(values) }, { halfLifePoints, minPoints: 5, k: 8, unit: 'ms', stepMs: MIN }, null).state
 }
 
 function storedState(rows: Record<string, unknown>[], service: string) {
@@ -468,5 +468,117 @@ describe('streaming: history is read and evaluated in windows sized to a memory 
     const T = T0 - DAY
     const res = await r.stub.backtest(r.tenant, ewma(), T, T + HOUR, MIN)
     expect(res).toMatchObject({ status: 'failed', error: expect.stringMatching(/^the engine returned \d+ points for a window the memory model sized for \d+ \(100 series a step\): more series than the rule allows$/) })
+  })
+})
+
+describe('CPU: a run the model prices over its budget is refused whole, never cut off by the platform', () => {
+  const limits = (r: { stub: { configure: (t: string, p: never) => Promise<unknown> }; tenant: string }, l: Record<string, number>) => r.stub.configure(r.tenant, { limits: l } as never)
+
+  it('a backtest is refused after reading only its first window, with the projection of the whole run (which, allowed, is what the run then costs), through RPC and HTTP', async () => {
+    const r = await rig([ewma()])
+    const T = T0 - DAY
+    ok((await limits(r as never, { maxBacktestMemoryBytes: 7_200_000, maxBacktestCpuMs: 20 })) as never)
+    const res = await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)
+    if (res.status !== 'over_budget') throw new Error(JSON.stringify(res))
+    expect(res.message).toMatch(/^over the CPU budget: the first window shows 3 series; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 20 ms\. Nothing was evaluated\. Shorten the range, lengthen the step \(alerting rules only\), or narrow the expression; an operator can raise maxBacktestCpuMs/)
+    expect(res.cpu!.budgetMs).toBe(20)
+    expect(res.cpu!.modelledMs).toBeGreaterThan(20)
+    expect(res.plan).toMatchObject({ queries: 1 })
+    // Planned whole, then one window read: the one that counts the series.
+    expect(r.w.planCalls).toHaveLength(1)
+    expect(r.w.rangeCalls).toHaveLength(1)
+    expect(r.w.rangeCalls[0]![2]).toBeLessThan(T + 6 * HOUR)
+
+    // Allowed, with the same series at every step, the run's account is the projection exactly.
+    ok((await limits(r as never, { maxBacktestCpuMs: 600_000 })) as never)
+    const allowed = good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN))
+    expect(allowed.cost!.cpu).toEqual({ modelledMs: res.cpu!.modelledMs, budgetMs: 600_000 })
+    expect(r.w.rangeCalls.length, 'many windows').toBeGreaterThan(5)
+
+    ok((await limits(r as never, { maxBacktestCpuMs: 20 })) as never)
+    const key = await apiKey(r.tenant)
+    const http = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { rule: ewma(), fromMs: T, toMs: T + 6 * HOUR, step: '1m' })
+    expect([http.status, http.json.error.code, http.json.cpu]).toEqual([422, 'over_budget', { modelledMs: res.cpu!.modelledMs, budgetMs: 20 }])
+  })
+
+  it('a run whose series grow is stopped before the first window that shows them, nothing kept; the series it had seen fitted the budget', async () => {
+    const r = await rig([ewma()])
+    const T = T0 - DAY
+    const grow = T + 3 * HOUR
+    const base = r.w.range!
+    r.w.range = (q, s0, e, st) => {
+      const m = base(q, s0, e, st) as PromMatrix
+      // From `grow` on, 97 more series (100 in all, the rule's max_series).
+      const later = m.result[0]!.values.filter(([sec]) => sec * 1000 >= grow)
+      if (later.length === 0) return m
+      return { resultType: 'matrix', result: [...m.result, ...Array.from({ length: 97 }, (_x, k) => ({ metric: { service: `x${k}` }, values: later }))] }
+    }
+    ok((await limits(r as never, { maxBacktestMemoryBytes: 7_200_000, maxBacktestCpuMs: 60 })) as never)
+    const res = await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)
+    if (res.status !== 'over_budget') throw new Error(JSON.stringify(res))
+    const [, fed, total] = /^over the CPU budget: after (\d+) of (\d+) windows the run shows 100 series; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 60 ms\. Stopped before evaluating more; nothing is kept\./.exec(res.message) ?? []
+    expect(Number(fed)).toBe(r.w.rangeCalls.length - 1)
+    expect(Number(total)).toBeGreaterThan(Number(fed) + 1)
+    // The window that showed them is the first holding a step at or after `grow`.
+    expect(r.w.rangeCalls.at(-2)![2]).toBeLessThan(grow)
+    expect(r.w.rangeCalls.at(-1)![2]).toBeGreaterThanOrEqual(grow)
+    // The same range with the original three series fits.
+    r.w.range = base
+    expect(good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)).cost!.cpu!.modelledMs).toBeLessThanOrEqual(60)
+  })
+
+  it('a warm-up priced over maxWarmupCpuMs is refused after its first window; the rule starts cold at once and says why', async () => {
+    const s = await rig([sloEntry()], undefined, { group: 'slos/1m' })
+    ok((await limits(s as never, { maxWarmupCpuMs: 10 })) as never)
+    await s.tick()
+    expect(s.w.rangeCalls).toHaveLength(1)
+    const st = await s.rule('CheckoutSLO')
+    expect(st.slo!.warmup).toMatchObject({ status: 'refused', attempts: 1, message: expect.stringMatching(/^over the CPU budget: the first window shows 2 series; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 10 ms\. Nothing was evaluated; the rule started cold$/) })
+    expect(st.slo!.warmup!.finishedAt).not.toBeNull()
+    // Cold, not waiting: evaluated at this tick.
+    expect(s.log.filter((x) => x.startsWith('query'))).toHaveLength(1)
+  })
+
+  const long = (name: string) => ({ alert: name, expr: LAT, keep_firing_for: '0s', anomaly: { params: { halfLifePoints: 300, minPoints: 5 }, unit: 'ms' } })
+  const keyOf = async (r: Awaited<ReturnType<typeof rig>>, name: string) => ok(await r.stub.listGroups(r.tenant)).groups.flatMap((g) => g.anomalyRules ?? []).find((x) => x.name === name)!.key
+  const stateOf = async (r: Awaited<ReturnType<typeof rig>>, name: string, service: string) => {
+    const key = await keyOf(r, name)
+    return storedState((await r.stateRows()).filter((x) => x.rule_key === key), service)
+  }
+  // The library's state over a contiguous run of points ending at `end`: 600 of look-back and what was evaluated live.
+  const library = (from: number, end: number) => {
+    const ts: number[] = []
+    for (let t = from; t <= end; t += MIN) ts.push(t)
+    return libraryState(ts, ts.map((x) => noise(x)), 300)
+  }
+
+  it('the warm-ups of one alarm share maxWarmupCpuMs: one that fits a warm-up but not what is left waits for the next alarm (no attempt counted, through an eviction) and is then warmed whole, to the state the library computes', async () => {
+    const r = await rig([long('A1'), long('A2')])
+    ok((await limits(r as never, { maxWarmupCpuMs: 40 })) as never)
+    const t1 = await r.tick()
+    expect((await r.rule('A1')).anomaly!.warmup).toMatchObject({ status: 'done', attempts: 1 })
+    const w2 = (await r.rule('A2')).anomaly!.warmup!
+    expect(w2).toMatchObject({ status: 'pending', attempts: 0, finishedAt: null })
+    expect(w2.message).toMatch(/^waiting for the next alarm: over the CPU budget: the first window shows 3 series; the whole run would take about (\d+) ms of CPU \(modelled\), the budget is \d+ ms\. Nothing was evaluated; it fits a warm-up's 40 ms but not the \d+ ms this alarm had left$/)
+    expect(await r.warmupRow()).toContainEqual(expect.objectContaining({ status: 'pending', attempts: 0 }))
+    await evictDurableObject(r.stub)
+    const t2 = await r.tick()
+    expect(t2).toBe(t1 + MIN)
+    expect((await r.rule('A2')).anomaly!.warmup).toMatchObject({ status: 'done', attempts: 1 })
+    // A2 is the rule it would be had it been created a tick later: 600 points ending one interval before t2, then t2 live.
+    expect(await stateOf(r, 'A2', 'b')).toEqual(library(t2 - 600 * MIN, t2))
+    // A1: warmed at t1 and evaluated live at t1 and t2.
+    expect(await stateOf(r, 'A1', 'b')).toEqual(library(t1 - 600 * MIN, t2))
+  })
+
+  it('groups evaluated in the same alarm reserve the budget before reading: two warm-ups that fit one at a time do not both run', async () => {
+    const r = await rig([long('A1')])
+    ok(await r.stub.saveGroups(r.tenant, { groups: [{ name: 'g', interval: '1m', rules: [long('A1')] }, { name: 'h', interval: '1m', rules: [long('A2')] }] }))
+    ok((await limits(r as never, { maxWarmupCpuMs: 40 })) as never)
+    // A late alarm: both groups are due in it, evaluated concurrently.
+    world.now = ok(await r.stub.health(r.tenant)).alarmAtMs! + 2 * MIN
+    expect(await runDurableObjectAlarm(r.stub)).toBe(true)
+    const states = [(await r.rule('A1')).anomaly!.warmup!.status, (await r.rule('A2')).anomaly!.warmup!.status].sort()
+    expect(states).toEqual(['done', 'pending'])
   })
 })

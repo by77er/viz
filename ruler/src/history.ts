@@ -284,9 +284,9 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
     }
   }
   let points = 0
-  // The CPU model, checked before each window is evaluated, with the series the run has shown so far.
+  // The CPU model, checked before each window is evaluated, with the most series a window has shown so far.
   let spentUs = CPU.base
-  let rate = 0
+  let series = 0
   let fed = 0
   const totalWindows = streams.reduce((n, s, i) => n + Math.ceil(stepsOf(s.read) / sizing.windowSteps[i]!), 0)
   const budgetUs = cpuBudget.budgetMs * 1000
@@ -306,19 +306,19 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
       if (held > allowed) return { ok: false, failed: `the engine returned ${held} points for a window the memory model sized for ${allowed} (${s.seriesBound} series a step): more series than the rule allows` }
       const mainPts = pointsOf(main)
       const thisUs = mainPts * s.cpuPerPoint + (held - mainPts) * (CPU.parse + CPU.presence) + CPU.perWindow
-      rate = Math.max(rate, held / stepsOf(w))
-      // What is left after this window, at the most points a step seen so far, at each stream's cost.
+      series = Math.max(series, main.result.length + comps.reduce((n, m) => n + (m?.result.length ?? 0), 0))
+      // What is left after this window, every series at every step, at each stream's cost.
       let restUs = 0
       for (let j = i; j < streams.length; j++) {
         const sj = streams[j]!
         const left = j === i ? Math.max(0, (sj.read.toMs - w.toMs) / sj.read.stepMs) : stepsOf(sj.read)
-        restUs += left * rate * Math.max(sj.cpuPerPoint, CPU.parse + CPU.presence) + Math.ceil(left / sizing.windowSteps[j]!) * CPU.perWindow
+        restUs += left * series * Math.max(sj.cpuPerPoint, CPU.parse + CPU.presence) + Math.ceil(left / sizing.windowSteps[j]!) * CPU.perWindow
       }
       const projected = spentUs + thisUs + restUs
       if (projected > budgetUs) {
         // `spentMs`: what this run used before it stopped (the window it read was parsed), for an alarm's account.
         const cpu = { modelledMs: Math.round(projected / 1000), budgetMs: cpuBudget.budgetMs, spentMs: Math.ceil((spentUs + held * CPU.parse) / 1000) }
-        const where = fed === 0 ? `the first window shows ${Math.round(rate)} points a step` : `after ${fed} of ${totalWindows} windows the run shows ${Math.round(rate)} points a step`
+        const where = fed === 0 ? `the first window shows ${series} series` : `after ${fed} of ${totalWindows} windows the run shows ${series} series`
         return {
           ok: false,
           refused: `over the CPU budget: ${where}; the whole run would take about ${cpuText(projected)} of CPU (modelled), the budget is ${cpuText(budgetUs)}. ${fed === 0 ? 'Nothing was evaluated' : 'Stopped before evaluating more; nothing is kept'}`,

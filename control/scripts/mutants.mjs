@@ -139,6 +139,7 @@ const mutants = [
   ['oauth: an error body repeats the presented code', [['src/ops-oauth.ts', "  const gone = 'The authorization code is unknown, expired or already used.'", "  const gone = `The authorization code ${req.code} is unknown, expired or already used.`"]]],
   ['oauth: a code nobody exchanged leaves its grant (and key) live', [['src/ops-oauth.ts', "  for (const g of open('id IN (SELECT grant_id FROM oauth_codes WHERE tenant = ? AND used_at IS NULL AND expires_at <= ?)', t.tenant, now)) revokeGrant(t, g, SYSTEM, now, 'not-exchanged')\n", '']]],
   ['oauth: a grant\'s key can be rotated through the keys API (its sealed copies go stale)', [['src/ops-keys.ts', "  guardGrantKey(row, 'rotated')\n", '']]],
+  ['oauth: a credential naming an unprovisioned tenant creates storage for it (the object migrates on construction)', [['src/tenant.ts', '      if (empty) {\n        this.unopened = true', '      if (false) {\n        this.unopened = true']]],
 ]
 
 const only = process.argv[2]

@@ -127,6 +127,17 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `LEAK_D30_sl_comp` no leaked compaction output, D30 + log as built: compaction, retention (1 removal), ledger loss + shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 19 steps | 1,359,944 | 7,442,170 | 51 | 55 s | 5e-8 |
 | `LEAK_V1_sl_comp` no leaked compaction output, the rules before D30: same bounds as LEAK_D30_sl_comp; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | holds (exhaustive) | 1,860,278 | 10,440,988 | 54 | 83.3 s | 9.4e-8 |
 
+## Proposed fixes: registration before writes (R1-R3) and F16
+
+| experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
+|---|---|---|---|---|---|---|---|
+| `LIVE_R1_sl` R1 (registration committed before writes): shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 315,394 | 1,211,232 | 36 | 17.3 s | 2.7e-9 |
+| `LIVE_R2_sl` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 156,911 | 610,119 | 38 | 7.2 s | 6.7e-10 |
+| `LIVE_R3_sl` R3 (registration logged before writes; coordinator settles a lost incarnation): shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 152,052 | 585,970 | 38 | 8.6 s | 6.3e-10 |
+| `LIVE_R2_teeth_no_read_trigger` R2 teeth: nothing registers a fresh incarnation on a read (only a write does): shard loss | AG EF done | **violated** LIVE_QueryCanComplete in 6 steps | 143,799 | 555,373 | 38 | 6.8 s | 5.6e-10 |
+| `LIVE_R3_teeth_no_settle` R3 teeth: the coordinator does not settle a lost incarnation: shard loss | AG EF done | **violated** LIVE_QueryCanComplete in 6 steps | 143,799 | 555,373 | 38 | 6 s | 5.6e-10 |
+| `R_teeth_lost_read_as_empty` R2/R3 teeth: tailRead answers ok/empty to an incarnation it does not hold (no refusal, so no re-plan); shard loss | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 15 steps | 95,270 | 345,431 | 15 | 5.5 s | 2.5e-10 |
+
 ## Counterexamples
 
 ### a_no_fence
@@ -1355,3 +1366,51 @@ Violates `W_NoLeakBehindLostFlush`.
 17. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
 18. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
 19. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+
+### LIVE_R2_teeth_no_read_trigger
+
+R2 teeth: nothing registers a fresh incarnation on a read (only a write does): shard loss
+
+Violates `LIVE_QueryCanComplete`. from the last state of the trace no continuation completes the query.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. append(b1 -> s0) seq 2
+6. SHARD STORAGE LOSS(s0)
+
+### LIVE_R3_teeth_no_settle
+
+R3 teeth: the coordinator does not settle a lost incarnation: shard loss
+
+Violates `LIVE_QueryCanComplete`. from the last state of the trace no continuation completes the query.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. append(b1 -> s0) seq 2
+6. SHARD STORAGE LOSS(s0)
+
+### R_teeth_lost_read_as_empty
+
+R2/R3 teeth: tailRead answers ok/empty to an incarnation it does not hold (no refusal, so no re-plan); shard loss
+
+Violates `I4_NoGapAtSeam`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. ledger drain: delete outbox rows v1..v1, advance logged
+10. query: plan (no files; wm s0:inc1@0)
+11. addUnit(s0 inc 1 1..1) admitted
+12. ledger drain: PUT segment v2..v2
+13. SHARD STORAGE LOSS(s0)
+14. query: tailRead(s0, inc 1, above 0) = ok nothing
+15. query: read files, merge -> nothing
