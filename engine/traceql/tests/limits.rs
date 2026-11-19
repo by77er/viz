@@ -48,7 +48,7 @@ fn trace() -> Trace {
         name: format!("s{id}"),
         start_unix_nano: S + id as u64 * MS,
         end_unix_nano: S + (id as u64 + 10) * MS,
-        resource: vec![("service.name".into(), AttrValue::Str("svc".into()))],
+        resource: vec![("service.name".into(), AttrValue::Str("svc".into()))].into(),
         attrs: vec![("a".into(), AttrValue::Int(1))],
         ..Default::default()
     };

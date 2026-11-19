@@ -167,7 +167,12 @@ until then. No key is ever accepted by two shards.
 
 ### 4.2 Acknowledgement
 
-1. `edge` verifies the API key, decodes the body to a columnar batch, and forwards it.
+1. `edge` verifies the API key, decodes the body to a columnar batch, and forwards it. What it
+   builds while decoding is bounded whatever the body's shape (D71): every key-value entry and
+   array element is counted before it is built and an item of more than 65,536 is refused on its
+   own; a request whose JSON structure or decoded size passes its limit, or whose body is over
+   8 MiB decompressed, is refused whole with 413 before anything is appended
+   (`contracts/BATCH.md`, "Decode limits").
 2. The shard appends the batch to its WAL. Batches arriving within a commit window share
    one transaction. The response is sent only after that transaction is durable.
 3. A request that spans shards succeeds only if every shard commits. Otherwise the sender

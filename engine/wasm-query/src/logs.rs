@@ -5,7 +5,7 @@
 //! Rows are de-duplicated on the row key `(stream_id, ts, line, metadata)`, the later winning
 //! for the other columns: files in the order given (ascending precedence), then tail batches
 //! in order. Each stream's rows go to the engine in `(ts, line, metadata)` order.
-use crate::sigfiles::{self, LogRec};
+use crate::sigfiles::{self, LogRec, Mem};
 use crate::{Fail, Req, Res};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use viz_logql::{Direction, LogRow, LogSource, MatchOp, Matcher, Options, SelectRequest};
@@ -64,22 +64,23 @@ fn row_hash(r: &LogRec) -> u64 {
 
 /// Decode the files (in the order given) and the tail batches, de-duplicate, group by stream.
 /// Memory: each row is held once (no copy of its line or metadata for the index), and a
-/// stream's labels once per file or batch entry, shared by its rows.
+/// stream's labels once per file or batch entry, shared by its rows; what is held is charged
+/// to `mem` as it is decoded ([`sigfiles::log_row_bytes`]) and refused past its limit.
 /// With `want`, only rows some selector can read are kept: a row whose stream matches none of
 /// the selectors, or whose time is outside all their ranges, cannot change the answer (the
 /// engine re-applies both) and is dropped before it is held. Both are parts of the row key, so
-/// dropping them before de-duplication changes no other row.
-pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mut u64, want: Option<&[Sel]>) -> Res<Rows> {
+/// dropping them before de-duplication changes no other row. `max_rows` bounds the rows held
+/// (ABI 7; before, the rows decoded): a tail row outside every selector's range costs nothing.
+/// `decoded` counts every row read.
+pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mut u64, want: Option<&[Sel]>, mem: &mut Mem) -> Res<Rows> {
     let compiled: Option<Vec<(Option<Compiled>, i64, i64)>> = want.map(|w| w.iter().map(|s| (Compiled::new(&s.matchers), s.start, s.end)).collect());
     // Per stream (by its shared labels), whether a selector's matchers admit it.
     let mut admitted: HashMap<Vec<(String, String)>, Vec<bool>> = HashMap::new();
     let mut kept: Vec<Option<LogRec>> = Vec::new();
     let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
-    let mut put = |r: LogRec| -> Res<()> {
+    let mut held = 0u64;
+    let mut put = |r: LogRec, mem: &mut Mem| -> Res<()> {
         *decoded += 1;
-        if *decoded > max_rows {
-            return Err(Fail::Limit("max_rows", max_rows, *decoded, format!("query exceeded limit max_rows: more than {max_rows} log rows decoded, the limit is {max_rows}. Narrow the time range, or select fewer streams.")));
-        }
         if let Some(c) = &compiled {
             if !admitted.contains_key(r.labels.as_slice()) {
                 let v = c.iter().map(|(m, _, _)| m.as_ref().is_none_or(|m| m.matches(&r.labels))).collect();
@@ -90,6 +91,11 @@ pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mu
                 return Ok(());
             }
         }
+        held += 1;
+        if held > max_rows {
+            return Err(Fail::Limit("max_rows", max_rows, held, format!("query exceeded limit max_rows: more than {max_rows} log rows decoded, the limit is {max_rows}. Narrow the time range, or select fewer streams.")));
+        }
+        mem.charge(sigfiles::log_row_bytes(&r))?;
         let slots = index.entry(row_hash(&r)).or_default();
         for &i in slots.iter() {
             let old = kept[i as usize].as_ref().expect("indexed rows are kept");
@@ -104,10 +110,10 @@ pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mu
         Ok(())
     };
     for f in files {
-        sigfiles::read_logs(f, &mut put)?;
+        sigfiles::read_logs(f, mem, &mut put)?;
     }
     for b in tails {
-        sigfiles::batch_logs(b, &mut put)?;
+        sigfiles::batch_logs(b, mem, &mut put)?;
     }
     drop(index);
     let mut grouped: BTreeMap<std::rc::Rc<Vec<(String, String)>>, Vec<(Vec<(String, String)>, LogRow)>> = BTreeMap::new();
@@ -257,6 +263,7 @@ pub(crate) fn do_lq_file_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
 /// 0) or instant (kind 1) query, after `u64` rows decoded.
 pub(crate) fn do_lq_query(mut r: Req<'_>) -> Res<Vec<u8>> {
     let max_rows = r.u64("max_rows")?;
+    let mut mem = Mem::new(r.u64("max_bytes")?);
     let max_series = usize::try_from(r.u64("max_series")?).unwrap_or(usize::MAX);
     let max_steps = usize::try_from(r.u64("max_steps")?).unwrap_or(usize::MAX);
     let limit = r.u32("limit")?;
@@ -275,14 +282,60 @@ pub(crate) fn do_lq_query(mut r: Req<'_>) -> Res<Vec<u8>> {
         .map(|s| Sel { matchers: s.matchers, start: s.start_ns, end: s.end_ns })
         .collect();
     let mut decoded = 0u64;
-    let src = rows(&files, &tails, max_rows, &mut decoded, Some(&sels))?;
-    let opts = Options { limit, direction, max_steps, max_series, now_ns: None };
-    let out = if kind == 1 { viz_logql::query_instant(&src, q, start, &opts) } else { viz_logql::query_range(&src, q, start, end, step, &opts) }.map_err(lq_err)?;
+    let src = rows(&files, &tails, max_rows, &mut decoded, Some(&sels), &mut mem)?;
+    // A metric query's series hold one point per step: they must fit what the budget leaves.
+    let steps = if kind == 1 { 1 } else { u64::try_from(end.saturating_sub(start) / step.max(1)).unwrap_or(u64::MAX).saturating_add(1) };
+    let fit = usize::try_from(mem.left() / steps.saturating_mul(METRIC_POINT_BYTES)).unwrap_or(usize::MAX).max(1);
+    let opts = Options { limit, direction, max_steps, max_series: max_series.min(fit), now_ns: None };
+    let out = if kind == 1 { viz_logql::query_instant(&src, q, start, &opts) } else { viz_logql::query_range(&src, q, start, end, step, &opts) }.map_err(|e| {
+        if fit < max_series && e.to_string().contains("maximum of series") {
+            Fail::Limit(
+                "max_decoded_bytes",
+                mem.max,
+                mem.used.saturating_add((fit as u64 + 1).saturating_mul(steps).saturating_mul(METRIC_POINT_BYTES)),
+                format!("query exceeded limit max_decoded_bytes: more than {fit} series of {steps} steps do not fit what the limit ({} bytes) leaves once the rows are held. Narrow the time range, use a longer step, or group by fewer labels.", mem.max),
+            )
+        } else {
+            lq_err(e)
+        }
+    })?;
+    drop(src);
+    // The answer, before it is written: lines as JSON escapes them, points as text.
+    mem.charge(answer_bytes(&out.data))?;
     let json = out.data_json();
     let mut payload = Vec::with_capacity(8 + json.len());
     payload.extend_from_slice(&decoded.to_le_bytes());
     payload.extend_from_slice(json.as_bytes());
     Ok(payload)
+}
+
+/// Bytes charged per point of a LogQL metric series (`(i64, f64)` and its share of the text).
+const METRIC_POINT_BYTES: u64 = 48;
+
+/// The length of `s` as a JSON string written by `viz_logql`'s `json_str`, quotes included.
+fn json_len(s: &str) -> u64 {
+    2 + s
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\r' | '\t' => 2,
+            '<' | '>' | '&' | '\u{2028}' | '\u{2029}' => 6,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8() as u64,
+        })
+        .sum::<u64>()
+}
+
+/// An upper bound on the bytes of a query's `data` object, from the result before it is
+/// written: what is charged for the answer.
+fn answer_bytes(d: &viz_logql::Data) -> u64 {
+    use viz_logql::Data;
+    let labels = |l: &[(String, String)]| 2 + l.iter().map(|(k, v)| 2 + json_len(k) + json_len(v)).sum::<u64>();
+    1024 + match d {
+        Data::Streams(v) => v.iter().map(|s| labels(&s.labels) + 32 + s.entries.iter().map(|(_, line)| 28 + json_len(line)).sum::<u64>()).sum(),
+        Data::Matrix(v) => v.iter().map(|s| labels(&s.labels) + 32 + METRIC_POINT_BYTES * s.points.len() as u64).sum(),
+        Data::Vector(v) => v.iter().map(|(l, _, _)| labels(l) + 64).sum(),
+        Data::Scalar(..) => 64,
+    }
 }
 
 /// A bare stream selector (`{…}`) as matchers; anything else is `bad_data`.

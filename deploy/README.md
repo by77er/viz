@@ -586,6 +586,125 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 
 All measured here unless it says Cloudflare.
 
+- **D69: format versions, rollback floors, run marks, and S9's measurements in the secret steps
+  (2026-11-19).** Nothing deployed; the Cloudflare API not called (another builder's stage
+  experiment ran from a separate checkout). The fakes follow what S9 measured on Cloudflare: the
+  secret list names the newest version's secrets; `versions deploy` of a version that served before
+  and whose value of a secret differs from the serving one is refused with 10220, one that lacks the
+  secret is allowed, a new version (a rotation's promotion) is allowed; a version just created can
+  answer 404, or show without the secret just put, for its first reads (`readLag`, `secretLag`);
+  `racePut` lets another run of the same release upload between the checks and the put; `ignoreVar`
+  uploads without `--var`. Shared by the end-to-end tests in `test/fake-account.mjs`.
+
+  **Tests that fail without the change.** The two end-to-end files that drive the real `deploy`,
+  `plan` and `rollback` (`test/release-checks.test.mjs`, 14 tests, and `test/secrets.test.mjs`, 21)
+  were copied, with the fakes, into a scratch copy of the tree as it was before this change and run
+  there: **23 of 35 fail**, each on its assertion (exit 0 where 3 is expected, a record without
+  `floors` or `formats`, the old restore across a rotation hitting 10220 after the gateway was rolled
+  back). The 12 that pass there are the 11 earlier secrets tests and the floors' negative control
+  ("while the switch was never on, they refuse nothing"). One earlier test, m-9's refusal, fails
+  there too, on its message only: the old code cites the secret list, which the fake now models as
+  the newest version's (S9). The 13 unit tests of new functions (`release.test.mjs` 8,
+  `configure.test.mjs` 5) cannot run against code that lacks them.
+
+  What each new test shows (the end-to-end ones):
+
+  | Test | Before this change |
+  |---|---|
+  | floors: the switch refused while the serving publisher (schema 3), query or ingest (unstamped) is below its floor; nothing uploaded; `plan` says the same | exit 0 |
+  | floors: the switch refused with one of the release's own Workers below its floor (query unstamped; publisher schema 3) | exit 0 |
+  | floors: allowed once a release at every floor has served; the record's `floors` | no `floors` |
+  | floors: once a kept viz-ingest version set the switch, a release with a Worker below its floor is refused with the switch off, also when the newest viz-ingest version has it off | exit 0 |
+  | floors: a rollback below a floor after the switch, whole or of one Worker (query, publisher, ingest each alone), refused; nothing restored | exit 0 |
+  | floors: a rollback at every floor allowed (to the release before the switch; publisher schema 5 → 4), then below refused | the second exit 0 |
+  | floors: a Worker the record does not name is judged as it serves (query put below its floor by hand) | exit 0 |
+  | floors: while the switch was never on, nothing refused | passes (control) |
+  | m-13: a → b (reads 2) → c (writes 2): to b allowed, then to a refused, b serving | exit 0, no `formats` |
+  | m-13: c over a (reads 1 only) is forward-only (kind `format`), and its automatic rollback target refused | not forward-only |
+  | m-13: a record from before format versions: allowed while only 1 was written since, refused once 2 was | exit 0 |
+  | m-13: what it costs today (`r2.dead-letters` 2 refuses a rollback to an old record) | exit 0 |
+  | m-13: a newer version that declares no formats is refused as unknown | exit 0 |
+  | a failed promotion after a Worker the release is forward-only for was promoted puts nothing back | restored |
+  | m-11: another run uploads between the check and the put: the key is on its version, exit 3, nothing promoted | exit 0, that version promoted |
+  | m-11: every upload carries `VIZ_DEPLOY_RUN`; two runs differ; the record names its run | no mark |
+  | m-11: an upload without this run's mark gets no put (refused before it) | put made |
+  | S9: a version not seen yet (404, or without the secret just put) is read again, and the deploy goes on | exit 1 |
+  | S9: a version that does not show within the budget stops the release, nothing promoted | other message |
+  | S9, created: rollback across the key's creation refused up front; accepted, it serves without the key; the next deploy keeps the key | exit 0 |
+  | S9, rotated: rollback across a rotation refused up front, also when accepting the loss; a record without viz-control goes ahead | gateway rolled back, then 10220 at viz-control |
+  | S9: a failed promotion leaves a viz-control with a rotated key on it | restore hits 10220 |
+  | a serving version that cannot be read stops the release, no key made | went on (a new key over the existing one) |
+
+  Unit tests: `release.test.mjs` (format rollback rule, `readsOf`, forward-only by format,
+  `VIZ_FORMATS` parsing, the floor rule as `workers.json` states it, malformed rules refused, the
+  deploy and rollback floor rules); `configure.test.mjs` (formats read from the real components into
+  the manifest and each version's `VIZ_FORMATS`, with the ruler's gate read from its source; every
+  `FORMATS` map in a deployed component declared; a Worker writing what it does not read, one format
+  at two versions, and read lists with nothing in common refused; viz-query and viz-ingest stamped
+  `VIZ_FLOORS`, a declaration without its evidence refused, a schema floor naming no class refused;
+  the publisher's floor pinned against `publisher/test/n1` (schema 3, metric tables only),
+  `test/d64` (schema 4, reads the three) and `src/` (schema ≥ 4, publishes them)).
+
+  **Suites, at the end** (`cd deploy`): `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`
+  FINAL_VITEST; `node --test --test-concurrency=2 'test/*.test.mjs'` FINAL_NODE (52 before this change:
+  release-checks 14 new, secrets 12 → 21, release 11 → 19, configure 22 → 27). `bash -n deploy.sh`
+  clean; shellcheck is not installed here, so deploy.sh's changed lines were not linted.
+
+  **Mutants**, each run in a fresh copy of the tree in a scratch directory (node_modules linked; the
+  scripts refuse a git work tree), whose unmutated tests the scripts check first; at most 2 test
+  workers. First runs: `node scripts/mutants-release.mjs` **40 of 41 killed**; the survivor, *a
+  schema floor naming no class of its Worker is not refused by configure()*, lived because
+  `configure()` read `workers.json` only from disk and the test called the check directly: it now
+  takes a `plan`, and a test configures one with a wrong floor (killed on re-run). `node
+  scripts/mutants-secrets.mjs` **30 of 31**: the earlier mutant *plan mode puts the secret* survived
+  because its injected `ensureSecrets` call has no run id, which the new run check refuses before
+  any put (the guard made that form equivalent); it now puts directly (killed on re-run). One kill
+  was not a kill: *the secret check of a rollback is never run* left a parenthesis unbalanced, the
+  test file did not load, and the script counted its failure; the replacement is fixed, and both
+  scripts now count a test file that does not load as NO RUN. Final runs, on the final code:
+  FINAL_MUTANTS. The new mutants and the tests that killed them:
+
+  | Mutant (release, 26 new; 15 earlier) | Killed by |
+  |---|---|
+  | formats: forward-only by format not marked | m-13 forward-only; the failed promotion that puts nothing back |
+  | formats rollback: the check never run / a version written since accepted / only schema-bearing Workers' versions read | m-13: a → b → c, to b allowed, to a refused (and 4 others) |
+  | formats rollback: a newer version declaring no formats ignored | m-13: unknown version refused |
+  | formats rollback: workers.json's format Workers not judged for an old record | m-13: old record; what it costs today |
+  | formats: a release declaring nothing taken to read every version | m-13: old record; what it costs today (5) |
+  | formats: what a release reads is the union over its Workers | formats: what every Worker of it reads |
+  | formats: two read lists in one Worker united | formats: … read lists with nothing in common refused |
+  | formats: a Worker writing what it does not read accepted | the same |
+  | formats: `read.` entries recorded as written | formats read from the components; the same |
+  | configure: no VIZ_FORMATS on versions | formats read from the components, into each version's VIZ_FORMATS |
+  | floors: the switch on while a serving Worker is below its floor | the switch refused while the serving publisher, query or ingest is below; the pure deploy rule |
+  | floors: the switch on while the release's own Worker is below its floor | own Worker below its floor; the pure deploy rule |
+  | floors: history never read with the switch off | a kept viz-ingest version set the switch |
+  | floors: only the newest writer version looked at | the same (the newest has the switch off, an older one had it on) |
+  | floors rollback: the check never run / allowed whatever the switch did | rollback below a floor refused, whole or one Worker (3, 4) |
+  | floors rollback: a Worker the record does not name not judged / its live state not read | a Worker the record does not name is judged as it serves |
+  | floors: only the signal names edge knows count | the floor rule as workers.json states it (`metrics2`) |
+  | floors: schema floor off by one | 7 tests |
+  | configure: a floor stamped without its evidence / no VIZ_FLOORS on versions | stamped on the evidence of their sources |
+  | configure: a schema floor naming no class not refused | the same test, through `configure({ plan })` (after the fix above) |
+  | phase 2: a failed promotion restores across a forward-only Worker | the failed promotion that puts nothing back |
+
+  | Mutant (secrets, 12 new; 19 earlier, two of them rewritten) | Killed by |
+  |---|---|
+  | m-11: the keyed version's VIZ_DEPLOY_RUN not checked after the put | another run uploads between the check and the put |
+  | m-11: the newest version's mark not checked before the put | an upload without this run's mark gets no put |
+  | m-11: uploads without the mark | absent, a failed put, rotation, … (every keyed deploy) |
+  | m-11: phase 2's `wrangler deploy` without the mark | a first deploy |
+  | m-11: every run has the same mark | two runs carry different values |
+  | S9: a just-created version read once | a version not seen yet is read again |
+  | S9: a rollback across the key's creation not refused | S9, created |
+  | S9: `--accept-secret-loss` ignored | S9, created |
+  | S9: a rollback across a rotation not refused | S9, rotated |
+  | S9: the secret check of a rollback never run | S9, created; S9, rotated (after the fix above) |
+  | S9: a failed promotion restores viz-control across its own rotation | S9: a failed promotion leaves viz-control on its rotated key |
+  | a serving version that cannot be read taken as not carrying the key | a serving version that cannot be read stops the release |
+  | (rewritten) m-9: newer versions not scanned (the scan, not the old `newestServing` guard) | m-9 (2) |
+  | (rewritten) plan mode puts the secret (directly) | plan |
+
 - **After the review of D44, D52, D53 and D60** (`design/reviews/d44-d52-d53-d60.md`,
   2026-11-19; nothing deployed, the Cloudflare API not called). `test/secrets.test.mjs` **12 of
   12**, three new: **m-9**, a rollback across the key's creation (the serving version without the

@@ -81,7 +81,8 @@ const run = () => {
     return { failed: false, detail: '' }
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '')
-    const names = [...out.matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1])
+    // A test file that does not load is reported under its own name: that is no test failing, not a kill.
+    const names = [...out.matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1]).filter((n) => !/^test\/[^ ]+\.test\.mjs$/.test(n))
     // Killed means a test ran and failed; a suite that did not load or finish is reported as such.
     return { failed: names.length > 0, crashed: names.length === 0, count: names.length, detail: names.slice(0, 2).join(' | ') || out.split('\n').slice(-5).join(' ') }
   }

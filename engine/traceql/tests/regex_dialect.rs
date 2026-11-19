@@ -22,7 +22,7 @@ fn span(id: u64, parent: Option<u64>, name: String, attrs: Vec<(String, AttrValu
         name,
         start_unix_nano: S,
         end_unix_nano: S + 1_000_000,
-        resource: vec![("service.name".into(), AttrValue::Str("regex".into()))],
+        resource: vec![("service.name".into(), AttrValue::Str("regex".into()))].into(),
         attrs,
         ..Default::default()
     }

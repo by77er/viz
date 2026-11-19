@@ -2887,7 +2887,11 @@ in spike S9, measured on Cloudflare. Code: `deploy/lib/formats.mjs`, `deploy/lib
    `#LOG_TABLES`), checked by configure, which then stamps every version of the Worker with
    `VIZ_FLOORS`; an unstamped version is below the floor. Refused (exit 3, before anything is
    uploaded or moved): a release that sets `INGEST_SIGNALS` unless each of the three, in this release
-   **and as it serves now**, is at its floor; a release with one below its floor while any viz-ingest
+   **and as it serves now**, is at its floor ("every release a rollback could reach": the serving one,
+   which deploy.sh's automatic rollback and phase 2's restore put back without asking, and this one;
+   an older one is reached only through `release.mjs rollback`, which refuses it from the moment this
+   release's viz-ingest is uploaded; asking every version Cloudflare keeps to be at the floor would
+   hold the switch off for about 100 releases); a release with one below its floor while any viz-ingest
    version Cloudflare keeps set the switch (redeploying older code); a rollback, of the whole release
    or of any Workers a record names (the others judged as they serve), that would leave one below
    its floor while any kept viz-ingest version set the switch. The record says what each floor saw.
@@ -2956,9 +2960,10 @@ publisher stopping tenants; a pre-D63 write path stalling flush and retention) a
 rollback that keeps each Worker at its floor.
 
 **Verified** (here, nothing deployed, the Cloudflare API not called; fakes of wrangler and the API that
-model S9's measurements: `deploy/README.md`, "How it was verified"): 36 new tests, 22 of which fail
-against the release tool as it was before this change (the rest are the earlier secrets tests,
-controls, and unit tests of new functions); mutants in a scratch copy, listed there.
+model S9's measurements: `deploy/README.md`, "How it was verified"): 36 new tests; of the 35 tests in
+the two files that drive the real deploy, plan and rollback, 23 fail against the release tool as it
+was before this change (the rest are the earlier secrets tests and a negative control; the other 13
+new tests are unit tests of new functions); mutants in a scratch copy: FINAL_MUTANTS_D69, listed there.
 
 **Cost of it.** Configure bundles more source (the `FORMATS` maps). A rollback reads one more version
 per format-bearing Worker per version since its target; a rollback below a floor, and a release
@@ -3100,3 +3105,101 @@ new version in `contracts/oauth.ts`); the binding is billed per call at a price 
 clients converge on another rate-limit code; viz moves to a plan or product where zone rules are
 managed with the release (then (c) carries the source limit); or a sign-in replaces approval by API
 key (the authorization page becomes a form and may need its own limits).
+
+## D71. Edge counts what it builds while decoding: an item (span, resource and scope, log record, data point) of more than 65,536 key-value entries and array elements is refused at the limit, not built; a request decodes into at most 16 MiB and a JSON body has at most 2^20 structural characters (413 otherwise); a body is at most 8 MiB decompressed
+
+(Written 2026-11-19 for the review of spans and logs end to end, M-3: "count attributes, array
+items and value bytes while decoding, and refuse at the limit before materialising. Lower
+`maxDecompressedBytes`. Measure in workerd.")
+
+**What was wrong, measured here** (`edge/bench/memory.mjs`: local workerd 2026-11-17, V8 heap
+from `--trace-gc`, peak = the largest heap any GC saw, one run per case; Node 22 alongside). Every
+decoder built every key-value entry and array element of an item as JavaScript objects and
+checked the limits afterwards, so a body of two-byte entries cost 25 to 40 bytes of heap per byte:
+a 4 MiB resource of empty `KeyValue`s peaked at 156 MiB in workerd (238 MiB in Node), a span of
+empty attributes at 168 MiB, OTLP logs and metrics alike (113 to 120 MiB), a Loki entry of empty
+metadata at 115 MiB, JSON of empty attributes at 112 to 135 MiB. At the old default of 32 MiB
+decompressed, which a 32 KB gzip body reaches, that is about 1.2 GB (extrapolated). Found while
+fixing it: a resource's labels are copied into every series of it, so a valid 157 KiB OTLP
+metrics body (one 96 KiB resource, 2,000 points) built a 498 MiB series table (Node, ArrayBuffers;
+2.1 GB at 350 KiB), live on `main`; 4 MiB of empty `ScopeSpans` took 19.6 s of CPU (each scope
+re-encoded its resource); offset arrays grew with every child message; each accepted span or log
+record was a JavaScript object of about 290 / 100 bytes (30 / 19 MiB retained for 107,546 minimal
+spans and 200,000 minimal records); a 4 MiB span name grew the row buffer to 12 MiB; a data point's
+attribute names were matched with `indexOf` (quadratic: 0.5 s for 229 KiB).
+
+**Decision.**
+
+- **Values per item, counted before building** (`edge/src/meter.ts`). Every key-value entry and
+  every array element, at any depth, as received, is counted against its item before it is
+  built: a span with its events and links, a resource with one scope (spans), a log resource, a
+  log scope, a log record, a Loki entry or label set, a metric resource, a data point. At 65,536
+  the item is refused on its own (OTLP `partial_success`, Loki 400; a metric point as "label set
+  too large to fit one batch"), its remainder is read only to check the wire (lengths, wire
+  types, nesting, UTF-8 for metrics), and the rest of the request is decoded as before. Events and
+  links past the 128th are read and not built. Contract: `contracts/BATCH.md`, "Decode limits".
+- **Per request: 413, nothing appended**, when the decoded series table (metrics) or entries and
+  rows (spans, logs) pass `maxDecodedBytes` (16 MiB), or a JSON body has more than
+  `maxJsonTokens` (1,048,576) structural characters, counted before `JSON.parse`.
+- **`maxDecompressedBytes` 32 → 8 MiB.**
+- **Shape of the decoders:** a protobuf level is read twice (what its children need, then the
+  children) instead of keeping an offset per child; a resource is encoded once for all its scopes
+  and an entry is found again by resource and scope bytes; rows are bytes in one buffer (no
+  object per row), the buffer doubles only up to the decoded limit; a request's body is released
+  once decoded; a point's attribute names are found in a `Map`. Decoded batches are identical
+  (`edge/bench/differential.mjs`: 1,294 requests against the tree before, 605 metrics requests
+  against `main`).
+
+**After, measured here** (same harness): the same hostile 4 MiB bodies peak at 0.0 to 6.0 MiB in
+workerd (the worst, 65,536 nested key-value lists in one span), JSON ones are 413 before parsing,
+the metrics fan-out is 413 at 16 MiB, empty scopes, spans and records cost 27 to 660 ms of Node CPU
+for 2 million of them; realistic bodies of 8,200 items peak at 1.4 to 3.2 MiB (protobuf) and 8.1
+to 17.1 MiB (JSON) in workerd, against 3.1 to 7.4 and 8.3 to 22.0 before. `edge/README.md`,
+"Memory per request", has the tables and the model.
+
+**Why 8 MiB.** Realistic batches of 8,200 items measured here are 0.4 MiB (Loki, snappy) to 3.4 MiB
+(traces) as protobuf and 1.6 to 7.1 MiB as JSON; they decode into 1.9 to 3.7 MiB. Clients' defaults
+(training knowledge, not verified here): the OpenTelemetry Collector's batch processor sends 8,192
+items (`send_batch_size`) and does not cap a batch unless `send_batch_max_size` is set; SDKs export
+512 spans or records at a time; gRPC's default largest message is 4 MiB; the Collector's HTTP
+server refuses bodies over 20 MiB by default; Prometheus sends 2,000 samples (625 KB measured here)
+and Promtail and Alloy 1 MiB of log lines. 8 MiB holds the Collector's default batch twice over as
+protobuf and once as JSON spans; the README's earlier advice was 8 to 16 MiB.
+
+**Why 65,536 values.** It bounds an item's objects to what was measured above (6.0 MiB at worst)
+while every item real senders make has tens to a few thousand values; items with more were valid
+but absurd (a log body that is an array of 100,000 numbers). An item of exactly 65,536 values can
+still be stored, and is, in the tests, for each signal.
+
+**Why 16 MiB decoded.** About four times the realistic batches above (3.7 MiB for 8,200 spans); a
+Kubernetes resource of about 25 attributes (about 1.4 KiB a series, modelled) makes 8,192 points
+about 11.5 MiB. It is what stops a resource's copies: the 157 KiB body above.
+
+**Alternatives.**
+
+- *Count after building* (as before): the measurements above.
+- *A byte budget per item* (a lower bound of the stored size against the 256 KiB row and entry,
+  64 KiB metadata and series limits) instead of a count: exact for well-formed input, but one
+  lower bound must hold for five mappings (typed attributes, canonical JSON, plain JSON, flattened
+  log metadata whose names are shorter than their keys, metric labels that drop empty values), and
+  it still needs a count for entries that map to nothing. Would change if the count refuses items
+  real senders make.
+- *Build nothing: write each mapping straight from the wire*: the least memory, but every mapping
+  re-implemented over the wire, the live metrics one included. Would change if 6 MiB per item is too
+  much.
+- *Refuse the whole request (413) for an item over the limit*: simpler, but one bad span would drop
+  a sender's batch, against the per-item refusals the contract and OTLP's `partial_success` define.
+- *One budget per request*: a large honest request would be refused for the sum of its items; the
+  body and decoded limits already govern a request's size.
+- *A streaming JSON parser* counted like protobuf: no pre-scan, more code; `JSON.parse` is native,
+  the pre-scan costs about 3 ms per MiB (Node).
+- *`maxDecompressedBytes` 16 MiB*: holds JSON batches of 16,000 spans, at twice the memory (modelled);
+  *4 MiB* would refuse a default Collector batch of spans as JSON (7.1 MiB measured).
+
+**Would change if.** Cloudflare measurements of isolate memory per request differ from these local
+ones (`design/VERIFICATION.md` §4: run the hostile and realistic bodies against a deployed edge and
+read the isolate's memory from Workers analytics); senders' bodies seen on Cloudflare are larger
+than 8 MiB, or metrics with wide resources reach 16 MiB decoded (then resource attributes go to
+`target_info` instead of every series, or the series table becomes chunks); OTLP clients learn to
+split on 413; a real sender's item passes 65,536 values.
+

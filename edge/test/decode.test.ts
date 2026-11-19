@@ -128,6 +128,7 @@ const HOSTILE: [name: string, signal: Signal, json: boolean, body: (n: number) =
   ['traces: resource of empty KeyValues', 'traces', false, (n) => request(rep([0x0a, 0], n), ld(0x12, span(0))), SpanReject.entryValues, 0],
   ['traces: span of empty attributes, then a valid span', 'traces', false, (n) => request(SVC, cat(ld(0x12, span(0, rep([0x4a, 0], n))), ld(0x12, span(1)))), SpanReject.values, 1],
   ['traces: span attribute, an array of empty values', 'traces', false, (n) => request(SVC, cat(ld(0x12, span(0, ld(0x4a, kvArray('a', n)))), ld(0x12, span(1)))), SpanReject.values, 1],
+  ['traces: span attribute, a key-value list of empty entries', 'traces', false, (n) => request(SVC, cat(ld(0x12, span(0, ld(0x4a, cat(str(0x0a, 'a'), ld(0x12, ld(0x32, rep([0x0a, 0], n))))))), ld(0x12, span(1)))), SpanReject.values, 1],
   ['traces: event attributes', 'traces', false, (n) => request(SVC, cat(ld(0x12, span(0, ld(0x5a, rep([0x1a, 0], n)))), ld(0x12, span(1)))), SpanReject.values, 1],
   ['traces: scope attributes', 'traces', false, (n) => request(SVC, cat(ld(0x0a, rep([0x1a, 0], n)), ld(0x12, span(0)))), SpanReject.entryValues, 0],
   ['traces JSON: resource of empty attributes', 'traces', true, (n) => json(`{"resourceSpans":[{"resource":{"attributes":[${emptyObjects(n)}]},"scopeSpans":[{"spans":[{}]}]}]}`), SpanReject.entryValues, 0],
@@ -199,6 +200,10 @@ describe('decode limits: an item with more than 65,536 values', () => {
     const entryOf = (extra: number) => lokiReq('{job="a"}', [rep([0x1a, 0], N + extra)])
     expect(run('loki', false, entryOf(0))).toMatchObject({ rows: 1, rejected: 0 })
     expect(run('loki', false, entryOf(1))).toMatchObject({ rows: 0, reasons: `1 ${LogReject.values}` })
+    // A Loki label set: N - 1 empty-valued pairs (dropped) and job="a", then one pair more.
+    const labelsOf = (extra: number) => lokiReq(`{${Array.from({ length: N - 1 + extra }, (_, i) => `a${i}=""`).join(',')},job="a"}`, [str(0x12, 'x')])
+    expect(run('loki', false, labelsOf(0))).toMatchObject({ rows: 1, rejected: 0 })
+    expect(run('loki', false, labelsOf(1))).toMatchObject({ rows: 0, reasons: `1 ${LogReject.labelPairs}` })
   })
 
   it('counts a resource and each of its scopes together (spans)', () => {
@@ -280,6 +285,28 @@ describe('decode limits: a request', () => {
     const under = await postSignal('/v1/traces', key, body, 'application/x-protobuf', at({ maxDecodedBytes: 400_000 }))
     expect(under.status).toBe(200)
     expect((await storedSpans(DEFAULT_MAP, tenant)).length).toBe(40)
+  })
+
+  it('takes exactly maxDecodedBytes, and refuses a byte less (each signal)', () => {
+    const decodedOf = (signal: Signal, body: Uint8Array, limits: Limits): number => {
+      const c = signal === 'metrics' ? new Collector(limits, Date.now(), body.length) : signal === 'traces' ? new SpanCollector(limits, Date.now()) : new LogCollector(limits, Date.now())
+      if (c instanceof Collector) decodeOtlpProto(body, c)
+      else if (c instanceof SpanCollector) decodeTracesProto(body, c)
+      else decodeLogsProto(body, c)
+      return c.decoded
+    }
+    const resource = cat(SVC, ld(0x0a, kvs('r', 'v'.repeat(500))))
+    const bodies: [Signal, Uint8Array][] = [
+      ['metrics', metricsReq(resource, Array.from({ length: 20 }, (_, i) => ld(0x3a, kvs('p', String(i)))))],
+      ['traces', ld(0x0a, cat(ld(0x0a, resource), ...Array.from({ length: 20 }, (_, i) => ld(0x12, cat(ld(0x0a, str(0x0a, `s${i}`)), ld(0x12, span(i)))))))],
+      ['logs', request(resource, cat(...Array.from({ length: 20 }, () => record(ld(0x2a, str(0x0a, 'line'))))))],
+    ]
+    for (const [signal, body] of bodies) {
+      const size = decodedOf(signal, body, DEFAULT_LIMITS)
+      expect(size, signal).toBeGreaterThan(1000)
+      expect(run(signal, false, body, { ...DEFAULT_LIMITS, maxDecodedBytes: size }).rows, signal).toBe(20)
+      expect(status(() => run(signal, false, body, { ...DEFAULT_LIMITS, maxDecodedBytes: size - 1 })), signal).toBe(413)
+    }
   })
 
   it('logs: rows past maxDecodedBytes refuse the request whole (413)', () => {

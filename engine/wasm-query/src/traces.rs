@@ -9,11 +9,13 @@
 //! every span of it that was read (`TraceSummary::from_spans`), never from `trace_index`
 //! counts (which over-count spans retried into another unit, `contracts/TRACES.md`): the
 //! index fragments only say which hours and which time hull to read.
-use crate::sigfiles::{self, SpanRec};
+use crate::sigfiles::{self, Mem, Resources, SpanRec};
 use crate::{Fail, Req, Res};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
+use std::sync::Arc;
 use viz_query::QueryError;
-use viz_storage::otel::Value;
+use viz_storage::otel::{Attr, Value};
 use viz_traceql::ast::{Intrinsic, Query, Scope};
 use viz_traceql::{AttrValue, Column, Kind, MemSource, RangeRequest, SearchRequest, Status, Trace};
 
@@ -106,8 +108,25 @@ fn kv_list(raw: &str) -> Res<Vec<(String, AttrValue)>> {
     Ok(sigfiles::kv_texts(raw)?.into_iter().map(|(k, v)| (k, any_to_av(&v))).collect())
 }
 
+/// The engine's form of each distinct resource of a call, made once (keyed by the record's
+/// shared copy, which [`Resources`] keeps alive for the call) and charged once.
+#[derive(Default)]
+pub(crate) struct EngineResources(HashMap<*const Vec<Attr<String>>, Arc<viz_traceql::data::Attrs>>);
+
+impl EngineResources {
+    fn get(&mut self, r: &Rc<Vec<Attr<String>>>, mem: &mut Mem) -> Res<Arc<viz_traceql::data::Attrs>> {
+        if let Some(x) = self.0.get(&Rc::as_ptr(r)) {
+            return Ok(Arc::clone(x));
+        }
+        mem.charge(64 + sigfiles::attrs_bytes(r))?;
+        let x: Arc<viz_traceql::data::Attrs> = Arc::new(r.iter().map(|a| (a.key.clone(), av(&a.value))).collect());
+        self.0.insert(Rc::as_ptr(r), Arc::clone(&x));
+        Ok(x)
+    }
+}
+
 /// The engine's span (`viz_traceql::Span`, the logical view) of a record.
-pub(crate) fn engine_span(r: &SpanRec) -> Res<viz_traceql::Span> {
+pub(crate) fn engine_span(r: &SpanRec, resources: &mut EngineResources, mem: &mut Mem) -> Res<viz_traceql::Span> {
     Ok(viz_traceql::Span {
         span_id: r.span_id,
         parent_span_id: r.parent,
@@ -117,7 +136,7 @@ pub(crate) fn engine_span(r: &SpanRec) -> Res<viz_traceql::Span> {
         status_message: r.status_message.clone(),
         start_unix_nano: r.start as u64,
         end_unix_nano: r.end as u64,
-        resource: r.resource.iter().map(|a| (a.key.clone(), av(&a.value))).collect(),
+        resource: resources.get(&r.resource, mem)?,
         attrs: r.attrs.iter().map(|a| (a.key.clone(), av(&a.value))).collect(),
         scope_name: r.scope_name.clone(),
         scope_version: r.scope_version.clone(),
@@ -129,36 +148,69 @@ pub(crate) fn engine_span(r: &SpanRec) -> Res<viz_traceql::Span> {
 
 // ───────────────────────────── reading ─────────────────────────────
 
-/// Limits on what one call decodes (`SPANS_DECODED` is reported to the caller).
+/// What one call may decode and hold, and which spans are part of its data.
+///
+/// * `bound`: a span whose start lies outside `[lo, hi]` (nanoseconds) is not part of the
+///   data. It is dropped as it is read, BEFORE de-duplication, so that what the call sees does
+///   not depend on which files or row groups outside the bound were read (pruning on or off):
+///   design/DECISIONS.md D62, a found trace's spans within the query's margin.
+/// * `max_spans`: spans held (inside the bound), the tail's included; `spans` counts them.
+/// * `mem`: the bytes of what is held ([`Mem`]); `resources`: one copy per distinct resource.
+/// * `decoded`: every span read, the dropped ones included (reported, not limited).
 pub(crate) struct Budget {
     pub max_spans: u64,
     pub spans: u64,
+    pub decoded: u64,
+    pub bound: (i64, i64),
+    pub mem: Mem,
+    pub res: Resources,
+    pub engine_res: EngineResources,
 }
 
+const ALL_TIME: (i64, i64) = (i64::MIN, i64::MAX);
+
 impl Budget {
-    fn take(&mut self) -> Res<()> {
-        self.spans += 1;
-        if self.spans > self.max_spans {
-            return Err(Fail::Limit("max_spans", self.max_spans, self.spans, format!("query exceeded limit max_spans: more than {} spans decoded, the limit is {}. Narrow the time range.", self.max_spans, self.max_spans)));
+    pub fn new(max_spans: u64, max_bytes: u64, bound: (i64, i64)) -> Budget {
+        Budget { max_spans, spans: 0, decoded: 0, bound, mem: Mem::new(max_bytes), res: Resources::default(), engine_res: EngineResources::default() }
+    }
+    /// `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi` (ABI 7).
+    fn read(r: &mut Req<'_>) -> Res<Budget> {
+        let (max_spans, max_bytes) = (r.u64("max_spans")?, r.u64("max_bytes")?);
+        let (lo, hi) = (r.i64("bound_lo")?, r.i64("bound_hi")?);
+        if lo > hi {
+            return Err(Fail::Malformed(format!("bound [{lo}, {hi}] is empty")));
         }
-        Ok(())
+        Ok(Budget::new(max_spans, max_bytes, (lo, hi)))
     }
 }
 
-/// Every span of the files (in the order given) and then the tail batches, to `put`, which
-/// keeps the later of two rows with one key. `keep` may drop a record before it is kept (a
-/// filter that does not depend on which copy of a span wins must not be used here).
-fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, mut visit: impl FnMut(SpanRec) -> Res<()>) -> Res<()> {
+fn take(max_spans: u64, spans: &mut u64) -> Res<()> {
+    *spans += 1;
+    if *spans > max_spans {
+        return Err(Fail::Limit("max_spans", max_spans, *spans, format!("query exceeded limit max_spans: more than {max_spans} spans decoded, the limit is {max_spans}. Narrow the time range.")));
+    }
+    Ok(())
+}
+
+/// Every span of the files (in the order given) and then the tail batches that lies inside the
+/// bound, to `visit`, each counted against `max_spans` and charged to the memory budget.
+fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, mut visit: impl FnMut(SpanRec, &mut Mem, &mut EngineResources) -> Res<()>) -> Res<()> {
+    let (lo, hi) = budget.bound;
+    let keep = move |start: i64| start >= lo && start <= hi;
+    let Budget { max_spans, spans, decoded, mem, res, engine_res, .. } = budget;
+    let max_spans = *max_spans;
     for f in files {
-        sigfiles::read_spans(f, |r| {
-            budget.take()?;
-            visit(r)
+        *decoded += sigfiles::read_spans(f, res, mem, keep, |r, mem| {
+            take(max_spans, spans)?;
+            mem.charge(sigfiles::span_bytes(&r))?;
+            visit(r, mem, engine_res)
         })?;
     }
     for b in tails {
-        sigfiles::batch_spans(b, |r| {
-            budget.take()?;
-            visit(r)
+        *decoded += sigfiles::batch_spans(b, res, mem, keep, |r, mem| {
+            take(max_spans, spans)?;
+            mem.charge(sigfiles::span_bytes(&r))?;
+            visit(r, mem, engine_res)
         })?;
     }
     Ok(())
@@ -167,7 +219,7 @@ fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, mut visit: i
 /// The spans read, de-duplicated (later wins), as records.
 fn latest_records(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: impl Fn(&SpanRec) -> bool) -> Res<Vec<SpanRec>> {
     let mut by: HashMap<Key, Option<SpanRec>> = HashMap::new();
-    each_span(files, tails, budget, |r| {
+    each_span(files, tails, budget, |r, _, _| {
         let k = (r.trace_id, r.span_id);
         // The later row wins whether or not it is wanted: an unwanted later copy hides an earlier one.
         by.insert(k, want(&r).then_some(r));
@@ -181,10 +233,10 @@ fn latest_records(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: i
 /// whose start lies in `(lo, hi]` are kept (a metrics query whose plan is span-local).
 pub(crate) fn traces(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, window: Option<(u64, u64)>) -> Res<Vec<Trace>> {
     let mut by: HashMap<Key, Option<viz_traceql::Span>> = HashMap::new();
-    each_span(files, tails, budget, |r| {
+    each_span(files, tails, budget, |r, mem, engine_res| {
         let k = (r.trace_id, r.span_id);
         let keep = window.is_none_or(|(lo, hi)| (r.start as u64) > lo && (r.start as u64) <= hi);
-        by.insert(k, if keep { Some(engine_span(&r)?) } else { None });
+        by.insert(k, if keep { Some(engine_span(&r, engine_res, mem)?) } else { None });
         Ok(())
     })?;
     let mut grouped: BTreeMap<[u8; 16], Vec<viz_traceql::Span>> = BTreeMap::new();
@@ -310,33 +362,53 @@ fn read_id(r: &mut Req<'_>) -> Res<Option<[u8; 16]>> {
 /// `viz_q_tq_extent`: the traces whose extent overlaps `[lo, hi]` (or the one trace `id`),
 /// from `trace_index` fragments merged per trace and the spans of the tail: how many, the
 /// hull of their extents, and the `spans` hours that hold them (`contracts/TRACES.md`,
-/// `trace_index.hours`). The planner reads the spans of that hull, so every span of every
-/// such trace is read.
+/// `trace_index.hours`). Only what lies inside `bound` counts (ABI 7): a fragment that does not
+/// overlap it is passed over, a tail span whose start is outside it too, and the hull and hours
+/// are cut to it, as the span calls cut the data to the same bound ([`Budget`]). So the
+/// traces found and the spans the planner reads for them do not depend on which files or row
+/// groups outside the bound were read, and every span of a found trace that starts inside the
+/// bound is read: the planner reads the `spans` files of the hull (D62).
 pub(crate) fn do_tq_extent(mut r: Req<'_>) -> Res<Vec<u8>> {
     let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
     let id = read_id(&mut r)?;
+    let (blo, bhi) = (r.i64("bound_lo")?, r.i64("bound_hi")?);
     let index = r.files("trace_index file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
+    if blo > bhi {
+        return Err(Fail::Malformed(format!("bound [{blo}, {bhi}] is empty")));
+    }
+    const HOUR: i64 = 3_600_000_000_000;
+    let hour_in = |h: i32| {
+        let start = (h as i64).saturating_mul(HOUR);
+        start.saturating_add(HOUR - 1) >= blo && start <= bhi
+    };
     let mut ext: HashMap<[u8; 16], (i64, i64, BTreeSet<i32>)> = HashMap::new();
+    // `a` is the earliest start (cut to the bound) and `b` the latest end of what is added.
     let mut add = |t: [u8; 16], a: i64, b: i64, hours: &mut dyn Iterator<Item = i32>| {
         if id.is_some_and(|x| x != t) {
             return;
         }
+        let a = a.max(blo);
         let e = ext.entry(t).or_insert((a, b, BTreeSet::new()));
         e.0 = e.0.min(a);
         e.1 = e.1.max(b);
-        e.2.extend(hours);
+        e.2.extend(hours.filter(|h| hour_in(*h)));
     };
     for f in &index {
         sigfiles::read_trace_index(f, |g| {
-            add(g.trace_id, g.min_start, g.max_end, &mut g.hours.iter().copied());
+            // A fragment overlaps the bound when some span of it may start inside it.
+            if g.max_end >= blo && g.min_start <= bhi {
+                add(g.trace_id, g.min_start, g.max_end, &mut g.hours.iter().copied());
+            }
             Ok(())
         })?;
     }
     for b in &tails {
-        sigfiles::batch_spans(b, |s| {
-            add(s.trace_id, s.start, s.end, &mut std::iter::once(s.start.div_euclid(3_600_000_000_000) as i32));
+        sigfiles::batch_span_times(b, |t, start, end| {
+            if start >= blo && start <= bhi {
+                add(t, start, end, &mut std::iter::once(start.div_euclid(HOUR) as i32));
+            }
             Ok(())
         })?;
     }
@@ -351,25 +423,28 @@ pub(crate) fn do_tq_extent(mut r: Req<'_>) -> Res<Vec<u8>> {
     }
     let mut out = serde_json::json!({"traces": n, "hours": hours.into_iter().collect::<Vec<_>>()});
     if n > 0 {
+        // The planner reads spans by start: none of the data starts after the bound.
         out["lo"] = hull.0.to_string().into();
-        out["hi"] = hull.1.to_string().into();
+        out["hi"] = hull.1.min(bhi).max(hull.0).to_string().into();
     }
     Ok(out.to_string().into_bytes())
 }
 
 // ───────────────────────────── search and metrics ─────────────────────────────
 
-fn counts(budget: &Budget, traces: usize, json: String) -> Vec<u8> {
+/// `u64 spans decoded, u64 traces`, then the body; the body is charged to the budget first.
+fn counts(budget: &mut Budget, traces: usize, json: String) -> Res<Vec<u8>> {
+    budget.mem.charge(json.len() as u64)?;
     let mut out = Vec::with_capacity(16 + json.len());
-    out.extend_from_slice(&budget.spans.to_le_bytes());
+    out.extend_from_slice(&budget.decoded.to_le_bytes());
     out.extend_from_slice(&(traces as u64).to_le_bytes());
     out.extend_from_slice(json.as_bytes());
-    out
+    Ok(out)
 }
 
 /// `viz_q_tq_search`: Tempo's `/api/search` body for a TraceQL query over the files and the tail.
 pub(crate) fn do_tq_search(mut r: Req<'_>) -> Res<Vec<u8>> {
-    let mut budget = Budget { max_spans: r.u64("max_spans")?, spans: 0 };
+    let mut budget = Budget::read(&mut r)?;
     let (limit, spss) = (r.u32("limit")?, r.u32("spss")?);
     let (start, end) = (r.i64("start")?, r.i64("end")?);
     let q = r.str("query")?;
@@ -382,14 +457,21 @@ pub(crate) fn do_tq_search(mut r: Req<'_>) -> Res<Vec<u8>> {
     let n = ts.len();
     let req = SearchRequest { limit, spans_per_spanset: spss, start_unix_nano: start.max(0) as u64, end_unix_nano: end.max(0) as u64 };
     let out = viz_traceql::search(&MemSource::new(ts), q, &req).map_err(tq_err)?;
-    Ok(counts(&budget, n, out.to_json()))
+    counts(&mut budget, n, out.to_json())
 }
 
+/// Bytes charged per point of a TraceQL metrics series (its accumulator: a count, an exact
+/// sum and a count, or a min or max; a histogram's buckets are not counted: README, "Memory").
+const METRIC_POINT_BYTES: u64 = 48;
+
 /// `viz_q_tq_metrics`: Tempo's `/api/metrics/query_range` (or `/query`, `instant`) body.
-/// The request is used as given: the caller aligns it (`viz_q_tq_plan`).
+/// The request is used as given: the caller aligns it (`viz_q_tq_plan`). The series a query
+/// may make are bounded by what the memory budget leaves once the spans are held: a series
+/// holds one accumulator per point.
 pub(crate) fn do_tq_metrics(mut r: Req<'_>) -> Res<Vec<u8>> {
-    let mut budget = Budget { max_spans: r.u64("max_spans")?, spans: 0 };
-    let limits = viz_traceql::Limits { max_series: usize::try_from(r.u64("max_series")?).unwrap_or(usize::MAX), max_points: r.u64("max_points")? };
+    let mut budget = Budget::read(&mut r)?;
+    let max_series = usize::try_from(r.u64("max_series")?).unwrap_or(usize::MAX);
+    let max_points = r.u64("max_points")?;
     let instant = r.u8("instant")? == 1;
     let (start, end, step) = (r.i64("start")?.max(0) as u64, r.i64("end")?.max(0) as u64, r.i64("step")?.max(0) as u64);
     let q = r.str("query")?;
@@ -404,8 +486,24 @@ pub(crate) fn do_tq_metrics(mut r: Req<'_>) -> Res<Vec<u8>> {
     let window = if local { p.span_window } else { None };
     let ts = traces(&files, &tails, &mut budget, window)?;
     let n = ts.len();
-    let out = viz_traceql::query_range_with(&MemSource::new(ts), q, &req, &limits).map_err(tq_err)?;
-    Ok(counts(&budget, n, out.to_json()))
+    let points = req.points().max(1);
+    let fit = usize::try_from(budget.mem.left() / points.saturating_mul(METRIC_POINT_BYTES)).unwrap_or(usize::MAX).max(1);
+    let limits = viz_traceql::Limits { max_series: max_series.min(fit), max_points };
+    let out = viz_traceql::query_range_with(&MemSource::new(ts), q, &req, &limits).map_err(|e| {
+        let series = matches!(&e, viz_traceql::Error::Eval(m) if m.starts_with("the query produces more than"));
+        if series && fit < max_series {
+            // The series did not fit the memory left, before the series cap.
+            Fail::Limit(
+                "max_decoded_bytes",
+                budget.mem.max,
+                budget.mem.used.saturating_add((fit as u64 + 1).saturating_mul(points).saturating_mul(METRIC_POINT_BYTES)),
+                format!("query exceeded limit max_decoded_bytes: more than {fit} series of {points} points do not fit what the limit ({} bytes) leaves once the spans are held. Narrow the time range, use a longer step, or group by fewer values.", budget.mem.max),
+            )
+        } else {
+            tq_err(e)
+        }
+    })?;
+    counts(&mut budget, n, out.to_json())
 }
 
 // ───────────────────────────── trace by ID ─────────────────────────────
@@ -597,11 +695,12 @@ fn span_json(s: &SpanRec, out: &mut String) {
 /// A trace as OTLP JSON in the protobuf JSON mapping Tempo answers with: resource spans as
 /// `batches`, ids in base64, enums by name, 64-bit integers as strings, empty fields left out.
 /// Spans in `(start, span_id)` order, grouped by resource and then instrumentation scope in
-/// the order their first span appears.
-pub(crate) fn trace_json(spans: &[SpanRec]) -> String {
+/// the order their first span appears. The text is charged to `mem` as it grows: refused once
+/// it would pass the budget, before it does.
+pub(crate) fn trace_json(spans: &[SpanRec], mem: &mut Mem) -> Res<String> {
     let mut res: Vec<(&[viz_storage::otel::Attr<String>], Vec<((&str, &str, &str), Vec<&SpanRec>)>)> = Vec::new();
     for s in spans {
-        let ri = match res.iter().position(|(r, _)| *r == s.resource.as_slice()) {
+        let ri = match res.iter().position(|(r, _)| std::ptr::eq(*r, s.resource.as_slice()) || *r == s.resource.as_slice()) {
             Some(i) => i,
             None => {
                 res.push((&s.resource, Vec::new()));
@@ -620,6 +719,8 @@ pub(crate) fn trace_json(spans: &[SpanRec]) -> String {
         if i > 0 {
             out.push(',');
         }
+        // A resource's attributes are written once per batch.
+        mem.charge(2 * sigfiles::attrs_bytes(r))?;
         out.push_str("{\"resource\":{");
         if !r.is_empty() {
             out.push_str("\"attributes\":");
@@ -651,6 +752,8 @@ pub(crate) fn trace_json(spans: &[SpanRec]) -> String {
                 if k > 0 {
                     out.push(',');
                 }
+                // At most twice what the span was charged as (escapes), checked before writing.
+                mem.charge(2 * sigfiles::span_bytes(s))?;
                 span_json(s, &mut out);
             }
             out.push_str("]}");
@@ -658,7 +761,7 @@ pub(crate) fn trace_json(spans: &[SpanRec]) -> String {
         out.push_str("]}");
     }
     out.push_str("]}");
-    out
+    Ok(out)
 }
 
 /// `viz_q_tq_trace`: one trace by ID: `u8 found`, `u64 spans decoded`, then Tempo's v1 body
@@ -668,16 +771,16 @@ pub(crate) fn do_tq_trace(mut r: Req<'_>) -> Res<Vec<u8>> {
     let version = r.u8("version")?;
     let mut id = [0u8; 16];
     id.copy_from_slice(r.take(16, "trace id")?);
-    let mut budget = Budget { max_spans: r.u64("max_spans")?, spans: 0 };
+    let mut budget = Budget::read(&mut r)?;
     let files = r.files("spans file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
     let mut spans = latest_records(&files, &tails, &mut budget, |s| s.trace_id == id)?;
     spans.sort_by(|a, b| (a.start, a.span_id).cmp(&(b.start, b.span_id)));
     let mut out = vec![(!spans.is_empty()) as u8];
-    out.extend_from_slice(&budget.spans.to_le_bytes());
+    out.extend_from_slice(&budget.decoded.to_le_bytes());
     if !spans.is_empty() {
-        let body = trace_json(&spans);
+        let body = trace_json(&spans, &mut budget.mem)?;
         let body = if version == 2 { format!("{{\"trace\":{body}}}") } else { body };
         out.extend_from_slice(body.as_bytes());
     }
@@ -705,7 +808,7 @@ pub(crate) fn do_tq_tags(mut r: Req<'_>) -> Res<Vec<u8>> {
     let scope = r.str("scope")?.to_string();
     let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
     let limit = r.u32("limit")? as usize;
-    let mut budget = Budget { max_spans: r.u64("max_spans")?, spans: 0 };
+    let mut budget = Budget::new(r.u64("max_spans")?, r.u64("max_bytes")?, ALL_TIME);
     let files = r.files("spans file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
@@ -744,7 +847,9 @@ pub(crate) fn do_tq_tags(mut r: Req<'_>) -> Res<Vec<u8>> {
             .collect();
         serde_json::json!({"scopes": list, "metrics": {}})
     };
-    Ok(json.to_string().into_bytes())
+    let json = json.to_string();
+    budget.mem.charge(json.len() as u64)?;
+    Ok(json.into_bytes())
 }
 
 /// A typed tag value (`/api/v2/search/tag/<tag>/values`: `{"type","value"}`).
@@ -803,15 +908,17 @@ pub(crate) fn do_tq_tag_values(mut r: Req<'_>) -> Res<Vec<u8>> {
     let q = r.str("q")?.to_string();
     let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
     let limit = r.u32("limit")? as usize;
-    let mut budget = Budget { max_spans: r.u64("max_spans")?, spans: 0 };
+    let mut budget = Budget::new(r.u64("max_spans")?, r.u64("max_bytes")?, ALL_TIME);
     let files = r.files("spans file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
     let filter = (!q.trim().is_empty()).then(|| viz_traceql::parse(&q).ok().filter(|root| matches!(root.query, Query::Search(_))).map(|_| q.clone())).flatten();
     let recs = latest_records(&files, &tails, &mut budget, |s| in_window(s, lo, hi))?;
     let mut grouped: BTreeMap<[u8; 16], Vec<viz_traceql::Span>> = BTreeMap::new();
-    for s in &recs {
-        grouped.entry(s.trace_id).or_default().push(engine_span(s)?);
+    // Each record is let go as its engine span is made, so the two are not held whole at once.
+    for s in recs {
+        let span = engine_span(&s, &mut budget.engine_res, &mut budget.mem)?;
+        grouped.entry(s.trace_id).or_default().push(span);
     }
     let mut values: BTreeSet<(&'static str, String)> = BTreeSet::new();
     for (t, mut spans) in grouped {
@@ -867,5 +974,7 @@ pub(crate) fn do_tq_tag_values(mut r: Req<'_>) -> Res<Vec<u8>> {
         let v: Vec<serde_json::Value> = values.into_iter().take(take).map(|(t, v)| serde_json::json!({"type": t, "value": v})).collect();
         serde_json::json!({"tagValues": v, "metrics": {}})
     };
-    Ok(json.to_string().into_bytes())
+    let json = json.to_string();
+    budget.mem.charge(json.len() as u64)?;
+    Ok(json.into_bytes())
 }

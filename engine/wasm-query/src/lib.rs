@@ -75,7 +75,7 @@
 //! | `viz_q_lq_file_plan` | `u64 gap, u32 n, (i64 start_ns, i64 end_ns, u32 n_matchers, matcher*)*, u32 m, str* (index fragments)` | JSON `[plan, …]`: row groups by time and stream list |
 //! | `viz_q_lq_query` | `u64 max_rows, u64 max_series, u64 max_steps, u32 limit, u8 direction (0 backward, 1 forward), u8 kind (0 range, 1 instant), i64 start_ns, i64 end_ns, i64 step_ns, str query, files, tails` | `u64 rows decoded`, then Loki's `data` object |
 //! | `viz_q_lq_labels` | `u8 kind (0 names, 1 values, 2 series), str name, i64 start_ns, i64 end_ns, u32 n, str* (stream selectors), u32 k, str* (fragments with stream lists), files (without), tails` | Loki's `data` array |
-//! | `viz_q_abi_version` | (no request) | returns 6 |
+//! | `viz_q_abi_version` | (no request) | returns 7 |
 //!
 //! Every span and log operation reads files that are whole or sparse (a row group whose
 //! first column chunk is not held is skipped) and `VZB1` batches of signal 2 (spans) or 3
@@ -100,7 +100,7 @@ use std::collections::{BTreeSet, HashMap};
 use viz_query::split::{self, Gathered, Grid, LeafBudget, LeafOutput};
 use viz_query::{EvalOptions, FetchRange, FileRead, Limits, MatchOp, Matcher, Options, PartFilter, QueryError, ScanInput, SplitKey, SplitPlan, Stats};
 
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 7;
 const OK: u32 = 0;
 const MALFORMED: u32 = 5;
 

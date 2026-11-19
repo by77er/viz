@@ -48,7 +48,7 @@ const MUTANTS = [
   ['S9: a rollback across the key\'s creation is not refused', 'lib/secrets.mjs', '      if (carrier && !accept.has(spec.name)) {', '      if (false) {'],
   ['S9: --accept-secret-loss is ignored (the refused rollback cannot be done on purpose)', 'lib/secrets.mjs', '      if (carrier && !accept.has(spec.name)) {', '      if (carrier) {'],
   ['S9: a rollback across a rotation is not refused (Cloudflare answers 10220 after the callers were moved)', 'lib/secrets.mjs', '    if (put) {', '    if (false) {'],
-  ['S9: the secret check of a rollback is never run', 'release.mjs', '    problems.push(...secretRollbackProblems({', '    void ({'],
+  ['S9: the secret check of a rollback is never run', 'release.mjs', '    problems.push(...secretRollbackProblems({', '    problems.push(...(() => [])({'],
   ['S9: a failed promotion restores viz-control across its own rotation', 'release.mjs', '      const back = promoted.filter((n) => !keyed.has(n))', '      const back = promoted'],
   ['a serving version that cannot be read is taken as not carrying the key', 'lib/secrets.mjs', '      if (!info) throw new Error(`${spec.worker}: serving version', '      if (!info) continue\n      if (!info) throw new Error(`${spec.worker}: serving version'],
   ['m-11: every run has the same VIZ_DEPLOY_RUN', 'release.mjs', "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}${randomUUID()}`", "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}00000000-0000-4000-8000-000000000000`"],
@@ -68,7 +68,8 @@ const run = () => {
     return { failed: false, detail: '' }
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '')
-    const names = [...out.matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1])
+    // A test file that does not load is reported under its own name: that is no test failing, not a kill.
+    const names = [...out.matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1]).filter((n) => !/^test\/[^ ]+\.test\.mjs$/.test(n))
     // Killed means a test ran and failed; a suite that did not load or finish is reported as such.
     return { failed: names.length > 0, crashed: names.length === 0, detail: names.join(' | ') || out.split('\n').slice(-5).join(' ') }
   }

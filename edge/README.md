@@ -93,7 +93,10 @@ are counted in `partial_success`, with the reasons in `error_message`.
 | Limit | Default | Over the limit |
 |---|---|---|
 | `maxBodyBytes` (as received) | 8 MiB | 413 |
-| `maxDecompressedBytes` | 32 MiB | 413; checked before snappy allocates and while gzip inflates |
+| `maxDecompressedBytes` | 8 MiB (was 32 MiB; D71) | 413; checked before snappy allocates and while gzip inflates |
+| `maxDecodedBytes` | 16 MiB (D71) | 413, nothing appended: the series table (metrics, Remote Write included), or the entries and rows (spans, logs), counted as they are built |
+| `maxJsonTokens` | 1,048,576 (D71) | 413 before parsing: structural characters (`{ [ , :`) of a JSON body outside strings |
+| values per item (constant, `DECODE.maxValues`) | 65,536 key-value entries and array elements, as received | that data point is rejected ("label set too large to fit one batch"); a resource over it rejects all its points. Counted before anything is built ("Memory per request") |
 | `maxSeries` per request | 100,000 | 413 |
 | `maxSamples` per request | 500,000 | 413 |
 | `maxLabelsPerSeries` | 128 (the contract's ceiling; cannot be raised) | that series is rejected |
@@ -221,7 +224,9 @@ decode is 400 (OTLP: a `google.rpc.Status` in the request's encoding); too large
 | all spans of a resource and scope | a resource or scope attribute list breaking the attribute rules; scope name or version over 8,192 bytes; the entry over 256 KiB |
 | log record | no timestamp; timestamp past 2^63−1 or outside the accept window (24 h back, 5 min ahead); severity number over 24; `trace_id` not 0 or 16 bytes, `span_id` not 0 or 8; line over 256 KiB; severity text over 1,024 bytes; a metadata name breaking `[A-Za-z_][A-Za-z0-9_]*` or over 1,024 bytes, a value over 8,192 bytes or with NUL, a repeated name (Loki), more than 128 entries or 64 KiB; an attribute with an empty key |
 | all records of a stream (or OTLP resource and scope) | a label name breaking the rule or repeated, a value over 8,192 bytes or with NUL, more than 32 labels, no labels; Loki labels that do not parse |
-| the request (413) | more than `maxSpans` / `maxLogRecords` (200,000 each), or the body limits of metrics |
+| span, record or Loki entry (decode limits, D71) | more than 65,536 key-value entries and array elements as received (a span with its events and links; a record's body and attributes; an entry's metadata): refused once its ids, kind, status, timestamps and event and link counts pass, without the attribute checks; not built past the limit |
+| all spans, records or entries of it (decode limits) | a resource with one scope (spans), a log resource, a log scope or a Loki label set over the same limit |
+| the request (413) | more than `maxSpans` / `maxLogRecords` (200,000 each), the body limits of metrics, more than `maxDecodedBytes` decoded or `maxJsonTokens` in a JSON body |
 
 New limits (`INGEST_LIMITS` may set them): `maxSpans`, `maxLogRecords`, `spanAcceptBackMs`,
 `spanAcceptAheadMs`, `logAcceptBackMs`, `logAcceptAheadMs`. The contract's ceilings (attribute
@@ -282,6 +287,51 @@ Why the shard returns ids and `edge` filters, rather than `edge` splitting batch
 series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
 `stack/scripts/mutants.mjs limit`.
 
+## Memory per request (decode limits, D71; review M-3)
+
+What a request holds is bounded whatever its body's shape (`contracts/BATCH.md`, "Decode limits").
+
+- **Counted before built.** Every decoder (OTLP metrics, traces and logs, protobuf and JSON; Loki
+  push, protobuf and JSON) counts each key-value entry and array element, at any depth, against
+  its item (`src/meter.ts`) before building it. At 65,536 the item is refused, the decoder builds
+  nothing more of it and reads the rest only to check the wire, so a malformed body is still 400.
+  Items under the limit are checked exactly as before. `BUILT` counts what the decoders build, for
+  the tests.
+- **No offsets per child.** A protobuf level is read twice (first what its children need and
+  how many there are, then the children), so an empty scope, span or record costs its two bytes
+  and nothing more. A resource is encoded once for all its scopes.
+- **Rows are bytes.** Accepted spans and records are laid out in one buffer (their fixed columns,
+  their lengths, their variable bytes), not one object each, and the buffer does not double past
+  `maxDecodedBytes`. A request's entries, streams, rows and series table count against that limit.
+  Nothing refers to the body after decoding, and `index.ts` lets it go before the shards are
+  written.
+- **JSON** is refused (413) above `maxJsonTokens` structural characters before `JSON.parse`, which
+  builds every value at once; realistic OTLP and Loki JSON has one per 10 to 35 bytes (measured
+  on the bodies below), hostile JSON one per 1.5.
+
+**The model.** A request holds, at most: its body (as received, at most `maxBodyBytes`, 8 MiB;
+decompressed, at most 8 MiB; while gzip inflates both and its chunks), then the decoded data (at
+most 16 MiB, in a buffer that may be up to one row larger) and its batches (about as large again)
+while the shards are written, plus the objects of the one item being decoded (at most 65,536
+values: 6.0 MiB of V8 heap measured at worst) or, for JSON, the parsed body (at most 1,048,576
+structural characters: see the table). All but the last two are ArrayBuffers. Summed at every
+limit at once that is about 50 MiB plus the JSON tree (modelled from the parts); realistic
+requests of 8,200 items hold 1.4 to 3.2 MiB of V8 heap (protobuf) and 8 to 17 MiB (JSON) at their
+peak, plus ArrayBuffers of about twice their decoded size (measured here, below). Two requests at
+every limit at once in one 128 MB isolate are not ruled out.
+
+**Measured here** (`node bench/memory.mjs`; 2026-11-19, one run per case; workerd 2026-11-17 local,
+V8 heap only, from `--trace-gc`: "peak" is the largest heap a GC saw before collecting, garbage
+included, "live" the largest it left. Node 22 alongside; Node does not compress pointers, so its
+numbers are about twice workerd's). Hostile bodies are 4 MiB decompressed, each a few bytes per
+item (review M-3's shapes and those found while fixing them); realistic ones have 8,200 items in
+the shape of `bench/otel.mjs`.
+
+TABLE_PLACEHOLDER
+
+Not measured: anything on Cloudflare (the isolate's memory as Workers reports it, under concurrent
+requests); ArrayBuffers in workerd (no API; Node's are in the table's notes).
+
 ## Not implemented
 
 - Remote Write 2.0 (415), native histograms, exemplars, metadata.
@@ -303,6 +353,12 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
   tenant's requests before decoding (an isolate-local hint, not a limit).
 - Key revocation faster than the 60 s cache, and any tooling to create keys.
 - Metrics about the edge itself (rejections by reason, bytes per tenant).
+- Decoding without building: an item's attributes are still JavaScript objects while it is
+  decoded (at most 65,536 values, 6.0 MiB at worst measured), not written from the wire to
+  their stored form; a JSON body is still parsed whole (bounded by `maxJsonTokens`). D71 has the
+  alternatives.
+- Truncating an item over the decode limits instead of refusing it, and naming every rule an item
+  over them breaks (it is named for the values limit once its scalar checks pass).
 
 ## Verification
 
@@ -688,13 +744,22 @@ typed, and every request's resource is hashed over its canonical JSON.
 - **Remote Write 400 after a partial write.** When some samples are invalid the valid
   ones are stored and the sender is told 400, which Prometheus does not retry. Its logs
   show the reason, but a sender far behind real time loses everything older than an hour.
-- **CPU.** A request at the default limits (32 MiB decompressed) costs up to about a
-  second of CPU by the numbers above. Nothing has been measured in workerd or on
+- **CPU.** A request at the default limits (8 MiB decompressed) costs up to a few hundred
+  ms of CPU by the numbers above (modelled from Node). Nothing has been measured on
   Cloudflare, and nothing has been run under concurrent load.
-- **Memory.** A request holds the compressed body, the decompressed body, the series
-  table and the batches at once: about three times the decompressed size, around 100 MB
-  at the default limits in a 128 MB isolate. Two such requests in one isolate would not
-  fit; `maxDecompressedBytes` should come down to 8–16 MiB before real traffic.
+- **Memory.** Bounded per request ("Memory per request", D71): about 50 MiB plus a JSON body's
+  parse tree with every limit reached at once (modelled), 2 to 17 MiB of V8 heap for realistic
+  requests (measured here, local workerd). Two requests at every limit in one 128 MB isolate may
+  not fit; nothing was measured on Cloudflare.
+- **413 drops a sender's batch.** OTLP senders do not retry 413 (training knowledge: the
+  Collector treats it as permanent and does not split the batch). A Collector whose batches
+  exceed 8 MiB decompressed, or decode into more than 16 MiB, loses them and logs why; set its
+  batch processor's `send_batch_max_size` (8,192 items is 1.3 to 7.1 MiB here). Metrics whose
+  resources carry many attributes come closest to the decoded limit, because each series copies
+  its resource (about 11.5 MiB for 8,192 points with a Kubernetes-sized resource, modelled).
+- **Decode limits name the values limit first.** An item over 65,536 values is refused for it
+  even when it also breaks an attribute rule; a repeated key (which OTLP forbids) and entries
+  that a mapping drops (empty values) count like any other.
 - **Caches are per isolate.** A disabled key keeps working for up to 60 s in each isolate
   that has it cached, and KV's own propagation delay comes on top.
 - **OTLP labels.** Resource attributes are copied onto every series rather than into
@@ -702,8 +767,9 @@ typed, and every request's resource is hashed over its canonical JSON.
   wide series. The `;` join of colliding attribute names follows arrival order, not the
   spec's sorted order.
 - **Traces and logs CPU.** An 8,000-span request costs 100 to 230 ms of CPU here (Node, noisy);
-  OTLP's recommended 64 MiB body would cost seconds. `maxDecompressedBytes` (32 MiB) bounds
-  it; nothing was measured in workerd or on Cloudflare.
+  OTLP's recommended 64 MiB body would cost seconds. `maxDecompressedBytes` (8 MiB) bounds
+  it; nothing was measured on Cloudflare. Two million empty spans or records (4 MiB) cost
+  0.5 to 0.7 s in Node, the most CPU per byte found.
 - **Traces and logs are refused, not truncated**, when an attribute or field is over its limit;
   senders with very long attribute values (SQL statements over 64 KiB) lose those spans and are
   told why.
