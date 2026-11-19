@@ -448,8 +448,8 @@ per line: the next things to optimise. Native, not WASM, and not measured on Clo
   a stream index), `stats` timing, error mapping (`Error::error_type`). The engine should
   join `engine/wasm-query`'s module (it already links viz-promql) behind new C ABI
   operations rather than ship as a second module; `wasm-check/` shows the ABI shape.
-- **Contracts**: `contracts/README.md` needs a row for `LOGS.md`; `contracts/engine.ts` says
-  LogQL result shapes are not defined yet and needs them (this crate's `Data`).
+- **Contracts**: `contracts/engine.ts` says LogQL result shapes are not defined yet and needs
+  them (this crate's `Data`). (`contracts/README.md` has its `LOGS.md` row, done.)
 - **Split execution and rules**: decomposable LogQL aggregations over leaves, and LogQL rule
   evaluation in the ruler.
 - **Design text**: `design/DESIGN.md` (§1, the `logs` row of §5.1, §6.1, §12) and decisions
