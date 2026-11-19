@@ -519,7 +519,10 @@ function anyValue(r: PbReader, view: DataView, depth: number, meter: Meter): unk
           if (t === 0x0a) {
             const ok = meter.take()
             const item = anyValue(r, view, depth + 1, meter) ?? null
-            if (ok && !meter.over) items!.push(item)
+            if (ok && !meter.over) {
+              BUILT.n++
+              items!.push(item)
+            }
           } else r.skip(t & 7)
         }
         r.done(aend)
@@ -568,7 +571,6 @@ function anyValue(r: PbReader, view: DataView, depth: number, meter: Meter): unk
     }
   }
   r.done(end)
-  if (value !== undefined) BUILT.n++
   return value
 }
 

@@ -142,7 +142,10 @@ export function pbAnyValue(r: PbReader, depth: number, m: Meter = FREE): AnyV {
           if (t === 0x0a) {
             const ok = m.take()
             const item = pbAnyValue(r, depth + 1, m)
-            if (ok && !m.over) items!.push(item)
+            if (ok && !m.over) {
+              BUILT.n++
+              items!.push(item)
+            }
           } else r.skip(t & 7)
         }
         r.done(aend)
@@ -190,7 +193,6 @@ export function pbAnyValue(r: PbReader, depth: number, m: Meter = FREE): AnyV {
     }
   }
   r.done(end)
-  if (value !== NONE) BUILT.n++
   return value
 }
 
@@ -307,7 +309,6 @@ export function jsonAny(raw: unknown, depth: number, m: Meter = FREE): AnyV {
   if (raw === undefined || raw === null) return NONE
   const v = object(raw, 'attribute value')
   const keep = !m.over
-  if (keep) BUILT.n++
   if (v.stringValue !== undefined && v.stringValue !== null) {
     const s = text(v.stringValue, 'stringValue')
     return keep ? { k: 's', v: s } : NONE
@@ -330,7 +331,10 @@ export function jsonAny(raw: unknown, depth: number, m: Meter = FREE): AnyV {
     for (const x of raws) {
       const ok = m.take()
       const item = jsonAny(x, depth + 1, m)
-      if (ok && !m.over) items!.push(item)
+      if (ok && !m.over) {
+        BUILT.n++
+        items!.push(item)
+      }
     }
     return keep ? { k: 'a', v: items! } : NONE
   }

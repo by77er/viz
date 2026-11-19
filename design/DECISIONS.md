@@ -2666,11 +2666,14 @@ must name `shard/src/pool.ts` now (`edge/scripts/mutants.mjs`, `stack/scripts/mu
 follows it), another derived pool suffix is added (`DERIVED_SIGNALS` carries it to both sides),
 or the drain-and-handover protocol exists (then a stored map that edge refuses can be replaced).
 
-## D67. The publisher publishes `spans`, `trace_index` and `logs` as Iceberg v2 tables of their own: every nested field has a pinned id and a nested name mapping, `spans` is partitioned by `hour(start_time)` with the value taken from the key's hour level, every tenant is re-based once on the upgrade, and the metric tables' bytes do not change
+## D67. The publisher publishes `spans`, `trace_index` and `logs` as Iceberg v2 tables of their own: every nested field has a pinned id and a nested name mapping, `spans` is partitioned by `hour(start_time)` with the value taken from the key's hour level, every tenant is re-based once on the upgrade, a few per publish, and the metric tables' bytes do not change
 
 (Written 2026-11-19. Step 2 of publishing traces and logs; step 1 was D64, whose release read the
 tables without publishing them. Replaces D64's "record and release": `publisher/README.md`,
-"The span and log tables".)
+"The span and log tables". Amended the same day after review M-6 of the spans-and-logs review: the
+upgrade's re-bases, and everything else a publish does in proportion to the cell's tenants, are
+bounded per publish (`publisher/README.md`, "Bounded work per publish"). This replaces the earlier
+text, under which the first publish after the upgrade re-based every tenant in one invocation.)
 
 **Decision.** `PUBLISHED_TABLES` is every `LedgerTable`, in commit order `metric_samples`,
 `metric_series`, `spans`, `trace_index`, `logs`; each is one Iceberg v2 table per cell with its
@@ -2691,9 +2694,19 @@ the ledger admits it only if its `[minTs, maxTs]` lies in that hour) and checked
 Statistics: value and null counts only for required top-level primitive columns; bounds for the
 time columns from `minTs`/`maxTs` widened by the last millisecond, for `service_name` and
 `trace_id` from the index fragment, never reading its 64-bit integers as numbers. Removals are
-released by the snapshot rule, as metric files are. The first publish after an upgrade from D64's
-release re-bases every tenant once (D55; the new tables have no cursor); the metric tables move on
-from their cursors and are committed only if their files changed. D64's `unpublished` records are
+released by the snapshot rule, as metric files are. After an upgrade from D64's release every tenant
+is re-based once (D55; the new tables have no cursor), spread over publishes: a publish starts at
+most 100 re-bases (`maxRebasesPerPublish`) and no further one once those it started have staged
+100,000 files and tombstones (`maxRebaseFilesPerPublish`), always at least one, least recently started
+first (storage migration 6, `rebase`, written before a re-base reads anything, so one cut off with its
+invocation goes to the back); each publish commits what it re-based. A tenant waiting for its re-base
+is read from the cursors it has, so its metric tables keep being published; the alarm continues
+after `continueMs` (1 s), and before publishing sets its own deadline `retryMs` ahead (a lease that an
+invocation cut off by the platform keeps). A publish reads at most 1,000 tenants
+(`maxTenantsPerPublish`), longest waiting first, a tenant read and not finished going behind. After a
+lost storage, a table whose metadata R2 has is rebuilt from it, one per publish, before any tenant is
+read, so no tenant is re-based for a table R2 holds its cursor for. The metric tables move on from
+their cursors and are committed only if their files changed. D64's `unpublished` records are
 left alone. The alarm's deadlines and orphan sightings of the new tables live in tables of their own
 (storage migration 5, additive), because the D64 release, the rollback floor, re-arms at the earliest
 row of `due` and `orphan` and would wake for ever on rows of tables it does not publish. New golden formats `iceberg.signal-metadata` and `iceberg.signal-manifest`;
@@ -2709,7 +2722,10 @@ resync's column-less `INSERT … SELECT`). Ids: (d) nested ids right after their
 ids written into the Parquet files instead of a name mapping (contract issue 4: `engine/storage`'s,
 not this component's). Counts: (f) per-column counts read from each file's footer at publish (a
 range read per file). The upgrade: (g) start the new tables' cursors from D64's `unpublished`
-records: they hold counts, not files. Removals: (h) keep D64's immediate release: wrong once a
+records: they hold counts, not files; (i) every re-base in the first publish (the text this
+amendment replaces); (j) a higher `limits.cpu_ms` alone (up to 5 minutes, Cloudflare's documentation);
+(k) a commit after every re-based tenant; (l) a tenant's staged state kept across invocations;
+(m) a tenant waiting for its re-base not read at all until then. Removals: (h) keep D64's immediate release: wrong once a
 snapshot can reference the file.
 
 **Why.** `hour(start_time)` is the partitioning contracts/TRACES.md and DESIGN §5.1 name, and the
@@ -2719,7 +2735,16 @@ exact for every file the ledger admits and needs no storage; the plan-time check
 breaks the rule rather than publishing a wrong partition. Field ids in a fixed table, golden-pinned
 and checked never to be reused, keep a column's id across releases whatever a later schema adds.
 Re-basing on the upgrade reuses D55's bounded-memory path, which every tenant takes anyway after a
-storage loss; nothing new is written for it. Metric commits first, and unchanged code paths for
+storage loss; nothing new is written for it. (i) adds the cell's re-bases up in one invocation, which
+has 30 s of CPU by default (Cloudflare's documentation, read 2026-11-19): about 340 s for 100 tenants
+of 100,000 files by the times measured here (modelled), and a publish cut off was retried from
+nothing, so the alarm could fail for ever and stop metric publication for the whole cell. (j) moves
+the wall without removing it, and is still the answer for one tenant too large for an invocation.
+(k) loses less in a cut-off but writes a snapshot per tenant per table; a publish commits what it
+re-based instead, and the cap bounds what one cut off loses. (l) needs `stage` to record, per tenant
+and table, the version it was diffed to; not done. (m) is simpler but holds every waiting tenant's
+metrics back for the whole queue, which D64's release did not. The started mark keeps a re-base that
+cannot finish, or keeps failing, from being taken first every time and holding the queue. Metric commits first, and unchanged code paths for
 them, keep metric publication byte-identical, which the counterfactual below requires.
 
 **Measured** (here, workerd, `publisher/README.md`): with the same ids and clock, the metric tables'
@@ -2732,16 +2757,31 @@ list as empty, counted), prune by
 tenant, hour and day, and give rows that viz-storage's readers read identically and on which
 viz-traceql and viz-logql answer identically (1,786 checks, 960 TraceQL and 576 LogQL answers, 0
 different). A first publication of 10,000 `spans` files took 0.8–1.4 s of commit and 399 kB of
-metadata, 10,000 `logs` files 0.8–1.2 s and 253 kB (four runs, load average 8.5–13.6).
+metadata, 10,000 `logs` files 0.8–1.2 s and 253 kB (four runs, load average 8.5–13.6). The capped
+upgrade (`publisher/bench/upgrade.bench.test.ts`, load average 9–10.6): a publish at the cap, 100,000
+staged files of which 50,000 span and log files added, took 3.3–3.8 s of workerd CPU and 4.8–9.5 s of
+wall time; a 300,000-file tenant re-based alone 10.3 s of CPU; a table rebuilt from R2 about 30 µs of
+CPU per file. In workerd tests, a cell of five tenants capped at two tenants' staged files is
+upgraded over three alarm runs, each within the cap, and ends with every table as one uncapped
+publish leaves it (live data files with partitions, counts and bounds, totals, cursors, metadata);
+waiting tenants' metric files are committed meanwhile; an invocation reset in the middle of a re-base
+loses nothing committed, keeps the alarm, and the next run takes the tenants never started; 12
+mutants of these rules killed. Not measured on Cloudflare.
 
 **Cost of it.** A publish that moves a tenant's cursors without a commit costs one R2 HEAD per
 table (up to five, three more than before) to check that no other writer is ahead. A `spans`
 `metadata.json` is about 9.8 kB with one snapshot (2.6 kB for a metric table: the schema has 70
 field ids and the name mapping all of them), and each of its manifests carries a 7.8 kB header.
-The upgrade re-bases every tenant once: about two `stage` row writes per live file of every table.
-A storage loss is rebuilt a table at a time, one conflict each, so a publish now gives up after six
-conflicts instead of three (found by the test of it: with three, the first publish after a loss
-threw at the fourth table and only the alarm's retry finished).
+The upgrade re-bases every tenant once: about two `stage` row writes per live file of every table,
+spread over about (the cell's files ÷ 100,000) publishes a second apart, each a commit (and a
+retained snapshot, about 1 kB of `metadata.json` each for 24 hours) of every span and log table;
+until a tenant's turn its span and log tables are not published. Storage migration 6, additive. A
+publish with a tenant to re-base GETs the version hint of each table SQLite has no metadata for (up
+to five). A lost storage takes a publish per table before tenants are read again; each rebuild reads
+its whole table (about 30 µs of CPU per file here, so about 1,000,000 files per table before it
+alone reaches 30 s, modelled). A publish still gives up after six conflicts (one per table plus one:
+with three, before the rebuild came first, the first publish after a loss threw at the fourth
+table), which now serves a lost storage whose version hints are gone too.
 External readers that ignore the name mapping, or the projection rule for identity partitions, see
 nothing or nulls; PyIceberg 0.12.0 shows a span without events as an empty list rather than null.
 
@@ -2749,7 +2789,10 @@ nothing or nulls; PyIceberg 0.12.0 shows a span without events as an empty list 
 fallback only); a promoted attribute is added (a schema change: this release refuses metadata with
 a schema id it did not write, so that needs a release that evolves the schema); compaction of
 `spans` ever merges across hours (then the hour comes from the files' bounds, not the key); or
-readers that matter turn out to ignore the name mapping.
+readers that matter turn out to ignore the name mapping. For the caps: a capped publish's CPU,
+measured on Cloudflare, far from the limit (then larger caps) or near it (smaller ones, or
+`limits.cpu_ms`); one tenant's re-base, or one table's rebuild from R2, near the limit by itself
+(then (l), or a rebuild a manifest at a time across invocations).
 
 ## D68. Spans, `trace_index` and logs are compacted by the metric step, each table on its own: spans per hour and never across one, `trace_index` and logs per day; merges stream their inputs and cut row groups at 2 MiB
 
