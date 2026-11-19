@@ -1,0 +1,36 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz · Monitor</title><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../dist/fonts/SchibstedGrotesk-Variable.woff2"><link rel="stylesheet" href="../../../dist/viz.css"><style>body{margin:0}</style></head><body class="vz"><a class="vz-button vz-skip" href="#main">Skip to content</a><nav class="vz-nav" aria-label="Sections"><span class="vz-nav-name">viz</span><a href="#">Explore</a><a href="#">Dashboards</a><a href="#" aria-current="page">Monitors</a><a href="#">Traces</a><a href="#">Logs</a><a href="#" class="vz-nav-end">acme-prod</a><a href="#">Settings</a></nav>
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">checkout p99 latency</h1>
+      <p class="vz-page-state"><span class="vz-mark" data-state="ack"></span>Acknowledged by you at <time class="vz-qty">15:16</time>, firing since <time class="vz-qty">13:07</time> (<span class="vz-qty">2 h 9 min</span>)</p>
+      <p class="vz-page-sub">Above <span class="vz-qty">500 ms</span> since 13:02. Paged Dana (payments on-call) at 13:07; pages stopped when you acknowledged.</p></div>
+    <div class="vz-notice-group"><div class="vz-controls"><span class="vz-done"><span class="vz-status" data-state="ack">Acknowledged by you</span><button class="vz-button" data-size="sm">Undo</button></span><span class="vz-menu-anchor"><button class="vz-button" aria-haspopup="menu" aria-expanded="true">Silence…</button>
+      <div class="vz-menu" role="menu" aria-label="Silence for" data-open>
+        <button role="menuitemradio" aria-checked="false">15 min</button><button role="menuitemradio" aria-checked="true">1 h</button><button role="menuitemradio" aria-checked="false">4 h</button><button role="menuitemradio" aria-checked="false">Until resolved</button>
+        <div role="separator"></div><p class="vz-menu-note">Pages stop until <span class="vz-qty">16:16</span>. The monitor keeps evaluating, and its history says who silenced it.</p>
+        <div class="vz-controls"><button class="vz-button" data-tone="yellow">Silence for 1 h</button></div></div></span></div></div>
+  </header>
+  <div class="vz-banner"><p class="vz-agent">Agent: payments-db has been slow since 12:58. Not verified.</p><a class="vz-link" href="#">Read the report</a></div>
+  <div class="vz-split">
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">p99 of checkout-api, by route</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+        <div class="vz-panel-body"><div class="vz-chart" id="mon" data-view="m-routes" style="--legend-rows:3;--legend-notes:1"></div></div></section>
+      <section class="vz-section"><h2 class="vz-section-title">Rule</h2>
+        <dl class="vz-kv"><dt>Query</dt><dd class="vz-num">histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket{service="checkout-api"}[5m])))</dd><dt>Fires when</dt><dd>above <span class="vz-qty">500 ms</span> for <span class="vz-qty">5 min</span></dd><dt>Evaluated</dt><dd>every <span class="vz-qty">30 s</span>, last <span class="vz-qty">20 s</span> ago</dd><dt>Notifies</dt><dd>payments on-call, then platform after <span class="vz-qty">30 min</span></dd></dl></section>
+    </div>
+    <div>
+      <section class="vz-section"><h2 class="vz-section-title">History</h2>
+        <ol class="vz-timeline">
+          <li><time class="vz-qty">15:16</time><span class="vz-mark" data-state="ack"></span><p>Acknowledged by you. Pages stop repeating.</p></li>
+          <li><time class="vz-qty">13:09</time><span class="vz-mark" data-state="agent"></span><p>Agent: investigation finished, payments-db suspected. Not verified.</p><a class="vz-link" href="#">Read the report</a></li>
+          <li><time class="vz-qty">13:07</time><span class="vz-mark" data-state="critical"></span><p>Fired at <span class="vz-qty">548 ms</span>. Paged Dana (payments on-call).</p></li>
+          <li><time class="vz-qty">13:02</time><span class="vz-mark" data-state="warn"></span><p>Went above <span class="vz-qty">500 ms</span>. Pending for <span class="vz-qty">5 min</span>.</p></li>
+          <li><time class="vz-qty">09:41</time><span class="vz-mark" data-state="info"></span><p>Deploy of checkout-api, revision 4f2a91c.</p><a class="vz-link" href="#">See the change</a></li>
+        </ol></section>
+      <section class="vz-section"><h2 class="vz-section-title">Related</h2>
+        <ul class="vz-links"><li><a class="vz-link" href="#">Checkout latency dashboard</a></li><li><a class="vz-link" href="#">Traces slower than 500 ms, in Explore</a></li><li><a class="vz-link" href="#">Error logs, in Explore</a></li></ul></section>
+    </div>
+  </div>
+</main>
+<script src="../../../dist/viz-chart.js"></script>
+<script>(function () { const s = vzChartDemos.s3(); s.markers = [...s.markers, { t: Date.UTC(2026, 10, 18, 12, 58), label: 'slow since 12:58', agent: true }]; const el = document.getElementById('mon'); el.vz = vzChart(el, s) })()</script></body></html>

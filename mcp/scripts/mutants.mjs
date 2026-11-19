@@ -22,8 +22,11 @@ const MUTANTS = [
     changes: [['src/index.ts', `const id = await identify(req, env, control ? (a: string) => make.control(env, a)! : null)`, `const id = { ...(await identify(req, env, control ? (a: string) => make.control(env, a)! : null)), ...(req.headers.get('X-Viz-Tenant') ? { tenant: req.headers.get('X-Viz-Tenant')! } : {}) }`]],
   },
   {
-    name: 'Agent apply allowed: the dry-run verdict "would become a proposal" is not refused',
-    changes: [['src/tools/write.ts', `if (id && dry.status === 202) refuseApply('Agents may not apply changes in this tenant.')`, `void 0`]],
+    name: 'Agent apply allowed: whoami\'s mayApply is not consulted before writing',
+    changes: [
+      ['src/tools/write.ts', "if (s.id.mayApply === false) refuseApply(", 'if (false) refuseApply('],
+      ['src/tools/write.ts', "if (s.id.mayApply !== true) refuseApply(", 'if (false) refuseApply('],
+    ],
   },
   {
     name: 'Dry run writes: the control-plane check is sent without dryRun',
@@ -98,6 +101,18 @@ const MUTANTS = [
   {
     name: 'A tenant in the query string is ignored instead of refused',
     changes: [['src/index.ts', "if (url.searchParams.has('tenant')) return problem(", "if (false) return problem("]],
+  },
+  {
+    name: 'No answer on mayApply (an older control release, or edge\'s fallback) is taken as yes',
+    changes: [['src/tools/write.ts', "if (s.id.mayApply !== true) refuseApply(", 'if (false) refuseApply(']],
+  },
+  {
+    name: 'A proposed new dashboard is sent as a direct create',
+    changes: [['src/tools/write.ts', "s.control.call('POST', '/proposals', { body: { spec: candidate,", "s.control.call('POST', '/dashboards', { body: { spec: candidate,"]],
+  },
+  {
+    name: 'read_dashboard lists panels in structure in layout order, not the order the text uses',
+    changes: [['src/tools/dashboards.ts', 'const ordered = panelOrder(panels).map((i) => ({ p: panels[i]!, i }))', 'const ordered = panels.map((p, i) => ({ p, i }))']],
   },
   {
     name: 'Unknown metric names not checked in the write preview (no did-you-mean)',
