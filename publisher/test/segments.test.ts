@@ -14,7 +14,7 @@
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { ledgerBaseKey, type FileEntry, type LedgerChange, type Table } from '../../contracts/ledger'
+import { ledgerBaseKey, ledgerLogKey, type FileEntry, type LedgerChange, type Table } from '../../contracts/ledger'
 import { FORMATS } from '../src/schema'
 import { goldenFile } from './golden'
 import {
@@ -197,6 +197,13 @@ describe('the first layout (one object per change)', () => {
 
     const p = publisher(cell)
     const oldPlan = await old.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
+    // A hole in the first layout stops the tenant before it, as one in segments does.
+    const hole = `${cell}/${ledgerLogKey(t, 1, oldPlan.version - 1)}`
+    await env.BUCKET.delete(hole)
+    const stopped = await p.publish([t])
+    expect(stopped.tenants[0]).toMatchObject({ status: 'gap', gapAt: oldPlan.version - 1, cursors: { metric_samples: { ledgerIncarnation: 1, version: oldPlan.version - 2 } } })
+    expect(await icebergLive(cell, 'metric_samples')).not.toContain(merged.key)
+    await copyLog(t, env.CELL, cell)
     const r = await p.publish([t])
     expect(r.tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: { ledgerIncarnation: 1, version: oldPlan.version } } })
     expect(await icebergLive(cell, 'metric_samples')).toEqual(oldPlan.files.map((f) => f.key).sort())

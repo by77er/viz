@@ -200,8 +200,9 @@ d30('D30_teeth_conflict_delete', 'D30 teeth: the step deletes its outputs on con
 d30('D30_teeth_purge_unlogged', 'D30 teeth: purge deletes a removed file before its removal is logged', { ...AD, ...T14, delLogged: false }, 'violated', ['I11_LiveFilesReadable'], 19_000_000)
 
 // ---- the ledger's segment log as built (LEDGER-LOG.md, ledger.ts): the IMPL_PLANNED bounds and more
+// at most 2 orphan sweep runs: the sweep is not what these check, and it multiplies the states
 const logrun = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated' = 'holds', props: string[] = ALLSAFE) =>
-  E.push({ name, kind: 'log', label, cfg, props, expect, maxStates: 19_000_000 })
+  E.push({ name, kind: 'log', label: `${label}; ≤ 2 sweep runs`, cfg: { ...cfg, maxSweeps: 2 }, props, expect, maxStates: 19_000_000 })
 logrun('LOG_as_built', 'IMPL_PLANNED_fixed\'s bounds with the segment log as built (base PUT before the commit, two-step start, F10 fix, tombstones in the base) and the code at HEAD; F3 assumed', { ...IMPL, noRetryAcrossLoss: true, maxLL: 1, maxComp: 1 })
 logrun('LOG_as_built_2LL', 'as LOG_as_built, two ledger losses (F11 needed two), compaction, one flush Worker', { ...IMPL, noRetryAcrossLoss: true, maxLL: 2, maxComp: 1, maxJobs: 1 })
 logrun('LOG_as_built_3LL', 'as LOG_as_built, three ledger losses, no compaction, one flush Worker', { ...IMPL, noRetryAcrossLoss: true, maxLL: 3, maxComp: 0, maxJobs: 1 })

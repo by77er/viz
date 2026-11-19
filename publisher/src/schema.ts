@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS pending (tenant TEXT PRIMARY KEY, since INTEGER NOT N
 `),
     },
     {
-      // The deadlines the one alarm serves (design/DECISIONS.md D31): `publish`, `sweep`,
+      // The deadlines the one alarm serves (design/DECISIONS.md D34): `publish`, `sweep`,
       // `expire:<table>`, each in the publisher's clock. Additive: a new table that release 1
       // neither reads nor needs. Release 1 on this storage publishes only from `notify` and
       // drops the other deadlines when it deletes its alarm; the next commit by a release that

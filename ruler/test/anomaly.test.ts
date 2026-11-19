@@ -323,6 +323,22 @@ describe('state is rebuilt from SQLite alone', () => {
     expect(ok(await target.rules(r.tenant)).rules[0]!.anomaly!.status).toBe('state_unreadable')
   })
 
+  it('a stored rule naming a detector this release does not know (a newer release saved it) is refused, not run as another detector; its state and alerts stay', async () => {
+    const r = await rig([ewmaRule()])
+    for (let i = 0; i < 6; i++) await r.tick()
+    await runInDurableObject(r.stub, (_i, s) => {
+      const spec = JSON.parse(s.storage.sql.exec('SELECT spec FROM rule_group WHERE tenant = ?', r.tenant).one().spec as string)
+      spec.anomalyRules[0].anomaly.detector = 'mstl'
+      s.storage.sql.exec('UPDATE rule_group SET spec = ? WHERE tenant = ?', JSON.stringify(spec), r.tenant)
+    })
+    await evictDurableObject(r.stub)
+    const before = await r.rows()
+    await r.tick()
+    const s = await r.status()
+    expect([s.health, s.lastError]).toEqual(['err', expect.stringMatching(/^unsupported_detector: this release does not know the detector "mstl"/)])
+    expect(await r.rows()).toEqual(before)
+  })
+
   it('every statement on detector state names the tenant: a row of another tenant in the same storage is neither loaded nor touched', async () => {
     const r = await rig([ewmaRule()])
     for (let i = 0; i < 3; i++) await r.tick()

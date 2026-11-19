@@ -486,6 +486,11 @@ export const MUTANTS = [
     edits: one('src/http.ts', 'new Call(req, env, principal.tenant,', "new Call(req, env, req.headers.get('X-Scope-OrgID') ?? principal.tenant,"),
     tests: ['test/anomaly.test.ts'],
   },
+  {
+    name: 'anomaly: a stored rule naming a detector this release does not know is run anyway',
+    edits: one('src/anomaly.ts', 'if (!(ANOMALY_DETECTORS as readonly string[]).includes(spec.detector)) {', 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

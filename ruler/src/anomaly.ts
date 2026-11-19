@@ -191,7 +191,7 @@ export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
   },
 }
 
-/** The detector the monitors API and rule files use when none is named. */
+/** The detector the monitors API and rule files use when none is named (design D33). */
 export const DEFAULT_DETECTOR: AnomalyDetector = 'ewma'
 /**
  * With `severity: page` and no detector, the default is the static threshold: on held-out NAB it
@@ -519,6 +519,11 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
     error: message,
     status: { ...prev.status, ...base, status, message, stateSeries: prev.series.size, stateBytes: sumBytes(prev.json) },
   })
+  if (!(ANOMALY_DETECTORS as readonly string[]).includes(spec.detector)) {
+    // A stored rule naming a detector this release does not know (a newer release saved it):
+    // refused, never run as another detector (contracts/rules.ts, `AnomalyDetector`).
+    return { ok: false, error: `unsupported_detector: this release does not know the detector ${JSON.stringify(spec.detector)}; a newer release saved this rule. Nothing was scored and no state or alert changed.`, status: { ...prev.status, series: series.length, message: `unsupported detector ${JSON.stringify(spec.detector)}` } }
+  }
   if (prev.unreadable !== null) {
     // Refuse rather than guess (COMPATIBILITY.md §3.2): starting cold would resolve firing alerts
     // and overwrite state a newer release will want back.

@@ -1,6 +1,6 @@
 /**
  * How the rest of viz tells the publisher that a tenant's ledger changed (design/DECISIONS.md
- * D31). The caller is the maintenance run (`stack/src/maintain.ts`), which every flush that
+ * D34). The caller is the maintenance run (`stack/src/maintain.ts`), which every flush that
  * changed something already causes, and which itself makes the ledger's other changes
  * (compaction, retention). Nothing on the ingest or flush path calls the publisher (D15).
  */

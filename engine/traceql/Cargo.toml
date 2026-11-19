@@ -1,0 +1,27 @@
+[package]
+name = "viz-traceql"
+version = "0.1.0"
+edition = "2021"
+description = "TraceQL parser, planner and evaluator for viz: clean-room, pure, no I/O, runs natively and in WASM"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# Regular expressions for =~ and !~ (RE2-like, linear time). Unicode tables trimmed as in viz-promql.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+
+[dev-dependencies]
+serde_json = "1"
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+# engine/AGENTS.md: fat LTO, one codegen unit and opt-level 3 measured fastest for WASM.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]

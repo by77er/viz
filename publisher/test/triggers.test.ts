@@ -1,5 +1,5 @@
 /**
- * Publication without a caller (design/DECISIONS.md D31). The maintenance run, which every
+ * Publication without a caller (design/DECISIONS.md D34). The maintenance run, which every
  * flush that changed something already causes and which makes the ledger's other changes,
  * nudges the cell's publisher (`nudge`, best effort and bounded). The publisher's one alarm
  * then publishes, retries, expires old snapshots and sweeps, each at its own deadline, and is

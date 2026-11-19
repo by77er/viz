@@ -311,7 +311,9 @@ edit that keeps the detector, its parameters and the interval keeps the state; o
 deleted. A shard move carries the rows in `GroupBundle.anomalyState`. Rows in a version this
 release does not read (a newer release wrote them) are **refused**: the rule is
 `state_unreadable`, nothing is scored, the rows are kept as they are (also through a move), and
-no alert changes; it never starts cold over them.
+no alert changes; it never starts cold over them. A stored rule naming a detector this release
+does not know is refused the same way (`unsupported_detector` in its error), never run as
+another detector.
 
 **Bounds, each an explicit refusal.**
 
@@ -426,11 +428,12 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 293 tests in 18 files, in workerd: all pass
+npm test                # 318 tests in 19 files, in workerd: all pass (`test/anomaly.bench.ts` runs only under `bench:anomaly`)
 npx tsc --noEmit        # clean
-npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass
-npm run mutants         # 59 mutants (50 earlier + 9 for versioning); vitest runs with at most 2 workers
+npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
+npm run mutants         # 81 mutants (50 earlier + 9 for versioning + 22 for anomaly rules), on a scratch copy; vitest runs with at most 2 workers
 npm run bench           # the measurements below
+npm run bench:anomaly   # anomaly rules in workerd (one worker): the "Anomaly rules" measurements below
 ```
 
 `npm run independent` needs Go 1.24 and the modules in `tools/promcheck/go.sum` (they were
@@ -454,8 +457,9 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `yaml.test.ts` | 37 | part 5 |
 | `robust.test.ts` | 15 | registry, sweeper, placement, shard splits and moves |
 | `independent.test.ts` | 2 | captures for `tools/promcheck` |
-| `compat.test.ts` | 14 | versioned storage: schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage |
-| `golden.test.ts` | 3 | golden formats |
+| `compat.test.ts` | 16 | versioned storage: schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage; version 1 storage with data upgraded to 2; the previous release still a rollback target |
+| `golden.test.ts` | 4 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation |
+| `anomaly.test.ts` | 22 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide, authorisation, tenant isolation, documented schemas |
 
 The first seven files held the 123 tests that existed before this task; all still pass.
 Checked by per-file count (unchanged except `bench.test.ts`, which gained the two
@@ -584,7 +588,7 @@ the new "dryRun on every write" test.
 | 62 | anomaly: the constructor does not rebuild detector state from SQLite | anomaly: "evicted every few ticks, the stored state … equal a batch run of the library" (+2 more) |
 | 63 | anomaly: a replayed tick advances each detector again (per-series replay guard removed) | anomaly: "a tick replayed after an eviction … advances no detector twice" |
 | 64 | anomaly: a newer release's state rows scored over (start cold) instead of refused | anomaly: "state rows a newer release wrote are refused (state_unreadable) …" |
-| 65 | anomaly: loading detector state does not name the tenant | anomaly: "every statement on detector state names the tenant …" (**survived the first run**: the injected foreign row reused a series key of this tenant, so it was overwritten on load; the test now gives it a key of its own and checks the series count after load; MUTANT65) |
+| 65 | anomaly: loading detector state does not name the tenant | anomaly: "every statement on detector state names the tenant …" (**survived the first run**: the injected foreign row reused a series key of this tenant, so it was overwritten on load; the test now gives it a key of its own and checks the series count after load; then killed) |
 | 66 | anomaly: the alert does not carry the detector's sentence | anomaly: "only the anomalous series fires; the receiver gets the library's sentence …" |
 | 67 | anomaly: the `severity` label not set from `anomaly.severity` | anomaly: "… severity routes" (+2 more) |
 | 68 | anomaly: the default EWMA uses the library's parameters (30 / 4) instead of the held-out ones | anomaly: "… severity routes" (+3 more, including the monitors API defaults) |
@@ -600,6 +604,7 @@ the new "dryRun on every write" test.
 | 78 | anomaly monitors: write without scope (as 29) | anomaly: "authorisation: creating, editing and deleting an anomaly monitor needs monitors:write …" |
 | 79 | anomaly monitors: tenant from the query string (as 31) | anomaly: "tenant isolation: the tenant is the credential's …" |
 | 80 | anomaly monitors: tenant from a header (as 32) | anomaly: same |
+| 81 | anomaly: a stored rule naming a detector this release does not know is run anyway | anomaly: "a stored rule naming a detector this release does not know … is refused" |
 
 **Mutants now run on a scratch copy.** `scripts/mutants.mjs` copies the component (and
 `contracts/`, `edge/src/`, `anomaly/src/`, which it imports) to `$VIZ_SCRATCH` or the system
@@ -608,9 +613,12 @@ checks at the end that every file a mutant touches is unchanged in the shared tr
 others snapshot the tree while mutants run; two such snapshots were taken during this task's
 runs, and neither held a mutant). Before this change the script edited the shared tree in place.
 
-**Anomaly mutants 60–80** (`VIZ_SCRATCH=… node scripts/mutants.mjs 60 … 80`, on the final code
-apart from the test fix for 65): 20 killed, 1 survived (65, the tenant filter on loading state;
-see its row), then MUTANT65_RERUN. RERUN_OLD
+**Anomaly mutants 60–81** (`VIZ_SCRATCH=… node scripts/mutants.mjs 60 … 81`): 60–80 on the
+code before the last two fixes (the unknown-detector refusal and the test for 65): 20 killed,
+1 survived (65, the tenant filter on loading state; see its row). After the fixes: 65 killed,
+81 killed. Through the new scratch-copy runner, 1, 16 and 51–59 were re-run (the compat and
+golden tests they rely on changed in this task): 11 of 11 killed. Mutants 2–15, 17–50 were not
+re-run in this task; 46–50 need Go.
 
 Mutants 51–59 were run on the final code (`node scripts/mutants.mjs 51 52 53 54 55 56 57 58
 59`): 9 of 9 killed. Two patterns (57, 59) did not apply on the first try because of an
@@ -646,6 +654,71 @@ about $6.5 (**modelled**, $0.15/M); the batch form is 43,200 (one group) to 432,
 groups) calls a month, $0.006–0.065. What would settle it: the engine's batch binding
 deployed and the bill read from Cloudflare analytics (spike S0, `design/VERIFICATION.md` §4).
 
+#### Anomaly rules (`npm run bench:anomaly`)
+
+**Measured here (workerd, local)**: workerd 1.20261117.1 under the vitest pool, one worker,
+4 cores shared with other sessions' builds and benchmarks: **load average 17–21** during the
+run below (12–13 during an earlier run on the code before the last fixes, whose CPU figures
+agree within the ranges below except where noted). CPU is the workerd process's thread time
+read from `/proc/<pid>/task/*/schedstat` by the `HOST` binding (`vitest.measure.config.ts`),
+so it includes the RPC into the object; wall time is `Date.now()` around each call (it moves
+in workerd across the call's I/O) and is inflated by the load. 100 series per rule, the
+ruler's defaults (EWMA half-life 100, k 8), the library's synthetic series (daily sine + noise,
+seeded), warm state computed by the library from history so every measured evaluation scores
+(CUSUM excepted, below). Ranges are min–max of 3 runs.
+
+A. The library alone, one batch call over 100,000 points, against its Node figures
+(`anomaly/README.md`, Node 22.23; median of 5; an empty call's 1.45 ms CPU taken off):
+
+| detector | workerd, ms CPU per 1,000 points | Node, ms CPU per 1,000 points |
+|---|---|---|
+| threshold | 0.56 | 0.59 |
+| ewma | 0.26 (0.29 in the earlier run) | 0.14 |
+| robust_z (288 points) | 3.2 | 3.6 |
+| seasonal, daily at 5 min, k = 4 | 10.3 | 9.8 |
+| seasonal, weekly at 1 h, k = 4 | 6.3 | 5.8 |
+| cusum | 0.59 | 0.61 |
+
+B. The ruler's evaluation function (`evalAnomaly`): one point per series from in-memory state,
+each changed series' state serialised as stored, limits checked; 40 evaluations:
+
+| detector | ms CPU per evaluation (100 series) | ms CPU per 1,000 points | state per series | Node, one tick through JSON state, per 1,000 points |
+|---|---|---|---|---|
+| threshold | 0.89–1.00 | 8.9–10.0 | 265 B | 6.3 |
+| ewma | 0.96–1.66 | 9.6–16.6 (7.2–9.2 earlier) | 335 B | 8.9 |
+| robust_z (288 points) | 10.0–11.1 | 100–111 | 9.6 KB | 193 |
+| seasonal, daily at 5 min | 19.7–20.9 | 197–209 | 27 KB | 523 |
+| seasonal, weekly at 1 h | 12.9–13.4 | 129–134 | 15.9 KB | 285 |
+| cusum | 1.26–1.85 | 12.6–18.5 | 740 B | 21 |
+
+C. The whole alarm tick of a group with one such rule (fake evaluator answering from a table,
+alert state machine, state rows written in the commit), against the counterfactual of the same
+group with one alerting rule whose result is empty; 30 ticks after 3 unmeasured:
+
+| rule | ms CPU per tick | wall per tick, median / p95 | SQL rows written per tick | state rows |
+|---|---|---|---|---|
+| counterfactual: alerting rule, empty result | 1.12–1.23 | 7–8 / 22–31 ms | 0 | 0 |
+| threshold | 2.54–2.93 | 10–12 / 17–80 ms | 1 | 1 |
+| ewma | 2.11–2.59 | 13–16 / 28–59 ms | 1 | 1 |
+| robust_z (288 points) | 17.5–18.0 | 52–62 / 125–232 ms | 2 | 2 |
+| seasonal, daily at 5 min | 40.2–42.2 | 134–139 / 376–464 ms | 6.4 | 6 |
+| seasonal, weekly at 1 h | 22.7–24.7 | 58–84 / 94–304 ms | 4 | 4 |
+| cusum | 5.0–5.7 | 18–41 / 40–89 ms | 12 | 1 |
+
+**Reading it.** The detectors cost in workerd what they cost in Node (A), EWMA aside (about
+twice, at a cost too small to matter). In the ruler the detector is not the cost: serialising
+each series' state every tick is (B: EWMA 10–17 ms per 1,000 points against 0.26 for the
+detector; robust z and seasonal 100–209 ms, their states being 9.6–27 KB). B is below Node's
+"one tick through JSON" because the ruler keeps state in memory and only serialises it. A whole
+tick of a 100-series EWMA rule costs about 1–1.5 ms CPU more than the empty counterfactual and
+writes one row; daily seasonal costs about 40 ms CPU and 6 rows (2.7 MB of state rewritten each
+tick), which is why seasonal rules belong on coarse rollups. CUSUM's row is not the steady
+state of the others: on this sine most series alarm and then re-learn their reference (all 100
+were re-learning at the end), so it also writes alert, hand-off and history rows (12 a tick).
+Nothing here is measured on Cloudflare; what would settle it is the same rule deployed with
+the engine binding, its duration and rows read from Cloudflare's analytics (spike S0).
+
+### Cost model
 ### Cost model
 
 **Modelled**, not measured on Cloudflare; unchanged in method from the previous version.
@@ -667,6 +740,13 @@ research/10 §1.
 Platform-wide, not per 1,000 rules: the sweeper's 16 index requests per run, 46,080 a month,
 about $0.007. The single-call form, for comparison, was $0.07–$1.0 before counting
 evaluator calls as requests and about $6.5 more if they are (previous version of this file).
+
+**Anomaly rules, per rule, modelled** from the measurements above (rows at $1 per million):
+a 1-minute EWMA rule of 100 series writes one row a tick, 43,200 a month, about $0.04, and adds
+about 1–1.5 ms CPU (a few ms of wall time) to its group's tick; a daily seasonal rule at a
+5-minute interval writes 6–7 rows a tick, about 56,000 a month, $0.06, and adds about 40 ms CPU
+a tick. Its stored state (2.7 MB for 100 series) is the larger cost driver for memory, not money.
+To settle: the same rules on Cloudflare, rows and duration from the analytics API.
 
 Excludes everything the engine itself costs (query CPU, shard and R2 reads), which D7 puts
 at cents for tail-class rules and dollars for the rest.

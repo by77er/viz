@@ -35,7 +35,7 @@ import { PUBLISHER_SCHEMA } from './schema'
 import { cursorCompare, inBatches, listTenants, readTenantLog, replayAt, type Cursor, type LogStatus, type Store, type TenantLog } from './log'
 
 /**
- * The jobs the publisher's one alarm serves (design/DECISIONS.md D31). Each deadline is a row
+ * The jobs the publisher's one alarm serves (design/DECISIONS.md D34). Each deadline is a row
  * of `due`, in the publisher's clock; the alarm is set at the earliest and deleted when there
  * is none, so an idle publisher has no alarm and costs nothing.
  *

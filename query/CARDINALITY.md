@@ -47,7 +47,7 @@ Read the times as rough; the counts, bytes and memory figures are exact for the 
    (37 s of reader CPU natively for ten minutes of data). **The cardinality report was not
    protected by its caps:** natively its merge reached 288 MiB before the pair cap refused
    it, past a 128 MB isolate. **Fixed here (D32):** the pair cap is now 400,000 (about
-   52 MiB at the merge, measured in WASM) and the report is counted over leaves above
+   52 MiB at the merge, extrapolated from 25.9 MiB of WASM memory measured for 200,000) and the report is counted over leaves above
    50,000 series.
 4. **Sketches**: the write path already uses them for admission (HyperLogLog and a Bloom
    filter, D21). The read path counts exactly, and that is the right default for a report

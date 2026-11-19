@@ -158,8 +158,8 @@ an alerting rule-file entry with an `anomaly` block, or a monitor with `query` a
   "warming" with `summary.message`; `missing` → not scored and the previous flag kept (a gap is
   not a recovery). `for`, `keep_firing_for`, no-data policies, the hand-off and the notifier are
   the alerting rule's, unchanged.
-- **State, built differently from the plan above.** The plan was to write state at the heartbeat.
-  The ruler writes it **every tick, in the transaction that commits the tick's alerts**, as whole
+- **State, built differently from this README's earlier plan**, which was to keep state in
+  memory and write it at the heartbeat (5 minutes). The ruler writes it **every tick, in the transaction that commits the tick's alerts**, as whole
   batches per row (all of a rule's series in rows of at most 512 KiB; never a row per series or
   per sample), because state must be rebuilt from SQLite alone and a replayed tick must
   reproduce its outcome: a heartbeat write would lose up to five minutes of points at an
@@ -172,12 +172,14 @@ an alerting rule-file entry with an `anomaly` block, or a monitor with `query` a
   limit): above it the evaluation is refused (`series_cap_exceeded`), nothing is scored and no
   alert changes. State limits per series, per rule and per object (the object's is checked at
   save from `stateBytesPerSeries × max_series`, because state lives in memory between ticks).
-- **Measured in workerd** (the ruler's Durable Object under the vitest pool, `npm run
-  bench:anomaly` in `ruler/`): one batch call of this library costs what it costs in Node (A in
-  the ruler's measurements: EWMA 0.29 against 0.14 ms per 1,000 points, the others within about
-  10%), under a load average of 12 to 13 on 4 cores. In the ruler's per-tick path the cost is
-  serialising each series' state, as "one tick through JSON state" below predicted, without the
-  parse: EWMA about 7–9 ms per 1,000 points, robust z about 92–116, seasonal daily about 193–200.
+- **Measured here (workerd, local)**, in the ruler's Durable Object under the vitest pool
+  (`npm run bench:anomaly` in `ruler/`; load average 17–21 on 4 shared cores): one batch call of
+  this library costs in workerd what it costs in Node (ms CPU per 1,000 points: EWMA 0.26 against
+  0.14 here, robust z 3.2 against 3.6, seasonal daily 10.3 against 9.8, the rest within 10%). In
+  the ruler's per-tick path the cost is serialising each series' state, as "one tick through JSON
+  state" below predicted, without the parse: EWMA 10–17 ms per 1,000 points, robust z 100–111,
+  seasonal daily 197–209; a whole tick of a 100-series EWMA rule costs about 1–1.5 ms CPU more
+  than an empty one (`ruler/README.md`, "Anomaly rules" under Measurements).
 - **Not wired**: burn rate (to compile to recording rules), cross-series, STL refits and PELT as
   scheduled jobs.
 

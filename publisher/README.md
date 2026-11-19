@@ -8,12 +8,13 @@ external readers see older data and physical deletes wait. Nothing else.
 
 | File | Contents |
 |---|---|
-| `src/publisher.ts` | `Publisher`: publish, commit, resync, expire, sweep, `verify`, `safeToDelete`, alarm |
-| `src/log.ts` | Reading a ledger's R2 log: changes after a cursor in version order up to the first hole; a strict replay for `verify` |
+| `src/publisher.ts` | `Publisher`: publish, commit, resync, expire, sweep, `verify`, `safeToDelete`; the one alarm and its deadlines |
+| `src/log.ts` | Reading a ledger's R2 log, segments and the first layout: changes after a cursor in version order, in whole segments, up to the first hole or unreadable object; a strict replay for `verify` |
+| `src/nudge.ts` | `nudge(PUBLISHER, cell, tenants)`: what the maintenance run calls; bounded, never throws (D34) |
 | `src/iceberg.ts` | Table schemas, Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 45 tests in workerd with a simulated R2, against the real `Ledger` class |
+| `test/` | 77 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout) |
 | `tools/fixtures/` | Rust: real Parquet files made with `viz_storage::encode_segment` and `merge_files` |
 | `tools/verify_readers.py` | PyIceberg and DuckDB read the published tables and are compared with the ledgers |
 | `tools/mutants.mjs` | Mutation checks |
@@ -36,24 +37,69 @@ snap-{snapshot}-{tag}.avro         manifest list of a snapshot
 cursors-{snapshot}-{tag}.json      {tenant: {ledgerIncarnation, version}} for every tenant
 ```
 
-**Driving it.** `publish(tenants?)` publishes now; with no argument it lists every tenant
-that has a ledger log in the cell. `notify(tenants)` records tenants as pending and sets the
-alarm `publishIntervalMs` (2 min) ahead, so nudges coalesce into one commit. The alarm exists
-only while something is pending: after a `notify`, after a publish that hit a hole or failed,
-or while a backlog is larger than one publish reads. An idle publisher has no alarm.
+**Driving it: nobody has to (design/DECISIONS.md D34).** Every maintenance run (the
+`viz-maint` consumer in `stack/`, which every flush that changed something already causes, and
+which itself makes the ledger's compactions and expiries) ends with `nudge(PUBLISHER, cell,
+[tenant])`. `nudge` waits at most 2 s and never throws; it returns false if the nudge may not
+have been recorded, and the run then marks the tenant due in an hour so the cron runs it
+again. (That wiring is two lines in `stack/`, not done here: "Needed changes".) `notify`
+writes the tenants to `pending` and a `publish` deadline `publishIntervalMs` (2 min) after the
+first nudge, so nudges coalesce into one commit per table; it writes nothing to R2 and never
+publishes itself.
 
-What will call it (neither exists yet): a queue consumer that receives `{cell, tenant}` from
-the ledger after a drain and calls `notify`; and a cron that calls `publish()` (which catches
-lost nudges) and `maintain()` (snapshot expiry when no publish did it, and the orphan sweep).
+The object has one alarm, set at the earliest of its deadlines (table `due`, migration 2) and
+deleted when there is none:
 
-**Reading the log.** For each tenant and table there is a cursor `(ledgerIncarnation,
-version)`. The log is listed after the cursor, sorted by version number, and read only as
-far as the versions are contiguous. A hole stops that tenant there and is reported
-(`status: 'gap'`, `gapAt`); the tenant stays pending. A newer ledger incarnation makes the
-publisher start again from that incarnation's `base`: it diffs the base's live set (plus
-the changes after it) against what is published for the tenant, removes what is gone and adds
-what is new. A change that does not fit the published state (it adds a live key, or removes
-a key of this table that is not live) stops the tenant with `status: 'inconsistent'`.
+| Deadline | Set by | What the alarm does |
+|---|---|---|
+| `publish` | `notify`; a publish that left tenants pending (a hole, a refusal, a backlog larger than one publish reads): `retryMs` (1 min) | publishes every pending tenant (whenever the alarm runs) |
+| `sweep` | a commit, or an attempt that failed: `orphanGraceMs` (1 h) later, unless one is due sooner; after a sweep that marked objects: their grace end | the orphan sweep of both tables |
+| `expire:<table>` | every commit: the time at which every snapshot beyond the newest `max(2, minSnapshots)` is outside the window | a metadata-only commit that drops them all at once (none if a publish already did) |
+
+Each job reads what is due from SQLite and is idempotent, so a repeated or early alarm is
+harmless. `publish(tenants?)`, `maintain()` and `sweep()` still run on demand (with no
+argument, `publish` lists every tenant with a log in the cell). Measured here
+(`test/triggers.test.ts`): after a tenant's last commit the alarm ran 5 times (a sweep that
+found nothing, one expiry per table, the sweep that marked what they dropped, the one that
+deleted it) and was then deleted; 48 simulated idle hours ran no alarm and wrote nothing. The
+publisher has no queue binding and no cron.
+
+**Reading the log** (`src/log.ts`, contracts/LEDGER-LOG.md "Readers of the log"). For each
+tenant and table there is a cursor `(ledgerIncarnation, version)`; the log is read once per
+tenant from the lower of the two. Each incarnation uses one layout:
+
+- **Segments** (what the ledger writes): the publisher lists
+  `startAfter: ledgerSegmentsStartingAfter(tenant, incarnation, version)`, which gives the
+  segments that start after the cursor. If the first starts above `version + 1`, it lists the
+  incarnation from its first segment and takes the one holding `version + 1` (the cursor is
+  inside it); if none does, that is a hole. It reads whole segments only, contiguous, until
+  about `maxChangesPerTenant` changes (at least one segment; the rest is `more`), decodes each
+  with the contract's codec against its key and tenant, then checks it against what this
+  publisher reads (below). Checkpoints are never read. A newer incarnation is re-based from the
+  first line of its first segment, which must be its `base`; an incarnation that also has a
+  `base.json` is corrupt.
+- **The first layout** (`base.json` and one `{version}.json` per change): read as before, for
+  incarnations a trial deployment may still hold (COMPATIBILITY.md §3.6, step 3). A ledger
+  that takes such a tenant over starts a new incarnation in segments, which the publisher
+  re-bases on (`test/segments.test.ts`).
+
+A hole stops the tenant before it (`gap`, `gapAt`); two segments that overlap stop it before
+both (`corrupt`; the shape of spec/README.md F10); a segment header `v` or `kind`, a change `v` or `kind`, or a file of a table
+this publisher does not know stops it before that whole segment (`unsupported`, `gapAt` = the
+segment's first version). Nothing after a stop is read, so nothing is ever skipped; the tenant
+stays pending and the alarm retries. A newer ledger incarnation makes the publisher diff the
+base's live set (plus the changes after it) against what is published for the tenant. A
+change that does not fit the published state stops the tenant with `inconsistent`: it adds a
+live key, removes a key of this table that is not live, or removes a live key as another
+table's file. Which table a removed key belongs to comes from `LedgerChange.removedFiles`;
+for a log written before it, from the key layout of contracts/TABLES.md. `removedFiles` that
+does not list `removed` key for key is `corrupt`.
+
+R2 operations per tenant read: one list (incarnations), one list (segments after the cursor;
+a second only when the cursor is inside a segment), one get per segment read, one head on a
+re-base. When nothing is new, one more list looks for the first layout. A cursor inside the
+newest segment (this reader never leaves one; another release might) waits until the ledger
+writes the next segment, which the "starts above `version + 1`" rule then catches.
 
 **Net changes.** A commit holds the difference between what is published and the ledgers'
 live sets after the changes read. A file added and removed between two publications is in
@@ -77,7 +123,8 @@ does not reach it leaves only unreferenced objects.
   manifests with fewer than 5,000 live files are merged into manifests ordered by
   `(tenant, day, key)`, entries EXISTING.
 - Snapshots older than `snapshotWindowMs` (24 h) are dropped by each commit, but never
-  below `minSnapshots` (2; a lower setting is refused). `metadata-log` keeps 20 entries.
+  below `minSnapshots` (2; a lower setting is refused); when no commit comes, by the alarm's
+  `expire` deadline. `metadata-log` keeps 20 entries.
 - The snapshot summary has the standard counts and `viz.ledger-cursors`, the URI of the
   cursor object. The map is not inline.
 
@@ -89,7 +136,7 @@ does not exist. If either fails, or its conditional write loses, it rebuilds SQL
 read of the logs. That one path covers a crash after the metadata write, a second writer,
 and lost Durable Object storage.
 
-**Orphan sweep.** `sweep()` lists the metadata prefix and deletes what the current metadata
+**Orphan sweep.** The alarm (at its `sweep` deadline) or `sweep()` lists the metadata prefix and deletes what the current metadata
 does not reference (through any retained snapshot or the metadata log), but only on a later
 sweep at least `orphanGraceMs` (1 h) after the sweep that first saw it. It first checks that
 SQLite is not behind R2, and never touches a metadata file with a version above the current
@@ -132,7 +179,9 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
 
 - **Storage.** The constructor opens SQLite with `openSchema` (`contracts/schema.ts`) inside
   `blockConcurrencyWhile` (`publisher.Publisher`, version 1 = the schema the pre-versioning
-  code created). Storage a newer release migrated past what this code may read is refused:
+  code created; version 2 adds `due`, the alarm's deadlines, `readableFrom` 1, so release 1
+  stays a rollback target: on this storage it publishes on nudges and drops the expiry and
+  sweep deadlines until the next commit by a release that knows them). Storage a newer release migrated past what this code may read is refused:
   every method throws `SchemaTooNewError` (message `schema_too_new: …`; its results are reports,
   not status unions, and its future callers, a queue consumer and a cron, retry on an
   exception), and the alarm only re-arms itself.
@@ -145,13 +194,22 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   swept by an older one; the tenants stay pending and the alarm retries. `verify` reports such
   metadata as a problem instead of checking it.
 - **Cursors objects** carry `v: 1`; a higher one is refused when rebuilding.
-- **The ledger log.** A change of a version (`v`, absent = 1) or `kind` this code does not
-  know stops that tenant there (`status: 'unsupported'`): the changes before it are published,
-  it is never skipped, and the tenant stays pending. `verify`'s replay throws on it.
+- **The ledger log.** A segment whose header `v` or `kind`, or one of whose changes' `v`
+  (absent = 1), `kind` or file table, this code does not know stops that tenant before the
+  segment (`status: 'unsupported'`); in the first layout, before the change. The segments
+  before it are published, it is never skipped, and the tenant stays pending. `verify`'s replay
+  throws on it. The versions this reader applies are pinned in `src/log.ts`, not taken from
+  the contract, and a test requires them to equal the contract's: a version bump in
+  `contracts/ledger.ts` fails here until this reader is taught it (readers first, §3.3).
 - **Formats** (`FORMATS` in `src/schema.ts`), pinned by `test/golden/formats/`: a new table's
   `metadata.json` for both tables (schemas, field ids, partition spec, sort order, name
   mapping, properties), the Avro schemas of manifests and manifest lists, the cursors object,
-  and an `add_unit` change as the ledger logs it today. A further test requires that, across
+  an `add_unit` change as the ledger logs it today, and `read.ledger-segment.v1.json`: every
+  log object of a scenario written by the current `Ledger` through this test pool (two
+  incarnations, a checkpoint, a compaction with `removedFiles`, retention and a unit in one
+  segment), with what each stage must publish. One test publishes those checked-in bytes stage
+  by stage; another re-runs the scenario on the current ledger and requires the same bytes
+  (only `at` differs), so a change of segment format without a new version fails here. A further test requires that, across
   every golden version and the code, a column keeps its field id and an id names one column.
 
 ## The partition columns
@@ -186,14 +244,13 @@ contract change; see "Contract issues").
 
 ## Not implemented
 
-- **Reading the ledger's segment log.** The ledger's log is moving to segments
-  (`contracts/LEDGER-LOG.md`, "Readers of the log"; the change for `src/log.ts` is in
-  `ledger/README.md`, "Needed changes"). This reader still reads one object per change. It must
-  read segments, and refuse an unknown segment header `v` or `kind` as it already refuses an
-  unknown change, before the publisher is deployed anywhere the ledger writes segments.
-
-- **Triggers.** No queue consumer, no cron handler, and the ledger sends no nudge. The
-  Worker entry only exports the class.
+- **The nudge is not wired.** `stack/` does not yet bind `PUBLISHER` or call `nudge` from the
+  maintenance run ("Needed changes"); until it does, nothing publishes without a caller.
+- **No backoff for a stuck tenant.** A tenant stopped by a hole, a corrupt or unsupported
+  segment or an inconsistent change is retried every `retryMs` (1 min) for as long as it lasts.
+- **Physical deletion does not wait for publication.** The janitor's purge releases a removed
+  file on the ledger's tombstone rules alone; DESIGN §5.2 wants it to wait for the removal to
+  be published and its snapshots expired (`safeToDelete`). "Needed changes", 3.
 - **Managed catalog.** Only the R2-native implementation exists. The catalog interface of
   D4 has not been extracted; a REST catalog commit would be a second implementation.
 - **The deleter.** `safeToDelete` and `acknowledgeDeleted` exist; nothing calls them or
@@ -221,16 +278,22 @@ contract change; see "Contract issues").
 ```
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
-npm test             # 59 tests in workerd, 7 files; fills export/
+npm test             # 77 tests in workerd, 9 files, at most 2 workers; fills export/
 npm run typecheck
-npm run readers      # PyIceberg and DuckDB on export/
-npm run mutants      # about 8 minutes
+# the readers, in a scratch virtualenv (versions as measured):
+python3 -m venv <scratch>/readers-venv
+<scratch>/readers-venv/bin/pip install pyiceberg==0.12.0 duckdb==2.0.0 pyarrow==26.0.1
+<scratch>/readers-venv/bin/python tools/verify_readers.py export
+MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see "Mutation checks"
 ```
 
-Last run (with versioning): 59 passed, 0 failed; `tsc --noEmit` clean (during one run it
-reported four errors in `../ledger/src/ledger.ts`, which the test worker imports, while
-another builder was changing `ExpireRequest`; gone on the final check). Before versioning: 45 passed, three runs in a row; `tsc --noEmit` clean;
-`wrangler deploy --dry-run` bundles the production entry.
+Last run (2026-11-19, segment reader and triggers): **77 passed, 0 failed**; `tsc --noEmit`
+clean. Run against `ledger/src/ledger.ts` as committed at `54cc31f` (segments, base first,
+checkpoints). The pool sets `LEDGER_DRAIN_DELAY_MS` to 60 s, so a ledger drains when a test
+says (`drain()`, `mirror`), and `LEDGER_CHECKPOINT_EVERY` to 3, so most logs carry checkpoints
+the publisher must not read. Before this change, against that ledger, 45 of 59 tests failed:
+the ledger writes no per-change objects any more, and it admits only keys under its own cell,
+which the tests' file keys were not.
 
 ### Fixtures and the ledger
 
@@ -243,18 +306,24 @@ rows themselves, never from the Parquet file. The files are exactly what flush p
 `tenant` or `day` column, no field ids, snappy, v2 data pages.
 
 Every test drives the real `Ledger` class (`ledger/src/ledger.ts`, in the same test
-script), so the logs in R2 are written by it. The `Ledger` writes under `env.CELL`; so that
-tests cannot see each other, all but the end-to-end test copy a tenant's log objects byte
-for byte under a cell of their own (`mirror` in `test/helpers.ts`). The end-to-end test uses
-the ledger's own prefix.
+script), so the logs in R2 are written by it; the first-layout tests drive the frozen as-built
+ledger (`ledger/bench/asbuilt/`), the last writer of that layout. The `Ledger` writes under
+`env.CELL` and admits only data keys under that cell; so that tests cannot see each other, all
+but the end-to-end test copy a tenant's log objects byte for byte under a cell of their own
+(`mirror` in `test/helpers.ts`), while the data keys stay under `env.CELL` (tenant names are
+unique per test). The end-to-end test uses the ledger's own prefix.
+
+Regenerated on 2026-11-19 with `engine/storage` at `0dae242` (into a scratch path, not over the
+committed file): the same 54 files, byte for byte, so the same content hashes in every key.
 
 ### Independent readers
 
 `test/e2e.test.ts` puts the 54 Parquet files into the simulated bucket and publishes four
-stages: (1) four units per tenant; (2) a compaction per tenant; (3) retention drops one
+stages, the ledgers writing their logs as segments: (1) four units per tenant; (2) a compaction per tenant; (3) retention drops one
 tenant's first day, a fifth unit per tenant, and one tenant compacts it away before the
 publish; (4) one tenant expires a day, its ledger loses its storage and rebuilds as
-incarnation 2, then compacts. It then sends every object under `cell-0/` (127 objects) to a
+incarnation 2 (from its segments, starting incarnation 2 with a base segment), then compacts.
+It then sends every object under `cell-0/` (114 objects) to a
 local sink that writes them under `export/` with the same relative paths, plus
 `export/expected.json`: for each stage, each table's snapshot id and the live files of each
 tenant as returned by `Ledger.plan`.
@@ -265,10 +334,12 @@ manifest lists and the manifests are the real locations of the dumped files. The
 refuses to run if the directory has moved. What this does not show is a read through
 `s3://`.
 
-`tools/verify_readers.py export`, with PyIceberg 0.12.0 (pyarrow 26.0.1) via
-`StaticTable.from_metadata` and DuckDB 2.0.0 (iceberg extension `4c0c0874c4`, avro extension
-`345c3f4e82`) via `iceberg_scan`: **496 checks, 0 failed** (240 PyIceberg, 256 DuckDB). For
-both tables, for each of the four stages reached by time travel from the final metadata
+`tools/verify_readers.py export`, run on 2026-11-19 on the export of the segment-reading
+publisher, in a fresh virtualenv with PyIceberg 0.12.0 (pyarrow 26.0.1) via
+`StaticTable.from_metadata` and DuckDB 2.0.0 (iceberg and avro extensions as installed for
+DuckDB 2.0.0) via `iceberg_scan`: **504 checks, 0 failed** (240 PyIceberg, 256 DuckDB, 8
+content hashes). For both tables, for each of the four stages (after a compaction, after a
+retention expiry, after a re-base) reached by time travel from the final metadata
 (`snapshot_id` / `snapshot_from_id`) and again by opening that stage's own
 `vN.metadata.json`:
 
@@ -282,6 +353,17 @@ both tables, for each of the four stages reached by time travel from the final m
 | `day = D` returns exactly D's rows and touches only D's files | yes | yes |
 | No row has a NULL `tenant` or `day` | yes | (covered by the group comparison) |
 | Opening the table directory alone finds the current metadata through `version-hint.text` | not applicable | yes |
+| A SHA-256 over every row (all columns, sorted) is identical from PyIceberg, from DuckDB, and from the ledgers' live Parquet files read directly with pyarrow | yes | yes |
+
+Content hashes (sha256 over every row, all columns, sorted; the same from both readers and from
+the Parquet files), first 12 hex digits:
+
+| Table | initial | compacted | expired | rebased |
+|---|---|---|---|---|
+| `metric_samples` | `b4a95a8a8c71` (3,450 rows) | `b4a95a8a8c71` (3,450) | `f5526a4e32d1` (3,690) | `9a5881afc385` (3,390) |
+| `metric_series` | `37d07b565ec3` (180) | `a314ee83e768` (120) | `8ee872fe777a` (126) | `51e6163aea9b` (81) |
+
+The samples hash is the same before and after compaction: the merge kept every row.
 
 Row counts seen: `metric_samples` 3,450 rows in 18 files, then 3,450 in 12, 3,690 in 12,
 3,390 in 9; `metric_series` 180, 120, 126, 81 rows.
@@ -294,12 +376,12 @@ the partition columns present in its data files, so it is a fault of that extens
 with identity-partitioned tables and not of how these tables are written. Everything else
 attempted was readable.
 
-### Workerd tests (59)
+### Workerd tests (77)
 
 | Area | Tests |
 |---|---|
 | Avro (6) | round trip across block boundaries, both codecs; empty file; compression; unsafe long and missing field refused; corrupted file refused |
-| Version order and gaps (4) | log applied in order with the cursor recorded in an immutable object; a hole stops the tenant, is reported, leaves others alone, and is finished by the alarm once filled; a change that does not fit is refused; unknown and invalid tenants |
+| Version order and gaps (4) | log applied in order with the cursor recorded in an immutable object; a missing segment stops the tenant, is reported, leaves others alone, stays a hole when it is right after the cursor, and is finished by the alarm once filled; a forged change that does not fit is refused; unknown and invalid tenants |
 | Net changes (3) | a file added and compacted away between publications is in no manifest of any snapshot; 2 tenants with more than 40 ledger versions each published in one commit per table; a backlog larger than one publish is finished from the alarm |
 | Idempotence (3) | a second publish writes nothing, also after eviction; a change that does not touch a table moves its cursor without a commit; state rebuilt from R2 after `deleteAll` with no new commit |
 | Concurrency (2) | two publishes on one object serialise into one commit; two writers on one cell: one paused before the metadata write, the other commits, the loser's conditional write fails, it takes the winner's state and commits v2 with both tenants |
@@ -309,12 +391,15 @@ attempted was readable.
 | `safeToDelete` (1) | empty until the removal is published, until the last referencing snapshot has expired, and until the grace period has passed; never a live key or another tenant's |
 | New incarnation (2) | re-base after ledger storage loss removes and adds by diff, DELETED and EXISTING entries; a cursor from a newer incarnation than R2 has is refused |
 | What is written (2) | format version, schema, partition spec, name mapping, partition values checked against the key layout, statistics, manifest list counts and ranges, summary; an unreadable index fragment |
-| Driving (3) | `notify` then alarm, no alarm when idle; a nudge during a running publish is kept; `locationPrefix` cannot change |
+| Driving (3) | `notify` then alarm, which leaves only the sweep's deadline and then none; a nudge during a running publish is kept; `locationPrefix` cannot change |
 | Smoke, end to end, measurements (3) | |
 | Versioned storage (`compat.test.ts`, 6) | a fresh object at version 1 with the golden schema; migrations 1..N reproduce the golden of N; version 1 equals the pre-versioning `sqlite_master` (`test/fixtures/storage/v0.json`); that dump (a cell published once) adopted with every row unchanged and served; a publisher left by pre-versioning code keeps publishing after adoption, verifies clean and is not migrated again after eviction; storage of a breaking N+1 refused by all 11 methods, alarm re-armed, every table unchanged; storage of an additive N+1 served, written, left at version 2 |
 | Newer Iceberg metadata (`compat.test.ts`, 1) | a table evolved by a newer publisher (schema 1 with a new field id, `viz.format-version` 2): publish refused and the tenant left pending, sweep refused, nothing under `iceberg/` changed, SQLite not rebuilt from it, `verify` reports it |
-| Unknown ledger changes (`compat.test.ts`, 2) | a change with `v: 2`, then with `kind: 'checkpoint'`: the prefix is published, the cursor stops before it, the tenant stays pending; once the change is readable the tenant catches up; the reader's accept and refuse rules |
-| Golden formats (`golden.test.ts`, 5) | every format has a file for its version; `metadata.json` of both new tables; field ids permanent across versions; Avro schemas; the cursors object and an `add_unit` change |
+| Versioned storage, migration 2 (`compat.test.ts`, +1) | storage at golden version 1 (no `due`) migrates to 2, keeps publishing, verifies clean, uses the new table, is not migrated twice; adoption of the pre-versioning dump now ends at version 2 with every adopted row unchanged |
+| Log objects this code does not know (`compat.test.ts`, 7) | five rewrites of one real segment as a newer ledger would write it (header `v` 2, unknown header kind, change `v` 2, unknown change kind, a file of table `spans`): each stops the tenant before that segment, twice in a row, with the earlier segments published and the later one unread; restored, it catches up. The same for a change object of the first layout. The reader's accept and refuse rules, and its pinned versions equal the contract's |
+| Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment finished from the holding segment once a later one exists; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
+| Triggers (`triggers.test.ts`, 3) | `notify` writes nothing to R2 and publishes nothing, later nudges never push the deadline back; a nudge returns false within its bound from a publisher that is slow (5 s) or refuses, and with none bound; a tenant's day of flushes and a compaction, each nudged, then the alarm settles in 5 runs (sweep, two expiries, mark, delete) to no alarm and no deadline, every remaining metadata object referenced, and 48 idle hours run no alarm and write nothing |
+| Golden formats (`golden.test.ts`, 5) | every format has a file for its version; `metadata.json` of both new tables; field ids permanent across versions; Avro schemas; the cursors object and an `add_unit` change (now read from its segment) |
 
 ### Mutation checks
 
@@ -358,8 +443,9 @@ M8 is caught by the crash injected after the metadata write, not by one before i
 seams sit after each step, and the mutant saves the cursor between two of them. M2 and M9
 fail almost every test because every publish replays a log and writes partition values.
 
-The reader script has teeth too: with one file removed from one stage of one table in
-`expected.json`, 24 of its 496 checks fail and it exits 1.
+The reader script has teeth too: with one file removed from one stage of one table (a copy
+of `expected.json` in a scratch directory, passed with `--expected`), 25 of its 504 checks fail,
+the content hash among them, and it exits 1.
 
 ### Measurements
 
@@ -371,17 +457,22 @@ were written by real `Ledger` objects; the data objects were not created. Source
 
 | Publish | Manifests | Manifest list | Cursor object | metadata.json | Total written | R2 operations (list / get / head / put) | Commit time |
 |---|---|---|---|---|---|---|---|
-| 1 file added, new table | 3,936 B | 1,590 B | 139 B | 2,622 B | 8.3 kB | 3 / 4 / 2 / 5 | 45–51 ms |
-| 100 files added, new table | 7,387 B | 1,596 B | 139 B | 2,635 B | 11.8 kB | 3 / 4 / 2 / 5 | 43–74 ms |
-| 10,000 files added, 10 tenants, 110 ledger changes | 337,200 B (1 manifest) | 1,604 B | 609 B | 2,649 B | 342 kB | 21 / 121 / 2 / 5 | 0.5–1.3 s |
-| +1 file on that table | 3,941 B | 1,695 B | 609 B | 3,601 B | 9.8 kB | 2 / 2 / 2 / 5 | 50–86 ms |
-| 100 removed + 1 added on that table (rewrites the 10,000-entry manifest) | 340,886 B (2 manifests) | 1,731 B | 609 B | 4,572 B | 348 kB | 2 / 2 / 2 / 6 | 0.45–1.0 s |
-| Idle, 10 tenants | 0 | 0 | 0 | 0 | 0 | 21 / 0 / 0 / 0 | – |
+| 1 file added, new table | 3,938 B | 1,590 B | 145 B | 2,647 B | 8.3 kB | 3 / 3 / 3 / 5 | 45–95 ms |
+| 100 files added, new table | 7,389 B | 1,596 B | 145 B | 2,660 B | 11.8 kB | 3 / 3 / 3 / 5 | 43–143 ms |
+| 10,000 files added, 10 tenants, 110 ledger changes | 337,580 B (1 manifest) | 1,602 B | 614 B | 2,668 B | 342 kB | 21 / 21 / 12 / 5 (first layout: 21 / 121 / 2 / 5) | 0.5–1.5 s |
+| +1 file on that table | 3,942 B | 1,693 B | 615 B | 3,621 B | 9.9 kB | 2 / 2 / 2 / 5 | 50–86 ms |
+| 100 removed + 1 added on that table (rewrites the 10,000-entry manifest) | 341,268 B (2 manifests) | 1,731 B | 615 B | 4,592 B | 348 kB | 2 / 2 / 2 / 6 | 0.45–1.5 s |
+| Idle `publish()` of every tenant, 10 tenants | 0 | 0 | 0 | 0 | 0 | 31 / 0 / 0 / 0 (first layout: 21) | – |
 
-Reading the operation counts: 1 list for the tenants (only with no argument), 2 lists per
-tenant (incarnations, versions after the cursor), 1 get per unread change, and per table
-with something to commit 1 get + 1 head + 5 puts (more puts only when manifests are
-rewritten). `verify` of the 10,000-file table without per-object checks took 0.4–0.8 s.
+Ranges span the runs before and after the segment reader (the last run, 2026-11-19, is the
+upper end of each, with other suites running on the machine). Reading the operation counts: 1
+list for the tenants (only with no argument); per tenant 2 lists (incarnations, segments after
+the cursor), 1 get per segment read (here 2 per tenant: the base segment and one segment of 11
+changes, against one get per change before), 1 head on a re-base, and a third list when there
+is nothing new (the first-layout check); per table with something to commit 1 get + 1 head +
+5 puts (more puts only when manifests are rewritten). `verify` of the 10,000-file table
+without per-object checks took 0.4–1.1 s. The idle full scan is the operator's path; nudged
+publication reads only nudged tenants, and an idle cell is not published at all (D34).
 
 A manifest costs about 3.9 kB of header (the schemas) plus about 34 bytes per file.
 `metadata.json` grows by about 1 kB per retained snapshot (measured: 2.6 kB with one
@@ -395,11 +486,26 @@ about 290 kB per commit (modelled from that slope, not measured).
   runs again (D15: the publisher is never upstream of ingest). The alarm retries every
   `retryMs`, so a long rollback costs one R2 list per pending tenant per minute.
 
-- **Cost of discovery.** An idle `publish()` with no argument costs 1 + 2 × tenants R2 list
-  operations (measured: 21 for 10 tenants). Modelled, with R2's list price taken from
-  training knowledge: 10,000 tenants every 5 minutes is about 5.8 million list operations
-  a day. The nudge path (`notify`) avoids it; the full scan should be rare. Settle it by
-  running the cron on a real cell and reading R2 analytics.
+- **Cost of discovery.** An idle `publish()` with no argument costs 1 + 3 × tenants R2 list
+  operations (measured: 31 for 10 tenants; the third list per tenant looks for the first
+  layout). Nothing calls it on a schedule any more (D34): the nudge path reads only nudged
+  tenants, and an idle cell is not read at all. If an operator ran it every 5 minutes on
+  10,000 tenants it would be about 8.6 million list operations a day (modelled from the
+  measured count).
+- **Nudges are the only trigger.** If the stack's maintenance run stops following every flush,
+  or stops nudging, publication stops (external readers see old snapshots; nothing upstream is
+  affected). A nudge that is not recorded is retried through the maintenance marker (an hour);
+  one that is recorded but whose changes were not yet logged when the publish read the log is
+  caught by the next run of that tenant, which the purge of the change's tombstones brings
+  (by the delete grace, 1 h). Measured only in workerd, with the maintenance run simulated by
+  a direct `nudge`; the wiring in `stack/` is not built.
+- **A stuck tenant costs a wake a minute.** A hole, a corrupt or unsupported segment, or an
+  inconsistent change keeps the tenant pending and the alarm retrying every `retryMs`, not
+  backed off: about 1,440 wakes and a few thousand R2 operations a day for as long as it lasts
+  (modelled from the per-publish counts above).
+- **A cursor inside the newest segment waits.** This reader advances over whole segments only,
+  so it never leaves one; a cursor left inside the newest segment by another release is
+  finished only when the ledger writes the next segment (`test/segments.test.ts`).
 - **Rewriting large manifests.** Removing one file from a 10,000-entry manifest rewrites
   all of it (0.45–1.0 s here). Compaction touches many files of a tenant-day; manifests are
   ordered by tenant and day when appended or merged, but a manifest written by one large
@@ -416,8 +522,9 @@ about 290 kB per commit (modelled from that slope, not measured).
   loser converges. But the hint is an unconditional write, so with two writers it can
   briefly name an older (still valid) version, and a sweep by a writer with a stale view
   is protected only by its staleness check and the grace period.
-- **`verify` cost.** It reads every change of every tenant since the incarnation's base and
-  does one HEAD per data file. With no ledger checkpoints this grows without bound.
+- **`verify` cost.** It reads every segment of every tenant since the incarnation's base and
+  does one HEAD per data file. Checkpoints would bound it, but they are for the ledger's
+  rebuild only (contracts/LEDGER-LOG.md), so this grows with the incarnation.
 - **Clock.** Snapshot expiry, the orphan grace period and the delete grace period use the
   Durable Object's clock.
 - **Memory and time for a very large catch-up.** All changes read in one publish are held
@@ -431,20 +538,68 @@ about 290 kB per commit (modelled from that slope, not measured).
 - No adversarial review of the commit protocol has been done (AGENTS.md asks for one before
   building on it).
 
+## Needed changes
+
+In components others own; not edited from here.
+
+1. **stack: nudge the publisher from every maintenance run** (D34). In the Worker that consumes
+   `viz-maint`, bind the publisher's namespace, `{ "name": "PUBLISHER", "class_name":
+   "Publisher", "script_name": "viz-publisher" }` (and the same in `deploy/`). At the end of
+   `maintainTenant` (`stack/src/maintain.ts`), after the run's own ledger changes and before the
+   marker is settled:
+
+   ```ts
+   import { nudge } from '../../publisher/src/nudge'
+   // ...
+   if (env.PUBLISHER && !(await nudge(env.PUBLISHER, env.CELL ?? 'cell-0', [tenant]))) due.push(Date.now() + HOUR_MS)
+   ```
+
+   `nudge` waits at most 2 s and never throws. Only with the binding: a deployment without a
+   publisher must not mark every tenant due hourly. In `stack/test/triggers.test.ts`, count
+   `PUBLISHER.get` in `counting(...)` and require 0 across the idle deployment's crons, and add
+   one test where a flush leads to a maintenance run and the tenant pending in the publisher.
+2. **deploy: the publisher before its caller.** Deploy `viz-publisher` (this Worker: the
+   `Publisher` class with migration tag v1, the cell's bucket as `BUCKET`,
+   `ICEBERG_LOCATION_PREFIX`) before the stack binds it (callee first, COMPATIBILITY.md §3.3).
+   Nothing was deployed here.
+3. **janitor: physical deletion waits for publication** (DESIGN §5.2, §5.3). `purgeTenant`
+   releases a removed file on the ledger's tombstone rules alone, so once publication runs it
+   can delete a file that a retained Iceberg snapshot still references, and external readers of
+   that snapshot fail. It should also require the publisher's `safeToDelete(tenant)` to list the
+   key (removal published, no retained snapshot references it, grace passed), and report what
+   it deleted with `acknowledgeDeleted`. Until the nudge is wired this cannot happen, because
+   nothing is published.
+4. **contracts/LEDGER-LOG.md** (the ledger's owner): mark the publisher's read-back as shown,
+   drop the pointer to a "Needed changes" section of `ledger/README.md` that does not exist,
+   and say how a cursor inside the newest segment is finished (Contract issues 10, 11).
+5. **ledger/README.md** still describes one R2 object per change, with no segments, checkpoints
+   or `removedFiles`; the publisher was written against `contracts/LEDGER-LOG.md` and
+   `ledger/src/ledger.ts` instead.
+
 ## Contract issues
 
 Recorded here because this work could not change `contracts/`, `ledger/`, `engine/` or
-`design/`.
+`design/` (except `design/DECISIONS.md` D34 and small edits to `DESIGN.md` §3.1, §5.3 and
+`UPGRADES.md`, made with this change).
 
-1. **`LedgerChange.removed` is keys only.** (The segment contract now adds `removedFiles`,
-   `{key, table}`, beside it; this reader does not use it yet.) A consumer that follows one table cannot tell
-   which table a removed key belongs to. The publisher uses the key layout of TABLES.md
-   (`{cell}/data/{table}/...`) to decide whether a removal it cannot place is an error; for
-   keys that do not follow the layout it cannot check. Proposal: `removed: {table, key}[]`,
-   or state in the contract that keys always follow the layout.
-2. **The meaning of `base.version`** ("the version the incarnation starts from; the first
-   change after it is `version + 1`") is only in a comment in `ledger/src/ledger.ts`. The
-   publisher depends on it. It belongs in `contracts/ledger.ts`.
+1. **Resolved: `LedgerChange.removed` is keys only.** The segment contract adds
+   `removedFiles` (`{key, table}`) beside it, and the reader uses it: a removal is placed by its
+   table, and one that names another table than the live file's is refused. For logs written
+   before it (the first layout), the key layout of TABLES.md is still the fallback.
+2. **Resolved: the meaning of `base.version`** is now in contracts/LEDGER-LOG.md ("The base":
+   the incarnation's first change is `version + 1`).
+10. **contracts/LEDGER-LOG.md is behind this work in two places** (not edited from here). Its
+    "What has to be shown" says the publisher and an independent reader seeing the same table
+    across the change of log format is "not shown"; it is now (`test/segments.test.ts` with the
+    as-built ledger for the first layout; `tools/verify_readers.py` on segments). And "The exact
+    change to `publisher/src/log.ts` is in `ledger/README.md`, 'Needed changes'" points at a
+    section that does not exist (`ledger/README.md` still describes the first layout).
+11. **The contract does not cover a cursor inside the newest segment.** "Readers of the log"
+    says what to do when the first segment after the cursor starts above `version + 1`; when no
+    segment starts after the cursor, a reader cannot tell "at a segment end" from "inside the
+    last segment" without listing the incarnation. This reader waits for the next segment
+    (Risks). Proposal: say that readers advance over whole segments only, so the case arises
+    only across releases, and that it is finished by the next segment.
 3. **`tenant` and `day` are not columns of the data files.** This works (see above) but
    forces the two columns to be optional in the Iceberg schema, because PyIceberg rejects
    missing required fields. If flush wrote both columns (one distinct value per file, so a

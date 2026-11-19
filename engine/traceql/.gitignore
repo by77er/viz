@@ -1,0 +1,6 @@
+target/
+# Tempo's tests, fetched at test time as a behavioural oracle (AGPL-3.0; never committed).
+testdata/upstream/
+# Differential run outputs and scratch.
+tools/godiff/.work/
+tools/godiff/godiff

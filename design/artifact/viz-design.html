@@ -204,7 +204,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
     <div><h3>Storage</h3>
       <p>Seven tables: series, samples and rollups for metrics; spans and a trace index; logs. Every file holds one tenant, so retention and erasure are file drops. Compaction is time-ordered and keeps sort order. Rollups are written when an hour closes. viz is the only writer; managed compaction stays off.</p></div>
     <div><h3>Read path</h3>
-      <p>Each language parses to its own tree and lowers to one plan. The tenant filter comes from the session and cannot be omitted. Leaves stream one row group at a time and return partial aggregates. Work that will not fit an isolate runs the identical engine in a Container.</p></div>
+      <p>Each language parses to its own tree and lowers to one plan. The tenant filter comes from the session and cannot be omitted. A query that aggregates is split over leaves that each own a range of series keys, sized by samples and by series; they return exact partial aggregates, so the answer is identical to one place. A query that does not aggregate runs in one place, bounded by one isolate.</p></div>
     <div><h3>One engine</h3>
       <p>A Rust core with no I/O does parsing, planning, Parquet and evaluation. It runs as WASM in Workers, natively in Containers, and inside a seeded simulator in CI. That last use is why it has no I/O.</p></div>
     <div><h3>Monitors</h3>
