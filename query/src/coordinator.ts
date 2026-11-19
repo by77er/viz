@@ -150,6 +150,8 @@ export const hooks: {
   alterTail?: (shard: string, answer: unknown) => unknown
   /** Each split leaf's statistics and the header of its answer (for the measurement). */
   leafStats?: (part: number, stats: EvaluateStats, summary: LeafSummary) => void
+  /** Bytes of tail the coordinator itself may read, in place of what the limits leave (so a test can make a small tail not fit). */
+  tailCap?: number
 } = {}
 
 export interface Context {
@@ -460,7 +462,7 @@ type Tails = { again: true } | { again: false; reads: TailRead[]; bytes: number;
  * lower bound of its bytes. Refusals are counted with `refused` (which throws past the bound).
  */
 async function readTails(c: Context, shards: string[], watermarks: Watermark[], known: Map<string, number>, refused: (who: string, why: string) => void, filter: TailFilter, cap: number): Promise<Tails> {
-  const budget: TailBudget = { cap: Math.max(0, cap), used: 0 }
+  const budget: TailBudget = { cap: Math.max(0, hooks.tailCap ?? cap), used: 0 }
   const tails = await Promise.all(shards.map((s) => readTail(c, s, watermarks.find((w) => w.shard === s), known, filter, budget)))
   let again = false
   shards.forEach((s, i) => {

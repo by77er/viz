@@ -182,7 +182,7 @@ const CALLS = (): [string, Record<string, unknown>][] => [
   ['list_monitors', {}],
   ['get_monitor', { id: 'mon_e0e0e0e0e0e0e0e0', max_tokens: 32000 }],
   ['backtest_monitor', { monitor: { name: 'evil-ok', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } }, start: 'now-3h', max_tokens: 32000 }],
-  ['backtest_monitor', { monitor: { name: 'evil-ok', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } }, start: 'now-3h', max_tokens: 600 }],
+  ['backtest_monitor', { monitor: { name: 'evil-ok', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } }, start: 'now-3h', max_tokens: 800 }],
   ['backtest_monitor', { monitor: { name: 'evil-budget', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } } }],
   ['backtest_monitor', { monitor: { name: 'evil-invalid', query: 'rate(evil_requests_total[5m])', condition: { op: '>', threshold: 0 } }, max_tokens: 32000 }],
   ['get_schema', {}],

@@ -946,6 +946,17 @@ six passes.
 | Fire, resolve, fire again, two repeats | 5, five keys | 5 |
 | 6 seeds × 30 ticks of flapping alerts, random crashes at six points, evictions, 20% 500s, 15% timeouts-after-processing, against the same seed without faults | many extra | identical notifications, alert state, recorded batches; empty outboxes |
 
+Recorded samples through the entrypoint (part 15, `recorded.test.ts`; the table above uses the
+scripted sink, which is unchanged):
+
+| Case | Calls seen | Kept by the write path |
+|---|---|---|
+| Crash in the tick's commit after the samples were written; evicted; the tick re-run | 2, identical batches (ids, samples, time) | one value per series and time; one alert hand-off |
+| `overloaded`, then `backpressure`, then accepted | 3, at least 280 ms apart (300 ms hints) | the samples once |
+| `unavailable` three times | 3 | nothing; the rule reports it, `samplesDropped` + 1 |
+| `invalid` / `series_limit` / `unauthorized` | 1 each | nothing (as refused); reported, counted; no Remote Write |
+| An ingest release without the entrypoint | Remote Write 1 | the samples once, nothing dropped |
+
 ### Exactly-once with acknowledge and silence
 
 Same method as before: the fake receiver records every request, assertions are on what a
@@ -1115,6 +1126,31 @@ the new "dryRun on every write" test.
 | 128 | per-alarm warm-up CPU: spent subtracted after the run, not reserved before it | history: "groups evaluated in the same alarm reserve the budget before reading …" (only this one: sequential warm-ups cannot tell) |
 | 129 | per-alarm warm-up CPU: one that fits a warm-up's budget but not the alarm's rest refused, not deferred | history: "the warm-ups of one alarm share maxWarmupCpuMs …" |
 | 130 | per-alarm warm-up CPU: a budget below the model's base defers every warm-up forever | history: "a warm-up priced over maxWarmupCpuMs is refused … even with a budget below the model's base" |
+| 131 | entrypoint, tenant: the tenant argument is dropped (the batches passed first) | recorded: "each tenant's samples go out with its own tenant as the argument …" (+2 more) |
+| 132 | entrypoint, tenant: one tenant per isolate (the first Ruler object's tenant passed for every object) | recorded: "each tenant's samples go out with its own tenant as the argument …" (+2 more) |
+| 133 | entrypoint, acknowledgement: the sink returns before the RPC resolves | recorded: "a write counts only once the entrypoint resolved …" (+2 more) |
+| 134 | entrypoint, acknowledgement: the tick does not wait for the sink (the next batch evaluated before the write) | recorded: "a write counts only once the entrypoint resolved …" (+2 more) |
+| 135 | entrypoint, refusals: every refusal retryable (unauthorized, invalid, series_limit retried) | recorded: "a write counts only once the entrypoint resolved …" (+2 more) |
+| 136 | entrypoint, refusals: the tick retries a refusal the sink says is permanent | recorded: "a write counts only once the entrypoint resolved …" (+2 more) |
+| 137 | entrypoint, refusals: overload and backpressure not retried (only unavailable) | recorded: "overloaded and backpressure are retried in the tick after the hint …" |
+| 138 | entrypoint, refusals: an overloaded ingest retried at once (the hint ignored) | recorded: "overloaded and backpressure are retried in the tick after the hint …" |
+| 139 | entrypoint, refusals: too_large not split (reported like invalid) | recorded: "too_large: the call is split by whole batches until each fits …" |
+| 140 | entrypoint, refusals: a split stops at the first half that fails (the batches after it not sent) | recorded: "too_large: the call is split by whole batches until each fits …" |
+| 141 | entrypoint, fallback: every rejection, refusals included, goes to Remote Write | recorded: "a write counts only once the entrypoint resolved …" (+2 more) |
+| 142 | entrypoint, fallback: none (an ingest release without the entrypoint loses the samples of a rollback window) | recorded: "during a rollback window the same samples go through Remote Write …" |
+| 143 | entrypoint, fallback: Remote Write whenever INGEST is bound (the entrypoint never used) | recorded: "each tenant's samples go out with its own tenant as the argument …" (+2 more) |
+| 144 | entrypoint, duplicates: a replayed tick names its batches by wall-clock time (not the same batch again) | recorded: "each tenant's samples …"; "a crash after the samples were written, before the tick committed …" |
+| 145 | entrypoint, health: /healthz does not count a missing sink | wiring: "/healthz: 200 with the production bindings, 503 naming a missing one …" |
+
+**Recorded-samples mutants 131–145** (part 15; `VIZ_SCRATCH=<scratch> node scripts/mutants.mjs 131
+… 145`, on a scratch copy): **15 of 15 killed on the first run**; the copy deleted, shared tree
+unchanged. The three asked for are 131 (drop the tenant argument), 133 and 134 (acknowledge
+before the RPC resolves, in the sink and in the tick) and 135/136 (retry a permanent refusal: as
+far as "forever" goes here, each flush makes at most three calls, so the tests count calls). All
+145 patterns were checked to match the source exactly once (a script that loads `MUTANTS`
+without running them). Mutants 1–130 were not re-run in this change: none of their patterns
+touches the lines it changed, and the whole suite (381) passes.
+
 
 **CPU mutants 123–130** (the refusal on the model's projection and the per-alarm warm-up budget;
 `VIZ_SCRATCH=… node scripts/mutants.mjs 123 … 130`, on a scratch copy): 8 of 8 killed on the first
@@ -1458,7 +1494,8 @@ at cents for tail-class rules and dollars for the rest.
 - **Fingerprints and group offsets** use a 64-bit hash of their own, not xxhash.
 - **Templates** are a subset; anything else is refused at save.
 - **Recorded samples** go to the sink before a rule whose text names them, else at the end
-  of the group; no staleness markers; a sink failing three times loses the batch (counted).
+  of the group; no staleness markers; a sink failing three times, or refusing once for good
+  (`unauthorized`, `invalid`, `series_limit`, part 15), loses the batch (counted).
 - **Same-tick dependencies** are found by text, not by parsing (part 1).
 - **No-data policies** `keep` and `alerting` are viz's; `ok` is Prometheus.
 - **`/api/v1/rules`**: `match[]` refused; `file` is `shard-<n>`; `evaluationTime` of a rule
@@ -1505,10 +1542,10 @@ Outside `ruler/`; not made here.
    expression over the same `ScanInput`, each failure in its own result (that is DESIGN §7's
    "a single plan with shared scans"). `check` returns `engine.selectors`. Then the ruler binds
    `{ "binding": "EVALUATOR", "service": "viz-query", "entrypoint": "QueryService" }`, which
-   `batchEvaluator()` already prefers, and the service key needs only `write` (for Remote Write)
-   until edge gets the same kind of entrypoint for recorded samples (`SINK.write(tenant, batches)`).
-2. **edge: an RPC entrypoint for recorded samples** (`SINK.write(tenant, batches)`), the same
-   way, so the ruler needs no stored key at all.
+   `batchEvaluator()` already prefers. Then the service key is used only by the recorded
+   samples' Remote Write fallback (part 15), and not at all once that fallback goes (6).
+2. ~~**edge: an RPC entrypoint for recorded samples**~~ Done: viz-ingest exports
+   `RecordedSamples` (D45), and the ruler writes through it (part 15, D52).
 3. **mcp/: a `backtest_monitor` tool** (not made: mcp/ is not this component's). `MonitorsClient`
    (`mcp/src/clients.ts`) gains `backtest(id, { fromMs, toMs, step? })` →
    `POST /api/v1/monitors/{id}/backtest` and `backtestDraft(monitor, { fromMs, toMs, step })` →
@@ -1527,6 +1564,18 @@ Outside `ruler/`; not made here.
    window is read instead of after it (part 14).
 5. **deploy/: `limits.cpu_ms` for viz-ruler** only if an operator raises `maxBacktestCpuMs` or
    `maxWarmupCpuMs` past what 30 s covers (part 14). At the defaults nothing is needed.
+6. **Retiring the Remote Write fallback** (part 15, D52; contracts/COMPATIBILITY.md §4, the
+   contract step). Once every viz-ingest release that may run (the rollback floor and later)
+   exports `RecordedSamples`: a ruler release drops the fallback (`recorded.ts`) and the `INGEST`
+   binding (`wrangler.jsonc`, `wrangler.test.jsonc`), and `/healthz` requires `SINK`. Then, with
+   (1), the ruler's service key is not needed at all; until (1), `contracts/control.ts` could
+   issue `service:viz-ruler/<shard>` with `read` only (its scopes are fixed there, so that is
+   control's change). A deploy-side check that the rollback floor's viz-ingest exports the
+   entrypoint (deploy/, `release.mjs`) would make the step checkable instead of remembered.
+7. **A trial on Cloudflare** (deploy/, a stage): deploy the previous viz-ingest (without
+   `RecordedSamples`), upload and promote this ruler, run a recording rule: whether the upload is
+   accepted, what the call returns, and that the fallback writes; then promote the current
+   ingest and see the fallback stop. Not run (this change does not deploy).
 
 ## Contract issues
 
@@ -1607,6 +1656,12 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
     format `store.warmup` v1 is unchanged (a waiting warm-up is `pending` with `attempts` unchanged);
     a backtest's answer carries `cost.memory`, `cost.cpu`, `over_budget.memory` and
     `over_budget.cpu` (`rules.v2.ts`, `openapi.json`).
+19. **Recorded samples (part 15):** `contracts/ingest.ts` is used as adopted, unchanged. Two gaps
+    the ruler works around: `RulerHealth.counters` has no field for writes that fell back to
+    Remote Write (the Worker logs a line instead; a counter would be an additive field, like
+    the budgets of item 18); and `Sink.write` reports one outcome for a whole flush,
+    so after a `too_large` split every rule of the flush shows the error, even those whose
+    batches were written (a per-batch result would need a new method, not a changed one).
 13. **Design text to update** (not done: outside `ruler/`): DESIGN §7 should say
     "one batch per group per tick, split only before a rule reading a series recorded
     earlier in the same tick", name the `RulerIndex` registry as the sweeper's source,
@@ -1622,8 +1677,20 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
   `groupTimeoutMs` (120 s): rules after the budget report `err` and keep their state. Groups of
   tens of rules are what this wiring is for.
 - **A stored bearer key per rule shard** (`meta` `service_key`), with `read` and `write` on the
-  tenant's data. It never leaves the object but in `Authorization` headers to viz-query and
-  viz-ingest; a person can disable it in the control plane, which stops evaluation.
+  tenant's data. It never leaves the object but in `Authorization` headers to viz-query, and to
+  viz-ingest only when a recorded-samples write falls back to Remote Write (part 15); a person
+  can disable it in the control plane, which stops evaluation (and that fallback).
+- **The fallback is taken on any rejection without a refusal word** (part 15, D52), not only on
+  a missing entrypoint: a platform failure of the call (an isolate reset, a dropped connection, a
+  message over the RPC size limit) also sends the flush by Remote Write with the key. Correct
+  (re-sending is harmless), but the key writes then too; the log line says when. Whether
+  Cloudflare even accepts a ruler version whose `SINK` names an entrypoint the serving viz-ingest
+  lacks is not measured: if it refuses the upload, the release stops in phase 1 before anything
+  is promoted, and the entrypoint must ship a release ahead of its caller (it already did, D45).
+- **The overload wait holds the group's tick** (at most 5 s a retry, two retries, within the
+  group's budget); the other groups of the object run meanwhile. Refused calls show in
+  viz-ingest's tail as exceptions (Trial 3, `deploy/README.md`), so refusals inflate ingest's
+  error count.
 - **KV propagation of a new key**: right after a key is issued (first use, or a rotation), the
   query service in another location may refuse it for up to a minute or more; rules report
   `unauthorized` for those ticks and keep their state.

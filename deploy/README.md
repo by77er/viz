@@ -69,9 +69,9 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
  viz-ingest      viz-query    viz-control       viz-ruler          viz-mcp
  edge, Shard,    Leaf DOs;    Tenant DO         Ruler, Notifier,   stateless; QUERY, CONTROL,
  Ledger, Flush,  SHARD and    (keys,            RulerIndex DOs;    RULER service bindings,
- 4 consumers,    LEDGER from  dashboards,       QUERY, INGEST      each call with the caller's
- hourly cron,    viz-ingest   settings)         service bindings,  own key
- RecordedSamples                                TENANT (control's
+ 4 consumers,    LEDGER from  dashboards,       QUERY, SINK and    each call with the caller's
+ hourly cron,    viz-ingest   settings)         INGEST service     own key
+ RecordedSamples                                bindings; TENANT (control's
  entrypoint                                     Tenant) by script_name;
      │ PUBLISHER (DO, by script_name): nudged by    cron */15
      │ maintenance runs, asked before deletion

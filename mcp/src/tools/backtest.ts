@@ -23,8 +23,14 @@ export const MAX_BACKTEST_STEPS = 11_000
 export const DEFAULT_INTERVAL_MS = 60_000
 /** Intervals rendered at most, firing first. The rest are counted in the answer, never dropped silently. */
 export const MAX_LISTED_INTERVALS = 1_000
-/** The smallest max_tokens this tool takes (the generic floor is 200). */
-export const MIN_BACKTEST_TOKENS = 600
+/**
+ * The smallest max_tokens this tool takes (the generic floor is 200). The header (at most about
+ * 1,000 characters), the cost footer, the cursor line and the resolution note (cut at
+ * NOTE_CHARS) always fit whole in it, with room for the start of an interval.
+ */
+export const MIN_BACKTEST_TOKENS = 800
+/** The ruler's resolution note in the text (its notes are under 600 characters; the structure keeps up to 2,000). */
+const NOTE_CHARS = 600
 
 type Kind = 'threshold' | 'anomaly' | 'slo'
 
@@ -533,7 +539,7 @@ export const backtestMonitor: ToolDef = {
       start: TIME_ARG('Start of the past range', 'now-24h'),
       end: TIME_ARG('End of the range, not in the future', 'now'),
       step: { type: ['string', 'number'], maxLength: 32, description: 'Evaluation step: a duration ("1m") or seconds. Default: the monitor\'s interval. A threshold monitor whose range needs more than 11,000 steps at its interval gets the smallest step that fits, and the result says so.' },
-      // At least 600: the summary and the cost alone take up to about 450 tokens, and both are always shown whole.
+      // At least MIN_BACKTEST_TOKENS: the summary, the note and the cost are always shown whole.
       max_tokens: { ...MAX_TOKENS_ARG(1500), minimum: MIN_BACKTEST_TOKENS },
       cursor: CURSOR_ARG,
     },
@@ -594,7 +600,7 @@ export const backtestMonitor: ToolDef = {
       items: listed.map(itemOf),
       offset: c?.o ?? 0,
       pinned: { f: range.fromMs, t: range.toMs, st: range.stepMs, ...(range.raisedFromMs !== null ? { r: range.raisedFromMs } : {}) },
-      prelude: c ? '' : `resolution: ${clean(typeof res?.note === 'string' ? res.note : '-', { max: MAX.long })}\n`,
+      prelude: c ? '' : `resolution: ${clean(typeof res?.note === 'string' ? res.note : '-', { max: NOTE_CHARS })}\n`,
       footer: ({ next }) => (next !== null ? 'Each further page runs the backtest again, at the cost below.\n' : '') + costLine(cost),
       meta: {
         kind,

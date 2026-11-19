@@ -17,6 +17,11 @@
 //   tiny          text below micro (11 px);
 //   sentence-link with a coarse pointer, a link inside running text drawn as a 44 px control (it breaks its line), or a link standing alone
 //                 whose hit area is under 44 px. A link is inside a sentence when its block holds other words; standing alone otherwise.
+//   overlap       a word whose centre, hit-tested with the page scrolled to it, belongs to another element (drawn over a neighbour, or a
+//                 neighbour drawn over it), a control's hit area over another control's words, or two words of different elements
+//                 drawn over each other (v6 review, B1: pod names drawn over the CPU figures);
+//   key-width     a key in a folded table narrower than key-min of its row (v6 review, B1: 87 px of a 368 px row);
+//   stale         dist/ not what the build makes of the tree: dist/viz.css, and the fixture page's inlined CSS (v6 review, m6).
 // And, on the compositions at 1500 px:
 //   figure        an element marked data-figure="<chart id>|<series label value>|last|min|max" that does not show what that chart's model
 //                 holds for that series, or elements marked data-same="<name>" that show different numbers;
@@ -27,6 +32,7 @@
 import { readdirSync, existsSync, writeFileSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join, resolve, relative, extname } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 const { chromium } = createRequire(import.meta.url)('playwright')
 const args = process.argv.slice(2), opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined }
@@ -36,6 +42,16 @@ const list = (dir) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWi
 const reviews = readdirSync(join(root, 'reviews')).filter((d) => /^system-v\d+$/.test(d)).sort((a, b) => +a.slice(8) - +b.slice(8))
 const latest = reviews.reverse().find((d) => existsSync(join(root, 'reviews', d, 'compositions')))
 const pages = explicit.length ? explicit.map((p) => resolve(p)) : [...list(join(root, 'dist/preview')), join(root, 'dist/reference.html'), join(root, 'dist/fixture/index.html'), ...(latest ? list(join(root, 'reviews', latest, 'compositions')) : []), ...list(join(root, 'flows/dist'))].filter(existsSync)
+// stale: dist/ is what the build makes of the tree, or every page below is measured on something else (v6 review, m6: the fixture page
+// inlined CSS older than dist/viz.css). Checked first, by content: no file date can say it.
+const stale = []
+{ const { buildCss } = await import(pathToFileURL(join(root, 'tools/css.mjs')).href), viz = buildCss(root + '/').viz, read = (p) => (existsSync(join(root, p)) ? readFileSync(join(root, p), 'utf8') : null)
+  const chart = read('project/components/Chart/preview.html')?.match(/<script>([\s\S]*?)<\/script>/)?.[1], press = read('src/press.js')
+  if (read('dist/viz.css') !== viz) stale.push('dist/viz.css is not what tools/build.mjs makes of tokens.json and src/components.css: run npm run build')
+  if (chart && !read('dist/viz-chart.js')?.endsWith(chart)) stale.push('dist/viz-chart.js is not the Chart preview\'s script: run npm run build')
+  if (press && !read('dist/viz-press.js')?.endsWith(press)) stale.push('dist/viz-press.js is not src/press.js: run npm run build')
+  const fx = read('dist/fixture/index.html'); if (fx && (!fx.includes(viz.replace(/url\("fonts\//g, 'url("../fonts/')) || (chart && !fx.includes(chart)))) stale.push('dist/fixture/index.html inlines CSS or a chart older than the tree (v6 review, m6): run npm run build')
+  const ref = read('dist/reference.html'); if (ref && !ref.includes(viz)) stale.push('dist/reference.html inlines CSS older than the tree: run npm run build') }
 const configs = quick
   ? [{ w: 320, coarse: true }, { w: 400, coarse: true }, { w: 720, zoom: 2 }, { w: 1500 }]
   : [...[320, 400, 560, 640, 800, 1024, 1280, 1500].map((w) => ({ w })), ...[320, 400, 768].map((w) => ({ w, coarse: true })), ...[640, 720, 750].map((w) => ({ w, zoom: 2 }))]
@@ -89,6 +105,54 @@ function audit({ coarse, words }) {
         if (reported >= 6) break }
     }
   }
+  // overlap (v6 review, B1): no element's box lies over another's words. Every visible word, clipped to the boxes that clip it, is
+  // hit-tested at its centre (the page scrolled so the word is in view): the element found there must be the word's own (or one that
+  // holds it, or one it holds). Found anything else, the word is drawn over that element (a name run out of its cell over the figures)
+  // or under it (a cell drawn over the name): either way it cannot be read there, and a tap there goes elsewhere. A hit area with
+  // nothing drawn (a control's ::after) that reaches over another control's words is reported too; over plain words it is not (a tap
+  // there still reaches a control, and a 44 px target may lie over a label). Overlays (open menus, dialogs, floating notices, tooltips)
+  // lie over the page by design; while a modal dialog is open only its own words are checked. And, independent of hit testing (words
+  // that take no pointer events), two words of different elements whose boxes overlap by more than a third of the smaller.
+  if (words) {
+    const modal = document.querySelector('dialog:modal') ?? [...document.querySelectorAll('.vz-scrim')].find((x) => x.getClientRects().length && cs(x).visibility === 'visible')
+    const overlay = (e) => e?.closest?.('.vz-menu, .vz-dialog, .vz-notice[data-floating], .vz-tooltip, dialog')
+    const control = (e) => e?.closest?.('a[href], button, input, select, textarea, summary, [role^="menuitem"], [role="tab"], label')
+    const clipOf = new Map(), clipBox = (el) => { if (clipOf.has(el)) return clipOf.get(el); let b
+      const p = el.parentElement && el !== document.body ? clipBox(el.parentElement) : [-Infinity, -Infinity, Infinity, Infinity]
+      if (el !== document.body && el !== document.documentElement && clips(el)) { const r = el.getBoundingClientRect(), s = cs(el), l = r.left + (parseFloat(s.borderLeftWidth) || 0), t = r.top + (parseFloat(s.borderTopWidth) || 0); b = [Math.max(p[0], l + scrollX), Math.max(p[1], t + scrollY), Math.min(p[2], l + scrollX + el.clientWidth), Math.min(p[3], t + scrollY + el.clientHeight)] } else b = p
+      clipOf.set(el, b); return b }
+    const fixedOf = (el) => { for (let x = el; x && x !== document.documentElement; x = x.parentElement) if (cs(x).position === 'fixed') return true; return false }
+    const list = [], walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), range = document.createRange(); let n
+    while ((n = walker.nextNode())) { const el = n.parentElement; if (!el || !n.textContent.trim() || hiddenText(el) || !shown(el) || (modal && !modal.contains(el))) continue
+      const c = clipBox(el), fixed = fixedOf(el), re = /\S+/g; let m
+      while ((m = re.exec(n.textContent))) { range.setStart(n, m.index); range.setEnd(n, m.index + m[0].length)
+        for (const r of range.getClientRects()) { const x0 = Math.max(r.left + scrollX, c[0]), y0 = Math.max(r.top + scrollY, c[1]), x1 = Math.min(r.right + scrollX, c[2]), y1 = Math.min(r.bottom + scrollY, c[3]); if (x1 - x0 < 2 || y1 - y0 < 2) continue
+          list.push({ el, word: m[0], x0, y0, x1, y1, fixed }) } } }
+    const found = new Set(), say = (k, msg) => { if (!found.has(k) && found.size < 8) { found.add(k); out.push(['overlap', msg]) } }
+    const vh = innerHeight, H = document.documentElement.scrollHeight, x0 = scrollX, y0 = scrollY
+    for (let top = 0; top < H; top += Math.max(100, vh - 60)) { scrollTo(x0, top)
+      for (const w of list) { if (w.done || (w.fixed && top > 0)) continue; const cx = (w.x0 + w.x1) / 2 - (w.fixed ? 0 : scrollX), cy = (w.y0 + w.y1) / 2 - (w.fixed ? 0 : scrollY); if (cy < 1 || cy > vh - 1 || cx < 0 || cx >= vw) continue
+        w.done = true; const hit = document.elementFromPoint(cx, cy), el = w.el
+        if (!hit || hit === el || el.contains(hit) || hit.contains(el) || (hit.closest('svg') && hit.closest('svg') === el.closest('svg'))) continue
+        if (overlay(hit) && overlay(hit) !== overlay(el)) continue
+        const hb = hit.getBoundingClientRect(), drawn = cx >= hb.left && cx <= hb.right && cy >= hb.top && cy <= hb.bottom
+        if (drawn) say(name(el) + '|' + name(hit), `"${w.word}" in ${name(el)} lies under or over ${name(hit)} at ${Math.round(cx)}, ${Math.round(cy + scrollY)}: one is drawn over the other's words`)
+        else if (control(el) && control(el) !== control(hit)) say(name(el) + '|' + name(hit), `"${w.word}" in ${name(control(el))} is under the hit area of ${name(control(hit))}: a tap on it goes to the other control`) } }
+    scrollTo(x0, y0)
+    // the same words, by their boxes: a grid of 64 px cells, each word against the words of other elements in its cells
+    const grid = new Map(), cell = (x, y) => Math.floor(x / 64) + ':' + Math.floor(y / 64)
+    for (const w of list) for (let gx = Math.floor(w.x0 / 64); gx <= Math.floor(w.x1 / 64); gx++) for (let gy = Math.floor(w.y0 / 64); gy <= Math.floor(w.y1 / 64); gy++) { const k = gx + ':' + gy; if (!grid.has(k)) grid.set(k, []); grid.get(k).push(w) }
+    for (const ws of grid.values()) for (let i = 0; i < ws.length; i++) for (let j = i + 1; j < ws.length; j++) { const a = ws[i], b = ws[j]; if (a.el === b.el || a.el.contains(b.el) || b.el.contains(a.el) || a.fixed !== b.fixed) continue
+      if ((overlay(a.el) || overlay(b.el)) && overlay(a.el) !== overlay(b.el)) continue
+      const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0), oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0); if (ox <= 2 || oy <= 0) continue
+      const area = ox * oy, least = Math.min((a.x1 - a.x0) * (a.y1 - a.y0), (b.x1 - b.x0) * (b.y1 - b.y0)); if (area > least / 3) say(name(a.el) + '|' + name(b.el), `"${a.word}" in ${name(a.el)} and "${b.word}" in ${name(b.el)} are drawn over each other (${Math.round(ox)} x ${Math.round(oy)} px)`) }
+  }
+  // key width (v6 review, B1): in a folded table, every key is at least key-min of its row (the whole row when it has its line to
+  // itself), so a name keeps a readable, tappable width at every width, zoom and pointer
+  for (const t of document.querySelectorAll('table[data-fold]')) { if (!shown(t) || cs(t).display !== 'block') continue
+    const min = parseFloat(cs(t).getPropertyValue('--key-min')) / 100 || 0.5
+    for (const td of t.querySelectorAll('tbody td[data-key]')) { if (!shown(td)) continue; const row = td.parentElement.getBoundingClientRect(), w = td.getBoundingClientRect().width
+      if (w < min * row.width - 1) { out.push(['key-width', `${name(td)} is ${Math.round(w)} px of a ${Math.round(row.width)} px row, under key-min (${Math.round(min * 100)}%): the name is squeezed by the kept columns or the actions`]); break } } }
   // text size
   let small = 99, where = ''; for (const e of document.body.querySelectorAll('*')) { if (hiddenText(e) || ![...e.childNodes].some((x) => x.nodeType === 3 && x.textContent.trim()) || !shown(e)) continue; const f = parseFloat(cs(e).fontSize); if (f < small) { small = f; where = name(e) } }
   if (small < 11) out.push(['tiny', `text at ${small} px: ${where}`])
@@ -152,6 +216,7 @@ for (const c of configs) {
   process.stdout.write(`\r${label(c).padEnd(16)} done, ${results.length} finding(s) so far, ${Math.round((Date.now() - started) / 1000)} s`)
 }
 await browser.close(); server.close()
+for (const msg of stale) results.unshift({ page: join(root, 'dist'), config: 'build', kind: 'stale', msg })
 const rel = (p) => relative(root, p), flows = (r) => /\/flows\//.test(r.page)
 console.log(`\n\n${pages.length} pages x ${configs.length} configurations (${configs.map(label).join('; ')})`)
 for (const group of [['System pages', (r) => !flows(r)], ['Flow screens (read only, reported)', flows]]) {

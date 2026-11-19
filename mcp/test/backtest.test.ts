@@ -218,9 +218,9 @@ describe('truncation is explicit', () => {
     let cursor: string | null = null
     let pages = 0
     do {
-      const x = await call({ monitor: CHECKOUT, start: 'now-24h', end: 'now', max_tokens: 600, ...(cursor ? { cursor } : {}) }, script, agent, moving)
+      const x = await call({ monitor: CHECKOUT, start: 'now-24h', end: 'now', max_tokens: 800, ...(cursor ? { cursor } : {}) }, script, agent, moving)
       ok(x.r)
-      expect(x.r.text.length).toBeLessThanOrEqual(2400)
+      expect(x.r.text.length).toBeLessThanOrEqual(3200)
       expect(x.calls).toHaveLength(1)
       bodies.push(x.calls[0]!.body)
       seen.push(...x.r.structured.data.items.map((i: any) => i.fingerprint))
@@ -274,6 +274,22 @@ describe('truncation is explicit', () => {
     ok(r)
     expect(r.text).toMatch(/^2 interval\(s\) in a form this server does not read are left out of the list and the counts\.$/m)
     expect(r.structured.intervals.malformed).toBe(2)
+  })
+
+  it('at the smallest budget the worst-case page still fits whole: every header line, a long note, the cursor and the cost', async () => {
+    const lots: FakeInterval[] = Array.from({ length: 1200 }, (_, i) => ({ fingerprint: `w${i}`, labels: { alertname: 'x', pod: 'q'.repeat(300) }, state: i < 1100 ? 'firing' : 'pending', startMs: NOW_MS - 29 * 86_400_000 + i * 999_983, endMs: NOW_MS - 29 * 86_400_000 + i * 999_983 + 123_457, open: false, annotations: { summary: 'S'.repeat(3000) } }))
+    const { r } = await call({ monitor: CHECKOUT, start: 'now-30d', max_tokens: 800 }, (b) => {
+      const body = fakeBacktest(b, lots)
+      ;(body.intervals as unknown[]).push(null)
+      ;(body.resolution as { note: string }).note = 'N'.repeat(5000)
+      return { status: 200, body }
+    })
+    ok(r)
+    expect(r.text.length).toBeLessThanOrEqual(3200)
+    expect(r.structured.truncated).toBe(true)
+    for (const line of [/^The step was raised/m, /^Would have fired 1,100/m, /^1 interval\(s\) in a form/m, /^Intervals: 1,200, firing first/m, /^resolution: N+…\[\+\d+ chars\]$/m, /^Truncated: \d+ of 1000 items not shown/m, /^Cost \(.*\.\n$/m]) expect(r.text).toMatch(line)
+    expect(dataRegions(r.text)).toHaveLength(1)
+    expect(r.text).toMatch(/\n```\n(Truncated|Each|Cost)/) // the block is closed before the footer
   })
 })
 
@@ -367,7 +383,7 @@ describe('refusals pass through truthfully, once', () => {
       [{ monitor: CHECKOUT, end: '2026-11-19T00:00:00Z' }, /Argument \/end is in the future/],
       [{ monitor: CHECKOUT, start: 'now', end: 'now-1h' }, /Argument \/end must be after "start"/],
       [{ monitor: CHECKOUT, step: '5x' }, /Argument \/step is not a step/],
-      [{ monitor: CHECKOUT, max_tokens: 300 }, /\/max_tokens must be at least 600/],
+      [{ monitor: CHECKOUT, max_tokens: 700 }, /\/max_tokens must be at least 800/],
     ]
     for (const [args, re] of cases) {
       const x = await call(args)
