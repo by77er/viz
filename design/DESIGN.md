@@ -126,10 +126,12 @@ Draft 2 hashed by series id, which sent every request to every shard and made ev
 tail-read every shard. Shard count per tenant is bounded to tens; beyond that a tenant is
 split across cells.
 
-Measured on Cloudflare (`spikes/s3-ingest-throughput/`): one shard saturates at roughly
-230–290 requests per second whatever the batch size, and took 133,000 samples per second
-when requests carried 2,000 series. Plan for 200 requests per second per shard, and expect
-senders to batch.
+Measured on Cloudflare (`spikes/s3-ingest-throughput/`): one shard as first built
+saturated at roughly 230–340 requests per second whatever the batch size, and took 133,000
+samples per second when requests carried 2,000 series. With early refusal and group commit
+(D37) the same shard acknowledged 864–1,056 requests per second at 64 clients, with a 99th
+percentile under 150 ms (2026-11-19, three 10-second runs). Plan for 500 requests per second
+per shard, and expect senders to batch.
 
 The shard map has an **epoch**, owned by the ledger. Every write carries the epoch it was
 routed with; a shard rejects a stale epoch and `edge` refetches. A map change takes effect
@@ -149,7 +151,11 @@ until then. No key is ever accepted by two shards.
    identical batch twice, and every reader and writer de-duplicates on the row key, so a
    retry that was split differently and stored again is invisible in results and removed
    at flush (`contracts/BATCH.md`).
-4. At its bounds the shard answers 429 with `Retry-After`. It never acknowledges and drops.
+4. At its bounds the shard refuses with `Retry-After` and never acknowledges and drops: a
+   full buffer (the tenant's or the shard's) is 429; too much in flight is refused before
+   anything is read or written and answered 503, which every sender retries, and `edge`
+   then refuses that tenant's requests before decoding them until the wait has passed
+   (D37).
 5. Timestamps outside the **accept window** (per signal, configurable; for example one hour
    back and five minutes ahead for metrics) are rejected with a reason.
 
@@ -187,16 +193,26 @@ wakes no object and sends nothing.
 Every step is idempotent and keyed by a **stream**: `(shard, tenant, incarnation)`.
 Sequence numbers, seals, units, watermarks, discard marks and fingerprints are all per
 stream, so one tenant's ledger being slow never blocks another tenant in the same shard
-and nothing crosses tenants. A shard that loses its storage registers a new incarnation with
-the ledger before it accepts writes; the ledger records the boundary and raises an alert,
-because rows between the old watermark and the loss are gone and that must be visible.
+and nothing crosses tenants. A shard that loses its storage starts a new incarnation; the
+ledger records the boundary when flush registers it, because rows between the old
+watermark and the loss are gone and that must be visible. (As built, registration happens
+at the new incarnation's first flush, not before it accepts writes, and no alert is raised:
+until then a query that names the old incarnation is refused, and a shard that gets no new
+writes is refused indefinitely. Registering before the first write closes that; it is not
+built. `ledger/README.md`, "Known risks".)
 
-**Ledger durability.** The ledger commits its transaction and appends the change to its R2
-log through an outbox. (As built, it waits for that R2 write before answering, which a
-measurement on Cloudflare showed limits it to about one unit per second; the write is
-moving to batched background segments.) It tells a shard to discard only what has been both committed and
-logged. A rebuilt ledger starts a new ledger incarnation, so versions are never reused, and
-periodic checkpoints bound rebuild time. The orphan sweeper deletes an object only if the
+**Ledger durability** (D36, `contracts/LEDGER-LOG.md`). The ledger commits each change to
+SQLite together with an outbox row and answers; it does not wait for R2. Its alarm writes
+the pending changes as one immutable segment per drain, about 0.2 s after the first unlogged
+commit, and only then deletes those rows and advances each stream's *logged* watermark. A
+shard is told to discard only what is logged, so the loss of the ledger's storage can cost
+the changes of one drain cycle, never a row a shard has discarded. A rebuilt ledger starts a
+new ledger incarnation, whose base segment is in R2 before it commits anything, so an
+incarnation number is never used for two histories and versions are never reused. A
+checkpoint every 256 segments bounds a rebuild, which runs outside
+`blockConcurrencyWhile`: requests meanwhile wait at most 2 s and are refused as retryable.
+Measured on Cloudflare: 234–422 units per second with eight writers, and a rebuild of
+5,008 changes in 5.4 s (`spikes/s4-ledger-scale/`). The orphan sweeper deletes an object only if the
 ledger neither lists nor tombstones it and it can never be listed: a flush file once its
 stream's *logged* watermark covers its sequence range, or once a newer incarnation of the
 stream has a logged unit (so its registration is logged); a compaction output once one of
@@ -466,7 +482,7 @@ Hypotheses until the read-slice spike measures them.
 
 | Path | Target |
 |---|---|
-| Ingest acknowledgement | p50 < 80 ms, p99 < 500 ms. Measured on Cloudflare: 60 ms and 113–340 ms below shard saturation |
+| Ingest acknowledgement | p50 < 80 ms, p99 < 500 ms. Measured on Cloudflare: 60 ms and 113–340 ms below shard saturation as first built; with group commit and early refusal, 30–71 ms and 86–276 ms from 1 to 200 clients per shard (2026-11-19) |
 | Time to queryable | p99 < 10 s |
 | Dashboard refresh, warm partials | p50 < 300 ms |
 | First load, 24 h on compacted days | p95 < 1.5 s |
@@ -507,7 +523,9 @@ every format that crosses a release boundary carries a version; readers deploy b
 writers; changes expand, then contract; a release with a breaking migration is
 forward-only. `design/UPGRADES.md` has the inventory of formats, the verified platform
 facts, the rollback rules and what each component still has to change. As built, control,
-the ruler and the publisher follow it; the write path does not yet.
+the ruler, the publisher, and on the write path the ledger, the shard and edge follow it,
+as do the flush and maintenance messages; `UPGRADES.md` §7 lists what the others still
+have to change.
 
 ## 12. Launch scope
 
@@ -527,7 +545,8 @@ the ruler and the publisher follow it; the write path does not yet.
 | Per-minute wakes bill as continuous duration | Measured not to: a wake bills 20–40 ms (`spikes/s0-do-billing/`, first hour; 24-hour read pending) |
 | First-load query latency on flat rows | Read-slice spike before any PromQL breadth; chunk-blob rows are the fallback |
 | PromQL compliance is a long tail | Port from the reference with the upstream corpus; publish the supported subset |
-| **The ledger admits about one flush unit per second** (measured, `spikes/s4-ledger-scale/`): each change waits on its own R2 write, and an R2 write takes about 0.4 s | Not yet fixed. Answer after the SQLite commit; write the change log in batched segments in the background; shards keep discarding only up to the logged watermark |
+| ~~The ledger admits about one flush unit per second~~ (measured, `spikes/s4-ledger-scale/`) | **Fixed** (D36): it answers after the SQLite commit and logs in batched background segments; 234–422 units per second with eight writers, measured on Cloudflare 2026-11-19 |
+| A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6) | Not fixed. Register a new incarnation with the ledger before the shard accepts its first write (spec F1), across shard, ledger, flush and query |
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |
