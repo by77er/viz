@@ -146,6 +146,16 @@ describe('detection against the SRE Workbook (99.9% over 30 days, the four defau
     expect(fires(7)).toBe(true)
   })
 
+  it('a series first evaluated at query time 0 keeps that bucket at the next evaluation (never-evaluated is its own marker, not time 0)', () => {
+    const rule = parsed()
+    const rt = newSloRt(rule)
+    expect(evalSlo(rule, rt, parts(10, 1), 0, MIN).ok).toBe(true)
+    expect(evalSlo(rule, rt, parts(10, 0), MIN, MIN).ok).toBe(true)
+    const s = [...rt.series.values()][0]!
+    expect(s.seenAt).toBe(MIN)
+    expect(s.fine.windowSums(1, [5])[0]).toMatchObject({ bad: 1, tot: 20 })
+  })
+
   it('a window counts only once min_coverage of its buckets have data: a new rule without history does not page on its first bad minute', () => {
     const rule = parsed()
     const rt = newSloRt(rule)
@@ -505,6 +515,9 @@ describe('validation', () => {
     expect(await errs({ objective: 0.99, sli: { good: SLI.bad, bad: SLI.bad, total: SLI.total } })).toEqual([['groups[0].rules[0].slo.sli', 'give exactly good and total (found good, bad, total)']])
     expect(await errs({ objective: 0.99, sli: SLI }, { expr: 'up' })).toEqual([['groups[0].rules[0].expr', 'an SLO rule has no expr: the SLI in slo.sli is its expression']])
     expect(await errs({ objective: 0.99, sli: SLI }, { labels: { severity: 'page' } })).toEqual([['groups[0].rules[0].labels.severity', 'an SLO rule sets severity itself: page or ticket, from the burn-rate alert that fires']])
+    // From the group's labels: reported where it was written.
+    const fromGroup = await stub.checkGroups(tenant, { groups: [{ name: 'g', interval: '1m', labels: { severity: 'page' }, rules: [{ alert: 'S', slo: { objective: 0.99, sli: SLI } }] }] })
+    expect(fromGroup.status === 'invalid' && fromGroup.errors.map((e) => [e.path, e.message])).toEqual([['groups[0].labels.severity', 'an SLO rule sets severity itself: page or ticket, from the burn-rate alert that fires']])
     expect(await errs({ objective: 0.99, sli: SLI, alerts: [{ severity: 'page', long_window: '5m', short_window: '1h', burn_rate: 2 }] })).toEqual([['groups[0].rules[0].slo.alerts[0].short_window', 'short_window must be shorter than long_window']])
     expect(await errs({ objective: 0.99, sli: SLI, max_series: 500 })).toEqual([['groups[0].rules[0].slo.max_series', 'max_series 500 is above this ruler\'s limit of 100']])
     const ok90 = await save({ objective: 0.9, sli: SLI })

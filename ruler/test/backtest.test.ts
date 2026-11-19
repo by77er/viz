@@ -178,7 +178,8 @@ describe('one computation: intervals to shade, and the numbers quoted beside the
     // Data stops for minutes [30, 50): the comparison is empty the whole time (healthy), the bare query has a hole.
     w.range = (q, s, e, st) => (q.includes('>') ? matrix({}, s, e, st) : matrix({ cart: (ts) => ((ts - T) / MIN >= 30 && (ts - T) / MIN < 50 ? null : 0.001) }, s, e, st))
     const bt = good(await stub.backtest(tenant, { ...rule, no_data: 'alerting', no_data_for: '10m', no_data_expr: 'ratio' }, T, T + 90 * MIN, MIN, MIN))
-    expect(new Set(w.rangeCalls.map((c) => c[0]))).toEqual(new Set(['(ratio) > 0.01', 'ratio']))
+    // Both reads' series counted first (an alerting rule's bound, 1,000 series, would cut them into minutes), then read in one window each.
+    expect(w.rangeCalls.map((c) => c[0])).toEqual(['count((ratio) > 0.01)', 'count(ratio)', '(ratio) > 0.01', 'ratio'])
     expect(expectWindows(w.rangeCalls, 'ratio', T, T + 90 * MIN, MIN)).toEqual(expectWindows(w.rangeCalls, '(ratio) > 0.01', T, T + 90 * MIN, MIN))
     expect(bt.intervals.map((i) => [i.state, i.noData, (i.startMs - T) / MIN, (i.endMs - T) / MIN])).toEqual([['pending', true, 30, 40], ['firing', true, 40, 50]])
   })

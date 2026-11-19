@@ -1046,7 +1046,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       if (!run.ok) {
         // Refused before anything was evaluated (budget, memory, the engine's plan, the CPU model), or
         // stopped in a window (the rule's own refusal: a series cap, a state limit): nothing is kept.
-        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, message: `${run.refused}; ${run.cpu ? 'the rule started cold' : 'nothing was fetched and the rule started cold'}`, finishedAt: this.now() })
+        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, message: `${run.refused}; ${run.cpu ? 'the rule started cold' : run.countsRead ? 'only the series counts were read and the rule started cold' : 'nothing was fetched and the rule started cold'}`, finishedAt: this.now() })
         else finish({ ...base, status: 'refused', attempts: job.attempts + 1, message: `${run.failed}; nothing was kept and the rule started cold`, finishedAt: this.now() })
         continue
       }
@@ -1669,7 +1669,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         const { modelledMs, budgetMs } = run.cpu
         return { status: 'over_budget', message: `${run.refused}. Shorten the range, lengthen the step (alerting rules only), or narrow the expression; an operator can raise maxBacktestCpuMs up to the Durable Object's CPU limit (README, "CPU").`, plan: run.plan, budget, memory, cpu: { modelledMs, budgetMs } }
       }
-      return { status: 'over_budget', message: `${run.refused}. Nothing was fetched: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, plan: run.plan, budget, memory, cpu: null }
+      return { status: 'over_budget', message: `${run.refused}. ${run.countsRead ? 'Only the series counts were read' : 'Nothing was fetched'}: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, plan: run.plan, budget, memory, cpu: null }
     }
     const cost = { ...run.plan, budget, memory: { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes, windowSteps: run.sizing.windowSteps, queries: run.sizing.queries }, cpu: run.cpu }
     if (parsedRule.kind === 'alert') {

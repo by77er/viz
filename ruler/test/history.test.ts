@@ -20,7 +20,7 @@ import { DETECTORS } from '../../anomaly/src/index.ts'
 import type { PromMatrix } from '../../contracts/engine'
 import type { Alert, BacktestInterval, BacktestResponse, HistoryPlan, RuleStatus } from '../contracts-proposal/rules.v2'
 import { readStateRows } from '../src/anomaly'
-import { CPU } from '../src/history'
+import { CPU, MAX_WINDOW_PLANS } from '../src/history'
 import { apiKey, call } from './api'
 import { Crash, T0, world } from './harness'
 import { expectWindows, MIN, ok, setup, vec } from './helpers'
@@ -209,17 +209,23 @@ describe('warming a new rule from history', () => {
     expect(r.log.filter((x) => x.startsWith('range'))).toHaveLength(2)
   })
 
-  it('an SLO rule: both reads are planned before either is fetched; the rings are written as rows in one transaction; the first evaluation sees every window and the whole compliance window', async () => {
+  it('an SLO rule: both reads, and the series count of the one the rule\'s bound would cut into windows, are planned before anything is fetched; then each read in one window (two series, not the 20 the rule allows); the rings are written as rows in one transaction; the first evaluation sees every window and the whole compliance window', async () => {
     const r = await rig([sloEntry()], undefined, { group: 'slos/1m' })
     const t = await r.tick()
     const end = t - MIN
     const plans = r.log.filter((x) => x.startsWith('plan'))
-    // Planned whole first; then fetched window by window (sized to the warm-up's memory budget).
-    expect(r.log.slice(0, 2)).toEqual(plans)
+    // Each read whole, and the fine read's count (at max_series 10, 20 series a step would cut its 3 days
+    // into windows of under a day; the coarse read fits whole), planned before anything is fetched. The
+    // windows are then those whole reads, planned already: no plan after the first fetch.
+    expect(r.log.slice(0, 3)).toEqual(plans)
+    expect(plans[1]).toBe(plans[2])
+    const ranges = r.w.rangeCalls.map((c) => c[0])
+    expect(ranges.map((q) => q.startsWith('count('))).toEqual([true, false, false])
     // The coarse read first: it holds the earlier time.
     const [coarse, fine] = plans.map((x) => x.split(' ').slice(1).map(Number))
-    expectWindows(r.w.rangeCalls, r.w.rangeCalls[r.w.rangeCalls.length - 1]![0], fine![0]!, fine![1]!, MIN)
-    expectWindows(r.w.rangeCalls, r.w.rangeCalls[0]![0], coarse![0]!, coarse![1]!, HOUR)
+    expect(expectWindows(r.w.rangeCalls, ranges[2]!, fine![0]!, fine![1]!, MIN)).toHaveLength(1)
+    expect(expectWindows(r.w.rangeCalls, ranges[1]!, coarse![0]!, coarse![1]!, HOUR)).toHaveLength(1)
+    expect(ranges[0]).toBe(`count(${ranges[2]})`)
     // The fine read ends one interval before this tick and holds at least the 3-day window.
     expect([fine![1], fine![2]]).toEqual([end, MIN])
     expect((fine![1]! - fine![0]!) / MIN + 1).toBeGreaterThanOrEqual(4320)
@@ -227,7 +233,7 @@ describe('warming a new rule from history', () => {
     expect(coarse![2]).toBe(HOUR)
     expect(fine![0]! - coarse![1]!).toBe(MIN)
     const s = await r.rule('CheckoutSLO')
-    expect(s.slo).toMatchObject({ status: 'ok', warming: 0, budgetRemaining: 1, budgetCoveredMs: 30 * DAY, warmup: { status: 'done', plan: { queries: 2 } } })
+    expect(s.slo).toMatchObject({ status: 'ok', warming: 0, budgetRemaining: 1, budgetCoveredMs: 30 * DAY, warmup: { status: 'done', plan: { scanSamples: 3000, queries: 3 } } })
     const rows = await runInDurableObject(r.stub, (_i, st) => st.storage.sql.exec('SELECT part, COUNT(*) AS n FROM slo_state WHERE tenant = ? GROUP BY part ORDER BY part', r.tenant).toArray())
     expect(rows.map((x) => x.part)).toEqual(['coarse', 'fine', 'head'])
     expect(rows.find((x) => x.part === 'fine')!.n).toBeGreaterThanOrEqual(72)
@@ -315,7 +321,8 @@ describe('backtests: the rule\'s own evaluation over history, in time order', ()
     const strip = (xs: BacktestInterval[]) => xs.map(({ fingerprint, state, startMs, endMs, open, annotations, labels }) => ({ fingerprint, state, startMs, endMs, open, annotations, labels }))
     expect(strip(bt.intervals)).toEqual(strip(live))
     expect(bt.intervals.find((x) => x.labels.severity === 'page')!.annotations!.slo).toMatch(/^error budget burning at .*\(page threshold (14\.4|6)×\).*% of the budget is left over the last 30 days/)
-    expect(bt.cost!.queries).toBe(2)
+    // The fine read counted (the bound, 20 series, would cut it), then each read in one window.
+    expect(bt.cost!.queries).toBe(3)
   })
 
   it('every backtest is planned first and refused whole past the budget, for every kind; a step other than the interval is refused for detectors', async () => {
@@ -386,7 +393,9 @@ describe('streaming: history is read and evaluated in windows sized to a memory 
       const m = Math.round(t / MIN) % 1000
       return (s === 'b' && (m % 41 === 7 || m % 41 === 8)) || (s === 'c' && m % 53 === 30) ? 400 : noise(t)
     }
-    const rule = ewma({ for: '1m', annotations: { summary: '{{ $labels.service }} latency {{ $value }}' } })
+    const base = ewma({ for: '1m', annotations: { summary: '{{ $labels.service }} latency {{ $value }}' } })
+    // max_series 10: the smallest budget the rule allows holds 10 points a window.
+    const rule = { ...base, anomaly: { ...base.anomaly, max_series: 10 } }
     const r = await rig([rule], values)
     const ticks: { ts: number; alerts: Alert[] }[] = []
     for (let i = 0; i < 60; i++) ticks.push({ ts: await r.tick(), alerts: (await r.rule()).alerts })
@@ -395,14 +404,21 @@ describe('streaming: history is read and evaluated in windows sized to a memory 
     const strip = (xs: BacktestInterval[]) => xs.map(({ fingerprint, state, startMs, endMs, open, annotations }) => ({ fingerprint, state, startMs, endMs, open, annotations }))
     const whole = good(await r.stub.backtest(r.tenant, rule, from, to, MIN))
     expect(whole.cost!.memory!.windowSteps).toEqual([80])
-    // A budget a little over the fixed bytes: windows of a few steps.
-    ok((await small(r.stub as never, r.tenant, 7_200_000)) as never)
+    // The smallest budget the rule allows (its fixed bytes and one step at its bound, as the refusal of a smaller one says): windows of 10 points, 3 steps of 3 series.
+    const least = async (st: typeof r.stub, tenant: string, rl: unknown) => {
+      ok((await small(st as never, tenant, 1 << 20)) as never)
+      const no = await st.backtest(tenant, rl, from, to, MIN)
+      if (no.status !== 'over_budget') throw new Error(JSON.stringify(no))
+      return no.memory!.peakBytes
+    }
+    const need = await least(r.stub, r.tenant, rule)
+    ok((await small(r.stub as never, r.tenant, need)) as never)
     const before = r.w.rangeCalls.length
     const windowed = good(await r.stub.backtest(r.tenant, rule, from, to, MIN))
     const ws = expectWindows(r.w.rangeCalls.slice(before), LAT, from - 20 * MIN, to, MIN)
-    expect(ws.length, 'many windows').toBeGreaterThan(5)
-    expect(windowed.cost!.memory!.windowSteps[0]).toBe(ws[0]![1] / MIN - ws[0]![0] / MIN + 1)
-    expect(windowed.cost!.memory!.peakBytes).toBeLessThanOrEqual(7_200_000)
+    expect(ws.length, 'many windows').toBeGreaterThan(20)
+    expect(windowed.cost!.memory!.windowSteps[0]).toBe(3)
+    expect(windowed.cost!.memory!.peakBytes).toBeLessThanOrEqual(need)
     expect(strip(windowed.intervals)).toEqual(strip(whole.intervals))
     expect(strip(windowed.intervals)).toEqual(strip(intervalsOf(ticks, to)))
     expect(windowed.warmup).toEqual(whole.warmup)
@@ -418,7 +434,14 @@ describe('streaming: history is read and evaluated in windows sized to a memory 
     const sFrom = sticks[0]!.ts
     const sTo = sticks.at(-1)!.ts
     const sWhole = good(await s.stub.backtest(s.tenant, sloEntry(), sFrom, sTo, MIN))
-    ok((await small(s.stub as never, s.tenant, 7_400_000)) as never)
+    // 200 points a window: 100 steps of the SLO's two series.
+    const sNeed = (await (async () => {
+      ok((await small(s.stub as never, s.tenant, 1 << 20)) as never)
+      const no = await s.stub.backtest(s.tenant, sloEntry(), sFrom, sTo, MIN)
+      if (no.status !== 'over_budget') throw new Error(JSON.stringify(no))
+      return no.memory!.peakBytes
+    })())
+    ok((await small(s.stub as never, s.tenant, sNeed + 180 * 768)) as never)
     const sBefore = s.w.rangeCalls.length
     const sWindowed = good(await s.stub.backtest(s.tenant, sloEntry(), sFrom, sTo, MIN))
     const fineCalls = s.w.rangeCalls.slice(sBefore).filter((c) => c[3] === MIN)
@@ -469,77 +492,76 @@ describe('streaming: history is read and evaluated in windows sized to a memory 
     const T = T0 - DAY
     const res = await r.stub.backtest(r.tenant, ewma(), T, T + HOUR, MIN)
     expect(res).toMatchObject({ status: 'failed', error: expect.stringMatching(/^the engine returned \d+ points for a window the memory model sized for \d+ \(100 series a step\): more series than the rule allows$/) })
+    // A read long enough to be counted: the count says so, and no window is fetched.
+    const before = r.w.rangeCalls.length
+    const counted = await r.stub.backtest(r.tenant, ewma(), T - DAY, T, MIN)
+    expect(counted).toMatchObject({ status: 'failed', error: expect.stringMatching(/^the read returns 200 series at .*, where the rule allows at most 100 a step: more series than the rule allows$/) })
+    expect(r.w.rangeCalls.slice(before).map((c) => c[0])).toEqual([`count(${LAT})`])
+  })
+
+  it('a window holding more points than its series count said (the data changed between the count and the read) is not evaluated', async () => {
+    const r = await rig([ewma()])
+    await r.tick()
+    // The count sees one series a step; the windows return three.
+    r.w.count = () => 1
+    const T = T0 - 2 * DAY
+    const res = await r.stub.backtest(r.tenant, ewma(), T, T + DAY, MIN)
+    expect(res).toMatchObject({ status: 'failed', error: expect.stringMatching(/^the engine returned 4383 points for a window its series count put at 1461: the data changed between the count and the read$/) })
   })
 })
 
 describe('CPU: a run the model prices over its budget is refused whole, never cut off by the platform', () => {
   const limits = (r: { stub: { configure: (t: string, p: never) => Promise<unknown> }; tenant: string }, l: Record<string, number>) => r.stub.configure(r.tenant, { limits: l } as never)
 
-  it('a backtest is refused after reading only its first window, with the projection of the whole run (which, allowed, is what the run then costs), through RPC and HTTP', async () => {
+  it('a backtest whose series counts price it over its CPU budget is refused before any window is read, with the projection of the whole run (which, allowed, is what the run then costs), through RPC and HTTP', async () => {
     const r = await rig([ewma()])
-    const T = T0 - DAY
-    ok((await limits(r as never, { maxBacktestMemoryBytes: 7_200_000, maxBacktestCpuMs: 20 })) as never)
-    const res = await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)
+    const T = T0 - 2 * DAY
+    ok((await limits(r as never, { maxBacktestCpuMs: 20 })) as never)
+    const res = await r.stub.backtest(r.tenant, ewma(), T, T + DAY, MIN)
     if (res.status !== 'over_budget') throw new Error(JSON.stringify(res))
-    expect(res.message).toMatch(/^over the CPU budget: the first window shows 3 series; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 20 ms\. Nothing was evaluated\. Shorten the range, lengthen the step \(alerting rules only\), or narrow the expression; an operator can raise maxBacktestCpuMs/)
+    // 1,441 steps and the detector's 20 before them, three series (max_series 100 would cut a day into windows of about 330 steps): counted, then one window.
+    expect(res.message).toMatch(/^over the CPU budget: its 1 window holds 4383 points by the series counts; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 20 ms\. Only the series counts were read\. Shorten the range, lengthen the step \(alerting rules only\), or narrow the expression; an operator can raise maxBacktestCpuMs/)
     expect(res.cpu!.budgetMs).toBe(20)
     expect(res.cpu!.modelledMs).toBeGreaterThan(20)
-    expect(res.plan).toMatchObject({ queries: 1 })
-    // Planned whole, then one window read: the one that counts the series.
-    expect(r.w.planCalls).toHaveLength(1)
-    expect(r.w.rangeCalls).toHaveLength(1)
-    expect(r.w.rangeCalls[0]![2]).toBeLessThan(T + 6 * HOUR)
+    expect(r.w.rangeCalls.map((c) => c[0])).toEqual([`count(${LAT})`])
+    // The read and its count planned; the window is the whole read, planned already.
+    expect(r.w.planCalls.map((c) => c[0])).toEqual([LAT, `count(${LAT})`])
 
-    // Allowed, with the same series at every step, the run's account is the projection exactly.
+    // Allowed, the run's account is the projection exactly: the counts gave its points.
     ok((await limits(r as never, { maxBacktestCpuMs: 600_000 })) as never)
-    const allowed = good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN))
+    const allowed = good(await r.stub.backtest(r.tenant, ewma(), T, T + DAY, MIN))
     expect(allowed.cost!.cpu).toEqual({ modelledMs: res.cpu!.modelledMs, budgetMs: 600_000 })
-    expect(r.w.rangeCalls.length, 'many windows').toBeGreaterThan(5)
 
     ok((await limits(r as never, { maxBacktestCpuMs: 20 })) as never)
     const key = await apiKey(r.tenant)
-    const http = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { rule: ewma(), fromMs: T, toMs: T + 6 * HOUR, step: '1m' })
+    const http = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { rule: ewma(), fromMs: T, toMs: T + DAY, step: '1m' })
     expect([http.status, http.json.error.code, http.json.cpu]).toEqual([422, 'over_budget', { modelledMs: res.cpu!.modelledMs, budgetMs: 20 }])
   })
 
-  it('a run whose series grow is stopped before the first window that shows them, nothing kept; the series it had seen fitted the budget', async () => {
+  it('a read not counted (one window holds it at the rule\'s bound) is priced at that bound, before anything is fetched; an allowed run costs at most its projection; a tighter max_series is the remedy', async () => {
     const r = await rig([ewma()])
-    const T = T0 - DAY
-    const grow = T + 3 * HOUR
-    // The run with three series throughout: its cost, plus a little, is the budget.
-    ok((await limits(r as never, { maxBacktestMemoryBytes: 7_200_000 })) as never)
-    const steady = good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)).cost!.cpu!.modelledMs
-    const budget = steady + 10
-    const base = r.w.range!
-    r.w.range = (q, s0, e, st) => {
-      const m = base(q, s0, e, st) as PromMatrix
-      // From `grow` on, 97 more series (100 in all, the rule's max_series).
-      const later = m.result[0]!.values.filter(([sec]) => sec * 1000 >= grow)
-      if (later.length === 0) return m
-      return { resultType: 'matrix', result: [...m.result, ...Array.from({ length: 97 }, (_x, k) => ({ metric: { service: `x${k}` }, values: later }))] }
-    }
-    ok((await limits(r as never, { maxBacktestCpuMs: budget })) as never)
-    const before = r.w.rangeCalls.length
-    const res = await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)
+    const T = T0 - 2 * DAY
+    ok((await limits(r as never, { maxBacktestCpuMs: 100 })) as never)
+    const res = await r.stub.backtest(r.tenant, ewma(), T, T + 5 * HOUR, MIN)
     if (res.status !== 'over_budget') throw new Error(JSON.stringify(res))
-    const [, fed, total] = new RegExp(`^over the CPU budget: after (\\d+) of (\\d+) windows the run shows 100 series; the whole run would take about \\d+ ms of CPU \\(modelled\\), the budget is ${budget} ms\\. Stopped before evaluating more; nothing is kept\\.`).exec(res.message) ?? []
-    expect(Number(fed)).toBe(r.w.rangeCalls.length - before - 1)
-    expect(Number(total)).toBeGreaterThan(Number(fed) + 1)
-    // The window that showed them is the first holding a step at or after `grow`.
-    expect(r.w.rangeCalls.at(-2)![2]).toBeLessThan(grow)
-    expect(r.w.rangeCalls.at(-1)![2]).toBeGreaterThanOrEqual(grow)
-    // The same range with the original three series still fits.
-    r.w.range = base
-    expect(good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)).cost!.cpu).toEqual({ modelledMs: steady, budgetMs: budget })
+    // 321 steps (300 and the detector's 20) of 100 series (max_series) at 10 µs a point: about 0.3 s, though the data has three series.
+    expect(res.message).toMatch(/^over the CPU budget: its 1 window holds 32100 points at the rule's bound; the whole run would take about 327 ms of CPU \(modelled\), the budget is 100 ms\. Nothing was fetched\. Shorten/)
+    expect(r.w.rangeCalls).toEqual([])
+    ok((await limits(r as never, { maxBacktestCpuMs: 1000 })) as never)
+    const allowed = good(await r.stub.backtest(r.tenant, ewma(), T, T + 5 * HOUR, MIN))
+    expect(allowed.cost!.cpu!.modelledMs).toBeLessThan(res.cpu!.modelledMs / 10)
+    ok((await limits(r as never, { maxBacktestCpuMs: 100 })) as never)
+    const narrow = { ...ewma(), anomaly: { ...ewma().anomaly, max_series: 3 } }
+    expect(good(await r.stub.backtest(r.tenant, narrow, T, T + 5 * HOUR, MIN)).cost!.cpu!.modelledMs).toBe(allowed.cost!.cpu!.modelledMs)
   })
 
-  it('a warm-up priced over maxWarmupCpuMs is refused after its first window, even with a budget below the model\'s base (it does not wait for a bigger alarm forever); the rule starts cold at once and says why', async () => {
+  it('a warm-up priced over maxWarmupCpuMs is refused before any window is read (only the series counts), even with a budget below the model\'s base (it does not wait for a bigger alarm forever); the rule starts cold at once and says why', async () => {
     const s = await rig([sloEntry()], undefined, { group: 'slos/1m' })
     ok((await limits(s as never, { maxWarmupCpuMs: 3 })) as never)
     await s.tick()
     expect(s.w.rangeCalls).toHaveLength(1)
     const st = await s.rule('CheckoutSLO')
-    expect(st.slo!.warmup).toMatchObject({ status: 'refused', attempts: 1, message: expect.stringMatching(/^over the CPU budget: the first window shows 2 series; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 3 ms\. Nothing was evaluated; the rule started cold$/) })
+    expect(st.slo!.warmup).toMatchObject({ status: 'refused', attempts: 1, message: expect.stringMatching(/^over the CPU budget: its 2 windows hold \d+ points by the series counts, or at the rule's bound where not counted; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 3 ms\. Only the series counts were read; the rule started cold$/) })
     expect(st.slo!.warmup!.finishedAt).not.toBeNull()
     // Cold, not waiting: evaluated at this tick.
     expect(s.log.filter((x) => x.startsWith('query'))).toHaveLength(1)
@@ -551,7 +573,10 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
     const res = good(await s.stub.backtest(s.tenant, sloEntry(), T, T + 6 * HOUR, MIN))
     const evaluated = 2 * (6 * 60 + 1)
     // Two series at every step: the model's account is exact, each part at its own price, plus every window read.
-    const us = CPU.base + res.warmup!.points * (CPU.parse + CPU.sloWarm) + evaluated * (CPU.parse + CPU.sloEvaluated) + s.w.rangeCalls.length * CPU.perWindow
+    // The series counts' points are parsed too: one a step of each counted read.
+    const counts = s.w.rangeCalls.filter((c) => c[0].startsWith('count(')).reduce((n, c) => n + (c[2] - c[1]) / c[3] + 1, 0)
+    expect(counts).toBeGreaterThan(0)
+    const us = CPU.base + counts * CPU.parse + res.warmup!.points * (CPU.parse + CPU.sloWarm) + evaluated * (CPU.parse + CPU.sloEvaluated) + s.w.rangeCalls.length * CPU.perWindow
     expect(Math.abs(res.cost!.cpu!.modelledMs - us / 1000)).toBeLessThanOrEqual(1)
     // At the warm-up's price throughout it would be this much less: more than the rounding.
     expect(evaluated * (CPU.sloEvaluated - CPU.sloWarm)).toBeGreaterThan(2000)
@@ -577,7 +602,7 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
     expect((await r.rule('A1')).anomaly!.warmup).toMatchObject({ status: 'done', attempts: 1 })
     const w2 = (await r.rule('A2')).anomaly!.warmup!
     expect(w2).toMatchObject({ status: 'pending', attempts: 0, finishedAt: null })
-    expect(w2.message).toMatch(/^waiting for the next alarm: over the CPU budget: the first window shows 3 series; the whole run would take about (\d+) ms of CPU \(modelled\), the budget is \d+ ms\. Nothing was evaluated; it fits a warm-up's 40 ms but not the \d+ ms this alarm had left$/)
+    expect(w2.message).toMatch(/^waiting for the next alarm: over the CPU budget: its 1 window holds 1800 points by the series counts; the whole run would take about (\d+) ms of CPU \(modelled\), the budget is \d+ ms\. Only the series counts were read; it fits a warm-up's 40 ms but not the \d+ ms this alarm had left$/)
     expect(await r.warmupRow()).toContainEqual(expect.objectContaining({ status: 'pending', attempts: 0 }))
     await evictDurableObject(r.stub)
     const t2 = await r.tick()
@@ -598,5 +623,86 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
     expect(await runDurableObjectAlarm(r.stub)).toBe(true)
     const states = [(await r.rule('A1')).anomaly!.warmup!.status, (await r.rule('A2')).anomaly!.warmup!.status].sort()
     expect(states).toEqual(['done', 'pending'])
+  })
+})
+
+describe('planning what is fetched: a read is counted, cut into windows by the points it holds, and every window planned before it is fetched', () => {
+  const lim = (stub: { configure: (t: string, p: never) => Promise<unknown> }, tenant: string, l: Record<string, number>) => stub.configure(tenant, { limits: l } as never)
+  /** `n` series of `latency_ms`-like values at every step, whatever the expression. */
+  const many = (n: number) => (_q: string, s0: number, e: number, st: number): PromMatrix => {
+    const values: [number, string][] = []
+    for (let t = s0; t <= e; t += st) values.push([t / 1000, String(noise(t))])
+    return { resultType: 'matrix', result: Array.from({ length: n }, (_x, k) => ({ metric: { svc: `s${k}` }, values })) }
+  }
+
+  it('a plain alerting backtest over a week of three series: counted, then one window: two range queries and two plans (at the rule\'s bound of 1,000 series it would be 326 windows of 31 steps)', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 6 * HOUR })
+    w.range = many(3)
+    const rule = { alert: 'Up', expr: 'latency_ms > 0', for: '2m' }
+    const T = Math.floor((T0 - 10 * DAY) / DAY) * DAY
+    const bt = good(await stub.backtest(tenant, rule, T, T + 7 * DAY - MIN, MIN))
+    expect(w.rangeCalls.map((c) => c[0])).toEqual(['count(latency_ms > 0)', 'latency_ms > 0'])
+    expect(w.rangeCalls[1]!.slice(1)).toEqual([T, T + 7 * DAY - MIN, MIN])
+    expect(w.planCalls.map((c) => c[0])).toEqual(['latency_ms > 0', 'count(latency_ms > 0)'])
+    expect(bt.cost!).toMatchObject({ queries: 2, memory: { windowSteps: [10_080], queries: 2 } })
+    expect(bt.intervals.map((x) => [x.state, x.open])).toEqual([['pending', false], ['pending', false], ['pending', false], ['firing', true], ['firing', true], ['firing', true]])
+  })
+
+  it('a long look-back expression: each window re-reads its look-back and the day files it touches, so every window is planned as it is fetched; refused once those plans pass the budget though the whole read fits it, with only the series counts read; allowed, the cost is exactly what was fetched', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 6 * HOUR })
+    w.range = many(20)
+    // The engine's plan: 100,000 samples (and bytes) for every day file a query touches, its 1 d look-back included.
+    const cost = (q: string, s0: number, e: number) => (Math.floor(e / DAY) - Math.floor((s0 - (q.includes('[1d]') ? DAY : 0)) / DAY) + 1) * 100_000
+    w.plan = (q, s0, e) => ({ scanSamples: cost(q, s0, e), bytesToRead: cost(q, s0, e), seriesEstimate: 20, refusal: null })
+    const rule = { alert: 'Slow', expr: 'avg_over_time(latency_ms[1d]) > 0' }
+    const T = Math.floor((T0 - 10 * DAY) / DAY) * DAY
+    const to = T + 7 * DAY - MIN
+    // The whole read touches 8 day files: 800,000, well within the budget; its count the same.
+    expect(cost(rule.expr, T, to)).toBe(800_000)
+    ok((await lim(stub as never, tenant, { maxBacktestScanSamples: 2_500_000 })) as never)
+    const res = await stub.backtest(tenant, rule, T, to, MIN)
+    if (res.status !== 'over_budget') throw new Error(JSON.stringify(res).slice(0, 400))
+    // 20 series a step: 7 windows of about a day, each touching 2 or 3 day files with its look-back.
+    const [, planned] = /^over budget: the read would scan (\d+) samples and \d+ bytes in 8 range queries \(its series counts, and its windows, each planned as it would be fetched\); the budget is 2500000 samples and \d+ bytes\. Only the series counts were read: shorten/.exec(res.message) ?? []
+    expect(Number(planned)).toBeGreaterThan(2_500_000)
+    expect(w.rangeCalls.map((c) => c[0])).toEqual([`count(${rule.expr})`])
+    expect(w.planCalls).toHaveLength(2 + 7)
+
+    ok((await lim(stub as never, tenant, { maxBacktestScanSamples: 100_000_000 })) as never)
+    const before = w.rangeCalls.length
+    const bt = good(await stub.backtest(tenant, rule, T, to, MIN))
+    const fetched = w.rangeCalls.slice(before)
+    expect(fetched).toHaveLength(8)
+    expect(bt.cost!.scanSamples).toBe(fetched.reduce((n, [q, s0, e]) => n + cost(q, s0, e), 0))
+    expect(bt.cost!.scanSamples).toBe(Number(planned))
+  })
+
+  it('past MAX_WINDOW_PLANS windows they are planned in contiguous groups, each group\'s plan counted for every window in it: at least what is fetched, and refused at one sample less than that', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 6 * HOUR })
+    w.range = many(200)
+    const rule = { alert: 'Slow', expr: 'avg_over_time(latency_ms[1d]) > 0' }
+    const T = Math.floor((T0 - 10 * DAY) / DAY) * DAY
+    // A plan that grows with the range (as the engine's does: a wider range touches a superset of the files)
+    // and with how late it ends (newer data in more, smaller files): a group's later windows cost more than its first.
+    const cost = (_q: string, s0: number, e: number) => 1000 + (e - T) / MIN + (e - s0) / MIN
+    w.plan = (q, s0, e) => ({ scanSamples: cost(q, s0, e), bytesToRead: 1, seriesEstimate: 200, refusal: null })
+    const to = T + 2 * DAY - MIN
+    // The least memory budget the rule allows holds 1,000 points a window; 4,000 points: windows of 20 steps.
+    ok((await lim(stub as never, tenant, { maxBacktestMemoryBytes: 1 << 20 })) as never)
+    const no = await stub.backtest(tenant, rule, T, to, MIN)
+    if (no.status !== 'over_budget') throw new Error(JSON.stringify(no).slice(0, 400))
+    ok((await lim(stub as never, tenant, { maxBacktestMemoryBytes: no.memory!.peakBytes + 3000 * 768, maxBacktestScanSamples: 1e12 })) as never)
+    const before = w.planCalls.length
+    const bt = good(await stub.backtest(tenant, rule, T, to, MIN))
+    const fetched = w.rangeCalls.filter((c) => c[0] === rule.expr)
+    expect(fetched.length).toBe(144)
+    // The whole read, its count, and at most MAX_WINDOW_PLANS groups.
+    expect(w.planCalls.length - before).toBeLessThanOrEqual(2 + MAX_WINDOW_PLANS)
+    const actual = w.rangeCalls.reduce((n, [q, s0, e]) => n + cost(q, s0, e), 0)
+    expect(bt.cost!.scanSamples).toBeGreaterThanOrEqual(actual)
+    expect(bt.cost!.scanSamples).toBeLessThan(2 * actual)
+    ok((await lim(stub as never, tenant, { maxBacktestScanSamples: actual - 1 })) as never)
+    const refused = await stub.backtest(tenant, rule, T, to, MIN)
+    expect(refused.status === 'over_budget' && refused.message).toMatch(/\(its series counts, and its windows planned in groups, each group's plan counted for every window in it: an upper bound\)/)
   })
 })

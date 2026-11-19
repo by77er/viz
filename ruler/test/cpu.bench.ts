@@ -92,12 +92,14 @@ describe('CPU model calibration', () => {
       const from = to - 2 * DAY + step
       const make = (q: string, s: number, e: number, st: number) => (q.includes('viz_slo_part') ? slo(s, e, st) : name === 'anomaly cusum' ? noise(s, e, st) : latency(s, e, st))
       w.range = make
+      // The series a read has at a step, for the ruler's series counts, without building the read twice.
+      w.count = (q) => (q.includes('viz_slo_part') ? 2 * SERIES : SERIES)
       let res: { status: string; intervals?: unknown[] } | null = null
       const total = await cpu(async () => {
         res = (await stub.backtest(tenant, c.rule, from, to, step, step)) as never
       })
       expect(res!.status, JSON.stringify(res).slice(0, 300)).toBe('ok')
-      const calls = w.rangeCalls.slice()
+      const calls = w.rangeCalls.filter((c) => !c[0].startsWith('count('))
       const gen = await cpu(() => runInDurableObject(stub, () => calls.reduce((n, [q, a, b, st]) => n + make(q, a, b, st).result.length, 0)))
       const points = calls.reduce((n, [q, a, b, st]) => n + (Math.floor((b - a) / st) + 1) * (q.includes('viz_slo_part') ? 2 * SERIES : SERIES), 0)
       console.log(`| ${name} | ${points.toLocaleString('en-US')} | ${(total.ms - gen.ms).toFixed(0)} | ${(((total.ms - gen.ms) * 1000) / points).toFixed(2)} | ${calls.length} | ${total.load.map((x) => x.toFixed(1)).join(' ')} |`)

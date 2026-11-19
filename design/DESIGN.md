@@ -439,10 +439,11 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   interval's events, and keeps each series' buckets for the longest window and coarser ones for
   the compliance window as state (D42), so every alert says which windows burned, how fast, and
   how much budget is left. A new anomaly or SLO rule is **warmed from history** before its first
-  evaluation: its look-back is read at its interval, planned first (viz-query's
-  `/api/v1/plan`) and refused whole over a budget, never fetched in part, then fed through the
-  rule's own evaluation in time windows sized to a memory budget, only the rule's state carried
-  between them (D43). **Backtests** of threshold, anomaly and SLO rules run the same
+  evaluation: its look-back is read at its interval, its series counted first when the rule's
+  bound would cut it into windows, every query it fetches planned first (viz-query's
+  `/api/v1/plan`) and the run refused whole over a budget, never fetched in part, then fed through
+  the rule's own evaluation in time windows cut by the points they hold to fit a memory budget,
+  only the rule's state carried between them (D43). **Backtests** of threshold, anomaly and SLO rules run the same
   evaluation over a past range in time order, under a larger budget, and return when each alert
   would have fired and resolved with the explanation it would have carried. Both are also priced
   in CPU (a model calibrated per point read) and refused whole over a budget under the Durable

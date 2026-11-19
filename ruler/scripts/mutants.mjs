@@ -620,21 +620,22 @@ export const MUTANTS = [
   },
   {
     name: 'warm-up budget: the planned cost is never compared with the budget (fetched whatever the plan says)',
-    edits: one('src/history.ts', '  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) {', '  if (false) {'),
+    // Pattern brought up to date (the plans are summed and checked twice, before anything is fetched and before the windows).
+    edits: one('src/history.ts', '  const over = (p: PlanSum) => p.scanSamples > budget.scanSamples || p.bytesToRead > budget.bytesToRead', '  const over = (_p: PlanSum) => false'),
     tests: ['test/history.test.ts'],
   },
   {
     name: 'warm-up budget: the budget is checked only after the fetch (an over-budget read is made, then refused)',
     edits: [
-      { file: 'src/history.ts', find: '  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) {', replace: '  if (false) {' },
+      { file: 'src/history.ts', find: '  const over = (p: PlanSum) => p.scanSamples > budget.scanSamples || p.bytesToRead > budget.bytesToRead', replace: '  const over = (_p: PlanSum) => false' },
       // Pattern brought up to date (history is read in windows by `streamHistory`).
-      { file: 'src/history.ts', find: '  return { ok: true, plan: sum, sizing, points, cpu:', replace: "  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) return { ok: false, refused: 'over budget (after the fetch)', plan: sum, sizing }\n  return { ok: true, plan: sum, sizing, points, cpu:" },
+      { file: 'src/history.ts', find: '  return { ok: true, plan: total, sizing, points, cpu:', replace: "  if (total.scanSamples > budget.scanSamples || total.bytesToRead > budget.bytesToRead) return { ok: false, refused: 'over budget (after the fetch)', plan: total, sizing }\n  return { ok: true, plan: total, sizing, points, cpu:" },
     ],
     tests: ['test/history.test.ts'],
   },
   {
     name: 'warm-up budget: a read the engine\'s plan refuses is made anyway',
-    edits: one('src/history.ts', '    if (plan.refusal) return', '    if (plan.refusal && false) return'),
+    edits: one('src/history.ts', '      if (p.refusal) return', '      if (p.refusal && false) return'),
     tests: ['test/history.test.ts'],
   },
   {
@@ -711,7 +712,7 @@ export const MUTANTS = [
   },
   {
     name: 'memory refusal: windows sized without the series count (one point a step)',
-    edits: one('src/history.ts', '    const perStep = (s.seriesBound + (s.companions ?? []).reduce((n, c) => n + c.seriesBound, 0)) * MEMORY.perPoint', '    const perStep = (1 + (s.companions ?? []).length) * MEMORY.perPoint'),
+    edits: one('src/history.ts', '    const perStep = boundOf(s) * MEMORY.perPoint', '    const perStep = (1 + (s.companions ?? []).length) * MEMORY.perPoint'),
     tests: ['test/history.test.ts'],
   },
   {
@@ -721,23 +722,23 @@ export const MUTANTS = [
   },
   {
     name: 'memory refusal: a window holding more points than it was sized for is evaluated anyway',
-    edits: one('src/history.ts', '      if (held > allowed) return', '      if (held > allowed && false) return'),
+    edits: one('src/history.ts', '      } else if (held > stepsOf(w) * boundOf(s)) {', '      } else if (false) {'),
     tests: ['test/history.test.ts'],
   },
   // ───────────── CPU: refused on the model's projection, never cut off ─────────────
   {
     name: 'CPU refusal: the projection is never checked (a run goes on whatever it would cost)',
-    edits: one('src/history.ts', '      if (projected > budgetUs) {', '      if (false) {'),
+    edits: one('src/history.ts', '  if (projected > budgetUs) {', '  if (false) {'),
     tests: ['test/history.test.ts'],
   },
   {
-    name: 'CPU refusal: the projection counts only what has been read (the rest of the run left out)',
-    edits: one('src/history.ts', '      const projected = spentUs + thisUs + restUs', '      const projected = spentUs + thisUs'),
+    name: 'CPU refusal: the projection leaves out the windows\' points (their allowances only)',
+    edits: one('src/history.ts', '      projected += n * Math.max(', '      projected += 0 * Math.max('),
     tests: ['test/history.test.ts'],
   },
   {
-    name: 'CPU refusal: the series count is taken from the first window only (later growth not seen)',
-    edits: one('src/history.ts', '      series = Math.max(series, ', '      series = fed > 0 ? series : Math.max(series, '),
+    name: 'CPU refusal: a window not counted is priced at no points, not at the rule\'s bound',
+    edits: one('src/history.ts', '      const n = w.points ?? stepsOf(w.read) * boundOf(streams[i]!)', '      const n = w.points ?? 0'),
     tests: ['test/history.test.ts'],
   },
   {
@@ -767,6 +768,62 @@ export const MUTANTS = [
     name: 'per-alarm warm-up CPU: a budget below the model\'s base defers every warm-up forever',
     edits: one('src/ruler.ts', '      if (room < budgets.warmupCpuMs && room < CPU.base / 1000) {', '      if (room < CPU.base / 1000) {'),
     tests: ['test/history.test.ts'],
+  },
+  // ───────────── planning what is fetched: counts, windows by points, every window planned ─────────────
+  {
+    name: 'window plans: the run is checked against the whole read and the counts only, not the windows as fetched (the finding: each window re-reads its look-back and files)',
+    edits: one('src/history.ts', '  if (over(total)) {', '  if (over(first)) {'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'window plans: a group\'s plan counted once, not for every window in it',
+    edits: one('src/history.ts', '      add(total, main, group.length)', '      add(total, main)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'window plans: a group\'s plan spans its first window only',
+    edits: one('src/history.ts', 'toMs: group.at(-1)!.read.toMs }', 'toMs: group[0]!.read.toMs }'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'counting: no read is counted (windows are the engine\'s pieces, sized by nothing)',
+    edits: one('src/history.ts', '  const counted = streams.map((s, i) => bound.windowSteps[i]! < Math.min(MAX_STEPS_PER_QUERY, stepsOf(s.read)))', '  const counted = streams.map(() => false)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'counting: counted windows cut at the rule\'s bound, not by the points counted (hundreds of windows again)',
+    edits: one('src/history.ts', '(pts + n > pointsPerWindow ||', '((ts - from) / s.read.stepMs >= bound.windowSteps[i]! ||'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'counting: a count above the rule\'s bound accepted (windows cut for more series than the rule allows)',
+    edits: one('src/history.ts', '          if (n > bounds[j]!) return', '          if (n > bounds[j]! && false) return'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'counting: a window holding more points than its count said evaluated anyway',
+    edits: one('src/history.ts', '        if (held > Math.ceil(win.points * 1.1) + stepsOf(w)) return', '        if (held > Math.ceil(win.points * 1.1) + stepsOf(w) && false) return'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'window boundary (counted windows): a step skipped at every boundary',
+    edits: one('src/history.ts', '        close(ts - s.read.stepMs)\n        from = ts\n', '        close(ts - 2 * s.read.stepMs)\n        from = ts\n'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'window boundary (counted windows): windows overlap by a step',
+    edits: one('src/history.ts', '        close(ts - s.read.stepMs)\n        from = ts\n', '        close(ts - s.read.stepMs)\n        from = ts - s.read.stepMs\n'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'SLO state: a series first evaluated at query time 0 treated as never evaluated',
+    edits: one('src/slo.ts', '    const fresh = s.seenAt === null', '    const fresh = s.seenAt === null || s.seenAt === 0'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO validation: a severity label from the group\'s labels reported at the rule',
+    edits: one('src/rules.ts', 'ownSeverity ? `${rp}.labels.severity` : `${gp}.labels.severity`', '`${rp}.labels.severity`'),
+    tests: ['test/slo.test.ts'],
   },
 ]
 

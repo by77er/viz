@@ -495,7 +495,8 @@ describe('rule groups and rule files over HTTP', () => {
     expect(res.json.intervals.map((i: { state: string; startMs: number; endMs: number }) => [i.state, (i.startMs - T0) / MIN, (i.endMs - T0) / MIN])).toEqual([['pending', 10, 20], ['firing', 20, 30]])
     expect(res.json.summary).toMatchObject({ firingCount: 1, firingMs: 10 * MIN })
     expect(res.json.resolution.note).toMatch(/Evaluated every 1m/)
-    expect(new Set(s.w.rangeCalls.map((c) => c[0]))).toEqual(new Set(['(ratio) > 0.01', 'ratio']))
+    // Both reads' series counted first (an alerting rule's bound, 1,000 series, would cut them into minutes), then read in one window each.
+    expect(s.w.rangeCalls.map((c) => c[0])).toEqual(['count((ratio) > 0.01)', 'count(ratio)', '(ratio) > 0.01', 'ratio'])
     expectWindows(s.w.rangeCalls, '(ratio) > 0.01', T0, T0 + HOUR, MIN)
     expect((await s.list()).total).toBe(0) // a backtest saves nothing
     expect((await call(s.key.auth, 'POST', '/api/v1/monitors/backtest', { ...body, step: undefined })).json.problems).toMatchObject([{ path: 'step' }])

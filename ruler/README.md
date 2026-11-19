@@ -550,13 +550,18 @@ over a save with their state, are not warmed.
 
 `Ruler.backtest` and `POST /api/v1/monitors/backtest` take an alerting entry, an anomaly entry or
 an SLO entry (or a monitor document of any kind); **`POST /api/v1/monitors/{id}/backtest`** (new,
-`monitors:read`) takes a saved monitor as stored, at its group's interval. Every read is planned
-first, as in part 11, against `RulerLimits.maxBacktestScanSamples` (20,000,000) and
-`maxBacktestBytes` (128 MiB), and read in windows sized to `maxBacktestMemoryBytes` (32 MiB,
+`monitors:read`) takes a saved monitor as stored, at its group's interval. Every query a backtest
+fetches is planned before it is fetched, against `RulerLimits.maxBacktestScanSamples` (20,000,000)
+and `maxBacktestBytes` (128 MiB), and read in windows sized to `maxBacktestMemoryBytes` (32 MiB,
 part 13): past any of them the answer is `over_budget` (HTTP 422 `over_budget` with `plan`,
-`budget` and the memory model's `memory`) and nothing is fetched; an engine failure is `failed` (502).
+`budget` and the memory model's `memory`); nothing is fetched, or, when the windows' own plans are
+what is over, only the series counts were (the message says which). An engine failure is `failed`
+(502).
 
-- **Alerting rules** as before (part 4), now planned first.
+- **Alerting rules** through the same evaluation as part 4, in as few queries as the series allow:
+  a week at 1 minute of a few series is two range queries (its series count, then one window) and
+  two plans. Sized by the rule's bound (its alert limit, 1,000 series) it was 326 windows of 31
+  steps, each re-reading its look-back and the files it touched (part 13).
 - **Anomaly and SLO rules** run at their interval (a step other than the interval is refused: a
   detector's step is the interval). One read covers the warm-up part and the range (`[from −
   look-back, to]`; an SLO adds its coarse read); the warm-up part is fed exactly as a warm-up at
@@ -581,6 +586,50 @@ state machine's alerts, the intervals found so far). Where the windows fall chan
 result: the evaluation is the same function, called on the same steps in the same order (tested
 across hundreds of boundaries, and against live evaluation).
 
+**Windows by the points a read holds, counted first.** A window must fit the memory budget at
+every step, and the rule's bound (its `max_series`, an alerting rule's 1,000-alert limit) is what
+a step may hold. When one window per engine piece (11,000 steps) fits at the bound, the windows are
+the pieces and nothing is counted. Otherwise the read is first **counted**: `count(<expr>)` over the
+same range and step, one series whose value at each step is the number of series the read has there
+(the no-data expression is counted the same way). The windows are then cut where the points counted
+so far reach the budget (at most 11,000 steps). Sizing from the series a first window shows was not
+used: an alerting expression's series are not steady (`up == 0` has none until an outage, then
+hundreds), and a window sized for the quiet part would hold the outage at many times the budget.
+The count is the read's own data, so it costs the read's scan again (planned, below): a counted read
+costs its scan about twice plus what its windows re-read, against hundreds of times when windows were
+sized at the bound.
+
+**Every query fetched is planned before it is fetched.** A window's query re-reads its expression's
+look-back and every file it touches (the engine's plan counts the files in range), so the plans of
+the whole read understate what windows fetch: `avg_over_time(x[1d])` in 326 windows read each day
+file about 46 times and the look-back 326 times what was compared with the budget (the finding of
+the review of this change). Now, in order:
+
+1. Before anything is fetched: the whole reads (every file they touch some window must read, so a
+   lower bound of the windows' total) and the count queries, against the budget.
+2. The counts are fetched; the windows are cut.
+3. Before any window is fetched: the counts and **every window as it will be fetched** (its no-data
+   companion clipped to it), against the budget. A window that is a whole piece reuses the piece's
+   plan. Past `MAX_WINDOW_PLANS` (32) windows, a stream's windows are planned in contiguous groups,
+   each group's plan counted once for every window in it: a window's query is the same expression
+   over a range inside its group's, so it reads a subset of the group's files and the sum is an upper
+   bound (the plan grows with its range; tested with a plan that also grows with how late a range
+   ends, where planning a group's first window alone would undercount). Plans are ledger reads in
+   viz-query, 10–70 ms each (query/README.md), one at a time through the object's gate: at most 32 for
+   the windows, plus one per piece of each read and of its count.
+
+Over the budget at 1 the answer says nothing was fetched; at 3, that only the series counts were.
+`cost` reports what was fetched: the counts and the windows (`queries` is their number).
+
+| run | before (windows at the bound, whole reads planned) | now |
+|---|---|---|
+| 7-day alerting backtest at 1 minute, 3 series | 1 plan, 326 range queries | 2 plans, 2 range queries (count, one window) |
+| SLO warm-up at 1 minute (default `max_series` 10), 2 series | 2 plans, 6 range queries | 3 plans, 3 range queries (the fine read's count; one window each) |
+| 7-day backtest of `avg_over_time(x[1d]) > 0` over 20 series, a day file each | planned at 800,000 samples; fetched 326 windows | planned and fetched: 2,800,000 (count 800,000, 7 windows of about a day, 2 or 3 day files each) |
+
+(Counted in the tests, `test/history.test.ts` and `test/wiring.test.ts`; plan latencies are not
+measured here.)
+
 **The memory model** (`src/history.ts`, `MEMORY`; bytes):
 
 ```
@@ -594,17 +643,19 @@ series per step  = the bound the rule's own evaluation enforces: max_series (twi
                    parts; the no-data expression adds its own), or an alerting rule's alert limit
 ```
 
-Windows are as long as `(budget − fixed) / (series per step × 768)` steps allows, at most 11,000.
+A window holds at most `(budget − fixed) / 768` points (counted), or, not counted, that many at the
+rule's bound; at most 11,000 steps. A count query holds one point a step and is cut to fit the same.
 The budgets are `RulerLimits` fields proposed in `rules.v2.ts` (`maxWarmupMemoryBytes` 16 MiB,
 `maxBacktestMemoryBytes` 32 MiB; contract issue 18). **Refused before any plan or fetch** when the
-fixed bytes and one step do not fit, or when the windows would take more than 1,000 range queries:
-`over_budget` with the model's `memory: { peakBytes, budgetBytes }` (a warm-up: `refused`, the rule
-starts cold). A window holding more points than it was sized for (the engine returned more series
-than the rule allows) stops the run (`failed`, with that reason) instead of being evaluated. The
-intervals of a backtest stop at 4 MiB (modelled: labels and annotations at two bytes a character).
-The answer's `cost.memory` gives the modelled peak, the budget, the steps per window of each read
-and the queries the windows took. Plans are still asked per 11,000-step piece of each whole read,
-before the first window.
+fixed bytes and one step at the rule's bound do not fit (`over_budget` with the model's
+`memory: { peakBytes, budgetBytes }`; a warm-up: `refused`, the rule starts cold), and after the
+counts when the windows would take more than 1,000 range queries. A count above the rule's bound at
+any step stops the run before any window (`failed`: more series than the rule allows). A window
+holding more points than its count said (the data changed between the count and the read; 10% and
+a series a step allowed), or, not counted, more than the bound allows, stops the run (`failed`)
+instead of being evaluated. The intervals of a backtest stop at 4 MiB (modelled: labels and
+annotations at two bytes a character). The answer's `cost.memory` gives the modelled peak, the
+budget, the longest window of each read and the range queries the run made.
 
 768 bytes a point is above every measurement of resident memory per point held (a window's JSON
 parsed and indexed by step: 440–710 bytes, `test/memory.bench.ts`, below), not the live objects'
@@ -657,15 +708,17 @@ the 500 per window are allowances, not measured. robust_z and seasonal scan thei
 point, so their price grows with the state they keep (the same per-series estimate that bounds
 their state, part 8; two sizes of each were measured).
 
-**The check.** Plans and memory first, as before. Then, **before each window is fed** (after it is
-fetched), the run projects its whole cost: what it has spent, this window, and every remaining step
-of every read at the most series any window has shown so far (series present in a window, counted
-as present at every step). Over the budget it stops: before the first window is evaluated
-("refused … after reading one window": the one that counts the series), or, when later windows show
-more series, before the first window that shows them ("after N of M windows … nothing is kept").
-With the same series throughout, the projection after the first window equals the run's final
-account (tested). An answer carries `cost.cpu: { modelledMs, budgetMs }`; an `over_budget` refusal
-carries `cpu` (HTTP 422, beside `plan`, `budget` and `memory`).
+**The check.** Plans and memory first (parts 12 and 13). Then, **before any window is fetched**,
+the run projects its whole cost once: what it has spent (the series counts parsed), every counted
+window at the points its count gave, and every window not counted at its steps times the rule's
+bound (it was not counted because that fits one window per engine piece, so this is at most about
+43,000 points a backtest window and 19,000 a warm-up's). That is an upper bound of what feeding the
+windows costs, so a run the check allows is never stopped part-way. Over the budget the run is
+refused: "only the series counts were read", or, when nothing was counted, "nothing was fetched".
+When every read was counted the projection is the run's final account (tested). An answer carries
+`cost.cpu: { modelledMs, budgetMs }`; an `over_budget` refusal carries `cpu` (HTTP 422, beside
+`plan`, `budget` and `memory`). (Before the series counts of part 13, the projection was made
+before each window from the most series a window had shown, and could stop a run part-way.)
 
 **Budgets** (`RulerLimits` fields proposed in `rules.v2.ts`, contract issue 18):
 
@@ -799,8 +852,8 @@ data names the tenant.
   rules; **resumable or asynchronous runs**: a backtest or warm-up over its CPU budget is refused,
   not continued across invocations from a persisted cursor (part 14, D51), and the request holds the
   object for its duration; a CPU model measured on Cloudflare (calibrated here, part 14);
-  windows sized by the series a read really returns (they are sized by the rule's bound, part 13);
-  a plan per window (plans price each whole read).
+  sizing windows without a second scan (the count query reads the data again; an engine plan that
+  reported series per step would make it unnecessary, "Needed changes" 4).
 - **Notifier:** mute / active time intervals, notification templates, receivers other than
   webhook and Slack, `/api/v2/alerts` ingestion, editing a silence, updating a Slack message.
 - **Metrics about itself** (`viz_rule_evaluations_total`…): `health()` only.
@@ -814,10 +867,10 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 374 tests in 22 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
+npm test                # 379 tests in 22 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 130 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 141 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 11 for planning what is fetched and the review's minor findings), on a scratch copy; vitest runs with at most 2 workers
 npm run bench           # the measurements below
 npm run bench:anomaly   # anomaly rules in workerd (one worker): the "Anomaly rules" measurements below
 npm run bench:history   # SLO ticks, warm-ups and 7-day backtests in workerd (one worker; run each `B.` case alone with -t, and MINIFLARE_WORKERD_V8_FLAGS=--max-old-space-size=128 for the heap limit): the "SLO rules, warm-ups and backtests" and "Streaming" measurements below
@@ -849,8 +902,8 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `compat.test.ts` | 17 | versioned storage: version 2 storage with anomaly state upgraded to 3 without a row changing, then SLO state surviving eviction; releases knowing 1 or 1–2 still rollback targets; schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage; version 1 storage with data upgraded to 2; the previous release still a rollback target |
 | `golden.test.ts` | 5 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation; the stored SLO rule, its key and per-tick expression, its rows, the warm-up status and the `slo_detail` annotation |
 | `wiring.test.ts` | 14 | warm-ups and backtests ask `/api/v1/plan` (start, end, step) for every read before any `/api/v1/query_range`, and an over-budget backtest fetches nothing; part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz`; notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
-| `slo.test.ts` | 20 | part 10: detection within one bucket of the SRE Workbook's formula for 100% to 0.1% error ratios (never where it says never), the library's table (1, 9, 44 and 217 minutes; 865 and 2,161), agreement with the library's own `burnRate.detect` at every point of 7,320 buckets (sentence included), the strict threshold with exactly representable numbers, coverage; the sentence and every number of `slo_detail` against an independent computation; in the object: one query per tick in the batch, page at the first bad minute and ticket at the fifth routed by severity, the page resolving 30 minutes after the outage; three rows a steady tick; evictions and replayed ticks, and a crash in the commit, giving exactly the state of a pure reference run; refusals (series cap, unpaired parts, a newer release's rows) changing nothing; a shard move; another tenant's rows neither loaded nor touched; validation with paths, fixes and warnings |
-| `history.test.ts` | 20 | parts 11–14: a backtest priced over its CPU budget refused after reading one window, with the projection the allowed run then costs exactly (RPC and HTTP 422 `cpu`); a run stopped before the first window whose series take it over; a warm-up refused by its CPU budget (also below the model's base) starting cold at once; an SLO backtest's evaluated part priced apart from its warm-up part; two warm-ups in one alarm: the second waits for the next alarm (no attempt, through an eviction), then equals the library's state; two groups in one late alarm do not both spend the budget;  windowed backtests across hundreds of boundaries equal to one window and to live evaluation (anomaly and SLO); the memory refusal before any plan or fetch (an SLO's rings over a small budget; 1,000 series of SLO state at the default budget, over HTTP); a warm-up refused by its memory budget; a window holding more points than sized for; an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
+| `slo.test.ts` | 21 | part 10: a series first evaluated at query time 0 keeping that bucket; a severity label from the group's labels reported at the group; detection within one bucket of the SRE Workbook's formula for 100% to 0.1% error ratios (never where it says never), the library's table (1, 9, 44 and 217 minutes; 865 and 2,161), agreement with the library's own `burnRate.detect` at every point of 7,320 buckets (sentence included), the strict threshold with exactly representable numbers, coverage; the sentence and every number of `slo_detail` against an independent computation; in the object: one query per tick in the batch, page at the first bad minute and ticket at the fifth routed by severity, the page resolving 30 minutes after the outage; three rows a steady tick; evictions and replayed ticks, and a crash in the commit, giving exactly the state of a pure reference run; refusals (series cap, unpaired parts, a newer release's rows) changing nothing; a shard move; another tenant's rows neither loaded nor touched; validation with paths, fixes and warnings |
+| `history.test.ts` | 25 | parts 11–14: a week's alerting backtest of three series in two range queries and two plans; a long look-back expression whose windows' plans (each re-reading its look-back and day files) pass the budget though the whole read's plan fits: refused with only the count read, and allowed, a cost equal to what was fetched; past 32 windows, grouped plans at least what is fetched (with a plan that grows with a range's end) and a refusal at one sample less; a count over the rule's bound stopping the run before any window; a window holding more than its count said; a backtest priced over its CPU budget by its counts refused before any window, with the projection the allowed run then costs exactly (RPC and HTTP 422 `cpu`); a read not counted priced at the rule's bound before anything is fetched; a warm-up refused by its CPU budget (also below the model's base) starting cold at once; an SLO backtest's evaluated part priced apart from its warm-up part; two warm-ups in one alarm: the second waits for the next alarm (no attempt, through an eviction), then equals the library's state; two groups in one late alarm do not both spend the budget;  windowed backtests across hundreds of boundaries equal to one window and to live evaluation (anomaly and SLO); the memory refusal before any plan or fetch (an SLO's rings over a small budget; 1,000 series of SLO state at the default budget, over HTTP); a warm-up refused by its memory budget; a window holding more points than sized for; an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
 | `anomaly.test.ts` | 22 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide, authorisation, tenant isolation, documented schemas |
 
 The first seven files held the 123 tests that existed before this task; all still pass.
@@ -1038,14 +1091,33 @@ the new "dryRun on every write" test.
 | 120 | memory refusal: windows sized without the series count | history: "across many window boundaries …" |
 | 121 | memory refusal: an SLO backtest's model leaves out its bucket rings | history: "refused before any plan or fetch when the modelled peak cannot fit …" |
 | 122 | memory refusal: a window holding more points than it was sized for evaluated anyway | history: "a window holding more points than the model sized it for …" |
-| 123 | CPU refusal: the projection never checked | history: "a backtest is refused after reading only its first window …" (+3 more) |
-| 124 | CPU refusal: the projection counts only what has been read (the rest of the run left out) | history: same (+2 more: the growth stop, the per-alarm deferral) |
-| 125 | CPU refusal: the series count taken from the first window only | history: "a run whose series grow is stopped before the first window that shows them …" |
+| 123 | CPU refusal: the projection never checked | history: "a backtest whose series counts price it over its CPU budget is refused before any window is read …" (+2 more) |
+| 124 | CPU refusal: the projection leaves out the windows' points (their allowances only); was "counts only what has been read", rewritten when the projection moved before the windows | history: same (+2 more, incl. the per-alarm deferral) |
+| 125 | CPU refusal: a window not counted priced at no points, not at the rule's bound; replaces "the series count taken from the first window only", which counting made moot | history: "a read not counted … is priced at that bound …" |
 | 126 | CPU model: an SLO backtest's evaluated points priced as warm-up points | history: "an SLO backtest prices its evaluated part … above its warm-up part" |
 | 127 | per-alarm warm-up CPU: a warm-up's reservation not taken from what the alarm has left | history: "the warm-ups of one alarm share maxWarmupCpuMs …" (+1 more) |
 | 128 | per-alarm warm-up CPU: spent subtracted after the run, not reserved before it | history: "groups evaluated in the same alarm reserve the budget before reading …" (only this one: sequential warm-ups cannot tell) |
 | 129 | per-alarm warm-up CPU: one that fits a warm-up's budget but not the alarm's rest refused, not deferred | history: "the warm-ups of one alarm share maxWarmupCpuMs …" |
 | 130 | per-alarm warm-up CPU: a budget below the model's base defers every warm-up forever | history: "a warm-up priced over maxWarmupCpuMs is refused … even with a budget below the model's base" |
+| 131 | window plans: the run checked against the whole read and the counts only, not the windows as fetched (the review's finding) | history: "a long look-back expression: each window re-reads its look-back …" |
+| 132 | window plans: a group's plan counted once, not for every window in it | history: "past MAX_WINDOW_PLANS windows they are planned in contiguous groups …" |
+| 133 | window plans: a group's plan spans its first window only | history: same (**survived the first run**: with a plan of day files every 20-minute window cost the same, so the first window times the group equalled the sum; the test's plan now also grows with how late a range ends; then killed) |
+| 134 | counting: no read counted (windows are the engine's pieces, sized by nothing) | history: "across many window boundaries …" (+2 more) |
+| 135 | counting: counted windows cut at the rule's bound, not by the points counted | history: "a plain alerting backtest over a week of three series …" |
+| 136 | counting: a count above the rule's bound accepted | history: "a window holding more points than the model sized it for …" (its counted case) |
+| 137 | counting: a window holding more points than its count said evaluated anyway | history: "a window holding more points than its series count said …" |
+| 138 | window boundary (counted windows): a step skipped at every boundary | history: "across many window boundaries …" |
+| 139 | window boundary (counted windows): windows overlap by a step | history: same |
+| 140 | SLO state: a series first evaluated at query time 0 treated as never evaluated | slo: "a series first evaluated at query time 0 keeps that bucket …" |
+| 141 | SLO validation: a severity label from the group's labels reported at the rule | slo: "problems come back with a path and a fix …" |
+
+**Planning mutants 131–141 and the mutants the change touched** (the review of PR #3: windows were
+planned as whole reads; `VIZ_SCRATCH=… node scripts/mutants.mjs …`, on a scratch copy of the PR
+worktree's ruler, deleted after): 131–141, 10 of 11 killed on the first run, 133 survived (see its
+row), then killed. Patterns brought up to date for the new code and re-run: 104, 105, 106, 120, 122,
+123, 124, 125 (all killed); re-run because the code they guard moved: 107–113, 116–119, 121, 126–130
+(all killed), and 94–103, 114, 115 (slo.ts changed: all 12 killed). Mutants 1–93 were not re-run
+in this change; all 141 patterns match the source exactly once.
 
 **CPU mutants 123–130** (the refusal on the model's projection and the per-alarm warm-up budget;
 `VIZ_SCRATCH=… node scripts/mutants.mjs 123 … 130`, on a scratch copy): 8 of 8 killed on the first
@@ -1283,8 +1355,9 @@ peak RSS increase, 60–122 MB at 128 MB, falls to 59–107 MB at 64 MB with the
 runs still complete; the check is that a run sized by the model survives a heap limit, and that the
 counterfactual does not. CPU was not bounded by this change: 12 s for a week of 1,000 threshold
 series and 50 s for 1,000 EWMA series, over a Durable Object's default 30 s; part 14 now refuses
-both up front (below). The alerting rule's windows are sized for 1,000 series however few there are
-(31 steps, 326 queries for a week).
+both up front (below). The alerting rule's windows here were sized for 1,000 series however few
+there were (31 steps, 326 queries for a week); they are now cut by the points counted (part 13), and
+these runs were not repeated after that change.
 
 #### CPU (`test/cpu.bench.ts`, `npm run bench:history`)
 
@@ -1454,8 +1527,9 @@ Outside `ruler/`; not made here.
 4. **query/: the plan of a range read could estimate the shards' tail** (`/api/v1/plan` reads the
    ledger only, so warm-up and backtest budgets miss up to the hot window's samples per series),
    and could take several queries at once (an SLO's two reads are two plan requests now). If it
-   also reported the series a read would return, the CPU check could refuse before the first
-   window is read instead of after it (part 14).
+   reported the series a read returns at each step exactly, the ruler would not need its count
+   query (part 13), which costs the read's scan once more; its `seriesEstimate` is an estimate
+   ("used to decide a split, never to refuse") and misses series only in the tail.
 5. **deploy/: `limits.cpu_ms` for viz-ruler** only if an operator raises `maxBacktestCpuMs` or
    `maxWarmupCpuMs` past what 30 s covers (part 14). At the defaults nothing is needed.
 
@@ -1586,9 +1660,10 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
   calibrated on local workerd (resident memory; thread CPU time under a load average around 9 on 4
   cores), not on Cloudflare's accounting. If Cloudflare's CPUs are more than about 1.5 times slower
   per point than this machine, a run the model allows could still reach the 30 s limit; the
-  settling experiment is in "CPU" below. The CPU check comes after the first window is read, so an
-  over-budget run still costs one window's read and parse (and, for a run stopped later, what it
-  evaluated before stopping, which is discarded).
+  settling experiment is in "CPU" below. The CPU check comes after the series counts are read, so
+  an over-budget long read still costs its count. A read not counted is priced at the rule's bound,
+  so a short read of a rule with a generous `max_series` can be refused although its few series
+  would fit (the message says so; a tighter `max_series` is the remedy).
 - **CPU refusals refuse useful work.** A 7-day backtest over 1,000 series at 1 minute, and the
   warm-up of a daily seasonal rule over 100 series at 5 minutes, are refused at the default budgets
   (part 14); an operator can raise `maxBacktestCpuMs` / `maxWarmupCpuMs`, and must then raise the
@@ -1597,10 +1672,13 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
   number of new rules (each alarm warms at least one that fits), not by time.
 - **The model's allowances are not measured**: 5 ms a run and 0.5 ms a window (engine request set-up
   and bookkeeping). A run of 1,000 windows is 0.5 s of allowance.
-- **An alerting rule's backtest is sized for its alert limit** (1,000 series a step), however few
-  series it returns: a week at 1 minute is 326 range queries, sequential through the one-call gate
-  (D39). A coarser step, or a lower `maxAlertsPerRule`, means fewer. The windows' queries may read
-  boundary files twice, so a run can cost somewhat more than its plans said.
+- **A long read is counted first** (part 13): `count(<expr>)` scans what the read scans, so a
+  counted read costs its scan about twice, plus what its windows re-read (their look-back and
+  boundary files: planned, not estimated). A read of many series is still many windows, each a
+  query through the one-call gate (D39), and past 32 windows the plan is a bound that can be up to
+  the group size times what one window costs too high (refusing a run that would fit). The count
+  and the windows are read at different moments: late data in between is allowed up to 10% and a
+  series a step, past that the run stops (`failed`).
 - **Anomaly state is written every tick**: at least one row per anomaly rule per tick (43,200 a
   month for a 1-minute rule, about $0.04 at $1 per million rows, modelled), more for large
   states (6 rows a tick for 100 daily seasonal series). A rule whose state changes every tick

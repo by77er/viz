@@ -3270,7 +3270,7 @@
        },
        "memory": {
         "type": "object",
-        "description": "History is fetched and evaluated in windows of `windowSteps` steps (per read), one at a time, carrying only the rule's state: the modelled peak and the budget",
+        "description": "History is fetched and evaluated in windows, one at a time, carrying only the rule's state: a long read is first counted (count(expr): its series at each step) and cut into windows by the points they hold. The modelled peak, the budget, the longest window of each read in steps, and the range queries the run made",
         "properties": {
          "peakBytes": {
           "type": "integer"
@@ -3282,11 +3282,12 @@
           "type": "array",
           "items": {
            "type": "integer"
-          }
+          },
+          "description": "The longest window of each read, in steps"
          },
          "queries": {
           "type": "integer",
-          "description": "Range queries the windows took"
+          "description": "Range queries the run made: series counts and windows"
          }
         }
        },
@@ -4132,7 +4133,7 @@
      "plan",
      "budget"
     ],
-    "description": "Refused, whole, nothing kept: the modelled peak memory is over the backtest's memory budget (windows cannot be small enough to hold the rule's state and one step), the engine's plan of the read is over the backtest budget, the engine's own limits would refuse it, or its cost could not be asked (plan null); or the CPU model's projection of the whole run is over maxBacktestCpuMs (cpu set), found after reading the first window, whose series it counts, or a later one with more series",
+    "description": "Refused, whole, nothing kept, no window read: the modelled peak memory is over the backtest's memory budget (windows cannot be small enough to hold the rule's state and one step), the engine's plan of the read is over the backtest budget, the engine's own limits would refuse it, or its cost could not be asked (plan null); or, after a long read's series counts (count(expr) over the range), the plans of the windows as they would be fetched are over the budget, or the CPU model's projection of the whole run is over maxBacktestCpuMs (cpu set). The message says whether nothing was fetched or only the series counts were",
     "properties": {
      "error": {
       "$ref": "#/components/schemas/ErrorBody"

@@ -164,7 +164,7 @@ export function sloHistory(spec: Pick<SloSpec, 'alerts' | 'windowMs'>, intervalM
  * The `slo` block of a rule-file entry, at `path`. Returns the normalized spec and the per-tick
  * expression, or null after reporting what is wrong. `labels` are the rule's labels.
  */
-export function parseSloSpec(c: ParseContext, v: unknown, path: string, intervalMs: number, labels: Labels, cfg: RulerConfig): { spec: SloSpec; expr: string; tickCost: ReturnType<typeof classify> } | null {
+export function parseSloSpec(c: ParseContext, v: unknown, path: string, intervalMs: number, labels: Labels, cfg: RulerConfig, severityPath = `${path.replace(/\.slo$/, '')}.labels.severity`): { spec: SloSpec; expr: string; tickCost: ReturnType<typeof classify> } | null {
   const errors: ValidationError[] = []
   const err = (p: string, message: string, fix: string) => errors.push({ path: p, message, fix })
   if (!isObject(v)) {
@@ -290,7 +290,8 @@ export function parseSloSpec(c: ParseContext, v: unknown, path: string, interval
     else given = [...new Set(v.given as string[])]
   }
   given.sort()
-  if (labels.severity !== undefined) err(`${path.replace(/\.slo$/, '')}.labels.severity`, 'an SLO rule sets severity itself: page or ticket, from the burn-rate alert that fires', 'Remove the severity label; route on severity="page" and severity="ticket".')
+  // `severityPath`: where the label was written (the rule's labels, or its group's).
+  if (labels.severity !== undefined) err(severityPath, 'an SLO rule sets severity itself: page or ticket, from the burn-rate alert that fires', 'Remove the severity label; route on severity="page" and severity="ticket".')
 
   const g = errors.length === 0 && sli !== null ? sloGeometry({ alerts, windowMs }, intervalMs) : null
   if (g && g.windows[g.windows.length - 1]! > MAX_SLO_RING) {
@@ -449,8 +450,8 @@ export interface SloSeriesState {
   fine: Ring
   coarse: Ring
   last: { page: SloFlag | null; ticket: SloFlag | null; warming: string | null } | null
-  /** Last query time at which the SLI returned the series. */
-  seenAt: number
+  /** Last query time at which the SLI returned the series; null until it has been evaluated once. */
+  seenAt: number | null
 }
 
 export interface SloRt {
@@ -498,10 +499,12 @@ export type SloEval =
     }
   | { ok: false; status: SloRuleStatus; error: string }
 
-const residue = (t: number, m: number) => ((t % m) + m) % m
+/** `t` modulo `m`, never negative: the offset of a time on a grid of width `m`. */
+export const residue = (t: number, m: number) => ((t % m) + m) % m
 
-function newSeries(labels: Labels, g: ReturnType<typeof sloGeometry>): SloSeriesState {
-  return { labels, fine: new Ring(g.fineSize, FINE_BLOCK), coarse: new Ring(g.coarseSize, COARSE_BLOCK), last: null, seenAt: 0 }
+/** A series with empty rings, never evaluated (`seenAt` null). */
+export function newSeries(labels: Labels, g: ReturnType<typeof sloGeometry>): SloSeriesState {
+  return { labels, fine: new Ring(g.fineSize, FINE_BLOCK), coarse: new Ring(g.coarseSize, COARSE_BLOCK), last: null, seenAt: null }
 }
 
 /** One series' parts at one evaluation: the bucket (bad, total), NaN when missing. */
@@ -686,14 +689,14 @@ export function evalSlo(rule: SloRuleV2, rt: SloRt, series: Series[], ts: number
   // Series gone longer than the longest window describe nothing any window still holds.
   let pruned = 0
   for (const [key, s] of rt.series) {
-    if (!buckets.has(key) && ts - s.seenAt > g.fineSize * intervalMs) {
+    if (!buckets.has(key) && s.seenAt !== null && ts - s.seenAt > g.fineSize * intervalMs) {
       rt.series.delete(key)
       pruned++
     }
   }
   for (const [key, s] of rt.series) {
     const b = buckets.get(key)
-    const fresh = s.seenAt === 0
+    const fresh = s.seenAt === null
     s.fine.advance(fresh ? null : rt.lastSlot, n)
     s.coarse.advance(fresh ? null : rt.lastCoarse, k)
     if (b && b.bad === b.bad) {
