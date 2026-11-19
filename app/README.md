@@ -1084,7 +1084,7 @@ gzip level 9, as `e2e/measure.cjs` computes it. The shell's script grows by 5.7 
 compressed (the parser, the error kinds and advice, the retries) to 156.6 kB, under the
 200 kB limit. The worker reader is not in the build (nothing imports it but its type).
 
-## Known issues
+## Known issues and risks
 
 - Speed (this change's section in "Verification"; nothing judged): response to paint from
   the last byte is still over 100 ms on desktop (36 series 199 ms, 200 series 233 ms) and on
@@ -1107,6 +1107,10 @@ compressed (the parser, the error kinds and advice, the retries) to 156.6 kB, un
 - "The real API" here is the working tree of `query/`, `edge/`, `control/` and the rest under
   `wrangler dev`, which reloads on every edit: the contract test can fail because another
   component is mid-edit, and its answers file records what the tree answered at that moment.
+- At the end of this session the local real API answered 500 to every query: the engine's
+  binding (`engine/wasm-query/js/index.ts`) expected module ABI 3 while `viz_query.wasm` was
+  still ABI 2, another component's change in progress. `e2e/contract.cjs` and `e2e/real.cjs`
+  last passed at 01:43 and 01:44 UTC and need running again once the module is rebuilt.
 - The worker reader (`src/api/matrixWorker.ts`) is kept, tested and not used: whether it helps
   on a phone cannot be measured with DevTools throttling (it does not throttle workers).
 - Colour memory is per browser tab (`sessionStorage`) and holds the assignment of the last
