@@ -41,11 +41,13 @@ pub struct SignalMergeOptions {
 }
 
 /// A compaction output's row groups hold at most this much data (as the contracts count it),
-/// a quarter of what flush may write: the merge buffers one output row group decoded, about six
-/// times its counted size for spans, and with every input open and the output growing, a 16 MiB
-/// group would take a merge at the step budget past an isolate's memory
-/// (`engine/storage/README.md`, "Compaction of spans and logs"). The contracts' caps are maxima.
-pub const MERGE_ROW_GROUP_BYTES: usize = 4 << 20;
+/// an eighth of what flush may write. A merge holds every input open (a decompressed page per
+/// column each), the output written so far, one output row group decoded (about six times its
+/// counted size for spans) and, for logs, the token filter being built; with 16 MiB groups a
+/// merge at the step budget (8 inputs, 16 MB) peaked at 193 MB of WASM memory, with 2 MiB at
+/// 62 (spans) and 81 (logs) (`engine/storage/README.md`, "Compaction of spans and logs"). The
+/// contracts' caps are maxima.
+pub const MERGE_ROW_GROUP_BYTES: usize = 2 << 20;
 
 impl Default for SignalMergeOptions {
     fn default() -> Self {

@@ -16,7 +16,7 @@ pub const MAX_TOKEN_BYTES: usize = 64;
 /// Tokens per block of the filter.
 pub const BLOCK_TOKENS: usize = 16;
 /// The writer leaves the filter out of a file with more distinct tokens than this (the builder
-/// holds about 33 bytes a token, so at most about 17 MB).
+/// holds about 12 bytes a token besides the tokens, so at most about 15 MB with them).
 pub const MAX_FILTER_TOKENS: usize = 1 << 19;
 const HEADER: usize = 20;
 
@@ -110,21 +110,25 @@ fn fnv(b: &[u8]) -> u64 {
     h
 }
 
-/// Builds one file's filter while its row groups are written: every distinct token once (bytes
-/// in one arena, an open-addressing table over them) with a bitset of the row groups that have
-/// it. About 30 bytes a token besides the token's own bytes.
+/// Builds one file's filter while its row groups are written: every distinct token once, its
+/// bytes in 1 MiB chunks that never move, an open-addressing table over them (at most 3/4 full)
+/// and a bitset of the row groups that have it, one byte per 8 row groups. About 12 bytes a
+/// token besides the token's own bytes.
 pub struct TokenFilterBuilder {
-    arena: Vec<u8>,
-    /// End of token i in `arena` (its start is the previous end).
-    ends: Vec<u32>,
-    /// u64 words per token in `bits`.
-    words: usize,
-    bits: Vec<u64>,
+    chunks: Vec<Vec<u8>>,
+    /// Token i: its chunk (high 12 bits) and offset in it (low 20 bits).
+    at: Vec<u32>,
+    lens: Vec<u8>,
+    /// Bytes per token in `bits`.
+    stride: usize,
+    bits: Vec<u8>,
     /// 0 empty, else token index + 1.
     slots: Vec<u32>,
     max_tokens: usize,
     overflow: bool,
 }
+
+const ARENA_CHUNK: usize = 1 << 20;
 
 impl Default for TokenFilterBuilder {
     fn default() -> Self {
@@ -139,16 +143,16 @@ impl TokenFilterBuilder {
 
     /// A builder that gives up (no filter) past `max_tokens` distinct tokens.
     pub fn with_max_tokens(max_tokens: usize) -> TokenFilterBuilder {
-        TokenFilterBuilder { arena: Vec::new(), ends: Vec::new(), words: 1, bits: Vec::new(), slots: vec![0; 1024], max_tokens, overflow: false }
+        TokenFilterBuilder { chunks: Vec::new(), at: Vec::new(), lens: Vec::new(), stride: 1, bits: Vec::new(), slots: vec![0; 1024], max_tokens, overflow: false }
     }
 
     /// Distinct tokens so far (0 once the bound was passed).
     pub fn len(&self) -> usize {
-        self.ends.len()
+        self.at.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ends.is_empty()
+        self.at.is_empty()
     }
 
     /// Whether the bound was passed: [`finish`](Self::finish) then gives no filter.
@@ -157,8 +161,8 @@ impl TokenFilterBuilder {
     }
 
     fn token(&self, i: usize) -> &[u8] {
-        let s = if i == 0 { 0 } else { self.ends[i - 1] as usize };
-        &self.arena[s..self.ends[i] as usize]
+        let (c, o) = ((self.at[i] >> 20) as usize, (self.at[i] & (ARENA_CHUNK as u32 - 1)) as usize);
+        &self.chunks[c][o..o + self.lens[i] as usize]
     }
 
     /// The tokens of `text` are in row group `rg`.
@@ -174,8 +178,8 @@ impl TokenFilterBuilder {
         if self.overflow {
             return;
         }
-        if rg >= self.words * 64 {
-            self.widen(rg / 64 + 1);
+        if rg >= self.stride * 8 {
+            self.widen(rg / 8 + 1);
         }
         let mask = self.slots.len() - 1;
         let mut i = fnv(t) as usize & mask;
@@ -185,42 +189,49 @@ impl TokenFilterBuilder {
                 s => {
                     let k = s as usize - 1;
                     if self.token(k) == t {
-                        self.bits[k * self.words + rg / 64] |= 1 << (rg % 64);
+                        self.bits[k * self.stride + rg / 8] |= 1 << (rg % 8);
                         return;
                     }
                     i = (i + 1) & mask;
                 }
             }
         }
-        if self.ends.len() >= self.max_tokens {
+        if self.at.len() >= self.max_tokens || self.chunks.len() >= 1 << 12 {
             // Past the bound: free everything; the file gets no filter.
-            *self = TokenFilterBuilder { arena: Vec::new(), ends: Vec::new(), words: 1, bits: Vec::new(), slots: vec![0; 1], max_tokens: self.max_tokens, overflow: true };
+            *self = TokenFilterBuilder { chunks: Vec::new(), at: Vec::new(), lens: Vec::new(), stride: 1, bits: Vec::new(), slots: vec![0; 1], max_tokens: self.max_tokens, overflow: true };
             return;
         }
-        self.arena.extend_from_slice(t);
-        self.ends.push(self.arena.len() as u32);
-        let k = self.ends.len() - 1;
-        self.bits.resize(self.bits.len() + self.words, 0);
-        self.bits[k * self.words + rg / 64] |= 1 << (rg % 64);
+        if self.chunks.last().is_none_or(|c| c.len() + t.len() > ARENA_CHUNK) {
+            self.chunks.push(Vec::with_capacity(ARENA_CHUNK));
+        }
+        let c = self.chunks.len() - 1;
+        let chunk = &mut self.chunks[c];
+        self.at.push(((c as u32) << 20) | chunk.len() as u32);
+        chunk.extend_from_slice(t);
+        self.lens.push(t.len() as u8);
+        let k = self.at.len() - 1;
+        self.bits.resize(self.bits.len() + self.stride, 0);
+        self.bits[k * self.stride + rg / 8] |= 1 << (rg % 8);
         self.slots[i] = k as u32 + 1;
-        if self.ends.len() * 2 > self.slots.len() {
+        if self.at.len() * 4 > self.slots.len() * 3 {
             self.rehash();
         }
     }
 
-    fn widen(&mut self, words: usize) {
-        let mut bits = vec![0u64; self.ends.len() * words];
-        for k in 0..self.ends.len() {
-            bits[k * words..k * words + self.words].copy_from_slice(&self.bits[k * self.words..(k + 1) * self.words]);
+    fn widen(&mut self, stride: usize) {
+        let mut bits = vec![0u8; self.at.len() * stride];
+        for k in 0..self.at.len() {
+            bits[k * stride..k * stride + self.stride].copy_from_slice(&self.bits[k * self.stride..(k + 1) * self.stride]);
         }
         self.bits = bits;
-        self.words = words;
+        self.stride = stride;
     }
 
     fn rehash(&mut self) {
         let n = self.slots.len() * 2;
+        self.slots = vec![0u32; 0];
         let mut slots = vec![0u32; n];
-        for k in 0..self.ends.len() {
+        for k in 0..self.at.len() {
             let mut i = fnv(self.token(k)) as usize & (n - 1);
             while slots[i] != 0 {
                 i = (i + 1) & (n - 1);
@@ -232,44 +243,72 @@ impl TokenFilterBuilder {
 
     /// The filter's bytes for a file of `n_row_groups` row groups, or `None` past the bound.
     pub fn finish(self, n_row_groups: usize) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        self.write(n_row_groups, &mut out).expect("writing to a Vec does not fail").map(|_| out)
+    }
+
+    /// Write the filter's bytes to `w` in pieces of at most 64 KiB (so a writer never holds the
+    /// whole filter twice): its length, or `None` past the bound (nothing written).
+    pub fn write(mut self, n_row_groups: usize, w: &mut dyn std::io::Write) -> std::io::Result<Option<usize>> {
         if self.overflow {
-            return None;
+            return Ok(None);
         }
-        let n = self.ends.len();
+        self.slots = Vec::new();
+        let n = self.at.len();
         let mut order: Vec<u32> = (0..n as u32).collect();
         order.sort_unstable_by(|a, b| self.token(*a as usize).cmp(self.token(*b as usize)));
-        let n_blocks = n.div_ceil(BLOCK_TOKENS);
-        let stride = n_row_groups.div_ceil(8);
-        let mut out = Vec::with_capacity(HEADER + 4 * n_blocks + self.arena.len() + 2 * n + n * stride);
-        out.extend_from_slice(TOKEN_FILTER_MAGIC);
-        for v in [n_row_groups as u32, n as u32, n_blocks as u32, 0] {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        let offs_at = out.len();
-        out.resize(offs_at + 4 * n_blocks, 0);
-        let blocks_at = out.len();
-        let mut prev: &[u8] = &[];
-        for (j, &k) in order.iter().enumerate() {
-            let t = self.token(k as usize);
-            let shared = if j % BLOCK_TOKENS == 0 {
-                let off = (out.len() - blocks_at) as u32;
-                let b = j / BLOCK_TOKENS;
-                out[offs_at + 4 * b..offs_at + 4 * b + 4].copy_from_slice(&off.to_le_bytes());
+        let shared = |j: usize| -> usize {
+            if j % BLOCK_TOKENS == 0 {
                 0
             } else {
-                prev.iter().zip(t).take_while(|(a, b)| a == b).count()
-            };
-            out.push(shared as u8);
-            out.push((t.len() - shared) as u8);
-            out.extend_from_slice(&t[shared..]);
-            prev = t;
+                let (p, t) = (self.token(order[j - 1] as usize), self.token(order[j] as usize));
+                p.iter().zip(t).take_while(|(a, b)| a == b).count()
+            }
+        };
+        // Block offsets first: the sizes of the encoded tokens.
+        let n_blocks = n.div_ceil(BLOCK_TOKENS);
+        let stride = n_row_groups.div_ceil(8);
+        let mut offs: Vec<u8> = Vec::with_capacity(4 * n_blocks);
+        let mut at = 0usize;
+        for j in 0..n {
+            if j % BLOCK_TOKENS == 0 {
+                offs.extend_from_slice(&(at as u32).to_le_bytes());
+            }
+            at += 2 + self.lens[order[j] as usize] as usize - shared(j);
+        }
+        let total = HEADER + offs.len() + at + n * stride;
+        let mut buf: Vec<u8> = Vec::with_capacity(64 << 10);
+        buf.extend_from_slice(TOKEN_FILTER_MAGIC);
+        for v in [n_row_groups as u32, n as u32, n_blocks as u32, 0] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        w.write_all(&buf)?;
+        w.write_all(&offs)?;
+        drop(offs);
+        buf.clear();
+        for j in 0..n {
+            let t = self.token(order[j] as usize);
+            let s = shared(j);
+            buf.push(s as u8);
+            buf.push((t.len() - s) as u8);
+            buf.extend_from_slice(&t[s..]);
+            if buf.len() > (64 << 10) - 130 {
+                w.write_all(&buf)?;
+                buf.clear();
+            }
         }
         for &k in &order {
-            let words = &self.bits[k as usize * self.words..(k as usize + 1) * self.words];
-            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            out.extend_from_slice(&bytes[..stride]);
+            let row = &self.bits[k as usize * self.stride..(k as usize + 1) * self.stride];
+            let take = stride.min(row.len());
+            buf.extend_from_slice(&row[..take]);
+            buf.extend(std::iter::repeat_n(0u8, stride - take));
+            if buf.len() > (64 << 10) - stride {
+                w.write_all(&buf)?;
+                buf.clear();
+            }
         }
-        Some(out)
+        w.write_all(&buf)?;
+        Ok(Some(total))
     }
 }
 

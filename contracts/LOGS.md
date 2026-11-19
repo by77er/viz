@@ -134,7 +134,7 @@ The mapping from a row:
   per-step limits). Rows equal on the row key are one row, the input of higher precedence
   supplying the other columns (within one input, the later row), so a merge of flush files
   equals one flush of their batches in admission order. Sort order, pages, statistics, the
-  bloom filter and the fragment are flush's; row groups are cut by the same rule at 4 MiB of
+  bloom filter and the fragment are flush's; row groups are cut by the same rule at 2 MiB of
   data instead of 16 MiB (still within the caps above), so that a merge at the step budget fits
   an isolate (`engine/storage/README.md`, "Compaction of spans and logs"); every compaction
   output also carries the token filter (§6).

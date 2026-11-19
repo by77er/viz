@@ -134,6 +134,19 @@ pub fn encode_logs_with(batches: &[&[u8]], opts: &SignalWriteOptions) -> SResult
     Ok(out)
 }
 
+/// The file writer as an `io::Write`, through `write_all` (which keeps its offsets right).
+struct WriteAll<'a>(&'a mut SerializedFileWriter<Sink>);
+
+impl std::io::Write for WriteAll<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write_all(buf)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The weight of one log row for the row-group byte cap (`contracts/LOGS.md` §4).
 pub(crate) fn log_weight(row: &LogRow<&str>, label_bytes: usize) -> usize {
     64 + row.line.len() + row.severity_text.len() + row.metadata.iter().map(|(n, v)| n.len() + v.len()).sum::<usize>() + label_bytes
@@ -273,11 +286,14 @@ impl LogsFileWriter {
     pub(crate) fn finish_parts(mut self) -> SResult<(SignalFile, Sink)> {
         let first_ts = self.first_ts.ok_or_else(|| SignalError::Parquet("a logs file needs at least one row".into()))?;
         let mut tok = None;
-        if let Some(filter) = self.tokens.take().and_then(|t| t.finish(self.groups)) {
+        if let Some(t) = self.tokens.take() {
+            // Written straight into the file, in pieces: the filter is never held whole.
             let off = self.w.bytes_written() as u64;
-            self.w.write_all(&filter).map_err(|e| SignalError::Parquet(e.to_string()))?;
-            self.w.append_key_value_metadata(KeyValue::new(TOKEN_FILTER_META.to_string(), format!("{off},{}", filter.len())));
-            tok = Some((off, filter.len() as u64));
+            let mut into = WriteAll(&mut self.w);
+            if let Some(len) = t.write(self.groups, &mut into).map_err(|e| SignalError::Parquet(e.to_string()))? {
+                self.w.append_key_value_metadata(KeyValue::new(TOKEN_FILTER_META.to_string(), format!("{off},{len}")));
+                tok = Some((off, len as u64));
+            }
         }
         self.w.finish().map_err(perr)?;
         let sink = std::mem::take(self.w.inner_mut());
