@@ -1,7 +1,7 @@
 {
   "name": "F12_impl_read_unbound",
   "kind": "finding",
-  "label": "F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)",
+  "label": "F12: shard.ts (2026-11-18) readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)",
   "cfg": {
     "nt": 1,
     "ns": 1,
@@ -46,7 +46,18 @@
     "fpScope": "stream",
     "tailScope": "stream",
     "noRetryAcrossLoss": true,
-    "retain": false
+    "retain": false,
+    "sweepSteps": false,
+    "sweepAge": true,
+    "purgeSteps": false,
+    "startSteps": false,
+    "goal": "query",
+    "sweepGone": "both",
+    "sweepOrder": "listFirst",
+    "sweepNewerLogged": true,
+    "maxSweeps": 99,
+    "maxRB": 0,
+    "rbFix": "none"
   },
   "props": [
     "I3_NoDuplicates"
@@ -57,7 +68,7 @@
   "states": 40478,
   "transitions": 127244,
   "depth": 13,
-  "seconds": 2.4,
+  "seconds": 1.8,
   "collisionProb": 4.4e-11,
   "violated": "I3_NoDuplicates",
   "trace": [

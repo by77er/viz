@@ -341,15 +341,18 @@ export async function enqueueDue(env: MaintEnv, now = Date.now()): Promise<DueRe
   return out
 }
 
-/** One line per run, for the log: what it did and what it waits for (no tenant data beyond counts). */
-export function summary(r: MaintReport): string {
+/**
+ * One line per run, for the log: what it did and what it waits for (counts only). Tolerates a
+ * partial report (a stand-in `run`): logging never changes a run's outcome.
+ */
+export function summary(r: Partial<MaintReport>): string {
   const p = r.purged
   return (
-    `maintenance ${r.tenant}: merged ${r.compaction.merged}, expired ${r.expired.removed.length}, deleted ${p.deleted.length}, waiting ${p.waiting}` +
-    (p.unpublished !== undefined ? ` (for publication ${p.unpublished})` : '') +
-    (p.publisher !== undefined ? `, publisher not asked: ${p.publisher}` : '') +
-    `, orphans deleted ${r.orphans?.deleted.length ?? 0}, nudged ${r.nudged === null ? 'n/a' : r.nudged}` +
-    `, next ${r.nextDueAt === null ? 'none' : new Date(r.nextDueAt).toISOString()}${r.more ? ', more' : ''}`
+    `maintenance ${r.tenant ?? '?'}: merged ${r.compaction?.merged ?? 0}, expired ${r.expired?.removed.length ?? 0}, deleted ${p?.deleted.length ?? 0}, waiting ${p?.waiting ?? 0}` +
+    (p?.unpublished !== undefined ? ` (for publication ${p.unpublished})` : '') +
+    (p?.publisher !== undefined ? `, publisher not asked: ${p.publisher}` : '') +
+    `, orphans deleted ${r.orphans?.deleted.length ?? 0}, nudged ${r.nudged === null || r.nudged === undefined ? 'n/a' : r.nudged}` +
+    `, next ${typeof r.nextDueAt === 'number' ? new Date(r.nextDueAt).toISOString() : 'none'}${r.more ? ', more' : ''}`
   )
 }
 
@@ -406,13 +409,13 @@ export async function consumeMaintBatch(
     try {
       outcome.report = await (opts.run ?? maintainTenant)(env, engine, tenant, { ...opts, wrote })
       if (outcome.report.more) await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant })
-      console.log(summary(outcome.report))
     } catch (e) {
       // Anything thrown is retried with a delay, including a ledger that refuses with
       // `schema_too_new` during a deploy (contracts/COMPATIBILITY.md §2.4): nothing happened.
       outcome.action = 'again'
       outcome.why = e instanceof Error ? e.message : String(e)
     }
+    if (outcome.report) console.log(summary(outcome.report))
     const carrier = outcome.action === 'again' ? messages.reduce((a, b) => (b.attempts < a.attempts ? b : a)) : null
     for (const m of messages) {
       if (m === carrier) m.retry({ delaySeconds: Math.min(600, 15 * 2 ** Math.max(0, m.attempts - 1)) })

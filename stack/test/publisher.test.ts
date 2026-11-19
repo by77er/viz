@@ -175,6 +175,22 @@ describe('the publisher wired into maintenance', () => {
     expect(report.purged.unpublished).toBeUndefined()
   })
 
+  it('a nudge that may not have been recorded is the only reason a tenant with nothing else to do is looked at again within the hour', async () => {
+    // A tenant with no data: a run has nothing to do and leaves no marker, unless its nudge failed.
+    const name = `empty-${Date.now().toString(36)}`
+    const answering = { idFromName: (n: string) => ({ name: n }) as unknown as DurableObjectId, get: () => ({ notify: async () => undefined, safeToDelete: async () => [], acknowledgeDeleted: async () => undefined }) }
+    const ok = await maintainTenant(withPublisher(sim.env, answering), engine, name)
+    expect([ok.nudged, ok.nextDueAt]).toEqual([true, null])
+    for (const mode of ['hang', 'refuse'] as const) {
+      const bad = badPublisher(mode)
+      const failing = { ...bad.ns, get: () => ({ ...bad.ns.get(), safeToDelete: async () => [] }) }
+      const r = await maintainTenant(withPublisher(sim.env, failing), engine, name, { publisherTimeoutMs: 200 })
+      expect(r.nudged).toBe(false)
+      expect(r.nextDueAt).toBeGreaterThan(Date.now() + 3_500_000)
+      expect(r.nextDueAt).toBeLessThanOrEqual(Date.now() + 3_600_000)
+    }
+  })
+
   it('a removal waiting only for publication is looked at again after publicationRecheckMs, not every grace', async () => {
     const [a] = sim.tenants
     const e = withPublisher(sim.env)

@@ -255,4 +255,80 @@ reports all three ("12 dashboards …" over 3 rows; "3 d ago" after "12 d ago"; 
 as ages). It also found one in v5's traces composition ("13 spans …, 10 shown" over 10 rows), now
 "10 of 13 spans, in the order they started", in the composition and the Waterfall preview.
 
+## Minors
+
+| | Finding | Change | Shown by |
+|---|---|---|---|
+| m1 | A link in a list sentence or a help line opened its line on a phone | The coarse rule exempts links inside running text (`p`, `li`, `dd`, help lines, `vz-text`, `vz-secondary`, the page sub-line) and gives the touch height back to a link that is a list item's, a timeline line's or a change's own child. The monitor composition now holds image 08's two cases | `tools/audit.mjs` ("sentence-link": a link inside a sentence drawn taller than its line, or a standalone link under 44 px); structure check; mutants V7 and A4 |
+| m2 | Key links holding a `vz-cut` lost their underline | The link's decoration is inherited into the cut's two parts | structure check; mutant V8; `compare/v6-long-table-*` |
+| m3 | Error after a result was drawn: coloured swatches for lines not drawn | The legend keeps the previous figures, inert, with hollow swatches; the text form says the latest query failed and the figures are the previous query's. Not taken: drawing the previous plot under the message (it would lie under the message, covering data) | structure check; mutant V11; `compare/v6-states-*` |
+| m4 | The done state repeated the page state | The state line keeps its own words with the acknowledged mark ("Firing since 13:07"); `vz-done` says who and when, once. States rule and Status README say so | `compare/v6-monitor-*` |
+| m5 | `series-4` and `series-other` had the same luminance (light, 1.02:1) | `series-other` light `#656565`, between the two lightness steps (1.30:1 or more from every slot); dark `#828282` (1.16:1, up from 1.09; a grey lighter than the light step would make Other's edges brighter than the lines). Still 3:1 on all six surfaces | token check (1.3 light, 1.15 dark); mutant V12 |
+| m6 | A threshold inflated the axis | M2 | `valueTicks` case |
+| m7 | The reservation needed an inline `style` attribute | Every chart reserves its fixed parts; `--legend-rows` and `--legend-notes` may come from a stylesheet | structure check (no `[style*=` selector); mutant V9 |
+| m8 | The nav at 400 px cut "Logs" with tenant and Settings out of view | Kept a scrolling strip (every section one tap away), now with the table's scroll edge: a `rule-control` line at its right while there is more. Not taken: wrapping the nav into two rows on phones (88 px of chrome on every screen) | the audit treats the nav as a strip that scrolls on purpose; images at 400 px |
+| m9 | One event, two settings ("Firing since 13:07, 2 h 9 min") | 13:07 is a `vz-qty` too (Table preview) | the preview |
+| m10 | Middle dots in the fixture's stat contexts | Full stops; the stats now read from the charts (M6) | `fixtures/dashboard.json` |
+| m11 | The time range's help line showed the forms, not what was parsed | "Read as 18 Nov, 09:16 to 15:16 (now), 6 h, UTC. Also takes …" (Field preview) | the preview |
+| m12 | `shots.mjs measure` counted only links inside a `p` | It classifies a link by its inline flow (other words on its line), as the audit does; it also takes only a visible scrim for an open dialog (flows G24) and lists controls under an open sheet menu separately (G27) | `shots.mjs` |
+| m13 | The Cover preview was a fixed 960 px poster | Fluid: its two halves wrap below their minimum, its picture scales | the audit (0 findings on Cover at 320) |
+| m14 | The scroll edge was painted under the cells | The edge is the wrap's own right border on the scroll timeline: outside the area the cells scroll in, so nothing covers it; the same edge on the navigation and tabs | structure check; mutant V13 |
+| m15 | At 200% zoom the Logs list scrolled 6 px | Log and Waterfall are `data-fold="wide"`; their fold rules got the wide twins they lacked; "a folding table never scrolls" is a rule | the audit's "fold-scroll"; structure check (twins); mutant V4 |
+
+## The flow screens' input (coordinator)
+
+**Overflow (screens 12 and 7).** The audit loads every `flows/dist/` screen read-only and reports it
+apart. Causes found, all in the system: on 12 at 200% zoom, the Silences head's `vz-sr` escaping its wrap
+(B2.1, fixed); on 12 at 320 px, a panel meta part ("paging works: the watchdog's test page … 58 s ago")
+that could not wrap, because every meta part was `nowrap` (now a part wraps only when it is longer than a
+line); on 7 at 320 px, a long sentence in a `vz-status` in the checks list, because every status was
+`nowrap` (now a status wraps, its mark held on the first line). Left for the flows: their folding tables
+that do not fit 640 px and so scroll at 200% zoom (1, 8 and 12 use `data-fold`; the system now says these
+are `data-fold="wide"`), and on screen 1 a link at the end of a sentence in a table cell (a cell's words
+cannot be told from a standalone link by CSS; make it the cell's own link or put the sentence in a `p`).
+
+<!-- FLOWS-AUDIT -->
+
+**B1 on screen 5.** The coordinator's sequence (cart, then 36 pods, then cart) is a fixed test: on v5 cart
+returns grey, on v6 in slot 1.
+
+**Gaps G17 to G27 and G11.**
+
+| Gap | Taken? | What |
+|---|---|---|
+| G17 caption a flex row, spaces collapse | Taken | `vz-table-caption` is one run of text; its strip height comes from padding. Structure check, mutant V6 |
+| G18 `vz-help` keeps a `p`'s margins | Taken | margin 0 |
+| G19 a state cut in a kept column | Taken (B2) | wraps; the kept column is never narrower than its longest phrase. The flows' work-around (folding the state under the key) can go |
+| G20 "Actions…" past the edge in the folded form | Taken (B2) | ends the key's line in every row. The flows' work-around (actions as the kept column) still works and can go |
+| G21 gutter after a right-aligned column when folded | Taken | none in the folded form |
+| G22 no width for a field in a row | Taken | `.vz-input[size]` takes its width from `size`, in characters (the flows' own work-around, made a rule) |
+| G23 tenant as text in the nav | Taken as a rule | `span.vz-nav-end.vz-secondary` (Nav README); no new class |
+| G24 `shots.mjs` took a hidden scrim for an open dialog | Taken | only a visible scrim or `dialog:modal` |
+| G25 Waterfall and Log behaviour only as preview script | **Waits** | packaging behaviour (the tree's keyboard, the tail's batching) is the component package the system does not have yet ("Not done"); the chart and the press are the only scripts it ships |
+| G26 a small button on a folded row's last line lost part of its hit area | Taken, through G20 | the actions sit on the key's line, which is `control-touch` tall |
+| G27 a sheet menu covers controls | Taken in the measure only | the measure lists them as under an open sheet; a sheet closes on a press outside, as a modal sheet would with a scrim. Not taken: a scrim behind a sheet (no review asked for it) |
+| G11 an outbound message component | **Waits** | its look belongs to the phone and chat products, not this system; screen 11 specifies it as content |
+
+## Migration (for the flows and the app, to be re-imaged on v6)
+
+No class was renamed or removed. What changes under existing markup:
+
+- Load `dist/viz-press.js` on every page (a script element, deferred), or a finger's press paints only
+  at the release. Every `:active` rule has a `[data-pressed]` twin.
+- `.vz-status` wraps its words when out of room (outside table cells that do not fold); its mark sits on
+  the first line. `.vz-panel-meta` parts wrap only when longer than a line. `.vz-segmented` wraps its
+  segments when wider than its room. `.vz-table-caption` is a block (one run of text), `.vz-help` has no
+  margins.
+- Folding tables: the kept column's state wraps and the column is never narrower than its longest phrase;
+  `td.vz-row-actions` ends the key's line; a table whose columns do not fit 640 px must be
+  `data-fold="wide"` (the audit fails it otherwise). Log and Waterfall: use `data-fold="wide"`.
+- `.vz-table-wrap`, `.vz-nav` and `.vz-tabs` keep a 2 px right border for the scroll edge (2 px less
+  room). The table wrap is positioned.
+- Charts: `--legend-head` and `--legend-row` are now the drawn heights (one hairline less than v5's), and
+  every chart reserves its fixed parts without `--legend-rows`; set `--legend-rows` and `--legend-notes`
+  as before, inline or from a stylesheet. `vzChartRules.assignSeries(map, series)` takes a map made by
+  `newMap()`; maps are kept under `vz-series6:` (v5's are not read). The legend note has a third sentence
+  ("No series is coloured: …").
+- `series-other` is `#656565` / `#828282`; a progress bar uses `--ease-measured`.
+
 <!-- SECTIONS -->

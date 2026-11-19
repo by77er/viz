@@ -4,5 +4,6 @@
  * seams (a movable clock), bound as TEST_PUBLISHER.
  */
 export * from '../src/index'
-export { default } from '../src/index'
+// Named again: the test pool finds a script's entrypoints (for `exports`) without following `export *`.
+export { default, Flush, Ledger, RecordedSamples, Shard } from '../src/index'
 export { TestPublisher } from '../../publisher/test/worker'

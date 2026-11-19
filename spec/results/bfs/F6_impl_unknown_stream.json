@@ -1,7 +1,7 @@
 {
   "name": "F6_impl_unknown_stream",
   "kind": "finding",
-  "label": "F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss)",
+  "label": "F6: shard.ts (2026-11-18) tailRead answers ok/empty for a stream it lost (no client retry across the loss)",
   "cfg": {
     "nt": 1,
     "ns": 1,
@@ -46,7 +46,18 @@
     "fpScope": "stream",
     "tailScope": "stream",
     "noRetryAcrossLoss": true,
-    "retain": false
+    "retain": false,
+    "sweepSteps": false,
+    "sweepAge": true,
+    "purgeSteps": false,
+    "startSteps": false,
+    "goal": "query",
+    "sweepGone": "both",
+    "sweepOrder": "listFirst",
+    "sweepNewerLogged": true,
+    "maxSweeps": 99,
+    "maxRB": 0,
+    "rbFix": "none"
   },
   "props": [
     "I4_NoGapAtSeam"
@@ -57,7 +68,7 @@
   "states": 12978,
   "transitions": 37719,
   "depth": 11,
-  "seconds": 0.5,
+  "seconds": 0.6,
   "collisionProb": 4.6e-12,
   "violated": "I4_NoGapAtSeam",
   "trace": [

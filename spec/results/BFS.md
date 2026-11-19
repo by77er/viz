@@ -48,10 +48,10 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `IMPL_1_as_built` code at 6488856 (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts); every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I4_NoGapAtSeam in 11 steps | 56,177 | 160,816 | 11 | 5.8 s | 8.6e-11 |
 | `IMPL_2_assume_F3` code at 6488856 (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts) + noRetryAcrossLoss; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property | all safety | **violated** I4_NoGapAtSeam in 11 steps | 29,837 | 95,793 | 11 | 5 s | 2.4e-11 |
 | `IMPL_3_fix_F6b` code at HEAD + F3 assumed + registration before writes, logged (F1/F6 fix in shard.ts); every action, every safety property | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 19 steps checked, no violation | 4,000,002 | 18,439,007 | 19 | 336 s | 4.3e-7 |
-| `F6_impl_unknown_stream` F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 11 steps | 12,978 | 37,719 | 11 | 0.5 s | 4.6e-12 |
+| `F6_impl_unknown_stream` F6: shard.ts (2026-11-18) tailRead answers ok/empty for a stream it lost (no client retry across the loss) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 11 steps | 12,978 | 37,719 | 11 | 0.6 s | 4.6e-12 |
 | `F6b_impl_now` F6(b) in the code at HEAD: tailRead still answers ok/empty to incarnation 0, which the coordinator sends for a stream the ledger has not registered (lazy registration) | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 11 steps | 14,978 | 46,021 | 11 | 2 s | 6.1e-12 |
-| `F12_impl_read_unbound` F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss) | I3_NoDuplicates | **violated** I3_NoDuplicates in 13 steps | 40,478 | 127,244 | 13 | 2.4 s | 4.4e-11 |
-| `F13_impl_comp_adopts_old_output` F13: compaction adopts an earlier step's output ("exists"); the sweeper judges it by the earlier upload | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 19 steps | 132,735 | 624,728 | 19 | 8.4 s | 4.8e-10 |
+| `F12_impl_read_unbound` F12: shard.ts (2026-11-18) readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss) | I3_NoDuplicates | **violated** I3_NoDuplicates in 13 steps | 40,478 | 127,244 | 13 | 1.8 s | 4.4e-11 |
+| `F13_impl_comp_adopts_old_output` F13: compaction adopts an earlier step's output ("exists"); the sweeper judges it by the earlier upload | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 19 steps | 132,735 | 624,728 | 19 | 6 s | 4.8e-10 |
 | `F14_impl_comp_conflict_delete` F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 21 steps | 41,961 | 143,700 | 21 | 2.8 s | 4.8e-11 |
 | `F15_sweeper_trusts_unlogged_registration` F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 17 steps | 518,127 | 2,018,428 | 17 | 29.4 s | 7.3e-9 |
 | `IMPL_PLANNED_fixed` As built with the fixes above (F6, F12, F13/F14, F15, F3 assumed), but the segment log as LEDGER-LOG.md stated it at the start of this work; ledger loss, compaction | all safety | **violated** V_IncarnationNotReused in 7 steps | 758 | 1,819 | 7 | 0.1 s | 1.6e-14 |
@@ -70,6 +70,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `D30_3batches` amended + D30 + log as built: 3 batches, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,004 states; every state reachable in at most 20 steps checked, no violation | 6,000,004 | 27,652,644 | 20 | 265.5 s | 9.8e-7 |
 | `D30_2shards` amended + D30 + log as built: 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 19 steps checked, no violation | 6,000,001 | 25,636,623 | 19 | 372.3 s | 9.8e-7 |
 | `D30_2tenants` amended + D30 + log as built: 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,005 states; every state reachable in at most 19 steps checked, no violation | 6,000,005 | 28,618,381 | 19 | 402.7 s | 9.8e-7 |
+| `D30_variants` amended + D30 + log as built: two encoder outputs per segment, ledger loss + compaction + retention, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,003 states; every state reachable in at most 21 steps checked, no violation | 6,000,003 | 29,105,288 | 21 | 296.2 s | 9.8e-7 |
 | `D30_teeth_not_live_only` D30 teeth: an input counts as gone when it is merely not live (its object may still exist) | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 27 steps | 406,920 | 1,822,925 | 27 | 24.7 s | 4.5e-9 |
 | `D30_teeth_absent_only` D30 with the live test dropped (absent from the listing alone): expected to hold, since an object is deleted only once its key can never be live | all safety | stopped: memory bound: stopped at 6,000,002 states; every state reachable in at most 31 steps checked, no violation | 6,000,002 | 33,756,569 | 31 | 277.7 s | 9.8e-7 |
 | `D30_teeth_read_first` D30 teeth: the sweep reads the ledger BEFORE it lists R2 | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 25 steps | 247,867 | 1,035,235 | 25 | 10.2 s | 1.7e-9 |
@@ -812,7 +813,7 @@ Violates `I4_NoGapAtSeam`.
 
 ### F6_impl_unknown_stream
 
-F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss)
+F6: shard.ts (2026-11-18) tailRead answers ok/empty for a stream it lost (no client retry across the loss)
 
 Violates `I4_NoGapAtSeam`.
 
@@ -848,7 +849,7 @@ Violates `I4_NoGapAtSeam`.
 
 ### F12_impl_read_unbound
 
-F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)
+F12: shard.ts (2026-11-18) readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)
 
 Violates `I3_NoDuplicates`.
 

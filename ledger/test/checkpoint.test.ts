@@ -222,9 +222,11 @@ describe('a checkpoint in parts is the state at its version', () => {
     expect(ck.fileKeysInOrder).toEqual([...ck.fileKeysInOrder].sort())
     expect(new Set(ck.fileKeysInOrder).size).toBe(ck.fileKeysInOrder.length)
     for (const [n, p] of ck.parts.entries()) {
-      // A part stops at the first record that reaches the budget, so it holds at most budget + one record.
-      if (p.records > 1) expect(p.chars, `part ${n}`).toBeLessThan(700 + 1_200)
-      if (p.chars > 5_000) expect(p.records, `part ${n}: the large record goes alone`).toBe(1)
+      // A part holds at most its budget of records, or one larger record alone.
+      if (p.records > 1) expect(p.chars, `part ${n}`).toBeLessThanOrEqual(700)
+      if (p.chars > 700) expect(p.records, `part ${n}: a larger record goes alone`).toBe(1)
+      // Parts are full: the next part's first record would not have fitted.
+      if (n + 1 < ck.parts.length && p.records > 0) expect(p.chars, `part ${n} is not cut early`).toBeGreaterThan(700 - 1_200)
     }
     expect(ck.parts.some((p) => p.records === 1 && p.chars > 5_000)).toBe(true)
     expect(ck.manifest.tombstones).toBe(2)
@@ -233,8 +235,8 @@ describe('a checkpoint in parts is the state at its version', () => {
   it('merges live rows and pre-images in SQLite\'s order of keys (UTF-8 bytes), also for keys JavaScript orders otherwise', async () => {
     const { tenant, l } = open(tenantName('ckutf8'))
     await noCheckpoints(l)
-    // In UTF-16 '\ud83d…' (an emoji) sorts before ''; in UTF-8 (SQLite) after it.
-    const names = ['a', 'b', 'b😀', 'b￿', 'cé', 'c😁', 'd']
+    // In UTF-16 '\ud83d\ude00' (an emoji) sorts before '\ue000'; in UTF-8 (SQLite) after it.
+    const names = ['a', 'b\ue000', 'b\ud83d\ude00', 'b\uffff', 'c\u00e9', 'c\ud83d\ude01', 'd']
     for (const [n, name] of names.entries()) expect((await l.addUnit(unit(n + 1, n + 1, [file(name)], S, 100))).status).toBe('ok')
     await inParts(l, 1) // one record per part
     await l.addUnit(unit(8, 8, [file('e')], S, 100))
@@ -242,8 +244,8 @@ describe('a checkpoint in parts is the state at its version', () => {
     const want = committed(await dumpState(l))
     await step(l, 0, 1) // 'a' written
     // Changes ahead of the cursor, on both sides of the UTF-16/UTF-8 disagreement.
-    await l.replace({ remove: [file('b😀').key], add: [file('b😀x', { level: 1 })] })
-    await l.replace({ remove: [file('cé').key], add: [file('b', { level: 1 })] })
+    await l.replace({ remove: [file('b\ud83d\ude00').key], add: [file('b\ud83d\ude00x', { level: 1 })] })
+    await l.replace({ remove: [file('c\u00e9').key], add: [file('b\ue001', { level: 1 })] })
     await l.drain()
     const v = want.version
     const ck = await readCheckpoint(tenant, await incarnationOf(l), v)
@@ -344,7 +346,7 @@ describe('crashes and storage losses at every await of the checkpoint path', () 
         }
       }
     }
-    console.log(`checkpoint crash cases: ${cases} (${total} operations × before/after × loss/eviction)`)
+    console.log(`checkpoint crash cases: ${cases} (${total} operations x before/after x loss/eviction)`)
   })
 })
 
@@ -386,14 +388,11 @@ describe('superseded checkpoints', () => {
     for (const o of firstObjects) expect(during).toContainEqual(o)
     // A loss now rebuilds from the first checkpoint (the second does not exist).
     const live = await dumpState(l)
-    await loseStorage(l)
-    const r: RebuildResult = await runInDurableObject(l, async (i: Ledger, state) => {
-      await state.storage.deleteAll()
-      return i.rebuildFromLog()
-    })
+    const r = await rebuild(l)
     expect(r.checkpoint).toBe(first)
     expect(await dumpState(l)).toEqual(live)
     // In the new incarnation: two complete checkpoints; the first is gone, manifest and parts, once the second is.
+    await evictDurableObject(l) // a working bucket again
     const inc2 = await incarnationOf(l)
     await inParts(l, 800)
     for (const k of [1, 2]) {
@@ -447,10 +446,15 @@ describe('superseded checkpoints', () => {
 })
 
 describe('a rebuild streams into SQLite', () => {
-  /** Serve log objects slowly, a few bytes at a time, and count the rows `file` holds when each object's last piece is asked for. */
-  const slowly = (l: Stub, seen: { key: string; rowsAtEnd: number }[]) =>
+  /**
+   * Serve log objects slowly, a few bytes at a time, and note how many rows `file` holds when the
+   * last piece of each one is asked for (or, for a checkpoint part, which is read whole, when it
+   * is fetched). A rebuild that held an object, or every part, before writing SQLite sees none.
+   */
+  const slowly = (l: Stub, seen: { key: string; rows: number }[]) =>
     runInDurableObject(l, (inst: Ledger, state) => {
       const real = env.BUCKET
+      const rows = () => state.storage.sql.exec(`SELECT COUNT(*) AS n FROM file`).one().n as number
       knobs(inst).bucket = new Proxy(real, {
         get(target, prop) {
           const f = Reflect.get(target, prop) as (...a: unknown[]) => Promise<unknown>
@@ -458,12 +462,16 @@ describe('a rebuild streams into SQLite', () => {
           return async (key: string, ...rest: unknown[]) => {
             const o = (await f.call(target, key, ...rest)) as R2ObjectBody | null
             if (!o || !(key.includes('/seg-') || key.includes('/ckpt-'))) return o
+            if (parseLedgerLogKey(key)?.type === 'checkpoint_part') {
+              seen.push({ key, rows: rows() })
+              return o
+            }
             const bytes = new Uint8Array(await o.arrayBuffer())
             let at = 0
             const body = new ReadableStream<Uint8Array>({
               pull(c) {
                 if (at >= bytes.length) {
-                  seen.push({ key, rowsAtEnd: state.storage.sql.exec(`SELECT COUNT(*) AS n FROM file`).one().n as number })
+                  seen.push({ key, rows: rows() })
                   c.close()
                   return
                 }
@@ -478,43 +486,43 @@ describe('a rebuild streams into SQLite', () => {
       })
     })
 
-  it('from a base, and from a checkpoint of either format: files are in SQLite before the object has been read to its end', async () => {
+  it('from a base, and from a checkpoint of either format: files are in SQLite before the object (or the last part) has been read', async () => {
     for (const format of ['base', 'v1', 'v2'] as const) {
-      const { tenant, l } = open(tenantName(`ckstream${format}`))
+      const { l } = open(tenantName(`ckstream${format}`))
       await noCheckpoints(l)
       await history(l, 20)
-      if (format !== 'base') {
+      if (format === 'base') {
+        await l.drain()
+        await loseStorage(l) // a new incarnation whose base holds every file
+        await everything(l)
+        await noCheckpoints(l)
+      } else {
         await runInDurableObject(l, (i: Ledger) => {
-          Object.assign(knobs(i), { checkpointEvery: 1, checkpointByLogBytes: false, checkpointOneObjectBytes: format === 'v1' ? 1e12 : -1, checkpointPartBytes: 4_000 })
+          Object.assign(knobs(i), { checkpointEvery: 1, checkpointByLogBytes: false, checkpointOneObjectBytes: format === 'v1' ? 1e12 : -1, checkpointPartBytes: 2_000 })
         })
         await l.addUnit(pair(1, 1, T0, 'pool/9', 1))
       }
       await l.drain()
       const live = await dumpState(l)
-      // An empty object of the same tenant rebuilds while the log is read slowly.
-      const seen: { key: string; rowsAtEnd: number }[] = []
-      const replica = env.LEDGER_REPLICA.get(env.LEDGER_REPLICA.idFromName(tenant)) as unknown as Stub
-      await runInDurableObject(replica, async (_i: Ledger, state) => { await state.storage.deleteAll() })
-      await evictDurableObject(replica)
-      await slowly(replica, seen)
-      const r: RebuildResult = await runInDurableObject(replica, async (i: Ledger, state) => {
-        await state.storage.deleteAll()
-        return i.rebuildFromLog()
-      })
+      expect(live.files.length).toBeGreaterThan(30)
+      const seen: { key: string; rows: number }[] = []
+      await slowly(l, seen)
+      const r = await rebuild(l)
       expect(r.checkpoint === null, format).toBe(format === 'base')
-      const big = seen.filter((x) => (format === 'v2' ? x.key.includes('/ckpt-') && x.key.endsWith('.jsonl') && !/ckpt-\d{12}\.jsonl$/.test(x.key) : format === 'v1' ? /ckpt-\d{12}\.jsonl$/.test(x.key) : x.key.includes('/seg-')))
-      expect(big.length, format).toBeGreaterThan(0)
-      // Streaming: when the object holding the state is read to its end, its files are already in SQLite.
-      const last = format === 'v2' ? big.at(-1)! : big[0]!
-      expect(last.rowsAtEnd, `${format}: rows in SQLite when ${last.key.slice(-40)} ended`).toBeGreaterThan(0)
-      const got = await dumpState(replica)
-      expect({ ...got, streams: got.streams }).toEqual(live)
+      const holding = seen.filter((x) => {
+        const p = parseLedgerLogKey(x.key)
+        return format === 'v2' ? p?.type === 'checkpoint_part' : format === 'v1' ? p?.type === 'checkpoint' : p?.type === 'segment'
+      })
+      expect(holding.length, format).toBeGreaterThan(format === 'v2' ? 5 : 0)
+      const last = format === 'v2' ? holding.at(-1)! : holding[0]!
+      expect(last.rows, `${format}: rows in SQLite when ${last.key.slice(-48)} was read`).toBeGreaterThan(0)
+      expect(await dumpState(l)).toEqual(live)
     }
   })
 
   it('the incremental reader gives what JSON.parse gives, however the text is cut (strings with brackets, escapes, astral characters)', () => {
     const r = rng(7)
-    const nasty = ['', ']', '[', '{', '}', ',', '"', '\\', '\\"]', 'a,b', 'é', '😀', ' ', '\n', 'x'.repeat(50)]
+    const nasty = ['', ']', '[', '{', '}', ',', '"', '\\', '\\"]', 'a,b', '\u00e9', '\ud83d\ude00', '\u2028', '\n', 'x'.repeat(50)]
     const value = (depth: number): unknown => {
       const k = r.int(depth > 2 ? 4 : 7)
       if (k === 0) return r.pick(nasty) + r.int(1000)
@@ -544,7 +552,7 @@ describe('a rebuild streams into SQLite', () => {
   })
 
   it('a log object read a byte at a time, multi-byte characters split across pieces, gives the same lines', async () => {
-    const lines = ['{"v":1,"h":"é😀"}', JSON.stringify({ kind: 'base', added: [{ key: 'k😀', n: 1 }, { key: ']"\\', n: 2 }], version: 3 }), '{"x":" "}']
+    const lines = ['{"v":1,"h":"\u00e9\ud83d\ude00"}', JSON.stringify({ kind: 'base', added: [{ key: 'k\ud83d\ude00', n: 1 }, { key: ']"\\', n: 2 }], version: 3 }), '{"x":"\u2028"}']
     const bytes = new TextEncoder().encode(lines.map((x) => `${x}\n`).join(''))
     let at = 0
     const body = new ReadableStream<Uint8Array>({ pull(c) { if (at >= bytes.length) c.close(); else c.enqueue(bytes.slice(at, ++at)) } })
@@ -639,10 +647,10 @@ describe('compatibility', () => {
     const scrub = (text: string) => text.replaceAll(tenant, '<tenant>').replace(/"at":\d{13}/g, '"at":"<ms>"').replaceAll(`"ledgerIncarnation":${inc}`, '"ledgerIncarnation":"<incarnation>"').replaceAll(m.attempt, '<attempt>').replace(/"bytes":\d+,"watermarks"/, '"bytes":"<bytes>","watermarks"')
     const parts: string[] = []
     for (let p = 0; p < m.parts; p++) parts.push(scrub(await (await env.BUCKET.get(`${env.CELL}/${ledgerCheckpointPartKey(tenant, inc, v, m.attempt, p)}`))!.text()))
+    const ckName = `ckpt-${String(v).padStart(12, '0')}`
     expect(keys.map((k) => k.slice(k.indexOf('/ckpt-') + 1).replace(m.attempt, '<attempt>'))).toEqual([
-      `ckpt-${String(v).padStart(12, '0')}-<attempt>/000000.jsonl`, `ckpt-${String(v).padStart(12, '0')}-<attempt>/000001.jsonl`,
-      `ckpt-${String(v).padStart(12, '0')}-<attempt>/000002.jsonl`, `ckpt-${String(v).padStart(12, '0')}.jsonl`,
-    ].slice(4 - keys.length))
+      ...Array.from({ length: m.parts }, (_, p) => `${ckName}-<attempt>/${String(p).padStart(6, '0')}.jsonl`), `${ckName}.jsonl`,
+    ])
     expectGolden(`formats/ledger.checkpoint.v${LEDGER_CHECKPOINT_VERSION}.json`, { format: 'ledger.checkpoint', version: LEDGER_CHECKPOINT_VERSION, manifest: scrub(manifest), parts })
     // And the contract decodes what it pins.
     expect(m).toMatchObject({ version: v, files: 3, tombstones: 2 })
