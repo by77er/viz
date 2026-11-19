@@ -16,7 +16,7 @@ dedicated tenants run the same code.
 | `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName` |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
 | `test/` | 63 tests in 8 files, run inside the Workers runtime |
-| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.log`) |
+| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`) |
 
 ## What is implemented
 
@@ -217,7 +217,7 @@ batches equal the acknowledged ones (the workerd counterfactual checks it).
 
 **Tail reads, whole against filtered** (measured here, in local workerd,
 `bench/tail.bench.test.ts`, 2026-11-19, three runs of five reads each at load average 8–11;
-raw lines in `bench/results/tail.log`). The tail: 100,000 series of one metric
+raw lines in `bench/results/tail.txt`). The tail: 100,000 series of one metric
 (`http_requests_total{job, instance}`, 20 jobs) at 60 s for seven minutes, 22.4 MB in 23
 stored batches of about 1 MB, all unsealed. "Before" is the read every caller makes today
 (no options); "after" the read each query needs. Before any time was compared, the engine

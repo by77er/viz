@@ -7,7 +7,11 @@
 pub struct Shape {
     pub name: &'static str,
     pub make: fn(usize) -> String,
-    /// The largest `n` accepted, which pins how levels are counted (`MAX_DEPTH` is 200).
+    /// The largest `n` accepted, which pins how levels are counted (`MAX_DEPTH` is 200). For
+    /// example `{ (((.a = 1))) }` uses 3 levels for the pipeline, the spanset expression and
+    /// the filter, and 2 per parenthesis, so 98 parentheses fit; `{ .a = 1 && .a = 1 ... }`
+    /// builds a tree 3 + n high (the filter, the comparison and its leaf, one per `&&`), so
+    /// 197 operators fit.
     pub max: usize,
 }
 
@@ -17,35 +21,36 @@ fn rep(s: &str, n: usize) -> String {
 
 /// Shapes whose depth grows with `n` and which must be refused past `max`.
 pub const NESTED: &[Shape] = &[
-    Shape { name: "field parentheses", make: |n| format!("{{ {}.a = 1{} }}", rep("(", n), rep(")", n)), max: 197 },
-    Shape { name: "field !", make: |n| format!("{{ {}(.a = 1) }}", rep("!", n)), max: 196 },
-    Shape { name: "field unary minus", make: |n| format!("{{ {}.a != 0 }}", rep("- ", n)), max: 196 },
+    Shape { name: "field parentheses", make: |n| format!("{{ {}.a = 1{} }}", rep("(", n), rep(")", n)), max: 98 },
+    Shape { name: "field !", make: |n| format!("{{ {}(.a = 1) }}", rep("!", n)), max: 195 },
+    Shape { name: "field unary minus", make: |n| format!("{{ {}.a != 0 }}", rep("- ", n)), max: 197 },
     Shape { name: "field && chain", make: |n| format!("{{ .a = 1{} }}", rep(" && .a = 1", n)), max: 197 },
     Shape { name: "field || chain", make: |n| format!("{{ .a = 0{} }}", rep(" || .a = 1", n)), max: 197 },
     Shape { name: "field + chain", make: |n| format!("{{ .a{} > 0 }}", rep(" + .a", n)), max: 197 },
     Shape { name: "field * chain", make: |n| format!("{{ .a{} = 1 }}", rep(" * .a", n)), max: 197 },
-    Shape { name: "field ^ chain", make: |n| format!("{{ .a{} = 1 }}", rep(" ^ 1", n)), max: 196 },
-    Shape { name: "field comparison chain", make: |n| format!("{{ .a = 1{} }}", rep(" = true", n)), max: 198 },
+    Shape { name: "field ^ chain", make: |n| format!("{{ .a{} = 1 }}", rep(" ^ 1", n)), max: 197 },
+    Shape { name: "field comparison chain", make: |n| format!("{{ .a = 1{} }}", rep(" = true", n)), max: 197 },
     Shape { name: "spanset parentheses", make: |n| format!("{}{{ .a = 1 }}{}", rep("(", n), rep(")", n)), max: 98 },
     Shape { name: "spanset && chain", make: |n| format!("{{ .a = 1 }}{}", rep(" && { .a = 1 }", n)), max: 197 },
     Shape { name: "spanset || chain", make: |n| format!("{{ .a = 0 }}{}", rep(" || { .a = 1 }", n)), max: 197 },
-    Shape { name: "structural >> chain", make: |n| format!("{{ }}{}", rep(" >> { }", n)), max: 197 },
-    Shape { name: "nested structural >", make: |n| format!("{}{{ }}{}", rep("{ } > (", n), rep(")", n)), max: 98 },
-    Shape { name: "nested pipelines", make: |n| format!("{}{{ }}{}", rep("({ } | ", n), rep(")", n)), max: 98 },
-    Shape { name: "metrics unary minus", make: |n| format!("rate() + {}1", rep("- ", n)), max: 196 },
-    Shape { name: "metrics + chain", make: |n| format!("rate(){}", rep(" + rate()", n)), max: 197 },
-    Shape { name: "metrics parentheses", make: |n| format!("{}{{ }} | rate(){}", rep("(", n), rep(")", n)), max: 98 },
+    Shape { name: "structural >> chain", make: |n| format!("{{ }}{}", rep(" >> { }", n)), max: 198 },
+    Shape { name: "nested structural >", make: |n| format!("{}{{ }}{}", rep("{ } > (", n), rep(")", n)), max: 66 },
+    Shape { name: "nested pipelines", make: |n| format!("{}{{ }}{}", rep("({ } | ", n), rep(")", n)), max: 99 },
+    Shape { name: "metrics unary minus", make: |n| format!("rate() + {}1", rep("- ", n)), max: 198 },
+    Shape { name: "metrics + chain", make: |n| format!("rate(){}", rep(" + rate()", n)), max: 199 },
+    Shape { name: "metrics parentheses", make: |n| format!("{}{{ }} | rate(){}", rep("(", n), rep(")", n)), max: 99 },
     Shape { name: "metrics threshold", make: |n| format!("{{ }} | rate() > 0{}", rep(" + 0", n)), max: 197 },
     Shape { name: "scalar filter constant", make: |n| format!("{{ }} | count() > 0{}", rep(" + 0", n)), max: 197 },
     Shape { name: "aggregate argument", make: |n| format!("{{ }} | avg(.a{}) > 0", rep(" + .a", n)), max: 196 },
-    Shape { name: "by() argument", make: |n| format!("{{ }} | by(.a{})", rep(" + .a", n)), max: 196 },
-    Shape { name: "metrics argument", make: |n| format!("{{ }} | sum_over_time(.a{})", rep(" + .a", n)), max: 196 },
+    Shape { name: "by() argument", make: |n| format!("{{ }} | by(.a{})", rep(" + .a", n)), max: 197 },
+    Shape { name: "metrics argument", make: |n| format!("{{ }} | sum_over_time(.a{})", rep(" + .a", n)), max: 197 },
     Shape {
         name: "regex in field parentheses",
-        make: |n| format!("{{ {}name =~ \"{}.*{}\"{} }}", rep("(", n), rep("(", 64), rep(")", 64), rep(")", n)),
-        max: 197,
+        // 63 groups and the repetition `.*` inside: REGEX_NEST_LIMIT (64) levels.
+        make: |n| format!("{{ {}name =~ \"{}.*{}\"{} }}", rep("(", n), rep("(", 63), rep(")", 63), rep(")", n)),
+        max: 98,
     },
-    Shape { name: "metrics by() argument", make: |n| format!("{{ }} | rate() by (.a{})", rep(" + .a", n)), max: 196 },
+    Shape { name: "metrics by() argument", make: |n| format!("{{ }} | rate() by (.a{})", rep(" + .a", n)), max: 197 },
 ];
 
 /// Shapes that repeat without nesting: long, but never deep, so never refused for depth.

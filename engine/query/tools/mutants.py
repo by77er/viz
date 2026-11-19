@@ -228,6 +228,9 @@ def main():
     print(f"{survived} mutant(s) not killed")
     after = fingerprint()
     print(f"shared tree, files the mutants touch: {before} before, {after} after" + (" (unchanged)" if before == after else " (CHANGED: by someone else; this script writes only to the scratch tree)"))
+    # The scratch tree and its target directory run to gigabytes on a shared disk: delete them.
+    shutil.rmtree(TOP, ignore_errors=True)
+    print(f"scratch tree {TOP} deleted")
     sys.exit(1 if survived or code else 0)
 
 

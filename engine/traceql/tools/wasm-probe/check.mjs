@@ -57,7 +57,7 @@ const NESTED = [
   ['by() argument', S, n => `{ } | by(.a${rep(' + .a', n)})`],
   ['metrics argument', M, n => `{ } | sum_over_time(.a${rep(' + .a', n)})`],
   ['metrics by() argument', M, n => `{ } | rate() by (.a${rep(' + .a', n)})`],
-  ['regex in field parentheses', S, n => `{ ${rep('(', n)}name =~ "${rep('(', 64)}.*${rep(')', 64)}"${rep(')', n)} }`],
+  ['regex in field parentheses', S, n => `{ ${rep('(', n)}name =~ "${rep('(', 63)}.*${rep(')', 63)}"${rep(')', n)} }`],
 ];
 const FLAT = [
   ['pipeline stages', S, n => `{ }${rep(' | { }', n)}`],
@@ -93,7 +93,7 @@ for (const [name, kind, make] of FLAT) {
   const out = attempt(kind, make(n));
   if (isErr(out) || out.startsWith('TRAP')) failures.push(`${name} x${n}: ${out.slice(0, 120)}`);
 }
-const nestRe = n => `{ name =~ "${rep('(', n)}op.${rep(')', n)}" }`;
+const nestRe = n => `{ name =~ "${rep('(', n)}x${rep(')', n)}" }`;
 const regex = {
   nest64: attempt(S, nestRe(64)), nest65: attempt(S, nestRe(65)), nestFar: attempt(S, nestRe(fill(nestRe))),
   size: attempt(S, '{ name =~ "(?:x{1000}){1000}" }'),

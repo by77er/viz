@@ -3,8 +3,7 @@
 //!
 //! A stack overflow is not a panic. Natively it aborts the whole test process ("has
 //! overflowed its stack"); in WebAssembly it traps the instance. So these tests run each
-//! query on a thread with a small stack ([`STACK`], in the debug build, whose frames are
-//! larger than the release build's), through every entry point: `parse`, `plan`, `search`,
+//! query on a thread with a bounded stack ([`STACK`]), through every entry point: `parse`, `plan`, `search`,
 //! `matching_spansets`, `query_range`, `query_instant` and the JSON writers. A regression
 //! shows as this test binary dying. `tools/wasm-probe/check.mjs` runs the same shapes in
 //! the WASM build.
@@ -18,9 +17,11 @@ use proptest::prelude::{prop_assert, proptest, ProptestConfig};
 use shapes::{fill, FLAT, NESTED};
 use viz_traceql::*;
 
-/// Stack for every query here: an eighth of Rust's default for a spawned thread (2 MiB),
-/// a quarter of a WASM module's (1 MiB).
-const STACK: usize = 256 * 1024;
+/// Stack for every query here. Debug frames are 5 to 10 times larger than release ones: at
+/// the limit the costliest shape (a 200-term `rate() + rate() + ...`) needs 2.6 MiB in the
+/// debug build and 280 KiB in the release build, natively (README, "Nesting limits").
+/// A query that escaped the limits recurses thousands of levels and overflows either.
+const STACK: usize = if cfg!(debug_assertions) { 4 << 20 } else { 512 << 10 };
 
 const S: u64 = 1_700_000_000_000_000_000;
 const MS: u64 = 1_000_000;
@@ -97,9 +98,10 @@ fn each_shape_runs_at_its_limit_and_is_refused_one_past_it() {
             if accepted != s.max {
                 failures.push(format!("{}: largest accepted n is {accepted}, expected {}", s.name, s.max));
             }
-            match run_all(&(s.make)(s.max)) {
-                Ok(n) if n > 0 => {}
-                other => failures.push(format!("{} at n = {}: {other:?}", s.name, s.max)),
+            // Evaluated over every span whatever it matches (an odd number of `!`, or a `>>`
+            // chain longer than the trace, matches nothing).
+            if let Err(e) = run_all(&(s.make)(s.max)) {
+                failures.push(format!("{} at n = {}: {e:?}", s.name, s.max));
             }
             let past = run_all(&(s.make)(s.max + 1));
             if !is_depth_error(&past) {
@@ -169,7 +171,7 @@ fn regexes_are_bounded_in_nesting_size_and_number() {
         let err = run_all(big).unwrap_err();
         assert!(matches!(&err, Error::Validation { msg, .. } if msg.contains("invalid regex")), "{err:?}");
         // An ordinary Unicode-aware pattern fits comfortably.
-        run_all(r#"{ name =~ "(?i)\w+[-_.]\d{1,4}|s\d" }"#).unwrap();
+        assert_eq!(run_all(r#"{ name =~ "(?i)\\w+[-_.]\\d{1,4}|s\\d" }"#).unwrap(), 1);
 
         // Number per query.
         let many = |k: usize| format!("{{ {} }}", vec![r#"name =~ "s.*""#; k].join(" && "));
@@ -183,12 +185,14 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: cases(), ..ProptestConfig::default() })]
 
     /// Random stacks of nesting constructs, at random depths up to 15 times the limit, never
-    /// crash; whatever is accepted also evaluates on the small stack.
+    /// crash; whatever is accepted also evaluates on the bounded stack. (In a run of 300
+    /// cases, 126 were accepted and evaluated and 174 refused for depth; README, "Nesting
+    /// limits".)
     #[test]
     fn random_deep_nesting_never_crashes(
         field in depths(7),
         spanset in depths(7),
-        metrics in proptest::collection::vec(0u8..4, 0..300),
+        metrics in depths(4),
         to_metrics in proptest::bool::ANY,
     ) {
         let q = deep_query(&field, &spanset, to_metrics.then_some(metrics.as_slice()));
@@ -210,12 +214,14 @@ proptest! {
     }
 }
 
-/// Nesting lengths: half the cases shallow (mostly accepted), half up to 3,000 levels.
+/// Nesting lengths: up to 25 (the three together then mostly fit within MAX_DEPTH), up to
+/// 70 (around the limit), or up to 3,000 (far past it).
 fn depths(kinds: u8) -> impl proptest::strategy::Strategy<Value = Vec<u8>> {
     use proptest::prelude::Strategy;
     proptest::prop_oneof![
-        proptest::collection::vec(0..kinds, 0..80),
-        proptest::collection::vec(0..kinds, 0..3000),
+        2 => proptest::collection::vec(0..kinds, 0..25),
+        1 => proptest::collection::vec(0..kinds, 0..70),
+        1 => proptest::collection::vec(0..kinds, 0..3000),
     ]
     .boxed()
 }
@@ -245,13 +251,14 @@ fn deep_query(field: &[u8], spanset: &[u8], metrics: Option<&[u8]>) -> String {
     }
     let mut s = format!("{{ {e} }}");
     for &w in spanset {
+        // Both operands of a spanset operator are wrapped pipelines (TraceQL refuses a mix).
         s = match w {
             0 => format!("({s})"),
-            1 => format!("({s}) && {{ }}"),
-            2 => format!("{{ }} >> ({s})"),
+            1 => format!("({s} | {{ }}) && ({{ }} | {{ }})"),
+            2 => format!("({{ }} | {{ }}) >> ({s} | {{ }})"),
             3 => format!("(({s}) | {{ }})"),
-            4 => format!("({s}) ~ {{ }}"),
-            5 => format!("{{ }} || ({s})"),
+            4 => format!("({s} | {{ }}) ~ ({{ }} | {{ }})"),
+            5 => format!("({{ }} | {{ }}) || ({s} | {{ }})"),
             _ => format!("({s}) | by(.a) | coalesce()"),
         };
         if s.len() > MAX_QUERY_BYTES {

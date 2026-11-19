@@ -41,8 +41,9 @@ pub const MAX_QUERY_BYTES: usize = 128 * 1024;
 /// Deepest accepted nesting. Two things are bounded by it, so that no recursion over a query
 /// can exhaust the stack (a stack overflow aborts a WASM isolate; it is not an error):
 ///
-/// - the parser's own recursion: open parentheses and braces, unary operators, the right
-///   operand of `^`, and each precedence level entered, counted on the way down;
+/// - the parser's own recursion, counted on the way down: braces, unary operators, the right
+///   operand of `^`, each precedence level entered, and parentheses (two levels each,
+///   since each recurses through several functions);
 /// - the height of the syntax tree it builds, counted on the way up. A chain such as
 ///   `a && b && c` or `{ } >> { } >> { }` is parsed by a loop but builds a tree one level
 ///   deeper per operator, and every later pass (validation, conversion, planning,
@@ -53,9 +54,10 @@ pub const MAX_QUERY_BYTES: usize = 128 * 1024;
 /// stack (debug build) and `tools/wasm-probe/check.mjs` runs them in the WASM build.
 pub const MAX_DEPTH: usize = 200;
 
-/// Most regular expressions in one query, and the limits each is compiled with: nesting of
-/// groups and repetitions (the regex compiler recurses over it), compiled size and lazy-DFA
-/// cache. Together they bound the memory a query's regexes can take to a few tens of MiB of
+/// Most regular expressions in one query, and the limits each is compiled with: nesting
+/// (as the regex parser counts it in the pattern: each group, repetition, alternation and
+/// concatenation is a level; the regex compiler recurses over it), compiled size and
+/// lazy-DFA cache. Together they bound the memory a query's regexes can take to a few tens of MiB of
 /// a 128 MB isolate, whatever the query text.
 pub const MAX_REGEXES: usize = 32;
 pub const REGEX_NEST_LIMIT: u32 = 64;
@@ -678,9 +680,10 @@ impl<'a> Parser<'a> {
         if self.regexes > MAX_REGEXES {
             return Err(self.verr(pos, format!("more than {MAX_REGEXES} regular expressions in one query")));
         }
-        // The anchoring group adds one level of nesting to the pattern.
+        // The anchoring `^(?s:…)$` adds two levels (a concatenation and a group) to the
+        // nesting the regex parser counts in the user's pattern.
         regex::RegexBuilder::new(&format!("^(?s:{text})$"))
-            .nest_limit(REGEX_NEST_LIMIT + 1)
+            .nest_limit(REGEX_NEST_LIMIT + 2)
             .size_limit(REGEX_SIZE_LIMIT)
             .dfa_size_limit(REGEX_DFA_SIZE_LIMIT)
             .build()
@@ -777,9 +780,12 @@ impl<'a> Parser<'a> {
 
     fn field_primary(&mut self) -> Hp<FieldExpr> {
         if matches!(self.peek(), Tok::LParen) {
-            // Parentheses add no node; `field_or` counts the recursion.
+            // Parentheses add no node, but recurse through all seven precedence functions:
+            // they count two levels here (with `field_or`'s), as spanset parentheses do.
             self.next();
+            self.enter()?;
             let (e, h) = self.field_or()?;
+            self.leave();
             self.expect(Tok::RParen, "')'")?;
             return Ok((e, h));
         }

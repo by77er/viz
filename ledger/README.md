@@ -16,7 +16,7 @@ authority on what is visible. It implements `LedgerRpc`, `LedgerAdminRpc` and
 | `test/checkpoint.test.ts` | 13 tests of checkpoints in parts (format 2) and the streaming rebuild: the state at the checkpoint's version whatever commits meanwhile, part boundaries, key order, a crash, lost answer or storage loss at every await of the checkpoint path, superseded checkpoints, tampered checkpoints, streaming, an untracked checkpoint, the release before reading this one's log and back, the format-2 golden |
 | `test/compat.test.ts` | 9 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8), including that the release before opens this storage |
 | `test/tombstone.test.ts`, `test/precedence.test.ts` | 8 and 5 tests |
-| `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`); checkpoints and rebuilds against the frozen release before checkpoints in parts (`bench/before/`, `44649de`; `checkpoint.bench.test.ts`, results in `bench/results/checkpoint.log`); `rss.mjs` samples the processes' memory |
+| `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`); checkpoints and rebuilds against the frozen release before checkpoints in parts (`bench/before/`, `44649de`; `checkpoint.bench.test.ts`, results in `bench/results/checkpoint.txt`); `rss.mjs` samples the processes' memory |
 
 Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`);
 optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (default 256).
@@ -159,7 +159,7 @@ drain in flight). A drain of an incarnation that has since been replaced changes
 
 **Checkpoints and rebuilds, the release before against this one** (measured here, in local
 workerd, `bench/checkpoint.bench.test.ts`, 2026-11-19; raw lines in
-`bench/results/checkpoint.log`). The counterfactual: the frozen release before checkpoints in
+`bench/results/checkpoint.txt`). The counterfactual: the frozen release before checkpoints in
 parts (`bench/before/`, `44649de`, its 16 MiB limit lifted as review S-2's benchmark did) and
 this one are filled with the same units of S4-shaped files (4,000 files a unit, an index
 fragment of about 460 characters); before any time is compared both must hold the identical
@@ -327,6 +327,31 @@ the recorded bounds not made durable before the PUT (untestable here, as above);
 S-7 guards (`rebuildFromLog` waiting for a drain in flight; `segmentWritten` ignoring a
 replaced incarnation): each covers the other, and no test empties storage in place while a
 drain is in flight, so S-7 is right by reading, not by test.
+
+**Run 3** (2026-11-19, checkpoints in parts and the streaming rebuild, D47; the copy also
+holds `contracts/`; checkpoint mutants run with `--bail=1`): **60 of 64 killed.** The 46 above
+again (patterns of six updated where the code they target was rewritten: the base's kind and
+watermarks, F11, the gap check, the alarm, superseded format-1 checkpoints), and 18 new ones,
+each killed by the `checkpoint.test.ts` test named in the run's output. Chunk boundaries: a
+record that does not fit going in anyway; a key not live at the checkpoint's version written;
+the live row winning over its pre-image; keys merged in UTF-16 order; tombstones of later
+removals written; no pre-image for a removal, or for an addition, ahead of the cursor; a
+checkpoint going on over untracked versions. Superseded checkpoints: deleted before the newer
+manifest is written; never deleted; the new checkpoint's own parts deleted. Streaming: the base
+read whole before anything is written; a base's rows all held until it ends; every part read
+before any is written; parts that do not add up to the manifest accepted; what an unreadable
+checkpoint loaded kept. Versions: migration 3 made forward-only (killed by the test that the
+release before opens this storage, added for it). Two mutants survived at first and were
+addressed: "a checkpoint for a segment that does not end at the committed version" (its test's
+state had grown past one part, so it ran in format 2, where the tracking check abandons such a
+checkpoint anyway; the test now runs both formats and kills it), and "S-1: storage readable by
+code that knows only version 1" (flipping migration 2 alone is equivalent now that migration 3
+also says `readableFrom` 2; the mutant now flips both, and is killed). **Survived (4):** the
+recorded bounds not made durable before the PUT (untestable here, as before); the two S-7
+guards (each covers the other, as before); and "superseded: parts deleted before their
+manifests": a rebuild always reads the newest complete checkpoint first, so the order matters
+only if that one later becomes unreadable; it is defensive, right by reading, and no test can
+tell.
 
 ## Not implemented
 

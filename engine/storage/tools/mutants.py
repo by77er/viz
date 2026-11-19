@@ -166,6 +166,9 @@ def main():
         bad += 0 if status == "fail" else 1
     changed = [rel for rel, h in start.items() if digest(rel) != h]
     print("shared tree untouched" if not changed else f"WARNING: the shared tree's {changed} changed during the run (someone else's edit?)")
+    # The copy and its target directory run to gigabytes on a shared disk: delete them.
+    shutil.rmtree(os.path.dirname(ROOT), ignore_errors=True)
+    print(f"scratch copy {os.path.dirname(ROOT)} deleted")
     sys.exit(1 if bad else 0)
 
 main()

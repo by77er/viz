@@ -25,7 +25,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -501,4 +501,7 @@ for (const m of chosen) {
 console.log(`\n${chosen.length - survived} of ${chosen.length} mutants killed`)
 const after = fingerprint()
 console.log(`shared tree, files the mutants touch: ${before} before, ${after} after${before === after ? ' (unchanged)' : ' (CHANGED: by someone else; this tool writes only to the scratch tree)'}`)
+// The scratch tree (with the copy's WASM target directory) is large on a shared disk: delete it.
+rmSync(scratch, { recursive: true, force: true })
+console.log(`scratch tree ${scratch} deleted`)
 process.exit(survived ? 1 : 0)
