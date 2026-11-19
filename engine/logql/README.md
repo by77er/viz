@@ -141,7 +141,7 @@ x86-64, 4 cores and 16 GB shared with other builds (load average 7 to 15 during 
 rustc 1.97.0, Go 1.24.7 (and go1.26.10 for the harness), Node 22.23. Measured here, not on
 Cloudflare, on 2026-11-19.
 
-`cargo test` runs offline and needs no Go: unit tests (25), `tests/api.rs` (7),
+`cargo test` runs offline and needs no Go: unit tests (25), `tests/api.rs` (8),
 `tests/semantics.rs` (10, rules observed in Loki), `tests/conformance.rs` (1; it reports
 itself skipped unless `tools/oracle/fetch.sh` was run), `tests/props.rs` (7 properties) and
 the doc test. The differential exporters in `tests/differential.rs` are `#[ignore]`d; the
@@ -238,7 +238,11 @@ fixed: colons kept in sanitised keys; `| unpack != "x"` parsed as a label filter
 pass entries that already carry an error; `__error__` filters run after the other filters
 of their run; line filters after `decolorize`. The run with whole-second rows found one
 more: at the log limit, entries with equal timestamps go to the smaller label set in both
-directions (viz had reversed it for backward queries). Earlier, hand-written probes (about 320
+directions (viz had reversed it for backward queries). A last probe of 72 query forms for
+accept/reject aligned the grammar: ranges and `offset` in Prometheus duration syntax (no
+`[1.5m]`), no hex literals, grouping keywords refused as label names, `vector()` taking an
+unsigned number, `bool` accepted on any binary operator, a zero range; 71 now agree and
+one is the explicit `Unsupported` for a template `define`. Earlier, hand-written probes (about 320
 queries) fixed the window edges, `rate_counter`, error precedence, sanitising, pattern
 anchoring and the instant/range shapes before the generated runs.
 
@@ -260,7 +264,7 @@ is not a difference; it looks like a unit slip in Loki and is noted here in case
 | a range query equals one instant query per step (values within 1e-12 relative) | pass |
 | evaluation reads exactly what `selectors()` reports | pass |
 | random tokens spliced into valid queries never panic (query and `selectors()`) | pass |
-| `query_pool_is_live`: of 524 generated queries, 514 evaluate and 245 return data, so the properties are not vacuous | pass |
+| `query_pool_is_live`: of 523 generated queries, 511 evaluate and 236 return data, so the properties are not vacuous | pass |
 
 The two value properties allow 1e-12 relative because `viz-promql`'s `stddev`/`stdvar` give
 results that differ in the last bit when the input series arrive in another order, and `or`
@@ -315,29 +319,44 @@ codegen unit, `opt-level = 3`, `panic = "abort"`, stripped,
 `RUSTFLAGS="-C target-feature=+simd128,+bulk-memory"`) and the `engine/query/patches`
 stand-ins: `cargo build --release --target wasm32-unknown-unknown`. `node check.mjs <wasm>`:
 
-FILL_WASM
+| | |
+|---|---|
+| module (`viz_logql_wasm_check.wasm`) | **2,420,254 bytes**, **738,399 bytes** `gzip -9` |
+| imports | **0** (`WebAssembly.Module.imports` is `[]`) |
+| exports | `memory`, `viz_logql_alloc`, `viz_logql_free`, `viz_logql_query` |
+| instantiation with `{}` | succeeds; mean 0.50 ms over 200 instances (Node, module compiled once) |
+| a query (`sum by (level) (count_over_time(… \| logfmt \| __error__="" [1m]))`, 1,000 rows, first call) | 54 ms, correct values; a bad query returns the `bad_data` error object, no trap |
+| linear memory after that query | 2.5 MiB |
+| peak RSS of the build | 571 MB |
+
+Most of the size is `promql-parser` and the `regex` engine, as in `engine/promql`'s measurement
+(its minimal wrapper is 2.39 MB). Inside `engine/wasm-query`, which links both already, the
+LogQL code adds much less than this module's size. Without the three patches the module
+imports `__wbindgen_placeholder__` functions.
 
 ### (f) Benchmark
 
 `cargo run --release --example bench 1000000`: 1,000,000 rows (97.4 MB of lines, half
-logfmt, half JSON) in 200 streams over one hour, `MemSource`, best of 3, one thread.
-Measured with load average 13 to 15 on the 4 shared cores, so these are pessimistic;
-peak RSS 471 MB (the data set is held in memory; the engine's own state is small except for
-metric queries, which hold every selected sample, 16 bytes each).
+logfmt, half JSON) in 200 streams over one hour, `MemSource`, best of 3, one thread, final
+code. Measured with load average 10.7 to 11.5 on the 4 shared cores (other engineers'
+builds); an earlier run of the same binary logic at load 13 to 15 took 2 to 3 times as long
+for every case, so read these as an order of magnitude. Peak RSS 376 MB, most of it the
+data set held in memory (not scaled down: it fits the 1.5 GB budget).
 
 | case | query | best ms | M rows/s read | MB/s read | rows read |
 |---|---|---:|---:|---:|---:|
-| needle, log query | `{env="prod"} \|= "trace=00000000deadbeef"` | 53 | 12.6 | 1,228 | 664,867 |
-| filter + logfmt + label filter, log query | `{app="api"} \|= "error" \| logfmt \| status >= 500` | 171 | 1.5 | 143 | 249,950 |
-| count by app | `sum by (app) (count_over_time({env=~".+"}[1m]))` | 80 | 12.5 | 1,218 | 1,000,000 |
-| rate of errors, logfmt | `sum by (app) (rate({env="prod"} \| logfmt \| level="error" \| __error__="" [5m]))` | 1,774 | 0.4 | 37 | 665,000 |
-| JSON unwrap quantile | `quantile_over_time(0.99, {app="web"} \| json \| unwrap latency_ms \| __error__="" [5m]) by (app)` | 474 | 0.5 | 51 | 250,000 |
-| line_format | `{app="db"} \| logfmt \| line_format "{{.level \| upper}} {{.status}} {{.latency}}"` | 2,933 | 0.1 | 8 | 249,950 |
+| needle, log query | `{env="prod"} \|= "trace=00000000deadbeef"` | 22 | 29.8 | 2,903 | 664,867 |
+| filter + logfmt + label filter, log query | `{app="api"} \|= "error" \| logfmt \| status >= 500` | 53 | 4.8 | 464 | 249,950 |
+| count by app | `sum by (app) (count_over_time({env=~".+"}[1m]))` | 25 | 39.9 | 3,886 | 1,000,000 |
+| rate of errors, logfmt | `sum by (app) (rate({env="prod"} \| logfmt \| level="error" \| __error__="" [5m]))` | 885 | 0.8 | 73 | 665,000 |
+| JSON unwrap quantile | `quantile_over_time(0.99, {app="web"} \| json \| unwrap latency_ms \| __error__="" [5m]) by (app)` | 243 | 1.0 | 100 | 250,000 |
+| line_format | `{app="db"} \| logfmt \| line_format "{{.level \| upper}} {{.status}} {{.latency}}"` | 1,154 | 0.2 | 21 | 249,950 |
 
-The fast path for pipelines of line filters only (labels pass through, the stream's series
-is resolved once) took `count by app` from 972 ms to 80 ms and the needle search from 146 ms
-to 53 ms. Pipelines with parsers allocate a label set per row; templates run at about
-10 µs per line. Not scaled down: 1 M rows fit the memory budget.
+A fast path for pipelines of line filters only (labels pass through, the stream's match and
+series are resolved once per stream) took `count by app` from 972 ms to 80 ms and the
+needle search from 146 ms to 53 ms in the earlier, more loaded run. Pipelines with parsers
+build a label set per row (about 1.3 µs per logfmt row here) and templates cost about 4 µs
+per line: the next things to optimise. Native, not WASM, and not measured on Cloudflare.
 
 ## Differences from Loki (by design or undecidable)
 
@@ -388,6 +407,15 @@ to 53 ms. Pipelines with parsers allocate a label set per row; templates run at 
   LogQL result shapes are not defined yet and needs them (this crate's `Data`).
 - **Split execution and rules**: decomposable LogQL aggregations over leaves, and LogQL rule
   evaluation in the ruler.
+- **Design text** (not edited here, per the task's scope): `design/DESIGN.md` §5.1 lists the
+  `logs` sort as `service_name, resource_fp, ts`; `contracts/LOGS.md` proposes
+  `service_name, stream_id, ts, line` and calls the stream identity `stream_id`. §1 and §6.5
+  of research 04 speak of a "LogQL subset"; this crate covers most of LogQL. Two choices here
+  deserve `design/DECISIONS.md` entries: evaluating LogQL's vector operations with
+  viz-promql (alternative: a LogQL-specific evaluator; would change if LogQL's vector
+  semantics diverge further from PromQL's than the translation can absorb), and reproducing
+  Loki behaviour observed as a black box where the documentation is silent (alternative:
+  documented behaviour only).
 
 ## Layout
 
