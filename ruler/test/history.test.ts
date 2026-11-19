@@ -1,0 +1,371 @@
+/**
+ * Reading a rule's history (contract version 4): warming new anomaly and SLO rules, and
+ * backtesting threshold, anomaly and SLO rules. What is checked here:
+ *
+ * - warm-up: a new rule's first tick reads exactly its history class (planned first, nothing
+ *   fetched before the plan is summed), feeds it through the rule's own evaluation, and scores at
+ *   once with the state the library computes over the same points; over the budget, or refused by
+ *   the engine's plan, nothing is fetched and the status says so (also over HTTP); an engine
+ *   failure is retried, then given up; the state is written as whole rows in one transaction,
+ *   survives eviction, and a crash in that transaction leaves nothing half-written and the retry
+ *   gives the same state; nothing is read twice;
+ * - backtests: over data a rule fired on live, a backtest from the time the rule was created gives
+ *   the same alerts at the same times with the same explanations (anomaly and SLO rules), through
+ *   the monitors API too; every backtest is planned first and refused whole past the budget;
+ * - tenant isolation of the new endpoint: the tenant is the credential's, nothing else.
+ */
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
+import { describe, expect, it } from 'vitest'
+import { DETECTORS } from '../../anomaly/src/index.ts'
+import type { PromMatrix } from '../../contracts/engine'
+import type { Alert, BacktestInterval, BacktestResponse, HistoryPlan, RuleStatus } from '../contracts-proposal/rules.v2'
+import { readStateRows } from '../src/anomaly'
+import { apiKey, call } from './api'
+import { Crash, T0, world } from './harness'
+import { MIN, ok, setup, vec } from './helpers'
+import { SLI, sloEntry } from './slo.test'
+
+const HOUR = 60 * MIN
+const DAY = 24 * HOUR
+const LAT = 'latency_ms'
+const SERVICES = ['a', 'b', 'c']
+/** A deterministic noisy level: 97..103 around 100, by absolute minute (so history and live agree). */
+const noise = (t: number) => 100 + ((Math.round(t / MIN) * 37) % 7) - 3
+
+const ewma = (extra: Record<string, unknown> = {}) => ({ alert: 'LatencyAnomaly', expr: LAT, keep_firing_for: '0s', ...extra, anomaly: { params: { halfLifePoints: 10, minPoints: 5 }, unit: 'ms' } })
+
+/** Values of `latency_ms` per service at a time; history and live ticks read the same function. */
+type Values = (service: string, t: number) => number
+
+function matrixOf(values: Values, start: number, end: number, step: number): PromMatrix {
+  return {
+    resultType: 'matrix',
+    result: SERVICES.map((s) => {
+      const v: [number, string][] = []
+      for (let t = start; t <= end; t += step) v.push([t / 1000, String(values(s, t))])
+      return { metric: { service: s }, values: v }
+    }),
+  }
+}
+
+/** A tenant with one group of rules over `latency_ms` (or an SLO's parts), its history and live values scripted, and an ordered log of engine calls. */
+async function rig(rules: unknown[], values: Values = (_s, t) => noise(t), opts: { group?: string; slo?: (t: number) => number } = {}) {
+  const { tenant, stub, w } = await setup({ heartbeatMs: 6 * HOUR })
+  const log: string[] = []
+  const sloBad = opts.slo ?? (() => 0)
+  w.evaluate = (q, t) => {
+    log.push(`query ${t}`)
+    if (q.includes('viz_slo_part')) return vec([{ viz_slo_part: 'total' }, 1000], [{ viz_slo_part: 'bad' }, sloBad(t)])
+    return q === LAT ? vec(...SERVICES.map((s): [Record<string, string>, number] => [{ service: s }, values(s, t)])) : vec()
+  }
+  w.range = (q, start, end, step) => {
+    log.push(`range ${start} ${end} ${step}`)
+    if (q.includes('viz_slo_part')) {
+      const width = step / MIN
+      const total: [number, string][] = []
+      const bad: [number, string][] = []
+      for (let t = start; t <= end; t += step) {
+        total.push([t / 1000, String(1000 * width)])
+        // A coarse bucket sums the minutes it covers; a fine one is one minute.
+        let b = 0
+        for (let x = t - step + MIN; x <= t; x += MIN) b += sloBad(x)
+        bad.push([t / 1000, String(b)])
+      }
+      return { resultType: 'matrix', result: [{ metric: { viz_slo_part: 'total' }, values: total }, { metric: { viz_slo_part: 'bad' }, values: bad }] }
+    }
+    return matrixOf(values, start, end, step)
+  }
+  const plan = (p: HistoryPlan) => (w.plan = (q, start, end, step) => {
+    log.push(`plan ${start} ${end} ${step}`)
+    return p
+  })
+  plan({ scanSamples: 1000, bytesToRead: 4096, seriesEstimate: 3, refusal: null })
+  const saved = ok(await stub.saveGroups(tenant, { groups: [{ name: opts.group ?? 'g', interval: '1m', rules }] }))
+  return {
+    tenant,
+    stub,
+    w,
+    saved,
+    log,
+    plan,
+    tick: async () => {
+      world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+      expect(await runDurableObjectAlarm(stub)).toBe(true)
+      return world.now
+    },
+    rule: async (name = 'LatencyAnomaly'): Promise<RuleStatus> => ok(await stub.rules(tenant)).rules.find((x) => x.name === name)!,
+    stateRows: () => runInDurableObject(stub, (_i, s) => s.storage.sql.exec('SELECT rule_key, chunk, body FROM anomaly_state WHERE tenant = ? ORDER BY chunk', tenant).toArray()),
+    warmupRow: () => runInDurableObject(stub, (_i, s) => s.storage.sql.exec('SELECT body FROM warmup WHERE tenant = ?', tenant).toArray().map((x) => JSON.parse(x.body as string))),
+  }
+}
+
+/** What the library computes on its own from no state over the same points, in one batch call. */
+function libraryState(ts: number[], values: number[]) {
+  const det = DETECTORS.ewma as unknown as { detect(s: unknown, p: unknown, st: unknown): { state: unknown } }
+  return det.detect({ ts: Float64Array.from(ts), values: Float64Array.from(values) }, { halfLifePoints: 10, minPoints: 5, k: 8, unit: 'ms', stepMs: MIN }, null).state
+}
+
+function storedState(rows: Record<string, unknown>[], service: string) {
+  const read = readStateRows(rows.map((r) => r.body as string))
+  if ('error' in read) throw new Error(read.error)
+  return [...read.series.values()].find((s) => s.labels.service === service)?.state
+}
+
+describe('warming a new rule from history', () => {
+  it('an anomaly rule: the first tick plans then reads exactly the detector\'s look-back at the interval, and scores at once with the state the library computes over history and the live point', async () => {
+    const r = await rig([ewma()])
+    const t = await r.tick()
+    // EWMA, half-life 10 points: a look-back of 20 points, ending one interval before this tick.
+    const end = t - MIN
+    expect(r.log).toEqual([`plan ${end - 19 * MIN} ${end} ${MIN}`, `range ${end - 19 * MIN} ${end} ${MIN}`, `query ${t}`])
+    const s = await r.rule()
+    expect(s.anomaly).toMatchObject({ status: 'ok', scored: 3, warming: 0, stateSeries: 3 })
+    expect(s.anomaly!.warmup).toMatchObject({ status: 'done', points: 60, attempts: 1, plan: { scanSamples: 1000, bytesToRead: 4096, queries: 1 }, budget: { scanSamples: 3_000_000, bytesToRead: 16 * 1024 * 1024 }, reads: [{ fromMs: end - 19 * MIN, toMs: end, stepMs: MIN }] })
+    const ts = Array.from({ length: 21 }, (_x, i) => end - 19 * MIN + i * MIN)
+    expect(storedState(await r.stateRows(), 'b')).toEqual(libraryState(ts, ts.map((x) => noise(x))))
+    // Whole batches: the three series' state in one row; the status in one more.
+    expect(await r.stateRows()).toHaveLength(1)
+    expect(await r.warmupRow()).toEqual([{ v: 1, ...s.anomaly!.warmup }])
+    // Nothing is read again: not at the next tick, not after an eviction.
+    await evictDurableObject(r.stub)
+    expect((await r.rule()).anomaly).toMatchObject({ stateSeries: 3, warmup: { status: 'done' } })
+    await r.tick()
+    expect(r.log.filter((x) => !x.startsWith('query'))).toHaveLength(2)
+    expect((await r.rule()).anomaly).toMatchObject({ status: 'ok', scored: 3 })
+  })
+
+  it('over the budget nothing is fetched: the warm-up is refused with the plan\'s numbers and the budget, the rule starts cold, and the monitors API shows why', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 6 * HOUR })
+    const key = await apiKey(tenant)
+    w.evaluate = (q, t) => vec(...SERVICES.map((s): [Record<string, string>, number] => [{ service: s }, noise(t)]))
+    w.range = () => {
+      throw new Error('fetched although over budget')
+    }
+    w.plan = () => ({ scanSamples: 5_000_000, bytesToRead: 40 << 20, seriesEstimate: 3, refusal: null })
+    const created = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'Latency', query: LAT, anomaly: { params: { halfLifePoints: 10, minPoints: 5 } } })
+    expect(created.status, created.text).toBe(201)
+    world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    expect(w.rangeCalls).toEqual([])
+    const m = (await call(key.auth, 'GET', `/api/v1/monitors/${created.json.id}`)).json.monitor
+    expect(m.anomaly.status).toMatchObject({ status: 'warming', warming: 3 })
+    expect(m.anomaly.status.warmup).toMatchObject({ status: 'refused', plan: { scanSamples: 5_000_000, bytesToRead: 40 << 20, queries: 1 }, budget: { scanSamples: 3_000_000, bytesToRead: 16 << 20 }, points: 0 })
+    expect(m.anomaly.status.warmup.message).toMatch(/^over budget: the read would scan 5000000 samples and 41943040 bytes in 1 range query; the budget is 3000000 samples and 16777216 bytes; nothing was fetched and the rule started cold$/)
+    // The budget is a limit like the others: raised, a new rule is warmed.
+    ok(await stub.configure(tenant, { limits: { maxWarmupScanSamples: 10_000_000, maxWarmupBytes: 64 << 20 } }))
+    w.range = (_q, start, end, step) => matrixOf((_s, t) => noise(t), start, end, step)
+    const second = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'Latency 2', query: LAT, anomaly: { params: { halfLifePoints: 10, minPoints: 5 } } })
+    world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    expect((await call(key.auth, 'GET', `/api/v1/monitors/${second.json.id}`)).json.monitor.anomaly.status.warmup.status).toBe('done')
+  })
+
+  it('a read the engine\'s own limits would refuse is refused too, with the engine\'s words; nothing is fetched', async () => {
+    const r = await rig([ewma()])
+    r.plan({ scanSamples: 9, bytesToRead: 9, seriesEstimate: 3, refusal: { errorType: 'execution', error: 'query exceeded limit max_files: 2400 data files to read, the limit is 2000. Narrow the time range.' } })
+    await r.tick()
+    expect(r.log.filter((x) => x.startsWith('range'))).toEqual([])
+    expect((await r.rule()).anomaly!.warmup).toMatchObject({ status: 'refused', plan: null, message: 'the engine would refuse the read: execution: query exceeded limit max_files: 2400 data files to read, the limit is 2000. Narrow the time range.; nothing was fetched and the rule started cold' })
+  })
+
+  it('an engine failure is retried at the next tick (the rule waits, and says so), then given up after three attempts: the rule starts cold', async () => {
+    const r = await rig([ewma()])
+    r.w.plan = () => {
+      throw new Error('unavailable: a storage component did not answer; retry')
+    }
+    const queried = () => r.log.filter((x) => x.startsWith('query')).length
+    await r.tick()
+    expect(queried(), 'the rule waited').toBe(0)
+    expect((await r.rule()).anomaly).toMatchObject({ status: 'warming', message: 'the engine failed the read (unavailable: a storage component did not answer; retry); tried again at the next tick', warmup: { status: 'pending', attempts: 1 } })
+    await r.tick()
+    expect([queried(), (await r.rule()).anomaly!.warmup!.attempts]).toEqual([0, 2])
+    await r.tick()
+    expect(queried(), 'given up: evaluated cold').toBe(1)
+    expect((await r.rule()).anomaly!.warmup).toMatchObject({ status: 'failed', attempts: 3, message: expect.stringMatching(/the rule started cold$/) })
+    await r.tick()
+    expect(queried()).toBe(2)
+  })
+
+  it('a crash in the warm-up\'s transaction writes nothing; the retried alarm warms again, to the same state; then nothing is read again', async () => {
+    const r = await rig([ewma()])
+    r.w.faults.add('ruler:warmup-commit')
+    world.now = Math.max(world.now, ok(await r.stub.health(r.tenant)).alarmAtMs!)
+    const t = world.now
+    const crashed = await runInDurableObject(r.stub, (inst) => inst.alarm()).then(() => 'ok', (e) => (e instanceof Crash || /injected crash/.test(String(e)) ? 'crashed' : String(e)))
+    expect(crashed).toBe('crashed')
+    expect(await r.stateRows()).toEqual([])
+    expect((await r.warmupRow()).map((x) => x.status)).toEqual(['pending'])
+    await evictDurableObject(r.stub)
+    expect(await runDurableObjectAlarm(r.stub)).toBe(true)
+    expect(r.log.filter((x) => x.startsWith('range'))).toHaveLength(2)
+    const end = t - MIN
+    const ts = Array.from({ length: 21 }, (_x, i) => end - 19 * MIN + i * MIN)
+    expect(storedState(await r.stateRows(), 'c')).toEqual(libraryState(ts, ts.map((x) => noise(x))))
+    expect((await r.warmupRow()).map((x) => [x.status, x.attempts])).toEqual([['done', 1]])
+    await r.tick()
+    expect(r.log.filter((x) => x.startsWith('range'))).toHaveLength(2)
+  })
+
+  it('an SLO rule: both reads are planned before either is fetched; the rings are written as rows in one transaction; the first evaluation sees every window and the whole compliance window', async () => {
+    const r = await rig([sloEntry()], undefined, { group: 'slos/1m' })
+    const t = await r.tick()
+    const end = t - MIN
+    const plans = r.log.filter((x) => x.startsWith('plan'))
+    const ranges = r.log.filter((x) => x.startsWith('range'))
+    expect(r.log.slice(0, 2)).toEqual(plans)
+    expect(ranges.map((x) => x.replace(/^range/, 'plan'))).toEqual(plans)
+    const [fine, coarse] = ranges.map((x) => x.split(' ').slice(1).map(Number))
+    // The fine read ends one interval before this tick and holds at least the 3-day window.
+    expect([fine![1], fine![2]]).toEqual([end, MIN])
+    expect((fine![1]! - fine![0]!) / MIN + 1).toBeGreaterThanOrEqual(4320)
+    // The coarse read is hourly and ends where the fine read's first hour begins.
+    expect(coarse![2]).toBe(HOUR)
+    expect(fine![0]! - coarse![1]!).toBe(MIN)
+    const s = await r.rule('CheckoutSLO')
+    expect(s.slo).toMatchObject({ status: 'ok', warming: 0, budgetRemaining: 1, budgetCoveredMs: 30 * DAY, warmup: { status: 'done', plan: { queries: 2 } } })
+    const rows = await runInDurableObject(r.stub, (_i, st) => st.storage.sql.exec('SELECT part, COUNT(*) AS n FROM slo_state WHERE tenant = ? GROUP BY part ORDER BY part', r.tenant).toArray())
+    expect(rows.map((x) => x.part)).toEqual(['coarse', 'fine', 'head'])
+    expect(rows.find((x) => x.part === 'fine')!.n).toBeGreaterThanOrEqual(72)
+    expect(rows.find((x) => x.part === 'coarse')!.n).toBeGreaterThanOrEqual(30)
+  })
+})
+
+/** Live alert states per tick, as backtest intervals (with the annotations each alert had when it entered its state). */
+function intervalsOf(ticks: { ts: number; alerts: Alert[] }[], to: number) {
+  const open = new Map<string, BacktestInterval>()
+  const out: BacktestInterval[] = []
+  for (const { ts, alerts } of ticks) {
+    const now = new Map(alerts.filter((a) => a.state !== 'inactive').map((a) => [a.fingerprint, a]))
+    for (const fp of new Set([...open.keys(), ...now.keys()])) {
+      const cur = open.get(fp)
+      const a = now.get(fp)
+      if (cur && cur.state === a?.state) continue
+      if (cur) {
+        cur.endMs = ts
+        cur.open = false
+        open.delete(fp)
+      }
+      if (a) {
+        const next: BacktestInterval = { fingerprint: fp, labels: a.labels, state: a.state as 'pending' | 'firing', startMs: ts, endMs: to, open: true, noData: false, annotations: a.annotations }
+        out.push(next)
+        open.set(fp, next)
+      }
+    }
+  }
+  return out.sort((a, b) => a.startMs - b.startMs || (a.fingerprint < b.fingerprint ? -1 : 1))
+}
+
+const good = (r: BacktestResponse) => {
+  if (r.status !== 'ok') throw new Error(JSON.stringify(r).slice(0, 500))
+  return r
+}
+
+describe('backtests: the rule\'s own evaluation over history, in time order', () => {
+  it('an anomaly rule: over data it fired on live, a backtest from its creation gives the same alerts at the same times with the same explanations', async () => {
+    // Two bursts on b and one on c, inside 60 minutes of live ticks.
+    const values: Values = (s, t) => {
+      const m = Math.round(t / MIN) % 1000
+      return (s === 'b' && (m % 41 === 7 || m % 41 === 8)) || (s === 'c' && m % 53 === 30) ? 400 : noise(t)
+    }
+    const r = await rig([ewma({ for: '1m', annotations: { summary: '{{ $labels.service }} latency {{ $value }}' } })], values)
+    const ticks: { ts: number; alerts: Alert[] }[] = []
+    for (let i = 0; i < 60; i++) {
+      const ts = await r.tick()
+      ticks.push({ ts, alerts: (await r.rule()).alerts })
+    }
+    const from = ticks[0]!.ts
+    const to = ticks.at(-1)!.ts
+    const live = intervalsOf(ticks, to)
+    expect(live.filter((x) => x.state === 'firing').length, 'it fired live').toBeGreaterThanOrEqual(2)
+    const bt = good(await r.stub.backtest(r.tenant, ewma({ for: '1m', annotations: { summary: '{{ $labels.service }} latency {{ $value }}' } }), from, to, MIN))
+    expect(bt.kind).toBe('anomaly')
+    const strip = (xs: BacktestInterval[]) => xs.map(({ fingerprint, state, startMs, endMs, open, annotations }) => ({ fingerprint, state, startMs, endMs, open, annotations }))
+    expect(strip(bt.intervals)).toEqual(strip(live))
+    expect(bt.intervals.find((x) => x.state === 'firing')!.annotations!.anomaly).toMatch(/^400 ms is [\d.]+ standard deviations above the exponentially weighted mean/)
+    // Warmed exactly as the live rule was: the same read before `from`.
+    expect(bt.warmup).toEqual({ reads: [{ fromMs: from - 20 * MIN, toMs: from - MIN, stepMs: MIN }], points: 60 })
+    expect(bt.cost).toEqual({ scanSamples: 1000, bytesToRead: 4096, queries: 1, budget: { scanSamples: 20_000_000, bytesToRead: 128 << 20 } })
+  })
+
+  it('an SLO rule: over data it paged and ticketed on live, the backtest gives the same alerts at the same times with the same sentences', async () => {
+    const outage = (t: number) => {
+      const m = Math.round(t / MIN)
+      return m % 97 >= 10 && m % 97 < 16 ? 1000 : m % 3
+    }
+    const r = await rig([sloEntry()], undefined, { group: 'slos/1m', slo: outage })
+    const ticks: { ts: number; alerts: Alert[] }[] = []
+    for (let i = 0; i < 100; i++) {
+      const ts = await r.tick()
+      ticks.push({ ts, alerts: (await r.rule('CheckoutSLO')).alerts })
+    }
+    const from = ticks[0]!.ts
+    const to = ticks.at(-1)!.ts
+    const live = intervalsOf(ticks, to)
+    const severities = new Set(live.map((x) => x.labels.severity))
+    expect(severities, 'it paged and ticketed live').toEqual(new Set(['page', 'ticket']))
+    const bt = good(await r.stub.backtest(r.tenant, sloEntry(), from, to, MIN))
+    expect(bt.kind).toBe('slo')
+    const strip = (xs: BacktestInterval[]) => xs.map(({ fingerprint, state, startMs, endMs, open, annotations, labels }) => ({ fingerprint, state, startMs, endMs, open, annotations, labels }))
+    expect(strip(bt.intervals)).toEqual(strip(live))
+    expect(bt.intervals.find((x) => x.labels.severity === 'page')!.annotations!.slo).toMatch(/^error budget burning at .*\(page threshold (14\.4|6)×\).*% of the budget is left over the last 30 days/)
+    expect(bt.cost!.queries).toBe(2)
+  })
+
+  it('every backtest is planned first and refused whole past the budget, for every kind; a step other than the interval is refused for detectors', async () => {
+    const r = await rig([ewma()])
+    r.plan({ scanSamples: 15_000_000, bytesToRead: 1 << 20, seriesEstimate: 3, refusal: null })
+    const T = T0 - DAY
+    for (const rule of [{ alert: 'Hot', expr: 'latency_ms > 300' }, ewma(), sloEntry()]) {
+      const res = await r.stub.backtest(r.tenant, rule, T, T + DAY, MIN)
+      expect(res).toMatchObject({ status: 'over_budget', budget: { scanSamples: 20_000_000, bytesToRead: 128 << 20 } })
+      expect(res.status === 'over_budget' && res.message).toMatch(/^over budget: the read would scan \d+ samples .* the budget is 20000000 samples and 134217728 bytes\. Nothing was fetched/)
+    }
+    expect(r.log.filter((x) => x.startsWith('range'))).toEqual([])
+    expect(await r.stub.backtest(r.tenant, ewma(), T, T + HOUR, 5 * MIN, MIN)).toMatchObject({ status: 'invalid', errors: [{ path: 'stepMs', message: expect.stringMatching(/an anomaly rule is backtested at its interval \(1m\)/) }] })
+    expect(await r.stub.backtest(r.tenant, { record: 'x:y', expr: 'up' }, T, T + HOUR, MIN)).toMatchObject({ status: 'invalid', errors: [{ path: 'rule', message: 'a recording rule cannot be backtested' }] })
+  })
+})
+
+describe('backtests through the monitors API', () => {
+  it('POST /monitors/backtest takes an SLO or anomaly monitor about to be saved; POST /monitors/{id}/backtest a saved one, at its interval; over budget is 422 over_budget; only the caller\'s own monitors and data', async () => {
+    const outage = (t: number) => (Math.round(t / MIN) % 97 >= 10 && Math.round(t / MIN) % 97 < 16 ? 1000 : 0)
+    const a = await rig([], undefined, { slo: outage })
+    const b = await rig([], undefined, { slo: () => 0 })
+    const ka = await apiKey(a.tenant)
+    const kb = await apiKey(b.tenant)
+    const doc = { name: 'Checkout availability', slo: { objective: 0.999, sli: { bad: SLI.bad, total: SLI.total } } }
+    const T = world.now - (world.now % MIN)
+    const draft = await call(ka.auth, 'POST', '/api/v1/monitors/backtest', { monitor: doc, fromMs: T - 2 * HOUR, toMs: T, step: '1m' })
+    expect(draft.status, draft.text).toBe(200)
+    expect(draft.json.kind).toBe('slo')
+    expect(draft.json.intervals.some((x: BacktestInterval) => x.state === 'firing' && x.labels.severity === 'page' && /^error budget burning/.test(x.annotations!.slo!))).toBe(true)
+    const anomalyDraft = await call(ka.auth, 'POST', '/api/v1/monitors/backtest', { monitor: { name: 'Latency', query: LAT, anomaly: {} }, fromMs: T - HOUR, toMs: T, step: '1m' })
+    expect([anomalyDraft.status, anomalyDraft.json.kind]).toEqual([200, 'anomaly'])
+    const saved = await call(ka.auth, 'POST', '/api/v1/monitors', doc)
+    expect(saved.status, saved.text).toBe(201)
+    expect(saved.json).toMatchObject({ group: 'slos/1m', expr: null, sloHistory: { lookbackMs: 4320 * MIN } })
+    const byId = await call(ka.auth, 'POST', `/api/v1/monitors/${saved.json.id}/backtest`, { fromMs: T - 2 * HOUR, toMs: T })
+    expect(byId.status, byId.text).toBe(200)
+    expect(byId.json.intervals.map((x: BacktestInterval) => [x.state, x.startMs, x.endMs, x.labels.severity])).toEqual(draft.json.intervals.map((x: BacktestInterval) => [x.state, x.startMs, x.endMs, x.labels.severity]))
+    // Past the budget: refused, nothing fetched.
+    const ranges = a.w.rangeCalls.length
+    a.plan({ scanSamples: 30_000_000, bytesToRead: 0, seriesEstimate: 1, refusal: null })
+    const over = await call(ka.auth, 'POST', `/api/v1/monitors/${saved.json.id}/backtest`, { fromMs: T - 2 * HOUR, toMs: T })
+    expect([over.status, over.json.error.code, over.json.budget]).toEqual([422, 'over_budget', { scanSamples: 20_000_000, bytesToRead: 128 << 20 }])
+    expect(a.w.rangeCalls.length).toBe(ranges)
+    const wrongStep = await call(ka.auth, 'POST', `/api/v1/monitors/${saved.json.id}/backtest`, { fromMs: T - HOUR, toMs: T, step: '5m' })
+    expect([wrongStep.status, wrongStep.json.problems?.[0]?.path]).toEqual([422, 'stepMs'])
+    // Tenant B: A's monitor is not found, whatever B names; B's own backtest reads B's data only.
+    const bRanges = b.w.rangeCalls.length
+    for (const [q, h, body] of [['', {}, {}], [`?tenant=${a.tenant}`, { 'X-Scope-OrgID': a.tenant }, { tenant: a.tenant }]] as const) {
+      const res = await call(kb.auth, 'POST', `/api/v1/monitors/${saved.json.id}/backtest${q}`, { fromMs: T - HOUR, toMs: T, ...body }, h)
+      expect(res.status, res.text).toBe(404)
+    }
+    a.plan({ scanSamples: 0, bytesToRead: 0, seriesEstimate: 1, refusal: null })
+    const aRanges = a.w.rangeCalls.length
+    const mine = await call(kb.auth, 'POST', `/api/v1/monitors/backtest?tenant=${a.tenant}`, { monitor: doc, fromMs: T - 2 * HOUR, toMs: T, step: '1m' }, { 'X-Scope-OrgID': a.tenant })
+    expect(mine.status, mine.text).toBe(200)
+    expect(mine.json.intervals, 'B has no outage').toEqual([])
+    expect([a.w.rangeCalls.length, b.w.rangeCalls.length]).toEqual([aRanges, bRanges + 2])
+  })
+})

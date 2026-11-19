@@ -19,6 +19,7 @@
 use crate::catalog;
 use crate::error::{Limit, QueryError};
 use crate::limits::Limits;
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use viz_promql::{CompiledMatcher, MatchOp, Matcher, NAME_LABEL};
 use viz_storage::ScanInput;
@@ -48,8 +49,13 @@ fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i6
     let want_range = |lo: &[u8], hi: &[u8]| lo > hi || names.as_ref().is_none_or(|s| s.range(lo.to_vec()..=hi.to_vec()).next().is_some());
     let matches = |l: &Labels| compiled.iter().any(|ms| ms.iter().all(|m| m.matches(l)));
 
-    // series_id -> index in `matched` if its labels match (None: they do not), parsed once.
-    let mut seen: HashMap<i64, Option<u32>> = HashMap::new();
+    // series_id -> index in `matched` if its labels match (None: they do not), parsed once;
+    // a row group's labels are decoded only if it holds an id not seen yet.
+    let seen: RefCell<HashMap<i64, Option<u32>>> = RefCell::new(HashMap::new());
+    let labels_for = |sids: &[i64]| {
+        let s = seen.borrow();
+        sids.iter().any(|x| !s.contains_key(x))
+    };
     let mut matched: Vec<(Labels, bool)> = Vec::new(); // (labels, listed)
     let mut count = 0u64;
     let mut list = |slot: u32, matched: &mut Vec<(Labels, bool)>| -> Result<(), QueryError> {
@@ -64,19 +70,20 @@ fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i6
         Ok(())
     };
     for (fi, f) in input.series_files.iter().enumerate() {
-        catalog::for_each_series(f, fi, &want_range, &want, &mut |row| {
+        catalog::for_each_series_with(f, fi, &want_range, &want, &labels_for, &mut |row| {
             if row.min_ts > max_ts || row.max_ts < min_ts {
                 return Ok(()); // not in the window in this file
             }
-            let slot = match seen.get(&row.series_id) {
-                Some(s) => *s,
+            let known = seen.borrow().get(&row.series_id).copied();
+            let slot = match known {
+                Some(s) => s,
                 None => {
                     let l = catalog::parse_labels(row.labels_json)?;
                     let s = matches(&l).then(|| {
                         matched.push((keep(l), false));
                         (matched.len() - 1) as u32
                     });
-                    seen.insert(row.series_id, s);
+                    seen.borrow_mut().insert(row.series_id, s);
                     s
                 }
             };
@@ -99,15 +106,16 @@ fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i6
             if !hit {
                 continue;
             }
-            let slot = match seen.get(&s.series_id) {
-                Some(x) => *x,
+            let known = seen.borrow().get(&s.series_id).copied();
+            let slot = match known {
+                Some(x) => x,
                 None => {
                     let l: Labels = s.labels.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
                     let x = matches(&l).then(|| {
                         matched.push((keep(l), false));
                         (matched.len() - 1) as u32
                     });
-                    seen.insert(s.series_id, x);
+                    seen.borrow_mut().insert(s.series_id, x);
                     x
                 }
             };

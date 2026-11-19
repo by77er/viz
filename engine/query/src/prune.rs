@@ -7,6 +7,7 @@ use crate::catalog;
 use crate::error::QueryError;
 use crate::plan::FetchRange;
 use crate::split::SplitKey;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use viz_promql::{CompiledMatcher, MatchOp, NAME_LABEL};
 use viz_storage::batch::{Row, SeriesDef};
@@ -250,14 +251,20 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
     let want_range = |lo: &[u8], hi: &[u8]| lo > hi || names.as_ref().is_none_or(|s| s.range(lo.to_vec()..=hi.to_vec()).next().is_some());
 
     // series_id -> (in the part, which reads match), decided once from its labels.
-    let mut decided: HashMap<i64, (bool, Vec<bool>)> = HashMap::new();
+    let decided: RefCell<HashMap<i64, (bool, Vec<bool>)>> = RefCell::new(HashMap::new());
+    // A row group's labels are decoded only if it holds an id not decided yet.
+    let labels_for = |sids: &[i64]| need_labels && {
+        let d = decided.borrow();
+        sids.iter().any(|s| !d.contains_key(s))
+    };
     // The selected series' labels, for the carrier (only when every read parses labels).
     let carry = part.is_none() && !rs.is_empty() && rs.iter().all(|r| !r.name_only);
     let mut selected: Vec<SeriesDef> = Vec::new();
     for (fi, f) in series_files.iter().enumerate() {
-        catalog::for_each_series_with(f, fi, &want_range, &want, need_labels, &mut |row| {
-            let (mine, hits) = match decided.get(&row.series_id) {
-                Some(d) => d.clone(),
+        catalog::for_each_series_with(f, fi, &want_range, &want, &labels_for, &mut |row| {
+            let known = decided.borrow().get(&row.series_id).cloned();
+            let (mine, hits) = match known {
+                Some(d) => d,
                 None => {
                     let parse = rs.iter().any(|r| !r.name_only) || (part_needs_labels && carries(row.labels_json));
                     let labels = if parse { Some(catalog::parse_labels(row.labels_json)?) } else { None };
@@ -282,7 +289,7 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
                             selected.push(SeriesDef { series_id: row.series_id, labels: l });
                         }
                     }
-                    decided.insert(row.series_id, (mine, hits.clone()));
+                    decided.borrow_mut().insert(row.series_id, (mine, hits.clone()));
                     (mine, hits)
                 }
             };

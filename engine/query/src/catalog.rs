@@ -70,18 +70,19 @@ pub fn for_each_series(
     want: &dyn Fn(&[u8]) -> bool,
     f: &mut dyn FnMut(SeriesRow<'_>) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    for_each_series_with(bytes, file, want_range, want, true, f)
+    for_each_series_with(bytes, file, want_range, want, &|_| true, f)
 }
 
-/// [`for_each_series`], decoding the `labels` column only when `with_labels` (otherwise
-/// `labels_json` is empty): a caller that needs only ids and times saves the column that
-/// is most of the file.
+/// [`for_each_series`], decoding a row group's `labels` column only when `labels_for` says
+/// so for its `series_id`s (otherwise every row's `labels_json` is empty): a caller that
+/// needs only ids and times, or has already seen the labels of every id (the same series
+/// in file after file of a day), saves the column that is most of the file.
 pub fn for_each_series_with(
     bytes: &[u8],
     file: usize,
     want_range: &dyn Fn(&[u8], &[u8]) -> bool,
     want: &dyn Fn(&[u8]) -> bool,
-    with_labels: bool,
+    labels_for: &dyn Fn(&[i64]) -> bool,
     f: &mut dyn FnMut(SeriesRow<'_>) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     let src = viz_storage::sparse::Source::from_bytes(Bytes::copy_from_slice(bytes), Some(file)).map_err(|e| QueryError::internal(format!("metric_series file {file}: {e}")))?;
@@ -116,6 +117,7 @@ pub fn for_each_series_with(
             continue;
         }
         read_col::<Int64Type>(&*rg, 1, n, file, &mut sids)?;
+        let with_labels = labels_for(&sids);
         if with_labels {
             read_col::<ByteArrayType>(&*rg, 2, n, file, &mut labels)?;
         }
