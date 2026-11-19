@@ -23,12 +23,15 @@ the `Leaf` Durable Object it reads files through.
 | `src/index.ts` | The Worker: routing, authentication, CORS, envelopes, cost headers |
 | `src/params.ts` | Prometheus parameter parsing: timestamps, durations, `match[]`, form bodies |
 | `src/coordinator.ts` | Plan, one ledger version, pruning, leaf fan-out, tail reads with the fence, evaluation; split execution (`runSplit`); the cardinality report |
-| `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2, extracts one part's rows from them (a reader), evaluates one part of a split query (a split leaf), and summarises one part's series for the cardinality report |
+| `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2, extracts one part's rows from them (a reader), evaluates one part of a split query (a split leaf), summarises one part's series for the cardinality report, lists one part's series for a label call (`meta`), and reads the rest of a tail too large for its coordinator in its key range |
 | `src/tail.ts` | Tail reads (D48): the filter a read sends (`tailFilter`), pages under a byte budget (`readPages`), the cut of a tail by `series_id` (`cutById`), and a part's own reads of the rest (`readRests`) |
 | `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults |
 | `wrangler.jsonc` | The production shape (not deployed to production; deployed twice as a staged copy, `deploy/README.md`) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
-| `test/*.test.ts` | 101 tests in workerd, 12 files |
+| `src/meta.ts` | The label endpoints over leaves: the engine's order (code points; label sets pair by pair) and the exact union of listings (`Listing`) |
+| `test/*.test.ts` | 110 tests in workerd, 13 files |
+| `test/meta.test.ts` | The label endpoints over leaves (the one-place bytes at the three moments, by themselves, with the tail read by the parts, the cap over parts and waves, code-point order, a missing file) and `limit` |
+| `test/meta.bench.ts` | Their counterfactual, local: 190,000 series over an hour and a 68 MiB tail (`npm run measure -- test/meta.bench.ts`) |
 | `test/tail.test.ts` | Tail reads filtered and paged: the same answers from shards of this release and the previous one, pages followed to the end, refusals on any page, a tail over the cap split with each part reading the rest, release skew of shards and leaves, `tailFilter` and `cutById` against the shard's own filter |
 | `test/tail.bench.ts` | The counterfactual of that work, local: 100,000 series with 21 and 68 MiB unflushed, previous-release shards against this release (`npm run measure -- test/tail.bench.ts`) |
 | `test/pruning.test.ts` | Series-level pruning and the series-only read through the whole path (25,000 series, a samples file of eight row groups) |
@@ -44,7 +47,7 @@ the `Leaf` Durable Object it reads files through.
 (cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it; owned by engine/wasm)
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
-npx vitest run --maxWorkers=2              # 101 tests in workerd, 12 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
+npx vitest run --maxWorkers=2              # 110 tests in workerd, 13 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
 npx tsc --noEmit                           # clean
 npm run measure                            # both local measurements (split execution about 2 minutes, cardinality about 3)
 node tools/mutants.mjs                     # the mutation check, on a scratch copy of the tree (never edits this one)
@@ -457,7 +460,7 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   series that has samples in a file on both sides of the window but none inside counts as
   in it (at most one file's span at each edge: ten minutes for flush files).
 
-### Label endpoints over leaves (since 2026-11-19)
+### Label endpoints over leaves (since 2026-11-19, D56)
 
 `/labels`, `/label/<name>/values` and `/series` read series files and the tail only (above).
 When the series files the window needs pass `maxFetchBytes`, or the tail does not fit the
@@ -929,6 +932,39 @@ behavioural cache test would need two objects whose keys differ only in their ha
 the write path never produces.
 
 ### Measurements
+
+#### The label endpoints over leaves (2026-11-19)
+
+`npm run measure -- test/meta.bench.ts`. **Measured here, local workerd**, 07:04 to 07:07 UTC
+(dataset C) and 07:00 to 07:02 (D), load average 8.3 to 11. **C**: 190,000 series of one
+metric at 60 s for an hour, flushed in ten-minute units on 2 shards: 72 series files, 18.71 MiB
+read by name and time (150,000 series made 14.8 MiB, under the cap: not used). **D**: the 68 MiB
+tail of `tail.bench.ts`'s dataset B. Before = one place (the code before this change refused
+every C call: 18.71 MiB is over `maxFetchBytes`; shown with the cap raised to 64 MiB, which is
+that code's path); after = default limits. Three calls each, medians; bodies byte-identical
+(asserted).
+
+| C, 190,000 series, 1 h | before, cap 64 MiB (one place) | after (over 4 parts) |
+|---|---|---|
+| `/label/job/values?match[]=m` | 703 ms, coordinator WASM 61.2 MiB, 18.71 MiB read | 1,518 ms, coordinator WASM 0, **74.83 MiB read** (each part reads every file whole: one row group a file) |
+| `/label/instance/values?match[]=m` (190,000 values, 3.6 MB) | 1,432 ms, 62.9 MiB | 3,734 ms, 0; 3.47 MiB of lists over RPC |
+| the same with `limit=100` | 919 ms | 2,649 ms (the parts list everything, then 100 are kept) |
+| `/labels?match[]=m` | 590 ms, 64.1 MiB | 1,604 ms, 0 |
+| `/series?match[]=m{job="job-07"}` (9,500 series) | 707 ms, 32.3 MiB | 1,507 ms, 0 |
+
+| D, 100,000 series, 68 MiB of tail, 15 min | before | after |
+|---|---|---|
+| `/label/job/values?match[]=m`, `/labels?match[]=m` | **503** (a shard's whole tail, 35.7 MB, cannot cross RPC) | 200 over 9 parts reading the rest of the tail in their key ranges (68.1 MiB in all, 22 shard calls), 2.4 to 2.8 s |
+
+What it says: the calls that were refused answer, with no engine memory at the coordinator and
+each part holding at most a wave of 8 MiB of files plus its part's lists. Locally they are 2 to
+2.6 times slower than one place with its cap raised, because every part reads and decodes
+the `series_id` column of every file (a file of under 100,000 series is one row group) and the
+parts run in one process here. **Modelled for Cloudflare** (not measured): the parts run in
+parallel on their own objects, each a wave of reads (one round trip, 55 to 203 ms, S1) per 8 MiB
+and its engine time (about a quarter of one place's, x 1 to 8 for Cloudflare CPU); **experiment
+that settles it:** C's calls on a staged deployment, one place with the cap raised against
+four parts, cold and warm.
 
 #### The filtered, paged tail (2026-11-19, D48/D54)
 

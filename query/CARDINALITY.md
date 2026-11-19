@@ -48,8 +48,10 @@ Read the times as rough; the counts, bytes and memory figures are exact for the 
      (item 3):** they read series files and the tail only, bounded by `maxMetadataSeries`
      (200,000 series listed) and `maxFetchBytes`; at 100,000 series over an hour they answer
      from 13.4 MiB of series files. At about 120,000 series over an hour (one ten-minute unit
-     of 1,000,000) the series files pass 16 MiB and they are refused again: they are not
-     counted over leaves.
+     of 1,000,000) the series files pass 16 MiB and they were refused again. **Counted over
+     leaves since 2026-11-19 (item 3):** 190,000 series over an hour (18.71 MiB of series
+     files) answer over 4 parts, byte-identical to one place, with nothing at the
+     coordinator's engine (one place needed 61 to 64 MiB); `limit` is honoured.
    - **Aggregations were refused by `max_series`** because leaves were counted by samples
      only. **Fixed here (D31):** leaves are now counted by series too, from the series
      files, before any fetch. `sum by (job)` over 100,000 series now answers on 7 leaves
@@ -80,7 +82,7 @@ Read the times as rough; the counts, bytes and memory figures are exact for the 
 | Tail | each shard keeps the read's metric names, window and pinned labels and pages its answer (D48); a split part reads the rest of a tail too large for the coordinator in its key range (new, D54) | filter |
 | One place | `maxSeries` 20,000, `maxSamples` 2 M, `maxStepPoints` 1 M, `maxFetchBytes` 16 MiB (files and the tail the query's filter keeps) | limit |
 | Split | leaves by samples and by series, at most 32; `maxQuerySeries` 640,000, `maxQuerySamples` 64 M | limit |
-| Label endpoints | a series-only read of series files and tail series tables, "in the range" per file (new); `maxMetadataSeries` 200,000 series listed, `maxFetchBytes` over the series files | limit |
+| Label endpoints | a series-only read of series files and tail series tables, "in the range" per file; `maxMetadataSeries` 200,000 series listed; over leaves (ranges of `series_id`, files in waves of half `maxFetchBytes`) when the series files or the tail pass `maxFetchBytes` (new); `limit` | limit |
 | Cardinality report | exact, from series files and tail series tables; `maxCardinalitySeries` 1 M, `maxCardinalityPairs` 400,000 (was 2 M); over leaves above 50,000 series (new) | exact, capped |
 
 ## What it costs: 10,000, 100,000 and 1,000,000 series
@@ -325,11 +327,16 @@ Worker against staged shards with a 20 MB tail, with the shards' CPU from the an
    (about 120,000 series over an hour); split parts still read every series file whole
    (most of their bytes now); a selection spread over the id space reads every row group
    until the sort key clusters a label (D19); pages are skipped in memory, not fetched.
-3. **A series-only read for the label endpoints: built, in one place (2026-11-19).** Label
-   names, values and series come from series files and tail series tables, never samples;
-   "in the range" is decided per file. Left: counting them over leaves when the series files
-   pass `maxFetchBytes` (one ten-minute unit of 1,000,000 series does), as the cardinality
-   report is; the `limit` parameter.
+3. **A series-only read for the label endpoints: built, in one place and over leaves
+   (2026-11-19).** Label names, values and series come from series files and tail series
+   tables, never samples; "in the range" is decided per file. Over leaves when the series files
+   or the tail pass `maxFetchBytes`: each part lists its range of `series_id`s from its row
+   groups of every file, in waves, counting distinct series exactly (`query/README.md`, "Label
+   endpoints over leaves"); measured above 16 MiB at 190,000 series over an hour and with 68 MiB
+   of tail (`query/README.md`, "Measurements"). `limit` as Prometheus documents it. Left: a
+   series file of under 100,000 series is one row group, so every part reads every file
+   whole (`L`-fold reads: 74.8 MiB for 18.7 MiB at 4 parts); `limit` does not shorten what the
+   parts list.
 4. **A streaming merge for the cardinality report**: parts send pairs sorted by (label,
    value); the coordinator merges them in one pass. Then the pair cap can rise to millions.
 5. **Sketches, labelled approximate**, only for windows beyond the caps.

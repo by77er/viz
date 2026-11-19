@@ -361,7 +361,8 @@ with label-based access rules. A caller cannot omit it.
    against `metric_series` first and reads only the row groups whose `(metric, series_id)`
    range holds a selected series (one more round of reads); split leaves resolve their own
    part. Pages are skipped in memory, not fetched (D41). The label endpoints read
-   `metric_series` and the tail only.
+   `metric_series` and the tail only, in one place or, when those do not fit it, over leaves
+   that each list a range of `series_id`s (D56).
 
 ### 6.2 Execute
 

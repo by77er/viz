@@ -296,11 +296,13 @@ describe('truncation is explicit', () => {
 describe('refusals pass through truthfully, once', () => {
   const R = (m: string) => `${m} Nothing was fetched: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`
 
+  // The tests up to the CPU one are a ruler older than `exceeded` (the field absent): the numbers and
+  // the ruler's wording name the budget, as before the field.
   it('over_budget, the plan: which budget, the numbers, and a concrete remedy', async () => {
     const msg = R('over budget: the read would scan 41000000 samples and 314572800 bytes in 2 range queries; the budget is 20000000 samples and 134217728 bytes.')
     const x = await call({ monitor: CHECKOUT }, () => fakeOverBudget(msg, { plan: { scanSamples: 41_000_000, bytesToRead: 314_572_800, queries: 2 }, memory: { peakBytes: 6_815_744, budgetBytes: 33_554_432 } }))
     refused(x, 422, 'over-budget', 'over budget: the read would scan 41000000 samples')
-    expect(x.r.text).toMatch(/^Error over-budget: The ruler refused this backtest over its read \(plan\) budget: the query service's plan of the read is 41,000,000 samples and 300 MiB in 2 range queries; the budget is 20,000,000 samples and 128 MiB \(2\.3× over\)\. Nothing was fetched\.$/m)
+    expect(x.r.text).toMatch(/^Error over-budget: The ruler refused this backtest over its read \(plan\) budget: the query service's plan of the read is 41,000,000 samples and 300 MiB in 2 range queries; the budget is 20,000,000 samples and 128 MiB \(2\.3× over\)\. No window was read; nothing was kept\.$/m)
     expect(x.r.text).toMatch(/^Fix: Shorten the range to at most 10h14m \(it is 1d\), or narrow the query to about 42% of its series or fewer \(aggregate with sum by \(…\), or add label matchers\)\. A coarser step does not reduce what is read\. Calling again with the same arguments gets the same refusal: change them first\.$/m)
     expect(x.r.structured.refusal).toMatchObject({ budget: 'plan', reason: 'plan-over', plan: { scanSamples: 41_000_000, bytesToRead: 314_572_800, queries: 2 }, limits: { scanSamples: 20_000_000, bytesToRead: 134_217_728 }, remedy: { maxRangeMs: 10 * 3_600_000 + 14 * MIN } })
     expect(x.r.structured.data.message).toBe(msg)
@@ -319,23 +321,54 @@ describe('refusals pass through truthfully, once', () => {
     const msg = R('over the memory budget: windows that fit 32.0 MiB would take 1200 range queries; at most 1000.')
     const x = await call({ monitor: CHECKOUT }, () => fakeOverBudget(msg, { memory: { peakBytes: 30_000_000, budgetBytes: 33_554_432 } }))
     refused(x, 422, 'over-budget', 'windows that fit 32.0 MiB')
-    expect(x.r.text).toMatch(/over its memory budget: windows small enough for the 32 MiB memory budget would take more than 1,000 range queries\. Nothing was fetched\.\nFix: Shorten the range, or use a coarser step, or narrow the query to fewer series, so each window holds more steps\./)
+    expect(x.r.text).toMatch(/over its memory budget: windows small enough for the 32 MiB memory budget would take more than 1,000 range queries\. No window was read; nothing was kept\.\nFix: Shorten the range, or use a coarser step, or narrow the query to fewer series, so each window holds more steps\./)
     expect(x.r.structured.refusal).toMatchObject({ budget: 'memory', reason: 'memory-windows' })
   })
 
-  it('over_budget, CPU: the modelled run and the budget, and a range, a step or fewer series', async () => {
-    const msg = 'over the CPU budget: after reading one window of 2 (1000 series); the whole run would take about 46.2 s of CPU (modelled), the budget is 20 s. Nothing was evaluated. Shorten the range, lengthen the step (alerting rules only), or narrow the expression; an operator can raise maxBacktestCpuMs up to the Durable Object\'s CPU limit (README, "CPU").'
-    const parts = { plan: { scanSamples: 1_440_000, bytesToRead: 9_000_000, queries: 1 }, memory: { peakBytes: 20_000_000, budgetBytes: 33_554_432 }, cpu: { modelledMs: 46_200, budgetMs: 20_000 } }
+  it('over_budget, CPU (the ruler names it in exceeded): the modelled run and the budget, and a range, a step or fewer series', async () => {
+    const msg = 'over the CPU budget: its 1 window holds 1440000 points by the series counts; the whole run would take about 46.2 s of CPU (modelled), the budget is 20 s. Only the series counts were read. Shorten the range, lengthen the step (alerting rules only), or narrow the expression; an operator can raise maxBacktestCpuMs up to the Durable Object\'s CPU limit (README, "CPU").'
+    const parts = { exceeded: 'cpu', plan: { scanSamples: 1_440_000, bytesToRead: 9_000_000, queries: 2 }, memory: { peakBytes: 20_000_000, budgetBytes: 33_554_432 }, cpu: { modelledMs: 46_200, budgetMs: 20_000 } }
     const x = await call({ monitor: CHECKOUT }, () => fakeOverBudget(msg, parts))
-    refused(x, 422, 'over-budget', 'over the CPU budget: after reading one window')
-    expect(x.r.text).toMatch(/over its CPU budget: its CPU model \(modelled, not measured\) puts the whole run at 46\.2 s; the budget is 20 s \(2\.3× over\)\. It read the first window to count the series; nothing was kept\./)
+    refused(x, 422, 'over-budget', 'over the CPU budget: its 1 window holds')
+    expect(x.r.text).toMatch(/over its CPU budget: its CPU model \(modelled, not measured\) puts the whole run at 46\.2 s; the budget is 20 s \(2\.3× over\)\. No window was read; nothing was kept\./)
     expect(x.r.text).toMatch(/^Fix: Shorten the range to at most 10h23m \(it is 1d\), or use a step of at least 2m19s \(it is 1m\), or narrow the query to about 43% of its series or fewer/m)
-    expect(x.r.structured.refusal).toMatchObject({ budget: 'cpu', reason: 'cpu', cpu: { modelledMs: 46_200, budgetMs: 20_000 }, remedy: { minStepMs: 139_000 } })
+    expect(x.r.structured.refusal).toMatchObject({ budget: 'cpu', reason: 'cpu', exceeded: 'cpu', cpu: { modelledMs: 46_200, budgetMs: 20_000 }, remedy: { minStepMs: 139_000 } })
     // An anomaly monitor's step is its interval: no step remedy, and the warm-up is said to count.
     const y = await call({ monitor: LATENCY }, () => fakeOverBudget(msg, parts))
     refused(y, 422, 'over-budget')
     expect(y.r.text).not.toMatch(/use a step/)
     expect(y.r.text).toMatch(/The warm-up before "start" \(the detector's look-back\) is read and fed too, and a shorter range does not reduce it\./)
+  })
+
+  it('over_budget with exceeded: the ruler\'s field names the budget, over the numbers and the wording; null is not a budget of the ruler\'s; a value this tool does not know is not guessed', async () => {
+    const plan = { scanSamples: 41_000_000, bytesToRead: 314_572_800, queries: 2 }
+    const memory = { peakBytes: 40_000_000, budgetBytes: 33_554_432 }
+    // Words that would name another budget, and numbers that would too (a peak over its budget): the field decides.
+    const misleading = R('over the CPU budget: words from another release.')
+    const cases: [string, Record<string, unknown>, string, string][] = [
+      ['scan_samples', { plan, memory }, 'plan', 'plan-over'],
+      ['bytes', { plan: { ...plan, scanSamples: 1 }, memory }, 'plan', 'plan-over'],
+      ['queries', { memory }, 'memory', 'memory-windows'],
+      ['memory', { memory }, 'memory', 'memory-state'],
+      ['cpu', { memory }, 'cpu', 'cpu'],
+    ]
+    for (const [exceeded, parts, budget, reason] of cases) {
+      const x = await call({ monitor: CHECKOUT }, () => fakeOverBudget(misleading, { ...parts, exceeded }))
+      refused(x, 422, 'over-budget')
+      expect(x.r.structured.refusal, exceeded).toMatchObject({ budget, reason, exceeded })
+    }
+    const queries = await call({ monitor: CHECKOUT }, () => fakeOverBudget(misleading, { memory, exceeded: 'queries' }))
+    expect(queries.r.text).toMatch(/over its memory budget: windows small enough for the 32 MiB memory budget would take more than 1,000 range queries\. No window was read; nothing was kept\./)
+    // null: the query service refused the read, or did not price it; the words tell which.
+    const engine = await call({ monitor: CHECKOUT }, () => fakeOverBudget(R('the engine would refuse the read: bad_data: too many series.'), { memory, exceeded: null }))
+    expect(engine.r.structured.refusal).toMatchObject({ budget: 'plan', reason: 'engine-limit', exceeded: null })
+    const unpriced = await call({ monitor: CHECKOUT }, () => fakeOverBudget(R('the engine\'s plan did not say what the read costs, so it was not made.'), { exceeded: null }))
+    expect(unpriced.r.structured.refusal).toMatchObject({ budget: 'plan', reason: 'unpriced', exceeded: null })
+    // A budget a newer ruler names that this tool does not know: unnamed, the ruler's words shown, not mapped by the numbers.
+    const unknown = await call({ monitor: CHECKOUT }, () => fakeOverBudget(misleading, { plan, memory, exceeded: 'gpu_seconds' }))
+    refused(unknown, 422, 'over-budget', 'words from another release')
+    expect(unknown.r.structured.refusal).toMatchObject({ budget: 'unknown', reason: 'unknown', exceeded: null })
+    expect(unknown.r.text).toMatch(/over its unnamed budget: the ruler did not say which budget \(its words are below\)/)
   })
 
   it('over_budget, the query service\'s own limit and an unpriced read', async () => {
@@ -498,7 +531,9 @@ describe('the fake ruler answers in the shapes ruler/openapi.json documents', ()
     const body = fakeBacktest({ monitor: CHECKOUT, fromMs: DAY_AGO, toMs: NOW_MS, step: '1m' }, CHECKOUT_INTERVALS)
     conforms('Backtest', body)
     for (const i of body.intervals as Record<string, unknown>[]) conforms('BacktestInterval', i)
-    conforms('OverBudget', fakeOverBudget('x', {}).body as Record<string, unknown>)
+    // As this ruler answers (with `exceeded`); without it is a ruler older than the field, the fallback the refusal tests cover.
+    conforms('OverBudget', fakeOverBudget('x', { exceeded: 'scan_samples' }).body as Record<string, unknown>)
+    expect(schemas.OverBudget.properties.exceeded.oneOf[0].enum).toEqual(['scan_samples', 'bytes', 'queries', 'memory', 'cpu'])
     const x = await call({ monitor: CHECKOUT }, answer([]))
     conforms('BacktestRequest', x.calls[0]!.body as Record<string, unknown>)
     // The monitor this tool accepts has no field the ruler's MonitorInput lacks.

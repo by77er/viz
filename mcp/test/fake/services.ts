@@ -346,9 +346,12 @@ export function fakeBacktest(body: any, intervals: FakeInterval[], over: Record<
   }
 }
 
-/** The ruler's 422 over_budget (`backtestAnswer` in ruler/src/http.ts). */
-export function fakeOverBudget(message: string, parts: { plan?: unknown; memory?: unknown; cpu?: unknown }): { status: number; body: unknown } {
-  return { status: 422, body: { error: { code: 'over_budget', message }, plan: parts.plan ?? null, budget: { scanSamples: 20_000_000, bytesToRead: 128 * 1024 * 1024 }, memory: parts.memory ?? null, cpu: parts.cpu ?? null } }
+/**
+ * The ruler's 422 over_budget (`backtestAnswer` in ruler/src/http.ts). `exceeded` (which budget,
+ * contract version 5) only when given: without it, the answer of a ruler older than the field.
+ */
+export function fakeOverBudget(message: string, parts: { plan?: unknown; memory?: unknown; cpu?: unknown; exceeded?: string | null }): { status: number; body: unknown } {
+  return { status: 422, body: { error: { code: 'over_budget', message }, ...('exceeded' in parts ? { exceeded: parts.exceeded } : {}), plan: parts.plan ?? null, budget: { scanSamples: 20_000_000, bytesToRead: 128 * 1024 * 1024 }, memory: parts.memory ?? null, cpu: parts.cpu ?? null } }
 }
 
 export function monitorView(over: Partial<MonitorView> & { id: string; name: string }): MonitorView {

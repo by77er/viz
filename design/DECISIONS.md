@@ -1878,3 +1878,41 @@ publisher's CPU limit on Cloudflare (then progress kept across invocations, or a
 `limits.cpu_ms`); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
 files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
 part is checked on its own as it arrives, not only the totals at the end).
+
+## D56. The label endpoints are counted over leaves by ranges of `series_id`, each part listing its files in waves and counting distinct series by id
+
+**Decision.** `/labels`, `/label/<name>/values` and `/series` run in one place while the series
+files their window needs fit `maxFetchBytes` and the tail fits the coordinator (D54). Otherwise
+they are counted over `L` parts, as the cardinality report is (D32): part `j` lists the series
+whose `series_id` is in its key range, reading its row groups of every series file (from the
+fragments) in waves of at most half of `maxFetchBytes`, one engine call a wave, and its part of
+the tail. The engine returns, with each listing, the ids of the series it listed, so a series in
+many files counts once; the coordinator merges the parts' lists in the engine's order (UTF-8
+byte order) and adds their counts against `maxMetadataSeries`. The answer is byte-identical to
+one place. `L` is the series in the files over `cardinalitySplitAboveSeries`, at least 2.
+Prometheus' `limit` is applied to the merged list (the first `limit`, and its warning).
+
+**Alternatives.** (a) Each part reads its row groups in one engine call under a per-part byte
+cap. (b) A listing session kept in the engine (files added one by one, like a split leaf's
+gathering session). (c) Raise the cap for label calls and stay in one place. (d) Parts by file
+(each part some of the files): a series would be counted by several parts. (e) Cut each part's
+listing at `limit` in the engine.
+
+**Why.** A series file of under 100,000 series is one row group (D41), so (a) gives every part
+every file whole, and its cap refuses exactly where one place did (measured here: 190,000 series
+over an hour are 72 files and 18.71 MiB, each read whole by each of 4 parts). Waves bound what a
+part holds whatever the window. (b) is the same bound with more engine code and a session that
+dies with the instance; returning ids is a few lines. (c) is what the isolate cannot hold: one
+place held 61 to 64 MiB of WASM for these calls with 18.71 MiB read (local workerd). (d) cannot
+count distinct series without shipping them. (e) changes nothing the cap protects (the part's
+whole listing is still built) and is not exact for `/series` without a merge by label set.
+
+**Cost of it.** `L` parts read every series file of under 100,000 series `L` times (74.8 MiB for
+18.7 MiB at 4 parts; Cache API hits after the first) and decode its `series_id` column; locally
+the calls took 2 to 2.6 times one place with its cap raised (load 8 to 11). A part's ids live in
+its memory (8 bytes and a set entry per series of the part).
+
+**Would change if.** Series files are cut into more row groups by `series_id` (then each part
+reads its own range: `partPlan` already plans it); the metadata calls get an index of their own
+(label values per metric, written at flush); or Prometheus clients come to depend on `limit`
+shortening the work, not only the answer (then (e)).
