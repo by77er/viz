@@ -248,7 +248,10 @@ and only grows; a group is never split (a group larger than a shard is refused w
 the group."). Growing from N to N+1 moves only groups that land on the new shard. A move is
 `exportGroup` (rules, every alert with its times, the monitors' histories) → `importGroup`
 on the target → `releaseGroup` at the source (forgets without resolving or notifying):
-alert state, `for` timers and history continue, the notifier hears nothing. A move cut
+alert state, `for` timers and history continue, the notifier hears nothing. The moved group
+runs on the target shard's own tick grid (a group's offset hashes tenant, shard and group), so
+an alert pending across a move fires at the first tick of the new grid at or after its `for`
+has run: up to one interval later than it would have on the old shard. A move cut
 between copy and release is finished by the next write; reads meanwhile use the assigned
 shard.
 
@@ -1169,11 +1172,11 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 419 tests in 24 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`); last run 2026-11-19, after the review of D60
+npm test                # 419 tests in 24 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`); last run 2026-11-19, after the fix of the move test's wait (below)
 TEST_ANOMALY_STATE_WRITE=2 npx vitest run --maxWorkers=2   # the same 419 with every test Ruler object writing store.anomaly-state v2 (the next release's gate): all pass
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 191 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint + 12 for the anomaly defaults of D33 + 11 for planning what is fetched, ported from PR #3 + 5 for `over_budget` naming its budget + 12 for windowed state as ring blocks and its readers-first gate + 6 for the head's block list, review of D60), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 191 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint + 12 for the anomaly defaults of D33 + 11 for planning what is fetched, ported from PR #3 + 5 for `over_budget` naming its budget + 12 for windowed state as ring blocks and its readers-first gate + 6 for the head's block list, review of D60 + 2 for the move test's wait), on a scratch copy; vitest runs with at most 2 workers
 node --experimental-strip-types tools/anomaly-default/nab-window.ts   # held-out NAB at windows 1,000 and 1,500 (about 1 minute; needs anomaly/bench/fetch-nab.sh)
 VIZ_SCRATCH=<scratch> bash tools/anomaly-default/smd-window.sh        # SMD at window 1,500, post hoc, on a scratch copy of anomaly/ (about 5 minutes; needs anomaly/bench/fetch-smd.sh)
 npm run bench           # the measurements below
@@ -1218,6 +1221,39 @@ Checked by per-file count (unchanged except `bench.test.ts`, which gained the tw
 batch-form runs: 125 in those files now). Repeating the
 randomized files (`ack`, `backtest`, `robust`, `monitors`, `exactly-once`) six times gave
 six passes.
+
+**The move test's flake (CI on PR #6, commit b42cd1d, fixed 2026-11-19).** `robust.test.ts`
+"moving a group preserves its alert state …" failed in two CI runs of the same commit with a
+moved `-A1` alert still `pending` (activeAt 4102445052231, and 4102445065768 in the other run).
+*Cause: the test's wait, not the product and not load.* A group's tick offset hashes
+`<tenant>/<shard>/<group>` (`newGroup`) and the test's tenant name is random (`newTenant`), so a
+moved group runs on a different, random grid. Its pending alert fires at the first tick of that
+grid at or after activeAt + 3m, between 3m and 4m after it appeared, as the test itself asserts;
+but the loop stopped at a fixed "latest activeAt + 3m30s", rounded up to the minute. When the new
+grid falls earlier in the minute than the old one and every shard-0 offset is under 30 s, the
+firing tick lies after the loop's end. Modelled from the schedule: 5.5% of tenant names (200,000
+names); **measured here**: 20 of 300 random tenants failed with the old wait (13 on `svc-0`, 7 on
+`svc-2`, all "still pending"), 0 of 300 with the new one (the scenario repeated 300 times in one
+file, one worker, scratch copy). Both CI messages are reproduced exactly, on an idle machine with
+one worker, by pinning the tenant to `split15-0vjuc7` and `split15-akeysi` (the counter value 15 is
+this test's place in the file); seven other pinned names gave the outcome the model predicted
+(four fail, three pass). Nothing that reads the real clock steers the simulated schedule: `Date.now()` in
+the ruler measures durations (`lastDurationMs`, the evaluator's `durationMs`), the group timeout
+is 120 s of real time, `VIZ_STAGE_EXPIRES_AT` is unset in tests, and a tick that throws would fail
+the test with that error, not leave an alert pending; CI's 24 workers only changed which random
+names were drawn. *Fix (test only):* after the move the test reads each pending alert's group on
+its current shard (`health().groups[].nextEvaluationMs`, `intervalMs`), waits until the first tick
+of that grid at or after activeAt + 3m has run for all three, and asserts `firingSince` equals that
+tick, which is stronger than before; the 3m ≤ firingSince − activeAt < 4m bounds are kept.
+*Verified (measured here, 2026-11-19):* `npx tsc --noEmit` clean; the whole suite with
+`--maxWorkers=2` 419 of 419; `robust.test.ts` alone 20 runs, 20 passes; the nine pinned names (six
+that fail the old wait) all pass. *Mutants 192–193* (`VIZ_SCRATCH=<scratch> node
+scripts/mutants.mjs 40 41 192 193`): 4 of 4 killed, shared tree unchanged; 192 and 193 were also
+run by hand against five pinned tenants covering both grid cases, killed by the final
+`[name, state, activeAt, firingSince]` assertion every time. 1–39, 42–191 were not re-run: no
+source changed. The runner's copy list gained `shard/src`: `control/src` imports it now, and
+without it no test file loaded in the copy, so every mutant would have been reported as not
+loaded.
 
 ### Exactly-once (inherited cases, unchanged and passing)
 
@@ -1477,6 +1513,8 @@ the new "dryRun on every write" test.
 | 189 | review m-12: a block row the head does not list is accepted | anomalystore: "a missing or partial block is detected … a partial block …, an extra block, a head without the list: refused" |
 | 190 | review m-12: a head without the block list is read (the format before the review) | anomalystore: "a missing or partial block is detected … a partial block …, an extra block, a head without the list: refused" |
 | 191 | review m-12: the writer lists only the blocks this write touched | anomalystore: "results do not change: … robust_z, the default window (1,500 points), 2,200 ticks …" (+9 more, among them the incremental-writes test) |
+| 192 | `for` restarts on the new shard: a moved group's first evaluation there starts from no alerts | robust: "shard splitting through the API moving a group preserves its alert state: pending and firing alerts keep th…" (the final `[name, state, activeAt, firingSince]` check: a new activeAt) |
+| 193 | a moved group waits four intervals on its new shard before its first evaluation (its pending alerts fire late) | robust: "shard splitting through the API moving a group preserves its alert state: pending and firing alerts keep th…" (the same check: still pending at the promised tick) |
 
 **The head's block list (review of D60, m-12): mutants 186–191** (`VIZ_SCRATCH=<scratch> node
 scripts/mutants.mjs 186 187 188 189 190 191`, the script's own copy of a copy of the whole tree in

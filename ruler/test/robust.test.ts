@@ -358,7 +358,7 @@ describe('shard splitting through the API', () => {
       // activeAt + 3m. A moved group runs on its new shard's own grid (the offset hashes the shard as well
       // as the tenant and the group), so that tick can be up to one interval later; where it falls depends
       // on the random tenant name. Wait for exactly that tick of every pending alert. (A fixed 3m30s
-      // after the latest one was too short for about 1 run in 18: the flake of PR #6, README "Verification".)
+      // after the latest one was too short in about 6% of runs: the flake of PR #6, README "Verification".)
       const pendingBefore = monitorsBefore.filter((m) => m.state === 'pending')
       expect(pendingBefore.length).toBe(3)
       const due = new Map<string, number>()
