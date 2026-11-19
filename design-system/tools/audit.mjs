@@ -115,8 +115,8 @@ function audit({ coarse, words }) {
   // a waiting line over its region's strip) lie over the page by design; while a modal dialog is open only its own words are checked. And, independent of hit testing (words
   // that take no pointer events), two words of different elements whose boxes overlap by more than a third of the smaller.
   if (words) {
-    const modal = document.querySelector('dialog:modal') ?? [...document.querySelectorAll('.vz-scrim')].find((x) => x.getClientRects().length && cs(x).visibility === 'visible')
-    const overlay = (e) => e?.closest?.('.vz-menu, .vz-dialog, .vz-notice[data-floating], .vz-tooltip, dialog, .vz-panel .vz-progress') // a waiting line lies over its region's strip of words by design (Panel)
+    const modal = document.querySelector('dialog:modal') ?? [...document.querySelectorAll('.vz-scrim')].find((x) => x.getClientRects().length && cs(x).visibility === 'visible' && cs(x).position === 'fixed') // a scrim over the page; a preview's framed scrim is an overlay
+    const overlay = (e) => e?.closest?.('.vz-menu, .vz-dialog, .vz-scrim, .vz-notice[data-floating], .vz-tooltip, dialog, .vz-panel .vz-progress') // a waiting line lies over its region's strip of words by design (Panel)
     const control = (e) => e?.closest?.('a[href], button, input, select, textarea, summary, [role^="menuitem"], [role="tab"], label')
     const clipOf = new Map(), clipBox = (el) => { if (clipOf.has(el)) return clipOf.get(el); let b
       const p = el.parentElement && el !== document.body ? clipBox(el.parentElement) : [-Infinity, -Infinity, Infinity, Infinity]
@@ -200,7 +200,7 @@ function words() {
 // ---- guards: each fix the reviews asked for, checked by what it does when rendered, so a later rule that overrides it fails whatever its
 // spelling (v6 review, M1: seven overrides passed the presence checks). Run at 1500 px with a fine pointer and at 400 px with a coarse one.
 function guards({ fine, coarse }) {
-  const out = [], cs = (e) => getComputedStyle(e), modal = document.querySelector('dialog:modal')
+  const out = [], cs = (e) => getComputedStyle(e), modal = document.querySelector('dialog:modal') ?? [...document.querySelectorAll('.vz-scrim')].find((x) => x.getClientRects().length && cs(x).visibility === 'visible' && cs(x).position === 'fixed') // behind a dialog's scrim the page is inert
   const name = (e) => { const t = (e.getAttribute?.('aria-label') || e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 32); return `<${e.tagName.toLowerCase()}${typeof e.className === 'string' && e.className ? '.' + e.className.trim().split(/\s+/).join('.') : ''}>${t ? ' "' + t + '"' : ''}` }
   const rgb = (v) => { v = String(v).trim(); if (!v.startsWith('#')) return v.replace(/\s*,\s*/g, ', '); let h = v.slice(1); if (h.length === 3) h = [...h].map((c) => c + c).join(''); return `rgb(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)})` }
   const tok = (el, t) => cs(el).getPropertyValue('--' + t).trim(), px = (el, t) => parseFloat(tok(el, t))
@@ -249,7 +249,8 @@ function guards({ fine, coarse }) {
       let strip = el.parentElement; while (strip && strip !== document.body && !/(auto|scroll)/.test(cs(strip).overflowX)) strip = strip.parentElement
       if (strip && strip !== document.body) { const b = strip.getBoundingClientRect(); if (r.left < b.left - 0.5 || r.right > b.right + 0.5) continue }
       const cx = Math.max(22, Math.min(innerWidth - 22, r.left + r.width / 2)), cy = r.top + r.height / 2
-      if (owner(cx, cy) !== el) { const at = document.elementFromPoint(cx, cy); if (!(at && el.contains(at))) say('hit-area', `${name(el)} is covered at its centre by ${at ? name(at) : 'nothing'} with a coarse pointer`); continue }
+      if (owner(cx, cy) !== el) { const at = document.elementFromPoint(cx, cy); if (at?.closest('.vz-scrim') && !at.closest('.vz-scrim').contains(el)) continue // behind a (framed) scrim: inert
+        if (!(at && el.contains(at))) say('hit-area', `${name(el)} is covered at its centre by ${at ? name(at) : 'nothing'} with a coarse pointer`); continue }
       const tall = owner(cx, cy - 21) === el && owner(cx, cy + 21) === el, wide = owner(cx - 21, cy) === el && owner(cx + 21, cy) === el // 44 px, less a pixel at each end where two areas meet and hit testing snaps
       if (!tall || !wide) say('hit-area', `${name(el)}: hit area under 44 px ${!tall ? 'tall' : 'wide'} with a coarse pointer (drawn ${Math.round(r.width)} x ${Math.round(r.height)} px)`)
     }

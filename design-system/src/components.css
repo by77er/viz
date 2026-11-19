@@ -108,7 +108,7 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
 .vz-help > .vz-mark:first-child { margin-right: var(--space-2); vertical-align: middle; }
 .vz-help[data-error] { color: var(--ink); }
 .vz-check { display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer; }
-.vz-check input { appearance: none; display: inline-grid; place-items: center; width: var(--icon); height: var(--icon); margin: 0; flex: none; cursor: pointer; background: var(--ground); border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-1); }
+.vz-check input { appearance: none; font: inherit; color: inherit; display: inline-grid; place-items: center; width: var(--icon); height: var(--icon); margin: 0; flex: none; cursor: pointer; background: var(--ground); border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-1); }
 .vz-check input:hover { border-color: var(--ink-secondary); }
 .vz-check input:checked { background: var(--ink); border-color: var(--ink); }
 .vz-check input:checked::before { content: ""; width: var(--space-1); height: var(--space-2); margin-top: calc(-1 * var(--space-half)); border: solid var(--ground); border-width: 0 var(--stroke) var(--stroke) 0; transform: rotate(var(--diagonal)); } /* a tick, so it cannot be mistaken for the hollow healthy mark */
@@ -492,7 +492,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 .vz-waterfall tr[hidden] { display: none; }
 .vz-waterfall td[data-key] > * { vertical-align: middle; }
 .vz-tree-toggle, .vz-tree-gap { position: relative; z-index: 1; flex: none; display: inline-grid; place-items: center; width: var(--control-sm); height: var(--control-sm); padding: 0; margin-right: var(--space-1); }
-.vz-tree-toggle { background: transparent; border: 0; border-radius: var(--radius-2); color: var(--ink-secondary); cursor: pointer; }
+.vz-tree-toggle { font: inherit; background: transparent; border: 0; border-radius: var(--radius-2); color: var(--ink-secondary); cursor: pointer; }
 .vz-tree-toggle::before { content: ""; border: var(--space-1) solid transparent; border-right-width: 0; border-left-color: currentColor; margin-left: var(--space-1); } /* a triangle pointing at what it would open */
 .vz-tree-toggle[aria-expanded="true"]::before { border-width: var(--space-1) var(--space-1) 0; border-color: currentColor transparent transparent; margin: var(--space-1) 0 0; }
 .vz-tree-toggle:hover { color: var(--ink); background: var(--hover); }
@@ -628,6 +628,7 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
   .vz-link:not(:is(p, li, .vz-help, .vz-secondary, .vz-text, .vz-page-sub) .vz-link, .vz-table td[data-key] .vz-link), :is(.vz-links, .vz-timeline) > li > .vz-link, .vz-change > .vz-link { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .vz-links { gap: 0; }
   .vz-controls, .vz-dialog-actions, .vz-banner, .vz-secret-row, .vz-notice { row-gap: calc(var(--control-touch) - var(--control-sm)); } /* wrapped rows: even two rows of small buttons keep 44px between centres */
+  .vz-table.vz-legend-table tr.vz-legend-actions td { padding-block: calc((var(--control-touch) - var(--control-sm)) / 2); } /* its small buttons keep 44 px inside the row when "Show 20 more of Other" and "Colour the eight largest" wrap (one line: still legend-row tall) */
   .vz-panel > .vz-controls { margin-block: var(--space-1); } /* a row of controls in a panel keeps a small button's 44 px hit area off the plot or table under it (v7: the rendered hit-area guard found it reaching 2 px into a plot) */
   .vz-table tr:has(a, button, input, select) td { height: calc(var(--control-touch) + var(--hairline)); } /* rows that hold a control; a table of figures keeps its density */
   .vz-table th:has(.vz-sort) { padding-block: 0; }

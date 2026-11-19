@@ -793,6 +793,282 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new; F16 is against D
   until retention re-runs (`viz.qnt`, and the first steps of F14). DESIGN should say retention
   re-runs after a rebuild, and erasure deadlines count from the logged removal.
 
+## Proposed fixes: registration before writes (F6, F6(b)) and the lost-incarnation leak (F16)
+
+**Status: designed and checked in the explicit-state model only (2026-11-19).** No component
+and no contract has been changed; the contract changes below are proposals for
+`contracts/` (contracts first, in their own commit, AGENTS.md). Configurations: `R1`–`R4`,
+`F16FIX` and `PROPOSED` in `bfs/run.ts`; model options `reg: 'committed'`, `regOnRead`,
+`regOnSweep`, `sweepNewerReg`, `lostEmpty`, `recheck` in `bfs/model.ts` (all optional: every
+configuration recorded before them is unchanged, checked by re-running nine of them, after the last
+change to the model, to the same state counts and trace lengths).
+
+### What has to become true
+
+Three statements, each false in the code as built:
+
+1. **Every plan names every stream that holds acknowledged rows** (or a newer incarnation of
+   it). Then a shard asked about a stream the plan does not name can answer "nothing" and be
+   right, which is what F6(b) needs: as built the coordinator asks such a shard with
+   incarnation 0 and a shard that lost its storage answers `ok`, empty. Lazy registration
+   breaks the statement (F6(b)); so does a registration that is only *committed*, because a
+   ledger rebuild rolls it back (R1 below, 15 steps). A registration in the **logged** prefix
+   survives every rebuild.
+2. **A query that names an incarnation the shard has lost can finish.** Either something makes
+   the shard start and register a fresh incarnation, which the next plan names, or the
+   coordinator, told of the loss before its current plan, takes that stream's tail as empty.
+   As built nothing does either (`LIVE_impl`, 8 steps).
+3. **The ledger learns, durably, that an incarnation is gone, even if the tenant never writes
+   there again** (F16). Then the sweep can call that incarnation's unlisted flush files dead,
+   and D30 lets the compaction outputs built on them follow.
+
+Statements 1 and 2 are what "registration before writes" has to deliver; the variants differ
+in how. Statement 1 can also be obtained after the fact, by the coordinator (R4).
+
+### The variants
+
+All four keep what is built: the shard creates the incarnation (`newIncarnation`, a stream
+row), `registerStream` is idempotent and refuses a lower incarnation, `addUnit` admits an
+unknown stream only at `seqLo = 1`, and `flush.ts` registers on `incarnation_mismatch` (both
+paths kept for shards of earlier releases during a rolling upgrade; in R2 and R3 they are
+unreachable for shards of this release). "A round trip" is one Durable Object RPC from the
+shard to the tenant's ledger: measured on Cloudflare at 15–47 ms from a Worker to a ledger
+(`spikes/s4-ledger-scale/`, one writer), not measured from a shard.
+
+| | R1: committed | R2: logged, shard re-registers | R3: logged, coordinator settles | R4: committed + re-check |
+|---|---|---|---|---|
+| Who registers what with whom | the shard: `registerStream({shard: its name, incarnation})` with `LEDGER.idFromName(tenant)` | same | same | same |
+| When | before it acknowledges the first append of a new stream (first use, or after a storage loss) | before it acknowledges ANY append of a stream whose registration it has not seen logged; each attempt repeats the call (which re-registers if a ledger rebuild lost it) | as R2 | as R1 |
+| What it needs from the ledger | the commit (the call's answer) | the registration in the ledger's **logged** prefix (`registerStream` answers `logged: true`) | as R2 | as R1 |
+| An append before that | waits for the one round trip (nothing acknowledged before the answer; a failed call: `backpressure`, nothing stored) | refused at once: `backpressure`, scope `registering`, Retry-After 0.5 s, nothing stored; the shard never holds an append across the ledger's R2 write | as R2 | as R1 |
+| `tailRead` naming an incarnation the shard does not hold | creates a fresh incarnation, registers it, answers `incarnation_mismatch(fresh)` | same | `incarnation_mismatch(0)`, as built (no registration on the read path) | as R1 |
+| `tailRead` with incarnation 0, no stream | `ok`, empty (as built) | same | same | same |
+| Coordinator | as built: a newer incarnation is learned and the attempt re-planned; the next plan names it, or the learned one is read from 0 | as built | **new**: remembers per shard the newest incarnation the shard said it does not hold; a later plan that names nothing newer gets an empty tail from that shard (everything of the stream the ledger has is in that plan's files; the rest was lost with the shard, a declared loss) | **new**: after its tail reads, if it read any shard the plan did not name, it reads the ledger's watermarks once more (`plan` with an empty range); if one of those shards is now registered, the attempt is refused and re-planned |
+| Re-registration after a shard storage loss, triggered by | the next append, or a tail read naming the lost incarnation | the same, or the janitor (F16 fix) | the next append only (or the janitor, with the F16 fix) | as R1 |
+| Acknowledgement path, per stream lifetime | 1 round trip on the first append | 1 + k round trips, k = refused attempts until the drain has logged the registration (drain 200 ms after the commit + one segment PUT, 180–494 ms measured on Cloudflare, at most 1,025 ms seen; with Retry-After 0.5 s, k = 1–2, 3 at the slowest PUT seen): the first acknowledgement of a stream comes 0.5–1.5 s after its first append (**modelled** from those measured parts, not measured end to end) | as R2 | as R1 |
+| Acknowledgement path, per append after that | 0 | 0 | 0 | 0 |
+| R2 PUT on any acknowledgement path | no | no | no | no |
+| Read path | as built | as built; one shard→ledger round trip inside the first tail read after a loss | one refused attempt and re-plan per query while the ledger names a lost incarnation (per isolate if cached; not modelled) | +1 ledger round trip per query attempt that read a shard the plan did not name |
+| New dependency | a new stream needs the ledger to commit | a new stream needs the ledger to **log**: while the tenant's ledger cannot write R2 a new stream takes no writes (fails closed, retryable) | as R2 | as R1 |
+
+### Results
+
+Every run on the code as built (`IMPL`: D30, the segment log as built, `readSegment` bound,
+`tailRead` refusing a named incarnation it does not hold) with F3 assumed away, as `IMPL_3`.
+"Stopped" = every state reachable within that many steps checked, no violation (bounded
+depth, not exhaustive). Liveness rows decide AG EF on the whole graph.
+
+<!-- BEGIN BFS_PROPOSED -->
+<!-- END BFS_PROPOSED -->
+
+- **R1 fails.** `R1_safety`: I4 in 15 steps, F6(b) again by another road: the registration is
+  committed, b0 acknowledged, a flush Worker writes its file; the ledger loses its storage and
+  the rebuild has no trace of the stream; a query plans (no watermark for s0); the flush
+  Worker's `addUnit` is admitted at `seqLo = 1` and re-registers the stream; it is logged; the
+  shard loses its storage; the tail read with incarnation 0 gets `ok`, empty; b0, logged in a
+  file the plan predates, is missing. Without a ledger loss R1 holds (`F6b_bounds_R1`), and it
+  is live (`LIVE_R1_*`). So "committed" is not enough; this is also the tooth for R2's
+  "logged".
+- **R2, R3 and R4 pass every safety property** within their bounds: no violation among all
+  states reachable in SAFE_DEPTHS steps (with client retries, two flush Workers, compaction,
+  retention, a ledger loss and a shard loss), TWO_DEPTHS. At F6(b)'s own bounds, F6B_DEPTHS
+  (F6(b)'s trace is 11 steps). R4's depth is the shallowest (its committed registration and the
+  lazy paths it keeps allow more interleavings per step); it still covers R1's 15-step trace,
+  and replaying that trace against R4 (`results/REPLAY.md`) shows the re-check refusing the
+  attempt.
+- **All four are live** (AG EF query done, whole graph): with a shard loss, and with a ledger
+  loss and a shard loss (`LIVE_R*_sl`, `LIVE_R*_llsl`). `LIVE_impl`'s dead end (8 steps) is
+  gone.
+- **F6(b)'s recorded trace** (`results/REPLAY.md`, with the registration each variant needs put
+  in front): in every variant the plan names the stream (`inc1@0`), so the tail read after the
+  storage loss asks for incarnation 1 and is refused; the query re-plans instead of completing
+  without b0.
+- **Teeth.** Each step of R2 and R3, removed alone, brings a finding back: acceptance at the
+  commit (R1: I4, 15 steps); no registration on a read (`LIVE_R2_teeth_no_read_trigger`) or no
+  settling in the coordinator (`LIVE_R3_teeth_no_settle`): the query can never complete, 6
+  steps (`LIVE_impl` back); a shard answering `ok`, empty to an incarnation it does not hold
+  (`R_teeth_lost_read_as_empty`): I4 in 15 steps (F6(a) back).
+- **The F16 fix** (`PROPOSED` = as built + R2 + `F16FIX`). Safety, I11's safety half
+  included, with F13's, F14's and F15's bounds: P_SAFE. The old flush-file leak is closed
+  (`LEAK_P_sl` holds where `LEAK_D30_sl` leaked in 11 steps), and so is F16: with two
+  retention removals `LEAK_P_sl_comp2` and `LEAK_P_llsl2` LEAK2, where D30 as built leaks at
+  the same bounds (`LEAK_D30_sl_comp2`, LEAK_BASE). Each half of the fix is load-bearing:
+  without the janitor's call to the shard, or with the sweep's rule as built, F16 is back
+  (LEAK_TEETH); counting a newer incarnation once merely committed brings F15 back
+  (`P_teeth_newer_committed`, I11 in 17 steps: the janitor's registration of incarnation 2 is
+  rolled back by a ledger rebuild after the sweep judged incarnation 1's file dead, and the
+  late `addUnit` lists it with no object).
+- **A bounds artefact, reported as found.** At `LEAK_D30_sl_comp`'s bounds (one retention
+  removal) the proposal still has a dead end, at 22 steps (`LEAK_P_sl_comp`, `LEAK_P_llsl`):
+  the one removal is spent on the compaction output, the ledger rebuild undoes it (it was not
+  logged) but the model does not refund the budget, and compaction's one step is spent too, so
+  the output's inputs, admitted again, can never be removed and D30 rightly keeps the output
+  while its inputs remain. It is not a leak of the protocol: the same state is a dead end under
+  D30 as built (`node bfs/replay.ts --deadend LEAK_P_sl_comp LEAK_D30_sl_comp`: goal
+  unreachable, 294 states, complete), where F16's shorter 19-step trace hid it; and F16's own
+  dead end is escapable under the proposal (`--deadend LEAK_D30_sl_comp LEAK_P_sl_comp`: goal
+  reached). With a second removal, which a real retention always has, the proposal holds.
+
+### Recommendation
+
+**R2 with the F16 fix.** R2 and R3 cost the same on the acknowledgement path and both pass;
+R2 changes fewer components (shard, ledger, janitor; the coordinator and flush stay as built),
+and the call that lets a query finish after a storage loss (the shard starting and
+registering a fresh incarnation) is the same call the janitor needs for F16, and the same
+code as an append to a new stream: one mechanism, three callers. R3 needs a coordinator change
+and still needs the shard's `ensureStream` for F16, and it leaves the ledger naming a lost
+incarnation (one refused attempt per query) until the tenant writes there again.
+
+R4 is the cheapest on writes (one round trip on the first append of a stream, no refused
+append, no dependency on the ledger's R2 writes) and passes within its (shallower) bounds. It
+pays on reads, one extra ledger round trip per query attempt that reads a shard its plan does
+not name, and it restores statement 1 only after the fact: a stream whose registration a
+rebuild rolled back is found because the coordinator asks every shard of the tenant's pool.
+Across a shard-map change (not modelled) a shard that has left the pool would not be asked at
+all; R2 makes every plan name it. Choose R4 only if the refused first append of R2 is measured
+to matter.
+
+**Cost of R2 on the acknowledgement path:** per stream lifetime (a tenant's first write to a
+shard, or the first after that shard lost its storage), 1 + k shard→ledger round trips, k the
+number of refused attempts until the registration is logged (1–2 at the measured PUT times, 3 at the slowest seen),
+and a first acknowledgement 0.5–1.5 s after the first append (modelled); per append afterwards,
+none. No R2 PUT on any acknowledgement path. The F16 fix adds nothing there: one shard RPC per
+stream with a pending flush file of its named incarnation, per sweep run.
+
+### Contract changes this implies (not made; for `contracts/`, in their own commit)
+
+`contracts/ledger.ts`:
+
+1. `LedgerRpc.registerStream` answers `{ version, previousIncarnation, logged: boolean }`.
+   `logged`: the change that registered `ref.incarnation` (or a later change of the stream
+   naming it) is in the logged prefix, so no rebuild can lose it. Additive; a caller that gets
+   no `logged` (a ledger of an earlier release) must treat it as `false`, so ledgers are
+   upgraded before shards (COMPATIBILITY.md §3.3, callee first).
+2. Every `Watermark` that `loggedWatermarks()` returns, and every entry of
+   `OrphanCheck.logged`, carries `loggedIncarnation: number`: the stream's incarnation as of the
+   logged prefix (at most `incarnation`; equal once the registration of `incarnation` is
+   logged). `seq` keeps its meaning (the logged watermark of `incarnation`).
+3. `OrphanCheck` (and its comment): a flush file that is neither live nor tombstoned is dead
+   when its range is at or below the logged watermark of its incarnation, **or when
+   `loggedIncarnation` is newer than its incarnation** (replacing "a newer committed
+   incarnation whose logged watermark is above 0", the F15 fix as built, which cost F16).
+4. The replay-rules comment: "a unit for a shard the ledger has never seen is admitted only
+   with `seqLo === 1`" stays, marked as the path of shards that do not register before writes.
+
+The shard's surface (`shard/src/shard.ts`; it is not in `contracts/`):
+
+5. `AppendResult` `backpressure.scope` gains `'registering'` (additive: a caller that does not
+   know a scope treats it like the others).
+6. `tailRead(tenant, incarnation ≠ 0, …)` for a stream it does not hold: the shard first starts
+   a fresh incarnation and registers it, and the answer `incarnation_mismatch` names the fresh
+   incarnation (today: 0). Answers to incarnation 0 are unchanged.
+7. New `ensureStream(tenant): Promise<{ incarnation: number; registered: boolean }>`: what an
+   append does before it is accepted, without a batch (for the janitor).
+8. `ShardEnv.LEDGER` (the ledger namespace) becomes a binding of the shard; `JanitorEnv.SHARD`
+   (the shard namespace) of the janitor.
+
+### Code changes per component (for the owners; R2 + the F16 fix)
+
+- **`shard/`.** Schema version 2: `stream.registered INTEGER NOT NULL DEFAULT 0` (1 once the
+  ledger answered `logged: true` for this incarnation), rebuilt into memory in `load()`.
+  `ensureRegistered(tenant, epoch)`: if no stream row, insert one (fresh incarnation,
+  `registered = 0`) and let it commit; if `registered = 0`, call `registerStream` (outside any
+  transaction; one call in flight per tenant, later callers await it); on `logged: true` set
+  `registered = 1`. `append` calls it before joining a group and answers `backpressure` /
+  `registering` unless the stream is registered; `commitGroup`'s `stream()` no longer creates
+  streams. `tailRead` naming an incarnation the shard does not hold calls it and answers
+  `incarnation_mismatch(current)`. `ensureStream` = `ensureRegistered` without a batch. A
+  thrown `registerStream` (a lower incarnation: S5's clock step back) leaves the stream
+  unregistered, so its writes are refused until an operator acts (fails closed). Existing
+  streams at the upgrade start with `registered = 0` and are confirmed by their next append
+  (one round trip each, a refusal only if the ledger's drain is behind).
+- **`ledger/`.** `stream.logged_inc` (schema change): in `segmentWritten`, for each drained
+  change with a watermark, `logged_inc = MAX(logged_inc, watermark.incarnation)` for its shard
+  (no incarnation filter); a rebuild or restore sets `logged_inc = incarnation`; `register`
+  does not touch it. Migration: `logged_inc = incarnation` unless the outbox still holds a
+  change naming `(shard, incarnation)`, else `prev_incarnation ?? 0` (exact: a committed change
+  not in the outbox is logged). `registerStream` returns `logged = logged_inc >= ref.incarnation`;
+  `loggedWatermarks` and `orphanCheck` return `loggedIncarnation`.
+- **`janitor/`.** `flushFileState`: dead iff `loggedIncarnation > inc`, or
+  `incarnation === inc && seq >= seqHi` (old rule only when `loggedIncarnation` is absent: an
+  older ledger). For each `pending_unit` file whose incarnation is the one the ledger names,
+  call `SHARD.get(idFromName(shard with '_' → '/')).ensureStream(tenant)` once per stream per
+  run; the file is judged again by a later run. D30's output rule is unchanged.
+- **`flush/`, `query/`.** No change for R2. (R3 would change `readTail`; R4 would add the
+  re-check after the tail reads.)
+- **`edge/`.** None needed (an unknown backpressure scope is backpressure); it may surface
+  `registering` as its own reason.
+
+### Tests that would show it (each tied to a model trace)
+
+Each is a model trace to replay against the code, in the Workers runtime (`cloudflare:test`,
+storage loss as `deleteAll` and eviction), and each has a mutant that must make it fail
+(AGENTS.md: break the rule in a scratch copy, confirm a test fails, list the mutants).
+
+1. **"spec R1: a committed registration is not enough"** (`shard/` + `ledger/`), the 15 steps
+   of `R1_safety`: with the ledger's drain held back, a fresh stream's first append is answered
+   `backpressure` / `registering` and nothing is stored (R1 would acknowledge it: its step 2);
+   once the ledger has drained, the retry is accepted. Then the rest of the trace with a ledger
+   rebuild: the query's plan names the stream, and the query never completes without b0.
+   Mutant: accept on `logged: false`.
+2. **"spec F6(b)"** (integration, as the "spec F12" tests: shard + ledger + flush +
+   coordinator), `F6b_impl_now` with the registration first (its replay against R2 in
+   `results/REPLAY.md`, 15 steps): the query plans before the stream's first unit is admitted
+   and the plan names the stream (`inc 1 @ 0`); the unit is admitted and logged; the shard loses
+   its storage; the tail read is refused, never `ok`, empty; the re-planned attempt returns b0
+   from the file. F6(b) has no code test today. Mutant: lazy registration (today's code).
+3. **"spec F6 liveness"** (`shard/` + coordinator), `LIVE_R2_teeth_no_read_trigger`'s 6 steps
+   (register, log, two appends, shard loss, no further write): the query's first attempt is
+   refused; the shard now holds a fresh incarnation that the ledger has registered; the second
+   attempt completes, without b0 and b1 (the declared loss). Mutant: `tailRead` does not start
+   and register a fresh incarnation (today's code): every attempt is refused until the cap.
+4. **`ledger/`**: `registerStream` answers `logged: false` until `segmentWritten` has committed
+   the segment holding the registration, then `true`; `loggedIncarnation` moves only there,
+   never at the commit; after `rebuildFromLog` it equals `incarnation`; the migration rule on a
+   ledger whose outbox still holds a registration. Mutant: set `logged_inc` at the commit (test
+   6 must fail too).
+5. **"spec F16"** (`janitor/` + shard + ledger), the 19 steps of `W_leak_behind_lost_flush`: two
+   units, a compaction step reads both, the shard loses its storage, the ledger loses its storage
+   (both admissions rolled back), the step PUTs its output. Sweep 1 keeps all three objects and
+   calls `ensureStream` (the shard registers a fresh incarnation); after the drain, a later
+   sweep deletes both flush files and then the output (an input absent and not live). Mutants:
+   no `ensureStream` call (`LEAK_P_teeth_no_trigger`), the rule as built
+   (`LEAK_P_teeth_wm_rule`): the three objects stay.
+6. **"spec F15", adapted** (`janitor/`), `P_teeth_newer_committed`'s trace: an old-incarnation
+   flush file is kept while the newer incarnation (registered by `ensureStream`) is only
+   committed; a rebuild then rolls the registration back and the late `addUnit` makes the file
+   live with its object. Mutant: count the committed incarnation.
+
+### What remains unproven
+
+- **Bounded depth.** The safety rows stopped at their state caps (4 or 6 million states;
+  every state within 16 to 25 steps checked, depending on the row). Only the liveness and leak
+  rows covered their whole graphs, at small bounds: one send per batch, one flush Worker, no
+  compaction in the `LIVE_*` rows, no query in the `LEAK_*` rows. AG EF with strong fairness,
+  not a temporal formula under weak fairness.
+- **Write availability is not checked**: that an append is eventually accepted. The model
+  repeats a registration whenever the ledger does not know it; the code repeats it on each
+  append attempt, tail read and `ensureStream`. A registration that is never logged (the
+  ledger's drain stuck, `LogFault`) refuses that stream's writes for good: fails closed, and new.
+- **Granularity.** The model creates a stream and commits its registration in one step; the
+  code creates the row, then calls the ledger. Every interleaving of the two is equivalent to a
+  modelled one (a stream with `registered = 0` only refuses writes). For the shard's
+  acceptance the model calls a registration logged once its segment is in R2; the code once the
+  drain's transaction has committed, which is later, so the code's behaviours are a subset. For
+  the sweep the model uses the code's notion (`loggedIncs`).
+- **Not modelled:** shard-map epochs and key moves (statement 1 is what a map change can rely
+  on under R2; under R4 a stream whose registration was rolled back and whose shard has left the
+  tenant's pool is not asked at all), S5 (a lower incarnation after a clock step back: the
+  shard's registration throws), a rolling upgrade with shards of both releases, more than one
+  shard loss in a run, a second shard of a tenant losing its storage while the first recovers.
+- **Not run:** R3 and R4 with the F16 fix; R1, R3 and R4 at the compaction-heavy bounds of
+  `P_F13x`–`P_F15x`.
+- **Costs are modelled**, from parts measured on Cloudflare (s4: 15–47 ms Worker→ledger round
+  trip, 180–494 ms segment PUT) and the drain delay set in code (200 ms). The experiment that
+  settles them: a spike that starts fresh streams on Cloudflare and times first append → first
+  acknowledgement and the shard→ledger round trip (n ≥ 30, with an idle ledger and one under
+  eight writers).
+
 ## Implementation / model mismatches
 
 Read-only comparison of the model's actions with the code, first as of 2026-11-18 evening

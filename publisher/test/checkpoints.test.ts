@@ -95,8 +95,9 @@ const nothingPublished = async (cell: string, p: PublisherStub, t: string) => {
   expect(await p.scratch()).toEqual({ stage: 0, liveNext: 0 })
 }
 
+/** The tenant's files in the published tables are exactly its ledger's live files. */
 const expectLedger = async (cell: string, t: string) => {
-  for (const table of TABLES) expect(await icebergLive(cell, table), table).toEqual(await liveKeys(t, table))
+  for (const table of TABLES) expect((await icebergLive(cell, table)).filter((k) => k.includes(`/tenant=${t}/`)), table).toEqual(await liveKeys(t, table))
 }
 
 /** Every object under the cell's Iceberg prefix, with its bytes (hex). */
@@ -237,8 +238,9 @@ describe('a ledger that writes its checkpoints in parts', () => {
     await expectVerified(p)
     const rows = () => runInDurableObject(p, (_i, s) => s.storage.sql.exec(`SELECT tbl, key, tenant, day, rows, bytes, snapshot_id, seq, file_seq, stats, manifest FROM live ORDER BY tbl, key`).toArray())
     const before = await rows()
-    await runInDurableObject(p, (_i, s) => void s.storage.sql.exec(`DELETE FROM live`))
-    await runInDurableObject(p, (_i, s) => void s.storage.sql.exec(`DELETE FROM tbl`))
+    await runInDurableObject(p, async (_i, s) => {
+      await s.storage.deleteAll()
+    })
     await evictDurableObject(p)
     expect((await p.publish()).ops.put).toBe(0) // resync from R2; nothing new to commit
     expect(await rows()).toEqual(before)
@@ -274,10 +276,10 @@ describe('a part that is not there, or not what its manifest says, stops the re-
   })
 
   /** Rewrite part `i` of the tenant's checkpoint; the publish must stop with `corrupt` naming `reason`, publish nothing, and publish once restored. */
-  async function tampered(name: string, change: (parts: string[], bodies: string[]) => Promise<void>, reason: RegExp) {
+  async function tampered(name: string, change: (parts: string[], bodies: string[]) => Promise<void>, reason: RegExp, partBytes = 700) {
     const { cell, tenant } = fresh()
     const t = tenant(name)
-    await scenario(cell, t, 'parts')
+    await scenario(cell, t, 'parts', partBytes)
     const { parts } = await checkpointsOf(cell, t, 1)
     const bodies = await Promise.all(parts.map(async (k) => (await env.BUCKET.get(k))!.text()))
     await change(parts, bodies)
@@ -307,15 +309,18 @@ describe('a part that is not there, or not what its manifest says, stops the re-
 
   it('a record dropped, the bytes made up with spaces: the parts do not hold the files the manifest names', async () => {
     await tampered('count', async (parts, bodies) => {
-      const recs = records(bodies[1]!)
+      // A part of files with at least two records.
+      const i = bodies.findIndex((b) => records(b).length >= 2 && records(b).every((r) => r.startsWith('{"file"')))
+      expect(i).toBeGreaterThanOrEqual(0)
+      const recs = records(bodies[i]!)
       recs.shift()
       // Same total size: what the dropped line took becomes whitespace inside another record.
-      const short = bodies[1]!.length - rewrite(bodies[1]!, recs).length
+      const short = bodies[i]!.length - rewrite(bodies[i]!, recs).length
       recs[0] = recs[0]!.replace('{', `{${' '.repeat(short)}`)
-      const body = rewrite(bodies[1]!, recs)
-      expect(body.length).toBe(bodies[1]!.length)
-      await env.BUCKET.put(parts[1]!, body)
-    }, /its parts hold \d+ files and \d+ tombstones, its manifest says \d+ and \d+/)
+      const body = rewrite(bodies[i]!, recs)
+      expect(body.length).toBe(bodies[i]!.length)
+      await env.BUCKET.put(parts[i]!, body)
+    }, /its parts hold \d+ files and \d+ tombstones, its manifest says \d+ and \d+/, 2_000)
   })
 
   it('two parts swapped: each says it is the other', async () => {
@@ -387,15 +392,34 @@ describe('eviction and concurrency', () => {
       (e: unknown) => `failed: ${String(e)}`,
     )
     await reached
-    await evictDurableObject(p) // the process is gone; only storage and R2 remain
+    // The runtime resets the object there (as an eviction or a crash does: no `finally` runs),
+    // and the next call constructs it afresh on its storage.
+    // (evictDurableObject refuses an object with a request in flight; ctx.abort() is the same reset.)
+    expect(await p.abortNow().then(() => 'returned', () => 'reset')).toBe('reset')
     expect(await done).toMatch(/^failed/)
+    const q = publisher(cell) // a stub to the object as constructed afresh (the old one is broken by the reset)
     // Some parts reached SQLite before the eviction; none of it was committed.
-    expect((await p.scratch()).stage).toBeGreaterThan(0)
+    expect((await q.scratch()).stage).toBeGreaterThan(0)
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([])
-    const r = await p.publish([t])
+    const r = await q.publish([t])
     expect(r.tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2, objects: 1 + parts.length } })
-    expect(await p.scratch()).toEqual({ stage: 0, liveNext: 0 })
+    expect(await q.scratch()).toEqual({ stage: 0, liveNext: 0 })
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([1])
+    await expectLedger(cell, t)
+    await expectVerified(q)
+  })
+
+  it('a read that fails at a part, then an eviction: nothing published, the next publish reads it all again', async () => {
+    const { cell, tenant } = fresh()
+    const t = tenant('crash')
+    await scenario(cell, t, 'parts')
+    const { parts } = await checkpointsOf(cell, t, 1)
+    const p = publisher(cell)
+    await p.failOnGet(parts[PART_WINDOW + 1]!.slice(parts[0]!.lastIndexOf('/', parts[0]!.lastIndexOf('/') - 1)))
+    expect((await p.tryPublish([t])).error).toMatch(/injected: R2 failed/)
+    await nothingPublished(cell, p, t)
+    await evictDurableObject(p)
+    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2 } })
     await expectLedger(cell, t)
     await expectVerified(p)
   })

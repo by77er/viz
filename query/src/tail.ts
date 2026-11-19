@@ -293,8 +293,8 @@ export function seriesIdsOf(batches: Uint8Array[], into: Set<string> = new Set()
 /**
  * What the tail would hold if it were read to the end, from what the reads saw: the bytes
  * kept, and for a read stopped at the budget its stored batches left (`through` minus those
- * examined) at the average stored size times the share kept so far. Only to size a split,
- * never to refuse or to answer.
+ * examined) at the average stored size times the share kept so far; and the distinct series
+ * seen (a lower bound). Only to size a split, never to refuse or to answer.
  */
 export function tailEstimate(reads: TailRead[]): { bytes: number; series: number } {
   let bytes = 0
@@ -314,7 +314,9 @@ export function tailEstimate(reads: TailRead[]): { bytes: number; series: number
     const ratio = r.scannedBytes > 0 ? Math.min(1, (r.bytes + r.overBytes) / r.scannedBytes) : 1
     bytes += Math.ceil(left * avg * ratio)
   }
-  return { bytes, series: kept > 0 ? Math.ceil((ids.size * bytes) / kept) : 0 }
+  // Series seen, not scaled: batches of later scrapes repeat the same series (measured: scaling
+  // by bytes asked for 15 leaves where 9 suffice, test/tail.bench.ts dataset B).
+  return { bytes, series: ids.size }
 }
 
 /**

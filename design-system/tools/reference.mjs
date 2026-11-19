@@ -13,9 +13,9 @@ const scripts = [...new Set(names.flatMap((n) => body(n).scripts))].join('\n')
 const col = (th) => `<div data-theme="${th}" class="vz side">${names.map((n) => { const b = body(n); return `<section><h2 class="vz-label">${n}</h2><div class="${n === 'Cover' ? 'coverwrap' : 'ex'}">${b.inner}</div></section>` }).join('')}</div>`
 const extra = names.map((n) => body(n).style).join('').replace(/<\/?style>/g, '').replace(/html,body\{margin:0\}|body\{padding:[^}]*\}/g, '')
 writeFileSync(root + 'dist/reference.html', `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz reference</title><style>${css}
-body{margin:0}.sheet{display:grid;grid-template-columns:1fr 1fr}.side{padding:32px;display:flex;flex-direction:column;gap:32px;min-width:0}
-.side section{display:flex;flex-direction:column;gap:12px}.side h2{margin:0}.side section>div{min-width:0}.coverwrap{overflow:hidden}
-@media (max-width:900px){.sheet{grid-template-columns:1fr}}
+body{margin:0}.sheet{display:grid;grid-template-columns:1fr 1fr}.side{padding:var(--space-8);display:flex;flex-direction:column;gap:var(--space-8);min-width:0}
+.side section{display:flex;flex-direction:column;gap:var(--space-3)}.side h2{margin:0}.side section>div{min-width:0}.coverwrap{overflow:hidden}
+@media (max-width:1199px){.sheet{grid-template-columns:1fr}}
 ${extra}</style></head><body><div class="sheet">${col('light')}${col('dark')}</div><script>${press}</script>${scripts}</body></html>`)
 mkdirSync(root + 'dist/preview', { recursive: true })
 for (const n of names) { const b = body(n), style = b.style.replace(/<\/?style>/g, '')

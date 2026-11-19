@@ -467,6 +467,35 @@ describe('the filter a read sends (tailFilter)', () => {
     expect(cuts).toBeGreaterThan(500)
   })
 
+  it('cutById puts ids at the very edges of every part where the shard does (ids written at each boundary)', () => {
+    for (const parts of [2, 3, 7, 10, 32, 1000]) {
+      // One series per edge: the first and last id of every part, and their neighbours.
+      const ids: bigint[] = []
+      for (let j = 0; j < parts; j++) {
+        const r = splitKeyRange(j, parts)
+        for (const id of [BigInt(r.lo), BigInt(r.hi), BigInt(r.lo) + 1n, BigInt(r.hi) - 1n]) if (id >= 0n && id < 1n << 64n) ids.push(id)
+      }
+      const series = ids.map((_, i) => ({ __name__: 'm', i: String(i) }))
+      const batch = encodeBatch(series, ids.map((_, i) => ({ series: i, ts: i, bits: 0n })))
+      // Overwrite each series' id (the first 8 bytes of its entry) with the edge it stands for.
+      const dv = new DataView(batch.buffer, batch.byteOffset, batch.byteLength)
+      let p = 16
+      for (const id of ids) {
+        dv.setBigUint64(p, id, true)
+        const n = dv.getUint32(p + 8, true)
+        p += 12
+        for (let l = 0; l < 2 * n; l++) p += 2 + dv.getUint16(p, true)
+      }
+      const got = cutById(batch, parts)
+      for (let j = 0; j < parts; j++) {
+        const f = compileFilter({ keyRange: splitKeyRange(j, parts) })
+        if ('invalid' in f) throw new Error(f.invalid)
+        const want = filterBatch(batch, f)
+        expect(got[j] ? [...got[j]!] : null, `part ${j} of ${parts}`).toEqual(want ? [...want.bytes] : null)
+      }
+    }
+  })
+
   it('sizes a split from what a read saw: series ids, and the stored batches left', () => {
     const b = encodeBatch([{ __name__: 'm', i: '1' }, { __name__: 'm', i: '2' }], [{ series: 0, ts: 1, bits: 0n }, { series: 1, ts: 1, bits: 0n }])
     expect(seriesIdsOf([b, b]).size).toBe(2)
@@ -474,7 +503,7 @@ describe('the filter a read sends (tailFilter)', () => {
     // 10 batches left of the 20 above the watermark, each like the 10 seen, of which a tenth was kept.
     const est = tailEstimate([read])
     expect(est.bytes).toBe(b.byteLength + Math.ceil(10 * b.byteLength * 0.1))
-    expect(est.series).toBe(Math.ceil((2 * est.bytes) / b.byteLength))
+    expect(est.series).toBe(2)
     expect(tailEstimate([{ ...read, complete: true }])).toEqual({ bytes: b.byteLength, series: 2 })
   })
 })

@@ -86,7 +86,7 @@ export class TestPublisher extends Publisher {
   private notifyDelayMs = 0
   private notifyFails = false
   private probe: Probe | null = null
-  private onGet: { match: string; pause: boolean; del: string | null; reached: (() => void) | null; resume: Promise<void> | null } | null = null
+  private onGet: { match: string; pause: boolean; fail?: boolean; del: string | null; reached: (() => void) | null; resume: Promise<void> | null } | null = null
   private seeded: number | null = null
   private fixedNow: number | null = null
 
@@ -136,6 +136,7 @@ export class TestPublisher extends Publisher {
     if (!h || !key.includes(h.match)) return
     this.onGet = null
     if (h.del) await this.env.BUCKET.delete(h.del)
+    if (h.fail) throw new Error(`injected: R2 failed reading ${key}`)
     if (h.pause) {
       h.reached?.()
       await h.resume
@@ -145,6 +146,11 @@ export class TestPublisher extends Publisher {
   /** The next GET of a key containing `match` first deletes `key`. */
   async deleteOnGet(match: string, key: string): Promise<void> {
     this.onGet = { match, pause: false, del: key, reached: null, resume: null }
+  }
+
+  /** The next GET of a key containing `match` fails, as R2 can. */
+  async failOnGet(match: string): Promise<void> {
+    this.onGet = { match, pause: false, fail: true, del: null, reached: null, resume: null }
   }
 
   /** The next GET of a key containing `match` waits forever (until the instance is evicted). Resolves when it is reached. */
@@ -163,6 +169,11 @@ export class TestPublisher extends Publisher {
       p.gets = []
     }
     return out
+  }
+
+  /** Reset the object now, as the runtime does when it evicts or loses it: whatever it was doing stops where it is. */
+  async abortNow(): Promise<void> {
+    this.ctx.abort('injected: the object is reset')
   }
 
   /** Rows of a scratch table (`stage`, `live_next`). */

@@ -123,16 +123,16 @@ async function measure(name: string, perWrite: number): Promise<void> {
         // Before: the shards' whole tails, as the previous release answers.
         tailHooks.previousRelease = () => true
         await setLimits(t, {})
-        const refusedBefore = await three(`${name} before (default limits): ${what}`, t, path, params)
+        const refusedBefore = await three(`${name} previous-release shards, this coordinator, default limits: ${what}`, t, path, params)
         await setLimits(t, { maxFetchBytes: 64 << 20 })
-        const before = await three(`${name} before (maxFetchBytes 64 MiB): ${what}`, t, path, params)
+        const before = await three(`${name} BEFORE (previous-release shards, maxFetchBytes 64 MiB: the old coordinator's path): ${what}`, t, path, params)
         // After: this release, default limits.
         delete tailHooks.previousRelease
         await setLimits(t, {})
-        const after = await three(`${name} after (default limits): ${what}`, t, path, params)
+        const after = await three(`${name} AFTER (default limits): ${what}`, t, path, params)
         if (before.status === 200 && after.status === 200) {
           expect(after.body, what).toBe(before.body)
-          console.log(`MEASURE   identical bodies (${after.body.length} B); before refused with the default limits: ${refusedBefore.status !== 200}`)
+          console.log(`MEASURE   identical bodies (${after.body.length} B); previous-release shards with the default limits: HTTP ${refusedBefore.status}`)
         }
       }
     } finally {
