@@ -224,7 +224,8 @@ of it or the final tree, alternating run by run (`tools/speed.mjs --compare`, th
 
 **Where the time went** (a Chromium trace of one tap on "Dark", phone, v8 as handed off; load 2.1 to 2.7): tap to the end of the frame
 123 to 195 ms. Style recalculation 57 to 98 ms, every element restyled (1,720 including pseudo-elements, of 1,383 elements); two more
-recalculations of 207 elements each on the press and the release; 48 colour transitions started on buttons and segments; paint 15 to
+recalculations of 207 elements each on the press and the release; colour transitions started on every button, input and segment (93 still running when that frame was drawn, counted later by the
+harness's new row); paint 15 to
 27 ms; script 15 to 21 ms. A forced-recalculation measurement (desktop and phone) settles what the style cost is: changing one custom
 property that **nothing reads** on the root costs as much (28 to 47 ms) as the whole theme change (27 to 30 ms); a non-inherited
 property costs nothing. The tokens are inherited custom properties, so any change on the root restyles every element, and the cost is
@@ -264,7 +265,7 @@ and no transitions; the desktop's 1,133 (was 1,439 with the transitions' recalcu
 
 **What guards it.**
 - `tools/speed.mjs`: a new row at both layouts, "Change theme: transitions still running when it is drawn", budget 0, judged at any
-  load (as layout shift is): v8 as handed off ran **93** on the phone, now **0**. The timing row stays as it was. The harness now
+  load (as layout shift is): v8 as handed off ran **93** at both layouts, now **0** (judged). The timing row stays as it was. The harness now
   touches a control two frames after scrolling it into view, once it is painted, as a person would: with charts skipped off screen, a
   touch in the same frame as the scroll found nothing drawn (the crosshair row timed out in 4 of 8 runs before this change).
 - `check.mjs`: fails any transition of a colour (or `all`), and fails `.vz-chart` without `content-visibility: auto` and a clip margin.
