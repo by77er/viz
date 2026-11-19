@@ -14,6 +14,7 @@ change it here first; nothing else may redefine these.
 | `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |
 | `ingest.ts` | The ingest Worker's service surface for other viz Workers: the `RecordedSamples` entrypoint, where the ruler writes recording-rule samples, authenticated by its service binding (D45) |
 | `control.ts` | The control plane's service surface over its Durable Object binding: the tenant's default notification destination and service keys (D39) |
+| `oauth.ts` | OAuth 2.1 for agents (MCP clients): clients, grants, codes, access and refresh tokens as the control plane holds them, their formats and lifetimes, and the token, revocation and introspection RPCs the agent surface and control's OAuth endpoints use (D44) |
 | `engine.ts` | The JavaScript face of the Rust/WASM engine |
 | `COMPATIBILITY.md` | What every component does so that release N and N±1 can run side by side: versioned storage, versioned formats, readers before writers, expand then contract, rollback rules |
 | `schema.ts` | The migration runner every Durable Object opens its storage with (`openSchema`), and the rollback test (`canOpen`, `schemaRelease`) |
