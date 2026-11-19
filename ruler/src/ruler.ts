@@ -4,6 +4,8 @@ import type { PromMatrix, PromScalar, PromVector } from '../../contracts/engine'
 import type {
   Alert,
   AlertingRuleV2 as AlertingRule,
+  AnomalyRuleV2 as AnomalyRule,
+  AnyRuleV2 as AnyRule,
   AlertUpdateV2 as AlertUpdate,
   BacktestResponse,
   BatchEvaluator,
@@ -21,6 +23,7 @@ import type {
   RulerHealth,
   RulerLimits,
   RulerRpcV2 as RulerRpc,
+  RuleSnapshot,
   RuleStatus,
   SampleBatch,
   SaveGroupsResult,
@@ -31,6 +34,7 @@ import type {
   Validator,
   Refused,
 } from '../contracts-proposal/rules.v2'
+import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, historyOf, maxClass, newAnomalyRt, readStateRows, stateRows, type AnomalyEval, type AnomalyRt } from './anomaly'
 import { MAX_BACKTEST_STEPS, runBacktest } from './backtest'
 import { classify } from './classify'
 import { batchFromSingle, errorText, permissiveValidator } from './evaluator'
@@ -97,6 +101,7 @@ export const DEFAULT_RULER_CONFIG: RulerConfig = {
     maxAnnotationBytes: 4096,
     maxGroupBytes: 1_500_000,
     minIntervalMs: 10_000,
+    ...ANOMALY_LIMIT_DEFAULTS,
   },
   defaultIntervalMs: 60_000,
   heartbeatMs: 5 * 60_000,
@@ -143,6 +148,10 @@ interface GroupRt {
   /** The first evaluation is at the first aligned time at or after this. */
   notBefore: number
   compiled: (CompiledAlertRule | null)[]
+  /** Anomaly rules' templates, by rule key. */
+  anomalyCompiled: Map<string, CompiledAlertRule>
+  /** Anomaly rule key → per-series detector state, as committed (rebuilt from `anomaly_state`). */
+  anomaly: Map<string, AnomalyRt>
   /** rule key → fingerprint → alert */
   alerts: Map<string, Map<string, Alert>>
   rules: Map<string, RuleRt>
@@ -157,9 +166,22 @@ interface GroupRt {
 }
 
 interface Staged {
-  rule: AlertingRule
+  rule: AlertingRule | AnomalyRule
   result: Extract<AlertEvalResult, { ok: true }>
+  /** Anomaly rules: the detector state to commit with the alerts. */
+  anomaly?: Extract<AnomalyEval, { ok: true }>
 }
+
+/** Every rule of a group, in evaluation order: the ordinary rules, then the anomaly rules. */
+export function allRules(spec: RuleGroup): AnyRule[] {
+  return [...(spec.rules as AnyRule[]), ...((spec.anomalyRules ?? []) as AnomalyRule[])]
+}
+
+/**
+ * The alert state machine reads only `name`, `forMs`, `keepFiringForMs` and `noData` of a rule,
+ * which an anomaly rule has with the same meaning.
+ */
+const asAlerting = (r: AnomalyRule): AlertingRule => r as unknown as AlertingRule
 
 type Cursor = { at: number; samplesDropped: number; groups: Record<string, [number | null, number, number, number, number]> }
 
@@ -312,6 +334,26 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       if (!m) g.alerts.set(row.rule_key, (m = new Map()))
       m.set(row.fp, reviveAlert(row.body))
     }
+    // Detector state: the only copy is these rows, so memory is exactly what was last committed.
+    const bodies = new Map<string, string[]>()
+    for (const row of this.exec<{ grp: string; rule_key: string; body: string }>(`SELECT grp, rule_key, body FROM anomaly_state WHERE tenant = ? ORDER BY grp, rule_key, chunk`, t)) {
+      const k = `${row.grp}\n${row.rule_key}`
+      bodies.set(k, [...(bodies.get(k) ?? []), row.body])
+    }
+    for (const [k, rows] of bodies) {
+      const cut = k.lastIndexOf('\n')
+      const rt = this.groups.get(k.slice(0, cut))?.anomaly.get(k.slice(cut + 1))
+      if (!rt) continue
+      const read = readStateRows(rows)
+      if ('error' in read) {
+        // A newer release's row format: start this rule cold rather than guess (COMPATIBILITY.md §3.2).
+        rt.status = { ...rt.status, message: `stored detector state not readable (${read.error}); starting cold` }
+        continue
+      }
+      rt.series = read.series
+      rt.json = read.json
+      rt.status = { ...rt.status, stateSeries: read.series.size, stateBytes: rows.reduce((n, b) => n + byteLength(b), 0) }
+    }
     if (cursor) {
       for (const [name, c] of Object.entries(cursor.groups)) {
         const g = this.groups.get(name)
@@ -337,8 +379,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       gen: ++this.genCounter,
       notBefore,
       compiled: spec.rules.map((r) => (r.kind === 'alert' ? compileAlertRule(r) : null)),
+      anomalyCompiled: new Map(((spec.anomalyRules ?? []) as AnomalyRule[]).map((r) => [r.key, compileAlertRule(asAlerting(r))])),
+      anomaly: new Map(((spec.anomalyRules ?? []) as AnomalyRule[]).map((r) => [r.key, newAnomalyRt(r)])),
       alerts: new Map(),
-      rules: new Map(spec.rules.map((r) => [r.key, { health: 'unknown', lastError: null, lastEvaluationMs: null, lastDurationMs: null, noData: false }])),
+      rules: new Map(allRules(spec).map((r) => [r.key, { health: 'unknown', lastError: null, lastEvaluationMs: null, lastDurationMs: null, noData: false }])),
       lastEvalMs: null,
       cursorApprox: false,
       lastDurationMs: null,
@@ -478,7 +522,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     const limit = g.spec.limit > 0 ? Math.min(g.spec.limit, hardCap) : hardCap
     const staged: Staged[] = []
     let pending: { rule: Rule; batch: SampleBatch }[] = []
-    const rules = g.spec.rules as Rule[]
+    const rules = allRules(g.spec)
+    const aLimits = anomalyLimits(this.cfg)
 
     // The time budget. At the deadline the evaluator is told to stop (`abort`) and the sink
     // is given up on (`timeout`); an evaluator that ignores the signal is abandoned a
@@ -500,7 +545,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     })
     timeout.catch(() => {})
 
-    const setHealth = (rule: Rule, error: string | null, durationMs: number | null = g.rules.get(rule.key)?.lastDurationMs ?? null, noData = g.rules.get(rule.key)?.noData ?? false) => {
+    const setHealth = (rule: AnyRule, error: string | null, durationMs: number | null = g.rules.get(rule.key)?.lastDurationMs ?? null, noData = g.rules.get(rule.key)?.noData ?? false) => {
       g.rules.set(rule.key, { health: error === null ? 'ok' : 'err', lastError: error, lastEvaluationMs: ts, lastDurationMs: durationMs, noData })
     }
     const flushSink = async () => {
@@ -526,7 +571,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     let stage: number[] = []
     let recordedHere: string[] = []
     rules.forEach((rule, i) => {
-      const reads = (name: string) => rule.expr.includes(name) || (rule.kind === 'alert' && rule.noData?.expr?.includes(name) === true)
+      const reads = (name: string) => rule.expr.includes(name) || (rule.kind !== 'record' && rule.noData?.expr?.includes(name) === true)
       if (stage.length > 0 && recordedHere.some(reads)) {
         stages.push(stage)
         stage = []
@@ -542,9 +587,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         if (!current()) return
         const requests: EvalRequest[] = []
         for (const i of indexes) {
-          const rule = rules[i] as Rule
+          const rule = rules[i] as AnyRule
           requests.push({ id: rule.key, promql: rule.expr, timeMs: queryTime })
-          if (rule.kind === 'alert' && rule.noData?.expr) requests.push({ id: `${rule.key}#presence`, promql: rule.noData.expr, timeMs: queryTime })
+          if (rule.kind !== 'record' && rule.noData?.expr) requests.push({ id: `${rule.key}#presence`, promql: rule.noData.expr, timeMs: queryTime })
         }
         const results = new Map<string, EvalResult>()
         // The whole call failing (the engine is unreachable) fails every rule of the batch;
@@ -559,9 +604,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         }
         if (!current()) return
         for (const i of indexes) {
-          const rule = rules[i] as Rule
+          const rule = rules[i] as AnyRule
           const res = results.get(rule.key)
-          const wantsPresence = rule.kind === 'alert' && Boolean(rule.noData?.expr)
+          const wantsPresence = rule.kind !== 'record' && Boolean(rule.noData?.expr)
           const pres = wantsPresence ? results.get(`${rule.key}#presence`) : undefined
           let error = batchError ?? (res === undefined ? 'the evaluator returned no result for this rule' : res.ok ? null : res.error)
           if (error === null && wantsPresence) error = pres === undefined ? 'the evaluator returned no result for the no-data check' : pres.ok ? null : `no-data check: ${pres.error}`
@@ -581,7 +626,25 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             setHealth(rule, error, res?.durationMs ?? null)
             continue
           }
-          if (rule.kind === 'alert') {
+          if (rule.kind === 'anomaly') {
+            // The detector decides which series are the rule's result; the alert state machine
+            // does the rest. A refused evaluation (series cap, state limit) changes nothing.
+            const rt = g.anomaly.get(rule.key) as AnomalyRt
+            const ev = evalAnomaly(rule, rt, series, queryTime, g.spec.intervalMs, aLimits, rule.annotations)
+            if (!ev.ok) {
+              rt.status = ev.status
+              setHealth(rule, ev.error, res?.durationMs ?? null)
+              continue
+            }
+            const result = evalAlertingRule(asAlerting(rule), g.anomalyCompiled.get(rule.key) as CompiledAlertRule, g.alerts.get(rule.key) ?? EMPTY, ev.flagged, ts, {
+              resolvedRetentionMs: this.cfg.resolvedRetentionMs,
+              limit,
+              maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes,
+              externalLabels: this.cfg.externalLabels,
+            }, presence ?? ev.present)
+            if (result.ok) staged.push({ rule, result, anomaly: ev })
+            setHealth(rule, result.ok ? null : result.error, res?.durationMs ?? null, result.ok ? result.noData : undefined)
+          } else if (rule.kind === 'alert') {
             const result = evalAlertingRule(rule, g.compiled[i] as CompiledAlertRule, g.alerts.get(rule.key) ?? EMPTY, series, ts, {
               resolvedRetentionMs: this.cfg.resolvedRetentionMs,
               limit,
@@ -616,7 +679,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   /** Persist the tick's transitions and their hand-off rows in one transaction, then adopt the new state. */
   private commit(g: GroupRt, ts: number, staged: Staged[]): void {
-    if (staged.some((s) => s.result.dirty.size > 0)) {
+    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {
       const t = this.tenant
       const updates: AlertUpdate[] = []
       this.ctx.storage.transactionSync(() => {
@@ -638,16 +701,41 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           // A monitor's history: the state changes of this tick, in the same transaction.
           if (rule.monitor) this.appendTimeline(rule.monitor.id, transitions(before, result.alerts, result.dirty, ts))
         }
+        // Detector state goes in the same transaction as the alerts it produced, so a replay
+        // finds both or neither. Whole batches of series per row, never a row per series.
+        for (const { rule, anomaly } of staged) if (anomaly?.changed) this.writeAnomalyState(g.spec.name, rule.key, anomaly.json)
         this.enqueueHandoff(updates, ts)
         this.fault('commit')
       })
       this.noteHandoff(updates, ts)
     }
-    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)
+    for (const { rule, result, anomaly } of staged) {
+      g.alerts.set(rule.key, result.alerts)
+      if (anomaly) {
+        const rt = g.anomaly.get(rule.key) as AnomalyRt
+        rt.series = anomaly.next
+        rt.json = anomaly.json
+        rt.status = anomaly.status
+        rt.pruned = anomaly.status.pruned
+      }
+    }
     this.fault('after-commit')
   }
 
-  private toUpdate(g: GroupRt, rule: AlertingRule, a: Alert, status: 'firing' | 'resolved', at: number): AlertUpdate {
+  /**
+   * Inside a transaction: replace one anomaly rule's state rows. Rows written per evaluation =
+   * ceil(state bytes / ANOMALY_ROW_BYTES), plus the rows of a shrinking state that are deleted.
+   */
+  private writeAnomalyState(group: string, key: string, json: Map<string, string>): void {
+    const rows = stateRows(json)
+    rows.forEach((body, chunk) => {
+      this.exec(`INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (tenant, grp, rule_key, chunk) DO UPDATE SET body = excluded.body`, this.tenant, group, key, chunk, body)
+    })
+    this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND chunk >= ?`, this.tenant, group, key, rows.length)
+  }
+
+  private toUpdate(g: GroupRt, rule: AlertingRule | AnomalyRule, a: Alert, status: 'firing' | 'resolved', at: number): AlertUpdate {
     const heartbeat = g.spec.name === DEADMAN_GROUP
     return {
       fingerprint: a.fingerprint,
@@ -774,6 +862,11 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         for (const g of this.groups.values()) {
           if (g.spec.name === DEADMAN_GROUP) continue
           for (const r of g.spec.rules) r.cost = classify(r.expr, next)
+          for (const r of (g.spec.anomalyRules ?? []) as AnomalyRule[]) {
+            const exprCost = classify(r.expr, next)
+            r.anomaly.history = historyOf(r.anomaly.detector, r.anomaly.params, g.spec.intervalMs, next)
+            r.cost = { class: maxClass(exprCost.class, r.anomaly.history.tick), windowMs: Math.max(exprCost.windowMs, r.anomaly.history.tickLookbackMs), reason: `${exprCost.reason}; the detector: ${r.anomaly.history.reason}` }
+          }
           this.exec(`UPDATE rule_group SET spec = ? WHERE tenant = ? AND name = ?`, JSON.stringify(g.spec), this.tenant, g.spec.name)
         }
       }
@@ -858,7 +951,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             intervalMs: spec.intervalMs,
             offsetMs: g.offsetMs,
             nextEvaluationMs: this.ceilTick(g, now),
-            rules: spec.rules.map((r) => ({ name: r.name, kind: r.kind, key: r.key, cost: r.cost })),
+            rules: allRules(spec).map((r) => (r.kind === 'anomaly' ? { name: r.name, kind: r.kind, key: r.key, cost: r.cost, history: r.anomaly.history } : { name: r.name, kind: r.kind, key: r.key, cost: r.cost })),
           }
         }),
       },
@@ -891,8 +984,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         const g = this.newGroup(spec, keepSchedule ? old.notBefore : now)
         // History: who created or last edited each monitor (once per `updatedAt`), ahead of
         // the transitions the edit itself causes.
-        for (const r of spec.rules as Rule[]) {
-          if (r.kind !== 'alert' || !r.monitor) continue
+        for (const r of allRules(spec)) {
+          if (r.kind === 'record' || !r.monitor) continue
           const m = r.monitor
           this.appendTimeline(m.id, [{ at: m.updatedAt, source: 'ruler', kind: m.updatedAt === m.createdAt ? 'created' : 'edited', by: m.updatedBy }])
         }
@@ -905,7 +998,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           g.unobserved = old.unobserved
           g.evaluations = old.evaluations
           g.evaluatorErrors = old.evaluatorErrors
-          const kept = new Set(spec.rules.map((r) => r.key))
+          const kept = new Set(allRules(spec).map((r) => r.key))
           for (const [key, alerts] of old.alerts) {
             if (kept.has(key)) {
               // Same name, expression and labels: the rule's alerts and health carry over.
@@ -916,6 +1009,14 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
               this.dropRuleAlerts(old, key, alerts, now, updates)
             }
           }
+          // Same key (detector and parameters too): the detector state carries over; otherwise it is deleted.
+          for (const [key, rt] of old.anomaly) {
+            if (kept.has(key)) g.anomaly.set(key, rt)
+            else this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ?`, t, spec.name, key)
+          }
+        } else {
+          // A new group: no state may be inherited from a group of the same name that is gone.
+          this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ?`, t, spec.name)
         }
         this.exec(`INSERT INTO rule_group (tenant, name, spec, not_before) VALUES (?, ?, ?, ?)
           ON CONFLICT (tenant, name) DO UPDATE SET spec = excluded.spec, not_before = excluded.not_before`, t, spec.name, JSON.stringify(spec), g.notBefore)
@@ -947,7 +1048,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (existing && group.name !== DEADMAN_GROUP) {
       doc = ruleFileDocument([existing.spec], { extensions: true }).file.groups[0] as Record<string, unknown>
       const rules = doc.rules as unknown[]
-      const at = typeof id === 'string' ? (existing.spec.rules as Rule[]).findIndex((r) => r.kind === 'alert' && r.monitor?.id === id) : -1
+      const at = typeof id === 'string' ? allRules(existing.spec).findIndex((r) => r.kind !== 'record' && r.monitor?.id === id) : -1
       ruleIndex = at >= 0 ? at : rules.length
       rules[ruleIndex] = rule
       if (group.interval !== undefined && parseDuration(group.interval) !== existing.spec.intervalMs) {
@@ -969,10 +1070,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
     const g = this.groups.get(groupName)
-    const at = g && groupName !== DEADMAN_GROUP ? (g.spec.rules as Rule[]).findIndex((r) => (r.kind === 'alert' && r.monitor?.id === monitorId) || bareRuleId(groupName, r.key) === monitorId) : -1
+    const at = g && groupName !== DEADMAN_GROUP ? allRules(g.spec).findIndex((r) => (r.kind !== 'record' && r.monitor?.id === monitorId) || bareRuleId(groupName, r.key) === monitorId) : -1
     if (!g || at < 0) return { status: 'ok', removed: false }
     if (dryRun) return { status: 'ok', removed: true }
-    if (g.spec.rules.length === 1) {
+    if (allRules(g.spec).length === 1) {
       await this.deleteGroup(tenant, groupName)
       return { status: 'ok', removed: true }
     }
@@ -987,9 +1088,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   /** Inside a transaction: a rule went away. Delete its alerts and tell the notifier the firing ones are over. */
   private dropRuleAlerts(g: GroupRt, key: string, alerts: Map<string, Alert>, now: number, updates: AlertUpdate[]): void {
-    const rule = (g.spec.rules as Rule[]).find((r) => r.key === key)
+    const rule = allRules(g.spec).find((r) => r.key === key)
     if (alerts.size > 0) this.exec(`DELETE FROM alert WHERE tenant = ? AND grp = ? AND rule_key = ?`, this.tenant, g.spec.name, key)
-    if (!rule || rule.kind !== 'alert') return
+    if (!rule || rule.kind === 'record') return
     for (const a of alerts.values()) if (a.state === 'firing') updates.push(this.toUpdate(g, rule, a, 'resolved', now))
     if (rule.monitor) this.appendTimeline(rule.monitor.id, transitions(alerts, EMPTY, new Set(alerts.keys()), now))
   }
@@ -1003,6 +1104,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     const updates: AlertUpdate[] = []
     this.ctx.storage.transactionSync(() => {
       this.exec(`DELETE FROM rule_group WHERE tenant = ? AND name = ?`, this.tenant, name)
+      this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ?`, this.tenant, name)
       for (const [key, alerts] of g.alerts) this.dropRuleAlerts(g, key, alerts, now, updates)
       this.enqueueHandoff(updates, now)
     })
@@ -1042,6 +1144,11 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   // ───────────────────────── views for the HTTP API ─────────────────────────
 
+  private anomalyStatus(g: GroupRt, rule: AnomalyRule) {
+    const rt = g.anomaly.get(rule.key)
+    return rt ? { ...rt.status, maxSeries: rule.anomaly.maxSeries } : emptyStatus(rule.anomaly.maxSeries)
+  }
+
   async snapshot(tenant: string) {
     const bad = this.wrongTenant(tenant)
     if (bad) return bad
@@ -1051,9 +1158,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       limit: g.spec.limit,
       lastEvaluationMs: g.lastEvalMs,
       lastDurationMs: g.lastDurationMs,
-      rules: (g.spec.rules as Rule[]).map((rule) => {
+      rules: allRules(g.spec).map((rule) => {
         const rt = g.rules.get(rule.key)
-        return {
+        const snap: RuleSnapshot = {
           rule,
           health: rt?.health ?? 'unknown',
           lastError: rt?.lastError ?? null,
@@ -1062,6 +1169,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           noData: rt?.noData ?? false,
           alerts: [...(g.alerts.get(rule.key)?.values() ?? [])],
         }
+        if (rule.kind === 'anomaly') snap.anomaly = this.anomalyStatus(g, rule)
+        return snap
       }),
     }))
     return { status: 'ok' as const, shard: this.shard, groups }
@@ -1130,10 +1239,14 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (!g || name === DEADMAN_GROUP) return { status: 'not_found' as const }
     const bundle: GroupBundle = { spec: g.spec as GroupBundle['spec'], alerts: {}, timelines: {} }
     for (const [key, alerts] of g.alerts) if (alerts.size > 0) bundle.alerts[key] = [...alerts.values()]
-    for (const r of g.spec.rules as Rule[]) {
-      if (r.kind !== 'alert' || !r.monitor) continue
+    for (const r of allRules(g.spec)) {
+      if (r.kind === 'record' || !r.monitor) continue
       const row = this.exec<{ body: string }>(`SELECT body FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, r.monitor.id)[0]
       if (row) bundle.timelines[r.monitor.id] = JSON.parse(row.body) as Timeline
+    }
+    if (g.anomaly.size > 0) {
+      bundle.anomalyState = {}
+      for (const [key, rt] of g.anomaly) if (rt.json.size > 0) bundle.anomalyState[key] = stateRows(rt.json)
     }
     return { status: 'ok' as const, bundle }
   }
@@ -1158,7 +1271,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     const now = this.now()
     const t = this.tenant
     const g = this.newGroup(spec as RuleGroup, now)
-    const keys = new Set(spec.rules.map((r) => r.key))
+    const keys = new Set(allRules(spec as RuleGroup).map((r) => r.key))
     this.ctx.storage.transactionSync(() => {
       this.activate(now)
       this.exec(`INSERT INTO rule_group (tenant, name, spec, not_before) VALUES (?, ?, ?, ?)
@@ -1174,6 +1287,16 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         g.alerts.set(key, m)
       }
       for (const [monitor, log] of Object.entries(bundle.timelines ?? {})) this.appendTimeline(monitor, log.entries)
+      this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ?`, t, spec.name)
+      for (const [key, rows] of Object.entries(bundle.anomalyState ?? {})) {
+        const rt = g.anomaly.get(key)
+        if (!rt || !keys.has(key)) continue
+        const read = readStateRows(rows)
+        if ('error' in read) continue // a format this code cannot read: the rule starts cold
+        rt.series = read.series
+        rt.json = read.json
+        this.writeAnomalyState(spec.name, key, read.json)
+      }
     })
     this.groups.set(spec.name, g)
     this.syncDeadman()
@@ -1190,7 +1313,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     this.ctx.storage.transactionSync(() => {
       this.exec(`DELETE FROM rule_group WHERE tenant = ? AND name = ?`, this.tenant, name)
       this.exec(`DELETE FROM alert WHERE tenant = ? AND grp = ?`, this.tenant, name)
-      for (const r of g.spec.rules as Rule[]) if (r.kind === 'alert' && r.monitor) this.exec(`DELETE FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, r.monitor.id)
+      this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ?`, this.tenant, name)
+      for (const r of allRules(g.spec)) if (r.kind !== 'record' && r.monitor) this.exec(`DELETE FROM timeline WHERE tenant = ? AND monitor = ?`, this.tenant, r.monitor.id)
     })
     this.groups.delete(name)
     await this.afterMutation(this.now())
@@ -1208,9 +1332,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (bad) return bad
     const rules: RuleStatus[] = []
     for (const g of this.groups.values()) {
-      for (const r of g.spec.rules) {
+      for (const r of allRules(g.spec)) {
         const rt = g.rules.get(r.key)
-        rules.push({
+        const status: RuleStatus = {
           group: g.spec.name,
           name: r.name,
           kind: r.kind,
@@ -1220,7 +1344,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           lastError: rt?.lastError ?? null,
           lastEvaluationMs: rt?.lastEvaluationMs ?? null,
           alerts: [...(g.alerts.get(r.key)?.values() ?? [])],
-        })
+        }
+        if (r.kind === 'anomaly') status.anomaly = this.anomalyStatus(g, r)
+        rules.push(status)
       }
     }
     return { status: 'ok' as const, rules }
@@ -1240,7 +1366,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       skippedTicks: g.skipped,
       unobservedTicks: g.unobserved,
       evaluatorErrors: g.evaluatorErrors,
-      rulesInError: g.spec.rules.flatMap((r) => {
+      rulesInError: allRules(g.spec).flatMap((r) => {
         const rt = g.rules.get(r.key)
         return rt?.health === 'err' ? [{ rule: r.name, error: rt.lastError ?? '' }] : []
       }),

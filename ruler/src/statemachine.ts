@@ -21,6 +21,11 @@ export interface Series {
   value: number
   /** The value exactly as the evaluator printed it. */
   text: string
+  /**
+   * Annotations that belong to this series at this evaluation, set after the rule's own
+   * templates (an anomaly rule's explanation of the flagged point). Absent for query results.
+   */
+  annotations?: Labels
 }
 
 /** A scalar result is one sample with no labels, as in Prometheus' `EngineQueryFunc`. */
@@ -129,6 +134,7 @@ export function evalAlertingRule(
     if (result.has(fp)) return { ok: false, error: ERR_DUPLICATE_ALERT }
     const annotations: Labels = {}
     for (const [name, tmpl] of compiled.annotations) annotations[name] = truncate(expandTemplate(tmpl, data), opts.maxAnnotationBytes)
+    if (s.annotations) for (const [name, v] of Object.entries(s.annotations)) annotations[name] = truncate(v, opts.maxAnnotationBytes)
     result.set(fp, { fingerprint: fp, labels, annotations, state: 'pending', activeAt: ts, firedAt: null, resolvedAt: null, keepFiringSince: null, value: s.value })
   }
 

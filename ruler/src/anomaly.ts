@@ -32,7 +32,7 @@ import {
   type ValidationError,
 } from '../contracts-proposal/rules.v2'
 import type { Series } from './statemachine'
-import { byteLength, formatDuration, labelsKey, type Labels } from './util'
+import { byteLength, fingerprint, formatDuration, type Labels } from './util'
 
 // ───────────────────────────── limits ─────────────────────────────
 
@@ -508,7 +508,8 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
   let warmingMessage: string | null = null
   let changed = false
   for (const s of series) {
-    const key = labelsKey(s.metric)
+    // The series' identity: a hash of all its labels (`fingerprint`, a stored format: id.hashes).
+    const key = fingerprint(s.metric)
     if (seen.has(key)) return { ok: false, error: 'vector contains metrics with the same labelset', status: { ...prev.status, ...base, status: prev.status.status, message: 'duplicate series' } }
     seen.add(key)
     const before = prev.series.get(key)

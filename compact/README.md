@@ -5,9 +5,11 @@ larger, sorted files (`design/DESIGN.md` §5.2). Stateless; the ledger is the on
 
 | File | Contents |
 |---|---|
-| `src/compact.ts` | `chooseJob` (the policy, a pure function), `compactStep` (one merge), `compactTenant` (steps until idle), `pairFiles`, `compactedKey` |
+| `src/compact.ts` | `chooseJob` (the policy, a pure function), `compactStep` (one merge), `compactTenant` (steps until idle), `pairFiles`, `compactedKey`, `inputsHash16`, and the inputs record every output carries (`encodeCompactionInputs`, `decodeCompactionInputs`) |
+| `src/formats.ts` | `FORMATS`: what this component writes that another release reads, with its version (contracts/COMPATIBILITY.md §3.1) |
 | `src/index.ts` | `Compact` entrypoint (RPC `compactTenant`), `CompactWorkflow` (the same step function as a Workflow), one engine per isolate |
-| `test/compact.test.ts` | 13 tests in workerd against the real `Shard`, `Ledger`, flush and a simulated R2 |
+| `test/compact.test.ts` | 18 tests in workerd against the real `Shard`, `Ledger`, flush and a simulated R2, 4 of them the interleavings of review R-2 and the protocol model's F13/F14 |
+| `test/golden.test.ts`, `test/golden/` | 5 tests: golden files of the output key and the inputs record, and the record's reader |
 | `test/workflow.test.ts` | 1 test: the Workflow run under `introspectWorkflowInstance` |
 
 Bindings: `LEDGER`, `BUCKET`, `CELL`; `COMPACT` (the Workflow). `SHARD` only for tests.
@@ -26,19 +28,56 @@ Bindings: `LEDGER`, `BUCKET`, `CELL`; `COMPACT` (the Workflow). `SHARD` only for
    review they went in key order; keys sort as text, so a stream's tenth flush sorted before
    its second and a merge could keep an older value: `DECISIONS.md` D22.)
 5. Both outputs are PUT in parallel under content-hashed keys with `If-None-Match: *`
-   (flush's `putFile`: an existing object counts only if its size and SHA-256 match).
+   (flush's `putFile`: an existing object counts only if its size and SHA-256 match). Each
+   carries its **inputs record**, R2 custom metadata `viz-inputs` =
+   `{"v":1,"inputs":[every input key, samples sorted then series sorted]}`: the list whose
+   hash is the key's `inputs16`.
 6. **One** `ledger.replace({ remove: every input of both tables, add: both outputs })`.
 
 | `replace` answers | The step |
 |---|---|
 | `ok` (also as a replay: outputs live, inputs not) | `merged` |
-| `conflict` (an input is no longer live: retention or another merge took it) | deletes its two outputs, after the ledger confirms in one read that it knows neither (not live, not tombstoned), and returns `conflict`; the caller plans again. Outputs the ledger knows were made by an identical step that won (keys are a function of the inputs); if they have been removed since, they are tombstoned, a reader holding an older plan may still read them, and only the janitor deletes them after the grace |
+| `conflict` (an input is no longer live, or another merge made a file the outputs would jump over) | returns `conflict` and **deletes nothing**; the caller plans again. The outputs are the orphan sweep's (below) |
 | `invalid` | returns `error: invalid`; nothing changed |
+| anything else (a newer ledger; `schema_too_new` during a deploy) | throws: fail closed, the maintenance run is retried. Never taken for a conflict or a success |
 
-Two more refusals happen before `replace`: `row_count` (the merged file has more rows than
-its inputs together, fewer than its largest input, another day or another table) and
-`too_slow` (the step has run longer than `maxStepMs`; the orphan sweep relies on this, see
-`janitor/README.md`).
+Three more refusals happen before `replace`: `too_many_inputs` (the input names do not fit in
+6 KB of object metadata; refused before any work, never written without its record),
+`row_count` (the merged file has more rows than its inputs together, fewer than its largest
+input, another day or another table) and `too_slow` (the step has run longer than
+`maxStepMs`: it bounds the work of one step; it is no longer what makes the sweep safe).
+
+### Who deletes a compaction output, and when (`design/DECISIONS.md` D30)
+
+Stated precisely, for an independent check (the protocol model's owner is modelling it).
+
+- **Keys.** An output's key is `…/L{level}-{span}-{inputs16}-{hash8}.parquet`, `inputs16` a
+  hash of its input keys, `hash8` of its bytes. Steps with the same inputs and bytes write the
+  same object; a later step whose PUT finds it answers `exists` and **adopts** it.
+- **A step never deletes an object.** Not after a crash, not on `too_slow`, not on
+  `conflict`, not on an answer it does not know. (Before D30 a conflicted step deleted its
+  outputs when the ledger neither listed nor tombstoned them: the model's F14.)
+- **The orphan sweep (`janitor/src/janitor.ts` `sweepOrphans`) deletes an output O only if,
+  all at once:**
+  1. O was in the sweep's listing of the tenant's prefix, with a readable inputs record whose
+     keys are under O's own tenant and day and hash to O's `inputs16` (otherwise O is kept
+     for ever: `unknown_inputs`);
+  2. in ONE ledger read (`orphanCheck`, after the listing) O is neither live nor tombstoned;
+  3. some input I of O was **absent** from that listing **and** is not live in that same read;
+  4. O is at least `max(orphan grace, 2 × maxStepMs)` old (an age floor; not needed for safety).
+- **Why that is safe.** `replace` admits O only with every input live. An object is deleted
+  only (a) by purge, after the ledger's LOGGED removal of its key and the delete grace, or
+  (b) by this sweep, when it can never be listed (a flush file below its stream's logged
+  watermark, or of an older incarnation whose newer one has a logged unit; or an output by this
+  rule, inductively). A key whose removal is logged never becomes live again, even after a
+  rebuild from the log. So I, absent and not live, is never live again, and no step, whether it
+  created O, adopted it or will, can ever make O live: whatever happens between the sweep's
+  read and its delete, and however old O is.
+- **What it does not rest on.** Clocks (R2's upload time, the Worker's step deadline), the
+  order of steps, or whether the conflicting removal is logged yet.
+- **The premise it does rest on.** Every deleter deletes only keys that can never be live
+  again. The flush-file rule's newer-incarnation case satisfies it only with the F15 fix
+  (`janitor/README.md`). Nothing else in viz deletes data objects.
 
 **Policy** (`chooseJob`, defaults in `DEFAULT_POLICY`):
 
@@ -106,6 +145,10 @@ in a deployed Worker (`design/VERIFICATION.md` §4).
 - **Rollups**, index-fragment consolidation, and anything for tables other than metrics.
 - **A creation time on files**, so "older than M minutes" is by data time.
 - **Starting the Workflow** from the stack; it is built and tested, not wired.
+- **A Parquet format marker** (`viz.format`, design/UPGRADES.md §7 item 7) in the outputs:
+  that is the engine's encoding; not done here.
+- **Rewriting the inputs record of an adopted object.** An object written before D30 has
+  none; a step that adopts it does not add one (it would need an unconditional overwrite).
 - Not run on Cloudflare.
 
 ## How it was verified
@@ -144,4 +187,19 @@ The property test for I8 and the soak are in `stack/` (`test/compaction.property
   property test.
 - **Write amplification.** An hour's level-1 pair is rewritten whenever new flush files
   join it, and a late file for a closed day rewrites a level-2 pair.
-- **Clock.** `closeAfterMs` and the step deadline use the Worker's clock.
+- **Clock.** `closeAfterMs` and the step deadline use the Worker's clock. Since D30 no
+  deletion depends on a clock (before it, the orphan sweep judged outputs by R2's upload time
+  against the step deadline, which an adopted output defeated: review R-2, the model's F13).
+- **F14 is fixed by D30, not by the model's step-unique keys.** A conflicted step used to
+  delete its outputs when the ledger did not know them; after a ledger rebuild that undid an
+  unlogged removal, an identical step could then commit the deleted objects (a live file with
+  no object). Steps now delete nothing, and the sweep deletes an output only once an input is
+  gone for good. Shown by the interleaving test "spec F14" (fails before the change). Not yet
+  re-checked by the model; its owner has been asked to model this rule.
+- **Leftover outputs cost storage until an input is purged.** A crashed or conflicted step's
+  outputs stay until an input of theirs is purged (its delete grace, then the next orphan
+  sweep, at most daily), or as long as their inputs stay live (a retry adopts them). Bounded by
+  retention. Not measured on real traffic.
+- **An output without a readable inputs record is never deleted automatically** (objects
+  written before D30, none deployed; a record of a newer version during a rollback). The sweep
+  reports them as `unknown_inputs`.

@@ -586,3 +586,64 @@ here (d) would let an agent key escape every agent rule.
 **Would change if.** People routinely approve agent changes without reading them (then the
 review is theatre and the rule should be revisited with data), or `user` identities with
 roles arrive and replace keys for people.
+
+## D30. An unreferenced compaction output is deleted only once an input of it is gone for good
+
+**Decision.** A compaction step never deletes its outputs, not even when `replace` answers
+`conflict`. Every output carries the list of its inputs as R2 custom metadata (`viz-inputs`,
+`{"v":1,"inputs":[…]}`, checked against the `inputs16` in its key). The orphan sweep
+(`janitor/`) deletes an output that the ledger neither lists nor tombstones only when one of
+its inputs is **gone for good**: not live in the same ledger read, and its object absent from
+the sweep's listing. Objects are deleted only after a logged removal (purge) or once they can
+never be listed (this sweep, by the same rules), so such an input never becomes live again,
+and `replace` admits an output only with every input live. Compaction output keys are
+unchanged. Replaces the earlier rule, which deleted an unreferenced output by its R2 upload
+age (≥ max(24 h, 2 × the step deadline)) and let a conflicted step delete its outputs when the
+ledger did not know them. Alongside it, for flush files (spec F15): a newer incarnation of a
+stream makes an older incarnation's file dead only once that newer incarnation has a logged
+unit, which proves its registration is logged.
+
+**Why it was needed.** Output keys are a function of the inputs, so a retry ADOPTS the objects
+an earlier attempt left (`exists`). The adopted object keeps its old upload time, so the
+sweep could judge it by an age that says nothing about the step now holding it, and delete
+it between that step's PUT and its `replace`: a live file with no object, then its inputs
+purged (review R-2; the protocol model's F13). And "an input is gone, so no step can list
+these outputs" was false while the input's removal was unlogged: a ledger rebuilt from its
+log brings the input back and an identical step commits the very objects the conflicted
+step deleted (the model's F14, critical). Both are acknowledged-row loss (I1, I11).
+
+**Alternatives.** (a) **Step-unique output keys** (the model's fix for F13/F14): a fresh step
+id in every output key, so no step adopts or deletes another's object; a conflicted step
+deletes only its own outputs, and only once the conflicting removal is logged; the sweep
+keeps its age rule. Sound, and checked by the model, but it changes the key format of
+`contracts/TABLES.md` (a format change under `contracts/COMPATIBILITY.md` §3.4, read by query,
+the publisher and the sweep), turns every retry into a new pair of objects to be cleaned up
+(no adoption), and keeps the sweep's safety resting on two clocks (the Worker's step deadline
+against R2's upload time). (b) **An intent in the ledger** before the PUTs (the reviewer's
+suggestion), which `orphanCheck` reports as known: needs new ledger state and RPCs, and with
+adopted keys still races (the sweep may judge before the retry records its intent; R2 deletes
+are not conditional), so it needs (a) as well. (c) **Refresh the upload time on adoption**
+(re-PUT): does not close it; the sweep decided on its earlier listing. (d) **HEAD and re-PUT
+after `replace`**: narrows the window, does not close it. (e) **Never adopt; fail the step on
+an existing object**: a crashed attempt then blocks its job until the sweep removes the
+leftover.
+
+**Why this one.** It closes R-2, F13 and F14 with one rule that rests on ledger facts already
+monotone (a removed key whose object is gone never returns), as D20 did for removals, and on
+no clock. Nothing on the step's path is added: the record rides on the PUT the step already
+makes. No contract or key format changes; the only new persisted format is the versioned
+metadata record, which compact writes and janitor reads (golden files in both). A retry still
+adopts its predecessor's objects, so a crash costs no extra objects.
+
+**Cost.** A leftover output lives until one of its inputs is purged (the inputs' delete grace,
+then the next orphan sweep, at most daily), or for as long as its inputs stay live: R2 bytes,
+not correctness, and bounded by retention. An output whose record is missing or unreadable is
+never deleted automatically (reported as `unknown_inputs`). A merge whose input names exceed
+6 KB of metadata is refused (`too_many_inputs`; about 25 pairs at 120-byte keys; the
+budget allows 8). The sweep lists with metadata and asks the ledger about the missing inputs
+of each unreferenced output in the same read.
+
+**Would change if.** R2 offers a conditional delete (then the sweep could delete exactly the
+version it judged, and age would do); the ledger gains intents or leases for other reasons;
+merges need more inputs than metadata holds (then the record moves to a sidecar object or
+the keys become step-unique, alternative (a)); or leftovers accumulate enough to matter.

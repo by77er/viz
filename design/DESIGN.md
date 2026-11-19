@@ -195,8 +195,14 @@ log through an outbox. (As built, it waits for that R2 write before answering, w
 measurement on Cloudflare showed limits it to about one unit per second; the write is
 moving to batched background segments.) It tells a shard to discard only what has been both committed and
 logged. A rebuilt ledger starts a new ledger incarnation, so versions are never reused, and
-periodic checkpoints bound rebuild time. The orphan sweeper deletes only files that are
-unreferenced *and* belong to a sequence range below the stream's logged watermark.
+periodic checkpoints bound rebuild time. The orphan sweeper deletes an object only if the
+ledger neither lists nor tombstones it and it can never be listed: a flush file once its
+stream's *logged* watermark covers its sequence range, or once a newer incarnation of the
+stream has a logged unit (so its registration is logged); a compaction output once one of
+its inputs is gone for good, that is, not live and its object already deleted, which
+happens only after a logged removal. A compaction step never deletes an output, not even
+on conflict, because an identical step may adopt the same object. No clock and no ledger
+rebuild can make the sweeper delete a file that may still become live (D30).
 
 ### 4.4 Pull and adapters
 
@@ -245,8 +251,9 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   output its inputs' range, refusing a merge that would jump over an overlapping file
   (D22).
 - **When it runs (as built).** Compaction, retention, deletion and the orphan sweep are one
-  per-tenant maintenance run, consumed from a queue. A successful flush asks for one; so
-  does the hourly cron, for tenants whose KV marker says time alone has made work (an hour
+  per-tenant maintenance run, consumed from a queue. A flush that changed something
+  (admitted a unit, wrote an object, or saw a segment recorded) asks for one; so does the
+  hourly cron, for tenants whose KV marker says time alone has made work (an hour
   gone quiet, a day closed, the oldest day reaching its retention, a grace ending, an orphan
   sweep still needed after objects were written). The compaction Workflow is built but not
   started.
@@ -259,6 +266,9 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   the ledger keeps a tombstone per removed key and releases it for deletion once the
   removal is in its R2 log and a grace period has passed by its own clock; the wait for
   publication is added with the publisher (tombstones carry the ledger version for that).
+  A tenant without a policy record gets the default (30 days); a record that cannot be read
+  (malformed, or of a version the janitor does not know) expires nothing for that tenant and
+  is reported every hour until fixed, never replaced by the default.
 - **Index fragments.** Each file's row-group offsets, key statistics and page-index
   locations are stored with its ledger row. Compaction consolidates the fragments of a
   partition into one content-addressed index object. Planning never issues one footer read

@@ -33,6 +33,22 @@ CREATE TABLE IF NOT EXISTS timeline (tenant TEXT NOT NULL, monitor TEXT NOT NULL
   PRIMARY KEY (tenant, monitor)) WITHOUT ROWID;
 `),
     },
+    {
+      // Anomaly rules (contracts/rules.ts, contract version 2). Additive: a new table, which the
+      // previous release neither reads nor needs, so it stays a valid rollback target
+      // (COMPATIBILITY.md §2.3). The rules themselves live in `rule_group.spec.anomalyRules`, a new
+      // optional JSON field the previous release ignores (README, "Rollback").
+      // One row per (rule, chunk): a batch of series' detector state (`anomaly.ts` `stateRows`,
+      // format `store.anomaly-state`), never a row per series or per sample.
+      version: 2,
+      name: 'anomaly rules: per-(rule, chunk) detector state',
+      readableFrom: 1,
+      up: (sql) =>
+        void sql.exec(`
+CREATE TABLE IF NOT EXISTS anomaly_state (tenant TEXT NOT NULL, grp TEXT NOT NULL, rule_key TEXT NOT NULL, chunk INTEGER NOT NULL, body TEXT NOT NULL,
+  PRIMARY KEY (tenant, grp, rule_key, chunk)) WITHOUT ROWID;
+`),
+    },
   ],
 }
 
@@ -92,4 +108,13 @@ export const FORMATS = {
   'http.webhook': 1,
   /** The rule-file export (Prometheus' YAML, plus viz's fields when asked). */
   'file.rules-yaml': 1,
+  /**
+   * Anomaly rules: a rule as stored in `rule_group.spec.anomalyRules` and exported, its key, and
+   * the series key of its state (contract version 2).
+   */
+  'store.anomaly-rule': 1,
+  /** `anomaly_state.body`: one batch of series' detector state (`{"v":1,"series":[...]}`). */
+  'store.anomaly-state': 1,
+  /** The `anomaly_detail` annotation an anomaly alert carries to the notifier and receivers (`AnomalyDetail`, `v: 1`). */
+  'annotation.anomaly-detail': 1,
 } as const

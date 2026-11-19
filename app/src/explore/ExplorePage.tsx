@@ -507,6 +507,20 @@ export function ExplorePage() {
     if (!aligned || !description || view !== 'text') return ''
     return cachedDigest(aligned, description.digestTitle, unit, formatAlone)
   }, [aligned, description, unit, formatAlone, view])
+  // ...and prepared ahead, when the browser is idle after a result arrives, so that the first
+  // switch to the text form only renders it (200 series: about 15 ms at 4x CPU, once per
+  // result, whether or not the form is ever shown; README, "Speed").
+  useEffect(() => {
+    if (!aligned || !description || aligned.series.length === 0) return
+    const idle = window.requestIdleCallback
+    const run = () => void cachedDigest(aligned, description.digestTitle, unit, formatAlone)
+    if (!idle) {
+      const t = setTimeout(run, 500)
+      return () => clearTimeout(t)
+    }
+    const id = idle(run, { timeout: 5000 })
+    return () => window.cancelIdleCallback(id)
+  }, [aligned, description, unit, formatAlone])
 
   // ---- render
   const error = q !== '' && query.isError ? query.error : null

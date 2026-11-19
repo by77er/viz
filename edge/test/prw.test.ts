@@ -187,7 +187,8 @@ describe('Remote Write 1.0', () => {
     expect(await tail(DEFAULT_MAP, tenant)).toEqual([])
   })
 
-  it('splits a request larger than one Durable Object value into several batches, all stored', async () => {
+  // 25,000 series, over 3 MB of batches: about 3 s alone, more on a busy machine.
+  it('splits a request larger than one Durable Object value into several batches, all stored', { timeout: 30_000 }, async () => {
     const tenant = newTenant()
     const key = await makeKey(tenant)
     await setPool(tenant, { pool: `big/${tenant}`, slots: 1, spread: 1, epoch: 1 })

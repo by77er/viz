@@ -4,8 +4,11 @@
  * nothing is saved unless the whole document is valid.
  */
 import {
+  ANOMALY_ANNOTATION,
+  ANOMALY_DETAIL_ANNOTATION,
   NO_DATA_LABEL,
   type AlertingRuleV2 as AlertingRule,
+  type AnomalyRuleV2,
   type MonitorMeta,
   type NoDataMode,
   type RecordingRule,
@@ -14,6 +17,7 @@ import {
   type RulerConfig,
   type ValidationError,
 } from '../contracts-proposal/rules.v2'
+import { anomalyKeyText, maxClass, parseAnomalySpec } from './anomaly'
 import { classify, PromqlTextError } from './classify'
 import { parseTemplate, type Template } from './template'
 import { byteLength, formatDuration, hash64, LABEL_NAME_RE, labelsKey, METRIC_NAME_RE, parseDuration } from './util'
@@ -22,7 +26,7 @@ export const DEADMAN_GROUP = 'viz:deadman'
 export const DEADMAN_ALERT = 'DeadMansSwitch'
 
 const GROUP_FIELDS = new Set(['name', 'interval', 'query_offset', 'limit', 'labels', 'rules'])
-const ALERT_FIELDS = new Set(['alert', 'expr', 'for', 'keep_firing_for', 'labels', 'annotations', 'no_data', 'no_data_for', 'no_data_expr', 'monitor'])
+const ALERT_FIELDS = new Set(['alert', 'expr', 'for', 'keep_firing_for', 'labels', 'annotations', 'no_data', 'no_data_for', 'no_data_expr', 'monitor', 'anomaly'])
 const NO_DATA_MODES: NoDataMode[] = ['ok', 'alerting', 'keep']
 export const MONITOR_ID_RE = /^mon_[0-9a-f]{16}$/
 const RECORD_FIELDS = new Set(['record', 'expr', 'labels'])
@@ -183,7 +187,7 @@ function monitorMeta(c: Ctx, v: unknown, path: string): MonitorMeta | null {
 }
 
 /** Key of a rule inside its group: what must stay the same for alert state to carry over a save. */
-export function ruleKey(kind: 'alert' | 'record', name: string, exprText: string, labels: Record<string, string>): string {
+export function ruleKey(kind: 'alert' | 'record' | 'anomaly', name: string, exprText: string, labels: Record<string, string>): string {
   return hash64(`${kind}\u0000${name}\u0000${exprText}\u0000${labelsKey(labels)}`)
 }
 
@@ -240,6 +244,7 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
       return
     }
     const rules: Rule[] = []
+    const anomalyRules: AnomalyRuleV2[] = []
     const keys = new Set<string>()
     g.rules.forEach((r: unknown, ri: number) => {
       const rp = `${gp}.rules[${ri}]`
@@ -291,6 +296,41 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
         }
         const noData = noDataPolicy(c, r, rp, cfg)
         const monitor = monitorMeta(c, r.monitor, `${rp}.monitor`)
+        if (r.anomaly !== undefined) {
+          // An anomaly rule (contract version 2): the detector's flag is the condition.
+          for (const k of [ANOMALY_ANNOTATION, ANOMALY_DETAIL_ANNOTATION]) {
+            if (k in annotations) c.err(`${rp}.annotations.${k}`, `the ${k} annotation is written by the detector`, 'Remove it; use description or summary for your own text.')
+          }
+          if (monitor?.condition) c.err(`${rp}.monitor.condition`, 'an anomaly rule has no threshold condition', 'Remove the condition; the detector decides.')
+          const spec = parseAnomalySpec(c, r.anomaly, `${rp}.anomaly`, intervalMs, forMs, labels, cfg)
+          if (!cost || !spec) return
+          const ruleLabels = { ...labels, severity: spec.severity }
+          const rule: AnomalyRuleV2 = {
+            kind: 'anomaly',
+            name,
+            expr: r.expr as string,
+            anomaly: spec,
+            forMs,
+            keepFiringForMs,
+            labels: ruleLabels,
+            annotations,
+            key: ruleKey('anomaly', name, anomalyKeyText(r.expr as string, spec), ruleLabels),
+            cost: { class: maxClass(cost.class, spec.history.tick), windowMs: Math.max(cost.windowMs, spec.history.tickLookbackMs), reason: `${cost.reason}; the detector: ${spec.history.reason}` },
+          }
+          if (noData) rule.noData = noData
+          if (monitor) {
+            if (monitorIds.has(monitor.id)) c.err(`${rp}.monitor.id`, `monitor id ${monitor.id} is used twice in this file`, 'Give each monitor its own id.')
+            monitorIds.add(monitor.id)
+            rule.monitor = monitor
+          }
+          if (keys.has(rule.key)) {
+            c.err(rp, `anomaly rule "${name}" is repeated with the same expression, detector, parameters and labels`, 'Remove the duplicate.')
+            return
+          }
+          keys.add(rule.key)
+          anomalyRules.push(rule)
+          return
+        }
         if (!cost) return
         const rule: AlertingRule = { kind: 'alert', name, expr: r.expr as string, forMs, keepFiringForMs, labels, annotations, key: ruleKey('alert', name, r.expr as string, labels), cost }
         if (noData) rule.noData = noData
@@ -322,6 +362,8 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
       }
     })
     const group: RuleGroup = { name, intervalMs, queryOffsetMs, limit, rules }
+    // Only when there are any, so a group without anomaly rules is stored exactly as before.
+    if (anomalyRules.length > 0) group.anomalyRules = anomalyRules
     groups.push(group)
   })
   return { groups, errors: c.errors, warnings: c.warnings }

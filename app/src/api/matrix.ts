@@ -53,6 +53,9 @@ export class NotAMatrix extends Error {
   }
 }
 
+/** `outsideString` when a string of the envelope runs on from the last piece. */
+const STRING_CONTINUES = -2
+
 /** Characters of a new piece read together with the unit cut at the end of the last one. */
 const JUNCTION = 1024
 
@@ -486,6 +489,8 @@ export class MatrixParser {
   private scanOutside(s: string, i: number): number {
     const n = s.length
     let from = i
+    // A string that ran on from the last piece continues where this one starts reading.
+    if (this.outsideString === STRING_CONTINUES) this.outsideString = i
     while (i < n) {
       const c = s.charCodeAt(i)
       if (this.outsideString >= 0) {
@@ -539,7 +544,7 @@ export class MatrixParser {
     if (this.outsideString >= 0) {
       // A string runs on into the next piece: keep what there is of a key.
       this.keyText += s.slice(this.outsideString, n)
-      this.outsideString = 0
+      this.outsideString = STRING_CONTINUES
     }
     this.outside.push(s.slice(from, n))
     return -1

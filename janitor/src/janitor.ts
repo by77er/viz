@@ -115,11 +115,10 @@ export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.n
   }
   const policy = read.policy
   const beforeDay = retentionCutoffDay(now, policy)
-  // Samples first: between the two calls a day may have series files without samples
-  // (which no query returns), never samples without the series that describe them.
-  const samples = await ledger.expire({ table: 'metric_samples', beforeDay })
-  const series = await ledger.expire({ table: 'metric_series', beforeDay })
-  return { beforeDay, keepDays: policy.metric_samples_days, removed: [...samples.removed, ...series.removed] }
+  // Both tables in ONE ledger change, so a samples file and its series file leave together
+  // (contracts/TABLES.md, "Pairing"; review R-5).
+  const expired = await ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay })
+  return { beforeDay, keepDays: policy.metric_samples_days, removed: expired.removed }
 }
 
 export interface PurgeResult {
