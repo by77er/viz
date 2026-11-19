@@ -259,7 +259,8 @@ export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.n
     signals.push(e)
   }
   if (read.unreadable) {
-    const refused = `${read.unreadable.join('; ')}: ${[policy.trace_days === null ? 'spans and trace_index' : '', policy.log_days === null ? 'logs' : ''].filter(Boolean).join(' and ')} not expired`
+    const kept = [...(policy.trace_days === null ? TRACE_TABLES : []), ...(policy.log_days === null ? LOG_TABLES : [])]
+    const refused = `${read.unreadable.join('; ')}: ${kept.join(', ')} not expired`
     console.error(`janitor: retention:${tenant} is partly unreadable (${refused}); the metric tables and any readable signal were expired, the rest waits until it is fixed`)
     return { beforeDay, keepDays: policy.metric_samples_days, removed, refused, signals }
   }

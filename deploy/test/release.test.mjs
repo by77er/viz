@@ -1,7 +1,9 @@
 // node --test deploy/test/: the release plan (migration gate) and the acknowledgement parser.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { forwardOnlyReasons, parseAcks, planRelease, rollback, schemaRollbackProblems, schemasOfManifest } from '../release.mjs'
+import { atFloor, deployFloorProblems, floorRules, floorsOfVersion, namesIn, rollbackFloorProblems } from '../lib/floors.mjs'
+import { formatsOfVersion, readsOf } from '../lib/formats.mjs'
+import { formatRollbackProblems, forwardOnlyReasons, parseAcks, planRelease, rollback, schemaRollbackProblems, schemasOfManifest } from '../release.mjs'
 
 const manifest = {
   release: 'sha1',
@@ -189,4 +191,118 @@ test('rollback_to after a rollback: a release that ran and was rolled back still
   assert.equal(r.exit, 3)
   assert.equal(restored.length, 0)
   assert.match(r.problems.join('\n'), /release sha-c \(viz-ingest version ic\) ran schema version 3, readable from 2, and sha-a knows only up to 1/)
+})
+
+// ───────────────────────────── format versions (D69; review of D60, m-13) ─────────────────────────────
+
+const ran = (release, formats, worker = 'viz-ruler') => ({ worker, versionId: `v-${release}`, release, formats })
+
+test('formats: the target must read every version written since it; what it reads comes from its record, and nothing declared means version 1', () => {
+  const reader = { release: 'sha-b', formats: { 'viz-ruler': { 'store.anomaly-state': { writes: 1, reads: [1, 2] } } } }
+  const before = { release: 'sha-a', formats: { 'viz-ruler': { 'store.anomaly-state': { writes: 1, reads: [1] } } } }
+  const wrote2 = ran('sha-c', { 'store.anomaly-state': { writes: 2, reads: [1, 2] } })
+  assert.deepEqual(formatRollbackProblems(reader, [wrote2]), [])
+  const p = formatRollbackProblems(before, [wrote2])
+  assert.equal(p.length, 1)
+  assert.match(p[0], /^store\.anomaly-state: release sha-c \(viz-ruler version v-sha-c\) wrote version 2, and sha-a reads only 1\. /)
+  // Version 1 written since: fine for both.
+  assert.deepEqual(formatRollbackProblems(before, [ran('sha-b', { 'store.anomaly-state': { writes: 1, reads: [1, 2] } })]), [])
+  // A record from before format versions: reads version 1 of every format, and says why.
+  assert.deepEqual(formatRollbackProblems({ release: 'sha-old' }, [ran('sha-b', { 'store.anomaly-state': { writes: 1, reads: [1, 2] } })]), [])
+  assert.match(formatRollbackProblems({ release: 'sha-old' }, [wrote2])[0], /sha-old reads only 1 \(its record predates format versions/)
+  // A format the target does not declare (added since): version 1 passes, 2 does not.
+  assert.deepEqual(formatRollbackProblems(reader, [ran('sha-c', { 'new.format': { writes: 1, reads: [1] } })]), [])
+  assert.equal(formatRollbackProblems(reader, [ran('sha-c', { 'new.format': { writes: 2, reads: [2] } })]).length, 1)
+  // A format only read (writes null) is never judged as written.
+  assert.deepEqual(formatRollbackProblems(before, [ran('sha-c', { 'kv.settings': { writes: null, reads: [1, 2] } })]), [])
+  // A newer version that declares no formats: unknown, refused.
+  assert.match(formatRollbackProblems(reader, [ran('sha-x', null)])[0], /does not declare its format versions/)
+})
+
+test('formats: what a release reads is what every Worker of it that declares the format reads', () => {
+  const two = { 'viz-ingest': { 'r2.compaction-inputs': { writes: 1, reads: [1, 2] } }, 'viz-query': { 'r2.compaction-inputs': { writes: null, reads: [1] } } }
+  assert.deepEqual(readsOf(two, 'r2.compaction-inputs'), [1])
+  assert.deepEqual(readsOf({ 'viz-ingest': two['viz-ingest'] }, 'r2.compaction-inputs'), [1, 2])
+  assert.deepEqual(readsOf(two, 'not.declared'), [1])
+  assert.deepEqual(readsOf(null, 'anything'), [1])
+})
+
+test('formats: a release writing a version the serving release does not read is forward-only, by format; a serving release that declares nothing reads version 1', () => {
+  const m = { order: ['viz-ruler'], workers: [{ name: 'viz-ruler', migrationTag: null, schemas: [], formats: [{ format: 'store.anomaly-state', writes: 2, reads: [1, 2] }, { format: 'id.hashes', writes: 1, reads: [1] }] }] }
+  const live = (formats) => ({ 'viz-ruler': { exists: true, migrationTag: null, schemas: null, formats } })
+  assert.deepEqual(forwardOnlyReasons(m, live({ 'store.anomaly-state': { writes: 1, reads: [1, 2] } })), [])
+  const f = forwardOnlyReasons(m, live({ 'store.anomaly-state': { writes: 1, reads: [1] } }))
+  assert.deepEqual(f.map((x) => [x.worker, x.kind, x.format, x.writes, x.previousReads, x.previousDeclared]), [['viz-ruler', 'format', 'store.anomaly-state', 2, [1], true]])
+  const undeclared = forwardOnlyReasons(m, live(null))
+  assert.deepEqual(undeclared.map((x) => [x.format, x.previousDeclared]), [['store.anomaly-state', false]])
+  // Nothing older runs: a first deploy is never forward-only.
+  assert.deepEqual(forwardOnlyReasons(m, { 'viz-ruler': { exists: false } }), [])
+})
+
+test('formats: VIZ_FORMATS is read back as written, and anything else is unknown', () => {
+  const v = (text) => ({ resources: { bindings: [{ type: 'plain_text', name: 'VIZ_FORMATS', text }] } })
+  assert.deepEqual(formatsOfVersion(v('{"v":1,"formats":{"store.anomaly-state":{"w":2,"r":[1,2]},"kv.settings":{"w":null,"r":[1]}}}')), { 'store.anomaly-state': { writes: 2, reads: [1, 2] }, 'kv.settings': { writes: null, reads: [1] } })
+  for (const bad of ['{"v":2,"formats":{}}', 'nope', '{"v":1,"formats":{"x":{"w":0,"r":[1]}}}', '{"v":1,"formats":{"x":{"w":1,"r":[]}}}']) assert.equal(formatsOfVersion(v(bad)), null, bad)
+  assert.equal(formatsOfVersion({ resources: { bindings: [] } }), null)
+})
+
+// ───────────────────────────── rollback floors (D64, D69; review of traces and logs, M-4) ─────────────────────────────
+
+const plan = JSON.parse((await import('node:fs')).readFileSync(new URL('../workers.json', import.meta.url), 'utf8'))
+const [SIGNALS] = floorRules(plan, undefined)
+const floor = (w) => SIGNALS.floors.find((f) => f.worker === w)
+const code = ({ publisher = 5, stamped = true } = {}) => ({ schemas: { 'publisher.Publisher': { latest: publisher } }, floors: stamped ? ['signal-data'] : null })
+
+test('floors: workers.json puts INGEST_SIGNALS under a floor for viz-publisher (schema 4), viz-query and viz-ingest (stamped)', () => {
+  assert.equal(SIGNALS.writer, 'viz-ingest')
+  assert.equal(SIGNALS.var, 'INGEST_SIGNALS')
+  assert.deepEqual(SIGNALS.floors.map((f) => [f.worker, f.schema ?? null, f.atLeast ?? null, Boolean(f.evidence)]), [['viz-publisher', 'publisher.Publisher', 4, false], ['viz-query', null, null, true], ['viz-ingest', null, null, true]])
+  assert.equal(atFloor(SIGNALS, floor('viz-publisher'), code({ publisher: 4 })), true)
+  assert.equal(atFloor(SIGNALS, floor('viz-publisher'), code({ publisher: 3 })), false)
+  assert.equal(atFloor(SIGNALS, floor('viz-publisher'), { schemas: null }), false)
+  assert.equal(atFloor(SIGNALS, floor('viz-query'), code()), true)
+  assert.equal(atFloor(SIGNALS, floor('viz-query'), code({ stamped: false })), false)
+  // Staged names follow the stage.
+  assert.deepEqual(floorRules(plan, 'trial')[0].floors.map((f) => f.worker), ['viz-trial-publisher', 'viz-trial-query', 'viz-trial-ingest'])
+  // What a value of the switch names: anything, fail closed.
+  assert.deepEqual(namesIn(' traces , logs,'), ['traces', 'logs'])
+  assert.deepEqual(namesIn('metrics2'), ['metrics2'])
+  assert.deepEqual(namesIn(''), [])
+  assert.deepEqual(namesIn(null), [])
+  assert.deepEqual(floorsOfVersion({ resources: { bindings: [{ type: 'plain_text', name: 'VIZ_FLOORS', text: '{"v":1,"at":["signal-data"]}' }] } }), ['signal-data'])
+  assert.equal(floorsOfVersion({ resources: { bindings: [{ type: 'plain_text', name: 'VIZ_FLOORS', text: '{"v":2,"at":["signal-data"]}' }] } }), null)
+})
+
+test('floors: a malformed rule is refused, not half-applied', () => {
+  const rule = (r) => ({ ...plan, rollback_floors: [{ ...plan.rollback_floors[0], ...r }] })
+  assert.throws(() => floorRules(rule({ writer: 'viz-nothing' }), undefined), /writer viz-nothing is not a Worker/)
+  assert.throws(() => floorRules(rule({ var: 'lower' }), undefined), /not a variable name/)
+  assert.throws(() => floorRules(rule({ floors: {} }), undefined), /at least one Worker/)
+  assert.throws(() => floorRules(rule({ floors: { 'viz-query': { why: 'x' } } }), undefined), /either a schema version .* or "evidence"/)
+  assert.throws(() => floorRules(rule({ floors: { 'viz-query': { schema: 'q.Q', at_least: 2, why: 'x' } } }), undefined), /declares no schemas/)
+  assert.throws(() => floorRules(rule({ floors: { 'viz-publisher': { schema: 'publisher.Publisher', at_least: 1, why: 'x' } } }), undefined), /from 2/)
+})
+
+test('floors: deploy-time rule, pure: the switch needs every Worker at its floor here and serving; with it off, history decides', () => {
+  const workers = (now, serving) => SIGNALS.floors.map((f) => ({ floor: f, now: now(f.worker), serving: serving(f.worker) }))
+  const at = () => code()
+  assert.deepEqual(deployFloorProblems(SIGNALS, { value: 'traces', workers: workers(at, at) }), [])
+  assert.equal(deployFloorProblems(SIGNALS, { value: 'traces', workers: workers(at, (w) => (w === 'viz-query' ? code({ stamped: false }) : code())) }).length, 1)
+  // A Worker that does not exist yet (first deploy) has nothing to roll back to.
+  assert.deepEqual(deployFloorProblems(SIGNALS, { value: 'traces', workers: workers(at, () => null) }), [])
+  assert.equal(deployFloorProblems(SIGNALS, { value: 'traces', workers: workers((w) => (w === 'viz-publisher' ? code({ publisher: 3 }) : code()), () => null) }).length, 1)
+  // Off, below a floor: refused only when a kept writer version had it on.
+  const below = workers((w) => (w === 'viz-ingest' ? code({ stamped: false }) : code()), at)
+  assert.deepEqual(deployFloorProblems(SIGNALS, { value: null, workers: below, seen: null }), [])
+  assert.match(deployFloorProblems(SIGNALS, { value: null, workers: below, seen: { versionId: 'i9', release: 'sha-on', value: 'logs' } })[0], /^viz-ingest: this release is below its floor .* viz-ingest version i9 \(release sha-on\) set INGEST_SIGNALS=logs/)
+})
+
+test('floors: rollback rule, pure: refused for each Worker it would leave below its floor, only once the switch was seen', () => {
+  const w = (worker, c, restored = true) => ({ floor: floor(worker), code: c, versionId: `${worker}-v`, release: 'sha-t', restored })
+  const seen = { versionId: 'i2', release: 'sha-on', value: 'traces' }
+  assert.deepEqual(rollbackFloorProblems(SIGNALS, { workers: [w('viz-publisher', code({ publisher: 3 }))], seen: null }), [])
+  const p = rollbackFloorProblems(SIGNALS, { workers: [w('viz-publisher', code({ publisher: 3 })), w('viz-query', code({ stamped: false }), false), w('viz-ingest', code())], seen })
+  assert.equal(p.length, 2)
+  assert.match(p[0], /^viz-publisher: this rollback would restore version viz-publisher-v .*schema 3, floor 4/)
+  assert.match(p[1], /^viz-query: this rollback would leave serving version viz-query-v/)
 })

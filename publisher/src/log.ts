@@ -194,6 +194,12 @@ export type LogStatus =
    * publish lists the checkpoints again.
    */
   | 'incomplete'
+  /**
+   * The tenant needs a re-base and the publisher did not give it a turn in this publish (its
+   * per-publish cap on re-bases is spent: `BaseSink.turn` returned null). Nothing of the
+   * checkpoint, base or changes was read; the tenant waits for a later publish.
+   */
+  | 'deferred'
 
 /** A removed key with its table: from `LedgerChange.removedFiles`, or from the key layout for logs written before it (null if the key does not follow it). */
 export interface RemovedFile {
@@ -240,11 +246,14 @@ export interface BaseSink {
    */
   tombstones(tenant: string, tombstones: { key: string; table: LedgerTable }[]): void
   /**
-   * Waits for this tenant's turn to read a checkpoint or base, and returns its release. The
+   * Waits for this tenant's turn to read a checkpoint or base, and returns its release, or null
+   * when the tenant may not re-base in this publish (then nothing is read: `deferred`). The
    * publisher gives one turn at a time, so tenants re-basing in the same publish hold one window
-   * of parts between them, not one each. Absent: no turns.
+   * of parts between them, not one each, and it decides each admission knowing what the re-bases
+   * before it staged. A tenant may ask more than once in one read (the segment path, then the
+   * first layout's); the answer is the same. Absent: no turns, every re-base admitted.
    */
-  turn?(): Promise<() => void>
+  turn?(tenant: string): Promise<(() => void) | null>
 }
 
 /** What a re-base started from. Its files are in the `BaseSink`, not here. */
@@ -774,6 +783,11 @@ async function readCheckpoint(
   }
 }
 
+/** A re-base the publisher did not admit in this publish: nothing read past the incarnations. */
+const deferred = (tenant: string, incarnation: number): TenantLog => ({
+  tenant, status: 'deferred', detail: 'needs a re-base; this publish has started as many as it may (the per-publish cap)', incarnation, layout: null, base: null, start: 0, changes: [],
+})
+
 /**
  * The segment path of `readTenantLog`. `from` is null to re-base: start from the newest
  * checkpoint this code reads, else from the base at the head of the incarnation's first
@@ -795,7 +809,8 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
   let cursor = from
   if (from === null) {
     // One tenant's checkpoint or base at a time (the publisher's turns): released on every way out.
-    const done = (await sink.turn?.()) ?? (() => {})
+    const done = sink.turn ? await sink.turn(tenant) : () => {}
+    if (done === null) return deferred(tenant, incarnation)
     try {
       const ck = await readNewestCheckpoint(store, cell, tenant, incarnation, sink)
       if (ck.status === 'corrupt' || ck.status === 'unsupported' || ck.status === 'incomplete') {
@@ -1003,7 +1018,15 @@ async function readObjectLog(store: Store, cell: string, tenant: string, incarna
   let base: BaseInfo | null = null
   let start: number
   if (from === null) {
-    const b = await streamObjectBase(store, cell, tenant, incarnation, sink)
+    // The first layout's base takes a turn too (the same tenant was admitted on the segment path already).
+    const done = sink.turn ? await sink.turn(tenant) : () => {}
+    if (done === null) return deferred(tenant, incarnation)
+    let b: BaseInfo | Stop | null
+    try {
+      b = await streamObjectBase(store, cell, tenant, incarnation, sink)
+    } finally {
+      done()
+    }
     if (b === null) return none('no_base', `incarnation ${incarnation} has neither a base segment nor a base.json`)
     if (b instanceof Stop) return b.status === 'unsupported' ? { ...none('unsupported', b.message), gapAt: 0 } : none('corrupt', b.message)
     base = b

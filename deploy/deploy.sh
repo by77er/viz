@@ -18,9 +18,10 @@
 # Steps: build both WASM engines; npm ci in each deployed component; resources; configure;
 # release (upload every Worker, then promote callees first); smoke test through the public
 # URL. A failed smoke test rolls back to the previous release when the release applied no
-# Durable Object migration; with a migration it fails loudly instead. Exit codes: 0 deployed
-# and healthy; 1 failed; 3 refused before anything was promoted (unacknowledged migration, or a
-# generated secret that is set but missing from the upload).
+# Durable Object migration and is not forward-only; otherwise it fails loudly instead. Exit codes:
+# 0 deployed and healthy; 1 failed; 3 refused before anything was promoted (unacknowledged
+# migration, a rollback floor such as INGEST_SIGNALS before its readers, a generated secret that is
+# set but missing from the upload, or another run's upload under this run's key).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -99,7 +100,7 @@ set +e
 node deploy/release.mjs deploy ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 rc=$?
 set -e
-if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (see above: an unacknowledged Durable Object migration, or a generated secret)"; exit 3; fi
+if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (see above: an unacknowledged Durable Object migration, a rollback floor, or a generated secret)"; exit 3; fi
 if [ $rc -ne 0 ]; then note "release: FAILED during upload or promotion (see above)"; exit 1; fi
 note "release: promoted; record deploy/generated/$TARGET/release.json"
 # Generated secrets, by name only (lib/secrets.mjs): kept, created or rotated.
@@ -108,10 +109,11 @@ SECRETS=$(node -e 'const r=require(process.argv[1]);console.log((r.secrets||[]).
 if [ -n "$SECRETS" ]; then note "secrets: $SECRETS"; fi
 # shellcheck disable=SC2016  # the single quotes hold JavaScript, not shell
 MIGRATED=$(node -e 'const r=require(process.argv[1]);console.log((r.migrations||[]).map(m=>`${m.worker} ${m.from??"(none)"}→${m.to}`).join(", "))' "$OUT/release.json")
-# Forward-only for a schema reason (contracts/COMPATIBILITY.md §6): a class's storage may already
-# be in a shape the previous release cannot open; release.mjs would refuse the rollback anyway.
+# Forward-only for a schema or a format (contracts/COMPATIBILITY.md §6): a class's storage may already
+# be in a shape, or a format at a version, the previous release cannot read; release.mjs would
+# refuse the rollback anyway.
 # shellcheck disable=SC2016
-FORWARD_ONLY=$(node -e 'const r=require(process.argv[1]);console.log((r.forwardOnlyBecause||[]).filter(f=>f.kind==="schema").map(f=>`${f.component} readable from ${f.compat}`).join(", "))' "$OUT/release.json")
+FORWARD_ONLY=$(node -e 'const r=require(process.argv[1]);console.log((r.forwardOnlyBecause||[]).filter(f=>f.kind==="schema"||f.kind==="format").map(f=>f.kind==="schema"?`${f.component} readable from ${f.compat}`:`${f.format} written at ${f.writes}`).join(", "))' "$OUT/release.json")
 
 if [ $SMOKE -eq 0 ]; then note "smoke: skipped (--skip-smoke)"; exit 0; fi
 step "smoke test"
@@ -122,7 +124,7 @@ fi
 note "smoke: FAILED"
 if [ -n "$FORWARD_ONLY" ] && [ -z "$MIGRATED" ]; then
   echo "::error::Smoke test failed after a FORWARD-ONLY release ($FORWARD_ONLY)." >&2
-  echo "  Not rolling back: storage this release migrated cannot be opened by the previous release (contracts/COMPATIBILITY.md §6)." >&2
+  echo "  Not rolling back: storage this release migrated, or a format version it wrote, cannot be read by the previous release (contracts/COMPATIBILITY.md §6)." >&2
   echo "  What to do: fix forward with a new commit (see deploy/README.md, 'When a deploy fails')." >&2
   note "rollback: NOT attempted (forward-only release: $FORWARD_ONLY)"
   exit 1

@@ -62,7 +62,9 @@ import {
  * is none, so an idle publisher has no alarm and costs nothing.
  *
  *   publish         tenants are pending: set by `notify` (coalescing nudges for
- *                   `publishIntervalMs`), or by a publish that left some (retry after `retryMs`)
+ *                   `publishIntervalMs`), by a publish that left some (retry after `retryMs`; after
+ *                   `continueMs` when it stopped at a per-publish cap), and by the alarm itself
+ *                   before it publishes (a lease: an invocation cut off keeps its deadline)
  *   sweep           metadata objects may be unreferenced: a commit or a failed attempt happened
  *                   (`orphanGraceMs` later), or the last sweep marked objects (their grace end)
  *   expire:<table>  every snapshot beyond the newest `minSnapshots` will be outside the window
@@ -114,6 +116,18 @@ export interface PublisherConfig {
   codec: AvroCodec
   /** Changes read per tenant per publish. More than this is finished by the alarm. */
   maxChangesPerTenant: number
+  /**
+   * Re-bases one publish may start (review M-6: the upgrade to D67 re-bases every tenant). Each
+   * publish starts at least one, and no further one once this many have started, or once the ones
+   * it started have staged `maxRebaseFilesPerPublish` files and tombstones. The rest wait, least
+   * recently started first (table `rebase`), and the alarm continues after `continueMs`.
+   */
+  maxRebasesPerPublish: number
+  maxRebaseFilesPerPublish: number
+  /** Tenants whose logs one publish reads (R2 calls are subrequests); the others wait, longest waiting first. */
+  maxTenantsPerPublish: number
+  /** Delay before the alarm continues a publish that stopped at one of the caps above, or after rebuilding a table from R2. */
+  continueMs: number
 }
 
 const DEFAULTS: Omit<PublisherConfig, 'locationPrefix'> = {
@@ -128,6 +142,12 @@ const DEFAULTS: Omit<PublisherConfig, 'locationPrefix'> = {
   publishIntervalMs: 120_000,
   codec: 'deflate',
   maxChangesPerTenant: 2_000,
+  // From `bench/upgrade.bench.test.ts` (README, "Capped re-bases"): a publish that re-bases this much
+  // took at most a few seconds here, against the 30 s of CPU a Durable Object invocation has by default.
+  maxRebasesPerPublish: 100,
+  maxRebaseFilesPerPublish: 100_000,
+  maxTenantsPerPublish: 1_000,
+  continueMs: 1_000,
 }
 
 export interface R2Ops {
@@ -189,6 +209,12 @@ class CountingBucket implements Store {
   }
 }
 
+/**
+ * `deferred` (from the reader, or set here): the tenant needs a re-base this publish did not start
+ * (its per-publish cap), or was not read at all (the cap on tenants, or the publisher rebuilt a
+ * table from R2 first). Tables with a cursor were published from it when the log was read. It stays
+ * pending, and the alarm continues after `continueMs`.
+ */
 export type TenantStatus = LogStatus | 'invalid' | 'inconsistent'
 
 export interface TenantReport {
@@ -304,6 +330,27 @@ interface TablePlan {
 
 /** A conditional write lost, or SQLite was found behind R2. The caller starts over. */
 class Conflict extends Error {}
+
+/**
+ * The re-bases of one publish (review M-6). Kept across its attempts: an attempt started over after
+ * a conflict re-reads the tenants already admitted and admits no new one (`closed`).
+ */
+interface RebaseBudget {
+  admitted: Set<string>
+  /** Files and tombstones the admitted re-bases staged (their checkpoint or base). */
+  staged: number
+  closed: boolean
+}
+
+/** An attempt's result, with what the publish needs to settle `pending` and the alarm. */
+interface AttemptResult {
+  tenants: TenantReport[]
+  tables: Record<LedgerTable, TableReport>
+  /** Tenants left for a later publish by a cap (or a rebuild from R2): the alarm continues soon. */
+  deferred: boolean
+  /** Tenants whose log was not read at all: they keep their place in `pending`. */
+  unread: Set<string>
+}
 
 /** What the stage refuses of a base or checkpoint (a file listed twice): the log object is corrupt. */
 export class BaseRefused extends Error {

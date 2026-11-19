@@ -1,11 +1,13 @@
 // node --test deploy/test/: configure.mjs, without the network.
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { checkEntrypoints, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, stageVars } from '../configure.mjs'
+import { checkEntrypoints, checkFloorSchemas, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, stageVars } from '../configure.mjs'
 import { GENERATED_DIR, REPO_ROOT, checkStage, parseJsonc, readJsonc, stagedName } from '../lib/common.mjs'
-import { SCHEMAS_VAR, parseSource, readSchemas, schemaSources, schemasVar } from '../lib/schemas.mjs'
+import { FLOORS_VAR, floorRules, stampedFloors } from '../lib/floors.mjs'
+import { FORMATS_VAR, formatSources, formatsVar, readFormats } from '../lib/formats.mjs'
+import { SCHEMAS_VAR, evaluateExports, parseSource, readSchemas, schemaSources, schemasVar } from '../lib/schemas.mjs'
 
 const { plan } = loadPlan()
 const worker = (name) => plan.workers.find((w) => w.name === name)
@@ -330,4 +332,104 @@ test('a Durable Object class of another Worker is bound only where workers.json 
   const q = readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc'))
   const queryW = { ...worker('viz-query'), binds_classes: { 'viz-ingest:Shard': 'x' } }
   assert.throws(() => generateWorker({ worker: queryW, cfg: q, componentDir: join(REPO_ROOT, 'query'), plan, stage: undefined, release: 'r', ids, outDir: join(GENERATED_DIR, 'production') }), /viz-ingest's Durable Object class Ledger/)
+})
+
+// ───────────────────────────── format versions and rollback floors (D69) ─────────────────────────────
+
+test('formats: what each Worker writes and reads is read from the components, into the manifest and each version\'s VIZ_FORMATS', () => {
+  const read = readFormats(formatSources(plan.workers))
+  const of = (w, f) => read.find((x) => x.worker === w && x.format === f)
+  // The ruler's gate (D60): written at ANOMALY_STATE_WRITE, read at 1 and 2.
+  const gate = Number(/export const ANOMALY_STATE_WRITE: 1 \| 2 = (\d)/.exec(readFileSync(join(REPO_ROOT, 'ruler/src/schema.ts'), 'utf8'))[1])
+  assert.deepEqual(of('viz-ruler', 'store.anomaly-state'), { worker: 'viz-ruler', format: 'store.anomaly-state', writes: gate, reads: [1, 2] })
+  assert.deepEqual(of('viz-ruler', 'rpc.alert-update'), { worker: 'viz-ruler', format: 'rpc.alert-update', writes: 1, reads: [1] })
+  // viz-ingest: flush's dead letters (writes 2, reads 1 and 2), the janitor's reads of what others write.
+  assert.deepEqual(of('viz-ingest', 'r2.dead-letters'), { worker: 'viz-ingest', format: 'r2.dead-letters', writes: 2, reads: [1, 2] })
+  assert.deepEqual(of('viz-ingest', 'kv.settings'), { worker: 'viz-ingest', format: 'kv.settings', writes: null, reads: [1] })
+  assert.deepEqual(of('viz-ingest', 'r2.compaction-inputs'), { worker: 'viz-ingest', format: 'r2.compaction-inputs', writes: 1, reads: [1] })
+  assert.ok(of('viz-control', 'kv.settings') && of('viz-publisher', 'iceberg.metadata'))
+  // The publisher's `read.…` entries name what another component writes: not recorded.
+  assert.deepEqual(read.filter((x) => x.format.startsWith('read.')), [])
+  assert.deepEqual([...new Set(read.map((x) => x.worker))].sort(), ['viz-control', 'viz-ingest', 'viz-publisher', 'viz-ruler'])
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+  for (const w of m.workers.filter((x) => x.deploy)) {
+    const cfg = readJsonc(join(REPO_ROOT, w.config))
+    const mine = read.filter((x) => x.worker === w.canonical)
+    assert.deepEqual(w.formats, mine.map(({ format, writes, reads }) => ({ format, writes, reads })), w.name)
+    assert.equal(cfg.vars[FORMATS_VAR], mine.length ? formatsVar(mine) : undefined, w.name)
+  }
+  assert.deepEqual(JSON.parse(readJsonc(join(REPO_ROOT, m.workers.find((w) => w.canonical === 'viz-ruler').config)).vars[FORMATS_VAR]).formats['store.anomaly-state'], { w: gate, r: [1, 2] })
+})
+
+test('formats: every FORMATS map in the sources of a deployed component is declared in workers.json, so no written format goes unrecorded', () => {
+  const declared = new Set(plan.workers.flatMap((w) => w.formats?.writes ?? []))
+  const dirs = ['contracts', 'publisher', 'stack', 'edge', 'shard', 'ledger', 'flush', 'compact', 'janitor', 'control', 'query', 'ruler', 'mcp']
+  const found = []
+  for (const d of dirs) {
+    const src = join(REPO_ROOT, d, d === 'contracts' ? '' : 'src')
+    if (!existsSync(src)) continue
+    for (const f of readdirSync(src, { recursive: true }).filter((x) => String(x).endsWith('.ts'))) {
+      if (/export const FORMATS = \{/.test(readFileSync(join(src, f), 'utf8'))) found.push(`${d}/${d === 'contracts' ? '' : 'src/'}${f}#FORMATS`)
+    }
+  }
+  assert.ok(found.length >= 6, found.join(', '))
+  for (const f of found) assert.ok(declared.has(f), `${f} is not under any Worker's formats.writes in deploy/workers.json`)
+})
+
+test('formats: a Worker that writes a version it does not read, or one format at two versions, is refused', () => {
+  const dir = join(GENERATED_DIR, 'test-formats')
+  mkdirSync(dir, { recursive: true })
+  try {
+    writeFileSync(join(dir, 'a.ts'), "export const FORMATS = { 'x.one': 2, 'read.other': 3 } as const\nexport const ONLY_1 = [1] as const\n")
+    writeFileSync(join(dir, 'b.ts'), "export const FORMATS = { 'x.one': 3 } as const\nexport const READS = { 'x.one': [2, 3], 'x.two': [1] } as const\n")
+    const src = (w, f) => formatSources([{ name: w, formats: f }])
+    const rel = (x) => `deploy/generated/test-formats/${x}`
+    assert.throws(() => readFormats(src('w', { writes: [rel('a.ts#FORMATS')], reads_of: { 'x.one': rel('a.ts#ONLY_1') } })), /w: writes x\.one version 2 but reads only 1: a release must read what it writes/)
+    assert.throws(() => readFormats(src('w', { writes: [rel('a.ts#FORMATS'), rel('b.ts#FORMATS')] })), /x\.one is written at version 2 .* and at 3/)
+    // Read lists intersect; `read.…` entries are skipped; a format only read has writes null.
+    assert.deepEqual(readFormats(src('w', { writes: [rel('b.ts#FORMATS')], reads: [rel('b.ts#READS')] })), [{ worker: 'w', format: 'x.one', writes: 3, reads: [2, 3] }, { worker: 'w', format: 'x.two', writes: null, reads: [1] }])
+    assert.deepEqual(readFormats(src('w', { writes: [rel('a.ts#FORMATS')] })), [{ worker: 'w', format: 'x.one', writes: 2, reads: [2] }])
+    assert.throws(() => readFormats(src('w', { writes: [rel('a.ts#NOPE')] })), /does not export NOPE/)
+    assert.throws(() => formatSources([{ name: 'w', formats: { write: [] } }]), /"write" is not one of/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('floors: viz-query and viz-ingest are stamped at the floor of INGEST_SIGNALS on the evidence of their sources; a declaration the code does not bear out is refused', () => {
+  const rules = floorRules(plan, 'citest')
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+  for (const w of m.workers.filter((x) => x.deploy)) {
+    const stamped = ['viz-query', 'viz-ingest'].includes(w.canonical)
+    assert.deepEqual(w.floors, stamped ? ['signal-data'] : [], w.name)
+    assert.equal(readJsonc(join(REPO_ROOT, w.config)).vars[FLOORS_VAR], stamped ? '{"v":1,"at":["signal-data"]}' : undefined, w.name)
+  }
+  // Evidence missing: an error at configure, never a stamp.
+  const bad = floorRules({ ...plan, rollback_floors: [{ ...plan.rollback_floors[0], floors: { ...plan.rollback_floors[0].floors, 'viz-query': { evidence: ['query/src/shards.ts#noSuchExport'], why: 'x' } } }] }, 'citest')
+  assert.throws(() => stampedFloors(bad, 'viz-query', exportedNames), /viz-query is declared at or above its floor on the evidence of query\/src\/shards\.ts#noSuchExport, which does not export it/)
+  assert.deepEqual(stampedFloors(rules, 'viz-publisher', exportedNames), [], 'the publisher is judged by its schema, not stamped')
+  // A schema floor must name a class the Worker has.
+  const schemas = readSchemas(schemaSources(plan.workers))
+  checkFloorSchemas(rules, schemas)
+  const wrong = floorRules({ ...plan, rollback_floors: [{ ...plan.rollback_floors[0], floors: { 'viz-publisher': { schema: 'publisher.Nope', at_least: 4, why: 'x' } } }] }, 'citest')
+  assert.throws(() => checkFloorSchemas(wrong, schemas), /names schema publisher\.Nope, which none of its classes has \(publisher\.Publisher\)/)
+})
+
+test('floors: the publisher\'s floor, schema 4, is the release that first reads the span and log tables (the frozen releases in publisher/test/)', () => {
+  const at = (module) => readSchemas([{ worker: 'viz-publisher', class: 'Publisher', module, name: 'PUBLISHER_SCHEMA' }])[0].latest
+  const floor = plan.rollback_floors[0].floors['viz-publisher']
+  assert.deepEqual([floor.schema, floor.at_least], ['publisher.Publisher', 4])
+  // The release before D64 (test/n1): schema 3, and its log reader knows the metric tables only.
+  assert.equal(at('publisher/test/n1/schema.ts'), 3)
+  const n1 = readFileSync(join(REPO_ROOT, 'publisher/test/n1/log.ts'), 'utf8')
+  assert.match(n1, /const TABLES: ReadonlySet<string> = new Set<Table>\(\['metric_samples', 'metric_series'\]\)/)
+  assert.doesNotMatch(n1, /'spans'|'trace_index'|'logs'/)
+  // D64 (test/d64): schema 4, and it reads the three span and log tables (without publishing them).
+  assert.equal(at('publisher/test/d64/schema.ts'), 4)
+  const { values: [d64] } = evaluateExports([{ module: 'publisher/test/d64/log.ts', name: 'UNPUBLISHED_TABLES' }])
+  assert.deepEqual([...d64], ['spans', 'trace_index', 'logs'])
+  // This release: at or above the floor (D67's migration 5 is additive), and it publishes them.
+  assert.ok(at('publisher/src/schema.ts') >= 4)
+  const { values: [now] } = evaluateExports([{ module: 'publisher/src/log.ts', name: 'PUBLISHED_TABLES' }])
+  for (const t of ['spans', 'trace_index', 'logs']) assert.ok([...now].includes(t), t)
 })
