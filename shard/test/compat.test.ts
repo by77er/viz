@@ -93,21 +93,23 @@ describe('versioned storage: storage made by other code', () => {
     await install(s, DDL_DC2A1C3, { ...OLD_ROWS, segment: OLD_ROWS.segment.map((x) => ({ ...x, sealed_at: 5 })) })
     const before = await runInDurableObject(s, (_i, st) => st.storage.sql.exec(`SELECT * FROM batch ORDER BY seq`).toArray())
     expect((await s.pendingSegments('t')).map((x) => [x.seqLo, x.seqHi])).toEqual([[1, 2]])
-    expect(await schemaRow(s)).toEqual({ component: 'shard.Shard', version: 1, compat: 1 })
+    // Adopted as version 1, then migrated to the latest (2 adds `stream.registered`, additive: compat stays 1).
+    expect(await schemaRow(s)).toEqual({ component: 'shard.Shard', version: LATEST, compat: 1 })
     const after = await dumpAll(s)
     expect(after.batch).toEqual(before)
     expect(after.segment).toEqual([{ ...OLD_ROWS.segment[0], sealed_at: 5 }])
+    expect(after.stream).toEqual([{ ...OLD_ROWS.stream[0], registered: 0 }])
     const a = await s.append({ tenant: 't', epoch: 1, fingerprint: 'f4', payload: new Uint8Array(8), rows: 1 })
     expect(a).toMatchObject({ status: 'ok', seq: 4 })
     await evictDurableObject(s)
-    expect(await schemaRow(s)).toEqual({ component: 'shard.Shard', version: 1, compat: 1 })
+    expect(await schemaRow(s)).toEqual({ component: 'shard.Shard', version: LATEST, compat: 1 })
   })
 
   it('adopts an object from before segment.sealed_at: migration 1 adds the column, and every statement naming it works', async () => {
     const s = fresh()
     await install(s, DDL_NO_SEALED_AT, OLD_ROWS)
     expect(await s.pendingTenants(0)).toEqual([{ tenant: 't', segments: 1, oldestSealedAt: 0 }])
-    expect(await schemaRow(s)).toEqual({ component: 'shard.Shard', version: 1, compat: 1 })
+    expect(await schemaRow(s)).toEqual({ component: 'shard.Shard', version: LATEST, compat: 1 })
     expect((await s.seal('t'))).toMatchObject({ seqLo: 3, seqHi: 3 })
   })
 

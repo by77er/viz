@@ -240,8 +240,11 @@ describe('pages', () => {
     const s = fresh()
     const inc = await writeTail(s, 't', 3, 9)
     expect(await s.tailRead('t', inc + 1, 0, {})).toMatchObject({ status: 'incarnation_mismatch', incarnation: inc })
-    expect(await s.tailRead('nobody', 5, 0, {})).toEqual({ status: 'incarnation_mismatch', incarnation: 0 })
     expect(await s.tailRead('nobody', 0, 0, {})).toMatchObject({ status: 'ok', batches: [], page: { next: null } })
+    // A lost stream: refused, naming the fresh stream the shard started for it (D57), never `ok`.
+    const lost = await s.tailRead('nobody', 5, 0, {})
+    expect(lost).toMatchObject({ status: 'incarnation_mismatch' })
+    expect((lost as { incarnation: number }).incarnation).toBeGreaterThan(5)
     const before = await allPages(s, 't', inc, 0, { metrics: ['m2'], maxBytes: 2_000 })
     await evictDurableObject(s)
     const after = await allPages(s, 't', inc, 0, { metrics: ['m2'], maxBytes: 2_000 })

@@ -43,9 +43,14 @@ describe('streams are per tenant', () => {
     }
     // A tenant that has never written here sees nothing, not someone else's data: asked
     // with no incarnation, an empty tail; asked about one the shard does not hold, a refusal
-    // that makes the loss visible (review R-10), never an empty `ok`.
+    // that makes the loss visible (review R-10), never an empty `ok`. Since D57 the refusal
+    // names a fresh stream the shard started (and registered) for it, which holds nothing.
     expect(await s.tailRead('c', 0, 0)).toMatchObject({ status: 'ok', batches: [] })
-    expect(await s.tailRead('c', 1, 0)).toEqual({ status: 'incarnation_mismatch', incarnation: 0 })
+    const lost = await s.tailRead('c', 1, 0)
+    expect(lost).toMatchObject({ status: 'incarnation_mismatch' })
+    const fresh = (lost as { incarnation: number }).incarnation
+    expect(fresh).toBeGreaterThan(1)
+    expect(await s.tailRead('c', fresh, 0)).toMatchObject({ status: 'ok', incarnation: fresh, batches: [] })
   })
 
   it('treats the same fingerprint from two tenants as two batches, and a retry as one', async () => {
