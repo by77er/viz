@@ -50,6 +50,15 @@ One row per series present in the file's day.
 ```
 
 - `level` is 0 for flush files. `shard` is the shard name with `/` replaced by `_`.
+- **Pool and shard names** (`POOL_NAME`, `SHARD_NAME` in `contracts/ledger.ts`) are segments
+  of `[A-Za-z0-9-]` joined by `/`: a pool name at most 120 characters, a shard name
+  (`{pool}/{slot}`) at most 128. They never contain `_`, so the replacement above is
+  one-to-one: two streams of a tenant can never write keys with the same shard part, and a
+  key's shard part names exactly one stream (the orphan sweep judges a flush file by it).
+  A pool map naming another pool is refused where it is read (edge: 503); a shard object
+  addressed by another name serves nothing; the ledger answers `invalid` to a unit of a
+  stream named otherwise and refuses to register it. (Added 2026-11-19; every name in use
+  already fits, so nothing written before changes.)
 - `hash8` is the first 8 hex characters of the SHA-256 of the file bytes.
 - Files are written with `If-None-Match: *`.
 

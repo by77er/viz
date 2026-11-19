@@ -73,12 +73,23 @@ export interface LiveFile extends FileEntry {
  * incarnation lower than the one it has registered.
  */
 export interface StreamRef {
+  /** The shard's Durable Object name: matches `SHARD_NAME`. */
   shard: string
   incarnation: number
 }
 
 /** Tenant ids are `[A-Za-z0-9_-]{1,64}` everywhere: they appear in object keys unescaped. */
 export const TENANT_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+/**
+ * Shard names (`{pool}/{slot}`, contracts/TABLES.md "Object keys"): segments of
+ * `[A-Za-z0-9-]` joined by `/`, at most 128 characters. No `_`, so a flush file's key, which
+ * writes the shard name with `/` replaced by `_`, names exactly one stream: `_` there always
+ * stands for `/`. The ledger refuses a stream named otherwise (`invalid`).
+ */
+export const SHARD_NAME = /^(?=.{1,128}$)[A-Za-z0-9-]+(?:\/[A-Za-z0-9-]+)*$/
+/** Pool names: as `SHARD_NAME`, at most 120 characters, so `{pool}/{slot}` is a shard name for any slot below 4,096. */
+export const POOL_NAME = /^(?=.{1,120}$)[A-Za-z0-9-]+(?:\/[A-Za-z0-9-]+)*$/
 
 /** Everything one sealed segment produced. Admitted atomically or not at all. */
 export interface FlushUnit extends StreamRef {
