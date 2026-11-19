@@ -216,7 +216,7 @@ and 123456789, and in 12 further random-seed runs.
 | NaN ≡ absent | every detector | pass |
 | Never throws | any doubles, ±Inf, NaN, −0, MAX_VALUE, unordered timestamps, garbage state; scores finite, state survives JSON | pass; found −0 in state, variance overflow, an infinite slot and an infinite inferred step (twice: locally, and in CI with seed −1295174040), all fixed at the root: values beyond ±1e150 and timestamps beyond the Date range are missing points, so no difference can overflow |
 | Regressions | the 7 counterexamples × 11 detector configurations: every number in state finite and not −0, exact JSON round trip, and the restored state gives the same next results as the original | pass (80 tests) |
-| STL vs statsmodels 0.15.0 | 6 fixtures (robust and not, ns 7/11/13, degree 0 and 1, with and without jumps) | max difference < 1e-9 (about 2e-13) |
+| STL vs statsmodels 0.15.0 | 6 fixtures (robust and not, ns 7/11/13, degree 0 and 1, with and without jumps) | every component within the test's 1e-9 bound (2.2e-13 measured on the first four) |
 | PELT vs ruptures 1.1.10 `Pelt(l2)` | 4 fixtures | identical changepoints |
 | PELT vs brute-force optimal partitioning | 1,000 random series, penalties, minimum segments | same optimum; **found a bug**: classic PELT pruning loses the optimum with a minimum segment length (a pruned candidate must stay usable for `minSegment − 1` more steps); fixed |
 | Seasonality detection | daily, weekly, hourly, white noise, AR(1) φ = 0.95, random walk, 30 % missing, too short | pass |
