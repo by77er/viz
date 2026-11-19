@@ -8,7 +8,7 @@ import { env } from 'cloudflare:workers'
 import { afterEach, describe, expect, it } from 'vitest'
 import { hooks } from '../src/coordinator'
 import type { Shard } from '../../shard/src/shard'
-import { QUERIES, type Tenant, type World, api, cost, discardAll, expected, flushAll, ingest, ledgerOf, run, sealAll, shardOf, workload, world } from './world'
+import { QUERIES, type Tenant, type World, api, cost, discardAll, expected, flushAll, ingest, ledgerOf, run, sealAll, shardOf, workload, world, write } from './world'
 
 const END = workload.end
 const sec = (ms: number): string => String(ms / 1000)
@@ -306,5 +306,83 @@ describe('release skew (contracts/COMPATIBILITY.md)', () => {
     }
     const res = await run(w.a.key, QUERIES.find((x) => x.id === 'rate-sum-by')!)
     expect([res.status, (await res.json<{ errorType: string }>()).errorType, res.headers.get('Retry-After')]).toEqual([503, 'unavailable', '5'])
+  })
+})
+
+/**
+ * Registration before writes (D61; shard/README.md, "Needed changes elsewhere", R2 item 2): the
+ * traces `flush/test/registration.test.ts` runs against a reader that follows `readTail`, here
+ * against the real coordinator over HTTP. Shards in registration mode `logged`; storage loss is
+ * `deleteAll` and eviction.
+ */
+describe('registration before writes (D61)', () => {
+  const LOGGED = { registration: 'logged' as const, registerBackoffMs: 20, registerBackoffMaxMs: 200 }
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+  /** Remote Write through edge, retried (with the ledger drained, as its alarm would) until 204: a new stream answers 503 while its registration is not logged. */
+  async function writeLogged(t: Tenant, series: (typeof workload.requests)['a'][number]): Promise<void> {
+    for (let i = 0; ; i++) {
+      try {
+        return await write(t, series)
+      } catch (e) {
+        if (!/remote write: 503/.test(String(e)) || i > 100) throw e
+        await ledgerOf(t).drain()
+        await sleep(25)
+      }
+    }
+  }
+
+  async function loseShardStorage(name: string): Promise<void> {
+    await runInDurableObject(shardOf(name), async (_i, st) => {
+      await st.storage.deleteAll()
+    })
+    await evictDurableObject(shardOf(name)).catch((e: Error) => {
+      if (!/not currently running/.test(e.message)) throw e
+    })
+  }
+
+  async function loggedWorld(mode: 'logged' | 'lazy' = 'logged'): Promise<World> {
+    const w = await world()
+    for (const s of w.shards) await shardOf(s).configure({ ...LOGGED, registration: mode })
+    for (const t of [w.a, w.b]) await writeLogged(t, workload.requests[t.which][0]!)
+    await sealAll(w)
+    for (const t of [w.a, w.b]) await writeLogged(t, workload.requests[t.which][1]!)
+    await sealAll(w)
+    return w
+  }
+
+  it('spec F6(b): flushed and logged after the plan, then the shards lose their storage: the re-planned attempt answers exactly from the files', async () => {
+    const w = await loggedWorld()
+    const q = Q[0]!
+    let fired = 0
+    hooks.afterPlan = async (_tenant, attempt) => {
+      if (attempt !== 1 || fired++ > 0) return
+      // The plan names every stream (registered and logged before its first write) and no file.
+      await flushAll(w)
+      for (const t of [w.a, w.b]) await ledgerOf(t).drain()
+      for (const s of w.shards) await loseShardStorage(s)
+      for (const s of w.shards) await shardOf(s).configure(LOGGED)
+    }
+    const res = await run(w.a.key, q)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(expected.a[q.id])
+    expect(fired).toBe(1)
+    // The tail read was refused (a fresh stream, newer than the one the plan names), never ok and empty.
+    expect(cost(res, 'Plan-Attempts')).toBe(2)
+  })
+
+  it('spec F6 liveness: registered and logged, never flushed, the shards lose their storage: 200 without those rows in two attempts, then one', async () => {
+    const w = await loggedWorld()
+    for (const s of w.shards) await loseShardStorage(s)
+    for (const s of w.shards) await shardOf(s).configure(LOGGED)
+    const q = Q[0]!
+    const res = await run(w.a.key, q)
+    expect(res.status).toBe(200)
+    // The declared loss: the rows were acknowledged and never flushed.
+    expect(await res.json()).toEqual({ status: 'success', data: { resultType: 'matrix', result: [] } })
+    expect(cost(res, 'Plan-Attempts')).toBe(2)
+    const again = await run(w.a.key, q)
+    expect(again.status).toBe(200)
+    expect(cost(again, 'Plan-Attempts')).toBe(1)
   })
 })

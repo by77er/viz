@@ -1,0 +1,838 @@
+{
+  "runs": 3,
+  "throttled": true,
+  "viewport": [
+    400,
+    800
+  ],
+  "coarse": true,
+  "cores": 4,
+  "judgedAtLoadAtMost": 4,
+  "calibrationMs": 290.42815399999995,
+  "loadAtEnd": [
+    5.93,
+    4.3,
+    4.24
+  ],
+  "at": "2026-11-19T08:16:30.872Z",
+  "sides": {
+    "before": {
+      "url": "http://127.0.0.1:8901/fixture/index.html",
+      "loadAtRunStart": [
+        3.6,
+        2.82,
+        3.85
+      ],
+      "measurements": [
+        {
+          "name": "Press: Run query",
+          "type": "press",
+          "budget": 50,
+          "p75": 26.699999999254942,
+          "median": 23.100000001490116,
+          "worst": 26.699999999254942,
+          "judged": true,
+          "runs": [
+            23.100000001490116,
+            16.100000001490116,
+            26.699999999254942
+          ],
+          "loads": [
+            3.39,
+            2.96,
+            4.32
+          ]
+        },
+        {
+          "name": "Typing in the query editor",
+          "type": "type",
+          "budget": 50,
+          "p75": 21.300000000745058,
+          "median": 20.200000002980232,
+          "worst": 21.300000000745058,
+          "judged": true,
+          "runs": [
+            15.600000001490116,
+            21.300000000745058,
+            20.200000002980232
+          ],
+          "loads": [
+            3.39,
+            2.96,
+            4.38
+          ]
+        },
+        {
+          "name": "Crosshair by touch drag, 36 series",
+          "type": "drag",
+          "budget": 50,
+          "p75": 58.099999997764826,
+          "median": 48.600000001490116,
+          "worst": 58.099999997764826,
+          "judged": true,
+          "runs": [
+            48.600000001490116,
+            38.30000000074506,
+            58.099999997764826
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.38
+          ]
+        },
+        {
+          "name": "Legend row toggle, 36 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 88.69999999925494,
+          "median": 69.60000000149012,
+          "worst": 88.69999999925494,
+          "judged": true,
+          "runs": [
+            69.60000000149012,
+            67.90000000223517,
+            88.69999999925494
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.38
+          ]
+        },
+        {
+          "name": "Legend row toggle, 200 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 72.80000000074506,
+          "median": 59.599999997764826,
+          "worst": 72.80000000074506,
+          "judged": true,
+          "runs": [
+            54,
+            59.599999997764826,
+            72.80000000074506
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.38
+          ]
+        },
+        {
+          "name": "One panel to table, 36 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 116.30000000074506,
+          "median": 92.09999999776483,
+          "worst": 116.30000000074506,
+          "judged": true,
+          "runs": [
+            66.10000000149012,
+            116.30000000074506,
+            92.09999999776483
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.38
+          ]
+        },
+        {
+          "name": "One panel to chart, 36 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 75.69999999925494,
+          "median": 72,
+          "worst": 75.69999999925494,
+          "judged": true,
+          "runs": [
+            48.30000000074506,
+            75.69999999925494,
+            72
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.38
+          ]
+        },
+        {
+          "name": "One panel to table, 200 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 79.69999999925494,
+          "median": 76.30000000074506,
+          "worst": 79.69999999925494,
+          "judged": true,
+          "runs": [
+            76.30000000074506,
+            79.69999999925494,
+            65.39999999850988
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.67
+          ]
+        },
+        {
+          "name": "Open a menu (Share…)",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 86.30000000074506,
+          "median": 47.100000001490116,
+          "worst": 86.30000000074506,
+          "judged": true,
+          "runs": [
+            86.30000000074506,
+            28.199999999254942,
+            47.100000001490116
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.67
+          ]
+        },
+        {
+          "name": "Change theme (to dark)",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 142.5,
+          "median": 123.80000000074506,
+          "worst": 142.5,
+          "judged": true,
+          "runs": [
+            142.5,
+            123.80000000074506,
+            93.39999999850988
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.67
+          ]
+        },
+        {
+          "name": "Run a query: request sent and waiting state shown",
+          "type": "send",
+          "budget": 100,
+          "p75": 75.30000000074506,
+          "median": 65.09999999776483,
+          "worst": 75.30000000074506,
+          "judged": true,
+          "runs": [
+            51.599999997764826,
+            65.09999999776483,
+            75.30000000074506
+          ],
+          "loads": [
+            3.28,
+            2.96,
+            4.67
+          ]
+        },
+        {
+          "name": "Move to a view whose data is not loaded: its shell and waiting state",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 60.80000000074506,
+          "median": 52.600000001490116,
+          "worst": 60.80000000074506,
+          "judged": true,
+          "runs": [
+            48.70000000298023,
+            52.600000001490116,
+            60.80000000074506
+          ],
+          "loads": [
+            3.18,
+            2.96,
+            4.67
+          ]
+        },
+        {
+          "name": "Response to paint, 36 series",
+          "type": "response",
+          "budget": 100,
+          "p75": 99.10000000149012,
+          "median": 20.599999997764826,
+          "worst": 99.10000000149012,
+          "judged": true,
+          "runs": [
+            20.599999997764826,
+            18.100000001490116,
+            99.10000000149012
+          ],
+          "loads": [
+            3.18,
+            2.96,
+            4.67
+          ]
+        },
+        {
+          "name": "Response to paint, 200 series",
+          "type": "response",
+          "budget": 100,
+          "p75": 39.19999999925494,
+          "median": 36.5,
+          "worst": 39.19999999925494,
+          "judged": true,
+          "runs": [
+            28.300000000745058,
+            36.5,
+            39.19999999925494
+          ],
+          "loads": [
+            3.18,
+            2.88,
+            4.85
+          ]
+        },
+        {
+          "name": "Layout shift, load and run",
+          "type": "shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.18,
+            2.88,
+            4.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to CPU by pod",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.6,
+            2.82,
+            3.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to Latency by route",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.6,
+            2.82,
+            3.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to Request rate",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.6,
+            2.82,
+            3.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to CPU by pod, every namespace",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.6,
+            2.82,
+            3.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to the backtest",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.6,
+            2.82,
+            3.85
+          ]
+        },
+        {
+          "name": "Worst interaction (Event Timing)",
+          "type": "inp",
+          "budget": 200,
+          "p75": 152,
+          "median": 136,
+          "worst": 152,
+          "judged": true,
+          "runs": [
+            136,
+            128,
+            152
+          ],
+          "loads": [
+            3.18,
+            2.88,
+            4.85
+          ]
+        }
+      ]
+    },
+    "after": {
+      "url": "http://127.0.0.1:8900/fixture/index.html",
+      "loadAtRunStart": [
+        3.18,
+        2.88,
+        4.85
+      ],
+      "measurements": [
+        {
+          "name": "Press: Run query",
+          "type": "press",
+          "budget": 50,
+          "p75": 31,
+          "median": 27.100000001490116,
+          "worst": 31,
+          "judged": true,
+          "runs": [
+            27.100000001490116,
+            23.300000000745058,
+            31
+          ],
+          "loads": [
+            3.08,
+            3.56,
+            5.83
+          ]
+        },
+        {
+          "name": "Typing in the query editor",
+          "type": "type",
+          "budget": 50,
+          "p75": 37.19999999925494,
+          "median": 34.79999999701977,
+          "worst": 37.19999999925494,
+          "judged": true,
+          "runs": [
+            20.200000002980232,
+            37.19999999925494,
+            34.79999999701977
+          ],
+          "loads": [
+            3.16,
+            3.56,
+            5.83
+          ]
+        },
+        {
+          "name": "Crosshair by touch drag, 36 series",
+          "type": "drag",
+          "budget": 50,
+          "p75": 78.80000000074506,
+          "median": 59.70000000298023,
+          "worst": 78.80000000074506,
+          "judged": true,
+          "runs": [
+            39.100000001490116,
+            78.80000000074506,
+            59.70000000298023
+          ],
+          "loads": [
+            3.16,
+            3.56,
+            5.83
+          ]
+        },
+        {
+          "name": "Legend row toggle, 36 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 109,
+          "median": 80.69999999925494,
+          "worst": 109,
+          "judged": true,
+          "runs": [
+            80.69999999925494,
+            64.30000000074506,
+            109
+          ],
+          "loads": [
+            3.16,
+            3.56,
+            5.92
+          ]
+        },
+        {
+          "name": "Legend row toggle, 200 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 125.69999999925494,
+          "median": 70.69999999925494,
+          "worst": 125.69999999925494,
+          "judged": true,
+          "runs": [
+            70.69999999925494,
+            63.30000000074506,
+            125.69999999925494
+          ],
+          "loads": [
+            3.16,
+            3.83,
+            5.92
+          ]
+        },
+        {
+          "name": "One panel to table, 36 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 188,
+          "median": 75.69999999925494,
+          "worst": 188,
+          "judged": true,
+          "runs": [
+            75.69999999925494,
+            188,
+            52.69999999925494
+          ],
+          "loads": [
+            3.16,
+            3.83,
+            5.92
+          ]
+        },
+        {
+          "name": "One panel to chart, 36 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 108,
+          "median": 106,
+          "worst": 108,
+          "judged": true,
+          "runs": [
+            108,
+            48.400000002235174,
+            106
+          ],
+          "loads": [
+            3.16,
+            3.83,
+            5.92
+          ]
+        },
+        {
+          "name": "One panel to table, 200 series",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 108.5,
+          "median": 80.89999999850988,
+          "worst": 108.5,
+          "judged": true,
+          "runs": [
+            65.59999999776483,
+            80.89999999850988,
+            108.5
+          ],
+          "loads": [
+            3.16,
+            3.83,
+            5.92
+          ]
+        },
+        {
+          "name": "Open a menu (Share…)",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 76.60000000149012,
+          "median": 69.40000000223517,
+          "worst": 76.60000000149012,
+          "judged": true,
+          "runs": [
+            65.09999999776483,
+            76.60000000149012,
+            69.40000000223517
+          ],
+          "loads": [
+            3.16,
+            3.83,
+            5.92
+          ]
+        },
+        {
+          "name": "Change theme (to dark)",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 211,
+          "median": 187.80000000074506,
+          "worst": 211,
+          "judged": true,
+          "runs": [
+            113,
+            187.80000000074506,
+            211
+          ],
+          "loads": [
+            3.06,
+            3.83,
+            5.92
+          ]
+        },
+        {
+          "name": "Run a query: request sent and waiting state shown",
+          "type": "send",
+          "budget": 100,
+          "p75": 71.19999999925494,
+          "median": 70.5,
+          "worst": 71.19999999925494,
+          "judged": true,
+          "runs": [
+            71.19999999925494,
+            68.5,
+            70.5
+          ],
+          "loads": [
+            3.06,
+            3.83,
+            5.92
+          ]
+        },
+        {
+          "name": "Move to a view whose data is not loaded: its shell and waiting state",
+          "type": "toggle",
+          "budget": 100,
+          "p75": 80.09999999776483,
+          "median": 59,
+          "worst": 80.09999999776483,
+          "judged": true,
+          "runs": [
+            49.19999999925494,
+            59,
+            80.09999999776483
+          ],
+          "loads": [
+            3.06,
+            3.85,
+            5.93
+          ]
+        },
+        {
+          "name": "Response to paint, 36 series",
+          "type": "response",
+          "budget": 100,
+          "p75": 39.70000000298023,
+          "median": 24.100000001490116,
+          "worst": 39.70000000298023,
+          "judged": true,
+          "runs": [
+            39.70000000298023,
+            20.800000000745058,
+            24.100000001490116
+          ],
+          "loads": [
+            3.06,
+            3.85,
+            5.93
+          ]
+        },
+        {
+          "name": "Response to paint, 200 series",
+          "type": "response",
+          "budget": 100,
+          "p75": 47.5,
+          "median": 30.899999998509884,
+          "worst": 47.5,
+          "judged": true,
+          "runs": [
+            28.600000001490116,
+            47.5,
+            30.899999998509884
+          ],
+          "loads": [
+            3.06,
+            3.85,
+            5.93
+          ]
+        },
+        {
+          "name": "Layout shift, load and run",
+          "type": "shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.06,
+            3.85,
+            5.93
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to CPU by pod",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.18,
+            2.88,
+            4.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to Latency by route",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.18,
+            2.88,
+            4.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to Request rate",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.18,
+            2.88,
+            4.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to CPU by pod, every namespace",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.18,
+            2.88,
+            4.85
+          ]
+        },
+        {
+          "name": "Layout shift, loaded scrolled to the backtest",
+          "type": "load-shift",
+          "budget": 0.05,
+          "p75": 0,
+          "median": 0,
+          "worst": 0,
+          "judged": true,
+          "runs": [
+            0,
+            0,
+            0
+          ],
+          "loads": [
+            3.18,
+            2.88,
+            4.85
+          ]
+        },
+        {
+          "name": "Worst interaction (Event Timing)",
+          "type": "inp",
+          "budget": 200,
+          "p75": 216,
+          "median": 184,
+          "worst": 216,
+          "judged": true,
+          "runs": [
+            120,
+            184,
+            216
+          ],
+          "loads": [
+            2.82,
+            3.85,
+            5.93
+          ]
+        }
+      ]
+    }
+  }
+}
