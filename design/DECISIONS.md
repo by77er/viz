@@ -1862,7 +1862,10 @@ query is refused (422). A query that cannot be split is refused with `max_fetch_
 the previous release answers with its whole tail: the coordinator uses it as before; a part (the
 shard rolled back after the coordinator's read) applies the shard's own filter, key range
 included, to that answer, so only its rows count. A leaf of the previous release, which ignores
-the rest it is given, is refused (503).
+the rest it is given, is refused (503). The span and log tail reads (D62) go through the same
+reads: one budget over the signal's shards, resumed in the second round with the signal's
+filter, and the same per-page checks. They are never split, so a span or log tail that does not
+fit is refused at once (422), and no end is learned for it: the end exists only for the parts.
 
 **Alternatives.** (a) Every split part always reads its own key range (shard/README.md "Needed
 changes" 2): no coordinator cap on the tail at all. (b) The coordinator always reads the whole
