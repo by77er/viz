@@ -360,11 +360,27 @@ export interface LogReadPlan {
 }
 
 /**
+ * What a span or log call may hold, and (traces) which spans are its data (D62; ABI 7 of
+ * `engine/wasm-query`, 2026-11-19, additive: an optional last argument).
+ * `maxBytes`: bytes of decoded rows, metric series and the answer the call may hold, as the
+ * engine counts them (a resource once per distinct resource of the call; an answer four times
+ * its length); past it an `execution` error whose limit is `max_decoded_bytes`. Default: the
+ * engine's (32 MiB). `bound`: a span whose start lies outside `[lo, hi]` (nanoseconds,
+ * inclusive) is not part of the call's data and is dropped before de-duplication; `tqExtent`
+ * counts only fragments that overlap it and tail spans that start in it, and cuts the hull and
+ * hours to it. Default: all time.
+ */
+export interface SignalBudget {
+  maxBytes?: number
+  bound?: { lo: bigint; hi: bigint }
+}
+
+/**
  * The span and log half of the read path's engine. Files are whole Parquet files or the byte
  * ranges a `SignalFilePlan` read (a sparse file container), passed in ascending precedence
  * (`contracts/ledger.ts` `LiveFile`); tail batches are `VZB1` signal 2 (spans) or 3 (logs)
  * in sequence order, after the files. The later of two rows with one row key wins
- * (`contracts/BATCH.md`). `maxSpans`/`maxRows` bound the rows decoded (an `execution` error
+ * (`contracts/BATCH.md`). `maxSpans`/`maxRows` bound the rows held; `budget.maxBytes` bounds their bytes (an `execution` error
  * past them). Errors are typed as for PromQL (`bad_data`, `execution`, `unsupported`, `internal`).
  */
 export interface SignalEngine {
@@ -372,17 +388,17 @@ export interface SignalEngine {
   /** Row groups of `spans` files whose span starts overlap `[lo, hi]`, or of `trace_index` files whose fragments do (and hold `traceId`). */
   tqFilePlan(table: 'spans' | 'trace_index', indexes: string[], lo: bigint, hi: bigint, traceId?: Uint8Array): SignalFilePlan[]
   /** The traces overlapping `[lo, hi]` (or `traceId`) from `trace_index` files and the tail: how many, their hull, and the `spans` hours holding them. */
-  tqExtent(indexFiles: Uint8Array[], tailBatches: Uint8Array[], lo: bigint, hi: bigint, traceId?: Uint8Array): { traces: number; lo?: string; hi?: string; hours: number[] }
-  tqSearch(spanFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { limit: number; spss: number; startNs: bigint; endNs: bigint; maxSpans: number }): { json: string; spans: number; traces: number }
-  tqMetrics(spanFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { instant: boolean; startNs: bigint; endNs: bigint; stepNs: bigint; maxSpans: number; maxSeries: number; maxPoints: number }): { json: string; spans: number; traces: number }
+  tqExtent(indexFiles: Uint8Array[], tailBatches: Uint8Array[], lo: bigint, hi: bigint, traceId?: Uint8Array, budget?: SignalBudget): { traces: number; lo?: string; hi?: string; hours: number[] }
+  tqSearch(spanFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { limit: number; spss: number; startNs: bigint; endNs: bigint; maxSpans: number }, budget?: SignalBudget): { json: string; spans: number; traces: number }
+  tqMetrics(spanFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { instant: boolean; startNs: bigint; endNs: bigint; stepNs: bigint; maxSpans: number; maxSeries: number; maxPoints: number }, budget?: SignalBudget): { json: string; spans: number; traces: number }
   /** `json` is `OtlpTrace` (v1) or `{ trace: OtlpTrace }` (v2); null when no span of the trace was read. */
-  tqTrace(spanFiles: Uint8Array[], tailBatches: Uint8Array[], traceId: Uint8Array, version: 1 | 2, maxSpans: number): { json: string | null; spans: number }
-  tqTags(spanFiles: Uint8Array[], tailBatches: Uint8Array[], version: 1 | 2, scope: string, lo: bigint, hi: bigint, limit: number, maxSpans: number): string
-  tqTagValues(spanFiles: Uint8Array[], tailBatches: Uint8Array[], version: 1 | 2, tag: string, q: string, lo: bigint, hi: bigint, limit: number, maxSpans: number): string
+  tqTrace(spanFiles: Uint8Array[], tailBatches: Uint8Array[], traceId: Uint8Array, version: 1 | 2, maxSpans: number, budget?: SignalBudget): { json: string | null; spans: number }
+  tqTags(spanFiles: Uint8Array[], tailBatches: Uint8Array[], version: 1 | 2, scope: string, lo: bigint, hi: bigint, limit: number, maxSpans: number, budget?: SignalBudget): string
+  tqTagValues(spanFiles: Uint8Array[], tailBatches: Uint8Array[], version: 1 | 2, tag: string, q: string, lo: bigint, hi: bigint, limit: number, maxSpans: number, budget?: SignalBudget): string
   lqPlan(kind: 'range' | 'instant', query: string, startNs: bigint, endNs: bigint, stepNs: bigint): LogReadPlan
   lqFilePlan(indexes: string[], selectors: LogReadPlan['selectors']): SignalFilePlan[]
   /** `json` is `LokiData`. */
-  lqQuery(logFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { kind: 'range' | 'instant'; startNs: bigint; endNs: bigint; stepNs: bigint; limit: number; direction: 'forward' | 'backward'; maxRows: number; maxSeries: number; maxSteps: number }): { json: string; rows: number }
+  lqQuery(logFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { kind: 'range' | 'instant'; startNs: bigint; endNs: bigint; stepNs: bigint; limit: number; direction: 'forward' | 'backward'; maxRows: number; maxSeries: number; maxSteps: number }, budget?: SignalBudget): { json: string; rows: number }
   /** `json` is `LokiLabels` (names, values of `name`) or `LokiSeries`. Streams from fragments that list them, from the files given whole or in part, and from the tail. */
   lqLabels(kind: 'names' | 'values' | 'series', name: string, selectors: string[], startNs: bigint, endNs: bigint, fragments: string[], logFiles: Uint8Array[], tailBatches: Uint8Array[]): string
 }
