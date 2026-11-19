@@ -18,8 +18,8 @@ test worker, every server stopped.
   (`evidence/audit-new-checks-on-v7.txt`) were run against the v7 copy. The reviewer's 13 mutants were run on v7 by the reviewer
   (1 caught); here they ran against v8.
 - **`npm test`**: `chart-rules.test.mjs` and `check.test.mjs` (the corpus without its browser mutants).
-- **`tools/mutants.mjs`**: the whole corpus, 153 mutants, browser mutants included, each on a copy in the scratch area: **153 of 153
-  as expected** (148 caught, the 5 harmless edits pass).
+- **`tools/mutants.mjs`**: the whole corpus, browser mutants included, each on a copy in the scratch area: **155 of 155 as
+  expected** (150 caught, the 5 harmless edits pass): 153 in one run on the final tree, and U10 and U11, added after it, run alone.
 - **`tools/check.mjs`** on the component CSS (with its rendered audit), the previews, the compositions and the fixtures.
 - **`tools/audit.mjs`**: every page at its 14 configurations, the guards in both themes at both pointers, presses by finger and mouse,
   hover, the token trace and the reduced-motion pass in both themes at both pointers.
@@ -34,7 +34,7 @@ test worker, every server stopped.
 |---|---|---|
 | M1 a narrowed query leaves the screen grey beside reserved colours, nothing offered | One rule for every way the screen changes: a series not in the result is not on screen, so its slot is open as a hidden series' is; the largest series on screen in Other take open slots at once; "Colour the eight largest" offered wherever Other has members | `chart-rules.test.mjs`: the reviewer's narrowing (failing first on v7), 300 random narrowing sequences done twice (query edit, dashboard filter) that must colour alike, 400 random sequences with narrow-and-back among the moves; mutants C1, C2, C4, C14, C15; `compare/v8-m1-query-narrowed-to-node-b-*`, `images/v8-chart-query-node-b-*` |
 | M2 single-unit number columns left-aligned | `vz-right` on "Memory, MiB" (Table preview) and on "Memory, MiB" and "Restarts" (folded-list composition) | the audit's **align** check, rendered, on every page at every configuration (failing first on v7); mutants U2, U3; `compare/v8-m2-*` |
-| M3 each guard renders one context; a token redefined locally passes | Every guard in both themes and both pointers; rings and borders read as painted, against the theme's tokens; a system token is defined once, by its theme (lint), and checked on every element as rendered; custom properties, `font-variation-settings` and picked members of Other read | the reviewer's 13 (W1 to W10, W17, W23, W24) all caught; v8's own U1 to U9; the reviewer's 65 (X 32, Y 20, W 13) caught; the corpus 153 of 153 as expected |
+| M3 each guard renders one context; a token redefined locally passes | Every guard in both themes and both pointers; rings and borders read as painted, against the theme's tokens; a system token is defined once, by its theme (lint), and checked on every element as rendered; custom properties, `font-variation-settings` and picked members of Other read | the reviewer's 13 (W1 to W10, W17, W23, W24) all caught; v8's own U1 to U11; the reviewer's 65 (X 32, Y 20, W 13) caught; the corpus 155 of 155 as expected |
 | m1 stacked folded rows cost density | The row is its key link's target; the key's line and "Actions…" are drawn at their own height; the 44 px are the row's | rows measured below; U5, U6 and the hit-area guard; `compare/v8-m2-m1-folded-list-400-*` |
 | m2 the audit's header names v6 | Rewritten: the latest review's compositions, every guard and context | `tools/audit.mjs` lines 1 to 44 |
 | m3 a segmented control drawn taller with a coarse pointer | Drawn at its own height; a wrapped one keeps its rows apart by a gap, so the 44 px hit areas do not meet | U8 and the hit-area guard at 320 px; `compare/v8-m3-segmented-preview-*`, `images/v8-chart-controls-320-coarse-light.png` |
@@ -74,7 +74,8 @@ query's series leave the screen and free the slots.
 - Mutants: C1 (a series that leaves the screen forgets its slot), C2 (v7's asymmetry), C4 (v7's rule 4: a slot whose owner left the
   result is not given to a grey series), C14, and C15 (the recolour offered only when a member of Other is larger): all caught.
 - The preview: the 36-pod panel has a query segment "node-b only" beside "Search only", so the narrowing can be done on the page;
-  a new panel, "CPU by pod, three of Other picked out", picks three members of Other (for M3's W17).
+  a new panel, "CPU by pod, the query narrowed to node-b", shows the narrowed result as loaded, so the audit reads it; another, "CPU
+  by pod, three of Other picked out", picks three members of Other (for M3's W17).
 - Images: `compare/v8-m1-query-narrowed-to-node-b-{1440,400}-{light,dark}.png` (v7 left: one coloured, eleven grey, no recolour; v8
   right: eight coloured, four in Other, the recolour offered), `images/v8-chart-query-node-b-*` (by the page's own segment).
 
@@ -133,10 +134,11 @@ log's "Show all … lines" ring cut by the table wrap (inside); `<b>`/`<strong>`
 reached the key's last words (the key's line now ends that far above it).
 
 **What guards it.** The reviewer's 13 (W1 to W10, W17, W23, W24, written as the review gives them) are in the corpus and all caught;
-so are v8's own nine (U1 to U9): U1 redefines `rule-control` and `focus` from script at run time, where no lint can see it, and is
+so are v8's own eleven (U1 to U11): U1 redefines `rule-control` and `focus` from script at run time, where no lint can see it, and is
 caught by the rendered focus and contrast guards. The whole corpus, on the final tree (`evidence/mutants.txt`; 23 min at a load of
 1.4 to 7.3): **153 of 153 as expected**: R1 to R17, N 13, X 32, V 17, Y 20, Z 8, W 13, U 9, C 15 and A 4 caught (148); R18 and H1 to H4
-(harmless edits) pass. Before the final run, three of v8's own were not as expected and were fixed in the checks or the corpus, not
+(harmless edits) pass. Then U10 (the stacked key's clearance above "Actions…" removed) and U11 ("Other" allowed to
+shrink) were added for the last two fixes and run alone on the same tree: both caught. **155 of 155.** Before the final run, three of v8's own were not as expected and were fixed in the checks or the corpus, not
 waved through: W7 (the waiting line moved over the plot) ran on the Panel preview, which draws no chart, and is now run on the
 reference, where the new drawn-box sampling catches it; U9 ran on the Claim preview, whose strong words have their own rule (now the
 Section preview); C1 had become equivalent under v8 (rewritten, see below). The new drawn-box sampling then found the stacked
@@ -225,9 +227,9 @@ waiting", a link inside a sentence drawn as a control. As printed: `evidence/aud
 finger's press with 0 failures, reserved heights equal to drawn, 0 literal values (`evidence/check.txt`). On the previews,
 the compositions and the fixtures (`--no-render`): 775 of 775 checks, 0 literal values in 45 files.
 
-`npm test`: 173 tests, **131 pass, 0 fail**, 42 skipped: the 20 chart tests, and the corpus's 111 mutants that need no browser
-(96 for `check.mjs`, 15 for the chart rules); the 42 that need a browser (34 audit, 8 rendered check) are skipped there unless
-`VIZ_SLOW=1`, and ran in the corpus run above. 85 s (`evidence/npm-test.txt`).
+`npm test`: 175 tests, **131 pass, 0 fail**, 44 skipped: the 20 chart tests, and the corpus's 111 mutants that need no browser
+(96 for `check.mjs`, 15 for the chart rules); the 44 that need a browser (36 audit, 8 rendered check) are skipped there unless
+`VIZ_SLOW=1`, and ran in the corpus runs above. 76 s (`evidence/npm-test.txt`).
 
 ## Images
 
@@ -290,10 +292,13 @@ fold (the row as the key's target) and rings without a change of markup; their p
 
 ## Disagreements, and what was not done
 
-- **No timing row could be judged** in most rows (above); the theme change remains the row to measure first on a quiet machine.
+- **The theme change is judged over budget at both layouts**, in v7 and v8 alike (Speed), and the phone's touch crosshair just over;
+  neither is fixed here. The theme change needs a decision (restyle less, or another budget for it) and is the next change to make.
 - `design/DECISIONS.md` is outside `design-system/`, where this work was confined; the M1 decision is recorded in the Chart README
   ("Why this rule": decision, alternatives weighed, the cost, what would change it). An entry there is for the owner of `design/`.
 - The flow screens and the app are not re-imaged on v8 (`flows/` and `app/` were not to be edited).
+- No check reads how close a ring drawn inside a control comes to its letters: the navigation's ring on "Explore" was found by eye
+  on the images and fixed with padding. A rendered check (the ring's inner edge against the text's box) is the next guard to add.
 - The audit's alignment check reads tables that are not folded at that width; a folded line ("Memory, MiB 661") is text, not a column.
 - Mutant C1 was rewritten: v5's order (the filter applied before colours are assigned) became equivalent under v8, where a hidden
   series and one not in the result are the same to the colours; C1 now makes a series that leaves the screen forget its slot. U9 runs on
@@ -311,7 +316,7 @@ fold (the row as the key's target) and rings without a change of markup; their p
 - Tools: `audit.mjs` (header; align; guards in every context; contrast; hit areas with drawn-box sampling; the token trace with scope,
   weights and curves; presses by mouse and finger; hover; reduced motion at both pointers), `lib/lint.mjs` (`token`, custom properties,
   `font-variation-settings`), `lib/structure.mjs` (the fold's touch entry), `check.mjs`, `mutants-corpus.mjs` (W1 to W10, W17, W23, W24;
-  U1 to U9; C1 to C15 for v8), `test/chart-rules.test.mjs` (rewritten for v8: the narrowing, twins, P3), `shots.mjs` (a control
+  U1 to U11; C1 to C15 for v8), `test/chart-rules.test.mjs` (rewritten for v8: the narrowing, twins, P3), `shots.mjs` (a control
   whose 44 px reach past the image's edge is counted, not measured), `speed.mjs` (a row is judged only on a strict majority of samples
   at or below the limit).
 - `reviews/system-v8/`: this file; `compositions/` (v7's, with `vz-right` on Memory and Restarts in `folded-list.html`);
@@ -323,8 +328,9 @@ fold (the row as the key's target) and rings without a change of markup; their p
 No mutant was applied in the tree: every one ran on a copy under the session's scratch area, each deleted after its run (the runner
 refuses a directory inside the tree). One corpus run was stopped early on purpose, to fix the navigation ring first; its copy and its
 browser were removed, and the corpus was run again in full on the final tree. The final runs of `check.mjs`, `npm test`, the corpus
-and the audit are on the tree as it is now, with one exception: `tools/speed.mjs` (the tie rule) changed after the corpus, and no
-check, test or mutant reads it. No edit is half-finished.
+and the audit are on the tree as it is now, with two exceptions: `tools/speed.mjs` (the tie rule) changed after the full corpus run,
+and no check, test or mutant reads it; and `tools/mutants-corpus.mjs` gained U10 and U11 after it, which then ran on the current tree,
+as did `npm test`. No edit is half-finished.
 
 The v7 copy used for "before", the raw captures, probes and JSON outputs were deleted at the end (the scratch work directory, 13 MB).
 Servers started by the audit, the harness and `shots.mjs` stopped with them; no process of this session is left running.

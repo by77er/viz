@@ -1,4 +1,4 @@
-# npm test on the final tree (load before: 4.19 4.34 4.88 6/215 11026; after: 3.79 4.22 4.79 1/119 12531)
+# npm test on the final tree (load before: 1.24 2.64 4.05 1/116 14310; after: 1.44 2.37 3.84 2/172 15660)
 # Subtest: B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
 ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
 # Subtest: B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
@@ -299,61 +299,61 @@ ok 148 - U7: the navigation's focus ring outside its links again: cut by the str
 ok 149 - U8: a wrapped segmented control's rows without their gap with a coarse pointer (v7 review, m3: drawn at its own height) # SKIP needs a browser: VIZ_SLOW=1
 # Subtest: U9: strong words at the browser's 700 again
 ok 150 - U9: strong words at the browser's 700 again # SKIP needs a browser: VIZ_SLOW=1
+# Subtest: U10: a stacked folded row's key line ending at the line "Actions…" is on: its hit area takes the key's last words
+ok 151 - U10: a stacked folded row's key line ending at the line "Actions…" is on: its hit area takes the key's last words # SKIP needs a browser: VIZ_SLOW=1
+# Subtest: U11: "Other" in the legend allowed to shrink: cut beside a wide range at 320 px
+ok 152 - U11: "Other" in the legend allowed to shrink: cut beside a wide range at 320 px # SKIP needs a browser: VIZ_SLOW=1
 # Subtest: C1: a series that leaves the screen forgets its slot (it never comes back in its colour; the query round trip breaks)
-ok 151 - C1: a series that leaves the screen forgets its slot (it never comes back in its colour; the query round trip breaks)
+ok 153 - C1: a series that leaves the screen forgets its slot (it never comes back in its colour; the query round trip breaks)
 # Subtest: C2: v7's asymmetry: a series coming back takes its slot from a hidden owner, not from one that left the result (the query round trip breaks)
-ok 152 - C2: v7's asymmetry: a series coming back takes its slot from a hidden owner, not from one that left the result (the query round trip breaks)
+ok 154 - C2: v7's asymmetry: a series coming back takes its slot from a hidden owner, not from one that left the result (the query round trip breaks)
 # Subtest: C3: a returning series never gets its slot back (v5 image 02)
-ok 153 - C3: a returning series never gets its slot back (v5 image 02)
+ok 155 - C3: a returning series never gets its slot back (v5 image 02)
 # Subtest: C4: v7's rule 4: a slot whose owner left the result is not given to a grey series on screen (the v7 review's M1, image 03)
-ok 154 - C4: v7's rule 4: a slot whose owner left the result is not given to a grey series on screen (the v7 review's M1, image 03)
+ok 156 - C4: v7's rule 4: a slot whose owner left the result is not given to a grey series on screen (the v7 review's M1, image 03)
 # Subtest: C5: "highest" over the coloured lines only (v4 B1)
-ok 155 - C5: "highest" over the coloured lines only (v4 B1)
+ok 157 - C5: "highest" over the coloured lines only (v4 B1)
 # Subtest: C6: the threshold's series over coloured lines only (M1, image 06)
-ok 156 - C6: the threshold's series over coloured lines only (M1, image 06)
+ok 158 - C6: the threshold's series over coloured lines only (M1, image 06)
 # Subtest: C7: the note counted over the whole result, not the legend (Other counted with the series the filter hides)
-ok 157 - C7: the note counted over the whole result, not the legend (Other counted with the series the filter hides)
+ok 159 - C7: the note counted over the whole result, not the legend (Other counted with the series the filter hides)
 # Subtest: C8: a negative value loses its sign
-ok 158 - C8: a negative value loses its sign
+ok 160 - C8: a negative value loses its sign
 # Subtest: C9: the axis starts at zero whatever the data (image 07)
-ok 159 - C9: the axis starts at zero whatever the data (image 07)
+ok 161 - C9: the axis starts at zero whatever the data (image 07)
 # Subtest: C10: v6's rule: no open slot is ever given to a series already on screen (the v6 review's sequences D and E)
-ok 160 - C10: v6's rule: no open slot is ever given to a series already on screen (the v6 review's sequences D and E)
+ok 162 - C10: v6's rule: no open slot is ever given to a series already on screen (the v6 review's sequences D and E)
 # Subtest: C11: open slots go to the smallest grey series on screen first
-ok 161 - C11: open slots go to the smallest grey series on screen first
+ok 163 - C11: open slots go to the smallest grey series on screen first
 # Subtest: C12: a hidden series is placed as if on screen (it takes a slot nobody sees)
-ok 162 - C12: a hidden series is placed as if on screen (it takes a slot nobody sees)
+ok 164 - C12: a hidden series is placed as if on screen (it takes a slot nobody sees)
 # Subtest: C13: "Colour the eight largest" ranks the whole result, hidden series included (the v6 review's other fix for E, not taken)
-ok 163 - C13: "Colour the eight largest" ranks the whole result, hidden series included (the v6 review's other fix for E, not taken)
+ok 165 - C13: "Colour the eight largest" ranks the whole result, hidden series included (the v6 review's other fix for E, not taken)
 # Subtest: C14: a returning series takes its slot back from a series on screen (a colour on screen changes)
-ok 164 - C14: a returning series takes its slot back from a series on screen (a colour on screen changes)
+ok 166 - C14: a returning series takes its slot back from a series on screen (a colour on screen changes)
 # Subtest: C15: "Colour the eight largest" offered only when a member of Other is larger than a coloured series (v7; the v7 review's M1)
-ok 165 - C15: "Colour the eight largest" offered only when a member of Other is larger than a coloured series (v7; the v7 review's M1)
+ok 167 - C15: "Colour the eight largest" offered only when a member of Other is larger than a coloured series (v7; the v7 review's M1)
 # Subtest: A1: the hidden "Actions" head escapes the table (B2.1, image 03)
-ok 166 - A1: the hidden "Actions" head escapes the table (B2.1, image 03) # SKIP needs a browser: VIZ_SLOW=1
+ok 168 - A1: the hidden "Actions" head escapes the table (B2.1, image 03) # SKIP needs a browser: VIZ_SLOW=1
 # Subtest: A2: "Burning budget" over "Actions…" in a kept column (B2.2, image 04): the status nowrap again, and the wrap and the minimum width removed from both fold forms, as in v5
-ok 167 - A2: "Burning budget" over "Actions…" in a kept column (B2.2, image 04): the status nowrap again, and the wrap and the minimum width removed from both fold forms, as in v5 # SKIP needs a browser: VIZ_SLOW=1
+ok 169 - A2: "Burning budget" over "Actions…" in a kept column (B2.2, image 04): the status nowrap again, and the wrap and the minimum width removed from both fold forms, as in v5 # SKIP needs a browser: VIZ_SLOW=1
 # Subtest: A3: "Actions…" off screen in a folded row (B2.2, image 04)
-ok 168 - A3: "Actions…" off screen in a folded row (B2.2, image 04) # SKIP needs a browser: VIZ_SLOW=1
+ok 170 - A3: "Actions…" off screen in a folded row (B2.2, image 04) # SKIP needs a browser: VIZ_SLOW=1
 # Subtest: A4: a link in a help line drawn as a control (m1, image 08)
-ok 169 - A4: a link in a help line drawn as a control (m1, image 08) # SKIP needs a browser: VIZ_SLOW=1
+ok 171 - A4: a link in a help line drawn as a control (m1, image 08) # SKIP needs a browser: VIZ_SLOW=1
 # Subtest: H1: harmless: a rule reformatted across lines
-ok 170 - H1: harmless: a rule reformatted across lines
+ok 172 - H1: harmless: a rule reformatted across lines
 # Subtest: H2: harmless: a comment added
-ok 171 - H2: harmless: a comment added
+ok 173 - H2: harmless: a comment added
 # Subtest: H3: harmless: a new rule written in tokens only
-ok 172 - H3: harmless: a new rule written in tokens only
+ok 174 - H3: harmless: a new rule written in tokens only
 # Subtest: H4: harmless: a data custom property in a style attribute
-ok 173 - H4: harmless: a data custom property in a style attribute
-# tests 173
+ok 175 - H4: harmless: a data custom property in a style attribute
+# tests 175
 # suites 0
 # pass 131
 # fail 0
 # cancelled 0
-# skipped 42
+# skipped 44
 # todo 0
-# duration_ms 84936.61034
-
-real	1m25.067s
-user	1m23.114s
-sys	0m8.164s
+# duration_ms 76102.742537
