@@ -331,7 +331,7 @@ export type LokiLabels = string[]
 /** The `data` of `/loki/api/v1/series`: the label sets of the matching streams, sorted. */
 export type LokiSeries = Record<string, string>[]
 
-// ─────────────────────── the engine's span and log operations (ABI 6) ───────────────────────
+// ─────────────────── the engine's span and log operations (ABI 6; 7 and 8 additive) ───────────────────
 
 /** How to read one file, from its index fragment: skip it, whole, or these `[offset, length]` byte ranges (footer and row groups). */
 export interface SignalFilePlan {
@@ -361,14 +361,23 @@ export interface LogReadPlan {
 
 /**
  * What a span or log call may hold, and (traces) which spans are its data (D62; ABI 7 of
- * `engine/wasm-query`, 2026-11-19, additive: an optional last argument).
- * `maxBytes`: bytes of decoded rows, metric series and the answer the call may hold, as the
- * engine counts them (a resource once per distinct resource of the call; an answer four times
- * its length); past it an `execution` error whose limit is `max_decoded_bytes`. Default: the
- * engine's (32 MiB). `bound`: a span whose start lies outside `[lo, hi]` (nanoseconds,
+ * `engine/wasm-query`, 2026-11-19, additive: an optional last argument; ABI 8, the same day,
+ * widened what `maxBytes` counts and gave it to `lqLabels`: design/reviews/signals-end-to-end-r2.md
+ * R2-M1, R2-M2).
+ * `maxBytes`: the bytes one call may hold, as the engine counts them, charged as each thing is
+ * made and refused BEFORE the thing that would pass it is built, never after: decoded rows (a
+ * resource once per distinct resource of the call); what the evaluation derives from them as it
+ * grows (trace extents and the ids the margin needs, TraceQL metric series with every point and
+ * histogram bucket, one output series per quantile or bucket, tag-name and tag-value sets, LogQL
+ * series and the label sets `regexp`, `label_format` and the other stages make, the streams, names
+ * and values of the label calls); and the answer, four times its length, before it is written.
+ * Past it an `execution` error whose limit is `max_decoded_bytes`. The charge is the engine's
+ * estimate, set at or above measured growth; what one row or value takes before it is charged,
+ * and the call's inputs, are not part of it (`engine/wasm-query/README.md`, "Memory"). Default:
+ * the engine's (32 MiB). `bound`: a span whose start lies outside `[lo, hi]` (nanoseconds,
  * inclusive) is not part of the call's data and is dropped before de-duplication; `tqExtent`
- * counts only fragments that overlap it and tail spans that start in it, and cuts the hull and
- * hours to it. Default: all time.
+ * counts only fragments that overlap it and tail spans that start in it, and cuts the hull,
+ * ranges and hours to it. Default: all time. Calls without spans ignore `bound`.
  */
 export interface SignalBudget {
   maxBytes?: number
@@ -380,25 +389,55 @@ export interface SignalBudget {
  * ranges a `SignalFilePlan` read (a sparse file container), passed in ascending precedence
  * (`contracts/ledger.ts` `LiveFile`); tail batches are `VZB1` signal 2 (spans) or 3 (logs)
  * in sequence order, after the files. The later of two rows with one row key wins
- * (`contracts/BATCH.md`). `maxSpans`/`maxRows` bound the rows held; `budget.maxBytes` bounds their bytes (an `execution` error
- * past them). Errors are typed as for PromQL (`bad_data`, `execution`, `unsupported`, `internal`).
+ * (`contracts/BATCH.md`). `maxSpans`/`maxRows` bound the rows HELD, never the rows decoded: a
+ * span outside `bound`, a span of another trace than the one `tqTrace` asks for, a span that
+ * starts outside a tag call's `[lo, hi]`, and a log row no selector reads are read and passed
+ * over, not held and not counted. `budget.maxBytes` bounds the bytes of what is held, derived
+ * and answered (`SignalBudget`). Past either, an `execution` error naming the limit. Errors are
+ * typed as for PromQL (`bad_data`, `execution`, `unsupported`, `internal`).
  */
 export interface SignalEngine {
   tqPlan(kind: 'search' | 'range' | 'instant', query: string, startNs: bigint, endNs: bigint, stepNs: bigint): TraceReadPlan
-  /** Row groups of `spans` files whose span starts overlap `[lo, hi]`, or of `trace_index` files whose fragments do (and hold `traceId`). */
-  tqFilePlan(table: 'spans' | 'trace_index', indexes: string[], lo: bigint, hi: bigint, traceId?: Uint8Array): SignalFilePlan[]
-  /** The traces overlapping `[lo, hi]` (or `traceId`) from `trace_index` files and the tail: how many, their hull, and the `spans` hours holding them. */
-  tqExtent(indexFiles: Uint8Array[], tailBatches: Uint8Array[], lo: bigint, hi: bigint, traceId?: Uint8Array, budget?: SignalBudget): { traces: number; lo?: string; hi?: string; hours: number[] }
+  /**
+   * Row groups of `spans` files whose span starts overlap `[lo, hi]`, or of `trace_index` files
+   * whose fragments do (and hold `traceId`). With `ranges` (`spans`; ABI 8), only row groups that
+   * also overlap one of them: the `ranges` a `tqExtent` gave (inclusive nanoseconds).
+   */
+  tqFilePlan(table: 'spans' | 'trace_index', indexes: string[], lo: bigint, hi: bigint, traceId?: Uint8Array, ranges?: { lo: bigint; hi: bigint }[]): SignalFilePlan[]
+  /**
+   * The traces overlapping `[lo, hi]` (or `traceId`) from `trace_index` files and the tail: how
+   * many, their hull, the `spans` hours holding them, and (ABI 8) `ranges`: their fragments'
+   * extents and tail spans, merged, ascending, disjoint and cut to `bound`, at most 256 (the
+   * closest are joined beyond that). Every span of a found trace that starts inside `bound`
+   * starts inside one of `ranges`, so a reader that plans `spans` by them (`tqFilePlan`) reads
+   * every such span and not the hull's other units. A trace is found when its extent, merged over
+   * every fragment and tail span inside `bound`, overlaps `[lo, hi]`; the call holds the traces
+   * with a piece in `[lo, hi]` and the ids of those with a piece after it, not every trace of
+   * `bound`. `ranges` is absent from an engine before ABI 8 (read the hull).
+   */
+  tqExtent(indexFiles: Uint8Array[], tailBatches: Uint8Array[], lo: bigint, hi: bigint, traceId?: Uint8Array, budget?: SignalBudget): { traces: number; lo?: string; hi?: string; hours: number[]; ranges?: [string, string][] }
   tqSearch(spanFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { limit: number; spss: number; startNs: bigint; endNs: bigint; maxSpans: number }, budget?: SignalBudget): { json: string; spans: number; traces: number }
   tqMetrics(spanFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { instant: boolean; startNs: bigint; endNs: bigint; stepNs: bigint; maxSpans: number; maxSeries: number; maxPoints: number }, budget?: SignalBudget): { json: string; spans: number; traces: number }
-  /** `json` is `OtlpTrace` (v1) or `{ trace: OtlpTrace }` (v2); null when no span of the trace was read. */
+  /**
+   * `json` is `OtlpTrace` (v1) or `{ trace: OtlpTrace }` (v2); null when no span of the trace was
+   * read. `maxSpans` bounds the trace's spans held (ABI 8; before, every span of the row groups
+   * read counted); `spans` is every span decoded, other traces' included.
+   */
   tqTrace(spanFiles: Uint8Array[], tailBatches: Uint8Array[], traceId: Uint8Array, version: 1 | 2, maxSpans: number, budget?: SignalBudget): { json: string | null; spans: number }
+  /** Tag names of the spans that start in `[lo, hi]`; `maxSpans` bounds those spans held (ABI 8). */
   tqTags(spanFiles: Uint8Array[], tailBatches: Uint8Array[], version: 1 | 2, scope: string, lo: bigint, hi: bigint, limit: number, maxSpans: number, budget?: SignalBudget): string
+  /** Values of `tag` on the spans that start in `[lo, hi]`; the set of values is charged as it grows (ABI 8). */
   tqTagValues(spanFiles: Uint8Array[], tailBatches: Uint8Array[], version: 1 | 2, tag: string, q: string, lo: bigint, hi: bigint, limit: number, maxSpans: number, budget?: SignalBudget): string
   lqPlan(kind: 'range' | 'instant', query: string, startNs: bigint, endNs: bigint, stepNs: bigint): LogReadPlan
   lqFilePlan(indexes: string[], selectors: LogReadPlan['selectors']): SignalFilePlan[]
   /** `json` is `LokiData`. */
   lqQuery(logFiles: Uint8Array[], tailBatches: Uint8Array[], query: string, req: { kind: 'range' | 'instant'; startNs: bigint; endNs: bigint; stepNs: bigint; limit: number; direction: 'forward' | 'backward'; maxRows: number; maxSeries: number; maxSteps: number }, budget?: SignalBudget): { json: string; rows: number }
-  /** `json` is `LokiLabels` (names, values of `name`) or `LokiSeries`. Streams from fragments that list them, from the files given whole or in part, and from the tail. */
-  lqLabels(kind: 'names' | 'values' | 'series', name: string, selectors: string[], startNs: bigint, endNs: bigint, fragments: string[], logFiles: Uint8Array[], tailBatches: Uint8Array[]): string
+  /**
+   * `json` is `LokiLabels` (names, values of `name`) or `LokiSeries`. Streams from fragments that
+   * list them, from the files given whole or in part, and from the tail. `budget.maxBytes` (ABI
+   * 8; before, nothing was counted) bounds the label texts read, the distinct streams, names or
+   * values held, and the answer: past it `max_decoded_bytes`, never a shortened list (Loki's API
+   * documents no `limit` for these calls). `bound` is ignored.
+   */
+  lqLabels(kind: 'names' | 'values' | 'series', name: string, selectors: string[], startNs: bigint, endNs: bigint, fragments: string[], logFiles: Uint8Array[], tailBatches: Uint8Array[], budget?: SignalBudget): string
 }

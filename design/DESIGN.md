@@ -523,7 +523,8 @@ inputs as tests; `QUERY_SIGNALS` stays off until D62 is reviewed again and the C
 Grafana runs of `query/README.md` ("Traces and logs", "What remains before the flag") have run.
 The write side of stage 2
 (D63) flushes and lists the `spans`, `trace_index` and `logs` tables, and tail reads choose
-batches by signal (`signals`). Stage 3 (2026-11-19) wired the halves together: the gateway routes
+batches by signal (`signals`) and, given a time range, skip span and log batches whose time
+bounds, recorded by the shard at append, lie outside it (D72). Stage 3 (2026-11-19) wired the halves together: the gateway routes
 Tempo's documented read paths (`/api/traces/<id>`, `/api/v2/traces/<id>`, `/api/search`, the tag
 and tag-value paths in v1 and v2, `/api/metrics/query_range`, `/api/metrics/query`) and Loki's
 (`/loki/api/v1/query`, `/query_range`, `/labels`, `/label/<name>/values`, `/series`) to viz-query
@@ -568,8 +569,10 @@ another signal refuses the query, never misread).
   are derived from the budget and the memory a realistic row takes. Split execution by trace-id
   hash, partial results with a cursor, and pushing predicates to sorted and promoted columns
   are not built. A span or log query reads the signal's whole tail under `maxFetchBytes`,
-  whatever its window (the shard has no time bounds for span and log batches): a tenant with
-  four or more span or log shards near their seal size is refused (modelled).
+  whatever its window: a tenant with four or more span or log shards near their seal size is
+  refused (modelled). The shard can now skip span and log batches outside a read's time range
+  (D72; measured here: a one-hour query takes 2.3 MB instead of 18.7 MB from an eight-hour span
+  tail, 11.7 MB with the trace margin), but the query does not send the range yet.
 - **Tables and engine:** the `spans` and `trace_index` tables are specified in
   `contracts/TRACES.md` and written by `engine/storage`; flush writes them (stage 2, D63).
 - **Logs:** row groups are chosen from each file's stream list and times; rows of streams no

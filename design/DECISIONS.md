@@ -2384,8 +2384,10 @@ shard tails, one engine call.
 3. **Tails by signal.** A tail read asks the shards of its signal by name (`…/traces/{slot}`,
    `…/logs/{slot}`, the rest metrics), sends `signals`, and checks every batch it gets back by
    its header: a batch of another signal refuses the query (503); none is read as the wrong
-   signal or dropped. A span or log tail is read whole, whatever the window (the shard filters
-   signals 2 and 3 by signal only, D63): the time fields are not sent.
+   signal or dropped. A span or log tail is read whole, whatever the window: the time fields are
+   not sent. (Since D72 the shard can skip span and log batches by time bounds it records at
+   append, when a read sends a time range; the query does not send one yet, shard/README.md
+   "Needed changes elsewhere".)
 
 **Alternatives.** Completeness: (a) the first text: `trace_index` over the window only;
 (b) a second `trace_index` round by trace id for the traces found, by the fragments' id ranges
@@ -2473,7 +2475,10 @@ under the hour its `[minTs, maxTs]` lies in. In `contracts/ledger.ts` the table 
 lists are a new union, `LedgerTable`; `Table` stays the metric pair (and
 `LedgerChange.removedFiles` stays typed `Table`, with a note) until the publisher reads the new
 tables. A filtered tail read takes `signals` (the header byte); the time range and series fields
-select metric rows only, and a span or log batch it admits is returned whole. Retention reads
+select metric rows only, and a span or log batch it admits is returned whole. (Replaced in part by
+D72, 2026-11-19: the time range also skips a span or log batch whose bounds, recorded at append,
+lie outside it; an admitted batch is still returned whole, and the series fields still keep
+nothing of one.) Retention reads
 `trace_days` and `log_days` from the record control already writes, 30 days each when absent,
 and expires them in ledger requests of their own after the metric one.
 
@@ -2536,7 +2541,8 @@ in-memory engines' (`stack/README.md`, "Traces and logs end to end").
 
 **Cost of it.** `removedFiles`' static type is narrower than what the ledger writes until the
 publisher is updated (readers check it at run time, as the publisher does). A span or log read
-gets every batch of its signal above the watermark, whatever its time range. `INGEST_SIGNALS`
+gets every batch of its signal above the watermark, whatever its time range (until D72, and until
+the query sends a time range). `INGEST_SIGNALS`
 must stay off in any deployment with a publisher until the publisher reads these tables (it
 stops a tenant at the first change naming one). (Since 2026-11-19 the publisher reads them and
 `removedFiles` is typed `LedgerTable`: D64, which also gives the rule for turning the flag on.)
@@ -2550,7 +2556,7 @@ signal, so `refused` no longer always means "nothing expired" (`beforeDay` says 
 
 **Would change if.** The publisher reads the span and log tables (then `removedFiles` and
 `Table` are retyped, and `Table` may become the full union); span tails grow large enough that
-per-batch time bounds at append pay (then (e) at batch granularity); or tenants ask for traces
+per-batch time bounds at append pay (then (e) at batch granularity: done, D72, after review m-3); or tenants ask for traces
 and logs to follow their metric retention (then (g), or a control-side default). The retention
 record gets a type in `contracts/` with its defaults (then control and the janitor import them and
 the copy goes); the rollup tiers get a reader (then its default replaces "left out counts as
@@ -3517,3 +3523,84 @@ than 8 MiB, or metrics with wide resources reach 16 MiB decoded (then resource a
 `target_info` instead of every series, or the series table becomes chunks); OTLP clients learn to
 split on 413; a real sender's item passes 65,536 values.
 
+
+## D72. A shard records each span and log batch's time bounds when it appends it, in the batch's row; a filtered tail read with a time range skips a span or log batch whose bounds lie outside it, and keeps every batch without bounds
+
+(Written 2026-11-19 by the shard engineer, after review finding m-3 of
+`design/reviews/signals-end-to-end.md`. It replaces one part of D63, "the time range and series
+fields select metric rows only, and a span or log batch it admits is returned whole", which was
+D63's alternative (e) at batch granularity, named in its "Would change if".)
+
+**Decision.** At append, the shard reads a span batch's `start` column, or a log batch's `ts`
+column, by walking the entry table's length fields (no decoding, no strings), and stores the floor
+in milliseconds of the smallest and largest value in two new nullable columns of the batch's row
+(`batch.min_ts`, `batch.max_ts`, schema 3, additive, `readableFrom` 1). A metric batch, an empty one
+and one the walk cannot follow get NULL, and the append is never refused for it. A filtered tail
+read with `minTs`/`maxTs` skips, in its SQL, a batch whose bounds lie wholly outside them, without
+reading its payload; a batch with NULL bounds is always kept. Everything else of D48 stands:
+pages, cursors (the range is in the filter they are bound to), `through`, the fence, refusals; a
+kept span or log batch is returned whole. The contract text is `contracts/BATCH.md`, "Tail reads
+of spans and log records by time". The batch format does not change.
+
+**Alternatives.** (a) The bounds in the batch header, written by `edge` (a new `VZB1` field, or the
+reserved bytes): a format change readers must know first (two releases, COMPATIBILITY §3.3), and a
+shard that trusts what edge wrote, where now it derives the bounds from the column every reader
+decodes. (b) The bounds as arguments of `append`, from `edge`, as `seriesIds` are: a contract change
+on the ingest path and a trusted value no reader can check. (c) A table of bounds, one row per batch:
+a second row write on every append (billed per row, AGENTS.md) for what fits in the batch's row.
+(d) A new filter field in nanoseconds (decimal strings) instead of the existing `minTs`/`maxTs`: exact
+to the nanosecond, but the stored bounds are milliseconds either way (a nanosecond does not fit a JS
+number or, safely, the SQL API's integers) and the floor is exact for overlap (D63), so it would add a
+second time model and a second canonical form for cursors for no batch kept or skipped differently.
+(e) Filter rows inside span and log batches (D63's (e) as written): rewriting batches with entry tables
+and variable-length columns on the thread that acknowledges writes, for rows the reader filters anyway.
+(f) Backfill the bounds of stored rows: a migration over an unbounded table (COMPATIBILITY §2.2) for
+rows that leave the tail within minutes; NULL is the safe reading of "unknown".
+(g) The same columns for metric batches (their `ts` column can be found from the end of the batch):
+it would let a metrics read skip batches without scanning their series tables, but D48 measured
+that a metric batch spans most of a tail's times, and the rows are filtered anyway; not done here.
+
+**Why.** Review m-3: a span or log query read the signal's whole tail whatever its window, and the
+tail's bytes count against `maxFetchBytes` (16 MiB), so a tenant with four or more span or log
+shards near the seal size was refused 422 on every trace or log query (modelled). The bounds come
+from the bytes every reader decodes, so they cannot disagree with the rows; skipping is only ever by
+bounds the shard computed itself, and a batch it knows nothing about is kept, so the only effect of
+a wrong or missing value is a read that returns more, never less. One read of a column of at most
+1 MiB costs microseconds at append (below), against milliseconds for the append's transaction.
+
+**Correctness for traces.** A query that needs every span starting in the nanosecond bound
+`[lo, hi]` (the window widened by `traceMarginMs`, D62) passes `floor(lo / 10⁶)` and
+`floor(hi / 10⁶)`, as `msRange` already computes. For a span at `t ∈ [lo, hi]`, `floor(t / 10⁶)`
+lies in that range and in its batch's bounds, so the batch overlaps and is returned. Tested over 200
+random nanosecond bounds against six hours of spans, with bounds on and next to span starts and
+millisecond edges (`shard/test/bounds.test.ts`), and killed when either comparison is off by one.
+
+**Measured** (here, local workerd, 2026-11-19, three runs at load average 3.0 to 3.9;
+`shard/bench/results/signaltail.txt`). Eight hours of tail, one batch per ten minutes of start time,
+48 batches: spans 18.74 MB, logs 16.79 MB. Bytes a one-hour query takes from the shard: spans, the
+read query makes today, 18,736,064 (over the 16 MiB budget: refused); a span-local hour, 2,343,888
+(6 batches); a search with the 2-hour margin, 11,719,440 (30 batches); an hour a day before the
+tail, 0. Logs: 16,791,072 today (over the budget), 2,100,928 for the hour, 0 a day before. In each
+case the read held, byte for byte, every batch in which the engine's flush finds a row inside the
+bound. Time per read, medians of five: 19 to 35 ms whole, 8 ms for the hour, 19 to 22 ms with the
+margin. Appends, the same 96 batches (35.5 MB) to this release and to the release before (frozen),
+three runs alternating: 362 to 457 ms against 369 to 497 ms in all, no difference beyond the spread;
+the walk alone, timed in Node 22, 7.5 to 35 µs per batch of 0.4 to 1 MB.
+
+**Cost of it.** One more pass over one column per span or log append, and two integers in its row.
+Rows written before this release, or by the release before it after a rollback, are read whatever
+the range until they leave the tail. The query does not send a time range for span and log reads
+yet (`query/src/signals.ts` `readSignalTail` passes `{}`; the change is in `shard/README.md`,
+"Needed changes elsewhere"): until it does, nothing is skipped and m-3 stands. A query whose bound
+covers the tail still takes all of it: the 2-hour margin makes a one-hour search read five hours, so
+a backlog of more than about 16 MiB within any five hours still refuses a search (modelled from the
+measurement above: 11.7 MB for five hours here). The two columns follow the payload in SQLite's
+record, so deciding to skip a batch walks the payload's overflow pages without copying it (training
+knowledge of SQLite's record format); here a read that skipped all 48 batches took 4 to 6 ms, the
+RPC included. Not measured on Cloudflare.
+
+**Would change if.** A query needs another time than a span's start or a log's `ts` (then that
+column's bounds too); senders' late spans make most batches span hours, so bounds skip little (then
+per-batch metadata finer than a hull); filtered metric reads show on the shard's CPU (then (g));
+Cloudflare shows deciding to skip a batch costing what reading it did (then the bounds in a table of
+their own, (c), with its row write).

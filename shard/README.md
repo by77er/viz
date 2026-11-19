@@ -12,11 +12,11 @@ dedicated tenants run the same code.
 |---|---|
 | `src/shard.ts` | `Shard`: append, seal (and its notification), pending segments and tenants, read segment, recorded, tail read, active-series metering, alarm housekeeping |
 | `src/sketch.ts` | `SeriesWindow`: distinct series in a sliding window: exact set, then HyperLogLog + Bloom filter |
-| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches (by signal since stage 2), the page cursor, `splitKeyRange` |
+| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches (by signal since stage 2), the page cursor, `splitKeyRange`; `batchTimeBounds`, a span or log batch's time bounds read at append (D72) |
 | `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName`; `validBasePool`, the one rule for a pool map's pool that edge reads maps with and control writes them with (D66); `dedicatedPool`; the derived pools of spans and logs (`signalPool`, `enabledSignals`) |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
-| `test/` | 85 tests in 10 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
-| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`); registration before writes (`registration.bench.test.ts`, against the release before it frozen in `bench/prereg/`; results in `bench/results/registration.log`) |
+| `test/` | 98 tests in 11 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
+| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`); registration before writes (`registration.bench.test.ts`, against the release before it frozen in `bench/prereg/`; results in `bench/results/registration.log`); a span or log query against eight hours of tail, and appends against the release before D72 frozen in `bench/prebounds/` (`signaltail.bench.test.ts`, `walk.node.mjs`; results in `bench/results/signaltail.txt`) |
 
 ## What is implemented
 
@@ -114,8 +114,9 @@ dedicated tenants run the same code.
   is the one derivation of those pool names (edge, flush's sweep and the stack use it).
   **Tail reads by signal** (`TailFilter.signals`, an additive field of `TailReadOptions` v1):
   a filtered read keeps only batches whose header's signal byte is listed, without reading
-  further; the time range and the series fields select metric rows only. A span or log batch
-  the read admits is returned whole, as stored (its times are nanoseconds in columns of their
+  further; the series fields select metric rows only, and the time range selects metric rows
+  and (since D72, next item) skips span and log batches by their recorded bounds. A span or log
+  batch the read admits is returned whole, as stored (its times are nanoseconds in columns of their
   own; the reader filters), unless the filter names `metrics`, `labels` or `keyRange`, which
   select series such a batch does not have: then it keeps nothing. A batch of any other
   signal is skipped when `signals` leaves it out and fails the read otherwise (never guessed
@@ -123,6 +124,24 @@ dedicated tenants run the same code.
   A metrics query passes `signals: [1]`; query's span and log reads `[2]` or `[3]`. A shard of
   an earlier release ignores the field and throws on a span or log batch under a series
   filter, so callers still read only their signal's shards by name.
+- **Time bounds of span and log batches** (D72, after review m-3 of
+  `design/reviews/signals-end-to-end.md`; contracts/BATCH.md "Tail reads of spans and log
+  records by time"). `append` reads a span batch's `start` column or a log batch's `ts` column
+  once (`batchTimeBounds`: the entry table is walked by its length fields to the column, which is
+  scanned as u32 pairs, exactly; no decoding, no strings) and stores the floor in milliseconds of
+  the smallest and largest value in the batch's own row (`batch.min_ts`, `batch.max_ts`; no
+  extra row). A metric batch, an empty one and one whose lengths do not lead to a whole column
+  inside it (or that holds a negative time) get NULL; the append is never refused for that. A
+  filtered read with `minTs`/`maxTs` skips, in its SQL, every batch whose bounds lie wholly
+  outside the range (`max_ts < minTs` or `min_ts > maxTs`), without reading its payload, and
+  keeps every batch with NULL bounds: rows from before schema 3, rows written by the release
+  before after a rollback, rows the walk could not follow. Pages, cursors (the range is part of
+  the filter they are bound to), `through`, the fence and every refusal are D48's; a skipped
+  batch is not examined (`scannedBatches`/`scannedBytes` leave it out) and `page_limit` names only
+  a kept batch. A trace query must send the bound it reads spans in (its window widened by
+  `traceMarginMs`, D62) as `floor(lo / 10⁶)`, `floor(hi / 10⁶)`; then every batch holding a span
+  that starts inside the bound is returned (tested, below). **The query does not send a time range
+  yet** ("Needed changes elsewhere"): until it does, nothing is skipped and m-3 stands.
 - **Segment reads bound to what was listed** (spec F12): `readSegment(tenant, seqLo,
   incarnation, seqHi)` answers null unless the stream is still that incarnation and the
   segment is exactly that range.
@@ -159,13 +178,16 @@ dedicated tenants run the same code.
   unchanged and adds `segment.sealed_at` to objects created before it; version 2 (D61) adds
   `stream.registered` (additive, `readableFrom` 1: the release before ignores it and never
   changes a stream row's incarnation, so what this release wrote stays true and its 0 is
-  only conservative). Storage of a newer release is
+  only conservative); version 3 (D72) adds `batch.min_ts` and `batch.max_ts` (nullable, additive,
+  `readableFrom` 1: the release before names its columns when it inserts, so its rows get NULL,
+  which every time range keeps; nothing is backfilled and nothing relies on a value being there).
+  Storage of a newer release is
   refused: `append` answers retryable `overload`, every other method throws
   `schema_too_new`, nothing is written, the alarm is re-armed. The series-window bucket
   carries a format byte (`SKETCH_FORMAT`); a bucket of an unknown kind or version is not
   read as something else: that tenant's metered appends are refused (retryable) rather than
   counted against an empty window. The flush message carries `v` (`FLUSH_MESSAGE_VERSION`).
-  Goldens: `test/golden/schema/v1.json`, `v2.json`, `test/golden/formats/series-window.v1.json`,
+  Goldens: `test/golden/schema/v1.json`, `v2.json`, `v3.json`, `test/golden/formats/series-window.v1.json`,
   `queue.flush.v1.json`.
 
 ## Rollout (D61)
@@ -271,13 +293,83 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 87 tests in workerd, 10 files (2026-11-19, review M-5)
+npx vitest run --maxWorkers=2   # 98 tests in workerd, 11 files (2026-11-19, D72)
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
 BENCH=tail npm run bench        # a 20 MB tail, read whole and filtered
 BENCH=registration npm run bench  # registration before writes (D61)
+BENCH=signaltail npm run bench    # a span or log query against eight hours of tail; appends (D72)
+node --experimental-strip-types --no-warnings bench/walk.node.mjs   # the bounds walk alone (Node)
 ```
+
+**Last run, 2026-11-19, after D72: 98 passed, 0 failed (11 files); `tsc --noEmit` clean.**
+
+- **Time bounds of span and log batches** (`test/bounds.test.ts`, 11, D72). Span and log batches
+  come from the engine's test encoder (no code shared with the shard or edge; a resource
+  attribute of type 5 is patched in, which that encoder cannot write), and bounds are checked
+  against the engine's flush (`encodeSpans`/`encodeLogs`: the files' `minNs`/`maxNs`), an
+  independent reader:
+  - *recorded at append*: six span and six log batches of up to 40 rows over an hour each, plus
+    one whose times lie in one millisecond and one straddling a millisecond by a nanosecond:
+    the stored bounds equal the flush's floors, after an eviction; a metric batch has none; 150
+    random batches (1 to 3 entries, every attribute type, times from 0 to 2^63 − 1, on and next
+    to millisecond edges) give the flush's bounds; a batch cut inside its entry table, one with a
+    negative start, one whose `n_rows` the batch cannot hold and an empty one are stored with
+    none, accepted, and kept by a hull that holds none of their times;
+  - *read by a hull*: a six-hour span tail of twelve batches of this release and two written by
+    the release before (frozen) in between: for 161 hulls (each bounded batch at both edges,
+    touching and one millisecond off, 60 random ones, open-ended ones, far ones) the read returns
+    exactly the overlapping batches and every unbounded one, in order, byte for byte;
+  - *traces (D62)*: 200 random nanosecond bounds (on, one below and one above span starts, and
+    anywhere), passed as `msRange` passes them: every span starting inside a bound is in a
+    returned batch (the test requires more than 500 such span and bound pairs);
+  - *logs*: 100 random bounds over ten batches: every record inside is in a returned batch, and
+    the batches returned are exactly the overlapping ones; without a range every batch;
+  - *signals with a hull*: in a stream mixing the three signals, `[2]`, `[3]` and `[2, 3]` keep
+    only their overlapping batches; `[1]` keeps metric rows by `ts`, which the engine selects as
+    from the metric batches alone; no `signals` applies each rule to its own signal;
+  - *pages and refusals*: the same batches at page sizes of one and two batches; skipped batches
+    are not counted as scanned; the scan budget (one batch a call) continues correctly; a cursor
+    of another hull, or of no hull, is `invalid`; the same after eviction; `page_limit` names the
+    first KEPT batch, not a larger skipped one; a discard between pages is `stale_watermark`, as
+    is a read below the fence; another incarnation is `incarnation_mismatch`;
+  - *rollback*: storage this release wrote (schema 3) is opened by the release before D72
+    (frozen, `bench/prebounds/`, at `fd4b75a`) on the same storage without lowering its version;
+    it serves every span batch whole whatever the hull, takes appends, seals and serves the
+    segment to flush; after the roll-forward its batches have no bounds and every hull keeps
+    them, this release's are still skipped by bounds, and new appends are bounded again;
+    *upgrade*: storage at schema 2 made by that release migrates to 3 once (rows unchanged,
+    bounds NULL, served, kept by every hull; not migrated again on the next open).
+  - The D61 rollback test now expects the current schema version (3), and the adoption test checks
+    that adopted rows have no bounds.
+- **Measured here** (local workerd, 2026-11-19, three runs at load average 3.0 to 3.9;
+  `bench/results/signaltail.txt`): eight hours of tail, one batch per ten minutes of start time,
+  48 batches; spans 18.74 MB (1,500 spans a batch, about 300 B each), logs 16.79 MB (2,000
+  records a batch). Before any bytes were compared, each read held, byte for byte, every batch
+  in which the engine's flush finds a row inside the read's nanosecond bound, and only batches of
+  the tail. Times are medians of five reads around the RPC calls, in one process.
+
+  | One-hour query (04:00 to 05:00) | Batches | Bytes the shard returns | Read (median, three runs) |
+  |---|---|---|---|
+  | spans, before: what query sends today (`signals` only) | 48 | 18,736,064 (over `maxFetchBytes`, 16 MiB: refused) | 25–35 ms |
+  | spans, after: span-local query (tags, span-local metrics), the hour | 6 | 2,343,888 | 8 ms |
+  | spans, after: search, whole-trace metrics, by ID with a hint: the hour ± 2 h margin | 30 | 11,719,440 | 19–22 ms |
+  | spans, after: an hour a day before the tail | 0 | 0 | 5–6 ms |
+  | logs, before | 48 | 16,791,072 (over 16 MiB: refused) | 19–31 ms |
+  | logs, after: the hour | 6 | 2,100,928 | 8 ms |
+  | logs, after: an hour a day before the tail | 0 | 0 | 4–5 ms |
+
+  Appends, as a counterfactual: the same 96 batches (35.5 MB) appended one after another to this
+  release and to the release before (frozen), three runs alternating which goes first, each
+  checked to have stored exactly what it was sent: 362–457 ms against 369–497 ms for the 96,
+  median 3 ms each on both; no difference beyond the spread. Nothing was tuned. The walk alone,
+  timed in Node 22 (workerd's clock does not move during synchronous work): 7.5–35 µs per batch of
+  0.4 to 1 MB, 0.3–1 µs for a one-row batch. What these do not show: the bytes and times are for a
+  tail whose batches each cover ten minutes; batches whose spans span hours (late senders, long
+  spans) skip less. On Cloudflare the reads and the walk over SQLite's overflow pages to the
+  bounds are not measured (experiment: the same tail and reads against a shard on Cloudflare, from
+  a query Worker).
 
 Last run, 2026-11-19: **78 passed, 0 failed**; `tsc --noEmit` clean. The suite now runs with
 the ledger in the same script (`wrangler.test.jsonc`; its drain only when a test asks).

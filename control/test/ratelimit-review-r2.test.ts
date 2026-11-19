@@ -19,7 +19,7 @@ import worker from '../src/index'
 import { introspectFor } from '../src/introspection'
 import { credentialExpired, mintCredential, oauthConfig } from '../src/oauth'
 import * as ratelimit from '../src/ratelimit'
-import { newTenant, post } from './helpers'
+import { auditOf, call, newTenant, post } from './helpers'
 import { ORIGIN, RESOURCE, connect, refresh as refreshPlain, revokeAtServer } from './oauth'
 
 const KEY = oauthConfig(env).clientKey!
@@ -161,6 +161,22 @@ describe('R2-M2, N1: refresh tokens farmed while approved, replayed after the gr
     }
     expect(fresh.gets).toEqual([])
     expect([credential.keys, tenantFuse.keys]).toEqual([[], []])
+  })
+})
+
+describe('R2-M2: collecting refresh tokens shows in the grant view, and the revocation\'s audit entry keeps it', () => {
+  it('a grant rotated at the per-grant limit shows 6 refreshes in its last day, an ordinary one 1; a person revoking it sees and keeps the count', async () => {
+    const { admin } = await newTenant('r2farm')
+    const bad = await connect(admin)
+    const ordinary = await connect(admin)
+    await farm(bad.clientId, bad.refresh, 5)
+    const views = (await call(admin, 'GET', '/oauth/grants')).body.items as { id: string; refreshesLastDay: number }[]
+    expect(views.find((g) => g.id === bad.grant.id)?.refreshesLastDay).toBe(6)
+    expect(views.find((g) => g.id === ordinary.grant.id)?.refreshesLastDay).toBe(1)
+    expect((await post(admin, `/oauth/grants/${bad.grant.id}/revoke`, {})).status).toBe(200)
+    const entry = (await auditOf(admin, '&action=oauth.grant.revoke')).find((a) => a.target?.id === bad.grant.id)
+    expect(entry?.before?.refreshesLastDay).toBe(6)
+    expect(entry?.after?.refreshesLastDay).toBe(0)
   })
 })
 

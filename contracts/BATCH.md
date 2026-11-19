@@ -354,7 +354,39 @@ The derivation is one function, `signalPool` in `shard/src/pool.ts`, used by `ed
 sweep and the stack's tests. Flush reads a segment's signal byte and refuses a segment whose
 batches are not all of one signal it flushes (`unreadable_segment`). A filtered tail read
 chooses batches by this byte (`TailFilter.signals`, `shard/src/tail.ts`): a metrics read passes
-`signals: [1]`, a span or log read `[2]` or `[3]`, and gets those batches whole.
+`signals: [1]`, a span or log read `[2]` or `[3]`, and gets those batches whole; with a time
+range, only those whose time bounds overlap it (next section).
+
+## Tail reads of spans and log records by time (added 2026-11-19, D72)
+
+A shard records, once, when it appends a span or log batch, the batch's **time bounds**: the
+floor, in Unix milliseconds, of its smallest and largest span `start` (signal 2) or log `ts`
+(signal 3), the same floor the ledger takes of a file's nanosecond bounds (D63). It reads them
+from the batch as stored (the entry table's length fields lead to the one column) without
+decoding it, and keeps them in the batch's row. The batch format does not change: nothing here
+is in the bytes `edge` sends, and the bounds are the shard's own, never sent to a reader.
+
+A filtered tail read (`TailReadOptions` `v` 1, `shard/src/tail.ts`) with a time range
+`[minTs, maxTs]` (inclusive milliseconds) returns a span or log batch it admits **whole**, as
+before, when the batch's bounds overlap the range (`max ≥ minTs` and `min ≤ maxTs`), and skips it,
+without reading it, when they do not. A batch **without bounds** is kept by every time range:
+one stored before this, one appended by a shard of the release before (which ignores the
+bounds), and one whose lengths the shard could not follow (it is still stored: an append is never
+refused for its bounds). Metric rows are filtered by time as before, one by one. Pages, cursors,
+`through`, the discard fence and every refusal are as before (D48); a skipped batch is not
+examined, so it counts in neither `scannedBatches` nor `scannedBytes`, and a `page_limit` names
+only a batch the read keeps. The time range is part of the filter a cursor is bound to.
+
+**What a caller passes.** A reader that needs every span starting (or record stamped) in the
+nanosecond range `[lo, hi]` passes `minTs = floor(lo / 10⁶)` and `maxTs = floor(hi / 10⁶)`:
+a row at `t ∈ [lo, hi]` has `floor(t / 10⁶)` in `[minTs, maxTs]` and in its batch's bounds, so
+its batch is returned. A trace query passes the bound it reads spans in (its window widened by
+`traceMarginMs`, D62), never the window alone. A batch is returned whole, so it can hold rows
+outside the range; the reader still selects rows.
+
+**Release skew.** A shard of the release before ignores the time range for span and log batches
+and returns every batch of the signal, as before; a caller cannot tell from the answer whether
+batches were skipped, and needs no change for it (the rows it selects are the same).
 
 ## Routing (signals 2 and 3)
 

@@ -22,8 +22,8 @@ export function lcg(seed) {
 }
 
 // ───────────────────────────── protobuf writer ─────────────────────────────
-// Fields are written in ascending field number, and a present scalar is written even when it is
-// zero, as protobufjs's encoder does: so the bytes can be compared with protobufjs's.
+// Fields are written in ascending field number and a scalar at its proto3 default (0, empty) is
+// left out, except a oneof member, as protobufjs's encoder does: so the bytes can be compared.
 
 const varintSize = (n) => {
   let s = 1
@@ -59,7 +59,8 @@ export class Pb {
   tag(field, wt) {
     this.raw(field * 8 + wt)
   }
-  uint(field, n) {
+  uint(field, n, always = false) {
+    if (n === 0 && !always) return
     this.tag(field, 0)
     this.raw(n)
   }
@@ -92,15 +93,16 @@ export class Pb {
     new DataView(this.buf.buffer, this.buf.byteOffset + this.pos, 8).setFloat64(0, v, true)
     this.pos += 8
   }
-  bytes(field, b) {
+  bytes(field, b, always = false) {
+    if (b.length === 0 && !always) return
     this.tag(field, 2)
     this.raw(b.length)
     this.grow(b.length)
     this.buf.set(b, this.pos)
     this.pos += b.length
   }
-  string(field, s) {
-    this.bytes(field, te.encode(s))
+  string(field, s, always = false) {
+    this.bytes(field, te.encode(s), always)
   }
   /** Start a length-delimited field; `end()` writes its length in front of it. */
   begin(field) {
@@ -129,8 +131,8 @@ export class Pb {
 
 function anyValue(w, field, v) {
   w.begin(field)
-  if (v.string_value !== undefined) w.string(1, v.string_value)
-  else if (v.bool_value !== undefined) w.uint(2, v.bool_value ? 1 : 0)
+  if (v.string_value !== undefined) w.string(1, v.string_value, true)
+  else if (v.bool_value !== undefined) w.uint(2, v.bool_value ? 1 : 0, true)
   else if (v.int_value !== undefined) w.uint64(3, BigInt(v.int_value))
   else if (v.double_value !== undefined) w.double(4, v.double_value)
   w.end()
@@ -341,14 +343,14 @@ function richSpanAttrs(i) {
 
 /**
  * OTLP/JSON spans `from` .. `from + count - 1` of mem-signals.mjs's `realistic-spans` (or
- * `fat-attrs`: every span its own 60 KB attribute): start t0 + i x 50 ms, 20 ms long, 12 spans a
+ * `fat-attrs`: every span its own 60 KB attribute): start t0 + i x 50 ms (i counted from the block start, so `from` continues a block), 20 ms long, 12 spans a
  * trace (trace id i/12 + 1 + idBase), span id i + 1 + idBase.
  */
 export function richSpansJson(resources, from, count, t0Ns, { fat = false, idBase = 0 } = {}) {
   const groups = new Map()
   for (let made = from; made < from + count; made++) {
     const r = made % resources.length
-    const start = t0Ns + BigInt(made - from) * 50_000_000n
+    const start = t0Ns + BigInt(made) * 50_000_000n
     const attrs = fat ? [S('blob', 'y'.repeat(60_000) + made)] : richSpanAttrs(made)
     const sp = { traceId: (Math.floor(made / 12) + 1 + idBase).toString(16).padStart(32, '0'), spanId: (made + 1 + idBase).toString(16).padStart(16, '0'), name: `op-${made % 40}`, kind: 2, startTimeUnixNano: String(start), endTimeUnixNano: String(start + 20_000_000n), attributes: attrs }
     if (!groups.has(r)) groups.set(r, [])
@@ -366,7 +368,7 @@ export function richLogsJson(from, count, t0Ns, seed) {
     const s = made % 50
     const line = `ts=2026-11-19T11:${String(Math.floor(made / 1000) % 60).padStart(2, '0')}:00Z level=${made % 20 ? 'info' : 'error'} msg="handled request" method=GET path=/api/v1/orders/${made % 997}/items status=${made % 50 ? 200 : 500} duration_ms=${made % 300} user=${made % 1000} trace_id=${h(32)} ${'k'.repeat(made % 250)}`
     if (!streams.has(s)) streams.set(s, [])
-    streams.get(s).push([String(t0Ns + BigInt(made - from) * 50_000_000n), line, { trace_id: h(32), pod: `svc-${s % 10}-7d9f8b6c5-${s}` }])
+    streams.get(s).push([String(t0Ns + BigInt(made) * 50_000_000n), line, { trace_id: h(32), pod: `svc-${s % 10}-7d9f8b6c5-${s}` }])
   }
   return JSON.stringify({ streams: [...streams].map(([s, values]) => ({ stream: { job: `svc-${s % 10}`, namespace: 'shop-prod', pod: `svc-${s % 10}-7d9f8b6c5-${s}`, container: 'app', node: `ip-10-0-${s}.eu-west-1.compute.internal` }, values })) })
 }
