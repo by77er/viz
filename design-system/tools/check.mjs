@@ -12,7 +12,9 @@
 //   3. Rendered audit (when src/components.css is checked, unless --no-render): every component preview in both themes, at rest, with
 //      legend rows chosen, under a forced hover, a forced press (:active) and a finger's press ([data-pressed]). Every piece of text is
 //      measured against the fill actually behind it (4.5:1), and every series swatch and line against its ring or its surface (3:1). And,
-//      with a fine and a coarse pointer, every chart that reserves its height reserves exactly what it draws.
+//      at 1200 px with a fine pointer and at 400 and 320 px with a coarse one, EVERY chart (v9; v8 read only those that set --legend-rows)
+//      reserves exactly what it draws, both in its markup (the first frame of a load, before any script) and once its script has drawn it,
+//      and computes content-visibility: auto.
 //   4. Literal values (tools/lib/lint.mjs, on css-tree and parse5): any design value written out instead of taken from a token, at any
 //      depth of a value, in component CSS, in <style> blocks and style attributes (either quote) in HTML, and in CSS written by script
 //      (style attributes in templates, cssText, style.<prop> = …, setProperty), plus colours anywhere in script; conditions must use the
@@ -185,14 +187,28 @@ async function audit() {
   await page.evaluate(() => { for (const e of document.querySelectorAll('button, a[href], summary, [role^="menuitem"], tr[data-key], .vz-sort')) for (let x = e; x && x !== document.body; x = x.parentElement) x.setAttribute('data-pressed', '') })
   results.push(...await measure('finger press'))
   await browser.close()
-  // the chart's reserved height is what it draws, with a fine and with a coarse pointer (v4 review, B2): every chart that sets --legend-rows
-  for (const coarse of [false, true]) {
-    const b2 = await chromium.launch(), p2 = await b2.newPage({ viewport: { width: coarse ? 400 : 1200, height: 900 }, ...(coarse ? { hasTouch: true, isMobile: true } : {}) })
-    await p2.setContent(html.replace(column('dark'), ''), { waitUntil: 'load' }); await p2.waitForTimeout(300)
-    const gaps = await p2.evaluate(() => [...document.querySelectorAll('.vz-chart')].filter((c) => /--legend-rows/.test(c.getAttribute('style') || '')).map((c) => { const reserved = parseFloat(getComputedStyle(c).minHeight); c.style.contentVisibility = 'visible'; c.style.minHeight = '0px'; const drawn = c.getBoundingClientRect().height; c.style.minHeight = ''; c.style.contentVisibility = ''; /* a chart off screen is skipped (content-visibility: auto, v8): what it draws is read with it laid out */ return [c.closest('section[data-c]')?.dataset.c, Math.round(reserved * 10) / 10, Math.round(drawn * 10) / 10] }))
+  // The chart's reserved height is what it draws (v4 review, B2), for EVERY chart on the previews (v9; the v8 review's B1: v8 read only the
+  // charts that set --legend-rows, and most did not), at 1200 px with a fine pointer and at 400 and 320 px with a coarse one, twice:
+  //   in its markup, as the first frame of a load draws it, before any script has run (the page rendered with its scripts left out): a
+  //     chart that draws legend rows and has no --legend-rows there has no reservation, and fails;
+  //   once its script has drawn it (the reservation it then holds while skipped off screen or while the next result waits);
+  // each against what it draws, laid out (a chart off screen is skipped: content-visibility: auto, v8). And every chart computes
+  // content-visibility: auto (the v8 review's V4: a later rule undid the skipping).
+  for (const [width, coarse] of [[1200, false], [400, true], [320, true]]) {
+    const b2 = await chromium.launch(), p2 = await b2.newPage({ viewport: { width, height: 900 }, ...(coarse ? { hasTouch: true, isMobile: true } : {}) }), light = html.replace(column('dark'), '')
+    const read = () => p2.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => { const cs = getComputedStyle(c); return { where: `${c.closest('section[data-c]')?.dataset.c} "${(c.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? c.dataset.view ?? '').trim().slice(0, 40)}"`, shown: c.getClientRects().length > 0, reserved: Math.round(parseFloat(cs.minHeight) * 10) / 10, rows: cs.getPropertyValue('--legend-rows').trim(), cv: cs.contentVisibility } }))
+    await p2.setContent(light.replace(/<script>[\s\S]*?<\/script>/g, ''), { waitUntil: 'load' }); const markup = await read()
+    await p2.setContent(light, { waitUntil: 'load' }); await p2.waitForTimeout(300); const drawnNow = await read()
+    const drawn = await p2.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => { c.style.setProperty('content-visibility', 'visible', 'important'); c.style.setProperty('min-height', '0px', 'important'); const h = c.getBoundingClientRect().height; c.style.removeProperty('min-height'); c.style.removeProperty('content-visibility'); return { h: Math.round(h * 10) / 10, rows: c.querySelectorAll('.vz-legend-table tbody tr').length } }))
     await b2.close()
-    for (const [where, reserved, drawn] of gaps) { checked++; if (Math.abs(reserved - drawn) > 1) results.push(`${coarse ? 'coarse' : 'fine'} pointer: ${where} chart reserves ${reserved} px and draws ${drawn} px: it would move what is under it when its data arrives`) }
-    console.log(`reserved height: ${gaps.length} chart(s) with a ${coarse ? 'coarse' : 'fine'} pointer, reserved against drawn: ${gaps.map((g) => g[1] + '/' + g[2]).join(', ')}`)
+    const at = `${coarse ? 'coarse' : 'fine'} pointer, ${width} px`
+    if (markup.length !== drawnNow.length) results.push(`${at}: the previews' scripts add or remove charts (${markup.length} in the markup, ${drawnNow.length} drawn): reservations cannot be compared`)
+    else drawnNow.forEach((c, i) => { if (!c.shown) return; const d = drawn[i], m = markup[i]; checked += 3
+      if (c.cv !== 'auto') results.push(`${at}: ${c.where} chart computes content-visibility: ${c.cv}: off screen it is restyled on every change of theme (the v8 review's V4)`)
+      if (Math.abs(c.reserved - d.h) > 1) results.push(`${at}: ${c.where} chart reserves ${c.reserved} px once drawn and draws ${d.h} px: skipped off screen it is the wrong height, and a page that loads scrolled past it moves (the v8 review's B1)`)
+      if (d.rows && !m.rows) results.push(`${at}: ${c.where} chart draws ${d.rows} legend row(s) and its markup sets no --legend-rows: it has no reservation before its script runs (the v8 review's B1)`)
+      else if (Math.abs(m.reserved - d.h) > 1) results.push(`${at}: ${c.where} chart reserves ${m.reserved} px in its markup and draws ${d.h} px: the first frame of a load is the wrong height`) })
+    console.log(`reserved height, ${at}: ${drawnNow.filter((c) => c.shown).length} chart(s), reserved in the markup / once drawn / drawn: ${drawnNow.map((c, i) => c.shown ? `${markup[i]?.reserved}/${c.reserved}/${drawn[i].h}` : null).filter(Boolean).join(', ')}`)
   }
   const uniq = [...new Set(results)]; checked += 3
   for (const r of uniq) fail('rendered ' + r)

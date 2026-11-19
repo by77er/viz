@@ -188,6 +188,7 @@ npm run soak                     # the soaks with 3,000 steps (SOAK_SIGNALS=off 
 node tools/signals_readback.mjs WORK 1 1    # stage 2 through the engines (Rust, -j 2; PyArrow and DuckDB if installed)
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
+node scripts/mutants.mjs --check # which mutant patterns no longer apply (writes nothing; runs in the checkout)
 node tools/hyparquet_check.mjs   # 4 checks agree
 ```
 
@@ -573,6 +574,33 @@ differently: a conflicted step's outputs being left behind is intended, and the 
 conflicted step deletes its outputs" (killed by compact: conflict); "a compaction output is an
 orphan as soon as a flush file would be" is now "a compaction output's age floor is only the
 flush files' grace" (killed by janitor: true orphans).
+
+**Check mode, and anchors re-fitted after D63 and M-5 (2026-11-19).** `node scripts/mutants.mjs
+--check [part] [name]` applies nothing and runs no test: it lists every mutant whose pattern
+is not in its file (NOT APPLIED) or is there more than once (AMBIGUOUS: only the first is
+mutated), and exits 1 if any does not apply. It writes nothing, so it may run in the
+checkout. On the tree of 2026-11-19 it found 7 of 141 that no longer applied, all since the
+ledger's SQLite rebuild, D61's logged incarnation and D63's per-signal retention; each was
+re-anchored to the code that now holds the same property:
+
+| Mutant | Now mutates | Killed by (on a scratch copy) |
+|---|---|---|
+| precedence: a rebuilt ledger forgets precedence | `applyLogged` loads every replayed file with precedence 0 | ledger `precedence.test.ts`: "keeps precedence across a rebuild from the log, also from a log written before precedence existed" |
+| deletion: the orphan sweep ignores pending units | `flushFileState`: every file not of an older incarnation is dead | janitor `janitor.test.ts`: "never deletes the files of a unit that is written but not yet admitted, and they become live", "judges a pending unit by the LOGGED watermark, not the committed one" |
+| deletion: the orphan sweep takes an unknown stream for a dead one | `flushFileState`: no stream means dead | janitor `janitor.test.ts`: "never deletes the files of a unit that is written but not yet admitted, and they become live" |
+| deletion: the orphan sweep judges by the committed watermark | `loggedStreams` reads `watermark` as `logged` | janitor `janitor.test.ts`: "never deletes while the removal is committed but not logged, whatever the grace", "judges a pending unit by the LOGGED watermark, not the committed one" |
+| deletion: series files are not expired | the metric `expire` names `metric_samples` only | janitor `janitor.test.ts`: "an unreadable record refuses the whole run for that tenant and says why; a fixed one is applied", "expires whole days past the policy from both tables, and touches no object" |
+| deletion: retention keeps one day too few | `cutoffDay` keeps `days - 1` (every table's cutoff) | janitor `signals.test.ts`: "the metric tables and the readable signal expire; …", "both signal fields unreadable: the metric tables still expire, …" |
+| review: F15, a newer incarnation counts before its registration is logged | `flushFileState`: `newer` is any higher incarnation | janitor `janitor.test.ts`: "spec F15: … worker 2 adopts worker 1's file; a newer incarnation registers unlogged; the sweep runs; a rebuild rolls it back" |
+
+These 7 and the base-pool mutant retargeted to `shard/src/pool.ts` ("edge: a base pool ending
+in /logs is accepted", killed by `test/gateway/gateway.e2e.test.ts` "a base pool ending in
+/traces or /logs … is refused by viz-ingest and by viz-query, through the gateway …") were run
+on a copy of the tree in a scratch area: **8 of 8 killed**, after the copy's unmutated suites
+they use passed (ledger precedence 5 of 5, janitor 33 of 33, gateway 4 of 4); the other 133
+were not run. The 7 AMBIGUOUS entries (compaction and review mutants of `compact/src/compact.ts`,
+whose metric and signal steps share lines, and "a live key is deletable") mutate their first
+match, which is the metric step's or `deletable`'s: the code they were written for.
 
 | Part | Mutant (review part) | Killed by |
 |---|---|---|

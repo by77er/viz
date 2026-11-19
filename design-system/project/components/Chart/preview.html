@@ -4,53 +4,53 @@
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Latency by route, p99</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
     <p class="vz-panel-desc">Three series: direct labels in the right gutter, a labelled threshold, a firing interval, two markers and a gap. Arrow keys move the crosshair; a marker under the crosshair is named in the readout.</p>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="s3" data-view="demo-routes" data-text-form="demo-routes-text"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s3" data-view="demo-routes" data-text-form="demo-routes-text" style="--legend-rows:3;--legend-notes:1"></div></div>
     <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-routes-text"></div></details>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
     <p class="vz-panel-desc">Eight series. Slots 1 to 4 are solid, 5 to 8 dashed; neighbours alternate darker and lighter. Point at a legend row to bring its line forward. Filter out the three largest and clear the filter: nothing on screen is grey, so nothing takes their slots, and every colour returns.</p>
     <div class="vz-controls"><div class="vz-segmented" role="group" aria-label="Services shown" data-filter-for="demo-services"><button aria-pressed="true" data-filter="">All services</button><button aria-pressed="false" data-filter="top3">Without the three largest</button></div></div>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="s8" data-view="demo-services"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s8" data-view="demo-services" style="--legend-rows:8;--legend-notes:1"></div></div>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
     <p class="vz-panel-desc">Thirty-six series: the eight largest are coloured, the other 28 are one band and one legend row. What a person sees wins: filter out the three largest and the three largest pods left in Other take their colours at once; add a pod larger than all of them and it joins Other; clear the filter and the three come back in Other too, which the note says beside "Colour the eight largest". Show another service's pods and come back: every colour returns. Narrow the query to node-b: the eight largest pods left take the colours, as a filter would.</p>
     <div class="vz-controls"><div class="vz-segmented" role="group" aria-label="Pods shown" data-filter-for="demo-pods"><button aria-pressed="true" data-filter="">All pods</button><button aria-pressed="false" data-filter="top3">Without the three largest</button></div><div class="vz-segmented" role="group" aria-label="Query" data-query-for="demo-pods"><button aria-pressed="true" data-query="">Three services</button><button aria-pressed="false" data-query="search">Search only</button><button aria-pressed="false" data-query="node-b">node-b only</button></div><button class="vz-button" data-size="sm" data-add-pod="demo-pods">Add a pod larger than the rest</button></div>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="demo-pods" data-text-form="demo-pods-text"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="demo-pods" data-text-form="demo-pods-text" style="--legend-rows:10;--legend-notes:2"></div></div>
     <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-pods-text"></div></details>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, against the limit</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
     <p class="vz-panel-desc">A member of Other above a threshold: the band crosses the line, the readout's "highest" names it, and the text form lists it among the series above the limit, at the end of the range and earlier.</p>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36limit" data-then="limit" data-view="demo-limit" data-text-form="demo-limit-text"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36limit" data-then="limit" data-view="demo-limit" data-text-form="demo-limit-text" style="--legend-rows:11;--legend-notes:2"></div></div>
     <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-limit-text"></div></details>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, three of Other picked out</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
     <p class="vz-panel-desc">Other opened and its three largest members chosen: each is drawn in ink, solid, dashed and dotted in the order chosen, and its swatch shows the same pattern. The other rows are off until one is chosen.</p>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="demo-picked" data-pick="3"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="demo-picked" data-pick="3" style="--legend-rows:30;--legend-notes:2"></div></div>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, the query narrowed to node-b</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
     <p class="vz-panel-desc">The 36 pods, then the query edited to node-b: the pods that left are not on screen, so the eight largest pods left take the colours at once, as the same dashboard filter would. The four others are Other, where every figure is below 0.1, and "Colour the eight largest" is offered.</p>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-then="nodeb" data-view="demo-nodeb"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-then="nodeb" data-view="demo-nodeb" style="--legend-rows:10;--legend-notes:2"></div></div>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate, change on last week</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span></span></div>
     <p class="vz-panel-desc">Values below zero: the axis runs from a round step below the lowest value to one above the highest, zero is always a tick and drawn in the stronger rule, and figures carry a minus sign.</p>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="delta" data-view="demo-delta" data-text-form="demo-delta-text"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="delta" data-view="demo-delta" data-text-form="demo-delta-text" style="--legend-rows:2;--legend-notes:0"></div></div>
     <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-delta-text"></div></details>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Memory by service</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
     <p class="vz-panel-desc">The data arrives in bytes. The chart picks one unit from the largest value (MiB) and steps the ticks in binary-round values.</p>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="bytes" data-view="demo-bytes"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="bytes" data-view="demo-bytes" style="--legend-rows:3;--legend-notes:0"></div></div>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Error ratio, if this rule had existed</h3><span class="vz-panel-meta"><span data-range>11 Nov 15:16 to 18 Nov 15:16</span><span>· 5 min max</span></span></div>
     <p class="vz-panel-desc">A backtest: one series (no direct label; the title names it), each interval in which the rule would have fired shaded and labelled with its length.</p>
-    <div class="vz-panel-body"><div class="vz-chart" data-demo="backtest" data-view="demo-backtest" data-size="sm"></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="backtest" data-view="demo-backtest" data-size="sm" style="--legend-rows:1;--legend-notes:0"></div></div>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta"><span class="vz-panel-note">Showing the previous query</span><span>· <span data-range>09:16 to 15:16</span></span><span>· updated <span class="vz-qty">48 s</span> ago</span></span></div>
@@ -193,7 +193,8 @@ const span = (f, lo, hi) => { const a = f(lo), b = f(hi); return a === b ? a : a
 function numberFormat(step, suffix = '', div = 1) {
     let tickDec = 0; while (tickDec < 3 && Math.abs(step * 10 ** tickDec - Math.round(step * 10 ** tickDec)) > 1e-9) tickDec++
     const dec = Math.min(3, Math.max(tickDec, 1 - Math.floor(Math.log10(step) + 1e-9)))
-    const abs = (v, d) => Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }), f = (v, d) => (v < 0 && abs(v, d) !== abs(0, d) ? MINUS : '') + abs(v, d) + suffix
+    // one formatter per number of decimals, made once: toLocaleString makes a new one on every call (v9: 3 ms a crosshair move at 4x CPU)
+    const nf = [], abs = (v, d) => (nf[d] ??= new Intl.NumberFormat('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })).format(Math.abs(v)), f = (v, d) => (v < 0 && abs(v, d) !== abs(0, d) ? MINUS : '') + abs(v, d) + suffix
     // tick: a value already in the display unit; value: a raw value from the data (divided here), empty when there is none
     return { dec, tick: (v) => f(v, tickDec), value: (raw) => { if (raw == null) return ''; const v = raw / div; return v !== 0 && Math.abs(v) < 0.5 * 10 ** -dec ? (v > 0 ? '< ' : '> ' + MINUS) + abs(10 ** -dec, dec) + suffix : f(v, dec) } }
   }
@@ -228,8 +229,10 @@ function numberFormat(step, suffix = '', div = 1) {
     if (m.larger.length) { const k = m.larger.length; return { kind: 'larger', count: k, text: `${k} in Other ${k === 1 ? 'is' : 'are'} now larger than a coloured series` } }
     return { kind: 'by-size', coloured: m.coloured.length, other: m.other.length, text: `${m.coloured.length} coloured by size; ${m.other.length} in Other` }
   }
-  /* What the action row under Other offers: more of Other (or fewer), and, wherever a series on screen is grey, "Colour the eight largest". */
-  function legendActions(m) { return m.other.length ? ['more', 'recolour'] : [] }
+  /* What the action rows under Other offer: more of Other (or fewer), and "Colour the eight largest" only when pressing it would change a
+     colour, that is, when one of the eight largest series on screen is not coloured (v9: the lead's decision on the v8 review's m3; every
+     response is meaningful, and at load the eight largest are already coloured). The eight largest are ranked as the recolour ranks them. */
+  function legendActions(m) { if (!m.other.length) return []; return [...m.listed].sort(byRank).slice(0, 8).some((s) => !s.slot) ? ['more', 'recolour'] : ['more'] }
   /* Facts over every drawn series, members of Other included: the highest at a point (the readout), the series above the threshold at the
      end of the range and earlier in it (the text form), the highest member of Other, and the note. One computation for the readout, the
      legend and the text form, so they cannot disagree. */
@@ -280,8 +283,12 @@ function numberFormat(step, suffix = '', div = 1) {
     const ctx = document.createElement('canvas').getContext('2d')
     const widths = new Map(), measure = (text, font) => { const k = font + '\u0000' + text; let w = widths.get(k); if (w == null) { ctx.font = font; w = ctx.measureText(text).width; widths.set(k, w) } return w }
     let g = null, cache = null, lastW = 0, lastH = 0, tok = null, liveTimer = 0, cursorWas = null; const sizes = { legendW: 0, readW: 0 }
+    /* Every token the drawing reads, read once per draw. The spaces are read here too, not on each use: a read of a computed style in the
+       crosshair's handler, after it has written the readout, made the browser restyle the page on every move (v9: 7 ms a move at 4x CPU,
+       the v8 review's m2). */
     const tokens = () => { if (tok) return tok; const cs = getComputedStyle(root), n = (p) => parseFloat(cs.getPropertyValue(p)) || 0, s = (p) => cs.getPropertyValue(p).trim()
-      return (tok = { axis: n('--axis'), gutter: n('--label-gutter'), stroke: n('--stroke'), sp: (k) => n('--space-' + k), micro: s('--text-micro'), small: s('--text-small'), data: s('--text-data'), label: s('--text-label'), microLh: n('--text-micro-lh'), smallLh: n('--text-small-lh'), strip: n('--strip') }) }
+      const space = Object.fromEntries(['half', 1, 2, 3, 4, 6, 8, 12].map((k) => [k, n('--space-' + k)]))
+      return (tok = { axis: n('--axis'), gutter: n('--label-gutter'), stroke: n('--stroke'), sp: (k) => space[k], micro: s('--text-micro'), small: s('--text-small'), data: s('--text-data'), label: s('--text-label'), microLh: n('--text-micro-lh'), smallLh: n('--text-small-lh'), strip: n('--strip') }) }
     function setSpec(next) { spec = next; const n = spec.series.length ? spec.series[0].values.length : 1; full = { t0: spec.t0, t1: spec.t0 + (n - 1) * spec.step }; st.t0 = full.t0; st.t1 = full.t1; st.cursor = null; version++ }
     setSpec(spec)
 
@@ -428,9 +435,10 @@ function numberFormat(step, suffix = '', div = 1) {
       if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? span(fmt.value, Math.min(...v), Math.max(...v)) : '' }
         h += `<tr role="row" data-key="other" title="${m.other.length} series drawn as one band, lowest to highest"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="Other: ${m.other.length} series as one band"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`}</tr>`
         h += [...m.other].sort(by === 'rank' ? byRank : cmp).slice(0, st.open).map((s) => row(s, 'other')).join('')
-        // the legend's last row: what can be done with Other. Its height is a legend row's, so the reserved height holds.
+        // the legend's last rows: what can be done with Other, one action to a row, each a legend row tall, so nothing wraps and the rows
+        // the legend draws are the rows it reserves, at every width (v9: two actions in one row wrapped at 320 px, 44 px past the reservation)
         const more = st.open < m.other.length ? `<button class="vz-button" data-size="sm" data-more>Show ${Math.min(20, m.other.length - st.open)} more of Other</button>` : `<button class="vz-button" data-size="sm" data-less>Hide the ${m.other.length} in Other</button>`
-        h += `<tr role="row" class="vz-legend-actions"><td role="cell" colspan="${cols.length}"><div class="vz-controls" data-size="sm">${more}${legendActions(m).includes('recolour') ? '<button class="vz-button" data-size="sm" data-recolour>Colour the eight largest</button>' : ''}</div></td></tr>` }
+        h += [more, ...(legendActions(m).includes('recolour') ? ['<button class="vz-button" data-size="sm" data-recolour>Colour the eight largest</button>'] : [])].map((b) => `<tr role="row" class="vz-legend-actions"><td role="cell" colspan="${cols.length}"><div class="vz-controls" data-size="sm">${b}</div></td></tr>`).join('') }
       tbody.innerHTML = h
       // the note: one line per fact, each cut to fit, so the reserved height holds at any width
       const common = Object.entries(m.names.common).filter(([k]) => k !== '__name__').map(([k, v]) => k + '="' + v + '"').join(', ')
@@ -439,6 +447,11 @@ function numberFormat(step, suffix = '', div = 1) {
       if (other) lines.push([other.text, ''])
       note.innerHTML = lines.map(([a, b]) => `<p title="${esc(a + b)}">${esc(a)}${b ? `<span class="vz-qty">${esc(fit([b], Math.max(t.sp(12), legendW - measure(a, t.small)), (q) => measure(q, t.data)))}</span>` : ''}</p>`).join('')
       note.hidden = !lines.length
+      // The reservation is what the legend draws: its rows (every series row, Other's row, the members shown and one row per action) and its
+      // note lines, set on the chart whenever the legend is drawn. So a chart this script draws reserves exactly what it draws, at every width
+      // and pointer, before and after it is skipped off screen (content-visibility: auto), and keeps the last result's height while the next
+      // one waits. Set only when it changes: the property is inherited, and a change restyles the chart (v9; the v8 review's B1).
+      for (const [p, v] of [['--legend-rows', tbody.rows.length], ['--legend-notes', lines.length]]) if (root.style.getPropertyValue(p) !== String(v)) root.style.setProperty(p, v)
     }
     /* Row state only: chosen, off, pressed, the order statement in the head, the sort triangle. Cheap; a toggle calls this. */
     function legendState() {

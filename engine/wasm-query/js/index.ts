@@ -237,7 +237,7 @@ export interface SignalBudget {
 }
 
 /** The default of `SignalBudget.maxBytes` (query/src/config.ts `maxDecodedBytes` sets the Worker's). */
-export const DEFAULT_SIGNAL_BYTES = 40 << 20
+export const DEFAULT_SIGNAL_BYTES = 32 << 20
 
 /** The PromQL operations and, since ABI 6, the span and log ones (`contracts/engine.ts` `SignalEngine`; ABI 7 adds `SignalBudget`). */
 export interface QueryEngine extends SignalEngine {

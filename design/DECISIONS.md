@@ -1350,11 +1350,16 @@ URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 wi
   name another tenant matches nothing. Because a forged one can name any string, a `Tenant` object
   nobody provisioned no longer creates storage when it is constructed: `provision` opens it.
 - **A made-up credential reaches no object** (review of D44, M-2). The secret's 43 characters are
-  27 random ones and a 16-character tag, HMAC-SHA-256 under a key derived by HKDF from
-  `OAUTH_CLIENT_KEY`, over the prefix, tenant and random part. `/oauth/token`, `/oauth/revoke` and
+  a 27-character body and a 16-character tag, HMAC-SHA-256 under a key derived by HKDF from
+  `OAUTH_CLIENT_KEY`, over the prefix, tenant and body. `/oauth/token`, `/oauth/revoke` and
   `OAuthIntrospection` check the tag in the Worker before any tenant's object is asked; a
   credential without it gets the answer an unknown one gets. The tag does not make a credential
-  valid (the object's hash does). And a token request or revocation that changed nothing writes
+  valid (the object's hash does). **Since the review of D70 (B-1) the body carries the
+  credential's expiry** (layout 2: the marker `e`, the expiry in minutes, 22 random characters, about
+  131 bits; layout 1, issued before, was 27 random characters), so the Worker also refuses a
+  credential past its expiry before any rate limit counts it or any object is asked (D70). The shape
+  and the tag are unchanged, so a release that knows only layout 1 still reads layout 2, and this
+  release serves layout 1 credentials until they expire in the object. And a token request or revocation that changed nothing writes
   nothing: the alarm is re-armed only after a write (each `setAlarm` is billed as a row written).
   Measured here (local workerd, three runs of 300 sequential forged `/oauth/token` requests against
   a tenant with a live grant): 1.50–1.69 ms, one object call and two `setAlarm` each before;
@@ -1415,7 +1420,9 @@ key becomes a generated secret of its own, or control verifies tags under two ke
 
 *Amended 2026-11-19 after the review of D44, D52, D53 and D60 (`reviews/d44-d52-d53-d60.md`, M-1,
 M-2, m-1 to m-3, m-5, m-6): the entrypoint, the tag, no writes on no change, key-only approvers.
-The decision itself stands.*
+The decision itself stands. Amended again the same day after the review of D70
+(`reviews/d70-rate-limits.md`, B-1): the credential body's layout 2, carrying its expiry under the
+tag; this replaces the text under which the body was 27 random characters. The decision stands.*
 
 ## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
 
@@ -2334,58 +2341,122 @@ creation, which `ensureStream` allows, m-4); the outbox read shows in the ledger
 nullable `kind` column older code leaves NULL); or pool retirement or tenant deletion is built
 (then a stream-retirement change in the ledger, and both creating paths fenced).
 
-## D62. Traces and logs are read in one place under row caps; a trace is read whole through the `trace_index` hull and summarised from its spans; each tail read asks only its signal's shards by name and checks every batch's header
+## D62. Traces and logs are read in one place under a byte budget the engine counts; a trace the answer names is read whole within a margin around the window, the same with pruning on or off; each tail read asks only its signal's shards by name and checks every batch's header
+
+(Rewritten 2026-11-19 after the adversarial review `design/reviews/signals-end-to-end.md`
+rejected the first text (M-1, M-2). This entry replaces it; "Replaces" at the end lists what
+changed. `QUERY_SIGNALS` stays off until this text has been reviewed again, as the review asks,
+and the Cloudflare and Grafana runs named under "Cost of it" and in `query/README.md` have run.)
 
 **Decision.** The query Worker answers Tempo's and Loki's APIs (behind `QUERY_SIGNALS`,
 `query/README.md` "Traces and logs") in one place: files through the leaf pool, the signal's
-shard tails, one engine call. A query whose files, bytes or rows (the rows of the row groups its
-index fragments say it reads: `maxSpans` 40,000, `maxLogRows` 60,000) do not fit one isolate is
-refused (422), never split. A search, or a TraceQL metrics query that is not span-local, reads
-`trace_index` over its window first, finds the traces whose extent (fragments merged, plus the
-tail's spans) overlaps it, and reads the `spans` files over the hull of those extents, at the same
-ledger version; every trace the answer can name is then complete, and its summary (root,
-duration, per-service counts) is computed from its spans by the engine. Trace by ID reads only the
-`trace_index` row groups whose id range holds it, then only the `spans` files of the hours its
-fragments name. A tail read asks the shards of its signal by name (`…/traces/{slot}`,
-`…/logs/{slot}`, the rest metrics), and every batch it gets back is checked by its header: a batch
-of another signal refuses the query (503); none is read as the wrong signal or dropped.
+shard tails, one engine call.
 
-**Alternatives.** (a) Summaries from `trace_index` alone (merged fragments, as
-`contracts/TRACES.md` allows): no second read for search, but `span_count`, `error_count` and
-the per-service counts over-count spans retried into another unit (43 to 52 of 300 traces of the
-read-back corpus), so answers would differ from the engine's on the same spans. (b) Read only the
-spans files of the window, Tempo's "only the blocks of the range": traces at the window's edges
-summarised from part of their spans. (c) Split execution: search by trace-id hash with each part
-returning its top `limit`, metrics by span with partial aggregates; the engines expose no
-partials yet. (d) Wait for the shard's signal filter before reading span and log tails. (e) Skip
-batches of another signal silently.
+1. **Memory is bounded by bytes, counted by the engine.** Every span and log call carries the
+   tenant's `maxDecodedBytes` (32 MiB). The engine charges each row it holds a fixed overhead
+   plus the length of every string it keeps; a span's resource is held once per distinct
+   resource of the call (shared by every span that carries it, from files and tail alike) and
+   charged once; a metric query's series are charged per point; the answer is charged four
+   times its length (twice in WASM, once more as a JavaScript string). Past the budget the call
+   is refused: 422 `max_decoded_bytes`. The row caps, `maxSpans` (18,000) and `maxLogRows`
+   (30,000), are checked from the fragments before anything is fetched and again by the engine
+   on the rows it holds (a span outside the bound below, or a log row no selector reads, is not
+   held and not counted); they are derived from the budget and the memory a realistic row takes,
+   so that a realistic query meets the cheap refusal before the budget.
+2. **A trace the answer names is whole within a margin.** A search, a TraceQL metrics query
+   that needs whole traces, and trace by ID with a time hint have a bound: the window widened by
+   the tenant's `traceMarginMs` (2 h) on each side. `trace_index` is planned over the bound; the
+   engine merges, per trace, every fragment and tail span that lies inside it, finds the traces
+   whose merged extent overlaps the window, and gives the hull of their extents cut to the
+   bound; `spans` is planned over that hull at the same ledger version; and the engine drops
+   every span whose start lies outside the bound, before de-duplication. So every trace the
+   answer names is evaluated over exactly its spans that start inside the bound: all of them
+   when the trace starts and ends within the margin of the window, wherever its spans were
+   flushed or whether they are still in a tail, and with pruning on or off (both read every
+   such span; the engine sees no other). A span that starts outside the bound is not part of
+   the answer: a trace longer than the margin is answered from its part inside it, the same
+   part every time. Trace by ID without a hint is bounded by all time: the whole trace. Its
+   summary (root, duration, per-service counts) is computed from the spans by the engine;
+   `trace_index` counts are upper bounds (a span retried into two units is counted twice, D68)
+   and are used only to plan.
+3. **Tails by signal.** A tail read asks the shards of its signal by name (`…/traces/{slot}`,
+   `…/logs/{slot}`, the rest metrics), sends `signals`, and checks every batch it gets back by
+   its header: a batch of another signal refuses the query (503); none is read as the wrong
+   signal or dropped. A span or log tail is read whole, whatever the window (the shard filters
+   signals 2 and 3 by signal only, D63): the time fields are not sent.
 
-**Why.** (a) and (b) answer differently from the engine over the same data, which the tests
-compare against (`query/test/signals.test.ts`: 128 cases a seed over three seeds, identical with
-pruning on and off). (c) is the right end state but needs engine work in two crates for partials
-that merge exactly; the caps make one place safe meanwhile (measured here: about 1.5 KiB of WASM
-memory per span held and 1 KiB per log row, `query/README.md` "Measurements"). Without (d)'s
-fallback every metrics query of a tenant with a span or log stream registered failed, since the
-ledger names those streams in every plan (D57) and the shard's metric filter throws on their
-batches. (e) would turn a wrong shard choice into a silent hole; the header check makes it a
-refusal. The shard's own signal filter (`TailFilter.signals`) landed the same day and is sent
-with every read; shards of an earlier release ignore it, which is why the name rule and the header
-check stay.
+**Alternatives.** Completeness: (a) the first text: `trace_index` over the window only;
+(b) a second `trace_index` round by trace id for the traces found, by the fragments' id ranges
+or the bloom filters, over a bounded lookback; (c) retract the claim and document a Tempo-like
+partiality (Tempo's API documentation, read 2026-11-19: trace by ID with a range "can result in
+trace not being found or partial results"; search makes no claim either way); (d) no bound: read
+every `trace_index` file of the tenant. Memory: (e) estimate decoded bytes from the fragments and
+refuse before reading; (f) lower row caps alone; (g) hold each resource once and keep the row
+caps. Earlier alternatives, still rejected: summaries from `trace_index` alone (they over-count
+retried spans, 43 to 52 of 300 traces of the read-back corpus); split execution by trace-id hash
+(the engines expose no exact partials yet); skipping batches of another signal silently.
 
-**Cost of it.** A search reads its window's `trace_index` before any span: one more ledger plan
-and round of reads. A trace whose lake spans all lie outside the window and whose fragments do
-too, but whose unflushed spans fall inside it, is summarised from the spans read. Trace by ID
-decodes every span of the row groups of its hours (one row group per 20,000-span flush unit):
-about 240 ms for 20,000 spans here. Tenants with more than about 40,000 spans or 60,000 log rows
-in a query's window are refused until split execution exists. A metric pool whose name ends in
-`/traces` or `/logs` would be classified as a signal pool; since stage 3 (2026-11-19) edge refuses
-a pool map naming one (and query, which reads pool maps through edge's `poolMap`, refuses its
-reads with 503), and before that its reads were refused by the header check, never misread.
+**Why.** (a) is false (review M-1, reproduced: a trace's `durationMs` 300,000 against
+7,260,000 over every span; `{ trace:duration > 1h }` empty; structural operators across units
+wrong). (b) selects traces by "a fragment overlaps the window", which depends on how spans fell
+into flush units, while the engine's in-memory source (the tests' reference) puts a trace in a
+window when its extent overlaps it; and it prunes nothing on flush output, whose `trace_index`
+file per unit is one row group whose random trace ids span the id space (bloom filters are written
+on `spans.trace_id`, not on `trace_index`, and not read yet), so it reads the same files as one
+round over the bound. (c) is what Tempo documents, but a trace summarised from part of its spans
+is an answer the engine over the same data does not give; a bound makes it right for every trace
+that fits, at a measured cost, and `traceMarginMs: 0` is exactly the window-only answer, made
+deterministic. (d) costs every `trace_index` file the tenant holds. Two hours covers the review's
+case (a child 1 h 50 min after the window) and costs, for a one-hour search, `trace_index` over
+five hours instead of one: about 5 % of the span bytes per hour in the benchmark data (measured
+here: 180,576 of 3,569,847 bytes), so about a fifth of the hour's span bytes, and one more
+`trace_index` file per flush unit (six per shard and hour at the 10-minute seal; modelled: 24 S
+more R2 reads for S shards, until compaction folds a day into one file). (e) is not possible
+with what the fragments carry, and Parquet's own uncompressed sizes count a dictionary value
+once: the review's 0.18 MiB of span files decoded to 176 MiB. (f) leaves one fat row (a line or
+an attribute of up to 256 KiB, within edge's limits) unbounded, and (g) leaves lines and span
+attributes unbounded.
 
-**Would change if.** The engines gain exact partials (then (c), and the caps become per part);
-every shard running answers the signal filter (then tails are chosen by it and the name rule goes);
-`trace_index` re-aggregation at compaction removes the over-count (then (a) for search over
-compacted data); or projection by the plan's columns cuts the memory per span (then larger caps).
+**Measured** (here; Node 22 through the binding, `query/README.md` "Memory"; and workerd through
+the Worker, `query/test/memory.test.ts`). The review's inputs: 1,000 and 2,000 spans with a
+180 KB resource, 176 and 349 MiB of WASM memory before, 4.8 and 6.0 MiB after; 400 log lines of
+200 KB, 158 MiB and a 19 MiB answer before, refused (422) at a 46.7 MiB peak after. Realistic
+rows (an OTel-like resource of about 3 KiB, 12 to 14 attributes: the shape is training
+knowledge): 1.64 KiB of WASM memory held per span and 1.72 KiB charged (40,000 spans: 66.3 MiB);
+log rows of 150 to 400 bytes, 0.64 KiB held and 0.8 KiB charged. The review's M-1 reproduction
+mirrored on the new planner: all six queries equal the engine over every span with the 2-hour
+margin; with a 1-hour margin the four that depend on the late child differ, as the bound says.
+
+**Cost of it.** Each trace query reads `trace_index` over the window and twice the margin (above;
+the reads on Cloudflare are not measured: the experiment is a search over a tenant with S span
+shards and uncompacted recent hours at margins of 0, 1 and 2 hours, timing files read and wall
+time). A trace longer than the margin is answered in part, deterministically. The row caps halve
+(from 40,000 and 60,000): tenants with more than about 18,000 spans or 30,000 log rows in a query's
+window are refused until split execution exists (about 5 spans a second over Tempo's default
+one-hour search). A span or log query reads the signal's whole tail under `maxFetchBytes`
+(16 MiB) whatever its window (review m-3, modelled: a shard seals at 4 MiB or 10 minutes, so a
+tenant whose spread S is 4 or more and whose segments are near the seal size is refused 422 on
+every trace or log query; rows of the tail outside the query cost no row and no byte of the
+budget). Answers are charged four times their length, so a log query asking for 5,000 lines of
+400 bytes uses about 8 MiB of the 32. Without this release's ABI 7 module the query refuses
+(`EngineLoadError`, 500), as for every ABI change.
+
+**Would change if.** `trace_index` gains an id-sorted, bloom-filtered layout at flush (then a
+second round by id over a longer reach, instead of a margin read whole); the engines gain exact
+partials (then split execution, and the caps become per part); projection by the plan's columns
+cuts the memory per span (then larger row caps); the shard keeps per-batch time bounds for signals
+2 and 3 (then tails are read by window, and m-3's limit goes); Cloudflare shows the margin's reads
+cost too much (then a smaller default, or the second round above).
+
+**Replaces.** "Every trace the answer can name is then complete" (it was not: M-1) is now
+"complete within `traceMarginMs`", with the bound applied by the planner and by the engine.
+"The caps make one place safe meanwhile (about 1.5 KiB of WASM memory per span held and 1 KiB
+per log row)" (they bounded rows and compressed bytes, not memory: M-2) is now the engine's
+decoded-bytes budget, with resources held once. `maxSpans` 40,000 and `maxLogRows` 60,000 are
+now 18,000 and 30,000, counting rows held rather than rows decoded. Trace by ID with a hint
+reads `trace_index` over the hint and the margin, not the hint alone. The Loki and Tempo
+compatibility points of the review (m-4) are in `query/README.md` ("Grafana"): Loki integers of
+ten or fewer digits are seconds, Loki errors are plain text, and Tempo's `/api/echo` answers.
 
 ## D63. Span and log files enter the ledger as metric files do: one unit per segment, millisecond bounds, a `spans` key under its hour; `Table` keeps its meaning and the ledger's tables are `LedgerTable`; a tail read chooses batches by signal and returns span and log batches whole
 
@@ -2982,130 +3053,284 @@ points at them, and evidence goes); a second switch appears (another rule); Clou
 deployment history the tool can read (then "the switch was on" need not be found among versions);
 or the key can be rotated with overlap (D53).
 
-## D70. OAuth is rate-limited in two layers: Cloudflare's Rate Limiting binding before any object (per client network; after the tag, per client, per token and per tenant), failing open; and an exact per-grant refresh limit in the tenant's object
+## D70. OAuth is rate-limited in two layers: Cloudflare's Rate Limiting binding before any object, counting each presented credential and then its tenant (a fuse near one object's capacity), and a network only where no genuine credential is involved, failing open within 100 ms; codes and tokens carry an expiry the Worker checks under their tag; and an exact per-grant refresh limit in the tenant's object
 
 (Written 2026-11-19 for the review of D44, M-2: "a rate limit in front of `/oauth/token`,
-`/oauth/revoke`, `/oauth/register`, `/oauth/authorize` and OAuth bearers before public exposure".)
+`/oauth/revoke`, `/oauth/register`, `/oauth/authorize` and OAuth bearers before public exposure".
+**Rewritten the same day after its adversarial review**, `reviews/d70-rate-limits.md`, which
+rejected layer 1 as built (B-1, M-1, M-2, m-1 to m-8). **This replaces the first version of D70.**
+That version keyed the token endpoint per presented `client_id` and then per tenant, and
+revocation per tenant only. It set the tenant budgets at 5 and 50 a second, counted every request
+by network, and gave each check 1 s. So one dead credential of a tenant could refuse all of that
+tenant's OAuth in a location. Layer 2, the refusal and the contract status stand as first written.)
 
 **What needs limiting, from the code** (costs measured here, `control/test/oauth-cost.test.ts`:
 local workerd, sequential, three runs; `control/README.md` has the table). Since the tag (D44) a
-made-up credential reaches no object: registration (0.18–0.41 ms), the authorization page
+made-up credential reaches no object. Registration (0.18–0.41 ms), the authorization page
 (0.23–0.52 ms) and a forged code (0.16–0.33 ms) cost the Worker alone and write nothing; anyone can
-send them. What reaches a tenant's object is a credential this deployment made: a code exchange or a
-refresh (4.3–8.4 ms, 9 rows and 2 `setAlarm`, so about 11 billed row writes each), a revocation
-(1 to 18 rows), an introspection (0.9–1.5 ms, no write), and a **replay** of a spent, rotated or
-revoked credential, whose tag stays good for ever (0.75–2.1 ms, one object request, no write). Only
-a client or someone holding one of its old credentials can drive those. An approval (17 rows, 2
-alarm writes, 1 KV write) needs a person's admin key and was already bounded exactly (20 a tenant
-an hour). So: the Worker's own cost by source; object requests and writes by credential (client,
-token, grant, tenant), never by the tenant a request merely names.
+send them. What reaches a tenant's object is a credential this deployment made:
+- a code exchange or a refresh: 4.3–8.4 ms, 9 rows and 2 `setAlarm`, so about 11 billed row writes
+  each;
+- a revocation: 1 to 18 rows;
+- an introspection: 0.9–1.5 ms, no write;
+- a **replay** of a spent, rotated or revoked credential: 0.75–2.1 ms, one object request, no write.
+
+The review showed what the first version missed: a credential's tag never expired. A dead
+credential was therefore as good as a live one for spending any budget keyed after the tag. And
+anyone may hold dead credentials: a former client, a debug log, a code left in shell history. An
+approval (17 rows, 2 alarm writes, 1 KV write) needs a person's admin key and was already bounded
+exactly (20 a tenant an hour).
 
 **Decision.**
 
-- **Layer 1, approximate, before any object: the Workers Rate Limiting binding** (developers.
-  cloudflare.com/workers/runtime-apis/bindings/rate-limit/, read 2026-11-19, page modified
-  2026-11-12). Five bindings, period 60 s each; the limits are deploy configuration (proposed values
-  below, `control/README.md`, "Needed changes elsewhere"):
+- **Credentials carry their expiry** (`contracts/oauth.ts`, layout 2 of format version 1). The 27
+  characters before the tag are now the marker `e`, the expiry, and 22 characters from a CSPRNG
+  (about 131 bits). The expiry is in whole minutes since 2026-11-01, rounded up, so it is never
+  earlier than the expiry the tenant's object stores. The tag covers it, as before.
+  - `/oauth/token`, `/oauth/revoke` and introspection refuse a tagged credential once its expiry and
+    60 s more have passed. They answer as the object would (`invalid_grant`, 200, `inactive`
+    `expired`), before any limit counts the request and before any object is asked.
+  - Codes die in the Worker 10 minutes after issue and access tokens after an hour. A former
+    client's stock of dead credentials shrinks to its refresh tokens (30 days) and to the access
+    tokens of its last hour.
+  - The shape and the tag are unchanged, so every earlier reader of version 1 reads layout 2: the
+    previous release's control and the agent surface's `parseCredential` see 27 opaque characters.
+  - Layout 1 credentials, issued by the previous release, carry no expiry. They go to the object as
+    before until they expire there. Both skews are tested (`test/ratelimit-review.test.ts`). None
+    had been issued in production.
+- **Layer 1, approximate, before any object: the Workers Rate Limiting binding**
+  (developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/, read 2026-11-19, page
+  modified 2026-11-12). Six bindings, period 60 s each. The limits are deploy configuration,
+  proposed here (`control/README.md`, "Needed changes elsewhere"):
 
   | Binding | Key | Proposed limit per 60 s, per Cloudflare location | Where | What it bounds |
   |---|---|---|---|---|
-  | `OAUTH_RL_SOURCE` | client network: IPv4 address, IPv6 /64, from `CF-Connecting-IP` | 120 | `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, before the body is read | one network's Worker CPU and its replays: 2 a second |
-  | `OAUTH_RL_CLIENT` | tenant and `client_id` (hashed) of a tagged code or refresh token | 20 | `/oauth/token`, after the tag | a looping client's object requests, and its share of its tenant's budget |
-  | `OAUTH_RL_TENANT` | tenant of a tagged credential | 300 | `/oauth/token` and `/oauth/revoke`, after the tag | OAuth token traffic on one tenant's object: 5 a second |
-  | `OAUTH_RL_BEARER` | the access token (hashed), tagged | 600 | introspection (`OAuthIntrospection`), after the tag | one agent's `/mcp` requests: 10 a second |
-  | `OAUTH_RL_BEARER_TENANT` | tenant of a tagged access token | 3,000 | introspection, after the tag | introspection on one tenant's object: 50 a second |
+  | `OAUTH_RL_SOURCE` | client network: IPv4 address or IPv6 /64, from `CF-Connecting-IP` | 120 | `/oauth/register` (POST) and `/oauth/authorize` (GET, HEAD) before the body is read; `/oauth/token` and `/oauth/revoke` only for a request the Worker refuses by itself | one network's Worker CPU: 2 a second |
+  | `OAUTH_RL_SOURCE_48` | IPv6 /48 | 1,200 | the same, after the /64 | one host's routed /48 (65,536 /64s): ten networks' worth |
+  | `OAUTH_RL_CREDENTIAL` | the presented code, refresh token or access token (SHA-256 prefix), tagged and not expired | 5 | `/oauth/token` and `/oauth/revoke` | one credential's object requests: a code or token is presented once, plus retries |
+  | `OAUTH_RL_TENANT` | its tenant | 6,000 | the same, after the credential | a fuse: OAuth token traffic on one object, 100 a second |
+  | `OAUTH_RL_BEARER` | the access token (SHA-256 prefix), tagged and not expired | 1,200 | introspection (`OAuthIntrospection`) | one agent's `/mcp` requests: 20 a second |
+  | `OAUTH_RL_BEARER_TENANT` | its tenant | 30,000 | introspection, after the token | a fuse: introspection on one object, 500 a second |
 
-  The narrower key is asked first and a refused call does not count, so one client's or token's
-  flood spends at most its own allowance of the tenant's budget. Keys built from request text are
-  SHA-256 prefixes, so no input sets a key's length.
-- **Layer 2, exact, in the tenant's object, where rows are written:** at most 6 refresh tokens per
-  grant in any 60 s (`OAUTH_LIMITS.refreshesPerGrantPerMinute`, the code exchange's included),
-  counted from the `oauth_tokens` rows the object already keeps (no new state, one read), checked
-  after reuse detection and before the presented token is spent. With the approvals, clients and
-  live grants D44 bounds, this is what bounds writes, from any number of locations.
-- **Refusal**: 429, `Retry-After` (60 for a binding, which does not say where in its window it is;
-  the exact time for the per-grant limit), `Cache-Control: no-store`, the endpoints' CORS headers,
-  and `{ "error": "too_many_requests", "error_description": … }`; the authorization page answers a
-  plain-text page with the same code. Nothing is read, changed or spent: a refused code or refresh
-  token still works. RFC 6749 §5.2 has no rate-limit code; `too_many_requests` is the code the MCP
-  TypeScript SDK's own authorization server sends with 429 on these four endpoints, and its client
-  maps it to `TooManyRequestsError` and keeps its credentials (verified in
-  `@modelcontextprotocol/sdk` 1.32.2, `client/auth.js`): an unknown code becomes a `ServerError`,
-  after which that client abandons the refresh and starts a new authorization (a person approves
-  again), and `invalid_grant` makes it discard its tokens. `temporarily_unavailable` (RFC 6749
-  §4.1.2.1) is registered for the authorization endpoint and means the server is overloaded, not
-  that this caller is over its rate; `slow_down` (RFC 8628) is device-flow polling. Introspection
-  answers the new status `rate_limited` with `retryAfterMs` (`contracts/oauth.ts`, additive within
-  version 1: the agent surface answers a status it does not know with a retryable 503 today, and is
-  to map it to 429, `mcp/` "Needed changes").
+  - **The narrower key is asked first**, and a refused call does not count. So one credential
+    spends its own allowance and at most that much of its tenant's fuse a minute, in each location.
+    A request refused by a fuse has still been counted against its credential.
+  - **Spending a fuse takes many distinct credentials that are tagged and unexpired**: the fuse
+    divided by the per-credential limit. That is 1,200 at the token endpoint and 25 at
+    introspection.
+  - **No per-client key.** The first version's was keyed on text the request chose (R1). A key on
+    a `client_id` whose MAC verifies would be no better: client ids are public, so any dead
+    credential sent with the victim's id would spend that client's allowance (R1b).
+  - **The fuses are sized** to protect the object, not to meter clients:
+    - The token fuse is 20 times the most live traffic layer 2 lets a whole tenant make: 6 refreshes
+      a minute times 50 grants, 300 a minute from all locations together. 100 a second is 8–21% of
+      one object busy with replays at 0.75–2.1 ms each (measured here).
+    - The bearer fuse is 10 times 50 grants calling `/mcp` once a second (review m-5). It is 45–75% of
+      the 670–1,100 introspections a second one object served here (0.9–1.5 ms each).
+    - Per bearer, 20 a second leaves room for an agent's parallel tool calls (m-5).
+    - These ratios are modelled, not measured on traffic.
+  - **Networks.** A genuine credential is never counted by where it comes from (review M-1). Every
+    MCP client hosted on Cloudflare Workers arrives from one address. Brokers concentrate all their
+    users' refreshes behind a few egress addresses.
+  - **The Workers address is not counted at all**, at any endpoint. Every cross-zone Worker
+    subrequest arrives from `2a06:98c0:3600::103` (developers.cloudflare.com/fundamentals/reference/
+    http-headers/, read 2026-11-19, page modified 2026-11-15; verified there). Counting it would let
+    anyone with a Workers account refuse every Worker-hosted client. Its requests then cost this
+    Worker's CPU only: registration and the authorization page store nothing. Their senders pay for
+    their own Worker requests.
+  - **IPv6 is counted by /64 and by /48** (m-6). A tunnel broker hands one host a routed /48, which
+    is 65,536 /64s; a /56 home allocation is 256 of them (training knowledge). One host with a /48
+    gets 1,200 a minute, not 7.8 million.
 - **Every binding check fails open**, for every endpoint, when the binding is absent, throws, does
-  not answer `{ success: boolean }`, or has not answered within 1 s; it logs. Per endpoint:
-  registration and the authorization page store nothing and reach no object, so a closed failure
-  would refuse onboarding and protect nothing; at the token endpoint, revocation and introspection
-  the tag still keeps made-up credentials from every object and layer 2 still bounds writes exactly,
-  so what an open failure lets through is object requests from holders of genuine credentials for
-  as long as the fault lasts, while a closed one would end every agent's access within the hour its
-  access token lasts, and would block revocations, which a client sends to end access. The
-  exact limits in layer 2 cannot fail open: they are statements in the request's own transaction.
-  That the bindings exist is for the deploy to check (a needed change: it is to refuse a production
-  viz-control without them), not something the Worker discovers request by request.
-- Not limited: the RFC 8414 metadata (static, `max-age=300`) and CORS preflights.
+  not answer `{ success: boolean }`, or has not answered in time.
+  - **Time**: all of one request's checks share 100 ms. A binding that failed is skipped by that
+    isolate for 10 s.
+  - **Brownout cost** (m-1): the review measured a refresh at 3,035 ms and an introspection at
+    2,005 ms with hanging limiters. Now one request per binding, per isolate, every 10 s, waits up to
+    100 ms. Measured here (local workerd, limiters that never answer): the first two refreshes
+    105–129 ms, then 14 ms; introspections 104–105 ms, then 2 ms.
+  - **Logs**: an absent or failing binding is logged once per isolate, never per request (m-2).
+    `/healthz` lists each limiter as `bound`, `absent` or `skipped`, and whether `OAUTH_CLIENT_KEY`
+    is set.
+  - **Why open, per endpoint.**
+    - Registration and the authorization page store nothing and reach no object. A closed failure
+      would refuse onboarding and protect nothing.
+    - At the token endpoint, revocation and introspection, the tag and the expiry still keep
+      made-up and expired credentials from every object, and layer 2 still bounds writes exactly.
+      What an open failure lets through is object requests from holders of unexpired genuine
+      credentials, for as long as the fault lasts.
+    - A closed failure would end every agent's access within the hour its access token lasts. It
+      would also block revocations, which a client sends to end access.
+  - **The exact limits** in layer 2 cannot fail open: they are statements in the request's own
+    transaction.
+  - **The deploy enforces that the bindings exist**, not the Worker: it is to refuse a production
+    viz-control without them (a needed change, restated in `control/README.md`).
+- **Layer 2, exact, in the tenant's object, where rows are written:** at most 6 refresh tokens per
+  grant in any 60 s (`OAUTH_LIMITS.refreshesPerGrantPerMinute`, the code exchange's included).
+  - It is counted from the `oauth_tokens` rows the object already keeps: no new state, one read.
+  - It is checked after reuse detection and before the presented token is spent.
+  - With the approvals, clients and live grants D44 bounds, this is what bounds writes, from any
+    number of locations.
+  - **Worst case per tenant** (m-7; modelled, list prices as training knowledge): 50 grants × 6
+    refreshes a minute × about 11 billed rows is 3,300 row writes a minute. That is about 4.75
+    million a day, about $4.75 a day per tenant, plus about 432,000 rotated refresh-token rows kept a
+    day. Per grant it is $0.10 a day. Only the tenant's own approved clients can drive it.
+- **Refusal**: 429 with `Retry-After`, `Cache-Control: no-store`, the endpoints' CORS headers, and
+  `{ "error": "too_many_requests", "error_description": … }`.
+  - `Retry-After` is 60 for a binding, which does not say where in its window it is. For the
+    per-grant limit it is the exact time.
+  - The authorization page answers a plain-text page with the same code.
+  - No credential is spent, and nothing in the object changes. A request the token endpoint or
+    revocation refused by itself has had its body read.
+  - RFC 6749 §5.2 has no rate-limit code. `too_many_requests` is what the MCP TypeScript SDK's own
+    authorization server sends with 429 on these endpoints. That SDK's client maps it to
+    `TooManyRequestsError` and keeps its credentials (verified in `@modelcontextprotocol/sdk`
+    1.32.2): an unknown code becomes a `ServerError`, after which that client starts a new
+    authorization, and `invalid_grant` makes it discard its tokens.
+  - **The Python SDK** (`mcp` 2.3.0, `_handle_refresh_response`; read by the review and again
+    here) discards its tokens on any refresh answer that is not 200. For its clients no refusal code
+    is safe: any refusal of a live refresh means a person approves again. That is why the limits are set so that only the client itself, or someone
+    holding many of the tenant's unexpired credentials, can make the Worker refuse a live refresh.
+  - Introspection answers the status `rate_limited` with `retryAfterMs` (`contracts/oauth.ts`,
+    additive within version 1). The agent surface maps it to 429 with `Retry-After`.
+- **Not limited**: the RFC 8414 metadata (static, `max-age=300`), CORS preflights, and requests with
+  a method an endpoint does not serve (m-3: the first version counted a preflight of the
+  authorization page).
+- **Assumed**: viz-control and viz-mcp run without Smart Placement (m-8). With placement their
+  invocations gather in a few locations, and the per-location budgets become nearly global, the
+  fuses with them. A control test checks both Workers' `wrangler.jsonc`. A check in the deploy's
+  configure is a needed change.
 
-**Alternatives, with what each costs per request (modelled; Cloudflare list prices as training
-knowledge: Workers $0.30 a million requests, Durable Objects $0.15 a million requests and $1.00 a
-million rows written; a service-binding call is not billed as a request) and what an attacker can
-still do.**
+**What an attacker can still do** (modelled unless marked):
+- **Someone holding unexpired dead credentials** of a tenant gets 5 object requests a minute per
+  credential at the token endpoint, and 1,200 at introspection, in each location they reach.
+  - To trip the tenant's token fuse in one location they need about 1,200 distinct refresh tokens
+    or codes within their lifetime. To trip its bearer fuse they need 25 access tokens less than an
+    hour old.
+  - A client that refreshed hourly for a month holds about 720 refresh tokens. Making 1,200 takes 3
+    hours and 20 minutes at layer 2's maximum, and 25 access tokens take about 4 minutes. Only a
+    client the tenant approved can do that, and while approved it could spend the fuse with live
+    tokens anyway.
+  - The effect, while it lasts, is that tenant's refreshes and revocations (or `/mcp` calls) in that
+    location are refused. TypeScript-SDK clients keep their tokens; Python-SDK clients need a person
+    to approve again. Revoking the client ends it within the hour for `/mcp`; for the token endpoint
+    it lasts until its refresh tokens expire, 30 days.
+- **Layout 1 credentials** (none in production) carry no expiry. Until they expire they still spend
+  their allowance and the fuse, as before.
+- **A host with many /48s, or many hosts**, gets 1,200 registrations and authorization pages a
+  minute per /48 and 120 per IPv4 address. **Worker-hosted senders** are not counted at all. Either
+  way this costs the Worker's CPU (0.2–0.5 ms each), never an object or a row.
+- **A Worker in the same zone** (`bitcru.sh` holds unrelated hostnames) sets `CF-Connecting-IP` from
+  its own `x-real-ip` (the headers page; verified there) (m-4). It can therefore evade the source
+  limit, or spend a chosen network's registration and authorization budget, such as a broker's
+  egress.
+  - Neither the gateway nor control reads `x-real-ip` (checked in `deploy/gateway/src` and
+    `control/src`).
+  - Since M-1, genuine credentials are not counted by network, so this cannot refuse a refresh.
+  - A future internal caller by service binding sends no `CF-Connecting-IP` and shares one key,
+    `none`.
+- **A flood spread over N locations** gets N times every per-location limit ("Other Cloudflare
+  locations maintain separate counts"; "Requests can exceed your configured limit before those
+  updates arrive"). NAT and carrier-grade NAT share one network's budget at the two endpoints that
+  count networks.
+
+**Alternatives, with what each costs and what an attacker can still do** (cost per request
+modelled: Cloudflare list prices as training knowledge, Workers $0.30 a million requests, Durable
+Objects $0.15 a million requests and $1.00 a million rows written; a service-binding call is not
+billed as a request).
 
 - (a) **The binding alone**, keyed as above. Cost: the page names no price and says a check "uses a
-  locally cached count"; modelled $0 to unknown, 0.01–1 ms. (Measured here only through miniflare,
-  whose binding is a SQLite-backed object: 2.1–4.0 ms for a registration with the source limit asked
-  against 0.18–0.41 ms without, 0.62–0.99 ms for one it refuses; an upper bound for local workerd,
-  not Cloudflare.) Still possible: per location and approximate ("Requests can exceed your configured
-  limit before those updates arrive"; "Other Cloudflare locations maintain separate counts"), so a
-  client spread over N locations gets N budgets and a burst overshoots; a botnet gets 120 a minute
-  per network; NAT and carrier-grade NAT share one budget, which is why the page advises against IP
-  keys (the source limit is set well above what people behind one address do in a minute). Every
-  refused request is still a billed Worker request: the binding saves CPU and object work, not
-  requests. Its `namespace_id` is account-wide in an account with unrelated Workers. Alone, it does
-  not bound writes exactly; with layer 2 it does not need to.
-- (b) **A Durable Object counter** (exact, global). Cost per check: one object request ($0.15 a
-  million), duration (about $0.002 a million at a few ms), and $1.00 a million more if every count
-  is a stored row, as AGENTS.md requires of state an object must not lose: $0.15–1.15 a million
-  checks, on every request including legitimate ones; latency 1–10 ms in the object's region,
-  50–300 ms from another continent (an object stays where it was created). Still possible: a counter
-  object is single-threaded (modelled 300–1,500 simple requests a second, review M-2), so a flood
-  moves to the limiter, and per-network objects multiply with the attacker's networks. Rejected as
-  the first layer; kept where it is free, inside the tenant's object the request reaches anyway
-  (layer 2).
-- (c) **A WAF rate-limiting rule on the zone** (`vis.bitcru.sh` only). Cost: in the plan's price
-  (training knowledge: the number of rules, periods and counting characteristics depend on the
-  plan); a refused request never runs a Worker, so it is the only layer that saves the request
-  charge. Still possible: it counts by IP (higher plans add headers and similar), cannot see a
-  credential's tenant, a form's `client_id` or a token, so it can do the source limit only; outside
-  the Worker and outside what the deploy manages, so its existence and values are not in a release.
-  Recommended in addition, by hand, as the volumetric layer (`control/README.md`, "Known risks"); not
-  built.
-- (d) **Combinations.** The chosen one is (a) plus exact accounting where the object already is. A
-  binding keyed by tenant before the tag check was rejected: it would hand any tenant's budget to
-  whoever writes its name into a made-up credential. Rate-limiting approvals further was not needed:
-  they already need a person's admin key and are bounded exactly per tenant.
-- (e) **Fail closed** on a limiter fault (all or some endpoints): rejected above.
+  locally cached count"; modelled $0 to unknown, 0.01–1 ms. Measured here only through miniflare,
+  whose binding is a SQLite-backed object: 2.1–4.0 ms for a registration with the source limit asked,
+  against 0.18–0.41 ms without, and 0.62–0.99 ms for one it refuses. That is an upper bound for
+  local workerd, not Cloudflare. Still possible: per location and approximate (above). Every refused
+  request is still a billed Worker request. Its `namespace_id` is account-wide in an account with
+  unrelated Workers.
+- (b) **A Durable Object counter** (exact, global). Cost per check: $0.15–1.15 a million (a request,
+  and a stored row if every count must survive), on every request; 1–10 ms in the object's region,
+  50–300 ms from another continent. A counter object is single-threaded, so a flood moves to it.
+  Rejected as the first layer; kept where it is free, inside the tenant's object (layer 2).
+- (c) **A WAF rate-limiting rule on the zone** (`vis.bitcru.sh` only): the only layer that saves the
+  request charge. But it counts by IP and the like and cannot see a credential, and it is outside
+  the release. Recommended in addition, by hand, as the volumetric layer; not built.
+- (d) **A binding keyed by tenant before the tag check**: it hands any tenant's budget to whoever
+  writes its name into a made-up credential. Rejected.
+- (e) **Fail closed** on a limiter fault, for all or some endpoints: rejected above.
+- (f) **Per presented `client_id`**, then per tenant at 5 and 50 a second (the first version): any
+  one dead credential spends the tenant's budgets (R1, R2, R3) or a named client's (R1b), at 5
+  requests a second. Replaced.
+- (g) **Per `client_id` whose MAC verifies**: still spent by any dead credential sent with the
+  victim's public client id (R1b). Rejected.
+- (h) **No tenant keys at all** (the review's option (b), first half). An attacker holding many
+  unexpired dead credentials then loads the tenant's object without bound. A month of one client's
+  refresh tokens at 5 a minute each is 60 replays a second, 4.5–13% of the object per location at
+  0.75–2.1 ms each, and all of it from enough locations. That slows the tenant's whole control plane, not
+  only its OAuth. Fuses near capacity refuse only when the object would be loaded anyway.
+- (i) **A per-location cache of credentials found dead** (the review's option (a), second half;
+  Cache API keyed by the credential's hash). It would cut each dead credential to one object request
+  per location per cache lifetime, and so remove the farming residual above. Not built:
+  - the Cache API page (read 2026-11-19) says Workers on custom domains have functional cache
+    operations, and says nothing of a Worker reached only through service bindings, as viz-control
+    is;
+  - it would add a cache lookup to every token request and every `/mcp` introspection;
+  - revocation's RPC result does not say whether the token was known.
+- (j) **Per-isolate memory of dead credentials**: free, but an isolate is a small share of a
+  location. Not built.
+- (k) **A new credential version** (`vza2`, …): a release that reads only version 1 would refuse it.
+  On a rollback, or during a gradual deployment, the previous control release and the agent
+  surface's `parseCredential` would refuse it, and clients discard tokens refused as `invalid_grant`
+  or 401. So it needs readers first, which is two releases (COMPATIBILITY.md §3.3).
+  - Layout 2 within version 1 needs neither: the previous release's checks accept layout 2
+    (tested).
+  - The cost: 22 random characters instead of 27, which is 131 bits instead of 160. RFC 6749 §10.10
+    asks for at most 2^-128, and the 16-character tag, which only `OAUTH_CLIENT_KEY` makes, adds to
+    it for anyone without the key.
+  - A layout 1 body begins with `e` one time in 62 and is then read with an expiry uniform over 28
+    years. So about 1 in 13,000 layout 1 credentials could be refused as expired early, in the month
+    they can live after the change.
+- (l) **An issue time instead of an expiry**: every reader would need the lifetimes, which a later
+  release may change. Rejected.
+- (m) **A 1 s timeout per check** (the first version): a brownout added 3 s to each refresh and 2 s
+  to each `/mcp` request. Replaced by one budget per request and the skip.
 
-**Why.** The properties that matter are already exact: no made-up credential reaches an object (the
-tag), and what a tenant's object stores is bounded inside it (approvals, clients, grants, and now
-refreshes per grant). What remains is cost, which is approximate by nature, and the cheapest
-approximate counter is the binding: no object request, no row, no latency to speak of. Keying after
-the tag means only a credential this deployment made can spend a tenant's budget, so a tenant's
-OAuth can be denied in one location only by someone holding its genuine credentials, and then only
-its OAuth, not its control plane.
+**Why.** The properties that matter are exact:
+- no made-up credential reaches an object (the tag);
+- no expired credential does either (the expiry under the tag);
+- what a tenant's object stores is bounded inside it (approvals, clients, grants, refreshes per
+  grant).
 
-**Would change if.** The binding's per-location counting is measured to let a flood that matters
-through (then a WAF rule in front, or an exact counter for the tenant budgets); replayed genuine
-credentials become a real cost (then the credential format carries an expiry the Worker can check, a
-new version in `contracts/oauth.ts`); the binding is billed per call at a price that matters; MCP
-clients converge on another rate-limit code; viz moves to a plan or product where zone rules are
-managed with the release (then (c) carries the source limit); or a sign-in replaces approval by API
-key (the authorization page becomes a form and may need its own limits).
+What remains is cost, which is approximate by nature, and the cheapest approximate counter is the
+binding. Keying the narrow limits on the credential itself means each credential spends only its own
+allowance. So a tenant's OAuth can be refused in a location only by someone holding many of its
+unexpired credentials, which in practice means a client it approved. The fuses then refuse only
+where one object would be loaded anyway. Counting networks only where no genuine credential is
+involved keeps shared egress addresses, Cloudflare's own and brokers', from refusing anyone's
+refresh. The expiry inside version 1 gets the Worker its check without the two releases a new
+version would take.
+
+**Would change if.**
+- **Bindings and the Cache API**:
+  - the Cache API is shown to work, and to be cheap, for a Worker reached only through service
+    bindings (then (i), keyed by the credential's hash, for the token endpoint and revocation first);
+  - the farming residual is seen in practice (then (i) or (j));
+  - `limit()` is measured on Cloudflare above about 50 ms (then a larger budget, or the checks in
+    parallel);
+  - the binding is billed per call at a price that matters;
+  - the per-location counts are measured to let a flood that matters through (then a WAF rule in
+    front, or an exact counter for the fuses).
+- **Platform and clients**:
+  - Cloudflare changes the address of Worker subrequests, or documents more of them;
+  - viz-control or viz-mcp is given Smart Placement (then the fuses become nearly global and must be
+    raised, or the placement refused);
+  - MCP clients converge on another rate-limit code, or the Python SDK stops discarding tokens on a
+    429.
+- **viz itself**:
+  - a version 2 of the credential is needed for another reason (then the expiry moves into it and
+    layout 1's reading ends);
+  - viz moves to a plan or product where zone rules are managed with the release (then (c) carries
+    the source limit);
+  - a sign-in replaces approval by API key (the authorization page becomes a form and may need its
+    own limits).
 
 ## D71. Edge counts what it builds while decoding: an item (span, resource and scope, log record, data point) of more than 65,536 key-value entries and array elements is refused at the limit, not built; a request decodes into at most 16 MiB and a JSON body has at most 2^20 structural characters (413 otherwise); a body is at most 8 MiB decompressed
 
@@ -3117,13 +3342,14 @@ items and value bytes while decoding, and refuse at the limit before materialisi
 from `--trace-gc`, peak = the largest heap any GC saw, one run per case; Node 22 alongside). Every
 decoder built every key-value entry and array element of an item as JavaScript objects and
 checked the limits afterwards, so a body of two-byte entries cost 25 to 40 bytes of heap per byte:
-a 4 MiB resource of empty `KeyValue`s peaked at 156 MiB in workerd (238 MiB in Node), a span of
-empty attributes at 168 MiB, OTLP logs and metrics alike (113 to 120 MiB), a Loki entry of empty
-metadata at 115 MiB, JSON of empty attributes at 112 to 135 MiB. At the old default of 32 MiB
+a 4 MiB resource of empty `KeyValue`s peaked at 139 MiB in workerd (245 MiB in Node), a span of
+empty attributes at 159 MiB, OTLP logs and metrics alike (113 to 124 MiB), a Loki entry of empty
+metadata at 120 MiB, JSON of empty attributes at 76 to 135 MiB (one run each; an earlier run of
+the same bodies differed by up to 12%). At the old default of 32 MiB
 decompressed, which a 32 KB gzip body reaches, that is about 1.2 GB (extrapolated). Found while
 fixing it: a resource's labels are copied into every series of it, so a valid 157 KiB OTLP
 metrics body (one 96 KiB resource, 2,000 points) built a 498 MiB series table (Node, ArrayBuffers;
-2.1 GB at 350 KiB), live on `main`; 4 MiB of empty `ScopeSpans` took 19.6 s of CPU (each scope
+2.1 GB at 350 KiB), live on `main`; 4 MiB of empty `ScopeSpans` took 17 to 20 s to decode in Node (each scope
 re-encoded its resource); offset arrays grew with every child message; each accepted span or log
 record was a JavaScript object of about 290 / 100 bytes (30 / 19 MiB retained for 107,546 minimal
 spans and 200,000 minimal records); a 4 MiB span name grew the row buffer to 12 MiB; a data point's
@@ -3151,12 +3377,13 @@ attribute names were matched with `indexOf` (quadratic: 0.5 s for 229 KiB).
   (`edge/bench/differential.mjs`: 1,294 requests against the tree before, 605 metrics requests
   against `main`).
 
-**After, measured here** (same harness): the same hostile 4 MiB bodies peak at 0.0 to 6.0 MiB in
-workerd (the worst, 65,536 nested key-value lists in one span), JSON ones are 413 before parsing,
-the metrics fan-out is 413 at 16 MiB, empty scopes, spans and records cost 27 to 660 ms of Node CPU
-for 2 million of them; realistic bodies of 8,200 items peak at 1.4 to 3.2 MiB (protobuf) and 8.1
-to 17.1 MiB (JSON) in workerd, against 3.1 to 7.4 and 8.3 to 22.0 before. `edge/README.md`,
-"Memory per request", has the tables and the model.
+**After, measured here** (same harness): the same hostile 4 MiB protobuf bodies peak at 0.1 to
+6.0 MiB in workerd (the worst, 65,536 nested key-value lists in one span) and every protobuf body
+measured at 6.9 MiB or less; hostile JSON is 413 before parsing, and JSON just under the token
+limit peaks at 28.2 MiB (the worst JSON shape found); the metrics fan-out is 413 at 16 MiB; 2
+million empty scopes, spans or records take 29 to 465 ms in Node (wall time). Realistic bodies of 8,200
+items peak at 1.4 to 3.2 MiB (protobuf) and 8.1 to 17.1 MiB (JSON) in workerd, against 3.1 to 7.6
+and 8.3 to 28.6 before. `edge/README.md`, "Memory per request", has the table and the model.
 
 **Why 8 MiB.** Realistic batches of 8,200 items measured here are 0.4 MiB (Loki, snappy) to 3.4 MiB
 (traces) as protobuf and 1.6 to 7.1 MiB as JSON; they decode into 1.9 to 3.7 MiB. Clients' defaults

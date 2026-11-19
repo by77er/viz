@@ -1,6 +1,7 @@
 // Component CSS read as CSS: the properties earlier reviews found broken, and their fixes, stated as requirements on the parsed rules, so
 // removing a fix fails the check (presence), and the rules that confine colour, shape and motion hold everywhere (structure).
 // rules: [{ sel: [selector], decls: [[prop, value, node, important]], cond: [at-rule prelude], line }], from lib/lint.mjs.
+import { csstree } from './lint.mjs'
 const N = (s) => String(s).replace(/\s+/g, '').toLowerCase()
 export function structure(rules, { fail, tokens }) {
   let checked = 0
@@ -31,9 +32,18 @@ export function structure(rules, { fail, tokens }) {
     if (transitioned.includes(base)) { checked++; if (!R.some((q) => q.nsel.some((x) => x === coveredBy || x === s) && q.nd.some(([p, v]) => /^transition(-duration)?$/.test(p) && /^(0s|none|0ms)$/.test(v)))) fail(`${s} (line ${r.line}) changes a control that has a transition, and no press rule for it sets transition-duration: 0s: the press would ease in`) } }
   // no colour is ever eased (Motion: animate opacity and position only): a change of theme moves every colour at once, and an eased colour
   // would start a transition on every control and show the old theme after the change is drawn (v8: the theme change's trace)
-  const COLOUR = /^(all|color|background(-color)?|border(-(top|right|bottom|left))?(-color)?|outline(-color)?|fill|stroke|box-shadow|text-decoration(-color)?|caret-color|column-rule(-color)?)$/
-  for (const r of R) for (const [p, v] of r.decls) if (/^transition(-property)?$/.test(p) && String(v).trim() !== 'none') for (const s of r.nsel) { checked++
-    const props = v.split(',').map((x) => x.trim().split(/\s+/)[0]); if (p === 'transition' ? props.some((x) => COLOUR.test(x) || /^\d|^var\(/.test(x)) : props.some((x) => COLOUR.test(x))) fail(`${s} transitions ${v} (line ${r.line}): no colour is eased; a hover, like a press and a change of theme, is drawn in the next frame`) }
+  // v9 (the v8 review's V2b and V3): every property that carries a colour, the logical longhands and shorthands included (border-block-end-color,
+  // border-inline-start, accent-color …), however it is spelled (escapes decoded, a vendor prefix dropped); a property list taken from a custom
+  // property (transition-property: var(--p)) cannot be read, so it fails whatever it holds; and a duration with no property list in its rule
+  // eases the initial list, all. tools/audit.mjs reads the same as computed, at rest, hovered and across a change of theme.
+  const COLOUR = /^(all|.*color|background|border(-(top|right|bottom|left|block|inline)(-(start|end))?)?|outline|fill|stroke|box-shadow|text-shadow|text-decoration|text-emphasis|column-rule|-webkit-text-stroke)$/
+  const ident = (x) => { try { return csstree.ident.decode(x).toLowerCase().replace(/^-(webkit|moz|ms|o)-(?!text-stroke)/, '') } catch { return x.toLowerCase() } }
+  for (const r of R) for (const [p0, v] of r.decls) { const p = p0.replace(/^-(webkit|moz|ms|o)-/, ''); if (!/^transition(-property|-duration)?$/.test(p) || String(v).trim() === 'none') continue
+    if (p === 'transition-duration') { if (String(v).split(',').every((d) => /^\s*0(s|ms)?\s*$/.test(d)) || r.decls.some(([q]) => /^(-webkit-)?transition(-property)?$/.test(q))) continue
+      for (const s of r.nsel) { checked++; fail(`${s} sets transition-duration: ${v} (line ${r.line}) with no transition-property in its rule: it eases every property (the initial list is all), colours included`) } continue }
+    for (const s of r.nsel) { checked++
+      const props = String(v).split(',').map((x) => x.trim().split(/\s+/)[0]), unread = /var\(/.test(p === 'transition' ? props.join(' ') : String(v))
+      if (unread || props.some((x) => COLOUR.test(ident(x)) || (p === 'transition' && /^\d/.test(x)))) fail(`${s} transitions ${v} (line ${r.line}): no colour is eased; a hover, like a press and a change of theme, is drawn in the next frame${unread ? ' (a property list taken from a custom property cannot be read, so it is not allowed)' : ''}`) } }
   // every :active has a [data-pressed] twin (a finger's press, painted from pointerdown by viz-press.js), with the same declarations
   for (const r of R) for (const s of r.nsel) if (s.includes(':active')) { checked++; const twin = s.replace(/:active/g, '[data-pressed]'); if (!R.some((q) => q.nsel.includes(twin) && N(JSON.stringify(q.nd)) === N(JSON.stringify(r.nd)))) fail(`${s} (line ${r.line}) has no [data-pressed] twin with the same declarations: a finger's press would not paint until the release`) }
 
@@ -64,6 +74,9 @@ export function structure(rules, { fail, tokens }) {
   // v8: a chart off screen is skipped (content-visibility: auto), so a change of theme restyles what is on screen; it keeps its reserved
   // height while skipped and draws its rings and hit areas inside its clip margin (the ring and hit-area guards in tools/audit.mjs)
   need(R.some((r) => r.nsel.includes('.vz-chart') && r.ncond.length === 0 && decl(r, 'content-visibility').includes('auto') && decl(r, 'overflow-clip-margin').length), '.vz-chart is not content-visibility: auto with an overflow-clip-margin: a change of theme restyles every chart on the page, on screen or not (the theme budget row)')
+  // and no later or narrower rule undoes it for some charts (v9; the v8 review's V4: .vz-panel .vz-chart { content-visibility: visible }); what
+  // each chart computes is read as rendered by tools/audit.mjs (skip) and tools/check.mjs
+  for (const r of R) for (const s of r.nsel) if (/\.vz-chart(\[[^\]]*\]|:[\w-]+(\([^)]*\))?)*$/.test(s.split(/[\s>+~]+/).pop())) for (const v of decl(r, 'content-visibility')) { checked++; if (v !== 'auto') fail(`${s} sets content-visibility: ${v} (line ${r.line}): a chart is skipped off screen (auto), or a change of theme restyles it there`) }
   need(R.some((r) => r.ncond.some((c) => c.includes('prefers-reduced-motion:reduce')) && r.nsel.includes(N('.vz *')) && r.nd.some(([p, v, imp]) => p === 'transition' && v === 'none' && imp)), 'the reduced-motion block is gone: .vz * { transition: none !important } under prefers-reduced-motion: reduce')
   // the swatch's ground ring; the crosshair dot's ground edge
   { const RING = N('0 0 0 var(--stroke) var(--ground)'), OFF = N('inset 0 0 0 var(--hairline) var(--series-other)'); let base = false

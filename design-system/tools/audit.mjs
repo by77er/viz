@@ -53,6 +53,7 @@ import { createRequire } from 'node:module'
 const { chromium } = createRequire(import.meta.url)('playwright')
 const args = process.argv.slice(2), opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined }
 const root = resolve(opt('--root') ?? new URL('..', import.meta.url).pathname), quick = args.includes('--quick')
+const reloadOnly = args.includes('--reload-only'), reloadPass = !args.includes('--no-reload') // --reload-only: the reload pass alone; --no-reload: without it
 const explicit = args.filter((a, i) => a.endsWith('.html') && args[i - 1] !== '--json')
 const list = (dir) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.html')).sort().map((f) => join(dir, f)) : [])
 const reviews = readdirSync(join(root, 'reviews')).filter((d) => /^system-v\d+$/.test(d)).sort((a, b) => +a.slice(8) - +b.slice(8))
@@ -256,6 +257,12 @@ function guards({ fine, coarse, hitOnly }) {
     if (s.outlineStyle === 'none' || Math.abs(parseFloat(s.outlineWidth) - stroke) > 0.01 || s.outlineColor !== focus || ![stroke, hair, -stroke].some((o) => Math.abs(parseFloat(s.outlineOffset) - o) < 0.01)) return `${name(el)} focused draws outline ${s.outlineStyle} ${s.outlineWidth} ${s.outlineColor} offset ${s.outlineOffset}, not the ring (${stroke}px solid ${focus}, offset ${stroke}px)`
     const ring = parse(s.outlineColor), behind = bgOf(el.parentElement); if (ring && ratio(ring, behind) < 3) return `${name(el)} focused: its ring is ${ratio(ring, behind).toFixed(2)}:1 on what is behind it (needs 3:1)`
     const r = el.getBoundingClientRect(), d = parseFloat(s.outlineOffset) + parseFloat(s.outlineWidth), box = [r.left - d, r.top - d, r.right + d, r.bottom + d]
+    // a ring drawn inside the control (offset below zero) stays off its letters: every line of its own text lies inside the ring's inner edge
+    // (v9; the v8 review's V10: the navigation's side padding removed put the ring over the first 2 px of "Explore")
+    if (parseFloat(s.outlineOffset) < 0) { const inset = -parseFloat(s.outlineOffset), inner = [r.left + inset, r.top + inset, r.right - inset, r.bottom - inset], rg = document.createRange(), tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let t, worst = 0
+      while ((t = tw.nextNode())) { if (!t.textContent.trim() || t.parentElement.closest('.vz-sr')) continue; rg.selectNodeContents(t)
+        for (const q of rg.getClientRects()) if (q.width > 0) worst = Math.max(worst, inner[0] - q.left, inner[1] - q.top, q.right - inner[2], q.bottom - inner[3]) }
+      if (worst > 0.5) return `${name(el)} focused: its ring is drawn inside it and lies ${Math.round(worst * 10) / 10} px over its letters (a ring drawn inside keeps clear of the words)` }
     for (let x = el.parentElement; x && x !== document.body && x !== document.documentElement; x = x.parentElement) { const st = cs(x)
       // paint containment clips as overflow does (contain: paint, content or strict; content-visibility: auto or hidden), at its padding box
       // grown by overflow-clip-margin (v8: charts are content-visibility: auto)
@@ -374,6 +381,38 @@ function tokenTrace({ css, names }) {
     if (v === w) say(p + v, `${p}: ${v} on ${name(e)} does not come from a token`) } })
   return out
 }
+// Charts, as the page opened them, before anything below lays out what is skipped (v9; the v8 review's B1 and V4). For every chart shown:
+//   skip     it computes content-visibility: auto (a later rule that undoes the skipping makes a change of theme restyle every chart);
+//   reserve  its reserved height (min-height, what it is while skipped or before its data arrives) is what it draws, laid out, to a pixel,
+//            whether or not it sets --legend-rows: a chart that reserves less than it draws moves the page when it loads scrolled past it.
+function charts() {
+  const out = [], title = (c) => (c.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? c.id ?? '').trim().replace(/\s+/g, ' ').slice(0, 48)
+  for (const c of document.querySelectorAll('.vz-chart')) { if (!c.getClientRects().length) continue
+    const cs = getComputedStyle(c), cv = cs.contentVisibility, reserved = parseFloat(cs.minHeight) || 0, rows = cs.getPropertyValue('--legend-rows').trim()
+    if (cv !== 'auto') out.push(['skip', `the chart "${title(c)}" computes content-visibility: ${cv}: off screen it is restyled on every change of theme (v8; the v8 review's V4)`])
+    c.style.setProperty('content-visibility', 'visible', 'important'); c.style.setProperty('min-height', '0px', 'important'); const drawn = c.getBoundingClientRect().height
+    c.style.removeProperty('min-height'); c.style.removeProperty('content-visibility')
+    if (Math.abs(reserved - drawn) > 1) out.push(['reserve', `the chart "${title(c)}" reserves ${Math.round(reserved * 10) / 10} px and draws ${Math.round(drawn * 10) / 10} px${rows ? '' : ' (it sets no --legend-rows)'}: skipped off screen or waiting for its data it is the wrong height, and a page that loads scrolled past it moves (the v8 review's B1)`]) }
+  return out
+}
+// Colours eased, as computed (v9; the v8 review's V2b and V3): an element whose transition, however it is written (a custom property in
+// transition-property, a logical longhand, a shorthand, all), names a property that carries a colour with a duration above zero. Read with
+// nothing held still, at rest; tools/audit.mjs also reads it under a hovering mouse and counts the transitions a change of theme starts.
+const COLOUR_PROP = String.raw`^(all|.*color|background|border(-(top|right|bottom|left|block|inline)(-(start|end))?)?|outline|fill|stroke|box-shadow|text-shadow|text-decoration|text-emphasis|column-rule|-webkit-text-stroke)$`
+function eased(colour) {
+  const out = [], re = new RegExp(colour), seen = new Set()
+  for (const el of document.querySelectorAll('.vz, .vz *')) { const s = getComputedStyle(el); if (s.transitionProperty === 'none') continue
+    const props = s.transitionProperty.split(',').map((x) => x.trim()), ds = s.transitionDuration.split(',').map((x) => parseFloat(x) || 0)
+    const hit = props.filter((p, i) => re.test(p) && ds[i % ds.length] > 0); if (!hit.length) continue
+    const k = `${el.tagName}.${el.className?.baseVal ?? el.className}|${hit.join()}`; if (seen.has(k)) continue; seen.add(k)
+    out.push(['motion', `<${el.tagName.toLowerCase()}${typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).join('.') : ''}> eases ${hit.join(', ')} over ${s.transitionDuration}: no colour is eased (Motion; a change of theme would start a transition on it)`]); if (out.length >= 6) break }
+  return out
+}
+// A change of theme, as drawn: the theme is set and the transitions running in the frame it is drawn are counted (v9; the v8 review's V2b
+// and V3: speed.mjs counts them on the fixture only, which has no input). Returns [count, what the first one eases].
+function themeTo(th) { document.documentElement.dataset.theme = th
+  return new Promise((done) => requestAnimationFrame(() => { const t = document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running'), a = t[0]
+    done([t.length, a ? `<${a.effect?.target?.tagName?.toLowerCase()}${typeof a.effect?.target?.className === 'string' ? '.' + a.effect.target.className.trim().split(/\s+/).join('.') : ''}> ${a.transitionProperty}` : '']) })) }
 // What content-visibility: auto skips off screen is drawn as it is on screen: the audit scrolls a control to the middle and hit-tests it
 // in the same task, before the browser could render what came into view, so every such element is laid out now, keeping the containment
 // (layout, style, paint) and the clip margin it has on screen (v8: charts are content-visibility: auto)
@@ -426,11 +465,13 @@ async function hoverGuards(page) {
   for (let i = 0; i < n; i++) {
     const at = await page.evaluate((i) => { const el = document.querySelector(`[data-vz-hover="${i}"]`); el.scrollIntoView({ block: 'center', inline: 'nearest' }); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } }, i)
     await page.mouse.move(at.x, at.y)
-    const bad = await page.evaluate((i) => new Promise((done) => requestAnimationFrame(() => { const el = document.querySelector(`[data-vz-hover="${i}"]`), msgs = []
+    const bad = await page.evaluate(([i, colour]) => new Promise((done) => requestAnimationFrame(() => { const el = document.querySelector(`[data-vz-hover="${i}"]`), msgs = []
+      { const s = getComputedStyle(el), ds = s.transitionDuration.split(',').map((x) => parseFloat(x) || 0), hit = s.transitionProperty.split(',').map((x) => x.trim()).filter((p, k) => new RegExp(colour).test(p) && ds[k % ds.length] > 0) // a transition set on hover only (v9)
+        if (hit.length) msgs.push(['motion', `hovered: <${el.tagName.toLowerCase()}.${[...el.classList].join('.')}> eases ${hit.join(', ')} over ${s.transitionDuration}: no colour is eased`]) }
       el.focus({ focusVisible: true, preventScroll: true }); if (document.activeElement === el && el.matches(':focus-visible')) { const b = window.__vzRing(el); if (b) msgs.push(['focus', 'hovered: ' + b]) }
       const sw = el.closest('tr')?.querySelector('.vz-swatch[data-series="5"], .vz-swatch[data-series="6"], .vz-swatch[data-series="7"], .vz-swatch[data-series="8"]'); if (sw && !sw.closest('[data-off]') && !sw.closest('[data-error]')) { const b = window.__vzSwatch(sw); if (b) msgs.push(['guard', 'hovered: ' + b]) }
       const chart = el.closest('.vz-chart'); if (chart && el.matches('.vz-series')) { const b = window.__vzEmph(chart); if (b) msgs.push(['guard', 'hovered: ' + b]) }
-      el.blur(); done(msgs) })), i)
+      el.blur(); done(msgs) })), [i, COLOUR_PROP])
     out.push(...bad)
   }
   await page.mouse.move(1, 1)
@@ -449,19 +490,22 @@ const types = { '.html': 'text/html; charset=utf-8', '.json': 'application/json'
 const server = createServer((req, res) => { const p = join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname)); if (!p.startsWith(root) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404); res.end(); return } res.writeHead(200, { 'content-type': types[extname(p)] ?? 'application/octet-stream' }); res.end(readFileSync(p)) })
 const port = await new Promise((ok) => server.listen(0, '127.0.0.1', () => ok(server.address().port))), urlOf = (p) => `http://127.0.0.1:${port}/${relative(root, p)}`
 const browser = await chromium.launch(), results = [], started = Date.now()
-for (const c of configs) {
+for (const c of reloadOnly ? [] : configs) {
   const ctx = await browser.newContext({ viewport: { width: c.zoom ? c.w : c.w, height: 900 }, deviceScaleFactor: c.zoom ?? 1, ...(c.coarse ? { hasTouch: true, isMobile: true } : {}) })
   const page = await ctx.newPage(); let errors = []
   page.on('pageerror', (e) => errors.push(e.message))
   for (const p of pages) {
     errors = []
-    try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => document.fonts.ready); await page.evaluate(onScreen); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
-    const found = await page.evaluate(audit, { coarse: !!c.coarse, words: true })
+    let skipped = []
+    try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => document.fonts.ready); skipped = await page.evaluate(charts); await page.evaluate(onScreen); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
+    const found = [...skipped, ...await page.evaluate(audit, { coarse: !!c.coarse, words: true })]
     const fine = c.w === 1500 && !c.zoom && !c.coarse, touch = c.w === 400 && !!c.coarse
     if (fine || c.coarse) for (const theme of ['light', 'dark']) { // every guard in both themes, at both pointers (v7 review, M3)
-      await page.evaluate((th) => { document.documentElement.dataset.theme = th }, theme)
-      if (fine) await page.keyboard.press('Shift') // keyboard modality, so a focused control shows its ring as from the keyboard
       const tag = (list) => list.map(([k, m]) => [k, `${theme}: ${m}`])
+      const [running, first] = await page.evaluate(themeTo, theme) // light, then dark: the second is a change of every colour (v9)
+      if (running) found.push(['motion', `a change of theme to ${theme} leaves ${running} transition(s) running in the frame it is drawn (the first: ${first}): no colour is eased`])
+      if (fine || touch) found.push(...tag(await page.evaluate(eased, COLOUR_PROP))) // as computed, nothing held still (v9)
+      if (fine) await page.keyboard.press('Shift') // keyboard modality, so a focused control shows its ring as from the keyboard
       found.push(...tag(await page.evaluate(guards, { fine, coarse: !!c.coarse, hitOnly: !fine && !touch }))) // hit areas at every coarse width
       if (fine || touch) {
         found.push(...tag(await pointerPress(page, touch ? 'touch' : 'mouse')))
@@ -476,13 +520,48 @@ for (const c of configs) {
   await ctx.close()
   process.stdout.write(`\r${label(c).padEnd(16)} done, ${results.length} finding(s) so far, ${Math.round((Date.now() - started) / 1000)} s`)
 }
-for (const rm of [{ w: 1500 }, { w: 400, coarse: true }]) { // reduced motion: one more pass at each pointer, in both themes
+for (const rm of reloadOnly ? [] : [{ w: 1500 }, { w: 400, coarse: true }]) { // reduced motion: one more pass at each pointer, in both themes
   const ctx = await browser.newContext({ viewport: { width: rm.w, height: 900 }, reducedMotion: 'reduce', ...(rm.coarse ? { hasTouch: true, isMobile: true } : {}) }), page = await ctx.newPage()
   for (const p of pages) { try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(onScreen) } catch { continue }
     for (const theme of ['light', 'dark']) { await page.evaluate((th) => { document.documentElement.dataset.theme = th }, theme)
       for (const [kind, msg] of await page.evaluate(stillness)) results.push({ page: p, config: `${rm.w}${rm.coarse ? ' coarse' : ''} reduced motion`, kind, msg: `${theme}: ${msg}` }) } }
   await ctx.close() }
+// Reload while scrolled to a chart, and a jump to a chart after load (v9; the v8 review's B1). Every system page with a chart, at both
+// layouts (1500 px with a fine pointer, 400 px with a coarse one); every chart on it (--quick: the middle one and the last). For each: the
+// page loads at its top; the chart is jumped to (scrolled to the top of the window, as a link or a search on the page does), and the layout
+// shift and how far the chart moves after the jump are read 500 ms later; then the page is reloaded, the browser restores the position,
+// and 2 s after the load (as the review read it) the reload's layout shift and where the chart landed are read. Fails at a layout shift of 0.05 or more (the
+// rubric's Narrow and zoom row: judged at any load), or a chart that does not land where it was (more than 1 px).
+const reloads = []
+for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
+  const ctx = await browser.newContext({ viewport: { width: L.w, height: 900 }, ...(L.coarse ? { hasTouch: true, isMobile: true } : {}) })
+  await ctx.addInitScript(() => { const z = (window.__vzShift = []); try { new PerformanceObserver((l) => { for (const e of l.getEntries()) z.push([e.startTime, e.value, e.hadRecentInput]) }).observe({ type: 'layout-shift', buffered: true }) } catch {} })
+  const page = await ctx.newPage(), settle = async (p, ms) => { await page.evaluate(() => document.fonts.ready); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(ms) }
+  const lay = `${L.w}${L.coarse ? ' coarse' : ''}`
+  for (const p of pages.filter((x) => !/\/flows\//.test(x))) {
+    let n = 0; try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); n = await page.evaluate(() => [...document.querySelectorAll('.vz-chart')].filter((c) => c.getClientRects().length).length) } catch { continue }
+    if (!n) continue
+    for (const i of quick ? [...new Set([Math.floor(n / 2), n - 1])] : [...Array(n).keys()]) {
+      try {
+        await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await settle(p, 200)
+        const jump = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i], t0 = performance.now(); scrollTo(0, c.getBoundingClientRect().top + scrollY); window.__vzT = [t0, c.getBoundingClientRect().top]
+          return (c.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? c.id ?? `chart ${i + 1}`).trim().replace(/\s+/g, ' ').slice(0, 48) }, i)
+        await page.waitForTimeout(500)
+        const j = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; return { shift: window.__vzShift.filter(([t, , input]) => t >= window.__vzT[0] && !input).reduce((a, [, v]) => a + v, 0), moved: c.getBoundingClientRect().top - window.__vzT[1], top: c.getBoundingClientRect().top } }, i)
+        await page.reload({ waitUntil: 'load', timeout: 60000 }); await settle(p, 2000)
+        const r = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; return { shift: window.__vzShift.filter(([, , input]) => !input).reduce((a, [, v]) => a + v, 0), top: c.getBoundingClientRect().top } }, i)
+        const row = { page: p, layout: lay, chart: i + 1, of: n, title: jump, jumpShift: j.shift, jumpMoved: j.moved, reloadShift: r.shift, landed: r.top - j.top }; reloads.push(row)
+        if (j.shift >= 0.05 || Math.abs(j.moved) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `jumping to chart ${i + 1} of ${n} ("${jump}") shifts the page ${j.shift.toFixed(4)} and the chart moves ${Math.round(j.moved)} px after the jump` })
+        if (r.shift >= 0.05 || Math.abs(row.landed) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `reloaded while scrolled to chart ${i + 1} of ${n} ("${jump}"): layout shift ${r.shift.toFixed(4)}, and the chart lands ${Math.round(row.landed)} px from where it was` })
+      } catch (e) { results.push({ page: p, config: lay, kind: 'load', msg: `reload pass, chart ${i + 1}: ${e.message.split('\n')[0]}` }) }
+    }
+    process.stdout.write(`\rreload pass ${lay.padEnd(10)} ${relative(root, p).slice(-40).padEnd(40)} ${Math.round((Date.now() - started) / 1000)} s`)
+  }
+  await ctx.close()
+}
 await browser.close(); server.close()
+if (reloads.length) { console.log(`\n\nReload while scrolled to a chart, and a jump to it after load (${reloads.length} loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):\n\n| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |\n|---|---|---|---|---|---|---|`)
+  for (const r of reloads) console.log(`| ${relative(root, r.page)} | ${r.layout} | ${r.chart} of ${r.of}, ${r.title} | ${r.jumpShift.toFixed(4)} | ${Math.round(r.jumpMoved)} | ${r.reloadShift.toFixed(4)} | ${Math.round(r.landed)} |`) }
 for (const msg of stale) results.unshift({ page: join(root, 'dist'), config: 'build', kind: 'stale', msg })
 const rel = (p) => relative(root, p), flows = (r) => /\/flows\//.test(r.page)
 console.log(`\n\n${pages.length} pages x ${configs.length} configurations (${configs.map(label).join('; ')})`)
@@ -491,5 +570,5 @@ for (const group of [['System pages', (r) => !flows(r)], ['Flow screens (read on
   const byPage = {}; for (const r of rs) (byPage[rel(r.page)] ??= []).push(r)
   for (const [p, list] of Object.entries(byPage)) { console.log(`  ${p}`); const seen = new Set(); for (const r of list) { const k = r.kind + r.msg.replace(/\d+(\.\d+)?/g, '#'); if (seen.has(k)) continue; seen.add(k); console.log(`    ${r.kind.padEnd(13)} ${r.config.padEnd(15)} ${r.msg}${list.filter((x) => x.kind + x.msg.replace(/\d+(\.\d+)?/g, '#') === k).length > 1 ? `  (and at ${list.filter((x) => x.kind + x.msg.replace(/\d+(\.\d+)?/g, '#') === k).slice(1).map((x) => x.config).join(', ')})` : ''}`) } }
 }
-if (opt('--json')) writeFileSync(opt('--json'), JSON.stringify({ at: new Date().toISOString(), root, pages: pages.map(rel), configs: configs.map(label), results: results.map((r) => ({ ...r, page: rel(r.page) })) }, null, 1))
+if (opt('--json')) writeFileSync(opt('--json'), JSON.stringify({ at: new Date().toISOString(), root, pages: pages.map(rel), configs: reloadOnly ? [] : configs.map(label), results: results.map((r) => ({ ...r, page: rel(r.page) })), reloads: reloads.map((r) => ({ ...r, page: rel(r.page) })) }, null, 1))
 process.exit(results.some((r) => !flows(r)) ? 1 : 0)

@@ -99,8 +99,10 @@ r.data_json();   // {"resultType":"matrix","result":[...],"stats":{...}}: Loki's
   escapes, escaped punctuation (`\<` is a literal), a `{` that starts no repetition, literal
   `[ && ~~ --` in classes, repeated and cancelled flags work as in Go; what Go refuses is
   refused (flags other than `i m s U`, unknown escapes, stacked repetitions, counts above 1000
-  alone or multiplied through nesting, unbalanced parentheses). The rules and their evidence
-  are in `engine/goregex/README.md`.
+  alone or multiplied through nesting, unbalanced parentheses). Group names follow Go's rule
+  (one or more of `[A-Za-z0-9_]`): matchers and line filters only match and accept every name
+  Go accepts, a leading digit (`(?P<1>…)`) and a repeated name included. The rules and their
+  evidence are in `engine/goregex/README.md`.
 
 ## Not implemented
 
@@ -118,6 +120,10 @@ Each returns `Error::Unsupported` (or a parse error where Loki's grammar has no 
   `engine/goregex` they compiled with Rust's semantics: `cargo tree` shows the `regex` crate
   built with its default features in this crate (through promql-parser's `cfgrammar`), so
   the Unicode tables were linked, although this README said they failed to compile.
+- Regex group names that Go accepts and the `regex` crate cannot hold (one that starts with a
+  digit, `(?P<1>…)`, or a name used twice) where the names are used: `Error::Unsupported` in
+  the `regexp` stage and in `label_replace`, a `TemplateFormatErr` in template functions.
+  What Loki extracts for them was not observed. Matchers and line filters accept them.
 - Instant log queries (Loki's HTTP API refuses them too); `interval` for log range queries;
   live tail; the label, series, volume, patterns and detected-fields endpoints (the engine
   answers queries only).
@@ -173,7 +179,8 @@ rustc 1.97.0, Go 1.24.7 (and go1.26.10 for the harness), Node 22.23. Measured he
 Cloudflare, on 2026-11-19.
 
 `cargo test` runs offline and needs no Go: unit tests (22; the regex translator's 3 moved to
-`engine/goregex` with it, section (g)), `tests/api.rs` (8),
+`engine/goregex` with it, section (g)), `tests/api.rs` (9; the ninth, regex group names,
+section (h)),
 `tests/semantics.rs` (10, rules observed in Loki), `tests/limits.rs` (5, pathological
 nesting), `tests/conformance.rs` (1; it reports itself skipped unless
 `tools/oracle/fetch.sh` was run), `tests/props.rs` (8 properties) and
@@ -441,6 +448,26 @@ The old translator was quadratic in one case: at every `[:` inside a class it co
 searched the rest of the pattern for `:]`. Measured here (release build, scratch program, both
 translators on `[` + `[:a` repeated + `]`): 61 ms at 16 KiB, 244 ms at 32 KiB, 1.25 s at 64 KiB
 and 4.9 s at 128 KiB; the shared translator takes 0.8, 1.6, 3.9 and 10 ms.
+
+### (h) Regex group names (2026-11-19, review nit on PR #4)
+
+Go accepts a group name of one or more of `[A-Za-z0-9_]`, one that starts with a digit
+(`(?P<1>…)`) and a name used twice included; the `regex` crate refuses those two
+(`engine/goregex/README.md`). Before, every LogQL regex kept its names, so `{app=~"(?P<1>a)"}`
+was a parse error with the regex crate's wording. Now matchers, label filters and line filters
+(which only match) drop names and accept them as Go does; the `regexp` stage and
+`label_replace`, which use the names, answer `Error::Unsupported` for such a name (before: a
+parse error), since what Loki extracts for them was not observed; template functions report
+it as a `TemplateFormatErr`, as before. A `label_replace` regex is now checked with its names
+at parse time, as it is evaluated. `tests/api.rs` `regex_group_names_follow_go`. Checked on
+the final code against the code before (commit e32d27f, scratch copies, same machine):
+
+| Check | Before | After |
+|---|---|---|
+| `cargo test -j 2 --offline` | (section (g)'s counts, not re-run) | unit 22, api 9 (8 and the new test), conformance 1 (skips without the oracle), limits 5, props 8, semantics 10, doc 1: all pass |
+| Loki oracle (`tools/oracle/fetch.sh` into the scratch copies, then `--test conformance`) | 371 pass, 10 pinned failures, 9 skipped, 10 not extracted | identical table |
+| Differential exports, seeds 7, 11, 12, 21, 33 at 60 rounds (7,895 evaluations, 436 with a named group) | | **byte-identical** case files; the Loki harness was not rebuilt |
+| Mutants 31–33 (`tools/mutate.py --only 31,32,33`) | | MUTANTS_PENDING |
 
 ## Differences from Loki (by design or undecidable)
 

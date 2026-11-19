@@ -102,16 +102,20 @@ export interface TenantLimits extends QueryLimits {
    */
   maxMetadataSeries: number
   /**
-   * Traces (README, "Traces and logs"): spans one query may decode, checked against the rows
-   * of the row groups it would read (from the index fragments, before anything is fetched) and
-   * again by the engine as it decodes (the tail's spans count too). Measured here: a search that
-   * held 40,000 spans peaked at 62 MiB of WASM memory (about 1.5 KiB a span, the files included).
+   * Traces (README, "Memory"): spans one query may hold, checked against the rows of the row
+   * groups it would read (from the index fragments, before anything is fetched) and again by
+   * the engine as it decodes (the tail's spans inside the query's bound count too). Re-derived
+   * from `maxDecodedBytes` (2026-11-19, review M-2): a span with an OTel-like resource of about
+   * 3 KiB (held once per resource) and 12 to 14 attributes was charged 1.7 KiB and held 1.6 KiB
+   * of WASM memory (measured here), so 32 MiB holds about 19,000; 18,000 leaves the answer room.
+   * (It was 40,000, from synthetic spans of 6 to 8 attributes whose resource was copied per span.)
    */
   maxSpans: number
   /**
-   * Logs: log rows one query may decode, checked the same way. Measured here: a query that
-   * kept 80,000 rows peaked at 83 MiB of WASM memory (about 1 KiB a row); one that kept the rows
-   * of one stream of the same files, at 15 MiB.
+   * Logs: log rows one query may hold, checked the same way (rows no selector reads are not
+   * held). Re-derived the same way: a row of 150 to 400 bytes with two metadata keys was charged
+   * 0.8 KiB and held 0.64 KiB (measured here); 30,000 rows are 24 MiB, which leaves 8 MiB for an
+   * answer of 5,000 lines. (It was 60,000.)
    */
   maxLogRows: number
   /**
@@ -172,9 +176,9 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxCardinalityPairs: 400_000,
   cardinalitySplitAboveSeries: 50_000,
   maxMetadataSeries: 200_000,
-  maxSpans: 40_000,
-  maxLogRows: 60_000,
-  maxDecodedBytes: 40 << 20,
+  maxSpans: 18_000,
+  maxLogRows: 30_000,
+  maxDecodedBytes: 32 << 20,
   traceMarginMs: 2 * 3_600_000,
   maxTraceSeries: 10_000,
   maxTracePoints: 11_000,

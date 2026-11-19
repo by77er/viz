@@ -204,7 +204,7 @@ struct Translator<'a> {
     /// work; [`Translator::assemble`] writes them in one pass at the end.
     opens: Vec<(usize, u32)>,
     /// Names kept so far (with `names`), to refuse a repeat Rust cannot hold.
-    seen: std::collections::HashSet<String>,
+    seen: std::collections::BTreeSet<String>,
 }
 
 fn invalid(msg: impl Into<String>) -> Error {
@@ -226,7 +226,7 @@ impl<'a> Translator<'a> {
             posix_from: 0,
             posix_next: None,
             opens: Vec::new(),
-            seen: std::collections::HashSet::new(),
+            seen: std::collections::BTreeSet::new(),
         }
     }
 

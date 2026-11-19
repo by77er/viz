@@ -570,28 +570,52 @@ fails the call (503, the RPC throws twice).
 Tempo's and Loki's HTTP APIs over a tenant's `spans`, `trace_index` and `logs` files
 (`contracts/TRACES.md`, `contracts/LOGS.md`) and the tails of its `{pool}/traces/{slot}` and
 `{pool}/logs/{slot}` shards (D57). **Off by default**: `QUERY_SIGNALS` (`traces`, `logs`, or
-both) turns the paths on; without it they are 404 as before. The write side of stage 2 (shards,
-flush, the ledger's tables: D63) landed the same day; what is left before production is the
-gateway's routes and the deployment ("Needed changes elsewhere"). Written from the APIs'
-documentation only (`CLEANROOM.md`).
+both) turns the paths on; without it they are 404 as before. The write side (D63) and the
+gateway's routes (stage 3) are built. Written from the APIs' documentation only (`CLEANROOM.md`).
+
+**The adversarial review of this work rejected it as first written**
+(`design/reviews/signals-end-to-end.md`, D62 "Reject as written"): a found trace's spans outside
+the window were never read (M-1), and the caps bounded rows and compressed bytes, not memory
+(M-2); also m-3 (the tail is read whole) and m-4 (Loki and Grafana compatibility). All four are
+dealt with below, each with the review's inputs as tests ("Completeness", "Memory", "The tail",
+"Grafana"); D62 is rewritten. **`QUERY_SIGNALS` may not be turned on yet**: see "What remains
+before the flag".
+
+### What remains before the flag
+
+1. **A second review of D62** (the review asks for one after the fixes). Not done.
+2. **A Cloudflare trial** (nothing here ran on Cloudflare): the margin's `trace_index` reads
+   (a search over a tenant with S span shards and uncompacted recent hours, at `traceMarginMs`
+   0, 1 and 2 hours: files read, bytes, wall time), and the memory of the review's inputs in a
+   real 128 MB isolate (`X-Viz-Wasm-Memory-Bytes` against the figures under "Memory").
+3. **A Grafana run** against a staged deployment ("Grafana", below). Not done.
+4. **The contract**: `contracts/engine.ts` does not have this module's `SignalBudget` yet
+   ("Contract issues", 11); another builder held the file. Nothing breaks without it (the binding
+   adds an optional argument), but the contract does not describe the call.
+5. **The tail's limit** ("The tail") is a usability limit, not a safety one: it refuses, it never
+   misanswers. It may be accepted for a first release; the fix is in `shard/`.
+
+### Endpoints
 
 | Endpoint | Supports | Not supported (answered `unsupported`, 422, or as noted) |
 |---|---|---|
-| `GET /api/traces/<id>`, `/api/v2/traces/<id>` | ids of up to 32 hex digits (shorter ones left-padded, Tempo's 64-bit ids); `start`/`end` (seconds) narrow the `trace_index` read; v1 `{"batches":[…]}`, v2 `{"trace":{"batches":[…]}}`; 404 when not found | `q`, `keep_hierarchy`, `match_depth`, `ancestor_depth`, `span_pruning*` (other than `span_pruning=false`); `Accept: application/protobuf` and the LLM format (JSON is always answered) |
+| `GET /api/traces/<id>`, `/api/v2/traces/<id>` | ids of up to 32 hex digits (shorter ones left-padded, Tempo's 64-bit ids); `start`/`end` (seconds) narrow the `trace_index` read to the hint and the margin ("Completeness"); v1 `{"batches":[…]}`, v2 `{"trace":{"batches":[…]}}`; 404 when not found | `q`, `keep_hierarchy`, `match_depth`, `ancestor_depth`, `span_pruning*` (other than `span_pruning=false`); `Accept: application/protobuf` and the LLM format (JSON is always answered) |
 | `GET /api/search` | `q` (TraceQL; default `{ }`), `limit` (20), `spss` (3), `start`/`end` (seconds; default the last hour) | `tags`, `minDuration`, `maxDuration` (tag-based search) |
 | `GET /api/search/tags`, `/api/v2/search/tags` | `scope` (`resource`, `span`, `intrinsic`, `event`, `link`, `instrumentation`), `start`/`end`, `limit` per scope | `maxStaleValues` (ignored), `q` on v2 tags (ignored) |
 | `GET /api/search/tag/<tag>/values`, `/api/v2/search/tag/<tag>/values` | v1: string values of a span or resource attribute; v2: TraceQL identifiers (`.k`, `span.k`, `resource.k`, `event.k`, `link.k`, `instrumentation.k`, `name`, `status`, `kind`, `statusMessage`) with types, and `q` (a filter that does not parse filters nothing, as Tempo documents) | other intrinsics as tags (400), `maxStaleValues` (ignored) |
 | `GET /api/metrics/query_range`, `/api/metrics/query` | `q`, `start`/`end` (seconds, nanoseconds of 13 or more digits, or RFC 3339) or `since` (default 1 h), `step` (Go or Prometheus durations; default the range over 250 points), aligned as Tempo's frontend aligns it | `exemplars` (ignored; none are returned) |
-| `GET|POST /loki/api/v1/query_range` | `query`, `start`/`end`/`since` (integers are nanoseconds, floats seconds, RFC 3339; default the last hour), `step` (default as above), `limit` (100, at most 100,000), `direction` | `interval` |
+| `GET /api/echo` | `echo` (`text/plain`), as Tempo documents it; behind the key like every path, so a data source's test also checks its key (since 2026-11-19, review m-4) | |
+| `GET|POST /loki/api/v1/query_range` | `query`, `start`/`end`/`since` (an integer of ten or fewer digits is seconds, a longer one nanoseconds, a float seconds, or RFC 3339; default the last hour), `step` (default as above), `limit` (100, at most 100,000), `direction` | `interval` |
 | `GET|POST /loki/api/v1/query` | `query` (metric queries; a log query is 400 as in Loki), `time` (default now), `limit`, `direction` | |
 | `GET|POST /loki/api/v1/labels`, `/loki/api/v1/label/<name>/values` | `start`/`end`/`since` (default 6 h), `query` (a stream selector) | |
 | `GET|POST /loki/api/v1/series` | `match[]` (at least one; the union), `start`/`end`/`since` | |
 
-Tempo bodies are Tempo's (no envelope) and its errors plain text; Loki's are
-`{"status":"success","data":…}` and errors the same envelope as the Prometheus API. Every answer
-carries the cost headers, with two new ones: `X-Viz-Scan-Rows` (rows of the row groups the
-fragments say the query reads) and `X-Viz-Rows-Decoded` (spans or log rows the engine decoded,
-the tail's included). `X-Viz-Pruning` is `fragments`, `hours` (trace by ID) or `off`.
+Tempo bodies are Tempo's (no envelope) and its errors plain text. Loki's answers are
+`{"status":"success","data":…}` and, since 2026-11-19, its errors are plain text with the status
+("Grafana"). Every answer carries the cost headers, with two new ones: `X-Viz-Scan-Rows` (rows
+of the row groups the fragments say the query reads) and `X-Viz-Rows-Decoded` (spans or log rows
+the engine decoded, the tail's included, whether or not it held them). `X-Viz-Pruning` is
+`fragments`, `hours` (trace by ID) or `off`.
 
 ### How a query runs
 
@@ -606,24 +630,30 @@ times per shard at most, then 503; never an empty or partial tail). One place ev
   list (labels matched as LogQL matches them) and times (`lqFilePlan`: byte ranges with the
   footer, or the whole object when they would cover half of it); the engine drops, before it
   holds them, rows of streams no selector matches and rows outside every selector's range (both
-  are parts of the row key, so de-duplication is unchanged). The token filter is not used: no
-  builder exists.
-- **Search, and metrics that are not span-local.** `plan(trace_index, window)`; the row groups
-  whose fragments overlap the window; with the tail, the engine finds the traces whose extent
-  overlaps it and the hull of their extents (`tqExtent`); `plan(spans, hull)`, which must be at
+  are parts of the row key, so de-duplication is unchanged). The per-file token filter
+  (`contracts/LOGS.md` §6, D65: compaction writes it inside each logs file it merges) is not read
+  here: it would skip row groups for line filters (`|= "x"`), which this read path does not
+  push down yet. Not read on purpose for now; it is the next pruning step for logs, not a gap
+  in correctness.
+- **Search, and metrics that are not span-local** ("Completeness"). The bound is the window
+  widened by `traceMarginMs` on each side. `plan(trace_index, bound)`; the row groups whose
+  fragments overlap the bound; with the tail, the engine merges per trace every fragment and
+  tail span inside the bound, finds the traces whose merged extent overlaps the window, and gives
+  the hull of their extents cut to the bound (`tqExtent`); `plan(spans, hull)`, which must be at
   the same ledger version (else the query starts again); the span row groups whose starts
-  overlap the hull. So every span of every trace the answer can name is read, and a trace's
-  summary (root, duration, per-service counts) is computed from its spans, exactly as the
-  engine's in-memory source computes it (`trace_index` counts over-count retried spans: they
-  are used only to plan).
+  overlap the hull; the engine call with the bound, which drops every span that starts outside
+  it before de-duplication. A trace's summary (root, duration, per-service counts) is computed
+  from its spans, as the engine's in-memory source computes it (`trace_index` counts are upper
+  bounds, a span retried into two units counted twice; they are used only to plan).
 - **Span-local metrics** (`{…} | rate() by (…)` without structural operators or trace-level
   intrinsics): `plan(spans, window)` only, and the engine keeps the spans that start in the
   window, after de-duplication.
-- **Trace by ID.** `plan(trace_index, start/end or all time)`; only the row groups whose
-  `[min_tid, max_tid]` holds the id (from the fragment, before any read); the trace's fragments
-  (and its tail spans) give its extent and its `spans` hours; `plan(spans, extent)` and of those
-  files only the ones whose hour the fragments name (a flush writes one `spans` file per hour, so
-  a file's hour is that of its `minTs`), their row groups by time.
+- **Trace by ID.** `plan(trace_index, bound)`: all time without `start`/`end`, the hint widened
+  by the margin with them; only the row groups whose `[min_tid, max_tid]` holds the id (from the
+  fragment, before any read); the trace's fragments (and its tail spans) inside the bound give
+  its extent and its `spans` hours; `plan(spans, extent)` and of those files only the ones whose
+  hour the fragments name (a flush writes one `spans` file per hour, so a file's hour is that of
+  its `minTs`), their row groups by time; the engine call with the bound.
 - **Tags and tag values**: `plan(spans, window)`, the spans that start in the window.
 
 ### Which shard holds which signal

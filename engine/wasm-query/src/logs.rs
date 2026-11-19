@@ -301,7 +301,7 @@ pub(crate) fn do_lq_query(mut r: Req<'_>) -> Res<Vec<u8>> {
     })?;
     drop(src);
     // The answer, before it is written: lines as JSON escapes them, points as text.
-    mem.charge(answer_bytes(&out.data))?;
+    mem.charge_answer(answer_bytes(&out.data))?;
     let json = out.data_json();
     let mut payload = Vec::with_capacity(8 + json.len());
     payload.extend_from_slice(&decoded.to_le_bytes());

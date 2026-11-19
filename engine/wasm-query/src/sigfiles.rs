@@ -43,6 +43,10 @@ impl Mem {
     pub fn left(&self) -> u64 {
         self.max.saturating_sub(self.used)
     }
+    /// Charge an answer of `n` bytes ([`ANSWER_COPIES`]).
+    pub fn charge_answer(&mut self, n: u64) -> Res<()> {
+        self.charge(n.saturating_mul(ANSWER_COPIES))
+    }
     pub fn charge(&mut self, n: u64) -> Res<()> {
         self.used = self.used.saturating_add(n);
         if self.used > self.max {
@@ -59,6 +63,11 @@ impl Mem {
         Ok(())
     }
 }
+
+/// An answer is charged this many times its length: it is in WASM memory twice while it is
+/// handed over (the text, then the result buffer it is copied into), and in the Worker's heap
+/// once more as a string, two bytes a character when it is not Latin-1.
+pub(crate) const ANSWER_COPIES: u64 = 4;
 
 /// Fixed bytes charged per attribute held (key and value headers, allocator overhead), per
 /// span, per log row, per event and per link; the strings' lengths are added to them.

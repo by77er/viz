@@ -4,6 +4,9 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs'
 const root = new URL('..', import.meta.url).pathname
 const css = readFileSync(root + 'dist/viz.css', 'utf8'), press = readFileSync(root + 'dist/viz-press.js', 'utf8')
+// Both typefaces preloaded in the head (project/README.md, Type), so text is drawn in them from the first frame and does not rewrap when
+// they arrive: a description that rewrapped on reload moved every chart under it (v9: the reload pass of tools/audit.mjs)
+const preload = (dir) => ['SchibstedGrotesk-Variable', 'JetBrainsMono-Variable'].map((f) => `<link rel="preload" as="font" type="font/woff2" crossorigin href="${dir}fonts/${f}.woff2">`).join('')
 const order = ['Cover', 'Nav', 'PageHeader', 'Section', 'Button', 'Controls', 'Field', 'Segmented', 'Query', 'Tabs', 'Menu', 'Tooltip', 'Dialog', 'Secret', 'Table', 'Status', 'Number', 'Stat', 'KeyValue', 'Timeline', 'Panel', 'Chart', 'Waterfall', 'Log', 'Banner', 'Notice', 'Progress', 'Empty', 'FirstRun', 'Claim', 'Changes']
 const found = readdirSync(root + 'project/components').filter((n) => existsSync(`${root}project/components/${n}/preview.html`))
 const names = [...order.filter((n) => found.includes(n)), ...found.filter((n) => !order.includes(n))]
@@ -12,12 +15,12 @@ const body = (n) => { const h = readFileSync(`${root}project/components/${n}/pre
 const scripts = [...new Set(names.flatMap((n) => body(n).scripts))].join('\n')
 const col = (th) => `<div data-theme="${th}" class="vz side">${names.map((n) => { const b = body(n); return `<section><h2 class="vz-label">${n}</h2><div class="${n === 'Cover' ? 'coverwrap' : 'ex'}">${b.inner}</div></section>` }).join('')}</div>`
 const extra = names.map((n) => body(n).style).join('').replace(/<\/?style>/g, '').replace(/html,body\{margin:0\}|body\{padding:[^}]*\}/g, '')
-writeFileSync(root + 'dist/reference.html', `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz reference</title><style>${css}
+writeFileSync(root + 'dist/reference.html', `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz reference</title>${preload('')}<style>${css}
 body{margin:0}.sheet{display:grid;grid-template-columns:1fr 1fr}.side{padding:var(--space-8);display:flex;flex-direction:column;gap:var(--space-8);min-width:0}
 .side section{display:flex;flex-direction:column;gap:var(--space-3)}.side h2{margin:0}.side section>div{min-width:0}.coverwrap{overflow:hidden}
 @media (max-width:1199px){.sheet{grid-template-columns:1fr}}
 ${extra}</style></head><body><div class="sheet">${col('light')}${col('dark')}</div><script>${press}</script>${scripts}</body></html>`)
 mkdirSync(root + 'dist/preview', { recursive: true })
 for (const n of names) { const b = body(n), style = b.style.replace(/<\/?style>/g, '')
-  writeFileSync(`${root}dist/preview/${n}.html`, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz ${n}</title><link rel="stylesheet" href="../viz.css"><style>html{background:var(--ground)}${style}</style></head><body class="vz">${b.inner}<script src="../viz-press.js"></script>${b.scripts.join('\n')}</body></html>`) }
+  writeFileSync(`${root}dist/preview/${n}.html`, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz ${n}</title>${preload('../')}<link rel="stylesheet" href="../viz.css"><style>html{background:var(--ground)}${style}</style></head><body class="vz">${b.inner}<script src="../viz-press.js"></script>${b.scripts.join('\n')}</body></html>`) }
 console.log('wrote dist/reference.html and dist/preview/*.html (' + names.length + ')')

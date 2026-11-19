@@ -15,9 +15,9 @@ let rust = translate(r"\Qa.b\E", true)?;                                      //
 
 | Item | Purpose |
 |---|---|
-| `translate(pattern, names) -> Result<String, Error>` | Go pattern to Rust pattern with the same meaning, or Go's refusal. `names = false` turns named groups into plain ones (Go accepts names Rust does not: `1`, a repeated name) |
+| `translate(pattern, names) -> Result<String, Error>` | Go pattern to Rust pattern with the same meaning, or Go's refusal. `names = false` turns named groups into plain ones; with `names = true` a name Go accepts and Rust cannot hold (one that starts with a digit, `(?P<1>x)`, or a repeated name) is `Error::Unsupported` |
 | `compile(pattern, Wrap, names, &Limits)` | Translate, wrap (`Plain`, `DotNl` = `(?s:…)`, `Anchored` = `^(?s:…)$`) and build with size, lazy-DFA and nesting limits |
-| `compile_anchored`, `compile_unanchored`, `compile_plain` | The forms viz-logql uses (names kept, `Limits::default()`: 16 MiB compiled, 2 MiB cache, 250 levels) |
+| `compile_anchored`, `compile_unanchored`, `compile_plain` | The forms viz-logql uses, with `Limits::default()` (16 MiB compiled, 2 MiB cache, 250 levels). The first two only match, so they drop names and accept every name Go accepts; `compile_plain` keeps names (LogQL's `regexp` stage and templates) |
 | `Error::Invalid(msg)`, `Error::Unsupported(msg)` | Go refuses it (or it exceeds a limit); valid in Go but not translated |
 
 ## Implemented
@@ -39,7 +39,8 @@ TraceQL, against Tempo v3.1.1 (black box, `engine/traceql/testdata/regex_dialect
 | flags `i m s U`, repeated or cancelled (`(?ii)`, `(?i-i)`), empty `(?)` | a repeated flag is an error | normalised (last mention wins) or dropped |
 | a repetition after an empty construct repeats the atom before it (`a(?i)*`, `a*\Q\E*`); assertions repeat (`^*`, `\b+`) | an error | the atom wrapped in `(?:…)`, the flag group moved after it |
 | a surrogate code point (`\x{D800}`) matches U+FFFD; in a class a single one does, a range of them matches nothing | not a scalar value | `\x{FFFD}`, or cut out of ranges |
-| refuses: flags other than `i m s U` (`(?x)`, `(?u)`), `\u`, `\U`, `\e`, `\Z`, `\cA`, `\N`, `\C`, `\8`, `\1`; `\Q`, `\E` or `\b` in a class; stacked repetitions (`a**`, `x{2}{3}`, `x*??`, `a?*`); counts above 1000 and nested counts whose product is above 1000 (`(?:a{10}){101}`); `[a-\d]`, `[z-a]`; group names other than `[A-Za-z0-9_]+`; unbalanced parentheses | most of these are accepted | `Error::Invalid` with Go's wording |
+| group names: `(?P<name>…)` and `(?<name>…)` with a name of one or more of `[A-Za-z0-9_]`, a leading digit (`(?P<1>x)`, `(?<01>x)`) and a repeated name included; `(?<=a)` and `(?<!a)` are named groups with an invalid name (`invalid named capture`); a pattern ending in `(?P<` or `(?<` is Perl syntax | a leading digit and a repeated name are errors; `(?<=` is lookbehind (unsupported) | without names, a plain group; with names, the name, or `Error::Unsupported` for a name Rust cannot hold |
+| refuses: flags other than `i m s U` (`(?x)`, `(?u)`), `\u`, `\U`, `\e`, `\Z`, `\cA`, `\N`, `\C`, `\8`, `\1`; `\Q`, `\E` or `\b` in a class; stacked repetitions (`a**`, `x{2}{3}`, `x*??`, `a?*`); counts above 1000 and nested counts whose product is above 1000 (`(?:a{10}){101}`); `[a-\d]`, `[z-a]`; group names other than `[A-Za-z0-9_]+` (`(?P<é>x)`, `(?P<a.b>x)`, the empty name); unbalanced parentheses | most of these are accepted | `Error::Invalid` with Go's wording |
 
 Unbalanced parentheses are refused by the translator itself, so a caller that wraps the
 result (`^(?s:` … `)$`) cannot turn `a)|(b` into a valid, differently anchored pattern; an
@@ -59,20 +60,26 @@ against `a)`).
   `[\x{D800}a]` match U+FFFD; `^\x{D800}` and `[\x{D800}ſA]` do not, Go 1.24). This crate
   applies one rule (a single surrogate matches U+FFFD), which agrees with Tempo on the simple
   forms; the differential run lists the other shapes apart (below).
+- **Keeping a group name the `regex` crate cannot hold**: a name that starts with a digit
+  (`(?P<1>x)`) or one used twice. Go accepts both; with `names = true` they are
+  `Error::Unsupported` (renaming them would change what a caller extracts). Without names, and in
+  `compile_anchored` and `compile_unanchored`, they are accepted as plain groups.
 
 ## Verification
 
 Measured here: Linux x86-64, 4 shared cores (load average 5 to 10), rustc 1.97.0, Go 1.24.7
 (standard library only). Not on Cloudflare.
 
-`cargo test -j 2 --offline`: unit tests 3 (moved from viz-logql with the translator),
-`tests/go_rules.rs` 9 (each rule above, with Go's and Tempo's answers; Unicode classes are
-Unsupported; surrogates; a 128 KiB pathological input), the doc build; the Go differential
-exporter is `#[ignore]`d. All pass.
+`cargo test -j 2 --offline`: unit tests 4 (3 moved from viz-logql with the translator, and
+where re-wraps are written), `tests/go_rules.rs` 11 (each rule above, with Go's and Tempo's
+answers; group names; Unicode classes are Unsupported; surrogates; a 128 KiB pathological
+input; re-wrapping in linear time), the doc build; the Go differential exporter is
+`#[ignore]`d. All pass (2026-11-19, after the group-name and re-wrap changes below).
 
 **Differential run against Go's `regexp`** (`tests/go_differential.rs` writes generated
 patterns with this crate's answers; `tools/godiff` (Go standard library only, built at test
-time) compiles each pattern with Go and runs it fully anchored on 53 subjects):
+time) compiles each pattern with Go and runs it fully anchored on 53 subjects; for each pattern both
+accept, it also compares the group names a caller that keeps them sees with Go's `SubexpNames`):
 
 ```sh
 GOREGEX_DIFF_OUT=$SCRATCH/cases.json GOREGEX_DIFF_SEED=1 GOREGEX_DIFF_N=20000 \
@@ -82,7 +89,17 @@ GOREGEX_DIFF_OUT=$SCRATCH/cases.json GOREGEX_DIFF_SEED=1 GOREGEX_DIFF_N=20000 \
 
 | Seeds | Patterns | Both accept, identical matches | Both refuse | Unsupported here (Go refuses) | Surrogate shapes | **Differ** |
 |---|---:|---:|---:|---:|---:|---:|
-| 1–5, 20,000 each | 100,000 | 36,388 | 60,005 | 3,542 (1,551) | 65 | **0** |
+| 1–5, 20,000 each (2026-11-19, with group names) | 100,000 | 24,357 | 72,973 | 2,611 (1,503) | 59 | **0** |
+| 1–5, 20,000 each (earlier generator, no group-name tokens) | 100,000 | 36,388 | 60,005 | 3,542 (1,551) | 65 | **0** |
+
+With names kept, the 24,416 patterns both accept (identical matches and surrogate shapes) have
+Go's group names in 22,412 cases (4,068 of them with at least one name) and are Unsupported in
+2,004, each one where Go has a name that starts with a digit or is used twice: 0 differences.
+24,054 patterns are refused by both as an invalid named capture. The current generator adds
+group-name tokens (`(?P<1>`, `(?<1a>`, `(?P<_>`, `(?P<é>`, `(?P<a.b>`, `(?P<>`, `(?<=`, `(?<!`,
+`(?P=n)`, `(?P<`, `(?<`, `>`) and, one time in six, a closed group with one of 14 openers, so
+that named groups are accepted often enough to be compared (before that change the same five
+seeds gave 50 patterns with a kept name and 29 Unsupported).
 
 Patterns are 1–7 tokens drawn from everything the translator treats specially (classes,
 escapes, flags, counts, `\Q…\E`, stray brackets); subjects include ASCII, Latin, Greek,
@@ -109,6 +126,28 @@ at every `[:` inside a class, so a 128 KiB pattern `[[:a[:a…]` cost O(n²) (me
 `engine/logql/README.md`); this one keeps one forward search position. A repetition that
 re-wraps the same atom (`a*(?i)*(?i)*…`) is refused after 1000 wraps, as Go refuses nesting
 deeper than 1000.
+
+Re-wrapping an atom (review nit on PR #4, "rewrap memmove bound") was not linear: the `(?:`
+that opens the wrap was inserted at the atom's start (`String::insert_str`), which moves the
+atom's text, and `MAX_WRAPS` bounded only how often one atom is wrapped, not the bytes moved.
+Nested groups each wrapped once (`((…(a)*(?)*)*(?)*…)`) moved every enclosing group's text,
+O(n²). The opens are now recorded as (offset, count) and written in one pass at the end
+(`Translator::assemble`), so a wrap costs constant work and every recorded offset stays valid.
+Measured here (scratch program, both translators on the same patterns, best of three, outputs
+byte-identical):
+
+| Pattern | Size | Before, release | After, release | Before, debug | After, debug |
+|---|---:|---:|---:|---:|---:|
+| nested groups, each wrapped once | 128 KiB | 26.5 ms | 2.2 ms | | |
+| | 512 KiB | 459 ms | 18 ms | | |
+| | 1 MiB | 1.88 s | 0.035 s | 1.97 s | 0.16 s |
+| | 2 MiB | | | 9.26 s | 0.29 s |
+| one 1 MiB atom wrapped 999 times | 1 MiB | 0.052 s | 0.059 s | 0.17 s | 0.15 s |
+
+TraceQL queries are at most 128 KiB with 16 regexes; a pattern there cost about 26 ms of
+translation before the regex crate's nesting limit refused it, natively. viz-logql itself bounds no
+query length, so there the cost grew with the square of the pattern. `tests/go_rules.rs` `rewrapping_costs_linear_time` runs the
+2 MiB nested pattern and requires under 3 s (debug build).
 
 **WebAssembly.** Built inside `engine/traceql/tools/wasm-probe` and
 `engine/logql/wasm-check` (0 imports in both; their READMEs have the numbers). TraceQL's

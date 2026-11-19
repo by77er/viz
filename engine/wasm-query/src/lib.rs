@@ -97,6 +97,8 @@
 
 mod logs;
 mod sigfiles;
+#[cfg(test)]
+mod sigtests;
 mod traces;
 
 use std::cell::RefCell;

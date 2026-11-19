@@ -123,6 +123,31 @@ fn errors_are_typed_with_positions() {
 }
 
 #[test]
+fn regex_group_names_follow_go() {
+    // Go accepts a group name that starts with a digit and a name used twice (engine/goregex,
+    // observed in Go 1.24.7 and Tempo v3.1.1). Matchers and line filters only match, so they
+    // accept them as Go does.
+    let q = r#"{app=~"(?P<1>w)(?P<a>e)(?<a>b)"} |~ "(?P<9>level)=(?P<9>info)""#;
+    assert_eq!(query_range(&src(), q, 0, 10 * S, S, &fwd(10)).unwrap().stats.returned, 1);
+    // Where names are kept (the `regexp` stage, `label_replace`), a name the regex crate cannot
+    // hold is Unsupported: neither a parse error nor a different extraction.
+    for q in [
+        r#"{app="web"} | regexp "(?P<1>l)""#,
+        r#"{app="web"} | regexp "(?P<a>l)(?P<a>e)""#,
+        r#"label_replace(rate({app="web"}[1m]), "x", "$1", "app", "(?P<1>w)eb")"#,
+    ] {
+        assert!(matches!(parse(q), Err(Error::Unsupported(_))), "{q}: {:?}", parse(q));
+    }
+    // A name Go refuses is a parse error, wherever the regex is.
+    for q in [r#"{app="web"} | regexp "(?P<a.b>l)""#, r#"{app=~"(?P<é>w)eb"}"#, r#"label_replace(rate({app="web"}[1m]), "x", "$1", "app", "(?<=w)eb")"#] {
+        assert!(matches!(parse(q), Err(Error::Parse { .. })), "{q}: {:?}", parse(q));
+    }
+    // Names Go and the regex crate both accept are extracted as before.
+    let q = r#"{app="web"} | regexp "level=(?P<lvl>\\w+)" | lvl="error""#;
+    assert_eq!(query_range(&src(), q, 0, 10 * S, S, &fwd(10)).unwrap().stats.returned, 1);
+}
+
+#[test]
 fn now_comes_from_the_caller() {
     let q = r#"{app="db"} | line_format "{{ unixEpoch now }}""#;
     let r = query_range(&src(), q, 0, 10 * S, S, &fwd(10)).unwrap();

@@ -522,7 +522,11 @@ characters, NBSP, em space, U+FFFD, 1,000 `x`). It runs 289 patterns through Tem
 (`tools/godiff`) in four forms: `{ span.s =~ P }`, `{ span.s =~ P || span.zz = 1 }`,
 `{ name = "root" } > { span.s =~ P }` and `{ span.s !~ P }`, with `P` as a backtick string.
 All four forms agreed on every pattern, so Tempo's storage-side and evaluator-side matching
-are the same. The answers are recorded in `testdata/regex_dialect.json`;
+are the same. The answers are recorded in `testdata/regex_dialect.json`, whose `about` field
+says what its `subjects` and `cases` sections hold and what the patterns probe, and whose
+`tempo` field names the release and commit that answered (both rewritten on 2026-11-19 from
+the file itself, `tools/probes/regex_dialect.py` and `tools/godiff/`; the date of the
+recording and the Go toolchain of that build are not recorded, and the field says so);
 `tests/regex_dialect.rs` runs the same forms through viz (and a search with pruning on) and
 requires Tempo's answer. What Tempo does, and what changed:
 

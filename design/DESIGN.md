@@ -510,7 +510,13 @@ is pinned near the bucket so that hits concentrate.
 ### 6.4 Traces and logs
 
 As built (2026-11-19, `query/README.md` "Traces and logs", D62): the query Worker answers
-Tempo's and Loki's HTTP APIs behind `QUERY_SIGNALS` (off by default); the write side of stage 2
+Tempo's and Loki's HTTP APIs behind `QUERY_SIGNALS` (off by default). The adversarial review of
+the first version (`design/reviews/signals-end-to-end.md`) rejected it: a found trace's spans
+outside the window were never read (M-1), and the caps bounded rows and compressed bytes, not
+memory (M-2). Both are fixed as D62 now describes (rewritten 2026-11-19), with the review's
+inputs as tests; `QUERY_SIGNALS` stays off until D62 is reviewed again and the Cloudflare and
+Grafana runs of `query/README.md` ("Traces and logs", "What remains before the flag") have run.
+The write side of stage 2
 (D63) flushes and lists the `spans`, `trace_index` and `logs` tables, and tail reads choose
 batches by signal (`signals`). Stage 3 (2026-11-19) wired the halves together: the gateway routes
 Tempo's documented read paths (`/api/traces/<id>`, `/api/v2/traces/<id>`, `/api/search`, the tag
@@ -522,7 +528,7 @@ ingest and query Workers (`stack/README.md`, "Through the gateway"); answers equ
 engines' in-memory ones over whole corpora through edge, flush and the ledger are query's own
 end-to-end test (`query/test/signals.e2e.test.ts`). The engines (`engine/traceql`,
 `engine/logql`, clean-room, D35, D40, D50) are linked into the read path's one WASM module
-(`engine/wasm-query`, ABI 6), which reads the files `engine/storage` writes and the span and log
+(`engine/wasm-query`, ABI 7), which reads the files `engine/storage` writes and the span and log
 tail batches through the engines' read seams. The seam with the tail is the metrics one (§2):
 one ledger version per query, tails strictly after the plan and above its watermarks, refusals
 re-planned. Every read sends its signal to the shards (`signals`), asks only its signal's shards
@@ -530,25 +536,43 @@ re-planned. Every read sends its signal to the shards (`signals`), asks only its
 ending in `/traces` or `/logs`, §4.1) and checks every tail batch's header (a batch of
 another signal refuses the query, never misread).
 
+- **A trace the answer names is whole within a margin** (D62). A search, a TraceQL metrics
+  query that needs whole traces, and trace by ID with a time hint read `trace_index` over the
+  window widened by the tenant's `traceMarginMs` (2 h) on each side (the bound); the engine
+  merges every fragment and tail span inside the bound per trace, finds the traces whose extent
+  overlaps the window, and gives the hull of their extents; the `spans` files of the hull are
+  read at the same ledger version, and the engine drops every span that starts outside the
+  bound before de-duplication. Every trace the answer names is evaluated over exactly its spans
+  that start inside the bound, wherever they were flushed and with pruning on or off: all of
+  them when the trace lies within the margin of the window; a longer trace is answered from its
+  part inside the bound, deterministically. A trace's summary is computed from its spans
+  (`trace_index` counts are upper bounds: a retried span is counted twice). Metrics queries
+  whose pipeline is span-local read only the spans that start in the window. Structural operators
+  are evaluated per trace in one place.
 - **Trace by ID:** the `trace_index` row groups whose trace-id range (from the index fragment)
-  holds the id are read; the trace's fragments name its extent and the `spans` hours that hold
-  it, and only those hours' files are read, their row groups chosen by time. Without a time hint
-  every day is planned (newest-first waves are not built). Inside an hour a flush unit's row
-  group is decoded whole to find the trace (the bloom filters are not used yet; measured: the
-  cost of a call is the hour's spans, not the trace's).
-- **TraceQL search** reads `trace_index` over the window, finds the traces whose extent overlaps
-  it and reads every span of them (the hull of their extents), so a trace's summary is computed
-  from its spans; metrics queries whose pipeline is span-local read only the spans that start in
-  the window. Structural operators are evaluated per trace in one place. Queries are bounded by
-  files, bytes and rows decoded (`maxSpans`); split execution by trace-id hash, partial results
-  with a cursor, and pushing predicates to sorted and promoted columns are not built.
+  holds the id are read, over all time without a hint and over the hint and the margin with one;
+  the trace's fragments name its extent and the `spans` hours that hold it, and only those hours'
+  files are read, their row groups chosen by time. Without a time hint every day is planned
+  (newest-first waves are not built). Inside an hour a flush unit's row group is decoded whole to
+  find the trace (the bloom filters are not used yet; measured: the cost of a call is the hour's
+  spans, not the trace's).
+- **Memory is bounded by bytes** (D62). The engine counts what each span or log call holds (rows,
+  a span's resource once per distinct resource, metric series' points, the answer four times)
+  against the tenant's `maxDecodedBytes` (32 MiB) and refuses past it (422). The row caps
+  (`maxSpans` 18,000, `maxLogRows` 30,000) are checked from the fragments before any fetch and
+  are derived from the budget and the memory a realistic row takes. Split execution by trace-id
+  hash, partial results with a cursor, and pushing predicates to sorted and promoted columns
+  are not built. A span or log query reads the signal's whole tail under `maxFetchBytes`,
+  whatever its window (the shard has no time bounds for span and log batches): a tenant with
+  four or more span or log shards near their seal size is refused (modelled).
 - **Tables and engine:** the `spans` and `trace_index` tables are specified in
   `contracts/TRACES.md` and written by `engine/storage`; flush writes them (stage 2, D63).
 - **Logs:** row groups are chosen from each file's stream list and times; rows of streams no
   selector matches, or outside every selector's range, are dropped before they are held. One
-  place, bounded by `maxLogRows`; using the per-file token filter (compaction writes it, D65; no
-  query reads it yet), split execution
-  and partial results with a cursor are not built. Labels and series come from the fragments'
+  place, bounded by `maxLogRows` and the engine's byte budget; the per-file token filter
+  (compaction writes it inside the file, D65) is not read by the query path (it would skip row
+  groups for line filters such as `|=`; not built); split execution and partial results with
+  a cursor are not built either. Labels and series come from the fragments'
   stream lists without reading data where the lists exist.
 
 ### 6.5 Cost visibility
@@ -658,11 +682,16 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   that question and takes the tenant from the token, never through control's `Tenant` objects
   (review of D44, M-1). A code or token carries a tag made with control's key, so a made-up one
   is refused in the Worker before any tenant's object is asked, and a request that changes
-  nothing writes nothing (M-2). Rate limits sit in front (D70): Cloudflare's Rate Limiting binding,
-  approximate and per location, counts each client network at the four OAuth endpoints and, once a
-  credential's tag holds, its client, its token and its tenant, before the tenant's object; the
-  object itself bounds refreshes per grant exactly; a refusal is 429 `too_many_requests` with
-  `Retry-After` and spends nothing; a limiter that fails lets requests through. Until a sign-in
+  nothing writes nothing (M-2). A code or token also carries its expiry under that tag, so the
+  Worker refuses an expired one the same way (D70, after its review). Rate limits sit in front
+  (D70): Cloudflare's Rate Limiting binding, approximate and per location, counts the presented
+  credential and then its tenant, as a fuse near what one object serves, before the tenant's
+  object, so a credential spends only its own allowance; it counts a client's network only at
+  registration and the authorization page, and for requests the Worker refuses by itself, never a
+  genuine credential (every client on Cloudflare Workers shares one address, which is not counted);
+  the object itself bounds refreshes per grant exactly; a refusal is 429 `too_many_requests` with
+  `Retry-After` and spends nothing; a limiter that fails lets requests through within 100 ms and is
+  reported by `/healthz`. These limits assume no Smart Placement for control and mcp. Until a sign-in
   exists the consent step is a call to the control API, and only an API key may approve.
   Fourteen tools: search telemetry, describe a metric, validate a query (with the query
   service's own plan: files, bytes, scan bound, refusal), run a query,

@@ -434,7 +434,7 @@ pub(crate) fn do_tq_extent(mut r: Req<'_>) -> Res<Vec<u8>> {
 
 /// `u64 spans decoded, u64 traces`, then the body; the body is charged to the budget first.
 fn counts(budget: &mut Budget, traces: usize, json: String) -> Res<Vec<u8>> {
-    budget.mem.charge(json.len() as u64)?;
+    budget.mem.charge_answer(json.len() as u64)?;
     let mut out = Vec::with_capacity(16 + json.len());
     out.extend_from_slice(&budget.decoded.to_le_bytes());
     out.extend_from_slice(&(traces as u64).to_le_bytes());
@@ -695,8 +695,8 @@ fn span_json(s: &SpanRec, out: &mut String) {
 /// A trace as OTLP JSON in the protobuf JSON mapping Tempo answers with: resource spans as
 /// `batches`, ids in base64, enums by name, 64-bit integers as strings, empty fields left out.
 /// Spans in `(start, span_id)` order, grouped by resource and then instrumentation scope in
-/// the order their first span appears. The text is charged to `mem` as it grows: refused once
-/// it would pass the budget, before it does.
+/// the order their first span appears. The text is charged to `mem` as it grows
+/// ([`Mem::charge_answer`]): refused once it passes the budget, at most one span's text later.
 pub(crate) fn trace_json(spans: &[SpanRec], mem: &mut Mem) -> Res<String> {
     let mut res: Vec<(&[viz_storage::otel::Attr<String>], Vec<((&str, &str, &str), Vec<&SpanRec>)>)> = Vec::new();
     for s in spans {
@@ -720,12 +720,13 @@ pub(crate) fn trace_json(spans: &[SpanRec], mem: &mut Mem) -> Res<String> {
             out.push(',');
         }
         // A resource's attributes are written once per batch.
-        mem.charge(2 * sigfiles::attrs_bytes(r))?;
+        let at = out.len();
         out.push_str("{\"resource\":{");
         if !r.is_empty() {
             out.push_str("\"attributes\":");
             attrs_json(r, &mut out);
         }
+        mem.charge_answer((out.len() - at) as u64)?;
         out.push_str("},\"scopeSpans\":[");
         for (j, ((name, version, attrs), list)) in scopes.iter().enumerate() {
             if j > 0 {
@@ -752,9 +753,10 @@ pub(crate) fn trace_json(spans: &[SpanRec], mem: &mut Mem) -> Res<String> {
                 if k > 0 {
                     out.push(',');
                 }
-                // At most twice what the span was charged as (escapes), checked before writing.
-                mem.charge(2 * sigfiles::span_bytes(s))?;
+                // Charged as written: past the budget by at most one span's text.
+                let at = out.len();
                 span_json(s, &mut out);
+                mem.charge_answer((out.len() - at) as u64)?;
             }
             out.push_str("]}");
         }
@@ -848,7 +850,7 @@ pub(crate) fn do_tq_tags(mut r: Req<'_>) -> Res<Vec<u8>> {
         serde_json::json!({"scopes": list, "metrics": {}})
     };
     let json = json.to_string();
-    budget.mem.charge(json.len() as u64)?;
+    budget.mem.charge_answer(json.len() as u64)?;
     Ok(json.into_bytes())
 }
 
@@ -975,6 +977,6 @@ pub(crate) fn do_tq_tag_values(mut r: Req<'_>) -> Res<Vec<u8>> {
         serde_json::json!({"tagValues": v, "metrics": {}})
     };
     let json = json.to_string();
-    budget.mem.charge(json.len() as u64)?;
+    budget.mem.charge_answer(json.len() as u64)?;
     Ok(json.into_bytes())
 }
