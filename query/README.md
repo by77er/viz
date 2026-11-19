@@ -622,6 +622,93 @@ the write path never produces.
 
 ### Measurements
 
+#### With split execution (2026-11-19)
+
+`npm run measure`, the same workload and query as below (`sum by (job)(rate(http_requests_total[5m]))`,
+2,000 series, 24 h 5 min, flushed in ten-minute units on 2 shards, the last 10 minutes in
+the tails), plus a third tenant with **5,000 series at 60 s for one day** (7.23 M samples),
+the 7-day query scaled down by 7 because seven days through the local stack would not fit
+the 1.5 GB this shared machine allows one process. **Local figures**, on 4 cores at a load
+average near 20 (other engineers' builds): engine times were 1.2 to 2.9 times the
+2026-11-18 run's for the same 1-hour query (96 and 234 ms against 81 to 145 ms).
+
+Split leaves are run **one after another**, each from a fresh engine instance, so that each
+memory figure is that leaf's own peak: locally every object shares one process, and eight
+leaves at once held 1.6 GB of RSS together (sessions, readers' buffers, extracts in
+flight), more than this machine allows; that first attempt was stopped. The figures below
+are from a complete run at about 00:55 UTC (counts, memory, answers) and a second at about
+01:10 (where the CPU goes; there the 24-hour 15 s query reached the default 30 s time
+limit at 32.4 s with its leaves in series, though every leaf finished, so the bench now
+gives its tenants 120 s).
+
+| | 24 h, 15 s scrape, step 5 m | 24 h, 60 s scrape, step 5 m | 1 day of the 7-day query: 5,000 series, 60 s, step 30 m |
+|---|---:|---:|---:|
+| answer, default limits | **200** (was 422 `max_scan_samples`) | **200** (was 422 `max_samples` after decoding 76 MiB) | **200** |
+| samples loaded / series | 11,560,000 / 2,000 | 2,890,000 / 2,000 | 7,225,000 / 5,000 |
+| leaves (parts) | 8 | 2 (and 8, forced) | 5 |
+| samples held per leaf | 1,051,960 to 1,907,400 | 1,361,190 and 1,528,810 | 1,199,350 to 1,748,450 |
+| series per leaf (of 2,000 or 5,000) | 182 to 330 | 942 and 1,058 | 830 to 1,210 |
+| **peak WASM memory per leaf** | **47.1 to 84.1 MiB** | 64.4 and 71.8 MiB (8 leaves: 13.7 to 23.5 MiB) | **53.6 to 77.4 MiB** |
+| coordinator's WASM memory (merge) | 7.5 MiB | 3.8 MiB | 6.4 MiB |
+| files listed / read (each by every leaf's readers) | 580 / 580 (27.8 MiB) | 580 / 580 (10.6 MiB) | 580 / 580 (26.0 MiB) |
+| reader calls (97 file groups per leaf) | 776 | 194 | 485 |
+| file reads (R2 + Cache API) | 4,640 (556 R2 GETs from R2 cold) | 1,160 | 2,900 |
+| **bytes over RPC**: extracts to leaves | **234.9 MiB** | 70.1 MiB | 175.4 MiB |
+| tail to leaves / answers to the coordinator | 0.96 MiB / under 1 MiB | 0.39 MiB / under 1 MiB | 0.97 MiB / under 1 MiB |
+| local wall time, leaves in series, files from R2 / from the Cache API | 13.9 s / 13.9 s | 4.2 s | 18.9 s |
+| per leaf (second run): its own engine (gather + evaluate) | 760 to 2,061 ms (median about 1,050) | | 582 to 1,400 ms |
+| per leaf: its readers' engine time, sum (longest call) | 1,005 to 1,584 ms (37 to 240 ms) | | 1,632 to 2,967 ms (78 to 204 ms) |
+| merge at the coordinator | 37 ms | 4 ms | 2 to 8 ms |
+| response | 194,948 B | 172,808 B | 30,385 B |
+
+- **Identical to one place at scale**: 24 hours at a 60 s scrape split over 2 leaves, over
+  8 leaves, and evaluated in one place (with `maxSamples` raised to 3 M, peak 76.4 MiB)
+  gave **byte-identical** responses. Every split result was also checked (20 jobs, every
+  point within 15% of the expected rate) and is identical from R2 and from the cache.
+- **Memory per leaf** is about 44 bytes a sample held: 20 in the gathering session (time,
+  value, precedence), 16 in the copy `select` hands the evaluator (it could move instead),
+  and the step grid. The leaf with the most series held 1.9 M samples (84 MiB), below its
+  share (2 M) and 128 MB.
+- **The spread of series over parts is uneven** (182 to 330 of an average 250): FNV-1a's
+  high bits are not uniform for these label sets. A mixing step before taking the range
+  would even it out but give up ranges of raw `series_id` (which row-group reads by key
+  range want). Not changed; the budgets absorb it (a leaf over its share is re-run).
+- **RPC carries 20 bytes a sample** (extracts as `VZB1`), about 8 times the Parquet bytes:
+  235 MiB for the 24-hour query, in 776 messages of at most a few MiB.
+
+**Production estimate (modelled), 24 hours at 15 s**, from these counts and the figures
+measured on Cloudflare (spikes S1, S2, S4; DO call 10 to 70 ms; a round of up to six reads
+55 to 203 ms; CPU twice local):
+
+| step | arithmetic | ms |
+|---|---|---:|
+| ledger, 2 `plan` calls and 580 files | 2 x 10..70 + 580 x 0.025..0.04 | 35 to 163 |
+| tail, 1 call deep | 10..70 | 10 to 70 |
+| leaves: one DO call, then their 776 reader calls at once | 10..70 + **1 to 25 rounds** x 55..203 (1 if each call has its own six connections, 776 / 32 if calls to one object share them: not measured) | 65 to 5,145 |
+| CPU on the critical path | 2 x (slowest leaf's own engine 2,061 + readers: longest call 240 .. all 10,105 ms over 32 objects = 316 + merge 37) | 4,676 to 4,828 |
+| **total, warm objects** | | **about 4.8 to 10.2 s** |
+
+With the median leaf instead of the slowest (1,050 ms own) and this machine's load taken
+out (the same run's 1-hour query was 2.4 times its quiet-machine engine time), the CPU part
+is nearer 1.5 to 2.5 s. First use of a leaf object adds 250 to 700 ms (S1).
+
+**7 days at 60 s, 5,000 series (extrapolated from the one-day run, not run):** 50.6 M
+samples, 4,060 files (ten-minute flush units), 181 MiB. Leaves: `ceil(50.6 M / 1.5 M)` = 34,
+capped at `maxLeaves` = **32 leaves of about 1.58 M samples**, so about **70 MiB per leaf**
+(the one-day run held 1.75 M in 77.4 MiB; the step grid is smaller with 156 series a leaf).
+It fits the limits (scan bound 50.4 M of `maxQueryScanSamples` 100 M; 4,060 files of
+`maxQueryFiles` 20,000; 181 MiB of `maxQueryFetchBytes` 512 MiB). **But with ten-minute
+flush files it is not fast:** every leaf reads every file, so 32 x 677 file groups = about
+21,700 reader calls and 130,000 file reads; at 1 to 677 rounds of 55 to 203 ms that is
+0.1 to 137 s of I/O, and the readers decode every file's `series_id` column 32 times
+(about 32 x 7 x 11 s / 5 of local reader time spread over 32 objects: 15 s each, 31 s at
+twice local). Over the 30 s time limit. Compacted day files (16 MB, a handful per day)
+cut the groups to about 10 per leaf; row-group reads by key range ("Needed changes", 2)
+would cut each leaf's reading and decoding to its own part. Measured on Cloudflare: none
+of this.
+
+#### Before split execution (2026-11-18)
+
 `npm run measure` (`test/measure.bench.ts`), with the production leaf pool size of 32.
 Two tenants each write 24 h 5 min of `http_requests_total` for 2,000 series (20 jobs x
 100 instances; counters growing by a pseudo-random 0 to 9 per scrape) through the edge
@@ -664,9 +751,8 @@ the random query id; times are given as first run / second run.
 
 - **24 hours at a 15 s scrape does not run.** 11.5 M samples are 176 MiB decoded, more
   than an isolate has; the query is refused from the ledger's row counts before a single
-  file or shard is read, and says what to do. Answering it needs evaluation split over
-  leaves ("Not implemented").
-- **24 hours at a 60 s scrape runs only with `maxSamples` raised** to 3,000,000; with the
+  file or shard is read, and says what to do. (Now split over leaves and answered: above.)
+- **24 hours at a 60 s scrape ran only with `maxSamples` raised** (now it is split) to 3,000,000; with the
   default limits it is refused by the engine's `max_samples` (2,890,000 > 2,000,000), but
   only after all 580 files were read and decoded: 76.4 MiB of WASM memory for a refusal
   ("Known risks", materialise then refuse).

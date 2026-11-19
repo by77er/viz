@@ -1,3 +1,4 @@
+import { TENANT_ID } from '../../contracts/ledger'
 import { HttpError } from './errors'
 
 /**
@@ -8,6 +9,9 @@ import { HttpError } from './errors'
  * no header, path or body field is ever consulted. Secrets are never logged or echoed;
  * error messages name the problem, not the credential.
  */
+
+/** Versions of the `key:<keyId>` record this code reads (field `v`; absent = 1). */
+export const KEY_RECORD_VERSION = 1
 
 export interface KeyRecord {
   tenant: string
@@ -59,10 +63,21 @@ function presentedKey(req: Request): string | null {
   return null
 }
 
-function parseRecord(v: unknown): KeyRecord | null {
+/** A key record written by a newer release: neither valid nor invalid to this code. */
+class NewerRecord {
+  constructor(readonly version: unknown) {}
+}
+
+function parseRecord(v: unknown): KeyRecord | null | NewerRecord {
   if (!v || typeof v !== 'object') return null
   const r = v as Record<string, unknown>
-  if (typeof r.tenant !== 'string' || r.tenant === '') return null
+  // contracts/COMPATIBILITY.md §3.2: an unknown version is refused, never parsed on a guess.
+  const version = r.v === undefined ? 1 : r.v
+  if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) return null
+  if (version > KEY_RECORD_VERSION) return new NewerRecord(version)
+  // The tenant id lands unescaped in object keys and names a ledger: only TENANT_ID ids
+  // (review R-9). Such a record authenticates nobody, so nothing is acknowledged for it.
+  if (typeof r.tenant !== 'string' || !TENANT_ID.test(r.tenant)) return null
   if (typeof r.secretSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(r.secretSha256)) return null
   if (!Array.isArray(r.scopes) || !r.scopes.every((s) => typeof s === 'string')) return null
   return { tenant: r.tenant, secretSha256: r.secretSha256, scopes: r.scopes as string[], disabled: r.disabled === true }
@@ -74,11 +89,19 @@ async function lookup(kv: KVNamespace, keyId: string, now: number): Promise<KeyR
   let record: KeyRecord | null = null
   const stored = await kv.get(`key:${keyId}`)
   if (stored !== null) {
+    let parsed: KeyRecord | null | NewerRecord = null
     try {
-      record = parseRecord(JSON.parse(stored))
+      parsed = parseRecord(JSON.parse(stored))
     } catch {
-      record = null // an unreadable record authenticates nobody
+      parsed = null // an unreadable record authenticates nobody
     }
+    if (parsed instanceof NewerRecord) {
+      // Keep the last good value if this isolate has one; otherwise 503, never a guess and
+      // never "unauthorized" (the key may be fine: a newer release wrote its record).
+      if (hit?.record) return hit.record
+      throw new HttpError(503, `API key record version ${String(parsed.version)} is newer than this release reads`, { 'Retry-After': '30' })
+    }
+    record = parsed
   }
   if (cache.size >= MAX_CACHE) cache.clear()
   cache.set(keyId, { record, expires: now + (record ? HIT_TTL_MS : MISS_TTL_MS) })

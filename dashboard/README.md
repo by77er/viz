@@ -10,7 +10,7 @@ erasable TypeScript syntax, so Node ≥ 22.18 runs `src/` directly and bundlers 
 step.
 
 ```
-npm test          # 316 tests, ~10 s
+npm test          # 319 tests, ~10 s
 npx tsc --noEmit  # clean
 ```
 
@@ -92,7 +92,8 @@ The schema is published at `schema/viz.dashboard.v1.schema.json` (generated from
 | `diff(a, b) → ops`, `summarizeDiff(a, b) → string[]` | Patch from a to b; one line per change in words |
 | `resolve(spec, { variables, builtins }) → ResolvedDashboard` | Expands fragments, substitutes variables with context-aware escaping |
 | `digestPanel(panel, data, opts) → PanelDigest` | Per-series last/min/max/mean, trend, outlier, threshold state, gaps; top-k |
-| `digestDashboard(resolved, dataByPanel, opts)`, `renderDigest(digest, { format, maxTokens, cursor })` | Markdown or TSV within a token budget, most important first, with `truncated` and `cursor` |
+| `digestDashboard(resolved, dataByPanel, opts)`, `renderDigest(digest, { format, maxTokens, cursor, continuation? })` | Markdown or TSV within a token budget, most important first, with `truncated` and `cursor`. `continuation: false` writes no truncation footer (the line naming the next cursor, or saying series were omitted) and does not reserve room for it, for a caller with its own cursors (mcp's `read_dashboard`) |
+| `panelOrder(panelDigests) → number[]` | The order `renderDigest` writes panels in, as indices; a cursor `o:N` means the first N of it were consumed. Lets a caller list the same panels in structured output as in the text |
 | `fromGrafana(json) → { spec, warnings, errors }` | Classic Grafana dashboard JSON importer |
 | helpers | `findVariables`, `substitute`, `escapeRegex`, `escapeString`, `thresholdState`, `robustZ`, `canonicalJson`, `deepEqual`, `walkLayout` |
 
@@ -147,7 +148,7 @@ through, multi-value and all.
 - `outlier`: robust z-score of the series' mean among its peers, `0.6745·(x − median)/MAD` (falls back to mean absolute deviation when MAD = 0), flagged above 3.5; needs at least 4 series.
 - `gaps`: spacing above 1.5 × step (given, or the median spacing); `stale` when the last sample is more than 1.5 steps before the range end.
 - top-k (default 5): breaching series first, then outliers, then largest value. The panel `state` and `omitted` counts cover the series that were cut.
-- Rendering order: crit, warn, info, panels with outliers, no data, the rest in layout order. Whole panels are written until one does not fit; the rest get one-line summaries while space lasts. The output never exceeds `maxTokens × 4` characters, and a call always advances the cursor by at least one panel.
+- Rendering order (`panelOrder`): crit, warn, info, panels with outliers, no data, panels that reached a threshold within the window, the rest in layout order, text panels last. Whole panels are written until one does not fit; the rest get one-line summaries while space lasts. The output never exceeds `maxTokens × 4` characters, and a call always advances the cursor by at least one panel.
 - Timestamps are Unix seconds, as in the Prometheus HTTP API.
 
 ## Implemented / not implemented
@@ -173,7 +174,7 @@ All numbers from this directory on Node 22.23, vitest 5.1, TypeScript 5.9.
 
 | Check | Result |
 |---|---|
-| `npm test` | 316 tests in 9 files, all pass |
+| `npm test` | 319 tests in 9 files, all pass |
 | `npx tsc --noEmit` (strict, `noUncheckedIndexedAccess`, `erasableSyntaxOnly`) | clean |
 | Official JSON Patch suite, fetched from `json-patch/json-patch-tests` (stored verbatim in `test/fixtures/jsonpatch/`) | `tests.json` 92/92 active cases pass (3 disabled upstream); `spec_tests.json` 16/16 (1 disabled upstream). 108/108 |
 | Invalid-spec table | 48 cases; each yields exactly one error with the expected code, pointer and suggestion |
@@ -182,13 +183,13 @@ All numbers from this directory on Node 22.23, vitest 5.1, TypeScript 5.9.
 | Revision stable under key reordering | 2,000 runs on arbitrary JSON + 20 shuffles of each example; SHA-256 checked against `node:crypto` (200 lengths + 1,000 random strings), FIPS vectors and WebCrypto |
 | `resolve` never throws on valid specs | 1,500 runs with arbitrary variable values + 500 runs on randomly edited valid specs |
 | Escaping | 2,000 runs: an arbitrary string value leaves exactly the original string literals and round-trips; 1,000 runs: a multi-value alternation, compiled as a real regex, matches exactly the selected values |
-| Digest | statistics checked against hand-computed values (linear series, known MAD, known gaps); budgets of 0–1,200 tokens never exceeded; paging by cursor shows every panel exactly once |
+| Digest | statistics checked against hand-computed values (linear series, known MAD, known gaps); budgets of 0–1,200 tokens never exceeded; paging by cursor shows every panel exactly once; `panelOrder` equals the order of the text, and a page's headings are a prefix of it; `continuation: false` writes no footer in either format, never shows fewer panels than with it, still pages through every panel once, and changes nothing when nothing is cut |
 | Grafana import | 13-panel hand-written fixture: 8 panels imported, 2 unsupported → warnings, 3 rows → layout; every panel, target and variable is in the spec or named in a warning |
 | Workers constraint | the whole API is exercised in a Node child process started with `--disallow-code-generation-from-strings`; a source scan asserts no `eval`/`Function`, no Node or DOM globals, no imports outside `src/` |
 
 ### Mutation checks
 
-Each behaviour was broken in the source, one at a time; `npm test` was run; the source was restored. All 20
+Each behaviour was broken in the source, one at a time; `npm test` was run; the source was restored. All 22
 mutants were killed (number of failing tests in brackets).
 
 1. Skip the `baseRevision` check in `applyPatch` [2]
@@ -211,6 +212,11 @@ mutants were killed (number of failing tests in brackets).
 18. Top-k ranking ignores threshold state [1]
 19. Do not report undefined variables [4]
 20. Never set the outlier flag [3]
+21. `continuation: false` ignored: the footer is written anyway [2]
+22. `panelOrder` returns layout order while `renderDigest` keeps its own sort, so the two disagree [1]
+
+21 and 22 were run on a copy of the package in a scratch directory (AGENTS.md), with the source compared
+byte for byte with the shared tree afterwards.
 
 ## Dependencies
 

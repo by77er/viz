@@ -73,7 +73,7 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 | `POST /api/v1/push` | viz-ingest | routed as asked; edge does not serve it yet (404 from edge) |
 | `/api/v1/query`, `/query_range`, `/labels`, `/series`, `/metadata`, `/api/v1/label/*`, `/api/v1/status/*` | viz-query | |
 | `/api/v1/control`, `/api/v1/control/*` | viz-control | |
-| `GET /healthz` | the gateway | asks ingest `/healthz`, query `/healthz`, control `/api/v1/control/openapi.json` (control has no health route, "Needed changes" 4); 200 `healthy` or 503 naming the backend |
+| `GET /healthz` | the gateway | asks each backend's own `GET /healthz` through its service binding (ingest, query, control; none is public, since the gateway answers `/healthz` itself); 200 `healthy` or 503 naming the backend |
 | `POST /api/v1/bootstrap` | the gateway | exists only while the one-time secret is set ("Bootstrap") |
 | anything else | the gateway | 404, JSON listing the entry points. No web UI and no page: the UI comes later, through design review |
 
@@ -252,7 +252,10 @@ secret put`, value on stdin. It calls `POST /api/v1/bootstrap` with the token as
 credential; the gateway compares SHA-256 digests in constant time and calls
 `Tenant.provision(tenant)` on viz-control's Tenant object, which refuses a tenant that
 already has a key (409). The tenant is part of the secret, never of the request: a body or a
-query string is refused (400), as control refuses a tenant in a request. The script then
+query string is refused (400), as control refuses a tenant in a request. If that object's
+storage belongs to a newer release (a rollback across a forward-only control release,
+`contracts/COMPATIBILITY.md` §2.4), `provision` refuses with `schema_too_new` and the route
+answers a retryable 503 with `Retry-After: 30`, having created nothing. The script then
 deletes the secret (also when anything failed) and checks it is gone; with no secret the path
 is the ordinary 404. The token never appears on a command line or in a log, and only its hash
 is stored. A version created while the secret existed would carry it, but it expires after 10
@@ -280,14 +283,18 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 
 All measured here unless it says Cloudflare.
 
-- `cd deploy && npm test`: vitest in workerd, 3 files, 53 tests (gateway routing for every
+- `cd deploy && npm test`: vitest in workerd, 3 files, 55 tests (gateway routing for every
   listed path and 11 that must 404; method, headers and a 3 MiB body byte-for-byte; a
   request body that is still being written; 12 status codes with status text, `Retry-After`,
   `WWW-Authenticate` and two `Set-Cookie`; a response whose first chunk arrives 600 ms before
   its second is delivered in under 450 ms; a throwing backend gives 502; health with a
-  failing and a throwing backend; bootstrap against control's real `Tenant`: no secret,
+  failing and a throwing backend; control's health is its own `/healthz`, the one path asked,
+  run by control's real Worker code on the test bindings, and unhealthy (503) when that code
+  lacks its `TENANT` binding; bootstrap against control's real `Tenant`: no secret,
   right token twice, six wrong tokens, expired, body and query string, GET, malformed
-  secret, a second token for a provisioned tenant), then `node --test`, 20 tests (configure
+  secret, a second token for a provisioned tenant, and storage a newer release holds (a
+  `viz_schema` row at version 99: 503 with `Retry-After`, no key, storage unchanged)), then
+  `node --test`, 20 tests (configure
   against the real component configs, the migration gate, acknowledgement parsing, the
   Remote Write body decoded by snappyjs and protobufjs, the CI matrix with and without
   `app/`, `design-system/` and `bench/`).
@@ -461,7 +468,7 @@ right after the trial for 23:10–23:50 UTC, returned no rows for the `viz-trial
 
 ## Needed changes in components
 
-None of these were made here.
+None of these were made here; 4 was made since, in control/ and the gateway.
 
 1. **`stack/src/index.ts`: queue names are hard-coded.** `handleQueue` compares
    `batch.queue` with the literals `viz-flush` and `viz-maint` (`FLUSH_QUEUE_NAME`,
@@ -484,10 +491,10 @@ None of these were made here.
    `app/` (main, until the UI lands) query's typecheck and tests fail. CI excludes that one
    file when `app/` is absent and says so in a warning. Wanted: the client as a contract,
    or a copy owned by query's tests.
-4. **`control/`: no health route.** The gateway's `/healthz` uses
-   `GET /api/v1/control/openapi.json`, the one route that needs no credential; it proves the
-   Worker runs, not that its Durable Object or KV answer. Wanted: `GET /healthz` (or
-   `/api/v1/control/healthz`).
+4. **`control/`: no health route.** Done: control serves `GET /healthz` without a credential,
+   as ingest and query do (200 `ok` when the Worker runs with its `TENANT` and `CONFIG`
+   bindings, 503 naming a missing one; it asks no Durable Object or KV), and the gateway
+   probes it instead of `/api/v1/control/openapi.json`.
 5. **`query/wrangler.jsonc` names the write path `viz-edge` and `viz-flush`**, Workers that
    no longer exist as such; the deploy maps both (and `viz-stack`) to viz-ingest through
    `script_aliases`. Wanted: `viz-ingest` in the component config.

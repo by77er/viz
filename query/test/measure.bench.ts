@@ -191,6 +191,10 @@ describe('measurements (local)', () => {
   it('1 hour and 24 hours over 2,000 series, data partly flushed', async () => {
     const w = await world()
     // ── Dataset A: scraped every 15 s (11.5 M samples in 24 h). ──
+    // Locally the split leaves run one after another (to measure each one's memory) on a
+    // shared machine: on a busy day that took 32 s, over the default 30 s time limit.
+    for (const t of [w.a, w.b]) await env.CONFIG.put(`limits:${t.name}`, JSON.stringify({ timeoutMs: 120_000 }))
+    clearLimitsCache()
     const a = await load(w, w.a, 15_000)
     console.log(`MEASURE dataset A (15 s scrape): ${a.samples} samples of ${N_SERIES} series through edge, ${a.segments} flushed 10-minute segments (x 2 shards), last 10 minutes in the tail; loading took ${(a.ms / 1000).toFixed(0)} s`)
 
@@ -231,14 +235,14 @@ describe('measurements (local)', () => {
     splitEstimate(d60s, per60)
     // ... and, at 2.9 M samples, it can still be evaluated in one place with the sample
     // limit raised: the SAME BYTES, 2,000 series over 24 hours, at 2 and at 8 leaves.
-    await env.CONFIG.put(`limits:${w.b.name}`, JSON.stringify({ maxSamples: 3_000_000, splitAboveSamples: 1e12 }))
+    await env.CONFIG.put(`limits:${w.b.name}`, JSON.stringify({ maxSamples: 3_000_000, splitAboveSamples: 1e12, timeoutMs: 120_000 }))
     clearLimitsCache()
     const d60 = await measure('24 h, 60 s scrape, step 5 m, ONE PLACE, maxSamples raised to 3,000,000, files from the Cache API', w.b, day)
     report(d60)
     expect(d60.status).toBe(200)
     expect(d60.res.headers.get('X-Viz-Execution')).toBe('single')
     expect(d60s.body).toBe(d60.body)
-    await env.CONFIG.delete(`limits:${w.b.name}`)
+    await env.CONFIG.put(`limits:${w.b.name}`, JSON.stringify({ timeoutMs: 120_000 }))
     clearLimitsCache()
     hooks.forceLeaves = 8
     const d60s8 = await perLeaf('24 h, 60 s scrape, step 5 m, split over 8 leaves', w.b, day)
@@ -255,6 +259,8 @@ describe('measurements (local)', () => {
 
   it('the 7-day, 60 s, 5,000-series query, scaled down to one day (7.2 M samples) and extrapolated', async () => {
     const w = await world()
+    await env.CONFIG.put(`limits:${w.a.name}`, JSON.stringify({ timeoutMs: 120_000 }))
+    clearLimitsCache()
     const n = 5_000
     const c = await load(w, w.a, 60_000, n)
     console.log(`MEASURE dataset C (60 s scrape, ${n} series): ${c.samples} samples through edge, ${c.segments} flushed 10-minute segments (x 2 shards); loading took ${(c.ms / 1000).toFixed(0)} s`)

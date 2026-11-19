@@ -4,7 +4,7 @@ import { HttpError, badRequest, tooLarge } from './errors'
 import { type Limits, limitsFrom } from './limits'
 import { decodeOtlpJson, decodeOtlpProto, exportResponse, statusBody } from './otlp'
 import { decodeRemoteWrite } from './prw'
-import { type Limited, type Outcome, type RouteEnv, appendAll, clearMapCache } from './route'
+import { type Limited, type Outcome, type RouteEnv, appendAll, clearMapCache, refuseEarly } from './route'
 import { snappyDecompress } from './snappy'
 
 // For now the shard is deployed in the same script as the edge Worker.
@@ -91,6 +91,9 @@ async function remoteWrite(req: Request, env: Env, limits: Limits): Promise<Resp
   }
   const encoding = (req.headers.get('Content-Encoding') ?? 'snappy').toLowerCase()
   if (encoding !== 'snappy') return text(415, 'unsupported content encoding; expected snappy', { 'Accept-Encoding': 'snappy' })
+  // Every shard this tenant may write to is shedding load: refuse before reading or decoding.
+  const early = await refuseEarly(env, tenant)
+  if (early) return refusal(early, (status, message, headers) => text(status, message, headers))
 
   const compressed = await readBody(req, limits.maxBodyBytes)
   const body = snappyDecompress(compressed, limits.maxDecompressedBytes)
@@ -100,11 +103,14 @@ async function remoteWrite(req: Request, env: Env, limits: Limits): Promise<Resp
   const outcome = await appendAll(env, tenant, c)
   if (outcome.status !== 'ok') return refusal(outcome, (status, message, headers) => text(status, message, headers))
   const written = { 'X-Prometheus-Remote-Write-Samples-Written': String(outcome.rows) }
-  // New series over the tenant's limit: 429, naming the limit. Everything else in the
-  // request is durably written; a sender that retries re-sends it and nothing is stored twice.
+  // New series over the tenant's limit: 400, naming the limit and what was refused. The
+  // samples of series the tenant already has are durably written. Not 429: a sender that
+  // retries 429 would resend the same new series for ever and fall behind on the series it
+  // has (review R-4); Remote Write senders "MUST NOT retry ... 4xx responses other than
+  // 429", and invalid samples are answered 400 (prometheus.io remote write spec 1.0).
   if (outcome.limited) {
     const also = c.rejectedTotal > 0 ? `; also rejected ${c.rejectedTotal} samples (${c.rejectionSummary()})` : ''
-    return text(429, `${limitMessage(outcome.limited)}; ${outcome.rows} samples written${also}`, { ...written, 'Retry-After': '60' })
+    return text(400, `${limitMessage(outcome.limited)}; ${outcome.rows} samples written${also}`, written)
   }
   // Remote Write has no partial success: if anything was rejected the answer is 400
   // (not retried by the sender), saying what was wrong and how much was still written.
@@ -130,6 +136,9 @@ async function otlpMetrics(req: Request, env: Env, limits: Limits): Promise<Resp
     }
     const encoding = (req.headers.get('Content-Encoding') ?? 'identity').toLowerCase()
     if (encoding !== 'identity' && encoding !== 'gzip') return fail(415, 'unsupported content encoding; expected gzip or none', { 'Accept-Encoding': 'gzip' })
+
+    const early = await refuseEarly(env, tenant)
+    if (early) return refusal(early, fail)
 
     let body = await readBody(req, limits.maxBodyBytes)
     if (encoding === 'gzip') body = await gunzip(body, limits.maxDecompressedBytes)
@@ -159,6 +168,9 @@ function refusal(
 ): Response {
   if (outcome.status === 'backpressure') {
     return render(429, 'ingest buffer is full; retry the whole request', { 'Retry-After': retryAfter(outcome.retryAfterMs) })
+  }
+  if (outcome.status === 'overloaded') {
+    return render(503, 'ingest shard is overloaded; retry the whole request', { 'Retry-After': retryAfter(outcome.retryAfterMs) })
   }
   return render(503, `${outcome.reason}; retry the whole request`, { 'Retry-After': '1' })
 }

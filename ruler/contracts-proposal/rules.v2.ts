@@ -30,6 +30,13 @@ import type {
   AlertUpdate,
   AlertingRule,
   AlertingRuleInput,
+  AnomalyDetector,
+  AnomalyHistory,
+  AnomalyParamValue,
+  AnomalyRule,
+  AnomalyRuleInput,
+  AnomalyRuleStatus,
+  AnomalySeverity,
   CostClass,
   NotifierAlert,
   RecordingRule,
@@ -158,6 +165,27 @@ export interface AlertingRuleV2 extends AlertingRule {
 
 export type RuleV2 = AlertingRuleV2 | RecordingRule
 
+/**
+ * EXTENDED (`AnomalyRuleInput`, contract version 2): an anomaly entry may carry the same viz
+ * fields as an alerting entry. With `no_data_expr` absent, "no data" means the watched expression
+ * returned no series at all.
+ */
+export interface AnomalyRuleInputV2 extends AnomalyRuleInput {
+  no_data?: NoDataMode
+  no_data_for?: string
+  no_data_expr?: string
+  monitor?: MonitorMeta
+}
+
+/** EXTENDED (`AnomalyRule`). As for `AlertingRuleV2`, neither field is part of the rule key. */
+export interface AnomalyRuleV2 extends AnomalyRule {
+  noData?: NoDataPolicy
+  monitor?: MonitorMeta
+}
+
+/** Every rule a group can hold: `RuleGroup.rules` and `RuleGroup.anomalyRules`. */
+export type AnyRuleV2 = RuleV2 | AnomalyRuleV2
+
 /** EXTENDED (`RulerConfig`). */
 export interface RulerConfigV2 extends RulerConfig {
   /** Entries kept per monitor in the transition log; the oldest are dropped and counted. */
@@ -211,7 +239,10 @@ export interface Timeline {
 // ───────────────────────────── 4. Ruler RPC additions ─────────────────────────────
 
 export interface RuleSnapshot {
-  rule: RuleV2
+  /** EXTENDED: an anomaly rule's snapshot is listed with the group's other rules, after them. */
+  rule: AnyRuleV2
+  /** EXTENDED. Anomaly rules only. */
+  anomaly?: AnomalyRuleStatus
   health: 'ok' | 'err' | 'unknown'
   lastError: string | null
   lastEvaluationMs: number | null
@@ -233,11 +264,16 @@ export interface GroupSnapshot {
 
 /** ADDED. A group with everything needed to continue it on another shard. */
 export interface GroupBundle {
-  spec: { name: string; intervalMs: number; queryOffsetMs: number; limit: number; rules: RuleV2[] }
+  spec: { name: string; intervalMs: number; queryOffsetMs: number; limit: number; rules: RuleV2[]; anomalyRules?: AnomalyRuleV2[] }
   /** rule key → alerts. */
   alerts: Record<string, Alert[]>
   /** monitor id → its transition log. */
   timelines: Record<string, Timeline>
+  /**
+   * EXTENDED. Anomaly rule key → its stored detector state rows (`anomaly_state.body`, in chunk
+   * order), so a moved rule keeps scoring where it was. Absent: the rules start cold.
+   */
+  anomalyState?: Record<string, string[]>
 }
 
 /** ADDED. A span during which one alert instance would have been pending or firing. */
@@ -461,9 +497,68 @@ export interface MonitorInput {
   startInvestigation?: boolean
   labels?: Record<string, string>
   annotations?: Record<string, string>
+  /**
+   * EXTENDED. An anomaly monitor: `query` is the expression to watch and a detector, not a
+   * `condition`, decides when it alerts. Defaults follow the held-out evidence (see
+   * `GET /api/v1/monitors/detectors`): detector `ewma` with the parameters chosen there, severity
+   * `ticket`, `for` 0s (alarms are onsets), `keepFiringFor` 10m.
+   */
+  anomaly?: MonitorAnomalyInput
 }
 
-export type MonitorState = 'firing' | 'pending' | 'ok' | 'no_data' | 'error' | 'unknown'
+/** ADDED. The `anomaly` field of a monitor document. */
+export interface MonitorAnomalyInput {
+  detector?: AnomalyDetector
+  params?: Record<string, AnomalyParamValue>
+  unit?: string
+  severity?: AnomalySeverity
+  maxSeries?: number
+}
+
+/** ADDED. What the Monitor screens show of an anomaly monitor. */
+export interface MonitorAnomalyView {
+  detector: AnomalyDetector
+  params: Record<string, AnomalyParamValue>
+  /** Parameter names the author gave; the rest are defaults. */
+  given: string[]
+  unit: string
+  severity: AnomalySeverity
+  maxSeries: number
+  history: AnomalyHistory
+  status: AnomalyRuleStatus | null
+  /** What this detector is good for and how far the evidence for its defaults goes. */
+  guide: DetectorGuide
+}
+
+/**
+ * ADDED. One detector in `GET /api/v1/monitors/detectors`: what it is for, and the evidence,
+ * with its kind stated (held-out NAB, post hoc, or none).
+ */
+export interface DetectorGuide {
+  name: string
+  /** Usable as an anomaly rule's detector; false: a library function for jobs and explanations. */
+  inRules: boolean
+  goodFor: string
+  notFor: string
+  /** May an anomaly rule with this detector have severity `page`. */
+  pageAllowed: boolean
+  defaultSeverity: AnomalySeverity | null
+  /** The parameters the ruler fills in when the author gives none. */
+  defaults: Record<string, AnomalyParamValue>
+  /** Parameters an author must give. */
+  required: string[]
+  evidence: {
+    /** `held_out`: chosen on one fold of NAB, scored on the other. `post_hoc`: changed after seeing results. `none`. */
+    kind: 'held_out' | 'post_hoc' | 'none' | 'not_scorable'
+    /** True only when the defaults above are the held-out-validated configuration. */
+    defaultsValidated: boolean
+    /** NAB held-out scores (standard / low FP / low FN), null when not scored. */
+    nab: { standard: number; lowFp: number; lowFn: number } | null
+    note: string
+  }
+}
+
+export type MonitorState = 'firing' | 'pending' | 'ok' | 'no_data' | 'error' | 'unknown' | 'warming'
 
 export interface MonitorAlertView {
   fingerprint: string
@@ -526,6 +621,8 @@ export interface MonitorView {
   alerts: MonitorAlertView[]
   /** False for a rule saved without monitor metadata: no history is recorded for it. */
   historyRecorded: boolean
+  /** EXTENDED. Set for an anomaly monitor, null otherwise. */
+  anomaly: MonitorAnomalyView | null
 }
 
 export type { CostClass, SaveGroupsResult }

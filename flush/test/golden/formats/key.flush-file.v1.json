@@ -1,0 +1,5 @@
+{
+ "format": "key.flush-file",
+ "version": 1,
+ "key": "cell-0/data/metric_samples/tenant=golden-tenant/day=2026-11-18/L0-pool_3-1763467200000123-7-9-01234567.parquet"
+}

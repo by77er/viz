@@ -6,12 +6,14 @@ The dashboard the speed budgets in `project/README.md` ("Responsiveness and feed
 |---|---|
 | `dashboard.json` | The specification: eight panels (four figures, charts of 3, 8, 36 and 200 series, a second 8-series chart, a 7-day backtest, a 30-row table), the fixed clock (15:16 on 18 Nov 2026), range and step. |
 | `generate.mjs` | The data: a seeded generator, the same recipes the Chart preview draws. `node fixtures/generate.mjs pods` prints one panel's JSON. The same seed always gives the same numbers. |
-| `build.mjs` | Writes `dist/fixture/index.html` and `dist/fixture/data/*.json`: the dashboard built from the system's components and the reference chart, with a query field, a Run button that fetches every panel again, and a charts/tables switch. |
-| `speed.json` | The scenario `tools/speed.mjs` runs on it: every budget row, including typing, the crosshair, and the 36- and 200-series cases. |
+| `build.mjs` | Writes `dist/fixture/index.html` and `dist/fixture/data/*.json`: the dashboard built from the system's components and the reference chart, with a query field, a Run button that fetches every panel again, and on each chart panel a Chart/Table switch (the control screens have; v4's page-wide switch was not). Each chart reserves its height from `--legend-rows` and `--legend-notes`; a panel's age appears only once something is drawn; tables state how many rows of how many. `?delay=ms` holds every response that long. |
+| `speed.json` | The scenario `tools/speed.mjs` runs on it at 1440 x 900 with a fine pointer: every budget row, including typing, the crosshair, legend toggles and one panel's form at 36 and 200 series, and layout shift when the page loads scrolled to the 36-series chart with its data 800 ms late. |
+| `speed-phone.json` | The same at 400 x 800 with a coarse pointer and touch: legend toggles by tap, the crosshair by touch drag, and layout shift loaded scrolled to each chart. |
 
 ```
 node tools/build.mjs && node fixtures/build.mjs
-node tools/speed.mjs fixtures/speed.json            # 20 runs, 4x CPU, Fast 4G; prints p75, median, worst against each budget
+node tools/speed.mjs fixtures/speed.json            # 20 runs, 4x CPU, Fast 4G; prints p75, median, worst and the load against each budget
+node tools/speed.mjs fixtures/speed-phone.json      # the same on a phone layout
 ```
 
 **What a number from here means.** Measured on `dist/fixture/` it is the cost of the design system's own CSS and reference chart: a floor, and a regression check for the system. It is not the application's number. An application is measured by serving the same specification and data under its own route (`/fixture`) and running the same scenario file with its selectors; report which of the two a number is.

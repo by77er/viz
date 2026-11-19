@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { compactStep } from '../../compact/src/compact'
 import { flushTenant } from '../../flush/src/flush'
-import { DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, healLedgerLog, liveKeys, loseLedgerStorage, read, someSamples, stream } from '../../flush/test/helpers'
+import { DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, flushSettled, healLedgerLog, liveKeys, loseLedgerStorage, read, someSamples, stream } from '../../flush/test/helpers'
 import { canonOf } from '../../flush/test/read'
 import { engine } from '../../flush/src/index'
 import { DEFAULT_RETENTION, expireTenant, parseRetention, purgeTenant, readRetention, retentionCutoffDay, sweepOrphans } from '../src/index'
@@ -24,7 +24,7 @@ async function tenantWith(prefix: string, n: number, dayBack: (i: number) => num
     for (const r of rows) byDay.get(d)!.add(r.labels, r.ts, BigInt.asUintN(64, new BigInt64Array(new Float64Array([r.value as number]).buffer)[0]!))
     await s.shard.seal(s.tenant)
   }
-  expect(await flushTenant(env, engine, s.tenant, s.shardName)).toMatchObject({ status: 'ok', awaitingLog: false })
+  expect(await flushSettled(env, engine, s.tenant, s.shardName)).toMatchObject({ status: 'ok', awaitingLog: false })
   return { ...s, sent, byDay }
 }
 
@@ -79,7 +79,7 @@ describe('review R-1: a retention record that cannot be read', () => {
     await s.shard.seal(s.tenant)
     await append(s.shard, s.tenant, someSamples(s.tenant, T0, 24, 1), new Sent())
     await s.shard.seal(s.tenant)
-    expect(await flushTenant(env, engine, s.tenant, s.shardName)).toMatchObject({ status: 'ok' })
+    expect(await flushSettled(env, engine, s.tenant, s.shardName)).toMatchObject({ status: 'ok' })
     expect(await liveKeys(s.ledger)).toHaveLength(4)
 
     await env.CONFIG.put(`retention:${s.tenant}`, '{"metric_samples_days": 365,}')
@@ -262,8 +262,22 @@ describe('orphan sweep', () => {
     await t.ledger.expire({ table: 'metric_series', beforeDay: '2026-11-19' })
     expect((await purgeTenant(env, t.tenant, { graceMs: 0 })).deleted.sort()).toEqual(live)
     expect((await sweepOrphans(env, t.tenant)).kept.map((k) => k.why).sort()).toEqual(['unknown_name', 'young', 'young'])
+    // The flush files' grace alone does not lift the age floor of a compaction output (twice a step's deadline).
+    expect((await sweepOrphans(env, t.tenant, { graceMs: 0 })).kept.map((k) => k.why).sort()).toEqual(['unknown_name', 'young', 'young'])
     expect((await sweepOrphans(env, t.tenant, { now: Date.now() + 25 * 3_600_000 })).deleted.sort()).toEqual(failedMerge.sort())
     expect(await dataKeys(t.tenant)).toEqual([unknown])
+  })
+
+  it('an input whose object is missing but which is still live does not release a leftover output', async () => {
+    const t = await tenantWith('o6', 4)
+    await expect(compactStep(env, engine, t.tenant, { now: QUIET, hooks: { afterPut: () => { throw new Error('crash') } } })).rejects.toThrow('crash')
+    const leftover = (await dataKeys(t.tenant)).filter((k) => /\/L1-/.test(k))
+    // A live file whose object is gone is a fault elsewhere (I11); the sweep must not compound it.
+    const [first] = await liveKeys(t.ledger)
+    await env.BUCKET.delete(first!)
+    const r = await sweepOrphans(env, t.tenant, { graceMs: 0, maxCompactStepMs: 0, now: Date.now() + 365 * DAY_MS })
+    expect(r.deleted).toEqual([])
+    expect(r.kept.map((k) => [k.key, k.why]).sort()).toEqual(leftover.map((k) => [k, 'inputs_remain']))
   })
 
   it('a merge in flight keeps its outputs: the sweep runs between its PUTs and its replace', async () => {

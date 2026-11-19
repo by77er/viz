@@ -128,15 +128,17 @@ if (cmd === 'capture') {
   const sc = JSON.parse(readFileSync(a, 'utf8')); mkdirSync(b, { recursive: true })
   for (const state of sc.states) for (const theme of state.themes ?? sc.themes ?? ['light', 'dark']) await runState(browser, sc, state, theme, b)
 } else if (cmd === 'compare') {
+  // Before and after side by side at their natural size (no scaling, so a 400 px image is not blown up and a 1440 px one keeps its detail).
   mkdirSync(c, { recursive: true })
   const uri = (p) => 'data:image/png;base64,' + readFileSync(p).toString('base64')
+  const width = (p) => readFileSync(p).readUInt32BE(16) // PNG IHDR width
   for (const f of readdirSync(b).filter((x) => x.endsWith('.png'))) {
-    let before
-    try { before = uri(join(a, f)) } catch { before = null }
-    const page = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 })
-    await page.setContent(`<body style="margin:0;padding:24px;background:#fff;font:14px Georgia,serif;color:#111"><div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start">
-      <div><div style="margin-bottom:8px">Before · ${f}</div>${before ? `<img src="${before}" style="width:100%;border:1px solid #e4e4e4">` : '<div style="padding:48px;border:1px solid #e4e4e4">New view: nothing to compare.</div>'}</div>
-      <div><div style="margin-bottom:8px">After · ${f}</div><img src="${uri(join(b, f))}" style="width:100%;border:1px solid #e4e4e4"></div></div></body>`)
+    let before = null; try { before = join(a, f); readFileSync(before) } catch { before = null }
+    const wa = before ? width(before) : width(join(b, f)), wb = width(join(b, f))
+    const page = await browser.newPage({ viewport: { width: wa + wb + 72, height: 600 }, deviceScaleFactor: 1 })
+    await page.setContent(`<body style="margin:0;padding:24px;background:#fff;font:14px Georgia,serif;color:#111"><div style="display:flex;gap:24px;align-items:flex-start">
+      <div><div style="margin-bottom:8px">Before (v4) · ${f}</div>${before ? `<img src="${uri(before)}" style="display:block;outline:1px solid #e4e4e4">` : `<div style="width:${wa}px;padding:48px 0;outline:1px solid #e4e4e4">New view: nothing to compare.</div>`}</div>
+      <div><div style="margin-bottom:8px">After (v5) · ${f}</div><img src="${uri(join(b, f))}" style="display:block;outline:1px solid #e4e4e4"></div></div></body>`) // token-lint-ignore: review frame, not product
     await page.screenshot({ path: join(c, f), fullPage: true })
     await page.close()
   }

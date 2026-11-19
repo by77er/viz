@@ -93,27 +93,49 @@ function instrument() {
     if (String(a[0] && a[0].url ? a[0].url : a[0]).includes('query_range')) res.clone().text().then(() => { m.resp = performance.now() })
     return res
   }
+  // A worker that answers for the page (a candidate reads the matrix in one): the time its
+  // message reaches the page stands in for "the body has arrived" (m.resp). The page cannot
+  // see a worker's Resource Timing, so responseFull is not taken for it.
+  const RealWorker = window.Worker
+  if (RealWorker) window.Worker = class extends RealWorker {
+    constructor(...a) { super(...a); this.addEventListener('message', () => { m.resp = performance.now(); m.viaWorker = true }) }
+  }
   // The result is painted when the burst of DOM changes that follows the response has been
   // drawn: the end of the last frame in which the result panel changed, the burst being over
   // once 250 ms pass without a change. (The old app adds its chart canvas one frame after the
   // rest of the result; the new one redraws the existing canvas in the same frame as the text.
   // Counting the whole burst treats both the same.)
-  let quiet = null
+  // The burst is the one that starts after the last byte (Resource Timing responseEnd of the
+  // query_range request; with a worker, after its message). Until 2026-11-19 it started when the
+  // harness's own copy of the body (res.clone().text()) resolved; an app that reads the body
+  // as it arrives can paint before that copy resolves, and the burst then started at the next
+  // change of the panel, the age turning from "now" to "5 s" (measured: 5 s figures).
+  m.frames = []
   new MutationObserver((records) => {
-    if (m.resp === null || m.respPaint !== null) return
+    if (!m.rec) return
     const panel = document.querySelector('section[aria-label="Query result"], [data-testid=result]')
     if (!panel || !records.some((r) => panel.contains(r.target))) return
-    const resp = m.resp
-    afterFrame((t) => { m.lastChange = t - resp; m.lastPaintAt = t })
-    clearTimeout(quiet)
-    quiet = setTimeout(() => {
-      m.respPaint = m.lastChange
-      const entries = performance.getEntriesByType('resource').filter((e) => e.name.includes('query_range'))
-      const last = entries[entries.length - 1]
-      m.respFull = last && last.responseEnd > 0 ? m.lastPaintAt - last.responseEnd : null
-      if (m.rec) m.rec.resultAt = performance.now()
-    }, 250)
+    const t = performance.now()
+    afterFrame((end) => m.frames.push({ t, end }))
   }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true })
+  /** The paint of the result, once its burst is over: null while it may go on. */
+  m.settle = () => {
+    const entries = performance.getEntriesByType('resource').filter((e) => e.name.includes('query_range') && e.startTime >= m.rec.armedAt)
+    const last = entries[entries.length - 1]
+    const lastByte = last && last.responseEnd > 0 ? last.responseEnd : m.viaWorker ? m.resp : null
+    if (lastByte === null || lastByte === undefined) return null
+    const after = m.frames.filter((f) => f.t >= lastByte)
+    if (after.length === 0) return null
+    let k = 0
+    while (k + 1 < after.length && after[k + 1].t - after[k].t <= 250) k++
+    if (k === after.length - 1 && performance.now() - after[k].t < 250) return null
+    const paintAt = after[k].end
+    return {
+      full: m.viaWorker ? null : paintAt - lastByte,
+      // The earlier figure, from when the harness's copy of the body resolved (or the worker's message), when that came first.
+      resp: m.resp !== null && m.resp <= after[0].t ? paintAt - m.resp : null,
+    }
+  }
   /** Record every mousemove (crosshair) or keydown (typing) until the frame that follows it. */
   m.moves = []; m.keys = []
   m.watch = (type, into) => {
@@ -123,8 +145,8 @@ function instrument() {
   }
   /** Arm a one-shot measurement of the next pointerdown. `done` is a selector, or 'result'. */
   m.arm = (done) => {
-    const rec = (m.rec = { t0: null, tUp: null, press: null, busy: null, done: null, resultAt: null, shiftFrom: performance.now() })
-    m.resp = null; m.respPaint = null; m.respFull = null
+    const rec = (m.rec = { t0: null, tUp: null, press: null, busy: null, done: null, resultAt: null, shiftFrom: performance.now(), armedAt: performance.now() })
+    m.resp = null; m.respPaint = null; m.respFull = null; m.frames = []; m.viaWorker = false
     window.addEventListener('pointerdown', (e) => {
       rec.t0 = e.timeStamp
       afterFrame((t) => { rec.press = t - rec.t0 })
@@ -136,6 +158,10 @@ function instrument() {
       const poll = () => {
         const run = document.querySelector('[data-testid=run]')
         if (!busySeen && run && run.getAttribute('aria-busy') === 'true') { busySeen = true; afterFrame((t) => { rec.busy = t - rec.tUp }) }
+        if (done === 'result' && rec.resultAt === null) {
+          const r = m.settle()
+          if (r) { m.respPaint = r.resp; m.respFull = r.full; rec.resultAt = performance.now() }
+        }
         const ok = done === 'result' ? rec.resultAt !== null : visible(done)
         if (ok) afterFrame((t) => { rec.done = t - rec.tUp })
         else requestAnimationFrame(poll)

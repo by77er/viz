@@ -30,7 +30,7 @@ export function batchFor(client: number, i: number, series: number): { payload: 
 }
 
 async function sha(bytes: Uint8Array): Promise<string> {
-  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>))
   return [...d].map((x) => x.toString(16).padStart(2, '0')).join('')
 }
 

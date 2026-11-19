@@ -19,6 +19,11 @@
  * - Nothing here throws for bad input: results are discriminated on `status`.
  * - Every RPC may answer `Refused` (`wrong_tenant`, or `schema_too_new` during a deploy or a
  *   rollback: contracts/COMPATIBILITY.md).
+ *
+ * Versions: 1 is the shape above without the members marked "contract version 2". Version 2
+ * (2026-11-19) adds anomaly rules, additively: new optional fields, new types, one new enum value
+ * (`'anomaly'` in `RuleStatus.kind` and `SavedRule.kind`, which callers must not act on as another
+ * kind). Every rule file and stored group valid under version 1 is valid and means the same.
  */
 
 import type { PromScalar, PromVector } from './engine'
@@ -76,7 +81,8 @@ export interface RuleGroupInput {
   limit?: number
   /** Labels added to every rule in the group; a rule's own label wins. */
   labels?: Record<string, string>
-  rules: (AlertingRuleInput | RecordingRuleInput)[]
+  /** EXTENDED (contract version 2): an entry may also be an `AnomalyRuleInput` (an alerting entry with an `anomaly` block). */
+  rules: (AlertingRuleInput | RecordingRuleInput | AnomalyRuleInput)[]
 }
 
 export interface AlertingRuleInput {
@@ -137,6 +143,13 @@ export interface RuleGroup {
   queryOffsetMs: number
   limit: number
   rules: Rule[]
+  /**
+   * EXTENDED (contract version 2). The group's anomaly rules, evaluated in the same tick and the
+   * same batch as `rules`, after them. Absent means none. They are kept out of `rules` on purpose:
+   * a release that predates anomaly rules reads `rules` only, so it never evaluates one as a plain
+   * alerting rule (which would fire for every series) or as a recording rule (see "anomaly rules").
+   */
+  anomalyRules?: AnomalyRule[]
 }
 
 /** A problem with a document, addressed so a UI can point at it. */
@@ -146,6 +159,169 @@ export interface ValidationError {
   message: string
   /** What to change. */
   fix: string
+}
+
+// ───────────────────────────── anomaly rules (contract version 2) ─────────────────────────────
+//
+// ADDED 2026-11-19, additively (contracts/COMPATIBILITY.md §4): nothing above changes meaning.
+// A rule file without an `anomaly` block means what it meant; a stored group without
+// `anomalyRules` is read as having none.
+//
+// An anomaly rule watches every series of one PromQL expression with a detector from
+// `anomaly/` (its `DETECTORS`). Each tick the ruler evaluates the expression through its
+// ordinary batch call, feeds each series' value to that series' detector state, and treats the
+// series the detector flags as the rule's result: from there `for`, `keep_firing_for`, the
+// no-data policy, alert state, the hand-off and the notifier are those of an alerting rule.
+// A flagged alert carries the detector's sentence and the numbers behind it
+// (`ANOMALY_ANNOTATION`, `ANOMALY_DETAIL_ANNOTATION`) and its severity as the `severity` label.
+
+/** Detectors a rule may name: the single-series detectors of `anomaly/` that run from per-series state, one point per tick. */
+export const ANOMALY_DETECTORS = ['ewma', 'threshold', 'robust_z', 'seasonal', 'cusum'] as const
+/**
+ * Not in the list, on purpose: `stl` and `pelt` (batch fits; explanations for a scheduled job, not
+ * pagers), `burn_rate` (two series per bucket; SLOs compile to recording rules instead) and the
+ * cross-series detector (one vector, no per-series state). A reader that meets a name it does not
+ * know refuses the rule; it never substitutes another detector.
+ */
+export type AnomalyDetector = (typeof ANOMALY_DETECTORS)[number]
+
+/** Becomes the alert's `severity` label, for routing. */
+export type AnomalySeverity = 'page' | 'ticket' | 'info'
+
+export type AnomalyParamValue = number | string | boolean | null
+
+/** The `anomaly` block of a rule-file entry. */
+export interface AnomalySpecInput {
+  /** Default `ewma`. */
+  detector?: AnomalyDetector
+  /**
+   * The detector's parameters (`anomaly/src/detectors/<name>.ts`, `<Name>Params`) by name. Not
+   * `stepMs`: that is the group's interval. Unknown names and wrong types are refused.
+   */
+  params?: Record<string, AnomalyParamValue>
+  /** Printed after numbers in explanations, e.g. "ms". */
+  unit?: string
+  /** Default `ticket`. */
+  severity?: AnomalySeverity
+  /**
+   * Most series the expression may return. Above it the evaluation is refused (the rule is
+   * `health: err`, status `series_cap_exceeded`), nothing is scored and no state or alert
+   * changes; series are never dropped to fit. Default 100; at most `RulerLimits.maxAnomalySeriesPerRule`.
+   */
+  max_series?: number
+}
+
+/**
+ * A rule-file entry: an alerting entry (`alert`, `expr`, `for`, `keep_firing_for`, labels,
+ * annotations) with an `anomaly` block. `expr` is the series to watch (a gauge, or `rate()` of a
+ * counter), not a comparison.
+ */
+export interface AnomalyRuleInput extends AlertingRuleInput {
+  anomaly: AnomalySpecInput
+}
+
+/** What a detector reads (the library's `HistoryNeed`), classified with the PromQL thresholds (design §7). */
+export interface AnomalyHistory {
+  /** What each evaluation reads once the detector has state. */
+  tick: CostClass
+  /** What warming the detector from history would read: `lookbackMs` at `resolutionMs`. */
+  coldStart: CostClass
+  lookbackMs: number
+  tickLookbackMs: number
+  /** 0 = the series' own (the group interval). */
+  resolutionMs: number
+  /** Valid points before anything is scored; until then the rule is `warming`. */
+  minPoints: number
+  incremental: boolean
+  reason: string
+}
+
+export interface AnomalySpec {
+  detector: AnomalyDetector
+  /**
+   * Every parameter, resolved when the rule is saved: defaults are written out, so a later change
+   * of a default never changes what a stored rule does (COMPATIBILITY.md §7).
+   */
+  params: Record<string, AnomalyParamValue>
+  /** The parameter names the author gave; the others are defaults. */
+  given: string[]
+  unit: string
+  severity: AnomalySeverity
+  maxSeries: number
+  history: AnomalyHistory
+  /** Estimated stored state of one series, in bytes, used to refuse at save what could not be stored. */
+  stateBytesPerSeries: number
+}
+
+export interface AnomalyRule {
+  kind: 'anomaly'
+  /** The `alertname` of its alerts. */
+  name: string
+  expr: string
+  anomaly: AnomalySpec
+  forMs: number
+  keepFiringForMs: number
+  /** Includes `severity`, from `anomaly.severity`. */
+  labels: Record<string, string>
+  annotations: Record<string, string>
+  /** Hash of `anomaly`, name, expression, detector, parameters and labels: a new detector or parameter is a new rule with fresh state. */
+  key: string
+  /** The larger of the expression's class and the detector's tick class. */
+  cost: RuleCost
+}
+
+/** The annotation holding the detector's one-sentence explanation of a flagged point. */
+export const ANOMALY_ANNOTATION = 'anomaly'
+/** The annotation holding the numbers behind that sentence, as `AnomalyDetail` JSON. */
+export const ANOMALY_DETAIL_ANNOTATION = 'anomaly_detail'
+
+/** `ANOMALY_DETAIL_ANNOTATION`'s value. Every number in the sentence is one of these. */
+export interface AnomalyDetail {
+  v: 1
+  detector: AnomalyDetector
+  kind: 'threshold' | 'deviation' | 'seasonal' | 'level_shift' | 'burn_rate' | 'group_outlier' | 'residual'
+  direction: 'above' | 'below'
+  value: number
+  /** What the value was compared with, and what that is in words. */
+  reference: number
+  referenceLabel: string
+  deviations?: number
+  spread?: number
+  spreadLabel?: string
+  /** The detector's score, in its own unit. */
+  score: number
+  /** Unix ms of the point (for a level shift, the estimated change). */
+  at: number
+  facts: Record<string, number | string>
+}
+
+/**
+ * How an anomaly rule's last evaluation went.
+ *   ok                     scored
+ *   warming                too little history for some or all series; not scored yet (`message` says what is needed)
+ *   series_cap_exceeded    refused: the expression returned more than `maxSeries` series
+ *   state_limit_exceeded   refused: the detector state would exceed a `RulerLimits` state limit
+ *   unknown                not evaluated yet
+ * A refused evaluation changes no state and no alert.
+ */
+export type AnomalyEvalStatus = 'ok' | 'warming' | 'series_cap_exceeded' | 'state_limit_exceeded' | 'unknown'
+
+export interface AnomalyRuleStatus {
+  status: AnomalyEvalStatus
+  message: string | null
+  /** Series the expression returned at the last evaluation (also when refused). */
+  series: number
+  maxSeries: number
+  scored: number
+  warming: number
+  /** Points that were NaN or ±Inf: not scored; the series keeps its previous flag (a gap is not a recovery). */
+  missing: number
+  anomalous: number
+  /** Series with stored state, and its size as stored. */
+  stateSeries: number
+  stateBytes: number
+  /** States of series absent longer than the detector's lookback, dropped since the object started. */
+  pruned: number
 }
 
 // ───────────────────────────── alert state ─────────────────────────────
@@ -176,7 +352,8 @@ export interface Alert {
 export interface RuleStatus {
   group: string
   name: string
-  kind: 'alert' | 'record'
+  /** EXTENDED (contract version 2): `anomaly`. A caller that does not know a kind must not act on the rule as if it were another. */
+  kind: 'alert' | 'record' | 'anomaly'
   key: string
   cost: RuleCost
   /** `unknown` until first evaluated. */
@@ -184,6 +361,8 @@ export interface RuleStatus {
   lastError: string | null
   lastEvaluationMs: number | null
   alerts: Alert[]
+  /** EXTENDED (contract version 2). Present for anomaly rules only. */
+  anomaly?: AnomalyRuleStatus
 }
 
 // ───────────────────────────── Ruler RPC ─────────────────────────────
@@ -198,6 +377,12 @@ export interface RulerLimits {
   /** Bytes of one group's stored JSON (one SQLite value). */
   maxGroupBytes: number
   minIntervalMs: number
+  /** EXTENDED (contract version 2). Hard cap on `AnomalySpec.maxSeries`. Default 1,000. */
+  maxAnomalySeriesPerRule?: number
+  /** EXTENDED (contract version 2). Detector state of one series, as stored JSON. Default 65,536. */
+  maxAnomalyStateBytesPerSeries?: number
+  /** EXTENDED (contract version 2). Detector state of all series of one rule. Default 1,048,576. */
+  maxAnomalyStateBytesPerRule?: number
 }
 
 export interface RulerConfig {
@@ -234,9 +419,12 @@ export type Refused = WrongTenant | SchemaTooNew
 
 export interface SavedRule {
   name: string
-  kind: 'alert' | 'record'
+  /** EXTENDED (contract version 2): `anomaly`. */
+  kind: 'alert' | 'record' | 'anomaly'
   key: string
   cost: RuleCost
+  /** EXTENDED (contract version 2). Anomaly rules only: what the detector reads per tick and at a cold start. */
+  history?: AnomalyHistory
 }
 
 export type SaveGroupsResult =

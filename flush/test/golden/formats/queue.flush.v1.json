@@ -1,0 +1,5 @@
+{
+ "format": "queue.flush",
+ "version": 1,
+ "message": "{\"v\":1,\"tenant\":\"golden-tenant\",\"shard\":\"golden-pool/0\"}"
+}

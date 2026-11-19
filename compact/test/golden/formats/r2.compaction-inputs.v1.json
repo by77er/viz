@@ -1,0 +1,6 @@
+{
+ "format": "r2.compaction-inputs",
+ "version": 1,
+ "metadataKey": "viz-inputs",
+ "record": "{\"v\":1,\"inputs\":[\"cell-0/data/metric_samples/tenant=golden-tenant/day=2026-11-18/L0-pool_0-1763467200000123-1-1-0a0a0a0a.parquet\",\"cell-0/data/metric_samples/tenant=golden-tenant/day=2026-11-18/L0-pool_0-1763467200000123-2-2-0b0b0b0b.parquet\",\"cell-0/data/metric_series/tenant=golden-tenant/day=2026-11-18/L0-pool_0-1763467200000123-1-1-1a1a1a1a.parquet\",\"cell-0/data/metric_series/tenant=golden-tenant/day=2026-11-18/L0-pool_0-1763467200000123-2-2-1b1b1b1b.parquet\"]}"
+}

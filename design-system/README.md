@@ -1,10 +1,10 @@
-# viz design system
+# viz design system, version 5
 
-The ground truth for how viz looks and behaves. Design changes are reviewed against it.
+The ground truth for how viz looks and behaves. Design changes are reviewed against it. The version is `version` in `project/tokens.json`; this is version 5.
 
 | Path | Contents |
 |---|---|
-| `project/tokens.json` | Every value: colours in both themes, type styles, spacing, radii, the one shadow, sizes. The single source. |
+| `project/tokens.json` | Every value: colours in both themes, type styles, spacing, radii, the one shadow, sizes, the one angle, the two breakpoints, the inline-number scale. The single source. |
 | `project/README.md` | The rules: colour, type, space and shape, states, motion, words, iconography, layout. |
 | `project/method.md` | How to design a change: the question, the presence test, build order, hard rules. |
 | `project/review.md` | The review process and rubric. |
@@ -13,11 +13,13 @@ The ground truth for how viz looks and behaves. Design changes are reviewed agai
 | `project/fonts/` | The two typefaces as variable WOFF2, limited to the weights used (about 75 KB and 54 KB). |
 | `reviews/` | Design reviews of the system itself and of changes, with their images. |
 | `fixtures/` | The fixture dashboard the speed budgets are measured on: a JSON specification, a seeded data generator (3, 8, 36 and 200 series, a 7-day backtest, a 30-row table) and a page built from the system's components. |
+| `tools/css.mjs` | The generation of the shipped CSS from the tokens and `src/components.css`, shared by `build.mjs` and `check.mjs`. |
 | `tools/build.mjs` | Generates `project/components/bundle.css`, `dist/tokens.css`, `dist/viz.css`, `dist/viz-chart.js` (the reference chart) and `dist/fonts/`. |
-| `tools/check.mjs` | Contrast of every text, control, mark and series pairing in both themes, series neighbours, press against hover and chosen, the swatch's ground edge, and a lint for literal colours, lengths, durations and opacity. Pass paths to lint other code. |
+| `tools/check.mjs` | Tokens (contrast of every pairing in both themes; the series palette as a palette: lightness steps, colour-vision separation within each dash group, distance from status and action colours; press against hover and chosen; the scrim), component CSS read as CSS (the swatch ring, the dot edge, no fill on a chart, slots 5 to 8 dashed, breakpoints are tokens), a rendered audit of every preview in both themes at rest, hovered and pressed (text against the fill behind it, series against their surface), and a lint for literal colours, lengths, durations, opacity, angles, percentages and weights, including `<style>` and `style=""` in HTML. Pass paths to lint other code; `--no-render` skips the audit. |
+| `tools/mutants.mjs` | Breaks each property `check.mjs` guards on a copy in a temporary folder (never the tree) and confirms the check fails; confirms a harmless reformatting passes. Run it after changing `check.mjs`. |
 | `tools/reference.mjs` | Builds `dist/reference.html`: every component in both themes on one page. A component left out of its order is appended. |
-| `tools/shots.mjs` | Captures a view in both themes at 1440 and 400 px, composes before/after images, and runs a scenario file: hover, pressed and focus on a selector, waiting after N ms, a coarse pointer, 200% zoom, greyscale, with hit areas, overflow and smallest text measured. |
-| `tools/speed.mjs` | The shared speed harness: N runs at 4x CPU and Fast 4G, p75, median and worst for press, typing, crosshair, a named toggle, response to paint, layout shift and the worst interaction. |
+| `tools/shots.mjs` | Captures a view in both themes at 1440 and 400 px, composes before/after images, and runs a scenario file: hover, pressed and focus on a selector, waiting after N ms, a coarse pointer, 200% zoom, greyscale, with hit areas, overflow and smallest text measured, and controls covered at their centre, drawn boxes reached by a neighbour's hit area and links inside sentences reported. |
+| `tools/speed.mjs` | The shared speed harness: N runs at 4x CPU and Fast 4G, at a desktop layout (`fixtures/speed.json`) and a phone layout with touch (`fixtures/speed-phone.json`); p75, median and worst for press, typing, crosshair (pointer and touch drag), toggles, response to paint, layout shift (including a load scrolled to a chart) and the worst interaction; the load average and a calibration task recorded with every result, and timing rows not judged when the load exceeded the cores. |
 
 `project/` is laid out so it can be published unchanged as the browsable reference.
 
@@ -27,8 +29,9 @@ The ground truth for how viz looks and behaves. Design changes are reviewed agai
 npm run build     # dist/tokens.css, dist/viz.css, dist/viz-chart.js, dist/reference.html
 npm run check     # contrast + literal-value lint on the component CSS
 node tools/check.mjs ../app/src   # lint application code for literal values
-node fixtures/build.mjs && node tools/speed.mjs fixtures/speed.json   # the budgets, on the fixture
-node tools/shots.mjs scenario reviews/system-v4/shots.json <outDir>   # compositions, states, touch, zoom
+node fixtures/build.mjs && node tools/speed.mjs fixtures/speed.json && node tools/speed.mjs fixtures/speed-phone.json   # the budgets, desktop and phone
+node tools/mutants.mjs            # check.mjs against its mutants, on a copy
+node tools/shots.mjs scenario reviews/system-v5/shots.json <outDir>   # compositions, states, touch, zoom
 ```
 
 Application code loads `dist/viz.css`, puts `class="vz"` on its root, and uses the token
@@ -46,18 +49,13 @@ override it.
   character to be recognisable (a serifed capital I, so I, l and 1 never blur) and enough
   restraint for dense tables. JetBrains Mono for data. Two families, each with one job. It was
   chosen by rendering the same dense screen in a serif and nine sans candidates and comparing.
-- **Charts are part of the system**, not a panel around a library: series colour belongs to the entity for the life of the view, everything past eight series is one "Other", the readout never covers the plot, and a finger can do what a pointer does (Chart).
+- **Charts are part of the system**, not a panel around a library: series colour belongs to the entity for the life of the view, never to its rank; everything past eight series is one "Other"; slots alternate darker and lighter and 5 to 8 are dashed, so hue is never the only channel; the readout never covers the plot; and a finger can do what a pointer does (Chart).
 - **Small radii, hairlines, one shadow.** Shape says what kind of thing something is:
   square tiles, 4px controls, 8px overlays.
 - **Sentence case everywhere.** Labels differ from text by weight and ink, not by capitals
   or tracking.
-- **Speed and honest feedback are part of the system**, with budgets and a waiting table in
-  the rules and rows in the review rubric.
-
-Reference points for behaviour and restraint, not for appearance: Linear (density,
-keyboard-first commands), Things (one primary action, calm states), iA Writer (type doing
-the work of chrome), Stripe's dashboard (tables and numbers), and the clarity and deference
-principles of Apple's interface guidelines.
+- **Speed and honest feedback are part of the system**, with budgets, a waiting table and a
+  harness that records the machine's load in the rules, and rows in the review rubric.
 
 ## What it deliberately leaves out
 
@@ -86,32 +84,29 @@ pull request description by commit, so it stays valid after merge:
 - `reviews/system-v2/review.md`: rejected again on one remaining blocker (tab hit areas
   clipped by the scrolling strip) and three new majors (tabular figures widening
   punctuation, the sticky column's layering, a checkbox that resembled a status mark).
-- `reviews/system-v3/review.md`: **approved**, no blockers or majors. Three minor wording
-  points were then corrected. No speed budget has been verified, because nothing uses the
-  system yet.
-- `reviews/system-v4/CHANGES.md`: **v4, not yet reviewed.** The system changes asked for by
-  the first application review (`reviews/app-restyle/`) and the flow screens' review
-  (`reviews/flows-v1/`): a Chart component and series-colour rule with a re-stepped light
-  palette, touch and narrow-table rules, a pressed fill and a scrim, the waiting line's
-  place, inline numbers, new components (page header, key-value list, timeline, agent claim,
-  change list, secret, notice, first run), the fixture dashboard and speed harness, and
-  rubric rows for typing, many series, touch parity, consistency, agent text and stale
-  labels. It lists migration notes for `app/src` and for the flow screens. It needs an
-  independent review before anything is built on it.
+- `reviews/system-v3/review.md`: **approved**, no blockers or majors.
+- `reviews/system-v4/review.md`: **rejected** v4 (the Chart component, touch and narrow rules,
+  `pressed`, new components, the fixture and harness) on two blockers (series promoted into
+  reserved slots after a filter round trip; the chart's reserved height wrong on phones) and
+  six majors (hue-only series identity, an open chart specification, the main path inside a
+  sentence, the harness, the rubric, missing pieces).
+- `reviews/system-v5/response.md`: **v5, not yet reviewed.** Every v4 finding, what changed,
+  where, and the image or measurement that shows it; the 16 system gaps from the flow screens'
+  second revision; what was not done. Before and after images in `reviews/system-v5/compare/`.
 
 ## Not done yet
 
-- No icon set. The rules say to use words until one is chosen.
+- No icon set. The rules say to use words until one is chosen ("Actions…" for a row's menu).
 - Components are CSS classes with HTML previews; there is no React component package.
-- The web app (`app/`) uses the system since the app-restyle change, which was rejected in
-  review on findings that v4 answers on the system's side; the app's own fixes are open.
-- Log line, trace waterfall, heatmap and flame graph are not specified; they arrive with
-  the traces and logs phases. Stacked charts are described in the Chart rules but not drawn
-  by the reference chart.
-- The budgets have been measured only on the system's own fixture page (a floor), on a
-  shared machine: two rows are over budget there (a legend toggle with 36 series and
-  switching seven panels from charts to tables; `reviews/system-v4/CHANGES.md`). The
-  application has not been measured against the fixture.
-- The application (`app/`) and the flow screens (`flows/`) do not follow v4 yet; the
-  migration notes are in `reviews/system-v4/CHANGES.md`.
+- The web app (`app/`) and the flow screens (`flows/`) are on v4; migration notes are in
+  `reviews/system-v4/CHANGES.md` and `reviews/system-v5/response.md` ("Migration").
+- Trace waterfall, log line, an outbound message, stacked and bar charts and heatmaps are not
+  specified; the Chart component says not to build them from it.
+- The budgets have been measured only on the system's own fixture page (a floor), on a shared
+  machine whose load stayed above its core count, so the harness reports every timing row as
+  "not judged"; layout shift is judged and within budget at both layouts. The application has
+  not been measured against the fixture.
 - Fonts cover Latin, extended Latin and (mono) Greek and Cyrillic only.
+- Not checked: a screen reader by ear, Safari and Firefox (the table's scroll edge uses a scroll
+  timeline, which Safari and Firefox may not draw; the table still scrolls), real touch hardware,
+  enlarged text as distinct from zoom.

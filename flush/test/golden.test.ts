@@ -40,7 +40,7 @@ describe('golden formats: every format this component writes has a golden file f
   it('r2.dead-letters: one object per batch, as written; and every version still reads', async () => {
     const puts: { key: string; body: string }[] = []
     const BUCKET = { put: async (key: string, body: string) => void puts.push({ key, body }) } as unknown as R2Bucket
-    const batch = createMessageBatch('viz-flush-dlq', [
+    const batch = createMessageBatch<unknown>('viz-flush-dlq', [
       { id: 'm-1', timestamp: 0, attempts: 9, body: { v: 1, tenant: 't1', shard: 'p/0' } },
       { id: 'm-2', timestamp: 0, attempts: 9, body: 'garbage' },
     ])

@@ -69,7 +69,7 @@ describe('active-series limit', () => {
     expect(shardShare(0, { pool: 'p', slots: 3, spread: 3, epoch: 1 }, 't')).toBe(0)
   })
 
-  it('Remote Write: 429 naming the limit when new series do not fit; existing series are written, also at the limit', async () => {
+  it('Remote Write: 400 (not retried) naming the limit when new series do not fit; existing series are written, also at the limit (review R-4)', async () => {
     const t = await tenantWith(10)
     expect((await postWrite(t.key, many('up', 0, 8))).status).toBe(204)
     expect((await shardStub(t.map, 0).seriesCount(t.tenant)).count).toBe(8)
@@ -77,8 +77,10 @@ describe('active-series limit', () => {
     // 5 series it already has + 5 new ones, room for 2.
     const mixed = many('up', 3, 13, now + 1)
     const r = await postWrite(t.key, mixed)
-    expect(r.status).toBe(429)
-    expect(r.headers.get('Retry-After')).toBe('60')
+    // 400, not 429: a sender that retries 429 would resend the refused series for ever
+    // and fall behind on the ones that are accepted.
+    expect(r.status).toBe(400)
+    expect(r.headers.get('Retry-After')).toBeNull()
     expect(r.headers.get('X-Prometheus-Remote-Write-Samples-Written')).toBe('7')
     const text = await r.text()
     expect(text).toContain('active series limit reached: the limit is 10 active series per tenant (10 on each of its shards, 8 active on the fullest)')
@@ -93,13 +95,13 @@ describe('active-series limit', () => {
     // ...a request of only new series is refused whole, and stores nothing...
     const before = (await tail(t.map, t.tenant)).length
     const full = await postWrite(t.key, many('other', 0, 4, now + 3))
-    expect(full.status).toBe(429)
+    expect(full.status).toBe(400)
     expect(full.headers.get('X-Prometheus-Remote-Write-Samples-Written')).toBe('0')
     expect(await full.text()).toContain('4 new series with 4 samples refused')
     expect((await tail(t.map, t.tenant)).length).toBe(before)
     // ...and the sender's retry of the mixed request is refused the same way and stores nothing twice.
     const batches = (await tailOfSlot(t.map, 0, t.tenant)).batches.length
-    expect((await postWrite(t.key, mixed)).status).toBe(429)
+    expect((await postWrite(t.key, mixed)).status).toBe(400)
     expect((await tailOfSlot(t.map, 0, t.tenant)).batches.length).toBe(batches)
   })
 
@@ -139,7 +141,7 @@ describe('active-series limit', () => {
     const on = (slot: number, lo: number, hi: number) => Array.from({ length: hi - lo }, (_, k) => one('up', lo + k, now, jobFor(slot)))
     // Three series for slot 0 (one too many), one for slot 1.
     const r = await postWrite(t.key, [...on(0, 0, 3), ...on(1, 0, 1)])
-    expect(r.status).toBe(429)
+    expect(r.status).toBe(400)
     expect(await r.text()).toContain('(2 on each of its shards')
     expect((await shardStub(t.map, 0).seriesCount(t.tenant)).count).toBe(2)
     expect((await shardStub(t.map, 1).seriesCount(t.tenant)).count).toBe(1)
@@ -155,7 +157,7 @@ describe('active-series limit', () => {
   it('a limit of zero refuses every series; no limits record means the default, which these requests are far below', async () => {
     const zero = await tenantWith(0)
     const r = await postWrite(zero.key, many('up', 0, 3))
-    expect(r.status).toBe(429)
+    expect(r.status).toBe(400)
     expect((await tail(zero.map, zero.tenant)).length).toBe(0)
     const none = await tenantWith(null)
     expect((await postWrite(none.key, many('up', 0, 300))).status).toBe(204)

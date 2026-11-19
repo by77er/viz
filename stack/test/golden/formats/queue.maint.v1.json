@@ -1,0 +1,6 @@
+{
+ "format": "queue.maint",
+ "version": 1,
+ "afterFlush": "{\"v\":1,\"tenant\":\"<tenant>\",\"wrote\":true}",
+ "fromCron": "{\"v\":1,\"tenant\":\"<tenant>\"}"
+}

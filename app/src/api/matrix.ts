@@ -53,6 +53,9 @@ export class NotAMatrix extends Error {
   }
 }
 
+/** Characters of a new piece read together with the unit cut at the end of the last one. */
+const JUNCTION = 1024
+
 const POW10 = [1, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22]
 
 // Character codes.
@@ -180,9 +183,11 @@ function readValue(s: string, from: number, to: number): number {
     if (s.startsWith('-Inf', from)) return -Infinity
   }
   if (n === 3 && s.startsWith('Inf', from)) return Infinity
-  // An empty string or text that is not a number is NaN, as Number() reads it... but Number('') is 0:
-  // a value of "" is not something an API sends, and the fallback path would give the same 0.
-  return readNumber(s, from, to)
+  const v = readNumber(s, from, to)
+  // Not a plain number (NaN from Number()): an escape inside the quotes would mean other text
+  // than the raw characters, which JSON.parse alone reads right.
+  if (v !== v && s.slice(from, to).includes('\\')) throw new Error('an escape in a sample value')
+  return v
 }
 
 /** Growable pair of Float64Arrays. */
@@ -257,17 +262,33 @@ export class MatrixParser {
     if (chunk === '') return
     this.chunks.push(chunk)
     if (this.mode === Mode.Failed) return
-    const s = this.pending === '' ? chunk : this.pending + chunk
-    const base = this.consumed
-    let i = 0
+    let s = chunk
+    let base = this.consumed
+    let from = 0
     try {
-      i = this.run(s, base)
+      if (this.pending !== '') {
+        // The unit cut at the end of the last piece is finished on a short junction string, and
+        // the rest is read from the piece itself: reading characters through a concatenation
+        // of the two (a cons string in V8) was about twice as slow (README, "Speed").
+        const p = this.pending
+        const head = p + chunk.slice(0, JUNCTION)
+        const i = this.run(head, base, 0)
+        const inValues = this.mode === Mode.Result || this.mode === Mode.Series || this.mode === Mode.Values
+        if (i >= p.length && inValues) {
+          base += p.length
+          from = i - p.length
+        } else {
+          // The cut unit is longer than the junction, or the envelope is being read: the whole of both.
+          s = p + chunk
+          from = i
+        }
+      }
+      const i = this.run(s, base, from)
+      this.pending = i < s.length ? s.slice(i) : ''
+      this.consumed = base + i
     } catch {
       this.mode = Mode.Failed
-      return
     }
-    this.pending = i < s.length ? s.slice(i) : ''
-    this.consumed = base + i
   }
 
   /** The whole body has arrived: the parsed matrix, or NotAMatrix with the parsed body. */
@@ -290,8 +311,8 @@ export class MatrixParser {
   }
 
   /** Consume as much of `s` as forms complete units; returns where the first incomplete one starts. */
-  private run(s: string, base: number): number {
-    let i = 0
+  private run(s: string, base: number, from: number): number {
+    let i = from
     const n = s.length
     while (i < n) {
       switch (this.mode) {
@@ -388,6 +409,20 @@ export class MatrixParser {
               break
             }
             if (c !== LBRACKET) throw new Error('expected a sample')
+            // Compact form, `[t,"v"]`, found with indexOf (native, faster than a loop here);
+            // anything else, or a pair not yet all here, goes the long way below.
+            const comma = s.indexOf(',', i + 1)
+            if (comma > 0 && s.charCodeAt(comma + 1) === QUOTE) {
+              const v1 = s.indexOf('"', comma + 2)
+              if (v1 > 0 && s.charCodeAt(v1 + 1) === RBRACKET) {
+                const t = readTime(s, i + 1, comma)
+                if (t === t) {
+                  samples.push(t, readValue(s, comma + 2, v1))
+                  i = v1 + 2
+                  continue
+                }
+              }
+            }
             const start = i
             // The time: up to the comma.
             let j = i + 1

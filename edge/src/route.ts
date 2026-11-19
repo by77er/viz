@@ -31,8 +31,45 @@ export interface Limited {
 
 export type Outcome =
   | { status: 'ok'; rows: number; batches: number; limited?: Limited }
+  /** A tenant or shard buffer is full: 429. */
   | { status: 'backpressure'; retryAfterMs: number }
+  /** A shard has more in flight than it takes (or cannot serve its storage): 503, which every sender retries. */
+  | { status: 'overloaded'; retryAfterMs: number }
   | { status: 'unavailable'; reason: string }
+
+/**
+ * Every `AppendResult` status this code knows. Anything else (a newer shard's) is a failure
+ * of the whole request, never counted as stored (contracts/COMPATIBILITY.md §3.2, design/UPGRADES.md §7).
+ */
+const KNOWN: ReadonlySet<string> = new Set(['ok', 'backpressure', 'stale_epoch', 'too_large', 'series_limit', 'invalid'])
+
+/**
+ * Shards that recently refused as overloaded, until when (this isolate's memory only; a
+ * hint). A request whose every slot is in here is refused before its body is read or
+ * decoded: it would be refused anyway, and the decode is the edge's largest cost.
+ */
+const hot = new Map<string, number>()
+
+/**
+ * Refuse before decoding: 503 with the shards' own Retry-After when every shard the tenant
+ * may write to answered `overload` and its wait has not passed. Null otherwise.
+ */
+export async function refuseEarly(env: RouteEnv, tenant: string, now = Date.now()): Promise<{ status: 'overloaded'; retryAfterMs: number } | null> {
+  if (hot.size === 0) return null
+  const map = await poolMap(env, tenant)
+  let until = Infinity
+  for (const slot of tenantSlots(map, tenant)) {
+    const t = hot.get(shardName(map, slot))
+    if (t === undefined || t <= now) return null
+    until = Math.min(until, t)
+  }
+  return { status: 'overloaded', retryAfterMs: until - now }
+}
+
+function noteOverload(map: PoolMap, slot: number, retryAfterMs: number): void {
+  if (hot.size >= MAX_CACHE) hot.clear()
+  hot.set(shardName(map, slot), Date.now() + retryAfterMs)
+}
 
 const MAP_TTL_MS = 30_000
 const MAX_CACHE = 10_000
@@ -41,6 +78,7 @@ const maps = new Map<string, { map: PoolMap; expires: number }>()
 export function clearMapCache(): void {
   maps.clear()
   limits.clear()
+  hot.clear()
 }
 
 /** Active series a tenant may have when `limits:<tenant>` says nothing. */
@@ -58,12 +96,21 @@ export async function activeSeriesLimit(env: RouteEnv, tenant: string): Promise<
   let limit = DEFAULT_ACTIVE_SERIES
   const stored = await env.CONFIG.get(`limits:${tenant}`)
   if (stored !== null) {
+    let record: { v?: unknown; active_series?: unknown } | null = null
     try {
-      const n = (JSON.parse(stored) as { active_series?: unknown }).active_series
-      if (typeof n === 'number' && Number.isInteger(n) && n >= 0) limit = n
+      record = JSON.parse(stored) as { v?: unknown; active_series?: unknown }
     } catch {
       // keep the default
     }
+    const version = record?.v === undefined ? 1 : record.v
+    if (record && version !== 1) {
+      // Written by a newer release (contracts/COMPATIBILITY.md §3.2): keep the last good
+      // value, else refuse (503). Never fall back to a default that could loosen the limit.
+      if (hit) return hit.limit
+      throw new HttpError(503, `limits record version ${String(version)} is newer than this release reads`, { 'Retry-After': '30' })
+    }
+    const n = record?.active_series
+    if (typeof n === 'number' && Number.isInteger(n) && n >= 0) limit = n
   }
   if (limits.size >= MAX_CACHE) limits.clear()
   limits.set(tenant, { limit, expires: now + MAP_TTL_MS })
@@ -78,9 +125,14 @@ export async function activeSeriesLimit(env: RouteEnv, tenant: string): Promise<
  */
 export const shardShare = (limit: number, map: PoolMap, tenant: string): number => Math.ceil(limit / tenantSlots(map, tenant).length)
 
-function parseMap(v: unknown): PoolMap | null {
+/** A pool map of a version this code does not read. */
+const NEWER_MAP = Symbol('newer pool map')
+
+function parseMap(v: unknown): PoolMap | null | typeof NEWER_MAP {
   if (!v || typeof v !== 'object') return null
   const m = v as Record<string, unknown>
+  // contracts/COMPATIBILITY.md §3.2: never route on a guess.
+  if (m.v !== undefined && m.v !== 1) return NEWER_MAP
   const int = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x)
   if (typeof m.pool !== 'string' || m.pool === '') return null
   if (!int(m.slots) || m.slots < 1 || m.slots > 4096) return null
@@ -99,15 +151,22 @@ export async function poolMap(env: RouteEnv, tenant: string, refresh = false): P
   if (stored !== null) {
     // A tenant with a map of its own must never fall through to the shared pool: that
     // would send its rows to shards its readers do not look at.
+    let parsed: PoolMap | null | typeof NEWER_MAP = null
     try {
-      map = parseMap(JSON.parse(stored))
+      parsed = parseMap(JSON.parse(stored))
     } catch {
-      map = null
+      parsed = null
     }
+    if (parsed === NEWER_MAP) {
+      if (hit) return hit.map // the last good map of this tenant
+      throw new HttpError(503, 'shard pool map is of a newer version than this release reads', { 'Retry-After': '30' })
+    }
+    map = parsed
     if (!map) throw new HttpError(503, 'shard pool map is invalid', { 'Retry-After': '30' })
   } else if (env.DEFAULT_POOL) {
     try {
-      map = parseMap(JSON.parse(env.DEFAULT_POOL))
+      const parsed = parseMap(JSON.parse(env.DEFAULT_POOL))
+      map = parsed === NEWER_MAP ? null : parsed
     } catch {
       map = null
     }
@@ -135,8 +194,11 @@ async function appendSlot(env: RouteEnv, map: PoolMap, tenant: string, slot: num
     for (const b of batches) {
       const fingerprint = await sha256Hex(b.bytes)
       last = await stub.append({ tenant, epoch: map.epoch, fingerprint, payload: b.bytes, rows: b.rows, seriesIds: b.seriesIds, seriesLimit })
+      // A status this code does not know is never success (fail closed).
+      if (!KNOWN.has(last.status)) return { status: 'error' }
       // `invalid` is this Worker contradicting itself; it is not the sender's to fix. Not acknowledged.
       if (last.status === 'invalid') return { status: 'error' }
+      if (last.status === 'backpressure' && (last as { scope: string }).scope === 'overload') noteOverload(map, slot, last.retryAfterMs)
       if (last.status !== 'ok') return last
     }
   } catch {
@@ -224,8 +286,17 @@ export async function appendAll(env: RouteEnv, tenant: string, c: Collector): Pr
     if (results.some((r) => r.status === 'too_large' || r.status === 'stale_epoch')) return { status: 'unavailable', reason: 'shard map is being updated' }
     if (results.some((r) => r.status === 'error')) return { status: 'unavailable', reason: 'shard unavailable' }
   }
+  // Fail closed: only `ok` counts as stored; anything not handled above refuses the request.
+  if (results.some((r) => r.status !== 'ok' && r.status !== 'backpressure')) return { status: 'unavailable', reason: 'shard refused the batch' }
+  // An overloaded shard is a 5xx (Remote Write senders MUST retry 5xx, MAY retry 429); a full buffer stays 429.
+  let overloadMs = 0
   let retryAfterMs = 0
-  for (const r of results) if (r.status === 'backpressure') retryAfterMs = Math.max(retryAfterMs, r.retryAfterMs, 1)
+  for (const r of results) {
+    if (r.status !== 'backpressure') continue
+    if ((r as { scope: string }).scope === 'overload') overloadMs = Math.max(overloadMs, r.retryAfterMs, 1)
+    else retryAfterMs = Math.max(retryAfterMs, r.retryAfterMs, 1)
+  }
+  if (overloadMs > 0) return { status: 'overloaded', retryAfterMs: Math.max(overloadMs, retryAfterMs) }
   if (retryAfterMs > 0) return { status: 'backpressure', retryAfterMs }
   return limited ? { status: 'ok', rows: c.nRows - limited.rows, batches, limited } : { status: 'ok', rows: c.nRows, batches }
 }

@@ -218,7 +218,7 @@ export const writeDashboard: ToolDef = {
       const b = res.body ?? {}
       if (id && res.status === 200) outcome = b.outcome === 'unchanged' ? 'nothing was written; applying would change nothing' : `nothing was written; apply would create revision ${Number(b.number)}`
       else if (id && res.status === 202) outcome = 'nothing was written; this key may not apply here, so apply would be refused: use mode "propose"'
-      else if (!id && res.status === 201) outcome = b.permitted === false ? 'nothing was written; this key may not create dashboards here' : 'nothing was written; apply would create the dashboard'
+      else if (!id && res.status === 201) outcome = b.permitted === false ? 'nothing was written; this key may not create dashboards here, so apply would be refused: use mode "propose"' : 'nothing was written; apply would create the dashboard'
       else {
         outcome = `nothing was written; the control plane would refuse (HTTP ${res.status})`
         controlDetail = [typeof b.code === 'string' ? `code: ${cell(b.code, 40)}` : '', typeof b.detail === 'string' ? `detail: ${clean(b.detail, { max: MAX.error })}` : '', Array.isArray(b.errors) ? b.errors.slice(0, 10).map((e: any) => `${clean(e.path, { max: 120 })}: ${clean(e.message, { max: MAX.error })}`).join('\n') : ''].filter(Boolean).join('\n')

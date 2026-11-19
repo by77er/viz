@@ -84,7 +84,7 @@ describe('shard saturation: as built vs early refusal + group commit (measured h
 
   it.runIf(only('tuning'))('the new shard: group commit alone, then the in-flight limit and window, at 32 and 64 clients', async () => {
     const rows: Row[] = []
-    for (const clients of [32, 64]) {
+    for (const clients of [64, 160]) {
       rows.push(await run('new', clients, 4, 50, 'group commit, no limit', { maxInFlight: 1e9, maxPendingBytes: 1e12 }))
       rows.push(await run('new', clients, 4, 50, 'limit 16', { maxInFlight: 16 }))
       rows.push(await run('new', clients, 4, 50, 'limit 64 (default)'))

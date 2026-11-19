@@ -534,9 +534,19 @@ insert, then retried, yields one dashboard and one entry.
   (training knowledge). Rapid changes to one key or setting would then fail in the drain
   and be retried by the alarm 30 s later, in order. Local KV does not enforce the limit, so
   this path is tested only with a KV that fails entirely.
-- **Two agents can approve each other.** The rule is that an agent may not apply its own
-  proposal; an agent with the apply scope may apply another's. Do not give agents
-  `dashboards:apply` until that is wanted.
+- **Two agents can approve each other's changes.** The rule is that an agent may not apply
+  its own proposal; an agent with the apply scope may apply another's change. (Not a
+  proposal that creates a dashboard: that needs `agentsMayApply`, as a direct create does.)
+  Do not give agents `dashboards:apply` until that is wanted.
+- **Release 1 against a proposal that creates a dashboard was not run.** That the previous
+  release fails closed on such a row ("Versioned storage" above) rests on reading its
+  handlers. What is tested: its runner opens version 2 storage unchanged, and this release
+  reads a row release 1 would have rewritten as a change.
+- **The health route is shallow.** It proves the Worker runs with its bindings, not that a
+  `Tenant` object or KV answers; a KV or Durable Object outage shows only in real requests.
+- **Scopes for other services are issued here, checked there.** A key with `monitors:ack`
+  is created without this component knowing whether the ruler is deployed; a scope renamed
+  in the ruler or mcp is caught by `scopes.test.ts`, which reads their source.
 - **`admin` is total.** An admin key can create a key of any scope and kind, set
   `agentsMayApply`, and raise the tenant's own limits unless `LIMIT_CEILINGS` is set. An
   agent with `admin` can therefore get around the agent rules. On a hosted deployment
@@ -550,7 +560,7 @@ insert, then retried, yields one dashboard and one entry.
   purge the specs are gone and the entries point at nothing.
 - **Three round trips per request**: a KV read (cached by edge's code for 60 s per isolate)
   and two Durable Object calls. Not measured.
-- **Edge's verifier is called once per known scope** until one fits (up to six SHA-256
+- **Edge's verifier is called once per known scope** until one fits (up to nine SHA-256
   computations), because its signature insists on a scope. See "Needed changes".
 - **Clock.** Expiry, overlap and purge use the object's `Date.now()`.
 - **The first own pool map moves the tenant's writes** from the shared pool to the new one
@@ -561,7 +571,8 @@ insert, then retried, yields one dashboard and one entry.
 
 ## Needed changes
 
-Things outside this directory that this component needs or exposes. None were made.
+Things outside this directory that this component needs or exposes. Only the gateway part of 7
+was made (in `deploy/gateway`, which was free).
 
 1. **`edge/src/auth.ts`**: `authenticate`'s `scope` is typed `'write' | 'read'` and is
    mandatory. The control plane needs to verify a key without naming a scope, and to ask for
@@ -581,9 +592,8 @@ Things outside this directory that this component needs or exposes. None were ma
    supply the `dashboardStates` hook from the query layer.
 7. **Readers of the KV records** (edge, shard routing, janitor, query) should check a `v`
    field, absent meaning 1, and refuse a newer one (`design/UPGRADES.md` §7); only then can
-   this component bump a record's version. **deploy/gateway**: `provision` now throws
-   `schema_too_new` during a rollback across a forward-only release; the bootstrap route
-   should answer 503 rather than 500 for it.
+   this component bump a record's version. (**deploy/gateway**, done: the bootstrap route
+   answers 503 with `Retry-After` when `provision` throws `schema_too_new`, tested.)
 8. **`design/DESIGN.md` §3.1** says of `Tenant` "reads are cached" and lists rule
    definitions; neither is true of this implementation. §9's "revocable at the shard" is
    still open.

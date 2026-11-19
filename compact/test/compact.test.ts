@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { Engine } from '../../contracts/engine'
 import type { FileEntry, LedgerChange, LiveFile } from '../../contracts/ledger'
 import { flushTenant } from '../../flush/src/flush'
-import { DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex, someSamples, stream } from '../../flush/test/helpers'
+import { DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, flushSettled, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex, someSamples, stream } from '../../flush/test/helpers'
 import { type JanitorEnv, purgeTenant, sweepOrphans } from '../../janitor/src/janitor'
 import { DEFAULT_POLICY, type Pair, type StepResult, chooseJob, compactStep, compactTenant, compactedKey, engine, jumpsOver, pairFiles, pairStem } from '../src/index'
 
@@ -15,16 +15,28 @@ async function flushed(prefix: string, n: number, at: (i: number) => number = (i
     await append(s.shard, s.tenant, someSamples(s.tenant, at(i), 24, i), sent)
     await s.shard.seal(s.tenant)
   }
-  const r = await flushTenant(env, engine, s.tenant, s.shardName)
+  const r = await flushSettled(env, engine, s.tenant, s.shardName)
   expect(r).toMatchObject({ status: 'ok', awaitingLog: false })
   return { ...s, sent }
 }
 const planOf = async (l: Awaited<ReturnType<typeof flushed>>['ledger'], table: 'metric_samples' | 'metric_series') =>
   (await l.plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files
-const lastChange = async (tenant: string): Promise<LedgerChange> => {
-  const keys = (await listKeys(`${env.CELL}/ledger/tenant=${tenant}/`)).filter((k) => !k.endsWith('base.json'))
-  return (await env.BUCKET.get(keys[keys.length - 1]!))!.json<LedgerChange>()
+/**
+ * Every change in the tenant's ledger log, in order, whatever the layout: one object per change,
+ * or segments (contracts/LEDGER-LOG.md; header line, then one change per line). Drains first,
+ * since the ledger writes its log in the background.
+ */
+const changesOf = async (tenant: string): Promise<LedgerChange[]> => {
+  await env.LEDGER.get(env.LEDGER.idFromName(tenant)).drain()
+  const out: LedgerChange[] = []
+  for (const k of await listKeys(`${env.CELL}/ledger/tenant=${tenant}/`)) {
+    const text = await (await env.BUCKET.get(k))!.text()
+    if (/\/seg-\d+-\d+\.jsonl$/.test(k)) for (const line of text.split('\n').slice(1)) { if (line) out.push(JSON.parse(line) as LedgerChange) }
+    else if (/\/\d+\.json$/.test(k)) out.push(JSON.parse(text) as LedgerChange)
+  }
+  return out.filter((c) => c.kind !== 'base').sort((a, b) => a.ledgerIncarnation - b.ledgerIncarnation || a.version - b.version)
 }
+const lastChange = async (tenant: string): Promise<LedgerChange> => (await changesOf(tenant)).at(-1)!
 /** A policy clock at which today's hours are quiet but the day is still open. */
 const QUIET = T0 + 30 * 60_000
 const CLOSED = T0 + 2 * DAY_MS
@@ -179,7 +191,7 @@ describe('compactStep', () => {
       await append(s.shard, s.tenant, someSamples(s.tenant, T0 + i * 60_000, 24, i), sent)
       await s.shard.seal(s.tenant)
     }
-    await flushTenant(env, engine, s.tenant, s.shardName)
+    await flushSettled(env, engine, s.tenant, s.shardName)
     const before = await read(s.tenant, [s.shardName])
     expect(before.lakeRows).toBe(96) // four files of 24 rows; `sent` holds fewer distinct samples
     const r = await compactStep(env, engine, s.tenant, { now: QUIET })
@@ -209,7 +221,7 @@ describe('compactStep', () => {
     const more = new Sent()
     await append(t.shard, t.tenant, someSamples(t.tenant, T0, 24, 9), more)
     await t.shard.seal(t.tenant)
-    await flushTenant(env, engine, t.tenant, t.shardName)
+    await flushSettled(env, engine, t.tenant, t.shardName)
     const live = await liveKeys(t.ledger)
     let outputs: string[] = []
     // Retention expires the old day between the step's PUTs and its replace.
@@ -279,7 +291,7 @@ describe('compactStep', () => {
     expect((await dataKeys(t.tenant)).filter((k) => /\/L1-/.test(k))).toEqual(live)
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
     // One replace in the log, not three.
-    const changes = await Promise.all((await listKeys(`${env.CELL}/ledger/tenant=${t.tenant}/`)).filter((k) => !k.endsWith('base.json')).map(async (k) => (await env.BUCKET.get(k))!.json<LedgerChange>()))
+    const changes = await changesOf(t.tenant)
     expect(changes.filter((c) => c.kind === 'replace')).toHaveLength(1)
   })
 
@@ -315,6 +327,24 @@ describe('compactStep', () => {
     expect(slow).toMatchObject({ status: 'error', reason: 'too_slow' })
     expect(await liveKeys(t.ledger)).toEqual(live)
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
+  })
+
+  it('fails closed on a replace answer it does not know (a newer ledger, schema_too_new): nothing swapped, nothing deleted', async () => {
+    const t = await flushed('c9', 4)
+    const live = await liveKeys(t.ledger)
+    // Calls go to the real stub, except `replace`, which answers a status this code does not know.
+    const wrap = (stub: DurableObjectStub<never>) =>
+      new Proxy(stub, {
+        get: (s, p) =>
+          p === 'then' ? undefined
+          : p === 'replace' ? async () => ({ status: 'schema_too_new', component: 'ledger.Ledger', found: 2, compat: 2, known: 1, retryAfterMs: 30_000 })
+          : (...a: unknown[]) => (s as unknown as Record<string | symbol, (...x: unknown[]) => unknown>)[p]!(...a),
+      })
+    const LEDGER = new Proxy(env.LEDGER, { get: (n, p) => (p === 'get' ? (id: DurableObjectId) => wrap(n.get(id) as never) : (Reflect.get(n, p) as (...a: unknown[]) => unknown).bind(n)) })
+    let outputs: string[] = []
+    await expect(compactStep({ ...env, LEDGER }, engine, t.tenant, { now: QUIET, hooks: { afterPut: (o) => void (outputs = o.map((f) => f.key)) } })).rejects.toThrow(/schema_too_new/)
+    expect(await liveKeys(t.ledger)).toEqual(live)
+    for (const k of outputs) expect(await env.BUCKET.head(k)).not.toBeNull()
   })
 
   it('compactedKey refuses parts that could leave the tenant prefix', () => {
