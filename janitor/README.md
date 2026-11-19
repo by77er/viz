@@ -89,8 +89,19 @@ two deleters, so it is never live again, by induction. None of this rests on a c
 grace periods only keep the sweep off objects that are seconds old and on work an operator
 may still want to inspect.
 
-**What it does not cover.** An object whose name fits two of the tenant's streams (below,
-"Contract issues").
+**What it does not cover.** An object whose name fits two of the tenant's streams: closed
+since 2026-11-19 by the name rule (`contracts/TABLES.md`, D38), under which no two streams
+share a key's shard part.
+
+**What it reports for the caller's schedule** (review S-6, 2026-11-19, by the storage-path
+engineer). `waitingSince` is the upload time of the youngest object kept for something a
+write or time can still change (`young`, `pending_unit`, `unknown_stream`, `inputs_remain`).
+`stack/src/maintain.ts` keeps the daily sweep due only while that is younger than seven days;
+after that only a write makes it due again. The objects are still kept: a flush file of a
+stream incarnation that will never report its unit (its shard lost storage and the tenant
+stopped writing there) and a `unknown_stream` file stay for ever. Deciding that would need
+the shard's word that it no longer holds the incarnation, plus a grace: a new deletion rule,
+for the protocol model and a review first.
 
 ## R2 operations per maintenance run
 

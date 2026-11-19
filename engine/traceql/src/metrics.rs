@@ -184,8 +184,9 @@ fn bucket(v: &Val) -> Option<u32> {
     if x < 2 {
         return None;
     }
-    let u = x as u64;
-    Some(64 - (u - 1).leading_zeros())
+    // Through f64, as Tempo does: 2^53 + 1 is 2^53 and lands in that bucket.
+    let e = (x as f64).log2().ceil();
+    Some(e as u32)
 }
 
 fn is_duration(e: &FieldExpr) -> bool {

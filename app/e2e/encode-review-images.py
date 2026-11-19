@@ -19,6 +19,9 @@ tokens = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 forced = []
 for t in tokens['color']['tokens']:
     for v in ([t['value']] if isinstance(t['value'], str) else t['value'].values()):
+        # Solid colours only: a translucent token (the scrim, rgba()) has no one colour in an image.
+        if not re.fullmatch(r'#[0-9a-fA-F]{6}', v):
+            continue
         rgb = tuple(int(v[i:i + 2], 16) for i in (1, 3, 5))
         if rgb not in forced:
             forced.append(rgb)

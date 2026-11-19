@@ -119,6 +119,16 @@ pub fn regex_match(v: &Val, re: &regex::Regex, negated: bool) -> bool {
     }
 }
 
+/// `x = nil` holds when `x` is missing, `x != nil` when it is present; other operators with
+/// `nil` never hold.
+pub fn nil_test(x: &Val, op: BinOp) -> bool {
+    match op {
+        BinOp::Eq => x.is_nil(),
+        BinOp::Neq => !x.is_nil(),
+        _ => false,
+    }
+}
+
 /// Ordering of two values of compatible kinds; `None` if they cannot be compared.
 pub fn order(a: &Val, b: &Val) -> Option<Ordering> {
     match (a, b) {
@@ -138,13 +148,11 @@ pub fn order(a: &Val, b: &Val) -> Option<Ordering> {
 }
 
 /// A computed comparison (operands are values, not a bare attribute against a literal).
+/// A missing value fails every comparison; only a literal `nil` tests presence, and that is
+/// handled where the literal is visible ([`nil_test`]).
 pub fn compare(a: &Val, op: BinOp, b: &Val) -> bool {
     if a.is_nil() || b.is_nil() {
-        return match op {
-            BinOp::Eq => a.is_nil() && b.is_nil(),
-            BinOp::Neq => a.is_nil() != b.is_nil(),
-            _ => false,
-        };
+        return false;
     }
     if let Val::Arr(arr) = a {
         let els = elements(arr);

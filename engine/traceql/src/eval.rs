@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::ast::*;
 use crate::data::{attr, AttrValue, Event, Link, Span, Trace};
-use crate::value::{arith, compare, go_duration, hex, hex_trimmed, regex_match, Val};
+use crate::value::{arith, compare, go_duration, hex, hex_trimmed, nil_test, regex_match, Val};
 
 /// One spanset: indices into the trace's spans, and the attributes the pipeline attached
 /// (`count()`, `by(...)`).
@@ -224,8 +224,15 @@ fn eval<'a, 't: 'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'t>, i: usize, b: Bindi
                 arith(*op, &x, &y)
             }
             op => {
-                // Arrays compare element-wise (see value.rs); other values by value.
+                // A literal nil tests presence; arrays compare element-wise (see value.rs).
                 match (&**l, &**r) {
+                    (FieldExpr::Static(Static::Nil), FieldExpr::Static(Static::Nil)) => {
+                        return Val::Bool(*op == BinOp::Eq);
+                    }
+                    (x, FieldExpr::Static(Static::Nil)) | (FieldExpr::Static(Static::Nil), x) => {
+                        let v = eval(x, ctx, i, b);
+                        return Val::Bool(nil_test(&v, *op));
+                    }
                     (FieldExpr::Intrinsic(intr, _), FieldExpr::Static(Static::Str(s)))
                     | (FieldExpr::Static(Static::Str(s)), FieldExpr::Intrinsic(intr, _))
                         if is_id(*intr) && matches!(op, BinOp::Eq | BinOp::Neq) =>
