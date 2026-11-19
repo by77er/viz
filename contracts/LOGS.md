@@ -3,14 +3,15 @@
 **Status (2026-11-19): the file layout, the ingest mapping and the batch are settled and
 written; flushing, the ledger, retention and compaction are built (stage 2), and compaction
 writes the token filter (§6: its place in the file settled 2026-11-19, its reader built in
-`engine/storage`); using it in query, and publishing, are proposed.**
+`engine/storage`); publishing as an Iceberg table is built (§9, 2026-11-19); using the filter in
+query is proposed.**
 `engine/storage` (`src/logs.rs`) writes `logs` files from log-record batches
 (`contracts/BATCH.md`, signal 3) exactly as below and reads them back; `edge` decodes OTLP
 logs and Loki push into those batches (behind `INGEST_SIGNALS`); the shards of `{pool}/logs`
 hold them, flush encodes each sealed segment (`engine/wasm` ABI 3) into one unit of `logs`
 files keyed by day, and the ledger lists them, plans them by time (milliseconds, the floor of
 the file's `ts` bounds) and expires them by day (`log_days` of the tenant's retention record).
-Query and publisher paths do not use them yet. The LogQL engine (`engine/logql`, `viz-logql`) evaluates over an in-memory
+The publisher publishes them (§9, design/DECISIONS.md D67); the query path does not use them yet. The LogQL engine (`engine/logql`, `viz-logql`) evaluates over an in-memory
 source shaped like this contract, and a test reads files written here through its
 `LogSource` seam and gets the same answers (`engine/storage/readback`). Everything still
 marked *proposed* may change, here first, before code.
@@ -252,9 +253,9 @@ property tests check that pruning on and off gives byte-identical results.
 
 ## 8. Not defined here, or still proposed
 
-- The query reader and its pruning, the use of the token filter by a query, Iceberg
-  publication (*proposed*). Flush, compaction (with the token filter's builder and reader),
-  the ledger's `logs` table and retention by day are built (stage 2).
+- The query reader and its pruning, the use of the token filter by a query (*proposed*).
+  Flush, compaction (with the token filter's builder and reader), the ledger's `logs` table,
+  retention by day and Iceberg publication (§9) are built.
 - Retention and deletion by line filter (Loki's delete API) are not designed.
 - Promoted metadata columns (`l_…`) for frequently filtered keys, a per-tenant choice of
   OTLP stream labels (the list above is the default), Loki's service-name discovery (viz
@@ -262,3 +263,21 @@ property tests check that pruning on and off gives byte-identical results.
   `template_id` (Drain patterns, research 04 §6.4) come later.
 - The accept window for logs (`edge`'s default: 24 hours back, 5 minutes ahead) is a
   default, not a contract value.
+
+## 9. Iceberg publication (built 2026-11-19, design/DECISIONS.md D67)
+
+The publisher (`publisher/`) publishes `logs` as an Iceberg v2 table of its own, one per cell,
+beside the metric tables (`{cell}/iceberg/logs/`):
+
+- **Schema.** The columns of §2 in file order and with the same nullability (`metadata` a map of
+  required string keys and required string values; `trace_id`/`span_id` `fixed[16]`/`fixed[8]`),
+  preceded by the optional partition columns `tenant` and `day`, which are not in the files and
+  which readers fill from the partition tuple, as for metrics.
+- **Field ids** pinned in `publisher/src/iceberg.ts` (`SIGNAL_DEFS`) and in
+  `publisher/test/golden/formats/iceberg.signal-metadata.v1.json` (`metadata`'s key and value
+  included); `schema.name-mapping.default` maps every field, since the files carry no field ids.
+- **Partitions** `identity(tenant)` and `identity(day)`: the key's day, the UTC day of `ts`.
+- **Statistics per file.** Row count and size; value and null counts for the required primitive
+  columns (`service_name`, `stream_id`, `ts`, `labels`, `line`); bounds for `ts` from the ledger's
+  millisecond bounds widened to the whole last millisecond, for `service_name` from the index
+  fragment's `min_name`/`max_name`; split offsets from the fragment.

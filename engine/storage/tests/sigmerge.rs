@@ -214,7 +214,8 @@ fn merged(frags: &[Fragment]) -> Fragment {
         max_end: frags.iter().map(|f| f.max_end).max().unwrap(),
         span_count: frags.iter().map(|f| f.span_count).sum(),
         error_count: frags.iter().map(|f| f.error_count).sum(),
-        root: frags.iter().filter_map(|f| f.root.clone()).min_by_key(|r| (r.2, r.3)),
+        // The earliest root, then the smaller span id; on a tie (one span in two units), the later fragment's.
+        root: frags.iter().rev().filter_map(|f| f.root.clone()).min_by_key(|r| (r.2, r.3)),
         services,
         services_truncated: truncated,
         hours: frags.iter().flat_map(|f| f.hours.iter().copied()).collect::<BTreeSet<_>>().into_iter().collect(),
@@ -683,4 +684,20 @@ fn a_merge_past_the_token_bound_writes_no_filter_and_parquet_readers_still_read_
     let f = TokenFilter::parse(&with.bytes[o as usize..(o + l) as usize]).unwrap();
     assert_eq!(f.n_tokens(), 52); // 50 ids, "request", "done"
     assert_eq!(read_logs(&with.bytes).unwrap(), read_logs(&plain.bytes).unwrap());
+}
+
+#[test]
+fn a_root_span_stored_by_two_units_takes_the_later_unit_s_fragment() {
+    let mk = |name: &str| {
+        let mut b = fixed_span_batch();
+        b.rows[0].name = name.into();
+        flush_spans(&[b], &SignalWriteOptions::default()).into_iter().find(|f| f.table == SignalTable::TraceIndex).unwrap()
+    };
+    let (a, b) = (mk("first"), mk("second"));
+    let o = SignalWriteOptions::default();
+    let f = read_trace_index(&merge(SignalTable::TraceIndex, &[&a, &b], &o, true).bytes).unwrap();
+    assert_eq!(f[0].root.as_ref().unwrap().1, "second");
+    assert_eq!(f[0].span_count, 4, "fragments are summed, not de-duplicated");
+    let f = read_trace_index(&merge(SignalTable::TraceIndex, &[&b, &a], &o, true).bytes).unwrap();
+    assert_eq!(f[0].root.as_ref().unwrap().1, "first");
 }

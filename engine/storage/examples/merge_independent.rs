@@ -40,7 +40,9 @@ impl Rng {
 
 const WORDS: &[&str] = &["GET", "POST", "/api/users", "timeout", "error:", "connection", "refused", "naïve", "café", "日本語テキスト", "😀ok", "id", "x", "level=info", "msg=\"done\"", "Bearer"];
 
-fn text(r: &mut Rng, words: usize) -> String {
+/// Up to `max` words.
+fn text(r: &mut Rng, max: u64) -> String {
+    let words = 1 + r.int(max) as usize;
     let mut s = String::new();
     for k in 0..words {
         if k > 0 {
@@ -57,9 +59,14 @@ fn text(r: &mut Rng, words: usize) -> String {
 
 fn value(r: &mut Rng) -> Value<String> {
     match r.int(8) {
-        0 | 1 => Value::Str(text(r, 1 + r.int(3) as usize)),
+        0 | 1 => {
+            Value::Str(text(r, 3))
+        }
         2 => Value::Int(r.next() as i64 >> r.int(60)),
-        3 => Value::Double(*r.pick(&[f64::NAN.to_bits(), (-0.0f64).to_bits(), f64::INFINITY.to_bits(), f64::NEG_INFINITY.to_bits(), 1.5f64.to_bits(), (r.next() >> 2) ^ 0x3ff0_0000_0000_0000])),
+        3 => {
+            let any = (r.next() >> 2) ^ 0x3ff0_0000_0000_0000;
+            Value::Double(*r.pick(&[f64::NAN.to_bits(), (-0.0f64).to_bits(), f64::INFINITY.to_bits(), f64::NEG_INFINITY.to_bits(), 1.5f64.to_bits(), any]))
+        }
         4 => Value::Bool(r.chance(0.5)),
         5 => Value::Other("{\"arrayValue\":{\"values\":[{\"stringValue\":\"a\"},{\"stringValue\":\"b\"}]}}".into()),
         _ => Value::Str(String::new()),
@@ -84,7 +91,8 @@ fn span_batch(r: &mut Rng, base: i64) -> (Vec<SpanEntry<String>>, Vec<Span<Strin
     let res_keys = ["service.name", "service.namespace", "deployment.environment.name", "k8s.pod.name", "cloud.region", "host.name"];
     let entries: Vec<SpanEntry<String>> = (0..n_entries)
         .map(|_| {
-            let mut resource = attrs(r, r.int(5) as usize, &res_keys);
+            let n = r.int(5) as usize;
+            let mut resource = attrs(r, n, &res_keys);
             if r.chance(0.8) {
                 resource.retain(|a| a.key != "service.name");
                 resource.push(Attr { key: "service.name".into(), value: Value::Str(format!("svc-{}", r.int(4))) });
@@ -120,7 +128,10 @@ fn span_batch(r: &mut Rng, base: i64) -> (Vec<SpanEntry<String>>, Vec<Span<Strin
                 name: format!("op {}", r.int(6)),
                 trace_state: if r.chance(0.2) { "k=v".into() } else { String::new() },
                 status_message: if r.chance(0.2) { text(r, 2) } else { String::new() },
-                attrs: attrs(r, r.int(7) as usize, &span_keys),
+                attrs: {
+                    let n = r.int(7) as usize;
+                    attrs(r, n, &span_keys)
+                },
                 events: (0..r.int(3)).map(|k| Event { time_unix_nano: start + k as i64, name: text(r, 1), attrs: "[]".into() }).collect(),
                 links: (0..r.int(2)).map(|_| Link { trace_id: [9; 16], span_id: [8; 8], trace_state: String::new(), attrs: "[{\"key\":\"l\",\"value\":{\"boolValue\":true}}]".into() }).collect(),
             }
@@ -149,7 +160,7 @@ fn log_batch(r: &mut Rng, base: i64) -> (Vec<LogStream<String>>, Vec<LogRow<Stri
         .map(|_| {
             let mut md: BTreeMap<String, String> = BTreeMap::new();
             for _ in 0..r.int(3) {
-                md.insert(r.pick(&["user", "trace_id", "pod", "level"]).to_string(), text(r, 1 + r.int(2) as usize));
+                md.insert(r.pick(&["user", "trace_id", "pod", "level"]).to_string(), text(r, 2));
             }
             LogRow {
                 entry: r.int(n_streams as u64) as u32,
@@ -159,7 +170,7 @@ fn log_batch(r: &mut Rng, base: i64) -> (Vec<LogStream<String>>, Vec<LogRow<Stri
                 span_id: if r.chance(0.3) { [4; 8] } else { [0; 8] },
                 flags: if r.chance(0.7) { 0 } else { 1 },
                 severity_number: r.int(25) as u8,
-                line: if r.chance(0.1) { String::new() } else { text(r, 1 + r.int(8) as usize) },
+                line: if r.chance(0.1) { String::new() } else { text(r, 8) },
                 severity_text: if r.chance(0.5) { "INFO".into() } else { String::new() },
                 metadata: md.into_iter().filter(|(_, v)| !v.is_empty()).collect(),
             }

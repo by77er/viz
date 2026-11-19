@@ -74,7 +74,9 @@ One row per series present in the file's day.
   stream named otherwise and refuses to register it. (Added 2026-11-19; every name in use
   already fits, so nothing written before changes.) The pool a pool map names (the base of
   the derived span and log pools) also never ends in `/traces` or `/logs`
-  (`contracts/BATCH.md`, "Streams per signal"); edge refuses such a map in the same way.
+  (`contracts/BATCH.md`, "Streams per signal"); edge refuses such a map in the same way, and
+  control refuses to assign one (so tenants `traces` and `logs` cannot have the dedicated pool
+  `tenant/<id>`; D66).
 - `hash8` is the first 8 hex characters of the SHA-256 of the file bytes.
 - Files are written with `If-None-Match: *`.
 

@@ -2,6 +2,14 @@
 //! "Measurements").
 //!
 //!   cargo run --release --example otel_bench -- [million] [segment] [runs]
+//!   cargo run --release --example otel_bench -- merge [inputs] [rows] [runs] [OUTDIR]
+//!
+//! `merge` (compaction, `merge_signal_files`): `inputs` flush units of `rows` spans and of `rows`
+//! log lines each, flushed one unit at a time; then the units' files of one hour of `spans`, of
+//! one day of `trace_index` and of `logs` merged as compaction merges them (inputs in unit order),
+//! timed alone (min of `runs`). Prints input and output bytes, the token filter's bytes, rows in
+//! and out, and throughput. With OUTDIR, writes the inputs there for
+//! `engine/wasm/tools/measure_signal_merge.mjs` (the same merges in WASM, with peak memory).
 //!
 //! Generates synthetic data deterministically (a fixed xorshift seed), builds VZB1 signal 2
 //! and 3 batches of at most 1 MiB with `otel::encode_spans` / `encode_logs`, and times only
@@ -19,9 +27,32 @@
 //! (service_name, namespace, pod), a logfmt line of 80-260 bytes with a random request id and
 //! a duration, 2-4 metadata entries (level, user, http_route), 30% with trace and span ids,
 //! severity number and text.
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
+
+/// Counts heap bytes in use and their peak, to report a merge's peak memory natively.
+struct Counting;
+static NOW: AtomicUsize = AtomicUsize::new(0);
+static PEAK: AtomicUsize = AtomicUsize::new(0);
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        let p = System.alloc(l);
+        if !p.is_null() {
+            let n = NOW.fetch_add(l.size(), Relaxed) + l.size();
+            PEAK.fetch_max(n, Relaxed);
+        }
+        p
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        System.dealloc(p, l);
+        NOW.fetch_sub(l.size(), Relaxed);
+    }
+}
+#[global_allocator]
+static A: Counting = Counting;
 use viz_storage::otel::{self, Attr, Event, Link, LogRow, LogStream, Span, SpanEntry, Value};
-use viz_storage::{encode_logs, encode_spans};
+use viz_storage::{encode_logs, encode_spans, merge_signal_files_shared, SignalMergeOptions, SignalTable};
 
 struct Rng(u64);
 impl Rng {
@@ -203,8 +234,92 @@ fn log_batches(r: &mut Rng, streams: &[LogStream<String>], n: usize) -> Vec<Vec<
     out
 }
 
+fn merge_bench(args: &[String]) {
+    let inputs: usize = args.get(2).map_or(8, |x| x.parse().unwrap());
+    let rows: usize = args.get(3).map_or(25_000, |x| x.parse().unwrap());
+    let runs: usize = args.get(4).map_or(3, |x| x.parse().unwrap());
+    let out_dir = args.get(5);
+    let entries = span_entries();
+    let streams = log_streams();
+    let mut r = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut files: Vec<(SignalTable, Vec<u8>)> = Vec::new();
+    for _ in 0..inputs {
+        let sb = span_batches(&mut r, &entries, rows);
+        let lb = log_batches(&mut r, &streams, rows);
+        let spans = encode_spans(&sb.iter().map(Vec::as_slice).collect::<Vec<_>>()).unwrap();
+        // The hour with most spans (the generator spreads starts over one hour from T0, 400 s past an hour).
+        let hour = spans.iter().filter(|f| f.table == SignalTable::Spans).max_by_key(|f| f.rows).unwrap().hour;
+        for f in spans {
+            if f.table == SignalTable::TraceIndex || f.hour == hour {
+                files.push((f.table, f.bytes));
+            }
+        }
+        for f in encode_logs(&lb.iter().map(Vec::as_slice).collect::<Vec<_>>()).unwrap() {
+            files.push((SignalTable::Logs, f.bytes));
+        }
+    }
+    if let Some(d) = out_dir {
+        std::fs::create_dir_all(d).unwrap();
+        let mut k = std::collections::HashMap::new();
+        for (t, b) in &files {
+            let n = k.entry(t.as_str()).or_insert(0);
+            std::fs::write(format!("{d}/{}-{n:02}.parquet", t.as_str()), b).unwrap();
+            *n += 1;
+        }
+    }
+    for table in [SignalTable::Spans, SignalTable::TraceIndex, SignalTable::Logs] {
+        let ins: Vec<bytes::Bytes> = files.iter().filter(|(t, _)| *t == table).map(|(_, b)| bytes::Bytes::from(b.clone())).collect();
+        let in_bytes: usize = ins.iter().map(|b| b.len()).sum();
+        let rows_in: i64 = ins
+            .iter()
+            .map(|b| {
+                use parquet::file::reader::FileReader;
+                parquet::file::reader::SerializedFileReader::new(b.clone()).unwrap().metadata().file_metadata().num_rows()
+            })
+            .sum();
+        let mut times = Vec::new();
+        let mut out = None;
+        let cap: usize = std::env::var("MERGE_RG_BYTES").ok().map_or(viz_storage::SIGNAL_ROW_GROUP_BYTES, |v| v.parse().unwrap());
+        let opts = SignalMergeOptions { write: viz_storage::SignalWriteOptions { max_row_group_bytes: cap, ..Default::default() }, ..Default::default() };
+        let mut peak = 0;
+        for _ in 0..runs {
+            drop(out.take());
+            let base = NOW.load(Relaxed);
+            PEAK.store(base, Relaxed);
+            let t = Instant::now();
+            out = Some(merge_signal_files_shared(table, &ins, &opts).unwrap());
+            times.push(t.elapsed().as_secs_f64());
+            // Heap the merge added at its peak, plus the inputs it was handed (held throughout).
+            peak = PEAK.load(Relaxed) - base + in_bytes;
+        }
+        let out = out.unwrap();
+        let plain = merge_signal_files_shared(table, &ins, &SignalMergeOptions { token_filter: false, ..Default::default() }).unwrap();
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let filter = out.bytes.len() - plain.bytes.len();
+        println!(
+            "{}: {} inputs, {:.2} MB in ({} rows), out {:.2} MB ({} rows, {} row groups){}; peak heap {:.1} MB with the inputs; merge {:.2} s (min of {runs}; all {}): {:.1} MB/s of input, {:.0} k rows/s",
+            table.as_str(),
+            ins.len(),
+            in_bytes as f64 / 1e6,
+            rows_in,
+            out.bytes.len() as f64 / 1e6,
+            out.rows,
+            out.index.matches("\"rows\"").count(),
+            if table == SignalTable::Logs { format!(", of which token filter {:.2} MB ({:.1}% of the file)", filter as f64 / 1e6, 100.0 * filter as f64 / out.bytes.len() as f64) } else { String::new() },
+            peak as f64 / 1048576.0,
+            times[0],
+            times.iter().map(|t| format!("{t:.2}")).collect::<Vec<_>>().join(", "),
+            in_bytes as f64 / 1e6 / times[0],
+            out.rows as f64 / 1e3 / times[0],
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("merge") {
+        return merge_bench(&args);
+    }
     let million: f64 = args.get(1).map_or(1.0, |x| x.parse().unwrap());
     let segment: usize = args.get(2).map_or(20_000, |x| x.parse().unwrap());
     let runs: usize = args.get(3).map_or(3, |x| x.parse().unwrap());

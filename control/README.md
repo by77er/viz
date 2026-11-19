@@ -207,13 +207,19 @@ a person for review instead of describing it in text.
 | `general` | `{ agentsMayApply, proposalTtlDays }` | no |
 | `retention` | `{ metric_samples_days, metric_5m_days?, metric_1h_days?, log_days?, trace_days? }`, 1 to 3650 days, coarser tiers not shorter than finer ones. Shortening needs `confirmShorter: true` | `retention:<tenant>`, the value as is |
 | `limits` | `{ active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency }`, any subset. `LIMIT_CEILINGS` (JSON, operator) caps them | `limits:<tenant>`, the value as is |
-| `pool` | `{ pool, slots, spread }`. The pool must be `tenant/<this tenant>` or the shared pool of `DEFAULT_POOL` | `pool:<tenant>` → `{ pool, slots, spread, epoch }` |
+| `pool` | `{ pool, slots, spread }`. The pool must be `tenant/<this tenant>` or the shared pool of `DEFAULT_POOL`, and must not end in `/traces` or `/logs` (D66, below) | `pool:<tenant>` → `{ pool, slots, spread, epoch }` |
 | `notifications` | `{ email[], webhookUrl, webhookFormat, sendResolved, webhookSecret }`. `webhookFormat` is `alertmanager` (default) or `json` (`viz.notification/v1`); `webhookSecret` (16–512 characters) is **write-only**: kept in `tenant_meta`, never in the value, so no read, list or audit entry holds it; the value shows `webhookSecretSetAt` instead. Left out, the secret is kept while `webhookUrl` is unchanged and dropped when it changes; `null` removes it. The ruler's notifier sends to this webhook as its receiver `viz:default` (below). `email` is stored, not acted on | no: read over the binding (`notificationTarget`), so the secret is not in KV |
 
 **Pool map.** The first map gets the shared map's epoch plus one; raising `spread` bumps
 the epoch. Everything else (another pool, another slot count, a smaller spread) is refused
 with 409 `pool-change-unsupported`, because it needs the drain-and-handover protocol of
-DESIGN §4.1, which is out of scope here.
+DESIGN §4.1, which is out of scope here. A pool ending in `/traces` or `/logs`, the suffixes of
+the derived span and log pools (`DERIVED_SIGNALS`, `shard/src/pool.ts`), is refused with 422
+`invalid`, field `pool` (`contracts/BATCH.md`, "Streams per signal"; D66): edge refuses a map
+whose pool ends so, which would turn every write of the tenant into a 503. So tenants `traces` and
+`logs` can be created (tenant ids are unchanged) and use the shared pool, but cannot have the
+dedicated pool `tenant/<id>`. The rule is on the pool, not the tenant id, because that is the
+narrower one: it refuses only the maps edge would refuse.
 
 ### The service surface (`contracts/control.ts`, decision D39)
 
@@ -481,15 +487,16 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 131 tests in 16 files, in workerd (at most 2 workers)
+npm test             # 132 tests in 16 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 93 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
+npm run mutants      # 97 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
 Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 75 s
 on a shared machine (75 s on a cold cache with the load average above 6). Last run
-2026-11-19: 131 of 131 pass, `tsc` clean.
+2026-11-19, after the pool rule of D66 (`npx vitest run --maxWorkers=2`): 132 of 132 pass in 31 s,
+`tsc` clean.
 
 What the tests establish:
 
@@ -633,9 +640,14 @@ What the tests establish:
   credential's tenant, and one log line, without request data).
 - **Health** (`http.test.ts`). `GET /healthz` without a credential is 200 `ok`, `HEAD` 200,
   `POST` 405; 503 naming `TENANT` or `CONFIG` when that binding is missing; only that path.
-- **Settings and audit** (`settings.test.ts`, 8 tests). KV shapes for retention, limits and
+- **Settings and audit** (`settings.test.ts`, 9 tests). KV shapes for retention, limits and
   pool; the published pool map is accepted by `shard/src/pool`'s routing; the refused pool
-  changes. Audit completeness: each of the 17 mutating routes is called once (the test
+  changes. Tenants `traces` and `logs` are provisioned, and their dedicated pools `tenant/traces`
+  and `tenant/logs` are refused (422, field `pool`, dry run and real), with no KV record, no
+  version and no audit entry; each can still take the shared pool. Ids that only resemble them
+  (`Traces`, `xlogs`, `traces-1`, `logs-traces-x`) get their dedicated pool. Edge's own
+  `validBasePool` (`edge/src/route.ts`) is the oracle for every pool: it refuses each one control
+  refuses and accepts each one control published. Audit completeness: each of the 17 mutating routes is called once (the test
   fails if the route table gains one it does not call) and adds exactly one entry; its dry
   run, every read, and refused or unchanged writes add none. Every non-GET method on the
   audit routes is 405, and `UPDATE` and `DELETE` on the table fail inside the object.
@@ -826,6 +838,16 @@ first run, before a container restart, did not report, so this is their only res
 | 91 | oauth: a grant's key can be rotated through the keys API | oauth (1) |
 | 92 | oauth: introspection ignores the approver's key | oauth (1) |
 | 93 | oauth: a credential naming an unprovisioned tenant creates storage for it | oauth (1) |
+| 94 | pool: a pool ending in `/traces` or `/logs` is published (D66) | settings (1) |
+| 95 | pool: only `/traces` is refused, `/logs` is published | settings (1) |
+| 96 | pool: any pool containing a derived signal's name is refused (too broad) | settings (1) |
+| 97 | pool: the suffix is compared without case (too broad) | settings (1) |
+
+**94–97** (D66) were run on 2026-11-19 in a copy in a scratch directory outside git, taken from the
+shared tree after its suite passed there (132 of 132) and checked green in the copy (132 of 132):
+`node scripts/mutants.mjs "pool:"`, **4 of 4 killed**, each by the new settings test alone.
+Afterwards the copy's `control/src` and `contracts/` were compared with the shared tree byte for
+byte: equal. 1–93 were not re-run in this change.
 
 Mutants 36–40 break `contracts/schema.ts`, the runner every component shares; they are run
 here because this suite tests it most fully.
@@ -883,6 +905,19 @@ insert, then retried, yields one dashboard and one entry.
 - **Edge's verifier is called once per known scope** until one fits (up to nine SHA-256
   computations), because its signature insists on a scope. See "Needed changes".
 - **Clock.** Expiry, overlap and purge use the object's `Date.now()`.
+- **A tenant id with `_` gets a dedicated pool edge refuses** (found while making D66, not
+  changed here). `TENANT_ID` allows `_`, `POOL_NAME` does not (D38), and `validatePool` accepts
+  only `tenant/<id>` verbatim: for a tenant `a_b` it answers 200 and publishes `tenant/a_b`,
+  which edge's `validBasePool` refuses, so every write of that tenant would be a 503 (checked in
+  a scratch copy: 200, map published, `validBasePool` false). D38's `dedicatedPool`
+  (`shard/src/pool.ts`) names that pool `tenant/a-b`. Wanted: a decision whether control
+  accepts `tenant/<id with _ as ->` (sharing objects with tenant `a-b`, as `dedicatedPool`
+  already does) or refuses a dedicated pool for such ids; until then, set no dedicated pool for
+  a tenant whose id contains `_`.
+- **A pool map published before D66** whose pool ends in `/traces` or `/logs` (only tenants
+  `traces` or `logs` could have one) is not withdrawn; edge refuses it. Such a tenant's only
+  further pool change, raising `spread`, is now refused too; moving it back to the shared pool
+  needs the drain-and-handover protocol (DESIGN §4.1). None is known to exist.
 - **The first own pool map moves the tenant's writes** from the shared pool to the new one
   with no handover. The task allows it; a tenant with data in flight would see the effects
   edge's README describes for `stale_epoch`.

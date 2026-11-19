@@ -1,8 +1,8 @@
 /**
  * The JavaScript binding of the viz engine: the storage half of `contracts/engine.ts`
- * (`encodeSegment`, `select`, `mergeFiles`) and the flush of spans and logs
- * (`SignalFlushEngine`: `encodeSpans`, `encodeLogs`, ABI 3) over the C ABI documented in
- * `../src/lib.rs`.
+ * (`encodeSegment`, `select`, `mergeFiles`), the flush of spans and logs
+ * (`SignalFlushEngine`: `encodeSpans`, `encodeLogs`, ABI 3) and their compaction
+ * (`SignalMergeEngine`: `mergeSignalFiles`, ABI 4) over the C ABI documented in `../src/lib.rs`.
  *
  * Number rules (contracts/engine.ts):
  *  - Times going in must be integers. `select` refuses a fractional or NaN bound instead of
@@ -19,9 +19,25 @@
  * The binding then drops the instance and creates a fresh one for the next call.
  */
 import type { EncodedFile, EncodedSignalFile, Engine, Matcher, ScanInput, SeriesData, SignalFlushEngine } from '../../../contracts/engine'
-import type { Table } from '../../../contracts/ledger'
+import type { SignalTable, Table } from '../../../contracts/ledger'
 
-export const ABI_VERSION = 3
+export const ABI_VERSION = 4
+
+/**
+ * Compaction of the span and log tables (contracts/TRACES.md and LOGS.md, "Compaction"). Not in
+ * `contracts/engine.ts` (not this change's to edit; compact/README.md, "Contract issues"): the
+ * one caller, compact/, takes it from here, and checks for it at run time.
+ */
+export interface SignalMergeEngine {
+  /**
+   * Merge whole files of ONE table and one partition (an hour of `spans`, a day of `trace_index`
+   * or `logs`) into one, inputs in ascending precedence: `spans` rows equal on
+   * `(trace_id, span_id)` and `logs` rows equal on their row key collapse to the later input's;
+   * the `trace_index` rows of one trace merge into one. A `logs` output carries its token filter
+   * (LOGS.md §6). Throws for no rows, unsorted inputs, rows of two partitions, another table.
+   */
+  mergeSignalFiles(table: SignalTable, files: Uint8Array[]): EncodedSignalFile
+}
 
 interface Exports {
   memory: WebAssembly.Memory
@@ -34,6 +50,7 @@ interface Exports {
   viz_free_file(ptr: number, cap: number): void
   viz_encode_spans(ptr: number, len: number): number
   viz_encode_logs(ptr: number, len: number): number
+  viz_merge_signal_files(ptr: number, len: number): number
 }
 
 /** An error the engine reported (malformed batch, bad matcher, corrupt file). */
@@ -41,7 +58,7 @@ export class EngineError extends Error {
   override name = 'EngineError'
 }
 
-export interface VizEngine extends Engine, SignalFlushEngine {
+export interface VizEngine extends Engine, SignalFlushEngine, SignalMergeEngine {
   /** Size of the instance's linear memory now, which is also its peak: it only grows. */
   memoryBytes(): number
   /** How many times a WASM instance has been created (1, plus one per trap). */
@@ -54,7 +71,10 @@ const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
 const TABLES: readonly Table[] = ['metric_samples', 'metric_series']
 /** Table bytes of an ABI 3 result (`viz_encode_spans`, `viz_encode_logs`). */
 const SIGNAL_TABLES: Record<number, EncodedSignalFile['table']> = { 2: 'spans', 3: 'trace_index', 4: 'logs' }
+const SIGNAL_TABLE_BYTES: Record<SignalTable, number> = { spans: 2, trace_index: 3, logs: 4 }
 const NS_PER_MS = 1_000_000n
+/** The floor of a Unix nanosecond in milliseconds (the ledger's bounds, contracts/engine.ts `EncodedSignalFile`). */
+const floorMs = (ns: bigint): number => Number(ns >= 0n ? ns / NS_PER_MS : -((-ns + NS_PER_MS - 1n) / NS_PER_MS))
 const I64_MIN = -(2n ** 63n)
 const I64_MAX = 2n ** 63n - 1n
 const utf8 = new TextEncoder()
@@ -92,7 +112,7 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
    * Run one operation: `size` bytes of request written by `write`, result read by `read`.
    * Views over WASM memory are taken after every call that can grow it, never kept.
    */
-  function call<T>(op: 'viz_encode_segment' | 'viz_select' | 'viz_merge_files' | 'viz_encode_spans' | 'viz_encode_logs', size: number, write: (mem: Uint8Array, at: number) => void, read: (payload: Uint8Array) => T): T {
+  function call<T>(op: 'viz_encode_segment' | 'viz_select' | 'viz_merge_files' | 'viz_encode_spans' | 'viz_encode_logs' | 'viz_merge_signal_files', size: number, write: (mem: Uint8Array, at: number) => void, read: (payload: Uint8Array) => T): T {
     if (size > 0xffff_ffff) throw new RangeError('engine: request larger than 4 GiB')
     const w = instance()
     let req = 0
@@ -185,7 +205,6 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
       p += 4 + len
       return payload.subarray(p - len, p)
     }
-    const floorMs = (ns: bigint): number => Number(ns >= 0n ? ns / NS_PER_MS : -((-ns + NS_PER_MS - 1n) / NS_PER_MS))
     const n = dv.getUint32(0, true)
     const files: EncodedSignalFile[] = []
     for (let i = 0; i < n; i++) {
@@ -254,6 +273,53 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
         const bytes = new Uint8Array(w.memory.buffer, ptr, len).slice() // the one copy out
         w.viz_free_file(ptr, cap)
         return { table: out, day, bytes, rows, minTs, maxTs, index }
+      },
+    )
+  }
+
+  /** `viz_merge_signal_files`: as `mergeFiles`, with the header of an ABI 3 signal file. */
+  function mergeSignalFiles(table: SignalTable, files: Uint8Array[]): EncodedSignalFile {
+    const t = SIGNAL_TABLE_BYTES[table]
+    if (t === undefined) throw new RangeError(`engine: unknown signal table ${String(table)}`)
+    let size = 8
+    for (const f of files) size += 4 + f.byteLength
+    return call(
+      'viz_merge_signal_files',
+      size,
+      (mem, at) => {
+        const dv = new DataView(mem.buffer)
+        dv.setUint32(at, t, true) // u8 table, u8[3] zero
+        dv.setUint32(at + 4, files.length, true)
+        let p = at + 8
+        for (const f of files) {
+          dv.setUint32(p, f.byteLength, true)
+          mem.set(f, p + 4)
+          p += 4 + f.byteLength
+        }
+      },
+      (payload) => {
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        let p = 28
+        const str = (): string => {
+          const len = dv.getUint32(p, true)
+          p += 4 + len
+          return text.decode(payload.subarray(p - len, p))
+        }
+        const out = SIGNAL_TABLES[payload[0]!]
+        if (out !== table) throw new Error('engine: the merge answered another table')
+        const hourByte = payload[1]!
+        const hour = hourByte === 255 ? null : hourByte
+        if ((out === 'spans') !== (hour !== null) || (hour !== null && hour > 23)) throw new Error('engine: a span file without its hour, or an hour on another table')
+        const rows = Number(dv.getBigUint64(4, true))
+        const minNs = dv.getBigInt64(12, true)
+        const maxNs = dv.getBigInt64(20, true)
+        const day = str()
+        const index = str()
+        const [ptr, len, cap] = [dv.getUint32(p, true), dv.getUint32(p + 8, true), dv.getUint32(p + 16, true)] // u64 each; wasm32 uses the low half
+        const w = instance()
+        const bytes = new Uint8Array(w.memory.buffer, ptr, len).slice() // the one copy out
+        w.viz_free_file(ptr, cap)
+        return { table: out, hour, day, bytes, rows, minTs: floorMs(minNs), maxTs: floorMs(maxNs), minNs: String(minNs), maxNs: String(maxNs), index }
       },
     )
   }
@@ -341,6 +407,7 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
     encodeLogs,
     select,
     mergeFiles,
+    mergeSignalFiles,
     queryRange: () => notBuilt('queryRange'),
     queryInstant: () => notBuilt('queryInstant'),
     selectors: () => notBuilt('selectors'),

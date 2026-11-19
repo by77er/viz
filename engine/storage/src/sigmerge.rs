@@ -21,13 +21,11 @@ use crate::otelpq::{perr, SResult, SignalError, SignalFile, SignalTable, SignalW
 use crate::otelread::{fragment_record, log_record, open, span_record, LOGS_LEAVES, SPANS_LEAVES, TRACE_INDEX_LEAVES};
 use crate::spans::{fragment_weight, merge_fragments, span_weight, EntryInfo, Fragment, IndexFileWriter, RowRef as SpanRef, SpansFileWriter, MAX_INDEX_SERVICES};
 use crate::tokens::MAX_FILTER_TOKENS;
-use crate::util::IdHasher;
 use bytes::Bytes;
+use parquet::file::reader::FileReader;
 use parquet::record::reader::RowIter;
 use parquet::record::Row;
 use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
 use std::rc::Rc;
 
 /// How a merge writes its output.
@@ -81,8 +79,12 @@ struct Cursor<T> {
     ordinal: u64,
 }
 
+/// Values the record reader decodes at a time per column. Its default (1024) costs about 40 KB
+/// per column per open input (2.3 MB for a `spans` file); a k-way merge holds every input open.
+const READ_BATCH: usize = 64;
+
 fn rows_of(bytes: &Bytes, table: &str, leaves: usize) -> SResult<RowIter<'static>> {
-    Ok(RowIter::from_file_into(Box::new(open(bytes.clone(), table, leaves)?)))
+    Ok(RowIter::from_file_into(Box::new(open(bytes.clone(), table, leaves)?)).with_batch_size(READ_BATCH))
 }
 
 fn next_row(rows: &mut RowIter<'static>) -> SResult<Option<Row>> {
@@ -234,15 +236,17 @@ fn write_span_group(w: &mut SpansFileWriter, g: &[SpanIn], hour: i64) -> SResult
 }
 
 fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> SResult<SignalFile> {
-    // Pass 1: the last occurrence of every (trace_id, span_id), by input then row.
+    // Pass 1: the last occurrence of every (trace_id, span_id), by input then row: every id
+    // with where it was read, sorted, the last of each id kept (32 bytes a row, sized once).
     let ids = parquet::schema::parser::parse_message_type(
         "message spans { required fixed_len_byte_array(16) trace_id; required fixed_len_byte_array(8) span_id; }",
     )
     .map_err(perr)?;
-    let mut winners: Winners = Winners::default();
+    let total: usize = inputs.iter().map(|b| open(b.clone(), "spans", SPANS_LEAVES).map(|r| r.metadata().file_metadata().num_rows().max(0) as usize)).sum::<SResult<usize>>()?;
+    let mut seen: Vec<([u8; 24], u32, u32)> = Vec::with_capacity(total);
     for (i, b) in inputs.iter().enumerate() {
-        let mut rows = rows_of(b, "spans", SPANS_LEAVES)?.project(Some(ids.clone())).map_err(perr)?;
-        let mut k = 0u64;
+        let mut rows = rows_of(b, "spans", SPANS_LEAVES)?.project(Some(ids.clone())).map_err(perr)?.with_batch_size(READ_BATCH);
+        let mut k = 0u32;
         while let Some(r) = next_row(&mut rows)? {
             let mut key = [0u8; 24];
             for (name, f) in r.get_column_iter() {
@@ -253,10 +257,22 @@ fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> 
                     _ => return merr("spans: an id has the wrong length"),
                 }
             }
-            winners.insert(key, (i as u32, k));
+            seen.push((key, i as u32, k));
             k += 1;
         }
     }
+    seen.sort_unstable();
+    // The last of each id (sorted by input, then row, within the id).
+    let mut w = 0;
+    for j in 0..seen.len() {
+        if j + 1 < seen.len() && seen[j + 1].0 == seen[j].0 {
+            continue;
+        }
+        seen[w] = seen[j];
+        w += 1;
+    }
+    seen.truncate(w);
+    let winners = Winners(seen);
     // Pass 2: the k-way merge, keeping winners only. Every row read is of one hour, the
     // output's (a row another input wins is checked too: the inputs are one partition).
     let mut hour: Option<i64> = None;
@@ -294,7 +310,14 @@ fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> 
     w.finish()
 }
 
-type Winners = HashMap<[u8; 24], (u32, u64), BuildHasherDefault<IdHasher>>;
+/// Where each (trace_id, span_id) is kept: (id, input, row), sorted by id.
+struct Winners(Vec<([u8; 24], u32, u32)>);
+
+impl Winners {
+    fn wins(&self, key: &[u8; 24], input: usize, row: u64) -> bool {
+        self.0.binary_search_by(|x| x.0.cmp(key)).is_ok_and(|i| (self.0[i].1 as usize, self.0[i].2 as u64) == (input, row))
+    }
+}
 
 /// Move cursor `c` (its head taken, `prev` the row it held) to its next winning row, checking
 /// that every row it reads sorts after the one before it.
@@ -315,7 +338,7 @@ fn seek_span(c: &mut Cursor<SpanIn>, prev: Option<&SpanIn>, winners: &Winners, h
         let mut key = [0u8; 24];
         key[..16].copy_from_slice(&x.span.trace_id);
         key[16..].copy_from_slice(&x.span.span_id);
-        if winners.get(&key) == Some(&(c.input as u32, k)) {
+        if winners.wins(&key, c.input, k) {
             c.head = Some(x);
             return Ok(());
         }
@@ -362,6 +385,9 @@ fn merge_trace_index(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usiz
                 run.push(f);
             }
         }
+        // Later inputs first: when two fragments claim the same root span (a span stored by two
+        // units), `merge_fragments` keeps the first claim, which is then the later input's.
+        run.reverse();
         let mut f = merge_fragments(&run).unwrap();
         if f.services.len() > MAX_INDEX_SERVICES {
             f.services.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.as_bytes().cmp(y.0.as_bytes())));

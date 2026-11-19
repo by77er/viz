@@ -37,9 +37,9 @@ const logs = encodeLogBatch([stream], [
   { entry: 0, ts: NS, line: 'a', metadata: [['user', 'bob']] }, // other metadata: another row
 ])
 
-describe('encodeSpans and encodeLogs (ABI 3)', () => {
+describe("encodeSpans and encodeLogs (ABI 3), mergeSignalFiles (ABI 4)", () => {
   it('exports the two encoders next to the metric operations', () => {
-    expect(WebAssembly.Module.exports(wasm).map((e) => e.name).sort()).toEqual(['memory', 'viz_abi_version', 'viz_alloc', 'viz_encode_logs', 'viz_encode_segment', 'viz_encode_spans', 'viz_free', 'viz_free_file', 'viz_merge_files', 'viz_select'])
+    expect(WebAssembly.Module.exports(wasm).map((e) => e.name).sort()).toEqual(['memory', 'viz_abi_version', 'viz_alloc', 'viz_encode_logs', 'viz_encode_segment', 'viz_encode_spans', 'viz_free', 'viz_free_file', 'viz_merge_files', 'viz_merge_signal_files', 'viz_select'])
   })
 
   it('spans: one file per hour of start, then trace_index per day; ms bounds are the floor of the ns bounds', async () => {
@@ -102,5 +102,35 @@ describe('encodeSpans and encodeLogs (ABI 3)', () => {
     const again = createEngine(wasm).encodeSpans([spansA, spansB])
     expect(again.map((f) => hex(f.bytes))).toEqual(e.encodeSpans([spansA, spansB]).map((f) => hex(f.bytes)))
     expect(e.encodeSpans([])).toEqual([])
+  })
+
+  it('mergeSignalFiles (ABI 4): spans per hour, trace_index and logs per day, the later input winning; read back by hyparquet', async () => {
+    const e = createEngine(wasm)
+    const a = e.encodeSpans([spansA])
+    const b = e.encodeSpans([spansB])
+    const at = (fs: EncodedSignalFile[], t: string, hour: number | null) => fs.find((f) => f.table === t && f.hour === hour)!
+    // Hour 22 of the 19th: span (1, 1) from both units, the later one kept.
+    const spans = e.mergeSignalFiles('spans', [at(a, 'spans', 22).bytes, at(b, 'spans', 22).bytes])
+    expect([spans.table, spans.day, spans.hour, spans.rows]).toEqual(['spans', '2026-11-19', 22, 1])
+    expect(spans.minNs).toBe(String(NS))
+    expect(spans.minTs).toBe(Number(NS / 1_000_000n))
+    expect((await read(spans)).map((r) => [r.span_name, r.end_unix_nano])).toEqual([['GET /a (again)', NS + 7n]])
+    expect(JSON.parse(spans.index).rg).toHaveLength(1)
+    // trace_index of the 19th: trace 1's two fragments merged into one row.
+    const idx = e.mergeSignalFiles('trace_index', [at(a, 'trace_index', null).bytes, at(b, 'trace_index', null).bytes])
+    const rows = await read(idx)
+    expect(rows.map((r) => [hex(r.trace_id as Uint8Array), r.span_count, r.root_span_name])).toEqual([['01'.repeat(16), 3, 'GET /a (again)'], ['03'.repeat(16), 1, 'early']])
+    // Logs: the same file twice is its rows once, with a token filter in the file that hyparquet skips.
+    const day = e.encodeLogs([logs])[0]!
+    const merged = e.mergeSignalFiles('logs', [day.bytes, day.bytes])
+    expect(merged.rows).toBe(day.rows)
+    expect((await read(merged)).map((r) => [r.line, r.metadata])).toEqual((await read(day)).map((r) => [r.line, r.metadata]))
+    const tok = JSON.parse(merged.index).tok as [number, number]
+    expect(new TextDecoder().decode(merged.bytes.subarray(tok[0], tok[0] + 4))).toBe('VZT1')
+    // Errors are EngineErrors; the instance stays usable.
+    expect(() => e.mergeSignalFiles('spans', [day.bytes])).toThrow(EngineError)
+    expect(() => e.mergeSignalFiles('logs', [])).toThrow(/no input/)
+    expect(() => e.mergeSignalFiles('metric_samples' as never, [day.bytes])).toThrow(RangeError)
+    expect(e.instances()).toBe(1)
   })
 })

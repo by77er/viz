@@ -139,7 +139,8 @@ metrics query), so a span or log batch never reaches the metrics engine (D48). T
 is wired (stage 3, 2026-11-19): the gateway on `vis.bitcru.sh` routes `/v1/traces`, `/v1/logs`
 and `/loki/api/v1/push` to viz-ingest by exact path, as it routes `/v1/metrics`; edge answers
 them 404 while `INGEST_SIGNALS` does not name the signal. A pool map's own pool never ends in
-`/traces` or `/logs` (edge refuses such a map, 503, metrics included), so a shard named
+`/traces` or `/logs` (edge refuses such a map, 503, metrics included; control refuses to assign
+one, so tenants `traces` and `logs` keep the shared pool, D66), so a shard named
 `…/traces/{slot}` or `…/logs/{slot}` is always a span or log shard and no metric shard shares
 an object or a name with another pool's span or log shard (`contracts/BATCH.md`).
 
@@ -307,9 +308,9 @@ and time.
 The span and log tables are written and listed as built on the write side (stage 2, behind
 `INGEST_SIGNALS`): flush, the ledger, retention and deletion; `query` reads them behind
 `QUERY_SIGNALS` (D62, §6.4), and both halves are joined through the gateway (stage 3). Not yet:
-their compaction and Iceberg publication. The publisher reads them and does not
-publish them yet (D64, §5.3): a change naming them no longer stops a tenant, so
-`INGEST_SIGNALS` may go on in a deployment with a publisher once that publisher release is the
+their compaction. The publisher publishes them as Iceberg tables of their own (D67, §5.3;
+before it, D64's release read them without publishing them): `INGEST_SIGNALS` may go on in a
+deployment with a publisher once a publisher release that reads them (D64's or later) is the
 oldest one a rollback of viz-publisher can reach (the rollout rule in D64).
 
 Native histograms share the samples layout and are added after float samples work. Flat
@@ -372,11 +373,15 @@ version order per tenant, read from the ledger's R2 log (segments, in whole segm
 or a segment it cannot read stops that tenant there, never skipped). A tenant it has no cursor
 for in the newest ledger incarnation is re-based from that incarnation's newest checkpoint, or
 its base, streamed into SQLite and diffed against what is published there, so the publisher's
-memory does not grow with a tenant's size (D55). It publishes the metric tables; the span and
-log tables it reads without publishing (D64): their files are counted per tenant and table,
-reported as not published, and never stop a tenant (a table no release knows still does), and
-the files of theirs a change removes are released to the janitor after the delete grace, since
-no snapshot can reference them. A removed
+memory does not grow with a tenant's size (D55). It publishes all five tables the ledger lists,
+each as its own Iceberg v2 table with its own cursor per tenant (D67): the metric pair, and
+`spans` (partitioned by `identity(tenant)` and `hour(start_time)`), `trace_index` and `logs`
+(by `identity(tenant)` and `identity(day)`), whose nested columns (attribute maps, events and
+links, a fragment's services and hours, structured metadata) carry a field id for every key,
+value and element and are found in the files through a nested name mapping. The metric tables
+commit first and are byte for byte what they were before. The first publish after the upgrade
+from D64's release re-bases every tenant once (the new tables have no cursor). A table no
+release knows still stops a tenant. A removed
 file is physically deleted only after the removal is published and every snapshot that
 referenced it has expired (the janitor asks the publisher before each purge). Each snapshot
 points at an object

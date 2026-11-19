@@ -82,7 +82,7 @@ describe('version order and gaps', () => {
     const p = publisher(cell)
     const r = await p.publish()
     // The first publication re-bases: from the base segment (two segments, no checkpoint yet).
-    // Every table's cursor moves, those of the span and log tables too: the changes read did not touch them (D65).
+    // Every table's cursor moves, those of the span and log tables too: the changes read did not touch them (D67).
     const v = await ledgerVersion(a)
     expect(r.tenants).toEqual([{ tenant: a, status: 'ok', cursors: { metric_samples: v, metric_series: v, spans: v, trace_index: v, logs: v }, rebase: expect.objectContaining({ source: 'base', version: 0 }) }])
     await expectPublished(cell, [a])

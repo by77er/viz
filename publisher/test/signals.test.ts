@@ -1,6 +1,6 @@
 /**
  * The span and log tables (contracts/TRACES.md, contracts/LOGS.md), published as Iceberg tables of
- * their own beside the metric pair (design/DECISIONS.md D65; the D64 release read them and did not
+ * their own beside the metric pair (design/DECISIONS.md D67; the D64 release read them and did not
  * publish them):
  *
  *   - a tenant's `spans`, `trace_index` and `logs` files are published exactly as its ledger lists

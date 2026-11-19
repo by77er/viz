@@ -20,6 +20,7 @@ import { fields, int, isRecord, iso } from './util'
  * (`webhookSecretSetAt`).
  */
 import type { NotificationTargetResult, WebhookFormat } from '../../contracts/control'
+import { DERIVED_SIGNALS } from '../../shard/src/pool'
 
 export const SECTIONS = ['general', 'retention', 'limits', 'pool', 'notifications'] as const
 export type Section = (typeof SECTIONS)[number]
@@ -161,6 +162,17 @@ function validatePool(t: Tenant, v: Record<string, unknown>, before: PoolValue |
   const shared = t.sharedPool
   if (v.pool !== `tenant/${t.tenant}` && v.pool !== shared.pool) {
     throw invalid(`A tenant may only use its own pool ("tenant/${t.tenant}")${typeof shared.pool === 'string' ? ` or the shared pool ("${shared.pool}")` : ''}.`, 'Another tenant\'s dedicated pool is not yours to write to.', { field: 'pool' })
+  }
+  // contracts/BATCH.md "Streams per signal", D66: a pool map's pool never ends in a derived pool's
+  // suffix, or its metric shards would be another pool's span or log shards; edge refuses such a
+  // map (503 for every write). So the dedicated pool of a tenant named `traces` or `logs` is refused.
+  const pool = v.pool
+  const derived = DERIVED_SIGNALS.find((s) => pool.endsWith(`/${s}`))
+  if (derived !== undefined) {
+    const fix = pool === shared.pool
+      ? 'The shared pool itself breaks this rule, and the data path refuses it for every tenant: the operator must rename it (DEFAULT_POOL).'
+      : `Use the shared pool${typeof shared.pool === 'string' ? ` ("${shared.pool}")` : ''}. A tenant whose id is "traces" or "logs" cannot have a dedicated pool.`
+    throw invalid(`The pool "${pool}" ends in "/${derived}", the suffix of the derived ${derived} pools; the data path refuses a pool map whose pool ends so.`, fix, { field: 'pool' })
   }
   if (v.pool === shared.pool && slots !== shared.slots) throw invalid(`The shared pool has ${String(shared.slots)} slots.`, 'A tenant can choose its spread within the shared pool, not the pool\'s size.', { field: 'slots' })
   // The first own map starts above the shared map's epoch, so a shard never sees it as older.

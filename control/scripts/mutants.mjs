@@ -141,6 +141,11 @@ const mutants = [
   ['oauth: a grant\'s key can be rotated through the keys API (its sealed copies go stale)', [['src/ops-keys.ts', "  guardGrantKey(row, 'rotated')\n", '']]],
   ['oauth: introspection ignores the approver\'s key (a grant outlives it, or works while it is disabled)', [['src/ops-oauth.ts', '  const a = approver(t, cur, now)', "  const a = 'live' as 'live' | 'disabled' | 'gone'"]]],
   ['oauth: a credential naming an unprovisioned tenant creates storage for it (the object migrates on construction)', [['src/tenant.ts', '      if (empty) {\n        this.unopened = true', '      if (false) {\n        this.unopened = true']]],
+  // ---- D66: a pool map's pool never ends in a derived pool's suffix ----
+  ['pool: a pool ending in /traces or /logs is published (tenants "traces" and "logs" get a map edge refuses)', [['src/ops-settings.ts', '  if (derived !== undefined) {', '  if (false) {']]],
+  ['pool: only /traces is refused, /logs is published', [['src/ops-settings.ts', 'const derived = DERIVED_SIGNALS.find(', "const derived = ['traces'].find("]]],
+  ['pool: any pool containing a derived signal\'s name is refused (too broad)', [['src/ops-settings.ts', '(s) => pool.endsWith(`/${s}`))', '(s) => pool.includes(s))']]],
+  ['pool: the suffix is compared without case (too broad)', [['src/ops-settings.ts', '(s) => pool.endsWith(`/${s}`))', '(s) => pool.toLowerCase().endsWith(`/${s}`))']]],
 ]
 
 const only = process.argv[2]

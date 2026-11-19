@@ -109,6 +109,12 @@ const mutants = [
     "  if (outcome.status === 'backpressure') refuse(", "  if (outcome.status === 'backpressure') return\n  if (false) refuse("],
   ['recorded: new series over the limit resolve', 'src/recorded.ts', '  if (ok.limited) {', '  if (false) {'],
   ['recorded: values parsed with Number() (hex, empty accepted)', 'src/recorded.ts', '  if (!DECIMAL.test(text)) return null\n', ''],
+  // review of D52, m-8: every error the entrypoint sees carries a refusal word
+  ['recorded: an error the entrypoint sees is rethrown without a refusal word', 'src/recorded.ts', '    throw asRefusal(e)', '    throw e'],
+  ['recorded: only HTTP errors get a refusal word (KV and unexpected errors pass bare)', 'src/recorded.ts',
+    "  return new RecordedSamplesError('unavailable', messageOf(e))", "  if (!(e instanceof HttpError)) throw e\n  return new RecordedSamplesError('unavailable', messageOf(e))"],
+  ['recorded: a request over the limits (413) is unavailable, not too_large', 'src/recorded.ts',
+    "  if (e instanceof HttpError && e.status === 413) return new RecordedSamplesError('too_large', e.message)\n", ''],
   // traces and logs, stage 1 (contracts/BATCH.md signals 2 and 3; contracts/LOGS.md §1)
   ['otel: tenant from the body (OTLP traces: a resource attribute named tenant)', 'src/index.ts',
     "    const { tenant } = await authenticate(req, env.CONFIG, 'write')\n    if (!json && contentType !== 'application/x-protobuf') {\n      return text(415, 'unsupported content type; expected application/x-protobuf or application/json')\n    }\n    const encoding = (req.headers.get('Content-Encoding') ?? 'identity').toLowerCase()\n    if (encoding !== 'identity' && encoding !== 'gzip') return fail(415, 'unsupported content encoding; expected gzip or none', { 'Accept-Encoding': 'gzip' })\n    const early = await refuseEarly(env, tenant, Date.now(), signal)",

@@ -204,7 +204,7 @@ export interface TenantReport {
 
 /**
  * What the D64 release recorded of a table it read and did not publish, for one tenant (storage
- * table `unpublished`, migration 4). Since D65 every table is published: this release neither reads
+ * table `unpublished`, migration 4). Since D67 every table is published: this release neither reads
  * nor writes that table, and `unpublished()` returns nothing. The type stays for that method.
  */
 export interface UnpublishedRecord {
@@ -228,7 +228,7 @@ export interface UnpublishedRecord {
 
 /** Where a table is (`status`). */
 export interface TableStatus {
-  /** True for every table the ledger lists since D65 (the D64 release answered false for the span and log tables). */
+  /** True for every table the ledger lists since D67 (the D64 release answered false for the span and log tables). */
   published: boolean
   version: number
   snapshotId: number | null
@@ -666,7 +666,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return out
   }
 
-  /** Where a table is: metadata version, current snapshot, live files and manifests. Every table the ledger lists is published (D65). */
+  /** Where a table is: metadata version, current snapshot, live files and manifests. Every table the ledger lists is published (D67). */
   async status(table: LedgerTable): Promise<TableStatus> {
     this.guard()
     if (!isPublished(table)) throw new Error(`publisher: unknown table ${JSON.stringify(table)}`)
@@ -677,7 +677,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /**
-   * What the D64 release recorded of the tables it read and did not publish. Since D65 there are
+   * What the D64 release recorded of the tables it read and did not publish. Since D67 there are
    * none: this release publishes every table and leaves that release's records alone (they serve
    * only a rollback to it, which counts on from them). Always empty; kept so a caller of the D64
    * interface gets an answer, not an error.

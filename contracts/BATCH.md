@@ -308,7 +308,11 @@ D62) would take metric shards for span or log shards. With the rule, a shard nam
 names never meet. `edge` refuses a pool map (`pool:<tenant>` or `DEFAULT_POOL`) whose pool
 breaks it, for every signal, metrics included (503, as for a name outside `POOL_NAME`);
 `POOL_NAME` itself cannot say it, since the derived pools end so. `design/DECISIONS.md` D57
-gives the alternatives. As built, `edge` appends there only when `INGEST_SIGNALS` enables the signal.
+gives the alternatives. `control`, which writes `pool:<tenant>`, refuses to assign such a pool
+(`PUT /settings/pool`: 422 `invalid`, field `pool`), so it never publishes a map `edge` would
+refuse for this reason. Tenant ids are not restricted for it (`TENANT_ID` is unchanged): a
+tenant whose id is `traces` or `logs` can be created and uses the shared pool, but cannot have
+the dedicated pool `tenant/<id>` (D66). As built, `edge` appends there only when `INGEST_SIGNALS` enables the signal.
 The derivation is one function, `signalPool` in `shard/src/pool.ts`, used by `edge`, flush's
 sweep and the stack's tests. Flush reads a segment's signal byte and refuses a segment whose
 batches are not all of one signal it flushes (`unreadable_segment`). A filtered tail read

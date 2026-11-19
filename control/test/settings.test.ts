@@ -1,6 +1,7 @@
 import { runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { slotFor, tenantSlots } from '../../shard/src/pool'
+import { validBasePool } from '../../edge/src/route'
 import { ROUTES } from '../src/routes'
 import { authorize, newClient, pkce } from './oauth'
 import { auditOf, call, example, get, kvGet, makeKey, newTenant, post, stubOf } from './helpers'
@@ -116,6 +117,40 @@ describe('settings', () => {
     // a tenant may also take a larger share of the shared pool
     const t2 = await newTenant()
     expect((await put(t2.admin, 'pool', { value: { pool: 'shared/c1', slots: 8, spread: 4 } })).body.value).toEqual({ pool: 'shared/c1', slots: 8, spread: 4, epoch: 2 })
+  })
+
+  // contracts/BATCH.md "Streams per signal", D66. The oracle is edge's own test of a pool map's
+  // pool (`validBasePool`): control must never publish a map the data path refuses for this.
+  it('pool map: a pool ending in /traces or /logs is refused, so tenants "traces" and "logs" keep the shared pool', async () => {
+    for (const id of ['traces', 'logs']) {
+      // The tenant id itself is allowed (TENANT_ID is unchanged).
+      const { key } = await stubOf(id).provision(id)
+      const mine = `tenant/${id}`
+      expect(validBasePool(mine)).toBe(false)
+      for (const dryRun of [true, false]) {
+        const res = await put(key, 'pool', { value: { pool: mine, slots: 4, spread: 2 }, dryRun })
+        expect(res.status, res.text).toBe(422)
+        expect(res.body).toMatchObject({ code: 'invalid', field: 'pool' })
+        expect(res.body.detail).toContain(`ends in "/${id}"`)
+      }
+      expect(await kvGet(`pool:${id}`)).toBeNull()
+      expect((await get(key, '/settings/pool')).body.version).toBe(0)
+      expect(await auditOf(key, '&action=settings.pool')).toEqual([])
+      // The shared pool is still theirs, and edge accepts that map.
+      const shared = await put(key, 'pool', { value: { pool: 'shared/c1', slots: 8, spread: 4 } })
+      expect(shared.status, shared.text).toBe(200)
+      expect(await kvGet(`pool:${id}`)).toEqual({ pool: 'shared/c1', slots: 8, spread: 4, epoch: 2 })
+      expect(validBasePool((await kvGet(`pool:${id}`)).pool)).toBe(true)
+    }
+    // Ids that only resemble them keep their dedicated pool, and edge accepts each map published.
+    for (const id of ['Traces', 'xlogs', 'traces-1', 'logs-traces-x']) {
+      const { key } = await stubOf(id).provision(id)
+      const res = await put(key, 'pool', { value: { pool: `tenant/${id}`, slots: 4, spread: 2 } })
+      expect(res.status, `${id}: ${res.text}`).toBe(200)
+      const published = await kvGet(`pool:${id}`)
+      expect(published).toEqual({ pool: `tenant/${id}`, slots: 4, spread: 2, epoch: 2 })
+      expect(validBasePool(published.pool)).toBe(true)
+    }
   })
 
   it('general and notifications: validated, versioned, not published', async () => {

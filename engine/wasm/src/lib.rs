@@ -2,8 +2,9 @@
 //!
 //! A plain C ABI over `viz-storage`, for `wasm32-unknown-unknown`. The TypeScript binding
 //! in `js/` is the only intended caller; together they implement the storage half of
-//! `contracts/engine.ts` (`encodeSegment`, `select`, `mergeFiles`) and the flush of spans
-//! and logs (`SignalFlushEngine`: `encodeSpans`, `encodeLogs`).
+//! `contracts/engine.ts` (`encodeSegment`, `select`, `mergeFiles`), the flush of spans and
+//! logs (`SignalFlushEngine`: `encodeSpans`, `encodeLogs`) and their compaction
+//! (`mergeSignalFiles`, ABI 4).
 //!
 //! Like every engine crate this does no I/O. Malformed input comes back as an error
 //! result, never as a trap: every byte of a request is bounds-checked before use.
@@ -73,17 +74,33 @@
 //! `spans` files come first, by hour, then `trace_index` files, by day (the storage crate's
 //! order). A batch of the other signal (or of metrics) is an error naming it.
 //!
+//! ### `viz_merge_signal_files`
+//!
+//! Compaction of the span and log tables (`viz_storage::merge_signal_files_shared`;
+//! contracts/TRACES.md and LOGS.md, "Compaction"): several files of ONE table and one
+//! partition (an hour of `spans`, a day of `trace_index` or `logs`) become one file; a `logs`
+//! output carries its token filter (LOGS.md §6). Inputs are given lowest precedence first, as
+//! for `viz_merge_files`. Added in ABI 4; nothing above changed.
+//!
+//! Request: `u8 table (2 = spans, 3 = trace_index, 4 = logs), u8[3] zero, u32 n_inputs`, then
+//! each input file as `u32 len, bytes`.
+//!
+//! Ok payload: `u8 table, u8 hour (0 to 23 for `spans`, 255 otherwise), u8[2] zero, u64 rows,
+//! i64 min_ns, i64 max_ns, u32 day_len, day, u32 index_len, index, u64 file_ptr, u64 file_len,
+//! u64 file_cap`: the header of `viz_encode_spans`' files, then the file left in place as
+//! `viz_merge_files` leaves it (copy it out, then `viz_free_file(file_ptr, file_cap)`).
+//!
 //! ### `viz_abi_version`
 //!
-//! Returns 3 (1 had no `viz_merge_files`, 2 no `viz_encode_spans` / `viz_encode_logs`). The
-//! binding refuses a module that answers anything else.
+//! Returns 4 (1 had no `viz_merge_files`, 2 no `viz_encode_spans` / `viz_encode_logs`, 3 no
+//! `viz_merge_signal_files`). The binding refuses a module that answers anything else.
 
 use viz_storage::{
-    encode_logs, encode_segment, encode_spans, merge_files_shared, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData, SignalFile, SignalTable, Table,
-    WriteOptions,
+    encode_logs, encode_segment, encode_spans, merge_files_shared, merge_signal_files_shared, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData,
+    SignalFile, SignalMergeOptions, SignalTable, Table, WriteOptions,
 };
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 const OK: u32 = 0;
 const ERR: u32 = 1;
 
@@ -347,7 +364,7 @@ pub unsafe extern "C" fn viz_merge_files(ptr: *const u8, len: usize) -> *mut u8 
     })
 }
 
-/// Release the file buffer of a `viz_merge_files` result.
+/// Release the file buffer of a `viz_merge_files` or `viz_merge_signal_files` result.
 ///
 /// # Safety
 /// `ptr` and `cap` must be the `file_ptr` and `file_cap` of one such result, passed once.
@@ -356,6 +373,51 @@ pub unsafe extern "C" fn viz_free_file(ptr: *mut u8, cap: usize) {
     if !ptr.is_null() && cap > 0 {
         drop(Vec::from_raw_parts(ptr, 0, cap));
     }
+}
+
+fn do_merge_signal(req: &[u8]) -> Result<SignalFile, String> {
+    let mut r = Req { b: req, at: 0 };
+    let table = match r.take(4, "table")? {
+        [2, 0, 0, 0] => SignalTable::Spans,
+        [3, 0, 0, 0] => SignalTable::TraceIndex,
+        [4, 0, 0, 0] => SignalTable::Logs,
+        other => return Err(format!("unknown signal table {:?}", other)),
+    };
+    let n = r.u32("n_inputs")?;
+    let inputs = r.items(n, "input file")?;
+    r.end()?;
+    // SAFETY: as in `do_merge`: the request outlives the call and nothing borrowed survives it.
+    let shared: Vec<bytes::Bytes> =
+        inputs.iter().map(|f| bytes::Bytes::from_static(unsafe { std::mem::transmute::<&[u8], &'static [u8]>(*f) })).collect();
+    merge_signal_files_shared(table, &shared, &SignalMergeOptions::default()).map_err(|e| e.to_string())
+}
+
+/// See the crate documentation.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable.
+#[no_mangle]
+pub unsafe extern "C" fn viz_merge_signal_files(ptr: *const u8, len: usize) -> *mut u8 {
+    let f = match do_merge_signal(request(ptr, len)) {
+        Err(m) => return error(m),
+        Ok(f) => f,
+    };
+    let SignalFile { table, day, hour, bytes, rows, min_ts, max_ts, index } = f;
+    let mut file = std::mem::ManuallyDrop::new(bytes);
+    let (file_ptr, file_len, file_cap) = (file.as_mut_ptr() as usize, file.len(), file.capacity());
+    result(OK, 28 + 4 + day.len() + 4 + index.len() + 24, |out| {
+        out.extend_from_slice(&[signal_table_byte(table), hour.unwrap_or(255), 0, 0]);
+        out.extend_from_slice(&rows.to_le_bytes());
+        out.extend_from_slice(&min_ts.to_le_bytes());
+        out.extend_from_slice(&max_ts.to_le_bytes());
+        for part in [day.as_bytes(), index.as_bytes()] {
+            out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+            out.extend_from_slice(part);
+        }
+        for v in [file_ptr, file_len, file_cap] {
+            out.extend_from_slice(&(v as u64).to_le_bytes());
+        }
+    })
 }
 
 fn do_select(req: &[u8]) -> Result<Vec<SeriesData>, String> {

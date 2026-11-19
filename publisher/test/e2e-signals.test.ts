@@ -1,5 +1,5 @@
 /**
- * End to end for the span and log tables (design/DECISIONS.md D65), for readers viz did not
+ * End to end for the span and log tables (design/DECISIONS.md D67), for readers viz did not
  * write. Real `spans`, `trace_index` and `logs` files made by viz's write path from the OTLP
  * corpus of stack/test (test/fixtures/signals.json, made by tools/signal_fixture.mjs: edge, the
  * shards, flush through engine/wasm, the ledger) go into the simulated bucket under two tenants of
@@ -36,9 +36,9 @@ interface Checkpoint {
 
 describe('end to end with real span and log files and a real ledger', () => {
   it('publishes the span and log tables over four stages and dumps them for PyIceberg and DuckDB', async () => {
-    const run = Date.now().toString(36)
-    const cell = `sig-${run}`
-    const tenants = [`sig-a-${run}`, `sig-b-${run}`] as const
+    // Fixed names, as the metric end-to-end test's: the content hashes the readers print include the tenant.
+    const cell = 'sig-cell'
+    const tenants = ['sig-a', 'sig-b'] as const
     const [a, b] = tenants
     const prefix = `file://${inject('exportDir')}/signals`
     const p = publisher(cell)
@@ -146,7 +146,7 @@ describe('end to end with real span and log files and a real ledger', () => {
       fixture: { seed: fixture.seed, stack: fixture.stack },
       tables: Object.fromEntries(SIGNALS.map((t) => [t, { metadata: `${cell}/iceberg/${t}/metadata/v${last.tables[t].version}.metadata.json` }])),
       checkpoints,
-      files: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, { table: f.table, tenant: f.tenant, day: f.day, hour: f.hour, rows: f.rows, bytes: f.bytes, minTs: f.minTs, maxTs: f.maxTs, sha256: f.sha256 }])),
+      files: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, { table: f.table, tenant: f.tenant, day: f.day, hour: f.hour, rows: f.rows, bytes: f.bytes, minTs: f.minTs, maxTs: f.maxTs, sha256: f.sha256, index: f.index }])),
       objects: keys.length,
     }
     await fetch(`${url}/signals/expected.json`, { method: 'PUT', body: JSON.stringify(expected, null, 1) })

@@ -1,14 +1,15 @@
 # Trace tables
 
 Status (2026-11-19): **the file layout is settled and written; the write side is built
-(stage 2), and so is compaction of both tables (section "Compaction", below); reading through
-query and publishing are proposed.** `engine/storage`
+(stage 2), and so is compaction of both tables (section "Compaction", below), and both tables
+are published as Iceberg tables (section "Iceberg publication", built 2026-11-19); reading
+through query is proposed.** `engine/storage`
 (`src/spans.rs`) writes `spans` and `trace_index` files from span batches (`contracts/BATCH.md`,
 signal 2) exactly as below; `edge` decodes OTLP traces into those batches (behind
 `INGEST_SIGNALS`), the shards of `{pool}/traces` hold them, flush encodes each sealed segment
 through `engine/wasm` (ABI 3) into one unit of `spans` and `trace_index` files under the keys
 below, and the ledger lists them (`contracts/ledger.ts` `LedgerTable`), plans them by time and
-expires them by day. Query and publisher paths do not use them yet. The query engine (`engine/traceql`)
+expires them by day; the publisher publishes them (design/DECISIONS.md D67). The query path does not use them yet. The query engine (`engine/traceql`)
 evaluates over an in-memory span source with the logical shape described here (`Span`,
 `TraceSummary`), and a test reads files written here into that shape and gets the same
 answers (`engine/storage/readback`). What stays proposed is marked "proposed".
@@ -232,7 +233,9 @@ a step never deletes its outputs), with these differences:
   statistics, bloom filter and index fragment are exactly flush's.
 - **`trace_index` is merged per day.** The rows of one `trace_id` in the inputs become one
   row, merged as "Merging fragments" says (sums, min and max, per-service sums, union of
-  `hours`, the root by the rule there); when the merged `services` list has more than 64
+  `hours`, the root by the rule there; when two fragments claim the same root span, which a span
+  stored by two units does, the fragment of the later input supplies it, as the later write of
+  a span wins); when the merged `services` list has more than 64
   entries it keeps the 64 with the most spans (ties: the smaller name), listed by name, and
   `services_truncated` is true. Fragments are not de-duplicated against spans: a span retried
   into two units stays counted twice, as when fragments are merged at query time, so a
@@ -317,11 +320,39 @@ in-memory source, and any storage reader must be tested the same way.
 OTLP/HTTP traces (protobuf and JSON, optionally gzip) into it; spans go to the tenant's
 `{pool}/traces` shards (proposed, `BATCH.md` "Streams per signal").
 
+## Iceberg publication (built 2026-11-19, design/DECISIONS.md D67)
+
+The publisher (`publisher/`) publishes `spans` and `trace_index` as Iceberg v2 tables of their own,
+one per cell, beside the metric tables (`{cell}/iceberg/spans/`, `{cell}/iceberg/trace_index/`):
+
+- **Schema.** Every column of the files above, in file order and with the same nullability
+  (`fixed[16]`/`fixed[8]` for ids, `timestamptz` for `start_time`, the maps with required string
+  keys and required values, `events`, `links` and `services` lists of required structs, `hours` a
+  list of required ints), preceded by the optional partition columns: `tenant` for both, `day`
+  for `trace_index`. Neither is in the files; readers fill them from the partition tuple, as for
+  metrics. The nested-set columns (proposed) are not in the schema.
+- **Field ids** are pinned in `publisher/src/iceberg.ts` (`SIGNAL_DEFS`) and in
+  `publisher/test/golden/formats/iceberg.signal-metadata.v1.json`: the files' columns 1..N in file
+  order, then the partition columns, then every map key and value, list element and struct field.
+  The files carry no field ids, so the tables set `schema.name-mapping.default`, which maps every
+  field, nested ones included (`element`, `key`, `value`).
+- **Partitions.** `spans`: `identity(tenant)` and `hour(start_time)` (partition field
+  `start_time_hour`, hours since the epoch), the value of the file's `hour=HH` key level, which the
+  ledger admits only under the hour its times lie in. `trace_index`: `identity(tenant)` and
+  `identity(day)`, the key's day.
+- **Statistics per file.** Row count and size; value and null counts for the required top-level
+  primitive columns only; bounds for `start_unix_nano` and `start_time` (`spans`) and
+  `min_start_unix_nano`/`max_end_unix_nano` (`trace_index`) from the ledger's millisecond bounds
+  widened to the whole last millisecond; `service_name` (`spans`) and `trace_id` (`trace_index`)
+  bounds and split offsets from the index fragment.
+- A promoted attribute added later is an Iceberg schema change, which needs a publisher release
+  that writes a new schema id (the current one refuses metadata whose schema it did not write).
+
 ## What stays proposed
 
 - Re-aggregation of `trace_index` from de-duplicated spans (compaction merges fragments; it
-  does not read spans), the query reader and its pruning, and Iceberg publication. (Flush,
-  compaction, the ledger's tables, retention and the object keys are built.)
+  does not read spans), and the query reader and its pruning. (Flush, compaction, the ledger's
+  tables, retention, the object keys and Iceberg publication are built.)
 - Nested-set columns, per-tenant promotion, sampling weights, `with(extrapolate=true)`.
 - The accept window for spans (`edge`'s default: start within 24 hours back and 5 minutes
   ahead) is a default, not a contract value.

@@ -12,14 +12,19 @@ and physical deletes wait. Nothing else.
 | `src/publisher.ts` | `Publisher`: publish, commit, resync, expire, sweep, `verify`, `safeToDelete`; the one alarm and its deadlines |
 | `src/log.ts` | Reading a ledger's R2 log, segments and the first layout: changes after a cursor in version order, in whole segments, up to the first hole or unreadable object; a re-base from the newest checkpoint (one object, or parts) or the base, streamed into SQLite; the six-connection slots; a strict replay for `verify` |
 | `src/nudge.ts` | `nudge(PUBLISHER, cell, tenants)`: what the maintenance run calls; bounded, never throws (D34) |
-| `src/iceberg.ts` | Table schemas, Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
+| `src/iceberg.ts` | Table schemas (the metric pair; the span and log tables with nested types and pinned nested field ids, `SIGNAL_DEFS`), name mappings, partition specs (`hour(start_time)` for `spans`), Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 111 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
-| `test/n1/` | This publisher as committed at `9292abb`, frozen: the release before it read the span and log tables (release N-1 beside N in `test/signals.test.ts`); one type-only edit, said in the file |
+| `test/` | 117 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `test/d64/` | This publisher as committed at `bcfe8db`, frozen: the D64 release, which reads the span and log tables and does not publish them; release N-1 of this one, and by D64's rollout rule the oldest rollback target once `INGEST_SIGNALS` is on (`test/signals.test.ts`) |
+| `test/n1/` | This publisher as committed at `9292abb`, frozen: the release before D64 (N-2 now), which stops at a span or log change; kept for the metric byte-identity counterfactual; one type-only edit, said in the file |
+| `test/fixtures/signals.json` | Real `spans`, `trace_index` and `logs` Parquet files (48 files, 485 kB) made by viz's write path from stack/test's OTLP corpus (`tools/signal_fixture.mjs`) |
 | `bench/` | The re-base at the ledger's state limit (`rebase.bench.test.ts`), the frozen publisher from before it streamed (`before/`, the counterfactual), `phases.mjs` (memory per phase) |
 | `tools/fixtures/` | Rust: real Parquet files made with `viz_storage::encode_segment` and `merge_files` |
-| `tools/verify_readers.py` | PyIceberg and DuckDB read the published tables and are compared with the ledgers |
+| `tools/verify_readers.py` | PyIceberg and DuckDB read the published metric tables and are compared with the ledgers |
+| `tools/signal_fixture.mjs` | Makes `test/fixtures/signals.json`: edge's OTLP corpus through stack/'s write path in workerd (the corpus mode of `stack/test/signals.test.ts`, run, not changed) |
+| `tools/verify_signal_readers.py` | PyIceberg and DuckDB read the span and log tables (every column, nested ones included, pruning by tenant, hour and day) and are compared with pyarrow on the files; writes what they read for `tools/signals-check` |
+| `tools/signals-check/` | Rust: viz-storage's readers, viz-traceql and viz-logql on the same files, compared with what PyIceberg and DuckDB read |
 | `tools/mutants.mjs` | Mutation checks |
 
 Bindings: Durable Object `PUBLISHER`, R2 bucket `BUCKET`, variable `ICEBERG_LOCATION_PREFIX`
@@ -30,10 +35,12 @@ the deploy's record of a health route; nothing reaches the publisher over HTTP.
 
 ## What is implemented
 
-**Tables.** One Iceberg table per viz metric table per cell (`metric_samples`, `metric_series`),
-shared by the cell's tenants, format version 2, partitioned by `identity(tenant)` and
-`identity(day)`, with the engine's sort order declared. Metadata lives under
-`{cell}/iceberg/{table}/metadata/`:
+**Tables.** One Iceberg table per viz table per cell, shared by the cell's tenants, format
+version 2, with the engine's sort order declared: `metric_samples` and `metric_series`,
+partitioned by `identity(tenant)` and `identity(day)`; and since design/DECISIONS.md D67 `spans`
+(`identity(tenant)`, `hour(start_time)`), `trace_index` and `logs` (`identity(tenant)`,
+`identity(day)`): "The span and log tables", below. They commit in that order, the metric pair
+first. Metadata lives under `{cell}/iceberg/{table}/metadata/`:
 
 ```
 v{N}.metadata.json                 one per commit, written with If-None-Match: *
@@ -60,7 +67,7 @@ deleted when there is none:
 | Deadline | Set by | What the alarm does |
 |---|---|---|
 | `publish` | `notify`; a publish that left tenants pending (a hole, a refusal, a backlog larger than one publish reads): `retryMs` (1 min) | publishes every pending tenant (whenever the alarm runs) |
-| `sweep` | a commit, or an attempt that failed: `orphanGraceMs` (1 h) later, unless one is due sooner; after a sweep that marked objects: their grace end | the orphan sweep of both tables |
+| `sweep` | a commit, or an attempt that failed: `orphanGraceMs` (1 h) later, unless one is due sooner; after a sweep that marked objects: their grace end | the orphan sweep of every table |
 | `expire:<table>` | every commit: the time at which every snapshot beyond the newest `max(2, minSnapshots)` is outside the window | a metadata-only commit that drops them all at once (none if a publish already did) |
 
 Each job reads what is due from SQLite and is idempotent, so a repeated or early alarm is
@@ -95,7 +102,7 @@ A hole stops the tenant before it (`gap`, `gapAt`); two segments that overlap st
 both (`corrupt`; the shape of spec/README.md F10); a segment header `v` or `kind`, a change `v` or `kind`, or a file of a table
 this publisher does not know (any table but the five of `LedgerTable`, pinned in `src/log.ts`)
 stops it before that whole segment (`unsupported`, `gapAt` = the segment's first version). The
-span and log tables are known: read, not published, never a stop ("Tables it does not publish"). Nothing after a stop is read, so nothing is ever skipped; the tenant
+span and log tables are known and published ("The span and log tables"). Nothing after a stop is read, so nothing is ever skipped; the tenant
 stays pending and the alarm retries. A newer ledger incarnation makes the publisher diff the
 base's live set (plus the changes after it) against what is published for the tenant. A
 change that does not fit the published state stops the tenant with `inconsistent`: it adds a
@@ -169,40 +176,67 @@ ledger incarnation is re-based, and nothing in it grows with the tenant's size:
 - **What still grows:** `verify` (Not implemented); the changes read per publish from a cursor
   (Risks); one manifest of `manifestTargetEntries` files while it is written.
 
-**Tables it does not publish** (design/DECISIONS.md D64, since 2026-11-19). The ledger lists
-`spans`, `trace_index` and `logs` files (stage 2 of traces and logs, D63). This publisher reads
-them and does not publish them (`UNPUBLISHED_TABLES` in `src/log.ts`; `PUBLISHED_TABLES` is the
-metric pair):
+**The span and log tables** (design/DECISIONS.md D67, since 2026-11-19; the D64 release before it
+read them and did not publish them). `PUBLISHED_TABLES` in `src/log.ts` is every `LedgerTable`;
+`UNPUBLISHED_TABLES` is empty. Each of `spans`, `trace_index` and `logs` is an Iceberg table with
+its own metadata, snapshots, cursor per tenant, expiry deadline and sweep, planned and committed
+by the same code as the metric tables:
 
-- **Never a stop.** A change, a base or a checkpoint naming them is read like any other; the metric
-  tables are planned and committed exactly as before, from the same changes (their files are not
-  the metric tables', so planning passes over them). Only a table no release knows stops a tenant.
-- **Not staged.** A re-base counts their files by table (`rebase.unpublished` in the report) instead
-  of writing them to `stage`; their tombstones go to `stage` as tombstones (a few rows).
-- **Recorded.** After the metric commits, in one SQLite transaction, per tenant and table (storage
-  table `unpublished`, migration 4): the ledger version through which the table was counted, the
-  live files counted, where the count started (`base`: the base or checkpoint of a re-base, so the
-  ledger's own count; `log`: the first change this publisher read naming the table, before which a
-  release that refused these tables cannot have passed one), and when it was first and last named.
-  A row's version is how far its table was counted, so a retried attempt never counts a change twice;
-  a newer incarnation, or a re-base above the row, counts again from the base. A tenant whose metric
-  changes did not apply (`inconsistent`) is left as it was.
-- **Surfaced.** Each publish reports `unpublished: { spans, trace_index, logs }` (files counted) for
-  a tenant that has a record (absent otherwise, so a metric-only report is as before);
-  `unpublished(tenant?)` returns the records; `status(table)` takes any `LedgerTable` and answers
-  `published: false`, no Iceberg state, and the tenants and files counted for these three.
-- **Released.** The files of these tables that a change removes, and the tombstones of them a re-base
-  reads, are recorded in `removed` as removed before they were ever published (`free_at` = now) and
-  `safeToDelete` releases them `deleteGraceMs` later: no snapshot of this publisher can reference
-  them. Without this the janitor's purge, which deletes only what the publisher releases, would keep
-  them for ever and, past 10,000 held back, stop reaching the tenant's metric files. Not while the
-  cell has any object under `{cell}/iceberg/{table}/`: only a newer publisher that publishes the
-  table writes there, and its snapshots may reference them (one list per such table, only in a
-  publish that has a removal of it to record).
-- **Rollout.** `INGEST_SIGNALS` goes on in a deployment with a publisher only once this release is the
-  oldest viz-publisher a rollback can reach; the release before stops every tenant at its first span
-  or log change, metrics included (D64, "The rollout rule"; shown side by side in
-  `test/signals.test.ts`).
+- **Schemas** (`SIGNAL_DEFS` in `src/iceberg.ts`; Iceberg spec "Nested Types" and Appendix C) match
+  the Parquet files of contracts/TRACES.md and LOGS.md column for column, with their nullability:
+  `fixed[16]`/`fixed[8]` ids, `start_time` a `timestamptz`, the attribute maps and `metadata`
+  `map<string, …>` with required values, `events`, `links` and `services` lists of required
+  structs, `hours` a list of required ints, `s_http_response_status_code` a `long` (the files'
+  INT64). `tenant` (and `day` for `trace_index` and `logs`) come first, optional, filled from the
+  partition tuple, as for metrics ("The partition columns"). `spans` has 45 top-level columns and
+  70 field ids, `trace_index` 14 and 19, `logs` 14 and 16.
+- **Field ids** are pinned, never derived: the files' columns 1..N in file order, then the
+  partition columns, then every map key and value, list element and element struct field in order
+  of appearance. `test/golden/formats/iceberg.signal-metadata.v1.json` pins them, and a test
+  requires that across every golden version an id names one column, nested ones included.
+- **Name mapping.** The files carry no field ids, so `schema.name-mapping.default` maps every
+  column, with `fields` for map `key` and `value`, list `element` and the element struct's fields
+  (spec, "Column Projection"). PyIceberg 0.12.0 and DuckDB 2.0.0 apply it to every nested field
+  (Independent readers, below).
+- **Partitions.** `spans`: `identity(tenant)` and `hour(start_time)`, partition field
+  `start_time_hour` (field id 1001), an int of hours since the epoch (spec, "Partition Transforms").
+  Its value is the file's key level `day=D/hour=HH` (`spanHour`): the ledger admits a `spans` file
+  only under the hour its `[minTs, maxTs]` lies in, and the planner checks that again
+  (`spanHourProblem`), from the cursor and in a re-base's `stage`: a file that disagrees stops its
+  tenant (`inconsistent`), nothing of it published. `verify` compares each entry's hour with the
+  key's. The manifest list summarises the hour range; a snapshot's `changed-partition-count`
+  counts (tenant, hour). `trace_index`, `logs`: `identity(tenant)`, `identity(day)`, the key's day.
+- **Manifests.** `spans` manifests use a `manifest_entry` Avro schema whose partition record is
+  `{tenant, start_time_hour}` (`SPANS_MANIFEST_ENTRY_SCHEMA`, golden `iceberg.signal-manifest.v1`);
+  `trace_index` and `logs` use the metric tables' (`{tenant, day}`).
+- **Statistics** per file: record count and size; value counts (= rows) and null counts (= 0) for
+  the required top-level primitive columns only (optional and nested columns: absent, which the
+  spec reads as unknown); bounds (Appendix D) for `spans` `start_unix_nano` (ns) and `start_time`
+  (µs), `trace_index` `min_start_unix_nano` and `max_end_unix_nano`, `logs` `ts`, all from the
+  ledger's `minTs`/`maxTs` (milliseconds, floors) widened to the whole last millisecond, valid and
+  not exact; `service_name` (`spans`, `logs`) from the fragment's `min_name`/`max_name` (for spans
+  a null counts as `""`, still a valid lower bound); `trace_id` (`trace_index`) exact, the
+  fragment's `min_tid`/`max_tid`; split offsets from the fragment. The fragment's 64-bit integers
+  are never read as numbers. Not populated: column sizes, NaN counts, other bounds.
+- **Removals** are released by the snapshot rule, as metric files are (`safeToDelete`); a file
+  removed before it was ever published, one delete grace after the cursor passed it.
+- **The upgrade from the D64 release.** Storage is unchanged (still version 4; no migration). A
+  tenant D64 published has metric cursors and none for the new tables, so the first publish
+  re-bases it once (D55: from the newest checkpoint or the base, streamed into `stage`, about two
+  row writes per live file); the metric tables move on from their own cursors and are committed
+  only if their files changed (the review P-1 path when the checkpoint is above them). D64's
+  `unpublished` records are left alone; `unpublished()` answers `[]`; reports carry no
+  `unpublished` field; `status(table)` answers `published: true` for every table.
+- **A rollback to the D64 release** (the oldest a rollback may reach once `INGEST_SIGNALS` is on,
+  D64's rule) is served: it opens this storage (same version), publishes the metric tables from
+  their cursors, leaves the span and log tables' metadata, cursors and `live` rows alone (it never
+  sweeps or expires them), and releases none of their removed files (its guard: an object exists
+  under `{cell}/iceberg/{table}/`). Rolled forward, this release catches up from those tables'
+  cursors (`test/signals.test.ts`).
+- **Cost.** A publish that moves a tenant's cursors without a commit HEADs the next metadata
+  version of each such table (up to five, three more than before) to check that no other writer
+  is ahead; a `spans` `metadata.json` is about 9.8 kB with one snapshot and a `spans` manifest
+  header 7.8 kB (Measurements).
 
 **Net changes.** A commit holds the difference between what is published and the ledgers'
 live sets after the changes read. A file added and removed between two publications is in
@@ -288,7 +322,7 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   `live_next`, the scratch of a re-base and of a resync, `readableFrom` 1: releases 1 and 2 never
   touch them, and each is emptied by the operation that fills it, so they hold rows only while
   it runs or after an eviction in the middle of it; version 4 adds `unpublished`, the record of the
-  tables read and not published, `readableFrom` 1: releases 1 to 3 neither read nor write it, and
+  tables the D64 release read and did not publish (this release, D67, neither reads nor writes it, and adds no migration), `readableFrom` 1: releases 1 to 3 neither read nor write it, and
   release 3 on this storage is shown to open it, leave it alone and publish, `test/signals.test.ts`). Storage a newer release migrated past what this code may read is refused:
   every method throws `SchemaTooNewError` (message `schema_too_new: …`; its results are reports,
   not status unions, and its future callers, a queue consumer and a cron, retry on an
@@ -310,8 +344,11 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   the contract, and a test requires them to equal the contract's: a version bump in
   `contracts/ledger.ts` fails here until this reader is taught it (readers first, §3.3).
 - **Formats** (`FORMATS` in `src/schema.ts`), pinned by `test/golden/formats/`: a new table's
-  `metadata.json` for both tables (schemas, field ids, partition spec, sort order, name
-  mapping, properties), the Avro schemas of manifests and manifest lists, the cursors object,
+  `metadata.json` for both metric tables (schemas, field ids, partition spec, sort order, name
+  mapping, properties; unchanged by D67, so the file of version 1 still pins them byte for byte),
+  the same for the span and log tables (`iceberg.signal-metadata.v1.json`, added with D67:
+  nested types and every nested id, `hour(start_time)`, nested name mapping), the Avro schemas
+  of manifests and manifest lists, that of a `spans` manifest (`iceberg.signal-manifest.v1.json`), the cursors object,
   an `add_unit` change as the ledger logs it today, and `read.ledger-segment.v1.json`: every
   log object of a scenario written by the current `Ledger` through this test pool (two
   incarnations, a checkpoint, a compaction with `removedFiles`, retention and a unit in one
@@ -325,6 +362,10 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   every golden version and the code, a column keeps its field id and an id names one column.
 
 ## The partition columns
+
+(For the span and log tables the same holds of `tenant`, and of `day` for `trace_index` and
+`logs`; `spans` has no `day` column: its second partition field is `hour(start_time)`, a transform
+of a column the files do hold, which a reader evaluates from a predicate on `start_time`.)
 
 The Parquet files contain neither `tenant` nor `day` (contracts/TABLES.md). The tables
 declare both as **optional** schema columns (`tenant: string`, `day: date`), make them the
@@ -356,40 +397,20 @@ contract change; see "Contract issues").
 
 ## Not implemented
 
-- **Publishing `spans`, `trace_index` and `logs`** (step 2 after D64). They are read, counted and
-  released, not published. What it needs, as found while doing step 1:
-  1. *Schemas.* `src/iceberg.ts` models only primitive columns (`string`, `long`, `double`, `date`).
-     `spans` needs `fixed[16]`/`fixed[8]` ids, `timestamptz` (`start_time`), ten maps
-     (`map<string, string|long|double|boolean>`), two `list<struct<…>>` (`events`, `links`);
-     `trace_index` a `list<struct<…>>` and a `list<int>`; `logs` a `map<string,string>`. Field ids for
-     every element, key and value; `schema.name-mapping.default` with nested `fields` (the files carry
-     no field ids, contract issue 4); optional columns where the contracts say so.
-  2. *Partitions.* `spans`: `identity(tenant)` and `hour(start_time)` (an int of hours since the epoch;
-     the hour is the `hour=HH` level of the key, whose `[minTs, maxTs]` the ledger confines to it);
-     `trace_index` and `logs`: `identity(tenant)`, `identity(day)` as for metrics. Today the manifest
-     Avro schema, `manifestEntry`, `liveFromEntry`, `summarise`, `ManifestInfo` and
-     `manifestListRecord` hard-wire `{tenant, day}`: they need the partition struct per table.
-  3. *Statistics.* `manifestEntry` claims `rows` values and no nulls for every data column, true only
-     for the metric tables; the new tables need counts only for required top-level columns, or none.
-     `statsFor` reads metric index fragments; bounds for `start_time` would come from `minTs`/`maxTs`
-     (milliseconds, floors: valid as micro bounds once widened by 999 µs).
-  4. *Commits.* `TABLE_NAMES` (five tables: five commits, cursors, expiry deadlines, sweeps), and the
-     record and release of D64 replaced by real publication (removals then released by the snapshot
-     rule). A tenant published before has no cursor for the new tables, so the first publish after the
-     upgrade re-bases every tenant once (D55 path; one-time `stage` writes, about two rows a file).
-     The rollback guard of D64 already keeps release N from releasing files of a table N+1 publishes.
-  5. *Files to read back.* Real span and log Parquet: either `tools/fixtures` extended with
-     `viz_storage::encode_spans` / `encode_logs` (Rust; `engine/storage/target` holds a build cache),
-     or flush through `engine/wasm` in the test worker as `janitor/test/signals.test.ts` does.
-  6. *Readers.* `tools/verify_readers.py` extended to the three tables, against the same files viz's
-     own readers read (`engine/storage/readback`): data files equal the ledgers' live sets, rows per
-     tenant and partition, a content hash over nested values from PyIceberg, DuckDB and pyarrow, and
-     pruning by tenant, hour and day. Not known yet, to settle first: whether DuckDB 2.0.0's iceberg
-     extension applies a nested name mapping and the `hour` transform, and whether PyIceberg 0.12.0
-     reads maps and lists of structs through a name mapping.
-  7. *Format and goldens.* New tables' `metadata.json` and manifest schemas pinned
-     (`test/golden/formats/`); the metric tables' bytes unchanged (the counterfactual of
-     `test/signals.test.ts` again).
+- **The span and log tables: what is not done** (D67 publishes them; "The span and log tables").
+  - Compacted span and log files (`compact/`, built by another engineer while this was written:
+    level-1/2 `spans` files per hour, merged `trace_index`, `logs` files with the token filter
+    inside the Parquet object, D65) were not in the read-back: the fixture holds flush files
+    only. They are published the same way (same keys, same tables); whether PyIceberg and DuckDB
+    read a `logs` file with bytes between its last row group and its footer is not shown here.
+  - Schema evolution: a promoted attribute (TRACES.md) or a nested-set column added later is a new
+    schema id, which this release refuses to commit over (`metadataProblem`). It needs a release
+    that evolves the schema.
+  - Exact bounds of `start_unix_nano`, `ts` and the `trace_index` times from the fragment's
+    nanosecond values (read as text), bounds of `end_unix_nano`, `duration_nano`, `stream_id`;
+    counts of optional and nested columns. All need either the fragment read as text or the
+    file's footer.
+  - Readers other than PyIceberg 0.12.0 and DuckDB 2.0.0 (Spark, Trino), and `s3://` reads.
 
 - **`verify` in bounded memory.** The scrubber still replays each tenant's log from its base into
   a map, reads the base segment whole, and holds the table's manifest entries: at the ledger's
@@ -431,7 +452,8 @@ contract change; see "Contract issues").
 ```
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
-npm test             # 111 tests in workerd, 12 files, at most 2 workers; fills export/
+node tools/signal_fixture.mjs <scratch>/sigwork 1 1 6   # writes test/fixtures/signals.json (already committed)
+npm test             # 117 tests in workerd, 15 files, at most 2 workers; fills export/ and export/signals/
 npm run typecheck
 # the re-base at scale (Measurements); one size and variant per process for clean memory figures:
 MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=32 --max-semi-space-size=4" \
@@ -442,10 +464,31 @@ node bench/phases.mjs <scratch>/bench.out <scratch>/rss.log
 python3 -m venv <scratch>/readers-venv
 <scratch>/readers-venv/bin/pip install pyiceberg==0.12.0 duckdb==2.0.0 pyarrow==26.0.1
 <scratch>/readers-venv/bin/python tools/verify_readers.py export
+<scratch>/readers-venv/bin/python tools/verify_signal_readers.py export/signals   # also writes export/signals/readback/
+(cd tools/signals-check && CARGO_TARGET_DIR=<scratch>/signals-check-target cargo build --release -j 2)
+<scratch>/signals-check-target/release/viz-publisher-signals-check export/signals
 MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see "Mutation checks"
 ```
 
-**Last run (2026-11-19, the span and log tables read, D64): 111 passed, 0 failed** (12 files,
+**Last run (2026-11-19, the span and log tables published, D67): 117 passed, 0 failed** (14
+files, `npx vitest run --maxWorkers=2`, 71–90 s with load average 8.5–9 from other builds); `tsc
+--noEmit` clean; `wrangler deploy --dry-run` bundles the production entry (173 KiB, nothing
+uploaded). New: `test/e2e-signals.test.ts` (1), `test/bench-signals.test.ts` (1), three golden
+tests (`iceberg.signal-metadata`, `iceberg.signal-manifest`, the name mapping against the schema)
+and two golden files; `test/signals.test.ts` rewritten (11 tests, the D64 behaviour it tested is
+gone: see "The span and log tables"); changed: three assertions that listed the metric tables'
+cursors or expiries exactly now list all five (`publisher.test.ts` 2, `segments.test.ts` 1). The
+metric readers script on that run's `export/`: **504 checks, 0 failed**, the eight content hashes
+unchanged. The span and log readers (`tools/verify_signal_readers.py export/signals`): **1,454
+checks, 0 failed**; `tools/signals-check`: **1,786 checks, 0 failed** ("Independent readers: the
+span and log tables"). The components that import this one, against these sources: `janitor`,
+`compact`, `stack`, `spikes/s8-managed-catalog` typecheck clean; `stack` `test/publisher.test.ts`,
+`test/triggers.test.ts` and `test/signals.test.ts` 15 passed, 1 skipped (as before); `janitor` 30
+passed, 1 failed (the D64 report assertion: "Needed changes" 9). Not run: the re-base bench (`npm
+run bench`; the re-base now stages span and log files too, which a 300,000-file metric tenant does
+not have), stack's soak, compact's suite (it imports nothing of this component).
+
+Before (2026-11-19, the span and log tables read, D64): **111 passed, 0 failed** (12 files,
 `npx vitest run --maxWorkers=2`, about 25 s); `tsc --noEmit` clean. New: `test/signals.test.ts`
 (10 tests) and the v4 schema golden; changed: three tests of `compat.test.ts` (the unknown table of
 the "newer ledger" rewrite is now `profiles`, since `spans` is known; `unpublished` among the methods
@@ -577,11 +620,83 @@ the partition columns present in its data files, so it is a fault of that extens
 with identity-partitioned tables and not of how these tables are written. Everything else
 attempted was readable.
 
-### Workerd tests (111)
+### Independent readers: the span and log tables
+
+`test/e2e-signals.test.ts` puts real `spans`, `trace_index` and `logs` files into the simulated
+bucket: 48 files (485 kB) that viz's write path made from the OTLP corpus of stack/test (seed 1,
+scale 1: `edge/scripts/otel-corpus.mjs`, posted through edge into the shards of `{pool}/traces`
+and `{pool}/logs`, sealed at 256 KiB, flushed through `engine/wasm`, listed by the ledger: the
+corpus mode of `stack/test/signals.test.ts`, run by `tools/signal_fixture.mjs`; 6 of its 8 traces
+units and 6 of its 35 logs units, to keep the fixture small). Their spans start in four hours (22
+and 23 of 2026-11-18, 0 and 1 of the next day). A real ledger per tenant admits them as flush units
+of two tenants and the publisher publishes four stages: (1) a traces unit and a logs unit per
+tenant; (2) one more each; (3) a third each, then retention of one tenant's first-day logs and the
+other's first-day traces (the third units' first-day files are added and removed between two
+publications and are in no snapshot); (4) the second tenant's ledger loses its storage, rebuilds as
+incarnation 2 and expires its first-day logs: a re-base. Every table verifies at every stage. The
+tables, the data files and `expected.json` (each stage's snapshots and each tenant's live files in
+the ledger's precedence order) go to `export/signals/` with `file://` URIs of their real places.
+
+`tools/verify_signal_readers.py export/signals`, run on 2026-11-19 with PyIceberg 0.12.0 (pyarrow
+26.0.1, `StaticTable.from_metadata`, each file read through `ArrowScan` on its own) and DuckDB 2.0.0
+(iceberg extension `4c0c0874c4`, avro `345c3f4e82`, `iceberg_scan` with the virtual column
+`filename`; a `timestamptz` selected as `epoch_us(…)` because DuckDB's Python conversion of it
+needs `pytz`, not installed here): **1,454 checks, 0 failed** (712 PyIceberg, 718 DuckDB, 24
+content hashes). For each table, each stage by time travel from the final metadata and again by
+opening that stage's own `vN.metadata.json`:
+
+| Check | PyIceberg | DuckDB |
+|---|---|---|
+| The files planned or scanned are exactly the ledgers' live files | `plan_files()` | `filename` |
+| Every row of every file, every column (the attribute maps, `events` and `links` lists of structs, `services`, `hours`, `metadata`, fixed ids, `start_time`), equals what pyarrow reads from that Parquet file directly | yes, with one difference allowed and counted: a null list read as empty (120 of 234 file comparisons) | yes, exactly |
+| `tenant` (and `day`) from the partition tuple, the file's own, never null | yes | yes |
+| A SHA-256 over every row (all columns, sorted, with the tenant) is the same from both readers and from the files | yes | yes |
+| `tenant = X`: exactly X's rows, only X's files | `plan_files()` | `EXPLAIN ANALYZE` "Total Files Read" |
+| `spans`, `start_time` within one UTC hour (each of the four): exactly its rows, only that hour's files | yes | yes (DuckDB applies the `hour` transform: it reads only that hour's files) |
+| `trace_index`, `logs`, `day = D`: exactly its rows, only that day's files | yes | yes |
+| The table directory alone, through `version-hint.text`; `iceberg_metadata`'s live entries | not applicable | yes |
+
+Content hashes (first 12 hex digits; the same from PyIceberg, DuckDB and the files):
+
+| Table | initial | appended | expired | rebased |
+|---|---|---|---|---|
+| `spans` | `9004444cebcc` (266 rows) | `3abd37558ffc` (387) | `f9f738d6df7b` (672) | `f9f738d6df7b` (672) |
+| `trace_index` | `b8e7aa8ced5b` (137) | `12bfe0cebf17` (216) | `18d675984709` (343) | `18d675984709` (343) |
+| `logs` | `e188a49ccaf0` (29) | `7cac60adc4ca` (146) | `ea97c82e54e7` (297) | `77bebaa5aedf` (208) |
+
+**What viz's own readers and the engines read from the same files.** The script then writes, per
+stage and reader, every row it read, file by file, as the logical rows contracts/TRACES.md and
+LOGS.md define (promoted columns and the five residual maps merged into one sorted typed list per
+scope; "other" values cut out of their canonical JSON as `engine/storage` does). `tools/signals-check`
+(Rust, built with `cargo -j 2` into the scratch directory; its span, log and engine code is
+stack/tools/signals-readback's) reads each tenant's live files with viz-storage's readers
+(`read_spans`, `read_trace_index`, `read_logs`) and requires, per file, the same rows; then, with
+duplicates resolved by the ledger's precedence on both sides, runs 30 TraceQL queries through
+viz-traceql over the reader's rows and over viz's rows (also with the engine's pruning), and 18
+LogQL queries through viz-logql over the reader's rows and over the files through `LogSource`
+(pruning by index fragment on and off). Run on 2026-11-19: **1,786 checks, 0 failed**: every file's
+rows equal, for both readers, every stage and both tenants (16 runs); TraceQL 960 answers compared,
+960 identical (394 non-empty); LogQL 576 compared, 576 identical (188 non-empty).
+
+**Teeth.** With one `logs` file removed from one stage of `expected.json` (a copy in the scratch
+directory, `--expected`), the readers script fails 20 checks and exits 1. With one attribute
+removed from one row DuckDB read, `signals-check` fails 3 checks (that file's rows, and two TraceQL
+answers) and exits 1. With mutant V1b (every list element mapped to the next field id), the
+end-to-end test still passes, and the readers script exits 1: PyIceberg cannot read `spans`
+(`KeyError: 'element'`).
+
+**PyIceberg and null lists.** PyIceberg 0.12.0 returns `[]` for a null list. Shown on a table
+PyIceberg wrote itself (an optional `list<struct>` column with a null row reads back as `[]`, a null
+map stays null), so it is the reader's, not these tables'. TRACES.md's logical view and viz's
+reader treat a null and an empty `events` or `links` alike.
+
+### Workerd tests (117)
 
 | Area | Tests |
 |---|---|
-| The span and log tables (`signals.test.ts`, 10) | a tenant with span and log units keeps publishing its metrics (first publication and from its cursor, a log day expired): status `ok`, metric tables exactly the ledger's, no Iceberg object of the other tables, `unpublished` in the report, the records and `status` (`published: false`) equal to the ledger's live counts, `verify` clean, a publish with nothing new counting nothing twice; **byte-identical metric output**: N on the log as written, N on the same log with every span and log file, removal, tombstone and unit taken out, and N-1 (`test/n1/`) on that log, at two stages (units, log and metric expiries, a compaction), with fixed ids and clock; their removed files released after `deleteGraceMs` and not before, acknowledged and forgotten, never a live key; none of `logs` released in a cell with an object under `iceberg/logs/` (a newer publisher's table), `spans` and `trace_index` still released; the tables this reader knows equal the contract's `TABLES`; a re-base from the base of a new incarnation after a ledger storage loss, and from a checkpoint in parts and in one object (their span and log files counted, `rebase.unpublished`, metrics exactly the ledger's, the expired log file among the tombstones released); review P-1 across span and log changes (metric_samples' cursor below the checkpoint, metric_series none): nothing skipped, counts exact; **N and N-1 side by side**: N-1 stops the tenant before the segment of the first span unit, twice, metrics after it unpublished, releases nothing in seven days; N publishes the same log and releases the expired log file; a rollback from N to N-1 on N's storage (version 4, compat 1): N-1 opens it, leaves the version and N's record alone, publishes a metric unit, then stops at the next log unit; rolled forward, N catches up with the counts right, `verify` clean |
+| The span and log tables, published (`signals.test.ts`, 11; D67) | a tenant's `spans`, `trace_index` and `logs` exactly as its ledger lists them, from a first publication and from the cursor (a log day expired: a DELETED entry), every table verified, `status` published, `unpublished()` empty; each live entry against the ledger's file: the `spans` hour = the key's hour = the hour of `minTs` and of `maxTs`, the day of the others, value and null counts for exactly the required primitive columns, the time bounds widened as said, `service_name` and `trace_id` bounds, split offsets; the partition spec with `hour`, the manifest list's hour summary, `changed-partition-count`, the nested name mapping; a publish with nothing new commits nothing; **byte-identical metric output** at two stages (units, log and metric expiries, a compaction) from four publishers with fixed ids and clock: this release on the log as written, this release on the log without span and log changes, the D64 release (`test/d64/`) on the log as written, the release before it (`test/n1/`) on the log without them (and only this release writes the span and log tables, exactly the ledger's); removals released by the snapshot rule (the never-published one after the grace, the published ones only once their last referencing snapshot expired, then the grace; never a live key); a forged `spans` file outside its key's hour stops the tenant (`inconsistent`), nothing of it published; the tables known equal the contract's, all published, metric tables first; **re-base** from the base of a new incarnation (every table by difference), from a checkpoint in parts and in one object (a log tombstone released by the snapshot rule), and review P-1 (`spans` committed, `trace_index` failed, a checkpoint above `spans`' cursor: `spans` re-based by difference); **the upgrade from D64**: D64's storage taken over, every tenant re-based once, the span and log tables published, the metric tables not committed again (byte-identical objects), D64's record left alone, its released log file still released; **D64 and this release side by side**: a rollback to D64 on this release's storage publishes the metrics, leaves the span and log tables' objects, cursors and `live` rows unchanged and releases nothing of them in seven days; rolled forward, this release catches up (a log added and one removed, a span added), verified, and releases the removed log file by the snapshot rule |
+| End to end, span and log tables (`e2e-signals.test.ts`, 1) | real files from the stack's write path under two tenants, four stages (units; more units; units and retention of one tenant's logs and the other's traces, with files added and removed between publications never in any snapshot; a ledger storage loss and a re-base), every table verified at each, the published files equal the ledgers'; dumped for the readers |
+| Measurements, span and log tables (`bench-signals.test.ts`, 1) | Measurements |
 | Avro (6) | round trip across block boundaries, both codecs; empty file; compression; unsafe long and missing field refused; corrupted file refused |
 | Version order and gaps (4) | log applied in order with the cursor recorded in an immutable object; a missing segment stops the tenant, is reported, leaves others alone, stays a hole when it is right after the cursor, and is finished by the alarm once filled; a forged change that does not fit is refused; unknown and invalid tenants |
 | Net changes (3) | a file added and compacted away between publications is in no manifest of any snapshot; 2 tenants with more than 40 ledger versions each published in one commit per table; a backlog larger than one publish is finished from the alarm |
@@ -601,7 +716,7 @@ attempted was readable.
 | Log objects this code does not know (`compat.test.ts`, 7) | five rewrites of one real segment as a newer ledger would write it (header `v` 2, unknown header kind, change `v` 2, unknown change kind, a file of table `profiles`, which no release knows; it was `spans` until this publisher read that table): each stops the tenant before that segment, twice in a row, with the earlier segments published and the later one unread; restored, it catches up. The same for a change object of the first layout. The reader's accept and refuse rules, and its pinned versions equal the contract's |
 | Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment (left by publishing through a `[5, 5]` holding the ledger's own line) finished from the holding segment once a later one exists, without re-applying the change at the cursor; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
 | Triggers (`triggers.test.ts`, 3) | `notify` writes nothing to R2 and publishes nothing, later nudges never push the deadline back; a nudge returns false within its bound from a publisher that is slow (5 s) or refuses, and with none bound; a tenant's day of flushes and a compaction, each nudged, then the alarm settles in 5 runs (sweep, two expiries, mark, delete) to no alarm and no deadline, every remaining metadata object referenced, and 48 idle hours run no alarm and write nothing |
-| Golden formats (`golden.test.ts`, 5) | every format has a file for its version; `metadata.json` of both new tables; field ids permanent across versions; Avro schemas; the cursors object and an `add_unit` change (now read from its segment) |
+| Golden formats (`golden.test.ts`, 8) | every format has a file for its version; `metadata.json` of both new metric tables (unchanged) and of the span and log tables; field ids permanent across versions, nested ones included; for every table the name mapping maps exactly the schema's file columns, nested ones included, to their ids, and `last-column-id` is the largest; Avro schemas (and a `spans` manifest's, `trace_index` and `logs` using the metric one); the cursors object and an `add_unit` change (now read from its segment) |
 | Re-base from checkpoints (`checkpoints.test.ts`, 22) | the real ledger writing parts (format 2): re-based from them, in part order, at most 4 requested ahead, at most 6 R2 operations in flight, no segment at or before the checkpoint read, verified; the same state from parts, from a format-1 checkpoint and from the base: **byte-identical Iceberg objects** (fixed ids and clock); a published tenant re-based on a new incarnation's parts, removing and adding by difference; a staged re-base across many tiny manifests with merges, and SQLite rebuilt from R2 alone equal row for row; a part deleted while the checkpoint is read (`incomplete`, nothing published, retried, published once back); a record changed with its size (bytes), a record dropped with the size made up (files), two parts swapped, a part of another attempt, records out of key order across parts, a manifest that is not one: `corrupt`, nothing published; a newer checkpoint format passed over for the base; the object reset (`ctx.abort()`) while paused at a GET mid-stream, and an R2 failure at a part then `evictDurableObject`: nothing committed, staged rows never used, the next publish complete; six tenants re-basing at once: at most six in flight, each tenant's parts in order and in one run (re-bases take turns); six tenants each with eight segments to read from their cursors: at most six in flight (36 without the slots); a checkpoint's tombstones released; the ledger release before parts (N-1) read from its format-1 checkpoint and then across its storage loss; a base segment that is not alone; golden: the ledger still writes the checked-in checkpoint bytes, which are published, and the segment golden's format-1 checkpoint is re-based from |
 
 ### Mutation checks
@@ -612,7 +727,42 @@ to the copy, runs the suites it names with at most 2 workers, and restores the c
 The shared tree is only read (AGENTS.md). `DRY=1` only checks that every mutant's text occurs
 exactly once in the source.
 
-**Run on 2026-11-19 on the span and log tables (D64): 7 new mutants and S3 again, 8 killed, 0
+**Run on 2026-11-19 on publishing the span and log tables (D67): 12 new mutants and 2 retargeted,
+14 killed, 0 survived** (`node tools/mutants.mjs M9 U2 U2b V1 V1b V2 V3 V3b V3c V4 V4b V5 V6 V7` on a
+copy under the session's scratch directory, `test/signals.test.ts`, and `test/golden.test.ts` for
+V1 and V1b; M9 on `test/publisher.test.ts`). The four asked for: **a wrong field id in a nested
+type** (V1 in the schema, V1b in the name mapping only), **the hour transform off by one** (V2), **a
+span file in the logs table** (V3, V3b, V3c: from a cursor, from the changes after a re-base's
+base, from the base or checkpoint itself), **metric bytes changed** (V4, V4b). M9 (the day off by
+one) and U2b were retargeted at the rewritten partition and planning code, same mutation. U1, U2c,
+U3, U4 and U5 tested D64's reading without publishing and are retired with it: U1 and U3 are now
+no-ops (no table is unpublished), the code U2c, U4 and U5 edit no longer exists.
+
+| # | Mutation | Result (tests failing) | A test that fails |
+|---|---|---|---|
+| V1 | a wrong field id in a nested type: the `name` field of a span event struct takes an unused id (71) | killed (2) | iceberg.signal-metadata: a new table's metadata.json, for the span and log tables |
+| V1b | a wrong field id in a nested type, in the name mapping only: every list element mapped to the id after its own | killed (1; 2 with the name-mapping test added after this run, run again alone) | iceberg.signal-metadata: …; name mapping: for every table, it maps exactly the schema's fields … (and the readers script: PyIceberg cannot read `spans`) |
+| V2 | the hour transform off by one: a `spans` file's `start_time_hour` is the next hour | killed (8) | a tenant's spans, trace_index and logs are published exactly as its ledger lists them, with the partition, counts and bounds of each file |
+| V3 | a span file published into the logs table (from a cursor) | killed (5) | the same |
+| V3b | a span file published into the logs table (a re-base: the changes after its base) | killed (8) | the same |
+| V3c | a span file published into the logs table (a re-base: the files of its base or checkpoint staged as logs files too) | killed (5) | from the base of a new incarnation after the ledger lost its storage: every table by difference |
+| V4 | metric bytes changed: every snapshot summary, the metric tables' too, gains a key | killed (1) | metric publication is byte-identical: this release on the log as written and without span and log changes, the D64 release on the log as written, and N-1 of D64 without them |
+| V4b | metric bytes changed: every manifest's Avro header, the metric tables' too, names its table | killed (1) | the same |
+| V5 | a removed span or log file released at once, not by the snapshot rule (as D64 did) | killed (2) | their removed files are released by the snapshot rule: once no retained snapshot references them, after the delete grace; never a live key |
+| V6 | a re-base stages no span or log files (D64's counting, without the count) | killed (3) | from the base of a new incarnation after the ledger lost its storage: every table by difference |
+| V7 | a `spans` file outside its key's hour is published (the plan-time check removed) | killed (1) | a spans file whose time range is not in its key's hour stops the tenant: nothing of that change is published |
+| U2 | a span file published into the metrics table (from a cursor) | killed (4) | a tenant's spans, trace_index and logs are published exactly as its ledger lists them, … |
+| U2b | a span file published into the metrics table (a re-base: the changes after its base) | killed (8) | the same |
+| M9 | wrong partition value (day off by one; now in `partitionOf`) | killed (29) | applies a log in version order and records the ledger version it reflects |
+
+V4 and V4b are caught only by the byte-identity test: the goldens pin `metadata.json` of a new
+table and the Avro schemas, not snapshot summaries or manifest headers. V1 is caught by the goldens
+and the id checks, not by the readers: a wrong id that the schema and the mapping agree on still
+reads; what it breaks is an id's permanence across releases.
+
+FULL_RUN_PLACEHOLDER
+
+Earlier, **on 2026-11-19 on the span and log tables (D64): 7 new mutants and S3 again, 8 killed, 0
 survived** (`node tools/mutants.mjs U1 U2 U2b U2c U3 U4 U5 S3` on a copy under the session's scratch
 directory; `test/signals.test.ts` for the U mutants, `test/compat.test.ts` for S3). The three asked
 for: **stop on an unknown table** (U1), **a span file published into the metrics table** (U2, U2b,
@@ -765,6 +915,38 @@ A manifest costs about 3.9 kB of header (the schemas) plus about 34 bytes per fi
 snapshot, 5.7 kB with four), so at one commit every 5 minutes and a 24-hour window it is
 about 290 kB per commit (modelled from that slope, not measured).
 
+### Measurements: the span and log tables
+
+Measured here (`test/bench-signals.test.ts`, output `export/bench-signals.json`), in workerd on this
+4-core machine with a simulated R2, two runs on 2026-11-19 with **load average 8.5–10.6** (other
+builds running; the second run inside the full suite); not on Cloudflare. Shaped as the metric
+bench: 10 tenants, 10 flush units each of 100 files over 10 days (`spans`: 10 hours of each day,
+plus one `trace_index` file a day per unit; `logs`: 10 files a day), keys of realistic length and
+entropy, index fragments of the contract's shape; ledger logs written by real Ledger objects; data
+objects not created. `deflate` codec. Ranges are over the two runs.
+
+| Publish | Table | Manifests | Manifest list | Cursors | metadata.json | Metadata bytes | Commit | Whole publish | R2 ops (list / get / head / put) |
+|---|---|---|---|---|---|---|---|---|---|
+| **10,000 `spans` files** + 1,000 `trace_index` files, first publication (110 ledger changes) | `spans` | 386,591 B (1) | 1,603 B | 656 B | 9,809 B | **398.7 kB** | **0.82–1.04 s** | 1.44–1.74 s | 31 / 22 / 15 / 10 |
+| | `trace_index` | 17,492 B (1) | 1,602 B | 662 B | 4,041 B | 23.8 kB | 0.26–0.29 s | | |
+| +1 unit on that table | `spans` | 7,803 B | 1,692 B | 656 B | 10,730 B | 20.9 kB | 40–72 ms | 93–123 ms | 2 / 3 / 5 / 10 |
+| | `trace_index` | 4,846 B | 1,692 B | 662 B | 4,975 B | 12.2 kB | 31–34 ms | | |
+| a day expired for every tenant (1,001 `spans`, 101 `trace_index` files removed) | `spans` | 394,606 B (2, the 10,000-entry one rewritten) | 1,673 B | 656 B | 11,657 B | 408.6 kB | 0.40–0.45 s | 0.62–0.71 s | 21 / 12 / 5 / 12 |
+| | `trace_index` | 22,365 B (2) | 1,673 B | 662 B | 5,916 B | 30.6 kB | 0.13 s | | |
+| **10,000 `logs` files**, first publication (110 ledger changes) | `logs` | 246,961 B (1) | 1,596 B | 635 B | 3,727 B | **252.9 kB** | **0.84–0.97 s** | 1.13–1.38 s | 31 / 21 / 15 / 5 |
+| +1 unit on that table | `logs` | 4,501 B | 1,685 B | 635 B | 4,645 B | 11.5 kB | 32–35 ms | 43–68 ms | 2 / 2 / 5 / 5 |
+| a day expired for every tenant (1,001 files removed) | `logs` | 251,721 B (2) | 1,665 B | 635 B | 5,568 B | 259.6 kB | 0.34–0.53 s | 0.42–0.63 s | 21 / 11 / 5 / 6 |
+
+Per 10,000 files, then: **`spans` about 399 kB of metadata and 0.8–1.0 s of commit, `logs` about
+253 kB and 0.8–1.0 s** (`metric_samples`: 342 kB and 0.5–1.5 s, the table above). Per file a
+`spans` manifest entry is about 38 bytes, a `logs` entry about 24 (the metric samples', 34):
+`spans` entries carry four bounds (two times, `service_name` twice) and ten counted columns, `logs`
+entries four bounds and five counted columns. Fixed costs are larger for `spans`: a manifest's
+header holds the whole schema (7.8 kB, against 3.9 kB for metrics) and `metadata.json` is 9.8 kB
+with one snapshot (2.6 kB for metrics; the schema's 70 field ids and its nested name mapping).
+A `trace_index` entry is about 13 bytes. Every publish HEADs the next metadata version of each
+table whose cursors move, committed or not: five where there were two before D67.
+
 ### Re-base: memory and time
 
 Measured here, in local workerd (`bench/rebase.bench.test.ts`, 2026-11-19, load average 5–11 on
@@ -865,15 +1047,29 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
 ## Risks
 
 - **The rollout rule rests on an operator** (D64). Nothing in the release tooling stops a rollback of
-  viz-publisher below this release after `INGEST_SIGNALS` is on (D46 judges storage, which this
-  release changes only additively). Such a rollback stops every tenant with a span or log change at
-  that change, metrics included, until rolled forward; nothing is lost or deleted.
-- **Counts after a storage loss.** The record of a table counted from the log (`origin: log`) misses
-  files added before this publisher lost its storage (it restarts at the cursors restored from R2),
-  until the tenant's next re-base; the count can then be low, or below zero after removals.
-- **A removal read while a newer publisher's table exists is never released by this release** (the
-  rollback guard of D64). If such an object was put there by mistake, those files stay in R2 until a
-  publisher that publishes the table runs, or an operator deletes them.
+  viz-publisher below the D64 release after `INGEST_SIGNALS` is on (D46 judges storage, which D64
+  and this release change only additively). Such a rollback stops every tenant with a span or log
+  change at that change, metrics included, until rolled forward; nothing is lost or deleted. A
+  rollback to D64 itself is served (see "The span and log tables").
+- **During a rollback to D64, span and log publication stops** (D64 does not publish them) and the
+  removed files of those tables wait (its guard sees this release's tables). Rolled forward, this
+  release catches up from their cursors.
+- **The upgrade re-bases every tenant.** The first publish after deploying this release over D64's
+  storage reads every tenant's newest checkpoint or base and writes every live file to `stage`
+  (about two row writes per file, modelled $0.60 per 300,000-file tenant at $1 per million rows, a
+  price from training knowledge), and at the ledger's limit a re-base took 8–17 s here (CPU on
+  Cloudflare not measured; Risks, "CPU time of a re-base at the limit").
+- **External readers depend on the nested name mapping** and on the projection rule for identity
+  partitions: PyIceberg 0.12.0 and DuckDB 2.0.0 apply both; a reader that ignores the mapping reads
+  no column of these files. PyIceberg 0.12.0 reads a null list (`events`, `links` of a span without
+  them) as an empty list, also on a table it wrote itself; DuckDB and pyarrow read null. The
+  logical view (TRACES.md) treats the two alike.
+- **A `spans` file's partition is its key's hour.** Exact for every file the ledger admits (the
+  ledger and the planner both check it against `minTs`/`maxTs`); a key layout that put a file
+  outside its hour would stop the tenant, not mis-partition it.
+- **Larger metadata.** A `spans` `metadata.json` carries 70 field ids and their name mapping, about
+  9.8 kB with one snapshot, and grows by about 1 kB per retained snapshot as a metric table's; every
+  `spans` manifest repeats the schema in its header (7.8 kB).
 
 - **A change without an index fragment** (a log from before D41, or a contract violation) is
   staged with none in both `stageSink` and `planStaged` (the latter since PR #5's review), so it
@@ -1012,10 +1208,23 @@ In components others own; not edited from here. **1, 2 and 3 are done** (2026-11
      code and its gate are unchanged.)
    - `edge/README.md`, "Needed changes" 2, the publisher item: done as far as passing over (reading)
      the tables; publishing them is not (Not implemented). `INGEST_SIGNALS` follows D64's rule.
-   - `contracts/TRACES.md` and `contracts/LOGS.md`, Status: "Query and publisher paths do not use
-     them yet": the publisher reads them, does not publish them.
+   - `contracts/TRACES.md` and `contracts/LOGS.md`, Status: done with D67 (publication sections
+     added, statuses updated; the only contract edits of this change).
    - `deploy/`: record, with the release that turns `INGEST_SIGNALS` on, that viz-publisher may not be
      rolled back below this release (D64, step 2 of the rule); the tooling cannot check it.
+9. **The span and log tables published (D67), for their owners; not edited from here:**
+   - `janitor/test/signals.test.ts`, "the real publisher reads these tables and does not publish
+     them": it asserts D64's report (`unpublished: { spans: 0, trace_index: 0, logs: 0 }`) and that
+     the publisher releases none of the removed span and log files within its grace. With D67 the
+     report has no `unpublished` field (the assertion fails on that field), and the files, removed
+     before they were ever published in that test, are still held for the delete grace (that part
+     holds). The janitor's code and gate are unchanged. Run against this release (not edited, janitor/
+     is not this change's): 30 passed, 1 failed, that assertion (`toMatchObject` on `unpublished`).
+     The typecheck of `janitor`, `compact`, `stack` and `spikes/s8-managed-catalog` against the new
+     sources is clean.
+   - `deploy/`: no new binding or variable. The rollback floor stays D64's release (D64, step 2).
+   - `stack/` and `edge/` READMEs say the publisher "reads" the span and log tables: it publishes
+     them since D67.
 7. **deploy**: viz-publisher with the streaming re-base must run before, or together with, a
    viz-ingest whose ledger is no longer pinned at 16 MiB (`stack/wrangler.jsonc` no longer pins
    it): readers first. The deploy already deploys viz-publisher before viz-ingest. Rolling
@@ -1057,7 +1266,13 @@ Recorded here because this work could not change `contracts/`, `ledger/`, `engin
    missing required fields. If flush wrote both columns (one distinct value per file, so a
    few bytes with dictionary encoding), they could be required and no reader would depend on
    the projection rule. Proposal to consider, not made.
-4. **No field ids in the Parquet files.** The tables rely on `schema.name-mapping.default`.
+17. **The index fragments of the span and log tables give nanosecond bounds as JSON numbers**
+    (TRACES.md: "a JavaScript reader must not read them as numbers"). So the publisher takes the
+    time bounds from the ledger's milliseconds, widened, valid but not exact, and does not use the
+    fragments' `min_ts`/`max_ts`, `min_dur`/`max_dur` or `sid`. Proposal: decimal strings there, as
+    `EncodedSignalFile.minNs` already is (contracts/engine.ts). Not changed (the engine's format).
+4. **No field ids in the Parquet files.** The tables rely on `schema.name-mapping.default` (for the
+   span and log tables, nested ids included: 70 for `spans`).
    Writing Parquet field ids (`metric_name` 1, `series_id` 2, ... as in `src/iceberg.ts`)
    would remove that dependency. Proposal for `engine/storage`.
 5. **`FileEntry.index` is declared opaque** ("produced and read only by the engine"), yet it

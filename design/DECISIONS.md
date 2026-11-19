@@ -2415,3 +2415,105 @@ change never read the bytes between, so they are unaffected.
 **Would change if.** A Parquet reader viz must support refuses bytes no footer field references;
 filters are wanted for files that are never compacted (flush files); or the ledger gains per-file
 side objects for other reasons.
+
+## D66. Control refuses a pool map whose pool ends in `/traces` or `/logs`; tenant ids stay as they are
+
+**Decision.** `PUT /settings/pool` refuses (422 `invalid`, field `pool`) a pool that ends in
+`/traces` or `/logs`, the suffixes of the derived span and log pools (`DERIVED_SIGNALS`,
+`shard/src/pool.ts`), whichever pool it is. A tenant whose id is `traces` or `logs` can still
+be created and uses the shared pool; it cannot have the dedicated pool `tenant/<id>`, which edge
+would refuse (503 for every signal: `contracts/BATCH.md`, "Streams per signal"; D57, D63).
+
+**Alternatives.** (a) Refuse the tenant ids `traces` and `logs` at `provision` (a change to
+`TENANT_ID`'s meaning in `contracts/ledger.ts`, which every component checks). (b) Give such a
+tenant a dedicated pool under another name (for example `tenant/<id>-t`). (c) Do nothing in
+control, and let edge's refusal show.
+
+**Why.** The narrower rule: (a) would refuse two names that work everywhere on the shared pool,
+and a tenant created before the rule would still exist; the pool rule refuses exactly the maps
+edge refuses for this reason and nothing else, at the moment one is written. (b) needs a second
+naming rule for dedicated pools that every operator and reader must know, for two names. (c)
+publishes a map that turns every one of the tenant's writes into a 503, with nothing in the
+response that says why.
+
+**Would change if.** Dedicated pools stop being named `tenant/<id>` (then the check moves with
+the naming), or another derived pool suffix is added (`DERIVED_SIGNALS` carries it here).
+
+## D67. The publisher publishes `spans`, `trace_index` and `logs` as Iceberg v2 tables of their own: every nested field has a pinned id and a nested name mapping, `spans` is partitioned by `hour(start_time)` with the value taken from the key's hour level, every tenant is re-based once on the upgrade, and the metric tables' bytes do not change
+
+(Written 2026-11-19. Step 2 of publishing traces and logs; step 1 was D64, whose release read the
+tables without publishing them. Replaces D64's "record and release": `publisher/README.md`,
+"The span and log tables".)
+
+**Decision.** `PUBLISHED_TABLES` is every `LedgerTable`, in commit order `metric_samples`,
+`metric_series`, `spans`, `trace_index`, `logs`; each is one Iceberg v2 table per cell with its
+own metadata, snapshots, cursors per tenant, expiry deadline and sweep, under
+`{cell}/iceberg/{table}/`. Schemas match the Parquet files of contracts/TRACES.md and LOGS.md
+column for column (required where the files are, `fixed[16]`/`fixed[8]` ids, `timestamptz`
+`start_time`, maps with required values, lists of required structs and of ints), with `tenant`
+(and `day` for `trace_index` and `logs`) first, optional, filled from the partition tuple, as for
+metrics. Field ids are pinned in `publisher/src/iceberg.ts` (`SIGNAL_DEFS`): the files' columns
+1..N in file order, then the partition columns, then every map key and value, list element and
+struct field in order of appearance; `schema.name-mapping.default` maps every one of them,
+`element`, `key` and `value` included (spec, "Column Projection"), because the files carry no
+field ids. Partition specs: `spans` `identity(tenant)` and `hour(start_time)` (field
+`start_time_hour`, an int of hours since the epoch); `trace_index` and `logs` `identity(tenant)`
+and `identity(day)`. A `spans` file's hour is read from its key (`…/day=D/hour=HH/`, under which
+the ledger admits it only if its `[minTs, maxTs]` lies in that hour) and checked against
+`minTs`/`maxTs` when it is planned: a file that disagrees stops its tenant (`inconsistent`).
+Statistics: value and null counts only for required top-level primitive columns; bounds for the
+time columns from `minTs`/`maxTs` widened by the last millisecond, for `service_name` and
+`trace_id` from the index fragment, never reading its 64-bit integers as numbers. Removals are
+released by the snapshot rule, as metric files are. The first publish after an upgrade from D64's
+release re-bases every tenant once (D55; the new tables have no cursor); the metric tables move on
+from their cursors and are committed only if their files changed. D64's `unpublished` records are
+left alone. New golden formats `iceberg.signal-metadata` and `iceberg.signal-manifest`;
+`viz.format-version` stays 1, so a metric table's `metadata.json` is unchanged.
+
+**Alternatives.** Partitioning `spans`: (a) `identity(day)` plus an optional `hour` int column
+filled from the partition tuple, like `day`: a reader would prune only on a predicate over that
+column, not over `start_time`; (b) `day(start_time)`: a day's 24 hours in one partition, and
+readers filtering an hour read them all. The hour's source: (c) `floor(minTs / 1 h)`, equal to the
+key's hour under the ledger's rule, but `live` keeps no `minTs`, and a rewrite or a resync would
+need it (a storage migration on `live`, which the release before cannot read back through its
+resync's column-less `INSERT … SELECT`). Ids: (d) nested ids right after their parent; (e) field
+ids written into the Parquet files instead of a name mapping (contract issue 4: `engine/storage`'s,
+not this component's). Counts: (f) per-column counts read from each file's footer at publish (a
+range read per file). The upgrade: (g) start the new tables' cursors from D64's `unpublished`
+records: they hold counts, not files. Removals: (h) keep D64's immediate release: wrong once a
+snapshot can reference the file.
+
+**Why.** `hour(start_time)` is the partitioning contracts/TRACES.md and DESIGN §5.1 name, and the
+one a reader can prune with from a time predicate: measured, PyIceberg 0.12.0 and DuckDB 2.0.0
+(iceberg extension `4c0c0874c4`) plan or read only the files of the hour asked for. The key's hour is
+exact for every file the ledger admits and needs no storage; the plan-time check refuses a log that
+breaks the rule rather than publishing a wrong partition. Field ids in a fixed table, golden-pinned
+and checked never to be reused, keep a column's id across releases whatever a later schema adds.
+Re-basing on the upgrade reuses D55's bounded-memory path, which every tenant takes anyway after a
+storage loss; nothing new is written for it. Metric commits first, and unchanged code paths for
+them, keep metric publication byte-identical, which the counterfactual below requires.
+
+**Measured** (here, workerd, `publisher/README.md`): with the same ids and clock, the metric tables'
+Iceberg objects are byte-identical whether published by this release from a log with span and log
+changes, by this release from the same log without them, by D64's release from the log as written,
+or by the release before D64 from the log without them, at two stages. Real span and log files from
+the stack's write path, four stages: PyIceberg and DuckDB read every row and column of every file
+as pyarrow does (1,454 checks, 0 failed; PyIceberg reads a null list as empty, counted), prune by
+tenant, hour and day, and give rows that viz-storage's readers read identically and on which
+viz-traceql and viz-logql answer identically (1,786 checks, 960 TraceQL and 576 LogQL answers, 0
+different). A first publication of 10,000 `spans` files took 1.0 s of commit and 399 kB of metadata,
+10,000 `logs` files 1.0 s and 253 kB (load average about 10).
+
+**Cost of it.** A publish that moves a tenant's cursors without a commit costs one R2 HEAD per
+table (up to five, three more than before) to check that no other writer is ahead. A `spans`
+`metadata.json` is about 9.8 kB with one snapshot (2.6 kB for a metric table: the schema has 70
+field ids and the name mapping all of them), and each of its manifests carries a 7.8 kB header.
+The upgrade re-bases every tenant once: about two `stage` row writes per live file of every table.
+External readers that ignore the name mapping, or the projection rule for identity partitions, see
+nothing or nulls; PyIceberg 0.12.0 shows a span without events as an empty list rather than null.
+
+**Would change if.** `engine/storage` writes Parquet field ids (then the name mapping is a
+fallback only); a promoted attribute is added (a schema change: this release refuses metadata with
+a schema id it did not write, so that needs a release that evolves the schema); compaction of
+`spans` ever merges across hours (then the hour comes from the files' bounds, not the key); or
+readers that matter turn out to ignore the name mapping.

@@ -4,7 +4,7 @@
  * Nothing here does I/O.
  *
  * Five tables: the metric pair (`TABLE_DEFS`, unchanged since the first release: the same bytes)
- * and, since design/DECISIONS.md D65, the span and log tables (`SIGNAL_DEFS`: `spans`,
+ * and, since design/DECISIONS.md D67, the span and log tables (`SIGNAL_DEFS`: `spans`,
  * `trace_index`, `logs`, contracts/TRACES.md and contracts/LOGS.md), with nested types, a field id
  * for every element, key and value, and a nested name mapping. `spans` is partitioned by
  * `identity(tenant)` and `hour(start_time)`; the others by `identity(tenant)` and `identity(day)`.
@@ -32,7 +32,7 @@ import type { AvroSchema } from './avro'
 /**
  * Every table this publisher publishes, in commit order: the metric pair first, so that in every
  * publish their commits come first and are what they were before the span and log tables were
- * published (design/DECISIONS.md D65).
+ * published (design/DECISIONS.md D67).
  */
 export const TABLE_NAMES: readonly LedgerTable[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
 export const METRIC_TABLE_NAMES: readonly Table[] = ['metric_samples', 'metric_series']
@@ -132,7 +132,7 @@ export const partitionSpecFields = (table: LedgerTable) => {
 
 const nameMapping = (table: Table) => TABLE_DEFS[table].data.map((c) => ({ 'field-id': c.id, names: [c.name] }))
 
-// ───────────────────────────── the span and log tables (D65) ─────────────────────────────
+// ───────────────────────────── the span and log tables (D67) ─────────────────────────────
 
 /** Iceberg types (spec, Appendix C "Schemas"). */
 export type IcebergType = 'string' | 'long' | 'int' | 'double' | 'boolean' | 'date' | 'timestamptz' | 'fixed[16]' | 'fixed[8]' | ListType | MapType | StructType

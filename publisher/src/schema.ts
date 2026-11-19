@@ -105,7 +105,7 @@ export const FORMATS = {
   /** The Avro schemas of manifests and manifest lists (Iceberg v2, with their field ids). */
   'iceberg.manifest': 1,
   /**
-   * The same conventions for the span and log tables (`SIGNAL_DEFS`, design/DECISIONS.md D65): their
+   * The same conventions for the span and log tables (`SIGNAL_DEFS`, design/DECISIONS.md D67): their
    * `metadata.json` when new (schemas with nested types and every nested field id, partition specs,
    * `hour(start_time)` for `spans`, sort orders, nested name mapping, properties; `viz.format-version`
    * 1, as the metric tables). Added beside `iceberg.metadata`, which keeps pinning the metric

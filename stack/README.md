@@ -282,7 +282,9 @@ failed** with that `TypeError`; with some on it, 4 of 4 passed.
 **Fix** (the test only): the leftover continues a stream the ledger has logged for the tenant,
 on whichever of the pool's shards it is, and the test asserts that there is one. No assertion
 was weakened and no wait was added. **After**: the same 50 runs (30 at load, 20 pinned):
-AFTER_COUNTS; the scratch variant passed 5 of 5 under both routings.
+**0 failed** (0 of 30, 0 of 20). 50 runs alone cannot rule out a 6.5% failure (that rate passes 50
+runs about 3% of the time), so the routing that failed was also forced: the scratch variant
+passed 5 of 5 under both routings.
 
 **Mutants** (in a scratch copy of the tree, each source restored and compared afterwards;
 against `test/cron.test.ts` and against the scratch variant under both routings):

@@ -73,6 +73,22 @@ describe('golden formats', () => {
     }
   })
 
+  it('name mapping: for every table, it maps exactly the schema\'s fields that the files hold, nested ones included, each to its id', () => {
+    type Mapping = { 'field-id': number; names: string[]; fields?: Mapping[] }
+    const flat = (ms: Mapping[], prefix = ''): [number, string][] =>
+      ms.flatMap((m) => {
+        const name = prefix ? `${prefix}.${m.names[0]}` : m.names[0]!
+        return [[m['field-id'], name] as [number, string], ...flat(m.fields ?? [], name)]
+      })
+    for (const t of TABLE_NAMES) {
+      const meta = emptyMetadata(t, `s3://viz-lake/cell-0/iceberg/${t}`, 'cell-0', UUID, NOW)
+      const mapping = flat(JSON.parse(meta.properties['schema.name-mapping.default']!) as Mapping[])
+      const schema = flattenFields((icebergSchema(t) as { fields: SchemaField[] }).fields).filter(([, n]) => n !== 'tenant' && n !== 'day')
+      expect(mapping.sort((a, b) => a[0] - b[0]), t).toEqual(schema.sort((a, b) => a[0] - b[0]))
+      expect(Math.max(...schema.map(([id]) => id), ...[meta['last-column-id']]), `${t}: last-column-id`).toBe(meta['last-column-id'])
+    }
+  })
+
   it('iceberg.manifest: the Avro schemas of manifests and manifest lists', () => {
     expectGolden(file('iceberg.manifest'), { format: 'iceberg.manifest', version: FORMATS['iceberg.manifest'], entry: MANIFEST_ENTRY_SCHEMA, list: MANIFEST_LIST_SCHEMA })
   })

@@ -109,7 +109,7 @@ The shell loads in at most 200 KB of compressed script. Layout shift stays under
 
 ## Motion
 
-- A press changes state in the next frame, with no transition. Hover eases over `duration-fast`. Things that enter or leave (menus, dialogs) take `duration-slow`. Two curves: `ease` (`cubic-bezier(0.2, 0, 0, 1)`) for everything that moves, and `ease-measured` (linear) for a progress bar moving between two measured values, because easing it would show an acceleration nobody measured. A strip's scroll edge follows the scroll position, not the clock.
+- A press and a hover change state in the next frame, with no transition. **No colour is ever eased** (v8; before, hover eased its fill over `duration-fast`): a change of theme moves every colour at once and must be drawn whole in one frame, and an eased colour would start a transition on every control and show the old theme after the change counts as done (`check.mjs` fails a transition of a colour; `tools/speed.mjs` counts transitions still running when a theme change is drawn: none). `duration-fast` stays a token, for an opacity change that needs one; no component uses it. Things that enter or leave (menus, dialogs) take `duration-slow`. Two curves: `ease` (`cubic-bezier(0.2, 0, 0, 1)`) for everything that moves, and `ease-measured` (linear) for a progress bar moving between two measured values, because easing it would show an acceleration nobody measured. A strip's scroll edge follows the scroll position, not the clock.
 - Animate opacity and position only. Nothing loops, bounces or draws attention to itself. Data never animates into place.
 - Honour `prefers-reduced-motion` by removing transitions.
 

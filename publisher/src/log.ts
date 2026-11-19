@@ -28,7 +28,7 @@
  *                   It holds that set in memory (README, "Not implemented").
  *
  * Tables. Every table the ledger lists (`LedgerTable`) is known here and published
- * (`PUBLISHED_TABLES`): the metric pair, and since design/DECISIONS.md D65 the span and log tables.
+ * (`PUBLISHED_TABLES`): the metric pair, and since design/DECISIONS.md D67 the span and log tables.
  * A re-base stages the files of every table.
  *
  * Refuse, never guess (contracts/COMPATIBILITY.md §3.2): a segment header `v` or `kind`, a change
@@ -274,11 +274,11 @@ export interface BaseInfo {
 
 /**
  * Tables this publisher publishes as Iceberg tables: every table the ledger lists. The metric pair
- * since the first release; the span and log tables since design/DECISIONS.md D65 (the release
+ * since the first release; the span and log tables since design/DECISIONS.md D67 (the release
  * before, D64, read them and did not publish them).
  */
 export const PUBLISHED_TABLES: readonly LedgerTable[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
-/** Tables the ledger lists that this publisher reads and does not publish: none since D65 (D64 had the span and log tables here). */
+/** Tables the ledger lists that this publisher reads and does not publish: none since D67 (D64 had the span and log tables here). */
 export const UNPUBLISHED_TABLES: readonly SignalTable[] = []
 const PUBLISHED: ReadonlySet<string> = new Set<string>(PUBLISHED_TABLES)
 /** Every table a ledger file may belong to, as far as this publisher knows. A file of any other table stops the tenant (`unsupported`). */
@@ -513,7 +513,7 @@ function tombstoneOf(x: unknown, where: string): { key: string; table: LedgerTab
   return { key: t.key, table: t.table as LedgerTable }
 }
 
-/** Files and tombstones on their way to the sink, `BASE_BATCH` per transaction: of every table, since every table is published (D65). */
+/** Files and tombstones on their way to the sink, `BASE_BATCH` per transaction: of every table, since every table is published (D67). */
 class Batches {
   private f: FileEntry[] = []
   private t: { key: string; table: LedgerTable }[] = []
