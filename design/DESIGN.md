@@ -166,7 +166,8 @@ until then. No key is ever accepted by two shards.
    full buffer (the tenant's or the shard's) is 429; too much in flight is refused before
    anything is read or written and answered 503, which every sender retries, and `edge`
    then refuses that tenant's requests before decoding them until the wait has passed
-   (D37).
+   (D37). A new stream whose registration is not yet logged (§4.3) is refused the same
+   way, at once and holding nothing, and answered 503 (D61).
 5. Timestamps outside the **accept window** (per signal, configurable; for example one hour
    back and five minutes ahead for metrics) are rejected with a reason.
 
@@ -204,13 +205,28 @@ wakes no object and sends nothing.
 Every step is idempotent and keyed by a **stream**: `(shard, tenant, incarnation)`.
 Sequence numbers, seals, units, watermarks, discard marks and fingerprints are all per
 stream, so one tenant's ledger being slow never blocks another tenant in the same shard
-and nothing crosses tenants. A shard that loses its storage starts a new incarnation; the
-ledger records the boundary when flush registers it, because rows between the old
-watermark and the loss are gone and that must be visible. (As built, registration happens
-at the new incarnation's first flush, not before it accepts writes, and no alert is raised:
-until then a query that names the old incarnation is refused, and a shard that gets no new
-writes is refused indefinitely. Registering before the first write closes that; it is not
-built. `ledger/README.md`, "Known risks".)
+and nothing crosses tenants.
+
+**Registration before writes** (D61). A stream is new when a tenant first writes to a shard,
+and again when the shard loses its storage and starts a new incarnation. The shard registers
+it with the tenant's ledger and accepts its first write only once the ledger answers that the
+registration is **logged**: in the ledger's R2 log, so no rebuild can lose it. Then every
+plan names every stream that holds acknowledged rows, whatever the ledger loses (a
+registration that is only committed is not enough: a rebuild rolls it back and a query
+misses rows, spec F6(b)). The ledger derives "logged" from its outbox (no pending
+`register_stream` change names it), never from a stored flag, so no rollback leaves it
+stale. Until then the shard refuses the stream's appends at once, holding nothing, and
+registers in the background, one call per stream at a time and a few per shard, so one
+tenant's slow ledger never blocks another; `edge` answers the refusal 503. A stream that
+already holds acknowledged rows (made by an earlier release) keeps accepting while it is
+confirmed. The ledger records the boundary between incarnations (`previousIncarnation`),
+because rows between the old watermark and a loss are gone and that must be visible; no
+alert is raised for it yet. While a tenant's ledger cannot log, its new streams take no
+writes (fails closed, retryable, reported after a minute). A ledger that forgets a logged
+registration is outside the protocol (a lost or replaced log: tenant re-creation, a restore);
+the shard does not re-register then. As built, production turns this on in the release after
+the one in which `edge` maps the refusal (`shard/README.md`, "Rollout"); until then appends
+register lazily, at the stream's first flush.
 
 **Ledger durability** (D36, `contracts/LEDGER-LOG.md`). The ledger commits each change to
 SQLite together with an outbox row and answers; it does not wait for R2. Its alarm writes
@@ -232,10 +248,14 @@ bounded at the largest measured (300 MiB, about 300,000 files; 20 s locally): ab
 Measured on Cloudflare: 234–422 units per second with eight writers, and a rebuild of
 5,008 changes in 5.4 s (`spikes/s4-ledger-scale/`). The orphan sweeper deletes an object only if the
 ledger neither lists nor tombstones it and it can never be listed: a flush file once its
-stream's *logged* watermark covers its sequence range, or once a newer incarnation of the
-stream has a logged unit (so its registration is logged); a compaction output once one of
-its inputs is gone for good, that is, not live and its object already deleted, which
-happens only after a logged removal. A compaction step never deletes an output, not even
+stream's *logged* watermark covers its sequence range, or once a newer incarnation's
+registration is logged (a committed one proves nothing: a rebuild can roll it back, spec
+F15); a compaction output once one of its inputs is gone for good, that is, not live and its
+object already deleted, which happens only after a logged removal. When a flush file waits
+past its grace for a unit of the incarnation the ledger names, the sweeper asks that shard to
+hold a registered stream: a shard that lost the stream registers a fresh incarnation, and the
+old files become dead once that is logged, so nothing leaks after a storage loss even if the
+tenant never writes there again (spec F16; D61). A compaction step never deletes an output, not even
 on conflict, because an identical step may adopt the same object. No clock and no ledger
 rebuild can make the sweeper delete a file that may still become live (D30).
 
@@ -359,7 +379,12 @@ plan (LogQL's vector operations run on the PromQL evaluator, D49). The tenant co
 with label-based access rules. A caller cannot omit it.
 
 1. One call to the tenant's ledger returns the ledger version, the partition index objects
-   for the time range, and the shard watermarks.
+   for the time range, and the shard watermarks. The plan names every stream that holds
+   acknowledged rows (§4.3, registration before writes); the coordinator also asks every
+   shard of the tenant's pool, from sequence 0, for a stream the plan does not name. A shard
+   asked about an incarnation it has lost does not answer "nothing": it starts and registers
+   a fresh one and names it, the coordinator re-plans, and the fresh stream is read from 0
+   (empty). The lost rows are a declared loss; the query finishes (D61).
 2. Index objects are fetched (immutable; cached).
 3. The planner prunes files and row groups by name and time from the index fragments, and
    reads a file as its footer and the row groups needed (byte ranges). When that does not fit
@@ -648,7 +673,7 @@ are never replaced except by a deploy told to (D53).
 | First-load query latency on flat rows | Read-slice spike before any PromQL breadth; chunk-blob rows are the fallback |
 | PromQL compliance is a long tail | Port from the reference with the upstream corpus; publish the supported subset |
 | ~~The ledger admits about one flush unit per second~~ (measured, `spikes/s4-ledger-scale/`) | **Fixed** (D36): it answers after the SQLite commit and logs in batched background segments; 234–422 units per second with eight writers, measured on Cloudflare 2026-11-19 |
-| A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6) | Not fixed. Register a new incarnation with the ledger before the shard accepts its first write (spec F1), across shard, ledger, flush and query |
+| A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6); a stream registered lazily can hide acknowledged rows from a query after a storage loss (F6(b)) | **Built** (D61): a read naming a lost incarnation registers a fresh one; registration logged before a new stream's first write, which production turns on in the release after edge maps the refusal to 503. Cost: about a second before a new stream's first acknowledgement; a tenant whose ledger cannot log takes no writes on new streams |
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
 | A tenant's ledger holds at most 300 MiB of state, about 300,000 live files: memory no longer bounds it (checkpoints in parts, a rebuild that streams; D47), the time a rebuild takes does (20 s here at that size, modelled 20–60 s on Cloudflare, the tenant refused meanwhile) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. The publisher re-bases such a tenant streaming, from its newest checkpoint or its base, in bounded memory (measured at 300,000 files under a capped heap, `publisher/README.md`), so production runs at the full limit since 2026-11-19 (before, 16 MiB) |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |

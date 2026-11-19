@@ -795,9 +795,12 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new; F16 is against D
 
 ## Proposed fixes: registration before writes (F6, F6(b)) and the lost-incarnation leak (F16)
 
-**Status: designed and checked in the explicit-state model only (2026-11-19).** No component
-and no contract has been changed; the contract changes below are proposals for
-`contracts/` (contracts first, in their own commit, AGENTS.md). Configurations: `R1`–`R4`,
+**Status: built (2026-11-19), as R2 with the F16 fix and the review's changes:
+`design/DECISIONS.md` D61; the code and its tests by model trace in `shard/README.md`
+("Registration before writes", "Rollout"), `ledger/`, `flush/` and `janitor/README.md`;
+the review's dispositions in `design/REVIEW.md`. On in production only from the release after
+edge maps the new refusal (`shard/README.md`, "Rollout").** The text below is the proposal as
+it was checked. Configurations: `R1`–`R4`,
 `F16FIX` and `PROPOSED` in `bfs/run.ts`; model options `reg: 'committed'`, `regOnRead`,
 `regOnSweep`, `sweepNewerReg`, `lostEmpty`, `recheck` in `bfs/model.ts` (all optional: every
 configuration recorded before them is unchanged, checked by re-running nine of them, after the last
