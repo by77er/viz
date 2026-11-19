@@ -52,7 +52,9 @@ impl MetaPart {
 /// keeping of each listed series only what `keep` makes of its labels (the
 /// label calls keep names, or one value), so a large listing holds little. Results are
 /// sorted and de-duplicated after `keep`; `max_series` counts series before it. With `part`,
-/// only that part's series; the second value is how many series were listed.
+/// only that part's series; the second value is the `series_id`s of the series listed (one
+/// each), so that listings of several calls (a part's files read in waves) can be counted
+/// exactly together.
 fn listed_as(
     input: &ScanInput<'_>,
     sets: &[&[Matcher]],
@@ -61,7 +63,7 @@ fn listed_as(
     limits: &Limits,
     keep: &dyn Fn(Labels) -> Labels,
     part: Option<MetaPart>,
-) -> Result<(Vec<Labels>, u64), QueryError> {
+) -> Result<(Vec<Labels>, Vec<i64>), QueryError> {
     let mine = |id: i64| part.is_none_or(|p| p.holds(id));
     let compiled: Vec<Vec<CompiledMatcher>> =
         sets.iter().map(|s| s.iter().map(|m| m.compile()).collect::<Result<Vec<_>, _>>()).collect::<Result<_, _>>().map_err(QueryError::from_promql)?;
@@ -82,12 +84,12 @@ fn listed_as(
         let s = seen.borrow();
         sids.iter().any(|x| mine(*x) && !s.contains_key(x))
     };
-    let mut matched: Vec<(Labels, bool)> = Vec::new(); // (labels, listed)
+    let mut matched: Vec<(Labels, i64, bool)> = Vec::new(); // (labels, series_id, listed)
     let mut count = 0u64;
-    let mut list = |slot: u32, matched: &mut Vec<(Labels, bool)>| -> Result<(), QueryError> {
+    let mut list = |slot: u32, matched: &mut Vec<(Labels, i64, bool)>| -> Result<(), QueryError> {
         let e = &mut matched[slot as usize];
-        if !e.1 {
-            e.1 = true;
+        if !e.2 {
+            e.2 = true;
             count += 1;
             if count > limits.max_series {
                 return Err(QueryError::limit(Limit::MaxSeries, limits.max_series, count, "series listed"));
@@ -106,7 +108,7 @@ fn listed_as(
                 None => {
                     let l = catalog::parse_labels(row.labels_json)?;
                     let s = matches(&l).then(|| {
-                        matched.push((keep(l), false));
+                        matched.push((keep(l), row.series_id, false));
                         (matched.len() - 1) as u32
                     });
                     seen.borrow_mut().insert(row.series_id, s);
@@ -138,7 +140,7 @@ fn listed_as(
                 None => {
                     let l: Labels = s.labels.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
                     let x = matches(&l).then(|| {
-                        matched.push((keep(l), false));
+                        matched.push((keep(l), s.series_id, false));
                         (matched.len() - 1) as u32
                     });
                     seen.borrow_mut().insert(s.series_id, x);
@@ -150,10 +152,12 @@ fn listed_as(
             }
         }
     }
-    let mut out: Vec<Labels> = matched.into_iter().filter(|(_, l)| *l).map(|(l, _)| l).collect();
+    debug_assert_eq!(count as usize, matched.iter().filter(|m| m.2).count());
+    let ids: Vec<i64> = matched.iter().filter(|m| m.2).map(|m| m.1).collect();
+    let mut out: Vec<Labels> = matched.into_iter().filter(|m| m.2).map(|m| m.0).collect();
     out.sort_unstable();
     out.dedup();
-    Ok((out, count))
+    Ok((out, ids))
 }
 
 /// Names of all labels (sorted, unique) on series that match `matchers` (none: every
@@ -167,15 +171,15 @@ pub fn label_names_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64
     Ok(label_names_part(input, matchers, min_ts, max_ts, limits, None)?.0)
 }
 
-/// [`label_names_with`] over one part's series (none: every series), with how many series were listed.
-pub fn label_names_part(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max_ts: i64, limits: &Limits, part: Option<MetaPart>) -> Result<(Vec<String>, u64), QueryError> {
+/// [`label_names_with`] over one part's series (none: every series), with the ids of the series listed.
+pub fn label_names_part(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max_ts: i64, limits: &Limits, part: Option<MetaPart>) -> Result<(Vec<String>, Vec<i64>), QueryError> {
     let mut names = BTreeSet::new();
     let keep = |l: Labels| l.into_iter().map(|(n, _)| (n, String::new())).collect();
-    let (listed, count) = listed_as(input, &[matchers], min_ts, max_ts, limits, &keep, part)?;
+    let (listed, ids) = listed_as(input, &[matchers], min_ts, max_ts, limits, &keep, part)?;
     for l in listed {
         names.extend(l.into_iter().map(|(n, _)| n));
     }
-    Ok((names.into_iter().collect(), count))
+    Ok((names.into_iter().collect(), ids))
 }
 
 /// Values of label `name` (sorted, unique) on series that match `matchers` (none: every
@@ -196,7 +200,7 @@ pub fn label_values_with(
     Ok(label_values_part(input, name, matchers, min_ts, max_ts, limits, None)?.0)
 }
 
-/// [`label_values_with`] over one part's series (none: every series), with how many series were listed.
+/// [`label_values_with`] over one part's series (none: every series), with the ids of the series listed.
 pub fn label_values_part(
     input: &ScanInput<'_>,
     name: &str,
@@ -205,14 +209,14 @@ pub fn label_values_part(
     max_ts: i64,
     limits: &Limits,
     part: Option<MetaPart>,
-) -> Result<(Vec<String>, u64), QueryError> {
+) -> Result<(Vec<String>, Vec<i64>), QueryError> {
     let mut values = BTreeSet::new();
     let keep = |l: Labels| l.into_iter().filter(|(n, _)| n == name).collect();
-    let (listed, count) = listed_as(input, &[matchers], min_ts, max_ts, limits, &keep, part)?;
+    let (listed, ids) = listed_as(input, &[matchers], min_ts, max_ts, limits, &keep, part)?;
     for l in listed {
         values.extend(l.into_iter().map(|(_, v)| v));
     }
-    Ok((values.into_iter().collect(), count))
+    Ok((values.into_iter().collect(), ids))
 }
 
 /// Label sets (sorted, unique) of the series that match at least one of `matcher_sets`
@@ -227,8 +231,8 @@ pub fn series_with(input: &ScanInput<'_>, matcher_sets: &[Vec<Matcher>], min_ts:
     Ok(series_part(input, matcher_sets, min_ts, max_ts, limits, None)?.0)
 }
 
-/// [`series_with`] over one part's series (none: every series), with how many were listed.
-pub fn series_part(input: &ScanInput<'_>, matcher_sets: &[Vec<Matcher>], min_ts: i64, max_ts: i64, limits: &Limits, part: Option<MetaPart>) -> Result<(Vec<Labels>, u64), QueryError> {
+/// [`series_with`] over one part's series (none: every series), with the ids of the series listed.
+pub fn series_part(input: &ScanInput<'_>, matcher_sets: &[Vec<Matcher>], min_ts: i64, max_ts: i64, limits: &Limits, part: Option<MetaPart>) -> Result<(Vec<Labels>, Vec<i64>), QueryError> {
     if matcher_sets.is_empty() {
         return Err(QueryError::bad_data("no match[] parameter provided"));
     }

@@ -416,7 +416,15 @@ export class Collector {
 export interface Batch {
   bytes: Uint8Array<ArrayBuffer>
   rows: number
-  /** The `series_id` of each series table entry, in table order: what the shard meters (contracts/BATCH.md). */
+  /**
+   * The `series_id` of each series table entry, in table order: what the shard meters
+   * (contracts/BATCH.md). Absent for span and log batches, which are not metered.
+   */
+  seriesIds?: BigInt64Array
+}
+
+/** A metrics batch: always carries its series ids. */
+export interface MetricBatch extends Batch {
   seriesIds: BigInt64Array
 }
 
@@ -428,7 +436,7 @@ const pad8 = (n: number): number => (n + 7) & ~7
  * holds at least one row). Row order within a slot is arrival order. Rows of a series
  * marked in `skip` are left out (series a shard refused for the active-series limit).
  */
-export function buildBatches(c: Collector, slotOfSeries: ArrayLike<number>, maxBatchBytes: number, skip?: Uint8Array): Map<number, Batch[]> {
+export function buildBatches(c: Collector, slotOfSeries: ArrayLike<number>, maxBatchBytes: number, skip?: Uint8Array): Map<number, MetricBatch[]> {
   const nSeries = c.nSeries
   const counts = new Map<number, number>()
   for (let r = 0; r < c.nRows; r++) {
@@ -448,9 +456,9 @@ export function buildBatches(c: Collector, slotOfSeries: ArrayLike<number>, maxB
   const stamp = new Int32Array(nSeries)
   const local = new Int32Array(nSeries)
   let gen = 0
-  const out = new Map<number, Batch[]>()
+  const out = new Map<number, MetricBatch[]>()
   for (const [slot, { rows }] of rowsOf) {
-    const batches: Batch[] = []
+    const batches: MetricBatch[] = []
     let from = 0
     while (from < rows.length) {
       gen++
@@ -478,7 +486,7 @@ export function buildBatches(c: Collector, slotOfSeries: ArrayLike<number>, maxB
   return out
 }
 
-function encodeBatch(c: Collector, series: number[], rows: Uint32Array, from: number, to: number, local: Int32Array, tableBytes: number): Batch {
+function encodeBatch(c: Collector, series: number[], rows: Uint32Array, from: number, to: number, local: Int32Array, tableBytes: number): MetricBatch {
   const n = to - from
   const idxAt = pad8(16 + tableBytes)
   const tsAt = idxAt + pad8(4 * n)

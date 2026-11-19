@@ -41,25 +41,34 @@ proptest! {
         let big = Limits::default();
         for set in sets() {
             for name in ["job", "inst", "le", "__name__", "nope"] {
-                let (whole, n) = viz_query::label_values_part(&input, name, &set, lo, hi, &big, None).unwrap();
+                let (whole, ids) = viz_query::label_values_part(&input, name, &set, lo, hi, &big, None).unwrap();
+                let n = ids.len();
                 prop_assert_eq!(&whole, &viz_query::label_values_with(&input, name, &set, lo, hi, &big).unwrap());
                 let mut union = BTreeSet::new();
                 let mut sum = 0;
+                let mut all_ids = Vec::new();
                 for part in 0..parts {
                     let (v, c) = viz_query::label_values_part(&input, name, &set, lo, hi, &big, Some(MetaPart { part, parts })).unwrap();
                     union.extend(v);
-                    sum += c;
+                    sum += c.len();
+                    all_ids.extend(c);
                 }
                 prop_assert_eq!(union.into_iter().collect::<Vec<_>>(), whole);
                 prop_assert_eq!(sum, n);
+                // The ids: one per series listed, the same series as the whole's.
+                let (mut a, mut b) = (all_ids, ids);
+                a.sort_unstable();
+                b.sort_unstable();
+                prop_assert_eq!(a, b);
             }
-            let (whole, n) = viz_query::label_names_part(&input, &set, lo, hi, &big, None).unwrap();
+            let (whole, ids) = viz_query::label_names_part(&input, &set, lo, hi, &big, None).unwrap();
+            let n = ids.len();
             let mut union = BTreeSet::new();
             let mut sum = 0;
             for part in 0..parts {
                 let (v, c) = viz_query::label_names_part(&input, &set, lo, hi, &big, Some(MetaPart { part, parts })).unwrap();
                 union.extend(v);
-                sum += c;
+                sum += c.len();
             }
             prop_assert_eq!(union.into_iter().collect::<Vec<_>>(), whole);
             prop_assert_eq!(sum, n);
@@ -67,7 +76,7 @@ proptest! {
                 continue; // `/series` needs a selective set
             }
             // A set that is not selective (`{inst=""}`) is refused, whole and in every part.
-            let Ok((whole, n)) = viz_query::series_part(&input, std::slice::from_ref(&set), lo, hi, &big, None) else {
+            let Ok((whole, ids)) = viz_query::series_part(&input, std::slice::from_ref(&set), lo, hi, &big, None) else {
                 for part in 0..parts {
                     let p = Some(MetaPart { part, parts });
                     let refused = viz_query::series_part(&input, std::slice::from_ref(&set), lo, hi, &big, p).is_err();
@@ -75,11 +84,11 @@ proptest! {
                 }
                 continue;
             };
-            prop_assert_eq!(n as usize, whole.len());
+            prop_assert_eq!(ids.len(), whole.len());
             let mut all = Vec::new();
             for part in 0..parts {
                 let (v, c) = viz_query::series_part(&input, std::slice::from_ref(&set), lo, hi, &big, Some(MetaPart { part, parts })).unwrap();
-                prop_assert_eq!(c as usize, v.len());
+                prop_assert_eq!(c.len(), v.len());
                 all.extend(v);
             }
             let before = all.len();
@@ -107,8 +116,8 @@ fn a_part_is_refused_by_its_own_cap_and_counts_only_its_series() {
         let input = stored.input();
         let one = Limits { max_series: 1, ..Limits::default() };
         assert!(viz_query::label_values_part(&input, "i", &[], T0, T0, &one, None).is_err());
-        let counts: Vec<u64> = (0..8).map(|part| viz_query::label_values_part(&input, "i", &[], T0, T0, &Limits::default(), Some(MetaPart { part, parts: 8 })).unwrap().1).collect();
-        assert_eq!(counts.iter().sum::<u64>(), 4);
+        let counts: Vec<usize> = (0..8).map(|part| viz_query::label_values_part(&input, "i", &[], T0, T0, &Limits::default(), Some(MetaPart { part, parts: 8 })).unwrap().1.len()).collect();
+        assert_eq!(counts.iter().sum::<usize>(), 4);
         // A part with two or more of the four series is refused by a cap of one.
         for (part, c) in counts.iter().enumerate() {
             let r = viz_query::label_values_part(&input, "i", &[], T0, T0, &one, Some(MetaPart { part: part as u32, parts: 8 }));

@@ -1204,31 +1204,43 @@ buckets, or (a)).
 
 (Rewritten the same day: the first version fetched each read whole and bounded only the bytes read;
 a 7-day backtest over 100 series then held about 0.6 GB, which would have killed the Durable Object
-rather than been refused. The windows and the memory budget are new. Their CPU budget is D51.)
+rather than been refused. The windows and the memory budget are new. Their CPU budget is D51.
+Revised after the review of the ruler's pull request: windows sized at the rule's bound were many
+small queries, each re-reading its look-back and files, while only the whole reads were planned.
+Reads are now counted first and cut by the points they hold, and every window is planned as it is
+fetched.)
 
 **Decision.** When an anomaly or SLO rule is created (a new rule key: a new detector, parameter,
 SLI or interval), a warm-up job is stored with it. At the rule's first tick the ruler builds the
 reads its history class needs (the detector's look-back, or an SLO's longest window and compliance
 window) at the rule's interval. It reads them **in time windows, one at a time, in order**,
 feeding each step through the rule's own evaluation and carrying only the rule's state from one
-window to the next, then commits the state rows and the status in one transaction. Windows are
-sized from a memory model (`ruler/src/history.ts` `MEMORY`: the rule's state, its alerts and
-intervals, plus 768 bytes per point of one window at the series bound the rule's evaluation
-enforces) to a budget (16 MiB for a warm-up, 32 MiB for a backtest). Before anything is fetched
-the run is refused when the model cannot fit (the state alone, or one step), when the windows would
-take over 1,000 queries, when viz-query's `/api/v1/plan` sums for the whole reads exceed the cost
-budget (3,000,000 samples and 16 MiB for a warm-up, 20,000,000 and 128 MiB for a backtest), or when
-a plan carries the engine's own refusal. A window holding more points than it was sized for stops
-the run. An engine failure is retried at the next tick while the rule waits (three attempts), then
+window to the next, then commits the state rows and the status in one transaction. Windows fit a
+memory model (`ruler/src/history.ts` `MEMORY`: the rule's state, its alerts and intervals, plus 768
+bytes per point of one window) to a budget (16 MiB for a warm-up, 32 MiB for a backtest). When one
+window per 11,000-step engine piece fits at the series bound the rule's evaluation enforces, the
+windows are the pieces. Otherwise the read is first counted (`count(<expr>)` over the same range and
+step: the series it has at every step) and cut into windows by the points counted. Every query is
+planned with viz-query's `/api/v1/plan` before it is fetched and the sums compared with the cost
+budget (3,000,000 samples and 16 MiB for a warm-up, 20,000,000 and 128 MiB for a backtest): before
+anything is fetched, the whole reads (a lower bound of any windows) and the counts; after the counts,
+before any window, the counts and every window as it will be fetched, or, past 32 windows, each
+contiguous group's plan counted for every window in it (an upper bound: a window reads a subset of
+its group's files). The run is refused when the model cannot fit (the state alone, or one step at
+the bound), when the windows would take over 1,000 queries, when a sum exceeds the budget, or when a
+plan carries the engine's own refusal. A count above the rule's bound, or a window holding more
+points than its count said, stops the run. An engine failure is retried at the next tick while the rule waits (three attempts), then
 the rule starts cold; a refused warm-up starts it cold and says why. Backtests of threshold, anomaly
-and SLO rules take the same path and answer `over_budget` (with the model's peak and budget) before
-fetching; an anomaly or SLO backtest starts with the state a warm-up at `fromMs` would leave.
+and SLO rules take the same path and answer `over_budget` (with the model's peak and budget) having
+fetched nothing or only the counts; an anomaly or SLO backtest starts with the state a warm-up at `fromMs` would leave.
 
 **Alternatives.** (a) Start cold and warm live (as before). (b) Evaluate live at once and merge
 history in later. (c) Fetch what fits the budget and warm partially. (d) No cost budget: the
 engine's own limits refuse what is too large. (e) One budget for warm-ups and backtests. (f) Fetch
 each read whole (the first version of this decision), bounded only by bytes read. (g) Size windows
-by the series a plan estimates or a first window shows, rather than the rule's bound.
+by the series a plan estimates or a first window shows. (h) Size windows at the rule's bound and plan
+only the whole reads (the second version). (i) Plan every window, or a sample of windows scaled by
+their number.
 
 **Why.** (a) leaves a seasonal rule silent for its k periods and an SLO's ticket windows
 meaningless for three days. (b) cannot work for sequential detectors. (c) gives a detector a state
@@ -1237,18 +1249,31 @@ what the tenant pays for an automatic read. (e) warm-ups run by themselves at ev
 is asked for. (f) holds the whole read: measured here, 0.4–0.6 GB for a week of 100 series, and it
 cannot complete under a 128 MB V8 heap limit, where windows sized by the model do (`ruler/README.md`,
 part 13 and "Streaming"). (g) would let one window outgrow the budget by the factor the estimate was
-wrong by (a plan does not see the shards' tail; a series can appear mid-range); the rule's own
-bound is what its evaluation guarantees.
+wrong by (a plan does not see the shards' tail; an alerting expression such as `up == 0` has no
+series until an outage, then hundreds); the count gives every step's series before any window is
+read. (h) made a week of a few series 326 queries for an alerting rule, each re-reading its
+look-back and the files it touched, while only the whole read was compared with the budget:
+`avg_over_time(x[1d])` read each day file about 46 times and the look-back 326 times what was
+planned. (i) a sample's maximum times the number of windows is not a bound unless the sample holds
+the dearest window, which only planning them all shows; planning contiguous groups is a bound
+because the plan grows with its range, and caps the plan requests at 32.
 
-**Cost.** More range queries: an alerting rule's bound is its alert limit (1,000), so a week at 1
-minute takes 326 windows of 31 steps even for one series (a tenant can lower the limit, or use a
-coarser step). The plans price the whole reads, so windows that re-read files at their boundaries
-can cost a little more than planned. A plan request per 11,000-step piece before every run. A new
-rule's first tick waits for its warm-up. 768 bytes a point is calibrated against resident memory in
-local workerd, not measured on Cloudflare.
+**Cost.** A read the bound would cut into windows is scanned once more by its count, so it costs
+about twice its scan plus what its windows re-read (each window reads its own look-back and every
+file it touches: `avg_over_time(x[1d])` over 7 windows of a day reads 2 or 3 day files per window,
+2,800,000 samples where the whole read is 800,000; this is planned, and refused over the budget,
+not estimated). A read of many series is still many windows. Plan requests before a run: one per
+11,000-step piece of each read and of its count, plus at most 32 for the windows (ledger reads,
+10–70 ms each, through the object's one-call gate); past 32 windows the grouped plan can exceed
+what is fetched by up to the group size, refusing runs that would fit. A week at 1 minute of a few
+series is two range queries and two plans (it was 326 queries and one plan); an SLO warm-up with
+two series, three of each (it was six and two). The count and the windows are read at different
+moments; late data between them is allowed up to 10% and a series a step. A new rule's first tick
+waits for its warm-up. 768 bytes a point is calibrated against resident memory in local workerd,
+not measured on Cloudflare.
 
-**Would change if.** The plan reports the tail and a series bound (then windows can be sized by
-what the read returns); viz-query exports an RPC entrypoint that streams results (then one query per
+**Would change if.** The plan reports the tail and the series a read returns at each step (then no
+count query); viz-query exports an RPC entrypoint that streams results (then one query per
 read again); or the Durable Object memory limit changes.
 
 ## D44. MCP clients connect with OAuth served by control: signed stateless registrations, a person approves with an admin key, each grant is backed by an agent key the resource uses downstream, and every request is checked by control
@@ -1545,17 +1570,20 @@ Loki looks wrong (`rate_counter`) but surprises users comparing the two.
 to a tag and would show it), or viz decides a Loki behaviour is a bug worth diverging from; each
 divergence is then listed in the README's "Differences from Loki".
 
-## D51. Warm-ups and backtests are refused on a modelled CPU cost, checked before each window is evaluated; they are not resumed across invocations
+## D51. Warm-ups and backtests are refused on a modelled CPU cost, checked before any window is read; they are not resumed across invocations
 
 **Decision.** A Durable Object invocation (a request, or an alarm) may use 30 s of CPU by default
 and 5 minutes at most (`limits.cpu_ms`); over it the object is reset, not refused
 (`ruler/README.md` part 14 cites the documentation). So the ruler prices every warm-up and backtest
 with a CPU model (`ruler/src/history.ts` `CPU`: µs per point read, by rule kind and, for robust_z
 and seasonal, by the state they keep per series; per window; per run) calibrated in local workerd
-at 1.5 times the largest measurement. Before each window is fed, the run projects its whole cost
-(spent, this window, every remaining step at the most series any window has shown) and stops over
-its budget, keeping nothing: refused after reading the first window, or stopped before the first
-window whose series take it over. Budgets: 20 s for a backtest (its own request); 5 s per alarm
+at 1.5 times the largest measurement. Before any window is read (after the series counts of D43),
+the run projects its whole cost: a counted window at the points its count gave, a window not
+counted at every step holding the rule's bound (it fits one window per engine piece, so at most
+tens of thousands of points), every window's allowance. That is an upper bound, so an allowed run
+is never stopped part-way; over the budget it is refused with only the counts read. (The first
+version projected before each window from the most series seen so far and could stop part-way.)
+Budgets: 20 s for a backtest (its own request); 5 s per alarm
 for all its warm-ups together, each reserving what is left before it reads. A warm-up over the
 whole 5 s is refused and its rule starts cold; one that fits the whole but not what this alarm has
 left waits for the next alarm (no attempt counted) and is then warmed whole there.
@@ -1573,14 +1601,16 @@ second deadline in an object whose single alarm is the tick schedule, and compet
 ticks on one thread; the refusal covers every case measured at 100 series and names its remedy.
 (b) moves the evaluation away from the code live ticks run, which the backtest/live equivalence
 rests on. (c) prices every rule at its bound (1,000 series for an alerting rule) however few series
-it has, refusing most backtests; one window read first counts them. (d) only moves the cliff: a
+it has, refusing most backtests; the counts give the points instead (a short read, not counted, is
+still priced at the bound). (d) only moves the cliff: a
 1,000-series week of EWMA is about 50 s measured, and alarms share their time with ticks. (e) is
 impossible inside workerd: its clocks do not advance during computation, so a run cannot see its
 own CPU.
 
 **Cost.** Useful runs are refused: a week of 1,000 series at 1 minute, and the warm-up of a daily
-seasonal rule over 100 series at 5 minutes, at the defaults. An over-budget run still reads and
-parses one window. The model's prices are calibrated on this machine under load, not on Cloudflare,
+seasonal rule over 100 series at 5 minutes, at the defaults; and a short read of a rule with a
+generous `max_series`, priced at that bound although its series are few. An over-budget long run
+still reads its counts. The model's prices are calibrated on this machine under load, not on Cloudflare,
 and its per-run and per-window allowances are not measured. A warm-up deferred to the next alarm
 delays its rule's first evaluation by an interval.
 

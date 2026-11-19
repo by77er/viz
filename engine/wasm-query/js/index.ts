@@ -284,12 +284,13 @@ export interface QueryEngine {
   /**
    * One part of a label call over leaves (ABI 4): what `labelNames` (`kind` 'names'),
    * `labelValues` ('values', of `name`) or `series` ('series') list of the series whose
-   * `series_id` is in part `part` of `parts`, as the engine wrote it (JSON text), and how many
-   * series were listed: one count per `match[]` set for names and values (one when there is
-   * none), one for series. Parts are disjoint: their listings union to the whole and their
-   * counts add up to the whole's.
+   * `series_id` is in part `part` of `parts`, as the engine wrote it (JSON text), and the
+   * `series_id`s of the series listed: one list per `match[]` set for names and values (one
+   * when there is none), one for series. Parts are disjoint: their listings union to the whole
+   * and their series add up to the whole's. The ids let several calls over a part's files be
+   * counted exactly together (a series is in many files).
    */
-  metaPart(kind: 'names' | 'values' | 'series', input: ScanInput, name: string, match: string[], minTs: number, maxTs: number, part: number, parts: number, limits?: QueryLimits): { json: string; listed: number[] }
+  metaPart(kind: 'names' | 'values' | 'series', input: ScanInput, name: string, match: string[], minTs: number, maxTs: number, part: number, parts: number, limits?: QueryLimits): { json: string; ids: BigInt64Array[] }
   /** Size of the instance's linear memory now, which is also its peak: it only grows. */
   memoryBytes(): number
   /** How many times a WASM instance has been created (1, plus one per trap or reset). */
@@ -666,9 +667,18 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
       const req = new Request().u8(k).limits(limits).i64(time('minTs', minTs)).i64(time('maxTs', maxTs)).count('part', part).count('parts', parts).str(name).strs(match).scan(input)
       return call('viz_q_meta_part', req, (payload) => {
         const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
-        const n = dv.getUint32(0, true)
-        const listed = Array.from({ length: n }, (_, i) => u64At(dv, 4 + 8 * i))
-        return { listed, json: text.decode(payload.subarray(4 + 8 * n)) }
+        const k = dv.getUint32(0, true)
+        let p = 4
+        const ids: BigInt64Array[] = []
+        for (let s = 0; s < k; s++) {
+          const n = dv.getUint32(p, true)
+          p += 4
+          const set = new BigInt64Array(n)
+          for (let i = 0; i < n; i++) set[i] = dv.getBigInt64(p + 8 * i, true)
+          p += 8 * n
+          ids.push(set)
+        }
+        return { ids, json: text.decode(payload.subarray(p)) }
       })
     },
     memoryBytes: () => (x ? x.memory.buffer.byteLength : 0),

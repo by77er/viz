@@ -3,6 +3,7 @@ import { type FetchRange, type FilePlan, type Grid, type LeafBudget, QueryError,
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { hash32 } from '../../shard/src/pool'
 import type { Shard } from '../../shard/src/shard'
+import { Listing } from './meta'
 import { type TailPart, readRests, splitKeyRange } from './tail'
 
 /**
@@ -587,51 +588,83 @@ export class Leaf extends DurableObject<LeafEnv> {
    * the part's tail under `maxBytes`, and list the part's series (engine `metaPart`).
    */
   async meta(req: MetaRequest): Promise<MetaAnswer> {
-    const t0 = performance.now()
     let engineMs = 0
+    const own = <T>(f: () => T): T => {
+      const t = performance.now()
+      try {
+        return f()
+      } finally {
+        engineMs += performance.now() - t
+      }
+    }
     const plans: FilePlan[] = req.files.every((f) => typeof f.index === 'string')
-      ? leafEngine.partPlan(req.files.map((f) => f.index!), req.ranges, req.part, req.parts)
+      ? own(() => leafEngine.partPlan(req.files.map((f) => f.index!), req.ranges, req.part, req.parts))
       : req.files.map(() => ({ rows: null, read: 'whole' as const }))
-    engineMs += performance.now() - t0
-    const wanted = req.files.map((f, i) => ({ f, read: plans[i]!.read })).filter((x) => x.read !== 'skip') as { f: FileRef; read: 'whole' | [number, number][] }[]
-    const fileBytes = wanted.reduce((a, x) => a + planBytes({ rows: null, read: x.read }, x.f.bytes), 0)
-    if (fileBytes > req.maxBytes) return { status: 'too_large', bytes: fileBytes }
-    // The rest of the tail in this part's key range, while the files are read; under what the files leave.
+    const wanted = req.files
+      .map((f, i) => ({ f, read: plans[i]!.read }))
+      .filter((x): x is { f: FileRef; read: 'whole' | [number, number][] } => x.read !== 'skip')
+      .map((x) => ({ ...x, bytes: planBytes({ rows: null, read: x.read }, x.f.bytes) }))
+    // Files go through the engine in waves of at most half the cap, so a part never holds
+    // more than that of them at once, whatever the series files of the window add up to.
+    const wave = Math.max(1, Math.floor(req.maxBytes / 2))
+    const big = wanted.find((x) => x.bytes > req.maxBytes)
+    if (big) return { status: 'too_large', bytes: big.bytes }
+    const waves: (typeof wanted)[] = []
+    for (const x of wanted) {
+      const last = waves[waves.length - 1]
+      if (last && last.reduce((a, y) => a + y.bytes, 0) + x.bytes <= wave) last.push(x)
+      else waves.push([x])
+    }
+    // The rest of the tail in this part's key range, while the files are read: under its own cap.
     const useParts = req.tailParts !== undefined && !leafHooks.ignoreTailParts
-    const tailRead = useParts ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.maxBytes - fileBytes, (batches) => batches) : null
+    const tailRead = useParts ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.maxBytes, (batches) => batches) : null
     tailRead?.catch(() => undefined)
     const stats = { cacheHits: 0, r2Gets: 0, bytesRead: 0 }
-    const items: { i: number; item: ReadItem; length: number }[] = []
-    wanted.forEach(({ f, read }, i) => {
-      if (read === 'whole') items.push({ i, item: { key: f.key }, length: f.bytes })
-      else for (const [offset, length] of read) items.push({ i, item: { key: f.key, offset, length }, length })
-    })
-    const got = await inWaves(items, MAX_READS_PER_CALL, (x) => this.one(x.item, req.cacheTtlS))
-    const parts: { offset: number; bytes: Uint8Array }[][] = wanted.map(() => [])
-    for (let k = 0; k < items.length; k++) {
-      const r = got[k]!
-      const { i, item, length } = items[k]!
-      if (r.status !== 'ok') return { status: 'missing', key: item.key }
-      // A short read would be a silent hole in a file: refuse it (as a missing file: back to the ledger).
-      if (r.bytes.byteLength !== length) return { status: 'missing', key: item.key }
-      if (r.cached) stats.cacheHits++
-      else stats.r2Gets++
-      stats.bytesRead += r.bytes.byteLength
-      parts[i]!.push({ offset: item.offset ?? 0, bytes: r.bytes })
+    const listing = new Listing(req.kind)
+    const list = (input: { seriesFiles: Uint8Array[]; tailBatches: Uint8Array[] }): MetaAnswer | null => {
+      try {
+        listing.add(own(() => leafEngine.metaPart(req.kind, { ...input, sampleFiles: [] }, req.name, req.match, req.start, req.end, req.part, req.parts, req.limits)))
+      } catch (e) {
+        if (e instanceof QueryError) return { status: 'error', errorType: e.errorType, message: e.message, ...(e.limit ? { limit: e.limit } : {}) }
+        throw e
+      }
+      // The cap counts distinct series over every wave (a series is in many files).
+      const n = Math.max(0, ...listing.counts())
+      if (n > req.limits.maxSeries) return { status: 'error', errorType: 'execution', message: `query exceeded limit max_series: ${n} series listed, the limit is ${req.limits.maxSeries}`, limit: { name: 'max_series', max: req.limits.maxSeries, reached: n } }
+      return null
     }
-    const files = wanted.map(({ f, read }, i) => (read === 'whole' ? parts[i]![0]!.bytes : sparseFile(f.bytes, parts[i]!)))
-    const tail = tailRead ? await tailRead : null
-    if (tail && tail.status === 'tail') return tail
-    if (fileBytes + (tail ? tail.batches.reduce((a, b) => a + b.byteLength, 0) : 0) > req.maxBytes) return { status: 'too_large', bytes: fileBytes + (tail ? tail.stats.bytes : 0) }
-    const t1 = performance.now()
     try {
-      const out = leafEngine.metaPart(req.kind, { seriesFiles: files, sampleFiles: [], tailBatches: tail ? tail.batches : req.tails }, req.name, req.match, req.start, req.end, req.part, req.parts, req.limits)
-      engineMs += performance.now() - t1
-      const ok: MetaAnswer = { status: 'ok', json: out.json, listed: out.listed, files: wanted.length, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs: Math.round(engineMs) }
+      for (const group of waves) {
+        const items: { i: number; item: ReadItem; length: number }[] = []
+        group.forEach(({ f, read }, i) => {
+          if (read === 'whole') items.push({ i, item: { key: f.key }, length: f.bytes })
+          else for (const [offset, length] of read) items.push({ i, item: { key: f.key, offset, length }, length })
+        })
+        const got = await inWaves(items, MAX_READS_PER_CALL, (x) => this.one(x.item, req.cacheTtlS))
+        const parts: { offset: number; bytes: Uint8Array }[][] = group.map(() => [])
+        for (let k = 0; k < items.length; k++) {
+          const r = got[k]!
+          const { i, item, length } = items[k]!
+          // Missing, or short (a silent hole): back to the ledger, never listed without it.
+          if (r.status !== 'ok' || r.bytes.byteLength !== length) return { status: 'missing', key: item.key }
+          if (r.cached) stats.cacheHits++
+          else stats.r2Gets++
+          stats.bytesRead += r.bytes.byteLength
+          parts[i]!.push({ offset: item.offset ?? 0, bytes: r.bytes })
+        }
+        const files = group.map(({ f, read }, i) => (read === 'whole' ? parts[i]![0]!.bytes : sparseFile(f.bytes, parts[i]!)))
+        const refused = list({ seriesFiles: files, tailBatches: [] })
+        if (refused) return refused
+      }
+      const tail = tailRead ? await tailRead : null
+      if (tail && tail.status === 'tail') return tail
+      const batches = tail ? tail.batches : req.tails
+      if (batches.length > 0 || waves.length === 0) {
+        const refused = list({ seriesFiles: [], tailBatches: batches })
+        if (refused) return refused
+      }
+      const ok: MetaAnswer = { status: 'ok', json: listing.json(), listed: listing.counts(), files: wanted.length, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs: Math.round(engineMs) }
       return tail ? { ...ok, tail: tail.stats } : ok
-    } catch (e) {
-      if (e instanceof QueryError) return { status: 'error', errorType: e.errorType, message: e.message, ...(e.limit ? { limit: e.limit } : {}) }
-      throw e
     } finally {
       maybeReset()
     }

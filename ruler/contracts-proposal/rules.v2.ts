@@ -395,10 +395,12 @@ export interface BacktestResult {
    */
   warmup?: { reads: { fromMs: number; toMs: number; stepMs: number }[]; points: number } | null
   /**
-   * EXTENDED (with contract version 4). What the engine's plan said before the fetch, summed over the
-   * range queries; and the memory model: the modelled peak, the budget, the steps per window of each
-   * read (fetched and evaluated one window at a time, only the rule's state carried between them)
-   * and the range queries the windows took; and the CPU model's cost of the run and its budget.
+   * EXTENDED (with contract version 4). What the engine's plans said before the fetch, summed over
+   * every range query the run made (a long read's series count, then its windows, each planned as
+   * fetched, or past 32 windows a bound from groups of them); and the memory model: the modelled
+   * peak, the budget, the longest window of each read in steps (fetched and evaluated one window at
+   * a time, only the rule's state carried between them) and the range queries the run made; and the
+   * CPU model's cost of the run and its budget.
    */
   cost?: {
     scanSamples: number
@@ -417,9 +419,9 @@ export type BacktestResponse =
   /**
    * EXTENDED (with contract version 4). Refused before anything was fetched: the engine's plan of the
    * read is over the backtest budget (`RulerLimits.maxBacktest*`), the engine's own limits would
-   * refuse it, or its cost could not be asked. Or refused by the CPU model, after reading the first
-   * window (to count the series) or a later one whose series take the run over its budget: nothing
-   * kept. Never answered with a part of the range.
+   * refuse it, or its cost could not be asked. Or, after a long read's series counts and before any
+   * window, refused by the plans of the windows as they would be fetched, or by the CPU model:
+   * nothing kept. Never answered with a part of the range.
    */
   | {
       status: 'over_budget'

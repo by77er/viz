@@ -18,9 +18,10 @@
 //! ```
 
 pub mod ast;
+// Go's regular expressions (RE2 syntax and semantics) on the regex crate, shared with viz-traceql.
+use viz_goregex as goregex;
 mod error;
 mod eval;
-mod goregex;
 mod ip;
 mod json;
 mod jsonwalk;

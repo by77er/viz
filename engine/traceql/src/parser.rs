@@ -14,11 +14,23 @@ use crate::lexer::{lex, Tok, Token};
 use crate::Error;
 
 pub fn parse(src: &str) -> Result<RootExpr, Error> {
+    parse_measured(src).map(|(root, _)| root)
+}
+
+/// The deepest nesting a query reaches as [`MAX_DEPTH`] counts it: the larger of the
+/// parser's recursion depth and the height of the syntax tree. A query whose nesting is at
+/// most `MAX_DEPTH` is not refused for depth. Used to measure real queries against the
+/// limit (README, "Limits").
+pub fn nesting(src: &str) -> Result<usize, Error> {
+    parse_measured(src).map(|(_, peak)| peak)
+}
+
+fn parse_measured(src: &str) -> Result<(RootExpr, usize), Error> {
     if src.len() > MAX_QUERY_BYTES {
         return Err(Error::Validation { pos: 0, line: 1, col: 1, msg: format!("query longer than {MAX_QUERY_BYTES} bytes") });
     }
     let toks = lex(src)?;
-    let mut p = Parser { src, toks, i: 0, depth: 0, regexes: 0 };
+    let mut p = Parser { src, toks, i: 0, depth: 0, regexes: 0, peak: std::cell::Cell::new(0) };
     if matches!(p.peek(), Tok::Eof) {
         return Err(p.err_here("empty query"));
     }
@@ -32,7 +44,7 @@ pub fn parse(src: &str) -> Result<RootExpr, Error> {
         return Err(p.err_here(format!("unexpected {}", describe(p.peek()))));
     }
     let query = p.convert(node)?;
-    Ok(RootExpr { query, hints })
+    Ok((RootExpr { query, hints }, p.peak.get()))
 }
 
 /// Longest accepted query text.
@@ -53,7 +65,7 @@ pub const MAX_QUERY_BYTES: usize = 128 * 1024;
 /// `MAX_DEPTH` frames of each pass. `tests/limits.rs` runs queries at the limit on a bounded
 /// stack, and `tools/wasm-probe/check.mjs` runs them in the WASM build, where the costliest
 /// needs under 128 KiB of V8's stack and of the module's own (README, Verification, 7).
-pub const MAX_DEPTH: usize = 200;
+pub const MAX_DEPTH: usize = 100;
 
 /// Most regular expressions in one query, and the limits each is compiled with: nesting
 /// (as the regex parser counts it in the pattern: each group, repetition, alternation and
@@ -168,6 +180,8 @@ struct Parser<'a> {
     depth: usize,
     /// Regexes compiled so far (see [`MAX_REGEXES`]).
     regexes: usize,
+    /// Deepest recursion or tree height seen (see [`nesting`]).
+    peak: std::cell::Cell<usize>,
 }
 
 fn describe(t: &Tok) -> String {
@@ -247,6 +261,7 @@ impl<'a> Parser<'a> {
     /// One level of parser recursion down; [`Parser::leave`] goes back up.
     fn enter(&mut self) -> Result<(), Error> {
         self.depth += 1;
+        self.peak.set(self.peak.get().max(self.depth));
         if self.depth > MAX_DEPTH {
             return Err(self.too_deep(self.pos()));
         }
@@ -258,6 +273,7 @@ impl<'a> Parser<'a> {
     /// The height of a new node over children at most `h` high.
     fn grow(&self, h: usize, pos: usize) -> Result<usize, Error> {
         let h = h + 1;
+        self.peak.set(self.peak.get().max(h));
         if h > MAX_DEPTH {
             return Err(self.too_deep(pos));
         }

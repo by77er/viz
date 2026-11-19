@@ -24,6 +24,7 @@ import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
 import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type CardinalityRequest, type MetaAnswer, type MetaRequest, type ReadItem, type ReadResult, type TailRefusal } from './leaf'
+import { byCodePoint, byLabels } from './meta'
 import { type TailBudget, type TailFilter, type TailPart, type TailRead, cutById, readPages, tailEstimate, tailFilter } from './tail'
 
 /** Largest and smallest timestamps storage can hold (contracts/BATCH.md). */
@@ -946,29 +947,6 @@ export interface MetaSpec {
   limits: QueryLimits
 }
 
-/** Code-point order, which is UTF-8 byte order (the engine sorts by bytes); JavaScript's `<` compares UTF-16 units. */
-export function byCodePoint(a: string, b: string): number {
-  const n = Math.min(a.length, b.length)
-  for (let i = 0; i < n; i++) {
-    const x = a.codePointAt(i)!
-    const y = b.codePointAt(i)!
-    if (x !== y) return x - y
-    if (x > 0xffff) i++
-  }
-  return a.length - b.length
-}
-
-/** Label sets in the engine's order: their (name, value) pairs, sorted by name, compared pair by pair; a prefix first. */
-function byLabels(a: Record<string, string>, b: Record<string, string>): number {
-  const pa = Object.entries(a).sort((x, y) => byCodePoint(x[0], y[0]))
-  const pb = Object.entries(b).sort((x, y) => byCodePoint(x[0], y[0]))
-  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
-    const c = byCodePoint(pa[i]![0], pb[i]![0]) || byCodePoint(pa[i]![1], pb[i]![1])
-    if (c !== 0) return c
-  }
-  return pa.length - pb.length
-}
-
 /**
  * The parts' listings of a label call merged as one place lists them: names and values a
  * sorted union, series a sorted concatenation (parts are disjoint in series); the counts of
@@ -1068,8 +1046,13 @@ export async function gatherSeries(c: Context, ranges: FetchRange[], meta: MetaS
       have.clear()
       const pool = leafPoolSize(c.env)
       const most = Math.max(1, Math.min(c.limits.maxLeaves, pool))
+      // Parts by series, as the cardinality report's (each part reads its ids' row groups of
+      // every series file, in waves under its byte cap), and enough that its share of the tail
+      // is under half its cap.
       const est = tailEstimate(tails.reads)
-      const L = hooks.forceLeaves ?? Math.min(most, Math.max(2, Math.ceil((bytes + (tails.over ? est.bytes : tails.bytes)) / (0.5 * c.limits.maxFetchBytes))))
+      const series = seriesEstimate(plans.map((p) => listedFiles.find((f) => f.key === p.f.key)!), plans.map(() => null))
+      c.cost.seriesEstimate = series
+      const L = hooks.forceLeaves ?? Math.min(most, Math.max(2, Math.ceil(Math.max(series, est.series) / c.limits.cardinalitySplitAboveSeries), Math.ceil((tails.over ? est.bytes : tails.bytes) / (0.5 * c.limits.maxFetchBytes))))
       c.cost.execution = 'split'
       c.cost.splitLeaves = L
       const cut = tails.reads.map((r) => cutAll(r.batches.map((b) => b.payload), L))

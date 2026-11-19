@@ -136,9 +136,9 @@ check('labelNames / labelValues / series', engine.labelNames(input, [], 0, T + 1
       for (const x of JSON.parse(n.json)) got.names.add(x)
       for (const x of JSON.parse(v.json)) got.values.add(x)
       got.series.push(...JSON.parse(s.json))
-      sums.names += n.listed[0]
-      sums.values += v.listed[0]
-      sums.series += s.listed[0]
+      sums.names += n.ids[0].length
+      sums.values += v.ids[0].length
+      sums.series += s.ids[0].length
     }
     const same = [...got.names].sort().join() === whole.names.join() && [...got.values].sort().join() === whole.values.join() && got.series.length === whole.series.length && sums.series === whole.series.length && sums.names === sums.series && sums.values === sums.series
     if (!same) ok = false

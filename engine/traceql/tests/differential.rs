@@ -11,7 +11,7 @@ mod common;
 use common::*;
 use std::collections::HashMap;
 use std::fmt::Write;
-use viz_traceql::{query_range, search, AttrValue, MemSource, RangeRequest, SearchRequest, Trace};
+use viz_traceql::{nesting, query_range, search, AttrValue, MemSource, RangeRequest, SearchRequest, Trace};
 
 fn esc(s: &str) -> String {
     let mut o = String::new();
@@ -117,6 +117,15 @@ fn dataset_json(traces: &[Trace]) -> String {
     format!("{{\"resources\":[{}],\"scopes\":[{}],\"spans\":[{}]}}", res.join(","), scopes.join(","), spans.join(","))
 }
 
+/// Keeps the most deeply nested query (as `MAX_DEPTH` counts it) seen so far.
+fn deepen(deepest: &mut (usize, String), q: &str) {
+    if let Ok(n) = nesting(q) {
+        if n > deepest.0 {
+            *deepest = (n, q.to_string());
+        }
+    }
+}
+
 fn env(name: &str, default: u64) -> u64 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
@@ -132,6 +141,8 @@ fn export_differential_cases() {
     let mut datasets = Vec::new();
     let mut cases = Vec::new();
     let mut id = 0;
+    // The deepest nesting of the generated queries viz parses (README, "Limits").
+    let mut deepest = (0usize, String::new());
     for d in 0..ndatasets {
         let o = Opts {
             traces: 10 + (d as usize * 7) % 50,
@@ -149,6 +160,7 @@ fn export_differential_cases() {
             let metrics = qi % 3 == 2;
             if !metrics {
                 let q = g.search_query();
+                deepen(&mut deepest, &q);
                 let req = SearchRequest { limit: 100_000, spans_per_spanset: 100_000, start_unix_nano: 0, end_unix_nano: 0 };
                 let viz = match search(&src, &q, &req) {
                     Ok(r) => r.to_json(),
@@ -160,6 +172,7 @@ fn export_differential_cases() {
                 ));
             } else {
                 let q = g.metrics_query();
+                deepen(&mut deepest, &q);
                 let (step, end_extra) = match g.r.below(4) {
                     0 => (30_000_000_000u64, 0u64),
                     1 => (7_000_000_000, 3_000_000_000),
@@ -186,6 +199,7 @@ fn export_differential_cases() {
             id += 1;
         }
     }
+    eprintln!("deepest nesting of the generated queries: {} levels ({:?})", deepest.0, deepest.1);
     let body = format!("{{\"datasets\":[{}],\"cases\":[{}]}}", datasets.join(","), cases.join(","));
     std::fs::write(&out, body).expect("write cases");
     eprintln!("wrote {} datasets, {} cases to {out}", ndatasets, id);

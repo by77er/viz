@@ -351,7 +351,8 @@ export interface AvroFile<T> {
 }
 
 /** Read an Avro object container file written with the `null` or `deflate` codec. */
-export async function readAvro<T = Record<string, unknown>>(file: Uint8Array): Promise<AvroFile<T>> {
+/** Read an Avro object container file. With `onRecord`, each record goes to it as its block is decoded and none are kept (`records` is empty). */
+export async function readAvro<T = Record<string, unknown>>(file: Uint8Array, onRecord?: (record: T) => void): Promise<AvroFile<T>> {
   const i = new In(file)
   const magic = i.raw(4)
   if (magic.some((b, k) => b !== MAGIC[k])) throw new Error('avro: not an object container file')
@@ -382,7 +383,11 @@ export async function readAvro<T = Record<string, unknown>>(file: Uint8Array): P
     const marker = i.raw(16)
     if (marker.some((b, k) => b !== sync[k])) throw new Error('avro: bad sync marker')
     const block = new In(data)
-    for (let k = 0; k < count; k++) records.push(decode(block, schema) as T)
+    for (let k = 0; k < count; k++) {
+      const r = decode(block, schema) as T
+      if (onRecord) onRecord(r)
+      else records.push(r)
+    }
     if (!block.done) throw new Error('avro: block has trailing bytes')
   }
   return { schema, metadata, records }

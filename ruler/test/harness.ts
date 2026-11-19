@@ -15,6 +15,7 @@ import { HttpError } from '../../edge/src/errors'
 import { snappyDecompress } from '../../edge/src/snappy'
 import { batchFromSingle, permissiveValidator } from '../src/evaluator'
 import type { AlertUpdate, BatchEvaluator, EvalRequest, EvalResult, Evaluator, HistoryPlan, HistoryPlanner, IngestResult, RangeEvaluator, SampleBatch, Sink, Validator } from '../contracts-proposal/rules.v2'
+import { countExpr } from '../src/history'
 import { createApi, type ApiEnv } from '../src/http'
 import { Notifier } from '../src/notifier'
 import { DEFAULT_PLACEMENT, type PlacementLimits } from '../src/placement'
@@ -64,6 +65,11 @@ export interface TenantWorld {
   validate: Validator['check'] | null
   /** The range evaluator backtests use. */
   range: ((promql: string, startMs: number, endMs: number, stepMs: number) => PromMatrix | Promise<PromMatrix>) | null
+  /**
+   * The series a read returns at a step, for the ruler's series counts (`countExpr`); unset = counted
+   * from `range` itself (a bench with many series sets it, so as not to build every window twice).
+   */
+  count: ((promql: string, ts: number) => number) | null
   rangeCalls: [string, number, number, number][]
   /** The engine's plan of a range read (warm-ups and backtests ask it first); unset = a read that costs nothing. Throwing = the engine is unreachable. */
   plan: ((promql: string, startMs: number, endMs: number, stepMs: number) => HistoryPlan) | null
@@ -163,6 +169,7 @@ export function tenantWorld(tenant: string): TenantWorld {
       batchFail: null,
       validate: null,
       range: null,
+      count: null,
       rangeCalls: [],
       plan: null,
       planCalls: [],
@@ -227,7 +234,7 @@ export class TestRuler extends Ruler {
       range: async (promql, startMs, endMs, stepMs) => {
         w.rangeCalls.push([promql, startMs, endMs, stepMs])
         if (!w.range) throw new Error('no range evaluator scripted')
-        return w.range(promql, startMs, endMs, stepMs)
+        return answerRange(w, promql, startMs, endMs, stepMs)
       },
     }
   }
@@ -383,7 +390,7 @@ export class FakeQuery extends WorkerEntrypoint<{ CONFIG: KVNamespace }> {
         const [start, end, step] = [params.start, params.end, params.step].map((x) => Math.round(Number(x) * 1000)) as [number, number, number]
         w.rangeCalls.push([query, start, end, step])
         if (!w.range) return promEnvelope(422, { status: 'error', errorType: 'execution', error: 'no range scripted' })
-        return promEnvelope(200, { status: 'success', data: await w.range(query, start, end, step) })
+        return promEnvelope(200, { status: 'success', data: await answerRange(w, query, start, end, step) })
       }
       return promEnvelope(404, { status: 'error', errorType: 'not_found', error: 'not found' })
     } finally {
@@ -513,3 +520,22 @@ export const api = {
 export default {
   fetch: (req, env) => api.fetch(req, env as unknown as ApiEnv),
 } satisfies ExportedHandler<RulerEnv>
+
+/**
+ * The fake engine's range answer. A series count of a read (`countExpr(read)`, what the ruler asks
+ * before cutting a long read into windows) is answered as the engine would: one series, at each step
+ * the number of series the scripted read has there (none where it has none).
+ */
+async function answerRange(w: TenantWorld, promql: string, startMs: number, endMs: number, stepMs: number): Promise<PromMatrix> {
+  const inner = promql.startsWith('count(') && promql.endsWith(')') ? promql.slice(6, -1) : null
+  if (inner === null || countExpr(inner) !== promql) return w.range!(promql, startMs, endMs, stepMs)
+  const n = new Map<number, number>()
+  if (w.count) {
+    for (let t = startMs; t <= endMs; t += stepMs) n.set(t, w.count(inner, t))
+  } else {
+    const m = await w.range!(inner, startMs, endMs, stepMs)
+    for (const x of m.result) for (const [sec] of x.values) n.set(Math.round(sec * 1000), (n.get(Math.round(sec * 1000)) ?? 0) + 1)
+  }
+  const values: [number, string][] = [...n.entries()].filter(([, c]) => c > 0).sort((a, b) => a[0] - b[0]).map(([t, c]) => [t / 1000, String(c)])
+  return { resultType: 'matrix', result: values.length > 0 ? [{ metric: {}, values }] : [] }
+}

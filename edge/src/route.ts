@@ -2,6 +2,7 @@ import { type PoolMap, shardName, slotFor, tenantSlots, validPoolName } from '..
 import type { AppendResult, Shard } from '../../shard/src/shard'
 import { type Batch, buildBatches, type Collector } from './batch'
 import { HttpError } from './errors'
+import type { Limits } from './limits'
 
 /**
  * Routing and append: rows → one or more `VZB1` batches per shard slot → `Shard.append`.
@@ -16,6 +17,37 @@ export interface RouteEnv {
   CONFIG: KVNamespace
   DEFAULT_POOL?: string
 }
+
+/**
+ * Spans and log records go to shards of their own (contracts/BATCH.md, "Streams per
+ * signal"): the pool `{pool}/traces` or `{pool}/logs`, with the tenant's slots, spread and
+ * epoch. Metrics use the pool itself.
+ */
+export type Signal = 'metrics' | 'traces' | 'logs'
+
+/** The pool map a signal's batches are appended with. 503 if the derived name is not a valid pool name. */
+export function signalMap(map: PoolMap, signal: Signal): PoolMap {
+  if (signal === 'metrics') return map
+  const pool = `${map.pool}/${signal}`
+  if (!validPoolName(pool)) throw new HttpError(503, `the ${signal} pool name derived from ${map.pool} is not a valid pool name`, { 'Retry-After': '30' })
+  return { ...map, pool }
+}
+
+/** What `appendAll` needs of a request's decoded rows: the metrics `Collector`, or a span or log collector. */
+export interface Collected {
+  readonly limits: Limits
+  readonly nRows: number
+  readonly nSeries: number
+  /** Distinct routing keys, and the one of each series (entry, stream). */
+  readonly routes: readonly string[]
+  readonly routeOf: ArrayLike<number>
+  /** The series (entry, stream) of each row. */
+  readonly rowSeries: ArrayLike<number>
+  seriesId(i: number): bigint
+}
+
+/** Batches per slot, from the slot of each series; rows of series marked in `skip` left out. */
+export type BuildBatches = (slotOfSeries: ArrayLike<number>, maxBatchBytes: number, skip?: Uint8Array) => Map<number, Batch[]>
 
 /** Series refused for the tenant's active-series limit. The rest of the request was appended. */
 export interface Limited {
@@ -54,9 +86,9 @@ const hot = new Map<string, number>()
  * Refuse before decoding: 503 with the shards' own Retry-After when every shard the tenant
  * may write to answered `overload` and its wait has not passed. Null otherwise.
  */
-export async function refuseEarly(env: RouteEnv, tenant: string, now = Date.now()): Promise<{ status: 'overloaded'; retryAfterMs: number } | null> {
+export async function refuseEarly(env: RouteEnv, tenant: string, now = Date.now(), signal: Signal = 'metrics'): Promise<{ status: 'overloaded'; retryAfterMs: number } | null> {
   if (hot.size === 0) return null
-  const map = await poolMap(env, tenant)
+  const map = signalMap(await poolMap(env, tenant), signal)
   let until = Infinity
   for (const slot of tenantSlots(map, tenant)) {
     const t = hot.get(shardName(map, slot))
@@ -209,12 +241,12 @@ async function appendSlot(env: RouteEnv, map: PoolMap, tenant: string, slot: num
   return last
 }
 
-async function attempt(env: RouteEnv, map: PoolMap, tenant: string, c: Collector, maxBatchBytes: number, limit: number, skip?: Uint8Array): Promise<{ results: SlotResult[]; batches: number }> {
+async function attempt(env: RouteEnv, map: PoolMap, tenant: string, c: Collected, build: BuildBatches, maxBatchBytes: number, limit: number, skip?: Uint8Array): Promise<{ results: SlotResult[]; batches: number }> {
   // Senders repeat few routing keys, so the slot is computed once per distinct key.
   const slotOfRoute = c.routes.map((key) => slotFor(map, tenant, key))
   const slotOfSeries = new Int32Array(c.nSeries)
   for (let i = 0; i < c.nSeries; i++) slotOfSeries[i] = slotOfRoute[c.routeOf[i]!]!
-  const bySlot = buildBatches(c, slotOfSeries, maxBatchBytes, skip)
+  const bySlot = build(slotOfSeries, maxBatchBytes, skip)
   const share = shardShare(limit, map, tenant)
   let batches = 0
   const pending: Promise<SlotResult>[] = []
@@ -225,20 +257,25 @@ async function attempt(env: RouteEnv, map: PoolMap, tenant: string, c: Collector
   return { results: await Promise.all(pending), batches }
 }
 
-/** Append everything the collector accepted. Resolves only when every shard has answered. */
-export async function appendAll(env: RouteEnv, tenant: string, c: Collector): Promise<Outcome> {
+/**
+ * Append everything the collector accepted. Resolves only when every shard has answered.
+ * Metrics by default; spans and log records pass their signal and their batch builder, and
+ * go to their signal's pool unmetered (their batches carry no `seriesIds`).
+ */
+export async function appendAll(env: RouteEnv, tenant: string, c: Collected, signal: Signal = 'metrics', build?: BuildBatches): Promise<Outcome> {
   if (c.nRows === 0) return { status: 'ok', rows: 0, batches: 0 }
-  let map = await poolMap(env, tenant)
-  const limit = await activeSeriesLimit(env, tenant)
-  let { results, batches } = await attempt(env, map, tenant, c, c.limits.maxBatchBytes, limit)
+  const make: BuildBatches = build ?? ((s, m, k) => buildBatches(c as Collector, s, m, k))
+  let map = signalMap(await poolMap(env, tenant), signal)
+  const limit = signal === 'metrics' ? await activeSeriesLimit(env, tenant) : 0
+  let { results, batches } = await attempt(env, map, tenant, c, make, c.limits.maxBatchBytes, limit)
 
   const stale = results.find((r) => r.status === 'stale_epoch')
   if (stale) {
     // Our map is older than one a shard has seen: fetch it again, once, and re-route.
-    const fresh = await poolMap(env, tenant, true)
+    const fresh = signalMap(await poolMap(env, tenant, true), signal)
     if (fresh.epoch <= map.epoch) return { status: 'unavailable', reason: 'shard map is being updated' }
     map = fresh
-    ;({ results, batches } = await attempt(env, map, tenant, c, c.limits.maxBatchBytes, limit))
+    ;({ results, batches } = await attempt(env, map, tenant, c, make, c.limits.maxBatchBytes, limit))
     if (results.some((r) => r.status === 'stale_epoch')) return { status: 'unavailable', reason: 'shard map is being updated' }
   }
   if (results.some((r) => r.status === 'error')) return { status: 'unavailable', reason: 'shard unavailable' }
@@ -251,7 +288,7 @@ export async function appendAll(env: RouteEnv, tenant: string, c: Collector): Pr
   if (tooLarge.length > 0) {
     for (const r of tooLarge) if (r.status === 'too_large') cap = Math.min(cap, r.maxBytes)
     if (cap >= c.limits.maxBatchBytes) return { status: 'unavailable', reason: 'shard refused the batch size' }
-    ;({ results, batches } = await attempt(env, map, tenant, c, cap, limit))
+    ;({ results, batches } = await attempt(env, map, tenant, c, make, cap, limit))
     // Still refused: a single row does not fit the shard's cap, or the map moved. Either
     // way nothing is acknowledged; the whole request is retryable (contracts/BATCH.md).
     if (results.some((r) => r.status === 'too_large' || r.status === 'stale_epoch')) {
@@ -283,7 +320,7 @@ export async function appendAll(env: RouteEnv, tenant: string, c: Collector): Pr
     for (let i = 0; i < c.nSeries; i++) series += skip[i]!
     for (let r = 0; r < c.nRows; r++) rows += skip[c.rowSeries[r]!]!
     limited = { limit, share: shardShare(limit, map, tenant), current, series, rows }
-    ;({ results, batches } = await attempt(env, map, tenant, c, cap, limit, skip))
+    ;({ results, batches } = await attempt(env, map, tenant, c, make, cap, limit, skip))
     if (results.some((r) => r.status === 'too_large' || r.status === 'stale_epoch')) return { status: 'unavailable', reason: 'shard map is being updated' }
     if (results.some((r) => r.status === 'error')) return { status: 'unavailable', reason: 'shard unavailable' }
   }

@@ -185,9 +185,9 @@ fn regexes_are_bounded_in_nesting_size_and_number() {
 proptest! {
     #![proptest_config(ProptestConfig { cases: cases(), ..ProptestConfig::default() })]
 
-    /// Random stacks of nesting constructs, at random depths up to 15 times the limit, never
+    /// Random stacks of nesting constructs, at random depths up to 30 times the limit, never
     /// crash; whatever is accepted also evaluates on the bounded stack. (In a run of 300
-    /// cases, 126 were accepted and evaluated and 174 refused for depth.)
+    /// cases, 132 were accepted and evaluated and 168 refused for depth.)
     #[test]
     fn random_deep_nesting_never_crashes(
         field in depths(7),
@@ -214,13 +214,13 @@ proptest! {
     }
 }
 
-/// Nesting lengths: up to 25 (the three together then mostly fit within MAX_DEPTH), up to
-/// 70 (around the limit), or up to 3,000 (far past it).
+/// Nesting lengths: up to 12 (the three together then mostly fit within MAX_DEPTH), up to
+/// 35 (around the limit), or up to 3,000 (far past it).
 fn depths(kinds: u8) -> impl proptest::strategy::Strategy<Value = Vec<u8>> {
     use proptest::prelude::Strategy;
     proptest::prop_oneof![
-        2 => proptest::collection::vec(0..kinds, 0..25),
-        1 => proptest::collection::vec(0..kinds, 0..70),
+        2 => proptest::collection::vec(0..kinds, 0..12),
+        1 => proptest::collection::vec(0..kinds, 0..35),
         1 => proptest::collection::vec(0..kinds, 0..3000),
     ]
     .boxed()

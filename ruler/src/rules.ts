@@ -334,7 +334,9 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig, stored?: StoredAno
             if (k in annotations) c.err(`${rp}.annotations.${k}`, `the ${k} annotation is written by the SLO rule`, 'Remove it; use description or summary for your own text.')
           }
           if (monitor?.condition) c.err(`${rp}.monitor.condition`, 'an SLO rule has no threshold condition', 'Remove the condition; the burn-rate alerts decide.')
-          const parsed = parseSloSpec(c, r.slo, `${rp}.slo`, intervalMs, labels, cfg)
+          // A severity label from the group's labels is reported there, not at the rule.
+          const ownSeverity = typeof r.labels === 'object' && r.labels !== null && 'severity' in r.labels
+          const parsed = parseSloSpec(c, r.slo, `${rp}.slo`, intervalMs, labels, cfg, ownSeverity ? `${rp}.labels.severity` : `${gp}.labels.severity`)
           if (!parsed) return
           const rule: SloRuleV2 = {
             kind: 'slo',

@@ -113,6 +113,65 @@ function success(data: string, headers: Record<string, string>, warnings: string
 /** Prometheus' warning when `limit` cut a result (`web/api/v1/api.go`). */
 export const TRUNCATED = 'results truncated due to limit'
 
+/**
+ * A query's `data` (JSON text as the engine wrote it) with at most `limit` series (0: all):
+ * a matrix or vector keeps its first `limit` series, a scalar or string is left alone
+ * (Prometheus: "Doesn't affect scalars or strings but truncates the number of series for
+ * matrices and vectors"). The text is cut between elements of `result`, never parsed, so no
+ * sample value passes through a JavaScript number.
+ */
+export function limitResult(c: Context, data: string, limit: number): string {
+  if (limit <= 0 || !/^\{"resultType":"(matrix|vector)","result":\[/.test(data)) return data
+  const open = data.indexOf('[', data.indexOf('"result":'))
+  let depth = 0
+  let inString = false
+  let elements = 0
+  let cut = -1
+  for (let i = open + 1; i < data.length; i++) {
+    const ch = data[i]
+    if (inString) {
+      if (ch === '\\') i++
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{' || ch === '[') depth++
+    else if (ch === '}' || ch === ']') {
+      if (depth === 0) {
+        // The end of `result`: fewer series than the limit, nothing to cut.
+        return data
+      }
+      depth--
+      if (depth === 0 && ++elements === limit) {
+        cut = i + 1
+        break
+      }
+    }
+  }
+  if (cut < 0) return data
+  // Anything after the limit-th series is dropped up to the end of `result`.
+  let end = cut
+  depth = 0
+  inString = false
+  for (; end < data.length; end++) {
+    const ch = data[end]
+    if (inString) {
+      if (ch === '\\') end++
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{' || ch === '[') depth++
+    else if (ch === '}' || ch === ']') {
+      if (depth === 0) break
+      depth--
+    }
+  }
+  if (end === cut) return data
+  c.warnings = [...(c.warnings ?? []), TRUNCATED]
+  return data.slice(0, cut) + data.slice(end)
+}
+
 /** The first `limit` items of a sorted list (0: all), with Prometheus' warning when some were cut. */
 function truncate<T>(c: Context, list: T[], limit: number): T[] {
   if (limit <= 0 || list.length <= limit) return list
@@ -154,6 +213,7 @@ type Handler = (c: Context, params: URLSearchParams, label: string) => Promise<s
 
 const instant: Handler = async (c, params) => {
   const query = required(params, 'query')
+  const limit = limitParam(params)
   const t = params.get('time')
   const time = t === null || t === '' ? Math.min(Math.max(Date.now(), MIN_TS), MAX_TS) : parseTime('time', t)
   const ranges = c.engine.plan(query, time, time, 1, c.limits)
@@ -168,12 +228,13 @@ const instant: Handler = async (c, params) => {
       return out.json
     },
     split,
-  )
+  ).then((data) => limitResult(c, data, limit))
 }
 
 const range: Handler = async (c, params) => {
   const query = required(params, 'query')
   const { start, end, step } = rangeParams(params)
+  const limit = limitParam(params)
   const ranges = c.engine.plan(query, start, end, step, c.limits)
   const split = splitSpec(c, c.engine.splitPlan(query, c.limits), query, { start, end, step })
   return gather(
@@ -186,7 +247,7 @@ const range: Handler = async (c, params) => {
       return out.json
     },
     split,
-  )
+  ).then((data) => limitResult(c, data, limit))
 }
 
 /**

@@ -616,7 +616,7 @@ pub(crate) fn to_promql(e: &MetricExpr, next: &mut usize) -> Result<String, Erro
         MetricExpr::LabelReplace { inner, dst, replacement, src, regex } => {
             let inner = to_promql(inner, next)?;
             // Go regex semantics: translate before handing the pattern to the Rust engine.
-            let re = crate::goregex::translate(regex).map_err(Error::Eval)?;
+            let re = crate::goregex::translate(regex, true).map_err(|e| Error::Eval(e.to_string()))?;
             format!("label_replace({inner}, {}, {}, {}, {})", prom_str(dst), prom_str(replacement), prom_str(src), prom_str(&re))
         }
     })

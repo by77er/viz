@@ -38,6 +38,16 @@ export interface Limits {
    * `MAX_BATCH_BYTES` (1 MiB, contracts/BATCH.md): the shard answers `too_large` beyond it.
    */
   maxBatchBytes: number
+  /** Spans in one request (OTLP traces). */
+  maxSpans: number
+  /** Log records in one request (OTLP logs, Loki push). */
+  maxLogRecords: number
+  /** Accept window for spans, on their start time. */
+  spanAcceptBackMs: number
+  spanAcceptAheadMs: number
+  /** Accept window for log records, on their timestamp. */
+  logAcceptBackMs: number
+  logAcceptAheadMs: number
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -51,6 +61,12 @@ export const DEFAULT_LIMITS: Limits = {
   acceptBackMs: 60 * 60_000,
   acceptAheadMs: 5 * 60_000,
   maxBatchBytes: CONTRACT.maxBatchBytes,
+  maxSpans: 200_000,
+  maxLogRecords: 200_000,
+  spanAcceptBackMs: 24 * 60 * 60_000,
+  spanAcceptAheadMs: 5 * 60_000,
+  logAcceptBackMs: 24 * 60 * 60_000,
+  logAcceptAheadMs: 5 * 60_000,
 }
 
 let cachedRaw: string | undefined

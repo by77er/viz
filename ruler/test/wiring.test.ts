@@ -236,23 +236,26 @@ describe('rule evaluation through the query API, with a service key from control
     await tick(s)
     const mine = services.calls.slice(from).filter((c) => c.tenant === s.tenant)
     const paths = mine.map((c) => c.path)
-    // Both reads priced first; then fetched window by window; then the tick's one query.
-    expect(paths.slice(0, 2)).toEqual(['/api/v1/plan', '/api/v1/plan'])
+    // Both reads, and the series count of the fine one (its 3 days at the rule's bound, 20 series, would
+    // be cut into windows), priced first; then the count; then each read in one window; then the tick's one query.
+    expect(paths.slice(0, 3)).toEqual(['/api/v1/plan', '/api/v1/plan', '/api/v1/plan'])
     expect(paths.at(-1)).toBe('/api/v1/query')
-    expect(paths.slice(2, -1).every((p) => p === '/api/v1/query_range')).toBe(true)
-    expect(mine.slice(0, 2).map((c) => c.params.step)).toEqual(['3600', '60'])
-    // The windows of each read cover exactly the range its plan priced.
+    expect(paths.slice(3, -1)).toEqual(['/api/v1/query_range', '/api/v1/query_range', '/api/v1/query_range'])
+    expect(mine.slice(0, 3).map((c) => c.params.step)).toEqual(['3600', '60', '60'])
+    expect(mine[2]!.params.query).toBe(`count(${mine[1]!.params.query})`)
+    expect(mine[3]!.params).toMatchObject({ query: mine[2]!.params.query, start: mine[2]!.params.start, end: mine[2]!.params.end })
+    // Each read is fetched as one window covering exactly the range its plan priced: nothing fetched unplanned.
     for (const plan of mine.slice(0, 2)) {
-      const ws = mine.slice(2, -1).filter((c) => c.params.step === plan.params.step)
-      expect([ws[0]!.params.start, ws.at(-1)!.params.end]).toEqual([plan.params.start, plan.params.end])
+      const ws = mine.slice(4, -1).filter((c) => c.params.query === plan.params.query)
+      expect(ws.map((c) => [c.params.start, c.params.end, c.params.step])).toEqual([[plan.params.start, plan.params.end, plan.params.step]])
     }
     const m = (await call(s.monitors.auth, 'GET', `/api/v1/monitors/${created.json.id}`)).json.monitor
-    expect(m.slo.status.warmup).toMatchObject({ status: 'done', plan: { scanSamples: 0, bytesToRead: 0, queries: 2 } })
-    // The engine's plan says a backtest would read too much: refused before any range query.
+    expect(m.slo.status.warmup).toMatchObject({ status: 'done', plan: { scanSamples: 0, bytesToRead: 0, queries: 3 } })
+    // The engine's plan says a backtest would read too much (the coarse read, the fine read and its count, 50M samples each): refused before any range query.
     s.w.plan = () => ({ scanSamples: 50_000_000, bytesToRead: 1 << 20, seriesEstimate: 2, refusal: null })
     const before = services.calls.filter((c) => c.path === '/api/v1/query_range').length
     const bt = await call(s.monitors.auth, 'POST', `/api/v1/monitors/${created.json.id}/backtest`, { fromMs: T0 - 60 * MIN, toMs: T0 })
-    expect([bt.status, bt.json.error.code, bt.json.plan.scanSamples, bt.json.budget.scanSamples]).toEqual([422, 'over_budget', 100_000_000, 20_000_000])
+    expect([bt.status, bt.json.error.code, bt.json.plan.scanSamples, bt.json.budget.scanSamples]).toEqual([422, 'over_budget', 150_000_000, 20_000_000])
     expect(services.calls.filter((c) => c.path === '/api/v1/query_range').length).toBe(before)
   })
 

@@ -33,7 +33,8 @@ for (const [kind, q] of [[0, '{ resource.service.name = "db" && span.http.status
 
 const memoryAfterQueries = inst.exports.memory.buffer.byteLength;
 
-// ---- limits: same shapes and boundaries as tests/common/shapes.rs (MAX_DEPTH = 200).
+// ---- limits: same shapes and boundaries as tests/common/shapes.rs.
+const MAX_DEPTH = 100;
 const MAX_QUERY_BYTES = 128 * 1024;
 const rep = (s, n) => s.repeat(n);
 const S = 0, M = 1; // search, metrics
@@ -82,7 +83,7 @@ const deep = out => out.includes('nested deeper than');
 const limits = {};
 for (const [name, kind, make] of NESTED) {
   let max = 0;
-  for (let n = 1; n <= 202; n++) { if (isErr(attempt(kind, make(n)))) break; max = n; }
+  for (let n = 1; n <= MAX_DEPTH + 2; n++) { if (isErr(attempt(kind, make(n)))) break; max = n; }
   const t = performance.now();
   const at = attempt(kind, make(max));
   const ms = +(performance.now() - t).toFixed(2);

@@ -124,7 +124,8 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
       // The warm-up (first tick) reads in windows; the fake engine builds them in the same isolate,
       // so its CPU is measured alone afterwards (the same windows built again) and taken off.
       const warmTotal = await measure(tick)
-      const calls = w.rangeCalls.slice()
+      // The series counts (one series a step) are not the fake engine's matrices: left out of its CPU.
+      const calls = w.rangeCalls.filter((c) => !c[0].startsWith('count('))
       cache.clear()
       const gen = await measure(() => runInDurableObject(stub, () => calls.reduce((n, [q, a, b, st]) => n + sloMatrix(series, a, b, st).result.length + (q ? 0 : 0), 0)))
       const warm = { cpuMs: warmTotal.cpuMs - gen.cpuMs, windows: calls.length }
@@ -171,6 +172,8 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
         // The fake engine builds each window's matrix when it is asked for it, as viz-query's JSON is parsed in the isolate.
         const make = (q: string, start: number, end: number, step: number): PromMatrix => (q.includes('viz_slo_part') ? sloMatrix(series, start, end, step) : latencyMatrix(series, start, end, step))
         w.range = make
+        // The series a read has at a step, for the ruler's series counts, without building the read twice.
+        w.count = (q) => (q.includes('viz_slo_part') ? 2 * series : series)
         const before = await host(true)
         let res: Awaited<ReturnType<typeof stub.backtest>> | null = null
         const m = await measure(async () => {
@@ -185,7 +188,7 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
           return
         }
         // The fake engine's own CPU: the same windows built again, measured alone.
-        const calls = w.rangeCalls.slice()
+        const calls = w.rangeCalls.filter((c) => !c[0].startsWith('count('))
         const gen = await measure(() => runInDurableObject(stub, () => {
           let n = 0
           for (const [q, a, b, st] of calls) n += make(q, a, b, st).result.length

@@ -488,6 +488,77 @@ const MUTANTS = [
     find: '    partOf[s] = Math.floor((hi * parts + Math.floor((lo * parts) / TWO32)) / TWO32)',
     replace: '    partOf[s] = Math.floor((hi * parts) / TWO32)',
   },
+  // ── 2026-11-19, the label endpoints over leaves and `limit` ──
+  {
+    name: 'The cap on series listed over leaves takes the largest part, not the sum',
+    tests: ['test/meta.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '    const n = answers.reduce((x, a) => x + (a.listed[i] ?? 0), 0)',
+    replace: '    const n = Math.max(0, ...answers.map((a) => a.listed[i] ?? 0))',
+  },
+  {
+    name: 'A part counts a series once per wave of files it is listed in (no exact union)',
+    tests: ['test/meta.test.ts'],
+    file: 'src/meta.ts',
+    find: '      for (let k = 0; k < list.length; k++) into.add(list[k]!)',
+    replace: '      for (let k = 0; k < list.length; k++) into.add(BigInt(into.size))',
+  },
+  {
+    name: 'Each part lists every series (the part is not passed to the engine)',
+    tests: ['test/meta.test.ts'],
+    file: 'src/leaf.ts',
+    find: '        listing.add(own(() => leafEngine.metaPart(req.kind, { ...input, sampleFiles: [] }, req.name, req.match, req.start, req.end, req.part, req.parts, req.limits)))',
+    replace: '        listing.add(own(() => leafEngine.metaPart(req.kind, { ...input, sampleFiles: [] }, req.name, req.match, req.start, req.end, 0, 1, req.limits)))',
+  },
+  {
+    name: 'Names and values merged in UTF-16 order, not code-point (UTF-8) order',
+    tests: ['test/meta.test.ts'],
+    file: 'src/meta.ts',
+    find: '    const x = a.codePointAt(i)!\n    const y = b.codePointAt(i)!',
+    replace: '    const x = a.charCodeAt(i)\n    const y = b.charCodeAt(i)',
+  },
+  {
+    name: 'The parts\' series are concatenated, not sorted',
+    tests: ['test/meta.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '    all.sort(byLabels)',
+    replace: '    all.sort(() => 0)',
+  },
+  {
+    name: 'Series files over maxFetchBytes are read in one place anyway (never over leaves by themselves)',
+    tests: ['test/meta.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '      const leaves = hooks.forceLeaves !== undefined || bytes > c.limits.maxFetchBytes',
+    replace: '      const leaves = hooks.forceLeaves !== undefined',
+  },
+  {
+    name: 'A series file a part cannot read is left out of its listing',
+    tests: ['test/meta.test.ts'],
+    file: 'src/leaf.ts',
+    find: "          if (r.status !== 'ok' || r.bytes.byteLength !== length) return { status: 'missing', key: item.key }",
+    replace: "          if (r.status !== 'ok' || r.bytes.byteLength !== length) return { status: 'ok', json: '[]', listed: [], files: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, engineMs: 0 }",
+  },
+  {
+    name: 'A negative `limit` is accepted (as no limit)',
+    tests: ['test/meta.test.ts'],
+    file: 'src/params.ts',
+    find: "  if (n < 0) throw bad('limit', 'limit must be non-negative')",
+    replace: "  if (n < -1e18) throw bad('limit', 'limit must be non-negative')",
+  },
+  {
+    name: 'A query result is cut one series late',
+    tests: ['test/meta.test.ts'],
+    file: 'src/index.ts',
+    find: '      if (depth === 0 && ++elements === limit) {',
+    replace: '      if (depth === 0 && ++elements === limit + 1) {',
+  },
+  {
+    name: 'A label list cut by `limit` carries no warning',
+    tests: ['test/meta.test.ts'],
+    file: 'src/index.ts',
+    find: '  c.warnings = [...(c.warnings ?? []), TRUNCATED]\n  return list.slice(0, limit)',
+    replace: '  return list.slice(0, limit)',
+  },
 ]
 
 function run(cmd, args, opts = {}) {

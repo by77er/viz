@@ -354,8 +354,13 @@ contract change; see "Contract issues").
 ```
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
-npm test             # 77 tests in workerd, 9 files, at most 2 workers; fills export/
+npm test             # 98 tests in workerd, 10 files, at most 2 workers; fills export/
 npm run typecheck
+# the re-base at scale (Measurements); one size and variant per process for clean memory figures:
+MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=32 --max-semi-space-size=4" \
+  BENCH_SIZES=300000 BENCH_VARIANTS=parts RSS_LOG=<scratch>/rss.log \
+  node ../ledger/bench/rss.mjs -- npm run bench -- --silent=false > <scratch>/bench.out
+node bench/phases.mjs <scratch>/bench.out <scratch>/rss.log
 # the readers, in a scratch virtualenv (versions as measured):
 python3 -m venv <scratch>/readers-venv
 <scratch>/readers-venv/bin/pip install pyiceberg==0.12.0 duckdb==2.0.0 pyarrow==26.0.1
@@ -363,7 +368,27 @@ python3 -m venv <scratch>/readers-venv
 MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see "Mutation checks"
 ```
 
-Last run (2026-11-19, segment reader and triggers): **77 passed, 0 failed**; `tsc --noEmit`
+**Last run (2026-11-19, the streaming re-base): 98 passed, 0 failed** (10 files, `npx vitest run
+--maxWorkers=2`); `tsc --noEmit` clean; the readers script on that run's export: **504 checks, 0
+failed**, every content hash as in the table under "Independent readers" (the re-based stage
+included). Against `ledger/src/ledger.ts` as on disk that day (checkpoints in parts, D47) and
+the frozen release before it (`ledger/bench/before/`). `deploy/`'s `node --test
+test/configure.test.mjs` (which requires `stack/wrangler.jsonc` and `wrangler.test.jsonc` to
+differ only as it allows) passed 20 of 20 after the pin was removed from both. `stack/`'s own
+suite was not run for this change (its tenants are small; it imports nothing changed here).
+
+What changed in the tests besides the new file: `TestPublisher` gained a probe under the store
+(R2 operations in flight, the order of GETs, a pause, a failure or a deletion at a GET), fixed
+ids and clock, `ctx.abort()`, and the `stage`/`live_next` row counts; the test worker binds the
+ledger release before checkpoints in parts (`LEDGER_BEFORE`). Because a re-base now starts from
+the newest checkpoint, four tests about how SEGMENTS are read (a hole; a segment, change or file
+of a newer version, five cases; a backlog read change by change) drop the checkpoints from their
+copy of the log (`dropCheckpoints`), with a comment saying why; two that compared a report
+exactly also expect its new `rebase` field; "never reads a checkpoint, even an unreadable one"
+is replaced by "a manifest that is not a checkpoint: corrupt, explicitly" (the opposite
+behaviour, on purpose); the adoption test also expects `stage` and `live_next` empty.
+
+Earlier (2026-11-19, segment reader and triggers): **77 passed, 0 failed**; `tsc --noEmit`
 clean.
 
 With the health route (2026-11-19): **78 passed, 0 failed** (9 files, `npx vitest run --maxWorkers=2`); `tsc --noEmit` clean. The one test added
@@ -372,7 +397,7 @@ With the health route (2026-11-19): **78 passed, 0 failed** (9 files, `npx vites
 404. The publisher's interface did not change. Run against `ledger/src/ledger.ts` as committed at `54cc31f` (segments, base first,
 checkpoints). The pool sets `LEDGER_DRAIN_DELAY_MS` to 60 s, so a ledger drains when a test
 says (`drain()`, `mirror`), and `LEDGER_CHECKPOINT_EVERY` to 3, so most logs carry checkpoints
-the publisher must not read. Before this change, against that ledger, 45 of 59 tests failed:
+(which, since the streaming re-base, a first publication starts from). Before this change, against that ledger, 45 of 59 tests failed:
 the ledger writes no per-change objects any more, and it admits only keys under its own cell,
 which the tests' file keys were not. `wrangler deploy --dry-run` bundles the production entry
 (111 KiB; nothing uploaded).
@@ -458,7 +483,7 @@ the partition columns present in its data files, so it is a fault of that extens
 with identity-partitioned tables and not of how these tables are written. Everything else
 attempted was readable.
 
-### Workerd tests (77)
+### Workerd tests (98)
 
 | Area | Tests |
 |---|---|
@@ -482,6 +507,7 @@ attempted was readable.
 | Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment (left by publishing through a `[5, 5]` holding the ledger's own line) finished from the holding segment once a later one exists, without re-applying the change at the cursor; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
 | Triggers (`triggers.test.ts`, 3) | `notify` writes nothing to R2 and publishes nothing, later nudges never push the deadline back; a nudge returns false within its bound from a publisher that is slow (5 s) or refuses, and with none bound; a tenant's day of flushes and a compaction, each nudged, then the alarm settles in 5 runs (sweep, two expiries, mark, delete) to no alarm and no deadline, every remaining metadata object referenced, and 48 idle hours run no alarm and write nothing |
 | Golden formats (`golden.test.ts`, 5) | every format has a file for its version; `metadata.json` of both new tables; field ids permanent across versions; Avro schemas; the cursors object and an `add_unit` change (now read from its segment) |
+| Re-base from checkpoints (`checkpoints.test.ts`, 21) | the real ledger writing parts (format 2): re-based from them, in part order, at most 4 requested ahead, at most 6 R2 operations in flight, no segment at or before the checkpoint read, verified; the same state from parts, from a format-1 checkpoint and from the base: **byte-identical Iceberg objects** (fixed ids and clock); a published tenant re-based on a new incarnation's parts, removing and adding by difference; a staged re-base across many tiny manifests with merges, and SQLite rebuilt from R2 alone equal row for row; a part deleted while the checkpoint is read (`incomplete`, nothing published, retried, published once back); a record changed with its size (bytes), a record dropped with the size made up (files), two parts swapped, a part of another attempt, records out of key order across parts, a manifest that is not one: `corrupt`, nothing published; a newer checkpoint format passed over for the base; the object reset (`ctx.abort()`) while paused at a GET mid-stream, and an R2 failure at a part then `evictDurableObject`: nothing committed, staged rows never used, the next publish complete; six tenants re-basing at once: at most six in flight, each tenant's parts in order; a checkpoint's tombstones released; the ledger release before parts (N-1) read from its format-1 checkpoint and then across its storage loss; a base segment that is not alone; golden: the ledger still writes the checked-in checkpoint bytes, which are published, and the segment golden's format-1 checkpoint is re-based from |
 
 ### Mutation checks
 

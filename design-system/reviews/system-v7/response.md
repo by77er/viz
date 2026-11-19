@@ -35,8 +35,8 @@ run below gives its own). One browser at a time, at most one test worker, every 
 | v6 finding | Change | Shown by |
 |---|---|---|
 | B1 folded list: key squeezed, names drawn over the figures | The key keeps half the row (`key-min`), its cut engages, two kept columns go under a key that has its own line below 640 px, "Actions…" leaves the key's line | `tools/audit.mjs` overlap and key-width at all 14 configurations (failing first on v6); mutants Z1 to Z4, Z8; `compare/v7-folded-list-*`, `compare/v7-table-preview-*`, `compare/v7-dialog-list-closed-*`; `images/v7-folded-list-*` |
-| B2 colour: README and rubric disagree | The lead's decision, "what a person sees wins", written once in the Chart README and the same in the rubric; `assignSeries` rewritten to it | `chart-rules.test.mjs`: D, D at 36 pods, E, each rubric blocker example, 400 random sequences (10 of 17 fail on v6 first); mutants C10 to C14; `compare/v7-b2-*` |
-| M1 checks: lint gaps, overridable presence rules | Lint gaps closed; each guarded fix checked as rendered in `tools/audit.mjs`; a token trace of every colour, length, duration and opacity | the reviewer's 20 as Y1 to Y20; CORPUS |
+| B2 colour: README and rubric disagree | The lead's decision, "what a person sees wins", written once in the Chart README and the same in the rubric; `assignSeries` rewritten to it | `chart-rules.test.mjs`: D, D at 36 pods, E, each rubric blocker example, 400 random sequences (8 of 17 fail on v6 first); mutants C10 to C14; `compare/v7-b2-*` |
+| M1 checks: lint gaps, overridable presence rules | Lint gaps closed; each guarded fix checked as rendered in `tools/audit.mjs`; a token trace of every colour, length, duration and opacity | the reviewer's 20 as Y1 to Y20, all caught; the corpus 130 of 130 (X 32 and Y 20 of the 52 asked for) |
 | m1 reserved-slot ties | "ties: the lowest slot" in the rule | Chart README rule 3.3 |
 | m2 a press on a scroll | accepted and said in States | `project/README.md` |
 | m3 press script in the flows | reported by the press guard, apart; the flows' to fix | the audit's flow section |
@@ -150,10 +150,12 @@ the cases the decided rule forbids.
   note's counts); P7 "Colour the eight largest" colours the eight largest on screen and nothing else. The properties judge slots by
   owner among series on screen or hidden, so they read v6's map and v7's alike.
 
-Failing first, on v6: 10 of 17 fail (the three sequences, four of the five blocker tests, v5's image 01 under the new rule, and the
-random sequences, each on P3 at the first filter with grey series on screen; the query round trip fails only on the note's new words,
-"8 coloured by size; 28 in Other", which no longer says "when first seen" because a reclaimed slot is given by size later). On v7:
-17 of 17.
+Failing first, on v6 (the final test file against the v6 copy, `evidence/chart-rules-on-v6.txt`): **8 of 17 fail**: the three
+sequences, the blocker tests for "the largest series on screen grey while a slot is held only by a hidden series" and "a series on
+screen changing colour" (the latter at its filter step, on the same property), v5's image 01 under the new rule, and the random
+sequences, each on P3 at the first filter with grey series on screen; the query round trip fails only on the note's new words, "8
+coloured by size; 28 in Other", which no longer says "when first seen", because a reclaimed slot is given by size later. The other
+blocker tests (a readout naming a smaller series; a pod coming back) pass on v6 too: v6 already held those. On v7: 17 of 17.
 
 **Teeth**: C10 (v6's rule: no reclaiming) fails D and E; C11 (reclaimed slots to the smallest first), C12 (hidden series placed as if
 on screen), C13 (the reviewer's other fix for E, not taken: "Colour the eight largest" ranking hidden series too), C14 (a returning
@@ -223,7 +225,17 @@ style attribute, a script, an SVG attribute, an escape, or the browser's own def
 written at the weight of the rule it overrides: a weaker selector does not override emphasis, so it would break nothing; Y14 puts a
 transition back on the progress bar, which has no press rule, so only the reduced-motion guard can catch it). v7's own: Z1 to Z8.
 
-CORPUSRESULT
+**Result** (`tools/mutants.mjs`, the whole corpus, browser mutants included, each on a copy in the scratch area; load 6.9 to 7.8 on
+4 cores; 12 min 44 s; `evidence/final-mutants.txt`): **130 of 130 as expected**. The 52 the review asked for: **X 32 of 32 and
+Y 20 of 20 caught**, 17 of the Y's by the check they target for the first time (the lint for Y1, Y3 to Y9, Y19, Y20; the rendered
+guards for Y10 to Y15, Y17, Y18; Y2 and Y16 were caught in v6 and still are). The rest: R 18 of 18, N 13 of 13, V 17 of 17, Z 8 of 8,
+C 14 of 14, A 4 of 4 caught, H 4 of 4 harmless edits passing; every mutant with several literals had each reported. On v6 the review
+found 3 of the twenty caught (Y2, Y16, and Y14 by an unrelated rule); I did not run the Y's against the v6 copy myself, only the
+new chart tests and the new audit checks (above). Writing the Z's taught two things, each fixed: a mutant
+that moved "Actions…" back to the key's line but kept the key's minimum survived because the minimum alone held the property (Z2 now
+removes both, as v6 had them), and the press guard first pressed only the first two segments of a control, missing the chosen one
+(it now presses a chosen and an unchosen segment). `npm test`: 147 tests, 121 passed, 0 failed, 26 skipped (the corpus's browser
+mutants, which `tools/mutants.mjs` ran); `evidence/final-npm-test.txt`.
 
 ## Minors
 
@@ -255,7 +267,7 @@ application), CPU 4x and Fast 4G. Results: `speed/phone.json`, `speed/desktop.js
 
 **Load, with every row.** 4 cores. Phone: the 1-minute load at the start of each run was 6.9 to 8.5; desktop: 6.8 to 8.8. The load is
 recorded with every sample; the table gives its median for each row and side. The rule: a timing row is judged only when most of its
-samples were taken at a load of 4 or less. **Every timing row on both layouts is "not judged"** (load 7.0 to 8.5 at the samples);
+samples were taken at a load of 4 or less. **Every timing row on both layouts is "not judged"** (median load at a row's samples 7.0 to 8.5; samples 6.6 to 9.5);
 **every layout-shift row is judged, and within budget** at both layouts, both versions. Calibration task 309 to 325 ms against about
 100 ms idle (context only). p75 (median), ms:
 

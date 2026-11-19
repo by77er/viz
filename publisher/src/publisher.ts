@@ -1415,19 +1415,30 @@ export class Publisher extends DurableObject<PublisherEnv> {
     try {
       if (current) {
         manifests = await this.readManifestList(store, cfg, current['manifest-list'])
-        // Two manifests in flight; each one's live entries into `live_next` as it arrives.
+        // Two manifests in flight; each one's live entries into `live_next` as they are decoded,
+        // 500 per transaction: no manifest's records are ever all in memory.
         await inBatches(manifests, 2, async (m) => {
-          const entries = await this.readManifest(store, m.path)
-          this.ctx.storage.transactionSync(() => {
-            for (const e of entries) {
-              if (e.status === STATUS_DELETED) continue
-              const f = liveFromEntry(e, this.keyOf(cfg, e.data_file.file_path), { snapshotId: m.addedSnapshotId, seq: m.seq })
-              sql.exec(
-                `INSERT INTO live_next (tbl, key, tenant, day, rows, bytes, snapshot_id, seq, file_seq, stats, manifest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                table, f.key, f.tenant, f.day, f.rows, f.bytes, f.snapshotId, f.seq, f.fileSeq, JSON.stringify(f.stats), m.path,
-              )
-            }
+          const o = await store.get(m.path)
+          if (!o) throw new Error(`publisher: manifest ${m.path} is not in R2`)
+          let batch: LiveFile[] = []
+          const flush = () => {
+            const run = batch
+            batch = []
+            this.ctx.storage.transactionSync(() => {
+              for (const f of run) {
+                sql.exec(
+                  `INSERT INTO live_next (tbl, key, tenant, day, rows, bytes, snapshot_id, seq, file_seq, stats, manifest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  table, f.key, f.tenant, f.day, f.rows, f.bytes, f.snapshotId, f.seq, f.fileSeq, JSON.stringify(f.stats), m.path,
+                )
+              }
+            })
+          }
+          await readAvro<ManifestEntryRecord>(new Uint8Array(await o.arrayBuffer()), (e) => {
+            if (e.status === STATUS_DELETED) return
+            batch.push(liveFromEntry(e, this.keyOf(cfg, e.data_file.file_path), { snapshotId: m.addedSnapshotId, seq: m.seq }))
+            if (batch.length >= 500) flush()
           })
+          flush()
         })
         const c = await store.get(this.keyOf(cfg, current.summary[CURSORS_KEY] as string))
         if (!c) throw new Error(`publisher: cursor object of snapshot ${current['snapshot-id']} is not in R2`)

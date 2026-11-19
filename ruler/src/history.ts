@@ -18,11 +18,11 @@
  * where the windows fall changes nothing in the result.
  */
 import type { PromMatrix } from '../../contracts/engine'
-import type { AlertingRuleV2, AnomalyRuleV2, BacktestResult, HistoryPlanner, RangeEvaluator, SloRuleV2, WarmupStatus } from '../contracts-proposal/rules.v2'
+import type { AlertingRuleV2, AnomalyRuleV2, BacktestResult, HistoryPlan, HistoryPlanner, RangeEvaluator, SloRuleV2, WarmupStatus } from '../contracts-proposal/rules.v2'
 import { evalAnomaly, newAnomalyRt, serializeAnomaly, type AnomalyLimits, type AnomalyRt } from './anomaly'
 import { INTERVALS_MAX_BYTES, IntervalTracker, resultOf } from './backtest'
 import type { CompiledAlertRule } from './rules'
-import { bucketsOf, COARSE_BLOCK, coarseExprOf, evalSlo, FINE_BLOCK, newSloRt, Ring, sloGeometry, type SloRt, type SloSeriesState } from './slo'
+import { bucketsOf, coarseExprOf, evalSlo, newSeries, newSloRt, residue, sloGeometry, type SloRt } from './slo'
 import type { AlertEvalOptions, Series } from './statemachine'
 import { formatDuration, parseSampleValue } from './util'
 
@@ -187,43 +187,6 @@ export interface Stream {
   feed(ts: number, series: Series[], companions: (Series[] | null)[]): string | null
 }
 
-export interface Sizing {
-  /** Steps per window, per stream. */
-  windowSteps: number[]
-  /** The model's peak: the fixed bytes and the largest window. */
-  peakBytes: number
-  budgetBytes: number
-  /** Range queries the windows take (companions included). */
-  queries: number
-}
-
-/**
- * Windows as large as the budget allows: (budget − fixed) / (points per step × bytes per point),
- * at most the engine's 11,000 steps. Refused when the fixed bytes alone, or one step, do not fit,
- * or when the windows would take more than `MAX_HISTORY_QUERIES` queries.
- */
-export function sizeWindows(streams: Stream[], fixedBytes: number, budgetBytes: number): ({ ok: true } & Sizing) | { ok: false; refused: string; peakBytes: number; budgetBytes: number } {
-  const windowSteps: number[] = []
-  let peak = fixedBytes
-  let queries = 0
-  for (const s of streams) {
-    const perStep = (s.seriesBound + (s.companions ?? []).reduce((n, c) => n + c.seriesBound, 0)) * MEMORY.perPoint
-    const w = Math.min(MAX_STEPS_PER_QUERY, stepsOf(s.read), Math.floor((budgetBytes - fixedBytes) / perStep))
-    if (w < 1) {
-      const need = fixedBytes + perStep
-      return { ok: false, refused: `over the memory budget: holding this rule's state (${mb(fixedBytes)}) and one step of ${s.seriesBound} series would take ${mb(need)}; the budget is ${mb(budgetBytes)}`, peakBytes: need, budgetBytes }
-    }
-    windowSteps.push(w)
-    peak = Math.max(peak, fixedBytes + w * perStep)
-    const windows = Math.ceil(stepsOf(s.read) / w)
-    queries += windows * (1 + (s.companions?.length ?? 0))
-  }
-  if (queries > MAX_HISTORY_QUERIES) {
-    return { ok: false, refused: `over the memory budget: windows that fit ${mb(budgetBytes)} would take ${queries} range queries; at most ${MAX_HISTORY_QUERIES}`, peakBytes: peak, budgetBytes }
-  }
-  return { ok: true, windowSteps, peakBytes: peak, budgetBytes, queries }
-}
-
 const mb = (b: number) => `${(b / 1048576).toFixed(1)} MiB`
 const cpuText = (us: number) => (us >= 1e6 ? `${(us / 1e6).toFixed(1)} s` : `${Math.round(us / 1000)} ms`)
 
@@ -242,12 +205,12 @@ export interface CpuBudget {
 export type Streamed =
   | { ok: true; plan: PlanSum; sizing: Sizing; points: number; cpu: CpuAccount }
   /**
-   * Refused: nothing kept. Before the first window's evaluation for a budget or a plan (then
-   * nothing was fetched, unless the CPU model needed one window to count the series), or before a
-   * later window whose series would take the run over its CPU budget. `defer`: it would fit a run
-   * with the whole of `deferBelowMs`.
+   * Refused before any window is read: nothing kept. Over the memory model, a budget or a plan's
+   * refusal before anything is fetched; over the budget by the windows' plans, or over the CPU
+   * budget, after the series counts (`countsRead`, when a read was counted). `defer`: it would fit
+   * a run with the whole of `deferBelowMs`.
    */
-  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean }
+  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean; countsRead?: boolean }
   /** A window could not be evaluated (or held more than the model allows); what came before it was. */
   | { ok: false; failed: string }
 
@@ -269,86 +232,289 @@ function clip(c: Read, w: Read): Read | null {
   return from <= to ? { ...c, fromMs: from, toMs: to } : null
 }
 
+export interface Sizing {
+  /** The longest window of each stream, in steps. */
+  windowSteps: number[]
+  /** The model's peak: the fixed bytes and the largest window (or count query) held. */
+  peakBytes: number
+  budgetBytes: number
+  /** Range queries the run makes: the series counts, then the windows (companions included). */
+  queries: number
+}
+
 /**
- * Size the windows, plan every piece, then fetch and feed window after window, stream after
- * stream, in time order. An engine that cannot be reached throws (the caller decides whether to
- * retry); a read over a budget, or one the engine's plan refuses, is refused before any window is
- * fetched; a window holding more points than the model sized it for stops the run (`failed`).
+ * The windows the rule's bound allows: (budget − fixed) / (points per step × bytes per point) steps,
+ * at most the engine's 11,000. Refused when the fixed bytes alone, or one step at the bound, do not
+ * fit: then no window can hold what the rule may return.
+ */
+export function sizeWindows(streams: Stream[], fixedBytes: number, budgetBytes: number): { ok: true; windowSteps: number[] } | { ok: false; refused: string; peakBytes: number; budgetBytes: number } {
+  const windowSteps: number[] = []
+  for (const s of streams) {
+    const perStep = boundOf(s) * MEMORY.perPoint
+    const w = Math.min(MAX_STEPS_PER_QUERY, stepsOf(s.read), Math.floor((budgetBytes - fixedBytes) / perStep))
+    if (w < 1) {
+      const need = fixedBytes + perStep
+      return { ok: false, refused: `over the memory budget: holding this rule's state (${mb(fixedBytes)}) and one step of ${s.seriesBound} series would take ${mb(need)}; the budget is ${mb(budgetBytes)}`, peakBytes: need, budgetBytes }
+    }
+    windowSteps.push(w)
+  }
+  return { ok: true, windowSteps }
+}
+
+/** Most series a step of a stream may hold: its own bound and its companions'. */
+const boundOf = (s: Stream) => s.seriesBound + (s.companions ?? []).reduce((n, c) => n + c.seriesBound, 0)
+
+/**
+ * The query that counts a read's series: one series, the number of the read's series at each step
+ * (none where it has none). It reads what the read reads; its answer is one point a step.
+ */
+export const countExpr = (promql: string): string => `count(${promql})`
+
+/**
+ * Plans a run asks for its windows, at most. Past it, a stream's windows are planned in contiguous
+ * groups instead, each group's plan counted once for every window in it: a window's query reads a
+ * subset of the files its group's range reads (the same expression, a range inside the group's),
+ * so the sum is at least what the windows read. A plan is one ledger read in viz-query, 10–70 ms
+ * (query/README.md), and goes through the object's one-call gate.
+ */
+export const MAX_WINDOW_PLANS = 32
+
+/** One window of a stream: its read, its companions' reads clipped to it, and the points its count gave (null when not counted). */
+interface Window {
+  read: Read
+  companions: (Read | null)[]
+  points: number | null
+}
+
+const keyOf = (r: Read) => `${r.stepMs} ${r.fromMs} ${r.toMs} ${r.promql}`
+
+/**
+ * Plan, count, plan the windows, then fetch and feed window after window, stream after stream, in
+ * time order. A read whose windows at the rule's series bound would cut it finer than the engine's
+ * 11,000-step pieces is first counted (`countExpr`) and cut into windows by the points each step
+ * really holds; otherwise its windows are the pieces. Every query that is fetched is planned, and
+ * the sum checked against the budget, before it is fetched:
+ * 1. before anything is fetched: the whole reads (a lower bound of any windows over them: every
+ *    file they read, some window reads) and the count queries;
+ * 2. after the counts, before any window: the count queries and every window as it will be fetched
+ *    (companions clipped to it), or a bound (`MAX_WINDOW_PLANS`).
+ * An engine that cannot be reached throws (the caller decides whether to retry); a window holding
+ * more points than its count said, or than the rule allows, stops the run (`failed`).
  */
 export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluator, streams: Stream[], budget: Budget, memoryBudget: number, fixedBytes: number, cpuBudget: CpuBudget = { budgetMs: Infinity }): Promise<Streamed> {
-  const sizing = sizeWindows(streams, fixedBytes, memoryBudget)
-  if (!sizing.ok) return { ok: false, refused: sizing.refused, plan: null, sizing: { peakBytes: sizing.peakBytes, budgetBytes: sizing.budgetBytes } }
-  const sum: PlanSum = { scanSamples: 0, bytesToRead: 0, queries: 0 }
-  for (const s of streams) {
-    for (const r of [s.read, ...(s.companions ?? []).map((c) => c.read)]) {
-      for (const p of pieces(r)) {
-        const plan = await planner.plan(p.promql, p.fromMs, p.toMs, p.stepMs)
-        if (plan.refusal) return { ok: false, refused: `the engine would refuse the read: ${plan.refusal.errorType}: ${plan.refusal.error}`, plan: null, sizing }
-        if (!Number.isFinite(plan.scanSamples) || !Number.isFinite(plan.bytesToRead)) return { ok: false, refused: 'the engine\'s plan did not say what the read costs, so it was not made', plan: null, sizing }
-        sum.scanSamples += plan.scanSamples
-        sum.bytesToRead += plan.bytesToRead
-        sum.queries++
+  const bound = sizeWindows(streams, fixedBytes, memoryBudget)
+  if (!bound.ok) return { ok: false, refused: bound.refused, plan: null, sizing: { peakBytes: bound.peakBytes, budgetBytes: bound.budgetBytes } }
+  const pointsPerWindow = Math.floor((memoryBudget - fixedBytes) / MEMORY.perPoint)
+  // A count query holds one point a step.
+  const countSteps = Math.min(MAX_STEPS_PER_QUERY, pointsPerWindow)
+  const counted = streams.map((s, i) => bound.windowSteps[i]! < Math.min(MAX_STEPS_PER_QUERY, stepsOf(s.read)))
+  const readsOf = (s: Stream) => [{ read: s.read, seriesBound: s.seriesBound }, ...(s.companions ?? [])]
+
+  // Every plan asked once: a window that is a whole piece reuses the piece's.
+  const plans = new Map<string, HistoryPlan>()
+  const planOf = async (r: Read): Promise<HistoryPlan | string> => {
+    const k = keyOf(r)
+    let p = plans.get(k)
+    if (!p) {
+      p = await planner.plan(r.promql, r.fromMs, r.toMs, r.stepMs)
+      if (p.refusal) return `the engine would refuse the read: ${p.refusal.errorType}: ${p.refusal.error}`
+      if (!Number.isFinite(p.scanSamples) || !Number.isFinite(p.bytesToRead)) return 'the engine\'s plan did not say what the read costs, so it was not made'
+      plans.set(k, p)
+    }
+    return p
+  }
+  const add = (to: PlanSum, p: HistoryPlan, times = 1) => {
+    to.scanSamples += p.scanSamples * times
+    to.bytesToRead += p.bytesToRead * times
+    to.queries += times
+  }
+  const over = (p: PlanSum) => p.scanSamples > budget.scanSamples || p.bytesToRead > budget.bytesToRead
+  const refuse = (p: PlanSum, how: string, countsRead: boolean, sizing: { peakBytes: number; budgetBytes: number }): Streamed => ({
+    ok: false,
+    refused: `over budget: the read would scan ${p.scanSamples} samples and ${p.bytesToRead} bytes in ${p.queries} range quer${p.queries === 1 ? 'y' : 'ies'}${how}; the budget is ${budget.scanSamples} samples and ${budget.bytesToRead} bytes`,
+    plan: p,
+    sizing,
+    ...(countsRead ? { countsRead } : {}),
+  })
+
+  // 1. Before anything is fetched: the whole reads and the count queries.
+  const first: PlanSum = { scanSamples: 0, bytesToRead: 0, queries: 0 }
+  const countReads: { j: number; read: Read }[][] = streams.map(() => [])
+  for (const [i, s] of streams.entries()) {
+    for (const [j, { read }] of readsOf(s).entries()) {
+      for (const p of pieces(read)) {
+        const plan = await planOf(p)
+        if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+        add(first, plan)
+      }
+      if (!counted[i]) continue
+      for (const p of pieces({ ...read, promql: countExpr(read.promql) }, countSteps)) {
+        const plan = await planOf(p)
+        if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+        add(first, plan)
+        countReads[i]!.push({ j, read: p })
       }
     }
   }
-  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) {
-    return {
-      ok: false,
-      refused: `over budget: the read would scan ${sum.scanSamples} samples and ${sum.bytesToRead} bytes in ${sum.queries} range quer${sum.queries === 1 ? 'y' : 'ies'}; the budget is ${budget.scanSamples} samples and ${budget.bytesToRead} bytes`,
-      plan: sum,
-      sizing,
+  const boundPeak = { peakBytes: fixedBytes + Math.max(...streams.map((s, i) => bound.windowSteps[i]! * boundOf(s))) * MEMORY.perPoint, budgetBytes: memoryBudget }
+  if (over(first)) return refuse(first, counted.some((x) => x) ? ' (its series counts, and windows that read at least the whole range once)' : '', false, boundPeak)
+
+  // 2. The counts: how many points each step of each counted read holds.
+  let spentUs = CPU.base
+  const windows: Window[][] = []
+  const total: PlanSum = { scanSamples: 0, bytesToRead: 0, queries: 0 }
+  let grouped = false
+  for (const [i, s] of streams.entries()) {
+    if (!counted[i]) {
+      // Its windows are the engine's pieces: planned as fetched (a companion clipped to each).
+      const ws: Window[] = pieces(s.read).map((w) => ({ read: w, companions: (s.companions ?? []).map((c) => clip(c.read, w)), points: null }))
+      for (const w of ws) {
+        for (const r of [w.read, ...w.companions]) {
+          if (!r) continue
+          const plan = await planOf(r)
+          if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+          add(total, plan)
+        }
+      }
+      windows.push(ws)
+      continue
+    }
+    const perStep = new Map<number, number>()
+    const bounds = readsOf(s).map((r) => r.seriesBound)
+    for (const { j, read: cr } of countReads[i]!) {
+      const m = await range.range(cr.promql, cr.fromMs, cr.toMs, cr.stepMs)
+      if (m.resultType !== 'matrix') throw new Error('the range evaluation did not return a matrix')
+      add(total, plans.get(keyOf(cr))!)
+      let pts = 0
+      for (const x of m.result) {
+        for (const [sec, text] of x.values) {
+          const ts = Math.round(sec * 1000)
+          const n = Number(text)
+          pts++
+          if (!(n > 0)) continue
+          if (n > bounds[j]!) return { ok: false, failed: `the read returns ${n} series at ${new Date(ts).toISOString()}, where ${j === 0 ? 'the rule allows' : 'its no-data expression may have'} at most ${bounds[j]} a step: more series than the rule allows` }
+          perStep.set(ts, (perStep.get(ts) ?? 0) + n)
+        }
+      }
+      spentUs += pts * CPU.parse + CPU.perWindow
+    }
+    // Windows by the points each step holds, at most 11,000 steps.
+    const ws: Window[] = []
+    let from = s.read.fromMs
+    let pts = 0
+    const close = (to: number) => {
+      const w = { ...s.read, fromMs: from, toMs: to }
+      ws.push({ read: w, companions: (s.companions ?? []).map((c) => clip(c.read, w)), points: pts })
+    }
+    for (let ts = s.read.fromMs; ts <= s.read.toMs; ts += s.read.stepMs) {
+      const n = perStep.get(ts) ?? 0
+      if (ts > from && (pts + n > pointsPerWindow || (ts - from) / s.read.stepMs >= MAX_STEPS_PER_QUERY)) {
+        close(ts - s.read.stepMs)
+        from = ts
+        pts = 0
+      }
+      pts += n
+    }
+    close(s.read.toMs)
+    windows.push(ws)
+  }
+  const fetches = total.queries + windows.reduce((n, ws, i) => n + (counted[i] ? ws.reduce((m, w) => m + 1 + w.companions.filter((c) => c).length, 0) : 0), 0)
+  const peakPoints = Math.max(0, ...countReads.flat().map((c) => stepsOf(c.read)), ...windows.flatMap((ws, i) => ws.map((w) => w.points ?? stepsOf(w.read) * boundOf(streams[i]!))))
+  const sizing: Sizing = { windowSteps: windows.map((ws) => Math.max(...ws.map((w) => stepsOf(w.read)))), peakBytes: fixedBytes + peakPoints * MEMORY.perPoint, budgetBytes: memoryBudget, queries: fetches }
+  if (fetches > MAX_HISTORY_QUERIES) {
+    return { ok: false, refused: `over the memory budget: windows that fit ${mb(memoryBudget)} would take ${fetches} range queries; at most ${MAX_HISTORY_QUERIES}`, plan: null, sizing: { peakBytes: sizing.peakBytes, budgetBytes: memoryBudget } }
+  }
+
+  // 3. The counted streams' windows, planned as they will be fetched (or bounded by groups of them).
+  const toPlan = windows.reduce((n, ws, i) => n + (counted[i] ? ws.filter((w) => !plans.has(keyOf(w.read))).length : 0), 0)
+  const groupsWanted = toPlan > MAX_WINDOW_PLANS
+  const countedWindows = windows.reduce((n, ws, i) => n + (counted[i] ? ws.length : 0), 0)
+  for (const [i, ws] of windows.entries()) {
+    if (!counted[i]) continue
+    const s = streams[i]!
+    if (!groupsWanted) {
+      for (const w of ws) {
+        for (const r of [w.read, ...w.companions]) {
+          if (!r) continue
+          const plan = await planOf(r)
+          if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+          add(total, plan)
+        }
+      }
+      continue
+    }
+    grouped = true
+    // Contiguous groups, as many as this stream's share of MAX_WINDOW_PLANS.
+    const g = Math.max(1, Math.floor((MAX_WINDOW_PLANS * ws.length) / countedWindows))
+    const size = Math.ceil(ws.length / g)
+    for (let a = 0; a < ws.length; a += size) {
+      const group = ws.slice(a, a + size)
+      const span = { ...s.read, fromMs: group[0]!.read.fromMs, toMs: group.at(-1)!.read.toMs }
+      const main = await planOf(span)
+      if (typeof main === 'string') return { ok: false, refused: main, plan: null, sizing: null }
+      add(total, main, group.length)
+      for (const [j, c] of (s.companions ?? []).entries()) {
+        const cs = clip(c.read, span)
+        const n = group.filter((w) => w.companions[j]).length
+        if (!cs || n === 0) continue
+        const plan = await planOf(cs)
+        if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+        add(total, plan, n)
+      }
     }
   }
-  let points = 0
-  // The CPU model, checked before each window is evaluated, with the most series a window has shown so far.
-  let spentUs = CPU.base
-  let series = 0
-  let fed = 0
-  const totalWindows = streams.reduce((n, s, i) => n + Math.ceil(stepsOf(s.read) / sizing.windowSteps[i]!), 0)
+  if (over(total)) {
+    return refuse(total, grouped ? ` (its series counts, and its windows planned in groups, each group's plan counted for every window in it: an upper bound)` : ' (its series counts, and its windows, each planned as it would be fetched)', true, { peakBytes: sizing.peakBytes, budgetBytes: memoryBudget })
+  }
+
+  // 4. The CPU model, before any window is read: a counted window at the points its count gave, any
+  // other at every step holding the rule's bound (it was not counted because that fits), every
+  // window its allowance. An upper bound of what feeding them costs, so a run that starts finishes.
+  const totalWindows = windows.reduce((n, ws) => n + ws.length, 0)
+  let projected = spentUs
+  let pointsUp = 0
+  for (const [i, ws] of windows.entries()) {
+    for (const w of ws) {
+      const n = w.points ?? stepsOf(w.read) * boundOf(streams[i]!)
+      pointsUp += n
+      projected += n * Math.max(pricePerPoint(streams[i]!, w.read.fromMs, w.read.toMs), CPU.parse + CPU.presence) + CPU.perWindow
+    }
+  }
   const budgetUs = cpuBudget.budgetMs * 1000
+  if (projected > budgetUs) {
+    const anyCounted = counted.some((x) => x)
+    const how = counted.every((x) => x) ? 'by the series counts' : anyCounted ? 'by the series counts, or at the rule\'s bound where not counted' : 'at the rule\'s bound'
+    return {
+      ok: false,
+      refused: `over the CPU budget: its ${totalWindows} window${totalWindows === 1 ? ' holds' : 's hold'} ${pointsUp} points ${how}; the whole run would take about ${cpuText(projected)} of CPU (modelled), the budget is ${cpuText(budgetUs)}. ${anyCounted ? 'Only the series counts were read' : 'Nothing was fetched'}`,
+      plan: total,
+      sizing,
+      // `spentMs`: what this run used before it was refused (the counts parsed), for an alarm's account.
+      cpu: { modelledMs: Math.round(projected / 1000), budgetMs: cpuBudget.budgetMs, spentMs: Math.ceil(spentUs / 1000) },
+      // A run started again from the beginning would cost the whole projection again.
+      defer: cpuBudget.deferBelowMs !== undefined && projected <= cpuBudget.deferBelowMs * 1000,
+      ...(anyCounted ? { countsRead: true } : {}),
+    }
+  }
+
+  // 5. The windows, in order.
+  let points = 0
   for (const [i, s] of streams.entries()) {
-    const W = sizing.windowSteps[i]!
-    for (const w of pieces(s.read, W)) {
+    for (const win of windows[i]!) {
+      const w = win.read
       const main = await range.range(w.promql, w.fromMs, w.toMs, w.stepMs)
       if (main.resultType !== 'matrix') throw new Error('the range evaluation did not return a matrix')
       const comps: (PromMatrix | null)[] = []
-      for (const c of s.companions ?? []) {
-        const cw = clip(c.read, w)
-        comps.push(cw ? await range.range(cw.promql, cw.fromMs, cw.toMs, cw.stepMs) : null)
-      }
-      // The model assumed at most `seriesBound` series a step: a window holding more is not evaluated.
-      const held = pointsOf(main) + comps.reduce((n, m) => n + pointsOf(m), 0)
-      const allowed = stepsOf(w) * (s.seriesBound + (s.companions ?? []).reduce((n, c) => n + c.seriesBound, 0))
-      if (held > allowed) return { ok: false, failed: `the engine returned ${held} points for a window the memory model sized for ${allowed} (${s.seriesBound} series a step): more series than the rule allows` }
+      for (const cw of win.companions) comps.push(cw ? await range.range(cw.promql, cw.fromMs, cw.toMs, cw.stepMs) : null)
       const mainPts = pointsOf(main)
-      const thisUs = mainPts * pricePerPoint(s, w.fromMs, w.toMs) + (held - mainPts) * (CPU.parse + CPU.presence) + CPU.perWindow
-      series = Math.max(series, main.result.length + comps.reduce((n, m) => n + (m?.result.length ?? 0), 0))
-      // What is left after this window, every series at every step, at each stream's cost.
-      let restUs = 0
-      for (let j = i; j < streams.length; j++) {
-        const sj = streams[j]!
-        const from = j === i ? w.toMs + sj.read.stepMs : sj.read.fromMs
-        const left = Math.max(0, Math.floor((sj.read.toMs - from) / sj.read.stepMs) + 1)
-        if (left === 0) continue
-        restUs += left * series * Math.max(pricePerPoint(sj, from, sj.read.toMs), CPU.parse + CPU.presence) + Math.ceil(left / sizing.windowSteps[j]!) * CPU.perWindow
+      const held = mainPts + comps.reduce((n, m) => n + pointsOf(m), 0)
+      // The model sized the window for its count, or for the rule's bound: a window holding more is not evaluated.
+      if (win.points !== null) {
+        if (held > Math.ceil(win.points * 1.1) + stepsOf(w)) return { ok: false, failed: `the engine returned ${held} points for a window its series count put at ${win.points}: the data changed between the count and the read` }
+      } else if (held > stepsOf(w) * boundOf(s)) {
+        return { ok: false, failed: `the engine returned ${held} points for a window the memory model sized for ${stepsOf(w) * boundOf(s)} (${s.seriesBound} series a step): more series than the rule allows` }
       }
-      const projected = spentUs + thisUs + restUs
-      if (projected > budgetUs) {
-        // `spentMs`: what this run used before it stopped (the window it read was parsed), for an alarm's account.
-        const cpu = { modelledMs: Math.round(projected / 1000), budgetMs: cpuBudget.budgetMs, spentMs: Math.ceil((spentUs + held * CPU.parse) / 1000) }
-        const where = fed === 0 ? `the first window shows ${series} series` : `after ${fed} of ${totalWindows} windows the run shows ${series} series`
-        return {
-          ok: false,
-          refused: `over the CPU budget: ${where}; the whole run would take about ${cpuText(projected)} of CPU (modelled), the budget is ${cpuText(budgetUs)}. ${fed === 0 ? 'Nothing was evaluated' : 'Stopped before evaluating more; nothing is kept'}`,
-          plan: sum,
-          sizing,
-          cpu,
-          // A run started again from the beginning would cost the whole projection again.
-          defer: cpuBudget.deferBelowMs !== undefined && projected <= cpuBudget.deferBelowMs * 1000,
-        }
-      }
-      spentUs += thisUs
-      fed++
+      spentUs += mainPts * pricePerPoint(s, w.fromMs, w.toMs) + (held - mainPts) * (CPU.parse + CPU.presence) + CPU.perWindow
       points += held
       const steps = byStep(main)
       const cSteps = comps.map((m) => (m ? byStep(m) : null))
@@ -358,7 +524,7 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
       }
     }
   }
-  return { ok: true, plan: sum, sizing, points, cpu: { modelledMs: Math.round(spentUs / 1000), budgetMs: cpuBudget.budgetMs } }
+  return { ok: true, plan: total, sizing, points, cpu: { modelledMs: Math.round(spentUs / 1000), budgetMs: cpuBudget.budgetMs } }
 }
 
 /** A matrix by step time: ts (ms) → the series at that step. */
@@ -385,7 +551,7 @@ export function warmupStatus(reads: Read[], budget: Budget): WarmupStatus {
 /** What a warm-up or a backtest ends with. `points` were read and fed. */
 export type HistoryRun<T> =
   | { ok: true; value: T; plan: PlanSum; sizing: Sizing; points: number; cpu: CpuAccount }
-  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean }
+  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean; countsRead?: boolean }
   | { ok: false; failed: string }
 
 /** The engine and the budgets a run reads with. */
@@ -441,8 +607,6 @@ export async function warmAnomaly(rule: AnomalyRuleV2, read: Read, limits: Anoma
 
 // ───────────────────────────── SLO rules ─────────────────────────────
 
-const residue = (t: number, m: number) => ((t % m) + m) % m
-
 /**
  * What warming an SLO rule reads to have its state at `endTs`: the fine buckets of the longest
  * window (from the start of the coarse bucket it begins in), and the compliance window before
@@ -471,11 +635,6 @@ export function sloStateBytes(rule: SloRuleV2, intervalMs: number): number {
   return rule.slo.maxSeries * (16 * (g.fineSize + g.coarseSize) + 4096)
 }
 
-function freshSeries(rule: SloRuleV2, intervalMs: number, labels: Record<string, string>): SloSeriesState {
-  const g = sloGeometry(rule.slo, intervalMs)
-  return { labels, fine: new Ring(g.fineSize, FINE_BLOCK), coarse: new Ring(g.coarseSize, COARSE_BLOCK), last: null, seenAt: 0 }
-}
-
 /**
  * The state a run over `fine` starts from: no buckets, the slot counters just before the fine
  * read (so the coarse buckets fed first are not cleared by the first fine one).
@@ -500,7 +659,7 @@ export function sloCoarseStep(rule: SloRuleV2, intervalMs: number, rt: SloRt, co
   const k = Math.round((ts - (rt.origin as number)) / g.coarseMs)
   for (const [key, b] of pairs.buckets) {
     let s = rt.series.get(key)
-    if (!s) rt.series.set(key, (s = freshSeries(rule, intervalMs, b.labels)))
+    if (!s) rt.series.set(key, (s = newSeries(b.labels, g)))
     if (b.bad === b.bad) {
       s.coarse.add(k, b.bad, b.tot)
       // The earliest bucket with data on record starts one coarse width before its step.
