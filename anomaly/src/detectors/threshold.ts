@@ -115,8 +115,7 @@ export const threshold: Detector<ThresholdParams, ThresholdState> = {
       points[i] = pt
     }
     const out: ThresholdState = { v: 1, firing: st.firing, lastTs: st.lastTs, stepMs: st.stepMs }
-    return { points, state: out, summary: summarize('threshold', points, out, undefined, above === null && below === null ? 'no threshold set' : undefined) }
+    return { points, state: out, summary: summarize('threshold', points, out) }
   },
 }
 
-void fmt

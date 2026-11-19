@@ -250,4 +250,3 @@ export const seasonal: Detector<SeasonalParams, SeasonalState> = {
   },
 }
 
-void fmt

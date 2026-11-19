@@ -257,7 +257,7 @@ if (!window.vzChart) (function () {
       const m = model()
       if (st.picked.has(k)) { st.picked.delete(k); st.pickOrder = st.pickOrder.filter((q) => q !== k) }
       else { const s = m.byKey.get(k); if (s && !s.slot && pickedOther(m).length >= 3) return false; st.picked.add(k); st.pickOrder.push(k) }
-      const vis = visibleSet(m), next = layout(m, vis)
+      const vis = visibleSet(m), next = layout(m, vis); next.nameKeys = g.nameKeys; next.nameW = g.nameW // the legend is not rebuilt: its fitted names carry over
       if (next.sig !== g.sig || vis.picked.length || g.vis.picked.length) { g = next; drawPlot(g) }
       else { g = next
         const show = (el, on) => (on ? el.removeAttribute('display') : el.setAttribute('display', 'none'))

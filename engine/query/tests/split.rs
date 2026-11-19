@@ -422,3 +422,24 @@ fn results_do_not_depend_on_the_order_extracts_arrive_in() {
     let (want, _) = one_place(&s, q, Grid::Instant { time: T0 + 15_000 }, &o);
     assert!(want.unwrap().contains("\"200\""));
 }
+
+/// `-0` and `+0` from different parts: `min` gives `-0` and `max` gives `+0` whichever
+/// part (or series) comes first, merged or in one partial. (A random property rarely
+/// draws both zeros in one group at one step.)
+#[test]
+fn signed_zeros_give_the_same_bits_in_any_order() {
+    let s = |i: usize, x: f64| viz_promql::SeriesV { labels: Arc::new(vec![("g".into(), "a".into()), ("i".into(), format!("{i}"))]), drop_name: false, vals: vec![Some(x)] };
+    for (q, want) in [("min(x)", -0.0f64), ("max(x)", 0.0), ("min by (g) (x)", -0.0), ("max without (i) (x)", 0.0), ("sum(x)", 0.0), ("avg(x)", 0.0)] {
+        let (neg, pos) = (vec![s(0, -0.0)], vec![s(1, 0.0)]);
+        let mut ab = partial_of(q, &neg, 1, &[]);
+        ab.merge(partial_of(q, &pos, 1, &[])).unwrap();
+        let mut ba = partial_of(q, &pos, 1, &[]);
+        ba.merge(partial_of(q, &neg, 1, &[])).unwrap();
+        let one_ab = partial_of(q, &[neg[0].clone(), pos[0].clone()], 1, &[]);
+        let one_ba = partial_of(q, &[pos[0].clone(), neg[0].clone()], 1, &[]);
+        for (how, p) in [("merged -0 first", &ab), ("merged +0 first", &ba), ("one part, -0 first", &one_ab), ("one part, +0 first", &one_ba)] {
+            let v = viz_query::agg::finish(p)[0].vals[0].unwrap();
+            assert_eq!(v.to_bits(), want.to_bits(), "{q} {how}: {v:?}");
+        }
+    }
+}

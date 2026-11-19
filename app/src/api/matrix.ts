@@ -1,0 +1,499 @@
+/**
+ * A parser for the one body the Explore view waits on: a Prometheus range-query envelope,
+ * `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{…},"values":[[t,"v"],…]},…]}}`.
+ *
+ * Why not `JSON.parse`: for 200 series over 3 h (144,000 samples, 3.4 MB) it builds 144,000
+ * two-element arrays, 144,000 strings and as many boxed numbers, about 125 ms at 4x CPU, and
+ * the young generation then collects them (design-system/reviews/app-restyle/fixes/FIXES.md).
+ * This parser writes each sample's time and value straight into Float64Arrays, and takes the
+ * body in pieces as they arrive, so most of the work is done while the rest downloads.
+ *
+ * It is specialised, not general: inside `data.result` it accepts only series objects of
+ * `metric` (any JSON object) and `values` (pairs of a number and a string), in either order.
+ * Anything else there (a native histogram, another key) and any input it cannot read makes
+ * it give up the fast path, and `finish()` parses the whole text with `JSON.parse` instead:
+ * the answer is the same either way, only slower. Outside `data.result` (the envelope,
+ * `warnings`, `infos`, an error) the text is small and is parsed by `JSON.parse` at the end.
+ *
+ * Numbers: a time or value with at most 15 significant digits and a power of ten up to 22 is
+ * computed from its digits (the "fast path" of Clinger, exact because both operands are exact
+ * doubles and IEEE division and multiplication round correctly); anything longer is read by
+ * `Number()` from its text. So every number equals what `JSON.parse` and `Number` give.
+ * "NaN", "+Inf" and "-Inf" are read as such.
+ */
+import type { Metric } from './types'
+
+export interface ParsedSeries {
+  metric: Metric
+  /** Sample times, epoch seconds, in the order sent. */
+  times: Float64Array
+  /** Sample values, as numbers (NaN, ±Infinity kept). */
+  values: Float64Array
+  /** Where this series' `values` array is in `ParsedMatrix.text` ([from, to)), for the raw JSON form. */
+  valuesAt: [number, number]
+}
+
+export interface ParsedMatrix {
+  series: ParsedSeries[]
+  warnings: string[]
+  infos: string[]
+  /** The whole body, as received. */
+  text: string
+  /** False when the fast path gave up and the body was read with JSON.parse. */
+  fast: boolean
+}
+
+/** The envelope was not a successful matrix: the caller treats it as any other response. */
+export class NotAMatrix extends Error {
+  constructor(readonly body: unknown) {
+    super('not a matrix response')
+  }
+}
+
+const POW10 = [1, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22]
+
+// Character codes.
+const QUOTE = 34
+const BACKSLASH = 92
+const COMMA = 44
+const COLON = 58
+const LBRACKET = 91
+const RBRACKET = 93
+const LBRACE = 123
+const RBRACE = 125
+const MINUS = 45
+const PLUS = 43
+const DOT = 46
+const ZERO = 48
+const NINE = 57
+const LOWER_E = 101
+const UPPER_E = 69
+
+const isSpace = (c: number) => c === 32 || c === 10 || c === 13 || c === 9
+
+/** A number read from `s[from, to)`, as `Number()` would read it: exactly, by the fast path when it applies. */
+export function readNumber(s: string, from: number, to: number): number {
+  let i = from
+  let neg = false
+  let c = s.charCodeAt(i)
+  if (c === MINUS || c === PLUS) {
+    neg = c === MINUS
+    i++
+  }
+  let mantissa = 0
+  let digits = 0
+  let scale = 0
+  let seenDigit = false
+  for (; i < to; i++) {
+    c = s.charCodeAt(i)
+    if (c >= ZERO && c <= NINE) {
+      seenDigit = true
+      if (digits > 0 || c !== ZERO) digits++
+      mantissa = mantissa * 10 + (c - ZERO)
+    } else break
+  }
+  if (i < to && c === DOT) {
+    for (i++; i < to; i++) {
+      c = s.charCodeAt(i)
+      if (c >= ZERO && c <= NINE) {
+        seenDigit = true
+        if (digits > 0 || c !== ZERO) digits++
+        mantissa = mantissa * 10 + (c - ZERO)
+        scale--
+      } else break
+    }
+  }
+  if (i < to || !seenDigit || digits > 15 || -scale > 22) {
+    // An exponent, more than 15 significant digits, or not a plain decimal: Number() reads it.
+    return Number(s.slice(from, to))
+  }
+  const v = scale === 0 ? mantissa : mantissa / POW10[-scale]!
+  return neg ? -v : v
+}
+
+/** A sample value from the text between its quotes. */
+function readValue(s: string, from: number, to: number): number {
+  const n = to - from
+  if (n === 3 && s.startsWith('NaN', from)) return NaN
+  if (n === 4 && s.charCodeAt(from + 1) === 73 /* I */) {
+    if (s.startsWith('+Inf', from)) return Infinity
+    if (s.startsWith('-Inf', from)) return -Infinity
+  }
+  if (n === 3 && s.startsWith('Inf', from)) return Infinity
+  // An empty string or text that is not a number is NaN, as Number() reads it... but Number('') is 0:
+  // a value of "" is not something an API sends, and the fallback path would give the same 0.
+  return readNumber(s, from, to)
+}
+
+/** Growable pair of Float64Arrays. */
+class Samples {
+  times: Float64Array
+  values: Float64Array
+  n = 0
+  constructor(capacity: number) {
+    this.times = new Float64Array(capacity)
+    this.values = new Float64Array(capacity)
+  }
+  push(t: number, v: number): void {
+    if (this.n === this.times.length) {
+      const times = new Float64Array(this.n * 2)
+      times.set(this.times)
+      this.times = times
+      const values = new Float64Array(this.n * 2)
+      values.set(this.values)
+      this.values = values
+    }
+    this.times[this.n] = t
+    this.values[this.n++] = v
+  }
+}
+
+const enum Mode {
+  /** The envelope around `data.result`: scanned for its place, kept as text. */
+  Outside,
+  /** Inside `data.result`, between series. */
+  Result,
+  /** Inside a series object, between its keys. */
+  Series,
+  /** Inside a series' `values` array, between pairs. */
+  Values,
+  /** After `data.result` closed: the rest of the envelope. */
+  After,
+  /** The fast path gave up: only collecting text for JSON.parse. */
+  Failed,
+}
+
+/** One container of the envelope outside `result`: its kind and, for an object, the key whose value comes next. */
+interface Frame {
+  object: boolean
+  key: string | null
+  /** In an object: true when a key (not a value) comes next. */
+  expectKey: boolean
+}
+
+export class MatrixParser {
+  private readonly chunks: string[] = []
+  /** Text not yet consumed: the tail of what arrived, from the start of an incomplete unit. */
+  private pending = ''
+  /** Characters of the body before `pending`. */
+  private consumed = 0
+  private mode: Mode = Mode.Outside
+  /** The envelope's text with the series left out (`"result":[]`), parsed at the end. */
+  private outside: string[] = []
+  private readonly stack: Frame[] = []
+  private readonly series: ParsedSeries[] = []
+  /** The series being read. */
+  private metric: Metric | null = null
+  private samples: Samples | null = null
+  private valuesAt: [number, number] = [0, 0]
+  private seenValues = false
+  /** Samples per series of the first series: the starting capacity of the next. */
+  private capacity = 256
+  /** Outside: the start of the string being scanned, or -1. */
+  private outsideString = -1
+
+  /** Feed the next piece of the body. */
+  push(chunk: string): void {
+    if (chunk === '') return
+    this.chunks.push(chunk)
+    if (this.mode === Mode.Failed) return
+    const s = this.pending === '' ? chunk : this.pending + chunk
+    const base = this.consumed
+    let i = 0
+    try {
+      i = this.run(s, base)
+    } catch {
+      this.mode = Mode.Failed
+      return
+    }
+    this.pending = i < s.length ? s.slice(i) : ''
+    this.consumed = base + i
+  }
+
+  /** The whole body has arrived: the parsed matrix, or NotAMatrix with the parsed body. */
+  finish(): ParsedMatrix {
+    const text = this.chunks.join('')
+    if (this.mode === Mode.After && this.pending.trim() === '') {
+      let envelope: unknown
+      try {
+        envelope = JSON.parse(this.outside.join(''))
+      } catch {
+        envelope = undefined
+      }
+      const e = envelope as { status?: unknown; data?: { resultType?: unknown; result?: unknown }; warnings?: unknown; infos?: unknown } | undefined
+      if (e && e.status === 'success' && e.data && e.data.resultType === 'matrix' && Array.isArray(e.data.result) && e.data.result.length === 0) {
+        return { series: this.series, warnings: strings(e.warnings), infos: strings(e.infos), text, fast: true }
+      }
+    }
+    return fromJson(text)
+  }
+
+  /** Consume as much of `s` as forms complete units; returns where the first incomplete one starts. */
+  private run(s: string, base: number): number {
+    let i = 0
+    const n = s.length
+    while (i < n) {
+      switch (this.mode) {
+        case Mode.Outside:
+        case Mode.After: {
+          const j = this.scanOutside(s, i)
+          if (j < 0) return n // all of it was taken into `outside`
+          i = j
+          break
+        }
+        case Mode.Result: {
+          while (i < n && isSpace(s.charCodeAt(i))) i++
+          if (i >= n) return i
+          const c = s.charCodeAt(i)
+          if (c === LBRACE) {
+            this.metric = null
+            this.samples = null
+            this.seenValues = false
+            this.mode = Mode.Series
+            i++
+          } else if (c === COMMA && this.series.length > 0) i++
+          else if (c === RBRACKET) {
+            // `result` is closed: the rest is envelope again.
+            this.outside.push(']')
+            this.stack.length > 0 && (this.top().expectKey = true)
+            this.mode = Mode.After
+            i++
+          } else throw new Error('unexpected character in result')
+          break
+        }
+        case Mode.Series: {
+          while (i < n && isSpace(s.charCodeAt(i))) i++
+          if (i >= n) return i
+          const c = s.charCodeAt(i)
+          if (c === COMMA) {
+            i++
+            continue
+          }
+          if (c === RBRACE) {
+            if (!this.metric || !this.samples) throw new Error('series without metric or values')
+            const k = this.samples.n
+            this.series.push({ metric: this.metric, times: this.samples.times.subarray(0, k), values: this.samples.values.subarray(0, k), valuesAt: this.valuesAt })
+            if (this.series.length === 1) this.capacity = Math.max(16, k)
+            this.mode = Mode.Result
+            i++
+            continue
+          }
+          if (c !== QUOTE) throw new Error('expected a key')
+          // A key and its colon: "metric" or "values".
+          const close = s.indexOf('"', i + 1)
+          if (close < 0) return i
+          const key = s.slice(i + 1, close)
+          let j = close + 1
+          while (j < n && isSpace(s.charCodeAt(j))) j++
+          if (j >= n) return i
+          if (s.charCodeAt(j) !== COLON) throw new Error('expected a colon')
+          j++
+          while (j < n && isSpace(s.charCodeAt(j))) j++
+          if (j >= n) return i
+          if (key === 'metric') {
+            const end = objectEnd(s, j)
+            if (end < 0) return i
+            this.metric = JSON.parse(s.slice(j, end)) as Metric
+            i = end
+          } else if (key === 'values' && !this.seenValues) {
+            if (s.charCodeAt(j) !== LBRACKET) throw new Error('values is not an array')
+            this.seenValues = true
+            this.samples = new Samples(this.capacity)
+            this.valuesAt = [base + j, -1]
+            this.mode = Mode.Values
+            i = j + 1
+          } else throw new Error(`a series key this parser does not read: ${key}`)
+          break
+        }
+        case Mode.Values: {
+          // The hot loop: pairs [number, "string"], separated by commas, until `]`.
+          const samples = this.samples!
+          for (;;) {
+            let c = s.charCodeAt(i)
+            while (isSpace(c)) c = s.charCodeAt(++i)
+            if (i >= n) return i
+            if (c === COMMA && samples.n > 0) {
+              c = s.charCodeAt(++i)
+              while (isSpace(c)) c = s.charCodeAt(++i)
+              if (i >= n) return i - 1
+            }
+            if (c === RBRACKET) {
+              this.valuesAt[1] = base + i + 1
+              this.mode = Mode.Series
+              i++
+              break
+            }
+            if (c !== LBRACKET) throw new Error('expected a sample')
+            const start = i
+            // The time: up to the comma.
+            let j = i + 1
+            while (j < n && isSpace(s.charCodeAt(j))) j++
+            const t0 = j
+            for (; j < n; j++) {
+              const d = s.charCodeAt(j)
+              if (d === COMMA || isSpace(d)) break
+            }
+            if (j >= n) return start
+            const t1 = j
+            while (j < n && isSpace(s.charCodeAt(j))) j++
+            if (j >= n) return start
+            if (s.charCodeAt(j) !== COMMA) throw new Error('expected a comma in a sample')
+            j++
+            while (j < n && isSpace(s.charCodeAt(j))) j++
+            if (j >= n) return start
+            if (s.charCodeAt(j) !== QUOTE) throw new Error('expected a quoted value')
+            const v0 = j + 1
+            let v1 = v0
+            for (; v1 < n; v1++) {
+              const d = s.charCodeAt(v1)
+              if (d === QUOTE) break
+              if (d === BACKSLASH) throw new Error('an escape in a sample value')
+            }
+            if (v1 >= n) return start
+            j = v1 + 1
+            while (j < n && isSpace(s.charCodeAt(j))) j++
+            if (j >= n) return start
+            if (s.charCodeAt(j) !== RBRACKET) throw new Error('expected the end of a sample')
+            if (t1 === t0) throw new Error('an empty time')
+            const t = readNumber(s, t0, t1)
+            if (t !== t) throw new Error('a time that is not a number')
+            samples.push(t, readValue(s, v0, v1))
+            i = j + 1
+          }
+          break
+        }
+        default:
+          return n
+      }
+    }
+    return i
+  }
+
+  private top(): Frame {
+    return this.stack[this.stack.length - 1]!
+  }
+
+  /**
+   * Scan the envelope from `i`: copy it to `outside`, follow containers and keys, and stop
+   * after `"result":[` inside the top-level `data`. Returns where scanning stopped, or -1
+   * when everything given was consumed.
+   */
+  private scanOutside(s: string, i: number): number {
+    const n = s.length
+    let from = i
+    while (i < n) {
+      const c = s.charCodeAt(i)
+      if (this.outsideString >= 0) {
+        // Inside a string (possibly begun in an earlier piece).
+        if (c === BACKSLASH) {
+          if (i + 1 >= n) {
+            this.outside.push(s.slice(from, i))
+            return i
+          }
+          i += 2
+          continue
+        }
+        if (c === QUOTE) {
+          const frame = this.stack[this.stack.length - 1]
+          if (frame && frame.object && frame.expectKey) {
+            // A key: remembered whole (keys are short; one split across pieces is re-read).
+            const keyText = this.keyText + s.slice(this.outsideString, i)
+            frame.key = JSON.parse(`"${keyText}"`) as string
+            frame.expectKey = false
+          }
+          this.keyText = ''
+          this.outsideString = -1
+        }
+        i++
+        continue
+      }
+      if (c === QUOTE) {
+        this.outsideString = i + 1
+        this.keyText = ''
+        i++
+        continue
+      }
+      if (c === LBRACE || c === LBRACKET) {
+        // `"result": [` in the top-level `data` object: the series start here.
+        const frame = this.stack[this.stack.length - 1]
+        if (c === LBRACKET && this.mode === Mode.Outside && frame && frame.object && frame.key === 'result' && this.stack.length === 2 && this.stack[0]!.key === 'data') {
+          this.outside.push(s.slice(from, i + 1))
+          this.mode = Mode.Result
+          return i + 1
+        }
+        this.stack.push({ object: c === LBRACE, key: null, expectKey: c === LBRACE })
+      } else if (c === RBRACE || c === RBRACKET) {
+        this.stack.pop()
+      } else if (c === COMMA) {
+        const frame = this.stack[this.stack.length - 1]
+        if (frame && frame.object) frame.expectKey = true
+      }
+      i++
+    }
+    if (this.outsideString >= 0) {
+      // A string runs on into the next piece: keep what there is of a key.
+      this.keyText += s.slice(this.outsideString, n)
+      this.outsideString = 0
+    }
+    this.outside.push(s.slice(from, n))
+    return -1
+  }
+  private keyText = ''
+}
+
+/** The end (exclusive) of the JSON object starting at `i`, or -1 if it is not all in `s`. */
+function objectEnd(s: string, i: number): number {
+  if (s.charCodeAt(i) !== LBRACE) throw new Error('expected an object')
+  let depth = 0
+  const n = s.length
+  for (; i < n; i++) {
+    const c = s.charCodeAt(i)
+    if (c === QUOTE) {
+      for (i++; i < n; i++) {
+        const d = s.charCodeAt(i)
+        if (d === BACKSLASH) i++
+        else if (d === QUOTE) break
+      }
+      if (i >= n) return -1
+    } else if (c === LBRACE || c === LBRACKET) depth++
+    else if (c === RBRACE || c === RBRACKET) {
+      depth--
+      if (depth === 0) return i + 1
+    }
+  }
+  return -1
+}
+
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+
+/** The slow path: JSON.parse, then the same typed arrays. Throws NotAMatrix for any other body. */
+export function fromJson(text: string): ParsedMatrix {
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    throw new NotAMatrix(undefined)
+  }
+  const e = body as { status?: unknown; data?: { resultType?: unknown; result?: unknown }; warnings?: unknown; infos?: unknown }
+  if (!e || e.status !== 'success' || !e.data || e.data.resultType !== 'matrix' || !Array.isArray(e.data.result)) throw new NotAMatrix(body)
+  const series: ParsedSeries[] = []
+  for (const r of e.data.result as { metric?: Metric; values?: [number, string][] }[]) {
+    const values = Array.isArray(r.values) ? r.values : []
+    const times = new Float64Array(values.length)
+    const vs = new Float64Array(values.length)
+    for (let k = 0; k < values.length; k++) {
+      times[k] = Number(values[k]![0])
+      const v = values[k]![1]
+      vs[k] = v === '+Inf' || v === 'Inf' ? Infinity : v === '-Inf' ? -Infinity : Number(v)
+    }
+    series.push({ metric: r.metric ?? {}, times, values: vs, valuesAt: [-1, -1] })
+  }
+  return { series, warnings: strings(e.warnings), infos: strings(e.infos), text, fast: false }
+}
+
+/** Parse a whole body at once (tests, and bodies that arrive in one piece). */
+export function parseMatrix(text: string): ParsedMatrix {
+  const p = new MatrixParser()
+  p.push(text)
+  return p.finish()
+}
