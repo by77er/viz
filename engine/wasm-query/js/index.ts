@@ -21,7 +21,7 @@
  */
 import type { Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData } from '../../../contracts/engine'
 
-export const ABI_VERSION = 3
+export const ABI_VERSION = 5
 
 /** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
 export interface QueryLimits {
@@ -119,6 +119,12 @@ export interface Extract {
   series: number
   /** The part's series whose `series_id` is in another part's range (their key leaves out a label they carry). */
   strays: number
+  /**
+   * ABI 5: series some range selects whose `series_id` is in this part's range but whose key is
+   * another part's (another part's strays). With series files read by the part's id range, no
+   * part can see its own strays; if no part has a foreign series, there are none.
+   */
+  foreign: number
 }
 
 /** The fixed header of a leaf's answer (`engine/query` `LeafOutput`). */
@@ -281,6 +287,16 @@ export interface QueryEngine {
   cardinalityPart(seriesFiles: Uint8Array[], tailBatches: Uint8Array[], startMs: number, endMs: number, part: number, parts: number, caps: CardinalityCaps): Uint8Array
   /** Cardinality: merge the parts and render `/api/v1/status/tsdb` and `/api/v1/status/cardinality` (`data` objects, JSON text). */
   cardinalityReport(summaries: Uint8Array[], limit: number, startMs: number, endMs: number, lookbackStartMs: number, caps: CardinalityCaps): { tsdb: string; cardinality: string }
+  /**
+   * One part of a label call over leaves (ABI 4): what `labelNames` (`kind` 'names'),
+   * `labelValues` ('values', of `name`) or `series` ('series') list of the series whose
+   * `series_id` is in part `part` of `parts`, as the engine wrote it (JSON text), and the
+   * `series_id`s of the series listed: one list per `match[]` set for names and values (one
+   * when there is none), one for series. Parts are disjoint: their listings union to the whole
+   * and their series add up to the whole's. The ids let several calls over a part's files be
+   * counted exactly together (a series is in many files).
+   */
+  metaPart(kind: 'names' | 'values' | 'series', input: ScanInput, name: string, match: string[], minTs: number, maxTs: number, part: number, parts: number, limits?: QueryLimits): { json: string; ids: BigInt64Array[] }
   /** Size of the instance's linear memory now, which is also its peak: it only grows. */
   memoryBytes(): number
   /** How many times a WASM instance has been created (1, plus one per trap or reset). */
@@ -319,6 +335,7 @@ type Op =
   | 'viz_q_file_plan'
   | 'viz_q_sample_plan'
   | 'viz_q_part_plan'
+  | 'viz_q_meta_part'
 type Module = Exports & Record<Op, (ptr: number, len: number) => number>
 
 const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
@@ -590,7 +607,7 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
       const req = new Request().strs(without).count('part', part).count('parts', parts).ranges(ranges).files(seriesFiles).files(sampleFiles)
       return call('viz_q_extract', req, (payload) => {
         const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
-        return { rows: u64At(dv, 0), series: u64At(dv, 8), strays: u64At(dv, 16), batch: payload.slice(24) }
+        return { rows: u64At(dv, 0), series: u64At(dv, 8), strays: u64At(dv, 16), foreign: u64At(dv, 24), batch: payload.slice(32) }
       })
     },
     splitTails,
@@ -651,6 +668,25 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     },
     partPlan: (indexes, ranges, part, parts, gap = RANGE_GAP) =>
       call('viz_q_part_plan', new Request().u64(limit('gap', gap)).count('part', part).count('parts', parts).ranges(ranges).strs(indexes), json<FilePlan[]>),
+    metaPart: (kind, input, name, match, minTs, maxTs, part, parts, limits = DEFAULT_LIMITS) => {
+      const k = kind === 'names' ? 0 : kind === 'values' ? 1 : 2
+      const req = new Request().u8(k).limits(limits).i64(time('minTs', minTs)).i64(time('maxTs', maxTs)).count('part', part).count('parts', parts).str(name).strs(match).scan(input)
+      return call('viz_q_meta_part', req, (payload) => {
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        const k = dv.getUint32(0, true)
+        let p = 4
+        const ids: BigInt64Array[] = []
+        for (let s = 0; s < k; s++) {
+          const n = dv.getUint32(p, true)
+          p += 4
+          const set = new BigInt64Array(n)
+          for (let i = 0; i < n; i++) set[i] = dv.getBigInt64(p + 8 * i, true)
+          p += 8 * n
+          ids.push(set)
+        }
+        return { ids, json: text.decode(payload.subarray(p)) }
+      })
+    },
     memoryBytes: () => (x ? x.memory.buffer.byteLength : 0),
     instances: () => created,
     reset: () => {

@@ -121,6 +121,38 @@ const last = new DataView(sel[0].values.buffer).getBigUint64(8 * 20, true)
 check('select: the marker comes back bit for bit', sel.length === 1 && sel[0].ts.length === 21 && last === STALE, last.toString(16))
 check('plan', JSON.stringify(engine.plan('rate(up[1m])', T, T + 60_000, 15_000)) === JSON.stringify([{ matchers: [{ name: '__name__', op: '=', value: 'up' }], minTs: T - 59_999, maxTs: T + 60_000 }]))
 check('labelNames / labelValues / series', engine.labelNames(input, [], 0, T + 10 ** 9).join() === '__name__,instance,job' && engine.labelValues(input, 'instance', ['up'], 0, T + 10 ** 9).join() === 'a' && engine.series(input, ['up'], 0, T + 10 ** 9).length === 1)
+{
+  // ABI 4: a label call over parts lists each part's series; the parts union to the whole and their counts add up.
+  const whole = { names: engine.labelNames(input, [], 0, T + 10 ** 9), values: engine.labelValues(input, '__name__', [], 0, T + 10 ** 9), series: engine.series(input, ['{job=~".+"}'], 0, T + 10 ** 9) }
+  let ok = true
+  const detail = []
+  for (const parts of [1, 2, 3, 8]) {
+    const got = { names: new Set(), values: new Set(), series: [] }
+    const sums = { names: 0, values: 0, series: 0 }
+    for (let part = 0; part < parts; part++) {
+      const n = engine.metaPart('names', input, '', [], 0, T + 10 ** 9, part, parts)
+      const v = engine.metaPart('values', input, '__name__', [], 0, T + 10 ** 9, part, parts)
+      const s = engine.metaPart('series', input, '', ['{job=~".+"}'], 0, T + 10 ** 9, part, parts)
+      for (const x of JSON.parse(n.json)) got.names.add(x)
+      for (const x of JSON.parse(v.json)) got.values.add(x)
+      got.series.push(...JSON.parse(s.json))
+      sums.names += n.ids[0].length
+      sums.values += v.ids[0].length
+      sums.series += s.ids[0].length
+    }
+    const same = [...got.names].sort().join() === whole.names.join() && [...got.values].sort().join() === whole.values.join() && got.series.length === whole.series.length && sums.series === whole.series.length && sums.names === sums.series && sums.values === sums.series
+    if (!same) ok = false
+    detail.push(`${parts}: ${sums.series} series`)
+  }
+  check('metaPart: parts union to the whole listing, counts add up', ok, detail.join(', '))
+  let refused = false
+  try {
+    engine.metaPart('values', input, 'job', [], 0, T + 10 ** 9, 0, 1, { ...DEFAULT_LIMITS, maxSeries: 1 })
+  } catch (e) {
+    refused = e instanceof QueryError && e.limit?.name === 'max_series'
+  }
+  check('metaPart: a part over its cap is a typed max_series error', refused)
+}
 check('scanRows on an unparsable fragment is unknown, never "skip"', engine.scanRows(['?'], [])[0] === null && engine.filesNeeded(['?'], [])[0] === true)
 // Series-level pruning (ABI 3). A fragment with row-group series bounds and a footer location.
 const frag = JSON.stringify({ v: 1, rg: [0, 1, 2, 3].map((g) => ({ rows: 100, off: 4 + 1000 * g, len: 1000, min_name: 'up', max_name: 'up', min_ts: T, max_ts: T + 600_000, sid: [g * 2 ** 50, g * 2 ** 50 + 999] })), foot: [4004, 500] })

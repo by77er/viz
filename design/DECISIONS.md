@@ -1574,8 +1574,9 @@ values copied as bytes), at most `maxBytes` a page, with `page.next` bound to th
 incarnation, watermark and filter, through the end fixed by the first page. A batch whose kept
 rows do not fit a page is refused (`page_limit`), never cut. Without options the answer is as
 before; an older shard ignores options, so `page` in the answer is how a caller knows. An
-answer without `page` in the middle of a paged read is the whole tail: the caller drops the
-pages it has and uses that answer alone. A new filter field comes with `v` 2, because a `v` 1
+answer without `page` in the middle of a paged read is the whole tail: the caller either drops
+the pages it has and uses that answer alone, or refuses the read retryably and plans again;
+never mixes the two (the query coordinator refuses with 503, D54). A new filter field comes with `v` 2, because a `v` 1
 shard ignores fields it does not know and still pages (review of D47, D48 and D55, P-9;
 `shard/README.md`, "Needed changes elsewhere").
 
@@ -1835,6 +1836,107 @@ wrangler can upload a version with secrets read from stdin (then code and key go
 or more generated secrets appear (they join `GENERATED_SECRETS`, and one `versions secret bulk`
 replaces one put per secret).
 
+## D54. The query coordinator reads each shard's tail filtered and paged under one byte budget for all shards; split parts read the rest in their key range, to an end fixed before the split, only when it does not fit
+
+*Revised 2026-11-19 after the adversarial review of D54, D56 and D59
+([`reviews/d54-d56-d59.md`](reviews/d54-d56-d59.md), M-1 to M-3, m-1 to m-3, m-7). This entry
+replaces the earlier D54 of the same day, which gave each shard's read the whole budget, let
+parts read "to the shard's end" when the coordinator's first page did not fit, cut a tail that
+fit in the engine, and did not bound the parts that read the rest.*
+
+**Decision.** Every tail read from `query/` passes the shard's `TailReadOptions` (D48): the hull
+of the read's times, its metric names when every range pins one, and the label values every
+range pins (the cardinality report sends no filter: it counts a tail series by the span of its
+rows in each batch, which a time filter changes at the window's edges). Pages are followed to the
+end under the read's byte budget (one place: `maxFetchBytes` minus the files; split execution,
+label endpoints, the report: `maxFetchBytes`), and **that budget is one for all the shards of the
+read** (`readShared`): the reads start in parallel, each under an equal share of what is left;
+then, one at a time in shard-name order, each read that stopped at its share goes on with what
+the others left. Held together they never pass the budget, and whether they fit never depends on
+which shard answered first. A refusal on any page re-plans or fails exactly as on the first; a
+page that does not advance the read, and a page asked for past the query's deadline, are refused
+(503). **The coordinator reads first** and cuts what it read by split key **in JavaScript**
+(`cutByKey`: bytes copied; the key is the `series_id`, or, for a series that carries a label the
+key leaves out, the FNV-1a hash of its other labels, as the engine computes it), letting each
+batch go as it is cut. When the tail fits, each part gets its cut. When it does not, and the
+query decomposes over a split key the shards can cut (`without` at most `__type__`/`__unit__`),
+the query is split (from one place too): the coordinator **fixes each shard's end** (from the
+read's first page; when the first page did not fit, from the shard: `Shard.describe`, the
+stream's last sequence number, after checking that its incarnation is the one read and that it
+has not discarded above the read's watermark, else the query re-plans), and each part reads the
+rest of each shard's tail after the last batch the coordinator read **through that end**, with
+the filter and its key range, under its own `maxFetchBytes` (one budget over the shards, as
+above; a batch past the end neither counts nor is kept, and ends the read). It cuts its rows by
+split key and refuses the query if any belong to another part (a series carrying
+`__type__`/`__unit__`). **At most `maxTailReadParts` (16) parts** may read rests; past it the
+query is refused (422, naming the limit). A part over its byte cap makes the split **run again
+once** with `k` times as many parts (`k` ≥ 2, so the new key ranges nest in the old and the
+coordinator's cut is cut again, within `maxLeaves`, the pool and `maxTailReadParts`), else the
+query is refused (422). A query that cannot be split is refused with `max_fetch_bytes`. A shard of
+the previous release answers with its whole tail: the coordinator uses it as before; a part (the
+shard rolled back after the coordinator's read) applies the shard's own filter, key range
+included, to that answer, so only its rows count. A leaf of the previous release, which ignores
+the rest it is given, is refused (503).
+
+**Alternatives.** (a) Every split part always reads its own key range (shard/README.md "Needed
+changes" 2): no coordinator cap on the tail at all. (b) The coordinator always reads the whole
+tail and cuts it (before: refused above 16 MiB, and a shard's answer above 32 MiB cannot cross
+RPC at all). (c) When the tail does not fit, parts re-read it from the watermark and the
+coordinator drops what it read. (d) Cut in the engine (`splitTails`), as the first D54 did for a
+tail that fits; or only below a measured threshold. (e) A size probe (`describe`) before every
+read. (f) Learn the end from `page_limit` carrying `through` (additive in `v` 1) instead of a
+`describe` call. (g) Each part says the end it read to and the coordinator refuses (503) when
+they differ. (h) One budget split evenly over the shards (`cap / S` each). (i) Bound the shard's
+work by running the parts' rests one shard call at a time, or by having the shard serve a key
+range without scanning every batch.
+
+**Why.** A filtered read costs the shard a scan of its whole tail per call (D48, "Cost of it"),
+and the shard is the object that acknowledges writes: (a) makes every split query scan each
+shard's tail `L` times where one scan serves a tail that fits, and leaves the coordinator without
+the tail's size to choose `L`. (b) is the wall CARDINALITY.md measured. (c) scans and moves the
+coordinator's part twice. (d) held 6.2 to 6.4 times the tail in coordinator WASM memory
+(measured here, local workerd: 132.6 MiB for 21 MiB of 100,000 series; 31.63 MiB for 5.09 MiB
+of 20,000 and **98.06 MiB for 15.28 MiB of 60,000**, just under the cap, on the path kept as
+the safe one); the JavaScript cut is exact for every split key (tested against the engine's) and
+held the coordinator at 1.63 MiB of WASM for both, with the same answers, in a third to a half less
+time locally
+(`query/README.md`, "Measurements"), so a threshold buys nothing. (e) costs a call
+before every read; `describe` is called only when a first page did not fit. (f) changes the
+shard's answer, and a shard of the previous release would not carry it, so the call is needed
+during a deploy anyway; `describe` is a method of both releases. (g) fails queries that a fixed
+end answers. (h) calls a tail "over" when one shard holds most of it at a fraction of the cap.
+(i) does not lower the scanning: every stored batch spans the whole key space (one sender's
+scrape covers all its series), so no per-batch bound skips one for a key range. Without a fixed
+end, parts read different appends and a query answered a value no state held (review M-1: 110
+where the store held 80, then 120); without one budget the coordinator held 1.7 to 1.9 times its
+cap and a part 1.7 times its own (M-2); a split sized from a read that saw no page was refused
+(m-3). Measured here (local workerd, load 7.6 to 9.3; `query/README.md`, "Measurements"): with
+21 MiB unflushed, the previous release refused every call (`max_fetch_bytes`); with the cap raised
+it answered the one-series query in 267 ms and this release in 149 ms with identical bodies,
+reading 0.002 MiB of tail instead of 21; with 68 MiB unflushed (one scrape per request), every call
+of the previous release failed (an RPC answer over 32 MiB) and this release answered all but the
+label calls.
+
+**Cost of it.** A split whose tail does not fit asks each shard once from the coordinator (plus a
+`describe` when its first page did not fit, and a second round of pages when it stopped at its
+share) and once per part, and each part's read is a scan of the shard's tail for the tenant from
+where it starts: up to `1 + maxTailReadParts` scans of a shard per query, on the object that
+acknowledges writes; a re-split counts its parts against the same bound, and D59's rerun reads the
+rests again (twice the parts' scans). Measured here (local workerd, load 2.0 to 2.6): one part's
+read scanned the shard's whole tail for the tenant at 390 to 815 MiB/s, 12 to 30 ms at 10.6 MiB a
+shard and 45 to 69 ms at 34 MiB (two calls of at most 32 MiB, between which appends run); at the
+bound, 17 scans of a 34 MiB shard tail are 0.8 to 1.2 s of the shard's thread for one query (it
+was 1.5 to 2.3 s at 32 parts). On Cloudflare not measured. A tail whose series carry `__type__` or `__unit__` and does not fit is refused, not
+answered. Rows outside the query's ranges travel to the parts (the shard's filter is a superset)
+and are dropped there. The tail's series are estimated from the pages read.
+
+**Would change if.** Shards skip batches without scanning them (per-batch metadata, D48 (b): then
+(a) costs little and the coordinator need not read first); append latency and refusals measured
+on Cloudflare while split queries read a 20 to 50 MiB tail at 8 and 16 parts (the experiment the
+review names) show `maxTailReadParts` too loose or too tight; the split key stops leaving out
+`__type__`/`__unit__` for series that carry them, or shards can cut by a key that leaves labels
+out; or the tail contract moves into `contracts/` with an end in `page_limit` (then (f)).
+
 ## D55. The publisher re-bases a tenant from its newest checkpoint, else its base, streamed into SQLite; a re-base that cannot be read whole publishes nothing
 
 **Decision.** When the publisher meets a ledger incarnation it has no cursor in (a new tenant, a
@@ -1916,6 +2018,92 @@ publisher's CPU limit on Cloudflare (then progress kept across invocations, or a
 "Would change if" says); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
 files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
 part is checked on its own as it arrives, not only the totals at the end).
+
+## D56. The label endpoints are counted over leaves by ranges of `series_id`, each part listing its files in waves and counting distinct series by id
+
+**Decision.** `/labels`, `/label/<name>/values` and `/series` run in one place while the series
+files their window needs fit `maxFetchBytes` and the tail fits the coordinator (D54). Otherwise
+they are counted over `L` parts, as the cardinality report is (D32): part `j` lists the series
+whose `series_id` is in its key range, reading its row groups of every series file (from the
+fragments) in waves of at most half of `maxFetchBytes`, one engine call a wave, and its part of
+the tail. The engine returns, with each listing, the ids of the series it listed, so a series in
+many files counts once; the coordinator merges the parts' lists in the engine's order (UTF-8
+byte order) and adds their counts against `maxMetadataSeries`. The answer is byte-identical to
+one place. `L` is the series in the files over `cardinalitySplitAboveSeries`, at least 2.
+Prometheus' `limit` is applied to the merged list (the first `limit`, and its warning).
+
+**Alternatives.** (a) Each part reads its row groups in one engine call under a per-part byte
+cap. (b) A listing session kept in the engine (files added one by one, like a split leaf's
+gathering session). (c) Raise the cap for label calls and stay in one place. (d) Parts by file
+(each part some of the files): a series would be counted by several parts. (e) Cut each part's
+listing at `limit` in the engine.
+
+**Why.** A series file of under 100,000 series is one row group (D41), so (a) gives every part
+every file whole, and its cap refuses exactly where one place did (measured here: 190,000 series
+over an hour are 72 files and 18.71 MiB, each read whole by each of 4 parts). Waves bound what a
+part holds whatever the window. (b) is the same bound with more engine code and a session that
+dies with the instance; returning ids is a few lines. (c) is what the isolate cannot hold: one
+place held 61 to 64 MiB of WASM for these calls with 18.71 MiB read (local workerd). (d) cannot
+count distinct series without shipping them. (e) changes nothing the cap protects (the part's
+whole listing is still built) and is not exact for `/series` without a merge by label set.
+
+**Cost of it.** `L` parts read every series file of under 100,000 series `L` times (74.8 MiB for
+18.7 MiB at 4 parts; Cache API hits after the first) and decode its `series_id` column; locally
+the calls took 2 to 2.6 times one place with its cap raised (load 8 to 11). A part's ids live in
+its memory (8 bytes and a set entry per series of the part).
+
+**Would change if.** Series files are cut into more row groups by `series_id` (then each part
+reads its own range: `partPlan` already plans it); the metadata calls get an index of their own
+(label values per metric, written at flush); or Prometheus clients come to depend on `limit`
+shortening the work, not only the answer (then (e)).
+
+## D59. Split parts read their `series_id` range of the series files too, and the split runs again with whole series files if any part sees a series whose key is not its id, or cannot say
+
+*Revised 2026-11-19 after the adversarial review of D54, D56 and D59
+([`reviews/d54-d56-d59.md`](reviews/d54-d56-d59.md), B-1, reproduced): the earlier text took a
+reader's answer without `foreign` as "none", so during a deploy a split answered 200 without a
+series. This entry replaces it.*
+
+**Decision.** When a split's key is the `series_id` of every series that carries no
+`__type__`/`__unit__` (D54's "the shards can cut"), its readers read the series files by the
+part's id range (`part_plan`), as they read the sample files (D41). Every reader of this release
+counts the series it sees whose id is in its range but whose key is another part's (`foreign`,
+ABI 5) and always answers the count. A reader's answer without it (a reader of the previous
+release, which ignores the request and reads by name and time) makes its split leaf's count
+unknown (`foreignUnknown`), and a split leaf's statistics without a known count (a split leaf of
+the previous release) are unknown too. If any part saw a foreign series **or cannot say**, the
+coordinator drops the answers and runs the split again with the series files read by name and
+time.
+
+**Alternatives.** (a) Keep reading series files by name and time (every part reads every
+series file). (b) Read by id range only when the key leaves nothing out (`without` empty), where
+no series can be foreign: almost never for a `rate` under an aggregation, which leaves out
+`__type__`/`__unit__`. (c) Read by id range and ignore the check, as no ingest path adds
+`__type__` today. (d) Each part asks its neighbours for its strays. (e) Take a missing count as
+0 (the earlier text): an old reader's own part is whole, and it was assumed to vouch for nothing
+else.
+
+**Why (measured here, native, `engine/query/examples/series_ranges.rs`, load 8 to 9).** At
+1,000,000 series over 32 parts (a series file of ten row groups) the parts read 640.7 MiB of
+series files and spent 36.4 s of reader CPU by name and time, 82.5 MiB and 9.9 s by id range,
+with identical extracts; at 100,000 series (one row group a file) nothing changed, so (a) only
+costs where splits are already expensive. (c) answers wrong for a tenant whose clients send
+`__type__` (a part misses its own series whose id lies elsewhere: shown in
+`tests/series_ranges.rs`, and in the query suite, `query/test/review-d54.test.ts` m-4, where
+answering from the first run gives 2.40 for 9.07). The check is exact when every reader
+reports: a series a part misses is seen by the reader of the part its id is in. (e) breaks that
+during every deploy and rollback (contracts/COMPATIBILITY.md §1): the old reader of the id's part
+is the only one that sees the series, and its silence was read as "none" (review B-1:
+reproduced, 200 with 2.40 for 9.07); unknown fails closed. (d) is a second round of calls for a
+case that is rare.
+
+**Cost of it.** A split over series that carry `__type__`/`__unit__` reads twice (once by id
+range, then whole); so does every split by id range while a reader or split leaf of the previous
+release serves a part (during a deploy). Readers parse the labels of the series they see either
+way.
+
+**Would change if.** The split key stops leaving out `__type__`/`__unit__` (then nothing is
+foreign), or series files are written per part (then the check is moot).
 
 ## D60. Robust z and seasonal windows are stored as Float64 values in ring blocks on the interval grid; readers first: this release reads the format and writes the old one, and writing it turns on in the release after one with this reader has been deployed to production
 

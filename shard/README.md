@@ -326,7 +326,7 @@ In all: **30 of 32 killed**, R-12 and this one surviving.
 
 ## Needed changes elsewhere
 
-**`query/`** (the coordinator and the leaves; not edited here). What makes a query read only
+**`query/`** (done by D54: the coordinator and leaves pass filters and follow pages; an unpaged answer mid-read is refused retryably). What makes a query read only
 the tail it needs, and split leaves fetch only their key range:
 
 1. **Coordinator, `readTail`** (`query/src/coordinator.ts`). Call
