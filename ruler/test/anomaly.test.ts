@@ -663,7 +663,12 @@ describe('defaults across an upgrade (D33 replaced on 2026-11-19: robust z with 
     // The very document the author saved before the change.
     const again = ok(await r.stub.saveGroups(r.tenant, before20261119.input))
     expect(again.groups[0]!.rules.map((x) => x.key)).toEqual(OLD_RULES.map((x) => x.key))
-    expect((await storedRules(r)).map((x) => x.anomaly)).toEqual(OLD_RULES.map((x) => x.anomaly))
+    // Everything stored is kept but the size estimate, which is the stored form's: robust z and
+    // seasonal are smaller as Float64 ring blocks (`store.anomaly-state` v2) than as JSON.
+    const noSize = ({ stateBytesPerSeries: _s, ...a }: AnomalyRuleV2['anomaly']) => a
+    expect((await storedRules(r)).map((x) => noSize(x.anomaly))).toEqual(OLD_RULES.map((x) => noSize(x.anomaly)))
+    expect((await storedRules(r)).map((x) => x.anomaly.stateBytesPerSeries)).toEqual([OLD_RULES[0]!.anomaly.stateBytesPerSeries, 5332, 7995])
+    expect(OLD_RULES.map((x) => x.anomaly.stateBytesPerSeries)).toEqual([1400, 11768, 8340])
     expect(new Set((await r.rows()).map((x) => x.rule_key)), 'the detector state carried over').toEqual(keys)
     expect(again.warnings).toEqual(expect.arrayContaining([
       { path: 'groups[0].rules[0].anomaly.detector', message: 'this rule keeps detector ewma, the default when it was saved; a new rule would get robust_z with the quantile spread (design D33)', fix: expect.any(String) },
@@ -685,7 +690,7 @@ describe('defaults across an upgrade (D33 replaced on 2026-11-19: robust z with 
     expect(now.find((x) => x.name === 'Another')!.anomaly).toMatchObject({ detector: 'robust_z', params: { ...ROBUST_Z_DEFAULTS } })
     expect(named.warnings.filter((w) => w.path === 'groups[0].rules[0].anomaly.detector')).toEqual([])
     // robust_z and seasonal still named without a spread keep the MAD they were stored with throughout.
-    expect(now.slice(1, 3).map((x) => x.anomaly)).toEqual(OLD_RULES.slice(1).map((x) => x.anomaly))
+    expect(now.slice(1, 3).map((x) => noSize(x.anomaly))).toEqual(OLD_RULES.slice(1).map((x) => noSize(x.anomaly)))
   })
 
   it('through the monitors API: a monitor stored as EWMA (as one saved without a detector was) and edited with the detector left out, even renamed, stays EWMA; naming one changes it', async () => {
