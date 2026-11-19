@@ -125,13 +125,66 @@ export type AddUnitResult =
  * Replay rules. A retried unit is `ok` whenever the stream's watermark is already at or past
  * its `seqHi`, even if its files have since been compacted away. A unit for a shard the
  * ledger has never seen is admitted only with `seqLo === 1`; otherwise it is
- * `not_contiguous` with watermark 0. A retried `replace` is `ok` if every output is live and
- * no input is; otherwise it is judged as a new request.
+ * `not_contiguous` with watermark 0. (That path, and `registerStream` from flush after
+ * `incarnation_mismatch`, serve shards that do not register before they accept writes: shards
+ * of releases before D57, and shards whose registration mode is `lazy`. A shard that registers
+ * first never takes them.) A retried `replace` is `ok` if every output is live and no input
+ * is; otherwise it is judged as a new request.
  */
 
 export interface Watermark extends StreamRef {
   /** Highest sequence number whose rows are in listed files. */
   seq: number
+}
+
+/**
+ * What `registerStream` answers. Added as a named type with `logged` (2026-11-19, D57); the
+ * other two fields are as before.
+ */
+export interface RegisterResult {
+  /** The ledger's version after the call (unchanged by a retry of a registration it has). */
+  version: number
+  /** The incarnation the stream had before this one (null for a stream new to the ledger). */
+  previousIncarnation: number | null
+  /**
+   * True iff the stream's committed incarnation is `ref.incarnation` AND the change that
+   * registered it is in the LOGGED prefix of the change log (contracts/LEDGER-LOG.md), so no
+   * rebuild from the log can lose it. A shard accepts writes for a new stream only after this
+   * answer (registration before writes, D57): then every plan names every stream that holds
+   * acknowledged rows, whatever the ledger loses.
+   *
+   * Derived at call time from facts every release maintains, never stored: a committed
+   * registration is logged exactly when no `register_stream` change naming it is still pending
+   * in the outbox, because outbox rows leave only with the segment that holds them, or with a
+   * new incarnation whose base (in R2 first) holds their effect. So a rollback and roll-forward
+   * cannot leave it stale (design/reviews/registration-before-writes.md B-1).
+   *
+   * Additive (COMPATIBILITY.md §4): a ledger of an earlier release does not send it, and a
+   * caller that gets no `logged` must treat it as false. A fresh registration answers false (it
+   * was only committed); ask again once the ledger has drained (about 0.2–1 s).
+   */
+  logged?: boolean
+}
+
+/**
+ * A stream as `loggedWatermarks()` and `orphanCheck()` report it: `incarnation` is the stream's
+ * COMMITTED incarnation and `seq` the logged watermark of that incarnation (0 until a unit of it
+ * is logged), as before.
+ *
+ * Its own type, not a field of `Watermark`, because `Watermark` is also `Plan.watermarks` and
+ * `LedgerChange.watermark`, which is part of the R2 log's format (review m-8).
+ */
+export interface LoggedWatermark extends Watermark {
+  /**
+   * Added 2026-11-19 (D57), optional: a ledger of an earlier release does not send it. The
+   * newest incarnation of this stream whose registration the ledger knows to be in the logged
+   * prefix: `incarnation` once its registration is logged; while it is not, the incarnation
+   * registered before it if THAT registration is logged; else 0. Never above what the logged
+   * prefix holds (so no rebuild can take the stream below it); it may be below (two
+   * registrations of one stream pending at once), which only keeps old files longer.
+   * Derived from the outbox at call time, like `RegisterResult.logged`.
+   */
+  loggedIncarnation?: number
 }
 
 export interface PlanRequest {
@@ -223,11 +276,15 @@ export interface LedgerChange {
 
 export interface LedgerRpc {
   /**
-   * Register a stream (or a new incarnation of one). Idempotent for the same incarnation.
+   * Register a stream (or a new incarnation of one). Idempotent for the same incarnation, and
+   * answers whether the registration is logged (`RegisterResult.logged`): a caller that needs
+   * it logged (a shard before it accepts a new stream's writes) calls again until it is.
    * Throws for an incarnation lower than the registered one (see `StreamRef`): the return
    * type has no refusal, and a caller must never proceed as if a stale stream were registered.
+   * The incarnation the ledger has is in `loggedWatermarks()` (what a shard whose clock stepped
+   * back reads to start a newer stream: shard/README.md, "S5").
    */
-  registerStream(ref: StreamRef): Promise<{ version: number; previousIncarnation: number | null }>
+  registerStream(ref: StreamRef): Promise<RegisterResult>
   addUnit(unit: FlushUnit): Promise<AddUnitResult>
   plan(req: PlanRequest): Promise<Plan>
   /** Compaction: swap inputs for outputs iff every input is still live and the outputs' precedence ranges fit (`LiveFile`). */
@@ -238,9 +295,10 @@ export interface LedgerRpc {
    * Highest sequence per stream that is both committed and durably logged to R2, as of the
    * highest version ALL of whose predecessors are in R2 (the contiguous prefix of the log).
    * With the segment log it lags the committed watermark by up to one drain cycle
-   * (contracts/LEDGER-LOG.md). The only legitimate source of `Shard.recorded`.
+   * (contracts/LEDGER-LOG.md). The only legitimate source of `Shard.recorded`. Each entry also
+   * carries `loggedIncarnation` (D57; see `LoggedWatermark`).
    */
-  loggedWatermarks(): Promise<Watermark[]>
+  loggedWatermarks(): Promise<LoggedWatermark[]>
 }
 
 /** Operator and test surface. Not called on the data path. */
@@ -286,8 +344,8 @@ export interface OrphanCheck {
   live: string[]
   /** Of the keys asked about: those with a tombstone (their deletion goes through `deletable`). */
   tombstoned: string[]
-  /** Every stream's LOGGED watermark, read in the same instant as the two lists. */
-  logged: Watermark[]
+  /** Every stream's LOGGED watermark and (D57) logged incarnation, read in the same instant as the two lists. */
+  logged: LoggedWatermark[]
 }
 
 export interface LedgerJanitorRpc {
@@ -299,9 +357,20 @@ export interface LedgerJanitorRpc {
   removedSince(version: number, limit?: number): Promise<Tombstone[]>
   /**
    * For the orphan sweep: which of these keys the ledger knows, and how far each stream is
-   * logged, as ONE consistent read. A flush file that is neither live nor tombstoned and
-   * whose sequence range is at or below its stream's logged watermark can never become
-   * live (a unit for that range is answered as a replay).
+   * logged, as ONE consistent read. A flush file of incarnation `i` that is neither live nor
+   * tombstoned can never become live when
+   *
+   *   (a) `i` is the stream's incarnation and the file's sequence range is at or below its
+   *       logged watermark (a unit for that range is answered as a replay), or
+   *   (b) `loggedIncarnation` is newer than `i`: that registration is logged, so no rebuild
+   *       brings `i` back, and the ledger refuses a lower incarnation for good (`addUnit`
+   *       answers `incarnation_mismatch`, `registerStream` throws).
+   *
+   * A newer incarnation that is only COMMITTED proves nothing: a rebuild can roll its
+   * registration back and admit `i` again (spec/README.md F15). Without `loggedIncarnation`
+   * (a ledger before D57), (b) holds only when the newer incarnation's logged watermark is
+   * above 0, which proves its registration is logged (the rule of D30, which leaks files of an
+   * incarnation lost before its first logged unit: spec F16).
    */
   orphanCheck(keys: string[]): Promise<OrphanCheck>
 }

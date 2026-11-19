@@ -559,6 +559,28 @@ const MUTANTS = [
     find: '  c.warnings = [...(c.warnings ?? []), TRUNCATED]\n  return list.slice(0, limit)',
     replace: '  return list.slice(0, limit)',
   },
+  // ── 2026-11-19, split parts read their id range of the series files (ABI 5) ──
+  {
+    name: 'A part that saw a foreign series is ignored (the split is not run again with the series files read whole)',
+    tests: ['test/tail.test.ts'],
+    file: 'src/coordinator.ts',
+    find: "  if (seriesByPart && foreign > 0) return { status: 'foreign', count: foreign }",
+    replace: "  if (seriesByPart && foreign < 0) return { status: 'foreign', count: foreign }",
+  },
+  {
+    name: 'A reader does not report the foreign series it saw',
+    tests: ['test/tail.test.ts'],
+    file: 'src/leaf.ts',
+    find: '          if (ex.strays === 0) return { status: \'ok\', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs, foreign: ex.foreign }',
+    replace: '          if (ex.strays === 0) return { status: \'ok\', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs, foreign: 0 }',
+  },
+  {
+    name: 'A split leaf does not add up its readers\' foreign series',
+    tests: ['test/tail.test.ts'],
+    file: 'src/leaf.ts',
+    find: '            stats.foreign += answer.foreign ?? 0',
+    replace: '            stats.foreign += 0',
+  },
 ]
 
 function run(cmd, args, opts = {}) {

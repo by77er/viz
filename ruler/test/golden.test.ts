@@ -7,6 +7,7 @@
  */
 import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
+import { readAnomalyRows } from '../src/anomaly'
 import { indexPartition } from '../src/registry'
 import { exportRuleFile } from '../src/rulefile'
 import { bareRuleId } from '../src/ruler'
@@ -138,12 +139,16 @@ describe('golden formats', () => {
       history: rule.history,
       extended: exportRuleFile(ok(await stub.listGroups(tenant)).groups, { extensions: true }).yaml,
     })
-    expectGolden(file('store.anomaly-state'), {
+    // EWMA's state is still written as version 1 (version 2 is for robust z and seasonal), so the
+    // version 1 file is still produced by the real code; and the decoder reads it.
+    expectGolden('formats/store.anomaly-state.v1.json', {
       format: 'store.anomaly-state',
-      version: FORMATS['store.anomaly-state'],
+      version: 1,
       seriesKey: fingerprint({ service: 'checkout' }),
       rows: stored.state,
     })
+    const v1 = readAnomalyRows(stored.state.map((r) => ({ chunk: r.chunk as number, body: r.body as string })))
+    expect('error' in v1 ? v1.error : [...v1.series.keys()]).toEqual([fingerprint({ service: 'checkout' })])
     const firing = w.ingestCalls.flat().find((u) => u.status === 'firing')
     expect(firing, 'the anomaly fired').toBeDefined()
     expectGolden(file('annotation.anomaly-detail'), {
@@ -152,6 +157,39 @@ describe('golden formats', () => {
       labels: firing!.labels,
       annotations: firing!.annotations,
     })
+  })
+
+  it('robust z state as Float64 ring blocks (store.anomaly-state v2): the head, an implicit block and an explicit one, and the decoder reads them back', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN }, 'goldenring')
+    ok(await stub.saveGroups(tenant, {
+      groups: [{ name: 'anomalies/1m', interval: '1m', rules: [{ alert: 'LatencyRing', expr: 'latency_ms', anomaly: { detector: 'robust_z', params: { windowPoints: 30, minPoints: 5 }, max_series: 4 } }] }],
+    }))
+    let i = 0
+    w.evaluate = () => {
+      i++
+      // Two series; b is missing every seventh tick (a gap) and spikes once.
+      const a: [Record<string, string>, number] = [{ service: 'a' }, 100 + ((i * 37) % 7) - 3 + i / 8]
+      const b: [Record<string, string>, number] = [{ service: 'b' }, i === 50 ? 900 : 50 + ((i * 13) % 5) / 4]
+      return i % 7 === 0 ? vec(a) : vec(a, b)
+    }
+    // Enough ticks to cross a block boundary (60 slots) and leave a few points in the newest block.
+    for (let t = 0; t < 75; t++) {
+      world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+      expect(await runDurableObjectAlarm(stub)).toBe(true)
+    }
+    const rows = await runInDurableObject(stub, (_i, s) => s.storage.sql.exec('SELECT rule_key, chunk, body FROM anomaly_state WHERE tenant = ? ORDER BY rule_key, chunk', tenant).toArray())
+    const bodies = rows.map((r) => JSON.parse(r.body as string) as { v: number; part: string; series: Record<string, unknown>[] })
+    expect(bodies.map((b) => [b.v, b.part])).toEqual([[2, 'head'], ...bodies.slice(1).map(() => [2, 'block'])])
+    expect(bodies.slice(1).flatMap((b) => b.series.map((e) => ('x' in e ? 'x' : 'e')))).toEqual(expect.arrayContaining(['x', 'e']))
+    expectGolden(file('store.anomaly-state'), {
+      format: 'store.anomaly-state',
+      version: FORMATS['store.anomaly-state'],
+      seriesKeys: { a: fingerprint({ service: 'a' }), b: fingerprint({ service: 'b' }) },
+      rows: rows.map((r) => ({ chunk: r.chunk, body: r.body })),
+    })
+    const back = readAnomalyRows(rows.map((r) => ({ chunk: r.chunk as number, body: r.body as string })))
+    if ('error' in back) throw new Error(back.error)
+    expect([...back.series.values()].map((s) => [s.labels.service, (s.state as { t: number[] }).t.length]).sort()).toEqual([['a', 30], ['b', expect.any(Number)]])
   })
 
   it('SLO rules: the stored rule, its key and per-tick expression, the stored rings, the warm-up status, and the numbers an SLO alert carries', async () => {

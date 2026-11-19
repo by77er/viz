@@ -183,8 +183,8 @@ describe('bounds: series cap, state limits, rows per tick', () => {
     expect(bad).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.max_series' }] })
     const seasonal = await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '10s', rules: [{ alert: 'S', expr: LAT, anomaly: { detector: 'seasonal', params: { periodMs: 7 * 24 * 60 * MIN, seasons: 4 } } }] }] })
     expect(seasonal).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.params', message: expect.stringMatching(/bytes of state per series/) }] })
-    // 100 × about 18.8 KB (the default window as ring blocks) is over 1 MiB.
-    const perRule = await stub.saveGroups(tenant, { groups: [{ name: 'g', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', max_series: 100 } }] }] })
+    // 50 × about 24.8 KB (2,000 points as ring blocks) is over 1 MiB.
+    const perRule = await stub.saveGroups(tenant, { groups: [{ name: 'g', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', max_series: 50, params: { windowPoints: 2000 } } }] }] })
     expect(perRule).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.max_series', message: expect.stringMatching(/would exceed the 1048576-byte limit per rule/) }] })
   })
 
@@ -712,23 +712,30 @@ describe('defaults across an upgrade (D33 replaced on 2026-11-19: robust z with 
     expect((await get()).anomaly).toMatchObject({ detector: 'robust_z', params: { ...ROBUST_Z_DEFAULTS } })
   })
 
-  it('the 4,000-point configuration confirmed on SMD stays nameable: refused at save over the per-series state limit, with why and what fits; accepted where the operator raised the limit', async () => {
+  it('the 4,000-point configuration confirmed on SMD stays nameable: as Float64 ring blocks it fits the per-series state limit (22 series a rule); under a lower limit it is refused at save with why and what fits', async () => {
     const { tenant, stub } = await setup()
     const save = (anomaly: Record<string, unknown>) => stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly }] }] })
-    expect(await save({ detector: 'robust_z', params: { windowPoints: 4000 } })).toMatchObject({
+    // About 47 KB a series (68 blocks of 60 slots), whatever the values; 145 KB as JSON, which was refused.
+    const fits = ok(await save({ detector: 'robust_z', params: { windowPoints: 4000 } }))
+    expect(fits.warnings).toEqual([expect.objectContaining({ path: 'groups[0].rules[0].anomaly.max_series', message: expect.stringMatching(/^max_series defaults to 22 here, not 100: robust_z with these parameters may keep about 46996 bytes/) })])
+    expect(ok(await stub.listGroups(tenant)).groups[0]!.anomalyRules![0]!.anomaly).toMatchObject({ maxSeries: 22, stateBytesPerSeries: 46996 })
+    // Under a per-series limit it does not fit, the refusal says what it is and the longest window that fits.
+    const lowered = await setup({ limits: { maxAnomalyStateBytesPerSeries: 40_000 } })
+    expect(await lowered.stub.saveGroups(lowered.tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', params: { windowPoints: 4000 } } }] }] })).toMatchObject({
       status: 'invalid',
       errors: [{
         path: 'groups[0].rules[0].anomaly.params',
-        message: 'robust_z with these parameters keeps about 145400 bytes of state per series at a 1m interval; the limit is 65536. This is the configuration frozen on NAB and confirmed on SMD (42.8); its window is over this ruler\'s per-series state limit',
-        fix: expect.stringMatching(/^Use a shorter window: windowPoints 1500, the default, is the largest whose state fits 65,536 bytes a series for any values \(NAB held out 42.6, SMD 42.5 post hoc\)\. A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries\.$/),
+        message: 'robust_z with these parameters keeps about 46996 bytes of state per series at a 1m interval; the limit is 40000. This is the configuration frozen on NAB and confirmed on SMD (42.8); its window is over this ruler\'s per-series state limit',
+        fix: expect.stringMatching(/^Use a shorter window: at most 3361 points fit 40000 bytes a series; the default is 1500 \(NAB held out 42.6, SMD 42.5 post hoc\)\. A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries\.$/),
       }],
     })
-    const raised = await setup({ limits: { maxAnomalyStateBytesPerSeries: 160_000 } })
-    const okd = ok(await raised.stub.saveGroups(raised.tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', params: { windowPoints: 4000 } } }] }] }))
-    expect(okd.warnings).toEqual([expect.objectContaining({ path: 'groups[0].rules[0].anomaly.max_series', message: expect.stringMatching(/^max_series defaults to 7 here/) })])
+    // At the default limit, the longest window that fits is about 5,600 points.
+    expect(await save({ detector: 'robust_z', params: { windowPoints: 6000 } })).toMatchObject({ status: 'invalid', errors: [{ fix: expect.stringMatching(/^Use a shorter window: at most 5641 points fit 65536 bytes a series/) }] })
+    ok(await save({ detector: 'robust_z', params: { windowPoints: 5641 }, max_series: 1 }))
     // spread "mad", given: the library's own defaults, as before, and the evidence against it.
+    // (288 points as ring blocks: about 5.3 KB a series, so the default of 100 series fits and is not warned about.)
     const mad = ok(await save({ detector: 'robust_z', params: { spread: 'mad' } }))
-    expect(mad.warnings.map((w) => w.path)).toEqual(['groups[0].rules[0].anomaly.max_series', 'groups[0].rules[0].anomaly.params.spread'])
+    expect(mad.warnings.map((w) => w.path)).toEqual(['groups[0].rules[0].anomaly.params.spread'])
     expect(ok(await stub.listGroups(tenant)).groups[0]!.anomalyRules![0]!.anomaly.params).toMatchObject({ spread: 'mad', windowPoints: 288, k: 3.5 })
     // seasonal named without a spread: the configuration frozen on NAB and confirmed on SMD.
     const seasonal = ok(await save({ detector: 'seasonal', params: { periodMs: 60 * MIN } }))
