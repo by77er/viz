@@ -933,13 +933,13 @@ Things outside this directory that this component needs or exposes. Only the gat
 8. **`design/DESIGN.md`**: §3.1's `Tenant` row now says what this implementation holds (no
    read cache, no rule definitions: rule groups are the ruler's), done. §9's "revocable at
    the shard" is still open.
-9. **OAuth (D44)**: `deploy/` must generate the Worker secret `OAUTH_CLIENT_KEY` for viz-control
-   once (32 or more random characters, `wrangler secret put` from stdin, kept across deploys;
-   without it registration answers 503 and is not advertised) and keep `PUBLIC_URL` equal for
-   viz-control and viz-mcp (the issuer and the resource are built from it); `deploy/README.md`'s
-   route table needs the OAuth paths (the gateway routes them, `deploy/gateway`, done; that README
-   is another engineer's). `app/`: the consent page and the grants screen ("What the UI must
-   later show"), through design review.
+9. **OAuth (D44)**: (**deploy/**, done, D53: the release creates `OAUTH_CLIENT_KEY` for
+   viz-control when it is missing, with `wrangler versions secret put` from stdin before anything
+   is promoted, and never rotates it on its own; rotation is by hand, `deploy/README.md`. Not yet
+   run on Cloudflare.) Still open: keeping `PUBLIC_URL` equal for viz-control and viz-mcp (the
+   issuer and the resource are built from it) is not enforced by `deploy/configure.mjs`.
+   `app/`: the consent page and the grants screen ("What the UI must later show"), through
+   design review.
 
 ## Contract issues
 
