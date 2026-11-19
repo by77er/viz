@@ -17,8 +17,8 @@ and a TypeScript binding (`js/`) that implements the storage half of `contracts/
 
 ```
 ./build.sh                 # release, fat LTO, +simd128,+bulk-memory → js/viz_engine.wasm
-CARGO_TARGET_DIR=$PWD/target cargo test -j 2   # 6 native ABI tests
-npm install && npm test    # 18 tests in workerd
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2   # 7 native ABI tests
+npm install && npm test    # 19 tests in workerd
 node tools/same_metrics.mjs OLD_DIR              # metrics identical to an older build
 npx tsc --noEmit
 node tools/measure.mjs     # Node figures
@@ -97,8 +97,8 @@ of a wasm-bindgen build of the same thing.
 
 ## What is not implemented
 
-- **Compaction of spans and logs** (`mergeFiles` of those tables), and reading them: the read
-  path's engine is `engine/wasm-query`, not this module.
+- **Reading spans and logs**: the read path's engine is `engine/wasm-query`, not this module.
+  (Compaction of spans and logs is built: ABI 4, `mergeSignalFiles`, D68.)
 
 - **`queryRange`, `queryInstant`, `selectors`.** They throw
   `engine: <name> is not built yet (the PromQL crate is not linked into this module)`.

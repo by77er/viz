@@ -5,13 +5,15 @@ findings) and rewritten as draft 3; draft 3 was re-reviewed (12 findings) and am
 `REVIEW.md` lists what changed and what is still open.
 
 Status (2026-11-19): the backend described here is built and merged to `main`, with the
-clean-room TraceQL and LogQL engines (not yet wired into storage or the query Worker); its first
-production deploy is pending. Spikes S0–S5 and the S3/S4 re-runs were measured on Cloudflare,
+clean-room TraceQL and LogQL engines; its first production deploy is pending. Spikes S0–S5 and the S3/S4 re-runs were measured on Cloudflare,
 and staged copies of the deployment were trialled and destroyed (`VERIFICATION.md`,
 `deploy/README.md`). Figures not marked as measured are models, printed as ranges, and
-`VERIFICATION.md` names the experiment that would confirm or kill each. Spans and logs: their
-batches, ingest decoding (behind a flag) and Parquet writers are built (stage 1, 2026-11-19);
-flushing, recording and querying them is not (stage 2). Self-monitoring is proposed, not built.
+`VERIFICATION.md` names the experiment that would confirm or kill each. Spans and logs, on the
+development branch only: ingest decoding, shards, flush, the ledger, compaction (D68), Iceberg
+publication (D67) and the Tempo and Loki read APIs (D62) are built behind `INGEST_SIGNALS` and
+`QUERY_SIGNALS`, both off; their adversarial review (`reviews/signals-end-to-end.md`) found a
+blocker and six majors that are being fixed, and `QUERY_SIGNALS` stays off until its M-1 and M-2
+are. Self-monitoring is proposed, not built.
 
 ## 1. What viz is, and how it is deployed
 

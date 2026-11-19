@@ -7,8 +7,8 @@ change it here first; nothing else may redefine these.
 |---|---|
 | `BATCH.md` | The columnar batch: what `edge` produces, a shard stores opaquely, and the engine decodes. Signal 1 (metrics) is built; signals 2 (spans) and 3 (log records) are built through shards of their own pools (`{pool}/traces`, `{pool}/logs`), flush and the ledger (stage 2, behind `INGEST_SIGNALS`) |
 | `TABLES.md` | Parquet schemas, sort orders, partitioning and object keys for the metrics tables (and the keys of the span and log tables) |
-| `TRACES.md` | The `spans` table and `trace_index`: layout, sort, promoted attributes and index fragments settled and written by `engine/storage`; the read plan the TraceQL engine (`engine/traceql`) produces, and how missing values read. Flush, the ledger's listing and retention of these tables are built (stage 2); query and publication are proposed |
-| `LOGS.md` | The log-records table (stream id, labels, line, structured metadata, OTLP severity and trace ids), the OTLP and Loki push mappings, its sort, index fragment and token-filter format, and the `LogSource` read seam the LogQL engine (`engine/logql`) uses. Layout settled and written by `engine/storage`; flush, the ledger and retention built (stage 2); query and the token filter are proposed |
+| `TRACES.md` | The `spans` table and `trace_index`: layout, sort, promoted attributes and index fragments settled and written by `engine/storage`; the read plan the TraceQL engine (`engine/traceql`) produces, and how missing values read. Flush, the ledger's listing and retention of these tables are built (stage 2); compaction (D68) and Iceberg publication (D67) built; the query reader is built behind `QUERY_SIGNALS`, which stays off until the review's M-1 and M-2 are fixed |
+| `LOGS.md` | The log-records table (stream id, labels, line, structured metadata, OTLP severity and trace ids), the OTLP and Loki push mappings, its sort, index fragment and token-filter format, and the `LogSource` read seam the LogQL engine (`engine/logql`) uses. Layout settled and written by `engine/storage`; flush, the ledger and retention built (stage 2); compaction (D68), the token filter inside the file (D65) and Iceberg publication (D67) built; the query reader is built behind `QUERY_SIGNALS` (off), and no query reads the token filter yet |
 | `ledger.ts` | The tenant ledger's RPC surface: file precedence (`LiveFile`, which file wins a duplicate sample), the tombstone surface used for physical deletion, and (D61, registration before writes) whether a registration is logged (`RegisterResult.logged`) and each stream's logged incarnation (`LoggedWatermark`), both additive. Since stage 2 the ledger's tables are `LedgerTable` (`Table` stays the metric pair) and `dataKeyPrefix` names where a file of each lies |
 | `LEDGER-LOG.md` | The ledger's change log as batched segments written in the background: format, drain, checkpoints, truncation, readers. Built; replaced one object per change (whose keys `ledger.ts` keeps for readers) |
 | `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |
@@ -23,5 +23,5 @@ change it here first; nothing else may redefine these.
 
 Scope of the first build: **metrics** (float samples). Traces and logs, stage 1
 (2026-11-19): their batches, ingest decoding (behind `INGEST_SIGNALS`) and Parquet layout;
-stage 2 (2026-11-19) wires them through shards, flush and the ledger; query and publication
-are next.
+stage 2 (2026-11-19) wires them through shards, flush and the ledger; compaction (D68),
+publication (D67) and the query reader (D62, behind `QUERY_SIGNALS`, off) followed the same day.
