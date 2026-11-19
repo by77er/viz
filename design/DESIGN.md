@@ -13,7 +13,7 @@ viz is an observability store and frontend that runs entirely in one Cloudflare 
 
 - metrics, logs and traces in Parquet files on R2, published as Apache Iceberg tables;
 - PromQL and TraceQL, with the Prometheus and Tempo HTTP APIs so existing tools can point at
-  it, and a core LogQL subset for logs;
+  it, and LogQL for logs (`engine/logql`: most of Loki's language, with Loki's result shapes);
 - authenticated push (OTLP/HTTP, Prometheus Remote Write) and pull (scrape, adapters);
 - dashboards that agents and people both write and read;
 - monitors: rules, anomaly detection, agent-run investigations.
@@ -250,7 +250,7 @@ and time.
 | `metric_rollup_5m`, `_1h` | series per window | same | count, sum, min, max, last, reset-aware increase |
 | `spans` | span | `service_name, span_name, start_time` | hour partitions; promoted attributes + residual maps |
 | `trace_index` | trace per day | `trace_id` | root, start, duration, counts, and the **hour partitions** that hold its spans (logical references survive compaction) |
-| `logs` | record | `service_name, resource_fp, ts` | a small token filter per file, written at flush |
+| `logs` | record | `service_name, stream_id, ts, line` | `stream_id` hashes the stream labels as `series_id` does; labels as canonical JSON per row (dictionary-encoded), structured metadata, OTLP severity and trace ids; an advisory per-file token filter written at compaction (`contracts/LOGS.md`, proposed) |
 
 Native histograms share the samples layout and are added after float samples work. Flat
 rows are chosen over chunk blobs for openness and simplicity, pending the read-slice spike.
@@ -330,8 +330,8 @@ Worker can do it reliably. Managed compaction stays off: viz is the only writer.
 
 ### 6.1 Plan
 
-PromQL, TraceQL and the LogQL subset each parse to their own AST and lower to one logical
-plan. The tenant comes from the authenticated session and is injected into every scan, along
+PromQL, TraceQL and LogQL each parse to their own AST and lower to one logical
+plan (LogQL's vector operations run on the PromQL evaluator, D49). The tenant comes from the authenticated session and is injected into every scan, along
 with label-based access rules. A caller cannot omit it.
 
 1. One call to the tenant's ledger returns the ledger version, the partition index objects
@@ -386,6 +386,11 @@ is pinned near the bucket so that hits concentrate.
 - **TraceQL search:** conditions are pushed to sorted and promoted columns. Structural
   operators shuffle candidate spans by trace-id hash to leaves that join per trace. Queries
   are bounded by scanned bytes and return partial results with a cursor.
+- **Tables and engine:** the `spans` and `trace_index` tables are specified in
+  `contracts/TRACES.md` (proposed; storage does not write them yet). The TraceQL engine is
+  `engine/traceql` (clean-room, D35, D40): parser, read plan for pruning, search and metrics
+  evaluation over that table's logical view, Tempo HTTP API JSON. It is not yet wired into
+  storage, ingest or the query Worker (its README, "Integration").
 - **Logs:** sort order and statistics, then the per-file token filter. Scans beyond a byte
   budget return partial results with a cursor.
 
@@ -563,7 +568,7 @@ have to change.
 | 0. Spikes | The nine experiments in `VERIFICATION.md` §4, in order |
 | 1. Metrics | Remote Write and OTLP metrics, shard / flush / ledger, PromQL subset, Prometheus HTTP API, R2-native Iceberg publication, minimal UI |
 | 2. Traces and rules | Spans, trace index, TraceQL subset, Tempo API, rulers, notifications, dashboards and the MCP tools |
-| 3. Logs and detection | Logs, LogQL subset, scrape, anomaly tiers, agentic monitors |
+| 3. Logs and detection | Logs, LogQL, scrape, anomaly tiers, agentic monitors |
 | Later | Managed catalog publication, SQL passthrough, tenant adapter code, native histograms, foundation models, MCP Apps |
 
 ## 13. Risks
