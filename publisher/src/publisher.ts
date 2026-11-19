@@ -399,19 +399,33 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return this.serial(() => this.publishNow(tenants))
   }
 
-  /** A nudge: these tenants changed. The alarm publishes them after `publishIntervalMs`. */
+  /**
+   * A nudge: these tenants' ledgers changed. The alarm publishes them `publishIntervalMs`
+   * after the first nudge, so nudges coalesce into one commit per table. Cheap on purpose (one
+   * SQLite write and the alarm): its caller is a maintenance run, and the publisher must never
+   * slow anything upstream of it (D15).
+   */
   async notify(tenants: string[]): Promise<void> {
     this.guard()
     const now = this.now()
+    let any = false
     for (const t of tenants) {
       // `since` is the latest nudge: a publish clears only nudges older than its own start.
-      if (TENANT_ID.test(t)) this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET since = excluded.since`, t, now)
+      if (!TENANT_ID.test(t)) continue
+      this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET since = excluded.since`, t, now)
+      any = true
     }
-    if (this.pendingTenants().length > 0 && (await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(now + this.config().publishIntervalMs)
-    }
+    if (!any) return
+    // The first nudge sets the deadline; later ones never push it back.
+    this.dueNoLaterThan('publish', now + this.config().publishIntervalMs)
+    await this.rearm()
   }
 
+  /**
+   * The one alarm: whatever of publish, expiry and sweep is due, then the alarm again at the
+   * earliest deadline left, or none. At-least-once safe: each job is idempotent and reads what
+   * is due from storage.
+   */
   async alarm(): Promise<void> {
     const refused = refusalOf(this.schemaState)
     if (refused) {
@@ -421,10 +435,106 @@ export class Publisher extends DurableObject<PublisherEnv> {
     }
     const tenants = this.pendingTenants()
     if (tenants.length > 0) {
-      // A failure leaves the tenants pending; `scheduleAlarm` below sets the retry.
+      // Served now. A publish that leaves tenants pending (a failure, a hole, a backlog) sets
+      // the retry; a nudge that arrives meanwhile sets its own deadline.
+      this.clearDue('publish')
       await this.publish(tenants).catch(() => undefined)
+    } else this.clearDue('publish')
+    const now = this.now()
+    const isDue = (job: Job) => {
+      const at = this.dueAt(job)
+      return at !== null && at <= now
     }
-    await this.scheduleAlarm(true)
+    const expiring = TABLE_NAMES.filter((t) => isDue(`expire:${t}`))
+    if (expiring.length > 0) await this.runMaintenance(expiring, false).catch(() => undefined)
+    if (isDue('sweep')) await this.runMaintenance([], true).catch(() => undefined)
+    await this.rearm()
+  }
+
+  // ───────────────────────────── deadlines ─────────────────────────────
+
+  private dueAt(job: Job): number | null {
+    const r = this.sql.exec(`SELECT at FROM due WHERE job = ?`, job).toArray()[0]
+    return r ? (r.at as number) : null
+  }
+
+  private setDue(job: Job, at: number): void {
+    this.sql.exec(`INSERT INTO due (job, at) VALUES (?, ?) ON CONFLICT (job) DO UPDATE SET at = excluded.at`, job, at)
+  }
+
+  /** Due at `at`, or earlier if it already is. */
+  private dueNoLaterThan(job: Job, at: number): void {
+    this.sql.exec(`INSERT INTO due (job, at) VALUES (?, ?) ON CONFLICT (job) DO UPDATE SET at = MIN(at, excluded.at)`, job, at)
+  }
+
+  private clearDue(job: Job): void {
+    this.sql.exec(`DELETE FROM due WHERE job = ?`, job)
+  }
+
+  /** One alarm, at the earliest deadline; none when nothing is due. */
+  private async rearm(): Promise<void> {
+    const at = this.sql.exec(`SELECT MIN(at) AS at FROM due`).one().at as number | null
+    if (at === null) {
+      if ((await this.ctx.storage.getAlarm()) !== null) await this.ctx.storage.deleteAlarm()
+      return
+    }
+    // Deadlines are in the publisher's clock (`now()`); the alarm runs on the platform's.
+    await this.ctx.storage.setAlarm(Date.now() + Math.max(0, at - this.now()))
+  }
+
+  /**
+   * Inside the transaction of a commit (or of a resync that found another writer's): the
+   * objects that commit stopped referencing are swept after the grace period, and the table
+   * expires its old snapshots by itself if no later commit does.
+   */
+  private noteMetadata(cfg: PublisherConfig, table: Table, meta: TableMetadata, committed: boolean): void {
+    if (committed) this.dueNoLaterThan('sweep', this.now() + cfg.orphanGraceMs)
+    const at = expiryDeadline(meta, this.retention(cfg))
+    if (at === null) this.clearDue(`expire:${table}`)
+    else this.setDue(`expire:${table}`, at)
+  }
+
+  /** Snapshot expiry for `tables` and, with `sweep`, the orphan sweep of both tables; then their deadlines. */
+  private runMaintenance(tables: Table[], sweep: boolean): Promise<void> {
+    return this.serial(async () => {
+      const cfg = this.config()
+      const store = new CountingBucket(this.env.BUCKET)
+      for (const table of tables) {
+        try {
+          await this.expireWithRetries(store, cfg, table)
+        } catch (e) {
+          // Metadata a newer publisher wrote, or R2 failing: look again later, not in a loop.
+          this.setDue(`expire:${table}`, this.now() + cfg.orphanGraceMs)
+          throw e
+        }
+      }
+      if (sweep) {
+        try {
+          for (const table of TABLE_NAMES) await this.sweepTable(store, cfg, table)
+        } catch (e) {
+          this.setDue('sweep', this.now() + cfg.orphanGraceMs)
+          throw e
+        }
+        this.afterSweep(cfg)
+      }
+    })
+  }
+
+  /** After a sweep: due again when the oldest object it marked has served its grace, else not. */
+  private afterSweep(cfg: PublisherConfig): void {
+    const oldest = this.sql.exec(`SELECT MIN(since) AS since FROM orphan`).one().since as number | null
+    if (oldest === null) this.clearDue('sweep')
+    else this.setDue('sweep', oldest + cfg.orphanGraceMs)
+  }
+
+  private async expireWithRetries(store: CountingBucket, cfg: PublisherConfig, table: Table): Promise<number> {
+    for (let tries = 0; ; tries++) {
+      try {
+        return await this.expire(store, cfg, table)
+      } catch (e) {
+        if (!(e instanceof Conflict) || tries >= 2) throw e
+      }
+    }
   }
 
   /** Tenants with unpublished work that the alarm will retry. */
@@ -463,13 +573,14 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return this.sql.exec(`SELECT tenant FROM pending ORDER BY tenant`).toArray().map((r) => r.tenant as string)
   }
 
-  /** One alarm, only while something is pending. */
-  private async scheduleAlarm(fromAlarm = false): Promise<void> {
-    if (this.pendingTenants().length === 0) {
-      await this.ctx.storage.deleteAlarm()
-    } else if (fromAlarm || (await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(this.now() + this.config().retryMs)
-    }
+  /**
+   * After a publish: tenants still pending are retried `retryMs` later, unless a nudge has
+   * already set an earlier deadline; with none pending, nothing is due for publication.
+   */
+  private async afterPublish(cfg: PublisherConfig): Promise<void> {
+    if (this.pendingTenants().length === 0) this.clearDue('publish')
+    else this.dueNoLaterThan('publish', this.now() + cfg.retryMs)
+    await this.rearm()
   }
 
   private async publishNow(requested?: string[]): Promise<PublishResult> {
@@ -489,16 +600,18 @@ export class Publisher extends DurableObject<PublisherEnv> {
           if (done.has(t.tenant)) this.sql.exec(`DELETE FROM pending WHERE tenant = ? AND since <= ?`, t.tenant, t0)
           else if (t.status !== 'invalid') this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO NOTHING`, t.tenant, now)
         }
-        await this.scheduleAlarm()
+        await this.afterPublish(cfg)
         return { ...result, conflicts, ops: store.ops, ms: this.now() - t0 }
       } catch (e) {
+        // An attempt that stopped may have left objects nothing references: sweep them later.
+        this.dueNoLaterThan('sweep', this.now() + cfg.orphanGraceMs)
         if (!(e instanceof Conflict) || ++conflicts > 3) {
           // Whatever was asked for is still unpublished: make sure the alarm comes back.
           const now = this.now()
           for (const t of working) {
             if (TENANT_ID.test(t)) this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO NOTHING`, t, now)
           }
-          await this.scheduleAlarm()
+          await this.afterPublish(cfg)
           throw e
         }
       }
@@ -862,6 +975,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       )
       sql.exec(`INSERT INTO snap (tbl, snapshot_id, seq, files) VALUES (?, ?, ?, ?)`, table, snapshotId, seq, JSON.stringify([listKey, cursorsKey, ...manifests.map((m) => m.path)]))
       this.dropExpired(table, keptSnapshots, freeBelow, now)
+      this.noteMetadata(cfg, table, meta, true)
     })
     await this.step('state-saved', table)
     report.commitMs = this.now() - t0
@@ -999,6 +1113,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         sql.exec(`INSERT INTO snap (tbl, snapshot_id, seq, files) VALUES (?, ?, ?, ?)`, table, f.snapshot['snapshot-id'], f.snapshot['sequence-number'], JSON.stringify(f.files))
       }
       this.dropExpired(table, new Set(meta.snapshots.map((s) => s['snapshot-id'])), oldestSeq(meta), now)
+      this.noteMetadata(cfg, table, meta, false)
     })
   }
 
