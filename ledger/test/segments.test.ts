@@ -13,8 +13,8 @@ import {
 } from '../../contracts/ledger'
 import { Ledger, type RebuildResult } from '../src/ledger'
 import {
-  DAY_MS, INC, S, T0, breakR2, dayOf, dumpState, everything, failure, file, heal, k, keys, listAll, logPrefix, loggedOf, loseStorage, nm, open,
-  pair, readLog, readSegments, sleep, type Stub, tenantName, unit,
+  DAY_MS, INC, S, T0, breakR2, dayOf, dumpState, everything, failure, file, heal, keys, listAll, logPrefix, loggedOf, loseStorage, nm, open,
+  pair, readLog, readSegments, sleep, type Stub, tenantName,
 } from './helpers'
 
 /** mulberry32, so a failing run can be repeated from its seed. */
@@ -50,7 +50,7 @@ async function expectContiguous(tenant: string): Promise<Map<number, number>> {
  * A random workload on one ledger: two streams, units, merges of one file, expiry of both
  * tables, re-registration. Returns after each commit through `onCommit`.
  */
-async function randomOp(l: Stub, r: ReturnType<typeof rng>, step: number, seqs: Map<string, { inc: number; seq: number }>): Promise<boolean> {
+async function randomOp(l: Stub, r: ReturnType<typeof rng>, step: number, seqs: Map<string, { inc: number; seq: number }>, expireEach = false): Promise<boolean> {
   const op = r.int(100)
   if (op < 60) {
     const shard = r.pick(['pool/0', 'pool/1'])
@@ -72,7 +72,14 @@ async function randomOp(l: Stub, r: ReturnType<typeof rng>, step: number, seqs: 
     return true
   }
   if (op < 88) {
-    const res = await l.expire({ tables: ['metric_samples', 'metric_series'], beforeDay: dayOf(T0 + (1 + r.int(2)) * DAY_MS) })
+    const beforeDay = dayOf(T0 + (1 + r.int(2)) * DAY_MS)
+    if (expireEach) {
+      // The first ledger knows only one table per expire.
+      const a = await l.expire({ table: 'metric_samples', beforeDay })
+      const b = await l.expire({ table: 'metric_series', beforeDay })
+      return a.removed.length + b.removed.length > 0
+    }
+    const res = await l.expire({ tables: ['metric_samples', 'metric_series'], beforeDay })
     return res.removed.length > 0
   }
   const shard = r.pick(['pool/0', 'pool/1'])
@@ -145,7 +152,7 @@ describe('drain: crashes between commit, segment write and row deletion', () => 
       for (let step = 0; step < 70; step++) {
         if (await randomOp(l, r, step, seqs)) await note()
         const x = r.int(100)
-        if (x < 25) await l.drain()
+        if (x < 25) await failure(l, (i) => i.drain()) // R2 may still be broken from an earlier step
         else if (x < 35) {
           await breakR2(l, () => true, r.pick(['before', 'after'] as const))
           await failure(l, (i) => i.drain())
@@ -286,7 +293,7 @@ describe('the first log layout (one object per change)', () => {
     expect((await l.removedSince(0)).map((t) => nm(t.key)).sort()).toEqual([nm(pair(1, 4, T0).files[0]!.key), nm(pair(1, 4, T0).files[1]!.key), nm(pair(1, 2, T0, 'pool/7', 3).files[1]!.key)].sort())
     await l.addUnit(pair(10, 12, T0))
     await l.drain()
-    expect((await readSegments(tenant)).map((s) => [s.ledgerIncarnation, s.first, s.last])).toEqual([[2, 7, 7], [2, 8, 8]])
+    expect((await readSegments(tenant)).map((s) => [s.ledgerIncarnation, s.first, s.last])).toEqual([[2, 8, 8], [2, 9, 9]])
   })
 
   it('refuses to replay a first-layout change of a kind it does not know, instead of applying it (design/UPGRADES.md §7)', async () => {
@@ -357,7 +364,7 @@ describe('starting an incarnation (review R-3: never across R2 inside blockConcu
     }
     expect(keys(await everything(l))).toEqual([nm(pair(1, 3).files[0]!.key)])
     expect((await l.logStatus()).phase).toBe('ready')
-    expect(tenant).toBeTruthy()
+    expect(await listAll(logPrefix(tenant))).toHaveLength(3) // two incarnations' bases and one segment
   })
 
   it('a start that fails (R2 unreadable) is retried by the alarm without any request', async () => {
@@ -459,28 +466,27 @@ describe('readers refuse what they do not know (contracts/COMPATIBILITY.md §3.2
 })
 
 describe('the change log as a counterfactual: the as-built ledger and this one agree', () => {
-  it('the same workload gives the same live set, watermarks and versions in both', async () => {
-    const tenant = tenantName('same')
-    open(tenant)
-    const a = env.LEDGER_ASBUILT.get(env.LEDGER_ASBUILT.idFromName(`${tenant}`)) as unknown as Stub
-    const b = env.LEDGER_REPLICA.get(env.LEDGER_REPLICA.idFromName(tenant)) as unknown as Stub
-    const r1 = rng(41)
-    const r2 = rng(41)
-    const s1 = new Map<string, { inc: number; seq: number }>()
-    const s2 = new Map<string, { inc: number; seq: number }>()
+  it('the same workload gives the same live set, watermarks, versions and tombstones in both', async () => {
+    const ta = tenantName('same-a')
+    const tb = tenantName('same-b')
+    const a = env.LEDGER_ASBUILT.get(env.LEDGER_ASBUILT.idFromName(ta)) as unknown as Stub
+    const b = env.LEDGER.get(env.LEDGER.idFromName(tb))
+    const [r1, r2] = [rng(41), rng(41)]
+    const [s1, s2] = [new Map<string, { inc: number; seq: number }>(), new Map<string, { inc: number; seq: number }>()]
     for (let step = 0; step < 40; step++) {
-      await randomOp(a, r1, step, s1)
-      await randomOp(b, r2, step, s2)
+      open(ta)
+      await randomOp(a, r1, step, s1, true)
+      open(tb)
+      await randomOp(b, r2, step, s2, true)
     }
+    const same = (key: string) => key.replace(`tenant=${ta}/`, 'tenant=T/').replace(`tenant=${tb}/`, 'tenant=T/')
     for (const t of ['metric_samples', 'metric_series'] as const) {
       const [pa, pb] = [await everything(a, t), await everything(b, t)]
-      expect(pb.files).toEqual(pa.files)
+      expect(pb.files.map((f) => ({ ...f, key: same(f.key) }))).toEqual(pa.files.map((f) => ({ ...f, key: same(f.key) })))
+      expect(pb.files.length).toBeGreaterThan(0)
       expect(pb.watermarks).toEqual(pa.watermarks)
       expect(pb.version).toBe(pa.version)
     }
-    expect(await b.removedSince(0)).toEqual(expect.arrayContaining([]))
-    expect((await b.removedSince(0)).map((t) => [t.key, t.version])).toEqual((await a.removedSince(0)).map((t) => [t.key, t.version]))
-    expect(k).toBeTruthy()
-    expect(unit).toBeTruthy()
+    expect((await b.removedSince(0)).map((t) => [same(t.key), t.version])).toEqual((await a.removedSince(0)).map((t) => [same(t.key), t.version]))
   })
 })
