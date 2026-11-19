@@ -1,9 +1,14 @@
 // Mutation checks (AGENTS.md, "Tests must have teeth").
 //
-// Each mutant breaks one property in the source, on purpose. The script applies it, runs
-// the named test files, requires at least one test to fail, and restores the source.
+// Each mutant breaks one property in the source, on purpose. The script copies the component
+// (and the sibling sources it imports: contracts/, edge/src/, anomaly/src/) to a fresh scratch
+// directory, applies the mutant to the COPY, runs the named test files there, requires at least
+// one test to fail, and deletes the copy at the end. The shared tree is only read: others commit
+// and snapshot it while this runs (AGENTS.md, Evidence), and the script checks at the end that
+// every file it mutated is byte-identical in the shared tree to what it was at the start.
 // A mutant that survives, or whose pattern no longer matches the source, is printed and
 // makes the script exit non-zero: a stale pattern is a check that silently stopped running.
+// The scratch directory is $VIZ_SCRATCH if set, else the system temporary directory.
 //
 // A mutant is one or more edits: { file, find, replace }. `find` must occur exactly once.
 // Kills are read from vitest's JSON report, not from its console output.
@@ -13,12 +18,14 @@
 //   node scripts/mutants.mjs --list     print the list
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/** The component in the shared tree: read, never written. */
+const source = join(dirname(fileURLToPath(import.meta.url)), '..')
+const repo = join(source, '..')
 
 const one = (file, find, replace) => [{ file, find, replace }]
 
@@ -376,6 +383,24 @@ export const MUTANTS = [
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0
 
+/**
+ * A throw-away copy of the component and of what it imports from its siblings, at the same
+ * relative paths; node_modules is linked (read only). Mutants are applied here and only here.
+ */
+function makeCopy() {
+  const base = process.env.VIZ_SCRATCH ?? tmpdir()
+  mkdirSync(base, { recursive: true })
+  const dir = mkdtempSync(join(base, 'ruler-mutants-'))
+  for (const d of ['contracts', 'edge/src', 'anomaly/src']) cpSync(join(repo, d), join(dir, d), { recursive: true })
+  const skip = new Set(['node_modules', '.capture', '.wrangler'].map((d) => join(source, d)))
+  cpSync(source, join(dir, 'ruler'), { recursive: true, filter: (p) => ![...skip].some((s) => p === s || p.startsWith(`${s}/`)) })
+  symlinkSync(join(source, 'node_modules'), join(dir, 'ruler', 'node_modules'), 'dir')
+  return dir
+}
+const copy = process.argv.includes('--list') ? null : makeCopy()
+/** Where the tests run: the copy. */
+const root = copy ? join(copy, 'ruler') : source
+
 /** `npm run independent`: killed when a Go check fails (or the capture itself fails). */
 function runIndependent() {
   const r = spawnSync('npm', ['run', 'independent'], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, GOTOOLCHAIN: 'local' } })
@@ -419,6 +444,9 @@ if (process.argv.includes('--list')) {
 const only = process.argv.slice(2).map(Number).filter((n) => n > 0)
 let bad = 0
 let killed = 0
+/** Every shared-tree file a mutant edits, as it was before the run: checked unchanged at the end. */
+const sharedAtStart = new Map()
+for (const m of MUTANTS) for (const e of m.edits) if (!sharedAtStart.has(e.file)) sharedAtStart.set(e.file, readFileSync(join(source, e.file), 'utf8'))
 for (const [i, m] of MUTANTS.entries()) {
   if (only.length > 0 && !only.includes(i + 1)) continue
   const originals = new Map()
@@ -461,5 +489,14 @@ for (const [i, m] of MUTANTS.entries()) {
   if (!dead) console.log(r.out.split('\n').slice(-25).join('\n'))
 }
 const total = only.length || MUTANTS.length
-console.log(`\n${killed} killed, ${bad} survived or not applied, of ${total}`)
-process.exit(bad === 0 ? 0 : 1)
+if (copy) rmSync(copy, { recursive: true, force: true })
+let touched = 0
+for (const [file, text] of sharedAtStart) {
+  if (readFileSync(join(source, file), 'utf8') !== text) {
+    // Someone else changed it meanwhile, or a bug wrote here: either way, say so.
+    console.log(`shared tree: ${file} changed during the run (this script never writes there; check who did)`)
+    touched++
+  }
+}
+console.log(`\n${killed} killed, ${bad} survived or not applied, of ${total}; mutants applied in a scratch copy, deleted; shared tree ${touched === 0 ? 'unchanged' : `changed in ${touched} file(s)`}`)
+process.exit(bad === 0 && touched === 0 ? 0 : 1)

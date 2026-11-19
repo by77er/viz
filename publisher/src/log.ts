@@ -318,8 +318,10 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
         break
       }
       if (s.first <= prev.last) {
+        // Two segments claim the same versions: neither is trusted. Stop before both.
         status = 'corrupt'
         detail = `segments ${prev.first}-${prev.last} and ${s.first}-${s.last} of incarnation ${incarnation} overlap`
+        if (take.at(-1) === prev) take.pop()
         break
       }
     }

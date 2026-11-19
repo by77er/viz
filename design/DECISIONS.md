@@ -647,3 +647,72 @@ of each unreferenced output in the same read.
 version it judged, and age would do); the ledger gains intents or leases for other reasons;
 merges need more inputs than metadata holds (then the record moves to a sidecar object or
 the keys become step-unique, alternative (a)); or leftovers accumulate enough to matter.
+
+## D31. Split execution: leaves own ranges of series keys, aggregate exactly, and are counted by samples and by series
+
+**Decision.** A PromQL query whose every selector sits inside a decomposable aggregation
+(`sum`, `avg`, `count`, `group`, `min`, `max`, `stddev`, `stdvar`, `topk`, `bottomk`,
+`count_values` over a series-local argument) is split over `L` leaf Durable Objects when one
+isolate is not enough. Part `j` owns the series whose key (the `series_id`, or a hash of the
+labels the argument cannot change) falls in `[j·2^64/L, (j+1)·2^64/L)`, so every sample of a
+series, lake and tail, reaches one leaf (I17). Leaves pull their part's rows from reader
+leaves (one call per group of at most six files) and the coordinator cuts the tail by part.
+Every aggregation is computed exactly and order-independently (exact sums rounded once,
+total orders for `min`/`max`/`topk`), so a split answer is byte-identical to one place.
+**`L` is the larger of two counts**, each at three quarters of one isolate's limit: the scan
+bound (plus tail) over `maxSamples`, and the series the query loads, estimated from the
+series files' row groups before any fetch, over `maxSeries`. A query splits when either is
+above its threshold (`splitAboveSamples`, `splitAboveSeries`), or its files do not fit one
+place. `/api/v1/plan` returns that decision from the ledger alone.
+
+**Why.** Sized by samples alone, a query over many series with few samples each ran in one
+place, or on too few leaves, and was refused by `max_series`: measured here, `sum by (job)`
+over 100,000 series was refused after materialising 87 MiB, where 7 leaves answer it
+(`query/CARDINALITY.md`). Exact aggregation is what makes split results comparable byte for
+byte with one place; a Neumaier sum cannot be exact under a different order.
+
+**Alternatives.** (a) Split by file or by time: a series' rows in several leaves, wrong for
+`rate` across the seam and double counting. (b) Ship every series' values to the coordinator:
+not compact. (c) Leaves read every file themselves: six reads in flight per object, about
+100 sequential waves for a day of flush files. (d) Learn `L` from the leaves' counts after a
+first round (re-split): robust to a bad estimate but pays a whole extra read; kept as the
+fallback if the estimate proves unreliable. (e) Partials as Arrow IPC (DESIGN §6.2 as first
+written): the binary form here is smaller and exact.
+
+**Cost.** Every part reads every file and decodes its `series_id` column (`L`-fold reads
+until row groups are cut by key range); extracts cross RPC at 20 bytes a row. A sum can
+differ from Prometheus' compensated sum in the last bit (it is the correctly rounded one).
+The series estimate counts whole row groups (high for a small metric among large ones), and
+is low when a shard's segments are shorter than one scrape interval.
+
+**Would change if.** Row groups are cut by `series_id` within a metric (then a part reads only
+its key range and `L` costs little), or Prometheus-identical last bits matter more than split
+invariance, or the estimate misleads in production (then alternative (d)).
+
+## D32. Read-side cardinality: exact counting with caps sized to the isolate; no sketch yet
+
+**Decision.** `/api/v1/status/tsdb` and `/api/v1/status/cardinality` count exactly, from
+`metric_series` files and tail series tables (no sample is read), in one place or over
+leaves that each own a range of `series_id`s. Distinct series and distinct label pairs plus
+(metric, label, value) triples are capped (`maxCardinalitySeries` 1,000,000,
+`maxCardinalityPairs` 400,000); above a cap the report is refused, naming it, never
+approximated. The report is counted over leaves when the series files hold more than
+`cardinalitySplitAboveSeries` (50,000) series. The write path keeps its approximate
+active-series limit (D21: HyperLogLog and Bloom filter); that is admission, not reporting.
+
+**Why.** Below the caps the error is zero, which is what a person cutting cardinality needs
+to trust. The caps are where memory runs out: measured here, the coordinator's merge holds
+about 130 bytes of WASM memory per distinct pair or triple (25.9 MiB for 200,000), and one
+place 51.9 MiB for 100,000 series. The earlier pair cap of 2,000,000 would have let a merge
+reach about 260 MiB before refusing, past a 128 MB isolate (natively it reached 288 MiB at
+1,000,000 unique values and was then refused).
+
+**Alternatives.** (a) HyperLogLog per label name for distinct values and pairs, and a
+heavy-hitter sketch (SpaceSaving) for top pairs: memory bounded whatever the cardinality,
+about 1.6 % error at 1 KiB per counter, but approximate exactly where a person decides what to
+drop. (b) A streaming merge of summaries sorted by (label, value): exact, memory about the
+summaries' bytes (30 MiB at 1,000,000 unique values) instead of 280 MiB of hash maps; the
+first thing to build if tenants hit the cap. (c) No caps: an isolate dies instead of a 422.
+
+**Would change if.** Tenants hit the pair cap in practice (build (b), then raise the cap), or a
+report over a window wider than the caps allow is needed (then (a), labelled approximate).

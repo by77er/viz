@@ -140,7 +140,7 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 | `e2e/design.cjs` | Design-system checks: colour, waiting, keyboard, touch, narrow |
 | `e2e/fixes.cjs` | Checks of the fixes to the design review (B1, B3, M2 to M5, M7) |
 | `e2e/errors.cjs` | What a person sees when the API refuses, is busy or stops a query (against the mock's failures) |
-| `e2e/contract.cjs` | The contract test: the same 70 requests to the real API and to the mock, compared |
+| `e2e/contract.cjs` | The contract test: the same 60 requests to the real API and to the mock, compared (82 checks) |
 | `e2e/real.cjs` | The app on the real API: flows, the same reading of the same data as on the mock, every refusal |
 | `e2e/real-api-shots.cjs` | Before/after images of what this change alters on screen |
 | `e2e/measure.cjs` | Speed budgets, desktop or phone (`--phone`), for 4, 36 and 200 series (`e2e/measurements/*.json`) |
@@ -235,8 +235,35 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
   the first time their form is shown for a result and kept for that result. The URL's `view`
   follows 300 ms after the last switch (on `pagehide` at once), so the router's work does
   not land in the frames right after the press.
-- States: start (examples are links), empty and error as `vz-empty` (the error offers "Go to
-  character N" when the API gives a position), warnings as a banner.
+- States: start (examples are links), empty and error as `vz-empty`, warnings as a banner.
+- The error state says who answered and what to do (`src/api/errors.ts`): "The API answered
+  <type> with HTTP <status>" only for the API's own error envelope; "No answer came back",
+  "The answer was HTTP 503 with no API error in it" or "The answer (HTTP 200) was not an API
+  response" otherwise. The advice follows the kind of failure: a key that is missing ("No API
+  key is set"), refused or without the read scope (the button opens Settings); a step too
+  small for the range (the advice names the step and the 11,000 points, and the button is
+  "Use the automatic step"); a limit, by which one (`max_query_bytes`: shorten the query;
+  `max_depth`: simplify it; `max_output_points`, `max_step_points`: a larger step or a shorter
+  range; what the query reads: narrow the range or select fewer series); PromQL viz does not
+  run; the API's time limit; a busy API, with how many tries over how long; a parse error,
+  with "Go to character N" from the API's position or, as the viz API gives none, from the
+  editor's own parser. The shell's banner says the same about the key (needed, refused,
+  without the read scope).
+- A busy answer (429, 502, 503 other than the time limit) is asked again after its
+  `Retry-After`, else after 1, 2 and 4 s, at most three times and never past the 60 s stop;
+  the waiting line says so over the previous result ("The API is busy (HTTP 503). Asking again
+  in 1 s.") and Cancel works throughout. The API's time limit (503 `timeout`) is not retried.
+- The range-query body is read as it arrives into Float64Arrays (`src/api/matrix.ts`): a
+  specialised scanner for `data.result`, exact for every number (property-tested equal to
+  `JSON.parse` and `Number`, the body cut into pieces anywhere); anything it does not read
+  falls back to `JSON.parse` with the same answer. Series values stay in Float64Arrays from
+  the parser to the chart, legend, table and digest (a gap is NaN).
+- The query window is computed in whole milliseconds, as the API evaluates it (start and end
+  rounded to the millisecond, the step a whole number of milliseconds), so a sub-second step
+  asks for the grid the API answers on.
+- Autocomplete lookups (`labels`, `label values`, `series`) carry the page's window, widened
+  to whole hours; without one the viz API reads every file of the tenant.
+- The `X-Viz-*` cost headers are kept with each result (`cost`); nothing shows them yet.
 
 **Shell**
 - `vz-nav` with Explore and Help, a Commands button and Settings. Light and dark follow the
