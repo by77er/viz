@@ -41,6 +41,9 @@ describe('end to end with real Parquet files and a real ledger', () => {
     const p = publisher(cell)
     await p.configure({ locationPrefix: prefix })
 
+    // Each tenant's ledger is running before its data objects exist, as in production (flush plans
+    // before its first PUT): a ledger that starts empty over data objects refuses (review S-5).
+    for (const t of fixture.tenants) await ledger(t).plan({ table: 'metric_samples', minTs: 0, maxTs: 0 })
     for (const [key, f] of Object.entries(fixture.files)) await env.BUCKET.put(key, decode(f.b64))
 
     const checkpoints: Checkpoint[] = []
