@@ -605,9 +605,12 @@ export class Publisher extends DurableObject<PublisherEnv> {
     }
     const tenants = this.pendingTenants()
     if (tenants.length > 0) {
-      // Served now. A publish that leaves tenants pending (a failure, a hole, a backlog) sets
-      // the retry; a nudge that arrives meanwhile sets its own deadline.
-      this.clearDue('publish')
+      // Served now. A publish that leaves tenants pending (a failure, a hole, a backlog, a cap)
+      // sets the retry; a nudge that arrives meanwhile sets its own deadline. Until then the
+      // deadline is a lease, `retryMs` on, and the alarm is set at it: an invocation cut off by the
+      // platform (the CPU limit, review M-6) runs no code after it, and still comes back.
+      this.setDue('publish', this.now() + this.config().retryMs)
+      await this.rearm()
       await this.publish(tenants).catch(() => undefined)
     } else this.clearDue('publish')
     const now = this.now()
@@ -756,12 +759,13 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /**
-   * After a publish: tenants still pending are retried `retryMs` later, unless a nudge has
-   * already set an earlier deadline; with none pending, nothing is due for publication.
+   * After a publish: tenants still pending are retried `retryMs` later, or `continueMs` later when
+   * the publish stopped at a cap (`soon`), unless a nudge has already set an earlier deadline; with
+   * none pending, nothing is due for publication.
    */
-  private async afterPublish(cfg: PublisherConfig): Promise<void> {
+  private async afterPublish(cfg: PublisherConfig, soon = false): Promise<void> {
     if (this.pendingTenants().length === 0) this.clearDue('publish')
-    else this.dueNoLaterThan('publish', this.now() + cfg.retryMs)
+    else this.dueNoLaterThan('publish', this.now() + (soon ? cfg.continueMs : cfg.retryMs))
     await this.rearm()
   }
 
@@ -772,19 +776,30 @@ export class Publisher extends DurableObject<PublisherEnv> {
     let conflicts = 0
     // The tenants being worked on, so that a failure can leave them pending for the alarm.
     let working: string[] = requested ?? []
+    const budget: RebaseBudget = { admitted: new Set(), staged: 0, closed: false }
     for (;;) {
       try {
-        const result = await this.attempt(store, cfg, requested, (names) => { working = names })
-        const done = new Set(result.tenants.filter((t) => t.status === 'ok' || t.status === 'no_log').map((t) => t.tenant))
+        const { tenants, tables, deferred, unread } = await this.attempt(store, cfg, requested, (names) => { working = names }, budget)
+        const done = new Set(tenants.filter((t) => t.status === 'ok' || t.status === 'no_log').map((t) => t.tenant))
         const now = this.now()
-        for (const t of result.tenants) {
-          // A nudge that arrived after this publish began may be about a change it did not read.
-          if (done.has(t.tenant)) this.sql.exec(`DELETE FROM pending WHERE tenant = ? AND since <= ?`, t.tenant, t0)
-          else if (t.status !== 'invalid') this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO NOTHING`, t.tenant, now)
-        }
-        await this.afterPublish(cfg)
-        return { ...result, conflicts, ops: store.ops, ms: this.now() - t0 }
+        this.ctx.storage.transactionSync(() => {
+          for (const t of tenants) {
+            if (done.has(t.tenant)) {
+              // A nudge that arrived after this publish began may be about a change it did not read.
+              this.sql.exec(`DELETE FROM pending WHERE tenant = ? AND since <= ?`, t.tenant, t0)
+              this.sql.exec(`DELETE FROM rebase WHERE tenant = ?`, t.tenant)
+            } else if (t.status === 'invalid') continue
+            // Not read (a cap): it keeps its place. Read and not done: behind those that were not
+            // read, so that tenants stuck on a hole never hold the others back from a publish.
+            else if (unread.has(t.tenant)) this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO NOTHING`, t.tenant, now)
+            else this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET since = MAX(since, excluded.since)`, t.tenant, now)
+          }
+        })
+        await this.afterPublish(cfg, deferred)
+        return { tenants, tables, conflicts, ops: store.ops, ms: this.now() - t0 }
       } catch (e) {
+        // A retry re-reads the re-bases this publish admitted, and admits no other.
+        budget.closed = true
         // An attempt that stopped may have left objects nothing references: sweep them later.
         this.dueNoLaterThan('sweep', this.now() + cfg.orphanGraceMs)
         // A table found behind R2 is rebuilt at its own commit, one conflict each: after a lost
@@ -807,15 +822,38 @@ export class Publisher extends DurableObject<PublisherEnv> {
     cfg: PublisherConfig,
     requested: string[] | undefined,
     working: (names: string[]) => void,
-  ): Promise<Omit<PublishResult, 'conflicts' | 'ops' | 'ms'>> {
+    budget: RebaseBudget,
+  ): Promise<AttemptResult> {
     // `stage` holds what one attempt's re-bases read, and nothing else may read it: empty it
-    // before (an evicted attempt may have left rows) and after.
+    // before (an evicted attempt may have left rows) and after. What survives an attempt is what
+    // it committed; the per-publish caps bound what one cut off can lose.
     this.sql.exec(`DELETE FROM stage`)
     try {
-      return await this.attemptStaged(store, cfg, requested, working)
+      return await this.attemptStaged(store, cfg, requested, working, budget)
     } finally {
       this.sql.exec(`DELETE FROM stage`)
     }
+  }
+
+  /** The tables the tenant has no cursor in: a re-base is needed before they can be published. */
+  private uncursored(tenant: string): LedgerTable[] {
+    return TABLE_NAMES.filter((table) => !this.cursorOf(table, tenant))
+  }
+
+  /**
+   * Whether `tenant` may re-base in this publish. Already admitted: yes. Else at least one per
+   * publish, and no other once `maxRebasesPerPublish` have started or the started ones have staged
+   * `maxRebaseFilesPerPublish` files and tombstones. Admitting one records when it started, before
+   * anything is read, so a re-base cut off with its invocation goes to the back of the queue
+   * instead of being tried first again (and holding every other tenant's re-base up for ever).
+   */
+  private admit(cfg: PublisherConfig, budget: RebaseBudget, tenant: string): boolean {
+    if (budget.admitted.has(tenant)) return true
+    if (budget.closed) return false
+    if (budget.admitted.size > 0 && (budget.admitted.size >= cfg.maxRebasesPerPublish || budget.staged >= cfg.maxRebaseFilesPerPublish)) return false
+    budget.admitted.add(tenant)
+    this.sql.exec(`INSERT INTO rebase (tenant, started) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET started = excluded.started`, tenant, this.now())
+    return true
   }
 
   private async attemptStaged(
@@ -823,7 +861,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
     cfg: PublisherConfig,
     requested: string[] | undefined,
     working: (names: string[]) => void,
-  ): Promise<Omit<PublishResult, 'conflicts' | 'ops' | 'ms'>> {
+    budget: RebaseBudget,
+  ): Promise<AttemptResult> {
     const names = [...new Set(requested ?? [...(await listTenants(store, this.cell)), ...this.pendingTenants()])].sort()
     working(names)
     const reports = new Map<string, TenantReport>()
@@ -832,19 +871,65 @@ export class Publisher extends DurableObject<PublisherEnv> {
       if (TENANT_ID.test(t)) valid.push(t)
       else reports.set(t, { tenant: t, status: 'invalid', detail: 'tenant id must match [A-Za-z0-9_-]{1,64}', cursors: {} })
     }
+    const unread = new Set<string>()
+    const notRead = (tenant: string, detail: string) => {
+      unread.add(tenant)
+      reports.set(tenant, { tenant, status: 'deferred', detail, cursors: {} })
+    }
+    const unchanged = () => Object.fromEntries(TABLE_NAMES.map((table) => [table, emptyReport(this.state(table).version)])) as Record<LedgerTable, TableReport>
 
-    // Read each tenant's log once, from the lowest cursor any table has for it. A re-base
-    // streams its state into `stage`.
-    const sink = this.stageSink()
-    const logs = await inBatches(valid, FANOUT, (tenant) => {
-      let from: Cursor | null = null
+    // Paging over tenants: at most `maxTenantsPerPublish` logs read, longest waiting first (a tenant
+    // not pending was asked for now). The others keep their place for the next publish.
+    const since = new Map(this.sql.exec(`SELECT tenant, since FROM pending`).toArray().map((r) => [r.tenant as string, r.since as number]))
+    const now = this.now()
+    const order = [...valid].sort((a, b) => (since.get(a) ?? now) - (since.get(b) ?? now) || (a < b ? -1 : a > b ? 1 : 0))
+    const read = order.slice(0, Math.max(1, cfg.maxTenantsPerPublish))
+    for (const t of order.slice(read.length)) notRead(t, `not read: this publish read ${read.length} tenants (maxTenantsPerPublish)`)
+    const uncursored = new Map(read.map((t) => [t, this.uncursored(t)]))
+    const candidates = read.filter((t) => uncursored.get(t)!.length > 0)
+
+    // A tenant with no cursor in a table where R2 has metadata and SQLite has none: the publisher's
+    // storage was lost (or another writer committed first). Its cursors are in R2: rebuild the
+    // table from there before re-basing anyone, one table per publish (a rebuild reads every
+    // manifest of its table), and leave every tenant for the next publish.
+    if (candidates.length > 0) {
       for (const table of TABLE_NAMES) {
-        const c = this.cursorOf(table, tenant)
-        if (!c) return readTenantLog(store, this.cell, tenant, null, cfg.maxChangesPerTenant, sink)
-        if (!from || cursorCompare(c, from) < 0) from = c
+        if (this.state(table).version > 0 || (await this.hint(store, table)) === 0) continue
+        await this.resync(store, cfg, table)
+        for (const t of read) notRead(t, `not read: this publish rebuilt the publisher's state of ${table} from R2 first`)
+        return { tenants: [...reports.values()], tables: unchanged(), deferred: true, unread }
       }
-      return readTenantLog(store, this.cell, tenant, from, cfg.maxChangesPerTenant, sink)
-    })
+    }
+
+    // Re-bases first, one tenant at a time, least recently started first, while the budget lasts;
+    // each streams its state into `stage` (D55).
+    const started = new Map(this.sql.exec(`SELECT tenant, started FROM rebase`).toArray().map((r) => [r.tenant as string, r.started as number]))
+    candidates.sort((a, b) => (started.get(a) ?? -1) - (started.get(b) ?? -1) || (a < b ? -1 : a > b ? 1 : 0))
+    const sink = this.stageSink(cfg, budget)
+    const logs: TenantLog[] = []
+    for (const tenant of candidates) {
+      if (!this.admit(cfg, budget, tenant)) break
+      logs.push(await readTenantLog(store, this.cell, tenant, null, cfg.maxChangesPerTenant, sink))
+    }
+    // Then every other tenant read, from the lowest cursor its tables have: the tables with a cursor
+    // are published (a tenant waiting for its re-base is not held back on them), the others wait.
+    // A tenant with no cursor at all has nothing to read without its re-base. One found to need a
+    // re-base only now (a new ledger incarnation) is admitted while the budget lasts.
+    const rest = read.filter((t) => !budget.admitted.has(t))
+    logs.push(
+      ...(await inBatches(rest, FANOUT, async (tenant) => {
+        let from: Cursor | null = null
+        for (const table of TABLE_NAMES) {
+          const c = this.cursorOf(table, tenant)
+          if (c && (!from || cursorCompare(c, from) < 0)) from = c
+        }
+        if (!from) return null
+        return readTenantLog(store, this.cell, tenant, from, cfg.maxChangesPerTenant, sink)
+      })).filter((log): log is TenantLog => log !== null),
+    )
+    for (const t of rest) if (uncursored.get(t)!.length === TABLE_NAMES.length) notRead(t, 'needs a re-base; this publish has started as many as it may (the per-publish cap)')
+    // In tenant order, as ever: what a commit writes does not depend on the order of the reads.
+    logs.sort((a, b) => (a.tenant < b.tenant ? -1 : a.tenant > b.tenant ? 1 : 0))
     for (const log of logs) {
       const r: TenantReport = { tenant: log.tenant, status: log.status, cursors: {} }
       if (log.detail) r.detail = log.detail
@@ -867,7 +952,16 @@ export class Publisher extends DurableObject<PublisherEnv> {
         if (c) (reports.get(log.tenant) as TenantReport).cursors[table] = c
       }
     }
-    return { tenants: [...reports.values()], tables }
+    // Read from its cursors, its re-base left for later: published as far as it could be, still pending.
+    for (const log of logs) {
+      const r = reports.get(log.tenant) as TenantReport
+      if (r.status === 'ok' && !budget.admitted.has(log.tenant) && this.uncursored(log.tenant).length > 0) {
+        r.status = 'deferred'
+        r.detail = `needs a re-base for ${this.uncursored(log.tenant).join(', ')}; this publish has started as many as it may (the per-publish cap)`
+      }
+    }
+    const tenants = [...reports.values()]
+    return { tenants, tables, deferred: tenants.some((t) => t.status === 'deferred'), unread }
   }
 
   /**
@@ -875,15 +969,23 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * computed only if it is added (most of a re-base is usually published already), when its
    * manifest is written, and kept in its row for the `live` row the commit inserts from it.
    */
-  private stageSink(): BaseSink {
+  private stageSink(cfg: PublisherConfig, budget: RebaseBudget): BaseSink {
     const sql = this.sql
-    // Re-bases of one publish read their checkpoint or base one at a time (memory: one window of parts).
+    // Re-bases of one publish read their checkpoint or base one at a time (memory: one window of
+    // parts), and each is admitted while it holds the turn, so the budget counts what every re-base
+    // before it staged.
     const turns = new Slots(1)
     return {
-      turn: () => turns.take(),
+      turn: async (tenant) => {
+        const release = await turns.take()
+        if (this.admit(cfg, budget, tenant)) return release
+        release()
+        return null
+      },
       reset: (tenant) => void sql.exec(`DELETE FROM stage WHERE tenant = ?`, tenant),
       files: (tenant, files) =>
         this.ctx.storage.transactionSync(() => {
+          budget.staged += files.length
           for (const f of files) {
             const n = sql.exec(
               `INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
@@ -894,6 +996,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         }),
       tombstones: (tenant, tombstones) =>
         this.ctx.storage.transactionSync(() => {
+          budget.staged += tombstones.length
           for (const t of tombstones) sql.exec(`INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 1, ?, '', 0, 0, 0, 0, '')`, tenant, t.table, t.key)
         }),
     }
@@ -907,7 +1010,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   private plan(table: LedgerTable, logs: TenantLog[]): TablePlan {
     const plan: TablePlan = { adds: [], removes: [], transient: [], staged: [], cursors: new Map(), problems: new Map() }
     for (const log of logs) {
-      if (log.status === 'no_log' || log.status === 'no_base' || log.status === 'cursor_ahead') continue
+      if (log.status === 'no_log' || log.status === 'no_base' || log.status === 'cursor_ahead' || log.status === 'deferred') continue
       const tenant = log.tenant
       const cursor = this.cursorOf(table, tenant)
       if (cursor && cursor.ledgerIncarnation > log.incarnation) {
