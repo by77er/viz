@@ -136,7 +136,7 @@ shared pool.
 
 A 2xx is sent only after every append has returned `ok`.
 
-## Recorded samples over a service binding (contracts/ingest.ts, D44)
+## Recorded samples over a service binding (contracts/ingest.ts, D45)
 
 `RecordedSamples` is a named `WorkerEntrypoint` export of the ingest Worker (re-exported by
 `stack/src/index.ts`, so viz-ingest has it). The ruler reaches it through a service binding
@@ -351,18 +351,19 @@ refuses the request") still answers 503, so behaviour does not change. The prope
 single point of failure; a mutant removing every layer at once was not run.
 
 **Mutants of the entrypoint (2026-11-19)**, `node scripts/mutants.mjs recorded` on a copy of
-`contracts/`, `shard/` and `edge/` in a scratch directory (each against the whole suite):
-results in the table below.
+the tree in a scratch directory (each against the whole suite, after the copy's unmutated
+suite passed 71 of 71): **7 of 7 killed**. `node scripts/mutants.mjs --check`: all 50 patterns
+apply (the earlier 43 were not re-run here).
 
 | Mutant | Killed by |
 |---|---|
-| any service binding may write (caller not checked) | RESULT_CALLER |
-| the tenant argument is not validated | RESULT_TENANT |
-| batches of another tenant are accepted | RESULT_BATCH |
-| invalid samples are dropped and the rest written | RESULT_INVALID |
-| a full buffer resolves (acknowledged, not written) | RESULT_BACKPRESSURE |
-| new series over the limit resolve | RESULT_LIMIT |
-| values parsed with `Number()` (hex, empty accepted) | RESULT_VALUE |
+| any service binding may write (caller not checked) | refuses a binding that does not name the ruler; every refusal word is one the contract lists |
+| the tenant argument is not validated | takes the tenant only from its argument, validated; every refusal word … |
+| batches of another tenant are accepted | takes the tenant only from its argument, validated (another tenant's batch) |
+| invalid samples are dropped and the rest written | a call with any sample the HTTP API would reject writes nothing at all |
+| a full buffer resolves (acknowledged, not written) | a full shard buffer is a retryable refusal, never a success |
+| new series over the limit resolve | new series over the tenant's active-series limit are refused (series_limit) |
+| values parsed with `Number()` (hex, empty accepted) | writes nothing at all (hex, empty); parses exactly Prometheus' text form |
 
 ### Decode throughput
 

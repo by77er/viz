@@ -201,7 +201,14 @@ describe.skipIf(!only('checkpoint'))('checkpoints and rebuilds: the release befo
           phase('cross', { reader, writer, files })
           const t0 = Date.now()
           await set(other, { stateMaxBytes: Number.MAX_SAFE_INTEGER, checkpointEvery: 1e9 })
-          await other.plan({ table: 'metric_samples', minTs: 0, maxTs: 1 })
+          // A caller is refused, retryably, while the object starts; it retries.
+          for (let tries = 0; ; tries++) {
+            const r = await other.plan({ table: 'metric_samples', minTs: 0, maxTs: 1 }).then(() => 'served', (e: Error) => e.message)
+            if (r === 'served') break
+            expect(r).toMatch(/^ledger_unavailable/)
+            expect(tries).toBeLessThan(600)
+            await sleep(100)
+          }
           const ms = Date.now() - t0
           phase('cross-end', { reader, writer, files })
           const got = await digest(other, tenant)

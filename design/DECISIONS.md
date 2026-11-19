@@ -776,8 +776,15 @@ backlog, `retryMs`), `sweep` (an orphan grace period after a commit or a failed 
 the grace end of what it marked) and `expire:<table>` (when every snapshot beyond the newest
 two has left the window, so one expiry drops them all). The alarm is set at the earliest
 deadline and deleted when there is none. Nothing on the ingest or flush path, and nothing in
-the cron, calls the publisher. As built in `publisher/`; the stack's two lines are in
-`publisher/README.md`, "Needed changes".
+the cron, calls the publisher. As built in `publisher/`, and **wired since 2026-11-19**:
+`stack/wrangler.jsonc` binds `PUBLISHER` (class `Publisher` of viz-publisher, which deploys
+first), `maintainTenant` (`stack/src/maintain.ts`) ends with the nudge only when that binding
+exists, and the janitor's purge also waits for the publisher's `safeToDelete`
+(`stack/README.md`, "The publisher wired in"; on Cloudflare, `deploy/README.md`, Trial 3).
+A tenant whose only waiting tombstones are held back by the publisher is looked at again after
+6 h, not every delete grace (1 h): a release comes at the earliest a day after the removal is
+published, and in a cell that publishes nothing more it never comes (its objects stay). Would
+change if the publisher told the janitor when it releases a tenant's keys.
 
 **Alternatives.** (a) The ledger's drain nudges after writing a segment: the exact moment a
 change becomes readable, but it puts a publisher call on the drain, which shards wait on for
@@ -1146,41 +1153,198 @@ the summing. The budget-left figure's far edge moves an hour at a time (one coar
 row per block; or SLOs need windows longer than the 100,000-bucket ring (then coarser fine
 buckets, or (a)).
 
-## D43. New anomaly and SLO rules are warmed from history before their first evaluation, under a budget checked with the engine's plan; backtests run the same evaluation under a larger budget
+## D43. New anomaly and SLO rules are warmed from history before their first evaluation, under budgets checked before anything is fetched; backtests run the same evaluation under larger budgets; both read history in memory-sized windows
+
+(Rewritten the same day: the first version fetched each read whole and bounded only the bytes read;
+a 7-day backtest over 100 series then held about 0.6 GB, which would have killed the Durable Object
+rather than been refused. The windows and the memory budget are new.)
 
 **Decision.** When an anomaly or SLO rule is created (a new rule key: a new detector, parameter,
 SLI or interval), a warm-up job is stored with it. At the rule's first tick the ruler builds the
-reads its history class needs (the detector's look-back, or an SLO's longest window and
-compliance window) at the rule's interval, asks viz-query's `/api/v1/plan` for every piece
-(nothing fetched), and refuses the whole warm-up when the sum is over `RulerLimits.maxWarmup*`
-(3,000,000 samples, 16 MiB) or the plan carries the engine's own refusal; otherwise it fetches the
-reads whole and feeds them, in time order, through the rule's own evaluation, then commits the
-state rows and the status in one transaction. An engine failure is retried at the next tick
-while the rule waits (at most three attempts), then the rule starts cold. A refused or failed
-warm-up starts the rule cold and says why in its status. Backtests of threshold, anomaly and SLO
-rules plan their reads the same way under `RulerLimits.maxBacktest*` (20,000,000 samples,
-128 MiB) and refuse with `over_budget` before fetching; an anomaly or SLO backtest starts with the
-state a warm-up at `fromMs` would leave and runs at the rule's interval.
+reads its history class needs (the detector's look-back, or an SLO's longest window and compliance
+window) at the rule's interval. It reads them **in time windows, one at a time, in order**,
+feeding each step through the rule's own evaluation and carrying only the rule's state from one
+window to the next, then commits the state rows and the status in one transaction. Windows are
+sized from a memory model (`ruler/src/history.ts` `MEMORY`: the rule's state, its alerts and
+intervals, plus 768 bytes per point of one window at the series bound the rule's evaluation
+enforces) to a budget (16 MiB for a warm-up, 32 MiB for a backtest). Before anything is fetched
+the run is refused when the model cannot fit (the state alone, or one step), when the windows would
+take over 1,000 queries, when viz-query's `/api/v1/plan` sums for the whole reads exceed the cost
+budget (3,000,000 samples and 16 MiB for a warm-up, 20,000,000 and 128 MiB for a backtest), or when
+a plan carries the engine's own refusal. A window holding more points than it was sized for stops
+the run. An engine failure is retried at the next tick while the rule waits (three attempts), then
+the rule starts cold; a refused warm-up starts it cold and says why. Backtests of threshold, anomaly
+and SLO rules take the same path and answer `over_budget` (with the model's peak and budget) before
+fetching; an anomaly or SLO backtest starts with the state a warm-up at `fromMs` would leave.
 
 **Alternatives.** (a) Start cold and warm live (as before). (b) Evaluate live at once and merge
-history in later. (c) Fetch what fits the budget and warm partially. (d) No budget: the engine's
-own limits refuse what is too large. (e) One budget for warm-ups and backtests.
+history in later. (c) Fetch what fits the budget and warm partially. (d) No cost budget: the
+engine's own limits refuse what is too large. (e) One budget for warm-ups and backtests. (f) Fetch
+each read whole (the first version of this decision), bounded only by bytes read. (g) Size windows
+by the series a plan estimates or a first window shows, rather than the rule's bound.
 
 **Why.** (a) leaves a seasonal rule silent for its k periods and an SLO's ticket windows
-meaningless for three days. (b) cannot work for sequential detectors (an EWMA cannot take earlier
-points after later ones). (c) gives a detector a state that is neither cold nor warm, and an SLO
-window that looks covered while it is not. (d) is per query: a warm-up of several reads, or a
-read split into 11,000-step pieces, could each pass and together cost many times one query; and
-the engine's limits are about its own memory, not about what the tenant is willing to pay for an
-automatic read. (e) warm-ups run by themselves at every save; a backtest is asked for and shown.
-The plan is one ledger read and touches no shard, leaf or R2 object (query/README).
+meaningless for three days. (b) cannot work for sequential detectors. (c) gives a detector a state
+that is neither cold nor warm. (d) is per query, and the engine's limits are about its memory, not
+what the tenant pays for an automatic read. (e) warm-ups run by themselves at every save; a backtest
+is asked for. (f) holds the whole read: measured here, 0.4–0.6 GB for a week of 100 series, and it
+cannot complete under a 128 MB V8 heap limit, where windows sized by the model do (`ruler/README.md`,
+part 13 and "Streaming"). (g) would let one window outgrow the budget by the factor the estimate was
+wrong by (a plan does not see the shards' tail; a series can appear mid-range); the rule's own
+bound is what its evaluation guarantees.
 
-**Cost.** A plan request per piece before every warm-up and backtest; the plan does not count the
-shards' tail, so a read can cost a little more than planned. A new rule's first tick waits for
-its warm-up (one engine call at a time per object, D39). A rule whose history is over the budget
-warms live, as before. The budgets are choices sized to one query of viz-query, not measured on
-Cloudflare.
+**Cost.** More range queries: an alerting rule's bound is its alert limit (1,000), so a week at 1
+minute takes 326 windows of 31 steps even for one series (a tenant can lower the limit, or use a
+coarser step). The plans price the whole reads, so windows that re-read files at their boundaries
+can cost a little more than planned. A plan request per 11,000-step piece before every run. A new
+rule's first tick waits for its warm-up. 768 bytes a point is calibrated against resident memory in
+local workerd, not measured on Cloudflare.
 
-**Would change if.** The plan reports the tail too (then the budget is exact); warm-ups prove
-cheap enough on Cloudflare to raise the budget; or a rule kind needs history it cannot read at
-its interval (then a coarser warm-up read with a declared approximation).
+**Would change if.** The plan reports the tail and a series bound (then windows can be sized by
+what the read returns); viz-query exports an RPC entrypoint that streams results (then one query per
+read again); or the Durable Object memory limit changes.
+
+## D44. MCP clients connect with OAuth served by control: signed stateless registrations, a person approves with an admin key, each grant is backed by an agent key the resource uses downstream, and every request is checked by control
+
+**Decision.** The control plane is the authorization server for the agent surface's `/mcp`
+(MCP 2026-07-28, "Authorization"; `contracts/oauth.ts`). It publishes RFC 8414 metadata at
+`/.well-known/oauth-authorization-server` and serves `/oauth/register` (RFC 7591),
+`/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (RFC 7009). Public clients only, PKCE
+`S256` only, exact redirect URIs (https, or http on a loopback host), one resource (`<public
+URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 with the
+`WWW-Authenticate` the specification gives.
+
+- **Registration stores nothing.** The client id is the registration (name, redirect URIs,
+  issue time), signed with control's `OAUTH_CLIENT_KEY`. The tenant is not known when a client
+  registers (it registers before anyone signs in), so a client is stored in a tenant only when a
+  person of that tenant approves it; that is where the per-tenant bounds apply (clients, live
+  grants, approvals per hour). A registration nobody approved within 24 h is refused; a bound
+  client with no live grant is deleted after 30 days.
+- **Consent through the control API.** There is no web UI, so `/oauth/authorize` validates the
+  request and answers a plain-text page that says what is asked (client name marked unverified,
+  redirect host, scopes, resource, lifetimes) and how to approve: `POST
+  /api/v1/control/oauth/approve` with the request handle, by a person (kind `key` or `user`, never
+  `agent`) holding `admin`; `dryRun` shows exactly what would be granted. The grant holds the
+  requested scopes the approver's own key holds (admin counts for the dashboards scopes only;
+  `admin`, `write`, `monitors:write|ack` are never grantable). The answer carries the redirect
+  with the code, `state` and `iss`, which the person opens. The server never redirects by itself.
+- **A grant is backed by an agent key.** Approval creates an ordinary key `oauth:<grantId>`
+  (kind `agent`, the grant's scopes, expiring with the grant). The resource calls the query
+  service, the control plane and the ruler with that key, never with the client's token. The
+  key's secret is not stored: it is sealed (AES-256-GCM, key derived by HKDF from the credential)
+  under each live code, access token and refresh token, which are themselves stored only as
+  SHA-256. Control unseals it when it validates a token for the resource
+  (`introspectAccessToken`, over the `Tenant` Durable Object binding, by `script_name`).
+- **Every request is checked by control**: audience, expiry, grant and key state. Revocation
+  takes effect at `/mcp` on the next request. Codes are single use (a second use revokes the
+  grant); refresh tokens rotate on every use (presenting a used one revokes the grant).
+
+**Alternatives.** (a) `@cloudflare/workers-oauth-provider` wrapping mcp's `fetch`: grants and
+tokens in KV outside the tenant's object and its audit log, revocation bounded by KV
+propagation, and it still leaves the downstream credential and the tenant-bound consent to
+write. (b) Pass the client's token downstream and teach the query service, control and the ruler
+to accept it: forbidden by the specification (token passthrough), and the token would work
+outside its audience. (c) Keep the downstream key's secret in clear in SQLite, or encrypted under
+one Worker secret: a dump of the object, or one secret, would yield working credentials for
+every grant. (d) Store registrations at registration time: no tenant yet, so a global registry,
+which is either a new Durable Object class (a lifecycle change, its own release) or KV writes
+from unauthenticated requests. (e) Client ID Metadata Documents instead of registration: the
+2026-07-28 revision prefers them and deprecates registration, but they need control to fetch
+arbitrary client URLs (SSRF, caching); not built yet. (f) A pending grant stored at
+`/oauth/authorize`: needs the tenant before anyone has authenticated. (g) Redirect automatically
+from `/oauth/authorize`: open registration makes every redirect URI untrusted, so the server
+would be an open redirector (OAuth 2.1 §7.12.2).
+
+**Why.** The tenant's object already holds keys, the audit log and the rules for agents (D29);
+grants there are tenant-scoped by construction, are revoked in one transaction with their key
+and its KV record, and appear in the audit log. The backing key reuses what every downstream
+service already enforces (scopes, tenancy, liveness) and keeps the token's audience to `/mcp`.
+Sealing means neither a database dump nor a token without control yields the downstream
+credential.
+
+**Would change if.** A sign-in exists (then `/oauth/authorize` shows a consent page to a signed-in
+person and redirects); Client ID Metadata Documents become what clients use (then they replace
+registration and its signing key); KV propagation of a new key record is measured slow enough to
+break the first downstream call after approval (then the resource retries, or control publishes
+the key earlier); or sender-constrained tokens (DPoP) become required.
+
+## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
+
+(D44 is taken by the OAuth contract being written beside this; this entry follows it.)
+
+**Decision.** viz-ingest exports `RecordedSamples`, a `WorkerEntrypoint` with one method,
+`write(tenant, batches)` (`contracts/ingest.ts`, `edge/src/recorded.ts`). Only a Worker whose
+deployed config has a service binding naming that entrypoint can call it; the binding carries
+`props: { caller: "viz-ruler" }`, which only that config sets, and any other caller is refused
+(`unauthorized`). The tenant is the explicit first argument, which only a binding holder can
+supply; it is validated (`TENANT_ID`) and every batch id must start with `<tenant>/`. The
+samples go through Remote Write's own validation, routing and appends; the promise resolves
+only when everything is durably appended, and rejects with a message that starts with a
+refusal word otherwise; a call with any invalid sample writes nothing. The ruler's existing
+`SINK` binding path uses it unchanged; its one-line binding is in `edge/README.md`, "Needed
+changes".
+
+**Alternatives.** (a) Remote Write over HTTP with a service key control issues (D39, today): a
+stored key per Ruler object, issued, rotated, propagated through KV (a fresh key may not have
+reached every location) and checked on every request. (b) A shared secret or HMAC in the RPC
+arguments: a secret to store and rotate again. (c) The entrypoint without a `props` check: any
+viz Worker given a binding to it could write any tenant's samples. (d) A status union as the
+result, the house style for RPC: the deployed ruler treats a resolved `write` as written, so a
+resolved refusal would fail open. (e) The tenant in `props`: bindings are static per Worker, and
+the ruler serves every tenant.
+
+**Why.** A service binding cannot be forged from outside the account, and a named entrypoint is
+not reachable over HTTP at all, so the binding is a credential nobody has to store, rotate or
+leak; `props` names the caller so a binding added for another purpose does not grant this. The
+explicit, validated tenant is the same rule as `contracts/control.ts` (the caller derives it
+from its own binding context). Rejecting on every failure matches `Sink.write` in
+`contracts/rules.ts`, which the ruler already implements.
+
+**Cost.** One more export on viz-ingest and one more caller list to keep. The accept window
+applies as for Remote Write: samples of a tick more than an hour old are `invalid`. Measured on
+Cloudflare in Trial 3 (`deploy/README.md`) through a probe Worker standing in for the ruler.
+
+**Would change if.** The platform attests the calling script itself (then `props` is not
+needed); another Worker needs to write derived series (it is added to
+`RECORDED_SAMPLES_CALLERS`); or query gets the same kind of entrypoint (then the ruler needs no
+stored key at all, the ruler's README "Needed changes" 1).
+
+## D46. Release records carry each Durable Object class's schema versions, stamped on every version; a rollback judges every version since its target
+
+**Decision.** `deploy/workers.json` names, for every Durable Object class a Worker defines, its
+`SchemaSpec` or why it keeps no storage. `deploy/lib/schemas.mjs` reads the specs from the
+sources (esbuild bundles just them; a Node `vm` evaluates the bundle with platform modules
+stubbed; `contracts/schema.ts`'s own `schemaRelease` runs on them). Each class's `{latest,
+compat}` goes into the release record and into **every version's `VIZ_SCHEMAS` var**. A
+release is recorded forward-only when a class's `compat` is above what the version serving
+before it declares (a version that declares nothing counts as knowing version 1), or when it
+changes a class's lifecycle. `release.mjs rollback` lists every version Cloudflare keeps of the
+target's Workers that is newer than the target's, reads their `VIZ_SCHEMAS`, and refuses,
+naming the release and migration, when any of them ran a class the target cannot open
+(`canOpen`). A record or a newer version without schema versions is refused, not guessed.
+
+**Alternatives.** (a) Each component publishes a generated `schema.json`: a change in every
+component, and a second copy of the spec to keep in step. (b) `/healthz` reports the schema:
+needs the version running and a request to it, and says nothing about versions no longer
+serving. (c) A high-water mark the deploy writes to KV or R2: extra state outside the versions,
+KV's eventual consistency, and a rollback that restores old versions must still update it. (d)
+The chain of CI release records: artifacts expire after 90 days and the job would download
+many. (e) Judge only the version serving now: a forward-only release that was itself rolled
+back would be missed (A → B → C with C raising `compat`, back to B, then to A passes, and A
+cannot open what C migrated: `deploy/test/release.test.mjs`).
+
+**Why.** A rollback can only reach a version Cloudflare still keeps, and every such version
+carries what its code knows, so the data the check needs lives exactly as long as the rollback
+is possible, with no store of its own. Judging every version since the target is the rule of
+contracts/COMPATIBILITY.md §6 ("the newest release that ever ran since T"), made conservative
+(uploaded versions that never served count too).
+
+**Cost.** A deploy reads one version per Worker (it already did, for the release tag); a
+rollback reads one version per Worker per version since its target (tens of API calls). A spec
+module that does more than define values at load time breaks the read, loudly. Format versions
+(queue messages, R2 objects, KV records) are not recorded yet, so the tool does not refuse a
+rollback below the reader of a format.
+
+**Would change if.** Format versions join the record (the same var can carry them); components
+start publishing their specs in a form the deploy can read directly; or Cloudflare keeps
+deployment metadata that makes listing versions unnecessary.

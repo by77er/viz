@@ -88,8 +88,17 @@ export interface Tracked {
   steps: number
 }
 
-/** Most intervals one backtest may produce: past it the backtest stops and says so (they are all held until the answer). */
-export const MAX_BACKTEST_INTERVALS = 5_000
+/**
+ * What the intervals of one backtest may hold, modelled (they are all held until the answer): an
+ * interval's labels and annotations at two bytes a character, and 200 bytes of its own. Past it the
+ * backtest stops and says so. `history.ts` reserves this much in its memory model.
+ */
+export const INTERVALS_MAX_BYTES = 4 * 1024 * 1024
+const intervalBytes = (labels: Record<string, string>, annotations: Record<string, string>) => {
+  let n = 200
+  for (const m of [labels, annotations]) for (const [k, v] of Object.entries(m)) n += 2 * (k.length + v.length) + 32
+  return n
+}
 
 /**
  * The alert state machine over a range, one step at a time, turning states into intervals. Each
@@ -102,13 +111,15 @@ export class IntervalTracker {
   private readonly open = new Map<string, BacktestInterval>()
   readonly intervals: BacktestInterval[] = []
   steps = 0
+  /** Modelled bytes the intervals hold. */
+  bytes = 0
 
   constructor(
     private readonly rule: AlertingRuleV2,
     private readonly compiled: CompiledAlertRule,
     private readonly opts: AlertEvalOptions,
     private readonly toMs: number,
-    private readonly maxIntervals = MAX_BACKTEST_INTERVALS,
+    private readonly maxBytes = INTERVALS_MAX_BYTES,
   ) {}
 
   /** One step, in time order. Returns an error (and the backtest stops) or null. */
@@ -129,7 +140,8 @@ export class IntervalTracker {
         this.open.delete(fp)
       }
       if (a && state) {
-        if (this.intervals.length >= this.maxIntervals) return `more than ${this.maxIntervals} intervals: the backtest stopped at ${new Date(ts).toISOString()}. Narrow the range or the expression.`
+        this.bytes += intervalBytes(a.labels, a.annotations)
+        if (this.bytes > this.maxBytes) return `the intervals would hold more than ${this.maxBytes} bytes (${this.intervals.length} so far): the backtest stopped at ${new Date(ts).toISOString()}. Narrow the range or the expression.`
         const next: BacktestInterval = { fingerprint: fp, labels: a.labels, state, startMs: ts, endMs: this.toMs, open: true, noData: isNoDataAlert(a), annotations: a.annotations }
         this.intervals.push(next)
         this.open.set(fp, next)

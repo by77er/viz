@@ -3267,6 +3267,28 @@
           "type": "integer"
          }
         }
+       },
+       "memory": {
+        "type": "object",
+        "description": "History is fetched and evaluated in windows of `windowSteps` steps (per read), one at a time, carrying only the rule's state: the modelled peak and the budget",
+        "properties": {
+         "peakBytes": {
+          "type": "integer"
+         },
+         "budgetBytes": {
+          "type": "integer"
+         },
+         "windowSteps": {
+          "type": "array",
+          "items": {
+           "type": "integer"
+          }
+         },
+         "queries": {
+          "type": "integer",
+          "description": "Range queries the windows took"
+         }
+        }
        }
       }
      }
@@ -4098,7 +4120,7 @@
      "plan",
      "budget"
     ],
-    "description": "Refused before anything was fetched: the engine's plan of the read is over the backtest budget, the engine's own limits would refuse it, or its cost could not be asked (plan null)",
+    "description": "Refused before anything was fetched: the modelled peak memory is over the backtest's memory budget (windows cannot be small enough to hold the rule's state and one step), the engine's plan of the read is over the backtest budget, the engine's own limits would refuse it, or its cost could not be asked (plan null)",
     "properties": {
      "error": {
       "$ref": "#/components/schemas/ErrorBody"
@@ -4134,6 +4156,26 @@
         "type": "integer"
        }
       }
+     },
+     "memory": {
+      "oneOf": [
+       {
+        "type": "object",
+        "properties": {
+         "peakBytes": {
+          "type": "integer",
+          "description": "The memory model's peak: the rule's state, its alerts and intervals, and the largest window"
+         },
+         "budgetBytes": {
+          "type": "integer"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The memory model; null when the engine's plan refused before sizing"
      }
     }
    }

@@ -20,7 +20,7 @@
 import type { PromMatrix } from '../../contracts/engine'
 import type { AlertingRuleV2, AnomalyRuleV2, BacktestResult, HistoryPlanner, RangeEvaluator, SloRuleV2, WarmupStatus } from '../contracts-proposal/rules.v2'
 import { evalAnomaly, newAnomalyRt, serializeAnomaly, type AnomalyLimits, type AnomalyRt } from './anomaly'
-import { IntervalTracker, resultOf } from './backtest'
+import { INTERVALS_MAX_BYTES, IntervalTracker, resultOf } from './backtest'
 import type { CompiledAlertRule } from './rules'
 import { bucketsOf, COARSE_BLOCK, coarseExprOf, evalSlo, FINE_BLOCK, newSloRt, Ring, sloGeometry, type SloRt, type SloSeriesState } from './slo'
 import type { AlertEvalOptions, Series } from './statemachine'
@@ -109,8 +109,8 @@ export const MEMORY = {
   base: 2 * 1024 * 1024,
   /** One alert held by the state machine (labels, annotations: an SLO sentence and its numbers). */
   perAlert: 3 * 1024,
-  /** What the intervals of one backtest may hold before it stops (`IntervalTracker`). */
-  intervals: 4 * 1024 * 1024,
+  /** What the intervals of one backtest may hold before it stops (`IntervalTracker`, `INTERVALS_MAX_BYTES`). */
+  intervals: INTERVALS_MAX_BYTES,
 } as const
 
 const stepsOf = (r: Read) => Math.floor((r.toMs - r.fromMs) / r.stepMs) + 1

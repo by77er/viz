@@ -209,7 +209,39 @@ Each now has one sentence in the Chart README, a case in the preview, and a test
   when most of its samples were taken at a load at or below the core count, stated in the output. The
   calibration ratio is printed as context and judges nothing (M4.2).
 
-<!-- SPEED-RESULT -->
+**Result** (`speed/phone.json`, `speed/desktop.json`; measured on this machine, on the system's fixture
+page, a floor, not the application; CPU 4x and Fast 4G; v5's fixture and v6's alternating run by run, 3
+runs each, not 20: the machine is shared and a loaded run is not judged however many runs it has, so I
+scaled down and say so). The 1-minute load was 5.5 to 10.7 on 4 cores during the phone runs and 6.1 to
+7.5 during the desktop runs: **no timing row can be judged on this machine**; every one is printed with
+its load and marked "not judged". Layout shift is judged: within budget on every row at both layouts,
+both versions. p75 (median), ms; load is the median at the samples.
+
+| Row | Phone v5 | Phone v6 | Desktop v5 | Desktop v6 | Budget |
+|---|---|---|---|---|---|
+| Press: Run query (phone: a held finger) | **1000 (1000): never painted** | 31 (30) | 18 (16) | 38 (28) | 50 |
+| Typing in the query editor | 27 (16) | 26 (22) | 44 (24) | 29 (29) | 50 |
+| Crosshair (phone: touch drag, 36 series; desktop: 3 / 36 / 200) | 58 (53) | 72 (54) | 135 / 33 / 36 | 57 / 32 / 36 | 50 |
+| Legend row toggle, 36 / 200 series | 244 / 54 | 145 / 81 | 82 / 95 | 90 / 69 | 100 |
+| One panel to table, 36 / 200; to chart, 36 | 62 / 111; 55 | 191 / 83; 70 | 100 / 55; 61 | 117 / 67; 62 | 100 |
+| Open a menu | no such control | 92 (62) | no such control | 47 (42) | 100 |
+| Change theme | no such control | **153 (153)** | no such control | **121 (119)** | 100 |
+| Run a query: sent, waiting state shown | 53 (40) | 66 (64) | 32 (17) | 49 (44) | 100 |
+| Move to a view whose data is not loaded | no such view | 62 (59) | no such view | 56 (43) | 100 |
+| Response to paint, 36 / 200 series | 20 / 34 | 56 / 33 | 35 / 36 | 40 / 137 | 100 |
+| Worst interaction | 240 | 184 | 144 | 232 | 200 |
+| Layout shift (load and run; loaded scrolled to each chart) | 0.0000 everywhere | 0.0000 everywhere | 0.0005; 0.0002 | 0.0004; 0.0002 | 0.05 |
+| Load (median at the samples) | 9.3 to 9.6 | 6.7 to 7.2 | 6.4 to 7.0 | 6.8 to 7.2 | judged at 4 or less |
+
+What can be read from it, without judging: the press by finger is a mechanism, not a timing (v5 never
+paints while the finger is held, in every run, at every load); the rows that were missing now have
+numbers; **"Change theme" is over its budget at both layouts in every run (119 to 153 ms)**, which is
+the row to measure first on a quiet machine (a theme change restyles every element of a page with a
+200-series chart; if it holds, the fix is to change the theme between frames of a view switch or to
+reduce what the theme restyles); "One panel to table, 36 series" and the worst interaction are over in
+some runs of both versions, as in v4 and v5. **Not judged, and why**: every timing row, because the load
+was above the core count for every sample. Three runs at a load of 7 do not say whether v6 is faster or
+slower than v5 anywhere except the press.
 
 ### M4. The rubric gave two verdicts in four places
 

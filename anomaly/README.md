@@ -137,12 +137,14 @@ reference = point.expected, deviations = point.score; PELT's means are the segme
 
 The ruler imports this library (`ruler/src/anomaly.ts`, no copy) and evaluates **anomaly rules**:
 an alerting rule-file entry with an `anomaly` block, or a monitor with `query` and `anomaly`
-(`ruler/README.md`, part 8, has the whole of it, the tests and the mutants). In short:
+(`ruler/README.md`, part 8, has the whole of it, the tests and the mutants). It also evaluates
+**SLO burn-rate rules** with this library's Workbook alerts (part 10, D42) and **warms new rules
+of both kinds from history** (part 11, D43). In short:
 
 - **Rule shape** (`contracts/rules.ts`, contract version 2, additive): `anomaly: { detector,
   params, unit, severity, max_series }` next to `expr`, which is the series to watch. Detectors
   in rules: `ewma`, `threshold`, `robust_z`, `seasonal`, `cusum` (`ANOMALY_DETECTORS`); `stl`,
-  `pelt` and `burn_rate` are refused, with the reason. Every parameter is resolved and written
+  `pelt` and `burn_rate` are refused, with the reason (burn rate is its own rule kind, below). Every parameter is resolved and written
   out at save, so a later change of a default here never changes a stored rule.
 - **Defaults follow the held-out results below** (design D33): `ewma` with half-life 100 and
   k 8 (chosen on both folds), not this library's 30 / 4 (0.0 under NAB's protocol);
@@ -168,9 +170,16 @@ an alerting rule-file entry with an `anomaly` block, or a monitor with `query` a
   reproduce its outcome: a heartbeat write would lose up to five minutes of points at an
   eviction. Measured in workerd: one row per rule per tick for EWMA, threshold and CUSUM at 100
   series, 2 for robust z, 4 to 6 for seasonal (`ruler/README.md`, measurements).
-- **Not built: warming from history.** A new or reset rule warms live (`minPoints` evaluations),
-  and the save warns when that is longer than a day. Reading `need.lookbackMs` through the
-  engine's range query at a cold start is the next step (contract issue 1 below).
+- **Warming from history** (`ruler/README.md` part 11, design D43; contract version 4): a new
+  anomaly rule (a new rule key) gets a warm-up job. At its first tick the ruler reads the
+  detector's look-back at the rule's interval (`max(minPoints, lookbackMs / interval)` points,
+  from this library's `history()`), first asking viz-query's `/api/v1/plan` for the cost of every
+  piece; over the budget (`RulerLimits.maxWarmup*`: 3,000,000 samples, 16 MiB) or on the engine's
+  own refusal the warm-up is refused whole and the rule warms live, saying why. Otherwise the
+  points are fed in time order through the same `detect` a tick calls, and the state and status
+  are committed in one transaction. The threshold needs none (`not_needed`). Rules saved before
+  that release are not warmed. Backtests of anomaly rules start from the state such a warm-up
+  would leave (part 12).
 - **Bounds.** A per-rule series cap (`max_series`, default 100 or what fits the per-rule state
   limit): above it the evaluation is refused (`series_cap_exceeded`), nothing is scored and no
   alert changes. State limits per series, per rule and per object (the object's is checked at
@@ -183,8 +192,18 @@ an alerting rule-file entry with an `anomaly` block, or a monitor with `query` a
   state" below predicted, without the parse: EWMA 10–17 ms per 1,000 points, robust z 100–111,
   seasonal daily 197–209; a whole tick of a 100-series EWMA rule costs about 1–1.5 ms CPU more
   than an empty one (`ruler/README.md`, "Anomaly rules" under Measurements).
-- **Not wired**: burn rate (to compile to recording rules), cross-series, STL refits and PELT as
-  scheduled jobs.
+- **SLO burn-rate rules** (`ruler/README.md` part 10, design D42; contract version 4): an
+  objective, a compliance window and an SLI written with `$window`. The ruler sends one
+  expression per rule per tick (the SLI's two parts over the last interval), keeps per-series
+  bucket rings in its own storage, and judges the windows with this library's
+  `SRE_WORKBOOK_RULES` and `evaluateWindows` (one alert per series and severity, `page` and
+  `ticket`). Not compiled to recording rules, and not the incremental `burnRate.detect` (its JSON
+  state would be rewritten every tick); D42 replaces D33's "burn rate is to compile to
+  recording rules". The window sums are the ruler's own (a second implementation of the
+  summing), tested to agree with `burnRate.detect` at every point of 7,320 buckets when the
+  counts are whole numbers (`ruler/README.md`, `slo.test.ts`). SLO rules are warmed from
+  history the same way (their longest alert window and the compliance window).
+- **Not wired**: cross-series, STL refits and PELT as scheduled jobs.
 
 ### Contract issues
 
@@ -192,12 +211,13 @@ Resolved by contract version 2 (`contracts/rules.ts`, "anomaly rules"): the rule
 per-(rule, series) state (3, ruler storage), the two classes (2: `AnomalyHistory.tick` and
 `coldStart`, with `RuleCost` the larger of the expression's and the tick class) and "warming"
 (4: `AnomalyRuleStatus`). `DESIGN.md` §7 and `DECISIONS.md` (D33) now say what the evidence
-below supports (5). Still open:
+below supports (5). Resolved by contract version 4: warming from history (formerly open issue 1;
+the ruler reads the look-back through a plan-checked range read at a rule's first tick, D43).
+Still open:
 
-1. Warming from history needs the ruler to read `lookbackMs` at `resolutionMs` through a range
-   query (`RangeEvaluator`, which the ruler already has for backtests) at a cold start; not done.
-2. The guide's numbers in `ruler/src/anomaly.ts` are copied from this README; a change here must
-   be made there too (no test ties them).
+1. The guide's numbers in `ruler/src/anomaly.ts` are copied from this README; a change here must
+   be made there too (no test ties them). The SMD results below and the proposed amendment to
+   D33 change some of them.
 
 ## How it was verified
 
@@ -621,8 +641,8 @@ A performance finding on the way: in this V8, `x ** 3` in STL's LOESS weights co
   the detectors here would apply to per-template counts, but nothing reads templates.
 - **Tier 2** foundation models; **MSTL** (several seasonalities at once), Holt-Winters, BOCPD;
   quantile sketches (DDSketch) as baselines — the seasonal baseline keeps raw values.
-- **In the ruler**: warming from history (range reads at a cold start), burn-rate and
-  cross-series rules, scheduled STL refits and PELT runs ("Integration").
+- **In the ruler**: cross-series rules, scheduled STL refits and PELT runs ("Integration").
+  Warming from history and SLO burn-rate rules are built (ruler parts 10 and 11, D42, D43).
 - **A workerd run of this package's own tests**: `src/` is checked to use no Node API and the
   bundle runs in a bare `node:vm` context with `Date.now`/`Math.random` poisoned. The detectors
   do run in workerd inside the ruler (its tests and `npm run bench:anomaly`), but this package's
@@ -632,8 +652,8 @@ A performance finding on the way: in this V8, `x ** 3` in STL's LOESS weights co
   needs the old detector stack); the TypeScript port reproduces all 45 published numbers.
 - **STL residuals with the quantile spread**; seasonal baseline with a trend term; an
   automatic per-series choice between MAD and quantile spread.
-- **Burn rate**: no OpenSLO input, no recording-rule generation (Sloth/Pyrra style); evaluation
-  from window aggregates is there (`evaluateWindows`).
+- **Burn rate**: no OpenSLO input; no recording-rule generation (Sloth/Pyrra style), by
+  decision (D42): the ruler's SLO rules judge their own bucket rings with `evaluateWindows`.
 - **Explanations** are English and UTC only.
 
 ## Risks
@@ -649,7 +669,9 @@ A performance finding on the way: in this V8, `x ** 3` in STL's LOESS weights co
   each): weekly seasonality belongs on 1-hour rollups.
 - **Cold start**: seasonal rules need k periods of rollups (35 days for weekly, k = 4) or they
   stay `warming`; robust z over a day reads a day of history on every cold start (`rollup`).
-  The ruler does not read history at a cold start yet, so these rules warm live for that long.
+  The ruler now reads that history at a new rule's first tick (D43), but only under its warm-up
+  budget (3,000,000 samples): a rule whose look-back is over it, or whose warm-up fails three
+  times, still warms live for that long, and says so in its status.
 - **Incremental ≡ batch holds only with an explicit `stepMs`** (an inferred step depends on the
   first batch).
 - **Floating-point limits**: values beyond ±1e150 and timestamps beyond ±8.64e15 ms are

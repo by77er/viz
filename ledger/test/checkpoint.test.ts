@@ -518,6 +518,8 @@ describe('a rebuild streams into SQLite', () => {
       expect(live.files.length).toBeGreaterThan(30)
       const seen: { key: string; rows: number }[] = []
       await slowly(l, seen)
+      // A base is written to SQLite in batches of rows as it is read; small ones here, so a small base shows it.
+      await runInDurableObject(l, (i: Ledger) => { (i as unknown as { rebuildBatchRows: number }).rebuildBatchRows = 8 })
       const r = await rebuild(l)
       expect(r.checkpoint === null, format).toBe(format === 'base')
       const holding = seen.filter((x) => {

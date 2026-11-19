@@ -569,6 +569,45 @@ first, as in part 11, against `RulerLimits.maxBacktestScanSamples` (20,000,000) 
   and ticketed. A backtest that starts at another time can differ in the budget figure's last
   digits (its older coarse buckets come from a coarse read rather than sums of fine ones).
 
+### 13. Streaming history: bounded memory for warm-ups and backtests
+
+Warm-ups (part 11) and backtests (part 12) read history **in time windows, one at a time, in
+order**: each window is fetched, fed step by step through the rule's evaluation, and dropped;
+only the rule's state crosses a window boundary (detector state, the SLO's bucket rings, the alert
+state machine's alerts, the intervals found so far). Where the windows fall changes nothing in the
+result: the evaluation is the same function, called on the same steps in the same order (tested
+across hundreds of boundaries, and against live evaluation).
+
+**The memory model** (`src/history.ts`, `MEMORY`; bytes):
+
+```
+peak = fixed + window steps × series per step × 768
+fixed (backtest) = 2 MiB (the call) + alerts × 3 KiB + 4 MiB (intervals, a cap) + the rule's state
+  anomaly state  = max_series × the stored estimate per series × 3 (heap per stored byte, part 8)
+  SLO state      = max_series × (16 × (fine + coarse ring buckets) + 4 KiB)   (80 KB a series at 1 minute)
+fixed (warm-up)  = 2 MiB (the state built is the rule's own, held live afterwards and bounded by the
+                   per-object state budget)
+series per step  = the bound the rule's own evaluation enforces: max_series (twice for an SLO's two
+                   parts; the no-data expression adds its own), or an alerting rule's alert limit
+```
+
+Windows are as long as `(budget − fixed) / (series per step × 768)` steps allows, at most 11,000.
+The budgets are `RulerLimits` fields proposed in `rules.v2.ts` (`maxWarmupMemoryBytes` 16 MiB,
+`maxBacktestMemoryBytes` 32 MiB; contract issue 18). **Refused before any plan or fetch** when the
+fixed bytes and one step do not fit, or when the windows would take more than 1,000 range queries:
+`over_budget` with the model's `memory: { peakBytes, budgetBytes }` (a warm-up: `refused`, the rule
+starts cold). A window holding more points than it was sized for (the engine returned more series
+than the rule allows) stops the run (`failed`, with that reason) instead of being evaluated. The
+intervals of a backtest stop at 4 MiB (modelled: labels and annotations at two bytes a character).
+The answer's `cost.memory` gives the modelled peak, the budget, the steps per window of each read
+and the queries the windows took. Plans are still asked per 11,000-step piece of each whole read,
+before the first window.
+
+768 bytes a point is above every measurement of resident memory per point held (a window's JSON
+parsed and indexed by step: 440–710 bytes, `test/memory.bench.ts`, below), not the live objects'
+size, so the model is conservative about live memory by construction; what the checks below show is
+that runs sized by it complete under a V8 heap limit like a Durable Object's.
+
 ### Versioned storage and formats (`contracts/COMPATIBILITY.md`)
 
 - **Storage.** `Ruler`, `Notifier` and `RulerIndex` open SQLite in the constructor, inside

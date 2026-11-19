@@ -376,3 +376,97 @@ describe('backtests through the monitors API', () => {
     expect(b.w.rangeCalls.length).toBeGreaterThan(bRanges)
   })
 })
+
+describe('streaming: history is read and evaluated in windows sized to a memory budget', () => {
+  const small = (tenantStub: { configure: (t: string, p: never) => Promise<unknown> }, tenant: string, bytes: number) => tenantStub.configure(tenant, { limits: { maxBacktestMemoryBytes: bytes } } as never)
+
+  it('across many window boundaries an anomaly and an SLO backtest give exactly the alerts, times and explanations of one window and of live evaluation', async () => {
+    const values: Values = (s, t) => {
+      const m = Math.round(t / MIN) % 1000
+      return (s === 'b' && (m % 41 === 7 || m % 41 === 8)) || (s === 'c' && m % 53 === 30) ? 400 : noise(t)
+    }
+    const rule = ewma({ for: '1m', annotations: { summary: '{{ $labels.service }} latency {{ $value }}' } })
+    const r = await rig([rule], values)
+    const ticks: { ts: number; alerts: Alert[] }[] = []
+    for (let i = 0; i < 60; i++) ticks.push({ ts: await r.tick(), alerts: (await r.rule()).alerts })
+    const from = ticks[0]!.ts
+    const to = ticks.at(-1)!.ts
+    const strip = (xs: BacktestInterval[]) => xs.map(({ fingerprint, state, startMs, endMs, open, annotations }) => ({ fingerprint, state, startMs, endMs, open, annotations }))
+    const whole = good(await r.stub.backtest(r.tenant, rule, from, to, MIN))
+    expect(whole.cost!.memory!.windowSteps).toEqual([80])
+    // A budget a little over the fixed bytes: windows of a few steps.
+    ok((await small(r.stub as never, r.tenant, 7_200_000)) as never)
+    const before = r.w.rangeCalls.length
+    const windowed = good(await r.stub.backtest(r.tenant, rule, from, to, MIN))
+    const ws = expectWindows(r.w.rangeCalls.slice(before), LAT, from - 20 * MIN, to, MIN)
+    expect(ws.length, 'many windows').toBeGreaterThan(5)
+    expect(windowed.cost!.memory!.windowSteps[0]).toBe(ws[0]![1] / MIN - ws[0]![0] / MIN + 1)
+    expect(windowed.cost!.memory!.peakBytes).toBeLessThanOrEqual(7_200_000)
+    expect(strip(windowed.intervals)).toEqual(strip(whole.intervals))
+    expect(strip(windowed.intervals)).toEqual(strip(intervalsOf(ticks, to)))
+    expect(windowed.warmup).toEqual(whole.warmup)
+
+    // The SLO rule: the coarse read and the fine read both cut into windows.
+    const outage = (t: number) => {
+      const m = Math.round(t / MIN)
+      return t >= T0 && m % 97 >= 10 && m % 97 < 16 ? 1000 : m % 2
+    }
+    const s = await rig([sloEntry()], undefined, { group: 'slos/1m', slo: outage })
+    const sticks: { ts: number; alerts: Alert[] }[] = []
+    for (let i = 0; i < 100; i++) sticks.push({ ts: await s.tick(), alerts: (await s.rule('CheckoutSLO')).alerts })
+    const sFrom = sticks[0]!.ts
+    const sTo = sticks.at(-1)!.ts
+    const sWhole = good(await s.stub.backtest(s.tenant, sloEntry(), sFrom, sTo, MIN))
+    ok((await small(s.stub as never, s.tenant, 7_400_000)) as never)
+    const sBefore = s.w.rangeCalls.length
+    const sWindowed = good(await s.stub.backtest(s.tenant, sloEntry(), sFrom, sTo, MIN))
+    const fineCalls = s.w.rangeCalls.slice(sBefore).filter((c) => c[3] === MIN)
+    expect(fineCalls.length, 'many fine windows').toBeGreaterThan(20)
+    expect(s.w.rangeCalls.slice(sBefore).filter((c) => c[3] === HOUR).length, 'the coarse read in windows too').toBeGreaterThan(1)
+    expect(strip(sWindowed.intervals)).toEqual(strip(sWhole.intervals))
+    expect(strip(sWindowed.intervals)).toEqual(strip(intervalsOf(sticks, sTo)))
+    expect(sWindowed.intervals.some((x) => x.labels.severity === 'page')).toBe(true)
+  })
+
+  it('refused before any plan or fetch when the modelled peak cannot fit: an SLO rule\'s rings over the budget, and 1,000 series of SLO state at the default budget; the answer says the model\'s numbers', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 6 * HOUR })
+    const key = await apiKey(tenant)
+    w.range = () => {
+      throw new Error('fetched although refused')
+    }
+    ok(await stub.configure(tenant, { limits: { maxBacktestMemoryBytes: 4 << 20 } } as never))
+    const T = T0 - DAY
+    const tooSmall = await stub.backtest(tenant, { alert: 'S', slo: { objective: 0.999, sli: SLI, max_series: 100 } }, T, T + HOUR, MIN)
+    expect(tooSmall).toMatchObject({ status: 'over_budget', plan: null, memory: { budgetBytes: 4 << 20 } })
+    expect(tooSmall.status === 'over_budget' && tooSmall.message).toMatch(/^over the memory budget: holding this rule's state \([\d.]+ MiB\) and one step of 200 series would take [\d.]+ MiB; the budget is 4\.0 MiB\. Nothing was fetched/)
+    // 1,000 series of SLO state (the limit raised to allow the rule) is about 80 MB of rings: refused at the default 32 MiB.
+    ok(await stub.configure(tenant, { limits: { maxBacktestMemoryBytes: 32 << 20, maxSloSeriesPerRule: 1000 } } as never))
+    const thousand = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { rule: { alert: 'S', slo: { objective: 0.999, sli: SLI, max_series: 1000 } }, fromMs: T, toMs: T + 7 * DAY - MIN, step: '1m' })
+    expect([thousand.status, thousand.json.error.code, thousand.json.plan]).toEqual([422, 'over_budget', null])
+    expect(thousand.json.memory.peakBytes).toBeGreaterThan(80_000_000)
+    expect(w.planCalls).toEqual([])
+    expect(w.rangeCalls).toEqual([])
+  })
+
+  it('a warm-up whose window cannot fit its memory budget is refused before any plan; the rule starts cold and says why', async () => {
+    const r = await rig([ewma()])
+    ok(await r.stub.configure(r.tenant, { limits: { maxWarmupMemoryBytes: 1 << 20 } } as never))
+    await r.tick()
+    expect(r.log.filter((x) => !x.startsWith('query'))).toEqual([])
+    expect((await r.rule()).anomaly!.warmup).toMatchObject({ status: 'refused', plan: null, message: expect.stringMatching(/^over the memory budget: holding this rule's state \(2\.0 MiB\) and one step of 100 series would take [\d.]+ MiB; the budget is 1\.0 MiB; nothing was fetched and the rule started cold$/) })
+  })
+
+  it('a window holding more points than the model sized it for (more series than the rule allows) stops the run with that reason', async () => {
+    const r = await rig([ewma()])
+    await r.tick()
+    const base = r.w.range!
+    r.w.range = (q, s0, e, st) => {
+      const m = base(q, s0, e, st) as PromMatrix
+      // Two hundred series, where the rule allows max_series 100.
+      return { resultType: 'matrix', result: Array.from({ length: 200 }, (_x, k) => ({ metric: { service: `x${k}` }, values: m.result[0]!.values })) }
+    }
+    const T = T0 - DAY
+    const res = await r.stub.backtest(r.tenant, ewma(), T, T + HOUR, MIN)
+    expect(res).toMatchObject({ status: 'failed', error: expect.stringMatching(/^the engine returned \d+ points for a window the memory model sized for \d+ \(100 series a step\): more series than the rule allows$/) })
+  })
+})

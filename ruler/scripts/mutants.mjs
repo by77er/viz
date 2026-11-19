@@ -682,6 +682,43 @@ export const MUTANTS = [
     ],
     tests: ['test/slo.test.ts'],
   },
+
+  // ───────────── streaming history in memory-sized windows ─────────────
+  {
+    name: 'window boundary: each window starts a step late (a step between windows is never read)',
+    edits: one('src/history.ts', '  for (let from = r.fromMs; from <= r.toMs; from += steps * r.stepMs) {', '  for (let from = r.fromMs; from <= r.toMs; from += (steps + 1) * r.stepMs) {'),
+    tests: ['test/history.test.ts', 'test/backtest.test.ts'],
+  },
+  {
+    name: 'window boundary: windows overlap by a step (the step at each boundary is read twice)',
+    edits: one('src/history.ts', '    out.push({ ...r, fromMs: from, toMs: Math.min(r.toMs, from + (steps - 1) * r.stepMs) })', '    out.push({ ...r, fromMs: from, toMs: Math.min(r.toMs, from + steps * r.stepMs) })'),
+    tests: ['test/history.test.ts', 'test/backtest.test.ts'],
+  },
+  {
+    name: 'window boundary: the last step of every window is not fed to the rule',
+    edits: one('src/history.ts', '      for (let ts = w.fromMs; ts <= w.toMs; ts += w.stepMs) {', '      for (let ts = w.fromMs; ts < w.toMs; ts += w.stepMs) {'),
+    tests: ['test/history.test.ts', 'test/backtest.test.ts'],
+  },
+  {
+    name: 'memory refusal: the rule\'s state is left out of the window sizing (windows sized as if the state cost nothing)',
+    edits: one('src/history.ts', 'Math.floor((budgetBytes - fixedBytes) / perStep)', 'Math.floor(budgetBytes / perStep)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'memory refusal: windows sized without the series count (one point a step)',
+    edits: one('src/history.ts', '    const perStep = (s.seriesBound + (s.companions ?? []).reduce((n, c) => n + c.seriesBound, 0)) * MEMORY.perPoint', '    const perStep = (1 + (s.companions ?? []).length) * MEMORY.perPoint'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'memory refusal: an SLO backtest\'s model leaves out its bucket rings',
+    edits: one('src/history.ts', '  const fixed = backtestFixed(2 * rule.slo.maxSeries) + sloStateBytes(rule, I)', '  const fixed = backtestFixed(2 * rule.slo.maxSeries)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'memory refusal: a window holding more points than it was sized for is evaluated anyway',
+    edits: one('src/history.ts', '      if (held > allowed) return', '      if (held > allowed && false) return'),
+    tests: ['test/history.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

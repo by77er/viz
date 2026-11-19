@@ -288,8 +288,10 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   removes whole files from the ledger. Objects are deleted after the removal has been
   published and a grace period has passed. As built (raw tier only, one policy per tenant):
   the ledger keeps a tombstone per removed key and releases it for deletion once the
-  removal is in its R2 log and a grace period has passed by its own clock; the wait for
-  publication is added with the publisher (tombstones carry the ledger version for that).
+  removal is in its R2 log and a grace period has passed by its own clock; with a publisher
+  bound (as viz-ingest is), the janitor also waits for the cell's publisher to release the key
+  (`safeToDelete`: removal published, no retained snapshot references the file, the
+  publisher's grace passed). A publisher that cannot answer releases nothing.
   A tenant without a policy record gets the default (30 days); a record that cannot be read
   (malformed, or of a version the janitor does not know) expires nothing for that tenant and
   is reported every hour until fixed, never replaced by the default.
@@ -301,13 +303,17 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
 ### 5.3 Iceberg publication
 
 The publisher applies ledger changes to the cell's Iceberg tables every few minutes, only
-when something changed. As built (D34), each tenant's maintenance run nudges the cell's
-publisher, which publishes from its own alarm a couple of minutes later; an idle cell has no
-alarm and nothing calls it. The nudge is only that: changes are applied strictly in ledger
+when something changed. As built and wired (D34): viz-ingest binds the cell's publisher
+(viz-publisher, deployed first) and every maintenance run ends with a nudge to it, at most 2 s
+and never on an ingest or flush acknowledgement path; a nudge that may not have been recorded
+makes the tenant due again within the hour. The publisher publishes from its own alarm a
+couple of minutes later; an idle cell has no alarm and nothing calls it. The nudge is only
+that: changes are applied strictly in ledger
 version order per tenant, read from the ledger's R2 log (segments, in whole segments; a hole
 or a segment it cannot read stops that tenant there, never skipped). A removed
 file is physically deleted only after the removal is published and every snapshot that
-referenced it has expired. Each snapshot points at an object
+referenced it has expired (the janitor asks the publisher before each purge). Each snapshot
+points at an object
 recording which ledger version of each tenant it reflects. A scrubber checks continuously
 that the Iceberg live set equals the union of the ledgers at those versions.
 

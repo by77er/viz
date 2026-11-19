@@ -562,7 +562,7 @@ function backtestAnswer(r: Exclude<Awaited<ReturnType<RulerStub['backtest']>>, {
   if (r.status === 'invalid') throw invalid(r.errors)
   if (r.status === 'failed') throw new ApiError(502, 'evaluation_failed', r.error)
   // Refused before anything was fetched: the read is over the backtest budget (or its cost is unknown).
-  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, plan: r.plan, budget: r.budget })
+  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, plan: r.plan, budget: r.budget, memory: r.memory ?? null })
   const { status: _s, ...result } = r
   return json(200, result)
 }

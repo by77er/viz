@@ -452,6 +452,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   protected checkpointPartBytes = LEDGER_CHECKPOINT_PART_MAX_BYTES
   /** A state estimated at most this is checkpointed in format 1, as one object (a field so that tests can force format 2). */
   protected checkpointOneObjectBytes = CHECKPOINT_ONE_OBJECT_BYTES
+  /** A rebuild writes a base it reads into SQLite in transactions of this many rows: what it holds of it at once. */
+  protected rebuildBatchRows = 256
   protected stateMaxBytes: number
   /** Why the log is stuck (phase `stuck`), re-derived by the next drain or start after an eviction. */
   private stuck: string | null = null
@@ -610,9 +612,18 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO ckpt_pre (key, absent) SELECT ?, 1 FROM ckpt WHERE phase = 'files' AND ? > file_cursor`, key, key)
   }
 
-  /** A live file admitted by a mutation (`addUnit`, `replace`): the checkpoint in progress is told. */
-  private insertFile(f: LiveFile, unit: UnitRef | null): void {
-    this.preimageOfInserted(f.key)
+  /**
+   * Inside a mutation's transaction: whether a checkpoint is reading files now, so that changes
+   * to files must leave pre-images. Read once per mutation; without one, a mutation runs no
+   * statement for it.
+   */
+  private tracking(): boolean {
+    return this.ctx.storage.sql.exec(`SELECT 1 AS x FROM ckpt WHERE phase = 'files'`).toArray().length > 0
+  }
+
+  /** A live file admitted by a mutation (`addUnit`, `replace`): a checkpoint reading files is told. */
+  private insertFile(f: LiveFile, unit: UnitRef | null, tracking: boolean): void {
+    if (tracking) this.preimageOfInserted(f.key)
     this.loadFile(f, unit)
   }
 
@@ -853,7 +864,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       // Units of a stream are admitted in sequence order, so a later write ranks higher.
       const v = this.version() + 1
       const listed = unit.files.map((f, i) => asListed(f, v * PRECEDENCE_PER_VERSION + i, v * PRECEDENCE_PER_VERSION + i))
-      for (const f of listed) this.insertFile(f, ref)
+      const tracking = this.tracking()
+      for (const f of listed) this.insertFile(f, ref, tracking)
       this.ctx.storage.sql.exec(`UPDATE stream SET watermark = ? WHERE shard = ?`, unit.seqHi, unit.shard)
       const recorded = this.record('add_unit', listed, [], { shard: unit.shard, incarnation: unit.incarnation, seq: unit.seqHi }, { seqLo: unit.seqLo, seqHi: unit.seqHi })
       if (recorded !== v) throw new Error('ledger: version moved inside a transaction')
@@ -936,11 +948,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       this.setMeta('state_bytes', Math.max(0, (this.meta('state_bytes') ?? 0) + delta))
       const gone = inputs.map((f) => ({ key: f.key, table: f.table }))
       this.bury(gone)
+      const tracking = this.tracking()
       for (const k of remove) {
-        this.preimageOfDeleted('f.key = ?', k)
+        if (tracking) this.preimageOfDeleted('f.key = ?', k)
         this.ctx.storage.sql.exec(`DELETE FROM file WHERE key = ?`, k)
       }
-      for (const f of outputs) this.insertFile(f, null)
+      for (const f of outputs) this.insertFile(f, null, tracking)
       return this.record('replace', outputs, gone)
     })
     this.afterCommit()
@@ -967,8 +980,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       let freed = 0
       for (const table of named) freed += sql.exec(`SELECT ${ENTRY_BYTES_SQL} AS b FROM file WHERE tbl = ? AND day < ?`, table, req.beforeDay).one().b as number
       this.setMeta('state_bytes', Math.max(0, (this.meta('state_bytes') ?? 0) - freed))
+      const tracking = this.tracking()
       for (const table of named) {
-        this.preimageOfDeleted('f.tbl = ? AND f.day < ?', table, req.beforeDay)
+        if (tracking) this.preimageOfDeleted('f.tbl = ? AND f.day < ?', table, req.beforeDay)
         sql.exec(`DELETE FROM file WHERE tbl = ? AND day < ?`, table, req.beforeDay)
       }
       return { version: this.record('expire', [], gone), removed: gone.map((x) => x.key) }
@@ -1736,7 +1750,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const at = Date.now()
     const header = `${JSON.stringify({ v: LEDGER_SEGMENT_VERSION, kind: LEDGER_SEGMENT_KIND, tenant: this.tenant, ledgerIncarnation, firstVersion: version, lastVersion: version, changes: 1 })}\n`
     let length = utf8Length(header) + 1
-    for (const piece of this.baseChunks(ledgerIncarnation, version, at)) length += utf8Length(piece)
+    let since = 0
+    for (const piece of this.baseChunks(ledgerIncarnation, version, at)) {
+      length += utf8Length(piece)
+      since += piece.length
+      // Measuring holds nothing, but it is a pass over the whole state: let other events in.
+      if (since >= 4 * BASE_WRITE_CHUNK) {
+        since = 0
+        await new Promise((r) => setTimeout(r, 0))
+      }
+    }
     const key = this.objectKey(ledgerSegmentKey(this.tenant, ledgerIncarnation, version, version))
     const { readable, writable } = new FixedLengthStream(length)
     const put = this.bucket.put(key, readable, { onlyIf: { etagDoesNotMatch: '*' }, httpMetadata: { contentType: 'application/x-ndjson' } })
@@ -1903,6 +1926,18 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const previous = new Map<string, number>()
     const lateUnits = new Map<string, UnitRef>()
     let files = 0
+    // Writes go in transactions of a few hundred rows: one commit per row would be most of a
+    // rebuild's time (measured: 32,000 files took 15.6 s that way, in local workerd).
+    let batch: (() => void)[] = []
+    const flush = () => {
+      const run = batch
+      batch = []
+      if (run.length > 0) this.ctx.storage.transactionSync(() => { for (const op of run) op() })
+    }
+    const later = (op: () => void) => {
+      batch.push(op)
+      if (batch.length >= this.rebuildBatchRows) flush()
+    }
     const fail = (why: string) => new LogFault(`ledger: a base that cannot be read: ${why}`)
     return {
       element: (member, el) => {
@@ -1912,21 +1947,24 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
           const f = x as unknown as LiveFile
           if (typeof f.key !== 'string') throw fail('a file without a key')
           // A base written before precedence existed has none: those files rank below everything later.
-          this.loadFile({ ...f, precedence: f.precedence ?? 0, precedenceLow: f.precedenceLow ?? f.precedence ?? 0 }, null)
+          later(() => this.loadFile({ ...f, precedence: f.precedence ?? 0, precedenceLow: f.precedenceLow ?? f.precedence ?? 0 }, null))
           files++
         } else if (member === 'tombstones') {
           const t = x as unknown as Tombstone
-          sql.exec(`INSERT OR REPLACE INTO tombstone (key, tbl, version, at) VALUES (?, ?, ?, ?)`, t.key, t.table, t.version, t.at)
+          later(() => sql.exec(`INSERT OR REPLACE INTO tombstone (key, tbl, version, at) VALUES (?, ?, ?, ?)`, t.key, t.table, t.version, t.at))
         } else if (member === 'units') {
           const u = x as unknown as UnitRef & { key: string }
           const ref = { shard: u.shard, incarnation: u.incarnation, seqLo: u.seqLo, seqHi: u.seqHi }
-          const hit = sql.exec(`UPDATE file SET u_shard = ?, u_inc = ?, u_lo = ?, u_hi = ? WHERE key = ?`, ref.shard, ref.incarnation, ref.seqLo, ref.seqHi, u.key).rowsWritten
-          if (hit === 0) lateUnits.set(u.key, ref)
+          later(() => {
+            const hit = sql.exec(`UPDATE file SET u_shard = ?, u_inc = ?, u_lo = ?, u_hi = ? WHERE key = ?`, ref.shard, ref.incarnation, ref.seqLo, ref.seqHi, u.key).rowsWritten
+            if (hit === 0) lateUnits.set(u.key, ref)
+          })
         } else if (member === 'watermarks') watermarks.push(x as unknown as Watermark)
         else if (member === 'previousIncarnations') previous.set(x.shard as string, x.previousIncarnation as number)
         else if (member !== 'removed') throw fail(`an array member ${JSON.stringify(member)} this code does not know`)
       },
       finish: (scalars, expect) => {
+        flush()
         const why = unsupportedLedgerChange(scalars)
         if (why) throw fail(why)
         if (scalars.kind !== 'base' || scalars.ledgerIncarnation !== expect.ledgerIncarnation || scalars.version !== expect.version) {

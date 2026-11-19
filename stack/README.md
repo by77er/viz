@@ -129,7 +129,11 @@ against it** (no `nudged`, no recheck interval), and pass after it. Mutants: bel
 - **Concurrency limits** on maintenance (two messages for one tenant in different batches
   run two maintenance runs; each step is safe to run twice, it is only wasted work. Before
   D30 that was not true together with the orphan sweep: review R-2).
-- Nothing was deployed to Cloudflare. Queue delivery, cron and KV metadata are miniflare's.
+- **No production deployment yet.** This script has run on Cloudflare as viz-ingest in three
+  staged trials (`deploy/README.md`: Trial 1 under load across four cutovers, Trial 2, and
+  Trial 3 with the publisher wired in, its maintenance runs and deletion gate on their own);
+  everything in "How it was verified" below is local (queue delivery, cron and KV metadata are
+  miniflare's).
 
 ## How it was verified
 

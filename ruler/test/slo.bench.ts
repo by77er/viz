@@ -14,12 +14,11 @@
  * (building each tick's result; the backtests' matrices are built before the measured call and
  * handed over in memory). Peak resident memory is VmHWM of the same process.
  */
-import { runDurableObjectAlarm } from 'cloudflare:test'
+import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { PromMatrix } from '../../contracts/engine'
 import type { SloRuleV2 } from '../contracts-proposal/rules.v2'
-import { anomalyWarmPoints, sloWarmReads } from '../src/history'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
 import { parseRuleFile } from '../src/rules'
 import { world } from './harness'
@@ -28,7 +27,7 @@ import { MIN, ok, setup, vec } from './helpers'
 const HOUR = 60 * MIN
 const DAY = 24 * HOUR
 type Host = { ns: number; pids: number[]; loadavg: number[]; rssKb: number; peakKb: number }
-const host = async () => (await (env as unknown as { HOST: Fetcher }).HOST.fetch('http://host/')).json() as Promise<Host>
+const host = async (reset = false) => (await (env as unknown as { HOST: Fetcher }).HOST.fetch(`http://host/${reset ? '?reset' : ''}`)).json() as Promise<Host>
 const range = (xs: number[], digits = 2) => (Math.min(...xs) === Math.max(...xs) ? Math.min(...xs).toFixed(digits) : `${Math.min(...xs).toFixed(digits)}–${Math.max(...xs).toFixed(digits)}`)
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1]!
 const load = (l: number[]) => l.map((x) => x.toFixed(1)).join(' ')
@@ -87,7 +86,7 @@ const sloRule = (maxSeries: number) => ({ alert: 'CheckoutSLO', slo: { objective
 describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per backtest', () => {
   it('T. one alarm tick of a group with one SLO rule (warm), at 1, 10 and 100 series, against an empty alerting rule; and its warm-up', async () => {
     note('\nT. one alarm tick, 1-minute interval; 3 unmeasured ticks after the warm-up, then 30 measured')
-    note('| rule | series | ms CPU per tick (median, min–max of 30) | warm-up (first tick), ms CPU | SQL rows written per tick | load average | peak RSS, MB |')
+    note('| rule | series | ms CPU per tick (median, min–max of 30) | warm-up (first tick), ms CPU, fake engine taken off | SQL rows written per tick | load average | peak RSS, MB |')
     note('|---|---|---|---|---|---|---|')
     for (const [kind, series] of [['empty', 1], ['slo', 1], ['slo', 10], ['slo', 100]] as const) {
       const { tenant, stub, w } = await setup({ heartbeatMs: 24 * HOUR, limits: { maxAnomalyStateBytesPerObject: 64_000_000 } })
@@ -110,18 +109,19 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
       }
       ok(await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [kind === 'slo' ? sloRule(100) : { alert: 'Nothing', expr: 'nothing_here' }] }] }))
       void firstTick
-      // The warm-up's two reads, built before the first tick is measured (the fake engine runs in
-      // the same isolate: building them inside the call would be measured as the ruler's CPU).
-      const at = ok(await stub.health(tenant)).alarmAtMs!
-      const reads = sloWarmReads(parsed, MIN, at - MIN)
-      for (const r of [reads.fine, reads.coarse]) if (r) cache.set(`${r.fromMs} ${r.toMs} ${r.stepMs}`, sloMatrix(series, r.fromMs, r.toMs, r.stepMs))
       const tick = async () => {
         world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
         expect(await runDurableObjectAlarm(stub)).toBe(true)
       }
       // The first tick holds the warm-up: its reads are generated on demand by the fake engine, so
       // generate them once untimed (a twin tenant would get other offsets), then time a fresh rule.
-      const warm = await measure(tick)
+      // The warm-up (first tick) reads in windows; the fake engine builds them in the same isolate,
+      // so its CPU is measured alone afterwards (the same windows built again) and taken off.
+      const warmTotal = await measure(tick)
+      const calls = w.rangeCalls.slice()
+      cache.clear()
+      const gen = await measure(() => runInDurableObject(stub, () => calls.reduce((n, [q, a, b, st]) => n + sloMatrix(series, a, b, st).result.length + (q ? 0 : 0), 0)))
+      const warm = { cpuMs: warmTotal.cpuMs - gen.cpuMs, windows: calls.length }
       for (let i = 0; i < 3; i++) await tick()
       const cpu: number[] = []
       const rows: number[] = []
@@ -137,51 +137,56 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
       }
       const status = ok(await stub.rules(tenant)).rules[0]!
       if (kind === 'slo') expect(status.slo).toMatchObject({ series, warmup: { status: 'done' } })
-      expect(cache.size, 'the warm-up read exactly the pre-built ranges').toBe(kind === 'slo' ? 2 : 2)
-      note(`| ${kind === 'slo' ? 'SLO, 4 alerts' : 'counterfactual: alerting rule, empty result'} | ${series} | ${median(cpu).toFixed(2)} (${range(cpu)}) | ${kind === 'slo' ? warm.cpuMs.toFixed(0) : '–'} | ${range(rows, 0)} | ${load(last)} | ${peak.toFixed(0)} |`)
+      note(`| ${kind === 'slo' ? 'SLO, 4 alerts' : 'counterfactual: alerting rule, empty result'} | ${series} | ${median(cpu).toFixed(2)} (${range(cpu)}) | ${kind === 'slo' ? `${warm.cpuMs.toFixed(0)} (${warm.windows} windows)` : '–'} | ${range(rows, 0)} | ${load(last)} | ${peak.toFixed(0)} |`)
     }
   })
 
-  it('B. a 7-day backtest at 1 minute over 100 series: threshold (the state machine alone), EWMA anomaly, SLO', async () => {
-    note('\nB. 7-day backtest, step 1 minute, 100 series; matrices built before the measured call')
-    note('| rule | points read | ms CPU | wall, ms | intervals | load average | peak RSS, MB |')
-    note('|---|---|---|---|---|---|---|')
-    const to = Math.floor(Date.UTC(2099, 11, 31) / MIN) * MIN
-    const from = to - 7 * DAY
-    for (const kind of ['threshold', 'ewma', 'slo'] as const) {
-      const { tenant, stub, w } = await setup({ heartbeatMs: 24 * HOUR })
-      const series = 100
-      let rule: Record<string, unknown>
-      const matrices = new Map<number, PromMatrix>()
-      if (kind === 'threshold') {
-        rule = { alert: 'Slow', expr: 'latency_ms > 300', for: '2m' }
-        matrices.set(MIN, latencyMatrix(series, from, to, MIN))
-      } else if (kind === 'ewma') {
-        rule = { alert: 'Latency', expr: 'latency_ms', anomaly: { params: { halfLifePoints: 10, minPoints: 5 }, max_series: 100 } }
-        const parsedRule = parseRuleFile({ groups: [{ name: 'g', interval: '1m', rules: [rule] }] }, DEFAULT_RULER_CONFIG).groups[0]!.anomalyRules![0]!
-        matrices.set(MIN, latencyMatrix(series, from - anomalyWarmPoints(parsedRule as never, MIN) * MIN, to, MIN))
-      } else {
-        rule = sloRule(100)
-        const parsedRule = parseRuleFile({ groups: [{ name: 'g', interval: '1m', rules: [rule] }] }, DEFAULT_RULER_CONFIG).groups[0]!.sloRules![0] as SloRuleV2
-        const reads = sloWarmReads(parsedRule, MIN, from - MIN)
-        matrices.set(MIN, sloMatrix(series, reads.fine.fromMs, to, MIN))
-        if (reads.coarse) matrices.set(reads.coarse.stepMs, sloMatrix(series, reads.coarse.fromMs, reads.coarse.toMs, reads.coarse.stepMs))
-      }
-      // The engine answers the range asked for (a read over 11,000 steps comes as two pieces).
-      w.range = (_q, start, end, step) => {
-        const m = matrices.get(step)!
-        const whole = m.result.every((x) => x.values[0]![0] * 1000 >= start && x.values.at(-1)![0] * 1000 <= end)
-        return whole ? m : { resultType: 'matrix', result: m.result.map((x) => ({ metric: x.metric, values: x.values.filter(([t]) => t * 1000 >= start && t * 1000 <= end) })) }
-      }
-      const points = [...matrices.values()].reduce((n, m) => n + m.result.reduce((x, s) => x + s.values.length, 0), 0)
-      let res: Awaited<ReturnType<typeof stub.backtest>> | null = null
-      const m = await measure(async () => {
-        res = await stub.backtest(tenant, rule, from, to, MIN)
+  // B. One case per process (`-t "B. ewma 1000"`): the peak (VmHWM) is reset before the case, and a
+  // case run after another would reuse heap the earlier one freed.
+  // `B1.`: the counterfactual, the previous behaviour: each read in one window (a budget of 4 GiB).
+  for (const [prefix, oneWindow] of [['B.', false], ['B1.', true]] as const) for (const kind of ['threshold', 'ewma', 'slo'] as const) {
+    for (const series of [100, 1000]) {
+      it(`${prefix} ${kind} ${series}: a 7-day backtest at 1 minute, ${oneWindow ? 'one window per read' : 'streamed in windows'}`, async () => {
+        const { tenant, stub, w } = await setup({ heartbeatMs: 24 * HOUR })
+        if (oneWindow) ok(await stub.configure(tenant, { limits: { maxBacktestMemoryBytes: 4 * 1024 ** 3 } } as never))
+        // A 1,000-series EWMA rule needs more state per rule than the default 1 MiB to be saved at all.
+        if (kind === 'ewma' && series > 100) ok(await stub.configure(tenant, { limits: { maxAnomalyStateBytesPerRule: 8 << 20 } } as never))
+        const to = Math.floor(Date.UTC(2099, 11, 31) / MIN) * MIN
+        const from = to - 7 * DAY + MIN
+        let rule: Record<string, unknown>
+        if (kind === 'threshold') rule = { alert: 'Up', expr: 'latency_ms > 0', for: '2m' }
+        else if (kind === 'ewma') rule = { alert: 'Latency', expr: 'latency_ms', anomaly: { params: { halfLifePoints: 10, minPoints: 5 }, max_series: series } }
+        else {
+          rule = { alert: 'CheckoutSLO', slo: { objective: 0.999, sli: SLI, max_series: series } }
+          if (series > 100) ok(await stub.configure(tenant, { limits: { maxSloSeriesPerRule: series } } as never))
+        }
+        // The fake engine builds each window's matrix when it is asked for it, as viz-query's JSON is parsed in the isolate.
+        const make = (q: string, start: number, end: number, step: number): PromMatrix => (q.includes('viz_slo_part') ? sloMatrix(series, start, end, step) : latencyMatrix(series, start, end, step))
+        w.range = make
+        const before = await host(true)
+        let res: Awaited<ReturnType<typeof stub.backtest>> | null = null
+        const m = await measure(async () => {
+          res = await stub.backtest(tenant, rule, from, to, MIN)
+        })
+        const after = await host()
+        const r = res as unknown as { status: string; intervals?: unknown[]; error?: string; message?: string; memory?: { peakBytes: number; budgetBytes: number }; cost?: { memory: { peakBytes: number; budgetBytes: number; windowSteps: number[]; queries: number } } }
+        const peakMb = (after.peakKb - before.rssKb) / 1024
+        if (r.status !== 'ok') {
+          expect(r.status, JSON.stringify(r).slice(0, 300)).toBe('over_budget')
+          note(`| ${prefix} ${kind} | ${series} | refused: ${r.message!.slice(0, 120)} | – | – | – | ${(r.memory!.peakBytes / 1048576).toFixed(1)} / ${(r.memory!.budgetBytes / 1048576).toFixed(0)} | ${peakMb.toFixed(1)} | – | ${load(m.load)} |`)
+          return
+        }
+        // The fake engine's own CPU: the same windows built again, measured alone.
+        const calls = w.rangeCalls.slice()
+        const gen = await measure(() => runInDurableObject(stub, () => {
+          let n = 0
+          for (const [q, a, b, st] of calls) n += make(q, a, b, st).result.length
+          return n
+        }))
+        const points = calls.reduce((n, [, a, b, st]) => n + (Math.floor((b - a) / st) + 1) * (kind === 'slo' ? 2 * series : series), 0)
+        const mem = r.cost!.memory
+        note(`| ${prefix} ${kind} | ${series} | ${(m.cpuMs - gen.cpuMs).toFixed(0)} (+${gen.cpuMs.toFixed(0)} fake engine) | ${(m.wallMs / 1000).toFixed(1)} | ${mem.windowSteps.join(' + ')} steps × ${mem.queries} queries | ${points.toLocaleString('en-US')} | ${(mem.peakBytes / 1048576).toFixed(1)} / ${(mem.budgetBytes / 1048576).toFixed(0)} | ${peakMb.toFixed(1)} | ${r.intervals!.length} | ${load(m.load)} |`)
       })
-      const r = res as unknown as { status: string; intervals?: unknown[]; error?: string }
-      expect(r.status, JSON.stringify(r).slice(0, 300)).toBe('ok')
-      note(`| ${kind} | ${points.toLocaleString('en-US')} | ${m.cpuMs.toFixed(0)} | ${m.wallMs} | ${r.intervals!.length} | ${load(m.load)} | ${m.peakMb.toFixed(0)} |`)
-      matrices.clear()
     }
-  })
+  }
 })

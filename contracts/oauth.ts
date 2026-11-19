@@ -56,6 +56,12 @@ export const OAUTH_DEFAULT_SCOPES = ['read', 'dashboards:read', 'monitors:read']
 /** The scope an approver must hold, as a person (kind `key` or `user`). */
 export const OAUTH_APPROVER_SCOPE = 'admin'
 
+/**
+ * A grant's key is named `oauth:<grantId>`. The prefix is reserved, as `service:` is: a person
+ * cannot create a key with it, and such a key is rotated or deleted only through its grant.
+ */
+export const GRANT_KEY_PREFIX = 'oauth:'
+
 /** Scopes `admin` stands for in control (its dashboards routes accept it); a grant approved by an admin key may carry these. */
 export const ADMIN_IMPLIES = ['dashboards:read', 'dashboards:write', 'dashboards:apply'] as const
 
