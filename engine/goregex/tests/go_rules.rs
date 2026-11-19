@@ -161,6 +161,15 @@ fn group_names_are_gos() {
     }
     let r = compile_plain("(?P<_>a)(?P<a1>b)(?<x9_Z>c)(?P<K>d)").unwrap();
     assert_eq!(r.capture_names().flatten().collect::<Vec<_>>(), vec!["_", "a1", "x9_Z", "K"]);
+    // Only a pattern Go accepts can be Unsupported for its names: Go's refusal of a later error
+    // comes first.
+    for (p, msg) in [
+        (r"(?P<1>a)\8", "invalid escape sequence: `\\8`"),
+        ("(?P<a>x)(?P<a>y)(", "missing closing ): `(?P<a>x)(?P<a>y)(`"),
+        ("(?P<1>a)(?P<é>b)", "invalid named capture: `(?P<é>`"),
+    ] {
+        assert_eq!(translate(p, true), Err(Error::Invalid(msg.to_string())), "{p:?}");
+    }
 }
 
 #[test]
