@@ -716,7 +716,41 @@ All measured here unless it says Cloudflare.
   tool. After the change all 14 pass. Not ported: RV-4 (m-1) and RV-10 (m-4), which reproduce risks
   left open, and the review's "held" test.
 
-  **Suites, at the end** (`cd deploy`): MUTANTS_AND_SUITES_PLACEHOLDER
+  **Mutants**, in a copy of the tree in a scratch directory (no git; node_modules linked; the copy
+  needs `.github/`, `dashboard/` and `anomaly/src/` too, which the bundling test reads), at most 2
+  test workers. `mutants-release.mjs` now also runs `review-d69` and `workflow`; `mutants-secrets.mjs`
+  also runs `review-d69`. **`mutants-release.mjs`: 60 of 60 killed** (19 new: 12 for M-1, 2 for M-2, 3
+  for m-2, 1 each for m-3 and m-8; 10 earlier patterns rewritten to the new code). The first run, on a
+  copy taken before two earlier patterns were rewritten, applied 57 of 59 and killed all 57; the two
+  rewritten ones and one added after it were run on a fresh copy of the final tree and killed (3 of
+  3). **`mutants-secrets.mjs`: 38 of 38 killed** (7 new: 2 for m-5, 1 for m-6, 3 for m-7, 1 for M-1's
+  message; one earlier pattern rewritten). Every kill is a named test failing; none survived.
+
+  | Mutant (new) | Killed by |
+  |---|---|
+  | M-1: the Workers a record leaves out are not judged | RV-1a; RV-1b; the left-out viz-control rolled back since |
+  | M-1: a left-out Worker judged by its serving version only | the left-out viz-control rolled back since |
+  | M-1: a left-out Worker's own record entry still reads | the M-1 unit test of the rule |
+  | M-1: a left-out kept version declaring nothing ignored | the same |
+  | M-1 (c): a Worker that declares nothing reads nothing | `readsOf`'s unit test; M-1 (c) end to end |
+  | M-1 (c): forward-only asks only serving Workers that declare | the forward-only unit test; M-1 (c) end to end |
+  | M-1 (c): an incomplete var, or record, taken as complete | `VIZ_FORMATS` unit test; M-1 (c); the format rollback unit tests |
+  | M-1 (c): configure deploys a Worker without `formats`; one declaring none carries no `VIZ_FORMATS`; `reads_v1` not read; viz-query's `kv.pool` dropped from `workers.json` | the configure tests (every Worker declares; formats into each version's var; the bundled-sources test) |
+  | M-2: either job's gate lets any ref through (2) | the workflow test |
+  | m-2: a secret switch, a JSON-var switch, or a secret on the writer at deploy, not seen (3) | RV-5; the JSON var |
+  | m-3: a floor Worker outside the release not judged | RV-6 |
+  | m-8: `--only` ignored | RV-9; RV-1a |
+  | m-5: the deploy-path refusal says nothing is promoted; logged as a promotion failure (2) | RV-7 |
+  | m-6: the refusal no longer says rollback and redeploy do not lift it | RV-8 |
+  | m-7: read until it exists only; `""` a 0 ms budget; no API timeout (3) | RV-11 (both budgets); the API timeout test |
+  | M-1: the rotation refusal advises a bare record without viz-control | RV-1b |
+
+  **Suites, at the end** (`cd deploy`): `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`
+  **178 of 178**; `node --test --test-concurrency=2 'test/*.test.mjs'` **106 of 106** (88 before:
+  review-d69 12 and workflow 2 new, release 19 → 21, configure 27 → 29; release-checks' and secrets'
+  fixtures follow configure's complete `VIZ_FORMATS`). `bash -n deploy.sh` clean; shellcheck and
+  actionlint are not installed here; the workflow was parsed as YAML and its two gate scripts run by
+  the workflow test.
 
 - **D69: format versions, rollback floors, run marks, and S9's measurements in the secret steps
   (2026-11-19).** Nothing deployed; the Cloudflare API not called (another builder's stage
