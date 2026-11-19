@@ -209,11 +209,14 @@ describe('scopes, audience and tenancy at the resource', () => {
     expect(r.status).toBe(403)
     expect(r.headers.get('WWW-Authenticate')).toBe(`Bearer error="insufficient_scope", scope="read", resource_metadata="${PRM}", error_description="query needs read"`)
     expect(r.body.error.data).toMatchObject({ code: 'insufficient-scope', scopes: ['read'] })
-    // the same call with a key of the same scopes is refused by the dispatcher, as always
+    // the same call with a key of the same scopes: over MCP the tool is not offered to it (a JSON-RPC
+    // error), and the dispatcher's own check refuses it (403 missing-scope on the JSON surface)
     const key = await makeKey(t.admin, ['dashboards:read'], { kind: 'agent' })
     const k = await callTool(key.key, 'query', { expr: 'up' })
-    expect(k.body.result.isError).toBe(true)
-    expect(k.body.result.structuredContent.error.code).toBe('missing-scope')
+    expect(k.status).toBe(200)
+    expect(k.body.error ?? k.body.result?.isError).toBeTruthy()
+    const viaRest = await rest(h, key.key, 'query', { expr: 'up' })
+    expect([viaRest.status, viaRest.structured.error.code]).toEqual([403, 'missing-scope'])
   })
 
   it('downstream calls carry the grant\'s key, never the client\'s token; what they reach is the token\'s tenant', async () => {
