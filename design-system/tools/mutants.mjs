@@ -23,13 +23,14 @@ export function runMutant(m, base = process.env.VIZ_MUTANT_DIR ?? tmpdir()) {
     for (const p of ['tools', 'src', 'project', 'fixtures', 'package.json']) cpSync(join(root, p), join(dir, p), { recursive: true })
     const rev = latest(); if (rev) cpSync(join(root, 'reviews', rev, 'compositions'), join(dir, 'reviews', rev, 'compositions'), { recursive: true })
     symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'))
-    const f = join(dir, m.edit.file); writeFileSync(f, m.edit.edit(readFileSync(f, 'utf8')))
+    const f = join(dir, m.edit.file), apply = () => writeFileSync(f, m.edit.edit(readFileSync(f, 'utf8')))
+    if (!m.after) apply()
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT // a test runner's child would report to it instead of running (npm test runs this)
     const run = m.run ?? 'check', node = (args) => spawnSync('node', args, { encoding: 'utf8', cwd: dir, env, maxBuffer: 64 << 20 })
     let r
     if (run === 'check') r = node(['tools/check.mjs', ...(m.args ?? []), ...(m.render ? [] : ['--no-render'])])
     else if (run === 'chart') r = node(['--test', '--test-concurrency=1', 'tools/test/chart-rules.test.mjs'])
-    else if (run === 'audit') { for (const s of ['tools/build.mjs', 'tools/reference.mjs']) node([s]); r = node(['tools/audit.mjs', '--quick', ...(m.args ?? [])]) }
+    else if (run === 'audit') { for (const s of ['tools/build.mjs', 'tools/reference.mjs']) node([s]); if (m.after) apply(); r = node(['tools/audit.mjs', '--quick', ...(m.args ?? [])]) }
     const out = (r.stdout ?? '') + (r.stderr ?? ''), got = r.status === 0 ? 'pass' : 'fail', expect = m.expect ?? 'fail'
     const missing = got === 'fail' ? (m.all ?? []).filter((re) => !re.test(out)) : []
     const ok = got === expect && missing.length === 0
