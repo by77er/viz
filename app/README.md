@@ -505,9 +505,12 @@ no longer: `query/` now sends `Retry-After: 1` with it, and the item was dropped
 
 ## Verification
 
-Run on 2026-11-19 on the final source of this change, Node 22.23, on a machine shared with
-other builders (load average 9 to 26 on 4 cores), the real stack under `wrangler dev --local`
-on port 8851.
+Run on 2026-11-19, Node 22.23, on a machine shared with other builders (load average 9 to
+26 on 4 cores), the real stack under `wrangler dev --local` on port 8851. The unit tests,
+typecheck, build and the four mock suites ran last at 03:20 to 03:27 UTC on the final source.
+Two edits came after the 01:43 run of the two real-API suites: the grid's point count in
+`src/lib/series.ts` (found by the mutation run, below) and the stack's readiness check in
+`e2e/lib.cjs` and `real/stack.mjs`; their re-run could not be counted (the table says why).
 
 | Check | Result |
 |---|---|
@@ -519,8 +522,8 @@ on port 8851.
 | `node e2e/design.cjs` | 52 of 52 checks pass |
 | `node e2e/fixes.cjs` | 37 of 37 checks pass, including the 60 s stop |
 | `node e2e/errors.cjs` | 15 of 15 checks pass |
-| `node e2e/contract.cjs` | 82 of 82 checks pass: 59 requests to both, compared, 22 of them value by value, and the limits-record refusal (one wording difference, reported, not failed: the mock's "aggregation "limitk" (not implemented …)" against the real "limitk / limit_ratio aggregations") |
-| `node e2e/real.cjs` | 28 of 28 checks pass on the real API (one page error is expected and checked for: the PromQL linter's stack overflow on a 5,000-term query) |
+| `node e2e/contract.cjs` | 82 of 82 checks pass (01:43 UTC): 59 requests to both, compared, 22 of them value by value, and the limits-record refusal (one wording difference, reported, not failed: the mock's "aggregation "limitk" (not implemented …)" against the real "limitk / limit_ratio aggregations"). The answers file is that run's. **Re-run at 03:27 on the final source: not counted**: the real API answered 500 `internal` "the query engine could not be loaded" to every query, because `engine/wasm-query/js/index.ts` (changed 03:24) expects module ABI 3 and `viz_query.wasm` (00:50) is ABI 2, another engineer's change in progress; 9 of 60 checks passed, and it also found a 30th cost header in the working tree of `query/` |
+| `node e2e/real.cjs` | 28 of 28 checks pass on the real API (01:44 UTC; one page error is expected and checked for: the PromQL linter's stack overflow on a 5,000-term query). The 03:28 re-run stopped at its first page for the same engine mismatch |
 | axe-core 4.14 | 0 serious or critical violations in 16 runs (5 in `run.cjs`, 8 in `design.cjs`, 3 in `fixes.cjs`) |
 | `MUTANTS=real node e2e/mutants.cjs` | first run 23 of 25 killed; the 2 survivors answered with tests (one found a bug, fixed) and re-run with a new mutant: 26 of 26 killed (table below) |
 | `MUTANTS=fixes node e2e/mutants.cjs`, `node e2e/mutants.cjs` | not re-run in this change; their results below are from the changes that wrote them |

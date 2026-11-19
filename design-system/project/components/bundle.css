@@ -341,14 +341,14 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
    custom properties, so the reserved height and the drawn height come from one place, on every pointer. */
 .vz-chart {
   --chart-plot: var(--plot); --chart-foot: var(--control-sm);
-  --legend-head: calc(var(--text-label-lh) + 2 * var(--space-1) + var(--hairline)); --legend-row: calc(var(--control-sm) + 2 * var(--hairline)); /* a row is its target plus its rule; the collapsed rule takes half a hairline from the cell, so the target keeps its full height */
+  --legend-head: calc(var(--text-label-lh) + 2 * var(--space-1)); --legend-row: calc(var(--control-sm) + var(--hairline)); /* the drawn height of the legend's head and of each row: a row is its target plus its rule (v6: v5 reserved a hairline more per row than it drew) */
   position: relative; display: flex; flex-direction: column; gap: var(--space-2); min-width: 0;
 }
 .vz-chart[data-size="sm"] { --chart-plot: var(--plot-sm); }
 /* A chart reserves its whole height before its data arrives, including on first load: the plot, strip, foot and legend head always, and
    the rows and note lines it knows from its last result (--legend-rows: coloured series, plus Other and the legend's action row when there
    is an Other; --legend-notes: shared labels, and Other's sentence), set inline or from a stylesheet. Without them it reserves its fixed parts. */
-.vz-chart { min-height: calc(var(--chart-plot) - var(--space-6) + var(--strip) + var(--space-2) + var(--chart-foot) + var(--space-2) + var(--legend-head) + var(--legend-rows, 0) * var(--legend-row) + min(var(--legend-notes, 0), 1) * var(--space-2) + var(--legend-notes, 0) * var(--text-small-lh)); }
+.vz-chart { min-height: calc(var(--chart-plot) - var(--space-6) + var(--strip) + var(--space-2) + var(--chart-foot) + var(--space-2) + var(--legend-head) + var(--legend-rows, 0) * var(--legend-row) + var(--hairline) / 2 + min(var(--legend-notes, 0), 1) * var(--space-2) + var(--legend-notes, 0) * var(--text-small-lh)); }
 .vz-plot { display: block; width: 100%; height: calc(var(--chart-plot) - var(--space-6) + var(--strip)); overflow: visible; touch-action: pan-y; user-select: none; -webkit-user-select: none; cursor: crosshair; }
 .vz-plot[hidden] { display: none; }
 .vz-chart > .vz-empty { height: calc(var(--chart-plot) - var(--space-6) + var(--strip)); padding-top: var(--strip); max-width: none; } /* empty in the plot's place, at its height */
@@ -398,8 +398,8 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-swatch[data-series="5"], .vz-swatch[data-series="6"], .vz-swatch[data-series="7"], .vz-swatch[data-series="8"], .vz-swatch[data-pattern="dash"] { background: transparent; border-inline: var(--space-1) solid var(--series); } /* dashed: two dashes and a gap */
 .vz-swatch[data-pattern="dot"] { background: transparent; height: 0; border-top: var(--space-1) dotted var(--series); }
 .vz-swatch[data-series="other"] { height: var(--mark); background: var(--sunken); border-block: var(--hairline) solid var(--series-other); }
-.vz-table.vz-legend-table th { background: transparent; padding-block: 0; height: calc(var(--legend-head) - var(--hairline)); }
-.vz-table.vz-legend-table td { height: calc(var(--legend-row) - var(--hairline)); font: var(--text-small); }
+.vz-table.vz-legend-table th { background: transparent; padding-block: 0; height: var(--legend-head); }
+.vz-table.vz-legend-table td { height: var(--legend-row); font: var(--text-small); } /* in collapsed borders a cell's height holds its rule */
 .vz-table.vz-legend-table td.vz-num { font: var(--text-data); white-space: nowrap; }
 .vz-table.vz-legend-table th:first-child, .vz-table.vz-legend-table td:first-child { box-shadow: none; }
 .vz-table.vz-legend-table tbody tr[data-key] { cursor: pointer; }
@@ -661,7 +661,7 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
 /* Touch: a 44px hit area on every control without changing how it is drawn, except where a hit area cannot reach past its own box. */
 @media (pointer: coarse) {
   .vz { --strip: var(--control-touch); }
-  .vz-chart { --chart-foot: var(--control-touch); --legend-head: calc(var(--control-touch) + 2 * var(--hairline)); --legend-row: calc(var(--control-touch) + 2 * var(--hairline)); }
+  .vz-chart { --chart-foot: var(--control-touch); --legend-head: calc(var(--control-touch) + var(--hairline)); --legend-row: calc(var(--control-touch) + var(--hairline)); }
   .vz-button::after, .vz-segmented button::after, .vz-tabs button::after, .vz-nav a::after, .vz-progress-action::after {
     content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, var(--control-touch)); height: var(--control-touch); transform: translate(-50%, -50%);
   }

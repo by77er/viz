@@ -62,6 +62,15 @@ fn run(i: &ScanInput<'_>, q: &str, start: i64, end: i64, step: i64) -> Result<(S
     viz_query::query_range_with(i, q, start, end, step, &opts).map(|r| (viz_query::to_json(&r.matrix).unwrap(), r.stats)).map_err(|e| e.message)
 }
 
+/// Split queries whose key leaves out a label every series carries (a `label_replace` or
+/// `label_join` target that exists): their series' split keys are not their ids, so a part's
+/// series lie outside its id range and the plans must place them by their labels.
+const EXTRA: &[&str] = &[
+    r#"sum by (job) (label_replace(m, "job", "j-$1", "inst", "(.*)"))"#,
+    r#"count(label_join(n, "inst", "-", "job", "inst"))"#,
+    r#"sum({job="x"})"#,
+];
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: cases(256), failure_persistence: None, ..ProptestConfig::default() })]
 
@@ -101,7 +110,7 @@ proptest! {
         let b = h.encoded();
         let s = store(&b, &layout);
         let whole = s.input();
-        for q in QUERIES {
+        for q in QUERIES.iter().chain(EXTRA) {
             let (Ok(ranges), Ok(reads)) = (plan(q, start, end, step), selectors(q, start, end, step)) else { continue };
             let reads: Vec<viz_query::FetchRange> = reads.into_iter().map(|r| viz_query::FetchRange { matchers: r.matchers, min_ts: r.min_ts_ms, max_ts: r.max_ts_ms }).collect();
             let series_plan = file_plan(&idx(&s.series_index), &ranges, gap);

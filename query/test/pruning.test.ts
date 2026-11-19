@@ -46,6 +46,7 @@ describe('series-level pruning', () => {
   afterEach(async () => {
     await setLimits(w.a, null)
     delete hooks.forceLeaves
+    delete hooks.leafStats
     delete leafHooks.resetBeforeEvaluate
   })
 
@@ -89,16 +90,28 @@ describe('series-level pruning', () => {
   })
 
   it('split readers read their part of each file, and the answer is the one-place answer', async () => {
-    const q = 'sum by (job) (rate(pr_total[5m]))'
-    const base = await range(w.a, q)
-    expect(base.status).toBe(200)
-    const want = await base.text()
-    for (const leaves of [2, 5]) {
-      hooks.forceLeaves = leaves
-      const res = await range(w.a, q)
-      expect([leaves, res.status]).toEqual([leaves, 200])
-      expect(await res.text()).toBe(want)
-      expect(res.headers.get('X-Viz-Execution')).toBe('split')
+    // The second query's split key leaves out `job`, which every series carries: a part's
+    // series are then not its id range, and a reader must read again what its first,
+    // id-range read did not cover.
+    for (const q of ['sum by (job) (rate(pr_total[5m]))', 'sum by (job) (label_replace(pr_total{ns="n5"}, "job", "x-$1", "pod", "p0*(.*)"))']) {
+      delete hooks.forceLeaves
+      const base = await range(w.a, q)
+      expect(base.status).toBe(200)
+      const want = await base.text()
+      for (const leaves of [2, 5]) {
+        hooks.forceLeaves = leaves
+        let readerBytes = 0
+        hooks.leafStats = (_p, st) => {
+          readerBytes += st.bytesRead
+        }
+        const res = await range(w.a, q)
+        delete hooks.leafStats
+        expect([q, leaves, res.status]).toEqual([q, leaves, 200])
+        expect(await res.text()).toBe(want)
+        expect(res.headers.get('X-Viz-Execution')).toBe('split')
+        // Together the readers read less than every part reading every file whole.
+        expect(readerBytes).toBeLessThan(leaves * cost(base, 'Bytes-Read'))
+      }
     }
   })
 

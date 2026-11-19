@@ -22,7 +22,7 @@ import type { SloDetail, SloRuleV2 } from '../contracts-proposal/rules.v2'
 import { parseRuleFile } from '../src/rules'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
 import { warmSlo } from '../src/history'
-import { evalSlo, newSloRt, readSloRows, sloGeometry, type SloRow, type SloRt } from '../src/slo'
+import { evalSlo, newSloRt, readSloRows, roughDuration, sloGeometry, type SloRow, type SloRt } from '../src/slo'
 import { toSeries, type Series } from '../src/statemachine'
 import { Crash, T0, tenantWorld, world } from './harness'
 import { MIN, notifierStub, ok, rulerStub, runNotifierUntil, setup, vec } from './helpers'
@@ -188,7 +188,7 @@ describe('the sentence: which windows burned, how fast, how much budget is left'
     expect(page.annotations.slo).toBe(
       `error budget burning at ${fmt(longBurn)}× over 1 hour and ${fmt(shortBurn)}× over 5 minutes (page threshold 14.4×); ` +
         `${fmt(100 * longBurn * HOUR / (30 * DAY))}% of the 30 days budget for a 99.9% objective was spent in the last 1 hour; ` +
-        `${fmt(100 * remaining)}% of the budget is left over the last 30 days, spent in ${duration(d.exhaustionMs!)} at this rate`,
+        `${fmt(100 * remaining)}% of the budget is left over the last 30 days, spent in ${roughDuration(d.exhaustionMs!)} at this rate`,
     )
     expect(page.annotations.slo).toMatch(/96\.3% of the budget is left over the last 30 days, spent in 1\.73 days at this rate$/)
     expect(page.value).toBe(Math.min(longBurn, shortBurn))

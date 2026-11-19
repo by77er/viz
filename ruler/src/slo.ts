@@ -549,13 +549,25 @@ export function bucketsOf(rule: SloRuleV2, series: Series[]): { ok: true; bucket
   return { ok: true, buckets }
 }
 
+const ROUGH: [number, string][] = [[7 * DAY, 'week'], [DAY, 'day'], [60 * MINUTE, 'hour'], [MINUTE, 'minute'], [1000, 'second']]
+/** A computed duration in its largest unit, to three significant digits ("1.73 days", not "2496 minutes"). */
+export function roughDuration(ms: number): string {
+  for (const [size, name] of ROUGH) {
+    if (ms >= size) {
+      const n = Number((ms / size).toPrecision(3))
+      return `${n} ${name}${n === 1 ? '' : 's'}`
+    }
+  }
+  return 'under a second'
+}
+
 /** The sentence's second half: how much budget is left, over how much history, and how long it lasts at this rate. */
 export function budgetClause(remaining: number | null, coveredMs: number, windowMs: number, longBurn: number): { text: string; exhaustionMs: number | null } {
   if (remaining === null) return { text: 'no events are on record to say how much budget is left', exhaustionMs: null }
   const over = coveredMs >= windowMs ? `over the last ${duration(windowMs)}` : `over the ${duration(coveredMs)} on record (the window is ${duration(windowMs)})`
   if (remaining <= 0) return { text: `the budget is spent ${over} (${fmt(100 * remaining)}% left)`, exhaustionMs: null }
   const exhaustionMs = longBurn > 0 ? Math.round((remaining * windowMs) / longBurn) : null
-  return { text: `${fmt(100 * remaining)}% of the budget is left ${over}${exhaustionMs !== null ? `, spent in ${duration(exhaustionMs)} at this rate` : ''}`, exhaustionMs }
+  return { text: `${fmt(100 * remaining)}% of the budget is left ${over}${exhaustionMs !== null ? `, spent in ${roughDuration(exhaustionMs)} at this rate` : ''}`, exhaustionMs }
 }
 
 /** The budget left over the compliance window, from the coarse ring ending at slot k. */
