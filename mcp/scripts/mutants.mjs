@@ -17,8 +17,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 // It edits sources in place: run it in a copy outside any git work tree (AGENTS.md: a mutant
 // caught in a commit ships). The copy needs mcp/ (with node_modules), control/{src,openapi.json},
-// dashboard/{src,examples,schema,package.json}, edge/src, contracts/ and ruler/openapi.json, which
-// the tests import.
+// dashboard/{src,examples,schema,package.json}, edge/src, shard/src, ledger/src, contracts/ and
+// ruler/openapi.json, which the tests import (directly or through control/src and edge/src).
 try {
   execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, stdio: 'pipe' })
   console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see above).')
