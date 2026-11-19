@@ -208,11 +208,74 @@ result), the legend's Other cells and a few rules. **Two rows are judged over bu
 version since v4):
 - **Change theme**: phone 172 ms (v7) and 174 ms (v8) at p75 against 100; desktop 106 and 117. v7's trace showed where the time goes:
   style recalculation of every element (a theme change moves every colour token on the root), then paint; no script runs. **This is
-  a blocker row of the rubric, now measured as failing, and v8 does not fix it.** It is the next change to make, and it needs a
-  decision: restyle less (for example `content-visibility: auto` on panels below the fold, whose reserved heights would then have to
-  be given as intrinsic sizes so the layout-shift rows, judged and within, do not move) or a different budget for a change made once
-  a session. I did not make either within this revision.
-- **Crosshair by touch drag, 36 series** (phone): 54 ms at p75 in both, against 50; run 2 (not judged) 66 and 53.
+  a blocker row of the rubric, measured as failing in v8 as first handed off.** Fixed afterwards by restyling less: see the next section.
+- **Crosshair by touch drag, 36 series** (phone): 54 ms at p75 in both, against 50; run 2 (not judged) 66 and 53. See the next section.
+
+The tables above are v8 as first handed off. The theme work's own measurements follow.
+
+## The theme change: restyling less (after the first hand-off)
+
+The coordinator returned v8 before review: the theme change is a blocker row, and the lead's decision is to fix the path first and
+change the budget only if it provably cannot be met. Everything below was measured here, on the fixture page (a floor), CPU 4x and
+Fast 4G, with the load beside each number. "Before" is v8 as first handed off, copied and built by its own tools; "after" is a variant
+of it or the final tree, alternating run by run (`tools/speed.mjs --compare`, the theme row alone unless said, 8 runs a side).
+
+**Where the time went** (a Chromium trace of one tap on "Dark", phone, v8 as handed off; load 2.1 to 2.7): tap to the end of the frame
+123 to 195 ms. Style recalculation 57 to 98 ms, every element restyled (1,720 including pseudo-elements, of 1,383 elements); two more
+recalculations of 207 elements each on the press and the release; 48 colour transitions started on buttons and segments; paint 15 to
+27 ms; script 15 to 21 ms. A forced-recalculation measurement (desktop and phone) settles what the style cost is: changing one custom
+property that **nothing reads** on the root costs as much (28 to 47 ms) as the whole theme change (27 to 30 ms); a non-inherited
+property costs nothing. The tokens are inherited custom properties, so any change on the root restyles every element, and the cost is
+the number of elements restyled, not how many of them use a colour.
+
+**Every attempt, in order** (p75, ms; "A/B" is the same session alternating):
+
+| Attempt | Kept? | Result |
+|---|---|---|
+| Fewer elements that consume the colour tokens | Not built | Ruled out by the measurement above: a custom property nobody reads costs the same. |
+| `contain: style` / `contain: layout style` on panels | No | Style containment scopes counters and quotes only; inherited custom properties pass through it. Traced on the phone: still 1,420 elements restyled, 49 to 79 ms of style (load 6.6), the same as without. |
+| `light-dark()` tokens: the theme changes `color-scheme` only, the token values never | No | Desktop: still 1,130 elements restyled, 48 to 59 ms of style (load 3.1 to 3.3) against 45 to 54 before. `color-scheme` is inherited too. |
+| Expensive selectors (`:has`, deep descendant chains) on themed properties | Found something else | An invalidation trace shows no `:has` cost on the theme change. It shows the press: `viz-press.js` marked every ancestor up to `body` `data-pressed`, and selectors such as `tr[data-pressed] td` then invalidated **every table cell on the page** (548 per tap: press and release). |
+| 1. The press marks the control and its pressable ancestors only (a legend row), not `body` | **Yes** | A/B, desktop 102 → 101 (load 2.1); phone 127 → 116 (load 2.8). The 548 cell invalidations are gone. |
+| 2. `content-visibility: auto` on whole panels | No | Phone, traced (six taps, load 2.1 to 2.6): restyled 1,720 → 374 to 500, tap to frame 68 to 155 ms. Rejected: a panel's paint and layout containment would clip a row's menu (on a phone it is a fixed sheet, which would be placed in the panel) and rings at a panel's edge. |
+| 2'. `content-visibility: auto` on charts only, `contain-intrinsic-size: auto none` (the reserved `min-height` holds while skipped), `overflow-clip-margin: space-3` | **Yes** | A/B, phone 139 → 96 (load 3.0); desktop 112 → 103 (load 3.8): at the top of the desktop page every chart is inside Chromium's relevance margin, so little is skipped there. `overflow-clip-margin: calc(…)` is ignored by Chromium (measured: computes to 0), hence a plain token. |
+| 3. No colour is eased: the three hover transitions removed (buttons, inputs, segments) | **Yes** | A/B, desktop, alone: 113 → 94 (load 3.6). Before, the frame that counts as done still showed the controls in the old theme's colours for 100 ms (`compare-theme/`). Motion already said "animate opacity and position only"; hover now changes in the next frame, as a press does. |
+| 1 + 2' | — | A/B, desktop 103 → 95 (load 2.9). |
+| **1 + 2' + 3** (a variant of the built page) | — | A/B at a load of 1.7 to 1.9, **judged**: **desktop 107 → 82**, **phone 152 → 66**. |
+| **The final tree** (the same three changes in `src/`, rebuilt) | — | @@FINAL@@ |
+
+What it restyles now (traced, final tree): the phone's theme change restyles 559 elements (was 1,720), with no press-wide invalidation
+and no transitions; the desktop's 1,133 (was 1,439 with the transitions' recalculations), in 4 recalculations instead of 6 or 7.
+
+**What changed in the system** (no class renamed; no token added or removed):
+- `src/press.js`: `data-pressed` on the control and its pressable ancestors (a legend row), never every ancestor.
+- `src/components.css`: the three colour transitions removed; `.vz-chart { content-visibility: auto; contain-intrinsic-size: auto none;
+  overflow-clip-margin: var(--space-3) }`.
+- `project/README.md`, Motion: a hover is drawn in the next frame; no colour is ever eased. `project/tokens.json`: `duration-fast`'s
+  usage says no component uses it now. Chart README, States: "Off screen", and never put a menu or popover inside a chart.
+
+**What guards it.**
+- `tools/speed.mjs`: a new row at both layouts, "Change theme: transitions still running when it is drawn", budget 0, judged at any
+  load (as layout shift is): v8 as handed off ran **93** on the phone, now **0**. The timing row stays as it was. The harness now
+  touches a control two frames after scrolling it into view, once it is painted, as a person would: with charts skipped off screen, a
+  touch in the same frame as the scroll found nothing drawn (the crosshair row timed out in 4 of 8 runs before this change).
+- `check.mjs`: fails any transition of a colour (or `all`), and fails `.vz-chart` without `content-visibility: auto` and a clip margin.
+- `tools/audit.mjs`: the ring guard treats paint containment (and `content-visibility`) as a clip, with its clip margin; the press guard
+  fails a press that marks `body`; and what `content-visibility: auto` skips off screen is laid out (with its containment kept) before
+  hit testing, which happens in the same task as each scroll.
+- Mutants U12 (the chart's `content-visibility` removed), U13 (its clip margin removed: rings at its edges cut), U14 (the press script
+  marking every ancestor), U15 (a hover that eases a colour); X15 rewritten (a press can ease only if a transition comes back, so the
+  mutant puts one back): all caught.
+- Layout shift, judged at any load: 0.0000 in every row at both layouts after the change (the charts keep their reserved height while
+  skipped, and `check.mjs` confirms reserved equals drawn).
+
+**Nothing on screen pretends the change finished early.** There is no spinner and nothing fakes progress: the theme is drawn whole in
+the frame it changes (no transition left running, measured), and a chart off screen is drawn in the new theme when it comes near.
+
+**The phone's touch crosshair** (54 ms against 50 before): the same technique does not reach it. A trace of one touch move on the
+36-pod plot (load 5.0): 36 to 44 ms, of which style is 0.1 to 1 ms; the chart's pointer handler takes 11 to 14 ms of script and the
+legend's figure column and readout 5 to 7 ms of layout. Restyling less cannot help; the handler and the legend's layout would. Not
+changed here; reported.
 
 ## The page audit, final run
 

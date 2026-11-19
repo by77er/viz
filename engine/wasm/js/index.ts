@@ -315,10 +315,20 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
         const maxNs = dv.getBigInt64(20, true)
         const day = str()
         const index = str()
-        const [ptr, len, cap] = [dv.getUint32(p, true), dv.getUint32(p + 8, true), dv.getUint32(p + 16, true)] // u64 each; wasm32 uses the low half
+        // The file in chunks: each copied out into one buffer and released at once (u64 each; wasm32 uses the low half).
+        const total = Number(dv.getBigUint64(p, true))
+        const n = dv.getUint32(p + 8, true)
+        p += 12
         const w = instance()
-        const bytes = new Uint8Array(w.memory.buffer, ptr, len).slice() // the one copy out
-        w.viz_free_file(ptr, cap)
+        const bytes = new Uint8Array(total)
+        let at = 0
+        for (let i = 0; i < n; i++, p += 24) {
+          const [ptr, len, cap] = [dv.getUint32(p, true), dv.getUint32(p + 8, true), dv.getUint32(p + 16, true)]
+          bytes.set(new Uint8Array(w.memory.buffer, ptr, len), at)
+          at += len
+          w.viz_free_file(ptr, cap)
+        }
+        if (at !== total) throw new Error(`engine: merged chunks hold ${at} bytes of ${total}`)
         return { table: out, hour, day, bytes, rows, minTs: floorMs(minNs), maxTs: floorMs(maxNs), minNs: String(minNs), maxNs: String(maxNs), index }
       },
     )

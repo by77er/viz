@@ -13,6 +13,7 @@ import {
   TABLE_NAMES,
   emptyMetadata,
   expiryDeadline,
+  isMetricTable,
   liveFromEntry,
   manifestEntry,
   manifestEntrySchema,
@@ -337,6 +338,14 @@ interface TableState {
 }
 
 const META_FILE = /\/v(\d+)\.metadata\.json$/
+/**
+ * Where the alarm's bookkeeping of a table lives: the metric tables' in `due` and `orphan`, the span
+ * and log tables' in `signal_due` and `signal_orphan` (storage migration 5), where the D64 release,
+ * a rollback target, never looks (it acts on metric tables only, and a row there it cannot act on
+ * would wake its alarm at once, for ever).
+ */
+const dueTable = (job: Job): 'due' | 'signal_due' => (job.startsWith('expire:') && !isMetricTable(job.slice('expire:'.length) as LedgerTable) ? 'signal_due' : 'due')
+const orphanTable = (table: LedgerTable): 'orphan' | 'signal_orphan' => (isMetricTable(table) ? 'orphan' : 'signal_orphan')
 const FANOUT = 6
 
 const emptyReport = (version: number): TableReport => ({
@@ -568,26 +577,26 @@ export class Publisher extends DurableObject<PublisherEnv> {
   // ───────────────────────────── deadlines ─────────────────────────────
 
   private dueAt(job: Job): number | null {
-    const r = this.sql.exec(`SELECT at FROM due WHERE job = ?`, job).toArray()[0]
+    const r = this.sql.exec(`SELECT at FROM ${dueTable(job)} WHERE job = ?`, job).toArray()[0]
     return r ? (r.at as number) : null
   }
 
   private setDue(job: Job, at: number): void {
-    this.sql.exec(`INSERT INTO due (job, at) VALUES (?, ?) ON CONFLICT (job) DO UPDATE SET at = excluded.at`, job, at)
+    this.sql.exec(`INSERT INTO ${dueTable(job)} (job, at) VALUES (?, ?) ON CONFLICT (job) DO UPDATE SET at = excluded.at`, job, at)
   }
 
   /** Due at `at`, or earlier if it already is. */
   private dueNoLaterThan(job: Job, at: number): void {
-    this.sql.exec(`INSERT INTO due (job, at) VALUES (?, ?) ON CONFLICT (job) DO UPDATE SET at = MIN(at, excluded.at)`, job, at)
+    this.sql.exec(`INSERT INTO ${dueTable(job)} (job, at) VALUES (?, ?) ON CONFLICT (job) DO UPDATE SET at = MIN(at, excluded.at)`, job, at)
   }
 
   private clearDue(job: Job): void {
-    this.sql.exec(`DELETE FROM due WHERE job = ?`, job)
+    this.sql.exec(`DELETE FROM ${dueTable(job)} WHERE job = ?`, job)
   }
 
-  /** One alarm, at the earliest deadline; none when nothing is due. */
+  /** One alarm, at the earliest deadline (of the metric tables' `due` and the span and log tables' `signal_due`); none when nothing is due. */
   private async rearm(): Promise<void> {
-    const at = this.sql.exec(`SELECT MIN(at) AS at FROM due`).one().at as number | null
+    const at = this.sql.exec(`SELECT MIN(at) AS at FROM (SELECT at FROM due UNION ALL SELECT at FROM signal_due)`).one().at as number | null
     if (at === null) {
       if ((await this.ctx.storage.getAlarm()) !== null) await this.ctx.storage.deleteAlarm()
       return
@@ -636,7 +645,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   /** After a sweep: due again when the oldest object it marked has served its grace, else not. */
   private afterSweep(cfg: PublisherConfig): void {
-    const oldest = this.sql.exec(`SELECT MIN(since) AS since FROM orphan`).one().since as number | null
+    const oldest = this.sql.exec(`SELECT MIN(since) AS since FROM (SELECT since FROM orphan UNION ALL SELECT since FROM signal_orphan)`).one().since as number | null
     if (oldest === null) this.clearDue('sweep')
     else this.setDue('sweep', oldest + cfg.orphanGraceMs)
   }
@@ -1686,6 +1695,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
     const now = this.now()
     const prefix = this.metaDir(table)
+    const orphan = orphanTable(table)
     const seen = new Set<string>()
     let cursor: string | undefined
     do {
@@ -1696,22 +1706,22 @@ export class Publisher extends DurableObject<PublisherEnv> {
         if (referenced.has(key)) continue
         const v = META_FILE.exec(key)
         if (v && Number(v[1]) > state.version) continue
-        const row = this.sql.exec(`SELECT since FROM orphan WHERE path = ?`, key).toArray()[0]
+        const row = this.sql.exec(`SELECT since FROM ${orphan} WHERE path = ?`, key).toArray()[0]
         if (!row) {
-          this.sql.exec(`INSERT INTO orphan (path, since) VALUES (?, ?)`, key, now)
+          this.sql.exec(`INSERT INTO ${orphan} (path, since) VALUES (?, ?)`, key, now)
           out.marked++
         } else if ((row.since as number) + cfg.orphanGraceMs <= now) {
           await store.delete(key)
-          this.sql.exec(`DELETE FROM orphan WHERE path = ?`, key)
+          this.sql.exec(`DELETE FROM ${orphan} WHERE path = ?`, key)
           out.deleted++
         }
       }
       cursor = page.truncated ? page.cursor : undefined
     } while (cursor)
     // Sightings of objects that are referenced after all, or gone.
-    for (const r of this.sql.exec(`SELECT path FROM orphan WHERE path >= ? AND path < ?`, prefix, `${prefix}￿`).toArray()) {
+    for (const r of this.sql.exec(`SELECT path FROM ${orphan} WHERE path >= ? AND path < ?`, prefix, `${prefix}￿`).toArray()) {
       const path = r.path as string
-      if (referenced.has(path) || !seen.has(path)) this.sql.exec(`DELETE FROM orphan WHERE path = ?`, path)
+      if (referenced.has(path) || !seen.has(path)) this.sql.exec(`DELETE FROM ${orphan} WHERE path = ?`, path)
     }
     return out
   }

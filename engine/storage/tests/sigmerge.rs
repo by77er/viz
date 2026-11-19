@@ -426,10 +426,12 @@ proptest! {
         check_logs_merge(&units, rg, cut, &picks)?;
     }
 
-    /// Default row groups: the merged bytes are one flush's (spans and logs), with every option at the contract's values.
+    /// Default options: the merged bytes are one flush's (spans and logs) with the same options.
     #[test]
     fn default_layout_merges_are_one_flush(s in prop::collection::vec(prop::collection::vec(arb_span_batch(), 1..3), 2..4), l in prop::collection::vec(prop::collection::vec(arb_log_batch(), 1..3), 2..4)) {
-        let o = SignalWriteOptions::default();
+        // A merge's defaults are flush's but for the smaller row-group byte cap.
+        let o = SignalMergeOptions::default().write;
+        prop_assert_eq!((o.max_row_group_rows, o.page_rows, o.max_row_group_bytes), (SignalWriteOptions::default().max_row_group_rows, SignalWriteOptions::default().page_rows, viz_storage::MERGE_ROW_GROUP_BYTES));
         let flushed: Vec<SignalFile> = s.iter().flat_map(|u| flush_spans(u, &o)).filter(|f| f.table == SignalTable::Spans).collect();
         let kept: Vec<_> = s.iter().map(|u| unit_spans(u)).collect();
         for h in flushed.iter().map(|f| f.min_ts.div_euclid(NS_PER_HOUR)).collect::<BTreeSet<_>>() {

@@ -17,7 +17,7 @@
 //! (logs) the token filter being built.
 use crate::logs::{log_weight, LogsFileWriter, RowRef as LogRef, StreamInfo};
 use crate::otel::{LogRow, LogStream, Span, SpanEntry};
-use crate::otelpq::{perr, SResult, SignalError, SignalFile, SignalTable, SignalWriteOptions, NS_PER_DAY, NS_PER_HOUR};
+use crate::otelpq::{perr, SResult, SignalError, SignalFile, SignalTable, SignalWriteOptions, Sink, NS_PER_DAY, NS_PER_HOUR};
 use crate::otelread::{fragment_record, log_record, open, span_record, LOGS_LEAVES, SPANS_LEAVES, TRACE_INDEX_LEAVES};
 use crate::spans::{fragment_weight, merge_fragments, span_weight, EntryInfo, Fragment, IndexFileWriter, RowRef as SpanRef, SpansFileWriter, MAX_INDEX_SERVICES};
 use crate::tokens::MAX_FILTER_TOKENS;
@@ -40,9 +40,20 @@ pub struct SignalMergeOptions {
     pub token_filter_max_tokens: usize,
 }
 
+/// A compaction output's row groups hold at most this much data (as the contracts count it),
+/// a quarter of what flush may write: the merge buffers one output row group decoded, about six
+/// times its counted size for spans, and with every input open and the output growing, a 16 MiB
+/// group would take a merge at the step budget past an isolate's memory
+/// (`engine/storage/README.md`, "Compaction of spans and logs"). The contracts' caps are maxima.
+pub const MERGE_ROW_GROUP_BYTES: usize = 4 << 20;
+
 impl Default for SignalMergeOptions {
     fn default() -> Self {
-        SignalMergeOptions { write: SignalWriteOptions::default(), token_filter: true, token_filter_max_tokens: MAX_FILTER_TOKENS }
+        SignalMergeOptions {
+            write: SignalWriteOptions { max_row_group_bytes: MERGE_ROW_GROUP_BYTES, ..SignalWriteOptions::default() },
+            token_filter: true,
+            token_filter_max_tokens: MAX_FILTER_TOKENS,
+        }
     }
 }
 
@@ -59,15 +70,28 @@ pub fn merge_signal_files(table: SignalTable, inputs: &[&[u8]]) -> SResult<Signa
 
 /// [`merge_signal_files`] over inputs the caller already holds, with explicit options.
 pub fn merge_signal_files_shared(table: SignalTable, inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFile> {
+    let (mut f, sink) = merge_parts(table, inputs, opts)?;
+    f.bytes = sink.into_bytes();
+    Ok(f)
+}
+
+/// [`merge_signal_files_shared`] with the output's bytes left in the chunks they were written
+/// in (at most 1 MiB each, in order) and `bytes` empty, so that a caller copying them out (the
+/// WASM binding) never holds the file twice.
+pub fn merge_signal_files_chunked(table: SignalTable, inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<(SignalFile, Vec<Vec<u8>>)> {
+    let (f, sink) = merge_parts(table, inputs, opts)?;
+    Ok((f, sink.into_chunks()))
+}
+
+fn merge_parts(table: SignalTable, inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<(SignalFile, Sink)> {
     if inputs.is_empty() {
         return merr("no input files");
     }
-    let out = match table {
-        SignalTable::Spans => merge_spans(inputs, opts)?,
-        SignalTable::TraceIndex => merge_trace_index(inputs, opts)?,
-        SignalTable::Logs => merge_logs(inputs, opts)?,
-    };
-    Ok(out)
+    match table {
+        SignalTable::Spans => merge_spans(inputs, opts),
+        SignalTable::TraceIndex => merge_trace_index(inputs, opts),
+        SignalTable::Logs => merge_logs(inputs, opts),
+    }
 }
 
 /// The rows of one input, in file order, converted by `conv`.
@@ -275,7 +299,7 @@ fn write_span_group(w: &mut SpansFileWriter, g: &[SpanIn], hour: i64) -> SResult
     w.group(&refs, &infos)
 }
 
-fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFile> {
+fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<(SignalFile, Sink)> {
     // Pass 1: the last occurrence of every (trace_id, span_id), by input then row: every id
     // with where it was read, sorted, the last of each id kept (32 bytes a row, sized once).
     let ids = parquet::schema::parser::parse_message_type(
@@ -349,7 +373,7 @@ fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFil
     let (Some(h), Some(mut w)) = (hour, writer) else { return merr("spans inputs hold no rows") };
     write_span_group(&mut w, &group, h)?;
     drop((cursors, group, entries, winners));
-    w.finish()
+    w.finish_parts()
 }
 
 /// Where each (trace_id, span_id) is kept: (id, input, row), sorted by id.
@@ -390,7 +414,7 @@ fn seek_span(c: &mut Cursor<SpanIn>, prev: Option<&SpanIn>, winners: &Winners, h
 
 // ───────────────────────────── trace_index ─────────────────────────────
 
-fn merge_trace_index(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFile> {
+fn merge_trace_index(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<(SignalFile, Sink)> {
     let first_day: std::cell::RefCell<Option<i64>> = std::cell::RefCell::new(None);
     let mut cursors: Vec<Cursor<Fragment>> = Vec::with_capacity(inputs.len());
     let next = |c: &mut Cursor<Fragment>, prev: Option<&Fragment>| -> SResult<()> {
@@ -455,7 +479,7 @@ fn merge_trace_index(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<Sig
     let Some(mut w) = writer else { return merr("trace_index inputs hold no rows") };
     w.group(&group)?;
     drop((cursors, group));
-    w.finish()
+    w.finish_parts()
 }
 
 // ───────────────────────────── logs ─────────────────────────────
@@ -537,7 +561,7 @@ fn pop_log(c: &mut Cursor<LogIn>, next: &dyn Fn(&mut Cursor<LogIn>, Option<&LogI
     Ok(x)
 }
 
-fn merge_logs(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFile> {
+fn merge_logs(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<(SignalFile, Sink)> {
     let first_day: std::cell::RefCell<Option<i64>> = std::cell::RefCell::new(None);
     // Reads the next row of `c` into its head; `prev` is the row it held (taken by the caller).
     let next = |c: &mut Cursor<LogIn>, prev: Option<&LogIn>| -> SResult<()> {
@@ -621,5 +645,5 @@ fn merge_logs(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFile
     // The readers, the buffered rows and (in `finish`) the token builder go before the filter
     // and the footer are written, so the output buffer can grow while little else is held.
     drop((cursors, group));
-    writer.finish()
+    writer.finish_parts()
 }

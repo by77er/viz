@@ -556,26 +556,35 @@ impl SpansFileWriter {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> SResult<SignalFile> {
+    /// The file, joined into one buffer.
+    pub(crate) fn finish(self) -> SResult<SignalFile> {
+        let (mut f, sink) = self.finish_parts()?;
+        f.bytes = sink.into_bytes();
+        Ok(f)
+    }
+
+    /// The file's description (its `bytes` empty) and its bytes as written, in chunks.
+    pub(crate) fn finish_parts(mut self) -> SResult<(SignalFile, Sink)> {
         if self.groups == 0 {
             return Err(SignalError::Parquet("a spans file needs at least one row".into()));
         }
         self.w.finish().map_err(perr)?;
-        let bytes = std::mem::take(self.w.inner_mut()).into_bytes();
-        let (fo, fl) = foot(self.groups_end, bytes.len());
+        let sink = std::mem::take(self.w.inner_mut());
+        let file_len = sink.len();
+        let (fo, fl) = foot(self.groups_end, file_len);
         let mut index = self.index;
         index.push_str(&format!("],\"foot\":[{fo},{fl}]}}"));
         let hour = self.hour;
-        Ok(SignalFile {
+        Ok((SignalFile {
             table: SignalTable::Spans,
             day: crate::day::format_day(hour.div_euclid(24)),
             hour: Some(hour.rem_euclid(24) as u8),
-            bytes,
+            bytes: Vec::new(),
             rows: self.rows,
             min_ts: self.min_ts,
             max_ts: self.max_ts,
             index,
-        })
+        }, sink))
     }
 }
 
@@ -770,16 +779,25 @@ impl IndexFileWriter {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> SResult<SignalFile> {
+    /// The file, joined into one buffer.
+    pub(crate) fn finish(self) -> SResult<SignalFile> {
+        let (mut f, sink) = self.finish_parts()?;
+        f.bytes = sink.into_bytes();
+        Ok(f)
+    }
+
+    /// The file's description (its `bytes` empty) and its bytes as written, in chunks.
+    pub(crate) fn finish_parts(mut self) -> SResult<(SignalFile, Sink)> {
         if self.groups == 0 {
             return Err(SignalError::Parquet("a trace_index file needs at least one row".into()));
         }
         self.w.finish().map_err(perr)?;
-        let bytes = std::mem::take(self.w.inner_mut()).into_bytes();
-        let (fo, fl) = foot(self.groups_end, bytes.len());
+        let sink = std::mem::take(self.w.inner_mut());
+        let file_len = sink.len();
+        let (fo, fl) = foot(self.groups_end, file_len);
         let mut index = self.index;
         index.push_str(&format!("],\"foot\":[{fo},{fl}]}}"));
-        Ok(SignalFile { table: SignalTable::TraceIndex, day: crate::day::format_day(self.day), hour: None, bytes, rows: self.rows, min_ts: self.min_ts, max_ts: self.max_ts, index })
+        Ok((SignalFile { table: SignalTable::TraceIndex, day: crate::day::format_day(self.day), hour: None, bytes: Vec::new(), rows: self.rows, min_ts: self.min_ts, max_ts: self.max_ts, index }, sink))
     }
 }
 

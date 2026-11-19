@@ -156,7 +156,16 @@ impl std::io::Write for Sink {
 }
 
 impl Sink {
-    /// The bytes in one buffer of exactly their length, each chunk freed once copied.
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The chunks, in order (a caller that copies them out one by one never holds two copies).
+    pub(crate) fn into_chunks(self) -> Vec<Vec<u8>> {
+        self.chunks
+    }
+
+    /// The bytes in one buffer of exactly their length.
     pub(crate) fn into_bytes(self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.len);
         for c in self.chunks {

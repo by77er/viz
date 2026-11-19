@@ -229,8 +229,10 @@ a step never deletes its outputs), with these differences:
   file). The output's key is `…/day=D/hour=HH/L{level}-h{HH}-{inputs16}-{hash8}.parquet` at
   both levels (`h{HH}`, never `d`). Rows equal on `(trace_id, span_id)` are one row: the input
   of higher precedence wins, and within one input the later row (so a merge of flush files
-  equals one flush of their batches in admission order). The sort order, row groups, pages,
-  statistics, bloom filter and index fragment are exactly flush's.
+  equals one flush of their batches in admission order). The sort order, pages, statistics,
+  bloom filter and index fragment are exactly flush's; row groups are cut by flush's rule at
+  4 MiB of data instead of 16 MiB (within the caps above), so that a merge at the step budget
+  fits an isolate (`engine/storage/README.md`, "Compaction of spans and logs").
 - **`trace_index` is merged per day.** The rows of one `trace_id` in the inputs become one
   row, merged as "Merging fragments" says (sums, min and max, per-service sums, union of
   `hours`, the root by the rule there; when two fragments claim the same root span, which a span
@@ -239,8 +241,9 @@ a step never deletes its outputs), with these differences:
   entries it keeps the 64 with the most spans (ties: the smaller name), listed by name, and
   `services_truncated` is true. Fragments are not de-duplicated against spans: a span retried
   into two units stays counted twice, as when fragments are merged at query time, so a
-  trace's extent, root and `hours` are the same before and after compaction. Keys as
-  `TABLES.md` (`L1-h{HH}`, `L2-d`; `inputs16` over this table's input keys only).
+  trace's extent, root and `hours` are the same before and after compaction. Row groups as for
+  `spans` (4 MiB). Keys as `TABLES.md` (`L1-h{HH}`, `L2-d`; `inputs16` over this table's input
+  keys only).
 - **Spans and their `trace_index` are compacted independently.** Nothing pairs them: a
   fragment names hours (logical references that survive compaction), never files, and both
   tables are expired by each file's own `day`. A merge's inputs and outputs are of one table.

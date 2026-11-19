@@ -223,7 +223,7 @@ export class TestPublisher extends Publisher {
   /** The deadlines the alarm serves, by job (the `due` table), and the alarm itself. */
   async schedule(): Promise<{ due: Record<string, number>; alarm: number | null; now: number }> {
     const due: Record<string, number> = {}
-    for (const r of this.ctx.storage.sql.exec(`SELECT job, at FROM due ORDER BY job`).toArray()) due[r.job as string] = r.at as number
+    for (const r of this.ctx.storage.sql.exec(`SELECT job, at FROM due UNION ALL SELECT job, at FROM signal_due ORDER BY job`).toArray()) due[r.job as string] = r.at as number
     return { due, alarm: await this.ctx.storage.getAlarm(), now: this.now() }
   }
 

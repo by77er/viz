@@ -21,7 +21,7 @@
  *     metrics, leaves the span and log tables, their cursors and their metadata alone, and releases
  *     none of their removed files; rolled forward, this release catches up.
  */
-import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { TABLES as CONTRACT_TABLES, dataKeyPrefix, ledgerSegmentKey, type FileEntry, type FlushUnit, type LedgerTable, type SignalTable } from '../../contracts/ledger'
@@ -576,7 +576,7 @@ describe('a re-base (D55) over the span and log tables', () => {
     const wrote = await runInDurableObject(old, (_i, s) => ({ dump: dumpOf(s), row: schemaRow(s) }))
     expect(wrote.row).toMatchObject({ version: 4, compat: 1 })
 
-    // The upgrade: this release on the D64 release's storage (the same schema version: no migration).
+    // The upgrade: this release on the D64 release's storage (version 4; migration 5 is additive).
     const p = publisher(cell)
     await p.pending()
     await install(p, wrote.dump)
@@ -589,7 +589,7 @@ describe('a re-base (D55) over the span and log tables', () => {
     await asLedger(cell, t)
     await verified(p)
     const after = await runInDurableObject(p, (_i, s) => ({ dump: dumpOf(s), row: schemaRow(s) }))
-    expect(after.row).toMatchObject({ version: 4, compat: 1 })
+    expect(after.row).toMatchObject({ version: 5, compat: 1 })
     // The D64 release's record is left as it was; this release reports nothing unpublished.
     expect(after.dump.rows.unpublished).toEqual(wrote.dump.rows.unpublished)
     expect(await p.unpublished()).toEqual([])
@@ -607,6 +607,67 @@ describe('a re-base (D55) over the span and log tables', () => {
 })
 
 describe('this release and the D64 release side by side (D64 is the oldest rollback target once INGEST_SIGNALS is on)', () => {
+  it('the span and log tables\' deadlines and orphan sightings do not wake D64\'s alarm for ever: they live where D64 does not look (migration 5); rolled forward, this release serves them', async () => {
+    const { cell, tenant } = fresh()
+    const t = tenant('alarm')
+    await quietLedger(t)
+    const now = publisher(cell)
+    await now.configure({ snapshotWindowMs: HOUR })
+    // Four snapshots of `spans` and `trace_index` (an expiry deadline each), then a commit of `spans` that fails after its manifest (an object to sweep).
+    for (let i = 1; i <= 4; i++) {
+      await addUnit(t, spanUnit(t, i, T0 + i * HOUR), { drain: true })
+      await mirror(t, cell)
+      expect((await now.publish([t])).tenants[0]).toMatchObject({ status: 'ok' })
+      await now.advanceClock(60_000)
+    }
+    await addUnit(t, spanUnit(t, 5, T0 + 5 * HOUR), { drain: true })
+    await mirror(t, cell)
+    await now.failAt('manifests-written', 'spans')
+    expect((await now.tryPublish([t])).error).toMatch(/injected/)
+    await now.advanceClock(2 * HOUR)
+    expect((await now.sweep()).spans).toMatchObject({ marked: 1 })
+    const sched = await now.schedule()
+    expect(Object.keys(sched.due).sort()).toEqual(['expire:spans', 'expire:trace_index', 'publish', 'sweep'])
+    const wroteN = await runInDurableObject(now, (_i, s) => ({
+      dump: dumpOf(s),
+      signalDue: s.storage.sql.exec(`SELECT job FROM signal_due ORDER BY job`).toArray().map((r) => r.job),
+      due: s.storage.sql.exec(`SELECT job FROM due ORDER BY job`).toArray().map((r) => r.job),
+      orphans: { metric: s.storage.sql.exec(`SELECT COUNT(*) AS n FROM orphan`).one().n, signal: s.storage.sql.exec(`SELECT COUNT(*) AS n FROM signal_orphan`).one().n },
+    }))
+
+    // Rollback: D64 on this storage, all of it overdue. Its alarm publishes and sweeps what it knows, then rests.
+    const old = d64(cell)
+    await old.pending()
+    await install(old, wroteN.dump)
+    await old.advanceClock(3 * HOUR)
+    for (let i = 0; i < 3; i++) {
+      await runInDurableObject(old, async (_i, s) => { await s.storage.setAlarm(Date.now()) })
+      expect(await runDurableObjectAlarm(old)).toBe(true)
+      const alarm = await runInDurableObject(old, (_i, s) => s.storage.getAlarm())
+      // Not set again at once: nothing D64 cannot act on is due (before migration 5 it would be, every time).
+      expect(alarm === null || alarm > Date.now() + 30 * 60_000, `D64's alarm, wake ${i + 1}: ${alarm === null ? 'none' : alarm - Date.now()}`).toBe(true)
+    }
+    // Where it was all kept (asserted after D64's wakes, so that a layout that breaks D64 fails there first).
+    expect(wroteN.signalDue).toEqual(['expire:spans', 'expire:trace_index'])
+    expect(wroteN.due).toEqual(['publish', 'sweep'])
+    expect(wroteN.orphans).toEqual({ metric: 0, signal: 1 })
+    // Its tables are left as they were.
+    const wroteD64 = await runInDurableObject(old, (_i, s) => ({ dump: dumpOf(s), signalDue: s.storage.sql.exec(`SELECT job, at FROM signal_due ORDER BY job`).toArray() }))
+    expect(wroteD64.dump.rows.signal_orphan).toEqual(wroteN.dump.rows.signal_orphan)
+    expect(wroteD64.dump.rows.signal_due).toEqual(wroteN.dump.rows.signal_due)
+
+    // Rolled forward: this release's alarm expires the snapshots and deletes the orphans, then rests.
+    await install(now, wroteD64.dump)
+    for (let i = 0; i < 4; i++) {
+      await runInDurableObject(now, async (_i, s) => { await s.storage.setAlarm(Date.now()) })
+      await runDurableObjectAlarm(now)
+      await now.advanceClock(2 * HOUR)
+    }
+    expect((await readMetadata(cell, 'spans')).snapshots).toHaveLength(2)
+    expect(await runInDurableObject(now, (_i, s) => s.storage.sql.exec(`SELECT COUNT(*) AS n FROM signal_orphan`).one().n)).toBe(0)
+    await verified(now, ['spans', 'trace_index'])
+  })
+
   it('a rollback to D64 on this release\'s storage: D64 publishes the metrics and leaves the span and log tables alone, releasing none of their files; rolled forward, this release catches up', async () => {
     const { cell, tenant } = fresh()
     const t = tenant('rollback')
@@ -619,7 +680,7 @@ describe('this release and the D64 release side by side (D64 is the oldest rollb
     await now.configure({ deleteGraceMs: 60_000 })
     expect((await now.publish([t])).tenants[0]).toMatchObject({ status: 'ok' })
     const wroteN = await runInDurableObject(now, (_i, s) => ({ dump: dumpOf(s), row: schemaRow(s) }))
-    expect(wroteN.row).toMatchObject({ version: 4, compat: 1 })
+    expect(wroteN.row).toMatchObject({ version: 5, compat: 1 })
     const signalObjects = await icebergObjects(cell, SIGNALS)
     expect(Object.keys(signalObjects).length).toBeGreaterThan(10)
 
@@ -642,7 +703,7 @@ describe('this release and the D64 release side by side (D64 is the oldest rollb
     expect(await old.safeToDelete(t)).toEqual([])
     expect(await icebergObjects(cell, SIGNALS)).toEqual(signalObjects)
     const wroteD64 = await runInDurableObject(old, (_i, s) => ({ dump: dumpOf(s), row: schemaRow(s) }))
-    expect(wroteD64.row).toMatchObject({ version: 4, compat: 1 })
+    expect(wroteD64.row).toMatchObject({ version: 5, compat: 1 }) // additive: D64 serves it and leaves the version alone
     const cursorsOf = (d: typeof wroteN.dump, tbl: string) => d.rows.cursor!.filter((c) => c.tbl === tbl)
     for (const s of SIGNALS) expect(cursorsOf(wroteD64.dump, s), s).toEqual(cursorsOf(wroteN.dump, s))
     expect(wroteD64.dump.rows.live!.filter((x) => SIGNALS.includes(x.tbl as SignalTable))).toEqual(wroteN.dump.rows.live!.filter((x) => SIGNALS.includes(x.tbl as SignalTable)))

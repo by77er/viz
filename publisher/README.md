@@ -15,7 +15,7 @@ and physical deletes wait. Nothing else.
 | `src/iceberg.ts` | Table schemas (the metric pair; the span and log tables with nested types and pinned nested field ids, `SIGNAL_DEFS`), name mappings, partition specs (`hour(start_time)` for `spans`), Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 117 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `test/` | 119 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
 | `test/d64/` | This publisher as committed at `bcfe8db`, frozen: the D64 release, which reads the span and log tables and does not publish them; release N-1 of this one, and by D64's rollout rule the oldest rollback target once `INGEST_SIGNALS` is on (`test/signals.test.ts`) |
 | `test/n1/` | This publisher as committed at `9292abb`, frozen: the release before D64 (N-2 now), which stops at a span or log change; kept for the metric byte-identity counterfactual; one type-only edit, said in the file |
 | `test/fixtures/signals.json` | Real `spans`, `trace_index` and `logs` Parquet files (48 files, 485 kB) made by viz's write path from stack/test's OTLP corpus (`tools/signal_fixture.mjs`) |
@@ -458,7 +458,7 @@ contract change; see "Contract issues").
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
 node tools/signal_fixture.mjs <scratch>/sigwork 1 1 6   # writes test/fixtures/signals.json (already committed)
-npm test             # 117 tests in workerd, 15 files, at most 2 workers; fills export/ and export/signals/
+npm test             # 119 tests in workerd, 14 files, at most 2 workers; fills export/ and export/signals/
 npm run typecheck
 # the re-base at scale (Measurements); one size and variant per process for clean memory figures:
 MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=32 --max-semi-space-size=4" \
@@ -475,17 +475,20 @@ python3 -m venv <scratch>/readers-venv
 MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see "Mutation checks"
 ```
 
-**Last run (2026-11-19, the span and log tables published, D67): 117 passed, 0 failed** (14
-files, `npx vitest run --maxWorkers=2`, 71–90 s with load average 8.5–9 from other builds); `tsc
---noEmit` clean; `wrangler deploy --dry-run` bundles the production entry (173 KiB, nothing
+**Last run (2026-11-19, the span and log tables published, D67): 119 passed, 0 failed** (14
+files, `npx vitest run --maxWorkers=2`, 88 s with load average 9.4–9.6 from other builds and this
+component's mutation run; two earlier runs of the same code before the last two tests were added:
+117 passed); `tsc --noEmit` clean; `wrangler deploy --dry-run` bundles the production entry (173 KiB, nothing
 uploaded). New: `test/e2e-signals.test.ts` (1), `test/bench-signals.test.ts` (1), three golden
 tests (`iceberg.signal-metadata`, `iceberg.signal-manifest`, the name mapping against the schema)
-and two golden files; `test/signals.test.ts` rewritten (11 tests, the D64 behaviour it tested is
-gone: see "The span and log tables"); changed: three assertions that listed the metric tables'
+and two golden files; `test/signals.test.ts` rewritten (12 tests, the D64 behaviour it tested is
+gone: see "The span and log tables"); `test/publisher.test.ts` gained one (a new incarnation whose
+versions start again below the cursor, written for mutant M15); changed: three assertions that listed the metric tables'
 cursors or expiries exactly now list all five (`publisher.test.ts` 2, `segments.test.ts` 1). The
 metric readers script on that run's `export/`: **504 checks, 0 failed**, the eight content hashes
-unchanged. The span and log readers (`tools/verify_signal_readers.py export/signals`): **1,454
-checks, 0 failed**; `tools/signals-check`: **1,786 checks, 0 failed** ("Independent readers: the
+unchanged. The span and log readers (`tools/verify_signal_readers.py export/signals`): **1,542
+checks, 0 failed**, the content hashes as in the table there; `tools/signals-check`: **1,786
+checks, 0 failed** ("Independent readers: the
 span and log tables"). The components that import this one, against these sources: `janitor`,
 `compact`, `stack`, `spikes/s8-managed-catalog` typecheck clean; `stack` `test/publisher.test.ts`,
 `test/triggers.test.ts` and `test/signals.test.ts` 15 passed, 1 skipped (as before); `janitor` 30
@@ -646,12 +649,13 @@ the ledger's precedence order) go to `export/signals/` with `file://` URIs of th
 26.0.1, `StaticTable.from_metadata`, each file read through `ArrowScan` on its own) and DuckDB 2.0.0
 (iceberg extension `4c0c0874c4`, avro `345c3f4e82`, `iceberg_scan` with the virtual column
 `filename`; a `timestamptz` selected as `epoch_us(…)` because DuckDB's Python conversion of it
-needs `pytz`, not installed here): **1,454 checks, 0 failed** (712 PyIceberg, 718 DuckDB, 24
-content hashes). For each table, each stage by time travel from the final metadata and again by
+needs `pytz`, not installed here): **1,542 checks, 0 failed** (712 PyIceberg, 718 DuckDB, 24
+content hashes, 88 of the schema). For each table, each stage by time travel from the final metadata and again by
 opening that stage's own `vN.metadata.json`:
 
 | Check | PyIceberg | DuckDB |
 |---|---|---|
+| The table's schema, partition columns aside, is each file's Parquet schema: names, order, types (`fixed[16]` for FLBA(16), `timestamptz` for TIMESTAMP(MICROS, UTC), …), nullability, nested ones included; the partition columns come first, optional, not in the files (44 files) | from `metadata.json`, against pyarrow's reading of each file's footer | |
 | The files planned or scanned are exactly the ledgers' live files | `plan_files()` | `filename` |
 | Every row of every file, every column (the attribute maps, `events` and `links` lists of structs, `services`, `hours`, `metadata`, fixed ids, `start_time`), equals what pyarrow reads from that Parquet file directly | yes, with one difference allowed and counted: a null list read as empty (120 of 234 file comparisons) | yes, exactly |
 | `tenant` (and `day`) from the partition tuple, the file's own, never null | yes | yes |
@@ -695,7 +699,7 @@ PyIceberg wrote itself (an optional `list<struct>` column with a null row reads 
 map stays null), so it is the reader's, not these tables'. TRACES.md's logical view and viz's
 reader treat a null and an empty `events` or `links` alike.
 
-### Workerd tests (117)
+### Workerd tests (119)
 
 | Area | Tests |
 |---|---|
@@ -923,26 +927,27 @@ about 290 kB per commit (modelled from that slope, not measured).
 ### Measurements: the span and log tables
 
 Measured here (`test/bench-signals.test.ts`, output `export/bench-signals.json`), in workerd on this
-4-core machine with a simulated R2, two runs on 2026-11-19 with **load average 8.5–10.6** (other
-builds running; the second run inside the full suite); not on Cloudflare. Shaped as the metric
+4-core machine with a simulated R2, three runs on 2026-11-19 with **load average 8.5–10.6** (other
+builds running, and in the third this component's mutation run; the second and third inside the
+full suite); not on Cloudflare. Shaped as the metric
 bench: 10 tenants, 10 flush units each of 100 files over 10 days (`spans`: 10 hours of each day,
 plus one `trace_index` file a day per unit; `logs`: 10 files a day), keys of realistic length and
 entropy, index fragments of the contract's shape; ledger logs written by real Ledger objects; data
-objects not created. `deflate` codec. Ranges are over the two runs.
+objects not created. `deflate` codec. Ranges are over the three runs; byte counts varied by a few bytes (Avro blocks compress the random ids).
 
 | Publish | Table | Manifests | Manifest list | Cursors | metadata.json | Metadata bytes | Commit | Whole publish | R2 ops (list / get / head / put) |
 |---|---|---|---|---|---|---|---|---|---|
-| **10,000 `spans` files** + 1,000 `trace_index` files, first publication (110 ledger changes) | `spans` | 386,591 B (1) | 1,603 B | 656 B | 9,809 B | **398.7 kB** | **0.82–1.04 s** | 1.44–1.74 s | 31 / 22 / 15 / 10 |
+| **10,000 `spans` files** + 1,000 `trace_index` files, first publication (110 ledger changes) | `spans` | 386,591 B (1) | 1,603 B | 656 B | 9,809 B | **398.7 kB** | **0.82–1.12 s** | 1.44–1.79 s | 31 / 22 / 15 / 10 |
 | | `trace_index` | 17,492 B (1) | 1,602 B | 662 B | 4,041 B | 23.8 kB | 0.26–0.29 s | | |
 | +1 unit on that table | `spans` | 7,803 B | 1,692 B | 656 B | 10,730 B | 20.9 kB | 40–72 ms | 93–123 ms | 2 / 3 / 5 / 10 |
-| | `trace_index` | 4,846 B | 1,692 B | 662 B | 4,975 B | 12.2 kB | 31–34 ms | | |
-| a day expired for every tenant (1,001 `spans`, 101 `trace_index` files removed) | `spans` | 394,606 B (2, the 10,000-entry one rewritten) | 1,673 B | 656 B | 11,657 B | 408.6 kB | 0.40–0.45 s | 0.62–0.71 s | 21 / 12 / 5 / 12 |
-| | `trace_index` | 22,365 B (2) | 1,673 B | 662 B | 5,916 B | 30.6 kB | 0.13 s | | |
+| | `trace_index` | 4,846 B | 1,692 B | 662 B | 4,975 B | 12.2 kB | 31–39 ms | | |
+| a day expired for every tenant (1,001 `spans`, 101 `trace_index` files removed) | `spans` | 394,606 B (2, the 10,000-entry one rewritten) | 1,673 B | 656 B | 11,657 B | 408.6 kB | 0.40–0.51 s | 0.62–0.71 s | 21 / 12 / 5 / 12 |
+| | `trace_index` | 22,365 B (2) | 1,673 B | 662 B | 5,916 B | 30.6 kB | 0.09–0.13 s | | |
 | **10,000 `logs` files**, first publication (110 ledger changes) | `logs` | 246,961 B (1) | 1,596 B | 635 B | 3,727 B | **252.9 kB** | **0.84–0.97 s** | 1.13–1.38 s | 31 / 21 / 15 / 5 |
-| +1 unit on that table | `logs` | 4,501 B | 1,685 B | 635 B | 4,645 B | 11.5 kB | 32–35 ms | 43–68 ms | 2 / 2 / 5 / 5 |
-| a day expired for every tenant (1,001 files removed) | `logs` | 251,721 B (2) | 1,665 B | 635 B | 5,568 B | 259.6 kB | 0.34–0.53 s | 0.42–0.63 s | 21 / 11 / 5 / 6 |
+| +1 unit on that table | `logs` | 4,501 B | 1,685 B | 635 B | 4,645 B | 11.5 kB | 32–53 ms | 43–85 ms | 2 / 2 / 5 / 5 |
+| a day expired for every tenant (1,001 files removed) | `logs` | 251,721 B (2) | 1,665 B | 635 B | 5,568 B | 259.6 kB | 0.28–0.53 s | 0.37–0.63 s | 21 / 11 / 5 / 6 |
 
-Per 10,000 files, then: **`spans` about 399 kB of metadata and 0.8–1.0 s of commit, `logs` about
+Per 10,000 files, then: **`spans` about 399 kB of metadata and 0.8–1.1 s of commit, `logs` about
 253 kB and 0.8–1.0 s** (`metric_samples`: 342 kB and 0.5–1.5 s, the table above). Per file a
 `spans` manifest entry is about 38 bytes, a `logs` entry about 24 (the metric samples', 34):
 `spans` entries carry four bounds (two times, `service_name` twice) and ten counted columns, `logs`

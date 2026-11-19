@@ -15,8 +15,9 @@ pub const MIN_TOKEN_BYTES: usize = 4;
 pub const MAX_TOKEN_BYTES: usize = 64;
 /// Tokens per block of the filter.
 pub const BLOCK_TOKENS: usize = 16;
-/// The writer leaves the filter out of a file with more distinct tokens than this.
-pub const MAX_FILTER_TOKENS: usize = 1 << 20;
+/// The writer leaves the filter out of a file with more distinct tokens than this (the builder
+/// holds about 33 bytes a token, so at most about 17 MB).
+pub const MAX_FILTER_TOKENS: usize = 1 << 19;
 const HEADER: usize = 20;
 
 /// ASCII letters and digits, and every byte of a non-ASCII character.

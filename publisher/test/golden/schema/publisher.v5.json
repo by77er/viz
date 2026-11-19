@@ -1,0 +1,105 @@
+{
+ "version": 5,
+ "schema": [
+  {
+   "type": "index",
+   "name": "live_manifest",
+   "sql": "CREATE INDEX live_manifest ON live (tbl, manifest)"
+  },
+  {
+   "type": "index",
+   "name": "live_tenant",
+   "sql": "CREATE INDEX live_tenant ON live (tbl, tenant)"
+  },
+  {
+   "type": "index",
+   "name": "removed_tenant",
+   "sql": "CREATE INDEX removed_tenant ON removed (tenant)"
+  },
+  {
+   "type": "index",
+   "name": "stage_order",
+   "sql": "CREATE INDEX stage_order ON stage (tenant, tbl, tomb, day, key)"
+  },
+  {
+   "type": "table",
+   "name": "config",
+   "sql": "CREATE TABLE config (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
+  },
+  {
+   "type": "table",
+   "name": "cursor",
+   "sql": "CREATE TABLE cursor (tbl TEXT NOT NULL, tenant TEXT NOT NULL, incarnation INTEGER NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (tbl, tenant))"
+  },
+  {
+   "type": "table",
+   "name": "due",
+   "sql": "CREATE TABLE due (job TEXT PRIMARY KEY, at INTEGER NOT NULL)"
+  },
+  {
+   "type": "table",
+   "name": "live",
+   "sql": "CREATE TABLE live ( tbl TEXT NOT NULL, key TEXT NOT NULL, tenant TEXT NOT NULL, day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, snapshot_id INTEGER NOT NULL, seq INTEGER NOT NULL, file_seq INTEGER NOT NULL, stats TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY (tbl, key))"
+  },
+  {
+   "type": "table",
+   "name": "live_next",
+   "sql": "CREATE TABLE live_next ( tbl TEXT NOT NULL, key TEXT NOT NULL, tenant TEXT NOT NULL, day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, snapshot_id INTEGER NOT NULL, seq INTEGER NOT NULL, file_seq INTEGER NOT NULL, stats TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY (tbl, key))"
+  },
+  {
+   "type": "table",
+   "name": "manifest",
+   "sql": "CREATE TABLE manifest (tbl TEXT NOT NULL, path TEXT NOT NULL, info TEXT NOT NULL, PRIMARY KEY (tbl, path))"
+  },
+  {
+   "type": "table",
+   "name": "orphan",
+   "sql": "CREATE TABLE orphan (path TEXT PRIMARY KEY, since INTEGER NOT NULL)"
+  },
+  {
+   "type": "table",
+   "name": "pending",
+   "sql": "CREATE TABLE pending (tenant TEXT PRIMARY KEY, since INTEGER NOT NULL)"
+  },
+  {
+   "type": "table",
+   "name": "removed",
+   "sql": "CREATE TABLE removed (tbl TEXT NOT NULL, tenant TEXT NOT NULL, key TEXT NOT NULL, removed_seq INTEGER NOT NULL, free_at INTEGER, PRIMARY KEY (tbl, key))"
+  },
+  {
+   "type": "table",
+   "name": "signal_due",
+   "sql": "CREATE TABLE signal_due (job TEXT PRIMARY KEY, at INTEGER NOT NULL)"
+  },
+  {
+   "type": "table",
+   "name": "signal_orphan",
+   "sql": "CREATE TABLE signal_orphan (path TEXT PRIMARY KEY, since INTEGER NOT NULL)"
+  },
+  {
+   "type": "table",
+   "name": "snap",
+   "sql": "CREATE TABLE snap (tbl TEXT NOT NULL, snapshot_id INTEGER NOT NULL, seq INTEGER NOT NULL, files TEXT NOT NULL, PRIMARY KEY (tbl, snapshot_id))"
+  },
+  {
+   "type": "table",
+   "name": "stage",
+   "sql": "CREATE TABLE stage ( tenant TEXT NOT NULL, tbl TEXT NOT NULL, tomb INTEGER NOT NULL, key TEXT NOT NULL, day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, min_ts INTEGER NOT NULL, max_ts INTEGER NOT NULL, idx TEXT NOT NULL, stats TEXT, PRIMARY KEY (tenant, tbl, tomb, key))"
+  },
+  {
+   "type": "table",
+   "name": "tbl",
+   "sql": "CREATE TABLE tbl (name TEXT PRIMARY KEY, version INTEGER NOT NULL, snapshot_id INTEGER, seq INTEGER NOT NULL, uuid TEXT NOT NULL)"
+  },
+  {
+   "type": "table",
+   "name": "unpublished",
+   "sql": "CREATE TABLE unpublished ( tbl TEXT NOT NULL, tenant TEXT NOT NULL, incarnation INTEGER NOT NULL, version INTEGER NOT NULL, files INTEGER NOT NULL, origin TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY (tbl, tenant))"
+  },
+  {
+   "type": "table",
+   "name": "viz_schema",
+   "sql": "CREATE TABLE viz_schema (one INTEGER PRIMARY KEY CHECK (one = 1), component TEXT NOT NULL, version INTEGER NOT NULL, compat INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+  }
+ ]
+}

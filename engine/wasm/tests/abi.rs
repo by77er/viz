@@ -333,10 +333,16 @@ fn signal_merge_file(out: &[u8]) -> (u8, u8, u64, i64, i64, Vec<u8>, Vec<u8>, Ve
     let head = r.u32().to_le_bytes();
     assert_eq!((head[2], head[3]), (0, 0));
     let (rows, min, max, day, index) = (r.u64(), r.u64() as i64, r.u64() as i64, r.bytes().to_vec(), r.bytes().to_vec());
-    let (ptr, len, cap) = (r.usize(), r.usize(), r.usize());
-    assert_eq!(r.1, out.len(), "nothing after the one file");
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len).to_vec() };
-    unsafe { viz_free_file(ptr as *mut u8, cap) };
+    let (total, n) = (r.usize(), r.u32());
+    let mut bytes = Vec::new();
+    for _ in 0..n {
+        let (ptr, len, cap) = (r.usize(), r.usize(), r.usize());
+        assert!(len <= 1 << 20 && len <= cap, "chunks of at most 1 MiB");
+        bytes.extend_from_slice(unsafe { std::slice::from_raw_parts(ptr as *const u8, len) });
+        unsafe { viz_free_file(ptr as *mut u8, cap) };
+    }
+    assert_eq!(r.1, out.len(), "nothing after the chunks");
+    assert_eq!(bytes.len(), total);
     (head[0], head[1], rows, min, max, day, index, bytes)
 }
 

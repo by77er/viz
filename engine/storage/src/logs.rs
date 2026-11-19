@@ -262,7 +262,15 @@ impl LogsFileWriter {
     }
 
     /// The token filter (when asked for and within its bound), the footer, the fragment.
-    pub(crate) fn finish(mut self) -> SResult<SignalFile> {
+    /// The file, joined into one buffer.
+    pub(crate) fn finish(self) -> SResult<SignalFile> {
+        let (mut f, sink) = self.finish_parts()?;
+        f.bytes = sink.into_bytes();
+        Ok(f)
+    }
+
+    /// The file's description (its `bytes` empty) and its bytes as written, in chunks.
+    pub(crate) fn finish_parts(mut self) -> SResult<(SignalFile, Sink)> {
         let first_ts = self.first_ts.ok_or_else(|| SignalError::Parquet("a logs file needs at least one row".into()))?;
         let mut tok = None;
         if let Some(filter) = self.tokens.take().and_then(|t| t.finish(self.groups)) {
@@ -272,10 +280,11 @@ impl LogsFileWriter {
             tok = Some((off, filter.len() as u64));
         }
         self.w.finish().map_err(perr)?;
-        let bytes = std::mem::take(self.w.inner_mut()).into_bytes();
+        let sink = std::mem::take(self.w.inner_mut());
+        let file_len = sink.len();
         let (fo, fl) = match tok {
-            Some((o, l)) => foot(o + l, bytes.len()),
-            None => foot(self.groups_end, bytes.len()),
+            Some((o, l)) => foot(o + l, file_len),
+            None => foot(self.groups_end, file_len),
         };
         let mut index = self.index;
         index.push_str(&format!("],\"foot\":[{fo},{fl}]"));
@@ -296,6 +305,6 @@ impl LogsFileWriter {
             index.push(']');
         }
         index.push('}');
-        Ok(SignalFile { table: SignalTable::Logs, day: day_of_ns(first_ts), hour: None, bytes, rows: self.rows, min_ts: self.min_ts, max_ts: self.max_ts, index })
+        Ok((SignalFile { table: SignalTable::Logs, day: day_of_ns(first_ts), hour: None, bytes: Vec::new(), rows: self.rows, min_ts: self.min_ts, max_ts: self.max_ts, index }, sink))
     }
 }

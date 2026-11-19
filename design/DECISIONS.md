@@ -2389,7 +2389,7 @@ before the page indexes and the footer metadata, through the `parquet` crate's
 `SerializedFileWriter::write_all` (which keeps the writer's offsets right). Its offset and
 length are in the index fragment (`"tok":[off,len]`) and in the footer's key-value metadata
 (`viz.token_filter`). The fragment's `foot` then starts where the filter ends. A file with more
-than 2^20 distinct tokens gets no filter.
+than 2^19 distinct tokens gets no filter (the builder holds about 33 bytes a token).
 
 **Alternatives.** (a) The settled text: a separate object `….tokens` next to the file, with its
 size and SHA-256 in the ledger. (b) The filter as a footer key-value entry. (c) The filter before
@@ -2501,11 +2501,12 @@ Iceberg objects are byte-identical whether published by this release from a log 
 changes, by this release from the same log without them, by D64's release from the log as written,
 or by the release before D64 from the log without them, at two stages. Real span and log files from
 the stack's write path, four stages: PyIceberg and DuckDB read every row and column of every file
-as pyarrow does (1,454 checks, 0 failed; PyIceberg reads a null list as empty, counted), prune by
+as pyarrow does, under a schema equal to the files' (1,542 checks, 0 failed; PyIceberg reads a null
+list as empty, counted), prune by
 tenant, hour and day, and give rows that viz-storage's readers read identically and on which
 viz-traceql and viz-logql answer identically (1,786 checks, 960 TraceQL and 576 LogQL answers, 0
-different). A first publication of 10,000 `spans` files took 0.8–1.0 s of commit and 399 kB of
-metadata, 10,000 `logs` files 0.8–1.0 s and 253 kB (two runs, load average 8.5–10.6).
+different). A first publication of 10,000 `spans` files took 0.8–1.1 s of commit and 399 kB of
+metadata, 10,000 `logs` files 0.8–1.0 s and 253 kB (three runs, load average 8.5–10.6).
 
 **Cost of it.** A publish that moves a tenant's cursors without a commit costs one R2 HEAD per
 table (up to five, three more than before) to check that no other writer is ahead. A `spans`

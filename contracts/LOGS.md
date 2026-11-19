@@ -133,9 +133,11 @@ The mapping from a row:
   day, `L2-d`; `inputs16` over the input keys; inputs in ascending precedence; the same
   per-step limits). Rows equal on the row key are one row, the input of higher precedence
   supplying the other columns (within one input, the later row), so a merge of flush files
-  equals one flush of their batches in admission order. Sort order, row groups, pages,
-  statistics, the bloom filter and the fragment are flush's; every compaction output also
-  carries the token filter (§6).
+  equals one flush of their batches in admission order. Sort order, pages, statistics, the
+  bloom filter and the fragment are flush's; row groups are cut by the same rule at 4 MiB of
+  data instead of 16 MiB (still within the caps above), so that a merge at the step budget fits
+  an isolate (`engine/storage/README.md`, "Compaction of spans and logs"); every compaction
+  output also carries the token filter (§6).
 - **Row groups**: at most 100,000 rows and at most 16 MiB of data, a row counting 64 bytes
   plus its line, severity text, metadata bytes and its stream's label bytes.
 - **Pages**: `line` data pages are at most 1 MiB uncompressed (the writer cuts a page at
@@ -225,7 +227,7 @@ builds it for every `logs` compaction output and reads it; no query path reads i
   `n_row_groups` are zero. A filter whose `n_row_groups` is not the file's, or that does not
   parse, is not used (the row groups are read).
 - **Bound.** The writer leaves the filter out (no `tok`, no `viz.token_filter`) when the file
-  has more than 1,048,576 distinct tokens, so building it fits a step's memory
+  has more than 524,288 distinct tokens, so building it fits a step's memory
   (`engine/storage/README.md`, "Compaction of spans and logs"). The file is then read as one
   without a filter.
 - **What a query may use.** The engine's `selectors()` reports, for each selector,

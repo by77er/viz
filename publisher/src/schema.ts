@@ -86,6 +86,24 @@ CREATE TABLE IF NOT EXISTS unpublished (
       PRIMARY KEY (tbl, tenant));
 `),
     },
+    {
+      // The alarm's bookkeeping of the span and log tables, kept apart from the metric tables'
+      // (design/DECISIONS.md D67): their expiry deadlines (`expire:spans`, `expire:trace_index`,
+      // `expire:logs`) and the sightings of their unreferenced metadata objects. The D64 release, the
+      // oldest a rollback may reach once `INGEST_SIGNALS` is on, re-arms its alarm at the earliest row
+      // of `due` and its sweep at the oldest row of `orphan`, and acts only on the metric tables: a
+      // row of these tables there would bring its alarm back at once, for ever (a sweep, R2 lists
+      // included, on every wake). Here it never sees them. Additive: releases 1 to 4 neither read nor
+      // write these tables, so each stays a rollback target.
+      version: 5,
+      name: 'signal_due and signal_orphan: the alarm bookkeeping of the span and log tables',
+      readableFrom: 1,
+      up: (sql) =>
+        void sql.exec(`
+CREATE TABLE IF NOT EXISTS signal_due (job TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS signal_orphan (path TEXT PRIMARY KEY, since INTEGER NOT NULL);
+`),
+    },
   ],
 }
 
