@@ -357,11 +357,18 @@ export async function exchangeCode(t: Tenant, req: TokenRequest, now: number): P
     if (row.expires_at <= now) return { error: fail('invalid_grant', gone) }
     // From here on any failure spends the code: whoever holds it without the rest gets one try.
     t.run('UPDATE oauth_codes SET used_at = ? WHERE tenant = ? AND hash = ?', now, t.tenant, hash)
-    if (!g || !issuable(t, g, now)) return { error: fail('invalid_grant', 'The grant this code was issued for has ended.') }
-    if (!clientMatches(t, g, req.client_id)) return { error: fail('invalid_grant', 'The code was issued to another client.') }
-    if (req.redirect_uri !== row.redirect_uri) return { error: fail('invalid_grant', 'redirect_uri is not the one the authorization request used.') }
-    if (!pkceMatches(req.code_verifier!, row.challenge)) return { error: fail('invalid_grant', 'code_verifier does not match the code_challenge.') }
-    if (req.resource !== undefined && !sameResource(req.resource, g.resource)) return { error: fail('invalid_target', 'The resource is not the one this code was issued for.') }
+    // A grant whose only code is spent without issuing anything can never issue anything: end it
+    // with the failure, so it neither lingers live (with an unusable key) nor counts against the
+    // grant and key limits until a sweep (review of #6).
+    const refuse = (r: TokenResult): Spent => {
+      if (g) revokeGrant(t, g, SYSTEM, now, 'exchange-failed')
+      return { error: r }
+    }
+    if (!g || !issuable(t, g, now)) return refuse(fail('invalid_grant', 'The grant this code was issued for has ended.'))
+    if (!clientMatches(t, g, req.client_id)) return refuse(fail('invalid_grant', 'The code was issued to another client.'))
+    if (req.redirect_uri !== row.redirect_uri) return refuse(fail('invalid_grant', 'redirect_uri is not the one the authorization request used.'))
+    if (!pkceMatches(req.code_verifier!, row.challenge)) return refuse(fail('invalid_grant', 'code_verifier does not match the code_challenge.'))
+    if (req.resource !== undefined && !sameResource(req.resource, g.resource)) return refuse(fail('invalid_target', 'The resource is not the one this code was issued for.'))
     touch(t, g, now)
     return { grant: g, sealed: row.sealed, scopes: JSON.parse(g.scopes) as OAuthScope[] }
   })
