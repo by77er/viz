@@ -20,7 +20,7 @@ changes no component: everything it needs from one is under "Needed changes".
 | `stage/` | The one shim a staged deployment needs (queue names, see "Needed changes" 1) |
 | `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports. Trial 3: `probe/index.ts`, a stand-in for the ruler's `SINK` binding |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
-| `scripts/mutants-release.mjs` | Mutation check of the schema rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs` (run on a copy) |
+| `scripts/mutants-release.mjs` | Mutation check of the schema rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs`, and of the class-binding allowlist and viz-mcp's bindings (run on a copy) |
 | `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`; run on a copy) |
 | `test/fake-wrangler.mjs` | A stand-in for wrangler that `test/secrets.test.mjs` runs as a real child process (`VIZ_WRANGLER_BIN`, tests only) |
 | `resources.json` | KV namespace ids by title (not secret; rewritten by `resources.mjs`) |
@@ -70,9 +70,10 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
  edge, Shard,    Leaf DOs;    Tenant DO         Ruler, Notifier,   stateless; QUERY, CONTROL,
  Ledger, Flush,  SHARD and    (keys,            RulerIndex DOs;    RULER service bindings,
  4 consumers,    LEDGER from  dashboards,       QUERY, SINK and    each call with the caller's
- hourly cron,    viz-ingest   settings)         INGEST service     own key
- RecordedSamples                                bindings; TENANT (control's
- entrypoint                                     Tenant) by script_name;
+ hourly cron,    viz-ingest   settings);        INGEST service     own key; OAUTH: control's
+ RecordedSamples              OAuthIntrospection bindings; TENANT  OAuthIntrospection
+ entrypoint                   entrypoint        (control's         entrypoint (no DO binding)
+                                                Tenant) by script_name;
      │ PUBLISHER (DO, by script_name): nudged by    cron */15
      │ maintenance runs, asked before deletion
  viz-publisher: Publisher DO, one per cell (Iceberg metadata in viz-lake); no route, no cron
@@ -187,11 +188,18 @@ does not carry the key:
   exists, so no request reaches viz-control without the key; a failure there stops the release
   before the gateway.
 
-**Never over one that exists.** If viz-control has the key now (its secret list, or a version
-serving now) but the version to be promoted does not carry it, the release is **refused, exit 3,
-before anything is promoted**, naming where it was seen: a new value would invalidate every
-registered client. A put is also refused when the newest version is not this release's upload
-(it would build on code that is not this release).
+**Never over one that exists.** If viz-control has the key now (its secret list, a version
+serving now, or a version newer than every serving one) but the version to be promoted does not
+carry it, the release is **refused, exit 3, before anything is promoted**, naming where it was
+seen: a new value would invalidate every registered client, and since the credential tag (D44,
+review M-2) every code and token too. A version newer than the serving one is what a rollback
+across the release that created the key leaves behind (review of D53, m-9): before, an upload
+that then did not inherit the key was given a new one silently. After such a refusal, promote the
+release that has the key again (`release.mjs rollback --record` to its record, or deploy its
+commit), or replace the key on purpose (`VIZ_ROTATE_SECRETS`). Reading the newer versions costs
+one list call and one read per newer version (none normally; up to the 100 Cloudflare keeps). A
+put is also refused when the newest version is not this release's upload (it would build on code
+that is not this release).
 
 Why not the alternatives (D53): `wrangler secret put` before phase 1 deploys the serving code plus
 the key outside any release record, is refused whenever an undeployed version is newest, and
@@ -228,7 +236,27 @@ changes").
 **Never shown.** The value exists in the deploy process's memory and in the pipe to wrangler's
 stdin. It is not on a command line, in an environment variable, in a log (wrangler's output for
 the put is not relayed, and is scrubbed before it can appear in an error), in a file, or in the
-release record, which says `secrets: [{ worker, name, action, versionId }]`.
+release record, which says `secrets: [{ worker, name, action, versionId }]`. **Wrangler's own
+debug log**: wrangler 4.164.0 writes every log level, request bodies included, to a file under
+`~/.config/.wrangler/logs/` (or `WRANGLER_LOG_PATH`) unless `WRANGLER_WRITE_LOGS` is false, and
+redacts bodies only while `WRANGLER_LOG_SANITIZE` is true (its default); with sanitising off in
+the deploy's environment the review of D53 (m-10) found the key's PATCH body in that file with
+the real wrangler. `lib/wrangler.mjs` therefore runs every wrangler command that gets something on
+stdin (this put, and `bootstrap.mjs`'s `secret put`) with `WRANGLER_LOG_SANITIZE=true` and
+`WRANGLER_WRITE_LOGS=false` (`SECRET_RUN_ENV`), whatever the environment says; other commands keep
+the environment's settings.
+
+## Class bindings across Workers (`binds_classes`)
+
+A Durable Object binding to another Worker's class (by `script_name`) can call every method of
+every object of that class, for any tenant. `configure.mjs` deploys one only where
+`workers.json` lists it under the binding Worker's `binds_classes` as `<worker>:<class>`, with
+why (review of D44, M-1). Today: viz-ingest → viz-publisher's `Publisher`, viz-query →
+viz-ingest's `Shard` and `Ledger`, viz-ruler and viz-gateway → viz-control's `Tenant`. viz-mcp has
+none: it binds viz-control's `OAuthIntrospection` entrypoint (`OAUTH`, with `props: { caller:
+"viz-mcp" }`), which answers one question. A Worker that needs one answer from another binds a
+named entrypoint that gives that answer; the existing entrypoint check makes sure the callee
+exports it before the caller is deployed.
 
 ## Durable Object migrations
 
@@ -438,6 +466,37 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 
 All measured here unless it says Cloudflare.
 
+- **After the review of D44, D52, D53 and D60** (`design/reviews/d44-d52-d53-d60.md`,
+  2026-11-19; nothing deployed, the Cloudflare API not called). `test/secrets.test.mjs` **12 of
+  12**, three new: **m-9**, a rollback across the key's creation (the serving version without the
+  key, a newer one with it) followed by an upload that does not inherit it: exit 3, the log names
+  the newer version, nothing put or promoted, and `plan` says `keep`, not `create` (before: exit 0
+  and a new key, the review's `D53-1`); the same rollback with an upload that inherits from the
+  newest version keeps the key, no put; **m-10**, with `WRANGLER_LOG=debug`,
+  `WRANGLER_LOG_SANITIZE=false` and `WRANGLER_WRITE_LOGS=true` in the deploy's environment, the
+  fake wrangler (`test/fake-wrangler.mjs` now records the three for every call) sees `true` and
+  `false` on the put, and the upload keeps the environment's values. `test/configure.test.mjs`
+  **22 of 22**, two new: viz-mcp's generated config (production and a stage) has the `OAUTH`
+  binding to viz-control's `OAuthIntrospection` with `props: { caller: "viz-mcp" }`, a caller
+  `contracts/oauth.ts` allows, and no Durable Object binding; control's main module exports the
+  entrypoint and a main without it is refused; viz-mcp with control's `Tenant` class bound again
+  is refused, in production and a stage, naming `binds_classes`; the four listed class bindings
+  are exactly those the components have, each with a reason, and an alias (`viz-edge`) is resolved
+  before the check. Whole suite: `npx vitest run --maxWorkers=2` 95 of 95, `node --test
+  --test-concurrency=2 'test/*.test.mjs'` 52 of 52, `npx tsc --noEmit` clean. Mutants, run in a
+  copy of the whole tree in a scratch directory (node_modules linked), whose unmutated tests the
+  scripts check first: `node scripts/mutants-secrets.mjs` **19 of 19 killed**, the two new ones
+  first time: *m-10, a run with a secret on stdin keeps the deploy's own log settings* (killed by
+  "m-10: a secret on stdin runs wrangler with …"), *m-9, a key on a version newer than the serving
+  one is not seen* (killed by "m-9: after a rollback across the key's creation …"); the 17 earlier
+  ones are killed as before, several now also by the m-9 and m-10 tests. `node
+  scripts/mutants-release.mjs` **15 of 15 killed**, three new: *a class of another Worker bound
+  without being listed in `binds_classes`* (killed by "a Durable Object class of another Worker is
+  bound only where workers.json lists it …"), *viz-mcp binds control's `Tenant` class again* (every
+  configure test that generates viz-mcp in production, among them "production: the gateway …"),
+  *viz-mcp's `OAUTH` binding without the entrypoint* ("every service a Worker binds …" and "viz-mcp:
+  control's OAuthIntrospection entrypoint …"). The 2026-11-19 failure that kept the release
+  mutants from starting (`stack/wrangler.test.jsonc`) is gone: that test passes now.
 - **Generated secrets (viz-control's `OAUTH_CLIENT_KEY`, 2026-11-19).** Not run on Cloudflare:
   nothing was deployed for this change. `node --test test/secrets.test.mjs`: **9 of 9**, through
   the real `release.mjs` `deploy` and `plan`, with `lib/wrangler.mjs` spawning a fake wrangler as
@@ -956,6 +1015,18 @@ deployment and nothing here needs it: the gateway has no page and no static asse
 
 ## Known risks
 
+- **Another run of the same release can upload between the newest-version check and the put**
+  (review of D53, m-11, reproduced against the fakes): the key then goes on that run's version,
+  which carries the same `VIZ_RELEASE`, and it is promoted. CI runs are serialised by the
+  `deploy-production` concurrency group; a run from a workstation is not. On the release that
+  creates the key, two such runs can each make a different key, and the second promotion
+  invalidates client ids registered and tokens issued in between. Open: tag each upload with a
+  value unique to the run and check that tag on the keyed version.
+- **A rollback below a release that writes anomaly state version 2 is not refused** (review of
+  D60, m-13): release records carry schema versions, not format versions (D46), so once the
+  ruler's gate is on, a rollback to a release without the reader leaves those rules
+  `state_unreadable` until rolled forward. Open: format versions in the release record before the
+  release that turns the gate on ("Not implemented", wire-format versions).
 - **Rollback across the release that created (or rotated) the OAuth key** (D53). The versions
   restored do not carry the key (or carry the old one). Not documented, not measured: whether
   `versions deploy` of such a version is refused (wrangler's own `rollback` handles an API error
@@ -965,8 +1036,9 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   keeps serving; if allowed, `/oauth/register` answers 503 until the next deploy. And whether the
   next deploy then keeps the key depends on uploads inheriting from the newest version, which is
   read from the documentation, not measured; if they inherit from the deployed version instead, it
-  either refuses (exit 3, the key seen in the secret list) or makes a new key, which only clients
-  that registered while the rolled-back release served would notice. **Experiment**: on a stage,
+  refuses (exit 3): since the review of D53 (m-9) the key is also looked for on the versions newer
+  than the serving one, where the rolled-back release left it, so no new key is made silently (the
+  review reproduced that against the fakes; tested). **Experiment**: on a stage,
   deploy R0 without the key, R1 (creates it), `release.mjs rollback` to R0's record, then R2;
   record whether the rollback is refused (10220), what `/oauth/register` answers, and whether R2
   keeps or creates the key. Cost: three releases of a stage, cents.

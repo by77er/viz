@@ -23,7 +23,13 @@ const chunks = []
 for await (const c of process.stdin) chunks.push(c)
 const stdin = Buffer.concat(chunks).toString('utf8')
 
-state.calls.push({ argv: args, stdinLength: stdin.length, envHasStdin: stdin.length > 0 && Object.values(process.env).some((v) => typeof v === 'string' && v.includes(stdin)) })
+state.calls.push({
+  argv: args,
+  stdinLength: stdin.length,
+  envHasStdin: stdin.length > 0 && Object.values(process.env).some((v) => typeof v === 'string' && v.includes(stdin)),
+  // What decides whether wrangler writes a debug log, and whether it redacts request bodies in it (lib/wrangler.mjs SECRET_RUN_ENV).
+  logEnv: { WRANGLER_LOG: process.env.WRANGLER_LOG ?? null, WRANGLER_LOG_SANITIZE: process.env.WRANGLER_LOG_SANITIZE ?? null, WRANGLER_WRITE_LOGS: process.env.WRANGLER_WRITE_LOGS ?? null },
+})
 const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2))
 const done = (text) => {
   save()

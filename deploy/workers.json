@@ -1,5 +1,5 @@
 {
-  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage).",
+  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage). Every Durable Object class a Worker binds from ANOTHER Worker (by script_name) is listed under `binds_classes` as `<worker>:<class>`, with why: such a binding can call every method of every object of the class (any tenant), so configure.mjs refuses one that is not listed. A Worker that needs one question answered binds a named entrypoint of the other Worker instead (viz-mcp: viz-control's OAuthIntrospection, contracts/oauth.ts).",
   "domain": "vis.bitcru.sh",
   "observability": {
     "enabled": true,
@@ -41,6 +41,9 @@
       "component": "stack",
       "deploy": true,
       "health": "/healthz",
+      "binds_classes": {
+        "viz-publisher:Publisher": "the cell's publisher, nudged by every maintenance run (D34)"
+      },
       "schemas": {
         "Shard": "shard/src/shard.ts#SHARD_SCHEMA",
         "Ledger": "ledger/src/ledger.ts#LEDGER_SCHEMA"
@@ -60,6 +63,10 @@
       "component": "query",
       "deploy": true,
       "health": "/healthz",
+      "binds_classes": {
+        "viz-ingest:Shard": "tail reads of a tenant's shards (D48)",
+        "viz-ingest:Ledger": "the ledger's file lists for a query's range"
+      },
       "unversioned": {
         "Leaf": "keeps nothing between calls: no storage, no fields, no alarm (query/src/leaf.ts)"
       }
@@ -69,6 +76,9 @@
       "component": "ruler",
       "deploy": true,
       "health": "/healthz",
+      "binds_classes": {
+        "viz-control:Tenant": "notificationTarget and serviceKey (contracts/control.ts, D39). Open: to become a named entrypoint of viz-control as viz-mcp's did (control/README.md, Known risks)"
+      },
       "schemas": {
         "Ruler": "ruler/src/schema.ts#RULER_SCHEMA",
         "Notifier": "ruler/src/schema.ts#NOTIFIER_SCHEMA",
@@ -86,7 +96,10 @@
       "component": "deploy/gateway",
       "deploy": true,
       "public": true,
-      "health": "/healthz"
+      "health": "/healthz",
+      "binds_classes": {
+        "viz-control:Tenant": "Tenant.provision for POST /api/v1/bootstrap only. Open: to become a named entrypoint of viz-control (control/README.md, Known risks)"
+      }
     }
   ]
 }

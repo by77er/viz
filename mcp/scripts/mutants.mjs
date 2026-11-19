@@ -140,7 +140,7 @@ const MUTANTS = [
   },
   {
     name: '`/healthz` says ok whatever is bound',
-    changes: [['src/index.ts', "const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER', 'TENANT'] as const).filter((b) => !env[b])", 'const missing: string[] = []']],
+    changes: [['src/index.ts', "const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER', 'OAUTH'] as const).filter((b) => !env[b])", 'const missing: string[] = []']],
   },
   // 27–33: OAuth at the resource (D44, contracts/oauth.ts)
   {
@@ -164,12 +164,11 @@ const MUTANTS = [
     changes: [['src/oauth.ts', 'const parts = [`realm="viz"`, `resource_metadata=${q(cfg.metadataUrl)}`,', 'const parts = [`realm="viz"`,']],
   },
   {
-    name: 'OAuth: the tenant object asked is the one a request header names, not the token\'s',
-    changes: [
-      ['src/auth.ts', 'export async function identifyOAuth(presented: { token: string; kind: string; tenant: string }, env: AuthEnv, resource: string): Promise<Caller> {', 'export async function identifyOAuth(presented: { token: string; kind: string; tenant: string }, env: AuthEnv, resource: string, header: string | null = null): Promise<Caller> {'],
-      ['src/auth.ts', 'env.TENANT.get(env.TENANT.idFromName(presented.tenant))', 'env.TENANT.get(env.TENANT.idFromName(header ?? presented.tenant))'],
-      ['src/index.ts', 'caller = await identifyOAuth(oauth, env, cfg.resource)', "caller = await identifyOAuth(oauth, env, cfg.resource, req.headers.get('X-Viz-Tenant'))"],
-    ],
+    // Replaces "the tenant object asked is the one a request header names" (review of D44, M-1):
+    // this Worker no longer picks a tenant's object at all; control's entrypoint takes the tenant
+    // from the token (control's mutants "review M-1" and "review M-2" cover that side).
+    name: 'OAuth: a binding control does not accept (props naming another caller) is taken for an unknown token (401), not a deployment fault (503)',
+    changes: [['src/auth.ts', "  if (r?.status === 'unauthorized') throw new AuthError(503, 'oauth-unavailable',", "  if (r?.status === 'unauthorized') throw new AuthError(401, 'invalid-token',"]],
   },
   {
     name: 'OAuth: protected resource metadata names no authorization server',
@@ -202,6 +201,15 @@ const MUTANTS = [
   {
     name: 'backtest_monitor: a refusal retried once',
     changes: [['src/tools/backtest.ts', 'const answer = await ruler.backtest(req, { signal: AbortSignal.timeout(s.limits.backtestTimeoutMs) })', 'let answer = await ruler.backtest(req, { signal: AbortSignal.timeout(s.limits.backtestTimeoutMs) })\n    if (!answer.ok) answer = await ruler.backtest(req, { signal: AbortSignal.timeout(s.limits.backtestTimeoutMs) })']],
+  },
+  // review of D44 (design/reviews/d44-d52-d53-d60.md)
+  {
+    name: 'review m-6: scopes compared literally (dashboards:apply does not cover dashboards:write)',
+    changes: [['src/auth.ts', 'all.every((s) => (IMPLIED[s] ?? [s]).some((x) => id.scopes.includes(x)))', 'all.every((s) => id.scopes.includes(s))']],
+  },
+  {
+    name: 'review m-2: the step-up check reads the whole body (no cap on one without Content-Length)',
+    changes: [['src/index.ts', '    const bytes = await readCapped(req.clone(), STEP_UP_MAX_BYTES)\n    if (bytes === null) return null\n', '    const bytes = new Uint8Array(await req.clone().arrayBuffer())\n']],
   },
 ]
 

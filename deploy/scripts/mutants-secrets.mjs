@@ -32,6 +32,9 @@ const MUTANTS = [
     "  const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)\n  for (const step of plan.steps) for (const v of live[step.name]?.versions ?? []) await ensureSecrets({ worker: step.name, versionId: v.version_id, specs: specs.filter((s) => s.worker === step.name), now: [], rotate, release: manifest.release, tag: 'x', message: 'x', api: SECRET_API }).catch(() => {})\n"],
   ['an unknown name to rotate is ignored instead of refused', 'release.mjs', '  const refusals = [...plan.problems, ...rotateProblems(rotate, specs)]', '  const refusals = [...plan.problems]'],
   ['lib/wrangler.mjs: the value is not written to stdin', 'lib/wrangler.mjs', '    if (input !== undefined) child.stdin.end(input)', '    if (input !== undefined) child.stdin.end()'],
+  // review of D53 (design/reviews/d44-d52-d53-d60.md)
+  ["m-10: a run with a secret on stdin keeps the deploy's own log settings (sanitising off, debug log on disk)", 'lib/wrangler.mjs', ", ...(input !== undefined ? SECRET_RUN_ENV : {}) },", ' },'],
+  ['m-9: a key on a version newer than the serving one (left by a rollback) is not seen, and a new one is made', 'lib/secrets.mjs', '    if (newestServing !== Infinity) {', '    if (false) {'],
 ]
 
 try {

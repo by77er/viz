@@ -96,6 +96,12 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
   tenant = ''
   /** No storage yet (never provisioned): opened, and migrated, by `provision` only. */
   private unopened = false
+  /**
+   * Rows written through `run` since this object started: a request compares it before and after
+   * to know whether it changed anything, so one that changed nothing writes nothing more (no alarm
+   * set; review of D44, M-2). A counter of this instance's own statements, not state.
+   */
+  rowsWritten = 0
   private draining: Promise<boolean> = Promise.resolve(true)
 
   /** What opening storage found (contracts/schema.ts). Anything but `ok` and the object serves nothing and writes nothing. */
@@ -151,7 +157,9 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
   }
 
   run(query: string, ...bindings: SqlStorageValue[]): number {
-    return this.ctx.storage.sql.exec(query, ...bindings).rowsWritten
+    const n = this.ctx.storage.sql.exec(query, ...bindings).rowsWritten
+    this.rowsWritten += n
+    return n
   }
 
   get limitCeilings(): Record<string, unknown> {
@@ -397,7 +405,11 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
 
   // ---- OAuth (contracts/oauth.ts): the token endpoint, revocation, and introspection for the resource ----
 
-  /** After a commit that may have queued KV writes (a grant's key removed): arm the alarm, publish, re-arm. */
+  /**
+   * After a commit that may have queued KV writes (a grant's key removed): arm the alarm, publish,
+   * re-arm. Only after a request that wrote something: each `setAlarm` is billed as a row written,
+   * and a request that changed nothing (a made-up or spent credential) must write nothing at all.
+   */
   private async settle(): Promise<void> {
     const scheduled = this.schedule()
     await this.drain()
@@ -417,11 +429,12 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
     // A credential naming another tenant can match nothing here; say so without looking.
     if (kind && kind.tenant !== this.tenant) return { v: 1, status: 'error', error: 'invalid_grant', description: 'The credential is unknown, expired or revoked.' }
     const now = Date.now()
+    const before = this.rowsWritten
     let out: TokenResult
     if (r.grant_type === 'authorization_code') out = await exchangeCode(this, r as TokenRequest, now)
     else if (r.grant_type === 'refresh_token') out = await refreshTokens(this, r as TokenRequest, now)
     else return { v: 1, status: 'error', error: 'unsupported_grant_type', description: 'grant_type must be authorization_code or refresh_token.' }
-    await this.settle()
+    if (this.rowsWritten !== before) await this.settle()
     return out
   }
 
@@ -431,12 +444,13 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
     if (refused) return refused
     if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }
     const now = Date.now()
+    const before = this.rowsWritten
     this.transaction(() => revokeToken(this, token, clientId, now))
-    await this.settle()
+    if (this.rowsWritten !== before) await this.settle()
     return { v: 1, status: 'ok' }
   }
 
-  /** For the agent surface (by Durable Object binding): is this access token live, for `resource`, and who is it. Read only. */
+  /** For the agent surface, through control's `OAuthIntrospection` entrypoint (src/introspection.ts): is this access token live, for `resource`, and who is it. Read only. */
   async introspectAccessToken(tenant: string, token: string, resource: string): Promise<IntrospectionResult> {
     const refused = this.refusal()
     if (refused) return refused
@@ -453,14 +467,16 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
       if (refused) throw schemaProblem(refused)
       const now = Date.now()
       if (this.tenant === '' || id.tenant !== this.tenant) throw new Problem(401, 'unauthenticated', 'The credential is not usable.', 'Use a key of a provisioned tenant.')
-      let identity = id
-      if (id.keyId !== undefined) {
-        // The key must still be live here, whatever KV or a cache said a moment ago.
-        const live = await this.resolveKey(id.tenant, id.keyId)
-        if (!live) throw new Problem(401, 'unauthenticated', 'The API key is disabled, expired or deleted.', 'Use a key that is enabled and not expired.')
-        if ('status' in live) throw schemaProblem(live)
-        identity = { ...id, ...live }
-      }
+      // The only identity there is today is an API key (`identify`), and it is checked here, against
+      // this object's own keys, whatever the caller says about it. An identity without a key is
+      // refused until sign-in gives a way to check a person too: a holder of this binding cannot
+      // make one up (review of D44, M-1).
+      if (typeof id.keyId !== 'string') throw new Problem(401, 'unauthenticated', 'Only an API key is accepted here.', 'Send "Authorization: Bearer viz_<keyId>_<secret>".')
+      // The key must still be live here, whatever KV or a cache said a moment ago.
+      const live = await this.resolveKey(id.tenant, id.keyId)
+      if (!live) throw new Problem(401, 'unauthenticated', 'The API key is disabled, expired or deleted.', 'Use a key that is enabled and not expired.')
+      if ('status' in live) throw schemaProblem(live)
+      const identity: Identity = { ...id, ...live }
       const route = routeOf(op)
       if (!route.scopes.some((s) => identity.scopes.includes(s))) {
         throw new Problem(403, 'missing-scope', `This needs one of the scopes: ${route.scopes.join(', ')}.`, `Use a key that has one of: ${route.scopes.join(', ')}. This key has: ${identity.scopes.join(', ') || 'none'}.`, { required: route.scopes })

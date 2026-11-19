@@ -526,3 +526,137 @@ describe('compatibility: read both, write the gate\'s version; refuse what a new
 describe('blocks', () => {
   it('ANOMALY_BLOCK is 60 slots', () => expect(ANOMALY_BLOCK).toBe(60))
 })
+
+describe('a missing or partial block is detected, never read as a smaller window (review of D60, m-12)', () => {
+  /** Two robust z series on a 1-minute grid: a with 200 points (four blocks), b with every fifth point (explicit pairs). */
+  function written() {
+    const I = MIN
+    const phase = 23_456
+    const t0 = phase + 1_000_000 * I
+    const robust = (every: number) => {
+      const t: number[] = []
+      const x: number[] = []
+      for (let i = 0; i < 200; i += every) {
+        t.push(t0 + i * I)
+        x.push(100 + Math.sin(i / 7) * 5 + i / 50)
+      }
+      return { v: 1, lastTs: t0 + 199 * I, stepMs: I, t, x }
+    }
+    const last = { ts: t0 + 199 * I, status: 'ok' as const, flag: false, value: 1, score: 0, explanation: null }
+    const series = new Map([
+      ['a', { labels: { service: 'a' }, state: robust(1), last, seenAt: t0 + 199 * I }],
+      ['b', { labels: { service: 'b' }, state: robust(5), last, seenAt: t0 + 199 * I }],
+    ])
+    const w = planV2('robust_z', I, 400 * I, emptyStore(), series, new Set(), true)!
+    const rows = w.upserts.map((u) => ({ chunk: u.chunk, body: u.body }))
+    return { rows, series }
+  }
+  const points = (r: ReturnType<typeof readAnomalyRows>) => ('error' in r ? -1 : [...r.series.values()].reduce((n, s) => n + (s.state as { t: number[] }).t.length, 0))
+
+  it('the head lists the blocks the rows hold and their series entries in all; intact rows read whole', () => {
+    const { rows } = written()
+    const head = JSON.parse(rows.find((r) => r.chunk === HEAD_CHUNK)!.body) as { blocks: [number, number][]; entries: number }
+    const blocks = rows.filter((r) => r.chunk > HEAD_CHUNK + 1e6)
+    expect(blocks.length).toBeGreaterThanOrEqual(4)
+    expect(head.blocks).toEqual([[blocks[0]!.chunk, blocks[blocks.length - 1]!.chunk]])
+    expect(head.entries).toBe(blocks.reduce((n, b) => n + (JSON.parse(b.body) as { series: unknown[] }).series.length, 0))
+    expect(points(readAnomalyRows(rows))).toBe(200 + 40)
+  })
+
+  it('a missing block row: refused, naming it (it read 536 of 596 points before)', () => {
+    const { rows } = written()
+    const blocks = rows.filter((r) => r.chunk > HEAD_CHUNK + 1e6)
+    const victim = blocks[1]!.chunk
+    const r = readAnomalyRows(rows.filter((x) => x.chunk !== victim))
+    expect('error' in r ? r.error : 'read').toBe(`anomaly_state is missing block row ${victim} that its head lists`)
+    // The first and the last block too.
+    for (const b of [blocks[0]!, blocks[blocks.length - 1]!]) expect('error' in readAnomalyRows(rows.filter((x) => x !== b))).toBe(true)
+  })
+
+  it('a partial block (one series\' entry gone from a row), an extra block, a head without the list: refused', () => {
+    const { rows } = written()
+    const blocks = rows.filter((r) => r.chunk > HEAD_CHUNK + 1e6)
+    const partial = rows.map((x) => {
+      if (x !== blocks[2]) return x
+      const body = JSON.parse(x.body) as { series: unknown[] }
+      expect(body.series.length).toBe(2)
+      return { ...x, body: JSON.stringify({ ...body, series: body.series.slice(0, 1) }) }
+    })
+    const p = readAnomalyRows(partial)
+    expect('error' in p ? p.error : 'read').toMatch(/^anomaly_state blocks hold \d+ series entries; its head counts \d+$/)
+    // One entry cut short (a truncated value) is refused as before.
+    const cut = rows.map((x) => {
+      if (x !== blocks[0]) return x
+      const body = JSON.parse(x.body) as { series: { x?: string; e?: string }[] }
+      return { ...x, body: JSON.stringify({ ...body, series: body.series.map((e) => (e.x ? { ...e, x: e.x.slice(0, 16) } : e.e ? { ...e, e: e.e.slice(0, 16) } : e)) }) }
+    })
+    expect('error' in readAnomalyRows(cut)).toBe(true)
+    // A block the head does not list (left behind by a write that should have deleted it).
+    const last = blocks[blocks.length - 1]!
+    const extra = [...rows, { chunk: last.chunk + 5, body: last.body.replace(`"b":${last.chunk}`, `"b":${last.chunk + 5}`) }]
+    expect('error' in readAnomalyRows(extra) ? (readAnomalyRows(extra) as { error: string }).error : 'read').toMatch(/holds \d+ block rows; its head lists \d+/)
+    // A head written without the list (the format before this review): not read.
+    const bare = rows.map((x) => (x.chunk === HEAD_CHUNK ? { ...x, body: JSON.stringify((({ blocks: _b, entries: _e, ...rest }) => rest)(JSON.parse(x.body) as Record<string, unknown>)) } : x))
+    expect('error' in readAnomalyRows(bare) ? (readAnomalyRows(bare) as { error: string }).error : 'read').toBe('anomaly_state head does not list its blocks')
+    // A list naming absurdly many blocks is refused without expanding it.
+    const huge = rows.map((x) => (x.chunk === HEAD_CHUNK ? { ...x, body: x.body.replace(/"blocks":\[\[\d+,\d+\]\]/, '"blocks":[[0,9007199254740000]]') } : x))
+    expect('error' in readAnomalyRows(huge)).toBe(true)
+  })
+
+  it('incremental writes keep the list exact: tick after tick, with series pruned and blocks deleted, the rows always read back', () => {
+    const rule = parsedRule()
+    let rt = newAnomalyRt(rule)
+    const rows = new Map<number, string>()
+    let ts = 1.8e12 + 23_456
+    for (let i = 0; i < 400; i++) {
+      ts += MIN * (i % 97 === 96 ? 70 : 1)
+      const series = ['a', 'b'].filter((s) => !(s === 'b' && i % 200 > 120)).map((s) => ({ metric: { service: s }, value: 100 + (i % 9), text: String(100 + (i % 9)) }))
+      const ev = evalAnomaly(rule, rt, series, ts, MIN, LIMITS_M12, {}, true, 2)
+      if (!ev.ok) throw new Error(ev.error)
+      if (ev.changed && ev.write) {
+        if (ev.write.purge) rows.clear()
+        for (const u of ev.write.upserts) rows.set(u.chunk, u.body)
+        for (const c of ev.write.deletes) rows.delete(c)
+        rt = { ...rt, series: ev.next, json: ev.json, store: ev.write.store, status: ev.status, pruned: ev.status.pruned }
+      }
+      const read = readAnomalyRows([...rows].map(([chunk, body]) => ({ chunk, body })))
+      if ('error' in read) throw new Error(`tick ${i}: ${read.error}`)
+    }
+  })
+
+  it('through the Ruler object: a block row deleted, or cut to one series, leaves the rule state_unreadable with its rows kept as they are', async () => {
+    for (const harm of ['missing', 'partial'] as const) {
+      const T = await setup({ heartbeatMs: 30 * MIN }, newTenant(`m12${harm}`))
+      T.w.anomalyStateWrite = 2
+      ok(await T.stub.saveGroups(T.tenant, { groups: [{ name: 'anomalies/1m', interval: '1m', rules: [{ alert: 'R', expr: LAT, anomaly: { detector: 'robust_z', params: { windowPoints: 150, minPoints: 5 }, max_series: 5 } }] }] }))
+      let i = 0
+      T.w.evaluate = (q) => (q === LAT ? vec([{ service: 'a' }, 100 + ((i * 37) % 7)], [{ service: 'b' }, 50 + ((i++ * 11) % 5)]) : vec())
+      for (let k = 0; k < 130; k++) await tick(T.stub, T.tenant)
+      const before = await rowsOf(T.stub, T.tenant)
+      const blocks = before.filter((r) => r.chunk > HEAD_CHUNK + 1e6)
+      expect(blocks.length, harm).toBeGreaterThanOrEqual(3)
+      const victim = blocks[1]!
+      await runInDurableObject(T.stub, (_i, s) => {
+        if (harm === 'missing') s.storage.sql.exec('DELETE FROM anomaly_state WHERE tenant = ? AND rule_key = ? AND chunk = ?', T.tenant, victim.rule_key, victim.chunk)
+        else {
+          const body = JSON.parse(victim.body) as { series: unknown[] }
+          s.storage.sql.exec('UPDATE anomaly_state SET body = ? WHERE tenant = ? AND rule_key = ? AND chunk = ?', JSON.stringify({ ...body, series: body.series.slice(0, 1) }), T.tenant, victim.rule_key, victim.chunk)
+        }
+      })
+      const harmed = await rowsOf(T.stub, T.tenant)
+      await evictDurableObject(T.stub)
+      for (let k = 0; k < 3; k++) await tick(T.stub, T.tenant)
+      const st = ok(await T.stub.rules(T.tenant)).rules[0]!
+      expect([st.health, st.anomaly!.status], harm).toEqual(['err', 'state_unreadable'])
+      expect(st.lastError, harm).toMatch(harm === 'missing' ? /^state_unreadable: anomaly_state is missing block row \d+ that its head lists/ : /^state_unreadable: anomaly_state blocks hold \d+ series entries; its head counts \d+/)
+      expect(await rowsOf(T.stub, T.tenant), harm).toEqual(harmed)
+    }
+  }, 300_000)
+})
+
+const LIMITS_M12 = anomalyLimits({ ...DEFAULT_RULER_CONFIG, limits: { ...DEFAULT_RULER_CONFIG.limits, maxAnomalyStateBytesPerRule: 16_000_000, maxAnomalyStateBytesPerObject: 64_000_000 } })
+function parsedRule(): AnomalyRuleV2 {
+  const p = parseRuleFile({ groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'A', expr: LAT, anomaly: { detector: 'robust_z', params: { windowPoints: 200, minPoints: 5 }, max_series: 4 } }] }] }, DEFAULT_RULER_CONFIG)
+  if (p.errors.length > 0) throw new Error(JSON.stringify(p.errors))
+  return p.groups[0]!.anomalyRules![0] as AnomalyRuleV2
+}

@@ -2,15 +2,17 @@ import {
   ADMIN_IMPLIES,
   CLIENT_ID,
   CREDENTIAL_PREFIX,
+  CREDENTIAL_TAG,
   type ClientRegistration,
   type CredentialKind,
+  OAUTH_CREDENTIAL,
   OAUTH_DEFAULT_SCOPES,
   OAUTH_LIMITS,
   OAUTH_SCOPES,
   type OAuthScope,
 } from '../../contracts/oauth'
 import { sha256Hex } from '../../dashboard/src/index.ts'
-import { randomId } from './util'
+import { B62, randomId } from './util'
 
 /**
  * OAuth building blocks for the control plane (contracts/oauth.ts, decision D44): where the
@@ -108,8 +110,52 @@ export function sameString(a: string, b: string): boolean {
 
 // ---- credentials ----
 
-/** A new code, access token or refresh token for `tenant`: `<prefix>.<tenant>.<43 base62>`. */
-export const mintCredential = (kind: CredentialKind, tenant: string): string => `${CREDENTIAL_PREFIX[kind]}.${tenant}.${randomId(43)}`
+/**
+ * The key credential tags are made with (contracts/oauth.ts `CREDENTIAL_TAG`): HKDF-SHA-256 of
+ * `OAUTH_CLIENT_KEY` with its own salt, so it is not the key that signs registrations. Derived once
+ * per isolate and secret; a pure function of the secret, not state.
+ */
+const tagKeys = new Map<string, Promise<CryptoKey>>()
+function tagKey(secret: string): Promise<CryptoKey> {
+  let k = tagKeys.get(secret)
+  if (!k) {
+    if (tagKeys.size >= 4) tagKeys.clear()
+    k = (async () => {
+      const ikm = await crypto.subtle.importKey('raw', utf8(secret), 'HKDF', false, ['deriveKey'])
+      return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: utf8(CREDENTIAL_TAG.salt), info: new Uint8Array() }, ikm, { name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign'])
+    })()
+    k.catch(() => tagKeys.delete(secret))
+    tagKeys.set(secret, k)
+  }
+  return k
+}
+
+async function tagOf(secret: string, body: string): Promise<string> {
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await tagKey(secret), utf8(body)))
+  let out = ''
+  for (let i = 0; i < CREDENTIAL_TAG.tagChars; i++) out += B62[mac[i]! % 62]
+  return out
+}
+
+/**
+ * A new code, access token or refresh token for `tenant`: `<prefix>.<tenant>.<random 27><tag 16>`
+ * (contracts/oauth.ts). `secret`: `OAUTH_CLIENT_KEY`, which the tag is made with.
+ */
+export async function mintCredential(kind: CredentialKind, tenant: string, secret: string): Promise<string> {
+  const body = `${CREDENTIAL_PREFIX[kind]}.${tenant}.${randomId(CREDENTIAL_TAG.randomChars)}`
+  return body + (await tagOf(secret, body))
+}
+
+/**
+ * Whether `credential` carries the tag this deployment makes: checked in the Worker before a
+ * tenant's object is asked, so a made-up credential costs the object nothing (review of D44,
+ * M-2). True does not mean valid: only the tenant's object knows that. False without a key.
+ */
+export async function credentialTagValid(secret: string | null, credential: unknown): Promise<boolean> {
+  if (secret === null || typeof credential !== 'string' || !OAUTH_CREDENTIAL.test(credential)) return false
+  const cut = credential.length - CREDENTIAL_TAG.tagChars
+  return sameString(await tagOf(secret, credential.slice(0, cut)), credential.slice(cut))
+}
 
 /** What is stored of a credential: the hex SHA-256 of the whole string. */
 export const hashCredential = (credential: string): string => sha256Hex(credential)
@@ -196,6 +242,10 @@ const LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])$/
 export function redirectProblem(u: string): string | null {
   if (typeof u !== 'string' || u.length === 0 || u.length > OAUTH_LIMITS.redirectUriLength) return `must be 1 to ${OAUTH_LIMITS.redirectUriLength} characters`
   if (/[\s\\<>"`{}|^\u0000-\u001f\u007f-\u009f]/.test(u)) return 'must not contain spaces, backslashes, quotes or control characters'
+  // Shown to a person on the consent page: ASCII only, so no bidirectional or invisible character
+  // can make it read as something else (review of D44, m-3). Other characters are percent-encoded,
+  // and an IDN host is written as punycode.
+  if (/[^\x20-\x7e]/.test(u)) return 'must be ASCII: percent-encode other characters, and write an internationalised host as punycode (xn--…)'
   if (u.includes('#')) return 'must not have a fragment'
   let url: URL
   try {

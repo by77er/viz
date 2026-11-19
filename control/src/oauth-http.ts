@@ -1,5 +1,5 @@
 import { CLIENT_ID, OAUTH_LIFETIMES, OAUTH_LIMITS, OAUTH_SCOPES, type OAuthScope, type TenantOAuthRpc, type TokenRequest, parseCredential } from '../../contracts/oauth'
-import { type AuthzRequest, CODE_CHALLENGE, type OAuthEnv, callback, canonicalResource, displayName, encodeRequest, isLoopback, oauthConfig, parseScope, redirectProblem, sameResource, signRegistration, verifyClientId, type OAuthConfig } from './oauth'
+import { type AuthzRequest, CODE_CHALLENGE, type OAuthEnv, callback, canonicalResource, credentialTagValid, displayName, encodeRequest, isLoopback, oauthConfig, parseScope, redirectProblem, sameResource, signRegistration, verifyClientId, type OAuthConfig } from './oauth'
 import type { Tenant } from './tenant'
 import { randomId } from './util'
 
@@ -17,7 +17,9 @@ import { randomId } from './util'
  *   POST /oauth/revoke                             RFC 7009
  *
  * The tenant is the one the presented code or token names; that tenant's object holds only the
- * credential's hash, so a credential edited to name another tenant matches nothing. Nothing here
+ * credential's hash, so a credential edited to name another tenant matches nothing. A credential
+ * without this deployment's tag (contracts/oauth.ts `CREDENTIAL_TAG`) is refused here, before any
+ * object is asked: a made-up one costs a tenant's object nothing (review of D44, M-2). Nothing here
  * logs a request parameter, and no error body repeats a credential.
  */
 
@@ -67,11 +69,36 @@ export function metadata(cfg: OAuthConfig): Record<string, unknown> {
 
 const MAX_FORM_BYTES = 16 * 1024
 
-async function readBytes(req: Request, max: number): Promise<Uint8Array | null> {
+/**
+ * The body, or null when it is larger than `max` bytes. Read from the stream with a cap: a body
+ * without Content-Length (chunked) is never buffered past `max` (review of D44, m-2).
+ */
+export async function readCapped(req: Request, max: number): Promise<Uint8Array | null> {
   if (Number(req.headers.get('Content-Length') ?? '0') > max) return null
-  const bytes = new Uint8Array(await req.arrayBuffer())
-  return bytes.length > max ? null : bytes
+  if (!req.body) return new Uint8Array()
+  const reader = req.body.getReader()
+  const parts: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > max) {
+      await reader.cancel().catch(() => {})
+      return null
+    }
+    parts.push(value)
+  }
+  const out = new Uint8Array(size)
+  let at = 0
+  for (const p of parts) {
+    out.set(p, at)
+    at += p.byteLength
+  }
+  return out
 }
+
+const readBytes = readCapped
 
 const mediaType = (req: Request): string => (req.headers.get('Content-Type') ?? '').split(';')[0]!.trim().toLowerCase()
 
@@ -221,7 +248,10 @@ async function authorize(req: Request, cfg: OAuthConfig): Promise<Response> {
     '              (the application\'s own description of itself; viz has not verified it)',
     `Returns to:   ${host}`,
     `              ${redirectUri}`,
-    ...(isLoopback(redirectUri) ? ['              WARNING: a program on the computer that opens the approval link. Any program listening', '              there can receive the code. Approve only a connection you started yourself.'] : []),
+    ...(isLoopback(redirectUri) ? ['              WARNING: a program on the computer that opens the approval link. Any program listening', '              there can receive the code.'] : []),
+    // Anyone can make this link and send it to a person (review of D44, m-5): said for every redirect.
+    '              Approve only a connection you started yourself, in the application you mean to connect:',
+    '              anyone can make a link to this page and send it to you.',
     'Asks for:',
     ...scope.ok.map((s) => `              ${s.padEnd(pad)}  ${SCOPE_TEXT[s]}`),
     `Resource:     ${cfg.resource}`,
@@ -264,6 +294,8 @@ async function token(req: Request, env: OAuthHttpEnv): Promise<Response> {
   if (presented === undefined) return oauthError(400, 'invalid_request', `${grantType === 'authorization_code' ? 'code' : 'refresh_token'} is required.`)
   const cred = parseCredential(presented)
   if (!cred || cred.kind !== (grantType === 'authorization_code' ? 'code' : 'refresh')) return oauthError(400, 'invalid_grant', 'The credential is unknown, expired or revoked.')
+  // Not made by this deployment: the same answer, and no tenant's object is asked.
+  if (!(await credentialTagValid(oauthConfig(env).clientKey, presented))) return oauthError(400, 'invalid_grant', 'The credential is unknown, expired or revoked.')
   const request: TokenRequest = { grant_type: grantType, client_id: form.client_id }
   for (const k of ['code', 'redirect_uri', 'code_verifier', 'refresh_token', 'resource', 'scope'] as const) if (form[k] !== undefined) request[k] = form[k]
   const r = await tenantStub(env, cred.tenant).oauthToken(cred.tenant, request)
@@ -281,8 +313,8 @@ async function revoke(req: Request, env: OAuthHttpEnv): Promise<Response> {
   if (form.token === undefined) return oauthError(400, 'invalid_request', 'token is required.')
   if (form.client_id === undefined) return oauthError(400, 'invalid_request', 'client_id is required.')
   const cred = parseCredential(form.token)
-  // RFC 7009 §2.2: an invalid token is not an error.
-  if (!cred || cred.kind === 'code') return json(200, null)
+  // RFC 7009 §2.2: an invalid token is not an error. One this deployment did not make reaches no object.
+  if (!cred || cred.kind === 'code' || !(await credentialTagValid(oauthConfig(env).clientKey, form.token))) return json(200, null)
   const r = await tenantStub(env, cred.tenant).oauthRevoke(cred.tenant, form.token, form.client_id)
   if (r.status === 'schema_too_new') return oauthError(503, 'temporarily_unavailable', 'A deployment is in progress; retry.', { 'Retry-After': String(Math.ceil(r.retryAfterMs / 1000)) })
   return json(200, null)

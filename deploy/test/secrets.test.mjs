@@ -290,3 +290,65 @@ test('plan: says it would create the key, and creates nothing (no wrangler call)
   assert.deepEqual(present.result.secrets, [{ worker: CONTROL, name: KEY, action: 'keep' }])
   assert.deepEqual(readState().calls, [])
 })
+
+// ---- review of D53 (design/reviews/d44-d52-d53-d60.md) ----
+
+/** An account where a rollback restored control's version without the key, while the version that created it is still kept (newer). */
+function rolledBack() {
+  const s = existing({ key: false })
+  s.workers[CONTROL].versions.push({ id: '00000000-0000-4000-8000-00000000000c', number: 2, tag: 'rel-k', vars: { VIZ_RELEASE: 'rel-k' }, secrets: { [KEY]: OLD } })
+  return s
+}
+
+test('m-9: after a rollback across the key\'s creation, an upload that does not inherit it is refused (exit 3), not given a new key', async () => {
+  writeState({ ...rolledBack(), inherit: 'none' })
+  const { result, error, log } = await captured(() => deploy({ stage: STAGE }))
+  assert.equal(error, undefined, `${error?.stack}\n${log}`)
+  assert.equal(result.exit, 3, log)
+  assert.match(log, /OAUTH_CLIENT_KEY is set \(version 00000000-0000-4000-8000-00000000000c \(number 2\), newer than the one serving: a rollback left it\), but version .* does not carry it/)
+  const s = readState()
+  assert.equal(callsLike(s, 'versions secret').length, 0, 'nothing generated')
+  assert.deepEqual(promotions(s).map(cmd), [], 'nothing promoted')
+  // plan says the same before anything: the key is known, so it is not "would be created".
+  writeState({ ...rolledBack(), inherit: 'none' })
+  const plan = await captured(() => planOnly({ stage: STAGE }))
+  assert.deepEqual(plan.result.secrets, [{ worker: CONTROL, name: KEY, action: 'keep' }])
+})
+
+test('m-9: after the same rollback, an upload that inherits from the newest version keeps the key (no put)', async () => {
+  writeState(rolledBack())
+  const { result, error, log } = await captured(() => deploy({ stage: STAGE }))
+  assert.equal(error, undefined, `${error?.stack}\n${log}`)
+  assert.equal(result.exit, 0, log)
+  assert.equal(result.record.secrets[0].action, 'kept')
+  assert.equal(callsLike(readState(), 'versions secret').length, 0)
+  assert.equal(serving(readState(), CONTROL).secrets[KEY], OLD)
+})
+
+test('m-10: a secret on stdin runs wrangler with WRANGLER_LOG_SANITIZE=true and WRANGLER_WRITE_LOGS=false, whatever the deploy\'s environment says', async () => {
+  const saved = { a: process.env.WRANGLER_LOG, b: process.env.WRANGLER_LOG_SANITIZE, c: process.env.WRANGLER_WRITE_LOGS }
+  process.env.WRANGLER_LOG = 'debug'
+  process.env.WRANGLER_LOG_SANITIZE = 'false'
+  process.env.WRANGLER_WRITE_LOGS = 'true'
+  try {
+    writeState(existing({ key: false }))
+    const { result, error, log } = await captured(() => deploy({ stage: STAGE }))
+    assert.equal(error, undefined, `${error?.stack}\n${log}`)
+    assert.equal(result.exit, 0, log)
+    const s = readState()
+    const put = callsLike(s, `versions secret put ${KEY}`)
+    assert.equal(put.length, 1)
+    assert.equal(put[0].logEnv.WRANGLER_LOG_SANITIZE, 'true')
+    assert.equal(put[0].logEnv.WRANGLER_WRITE_LOGS, 'false')
+    // Only runs with something on stdin are changed: an upload keeps the deploy's own settings.
+    const upload = callsLike(s, 'versions upload')[0]
+    assert.equal(upload.logEnv.WRANGLER_LOG_SANITIZE, 'false')
+    assert.equal(upload.logEnv.WRANGLER_WRITE_LOGS, 'true')
+    assertNotLeaked(serving(s, CONTROL).secrets[KEY], s, log)
+  } finally {
+    for (const [k, v] of [['WRANGLER_LOG', saved.a], ['WRANGLER_LOG_SANITIZE', saved.b], ['WRANGLER_WRITE_LOGS', saved.c]]) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  }
+})

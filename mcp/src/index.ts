@@ -1,5 +1,6 @@
 import { AuthError, type Caller, type Identity, hasScopes, identify, identifyOAuth, presentedOAuth } from './auth'
 import { type ControlClient, type MonitorsClient, type QueryClient, type Fetcher, httpControlClient, httpMonitorsClient, httpQueryClient } from './clients'
+import type { OAuthIntrospectionRpc } from '../../contracts/oauth'
 import { serveMcp } from './mcp'
 import { PRM_PATHS, type ResourceConfig, challenge401, challenge403, resourceConfig, servePrm } from './oauth'
 import { toolByName } from './registry'
@@ -14,14 +15,14 @@ export { clearNamesCache } from './session'
  * the same operations as JSON under /api/v1/agent/…. No Durable Object.
  *
  * Bindings (wrangler.jsonc): CONFIG (edge's key store, KV), QUERY (the query service),
- * CONTROL (the tenant control plane), RULER (monitors), TENANT (control's Tenant object, by
- * script_name: OAuth token introspection), APP_URL (deep links), PUBLIC_URL (the public origin:
+ * CONTROL (the tenant control plane), RULER (monitors), OAUTH (control's OAuthIntrospection
+ * entrypoint: OAuth token introspection, and nothing else), APP_URL (deep links), PUBLIC_URL (the public origin:
  * this resource is <PUBLIC_URL>/mcp and the authorization server is <PUBLIC_URL>), MCP_LIMITS
  * (JSON overrides of the limits), ALLOWED_ORIGINS (browser origins).
  */
 export interface Env {
   CONFIG: KVNamespace
-  TENANT?: DurableObjectNamespace
+  OAUTH?: OAuthIntrospectionRpc
   PUBLIC_URL?: string
   QUERY?: Fetcher
   CONTROL?: Fetcher
@@ -55,15 +56,43 @@ const defaults: Required<Pick<Deps, 'query' | 'control' | 'monitors'>> = {
 
 export const MCP_PATH = '/mcp'
 
+/** The largest body `stepUp` looks into for a tool call (bytes). */
+export const STEP_UP_MAX_BYTES = 1 << 20
+
+/** The body, or null when it is larger than `max` bytes; read from the stream, never buffered past `max`. */
+export async function readCapped(req: { body: ReadableStream<Uint8Array> | null }, max: number): Promise<Uint8Array | null> {
+  if (!req.body) return new Uint8Array()
+  const reader = req.body.getReader()
+  const parts: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > max) {
+      await reader.cancel().catch(() => {})
+      return null
+    }
+    parts.push(value)
+  }
+  const out = new Uint8Array(size)
+  let at = 0
+  for (const p of parts) {
+    out.set(p, at)
+    at += p.byteLength
+  }
+  return out
+}
+
 /**
  * `GET /healthz`, without a credential (the gateway asks it through its service binding and
  * never forwards the path): 200 `ok` when the Worker has the key store, the three services it
- * calls and control's Tenant object (OAuth), 503 naming what is missing. It calls none of them: without a credential there is
+ * calls and control's OAuthIntrospection entrypoint, 503 naming what is missing. It calls none of them: without a credential there is
  * nothing it may ask.
  */
 export function health(req: Request, env: Env): Response {
   if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('method not allowed\n', { status: 405, headers: { Allow: 'GET, HEAD' } })
-  const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER', 'TENANT'] as const).filter((b) => !env[b])
+  const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER', 'OAUTH'] as const).filter((b) => !env[b])
   const body = missing.length === 0 ? 'ok\n' : `missing binding: ${missing.join(', ')}\n`
   return new Response(req.method === 'HEAD' ? null : body, { status: missing.length === 0 ? 200 : 503, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } })
 }
@@ -105,10 +134,13 @@ function authFailure(e: AuthError, mcp: boolean, cfg: ResourceConfig, presented:
  * dispatcher's, the same as for keys; this only adds the HTTP signal OAuth clients act on.
  */
 async function stepUp(req: Request, id: Identity, cfg: ResourceConfig): Promise<Response | null> {
-  if (req.method !== 'POST' || Number(req.headers.get('Content-Length') ?? '0') > 1 << 20) return null
+  if (req.method !== 'POST' || Number(req.headers.get('Content-Length') ?? '0') > STEP_UP_MAX_BYTES) return null
   let msg: { id?: unknown; method?: unknown; params?: { name?: unknown } } | null
   try {
-    msg = JSON.parse(await req.clone().text()) as typeof msg
+    // A copy of the body, read with a cap: one without Content-Length is not buffered past it (review of D44, m-2).
+    const bytes = await readCapped(req.clone(), STEP_UP_MAX_BYTES)
+    if (bytes === null) return null
+    msg = JSON.parse(new TextDecoder().decode(bytes)) as typeof msg
   } catch {
     return null
   }

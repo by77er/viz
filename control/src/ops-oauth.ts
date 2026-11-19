@@ -114,15 +114,28 @@ const loadClient = (t: Tenant, id: string): ClientRow | undefined => t.one<Clien
 const keyOf = (t: Tenant, g: GrantRow) =>
   g.key === null ? undefined : t.one<{ id: string; name: string; key_id: string; disabled: number; expires_at: number | null }>('SELECT id, name, key_id, disabled, expires_at FROM keys WHERE tenant = ? AND id = ?', t.tenant, g.key)
 
+/** The approver's key id (`key:<id>`), or null when the approver was not a key. */
+function approverKeyId(g: GrantRow): string | null {
+  let by: Partial<Actor> | null = null
+  try {
+    by = JSON.parse(g.created_by) as Partial<Actor>
+  } catch {
+    return null
+  }
+  return typeof by?.subject === 'string' && by.subject.startsWith('key:') ? by.subject.slice(4) : null
+}
+
 /**
  * The approver's own key: a grant is never broader than it, also later. While it is disabled the
  * grant is suspended; once it is deleted or expired the grant is dead (and the alarm ends it).
- * Identities other than keys (people, later) are not checked here yet.
+ * Fails closed: an approver that is not a key (a person signed in, later, or anything else) cannot
+ * be checked yet, so its grant counts as gone (review of D44, M-1). `approve` refuses such an
+ * approver in the first place; this ends any grant recorded with one.
  */
 function approver(t: Tenant, g: GrantRow, now: number): 'live' | 'disabled' | 'gone' {
-  const by = JSON.parse(g.created_by) as Actor
-  if (!by.subject.startsWith('key:')) return 'live'
-  const k = t.one<{ disabled: number; expires_at: number | null }>('SELECT disabled, expires_at FROM keys WHERE tenant = ? AND id = ?', t.tenant, by.subject.slice(4))
+  const id = approverKeyId(g)
+  if (id === null) return 'gone'
+  const k = t.one<{ disabled: number; expires_at: number | null }>('SELECT disabled, expires_at FROM keys WHERE tenant = ? AND id = ?', t.tenant, id)
   if (!k || (k.expires_at !== null && k.expires_at <= now)) return 'gone'
   return k.disabled === 1 ? 'disabled' : 'live'
 }
@@ -178,7 +191,8 @@ export interface ApprovePrep {
   /** The client id's registration when its signature holds; its age is checked in the transaction. */
   registration: ClientRegistration | null
   grantId: string
-  code: string
+  /** Null when this deployment has no `OAUTH_CLIENT_KEY`: nothing can be issued. */
+  code: string | null
   key: { keyId: string; secret: string }
   sealed: string
 }
@@ -187,9 +201,10 @@ export async function prepareApprove(t: Tenant, body: unknown): Promise<ApproveP
   const request = decodeRequest(isRecord(body) ? body.request : undefined)
   const registration = request ? await verifyClientId(t.oauth.clientKey, request.client_id) : null
   const grantId = `g_${randomId(22)}`
-  const code = mintCredential('code', t.tenant)
+  const clientKey = t.oauth.clientKey
+  const code = clientKey === null ? null : await mintCredential('code', t.tenant, clientKey)
   const key = mintKey()
-  return { request, registration, grantId, code, key, sealed: await seal(code, key.secret, sealAad(t.tenant, grantId)) }
+  return { request, registration, grantId, code, key, sealed: code === null ? '' : await seal(code, key.secret, sealAad(t.tenant, grantId)) }
 }
 
 const approve: Op = (t, c) => {
@@ -199,6 +214,10 @@ const approve: Op = (t, c) => {
   if (!req) throw invalid('"request" is not an authorization request this server issued.', 'Copy "request" exactly from the page /oauth/authorize showed.', { field: 'request' })
   // Only a person decides what an agent may do (D29). Approving needs admin (the route) and a person's key.
   if (c.id.kind === 'agent') throw new Problem(403, 'approver-not-a-person', 'An agent key may not approve access for an application.', 'Approve with a person\'s key (kind "key") that has the admin scope.')
+  // A grant follows its approver's key afterwards (`approver`). An approver that is not a key cannot
+  // be followed yet, so it may not approve (fails closed; review of D44, M-1).
+  if (!c.id.subject.startsWith('key:')) throw new Problem(403, 'approver-not-a-key', 'Only an API key of a person can approve access for an application today.', 'Approve with a person\'s key (kind "key") that has the admin scope.')
+  if (p.code === null) throw new Problem(503, 'oauth-unavailable', 'OAuth is not configured on this deployment: it has no OAUTH_CLIENT_KEY, so nothing can be issued.', 'Ask the operator to deploy viz-control with its generated OAUTH_CLIENT_KEY (deploy/README.md).')
   const cfg = t.oauth
   if (!sameResource(req.resource, cfg.resource)) throw invalid('The request is for a resource this server does not issue tokens for.', `Tokens are issued for ${cfg.resource} only. Ask the application to connect to that address.`, { field: 'request' })
 
@@ -264,17 +283,19 @@ const approve: Op = (t, c) => {
   const codeExpires = c.now + OAUTH_LIFETIMES.codeSeconds * 1000
   t.run(
     'INSERT INTO oauth_codes (tenant, hash, grant_id, challenge, redirect_uri, expires_at, used_at, sealed) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)',
-    t.tenant, hashCredential(p.code), p.grantId, req.code_challenge, req.redirect_uri, codeExpires, p.sealed,
+    t.tenant, hashCredential(p.code!), p.grantId, req.code_challenge, req.redirect_uri, codeExpires, p.sealed,
   )
   const view = grantView(t, loadGrant(t, p.grantId)!, c.now)
   t.audit(c.actor, c.now, 'oauth.grant.approve', 'oauth-grant', p.grantId, null, view)
 
   const host = new URL(req.redirect_uri).host
   const warnings = [`The application's name ("${client.name}") is what it says about itself; viz has not verified it.`]
-  if (isLoopback(req.redirect_uri)) warnings.push(`The code goes to a program on the computer that opens the link (${host}). Any program listening there can receive it: approve only a connection you started yourself.`)
+  // Anyone can make an authorization link and ask a person to approve it (review of D44, m-5): said for every redirect.
+  warnings.push(`Approve only a connection you started yourself, in the application you mean to connect: anyone can make an authorization link and send it to you. The code goes to ${host}, which the application chose.`)
+  if (isLoopback(req.redirect_uri)) warnings.push(`The code goes to a program on the computer that opens the link (${host}). Any program listening there can receive it.`)
   if (withheld.length) warnings.push(`Not granted, because your key does not hold them or you left them out: ${withheld.join(', ')}.`)
   // A dry run is the consent preview: exactly what would be granted, and no code.
-  const redirect = c.dryRun ? null : callback(req.redirect_uri, { code: p.code, state: req.state, iss: cfg.issuer })
+  const redirect = c.dryRun ? null : callback(req.redirect_uri, { code: p.code!, state: req.state, iss: cfg.issuer })
   return { status: 201, body: { outcome: 'approved', grant: view, withheld, returnsTo: { host, uri: req.redirect_uri }, warnings, redirect, codeExpiresAt: iso(codeExpires), shownOnce: true } }
 }
 
@@ -422,8 +443,10 @@ async function issue(t: Tenant, g: GrantRow, presented: string, sealed: string, 
   const aad = sealAad(t.tenant, g.id)
   const secret = await unseal(presented, sealed, aad)
   if (secret === null) return fail('invalid_grant', 'This grant cannot issue tokens; approve the application again.')
-  const access = mintCredential('access', t.tenant)
-  const refresh = mintCredential('refresh', t.tenant)
+  const clientKey = t.oauth.clientKey
+  if (clientKey === null) return fail('invalid_grant', 'This deployment cannot issue tokens now (no OAUTH_CLIENT_KEY).')
+  const access = await mintCredential('access', t.tenant, clientKey)
+  const refresh = await mintCredential('refresh', t.tenant, clientKey)
   const [sa, sr] = await Promise.all([seal(access, secret, aad), seal(refresh, secret, aad)])
   const stored = t.transaction(() => {
     // Revoked while the crypto ran (a reuse, a person, the alarm): issue nothing.
@@ -540,8 +563,16 @@ export function oauthDeadlines(t: Tenant, now: number): number[] {
   if (idle !== null) out.push(idle + OAUTH_LIFETIMES.clientIdleDays * DAY_MS)
   const closed = min('SELECT MIN(revoked_at) AS m FROM oauth_grants WHERE tenant = ? AND revoked_at IS NOT NULL', t.tenant)
   if (closed !== null) out.push(closed + KEEP_CLOSED_MS)
-  // A grant whose approver's key is gone ends at the next alarm, which is now (at most 50 live grants to look at).
+  // A grant whose approver's key is gone ends at the next alarm, which is now; one whose approver's
+  // key expires later ends then (at most 50 live grants to look at).
   const live = t.all<GrantRow>(`SELECT ${GRANT_COLS} FROM oauth_grants WHERE tenant = ? AND revoked_at IS NULL AND expires_at > ?`, t.tenant, now)
-  if (live.some((g) => approver(t, g, now) === 'gone')) out.push(now)
+  for (const g of live) {
+    if (approver(t, g, now) === 'gone') {
+      out.push(now)
+      continue
+    }
+    const expires = t.one<{ e: number | null }>('SELECT expires_at AS e FROM keys WHERE tenant = ? AND id = ?', t.tenant, approverKeyId(g)!)?.e ?? null
+    if (expires !== null) out.push(expires)
+  }
   return out.filter((x): x is number => x !== null)
 }
