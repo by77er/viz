@@ -13,7 +13,7 @@ dedicated tenants run the same code.
 | `src/shard.ts` | `Shard`: append, seal (and its notification), pending segments and tenants, read segment, recorded, tail read, active-series metering, alarm housekeeping |
 | `src/sketch.ts` | `SeriesWindow`: distinct series in a sliding window: exact set, then HyperLogLog + Bloom filter |
 | `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches (by signal since stage 2), the page cursor, `splitKeyRange` |
-| `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName`; the derived pools of spans and logs (`signalPool`, `enabledSignals`) |
+| `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName`; `validBasePool`, the one rule for a pool map's pool that edge reads maps with and control writes them with (D66); `dedicatedPool`; the derived pools of spans and logs (`signalPool`, `enabledSignals`) |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
 | `test/` | 85 tests in 10 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
 | `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`); registration before writes (`registration.bench.test.ts`, against the release before it frozen in `bench/prereg/`; results in `bench/results/registration.log`) |
@@ -149,7 +149,11 @@ dedicated tenants run the same code.
 - **Names** (D38, `contracts/TABLES.md`): a shard object whose name does not match
   `SHARD_NAME` (segments of `[A-Za-z0-9-]` joined by `/`) throws in its constructor and so
   serves nothing; `validPoolName` is what `edge` checks maps against; `dedicatedPool`
-  turns a tenant id's `_` into `-`.
+  turns a tenant id's `_` into `-`. `validBasePool` (moved here from `edge/src/route.ts` after
+  review M-5 of `design/reviews/signals-end-to-end.md`): a valid pool name that does not end in
+  `/traces` or `/logs` (`contracts/BATCH.md`, "Streams per signal"). Edge refuses a map whose
+  pool breaks it (503) and control refuses to publish one (422), with this one function, and
+  control's dedicated pool is `dedicatedPool` (D66).
 - **Versioned storage and formats** (`contracts/COMPATIBILITY.md`, D24). `shard.Shard`
   version 2 through `contracts/schema.ts`: version 1 adopts the pre-versioning schema
   unchanged and adds `segment.sealed_at` to objects created before it; version 2 (D61) adds
@@ -267,7 +271,7 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 78 tests in workerd, 9 files
+npx vitest run --maxWorkers=2   # 87 tests in workerd, 10 files (2026-11-19, review M-5)
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
@@ -472,6 +476,19 @@ in `scripts/mutants.mjs` as `D61:`; the others in `ledger/` and `janitor/`'s scr
 
 **11 of 11 D61 mutants killed** (one after a test was added), plus R-10 re-checked. The
 ledger's and the janitor's D61 mutants are listed in their READMEs.
+
+**Run of 2026-11-19, review M-5 (the base-pool rule shared with edge and control)**, on a copy of
+the tree in a scratch directory outside git whose unmutated suite passed 87 of 87, against
+`test/pool.test.ts` (`node scripts/mutants.mjs "names:"`): **3 of 3 new mutants killed**, and
+the two older `names:` mutants run again, killed. "A base pool ending in /logs is valid" (the
+suffix check narrowed to `/traces`): killed by "a base pool is a valid pool name that does not
+end in a derived pool's suffix" and "the dedicated pool of every tenant id is a valid base pool,
+except for the ids traces and logs". "A base pool may contain `_`" (`POOL_NAME` dropped from the
+rule): killed by the first. "`dedicatedPool` keeps `_`": killed by "treats a dedicated tenant as a
+pool of its own" and the second. The same rule is mutated from control's suite (control README,
+94–97 and 144–145) and from edge's: edge's three base-pool mutants, pointed at
+`../shard/src/pool.ts` in the copy, were killed by edge's own tests (a pool outside `POOL_NAME`,
+and a base pool ending in `/traces` or `/logs`, refused with 503).
 
 ## Not implemented yet
 

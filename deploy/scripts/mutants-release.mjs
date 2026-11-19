@@ -5,7 +5,8 @@
 // mutant is one text replacement; `node --test` on the release, release-checks and configure tests
 // must fail with it. The file is restored after every mutant, also on failure.
 //
-//   node scripts/mutants-release.mjs        (from deploy/, in a COPY outside any git work tree)
+//   node scripts/mutants-release.mjs [text]   (from deploy/, in a COPY outside any git work tree;
+//                                              with text, only the mutants whose name contains it)
 //
 // The copy needs deploy/ (node_modules linked) and the component sources configure.mjs reads:
 // contracts/, publisher/ (src/ and test/n1, test/d64), stack/, shard/, ledger/, edge/, flush/,
@@ -91,8 +92,10 @@ if (base.failed) {
   console.error(`the unmutated tests fail (${base.detail}); fix that first`)
   process.exit(1)
 }
+const only = process.argv[2]
+const chosen = MUTANTS.filter(([name]) => !only || name.includes(only))
 let killed = 0
-for (const [name, file, from, to] of MUTANTS) {
+for (const [name, file, from, to] of chosen) {
   const path = join(DEPLOY_DIR, file)
   const original = readFileSync(path, 'utf8')
   if (original.split(from).length !== 2) {
@@ -109,5 +112,5 @@ for (const [name, file, from, to] of MUTANTS) {
   if (r.failed) killed++
   console.log(`${r.failed ? `KILLED (${r.count})` : r.crashed ? 'NO RUN  ' : 'SURVIVED'}  ${name}${r.detail ? `  ← ${r.detail}` : ''}`)
 }
-console.log(`${killed} of ${MUTANTS.length} killed`)
-process.exit(killed === MUTANTS.length ? 0 : 1)
+console.log(`${killed} of ${chosen.length} killed`)
+process.exit(killed === chosen.length ? 0 : 1)

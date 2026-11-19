@@ -313,10 +313,13 @@ export function checkEntrypoints(workerName, entrypoints, mains) {
   }
 }
 
-export function configure({ stage, release = releaseId(), idsOptional = false, quiet = false, expires = null } = {}) {
+/** `plan` replaces deploy/workers.json (the tests' way to configure a plan that must be refused). */
+export function configure({ stage, release = releaseId(), idsOptional = false, quiet = false, expires = null, plan: planOverride } = {}) {
   checkStage(stage)
   if (expires !== null && !(Number.isFinite(Date.parse(expires)) && /^\d{4}-\d{2}-\d{2}T/.test(expires))) throw new Error(`--expires must be an ISO 8601 time: ${expires}`)
-  const { plan, resources } = loadPlan()
+  const loaded = loadPlan()
+  const plan = planOverride ?? loaded.plan
+  const resources = loaded.resources
   const ids = resources.kv_namespaces ?? {}
   const extra = stageVars(process.env.VIZ_STAGE_VARS, stage)
   for (const w of Object.keys(extra)) if (!plan.workers.some((x) => x.name === w)) throw new Error(`VIZ_STAGE_VARS names ${w}, which is not a Worker in deploy/workers.json`)

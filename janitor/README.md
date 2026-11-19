@@ -26,13 +26,17 @@ Reads `retention:<tenant>` from KV (format `kv.settings` v1, written by `control
 fields are ignored). `trace_days` and `log_days` (stage 2 of traces and logs, the names
 control's settings already write) are optional: absent, each is 30 days (`DEFAULT_SIGNAL_DAYS`,
 the deployment default, whatever the metric days); present, each must be a positive safe
-integer, or the whole record is refused as below.
+integer, or that signal alone is refused, as below (review m-1 of
+`design/reviews/signals-end-to-end.md`; before it, a bad signal field refused the whole record,
+metrics included). Control asks for confirmation of any PUT that shortens what this reader keeps,
+a field left out included (D63; its tests run this file's `parseRetention`).
 
 | The record | Result |
 |---|---|
 | absent | the default policy, 30 days. The default IS the policy of a tenant that has none |
 | version 1 with `metric_samples_days` a positive safe integer | that policy |
 | anything else: not JSON, not an object, a `v` other than 1, `metric_samples_days` missing, 0, negative, fractional or a string | **refused**: nothing is expired for this tenant, the result carries `refused: <reason>`, and an error is logged. Never the default, which could be shorter than what the tenant asked for (review R-1) |
+| readable, but `trace_days` or `log_days` present and not a positive safe integer (0, negative, fractional, a string, null) | **that signal refused**: `parseRetention` gives it as null with the reason in `unreadable`; its tables expire nothing (no ledger request is made for them), the metric tables and the other signal expire as usual, the result carries `refused: <reason>: <tables> not expired` with `beforeDay` set, and an error is logged. Never the default, for R-1's reason |
 
 With a policy of N days it calls **one** `ledger.expire({ tables: [samples, series], beforeDay })`,
 `beforeDay` = the UTC day of `now − N days` (`retentionCutoffDay`; a policy reaching before
@@ -50,13 +54,16 @@ with none of these files removes nothing and uses no version, so a tenant that s
 logs sees no change in its log. A ledger that refuses the request (a release before these
 tables answers `unknown table`) costs the metric expiry nothing: the result's `signals` entry
 carries the error, it is logged, and the next run tries again. `ExpireResult.signals` lists
-each request with its cutoff, `keepDays` and how many files it removed. (`stack/`'s due time
+each request with its cutoff, `keepDays` and how many files it removed; a signal whose field
+cannot be read makes no request and has no entry. (`stack/`'s due time
 still follows the metric `keepDays` only: a tenant whose spans or logs expire before its
 metrics is expired at its next run, not at the exact midnight.)
 
 A refusal is visible in three places: the error log of the run; `stack/`'s maintenance marker
 (`retention: <reason>`), which the hourly cron lists and logs every hour; and the run is due
 again within the hour, so a fixed record is applied within the hour (`stack/src/maintain.ts`).
+A signal refused alone is reported the same way (`refused` is set), so `refused` no longer always
+means that nothing was expired: `beforeDay` is null only when the whole record was refused.
 
 ### `purgeTenant(env, tenant, { graceMs, maxKeys })`: physical deletion of removed files
 
@@ -221,6 +228,29 @@ Not measured on Cloudflare; the experiment is a deployed purge of 10,000 keys
 
 ## How it was verified
 
+**Review m-1 of spans and logs (2026-11-19; `design/reviews/signals-end-to-end.md`).** `npx vitest
+run --maxWorkers=2`: **33 passed, 0 failed** (5 files; `test/signals.test.ts` 8, two of them new);
+`npx tsc --noEmit` clean; `stack/`, `query/` and `flush/`, which import these types, typecheck
+clean. The review's reproduction (`retention-signal-field.mjs`, bundled from copies of the tree
+before and after): `{"metric_samples_days":30,"trace_days":0}` gave `unreadable` for the whole
+record before, and gives `ok` with `trace_days: null` and the reason after. Tests: the parser on
+five bad values of one field (that field null, the other and the metric days read) and on both
+bad at once; a bad `metric_samples_days` still refuses everything. Expiry of a tenant with
+metric, span, trace_index and log files 40 days old under `{metric_samples_days: 30, trace_days:
+0}`: the metric and log files leave the ledger, the span and trace_index files stay, `refused`
+names the field and the tables, `signals` holds the log request only; with the field fixed, the
+next run removes exactly the span and trace_index files. Both fields bad: the metric files leave,
+no span or log request is made. Mutants (`scripts/mutants.mjs "m-1:"`, in a copy of the tree in a
+scratch directory outside git whose unmutated suite passed 33 of 33): **5 of 5 killed, first run**:
+
+| Mutant | Killed by |
+|---|---|
+| an unreadable signal field refuses the whole record, metrics included (the fix undone) | the parser test; "the metric tables and the readable signal expire…" |
+| an unreadable signal field falls back to the default (fails open) | the parser test; "the metric tables and the readable signal expire…" |
+| an unreadable signal is expired as if it kept no days (`null` taken for 0) | both expiry tests |
+| only `trace_days` is checked; a bad `log_days` is taken as a number or the default | the parser test; "both signal fields unreadable…" |
+| a partly unreadable record is not reported (no hourly look, no marker) | both expiry tests |
+
 **Stage 2 of traces and logs (2026-11-19).** `npx vitest run --maxWorkers=2`: **31 passed, 0
 failed** (5 files; 25 before, plus `test/signals.test.ts`, 6); `tsc --noEmit` clean. The three
 existing tests that compared a policy object whole now include `trace_days` and `log_days`.
@@ -334,6 +364,12 @@ from a copy of `stack/` (never in the checkout); results in `stack/README.md`.
   ("Not implemented") would close it.
 - **A retention shortened by mistake** removes data at the next run; the delete grace is
   the only window in which the ledger's log could still be used to restore the listing.
+  Control asks for confirmation of any change that shortens what this reader keeps, a field left
+  out of a replacing PUT included (D63, review B-1), but a writer other than control is not held
+  to it, and control's copy of `DEFAULT_SIGNAL_DAYS` is tied to this one only by a test in the
+  same tree.
+- **A partly unreadable record keeps one signal for ever** until it is fixed: refusing is the
+  point (review m-1), and it is reported hourly, but nothing else escalates it.
 - **Leftover compaction outputs** stay until an input of theirs is purged (D30): storage, not
   correctness. An output without a readable inputs record is never deleted automatically.
 - **Listing a large prefix** is one request per page; a tenant with millions of files needs

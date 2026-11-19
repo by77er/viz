@@ -415,6 +415,9 @@ test('floors: viz-query and viz-ingest are stamped at the floor of INGEST_SIGNAL
   checkFloorSchemas(rules, schemas)
   const wrong = floorRules({ ...plan, rollback_floors: [{ ...plan.rollback_floors[0], floors: { 'viz-publisher': { schema: 'publisher.Nope', at_least: 4, why: 'x' } } }] }, 'citest')
   assert.throws(() => checkFloorSchemas(wrong, schemas), /names schema publisher\.Nope, which none of its classes has \(publisher\.Publisher\)/)
+  // configure() itself runs that check, before writing anything.
+  const wrongPlan = { ...plan, rollback_floors: [{ ...plan.rollback_floors[0], floors: { 'viz-publisher': { schema: 'publisher.Nope', at_least: 4, why: 'x' } } }] }
+  assert.throws(() => configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, plan: wrongPlan }), /names schema publisher\.Nope/)
 })
 
 test('floors: the publisher\'s floor, schema 4, is the release that first reads the span and log tables (the frozen releases in publisher/test/)', () => {
