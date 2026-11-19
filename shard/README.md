@@ -15,7 +15,7 @@ dedicated tenants run the same code.
 | `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches, the page cursor, `splitKeyRange` |
 | `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName` |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
-| `test/` | 77 tests in 9 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
+| `test/` | 78 tests in 9 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
 | `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`); registration before writes (`registration.bench.test.ts`, against the release before it frozen in `bench/prereg/`; results in `bench/results/registration.log`) |
 
 ## What is implemented
@@ -249,7 +249,7 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 77 tests in workerd, 9 files
+npx vitest run --maxWorkers=2   # 78 tests in workerd, 9 files
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
@@ -257,10 +257,10 @@ BENCH=tail npm run bench        # a 20 MB tail, read whole and filtered
 BENCH=registration npm run bench  # registration before writes (D61)
 ```
 
-Last run, 2026-11-19: **77 passed, 0 failed**; `tsc --noEmit` clean. The suite now runs with
+Last run, 2026-11-19: **78 passed, 0 failed**; `tsc --noEmit` clean. The suite now runs with
 the ledger in the same script (`wrangler.test.jsonc`; its drain only when a test asks).
 
-- `test/registration.test.ts` (15, D61), each tied to a trace of the protocol model or a
+- `test/registration.test.ts` (16, D61), each tied to a trace of the protocol model or a
   finding of `design/reviews/registration-before-writes.md`:
   - **spec test 1, shard half** (`R1_safety`): a new stream's appends are refused
     `registering`, nothing stored, while the ledger has only committed the registration; the
