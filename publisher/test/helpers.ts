@@ -75,6 +75,9 @@ export const pairUnit = (cell: string, tenant: string, seqLo: number, seqHi: num
  * so the changes in between share a segment, as under load.
  */
 export const addUnit = async (tenant: string, unit: FlushUnit, opts: { drain?: boolean } = {}) => {
+  // The ledger is running before any of the tenant's data objects exist, as in production (flush
+  // plans before its first PUT): a ledger that starts empty over data objects refuses (review S-5).
+  await ledger(tenant).plan({ table: 'metric_samples', minTs: 0, maxTs: 0 })
   await putObjects(unit.files)
   expect(await ledger(tenant).addUnit(unit)).toMatchObject({ status: 'ok' })
   if (opts.drain) await ledger(tenant).drain()
