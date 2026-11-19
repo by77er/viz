@@ -508,15 +508,18 @@ export function fromJson(text: string): ParsedMatrix {
   if (!e || e.status !== 'success' || !e.data || e.data.resultType !== 'matrix' || !Array.isArray(e.data.result)) throw new NotAMatrix(body)
   const series: ParsedSeries[] = []
   for (const r of e.data.result as { metric?: Metric; values?: [number, string][] }[]) {
-    const values = Array.isArray(r.values) ? r.values : []
+    if (!r || typeof r !== 'object' || (r.values !== undefined && !Array.isArray(r.values))) throw new NotAMatrix(body)
+    const values = r.values ?? []
     const times = new Float64Array(values.length)
     const vs = new Float64Array(values.length)
     for (let k = 0; k < values.length; k++) {
-      times[k] = Number(values[k]![0])
-      const v = values[k]![1]
+      const pair = values[k]
+      if (!Array.isArray(pair)) throw new NotAMatrix(body)
+      times[k] = Number(pair[0])
+      const v = pair[1]
       vs[k] = v === '+Inf' || v === 'Inf' ? Infinity : v === '-Inf' ? -Infinity : Number(v)
     }
-    series.push({ metric: r.metric ?? {}, times, values: vs, valuesAt: [-1, -1] })
+    series.push({ metric: r.metric ?? {}, times, values: vs, valuesText: () => JSON.stringify(values) })
   }
   return { series, warnings: strings(e.warnings), infos: strings(e.infos), text, fast: false }
 }

@@ -138,6 +138,7 @@ describe('drain: crashes between commit, segment write and row deletion', () => 
   })
 
   it('under random crashes, failed writes and evictions, a rebuild reproduces the committed state up to the last written segment, and no shard was ever told to discard past it', { timeout: 120_000 }, async () => {
+    const totals = { losses: 0, segments: 0, failedDrains: 0 }
     for (const seed of [11, 12, 13]) {
       const r = rng(seed)
       const { tenant, l } = open(tenantName(`crash${seed}`))
@@ -155,7 +156,7 @@ describe('drain: crashes between commit, segment write and row deletion', () => 
         if (x < 25) await failure(l, (i) => i.drain()) // R2 may still be broken from an earlier step
         else if (x < 35) {
           await breakR2(l, () => true, r.pick(['before', 'after'] as const))
-          await failure(l, (i) => i.drain())
+          if ((await failure(l, (i) => i.drain())) !== 'did not fail') totals.failedDrains++
           if (r.chance(0.5)) await heal(l)
         } else if (x < 42) await evictDurableObject(l) // a fresh instance has a working bucket
         if (r.chance(0.3)) {
@@ -164,7 +165,7 @@ describe('drain: crashes between commit, segment write and row deletion', () => 
             told.set(key, Math.max(told.get(key) ?? 0, w.seq))
           }
         }
-        if (step > 10 && losses < 2 && r.chance(0.05)) {
+        if (step === 69 || (step > 10 && losses < 2 && r.chance(0.08))) {
           // Storage is lost. R2 holds the segments up to some version: that is what must come back.
           const inc = await incarnationOf(l)
           const ends = await expectContiguous(tenant)
@@ -185,7 +186,12 @@ describe('drain: crashes between commit, segment write and row deletion', () => 
         }
       }
       await expectContiguous(tenant)
+      expect(losses, `seed ${seed}: storage losses exercised`).toBeGreaterThanOrEqual(1)
+      totals.losses += losses
+      totals.segments += (await readSegments(tenant)).length
     }
+    // How much the run exercised, for the README.
+    console.log(`crash property: ${JSON.stringify(totals)}`)
   })
 })
 

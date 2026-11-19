@@ -32,9 +32,16 @@ export interface AlignedSeries {
   key: string
   labels: Labels
   name: string
-  /** One entry per grid timestamp; null where the series has no sample (a gap). */
-  values: (number | null)[]
+  /**
+   * One entry per grid timestamp; NaN where the series has no sample (a gap), and where its
+   * sample cannot be drawn (NaN, ±Inf). A Float64Array: 144,000 samples of 200 series are
+   * 1.2 MB of doubles, not 144,000 boxed numbers for the garbage collector (FIXES.md, B3).
+   */
+  values: Float64Array
 }
+
+/** Values of one series as the views read them: a gap is null or NaN (both forms are accepted). */
+export type SeriesValues = ArrayLike<number | null>
 
 export interface AlignedData {
   /** Epoch seconds, ascending. */
@@ -42,41 +49,45 @@ export interface AlignedData {
   series: AlignedSeries[]
 }
 
+/** One series as received: label set, then sample times and values in the order sent. */
+export interface SampleColumns {
+  metric: Labels
+  times: ArrayLike<number>
+  values: ArrayLike<number>
+}
+
 /**
  * Put a range-query matrix on the regular evaluation grid `start, start+step, ... end`.
  *
  * Prometheus omits steps where a series is stale, so a missing step must become an explicit
- * null — otherwise the line would be drawn straight across the hole. Samples that are not on
+ * gap — otherwise the line would be drawn straight across the hole. Samples that are not on
  * the grid (a backend that ignores `step`) fall back to the union of observed timestamps.
  * Non-finite values (NaN, ±Inf) cannot be drawn and are treated as gaps.
  */
-export function alignMatrix(data: PromMatrixData, start: number, end: number, step: number): AlignedData {
-  const result = data.result
+export function alignSeries(result: readonly SampleColumns[], start: number, end: number, step: number): AlignedData {
   const byName = (a: AlignedSeries, b: AlignedSeries) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
   const n = Math.floor((end - start) / step + 1e-9) + 1
 
   // The usual case, in one pass: every sample is on the grid, so its index is computed, not
   // looked up. The first sample off the grid abandons this pass for the general one below.
-  // (Indexed loops and `+v`: this runs once per sample of every result, 144,000 times for 200
-  // series over 3 h, between the response and its paint; design review B3.)
   if (n > 0 && n <= 1_000_000) {
     const series: AlignedSeries[] = []
     let onGrid = true
     outer: for (let s = 0; s < result.length; s++) {
       const r = result[s]!
-      const samples = r.values
-      const values: (number | null)[] = new Array<number | null>(n).fill(null)
-      for (let k = 0; k < samples.length; k++) {
-        const sample = samples[k]!
-        const pos = (sample[0] - start) / step
+      const times = r.times
+      const vs = r.values
+      const values = new Float64Array(n).fill(NaN)
+      for (let k = 0; k < times.length; k++) {
+        const pos = (times[k]! - start) / step
         const i = Math.round(pos)
         if (i < 0 || i >= n || Math.abs(pos - i) > 1e-6) {
           onGrid = false
           break outer
         }
-        // "+Inf", "-Inf" and "NaN" read as NaN here; like ±Inf they cannot be drawn and are gaps.
-        const num = +sample[1]
-        values[i] = num - num === 0 ? num : null
+        // ±Inf and NaN cannot be drawn: gaps.
+        const v = vs[k]!
+        values[i] = v - v === 0 ? v : NaN
       }
       series.push({ key: seriesKey(r.metric), labels: r.metric, name: seriesName(r.metric), values })
     }
@@ -88,20 +99,34 @@ export function alignMatrix(data: PromMatrixData, start: number, end: number, st
 
   // Samples off the grid (a backend that ignores `step`): the union of observed timestamps.
   const set = new Set<number>()
-  for (const s of result) for (const [t] of s.values) set.add(t)
+  for (const s of result) for (let k = 0; k < s.times.length; k++) set.add(s.times[k]!)
   const xs = [...set].sort((a, b) => a - b)
   const map = new Map(xs.map((t, i) => [t, i]))
   const series = result.map((s) => {
-    const values: (number | null)[] = new Array<number | null>(xs.length).fill(null)
-    for (const [t, v] of s.values) {
-      const num = parseSampleValue(v)
-      const i = map.get(t) ?? -1
-      if (i >= 0) values[i] = Number.isFinite(num) ? num : null
+    const values = new Float64Array(xs.length).fill(NaN)
+    for (let k = 0; k < s.times.length; k++) {
+      const v = s.values[k]!
+      const i = map.get(s.times[k]!) ?? -1
+      if (i >= 0) values[i] = Number.isFinite(v) ? v : NaN
     }
     return { key: seriesKey(s.metric), labels: s.metric, name: seriesName(s.metric), values }
   })
   series.sort(byName)
   return { xs, series }
+}
+
+/** `alignSeries` of a matrix as JSON.parse gives it: values are strings ("1.5", "NaN", "+Inf"). */
+export function alignMatrix(data: PromMatrixData, start: number, end: number, step: number): AlignedData {
+  return alignSeries(
+    data.result.map((r) => ({
+      metric: r.metric,
+      times: r.values.map((p) => p[0]),
+      values: r.values.map((p) => parseSampleValue(p[1])),
+    })),
+    start,
+    end,
+    step,
+  )
 }
 
 export interface SeriesStats {
@@ -113,7 +138,7 @@ export interface SeriesStats {
   count: number
 }
 
-export function seriesStats(xs: number[], values: (number | null)[]): SeriesStats {
+export function seriesStats(xs: number[], values: SeriesValues): SeriesStats {
   let min = Infinity
   let max = -Infinity
   let sum = 0
@@ -122,7 +147,8 @@ export function seriesStats(xs: number[], values: (number | null)[]): SeriesStat
   let lastAt: number | null = null
   for (let i = 0; i < values.length; i++) {
     const v = values[i]
-    if (v == null) continue
+    // A gap: null, or NaN in a Float64Array.
+    if (v == null || v !== v) continue
     if (v < min) min = v
     if (v > max) max = v
     sum += v

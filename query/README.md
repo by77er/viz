@@ -351,6 +351,28 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   series that has samples in a file on both sides of the window but none inside counts as
   in it (at most one file's span at each edge: ten minutes for flush files).
 
+### Release skew (contracts/COMPATIBILITY.md)
+
+- **Every shard status is handled by name.** `tailRead` answers `ok`, `stale_watermark`
+  and `incarnation_mismatch` are handled as before; `schema_too_new`, any status this
+  release does not know, and an `ok` without batches are a retryable 503 (`unavailable`,
+  `Retry-After: 1`), never an empty tail and never a stream to re-read
+  (`fence.test.ts`, "release skew", through a test hook that replaces the shard's answer).
+  A ledger that throws `schema_too_new` is a 503 with `Retry-After: 5`.
+- **Leaves keep no storage** (no SQLite, no alarm), so they have no schema to open through
+  `contracts/schema.ts`.
+- **An engine that does not load is a 500**, not a retryable 503: the binding throws
+  `EngineLoadError` (instantiation failed, or the module's ABI is not the binding's), the
+  Worker answers `internal`, and a split leaf whose engine does not load fails its query
+  with 500 too (`http.test.ts`).
+- Not done: the coordinator–leaf RPC arguments (`EvaluateRequest`, `ExtractRequest`, the
+  cardinality request) carry no `v` field. The leaves' answers are versioned by their
+  magic (`VZL1`, `VZC1`, `VZB1`) and the module by its ABI number, but an answer with an
+  unknown magic is reported as `internal` (500), not as a retryable refusal. During a
+  gradual deployment a coordinator of one release can call a leaf of the other; both are
+  in the same script, so this needs a `v` on the requests and an `unsupported_version`
+  answer before either format changes.
+
 ## Not implemented
 
 - **Split execution, what is left.** Queries that do not decompose (`quantile` or
@@ -384,6 +406,13 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   they cover all time, as in Prometheus, and are then bounded only by the limits.
 - **Statistics for the label endpoints**: `X-Viz-Samples-Loaded` and `-Series-Loaded`
   are 0 for them.
+- **A plan-only endpoint** (asked for by the MCP builder): the bytes, files and scan bound
+  a query would read, and whether it would split, without evaluating. Everything it would
+  return is computed before any file is read (the cost headers of a refused query show
+  it), so it is `gather` stopping after the ledger read; not built.
+- **Metric metadata** (type, unit, help; also asked for by the MCP builder):
+  `/api/v1/metadata` answers `{}` because nothing stores it; the write path drops
+  Remote Write metadata and OTLP descriptions.
 - **Production wiring.** `wrangler.jsonc` binds `SHARD` and `LEDGER` by `script_name` to
   Workers that are themselves still combined scripts. Nothing was deployed, and the
   bindings were only exercised in the one-script composition. `wrangler deploy --dry-run`
@@ -493,6 +522,13 @@ both tenants. Plus 10 label-endpoint calls per tenant.
 | Caps | `cardinality.test.ts` | at 76 series seen and 135 pairs + triples it answers; one below, 422 naming the cap |
 | **Cardinality isolation.** Two tenants on the same shards, lake and tail; a parameter and headers naming the other tenant | `cardinality.test.ts` | the other tenant's metric, label and values never appear, one place and over leaves; a tenant with no data gets zeros and nulls |
 | The lake alone after the shards discard | `cardinality.test.ts` | the same report |
+
+**The independent client.** The app's API client (`app/src/api/client.ts`) used to be
+the independent consumer; `app/` is not on `main`, so `http.test.ts` now uses
+`test/client.ts`, a small Prometheus API client written from the API documentation (GET
+with parameters, a bearer key, the `{status, data}` envelope, `PromApiError`). The tests
+need nothing outside `query/` but the components they run (edge, shard, ledger, flush and
+their test helpers).
 
 The shapes were checked against the Prometheus HTTP API documentation
 (`prometheus.io/docs/prometheus/latest/querying/api/`, read on 2026-11-18): the envelope
