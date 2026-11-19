@@ -2444,7 +2444,16 @@ the shard's thread for a filter the reader applies anyway; whole batches keep th
 them, as it is on append. (f) would make an older caller's metric filter throw on a span batch,
 as before: keeping nothing is the answer a series filter gives a batch with no series. (g) ties
 the volume a tenant keeps of its largest signals to a number chosen for metrics (a tenant keeping
-metrics for 400 days would keep logs as long); control already writes separate fields.
+metrics for 400 days would keep logs as long); control already writes separate fields. (h) alone
+leaves a hole of the same kind: a signal set for the first time below the 30-day default has no
+stored field to compare with, so it shortens what the janitor keeps with nothing asked (reproduced
+before the fix: a stored `{metric_samples_days: 45}` took `trace_days: 7` unconfirmed). It would
+also make retention the one section whose PUT is a patch, leave no way to return a field to its
+default, and change the documented behaviour of an existing route. The effective comparison closes
+both holes alone, so (i) adds the patch for no safety; a caller that leaves fields out gets a 422
+that names them. (j) let one optional field stop metric expiry, against this entry's own "the
+metric expiry never depends on them". (k) is R-1's mistake again: the default can be shorter than
+what was meant.
 
 **Measured** (here, workerd, load average 8; `flush/README.md`, "Spans and logs"): a ~3.3 MB
 segment flushes in 134–388 ms (spans) and 86–218 ms (logs); 94 bytes in R2 per span (with its
@@ -2458,11 +2467,21 @@ gets every batch of its signal above the watermark, whatever its time range. `IN
 must stay off in any deployment with a publisher until the publisher reads these tables (it
 stops a tenant at the first change naming one). (Since 2026-11-19 the publisher reads them and
 `removedFiles` is typed `LedgerTable`: D64, which also gives the rule for turning the flag on.)
+Control holds its own copy of the readers' defaults (`KEPT_WHEN_ABSENT` in
+`control/src/ops-settings.ts`), not the janitor's constant: importing the janitor's source would
+bring compaction and flush into control's Worker, and `contracts/` has no type for the record yet
+(control README, "Contract issues"). A control test runs random PUT sequences, with days on both
+sides of the default, through the janitor's own `readRetention` and `parseRetention`, and fails if
+the two disagree on any shortening. A partly unreadable record expires metrics and the readable
+signal, so `refused` no longer always means "nothing expired" (`beforeDay` says which).
 
 **Would change if.** The publisher reads the span and log tables (then `removedFiles` and
 `Table` are retyped, and `Table` may become the full union); span tails grow large enough that
 per-batch time bounds at append pay (then (e) at batch granularity); or tenants ask for traces
-and logs to follow their metric retention (then (g), or a control-side default).
+and logs to follow their metric retention (then (g), or a control-side default). The retention
+record gets a type in `contracts/` with its defaults (then control and the janitor import them and
+the copy goes); the rollup tiers get a reader (then its default replaces "left out counts as
+shortened"); or operators want partial updates (then a PATCH of its own, not a change to PUT).
 
 ## D64. The publisher reads the span and log tables and does not publish them yet: it records them per tenant, releases their removed files to the janitor, and never stops a tenant for them; `INGEST_SIGNALS` goes on only once this publisher release is the oldest a rollback can reach
 
@@ -2598,28 +2617,54 @@ change never read the bytes between, so they are unaffected.
 filters are wanted for files that are never compacted (flush files); or the ledger gains per-file
 side objects for other reasons.
 
-## D66. Control refuses a pool map whose pool ends in `/traces` or `/logs`; tenant ids stay as they are
+## D66. Control refuses every pool map edge would refuse, with edge's own function (`validBasePool`: `POOL_NAME`, and no `/traces` or `/logs` suffix); a tenant's dedicated pool is `dedicatedPool(tenant)`; tenant ids stay as they are
 
-**Decision.** `PUT /settings/pool` refuses (422 `invalid`, field `pool`) a pool that ends in
-`/traces` or `/logs`, the suffixes of the derived span and log pools (`DERIVED_SIGNALS`,
-`shard/src/pool.ts`), whichever pool it is. A tenant whose id is `traces` or `logs` can still
-be created and uses the shared pool; it cannot have the dedicated pool `tenant/<id>`, which edge
-would refuse (503 for every signal: `contracts/BATCH.md`, "Streams per signal"; D57, D63).
+(Rewritten 2026-11-19 after review M-5, `design/reviews/signals-end-to-end.md`. It replaces the
+first D66, which checked only the derived suffixes and accepted the dedicated pool `tenant/<id>`
+verbatim: for a tenant id with `_`, which `TENANT_ID` allows and `POOL_NAME` does not, control
+published a map edge refuses, and every write of that tenant, metrics included, was a 503.)
+
+**Decision.** `PUT /settings/pool` refuses (422 `invalid`, field `pool`) any pool that is not a
+valid base pool by `validBasePool` (`shard/src/pool.ts`): a valid pool name (`POOL_NAME`: segments
+of `[A-Za-z0-9-]` joined by `/`, at most 120 characters) that does not end in `/traces` or
+`/logs`, the suffixes of the derived span and log pools (`DERIVED_SIGNALS`). The function moved
+there from `edge/src/route.ts`, and edge reads every map with it (`parseMap`), so control and
+edge cannot disagree. A tenant's dedicated pool is D38's `dedicatedPool(tenant)`: `tenant/<id>`
+with `_` written `-`. Control offers and accepts only that one; asked for `tenant/<id>` verbatim
+with a `_`, it refuses and names the right pool. A shared pool (`DEFAULT_POOL`) that breaks the
+rule is refused too, with a fix for the operator. A tenant whose id is `traces` or `logs` can still
+be created and uses the shared pool. Its dedicated pool breaks the suffix rule and is refused, as
+edge would refuse it (503 for every signal: `contracts/BATCH.md`, "Streams per signal"; D57, D63).
 
 **Alternatives.** (a) Refuse the tenant ids `traces` and `logs` at `provision` (a change to
 `TENANT_ID`'s meaning in `contracts/ledger.ts`, which every component checks). (b) Give such a
 tenant a dedicated pool under another name (for example `tenant/<id>-t`). (c) Do nothing in
-control, and let edge's refusal show.
+control, and let edge's refusal show. (d) Control's own copy of the rule (the first D66). (e) No
+dedicated pool for tenant ids with `_`. (f) An injective naming of dedicated pools: escape `-` as
+well as `_`, or write `_` as `/`.
 
 **Why.** The narrower rule: (a) would refuse two names that work everywhere on the shared pool,
 and a tenant created before the rule would still exist; the pool rule refuses exactly the maps
-edge refuses for this reason and nothing else, at the moment one is written. (b) needs a second
-naming rule for dedicated pools that every operator and reader must know, for two names. (c)
-publishes a map that turns every one of the tenant's writes into a 503, with nothing in the
-response that says why.
+edge refuses and nothing else, at the moment one is written. (b) needs a second naming rule for
+dedicated pools that every operator and reader must know, for two names. (c) publishes a map
+that turns every one of the tenant's writes into a 503, with nothing in the response that says
+why. (d) drifted at once: the copy checked the suffix and not `POOL_NAME` (M-5), which is what
+one function shared by the writer and the reader prevents. (e) refuses for a reason the data path
+does not have: `dedicatedPool` already names those tenants' pool. Two ids that differ only in
+`_` and `-` then share their dedicated objects, which D38 recorded as safe: streams and epochs
+are per tenant, and keys lie under each tenant's own `tenant=` prefix. (f) either renames every
+existing dedicated pool whose id has a `-`, or produces names that break the rule (`_` as `/`
+turns `a_traces` into `tenant/a/traces` and `a__b` into an empty segment).
 
-**Would change if.** Dedicated pools stop being named `tenant/<id>` (then the check moves with
-the naming), or another derived pool suffix is added (`DERIVED_SIGNALS` carries it here).
+**Cost of it.** Tenants `a_b` and `a-b` share their dedicated shard objects, so a noisy one slows
+the other, as in a shared pool. A map published by an earlier control that breaks the rule is
+not withdrawn: edge refuses it, and replacing it is a pool change (409 until the drain-and-handover
+protocol of DESIGN §4.1 exists). None is known to exist. Edge's and the stack's mutants of the rule
+must name `shard/src/pool.ts` now (`edge/scripts/mutants.mjs`, `stack/scripts/mutants.mjs`).
+
+**Would change if.** Dedicated pools get another naming (then `dedicatedPool` changes and control
+follows it), another derived pool suffix is added (`DERIVED_SIGNALS` carries it to both sides),
+or the drain-and-handover protocol exists (then a stored map that edge refuses can be replaced).
 
 ## D67. The publisher publishes `spans`, `trace_index` and `logs` as Iceberg v2 tables of their own: every nested field has a pinned id and a nested name mapping, `spans` is partitioned by `hour(start_time)` with the value taken from the key's hour level, every tenant is re-based once on the upgrade, and the metric tables' bytes do not change
 

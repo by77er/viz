@@ -45,7 +45,7 @@ if (process.argv[2] === '--child') {
   const ms = performance.now() - t0
   globalThis.gc()
   const ab1 = process.memoryUsage().arrayBuffers
-  writeSync(1, `MARK end ${JSON.stringify({ outcome: r.outcome, rows: r.rows, rejected: r.rejected, reasons: r.reasons.slice(0, 200), ms, arrayBuffersMiB: (ab1 - ab0) / 2 ** 20 })}\n`)
+  writeSync(1, `MARK end ${JSON.stringify({ outcome: r.outcome, rows: r.rows, rejected: r.rejected, reasons: r.reasons.slice(0, 200), decoded: r.decoded, ms, arrayBuffersMiB: (ab1 - ab0) / 2 ** 20 })}\n`)
   r.keep.length = 0
   process.exit(0)
 }
@@ -170,6 +170,9 @@ function hostile(mib) {
     [`logs json: resource of empty attributes, ${mib} MiB`, 'logs', true, false, () => jsonRepeat('{"resourceLogs":[{"resource":{"attributes":[', '{}', ']}}]}', S)],
     [`metrics json: resource of empty attributes, ${mib} MiB`, 'metrics', true, false, () => jsonRepeat('{"resourceMetrics":[{"resource":{"attributes":[', '{}', ']}}]}', S)],
     [`traces json: attribute array of empty values, ${mib} MiB`, 'traces', true, false, () => jsonRepeat('{"resourceSpans":[{"resource":{"attributes":[{"key":"a","value":{"arrayValue":{"values":[', '{}', ']}}}]}}]}', S)],
+    // Just under the default token limit (1,048,576): the most JSON.parse can be made to build.
+    ['traces json: empty objects at the token limit', 'traces', true, false, () => te.encode('{"resourceSpans":[{"resource":{"attributes":[' + Array(1_048_570 / 2).fill('{}').join(',') + ']}}]}')],
+    ['traces json: nested arrays at the token limit', 'traces', true, false, () => te.encode('{"resourceSpans":[{"resource":{"attributes":[' + Array(1_048_570 / 2).fill('[]').join(',') + ']}}]}')],
   ]
 }
 
@@ -419,8 +422,8 @@ const dir = mkdtempSync(join(tmpdir(), 'viz-edge-mem-'))
 const bundlePath = await bundle(dir)
 const cases = [...hostile(mib), ...(await realistic())].filter(([name]) => filters.length === 0 || filters.some((f) => name.includes(f)))
 if (!asJson && !dump) {
-  console.log(`| Case | Body | Outcome | Node peak / live / retained (MiB) | Node ArrayBuffers retained | workerd peak / live / retained (MiB) | Node ms |`)
-  console.log('|---|---|---|---|---|---|---|')
+  console.log(`| Case | Body | Outcome | Decoded | Node peak / live / retained (MiB) | Node ArrayBuffers retained | workerd peak / live / retained (MiB) | Node ms |`)
+  console.log('|---|---|---|---|---|---|---|---|')
 }
 let port = 18900
 for (const [name, path, json, snappy, make] of cases) {
@@ -443,5 +446,6 @@ for (const [name, path, json, snappy, make] of cases) {
   const rows = (n && !n.error ? n : w && !w.error ? w : {}).rows ?? '?'
   const rej = (n && !n.error ? n : w && !w.error ? w : {}).rejected ?? '?'
   const size = body.length >= MiB ? `${(body.length / MiB).toFixed(2)} MiB` : `${(body.length / 1024).toFixed(0)} KiB`
-  console.log(`| ${name} | ${size} | ${outcome}, ${rows} rows, ${rej} refused | ${f(n)} | ${n && !n.error ? n.arrayBuffersMiB.toFixed(1) : '–'} | ${f(w)} | ${n && !n.error ? n.ms.toFixed(0) : '–'} |`)
+  const dec = (n && !n.error ? n : {}).decoded
+  console.log(`| ${name} | ${size} | ${outcome}, ${rows} rows, ${rej} refused | ${dec == null ? '–' : `${(dec / MiB).toFixed(2)} MiB`} | ${f(n)} | ${n && !n.error ? n.arrayBuffersMiB.toFixed(1) : '–'} | ${f(w)} | ${n && !n.error ? n.ms.toFixed(0) : '–'} |`)
 }

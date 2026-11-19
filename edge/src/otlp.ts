@@ -1,6 +1,6 @@
 import { type Collector, Reject } from './batch'
 import { badRequest } from './errors'
-import { FREE, Meter, SKIM, checkJsonTokens } from './meter'
+import { BUILT, FREE, Meter, SKIM, checkJsonTokens } from './meter'
 import { PbReader, checkUtf8, utf8String } from './pb'
 
 /**
@@ -468,7 +468,9 @@ function keyValue(r: PbReader, view: DataView, meter: Meter): Attr | null {
     else r.skip(tag & 7)
   }
   r.done(end)
-  return keep && !meter.over ? [key, attrString(value)] : null
+  if (!keep || meter.over) return null
+  BUILT.n++
+  return [key, attrString(value)]
 }
 
 /**
@@ -545,7 +547,10 @@ function anyValue(r: PbReader, view: DataView, depth: number, meter: Meter): unk
               else r.skip(kt & 7)
             }
             r.done(kvend)
-            if (ok && !meter.over) obj![k] = v
+            if (ok && !meter.over) {
+              BUILT.n++
+              obj![k] = v
+            }
           } else r.skip(t & 7)
         }
         r.done(kend)
@@ -563,6 +568,7 @@ function anyValue(r: PbReader, view: DataView, depth: number, meter: Meter): unk
     }
   }
   r.done(end)
+  if (value !== undefined) BUILT.n++
   return value
 }
 
@@ -683,7 +689,10 @@ function jsonAttrs(v: unknown, meter: Meter = FREE): Attr[] {
     const ok = meter.take()
     const key = text(kv.key, 'attribute key')
     const value = jsonAny(kv.value, 0, meter)
-    if (ok && !meter.over) out.push([key, attrString(value)])
+    if (ok && !meter.over) {
+      BUILT.n++
+      out.push([key, attrString(value)])
+    }
   }
   return out
 }
@@ -705,7 +714,10 @@ function jsonAny(raw: unknown, depth: number, meter: Meter): unknown {
     for (const x of list(object(v.arrayValue, 'arrayValue').values, 'arrayValue.values')) {
       const ok = meter.take()
       const item = jsonAny(x, depth + 1, meter) ?? null
-      if (ok && !meter.over) items!.push(item)
+      if (ok && !meter.over) {
+        BUILT.n++
+        items!.push(item)
+      }
     }
     return items ?? undefined
   }
@@ -717,7 +729,10 @@ function jsonAny(raw: unknown, depth: number, meter: Meter): unknown {
       const ok = meter.take()
       const key = text(kv.key, 'attribute key')
       const item = jsonAny(kv.value, depth + 1, meter) ?? null
-      if (ok && !meter.over) obj![key] = item
+      if (ok && !meter.over) {
+        BUILT.n++
+        obj![key] = item
+      }
     }
     return obj ?? undefined
   }

@@ -1,7 +1,7 @@
 import { type Batch, fnv1a64 } from './batch'
 import { tooLarge } from './errors'
 import type { Limits } from './limits'
-import { Meter, SKIM, checkJsonTokens } from './meter'
+import { BUILT, Meter, SKIM, checkJsonTokens } from './meter'
 import {
   type AnyV,
   Buf,
@@ -152,7 +152,7 @@ export class SpanCollector {
   readonly routeOf: number[] = []
   private readonly routeIdx = new Map<string, number>()
   /** Every accepted row, as bytes (layout `F`). */
-  private readonly heap = new Buf(1 << 16)
+  private readonly heap: Buf
   private rowAt: Uint32Array = new Uint32Array(256)
   private rowEntry: Uint32Array = new Uint32Array(256)
   nRows = 0
@@ -170,6 +170,8 @@ export class SpanCollector {
   private readonly maxMs: number
 
   constructor(readonly limits: Limits, now: number) {
+    // Rows past the decoded-size limit are refused (413), so the heap need not double past it and one more row.
+    this.heap = new Buf(1 << 16, limits.maxDecodedBytes + SPAN.maxRowBytes)
     this.minMs = Math.max(now - limits.spanAcceptBackMs, 0)
     this.maxMs = now + limits.spanAcceptAheadMs
   }
@@ -684,7 +686,9 @@ function event(r: PbReader, m: Meter, keep: boolean): SpanIn['events'][number] |
     } else r.skip(t & 7)
   }
   r.done(end)
-  return keep ? { lo, hi, name, attrs: attrs! } : null
+  if (!keep) return null
+  BUILT.n++
+  return { lo, hi, name, attrs: attrs! }
 }
 
 /** A link, or null when it is not kept (only read, to check the wire). */
@@ -708,7 +712,9 @@ function link(r: PbReader, m: Meter, keep: boolean): SpanIn['links'][number] | n
     } else r.skip(t & 7)
   }
   r.done(end)
-  return keep ? { traceId, spanId, traceState, attrs: attrs! } : null
+  if (!keep) return null
+  BUILT.n++
+  return { traceId, spanId, traceState, attrs: attrs! }
 }
 
 // ─────────────────────────────── JSON ───────────────────────────────

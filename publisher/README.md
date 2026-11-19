@@ -224,7 +224,10 @@ next alarm, and could be cut off again, so publication could stop for the whole 
   rebuild: up to six times over in one invocation. A cell whose span and log tables were never
   committed (no span or log data) has no cursors of them in R2, so its tenants are re-based for those
   tables once, within the caps.
-- **Measured here** (Measurements, "Capped re-bases: time per publish"): MEASURED_PLACEHOLDER
+- **Measured here, not on Cloudflare** (Measurements, "Capped re-bases: time per publish"): a publish
+  at the cap (100,000 staged files, half of them span and log files it adds) took 3.3–3.8 s of
+  workerd CPU and 4.8–9.5 s of wall time on this loaded machine; a 300,000-file tenant, re-based
+  alone, 10.3 s of CPU; a table rebuilt from R2, about 30 µs of CPU per file.
 
 **The span and log tables** (design/DECISIONS.md D67, since 2026-11-19; the D64 release before it
 read them and did not publish them). `PUBLISHED_TABLES` in `src/log.ts` is every `LedgerTable`;
@@ -1072,6 +1075,68 @@ header holds the whole schema (7.8 kB, against 3.9 kB for metrics) and `metadata
 with one snapshot (2.6 kB for metrics; the schema's 70 field ids and its nested name mapping).
 A `trace_index` entry is about 13 bytes. Every publish HEADs the next metadata version of each
 table whose cursors move, committed or not: five where there were two before D67.
+
+### Capped re-bases: time per publish
+
+Measured here, in local workerd (`bench/upgrade.bench.test.ts`, 2026-11-19, load average 9.1–10.6
+on this 4-core machine with other builds running), not on Cloudflare. Each tenant's log is written
+with the contract's encoders: a base segment of F files, one unit after it, and a checkpoint in parts
+(format 2) at the unit; half of the files are metric files, half span and log files (`spans` 25%,
+`trace_index` 5%, `logs` 20%), over 30 days, keys and index fragments of realistic length. **The
+upgrade:** every tenant published once (all five tables, caps lifted), then the span and log
+tables forgotten in SQLite and R2 (what the D64 release leaves: metrics published and cursored),
+then `publish` until no tenant waits, at the default caps (100 tenants, 100,000 staged files).
+**The rebuild:** the publisher's storage deleted, then `publish` until settled. **CPU** is the
+workerd process's user and system time during each publish (`bench/cpu.mjs`, from `/proc`, 10 ms
+ticks): the publisher, its SQLite, the simulated R2 and the test runner share that process, so it
+is an upper bound on the publisher's own, taken while other builds competed for the 4 cores.
+
+| Cell | Publish | Staged (files and tombstones) | Span and log files added | Wall | CPU (workerd) |
+|---|---|---|---|---|---|
+| 8 tenants × 25,000 files | upgrade 1 (4 tenants re-based) | 100,008 | 50,000 | 7.8 s | 3.5 s |
+| | upgrade 2 (4 tenants) | 100,008 | 50,000 | 9.5 s | 3.8 s |
+| 2 tenants × 100,000 files | upgrade 1 (1 tenant: the second would start at the cap) | 100,002 | 50,000 | 4.8 s | 3.3 s |
+| | upgrade 2 (1 tenant) | 100,002 | 50,000 | 5.4 s | 3.5 s |
+| 1 tenant × 300,000 files (the ledger's limit) | upgrade (alone: a publish always starts one re-base) | 300,002 | 150,000 | 17.5 s | 10.3 s |
+| 8 tenants × 25,000 files, uncapped | the first publication (every file added to all five tables) | 200,016 | 100,000 | 19.5 s | 12.3 s |
+
+An earlier run of the first cell, without the CPU sampler: 7.6 s and 6.1 s of wall time. The
+rebuild, a table per publish (CPU): 50,000-file `metric_samples`, `metric_series` and `spans`
+1.6–1.9 s each, 40,000-file `logs` 1.1 s, 10,000-file `trace_index` 0.3 s, then the publish from the
+cursors found there 0.01 s, with no re-base; at 75,000 files a table 2.3–2.5 s. So about 35 µs of
+CPU per staged file at the cap here (half of them added), and about 30 µs per file rebuilt. (These
+runs had the retry path's `break` that was later made `continue`, "Bounded work per publish"; no
+attempt was started over in them, so the code they ran is the same.)
+
+**The cap, and why.** 100,000 staged files and tombstones per publish: 3.3–3.8 s of CPU here, about
+an eighth of the 30 s a Durable Object invocation has by default (Cloudflare's documentation, read
+2026-11-19), and at most 9.5 s of wall time under load. The margin is for what is not measured:
+Cloudflare's CPU against this machine's, and work this bench does not have (tombstones, changes
+after the checkpoint, the other tenants' commits in the same publish). A publish stages at most the
+cap plus one tenant: at the ledger's limit a tenant alone took 10.3 s of CPU here, and the worst
+case, a 99,999-file tenant and then a 300,000-file one in one publish, is about 14 s (modelled: the
+two measurements added), still about half the limit. A smaller cap would not shorten that case and
+would multiply publishes, each a commit and a retained snapshot per table; a larger one spends the
+margin. 100 re-bases per publish bounds a cell of many small tenants: a re-base costs about eight R2
+operations besides its parts (lists, a head, the checkpoint manifest, the segments after it), against
+the 10,000 subrequests an invocation may make on the Paid plan by default (documentation, read
+2026-11-19). 1,000 tenants read per publish is about 3,000–4,000 R2 operations (three lists per
+tenant with nothing new, measured in the rebuild's last publish: 24 for 8 tenants); its CPU is not
+measured.
+
+**Modelled for the review's cell** (100 tenants × 100,000 files, half span and log): uncapped, one
+invocation of about 100 × 3.4 ≈ 340 s of CPU by these measurements (the review modelled 240 s from
+wall times here); capped, 100 publishes of about 3.4 s of CPU each, `continueMs` (1 s) apart, about
+7–12 minutes of wall time for the whole upgrade, during which every tenant's metric tables keep
+being published.
+
+**The experiment that settles it on Cloudflare:** viz-publisher deployed on a `viz-` bucket holding
+the bench's cell (its logs written by the bench's encoders from a Worker), its storage made D64's as
+the bench does, the alarm left to drain the upgrade at the default caps; the CPU time of each alarm
+invocation read from the analytics API (the Durable Object invocations' CPU time; the dataset's
+name not checked here). Every capped publish must stay well under 30 s, and the 300,000-file
+tenant's publish is the number that decides between this cap, `limits.cpu_ms`, and keeping a
+tenant's staged state across invocations.
 
 ### Re-base: memory and time
 

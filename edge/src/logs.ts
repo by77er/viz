@@ -27,7 +27,7 @@ import {
   text,
   utf8,
 } from './otel'
-import { DECODE, Meter, checkJsonTokens } from './meter'
+import { BUILT, DECODE, Meter, checkJsonTokens } from './meter'
 import { PbReader } from './pb'
 
 /**
@@ -160,7 +160,7 @@ export class LogCollector {
   readonly routeOf: number[] = []
   private readonly routeIdx = new Map<string, number>()
   /** Every accepted row, as bytes (layout `F`). */
-  private readonly heap = new Buf(1 << 16)
+  private readonly heap: Buf
   private rowAt: Uint32Array = new Uint32Array(256)
   private rowEntry: Uint32Array = new Uint32Array(256)
   nRows = 0
@@ -179,6 +179,8 @@ export class LogCollector {
   private readonly maxMs: number
 
   constructor(readonly limits: Limits, now: number) {
+    // Rows past the decoded-size limit are refused (413), so the heap need not double past it and one more row.
+    this.heap = new Buf(1 << 16, limits.maxDecodedBytes + LOG.maxLine + LOG.maxMetadataBytes + 4096)
     this.minMs = Math.max(now - limits.logAcceptBackMs, 0)
     this.maxMs = now + limits.logAcceptAheadMs
   }
@@ -805,6 +807,7 @@ export function parseLabelSet(s: string, max = Number.POSITIVE_INFINITY): [strin
       } else return null
     }
     if (out.length >= max) return TOO_MANY_PAIRS
+    BUILT.n++
     out.push([name, v])
     ws()
     if (s[i] === ',') {
@@ -914,7 +917,10 @@ export function decodeLokiProto(body: Uint8Array, c: LogCollector): void {
             else r.skip(mt & 7)
           }
           r.done(mend)
-          if (ok) md.push([n, v])
+          if (ok) {
+            BUILT.n++
+            md.push([n, v])
+          }
         } else r.skip(t & 7)
       }
       r.done(eend)
@@ -954,7 +960,10 @@ export function decodeLokiJson(body: Uint8Array, c: LogCollector): void {
     const lm = c.scopeMeter.reset()
     for (const [k, v] of Object.entries(labelsRaw as Record<string, unknown>)) {
       if (typeof v !== 'string') malformed(`label ${JSON.stringify(k)} is not a string`)
-      if (lm.take()) labels.push([k, v as string])
+      if (lm.take()) {
+        BUILT.n++
+        labels.push([k, v as string])
+      }
     }
     const values = s.values ?? []
     if (!Array.isArray(values)) malformed('values is not an array')
@@ -973,7 +982,10 @@ export function decodeLokiJson(body: Uint8Array, c: LogCollector): void {
         if (typeof mdRaw !== 'object' || Array.isArray(mdRaw)) malformed('structured metadata is not an object')
         for (const [k, v] of Object.entries(mdRaw as Record<string, unknown>)) {
           if (typeof v !== 'string') malformed(`structured metadata ${JSON.stringify(k)} is not a string`)
-          if (m.take()) md.push([k, v as string])
+          if (m.take()) {
+            BUILT.n++
+            md.push([k, v as string])
+          }
         }
       }
       const ts = typeof tsRaw === 'string' && /^\d{1,19}$/.test(tsRaw) ? nsHalves(BigInt(tsRaw)) : null

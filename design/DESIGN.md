@@ -140,7 +140,9 @@ is wired (stage 3, 2026-11-19): the gateway on `vis.bitcru.sh` routes `/v1/trace
 and `/loki/api/v1/push` to viz-ingest by exact path, as it routes `/v1/metrics`; edge answers
 them 404 while `INGEST_SIGNALS` does not name the signal. A pool map's own pool never ends in
 `/traces` or `/logs` (edge refuses such a map, 503, metrics included; control refuses to assign
-one, so tenants `traces` and `logs` keep the shared pool, D66), so a shard named
+one, so tenants `traces` and `logs` keep the shared pool, D66; control and edge check a map with
+one function, `validBasePool`, which also requires `POOL_NAME`, and a dedicated pool is
+`dedicatedPool`'s `tenant/<id>` with `_` written `-`), so a shard named
 `…/traces/{slot}` or `…/logs/{slot}` is always a span or log shard and no metric shard shares
 an object or a name with another pool's span or log shard (`contracts/BATCH.md`).
 
@@ -363,7 +365,10 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   is reported every hour until fixed, never replaced by the default. Spans (with their
   `trace_index` files) and logs expire by the record's `trace_days` and `log_days`, each 30 days
   when absent, in ledger changes of their own after the metric one; their tombstones go
-  through the same purge and the same publisher gate.
+  through the same purge and the same publisher gate. A `trace_days` or `log_days` that is
+  present but unreadable stops that signal only, reported the same way; the metric tables never
+  wait for it (D63). Control asks for confirmation of any change that shortens what the janitor
+  keeps, including a field a replacing PUT leaves out, which returns to its default (D63).
 - **Index fragments.** Each file's row-group offsets, key statistics and page-index
   locations are stored with its ledger row. Compaction consolidates the fragments of a
   partition into one content-addressed index object. Planning never issues one footer read

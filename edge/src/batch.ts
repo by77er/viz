@@ -135,6 +135,11 @@ export class Collector {
     return this.entryOff.length
   }
 
+  /** Bytes of the series table, against `limits.maxDecodedBytes`. */
+  get decoded(): number {
+    return this.arenaLen
+  }
+
   entry(i: number): Uint8Array {
     return this.arena.subarray(this.entryOff[i]!, this.entryOff[i]! + this.entryLen[i]!)
   }

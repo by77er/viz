@@ -42,6 +42,13 @@ export class Meter {
   }
 }
 
+/**
+ * Values built by every decoder in this isolate (key-value entries, AnyValues, array elements,
+ * Loki labels and metadata), counted where each is created, apart from any meter. Tests read
+ * it to check that a refused item stopped being built at the limit (edge/README.md, mutants).
+ */
+export const BUILT = { n: 0 }
+
 /** Always over: decoders given it check the wire of what they read and build nothing. */
 export const SKIM: Meter = new Meter().reset(0, -1)
 

@@ -1,5 +1,5 @@
 import { badRequest } from './errors'
-import { FREE, type Meter } from './meter'
+import { BUILT, FREE, type Meter } from './meter'
 import type { PbReader } from './pb'
 
 /**
@@ -97,7 +97,9 @@ export function pbKeyValue(r: PbReader, m: Meter = FREE): KV | null {
     else r.skip(tag & 7)
   }
   r.done(end)
-  return keep && !m.over ? [key, value] : null
+  if (!keep || m.over) return null
+  BUILT.n++
+  return [key, value]
 }
 
 export function pbAnyValue(r: PbReader, depth: number, m: Meter = FREE): AnyV {
@@ -167,7 +169,10 @@ export function pbAnyValue(r: PbReader, depth: number, m: Meter = FREE): AnyV {
               else r.skip(kt & 7)
             }
             r.done(kvend)
-            if (ok && !m.over) items!.push([k, v])
+            if (ok && !m.over) {
+              BUILT.n++
+              items!.push([k, v])
+            }
           } else r.skip(t & 7)
         }
         r.done(kend)
@@ -185,6 +190,7 @@ export function pbAnyValue(r: PbReader, depth: number, m: Meter = FREE): AnyV {
     }
   }
   r.done(end)
+  if (value !== NONE) BUILT.n++
   return value
 }
 
@@ -301,6 +307,7 @@ export function jsonAny(raw: unknown, depth: number, m: Meter = FREE): AnyV {
   if (raw === undefined || raw === null) return NONE
   const v = object(raw, 'attribute value')
   const keep = !m.over
+  if (keep) BUILT.n++
   if (v.stringValue !== undefined && v.stringValue !== null) {
     const s = text(v.stringValue, 'stringValue')
     return keep ? { k: 's', v: s } : NONE
@@ -349,7 +356,9 @@ function jsonKV(raw: unknown, depth: number, m: Meter): KV | null {
   const ok = m.take()
   const key = text(kv.key, 'attribute key')
   const value = jsonAny(kv.value, depth, m)
-  return ok && !m.over ? [key, value] : null
+  if (!ok || m.over) return null
+  BUILT.n++
+  return [key, value]
 }
 
 export function jsonAttrs(v: unknown, m: Meter = FREE): KV[] {
@@ -441,14 +450,15 @@ export class Buf {
   n = 0
   private dv: DataView
 
-  constructor(cap = 256) {
+  /** `limit`: it doubles as it grows, but not past this (only as far as a write needs). */
+  constructor(cap = 256, readonly limit = Number.POSITIVE_INFINITY) {
     this.b = new Uint8Array(cap)
     this.dv = new DataView(this.b.buffer)
   }
 
   private room(k: number): void {
     if (this.n + k <= this.b.length) return
-    const g = new Uint8Array(Math.max(this.b.length * 2, this.n + k))
+    const g = new Uint8Array(Math.max(Math.min(this.b.length * 2, this.limit), this.n + k))
     g.set(this.b.subarray(0, this.n))
     this.b = g
     this.dv = new DataView(g.buffer)

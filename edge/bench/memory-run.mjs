@@ -15,7 +15,7 @@ export function runCase(E, c) {
       else E.decodeOtlpProto(body, col)
       const slots = new Int32Array(col.nSeries).map((_, i) => i % 4)
       const batches = E.buildBatches(col, slots, L.maxBatchBytes)
-      return { outcome: 'ok', rows: col.nRows, rejected: col.rejectedTotal, reasons: col.rejectionSummary(), keep: [body, col, batches] }
+      return { outcome: 'ok', rows: col.nRows, rejected: col.rejectedTotal, reasons: col.rejectionSummary(), decoded: col.decoded ?? null, keep: [body, col, batches] }
     }
     const col = c.path === 'traces' ? new E.SpanCollector(L, c.now) : new E.LogCollector(L, c.now)
     if (c.path === 'traces') (c.json ? E.decodeTracesJson : E.decodeTracesProto)(body, col)
@@ -23,7 +23,7 @@ export function runCase(E, c) {
     else (c.json ? E.decodeLokiJson : E.decodeLokiProto)(body, col)
     const slots = new Int32Array(col.nSeries).map((_, i) => i % 4)
     const batches = col.build(slots, L.maxBatchBytes)
-    return { outcome: 'ok', rows: col.nRows, rejected: col.rejectedTotal, reasons: col.rejectionSummary(), keep: [body, col, batches] }
+    return { outcome: 'ok', rows: col.nRows, rejected: col.rejectedTotal, reasons: col.rejectionSummary(), decoded: col.decoded ?? null, keep: [body, col, batches] }
   } catch (e) {
     if (e && typeof e.status === 'number') return { outcome: `${e.status} ${e.message}`.slice(0, 120), rows: 0, rejected: 0, reasons: '', keep: [] }
     return { outcome: `threw ${e && e.message}`.slice(0, 120), rows: 0, rejected: 0, reasons: '', keep: [] }
