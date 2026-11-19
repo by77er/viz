@@ -1053,8 +1053,8 @@ in full, the shared tree's files unchanged (`c011da469efe0f4f` before and after)
 Rust (`engine/query`, on a scratch copy): the part filter dropped for tail series, and for file
 rows, each killed by both tests of `tests/meta_parts.rs`.
 
-**Traces and logs (2026-11-19, mutants 74 to 80, on a scratch tree, 08:47 to 09:3x UTC, load
-average 4 to 7): 7 of 7 killed in the end, after two findings.** (1) The first form of the hour
+**Traces and logs (2026-11-19, mutants 74 to 80, on a scratch tree, 08:47 to 09:16 UTC, load
+average 4 to 7): 7 of 7 killed in the end, after two findings; 76, 78, 79 and 80 re-run on the final code, 4 of 4.** (1) The first form of the hour
 mutant (the hour computed one too high) **survived**: it made every file's hour unknown, and an
 unknown hour is kept, so it pruned less instead of dropping a match; it was rewritten to keep a
 file only if the fragments name the hour after its own (row 77), which is killed. (2) Row 74
