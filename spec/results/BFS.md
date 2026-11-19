@@ -53,8 +53,8 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `F12_impl_read_unbound` F12: shard.ts (2026-11-18) readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss) | I3_NoDuplicates | **violated** I3_NoDuplicates in 13 steps | 40,478 | 127,244 | 13 | 1.8 s | 4.4e-11 |
 | `F13_impl_comp_adopts_old_output` F13: compaction adopts an earlier step's output ("exists"); the sweeper judges it by the earlier upload | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 19 steps | 132,735 | 624,728 | 19 | 6 s | 4.8e-10 |
 | `F14_impl_comp_conflict_delete` F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 21 steps | 41,961 | 143,700 | 21 | 1.7 s | 4.8e-11 |
-| `F15_sweeper_trusts_unlogged_registration` F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 17 steps | 518,127 | 2,018,428 | 17 | 29.4 s | 7.3e-9 |
-| `IMPL_PLANNED_fixed` As built with the fixes above (F6, F12, F13/F14, F15, F3 assumed), but the segment log as LEDGER-LOG.md stated it at the start of this work; ledger loss, compaction | all safety | **violated** V_IncarnationNotReused in 7 steps | 758 | 1,819 | 7 | 0.1 s | 1.6e-14 |
+| `F15_sweeper_trusts_unlogged_registration` F15: janitor.ts (first version) calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 17 steps | 518,127 | 2,018,428 | 17 | 17.3 s | 7.3e-9 |
+| `IMPL_PLANNED_fixed` As built with the fixes above (F6, F12, F13/F14, F15, F3 assumed), but the segment log as LEDGER-LOG.md stated it at the start of this work; ledger loss, compaction | all safety | **violated** V_IncarnationNotReused in 7 steps | 758 | 1,819 | 7 | 0.2 s | 1.6e-14 |
 
 ## D30: the compaction fix as built (compact.ts + janitor.ts)
 
@@ -923,7 +923,7 @@ Violates `I11_LiveFilesReadable`.
 
 ### F15_sweeper_trusts_unlogged_registration
 
-F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild
+F15: janitor.ts (first version) calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild
 
 Violates `I11_LiveFilesReadable`.
 

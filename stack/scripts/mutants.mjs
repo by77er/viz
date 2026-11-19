@@ -323,9 +323,9 @@ const mutants = [
   await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant: result.tenant, wrote: true })
 }"],
   ['publication', 'ingest asks the publisher before acknowledging', 'stack/src/index.ts', T.stackPub,
-    '  fetch: (req, env) => edge.fetch(req, env),', "  fetch: async (req, env) => (await nudge(env.PUBLISHER, env.CELL || 'cell-0', ['ingest']), edge.fetch(req, env)),"],
+    '  fetch: (req, env) => edge.fetch(req, env),', "  fetch: async (req, env) => ((await (await import('../../publisher/src/nudge')).nudge(env.PUBLISHER, env.CELL || 'cell-0', ['ingest'])), edge.fetch(req, env)),"],
   ['publication', 'the cron nudges the publisher (an idle deployment wakes it hourly)', 'stack/src/index.ts', T.triggers,
-    '  const [f, m] = await Promise.allSettled([sweepPending(env, { now }), enqueueDue(env, now)])', "  const [f, m] = await Promise.allSettled([sweepPending(env, { now }), enqueueDue(env, now), nudge(env.PUBLISHER, env.CELL || 'cell-0', ['cron'])])"],
+    '  const [f, m] = await Promise.allSettled([sweepPending(env, { now }), enqueueDue(env, now)])', "  const [f, m] = await Promise.allSettled([sweepPending(env, { now }), enqueueDue(env, now), import('../../publisher/src/nudge').then((x) => x.nudge(env.PUBLISHER, env.CELL || 'cell-0', ['cron']))])"],
 ]
 
 const [part, only] = process.argv.slice(2)
