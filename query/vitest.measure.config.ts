@@ -1,6 +1,6 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin'
 import { defineConfig } from 'vitest/config'
-import { ledgerSignalTables } from './vitest.ledger'
+import { ledgerSignalTables } from './vitest.ledger.ts'
 
 // The local measurements (`npm run measure`; one file: `npm run measure -- test/cardinality.bench.ts`):
 // the same one-script composition as the tests, with the production leaf pool size.

@@ -25,7 +25,9 @@ regex = { version = "1", default-features = false, features = ["std", "perf", "u
 # The versions viz-storage links (no second copy): the span and log readers (src/sigfiles.rs).
 parquet = { version = "60", default-features = false, features = ["snap"] }
 bytes = "1"
-serde_json = "1"
+# `float_roundtrip`: doubles inside canonical OTLP JSON (arrays, key-value lists) parse to the
+# exact value written; without it serde_json may be one ulp off (seen: -2.25e-300).
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 # engine/AGENTS.md: the settings that measured faster.
 [profile.release]

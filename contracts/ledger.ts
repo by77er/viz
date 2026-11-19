@@ -4,22 +4,53 @@
  * See design/DESIGN.md §2, §4.3, §5.2.
  */
 
-export type Table = 'metric_samples' | 'metric_series'
+/**
+ * The tables the ledger lists files of. `spans`, `trace_index` and `logs` were added on
+ * 2026-11-19 (stage 2 of traces and logs; contracts/TRACES.md, contracts/LOGS.md). Additive
+ * for every reader that ignores tables it does not act on; a reader that must act on every
+ * file (the publisher) refuses a change naming a table it does not know (COMPATIBILITY.md
+ * §3.2), so those readers deploy first (§3.3): `edge` writes these tables only where
+ * `INGEST_SIGNALS` enables a signal.
+ */
+export type Table = 'metric_samples' | 'metric_series' | 'spans' | 'trace_index' | 'logs'
+
+/** Every table, in the order the ledger, the janitor and the checks list them. */
+export const TABLES: readonly Table[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
+/** The tables of each signal. A flush unit holds the files of ONE signal (one shard stream holds one signal: contracts/BATCH.md "Streams per signal"). */
+export const METRIC_TABLES: readonly Table[] = ['metric_samples', 'metric_series']
+export const TRACE_TABLES: readonly Table[] = ['spans', 'trace_index']
+export const LOG_TABLES: readonly Table[] = ['logs']
+
+/**
+ * Where a file of `table` and `day` lies (contracts/TABLES.md, contracts/TRACES.md "Object
+ * keys"): `{cell}/data/{table}/tenant={tenant}/day={day}/`, and for `spans` one more level,
+ * `hour={HH}/`. Every key the ledger admits is directly under this prefix (no further `/`).
+ */
+export const dataKeyPrefix = (cell: string, table: Table, tenant: string, day: string, hour?: number): string =>
+  `${cell}/data/${table}/tenant=${tenant}/day=${day}/${hour === undefined ? '' : `hour=${String(hour).padStart(2, '0')}/`}`
 
 /** One immutable Parquet object. */
 export interface FileEntry {
   table: Table
-  /** UTC day, `YYYY-MM-DD`. */
+  /** UTC day, `YYYY-MM-DD`: of the rows (metrics, logs), of their start time (`spans`), of the fragments' first start (`trace_index`). */
   day: string
   /**
    * R2 object key (contracts/TABLES.md). Unique. It must lie under
    * `{cell}/data/{table}/tenant={tenant}/day={day}/` for this entry's table and day and the
    * ledger's own tenant and cell: the ledger answers `invalid` otherwise, so the janitor can
    * never be told to delete another tenant's object (design/reviews/write-path-completion.md R-8).
+   * A `spans` key lies one level deeper, under `…/day={day}/hour={HH}/` (`dataKeyPrefix`), and
+   * the ledger requires `[minTs, maxTs]` to lie inside that hour of that day.
    */
   key: string
   bytes: number
   rows: number
+  /**
+   * Inclusive Unix MILLISECONDS for every table. Spans and logs are stored in nanoseconds: their
+   * entries carry the floor of the nanosecond bounds (`EncodedSignalFile` in contracts/engine.ts),
+   * so a plan's millisecond range overlaps the file exactly when its nanosecond range does.
+   * `trace_index`: the first fragment start and the last fragment end.
+   */
   minTs: number
   maxTs: number
   /** 0 = flush file; higher = compaction output. */
@@ -189,7 +220,7 @@ export interface LoggedWatermark extends Watermark {
 
 export interface PlanRequest {
   table: Table
-  /** Inclusive Unix-millisecond range. */
+  /** Inclusive Unix-millisecond range, for every table (spans and logs too: `FileEntry.minTs`). */
   minTs: number
   maxTs: number
 }
@@ -227,6 +258,10 @@ export type ReplaceResult =
  * its series file leave together (contracts/TABLES.md, "Pairing"). `tables` was added after
  * `table` (an additive request field, COMPATIBILITY.md §4); a ledger that predates it refuses
  * a request without `table` (unknown table), so a caller never loses an expiry silently.
+ * `spans` and `trace_index` are expired together, by the `day` of each file (a span's start
+ * day; a fragment's first start), as are the metric pair. A ledger of a release before the
+ * span and log tables refuses a request naming one (`unknown table`): the caller expires them
+ * in a request of their own, so the metric expiry never depends on it.
  */
 export type ExpireRequest =
   | {

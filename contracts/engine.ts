@@ -33,6 +33,48 @@ export interface EncodedFile {
   index: string
 }
 
+/**
+ * One Parquet file of the span and log tables (contracts/TRACES.md, contracts/LOGS.md),
+ * produced from a sealed segment of signal 2 or 3 batches by `SignalFlushEngine`. Added
+ * 2026-11-19 (stage 2 of traces and logs); additive.
+ *
+ * `minTs`/`maxTs` are Unix MILLISECONDS, as for every `FileEntry` the ledger lists: the
+ * floor of `minNs`/`maxNs`, so a plan's millisecond range overlaps the file exactly when its
+ * nanosecond range does (`[a, b]` in ms covers `[a·10⁶, b·10⁶ + 999,999]` in ns). The exact
+ * nanosecond bounds cross as decimal strings (a Unix nanosecond does not fit a JS number):
+ *
+ *   spans        smallest and largest `start_unix_nano`
+ *   trace_index  smallest `min_start_unix_nano`, largest `max_end_unix_nano`
+ *   logs         smallest and largest `ts`
+ */
+export interface EncodedSignalFile extends EncodedFile {
+  table: 'spans' | 'trace_index' | 'logs'
+  /** `spans` only: the UTC hour (0 to 23) of `day` that every row's start time falls in; null for the other tables. */
+  hour: number | null
+  minNs: string
+  maxNs: string
+}
+
+/**
+ * Flush of span and log batches (added 2026-11-19, ABI 3 of `engine/wasm`). Metrics are
+ * unchanged: `Engine.encodeSegment` is still the only encoder of signal 1.
+ */
+export interface SignalFlushEngine {
+  /**
+   * A sealed segment's span batches (`VZB1` signal 2, sequence order) as `spans` files, one
+   * per UTC hour of start time (hours ascending), then `trace_index` files, one per UTC day of
+   * the fragments' first start. The later of two rows with one `(trace_id, span_id)` wins.
+   * Throws for a batch that is not signal 2.
+   */
+  encodeSpans(batches: Uint8Array[]): EncodedSignalFile[]
+  /**
+   * A sealed segment's log-record batches (`VZB1` signal 3) as `logs` files, one per UTC day
+   * of `ts`. Rows equal on `(stream_id, ts, line, metadata)` are one row. Throws for a batch
+   * that is not signal 3.
+   */
+  encodeLogs(batches: Uint8Array[]): EncodedSignalFile[]
+}
+
 /** Prometheus-style label matcher. */
 export interface Matcher {
   name: string

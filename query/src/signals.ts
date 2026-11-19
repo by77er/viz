@@ -258,7 +258,7 @@ async function traceRounds<T>(
     if (second.version !== first.version || second.ledgerIncarnation !== first.ledgerIncarnation) continue
     // By ID: only the hours the trace's fragments (and its tail spans) name hold its spans.
     const hours = new Set(ext.hours)
-    const candidates = id && pruning() ? second.files.filter((f) => { const x = hourOf(f.key); return x === null || hours.has(x) }) : second.files
+    const candidates = id && pruning() ? second.files.filter((f) => { const x = hourOf(f); return x === null || hours.has(x) }) : second.files
     const r2 = round(candidates, pruning() ? c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi) : null)
     r2.listed = second.files.length
     const tailBytes = tails.reduce((a, b) => a + b.byteLength, 0)
@@ -277,11 +277,14 @@ async function traceRounds<T>(
   throw new ApiError('unavailable', 'the ledger kept changing while the query was being planned; retry')
 }
 
-/** Hours since the epoch of a `spans` key (`…/day=YYYY-MM-DD/hour=HH/…`, contracts/TRACES.md "Object keys"); null when the key has none. */
-export function hourOf(key: string): number | null {
-  const m = /\/day=(\d{4})-(\d{2})-(\d{2})\/hour=(\d{2})\//.exec(key)
-  if (!m) return null
-  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 3_600_000 + Number(m[4])
+/**
+ * The hour (since the epoch) of a `spans` file: a flush writes one file per hour of span start
+ * (contracts/TRACES.md), so it is the hour of its first start (`minTs`), whatever its key looks
+ * like. Null for a file that spans several hours (a compaction output: never pruned by hour).
+ */
+export function hourOf(f: Pick<FileEntry, 'minTs' | 'maxTs'>): number | null {
+  const h = Math.floor(f.minTs / 3_600_000)
+  return Math.floor(f.maxTs / 3_600_000) === h ? h : null
 }
 
 export interface TraceSearch {

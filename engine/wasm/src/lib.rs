@@ -2,7 +2,8 @@
 //!
 //! A plain C ABI over `viz-storage`, for `wasm32-unknown-unknown`. The TypeScript binding
 //! in `js/` is the only intended caller; together they implement the storage half of
-//! `contracts/engine.ts` (`encodeSegment`, `select`).
+//! `contracts/engine.ts` (`encodeSegment`, `select`, `mergeFiles`) and the flush of spans
+//! and logs (`SignalFlushEngine`: `encodeSpans`, `encodeLogs`).
 //!
 //! Like every engine crate this does no I/O. Malformed input comes back as an error
 //! result, never as a trap: every byte of a request is bounds-checked before use.
@@ -57,14 +58,32 @@
 //! read in place from the request). Peak is about inputs + output + one decoded row group
 //! per input; see the README for measurements.
 //!
+//! ### `viz_encode_spans`, `viz_encode_logs`
+//!
+//! Flush of span (`VZB1` signal 2) and log-record (signal 3) batches
+//! (`viz_storage::encode_spans`, `encode_logs`; contracts/TRACES.md, contracts/LOGS.md).
+//! Added in ABI 3; the metric operations above are unchanged.
+//!
+//! Request: as `viz_encode_segment`, `u32 n_batches`, then per batch `u32 len, bytes`.
+//!
+//! Ok payload: `u32 n_files`, then per file `u8 table (2 = spans, 3 = trace_index, 4 = logs),
+//! u8 hour (0 to 23 for `spans`, 255 for the other tables), u8[2] zero, u64 rows,
+//! i64 min_ns, i64 max_ns, u32 day_len, day, u32 index_len, index, u32 bytes_len, bytes`.
+//! Times are Unix NANOSECONDS (what the files hold); the binding derives milliseconds.
+//! `spans` files come first, by hour, then `trace_index` files, by day (the storage crate's
+//! order). A batch of the other signal (or of metrics) is an error naming it.
+//!
 //! ### `viz_abi_version`
 //!
-//! Returns 2 (1 had no `viz_merge_files`). The binding refuses a module that answers
-//! anything else.
+//! Returns 3 (1 had no `viz_merge_files`, 2 no `viz_encode_spans` / `viz_encode_logs`). The
+//! binding refuses a module that answers anything else.
 
-use viz_storage::{encode_segment, merge_files_shared, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData, Table, WriteOptions};
+use viz_storage::{
+    encode_logs, encode_segment, encode_spans, merge_files_shared, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData, SignalFile, SignalTable, Table,
+    WriteOptions,
+};
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 const OK: u32 = 0;
 const ERR: u32 = 1;
 
@@ -221,6 +240,64 @@ pub unsafe extern "C" fn viz_encode_segment(ptr: *const u8, len: usize) -> *mut 
             }
         }),
     }
+}
+
+/// The table byte of a span or log file in an ABI 3 result.
+fn signal_table_byte(t: SignalTable) -> u8 {
+    match t {
+        SignalTable::Spans => 2,
+        SignalTable::TraceIndex => 3,
+        SignalTable::Logs => 4,
+    }
+}
+
+fn signal_payload_len(files: &[SignalFile]) -> usize {
+    4 + files.iter().map(|f| 4 + 24 + 4 + f.day.len() + 4 + f.index.len() + 4 + f.bytes.len()).sum::<usize>()
+}
+
+fn signal_result(r: Result<Vec<SignalFile>, String>) -> *mut u8 {
+    match r {
+        Err(m) => error(m),
+        Ok(files) => result(OK, signal_payload_len(&files), |out| {
+            out.extend_from_slice(&(files.len() as u32).to_le_bytes());
+            for f in &files {
+                out.extend_from_slice(&[signal_table_byte(f.table), f.hour.unwrap_or(255), 0, 0]);
+                out.extend_from_slice(&f.rows.to_le_bytes());
+                out.extend_from_slice(&f.min_ts.to_le_bytes());
+                out.extend_from_slice(&f.max_ts.to_le_bytes());
+                for part in [f.day.as_bytes(), f.index.as_bytes(), f.bytes.as_slice()] {
+                    out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+                    out.extend_from_slice(part);
+                }
+            }
+        }),
+    }
+}
+
+fn batches_of(req: &[u8]) -> Result<Vec<&[u8]>, String> {
+    let mut r = Req { b: req, at: 0 };
+    let n = r.u32("n_batches")?;
+    let batches = r.items(n, "batch")?;
+    r.end()?;
+    Ok(batches)
+}
+
+/// See the crate documentation.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable.
+#[no_mangle]
+pub unsafe extern "C" fn viz_encode_spans(ptr: *const u8, len: usize) -> *mut u8 {
+    signal_result(batches_of(request(ptr, len)).and_then(|b| encode_spans(&b).map_err(|e| e.to_string())))
+}
+
+/// See the crate documentation.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable.
+#[no_mangle]
+pub unsafe extern "C" fn viz_encode_logs(ptr: *const u8, len: usize) -> *mut u8 {
+    signal_result(batches_of(request(ptr, len)).and_then(|b| encode_logs(&b).map_err(|e| e.to_string())))
 }
 
 fn do_merge(req: &[u8]) -> Result<EncodedFile, String> {
