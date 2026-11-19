@@ -306,8 +306,9 @@ asks `deletable`; one that makes the outbox skip a version; one segment over 4 M
 All on the extracted `58b6bbd`, at most two workers: ledger 75 passed; janitor 17; compact 24;
 flush 45; shard 52; query 78; stack 40 (its `e2e` needs `bench/node_modules`, linked). All green.
 D30/F14/F15 mutants (`stack/scripts/mutants.mjs review` filtered to `R-2`, `F14`, `F15`, run on the
-copy): 9 of 9 killed. Segment-log mutants (S-9): 7 of 11 killed. `tsc --noEmit` was not run. Not
-run: anything on Cloudflare; the protocol model; the ledger benchmark.
+copy): 9 of 9 killed. Segment-log mutants (S-9): 7 of 11 killed. `tsc --noEmit` clean in ledger,
+compact, janitor and flush. Not run: anything on Cloudflare; the protocol model; the ledger
+benchmark.
 
 ## How to reproduce
 
