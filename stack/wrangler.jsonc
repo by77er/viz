@@ -40,9 +40,13 @@
   "triggers": { "crons": ["7 * * * *"] },
   "vars": {
     "CELL": "cell-0",
-    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"
-    // No LEDGER_STATE_MAX_BYTES: the ledger's own limit, 300 MiB (D47), applies. The 16 MiB pin
-    // that stood here until the publisher re-based streaming is gone (D55; publisher/README.md,
-    // "Re-base in bounded memory": 300,000 files re-based under a capped heap).
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
+    // The ledger can hold 300 MiB (D47) and the publisher re-bases it in bounded memory (D55), but
+    // production keeps 16 MiB for this release (review of D47/D55, P-2 and P-3): the release before
+    // cannot hold or checkpoint a larger state, so a rollback to it must not meet one; and a
+    // rebuild and first publication above 16 MiB have not been measured within a Durable Object's
+    // CPU limit on Cloudflare. Lift it in a release whose rollback floor is this one, once those
+    // are measured (design/reviews/d47-d48-d55.md).
+    "LEDGER_STATE_MAX_BYTES": "16777216"
   }
 }

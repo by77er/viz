@@ -798,7 +798,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
         plan.problems.set(tenant, `cursor of ${table} is at incarnation ${cursor.ledgerIncarnation}, R2 has ${log.incarnation}`)
         continue
       }
-      const rebase = !cursor || cursor.ledgerIncarnation < log.incarnation
+      // Re-base when the table has no cursor in this incarnation, or when the log was read from a
+      // state (base or checkpoint) above the table's cursor: the changes between the cursor and that
+      // state are not in `log.changes`, so planning from the cursor would skip them (review P-1).
+      const rebase = !cursor || cursor.ledgerIncarnation < log.incarnation || (log.base !== null && cursor.version < log.start)
       // A new ledger incarnation: its base (or newest checkpoint) is the whole live set it starts
       // from, in `stage`. Without one, a re-base has nothing to start from.
       if (rebase && !log.base) continue
@@ -831,6 +834,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * is what the changes read touch, never the tenant's published set.
    */
   private planFromCursor(table: Table, tenant: string, log: TenantLog, cursor: Cursor): { adds: FileEntry[]; removes: string[]; transient: string[]; last: number } | { problem: string } {
+    // The changes must start at or below the cursor; a log that starts above it lacks the
+    // versions between, and planning from it would skip them silently (review P-1). Refuse.
+    if (log.start > cursor.version) {
+      return { problem: `the log read for ${table} starts after version ${log.start}, above its cursor at ${cursor.version}: the changes between are not in it` }
+    }
     // Keys the changes touched that are live after them: the entry to add, or null if published.
     const work = new Map<string, FileEntry | null>()
     // Published keys the changes removed (and, if in `work` too, added again).
