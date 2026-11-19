@@ -10,8 +10,11 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
-# Regular expressions for =~ and !~ (RE2-like, linear time). Unicode tables trimmed as in viz-promql.
-regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+# TraceQL's =~ and !~ use Go's regular expressions: viz-goregex translates them for the regex
+# crate (shared with viz-logql). Go's \d \w \s \b are ASCII, so no Unicode Perl-class tables are
+# linked; (?i) needs the case-folding tables.
+viz-goregex = { path = "../goregex" }
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case"] }
 
 [dev-dependencies]
 serde_json = "1"

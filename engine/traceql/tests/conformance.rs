@@ -6,7 +6,7 @@
 //!
 //! `cargo test --test conformance -- --nocapture` prints the table in README.md.
 
-use viz_traceql::{parse, Error};
+use viz_traceql::{nesting, parse, Error, MAX_DEPTH};
 
 /// Parses the YAML subset of the example file: top-level `name:` sections and
 /// `  - 'query'` / `  - "query"` items.
@@ -118,6 +118,19 @@ fn tempo_examples() {
     for u in &unsupported_valid {
         println!("  {u}");
     }
+    // How deep Tempo's own examples nest, as MAX_DEPTH counts it (README, "Limits").
+    let mut depths: Vec<(usize, &str, &str)> =
+        cases.iter().filter_map(|(s, q)| nesting(q).ok().map(|d| (d, s.as_str(), q.as_str()))).collect();
+    depths.sort();
+    let accepted = depths.len();
+    println!("\nnesting of the {accepted} examples viz parses (MAX_DEPTH = {MAX_DEPTH}):");
+    for (d, s, q) in depths.iter().rev().take(5) {
+        println!("  {d:>4}  [{s}] {q}");
+    }
+    let hist = |lo: usize, hi: usize| depths.iter().filter(|(d, _, _)| *d >= lo && *d <= hi).count();
+    println!("  levels 1-10: {}, 11-20: {}, 21-50: {}, 51-100: {}, over 100: {}", hist(1, 10), hist(11, 20), hist(21, 50), hist(51, 100), hist(101, usize::MAX));
+    assert!(depths.iter().all(|(d, _, _)| *d <= MAX_DEPTH));
+
     println!("\nfailures ({}):", failures.len());
     for f in &failures {
         println!("  {f}");

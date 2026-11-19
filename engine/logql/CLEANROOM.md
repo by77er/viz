@@ -103,6 +103,16 @@ function name only, and deleted: `pkg/logql/log/label_filter_test.go`, `filter_t
 `ip_test.go`, `drop_labels_test.go`, `keep_labels_test.go`, `pattern/pattern_test.go`,
 `pkg/logql/syntax/lex_test.go`.
 
+### Follow-up of 2026-11-19: the regex translator moved to `engine/goregex`
+
+`src/goregex.rs` moved, with its tests, into the shared crate `engine/goregex`, which
+viz-traceql uses too, and was extended there (one engineer, an AI agent, Claude). Its sources
+are listed in `engine/goregex/CLEANROOM.md`: Go's `regexp/syntax` documentation, Go's
+`regexp` run as a black box, and Tempo v3.1.1 run as a black box. No Loki source was read and
+Loki was not run in this follow-up (the Loki harness was not rebuilt). Loki's three test files
+were fetched again by `tools/oracle/fetch.sh` into the git-ignored `testdata/loki-oracle/` and
+used as before, as an accept/reject and expected-output oracle. No git command was run.
+
 ## Statement
 
 I followed the rules above. I did not read Loki's implementation source. Where this crate

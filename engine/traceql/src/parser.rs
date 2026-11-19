@@ -14,11 +14,23 @@ use crate::lexer::{lex, Tok, Token};
 use crate::Error;
 
 pub fn parse(src: &str) -> Result<RootExpr, Error> {
+    parse_measured(src).map(|(root, _)| root)
+}
+
+/// The deepest nesting a query reaches as [`MAX_DEPTH`] counts it: the larger of the
+/// parser's recursion depth and the height of the syntax tree. A query whose nesting is at
+/// most `MAX_DEPTH` is not refused for depth. Used to measure real queries against the
+/// limit (README, "Limits").
+pub fn nesting(src: &str) -> Result<usize, Error> {
+    parse_measured(src).map(|(_, peak)| peak)
+}
+
+fn parse_measured(src: &str) -> Result<(RootExpr, usize), Error> {
     if src.len() > MAX_QUERY_BYTES {
         return Err(Error::Validation { pos: 0, line: 1, col: 1, msg: format!("query longer than {MAX_QUERY_BYTES} bytes") });
     }
     let toks = lex(src)?;
-    let mut p = Parser { src, toks, i: 0, depth: 0, regexes: 0 };
+    let mut p = Parser { src, toks, i: 0, depth: 0, regexes: 0, peak: std::cell::Cell::new(0) };
     if matches!(p.peek(), Tok::Eof) {
         return Err(p.err_here("empty query"));
     }
@@ -32,7 +44,7 @@ pub fn parse(src: &str) -> Result<RootExpr, Error> {
         return Err(p.err_here(format!("unexpected {}", describe(p.peek()))));
     }
     let query = p.convert(node)?;
-    Ok(RootExpr { query, hints })
+    Ok((RootExpr { query, hints }, p.peak.get()))
 }
 
 /// Longest accepted query text.
@@ -53,15 +65,15 @@ pub const MAX_QUERY_BYTES: usize = 128 * 1024;
 /// `MAX_DEPTH` frames of each pass. `tests/limits.rs` runs queries at the limit on a bounded
 /// stack, and `tools/wasm-probe/check.mjs` runs them in the WASM build, where the costliest
 /// needs under 128 KiB of V8's stack and of the module's own (README, Verification, 7).
-pub const MAX_DEPTH: usize = 200;
+pub const MAX_DEPTH: usize = 100;
 
 /// Most regular expressions in one query, and the limits each is compiled with: nesting
-/// (as the regex parser counts it in the pattern: each group, repetition, alternation and
-/// concatenation is a level; the regex compiler recurses over it), compiled size and
-/// lazy-DFA cache. A regex compiled at the size limit was measured to hold about 1.3 MiB,
-/// so a query's regexes hold at most about 26 MiB of a 128 MB isolate (16 x 1.3 MiB, plus
-/// 16 x 256 KiB of cache), whatever the query text. 1 MiB still compiles `\w{20}` (Unicode
-/// classes are large).
+/// (as the regex parser counts it in the translated pattern: each group, repetition,
+/// alternation, concatenation and bracketed class is a level; the regex compiler recurses
+/// over it), compiled size and lazy-DFA cache. A regex compiled at the size limit was
+/// measured to hold about 1.3 MiB, so a query's regexes hold at most about 26 MiB of a 128 MB
+/// isolate (16 x 1.3 MiB, plus 16 x 256 KiB of cache), whatever the query text. 1 MiB compiles
+/// `.{1000}` but not four of them; Go's own bound refuses any count above 1000 before that.
 pub const MAX_REGEXES: usize = 16;
 pub const REGEX_NEST_LIMIT: u32 = 64;
 pub const REGEX_SIZE_LIMIT: usize = 1 << 20;
@@ -168,6 +180,8 @@ struct Parser<'a> {
     depth: usize,
     /// Regexes compiled so far (see [`MAX_REGEXES`]).
     regexes: usize,
+    /// Deepest recursion or tree height seen (see [`nesting`]).
+    peak: std::cell::Cell<usize>,
 }
 
 fn describe(t: &Tok) -> String {
@@ -247,6 +261,7 @@ impl<'a> Parser<'a> {
     /// One level of parser recursion down; [`Parser::leave`] goes back up.
     fn enter(&mut self) -> Result<(), Error> {
         self.depth += 1;
+        self.peak.set(self.peak.get().max(self.depth));
         if self.depth > MAX_DEPTH {
             return Err(self.too_deep(self.pos()));
         }
@@ -258,6 +273,7 @@ impl<'a> Parser<'a> {
     /// The height of a new node over children at most `h` high.
     fn grow(&self, h: usize, pos: usize) -> Result<usize, Error> {
         let h = h + 1;
+        self.peak.set(self.peak.get().max(h));
         if h > MAX_DEPTH {
             return Err(self.too_deep(pos));
         }
@@ -675,8 +691,11 @@ impl<'a> Parser<'a> {
         Ok((lhs, h))
     }
 
-    /// Compiles the pattern of `=~` / `!~`, fully anchored, within the limits of
-    /// [`MAX_REGEXES`].
+    /// Compiles the pattern of `=~` / `!~` within the limits of [`MAX_REGEXES`]. TraceQL's
+    /// regexes are Go's (Tempo's documentation and observed behaviour: `\w`, `\d`, `\s`, `\b`
+    /// ASCII-only, `\Q…\E`, octal escapes, Go's errors), fully anchored with `.` matching a
+    /// newline (`^(?s:…)$`, observed); `viz_goregex` translates them. Unicode classes are
+    /// Unsupported. Group names are dropped: matching does not use them.
     #[inline(never)]
     fn regex(&mut self, text: &str, pos: usize) -> Result<regex::Regex, Error> {
         self.regexes += 1;
@@ -684,13 +703,12 @@ impl<'a> Parser<'a> {
             return Err(self.verr(pos, format!("more than {MAX_REGEXES} regular expressions in one query")));
         }
         // The anchoring `^(?s:…)$` adds two levels (a concatenation and a group) to the
-        // nesting the regex parser counts in the user's pattern.
-        regex::RegexBuilder::new(&format!("^(?s:{text})$"))
-            .nest_limit(REGEX_NEST_LIMIT + 2)
-            .size_limit(REGEX_SIZE_LIMIT)
-            .dfa_size_limit(REGEX_DFA_SIZE_LIMIT)
-            .build()
-            .map_err(|e| self.verr(pos, format!("invalid regex {text:?}: {e}")))
+        // nesting the regex parser counts in the translated pattern.
+        let limits = viz_goregex::Limits { size: REGEX_SIZE_LIMIT, dfa_size: REGEX_DFA_SIZE_LIMIT, nest: REGEX_NEST_LIMIT + 2 };
+        viz_goregex::compile(text, viz_goregex::Wrap::Anchored, false, &limits).map_err(|e| match e {
+            viz_goregex::Error::Unsupported(m) => Error::Unsupported(format!("regex {text:?}: {m}")),
+            viz_goregex::Error::Invalid(m) => self.verr(pos, format!("invalid regex {text:?}: {m}")),
+        })
     }
 
     fn field_add(&mut self) -> Hp<FieldExpr> {
