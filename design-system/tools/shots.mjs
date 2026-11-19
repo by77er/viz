@@ -16,6 +16,8 @@
 //       { "name": "grey",          "greyscale": true } ] }
 // Steps, in order: { "hover": sel } { "press": sel } (pointer held down while the image is taken) { "focus": sel } (keyboard focus, so the ring shows)
 //   { "click": sel } { "tap": sel } { "type": [sel, text] } { "key": "ArrowRight" } { "wait": ms } { "scroll": [sel, x] } { "eval": "js" }
+//   { "reload": ms } (reload where the page stands, as a person does, and wait; prints the reload's layout shift and the scroll position;
+//   give the state a "height" so the image is the window the person sees)
 // State options: width (default 1440), height, scale (default 2; 1 for wide pages), coarse (touch, coarse pointer), zoom (2 = 200%: half the
 //   CSS width at twice the scale), greyscale, reducedMotion, clip (selector) with pad, measure (prints sideways overflow, the smallest text,
 //   any sans text set in tabular figures, and with a coarse pointer every hit area under 44px; an item partly scrolled out of a scrolling
@@ -97,6 +99,10 @@ async function runState(browser, sc, state, theme, outDir) {
     else if (kind === 'wait') await page.waitForTimeout(arg)
     else if (kind === 'scroll') await page.evaluate(([s, x]) => { document.querySelector(s).scrollLeft = x }, arg)
     else if (kind === 'eval') await page.evaluate(arg)
+    else if (kind === 'reload') { // v9: reload where the page stands (the browser restores the scroll position) and wait `arg` ms; prints the reload's layout shift and how far the page moved
+      await page.addInitScript(() => { window.__shift = 0; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) window.__shift += e.value }).observe({ type: 'layout-shift', buffered: true }) } catch {} })
+      const y0 = await page.evaluate(() => scrollY); await page.reload({ waitUntil: 'load' }); await page.waitForTimeout(arg)
+      const [shift, y1] = await page.evaluate(() => [window.__shift, scrollY]); console.log(`${sc.name ?? 'view'}-${state.name}-${theme}: reloaded at ${Math.round(y0)} px, now at ${Math.round(y1)} px; layout shift ${shift.toFixed(4)}`) }
     else throw new Error('unknown step ' + kind)
   }
   if (state.greyscale) await page.addStyleTag({ content: 'html{filter:grayscale(1)}' })

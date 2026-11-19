@@ -21,7 +21,11 @@
 // after the deploy's checks and before the put is applied: review of D53, m-11), `ignoreVar: true`
 // (`--var` is not applied), `readLag: n` (each version created answers 404 to its first n reads)
 // and `secretLag: n` (a version made by a put is shown without the secret put for its first n
-// reads): both seen on Cloudflare in 2 of 16 reads of a just-created version (S9).
+// reads): both seen on Cloudflare in 2 of 16 reads of a just-created version (S9). From the review
+// of D69 (design/reviews/d69-deploy-safety.md): `uploadSecretLag: n` (an upload is shown without the
+// secrets it inherited for its first n reads, as S9 saw a fresh version shown without a secret it
+// carried) and `keep: n` (Cloudflare keeps only the n newest versions of a Worker, 100 in
+// production, and never drops one serving now).
 // Every version keeps its `--message` (the API's `workers/message`).
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 
@@ -39,7 +43,22 @@ state.calls.push({
   // What decides whether wrangler writes a debug log, and whether it redacts request bodies in it (lib/wrangler.mjs SECRET_RUN_ENV).
   logEnv: { WRANGLER_LOG: process.env.WRANGLER_LOG ?? null, WRANGLER_LOG_SANITIZE: process.env.WRANGLER_LOG_SANITIZE ?? null, WRANGLER_WRITE_LOGS: process.env.WRANGLER_WRITE_LOGS ?? null },
 })
-const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2))
+/** `keep: n`: drop the oldest versions beyond n, never one serving now. */
+const prune = () => {
+  if (!state.keep) return
+  for (const w of Object.values(state.workers)) {
+    const live = new Set((w.deployment ?? []).map((d) => d.version_id))
+    while (w.versions.length > state.keep) {
+      const i = w.versions.findIndex((v) => !live.has(v.id))
+      if (i < 0) break
+      w.versions.splice(i, 1)
+    }
+  }
+}
+const save = () => {
+  prune()
+  writeFileSync(statePath, JSON.stringify(state, null, 2))
+}
 const done = (text) => {
   save()
   process.stdout.write(text + '\n')
@@ -89,6 +108,8 @@ if (a === 'versions' && b === 'upload') {
   const w = state.workers[cfg.name]
   if (!w) fail(`This Worker does not exist on your account. [code: 10007]`)
   const v = lagged({ id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, message: opt('message') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w) })
+  // `uploadSecretLag`: the upload is shown without the first secret it inherited for its first n reads.
+  if (state.uploadSecretLag && Object.keys(v.secrets).length) Object.assign(v, { secretLag: state.uploadSecretLag, lagSecret: Object.keys(v.secrets)[0] })
   w.versions.push(v)
   if (state.afterUpload === 'foreign') w.versions.push({ id: newId(), number: v.number + 1, tag: 'someone-else', vars: { VIZ_RELEASE: 'someone-else' }, secrets: { ...v.secrets } })
   output({ type: 'version-upload', version_id: v.id })

@@ -7,6 +7,14 @@
 #   manual run   ──► the same, with `acknowledge_migrations`; or, with `rollback_to`, restore
 #                    the release recorded for that commit (refused across a migration)
 #
+# Only main is deployed, and only with main's own deploy tooling (design/DECISIONS.md D69; review
+# of D69, M-2): both jobs that hold the Cloudflare credentials refuse, as their first step, a run on
+# any other ref. A run of this workflow on an older commit would run THAT commit's deploy/ and its
+# workflow, which predate the rollback floors, format versions and key checks. That older file has
+# no such step, so the `production` environment must also allow deployments from main only
+# (deploy/README.md, One-time setup). Older code goes out again as a new commit on main (a revert),
+# which this tooling judges like any release; or as a recorded release, with `rollback_to`.
+#
 # One run at a time (concurrency group deploy-production, nothing cancelled). GitHub keeps at
 # most one run pending in the group and a newer one replaces it, so a push that arrives during
 # a deploy waits, and the newest commit is the one deployed next.
@@ -55,6 +63,12 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
+      - name: Only main, with main's own deploy tooling (D69; review of D69, M-2)
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::This workflow deploys only main, with main's own deploy tooling, and this run is on ${GITHUB_REF}. An older commit's tooling cannot judge the release-safety rules added since (rollback floors, format versions, the OAuth key: design/DECISIONS.md D69). To go back to older code, restore a recorded release with rollback_to, or restore the code in a new commit on main (deploy/README.md, Rollback)."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The whole history: migration trailers are read from every commit since the
@@ -126,6 +140,12 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
+      - name: Only main, with main's own deploy tooling (D69; review of D69, M-2)
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::This workflow deploys only main, with main's own deploy tooling, and this run is on ${GITHUB_REF}. An older commit's tooling cannot judge the release-safety rules added since (rollback floors, format versions, the OAuth key: design/DECISIONS.md D69). To go back to older code, restore a recorded release with rollback_to, or restore the code in a new commit on main (deploy/README.md, Rollback)."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -142,7 +162,7 @@ jobs:
           if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then echo "::error::rollback_to must be a full 40-character commit SHA"; exit 1; fi
           run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy.yml --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId // empty')
           if [ -z "$run_id" ]; then
-            echo "::error::No successful deploy run of $SHA, so no release record to restore. To go back to that code, run this workflow on that commit instead (a new deploy of old code)."
+            echo "::error::No successful deploy run of $SHA, so no release record to restore. To go back to that code, restore it in a new commit on main (git revert, or check out its components' directories from $SHA): main's tooling then deploys it and judges it like any release. Running this workflow on that commit is refused (it would run that commit's own, older deploy tooling)."
             exit 1
           fi
           gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "release-$SHA" --dir release

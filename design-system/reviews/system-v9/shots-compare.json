@@ -1,0 +1,363 @@
+{
+ "name": "v9",
+ "themes": [
+  "light",
+  "dark"
+ ],
+ "states": [
+  {
+   "name": "b1-reload-scrolled-to-node-b-1500",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 1500,
+   "height": 900,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "const c = document.querySelector('[data-view=\"demo-nodeb\"]'); scrollTo(0, c.getBoundingClientRect().top + scrollY)"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "reload": 2000
+    }
+   ]
+  },
+  {
+   "name": "b1-reload-scrolled-to-node-b-400-coarse",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 400,
+   "height": 800,
+   "scale": 1,
+   "coarse": true,
+   "steps": [
+    {
+     "eval": "const c = document.querySelector('[data-view=\"demo-nodeb\"]'); scrollTo(0, c.getBoundingClientRect().top + scrollY)"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "reload": 2000
+    }
+   ]
+  },
+  {
+   "name": "b1-reload-scrolled-to-memory-1500",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 1500,
+   "height": 900,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "const c = document.querySelector('[data-view=\"demo-bytes\"]'); scrollTo(0, c.getBoundingClientRect().top + scrollY)"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "reload": 2000
+    }
+   ]
+  },
+  {
+   "name": "b1-reload-scrolled-to-memory-400-coarse",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 400,
+   "height": 800,
+   "scale": 1,
+   "coarse": true,
+   "steps": [
+    {
+     "eval": "const c = document.querySelector('[data-view=\"demo-bytes\"]'); scrollTo(0, c.getBoundingClientRect().top + scrollY)"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "reload": 2000
+    }
+   ]
+  },
+  {
+   "name": "m3-pods-at-load-1440",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 1440,
+   "scale": 1,
+   "steps": [
+    {
+     "wait": 200
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "m3-pods-narrowed-and-widened-back-1440",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 1440,
+   "scale": 1,
+   "steps": [
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"node-b\"]"
+    },
+    {
+     "wait": 300
+    },
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"\"]"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "m3-pods-after-colour-the-eight-largest-1440",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 1440,
+   "scale": 1,
+   "steps": [
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"node-b\"]"
+    },
+    {
+     "wait": 300
+    },
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"\"]"
+    },
+    {
+     "wait": 300
+    },
+    {
+     "click": "[data-view=\"demo-pods\"] [data-recolour]"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "m3-pods-at-load-400-coarse",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 400,
+   "scale": 1,
+   "coarse": true,
+   "steps": [
+    {
+     "wait": 200
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "m3-pods-narrowed-and-widened-back-400-coarse",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 400,
+   "scale": 1,
+   "coarse": true,
+   "steps": [
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"node-b\"]"
+    },
+    {
+     "wait": 300
+    },
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"\"]"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "m3-pods-after-colour-the-eight-largest-400-coarse",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 400,
+   "scale": 1,
+   "coarse": true,
+   "steps": [
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"node-b\"]"
+    },
+    {
+     "wait": 300
+    },
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"\"]"
+    },
+    {
+     "wait": 300
+    },
+    {
+     "click": "[data-view=\"demo-pods\"] [data-recolour]"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b1-legend-two-actions-320-coarse",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 320,
+   "scale": 1,
+   "coarse": true,
+   "steps": [
+    {
+     "wait": 200
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-limit\"]) .vz-legend-table",
+   "pad": 8
+  },
+  {
+   "name": "b1-legend-two-actions-1440",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 1440,
+   "scale": 1,
+   "steps": [
+    {
+     "wait": 200
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-limit\"]) .vz-legend-table",
+   "pad": 8
+  },
+  {
+   "name": "m1-nav-focus-1440",
+   "url": "http://127.0.0.1:8971/dist/preview/Nav.html",
+   "width": 1440,
+   "scale": 2,
+   "steps": [
+    {
+     "focus": ".vz-nav a"
+    }
+   ],
+   "clip": ".vz-nav",
+   "pad": 4
+  },
+  {
+   "name": "m1-legend-sort-focus-1440",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 1440,
+   "scale": 2,
+   "steps": [
+    {
+     "focus": "[data-view=\"demo-routes\"] .vz-sort[data-col=\"last\"]"
+    }
+   ],
+   "clip": "[data-view=\"demo-routes\"] .vz-legend-table",
+   "pad": 8
+  },
+  {
+   "name": "m1-nav-focus-400-coarse",
+   "url": "http://127.0.0.1:8971/dist/preview/Nav.html",
+   "width": 400,
+   "scale": 2,
+   "coarse": true,
+   "steps": [
+    {
+     "focus": ".vz-nav a"
+    }
+   ],
+   "clip": ".vz-nav",
+   "pad": 4
+  },
+  {
+   "name": "m1-legend-sort-focus-400-coarse",
+   "url": "http://127.0.0.1:8971/dist/preview/Chart.html",
+   "width": 400,
+   "scale": 2,
+   "coarse": true,
+   "steps": [
+    {
+     "focus": "[data-view=\"demo-routes\"] .vz-sort[data-col=\"last\"]"
+    }
+   ],
+   "clip": "[data-view=\"demo-routes\"] .vz-legend-table",
+   "pad": 8
+  },
+  {
+   "name": "fixture-table-panel-1440",
+   "url": "http://127.0.0.1:8971/dist/fixture/index.html",
+   "width": 1440,
+   "scale": 1,
+   "steps": [
+    {
+     "wait": 1500
+    }
+   ],
+   "clip": "#panel-table",
+   "pad": 8
+  },
+  {
+   "name": "fixture-full-1440",
+   "url": "http://127.0.0.1:8971/dist/fixture/index.html",
+   "width": 1440,
+   "scale": 1,
+   "steps": [
+    {
+     "wait": 1500
+    }
+   ]
+  },
+  {
+   "name": "dashboard-1500",
+   "url": "http://127.0.0.1:8971/reviews/system-vN/compositions/dashboard.html",
+   "width": 1500,
+   "scale": 1,
+   "steps": [
+    {
+     "wait": 300
+    }
+   ]
+  },
+  {
+   "name": "charts-1500",
+   "url": "http://127.0.0.1:8971/reviews/system-vN/compositions/charts.html",
+   "width": 1500,
+   "scale": 1,
+   "steps": [
+    {
+     "wait": 300
+    }
+   ]
+  },
+  {
+   "name": "dashboard-400-coarse",
+   "url": "http://127.0.0.1:8971/reviews/system-vN/compositions/dashboard.html",
+   "width": 400,
+   "scale": 1,
+   "coarse": true,
+   "steps": [
+    {
+     "wait": 300
+    }
+   ]
+  },
+  {
+   "name": "charts-400-coarse",
+   "url": "http://127.0.0.1:8971/reviews/system-vN/compositions/charts.html",
+   "width": 400,
+   "scale": 1,
+   "coarse": true,
+   "steps": [
+    {
+     "wait": 300
+    }
+   ]
+  }
+ ]
+}

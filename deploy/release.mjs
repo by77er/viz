@@ -201,7 +201,10 @@ export function forwardOnlyReasons(manifest, live) {
       if (f.writes === null) continue
       const r = readersOf(serving, f.format)
       if (r.reads === null || r.reads.includes(f.writes)) continue // nothing serving reads it, or every reader reads this version
-      const assumed = [...r.undeclared, ...r.implicit]
+      const assumed = [
+        r.undeclared.length ? `${r.undeclared.join(', ')} ${r.undeclared.length > 1 ? 'declare' : 'declares'} no format versions` : '',
+        r.implicit.length ? `${r.implicit.join(', ')} ${r.implicit.length > 1 ? 'do' : 'does'} not list it, in a declaration from before declarations were complete` : '',
+      ].filter(Boolean)
       out.push({
         worker: name,
         kind: 'format',
@@ -209,7 +212,7 @@ export function forwardOnlyReasons(manifest, live) {
         writes: f.writes,
         previousReads: r.reads,
         previousDeclared: assumed.length === 0,
-        why: `${f.format}: ${name} writes version ${f.writes}, and the release serving before it reads only ${r.reads.join(', ')}${assumed.length === 0 ? '' : ` (${assumed.join(', ')} declares no version of this format, so it is taken to read version 1)`}; contracts/COMPATIBILITY.md §3.3 deploys the reader first`,
+        why: `${f.format}: ${name} writes version ${f.writes}, and the release serving before it reads only ${r.reads.join(', ')}${assumed.length === 0 ? '' : ` (${assumed.join('; ')}: taken to read version 1)`}; contracts/COMPATIBILITY.md §3.3 deploys the reader first`,
       })
     }
   }

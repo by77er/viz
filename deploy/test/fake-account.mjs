@@ -40,7 +40,8 @@ export function installFakeAccount(tmp) {
       number: v.number,
       annotations: { 'workers/tag': v.tag, ...(v.message ? { 'workers/message': v.message } : {}) },
       // Secrets are listed by name and type only, as Cloudflare does.
-      resources: { bindings: [...Object.entries(v.vars).map(([n, text]) => ({ type: 'plain_text', name: n, text })), ...Object.keys(v.secrets).filter((n) => n !== hide).map((n) => ({ type: 'secret_text', name: n }))] },
+      // A var whose value is not a string is a JSON var, as Cloudflare shows it.
+      resources: { bindings: [...Object.entries(v.vars).map(([n, x]) => (typeof x === 'string' ? { type: 'plain_text', name: n, text: x } : { type: 'json', name: n, json: x })), ...Object.keys(v.secrets).filter((n) => n !== hide).map((n) => ({ type: 'secret_text', name: n }))] },
     })
     if (sub === 'deployments') return ok({ deployments: [{ id: 'd1', created_on: '2026-11-19T00:00:00Z', versions: w.deployment }] })
     if (sub === 'versions' && id) {

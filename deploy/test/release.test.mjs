@@ -281,7 +281,7 @@ test('formats: a release writing a version the serving release does not read is 
   // Worker that declares nothing reads version 1 of it; one that declares completely without it does not read it.
   const others = (formats) => ({ ...live({ 'store.anomaly-state': { writes: 1, reads: [1, 2] } }), 'viz-query': { exists: true, formats } })
   assert.deepEqual(forwardOnlyReasons(m, others(null)).map((x) => [x.format, x.previousReads, x.previousDeclared]), [['store.anomaly-state', [1], false]])
-  assert.match(forwardOnlyReasons(m, others(null))[0].why, /\(viz-query declares no version of this format, so it is taken to read version 1\)/)
+  assert.match(forwardOnlyReasons(m, others(null))[0].why, /\(viz-query declares no format versions: taken to read version 1\)/)
   assert.deepEqual(forwardOnlyReasons(m, others({})), [])
   assert.equal(forwardOnlyReasons(m, others({ [ANY]: { writes: null, reads: [1] } })).length, 1)
   // Nothing older runs: a first deploy is never forward-only.

@@ -167,9 +167,12 @@ fn extents_count_only_what_lies_inside_the_bound_and_find_a_trace_whose_pieces_s
     let tail_in = batch(&[Sp { trace: 0xd, span: 8, parent: 1, name: "later", from: 100, to: 101 }], &api(), |_| Vec::new());
     assert_eq!(extent(&index, &[tail_out.clone()], BOUND)["hi"], (T0 + 45 * MIN).to_string());
     assert_eq!(extent(&index, &[tail_out, tail_in], BOUND)["hi"], (T0 + 101 * MIN).to_string());
-    // A hull that would pass the bound's end is cut to it (spans are planned by start).
+    // A hull that would pass the bound's end is cut to it (spans are planned by start), and one
+    // whose fragment starts before the bound starts at the bound.
     let (_, t5) = unit(&[Sp { trace: 0xf, span: 5, parent: 0, name: "long", from: 0, to: 600 }]);
     assert_eq!(extent(&t5, &[], BOUND)["hi"], BOUND.1.to_string());
+    let (_, t6) = unit(&[Sp { trace: 0xb, span: 6, parent: 0, name: "early", from: -140, to: -139 }, Sp { trace: 0xb, span: 7, parent: 6, name: "in", from: 0, to: 1 }]);
+    assert_eq!(extent(&t6, &[], BOUND)["lo"], BOUND.0.to_string());
 }
 
 #[test]
@@ -239,7 +242,12 @@ fn a_metric_query_whose_series_do_not_fit_the_budget_is_refused_by_it() {
     let lines: Vec<String> = (0..2000).map(|i| format!("user={i}")).collect();
     let b = log_batch(&lines);
     let w = |max_bytes: u64| W::default().u64(1_000_000).u64(max_bytes).u64(100_000).u64(11_000).u32(100).u8(0).u8(0).i64(T0).i64(T0 + 10_000 * 1_000_000_000).i64(1_000_000_000).item(b"sum by (user) (count_over_time({job=\"a\"} | logfmt [1m]))").files(&[]).files(std::slice::from_ref(&b));
-    assert_eq!(run(logs::do_lq_query, w(8 << 20)), Err("limit max_decoded_bytes".into()));
+    // Refused before the series are made (not only when the answer is charged after them).
+    let r = w(8 << 20);
+    match logs::do_lq_query(Req { b: &r.0, at: 0 }) {
+        Err(Fail::Limit("max_decoded_bytes", _, _, m)) => assert!(m.contains("series of 10001 steps do not fit"), "{m}"),
+        other => panic!("expected max_decoded_bytes, got {}", other.is_ok()),
+    }
     assert!(run(logs::do_lq_query, w(BIG)).is_ok());
 }
 
@@ -275,4 +283,19 @@ fn extents_are_charged_to_the_budget_by_trace_not_by_row_cap() {
     let ok: serde_json::Value = serde_json::from_slice(&call(1 << 20).expect("fits")).unwrap();
     assert_eq!(ok["traces"], 3000);
     assert_eq!(call(100_000), Err("limit max_decoded_bytes".into()));
+}
+
+#[test]
+fn a_trace_metric_query_whose_series_do_not_fit_the_budget_is_refused_by_it() {
+    let names: Vec<&'static str> = (0..500).map(|i| &*Box::leak(format!("op-{i}").into_boxed_str())).collect();
+    let spans: Vec<Sp> = (0..500).map(|i| Sp { trace: (i % 200) as u8 + 1, span: (i / 200) as u8 + 1, parent: 0, name: names[i], from: 0, to: 1 }).collect();
+    let b = batch(&spans, &api(), |_| Vec::new());
+    // `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi, u64 max_series, u64 max_points, u8 instant, i64 start, i64 end, i64 step, str, files, tails`.
+    let w = |max_bytes: u64| W::default().u64(1_000_000).u64(max_bytes).i64(ALL.0).i64(ALL.1).u64(10_000).u64(11_000).u8(0).i64(T0 - MIN).i64(T0 + 10_000 * 1_000_000_000).i64(1_000_000_000).item(b"{ } | count_over_time() by (name)").files(&[]).files(std::slice::from_ref(&b));
+    let r = w(8 << 20);
+    match traces::do_tq_metrics(Req { b: &r.0, at: 0 }) {
+        Err(Fail::Limit("max_decoded_bytes", _, _, m)) => assert!(m.contains("series of"), "{m}"),
+        other => panic!("expected max_decoded_bytes, got ok={}", other.is_ok()),
+    }
+    assert!(run(traces::do_tq_metrics, w(BIG)).is_ok());
 }
