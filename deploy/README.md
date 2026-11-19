@@ -85,6 +85,11 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 | `POST /v1/metrics` | viz-ingest | OTLP/HTTP metrics |
 | `POST /api/v1/push` | viz-ingest | routed as asked; edge does not serve it yet (404 from edge) |
 | `/api/v1/query`, `/query_range`, `/labels`, `/series`, `/metadata`, `/api/v1/label/*`, `/api/v1/status/*` | viz-query | |
+| `/api/v1/plan` (exactly) | viz-query | what a query would read, without running it (added 2026-11-19; the ruler and mcp reach it through their own `QUERY` bindings) |
+| `POST /v1/traces`, `POST /v1/logs` (exactly) | viz-ingest | OTLP/HTTP traces and logs, the OTLP default paths (opentelemetry.io/docs/specs/otlp/, "OTLP/HTTP Request", read 2026-11-19). edge serves them only while `INGEST_SIGNALS` names the signal, else 404 (added 2026-11-19, stage 3 of traces and logs) |
+| `POST /loki/api/v1/push` (exactly) | viz-ingest | Loki push (grafana.com/docs/loki/latest/reference/loki-http-api/, read 2026-11-19); edge serves it only while `INGEST_SIGNALS` names `logs` |
+| Tempo: `/api/traces/<id>`, `/api/v2/traces/<id>`, `/api/search`, `/api/search/tags`, `/api/v2/search/tags`, `/api/search/tag/<tag>/values`, `/api/v2/search/tag/<tag>/values`, `/api/metrics/query_range`, `/api/metrics/query` | viz-query | the paths of the "Query" section of grafana.com/docs/tempo/latest/api_docs/ (read 2026-11-19) that viz-query serves (`query/src/sigroutes.ts`); exact paths, a path parameter is one non-empty segment. viz-query answers them only while `QUERY_SIGNALS` names `traces`, else 404. Tempo's `POST /api/v2/traces/diff` has the shape of a trace id and reaches viz-query, which does not serve it (an invalid id) |
+| Loki: `/loki/api/v1/query`, `/query_range`, `/labels`, `/label/<name>/values`, `/series` | viz-query | the query paths of grafana.com/docs/loki/latest/reference/loki-http-api/ that viz-query serves; only while `QUERY_SIGNALS` names `logs`, else 404. Every other `/loki/…` path (tail, index stats and volume, patterns, detected fields, rules, delete, format_query, status), Loki's `/otlp/v1/logs`, the deprecated `/api/prom/…` and Tempo's `/api/echo`, `/api/status/buildinfo`, `/api/overrides` are 404 at the gateway |
 | `/api/v1/control`, `/api/v1/control/*` | viz-control | |
 | `GET /api/v1/rules`, `GET /api/v1/alerts`, `/api/v1/monitors`, `/api/v1/monitors/*` | viz-ruler | Prometheus' rule and alert reads, and the monitors API (monitors, groups, rule files, backtest, detectors, notifier config, silences): `ruler/src/http.ts` `ROUTES`. `/api/v2/alerts` (Alertmanager ingestion) is not served |
 | `/mcp` (exactly), `/api/v1/agent`, `/api/v1/agent/*` | viz-mcp | MCP over Streamable HTTP, and the same tools as JSON. `/mcp/` and `/mcp/x` are 404 at the gateway |
@@ -582,6 +587,28 @@ All measured here unless it says Cloudflare.
   whose `gateway/` was equal to the shared tree's: **18 of 18 killed** (the script now runs
   vitest with at most 2 workers).
 
+- **Stage 3 of traces and logs (2026-11-19): the span, log, Tempo, Loki and plan routes.**
+  Nothing deployed. `npx vitest run --maxWorkers=2`: **178 of 178** (3 files; 83 more than the
+  last count above: 22 newly routed paths and 61 near misses that must 404, among them `/v1/logs`,
+  which was a 404 before, `/api/traces/`, `/api/traces/abc/x`, `/api/search/tag//values`,
+  `/loki/api/v1/label/x/values/y`, `/loki/api/v1/tail`, `/loki/api/v1/index/stats`, `/otlp/v1/logs`,
+  `/api/echo`, `/api/v1/planx`). `node --test --test-concurrency=2 'test/*.test.mjs'`: **47 of 47**.
+  `npx tsc --noEmit` clean. Through the gateway in front of the real ingest and query Workers:
+  `stack/README.md`, "Through the gateway". `node gateway/scripts/mutants.mjs`, run from `deploy/`
+  in a copy of the tree in a scratch directory after the copy's suite passed unmutated (178 of
+  178): **28 of 28 killed**; the copy's `gateway/src/index.ts` equal to the shared tree's afterwards.
+  This change's seven, and how many tests failed for each:
+
+  | Mutant | Killed by (tests failing) |
+  |---|---|
+  | a trace path goes to ingest (OTLP traces and Tempo share `/api/traces/…`) | the Tempo trace-by-ID rows (5) |
+  | every `/loki/` path goes to ingest (where the push is served) | the Loki rows and Loki near misses (29) |
+  | the span and log ingest paths are not routed | `/v1/traces`, `/v1/logs`, `/loki/api/v1/push` rows (4) |
+  | the Tempo and Loki read paths are not routed | their rows (18) |
+  | a trace id matched as a prefix (`/api/traces/abc/x` reaches query) | the trace-id near misses (4) |
+  | `/api/v1/plan` is not routed | its row (2) |
+  | every `/loki/` path goes to query (`/loki/api/v1/tail`, index, rules reach it) | the Loki near misses (23) |
+
 - `wrangler deploy --dry-run` of all four generated production configs: bundles (viz-ingest
   2,642.54 KiB / 799.96 KiB gzip, viz-control 303.48 / 58.00, viz-query 2,625.71 / 824.97,
   viz-gateway 7.15 / 2.75).
@@ -856,6 +883,25 @@ right after the trial for 23:10–23:50 UTC, returned no rows for the `viz-trial
 (already deleted, or not yet ingested), so there is no measured bill for it here.
 
 ## Needed changes in components
+
+From stage 3 of traces and logs (2026-11-19): what is still needed before `INGEST_SIGNALS` and
+`QUERY_SIGNALS` are set in a production deployment (the gateway routes their paths already; both
+Workers answer them 404 until then):
+
+- **The publisher's rollback floor (D64).** `INGEST_SIGNALS` goes on only once the publisher
+  release that reads the span and log tables is the oldest one a rollback of viz-publisher can
+  reach; an older publisher stops a tenant at the first change naming them.
+- **A trial on Cloudflare.** Nothing of stages 1 to 3 has run there: OTLP and Loki decode CPU in
+  workerd (`edge/README.md`, "Known risks"), the flush of span and log segments against real R2
+  latencies, the query caps (`maxSpans` 40,000, `maxLogRows` 60,000) against a 128 MB isolate, and
+  the service bindings in production shape (`script_name`; the test puts every Worker in one
+  script). A stage release with both flags in `VIZ_STAGE_VARS`, OTLP and Loki load through the
+  gateway, and Tempo and Loki queries back is the experiment.
+- **Where the flags are set.** Neither is in `workers.json` or a component config; setting them is
+  a var on viz-ingest and on viz-query (a release). They are per deployment, not per tenant.
+- **A client run.** No Grafana Tempo or Loki data source, and no OTLP SDK exporter, has been
+  pointed at the gateway. Tempo's `/api/echo` and `/api/status/buildinfo` are not served
+  (whether Grafana's data source check needs one of them was not verified).
 
 From the generated OAuth key (D53; none made here):
 

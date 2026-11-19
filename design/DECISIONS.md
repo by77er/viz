@@ -1960,7 +1960,10 @@ what a shard-side tail filter (D48) would read for logs. (e) would make the Rust
 OTLP values and produce ECMAScript number text; `edge` has both already.
 
 **Cost.** Up to three shard streams per tenant in each ledger's watermarks (only for tenants
-that send spans or logs), and a base pool name at most 113 characters. Query, flush and the
+that send spans or logs), and a base pool name at most 113 characters that does not end in
+`/traces` or `/logs` (the second rule added 2026-11-19, stage 3: a metric shard of such a pool
+would be the same object, under the same name, as another pool's span or log shard; edge refuses
+the map, `contracts/BATCH.md`). Query, flush and the
 sweeper must know the derived pools (`edge/README.md`, "Needed changes"). Measured here (Node,
 load 8 to 9, not workerd): `edge` decodes and batches OTLP traces in 16 to 22 µs a span, OTLP
 logs in 10 to 19 µs a record, Loki push in 3 to 5 µs an entry; `engine/storage` encodes a million
@@ -2216,8 +2219,9 @@ too, but whose unflushed spans fall inside it, is summarised from the spans read
 decodes every span of the row groups of its hours (one row group per 20,000-span flush unit):
 about 240 ms for 20,000 spans here. Tenants with more than about 40,000 spans or 60,000 log rows
 in a query's window are refused until split execution exists. A metric pool whose name ends in
-`/traces` or `/logs` would be classified as a signal pool (edge allows such names today); its
-reads are then refused by the header check, not misread.
+`/traces` or `/logs` would be classified as a signal pool; since stage 3 (2026-11-19) edge refuses
+a pool map naming one (and query, which reads pool maps through edge's `poolMap`, refuses its
+reads with 503), and before that its reads were refused by the header check, never misread.
 
 **Would change if.** The engines gain exact partials (then (c), and the caps become per part);
 every shard running answers the signal filter (then tails are chosen by it and the name rule goes);
@@ -2370,3 +2374,44 @@ Iceberg state, their removals are released by the snapshot rule, and every tenan
 for the new tables' cursors); the release tooling learns per-format floors (then step 2 of the
 rule is enforced); or counts must be exact across a publisher storage loss (then a re-base of
 every tenant after a resync).
+
+## D65. A `logs` file's token filter lives inside its Parquet object, between the last row group and the footer; its place is in the fragment (`tok`) and the file's metadata
+
+(Written 2026-11-19, with compaction of the span and log tables, D66. Replaces the placement
+`contracts/LOGS.md` §6 gave before, which was never built; the filter's bytes are unchanged.)
+
+**Decision.** Compaction writes a `logs` output's token filter (`VZT1`, contracts/LOGS.md §6)
+into the output's own Parquet bytes: after the last row group's column chunks and bloom filter,
+before the page indexes and the footer metadata, through the `parquet` crate's
+`SerializedFileWriter::write_all` (which keeps the writer's offsets right). Its offset and
+length are in the index fragment (`"tok":[off,len]`) and in the footer's key-value metadata
+(`viz.token_filter`). The fragment's `foot` then starts where the filter ends. A file with more
+than 2^20 distinct tokens gets no filter.
+
+**Alternatives.** (a) The settled text: a separate object `….tokens` next to the file, with its
+size and SHA-256 in the ledger. (b) The filter as a footer key-value entry. (c) The filter before
+the first row group. (d) A filter in the ledger's index fragment.
+
+**Why.** (a) needs every deleter to know the second object: the orphan sweep keeps any key it
+cannot parse for ever (`unknown_name`), and purge deletes only keys the ledger removed, so every
+`.tokens` object would outlive retention, holding the tokens of expired log lines; the ledger has
+no field for its size or hash (`contracts/ledger.ts`, not this change's to edit) and would need a
+format change and its readers first (COMPATIBILITY.md §3.3); D30's adoption and sweep rules would
+need restating for a pair of objects; and a merge would cost a third PUT. Inside the object it is
+covered by the object's hash, written by the PUT the step already makes, and deleted with the file
+by rules already proven. (b) Every reader reads the footer; a filter of hundreds of kilobytes
+there taxes every read of the file, including the ones that never use it. (c) needs all of the
+file's tokens before its first row group is written, which a streaming merge does not have. (d)
+Fragments are capped (ledger state is 16 MiB a tenant) and the filter grows with distinct tokens.
+Parquet readers locate everything through the footer, and writers already put bloom filters and
+page indexes between row groups and the footer; PyArrow 26.0.1 and DuckDB 2.0.0 read every merged
+file whole (`engine/storage/README.md`).
+
+**Cost.** A reader that wants only the filter first needs the fragment (or the footer) to find it.
+A file's bytes grow by its filter (measured in `engine/storage/README.md`, "Compaction of spans and
+logs"). `foot` no longer starts at the last row group's end for these files; readers before this
+change never read the bytes between, so they are unaffected.
+
+**Would change if.** A Parquet reader viz must support refuses bytes no footer field references;
+filters are wanted for files that are never compacted (flush files); or the ledger gains per-file
+side objects for other reasons.

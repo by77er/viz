@@ -48,8 +48,8 @@ And one RPC entrypoint, reachable only through a service binding (never over HTT
 Bindings: `SHARD` (Durable Object namespace), `CONFIG` (KV), `DEFAULT_POOL` (JSON `PoolMap`
 for tenants without their own), optionally `INGEST_LIMITS` (JSON overriding any field
 of `Limits`), and optionally `INGEST_SIGNALS` (`traces`, `logs` or `traces,logs`; unset in
-every deployment: stage 2 drains those shards, but the publisher must read the new tables
-first, see "Needed changes" 2).
+every deployment: stage 2 drains those shards and stage 3 routes their paths through the
+gateway, but the flag goes on only as "Needed changes" 2 says).
 
 KV layout:
 
@@ -142,7 +142,7 @@ shared pool.
 | New series over the active-series limit | 400 naming the limit (below); the rest is written | 200 with `partial_success` |
 | A shard status this code does not know, a newer key record, pool map or limits record | 503 with `Retry-After`; never counted as stored, never authenticated on a guess | same |
 | `stale_epoch` | map refetched once and the request re-routed; otherwise 503 with `Retry-After` | same |
-| Shard error, no pool, or a pool map naming a pool outside `POOL_NAME` (D38) | 503 with `Retry-After` | same |
+| Shard error, no pool, or a pool map naming a pool outside `POOL_NAME` (D38) or a pool ending in `/traces` or `/logs` (contracts/BATCH.md, "Streams per signal") | 503 with `Retry-After` | same |
 | Malformed body | 400 with a short reason | 400, body is a `Status` in the request's encoding |
 | Too large | 413 | 413 |
 
@@ -193,6 +193,16 @@ their files, but the publisher must read those tables first ("Needed changes" 2)
   (2026-11-19): `npx vitest run`, **91 passed, 0 failed** (11 files); `tsc --noEmit` clean; the
   corpus at seed 1 (no `--requests`) writes the same batches and expected rows as before (the
   generator's draws are unchanged: requests are written after they are built).
+
+**Base pools (stage 3, 2026-11-19).** A pool map whose pool ends in `/traces` or `/logs`
+(`pool:<tenant>` or `DEFAULT_POOL`) is refused like one outside `POOL_NAME`: 503 with
+`Retry-After: 30`, for every signal, metrics included, and nothing is stored (`validBasePool` in
+`src/route.ts`; `contracts/BATCH.md`, "Streams per signal", changed first). Otherwise the metric
+shard `{pool}/{slot}` of a pool `p/logs` would be the very object, under the very name, of the log
+shard `p/logs/{slot}` of a pool `p`, and `query/` (which tells a shard's signal by its name, D62)
+would read it as a log shard. Names that only look alike are pools like any other (`…/tracesx`,
+`…/traces-1`, `…/logs/a`, `traces`). `query/` reads pool maps through this module's `poolMap`, so
+it refuses such a tenant's reads with 503 too (`stack/README.md`, "Through the gateway").
 
 **Per-item refusals.** A span or record that breaks a rule is refused on its own; the rest is
 stored. OTLP answers 200 with `partial_success` (`rejected_spans` / `rejected_log_records`
@@ -273,8 +283,9 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
   `partial_success`). Scope attributes, `target_info`, start timestamps and exemplars
   are ignored. zstd is refused with 415.
 - OTLP/gRPC. OTLP traces and logs and Loki push are decoded and appended, but only behind
-  `INGEST_SIGNALS`; stage 2 drains their shards into the ledger, query and the publisher do not
-  read those tables yet ("Needed changes" 2).
+  `INGEST_SIGNALS` (off everywhere); stage 2 drains their shards into the ledger, `query/` reads
+  them behind `QUERY_SIGNALS` (D62), the gateway routes both (stage 3), and the publisher reads
+  them without publishing them (D64; "Needed changes" 2).
 - For traces and logs: OTLP `schema_url`, the span `type` field (OTLP 1.12, development), event
   and link dropped-attribute counts, link flags, log `event_name`, resource `entity_refs`;
   Loki's service-name discovery (a Loki stream without `service_name` keeps none); Loki's
@@ -460,6 +471,28 @@ apply (the earlier 43 were not re-run here).
 | a full buffer resolves (acknowledged, not written) | a full shard buffer is a retryable refusal, never a success |
 | new series over the limit resolve | new series over the tenant's active-series limit are refused (series_limit) |
 | values parsed with `Number()` (hex, empty accepted) | writes nothing at all (hex, empty); parses exactly Prometheus' text form |
+
+### Stage 3 of traces and logs (2026-11-19)
+
+The base-pool rule above. `npx vitest run --maxWorkers=2`: **92 passed, 0 failed** (11 files; one
+new test in `test/overload.test.ts`: two bad pools (`…/traces`, `…/logs`) as the tenant's map and
+as `DEFAULT_POOL`, each refused for Remote Write, OTLP metrics, OTLP traces and Loki push with
+nothing in the shard it names or in its derived pools; six look-alike names accepted and stored;
+the good map again stores spans in its traces pool). `npx tsc --noEmit` clean.
+`node scripts/mutants.mjs --check`: all 73 patterns apply (one older pattern, "spans appended to
+the metrics pool", no longer applied since stage 2 moved the derivation to `signalPool`; it now
+mutates `signalMap` to return the metrics pool). Run on a copy of the tree in a scratch directory,
+after the copy's suite passed 92 of 92, each against the whole suite:
+
+| Mutant | Killed by |
+|---|---|
+| a base pool ending in `/logs` is accepted | a base pool ending in /traces or /logs is refused (503) … |
+| a base pool ending in `/traces` or `/logs` is accepted | the same |
+| a pool map whose pool is outside `POOL_NAME` is used (pattern moved into `validBasePool`) | a pool map naming a pool outside POOL_NAME is refused (503) …|
+| spans appended to the metrics pool (retargeted at `signalMap`) | the base-pool test; stores every span exactly …; refuses each invalid span … |
+
+Through the gateway, the same rule is also checked end to end and the first mutant killed again
+there (`stack/README.md`, "Through the gateway").
 
 ### Decode throughput
 
@@ -703,6 +736,21 @@ In components others own; not made here.
    - **edge**: nothing; the mapping of `registering` to 503 (D61) already covers the derived
      pools' new streams.
 
+   **Stage 3 (2026-11-19).** Done since: `query/` reads the tables and sends `signals` (D62); the
+   gateway routes `/v1/traces`, `/v1/logs` and `/loki/api/v1/push` here and Tempo's and Loki's
+   read paths to viz-query (`deploy/README.md`, "Topology and routes"); edge refuses base pools
+   ending in `/traces` or `/logs` (query's "Needed changes elsewhere" 4); the publisher reads the
+   tables without publishing them (D64, its README). What remains before the flag is set in
+   production is listed once, in `deploy/README.md` ("Needed changes in components", stage 3):
+   the publisher's rollback floor, a trial on Cloudflare, a client run.
+
+3. **control (and `shard/src/pool.ts` `dedicatedPool`): a tenant named `traces` or `logs`.** Its
+   dedicated pool is `tenant/traces` or `tenant/logs` (`control/src/ops-settings.ts` accepts
+   exactly `tenant/<tenant>`), which edge now refuses (503 for every request of that tenant).
+   Wanted: control refuses such a pool setting with a reason (or the dedicated pool gets a name
+   that cannot end so, e.g. `tenant/<tenant>/p`, with a migration for existing records). No
+   such tenant exists in any deployment; `TENANT_ID` allows the names.
+
 ## Contract issues (traces and logs, 2026-11-19)
 
 What could not be settled here, or was settled in a way someone else must confirm:
@@ -710,7 +758,10 @@ What could not be settled here, or was settled in a way someone else must confir
 1. **Per-signal pools are a naming convention**, not part of the pool map
    (`shard/src/pool.ts`, a contract this change does not own): `edge`, flush's sweep and query
    must all derive `{pool}/traces` and `{pool}/logs` the same way. A field in the pool map
-   would be explicit (D57, "Would change if").
+   would be explicit (D57, "Would change if"). Since stage 3 the convention is unambiguous:
+   `contracts/BATCH.md` forbids a base pool ending in `/traces` or `/logs`, and edge enforces it
+   when it reads a map. `POOL_NAME` (`contracts/ledger.ts`) cannot say it (the derived pools end
+   so), and its comment does not mention it: the file was another engineer's while this was done.
 2. **`trace_index` counts over-count** a span stored by two units (`contracts/TRACES.md`,
    "Duplicates across units"). Exact counts need the de-duplicated spans or a compaction that
    re-aggregates fragments from them.

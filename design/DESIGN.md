@@ -135,7 +135,13 @@ their own: the pools `{pool}/traces` and `{pool}/logs`, so a shard stream holds 
 default; stage 2, 2026-11-19): edge appends there, those shards seal, register (D61) and are
 flushed and recorded like any other, and their files are listed by the ledger (§4.3, §5.1).
 A tail read names the signals it wants by the batches' header byte (`signals: [1]` for a
-metrics query), so a span or log batch never reaches the metrics engine (D48).
+metrics query), so a span or log batch never reaches the metrics engine (D48). The public path
+is wired (stage 3, 2026-11-19): the gateway on `vis.bitcru.sh` routes `/v1/traces`, `/v1/logs`
+and `/loki/api/v1/push` to viz-ingest by exact path, as it routes `/v1/metrics`; edge answers
+them 404 while `INGEST_SIGNALS` does not name the signal. A pool map's own pool never ends in
+`/traces` or `/logs` (edge refuses such a map, 503, metrics included), so a shard named
+`…/traces/{slot}` or `…/logs/{slot}` is always a span or log shard and no metric shard shares
+an object or a name with another pool's span or log shard (`contracts/BATCH.md`).
 
 Draft 2 hashed by series id, which sent every request to every shard and made every query
 tail-read every shard. Shard count per tenant is bounded to tens; beyond that a tenant is
@@ -299,8 +305,9 @@ and time.
 | `logs` | record | `service_name, stream_id, ts, line, metadata` | day partitions; `stream_id` hashes the stream labels as `series_id` does; labels as canonical JSON per row (dictionary-encoded), structured metadata, OTLP severity and trace ids; OTLP stream labels from a fixed list of resource attributes (D58); an advisory per-file token filter written at compaction (`contracts/LOGS.md`, format settled, not built) |
 
 The span and log tables are written and listed as built on the write side (stage 2, behind
-`INGEST_SIGNALS`): flush, the ledger, retention and deletion. Not yet: their compaction,
-reading through `query`, and Iceberg publication. The publisher reads them and does not
+`INGEST_SIGNALS`): flush, the ledger, retention and deletion; `query` reads them behind
+`QUERY_SIGNALS` (D62, §6.4), and both halves are joined through the gateway (stage 3). Not yet:
+their compaction and Iceberg publication. The publisher reads them and does not
 publish them yet (D64, §5.3): a change naming them no longer stops a tenant, so
 `INGEST_SIGNALS` may go on in a deployment with a publisher once that publisher release is the
 oldest one a rollback of viz-publisher can reach (the rollout rule in D64).
@@ -468,13 +475,22 @@ is pinned near the bucket so that hits concentrate.
 As built (2026-11-19, `query/README.md` "Traces and logs", D62): the query Worker answers
 Tempo's and Loki's HTTP APIs behind `QUERY_SIGNALS` (off by default); the write side of stage 2
 (D63) flushes and lists the `spans`, `trace_index` and `logs` tables, and tail reads choose
-batches by signal (`signals`). The engines (`engine/traceql`,
+batches by signal (`signals`). Stage 3 (2026-11-19) wired the halves together: the gateway routes
+Tempo's documented read paths (`/api/traces/<id>`, `/api/v2/traces/<id>`, `/api/search`, the tag
+and tag-value paths in v1 and v2, `/api/metrics/query_range`, `/api/metrics/query`) and Loki's
+(`/loki/api/v1/query`, `/query_range`, `/labels`, `/label/<name>/values`, `/series`) to viz-query
+by exact path, one segment per path parameter; their other paths stay 404 at the gateway, and
+viz-query answers these 404 while its flag is off. Tested through the gateway in front of the real
+ingest and query Workers (`stack/README.md`, "Through the gateway"); answers equal to the
+engines' in-memory ones over whole corpora through edge, flush and the ledger are query's own
+end-to-end test (`query/test/signals.e2e.test.ts`). The engines (`engine/traceql`,
 `engine/logql`, clean-room, D35, D40, D50) are linked into the read path's one WASM module
 (`engine/wasm-query`, ABI 6), which reads the files `engine/storage` writes and the span and log
 tail batches through the engines' read seams. The seam with the tail is the metrics one (§2):
 one ledger version per query, tails strictly after the plan and above its watermarks, refusals
 re-planned. Every read sends its signal to the shards (`signals`), asks only its signal's shards
-(by name, for shards of a release before D63) and checks every tail batch's header (a batch of
+(by name, for shards of a release before D63; a name is unambiguous since edge refuses base pools
+ending in `/traces` or `/logs`, §4.1) and checks every tail batch's header (a batch of
 another signal refuses the query, never misread).
 
 - **Trace by ID:** the `trace_index` row groups whose trace-id range (from the index fragment)
@@ -490,7 +506,7 @@ another signal refuses the query, never misread).
   files, bytes and rows decoded (`maxSpans`); split execution by trace-id hash, partial results
   with a cursor, and pushing predicates to sorted and promoted columns are not built.
 - **Tables and engine:** the `spans` and `trace_index` tables are specified in
-  `contracts/TRACES.md` and written by `engine/storage`; flushing them is stage 2's write side.
+  `contracts/TRACES.md` and written by `engine/storage`; flush writes them (stage 2, D63).
 - **Logs:** row groups are chosen from each file's stream list and times; rows of streams no
   selector matches, or outside every selector's range, are dropped before they are held. One
   place, bounded by `maxLogRows`; the per-file token filter (no builder yet), split execution

@@ -1,7 +1,8 @@
 # Trace tables
 
 Status (2026-11-19): **the file layout is settled and written; the write side is built
-(stage 2); reading through query and publishing are proposed.** `engine/storage`
+(stage 2), and so is compaction of both tables (section "Compaction", below); reading through
+query and publishing are proposed.** `engine/storage`
 (`src/spans.rs`) writes `spans` and `trace_index` files from span batches (`contracts/BATCH.md`,
 signal 2) exactly as below; `edge` decodes OTLP traces into those batches (behind
 `INGEST_SIGNALS`), the shards of `{pool}/traces` hold them, flush encodes each sealed segment
@@ -176,7 +177,8 @@ README):
 
 One row per (trace, flush unit) **fragment**: for every trace with a span in the unit, one
 row describing that trace's spans in the unit's `spans` files (however many hours they
-span), written by flush next to them and re-aggregated by compaction (proposed).
+span), written by flush next to them; compaction merges the rows of one trace into one
+(section "Compaction").
 Partitioned by tenant and **day** of `min_start_unix_nano` (so a unit spanning midnight has
 two `trace_index` files); sorted by `trace_id` (bytes) with the page index on, so
 trace-by-id is a binary search (DESIGN §6.4, research 04 §6.3). Statistics and page index on
@@ -214,6 +216,40 @@ compaction re-aggregating fragments from de-duplicated spans would remove the ov
 (proposed). Measured on the read-back corpus (`engine/storage/README.md`): 43 to 52 of 300
 traces over-counted, all of them traces with a retried span in another unit.
 
+## Compaction (settled and built 2026-11-19)
+
+`compact/` merges the files of each table by the rules of `TABLES.md` ("Object keys":
+`inputs16`, levels, precedence) and design/DECISIONS.md D30 (every output carries its inputs,
+a step never deletes its outputs), with these differences:
+
+- **`spans` is merged per hour, never across hours.** The inputs of a merge are files of one
+  hour of one day (one `…/day=D/hour=HH/` prefix), and so is its output: level 1 while the
+  day is open, level 2 once it is closed (each hour of a closed day becomes its own level-2
+  file). The output's key is `…/day=D/hour=HH/L{level}-h{HH}-{inputs16}-{hash8}.parquet` at
+  both levels (`h{HH}`, never `d`). Rows equal on `(trace_id, span_id)` are one row: the input
+  of higher precedence wins, and within one input the later row (so a merge of flush files
+  equals one flush of their batches in admission order). The sort order, row groups, pages,
+  statistics, bloom filter and index fragment are exactly flush's.
+- **`trace_index` is merged per day.** The rows of one `trace_id` in the inputs become one
+  row, merged as "Merging fragments" says (sums, min and max, per-service sums, union of
+  `hours`, the root by the rule there); when the merged `services` list has more than 64
+  entries it keeps the 64 with the most spans (ties: the smaller name), listed by name, and
+  `services_truncated` is true. Fragments are not de-duplicated against spans: a span retried
+  into two units stays counted twice, as when fragments are merged at query time, so a
+  trace's extent, root and `hours` are the same before and after compaction. Keys as
+  `TABLES.md` (`L1-h{HH}`, `L2-d`; `inputs16` over this table's input keys only).
+- **Spans and their `trace_index` are compacted independently.** Nothing pairs them: a
+  fragment names hours (logical references that survive compaction), never files, and both
+  tables are expired by each file's own `day`. A merge's inputs and outputs are of one table.
+- **What a merge does not resolve.** A span id re-sent with a start in another hour lies in two
+  hours' files, which are never merged together; a reader resolves it by precedence, and the
+  ledger orders by precedence only files that overlap in time, so after a merge of one of the
+  two hours the older copy can rank above the newer one. A sender that changes a span's start
+  between retries is the only way to get there (a retried OTLP request carries the same start).
+
+The per-step limits are the metric ones (`compact/`, `DEFAULT_POLICY`): at most 8 inputs and
+16 MB of input bytes, and the same step deadline.
+
 ## Index fragments
 
 `FileEntry.index` for these tables (produced by `engine/storage`, read only by the engine),
@@ -243,7 +279,9 @@ As in `TABLES.md`, with an hour level for `spans` (`dataKeyPrefix` in `contracts
 {cell}/data/trace_index/tenant={tenant}/day={YYYY-MM-DD}/L{level}-…-{hash8}.parquet
 ```
 
-The stream and compaction parts of the name follow `TABLES.md`. A flush unit's `spans`
+The stream and compaction parts of the name follow `TABLES.md`, except that a `spans`
+compaction output is named after its hour at both levels (`L1-h{HH}-…`, `L2-h{HH}-…`, under
+`hour={HH}/`; section "Compaction"). A flush unit's `spans`
 files and its `trace_index` files enter the ledger in one change, like a metric samples file
 and its series file; retention expires both tables in one change, each file by its own `day`
 (a span's start day; a fragment's first start), so a `trace_index` file can leave a day before
@@ -281,8 +319,9 @@ OTLP/HTTP traces (protobuf and JSON, optionally gzip) into it; spans go to the t
 
 ## What stays proposed
 
-- Compaction and re-aggregation of `trace_index`, the query reader and its pruning, and
-  Iceberg publication. (Flush, the ledger's tables, retention and the object keys are built.)
+- Re-aggregation of `trace_index` from de-duplicated spans (compaction merges fragments; it
+  does not read spans), the query reader and its pruning, and Iceberg publication. (Flush,
+  compaction, the ledger's tables, retention and the object keys are built.)
 - Nested-set columns, per-tenant promotion, sampling weights, `with(extrapolate=true)`.
 - The accept window for spans (`edge`'s default: start within 24 hours back and 5 minutes
   ahead) is a default, not a contract value.

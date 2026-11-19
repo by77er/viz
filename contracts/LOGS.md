@@ -1,8 +1,9 @@
 # Logs table (`logs`)
 
 **Status (2026-11-19): the file layout, the ingest mapping and the batch are settled and
-written; flushing, the ledger and retention are built (stage 2); reading through query, the
-token filter and publishing are proposed.**
+written; flushing, the ledger, retention and compaction are built (stage 2), and compaction
+writes the token filter (§6: its place in the file settled 2026-11-19, its reader built in
+`engine/storage`); using it in query, and publishing, are proposed.**
 `engine/storage` (`src/logs.rs`) writes `logs` files from log-record batches
 (`contracts/BATCH.md`, signal 3) exactly as below and reads them back; `edge` decodes OTLP
 logs and Loki push into those batches (behind `INGEST_SIGNALS`); the shards of `{pool}/logs`
@@ -125,8 +126,15 @@ The mapping from a row:
   metrics. Rows that differ in `line` or `metadata` at the same `ts` are all kept.
 - **Partitioning and keys**: one tenant and one UTC day (of `ts`) per file, with the object
   keys and levels of `TABLES.md` and table name `logs`. Hour-level clustering comes from
-  compaction levels as for metrics (*proposed*; research 04 suggests hour partitions for
-  large tenants).
+  compaction levels as for metrics (research 04 suggests hour partitions for large tenants).
+- **Compaction** (built 2026-11-19, `compact/`, design/DECISIONS.md D30): the files of one day
+  are merged as metric files are (level 1 per open hour bucket, `L1-h{HH}`; level 2 per closed
+  day, `L2-d`; `inputs16` over the input keys; inputs in ascending precedence; the same
+  per-step limits). Rows equal on the row key are one row, the input of higher precedence
+  supplying the other columns (within one input, the later row), so a merge of flush files
+  equals one flush of their batches in admission order. Sort order, row groups, pages,
+  statistics, the bloom filter and the fragment are flush's; every compaction output also
+  carries the token filter (§6).
 - **Row groups**: at most 100,000 rows and at most 16 MiB of data, a row counting 64 bytes
   plus its line, severity text, metadata bytes and its stream's label bytes.
 - **Pages**: `line` data pages are at most 1 MiB uncompressed (the writer cuts a page at
@@ -146,6 +154,7 @@ bounded list of the file's streams:
 ```
 {"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_name":S,"max_name":S,"min_ts":N,"max_ts":N,"sid":[N,N]},…],
  "foot":[N,N],
+ "tok":[N,N],
  "streams":[[stream_id,labels,min_ts,max_ts,first_rg,last_rg],…]}
 ```
 
@@ -154,6 +163,12 @@ bounded list of the file's streams:
   last row. With the sort order a row group holds only keys `(service_name, stream_id)`
   between `(min_name, sid[0])` and `(max_name, sid[1])`, exactly as for metric names and
   series ids.
+- `tok`: `[offset, length]` of the file's token filter (§6), present only when the file has
+  one. `foot` then begins where the filter ends (it still holds the offset index, the footer
+  metadata, the closing length and magic); the bytes between the last row group's column
+  chunks and the filter (that row group's bloom filter) are in neither. A reader that does not
+  know `tok` reads `foot` and row groups as before and never needs those bytes. Added
+  2026-11-19, additively within version 1 (COMPATIBILITY.md §3.2: unknown fields are ignored).
 - `streams`: every stream of the file in file order, with its `labels` (canonical JSON, as
   a JSON string), its first and last `ts`, and the first and last row group holding it (a
   stream's rows are contiguous). Present only when the file has at most 256 streams and
@@ -164,19 +179,29 @@ bounded list of the file's streams:
 A planner prunes files and row groups with a stream selector's matchers and a time range
 from the fragment alone, before any object read, when `streams` is present.
 
-## 6. Line filters and the token filter (*proposed*, phase 2)
+## 6. Line filters and the token filter (writer and reader built 2026-11-19; query use proposed)
 
 Phase 1 has no text index: rows are pruned by time, stream and statistics, then `line` is
 scanned (research 04 §6.4). Phase 2 adds a per-file **token filter**, written at compaction
 (never at flush), and always advisory: a missing or unreadable filter means "read the row
-group", and results are identical with and without it.
+group", and results are identical with and without it. `engine/storage` (`src/tokens.rs`)
+builds it for every `logs` compaction output and reads it; no query path reads it yet.
 
 - **Tokens** of a text are its maximal runs of ASCII letters, ASCII digits and non-ASCII
   characters, lowercased (ASCII only), of at least 4 bytes, and cut to their first 64 bytes
   (at a character boundary). A text's token set covers `line` and every structured-metadata
   value.
-- **Format** (settled here, not implemented): a separate object next to the Parquet file,
-  its key the file's with `.parquet` replaced by `.tokens`, written with `If-None-Match: *`:
+- **Where it lives** (settled 2026-11-19, replacing "a separate object next to the Parquet
+  file, its key the file's with `.parquet` replaced by `.tokens`, its size and SHA-256 in the
+  ledger", which was never built; design/DECISIONS.md D65): **inside the Parquet object**,
+  after the last row group (and that row group's bloom filter) and before the page indexes and
+  the footer metadata, at the offset and length the fragment's `tok` gives (§5) and the
+  file's key-value metadata `viz.token_filter` repeats (`"{offset},{length}"`, decimal). No
+  footer field references those bytes, so Parquet readers skip them (PyArrow and DuckDB are
+  shown to, `engine/storage/README.md`). The object's content hash (`hash8`, the SHA-256 a PUT
+  checks) covers the filter; it is written, kept, adopted, purged and swept with its file, by
+  the rules that already hold for every data object (D30), and needs no ledger field.
+- **Format** (the bytes, settled before 2026-11-19 and unchanged):
 
   ```
   0   4  magic "VZT1"
@@ -193,8 +218,15 @@ group", and results are identical with and without it.
                                    row group g has the token
   ```
 
-  A reader binary-searches the blocks' first tokens and scans one block. The object is
-  immutable; its size and SHA-256 go in the ledger next to the file (proposed).
+  A reader binary-searches the blocks' first tokens and scans one block. The bitsets are the
+  last `n_tokens × ceil(n_row_groups / 8)` bytes of the filter, so the blocks end where they
+  begin; `block_off[0]` is 0 and the offsets increase. Bits for row groups past
+  `n_row_groups` are zero. A filter whose `n_row_groups` is not the file's, or that does not
+  parse, is not used (the row groups are read).
+- **Bound.** The writer leaves the filter out (no `tok`, no `viz.token_filter`) when the file
+  has more than 1,048,576 distinct tokens, so building it fits a step's memory
+  (`engine/storage/README.md`, "Compaction of spans and logs"). The file is then read as one
+  without a filter.
 - **What a query may use.** The engine's `selectors()` reports, for each selector,
   `required`: a list of clauses, each an OR of literal substrings, such that every line the
   query can return or count contains, for every clause, at least one of its literals
@@ -220,9 +252,9 @@ property tests check that pruning on and off gives byte-identical results.
 
 ## 8. Not defined here, or still proposed
 
-- Compaction, the query reader and its pruning, Iceberg publication (*proposed*). Flush, the
-  ledger's `logs` table and retention by day are built (stage 2).
-- The token filter's builder and reader (format settled above).
+- The query reader and its pruning, the use of the token filter by a query, Iceberg
+  publication (*proposed*). Flush, compaction (with the token filter's builder and reader),
+  the ledger's `logs` table and retention by day are built (stage 2).
 - Retention and deletion by line filter (Loki's delete API) are not designed.
 - Promoted metadata columns (`l_…`) for frequently filtered keys, a per-tenant choice of
   OTLP stream labels (the list above is the default), Loki's service-name discovery (viz

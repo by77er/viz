@@ -1500,19 +1500,30 @@ millisecond bounds, a span segment's `spans` and `trace_index` files in one unit
 `signals` with every tail read and plans the new tables directly (`test/signals.e2e.test.ts` runs
 the whole path). What is left, for its owners:
 
-1. **The gateway (`deploy/gateway/src/index.ts`)**: route to QUERY `/api/search`,
+1. **Done (stage 3, 2026-11-19; `deploy/README.md`, "Topology and routes").** The gateway routes
+   these exactly as listed, by exact path with one segment per path parameter, `/api/v1/plan`
+   included, and leaves every other `/loki/…` path 404; tested through the gateway in front of
+   this Worker with `QUERY_SIGNALS` on and off (`stack/README.md`, "Through the gateway"). Was:
+   **the gateway (`deploy/gateway/src/index.ts`)**: route to QUERY `/api/search`,
    `/api/search/…`, `/api/traces/…`, `/api/v2/traces/…`, `/api/v2/search/…`,
    `/api/metrics/query`, `/api/metrics/query_range`, `/loki/api/v1/query`,
    `/loki/api/v1/query_range`, `/loki/api/v1/labels`, `/loki/api/v1/label/…`,
    `/loki/api/v1/series` (and `/api/v1/plan`, which it does not route today); to INGEST
    `/v1/traces`, `/v1/logs`, `/loki/api/v1/push`. Every other `/loki/…` path stays 404.
-2. **`edge/` (or wherever pool names are checked): no base pool name ending in `/traces` or
-   `/logs`**, while shards are told apart by name for shards of a release before D63, which
+2. **Done by `edge/` (stage 3, 2026-11-19; `contracts/BATCH.md` "Streams per signal" first).**
+   Edge refuses a pool map whose pool ends in `/traces` or `/logs` with 503 for every signal, and
+   this Worker, which reads pool maps through edge's `poolMap`, refuses that tenant's reads with
+   503 as well (`stack/README.md`, "Through the gateway"). The comment on `signalOfShard` in
+   `src/shards.ts` ("edge allows such a base pool today") is now stale; `src/` was not edited for
+   this. Was: **`edge/` (or wherever pool names are checked): no base pool name ending in
+   `/traces` or `/logs`**, while shards are told apart by name for shards of a release before D63, which
    ignore `signals` (`signalOfShard`). Such a pool would have its metric shards classified as span
    shards: their reads would be refused by the header check (503), never misread. Unneeded once
    every shard running answers `signals` (then `query/` chooses by the filter alone).
 3. **`deploy/`**: `QUERY_SIGNALS` on `viz-query` after 1, and with `INGEST_SIGNALS` (D63: not in a
-   deployment whose publisher does not read these tables yet).
+   deployment whose publisher does not read these tables yet). Still open: what remains before
+   either flag is set in production is listed in `deploy/README.md` ("Needed changes in
+   components", stage 3).
 
 ## Needed changes in other components
 
@@ -1655,7 +1666,8 @@ New with split execution, each with its alternative:
   caps (`maxSpans`, `maxLogRows`) were chosen from two sizes' memory (about 1.5 KiB a span,
   1 KiB a row) and a 128 MB isolate, not from a soak test.
 - **Shards are told apart by name** while shards of an earlier release (no signal filter) may
-  answer: a metric pool named `…/traces` or `…/logs` would have its reads refused (never misread).
+  answer: a metric pool named `…/traces` or `…/logs` would have its reads refused (never misread);
+  since stage 3 edge refuses a pool map naming one, so such a pool is neither written nor read.
 - **A trace straddling the window from the lake into the tail** (lake spans and their fragments
   all outside the window, unflushed spans inside it) is summarised from the spans read (D62).
 - **Tempo compatibility of trace by ID** rests on Tempo's documentation and Grafana's

@@ -37,6 +37,7 @@ hourly cron. It is deployed as viz-ingest (`deploy/`).
 | `test/settle.ts` | The soak's checked purge and orphan sweep and its end phase, shared with `test/settle.test.ts` |
 | `test/settle.test.ts` | 1 test: the end phase reaches its end state while a ledger's drain is still backing off, the backoff forced with no explicit drain after the outage (regression test for the soak's end-phase failure of 2026-11-19) |
 | `test/sim.ts`, `test/world.ts` | Simulated deployments: tenants, real requests, queues under test control, the model, the invariants |
+| `test/gateway/gateway.e2e.test.ts`, `test/gateway/worker.ts`, `test/gateway/wrangler.jsonc`, `vitest.gateway.config.ts` | 4 tests through the public path: viz-gateway in front of this Worker and viz-query, in one test script ("Through the gateway") |
 | `scripts/mutants.mjs` | Mutation check for the four new parts |
 | `tools/hyparquet_check.mjs` | Reads one produced Parquet file with hyparquet, in Node |
 | `tools/signals_readback.mjs`, `tools/signals-readback/` | An OTLP corpus through this Worker's write path, its files read back by viz-storage's readers, viz-traceql, viz-logql, PyArrow and DuckDB |
@@ -158,7 +159,8 @@ letters.
 
 ## Not implemented
 
-- **A query Worker.** The read path here is test code; nothing serves queries.
+- **A query Worker.** The read path here is test code; viz-query (`query/`) serves queries. Only
+  `test/gateway/` puts the two Workers (and the gateway) in one script, for tests.
 - **Separate deployment.** In production these are several Workers bound to each other;
   that wiring (service bindings, `script_name` on the Durable Object bindings, the queue
   consumers in their own scripts) is not written.
@@ -181,6 +183,7 @@ letters.
 (cd ../engine/wasm && ./build.sh)
 npm install
 npx vitest run --maxWorkers=2    # 50 tests (and 1 skipped) in workerd, 11 files (soaks: 400 steps, flag off and on)
+npx vitest run -c vitest.gateway.config.ts   # 4 tests through the gateway (npm test runs both)
 npm run soak                     # the soaks with 3,000 steps (SOAK_SIGNALS=off or on for one)
 node tools/signals_readback.mjs WORK 1 1    # stage 2 through the engines (Rust, -j 2; PyArrow and DuckDB if installed)
 npx tsc --noEmit                 # clean
@@ -756,6 +759,77 @@ after the run.
 
 **Mutants** of stage 2 are listed in the READMEs of `shard/`, `flush/`, `ledger/` and
 `janitor/`, each run on a scratch copy: 10 of 10 killed.
+
+## Through the gateway (stage 3 of traces and logs, 2026-11-19)
+
+The public path end to end: every request goes to viz-gateway's own `handle`
+(`deploy/gateway/src/index.ts`), whose `INGEST` and `QUERY` service bindings reach this Worker's
+`fetch` (edge) and viz-query's `fetch` (`query/src/index.ts`) in the same test script
+(`test/gateway/worker.ts`, `test/gateway/wrangler.jsonc`; both flags on). `INGEST_OFF` and
+`QUERY_OFF` reach the same entrypoints with `props: {signals: "off"}`, which take the flag away;
+the flags-off test puts them behind the gateway in place of `INGEST` and `QUERY`. Seals go through
+the real flush queue to this Worker's consumer. Thin on purpose: answers equal to the engines'
+in-memory ones over whole OTLP corpora through edge, flush and the ledger are query's
+`test/signals.e2e.test.ts`.
+
+| Test (`test/gateway/gateway.e2e.test.ts`) | What it shows |
+|---|---|
+| both flags on | OTLP/protobuf and OTLP/JSON traces (the same three spans, two services), OTLP/JSON logs and a Loki push (protobuf, snappy) reach viz-ingest (`x-viz-route: ingest`, 200, 200, 200 `{}`, 204); 15 calls on every Tempo and Loki read path (trace by ID v1 and v2, search, tags v1 and v2, tag values v1 and v2, TraceQL metrics range and instant, LogQL range by GET and by POST form, LogQL instant, labels, label values, series) reach viz-query and answer exactly what was sent (span ids, root service, tag names and values, span counts 2 and 3, lines, `2`, labels, the series) with no file read; `/api/v1/plan` reaches viz-query; a missing trace is viz-query's 404. Then every shard is sealed, the flush queue's consumer flushes, the ledger lists `spans`, `trace_index` and `logs` files, and the same 15 calls answer the same bodies (without Tempo's `metrics` and Loki's `stats`) from files, with no tail batch |
+| both flags off | `/v1/traces`, `/v1/logs`, `/loki/api/v1/push` are routed to viz-ingest, which answers 404 `not found`, and no derived shard holds a stream of the tenant; the 15 read calls are routed to viz-query, which answers 404 `not_found`, with a valid key and with a malformed one (before authentication, as before stage 2); `/api/v1/plan` answers. Metrics: the same Remote Write for a tenant behind the flags-off Workers and one behind the flags-on Workers that also sent spans and logs (so its ledger names span and log streams in every plan, D62): `query_range`, `query`, `series`, `labels` and label values give byte-identical bodies, non-empty, from the tails and again after both are flushed through the queue |
+| a base pool ending in `/logs` | a tenant whose pool is another tenant's pool plus `/logs` (its metric shards would be that tenant's log shards): Remote Write and Loki push through the gateway 503 from viz-ingest (`shard pool map is invalid`), nothing in those shards for it; `/api/v1/query` and `/loki/api/v1/labels` 503 from viz-query; the other tenant's Loki series unchanged |
+| ingest to queryable | measured, below; also asserts that every acknowledged span and log line is answered by the first query after the acknowledgement |
+
+**Run (2026-11-19):** `npx vitest run -c vitest.gateway.config.ts --maxWorkers=2`: **4 of 4** (about
+30 s). `npx tsc --noEmit` clean (it now covers `test/gateway/`, which imports `query/src` and
+`deploy/gateway/src`). The main suite, `npx vitest run --maxWorkers=2`: **50 passed, 1 skipped** (11
+files, 87 s; `vitest.config.ts` now leaves `test/gateway/` out). One later run of `npm test` (which
+passes no worker cap to its first half) failed one test, `test/cron.test.ts` "a flush file of a unit
+that may yet be admitted keeps the orphan sweep due only for stalledAfterMs…"; it passed in the run
+before, and alone three times out of three. Nothing it covers was changed here (no `src/`, flush or
+janitor file); recorded as intermittent, not investigated.
+
+**Mutants** (`node scripts/mutants.mjs gateway`, on a copy of the tree in a scratch directory, after
+the copy's unmutated gateway suite passed 4 of 4; each against that suite; every source in the copy
+equal to the shared tree's afterwards): **8 of 8 killed**.
+
+| Mutant (file) | Killed by |
+|---|---|
+| a trace path goes to ingest (`deploy/gateway/src/index.ts`) | both flags on; both flags off |
+| every `/loki/` path goes to ingest (gateway) | both flags on; both flags off |
+| the span and log ingest paths are not routed (gateway) | both flags on; both flags off |
+| `/api/v1/plan` is not routed (gateway) | both flags on; both flags off |
+| a base pool ending in `/logs` is accepted (`edge/src/route.ts`) | a base pool ending in `/logs` |
+| `QUERY_SIGNALS` ignored on the Loki read paths (`query/src/index.ts`) | both flags off |
+| `QUERY_SIGNALS` ignored on the Tempo read paths (`query/src/index.ts`) | both flags off |
+| `INGEST_SIGNALS` ignored on the span and log ingest paths (`edge/src/index.ts`) | both flags off |
+
+The gateway's own suite kills its routing mutants too (`deploy/README.md`, 28 of 28), and edge's
+the pool-name ones (`edge/README.md`).
+
+**Ingest to queryable, measured here** (local workerd through the gateway, one script, service
+bindings to itself; miniflare's Durable Objects, R2 and queue; 4 shared cores at load average 2.0
+to 3.1 with other engineers' test runs on the machine; three runs at 09:35, 09:41 and 09:47 UTC;
+times from `Date.now()`, which workerd advances at I/O). Per run, 20 traces of one span posted as
+OTLP/JSON to `/v1/traces` then asked for by `/api/traces/<id>`, and 20 lines posted to
+`/loki/api/v1/push` then asked for by a LogQL range query with a line filter, alternating:
+
+| | First request of a new tenant (3 runs) | Established streams (57 per kind) |
+|---|---|---|
+| trace: acknowledgement | 12–21 ms | 2–7 ms (medians 2–3) |
+| trace: acknowledgement → answered by trace by ID | 28–51 ms | 3–6 ms (median 4) |
+| log line: acknowledgement | 8–9 ms | 2–4 ms (medians 2–3) |
+| log line: acknowledgement → answered by LogQL | 16–35 ms | 3–23 ms (medians 3–4) |
+
+Every one of the 120 items was answered by the first query after its acknowledgement: tails are
+read above the ledger's watermark, so nothing waits for a flush. Served **from a file** instead:
+after a seal, 1,040–1,131 ms (n = 15, medians 1,048–1,096), almost all of it the flush queue's
+`max_batch_timeout` of 1 s in this config. The new tenant's first request includes its first shard
+and ledger objects (registration mode `lazy`, the default; in mode `logged` add D61's measured
+0.5–1 s). **Not measured on Cloudflare.** There, by configuration rather than measurement, the
+file path is bounded by the seal (4 MiB or `sealAgeMs`, 10 minutes by default) plus the queue and
+a flush (D63: 134–388 ms here per ~3.3 MB segment) and R2 PUTs (0.17–0.4 s each, AGENTS.md); the
+tail path is a ledger plan, shard tail reads and the engine. The experiment: the stage trial
+listed in `deploy/README.md` ("Needed changes in components", stage 3).
 
 ## Contract changes made during integration
 
