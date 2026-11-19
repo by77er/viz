@@ -1,0 +1,15 @@
+{
+  // LOCAL ONLY: `wrangler dev` for scripts/oauth-client.mjs. Never deploy this: /__local/provision
+  // makes a tenant and an admin key for anyone who asks. The OAuth signing key comes from an env
+  // file the script writes for the run (never a command-line argument).
+  "name": "viz-mcp-oauth-local",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tenant"] }],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-mcp-oauth-local" }],
+  "vars": {
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
+    "PUBLIC_URL": "http://127.0.0.1:8922"
+  }
+}

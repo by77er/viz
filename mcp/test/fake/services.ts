@@ -171,30 +171,91 @@ function answer(path: string, params: URLSearchParams, storage: FakeStorage, now
 
 // ---- the ruler's monitor API ----
 
+/** How the fake answers `POST /api/v1/monitors/backtest` for one tenant, from the request body. */
+export type BacktestScript = (body: any) => { status: number; body: unknown; headers?: Record<string, string> } | Promise<{ status: number; body: unknown; headers?: Record<string, string> }>
+
+export interface RulerCall {
+  path: string
+  tenant: string | null
+  method?: string
+  /** The JSON body, for POSTs. */
+  body?: unknown
+  /** Anything in the request that tries to name a tenant: tenant-looking headers, a `tenant` field. The ruler ignores them; tests require there are none. */
+  tenantClaims?: string[]
+}
+
 export interface FakeRuler {
   fetcher: Fetcher
   monitors: Map<string, { view: MonitorView; history: { at: number; kind: string; [k: string]: unknown }[] }[]>
-  calls: { path: string; tenant: string | null }[]
+  /** Per tenant: the backtest answer. Unset: a 200 with no intervals over the range asked. */
+  backtests: Map<string, BacktestScript>
+  calls: RulerCall[]
 }
 
+const TENANT_HEADERS = ['x-viz-tenant', 'x-scope-orgid', 'x-tenant', 'tenant']
+
+function claimsOf(req: Request, body: unknown): string[] {
+  const out = TENANT_HEADERS.filter((h) => req.headers.has(h)).map((h) => `header ${h}`)
+  const walk = (v: unknown, path: string) => {
+    if (typeof v !== 'object' || v === null) return
+    for (const [k, x] of Object.entries(v)) {
+      if (/^(tenant|tenantId|orgId|org_id)$/i.test(k) && !path.endsWith('.labels') && !path.endsWith('.annotations')) out.push(`body ${path}.${k}`)
+      walk(x, `${path}.${k}`)
+    }
+  }
+  walk(body, 'body')
+  return out
+}
+
+/**
+ * The ruler as its HTTP API answers (ruler/src/http.ts, ruler/openapi.json): edge's own key
+ * verifier with the route's scope (`monitors:read` for every route here), the tenant from the
+ * key record only, errors as `{ error: { code, message } }`.
+ */
 export function fakeRuler(kv: () => KVNamespace): FakeRuler {
   const monitors: FakeRuler['monitors'] = new Map()
+  const backtests: FakeRuler['backtests'] = new Map()
   const calls: FakeRuler['calls'] = []
   return {
     monitors,
+    backtests,
     calls,
     fetcher: {
       async fetch(req: Request): Promise<Response> {
         const url = new URL(req.url)
+        let body: unknown
+        if (req.method === 'POST') {
+          try {
+            body = JSON.parse(await req.text())
+          } catch {
+            body = null
+          }
+        }
+        const call: RulerCall = { path: url.pathname, tenant: null, method: req.method, ...(body !== undefined ? { body } : {}), tenantClaims: claimsOf(req, body) }
+        calls.push(call)
         let tenant: string
         try {
           tenant = (await authenticate(req, kv(), 'monitors:read' as 'read')).tenant
         } catch (e) {
-          calls.push({ path: url.pathname, tenant: null })
           if (e instanceof HttpError) return Response.json({ error: { code: e.status === 401 ? 'unauthorized' : 'forbidden', message: e.message } }, { status: e.status })
           throw e
         }
-        calls.push({ path: url.pathname, tenant })
+        call.tenant = tenant
+        if (url.pathname === '/api/v1/monitors/backtest') {
+          if (req.method !== 'POST') return Response.json({ error: { code: 'method_not_allowed', message: `${req.method} is not supported on this path` } }, { status: 405 })
+          const b = body as { monitor?: unknown; step?: unknown } | null
+          if (!b || typeof b.monitor !== 'object' || b.monitor === null) return Response.json({ error: { code: 'invalid', message: '1 problem found; nothing was saved' }, problems: [{ path: 'monitor', message: 'give "monitor" (a monitor document) or "rule" (an alerting rule)', fix: 'Send the monitor you are about to save.' }] }, { status: 422 })
+          if (typeof b.step !== 'string') return Response.json({ error: { code: 'invalid', message: '1 problem found; nothing was saved' }, problems: [{ path: 'step', message: 'step is required', fix: 'Give the resolution as a duration, e.g. "1m".' }] }, { status: 422 })
+          const script = backtests.get(tenant)
+          // A slow answer is abandoned when the caller aborts, as a service binding's fetch is.
+          const aborted = new Promise<never>((_, reject) => {
+            if (req.signal.aborted) reject(req.signal.reason)
+            req.signal.addEventListener('abort', () => reject(req.signal.reason))
+          })
+          const r = await Promise.race([Promise.resolve(script ? script(b) : { status: 200, body: fakeBacktest(b, []) }), aborted])
+          return Response.json(r.body, { status: r.status, headers: r.headers ?? {} })
+        }
+        if (req.method !== 'GET') return Response.json({ error: { code: 'method_not_allowed', message: `${req.method} is not supported on this path` } }, { status: 405 })
         const mine = monitors.get(tenant) ?? []
         if (url.pathname === '/api/v1/monitors') {
           const views = mine.map((m) => m.view)
@@ -211,6 +272,86 @@ export function fakeRuler(kv: () => KVNamespace): FakeRuler {
       },
     },
   }
+}
+
+// ---- backtest answers, in the ruler's shape (ruler/openapi.json Backtest) ----
+
+export interface FakeInterval {
+  fingerprint: string
+  labels: Record<string, string>
+  state: 'pending' | 'firing'
+  startMs: number
+  endMs: number
+  open: boolean
+  noData?: boolean
+  annotations?: Record<string, string>
+}
+
+/** A Prometheus duration in the ruler's form to milliseconds (ruler/src/util.ts). */
+export function durationMs(text: string): number {
+  const m = /^(?:(\d+)y)?(?:(\d+)w)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?(?:(\d+)ms)?$/.exec(text)
+  if (!m || text === '') throw new Error(`not a duration: ${text}`)
+  const n = (i: number) => (m[i] ? Number(m[i]) : 0)
+  return n(1) * 365 * 86_400_000 + n(2) * 7 * 86_400_000 + n(3) * 86_400_000 + n(4) * 3_600_000 + n(5) * 60_000 + n(6) * 1000 + n(7)
+}
+
+/** The ruler's summary, written again here from ruler/src/backtest.ts `summarize` (not imported from the code under test). */
+function rulerSummary(intervals: FakeInterval[]) {
+  const firing = intervals.filter((i) => i.state === 'firing')
+  const pending = intervals.filter((i) => i.state === 'pending')
+  const fired = new Set(firing.map((i) => `${i.fingerprint}@${i.startMs}`))
+  return {
+    firingCount: firing.length,
+    pendingCount: pending.length,
+    firingMs: firing.reduce((n, i) => n + (i.endMs - i.startMs), 0),
+    longestFiringMs: firing.reduce((n, i) => Math.max(n, i.endMs - i.startMs), 0),
+    clearedCount: pending.filter((i) => !i.open && !fired.has(`${i.fingerprint}@${i.endMs}`)).length,
+    firingAtEnd: firing.some((i) => i.open),
+    series: new Set(intervals.map((i) => i.fingerprint)).size,
+  }
+}
+
+/** A 200 answer for the request `body` with these intervals, as the ruler builds it (`Ruler.backtest`). */
+export function fakeBacktest(body: any, intervals: FakeInterval[], over: Record<string, unknown> = {}): Record<string, unknown> {
+  const stepMs = durationMs(body.step)
+  const monitor = body.monitor ?? {}
+  const kind = monitor.slo !== undefined ? 'slo' : monitor.anomaly !== undefined ? 'anomaly' : 'alert'
+  const liveIntervalMs = monitor.interval ? durationMs(monitor.interval) : 60_000
+  const sorted = [...intervals].sort((a, b) => a.startMs - b.startMs || (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0))
+  const steps = Math.floor((body.toMs - body.fromMs) / stepMs) + 1
+  return {
+    fromMs: body.fromMs,
+    toMs: body.toMs,
+    stepMs,
+    steps,
+    intervals: sorted,
+    summary: rulerSummary(sorted),
+    resolution: {
+      stepMs,
+      liveIntervalMs,
+      edgeErrorMs: Math.max(stepMs, liveIntervalMs),
+      note: `Evaluated every ${body.step}; the live rule would be evaluated every ${monitor.interval ?? '1m'}. Each start and end is within ${body.step} of the true time. A breach shorter than ${body.step} can be missed, and firings less than ${body.step} apart are joined. History is read as it is stored now (late samples and rollups included), not as it was at the time.`,
+    },
+    kind,
+    warmup: kind === 'alert' ? null : { reads: [{ fromMs: body.fromMs - 100 * stepMs, toMs: body.fromMs - stepMs, stepMs }], points: 100 * 3 },
+    cost: {
+      scanSamples: steps * 240,
+      bytesToRead: steps * 2001,
+      queries: 1,
+      budget: { scanSamples: 20_000_000, bytesToRead: 128 * 1024 * 1024 },
+      memory: { peakBytes: 6_815_744, budgetBytes: 32 * 1024 * 1024, windowSteps: [steps], queries: 1 },
+      cpu: { modelledMs: 12, budgetMs: 20_000 },
+    },
+    ...over,
+  }
+}
+
+/**
+ * The ruler's 422 over_budget (`backtestAnswer` in ruler/src/http.ts). `exceeded` (which budget,
+ * contract version 5) only when given: without it, the answer of a ruler older than the field.
+ */
+export function fakeOverBudget(message: string, parts: { plan?: unknown; memory?: unknown; cpu?: unknown; exceeded?: string | null }): { status: number; body: unknown } {
+  return { status: 422, body: { error: { code: 'over_budget', message }, ...('exceeded' in parts ? { exceeded: parts.exceeded } : {}), plan: parts.plan ?? null, budget: { scanSamples: 20_000_000, bytesToRead: 128 * 1024 * 1024 }, memory: parts.memory ?? null, cpu: parts.cpu ?? null } }
 }
 
 export function monitorView(over: Partial<MonitorView> & { id: string; name: string }): MonitorView {

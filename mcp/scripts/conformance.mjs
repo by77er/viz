@@ -19,7 +19,8 @@ const env = { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: '1' }
 delete env.CLOUDFLARE_API_TOKEN // local only: never authenticate to the account
 delete env.CLOUDFLARE_ACCOUNT_ID
 
-const dev = spawn('npx', ['wrangler', 'dev', '--config', 'test/conformance/wrangler.jsonc', '--port', String(PORT), '--ip', '127.0.0.1', '--persist-to', state, '--log-level', 'warn'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] })
+// Its own process group, so that stopping it stops wrangler and workerd too, not only npx.
+const dev = spawn('npx', ['wrangler', 'dev', '--config', 'test/conformance/wrangler.jsonc', '--port', String(PORT), '--ip', '127.0.0.1', '--persist-to', state, '--log-level', 'warn'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
 let log = ''
 dev.stdout.on('data', (d) => (log += d))
 dev.stderr.on('data', (d) => (log += d))
@@ -60,7 +61,13 @@ try {
     }
   }
 } finally {
-  dev.kill('SIGTERM')
+  try {
+    process.kill(-dev.pid, 'SIGTERM')
+  } catch {}
+  await new Promise((r) => setTimeout(r, 2000))
+  try {
+    process.kill(-dev.pid, 'SIGKILL')
+  } catch {}
   rmSync(state, { recursive: true, force: true })
 }
 process.exit(code)

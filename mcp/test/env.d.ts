@@ -8,5 +8,7 @@ declare namespace Cloudflare {
     CONFIG: KVNamespace
     DEFAULT_POOL?: string
     APP_URL?: string
+    PUBLIC_URL?: string
+    OAUTH_CLIENT_KEY?: string
   }
 }
