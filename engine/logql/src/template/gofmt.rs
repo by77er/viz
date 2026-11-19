@@ -5,7 +5,8 @@
 use super::value::V;
 
 /// `strconv.FormatFloat(f, 'g', -1, 64)` as `%v` prints a float: the shortest digits that
-/// round-trip, in exponent form when the exponent is < -4 or >= 21.
+/// round-trip, in exponent form when the decimal exponent is < -4 or >= 6 (Go uses
+/// precision 6 for that decision when printing the shortest form).
 pub fn float_v(f: f64) -> String {
     if f.is_nan() {
         return "NaN".into();
@@ -22,7 +23,7 @@ pub fn float_v(f: f64) -> String {
     let exp: i32 = exp.parse().unwrap_or(0);
     let neg = mant.starts_with('-');
     let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
-    if exp < -4 || exp >= 21 {
+    if exp < -4 || exp >= 6 {
         let mut s = String::new();
         if neg {
             s.push('-');
@@ -261,7 +262,7 @@ pub fn sprintf(format: &str, args: &[V]) -> String {
             }
             i += 1;
         }
-        let mut num = |i: &mut usize| -> Option<usize> {
+        let num = |i: &mut usize| -> Option<usize> {
             let s = *i;
             while *i < cs.len() && cs[*i].is_ascii_digit() {
                 *i += 1;

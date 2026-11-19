@@ -286,7 +286,6 @@ pub fn get(line: &str, path: &JsonPath) -> Result<Option<String>, &'static str> 
                     return Ok(None);
                 }
                 w.i += 1;
-                let mut found = false;
                 loop {
                     w.ws();
                     match w.peek() {
@@ -303,7 +302,6 @@ pub fn get(line: &str, path: &JsonPath) -> Result<Option<String>, &'static str> 
                     }
                     w.i += 1;
                     if key == *k {
-                        found = true;
                         break;
                     }
                     if w.skip_value(0).is_err() {
@@ -314,9 +312,6 @@ pub fn get(line: &str, path: &JsonPath) -> Result<Option<String>, &'static str> 
                         Some(b',') => w.i += 1,
                         _ => return Ok(None),
                     }
-                }
-                if !found {
-                    return Ok(None);
                 }
             }
             PathPart::Index(idx) => {

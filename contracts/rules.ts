@@ -24,6 +24,10 @@
  * (2026-11-19) adds anomaly rules, additively: new optional fields, new types, one new enum value
  * (`'anomaly'` in `RuleStatus.kind` and `SavedRule.kind`, which callers must not act on as another
  * kind). Every rule file and stored group valid under version 1 is valid and means the same.
+ * Version 3 (2026-11-19, additively, decision D39): `WebhookConfig.format` and the plain JSON
+ * notification body (`JsonNotification`), and the reserved receiver `CONTROL_RECEIVER` through
+ * which the destination a person set in control (`contracts/control.ts`) is reached. A config
+ * valid under version 2 is valid and means the same (`format` defaults to `alertmanager`).
  */
 
 import type { PromScalar, PromVector } from './engine'
@@ -565,7 +569,22 @@ export interface WebhookConfig {
   send_resolved?: boolean
   /** 0 = all. Extra alerts are counted in `truncatedAlerts`. */
   max_alerts?: number
+  /**
+   * EXTENDED (contract version 3). The body: `alertmanager` (default), Alertmanager's webhook
+   * JSON (`WebhookPayload`, version "4"); `json`, viz's plain form (`JsonNotification`).
+   */
+  format?: 'alertmanager' | 'json'
 }
+
+/**
+ * ADDED (contract version 3). The receiver that stands for the tenant's default destination,
+ * set through control (`contracts/control.ts` `NotificationTarget`). The notifier adds it to
+ * every config: a route may name it, and when the tenant has no notifier config of its own the
+ * whole config is `route: { receiver: CONTROL_RECEIVER }` with Alertmanager's default timers.
+ * A tenant config may not define a receiver of this name. With no destination set in control
+ * it has no integration, and nothing is sent to it.
+ */
+export const CONTROL_RECEIVER = 'viz:default'
 
 export interface SlackConfig {
   /** A Slack-compatible incoming-webhook URL. */
@@ -654,6 +673,38 @@ export interface WebhookPayload {
     /** `0001-01-01T00:00:00Z` while firing. */
     endsAt: string
     generatorURL: string
+    fingerprint: string
+  }[]
+}
+
+/**
+ * ADDED (contract version 3). viz's plain webhook body (`WebhookConfig.format: 'json'`), for
+ * receivers that are not Alertmanager-compatible. Times are RFC 3339 (UTC, milliseconds), or
+ * null. It carries no secret and no URL: `idempotencyKey` is the same value as the
+ * `Idempotency-Key` header, the same on every attempt of one notification.
+ */
+export interface JsonNotification {
+  version: 'viz.notification/v1'
+  idempotencyKey: string
+  status: 'firing' | 'resolved'
+  receiver: string
+  groupKey: string
+  groupLabels: Record<string, string>
+  externalURL: string
+  /** Alerts the body leaves out (`max_alerts`, or the 500 cap). */
+  truncatedAlerts: number
+  /** Firing first, then resolved; each ordered by fingerprint. */
+  alerts: {
+    status: 'firing' | 'resolved'
+    /** The `alertname` label. */
+    name: string
+    labels: Record<string, string>
+    annotations: Record<string, string>
+    startsAt: string
+    /** Null while firing. */
+    endsAt: string | null
+    /** The sample value at the transition; null when not finite. */
+    value: number | null
     fingerprint: string
   }[]
 }

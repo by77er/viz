@@ -630,12 +630,23 @@ rebuilt module had the same SHA-256 as before the run.
 | 35 | a split query's result checked against one leaf's share instead of the query's budget | split › budgets; reruns (2 tests) |
 | 36 | an unknown shard status falls through to the stream-mismatch path | fence › release skew: an unknown status or schema_too_new is a retryable 503 |
 | 37 | an engine that does not load answered as a retryable 503 | http › an engine that does not load is a 500 |
-| 38 | **a query over many series is not split by its series estimate** | MUT38 |
-| 39 | **leaves are sized from samples alone** | MUT39 |
-| 40 | the series estimate counts one file per shard (size-cut segments of one span hold different series) | MUT40 |
-| 41 | the plan-only answer leaves out the refusal the query would get | MUT41 |
-| 42 | the plan-only endpoint reads the tail (wakes every shard) | MUT42 |
-| 43 | **the cardinality report ignores its series estimate** (one place whatever the series) | MUT43 |
+| 38 | **a query over many series is not split by its series estimate** | split › a query is split by itself once its series estimate is above splitAboveSeries |
+| 39 | **leaves are sized from samples alone** | split › leafCount (unit); the series-split test (3 leaves) |
+| 40 | the series estimate counts one file per shard (size-cut segments of one span hold different series) | split › seriesEstimate (unit). Only the unit test catches it: the HTTP tests read the estimate from the answer's own header |
+| 41 | the plan-only answer leaves out the refusal the query would get | split › /api/v1/plan says what a query would read |
+| 42 | the plan-only endpoint reads the tail (wakes every shard) | split › /api/v1/plan (no shard call) |
+| 43 | **the cardinality report ignores its series estimate** (one place whatever the series) | cardinality › the tsdb status of a known data set (splits by itself above cardinalitySplitAboveSeries) |
+
+**Run 2026-11-19, 01:16 to 01:53 UTC, all 43 mutants on a scratch copy** (load average 7 to
+21): **43 of 43 killed, none survived, none invalid**; the unmutated suite passed first in
+the scratch tree; the shared tree's mutated files hashed the same before and after
+(`907cf573dad4d5bd`), and the shared WASM module kept its SHA-256 (`2b3132a41bd9e0cf…`)
+although mutant 8 rebuilt the copy's twice. New in this run: 38 to 43 (the series rule,
+`/api/v1/plan`, the cardinality report's split). Rewritten for the code as it is now: 4 (the
+tail is skipped in `readTail`, so for queries, split queries and the report at once), 21
+and 22 (the checks moved into `refusalBeforeFetch`), 26 (its text occurred twice once split
+execution and the report had their own refusal closures; it now names one-place `gather`'s).
+Before the rewrite the tool refused to run 4 and 26 at all ("occurs 3 times").
 
 Mutants 27 to 37 are new with split execution, the cardinality report and the
 compatibility fixes; mutant 10 was rewritten for the precedence order (it now sorts by
@@ -963,6 +974,10 @@ New with split execution, each with its alternative:
   70). It is low when a shard's segments are shorter than one scrape interval; the query
   is then refused by the per-leaf budget as before. A re-split from the leaves' own counts
   is the fallback if that happens in production (D31, alternative (d)).
+- **The series estimate costs CPU at the coordinator** quadratic in a shard's files in the
+  worst case: measured here in Node (load average 19), 2 ms for 2,000 ten-minute files on
+  one shard and 207 ms for 10,000 (only reachable near `maxQueryFiles`, 20,000). A window on
+  the files' longest span makes it linear; not done after the mutation run.
 - **The plan-only endpoint does not read the tail**, so its `leaves` can be lower than the
   query's (the tail's bytes count towards a split's samples) and it cannot say that the
   tail is over `maxFetchBytes`.

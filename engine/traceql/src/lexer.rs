@@ -238,12 +238,12 @@ impl<'a> Lexer<'a> {
                     let name = self.attr_name(start)?;
                     self.push(Tok::Attr(true, scope, name), start);
                     Ok(())
-                } else if scope.is_empty() {
+                } else {
+                    // parent.<name>: an unscoped attribute of the parent span.
+                    self.pos = s2;
                     let name = self.attr_name(start)?;
                     self.push(Tok::Attr(true, String::new(), name), start);
                     Ok(())
-                } else {
-                    Err(self.err(start, format!("unknown attribute scope parent.{scope}")))
                 }
             }
             Some('.') if SCOPES.contains(&word.as_str()) => {

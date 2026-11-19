@@ -315,8 +315,18 @@ impl<'q> Leaf<'q> {
     fn finish(self, req: &RangeRequest, n: usize) -> Vec<Series> {
         let step_s = req.step_nano as f64 / 1e9;
         let name_label = |name: &str| vec![("__name__".to_string(), Val::Str(name.to_string().into()))];
+        // Missing grouping values are left out of the labels; a series left with no label
+        // at all is labelled with the first `by` field and `nil` (observed in Tempo).
         let by_labels = |vals: &[Val<'static>]| -> Vec<(String, Val<'static>)> {
-            self.by.iter().zip(vals).map(|(e, v)| (expr_text(e), label_value(v))).collect()
+            self.by.iter().zip(vals).filter(|(_, v)| !matches!(v, Val::Nil | Val::Arr(_))).map(|(e, v)| (expr_text(e), v.clone())).collect()
+        };
+        let series_labels = |vals: &[Val<'static>]| -> Vec<(String, Val<'static>)> {
+            let l = by_labels(vals);
+            if l.is_empty() {
+                vec![(expr_text(&self.by[0]), label_value(&Val::Nil))]
+            } else {
+                l
+            }
         };
         let mut out = Vec::new();
         let scale = match self.func.arg() {
@@ -324,7 +334,7 @@ impl<'q> Leaf<'q> {
             _ => 1.0,
         };
         for (_, (vals, acc)) in self.series.iter() {
-            let labels = if self.by.is_empty() { name_label(self.func.name()) } else { by_labels(vals) };
+            let labels = if self.by.is_empty() { name_label(self.func.name()) } else { series_labels(vals) };
             match acc {
                 Acc::Count(c) => {
                     let values = c

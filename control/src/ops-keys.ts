@@ -1,3 +1,4 @@
+import { SERVICE_KEYS, SERVICE_KEY_PREFIX, type ServiceKeyResult, type ServiceName } from '../../contracts/control'
 import { sha256Hex } from '../../dashboard/src/index.ts'
 import { DAY_MS } from './caps'
 import { Problem, invalid, notFound } from './errors'
@@ -153,6 +154,10 @@ const get: Op = (t, c) => ({ status: 200, body: { key: keyView(t, load(t, c.inpu
 const create: Op = (t, c) => {
   const b = fields(c.input.body, ['name', 'scopes', 'kind', 'expiresAt', 'dryRun'], 'request body')
   const name = str(b.name, 'name', { max: 80 })!
+  if (name.startsWith(SERVICE_KEY_PREFIX)) {
+    // Service keys are issued by viz (contracts/control.ts): a person's key under such a name would be taken over by the service.
+    throw invalid(`Key names starting with "${SERVICE_KEY_PREFIX}" are reserved for keys viz issues to its own services.`, 'Choose another name.', { field: 'name' })
+  }
   if (!Array.isArray(b.scopes) || b.scopes.length === 0 || !b.scopes.every((s) => typeof s === 'string' && (SCOPES as readonly string[]).includes(s))) {
     throw invalid('"scopes" must be a non-empty list of known scopes.', `Choose from: ${SCOPES.join(', ')}.`, { field: 'scopes' })
   }
@@ -236,6 +241,39 @@ const remove: Op = (t, c) => {
   bumpRevocation(t, c.now)
   t.audit(c.actor, c.now, 'key.delete', 'key', row.id, before, null)
   return { status: 200, body: { deleted: row.id } }
+}
+
+/**
+ * contracts/control.ts `serviceKey`, inside the caller's transaction: create the key
+ * `service:<service>/<instance>` with the scopes the contract fixes, or rotate it with no
+ * overlap, so one secret is live at a time. A disabled one is left alone: the tenant has
+ * withdrawn that service's access. One audit entry, `key.service`, by the service.
+ */
+export function issueServiceKey(t: Tenant, now: number, service: ServiceName, instance: string): ServiceKeyResult {
+  const name = `${SERVICE_KEY_PREFIX}${service}/${instance}`
+  const actor: Actor = { subject: `system:${service}`, kind: 'system', name: service }
+  const scopes: string[] = [...SERVICE_KEYS[service].scopes]
+  const row = t.one<KeyRow>(`SELECT ${COLUMNS} FROM keys WHERE tenant = ? AND name = ?`, t.tenant, name)
+  if (row && row.disabled === 1) return { v: 1, status: 'disabled', name }
+  if (!row) {
+    if (t.one<{ n: number }>('SELECT COUNT(*) AS n FROM keys WHERE tenant = ?', t.tenant)!.n >= t.caps.maxKeys) {
+      return { v: 1, status: 'invalid', message: `the tenant already has ${t.caps.maxKeys} keys, the most it may have` }
+    }
+    const k = newKey(t, actor, now, { name, scopes, kind: 'key', expiresAt: null })
+    t.audit(actor, now, 'key.service', 'key', k.view.id as string, null, k.view)
+    return { v: 1, status: 'ok', key: k.secret, keyId: /^viz_([A-Za-z0-9]+)_/.exec(k.secret)![1]!, name, scopes, issuedAt: now }
+  }
+  const before = keyView(t, row, now)
+  for (const s of t.all<{ key_id: string }>('SELECT key_id FROM key_secrets WHERE tenant = ? AND key = ?', t.tenant, row.id)) t.publish(`key:${s.key_id}`, null, now)
+  t.run('DELETE FROM key_secrets WHERE tenant = ? AND key = ?', t.tenant, row.id)
+  bumpRevocation(t, now)
+  const { keyId, secret } = mint()
+  t.run('INSERT INTO key_secrets (tenant, key_id, key, secret_sha256, valid_until) VALUES (?, ?, ?, ?, NULL)', t.tenant, keyId, row.id, sha256Hex(secret))
+  // The scopes are the contract's, whatever the row says.
+  t.run('UPDATE keys SET key_id = ?, rotated_at = ?, scopes = ?, expires_at = NULL WHERE tenant = ? AND id = ?', keyId, now, JSON.stringify(scopes), t.tenant, row.id)
+  publishKey(t, row.id, now)
+  t.audit(actor, now, 'key.service', 'key', row.id, before, keyView(t, load(t, row.id), now))
+  return { v: 1, status: 'ok', key: `viz_${keyId}_${secret}`, keyId, name, scopes, issuedAt: now }
 }
 
 export const keyOps = {

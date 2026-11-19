@@ -3521,7 +3521,7 @@
       "put": {
         "operationId": "PUT_settings_section",
         "summary": "Replace a settings section",
-        "description": "general: {agentsMayApply, proposalTtlDays}. retention: {metric_samples_days, metric_5m_days, metric_1h_days, log_days, trace_days} (shortening needs confirmShorter). limits: {active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency}. pool: {pool, slots, spread}; only a first map or a larger spread is accepted, and the epoch is bumped. notifications: {email, webhookUrl} (stored, not yet acted on).",
+        "description": "general: {agentsMayApply, proposalTtlDays}. retention: {metric_samples_days, metric_5m_days, metric_1h_days, log_days, trace_days} (shortening needs confirmShorter). limits: {active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency}. pool: {pool, slots, spread}; only a first map or a larger spread is accepted, and the epoch is bumped. notifications: {email, webhookUrl, webhookFormat (alertmanager|json), sendResolved, webhookSecret (write-only: never returned; null removes it; left out it is kept while webhookUrl is unchanged)}; the response shows webhookSecretSetAt instead of the secret. The ruler notifier sends to webhookUrl as its receiver viz:default (contracts/control.ts); email is stored, not acted on.",
         "security": [
           {
             "apiKey": [

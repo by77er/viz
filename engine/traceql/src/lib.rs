@@ -84,12 +84,72 @@ impl std::error::Error for Error {}
 /// is read.
 pub fn parse(query: &str) -> Result<RootExpr, Error> {
     let root = parser::parse(query)?;
+    if root_fields(&root).iter().any(|e| matches!(e, FieldExpr::Intrinsic(ast::Intrinsic::NestedSet, _))) {
+        return Err(Error::unsupported("the undocumented nestedSetLeft/nestedSetRight/nestedSetParent intrinsics"));
+    }
     for (k, v) in &root.hints {
         if k == "extrapolate" && *v == Static::Bool(true) {
             return Err(Error::unsupported("with(extrapolate=true): sampling weights are not stored yet"));
         }
     }
     Ok(root)
+}
+
+/// Every attribute and intrinsic a query references.
+pub fn root_fields(root: &RootExpr) -> Vec<FieldExpr> {
+    let mut out = Vec::new();
+    fn stage(st: &Stage, out: &mut Vec<FieldExpr>) {
+        let mut add = |e: &FieldExpr| {
+            e.visit(&mut |x| {
+                if matches!(x, FieldExpr::Attr { .. } | FieldExpr::Intrinsic(..)) {
+                    out.push(x.clone())
+                }
+            })
+        };
+        match st {
+            Stage::Filter(e) => add(e),
+            Stage::Op(_, a, b) => {
+                stage(a, out);
+                stage(b, out);
+            }
+            Stage::Pipeline(v) => v.iter().for_each(|s| stage(s, out)),
+            Stage::ScalarFilter { arg, .. } => {
+                if let Some(e) = arg {
+                    add(e)
+                }
+            }
+            Stage::By(v) | Stage::Select(v) => v.iter().for_each(|e| add(e)),
+            Stage::Coalesce => {}
+        }
+    }
+    fn metrics(m: &ast::MetricsExpr, out: &mut Vec<FieldExpr>) {
+        match m {
+            ast::MetricsExpr::Query { pipeline, func, by, .. } => {
+                pipeline.iter().for_each(|s| stage(s, out));
+                let mut add = |e: &FieldExpr| {
+                    e.visit(&mut |x| {
+                        if matches!(x, FieldExpr::Attr { .. } | FieldExpr::Intrinsic(..)) {
+                            out.push(x.clone())
+                        }
+                    })
+                };
+                if let Some(e) = func.arg() {
+                    add(e)
+                }
+                by.iter().for_each(|e| add(e));
+            }
+            ast::MetricsExpr::Math { lhs, rhs, .. } => {
+                metrics(lhs, out);
+                metrics(rhs, out);
+            }
+            ast::MetricsExpr::Scalar(_) => {}
+        }
+    }
+    match &root.query {
+        Query::Search(st) => st.iter().for_each(|s| stage(s, &mut out)),
+        Query::Metrics(m) => metrics(m, &mut out),
+    }
+    out
 }
 
 /// Statistics of one evaluation.

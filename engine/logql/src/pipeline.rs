@@ -403,10 +403,6 @@ impl Pipeline {
         Ok(Pipeline { stages: out, now_ns: None })
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.stages.is_empty()
-    }
-
     /// Run one entry through the pipeline. Returns the (possibly rewritten) line, or `None`
     /// when a filter drops the entry. `labels` is updated in place.
     pub fn process<'l>(&self, ts_ns: i64, line: &'l str, labels: &mut LabelSet) -> Option<Cow<'l, str>> {

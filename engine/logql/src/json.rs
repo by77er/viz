@@ -357,6 +357,7 @@ impl JsonPath {
     }
 
     /// The value at this path, if any. With duplicate keys the first wins.
+    #[cfg(test)]
     pub fn get<'v, 'a>(&self, v: &'v JValue<'a>) -> Option<&'v JValue<'a>> {
         let mut cur = v;
         for p in &self.0 {

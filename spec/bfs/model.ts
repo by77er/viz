@@ -49,6 +49,8 @@ export interface Cfg {
   sweepGone: 'both' | 'notLive' | 'absent' // with 'inputs': an input is gone for good if absent from the listing AND not live (janitor.ts) / only not live / only absent
   sweepOrder: 'listFirst' | 'readFirst' // with sweepSteps: list R2 before the ledger read (janitor.ts) / read the ledger first, then list
   sweepNewerLogged: boolean // with 'inputs': a newer incarnation makes an old flush file dead only if it has a logged watermark > 0 (F15 fix)
+  maxRB: number // review S-1: release rollbacks to the first-layout ledger while storage is in segments, each later rolled forward (per ledger)
+  rbFix: 'none' | 'heal' // S-1 as built / fix (b): on roll-forward, an outbox that does not continue the segment log starts a new incarnation from SQLite
   goal: 'query' | 'clean' | 'cleanComp' // liveness goal: the query completes / every object in R2 is live (no object leaks: I11's no-leak half)
   reg: 'design' | 'logged' | 'impl' // stream registration: before writes (committed) / before writes (logged) + repeat / lazily by flush (as built)
   query: 'design' | 'impl' // ask only streams in the plan / also every pool shard, unregistered streams from 0 (coordinator.ts)
@@ -164,6 +166,12 @@ export interface Led {
   ru: number // ghost: this incarnation number was used before (versions reused)
   st: number // startSteps: 0 serving; 1 storage lost, state replayed, base not yet PUT; 2 base PUT, not committed. Nothing is served while st > 0
   mx: number // ghost (startSteps): the highest ledger incarnation number with a base in R2
+  // review S-1 (only with maxRB > 0; absent otherwise)
+  rb?: number // the first-layout release runs on this storage: 1 (as built: nothing heals on roll-forward), 2 (with fix (b))
+  pc?: number[] // changes the first-layout drain wrote as per-change objects into this segment incarnation's prefix
+  lt?: number // `logged_through` + 1 as the segment drain knows it (only the segment drain moves it)
+  ft?: number // 1: the drain stopped for good (LogFault: the outbox does not continue the segment log)
+  nRB?: number
 }
 
 /** One run of janitor.ts sweepOrphans (sweepSteps). */
@@ -264,6 +272,7 @@ export function init(c: Cfg): St {
       li: 1, dn: 0, fi: [], wm: range(c.ns).map(() => [0, 0]), lg: range(c.ns).map(() => 0), ex: [],
       h: [], o0: 0, sg: [], dr: null, pl: null, b: freshSnap(c.ns), tb: [], nC: 0, nE: 0, nL: 0, ru: 0,
       st: 0, mx: c.startSteps && c.baseFirst ? 1 : 0,
+      ...(c.maxRB > 0 ? { rb: 0, pc: [], lt: 0, ft: 0, nRB: 0 } : {}),
     })),
     q: idleQ(),
     nSL: 0,
@@ -286,6 +295,7 @@ function cp(s: St): St {
     L: s.L.map((L) => ({
       li: L.li, dn: L.dn, fi: L.fi, wm: aa(L.wm), lg: L.lg.slice(), ex: L.ex, h: L.h.slice(), o0: L.o0, sg: L.sg.slice(),
       dr: L.dr, pl: L.pl, b: L.b, tb: L.tb, nC: L.nC, nE: L.nE, nL: L.nL, ru: L.ru, st: L.st, mx: L.mx,
+      ...(L.pc ? { rb: L.rb, pc: L.pc, lt: L.lt, ft: L.ft, nRB: L.nRB } : {}),
     })),
     q: { st: s.q.st, t: s.q.t, fi: s.q.fi, wm: s.q.wm, nd: s.q.nd, tl: s.q.tl, mu: s.q.mu, ex: s.q.ex, ln: s.q.ln.slice(), rs: s.q.rs, dup: s.q.dup, miss: s.q.miss, leak: s.q.leak },
     nSL: s.nSL, nQ: s.nQ, cN: s.cN,
@@ -338,7 +348,10 @@ function replay(L: Led, strict: boolean): { sn: Snap; upTo: number; refused: boo
   let sn: Snap = { fi: [...L.b.fi], wm: L.b.wm.map((x) => [...x]), ex: [...L.b.ex], tb: L.b.tb }
   let next = 0
   const removed: number[] = []
-  for (const [lo, hi] of segsInKeyOrder(L)) {
+  // S-1: the segment rebuild never reads per-change objects. While the first-layout release runs
+  // with fix (b) in place, its roll-forward will put them in a new base, so they count as durable.
+  const segs = L.rb === 2 && L.pc!.length ? [...L.sg, ...L.pc!.filter((k) => !L.sg.some((g) => g[0]! <= k && k <= g[1]!)).map((k) => [k, k])].sort(cmpArr) : segsInKeyOrder(L)
+  for (const [lo, hi] of segs) {
     if (lo! > next) return { sn, upTo: next, refused: true, removed }
     if (lo! < next && strict) return { sn, upTo: next, refused: true, removed }
     for (let k = Math.max(lo!, next); k <= hi!; k++) {
@@ -701,8 +714,48 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
         emit(`ledger${tt} start: commit incarnation ${nL.li}, serve`, ns)
       }
     }
+    // review S-1: a rollback to the first-layout release, and the roll-forward after it
+    if (L.pc && L.st === 0) {
+      if (!L.rb && L.nRB! < c.maxRB && !L.dr) {
+        const ns = cp(s)
+        const nL = ns.L[t]!
+        nL.rb = c.rbFix === 'heal' ? 2 : 1
+        nL.nRB! += 1
+        emit(`RELEASE ROLLBACK${tt}: the first-layout ledger runs on segment storage`, ns)
+      }
+      if (L.rb && !L.dr) {
+        const ns = cp(s)
+        const nL = ns.L[t]!
+        nL.rb = 0
+        const broken = nL.pl ? nL.pl[0]! < nL.o0 : nL.o0 !== nL.lt
+        if (c.rbFix === 'heal' && broken) {
+          // fix (b): SQLite holds the whole committed state; a new incarnation's base carries it
+          const tomb = nL.tb.map((x) => x[0]!).filter((f) => !has(nL.fi, f))
+          Object.assign(nL, {
+            li: Math.max(nL.mx, nL.li) + 1, mx: Math.max(nL.mx, nL.li) + 1, lg: nL.wm.map((w) => w[1]), h: [], o0: 0, sg: [], dr: null, pl: null,
+            b: { fi: [...nL.fi], wm: nL.wm.map((x) => [...x]), ex: [...nL.ex], tb: c.baseTombstones ? tomb : [] }, tb: nL.tb.map((x) => [x[0]!, -1]),
+            pc: [], lt: 0, ft: 0,
+          })
+          emit(`RELEASE ROLL-FORWARD${tt}: the outbox does not continue the segment log -> new incarnation ${nL.li} from SQLite`, ns)
+        } else emit(`RELEASE ROLL-FORWARD${tt}`, ns)
+      }
+    }
+    if (L.rb === 0 && L.ft === 0 && !L.dr && L.o0 < L.h.length && (L.pl ? L.pl[0]! < L.o0 : L.o0 !== L.lt)) {
+      // ledger.ts nextSegment: the outbox does not continue the log (or a recorded segment lost its rows)
+      const ns = cp(s)
+      ns.L[t]!.ft = 1
+      emit(`ledger${tt} drain: LogFault, the outbox does not continue the segment log; the drain stops for good`, ns)
+    }
+    if (L.rb && !L.dr && L.o0 < L.h.length) {
+      // the first-layout drain: one object per change, {version}.json, in this incarnation's prefix
+      const ns = cp(s)
+      const nL = ns.L[t]!
+      if (!nL.pc!.includes(nL.o0)) nL.pc = [...nL.pc!, nL.o0]
+      nL.dr = [nL.o0, nL.o0]
+      emit(`ledger${tt} first-layout drain: PUT change v${nL.o0 + 1} as a per-change object`, ns)
+    }
     // drain step 1: PUT the pending changes to R2 (one object per change, or one segment)
-    if (!L.dr && L.o0 < L.h.length) {
+    if (!L.rb && !L.ft && !L.dr && L.o0 < L.h.length && !(L.pc && (L.pl ? L.pl[0]! < L.o0 : L.o0 !== L.lt))) {
       let lo = L.o0
       let hi = c.log === 'perChange' ? L.o0 : L.h.length - 1
       if (c.drainRetrySame && L.pl) [lo, hi] = [L.pl[0]!, L.pl[1]!]
@@ -725,7 +778,8 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       }
       nL.o0 = Math.max(nL.o0, hi + 1)
       nL.dr = null
-      nL.pl = null
+      if (!L.rb) nL.pl = null // the first-layout release neither reads nor clears the recorded bounds
+      if (L.pc && !L.rb) nL.lt = hi + 1 // segmentWritten sets logged_through; the first layout does not
       emit(`ledger${tt} drain: delete outbox rows v${lo + 1}..v${hi + 1}, advance logged`, ns)
       // the isolate dies (or the PUT's answer is lost) before that transaction
       const ns2 = cp(s)
@@ -734,7 +788,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
     }
     // ledger storage loss + rebuild from R2 (new ledger incarnation). With startSteps a loss
     // before the new base is PUT changes nothing (the storage held nothing yet), so it is skipped.
-    if (L.nL < c.maxLL && L.st !== 1) {
+    if (L.nL < c.maxLL && L.st !== 1 && !L.rb) {
       const ns = cp(s)
       const nL = ns.L[t]!
       const r = replay(nL, c.rebuild === 'strict')
@@ -748,6 +802,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
         li: newLi, dn: r.refused && inR2 ? 1 : 0, fi: sn.fi, wm: sn.wm, lg: sn.wm.map((w) => w[1]), ex: sn.ex,
         h: [], o0: 0, sg: [], dr: null, pl: null, b: { fi: [...sn.fi], wm: sn.wm.map((x) => [...x]), ex: [...sn.ex], tb: c.baseTombstones ? tomb : [] },
         tb: tomb.map((f) => [f, -1]), nL: nL.nL + 1, ru: nL.ru || (!inR2 && nL.h.length > 0 ? 1 : 0), st: steps && !(r.refused && inR2) ? 1 : 0,
+        ...(nL.pc ? { pc: [], lt: 0, ft: 0 } : {}),
       })
       emit(`LEDGER${tt} STORAGE LOSS -> rebuild from R2${r.refused && inR2 ? ' REFUSED (log not contiguous)' : ''}${inR2 ? '' : ' (nothing of this incarnation in R2: incarnation number reused)'}${steps ? `, start incarnation ${newLi}` : ''}`, ns)
     }

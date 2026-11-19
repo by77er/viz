@@ -37,7 +37,12 @@ import type {
 import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, historyOf, maxClass, newAnomalyRt, readStateRows, stateRows, type AnomalyEval, type AnomalyRt } from './anomaly'
 import { MAX_BACKTEST_STEPS, runBacktest } from './backtest'
 import { classify } from './classify'
+import type { ServiceKeyResult, TenantServiceRpc } from '../../contracts/control'
+import { ServiceCredential, type StoredKey } from './credential'
+import { ENGINE_CALLS_IN_FLIGHT, Gate, httpEngine, type Fetcher, type HttpEngine } from './engine'
 import { batchFromSingle, errorText, permissiveValidator } from './evaluator'
+import { remoteWriteSink } from './remote'
+import { stageExpired } from './util'
 import { indexName } from './registry'
 import { ruleFileDocument } from './rulefile'
 import { RULER_SCHEMA } from './schema'
@@ -82,6 +87,17 @@ export interface RulerEnv {
   SINK?: { write(tenant: string, batches: SampleBatch[]): Promise<void> }
   /** The registry the cron sweeper walks (`registry.ts`). */
   RULER_INDEX?: DurableObjectNamespace
+  /**
+   * Production wiring while the query Worker has no RPC entrypoint (README, "Needed
+   * changes"): viz-query's Prometheus HTTP API (`engine.ts`), viz-ingest's Remote Write
+   * (`remote.ts`), both with the shard's service key from control's `Tenant` object
+   * (`credential.ts`, contracts/control.ts). `EVALUATOR` / `SINK`, when bound, win.
+   */
+  QUERY?: Fetcher
+  INGEST?: Fetcher
+  TENANT?: DurableObjectNamespace
+  /** A staged trial's deadline (ISO 8601, set by deploy/configure.mjs --expires): after it, nothing is evaluated or re-armed. */
+  VIZ_STAGE_EXPIRES_AT?: string
 }
 
 export interface NotifierPort {
@@ -240,6 +256,40 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     return Date.now()
   }
 
+  /** Every engine call of this object goes through here: one at a time (`engine.ts`, six connections). */
+  private readonly engineGate = new Gate(ENGINE_CALLS_IN_FLIGHT)
+  private credentialRt: ServiceCredential | null = null
+
+  /** The shard's service key (`credential.ts`), from control's `Tenant` object; stored in `meta`. */
+  protected credential(): ServiceCredential {
+    this.credentialRt ??= new ServiceCredential({
+      now: () => this.now(),
+      load: () => {
+        const row = this.exec<{ v: string }>(`SELECT v FROM meta WHERE tenant = ? AND k = 'service_key'`, this.tenant)[0]
+        return row ? (JSON.parse(row.v) as StoredKey) : null
+      },
+      save: (k) => {
+        if (k === null) this.exec(`DELETE FROM meta WHERE tenant = ? AND k = 'service_key'`, this.tenant)
+        else this.putMeta('service_key', k)
+      },
+      issue: () => this.issueServiceKey(),
+    })
+    return this.credentialRt
+  }
+
+  protected issueServiceKey(): Promise<ServiceKeyResult> {
+    const ns = this.env.TENANT
+    if (!ns) return Promise.reject(new Error('no TENANT binding (the control plane)'))
+    const stub = ns.get(ns.idFromName(this.tenant)) as unknown as TenantServiceRpc
+    return stub.serviceKey(this.tenant, 'viz-ruler', this.shard)
+  }
+
+  /** viz-query's HTTP API, when bound and no RPC evaluator is. */
+  private httpEngine(): HttpEngine | null {
+    const q = this.env.QUERY
+    return q ? httpEngine(q, this.credential(), this.engineGate) : null
+  }
+
   /** The single-call form. Kept as the input of the adapter; nothing else calls it. */
   protected evaluator(): Evaluator {
     const binding = this.env.EVALUATOR
@@ -255,20 +305,31 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       const evaluate = binding.evaluate.bind(binding)
       return { evaluate: (requests) => evaluate(this.tenant, requests) }
     }
+    if (!binding?.instant) {
+      const http = this.httpEngine()
+      if (http) return { evaluate: (requests, opts) => http.evaluate(requests, opts) }
+    }
     return batchFromSingle(this.evaluator())
   }
 
   protected rangeEvaluator(): RangeEvaluator {
     const binding = this.env.EVALUATOR
-    if (!binding?.range) throw new Error('no range evaluator binding')
+    if (!binding?.range) {
+      const http = this.httpEngine()
+      if (http) return { range: (promql, startMs, endMs, stepMs) => http.range(promql, startMs, endMs, stepMs) }
+      throw new Error('no range evaluator binding')
+    }
     const range = binding.range.bind(binding)
     return { range: (promql, startMs, endMs, stepMs) => range(this.tenant, promql, startMs, endMs, stepMs) }
   }
 
-  /** Save-time PromQL validation. Permissive until the engine binding offers `check`. */
+  /** Save-time PromQL validation: the engine's `check`, else query's `/api/v1/plan`, else permissive. */
   protected validator(): Validator {
     const binding = this.env.EVALUATOR
-    if (!binding?.check) return permissiveValidator
+    if (!binding?.check) {
+      const http = this.httpEngine()
+      return http ? { check: (promql) => http.check(promql) } : permissiveValidator
+    }
     const check = binding.check.bind(binding)
     return { check: (promql) => check(this.tenant, promql) }
   }
@@ -282,7 +343,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   protected sink(): Sink {
     const binding = this.env.SINK
-    if (!binding) throw new Error('no SINK binding')
+    if (!binding) {
+      if (this.env.INGEST) return remoteWriteSink(this.env.INGEST, this.credential())
+      throw new Error('no SINK binding')
+    }
     return { write: (batches) => binding.write(this.tenant, batches) }
   }
 
@@ -463,6 +527,11 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (refused) {
       // Keep the alarm for the release that owns this storage; touch nothing else.
       await this.ctx.storage.setAlarm(Date.now() + refused.retryAfterMs)
+      return
+    }
+    // A staged trial past its deadline stops by itself (AGENTS.md: timers end at a deadline).
+    if (stageExpired(this.env.VIZ_STAGE_EXPIRES_AT, Date.now())) {
+      await this.ctx.storage.deleteAlarm()
       return
     }
     await this.tick()

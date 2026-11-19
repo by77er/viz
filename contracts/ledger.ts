@@ -99,7 +99,12 @@ export interface FlushUnit extends StreamRef {
 }
 
 export type AddUnitResult =
-  /** Admitted, or already admitted earlier (idempotent replay). */
+  /**
+   * Admitted, or already admitted earlier (idempotent replay). `watermark` is the COMMITTED
+   * watermark: the change may not be in the ledger's R2 log yet (contracts/LEDGER-LOG.md), and a
+   * ledger that loses its storage comes back without it. It must never be passed to a shard's
+   * `recorded`: only `loggedWatermarks()` may (spec F8).
+   */
   | { status: 'ok'; version: number; watermark: number }
   /** `seqLo` is not `watermark + 1` for this stream. Nothing changed. */
   | { status: 'not_contiguous'; watermark: number }
@@ -107,6 +112,14 @@ export type AddUnitResult =
   | { status: 'incarnation_mismatch'; incarnation: number }
   /** The unit itself is unacceptable (a key already belongs to another unit, an empty unit). Nothing changed. */
   | { status: 'invalid'; reason: string }
+  /**
+   * The ledger already holds as much state as it can write as one base or checkpoint and
+   * rebuild within one isolate (`stateBytes` of `limitBytes`, estimated; LEDGER-LOG.md "Size").
+   * Nothing changed. Retryable: compaction and retention shrink the state; if it persists the
+   * tenant needs splitting. Added 2026-11-19 (review S-2); a caller that does not know it
+   * fails closed and retries (COMPATIBILITY.md §3.2).
+   */
+  | { status: 'full'; stateBytes: number; limitBytes: number }
 
 /*
  * Replay rules. A retried unit is `ok` whenever the stream's watermark is already at or past

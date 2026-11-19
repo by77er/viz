@@ -80,6 +80,8 @@ export interface LedgerEnv {
   LEDGER_DRAIN_DELAY_MS?: string
   /** Write a checkpoint after this many segments. Default `CHECKPOINT_EVERY`. */
   LEDGER_CHECKPOINT_EVERY?: string
+  /** Refuse new files above this much state (bytes). Default `STATE_MAX_BYTES`. */
+  LEDGER_STATE_MAX_BYTES?: string
 }
 
 /** Which flush unit a file came from. Null for compaction outputs. */
@@ -119,7 +121,13 @@ export interface RebuildResult {
 }
 
 export interface LogStatus {
-  phase: 'ready' | 'starting' | 'refused' | 'corrupt'
+  /**
+   * `stuck`: the log cannot go on as it is (the outbox does not continue the written log, an
+   * object at a segment's key has other bytes, or the log cannot be rebuilt from); `stuck`
+   * says why. Nothing more counts as logged until an operator acts (`restartFromSqlite`, or
+   * repairing R2): stuck, never lost, never silently skipped (review S-1).
+   */
+  phase: 'ready' | 'starting' | 'refused' | 'corrupt' | 'stuck'
   ledgerIncarnation: number | null
   version: number
   /** Highest version in a written segment of this incarnation. */
@@ -135,6 +143,11 @@ export interface LogStatus {
   /** Since this instance started: segments written, and the slowest and the last segment write (ms). */
   segmentsWritten: number
   segmentWriteMs: { last: number; max: number }
+  /** Why the log is stuck, if it is (phase `stuck`). */
+  stuck: string | null
+  /** Estimated size of the whole state as a base or checkpoint (bytes), and the most `addUnit` admits to (review S-2). */
+  stateBytes: number
+  stateLimitBytes: number
 }
 
 /**
@@ -160,8 +173,25 @@ const DRAIN_RETRY_MS = 1_000
 const DRAIN_RETRY_MAX_MS = 60_000
 /** At most this many segments per alarm; then the alarm is set again. */
 const SEGMENTS_PER_ALARM = 16
-/** Default: a checkpoint after this many segments bounds a rebuild (contracts/LEDGER-LOG.md). */
+/**
+ * Default: a checkpoint after at least this many segments, and only once the segments written
+ * since the last checkpoint (or the base) are at least as large as it: so checkpoints cost at
+ * most as much R2 as the log itself, whatever the write rate (review S-2).
+ */
 export const CHECKPOINT_EVERY = 256
+/**
+ * Default: `addUnit` refuses new files (`full`) once the state would exceed this many bytes, as
+ * estimated by `entryBytes` (review S-2). A base or checkpoint is the whole state as one JSON
+ * line, built in one synchronous step with about three copies in memory, and a rebuild holds it
+ * as objects: 16 MiB keeps that well inside a 128 MB isolate (modelled, not measured on
+ * Cloudflare). Lifting it needs a rebuild and checkpoints that stream (ledger/README.md).
+ */
+export const STATE_MAX_BYTES = 16 * 1024 * 1024
+/** What one live file adds to a base, beyond its key and index fragment (field names, numbers, unit): an estimate. */
+const FILE_OVERHEAD_BYTES = 256
+const entryBytes = (f: { key: string; index: string }): number => f.key.length + f.index.length + FILE_OVERHEAD_BYTES
+/** The same estimate in SQL, over rows of `file`. */
+const ENTRY_BYTES_SQL = `COALESCE(SUM(LENGTH(idx) + LENGTH(key) + ${FILE_OVERHEAD_BYTES}), 0)`
 /** Concurrent R2 reads while replaying a log: a Durable Object's six connections. */
 const REPLAY_FANOUT = 6
 /** A request waits this long for a starting incarnation before it is refused. */
@@ -208,6 +238,20 @@ export const LEDGER_SCHEMA: SchemaSpec = {
       if (!cols.has('prec')) sql.exec(`ALTER TABLE file ADD COLUMN prec INTEGER NOT NULL DEFAULT 0`)
       if (!cols.has('prec_lo')) sql.exec(`ALTER TABLE file ADD COLUMN prec_lo INTEGER NOT NULL DEFAULT 0`)
     },
+  }, {
+    // FORWARD-ONLY (readableFrom = 2): the outbox and `meta` now mean "drained as segments".
+    // Code that knows only version 1 and drains the first layout must not open this storage:
+    // it would write per-change objects into a segment incarnation and tell shards they are
+    // logged (review S-1). Versioned older code now refuses (`schema_too_new`); code from
+    // before versioning cannot be stopped by a version row and is kept out by the release
+    // record (contracts/COMPATIBILITY.md §6; ledger/README.md, "Needed changes elsewhere").
+    version: 2,
+    name: 'the change log in segments (contracts/LEDGER-LOG.md); the state-size estimate in meta',
+    readableFrom: 2,
+    up: (sql) => {
+      sql.exec(`DELETE FROM meta WHERE k = 'state_bytes'`)
+      sql.exec(`INSERT INTO meta (k, v) SELECT 'state_bytes', ${ENTRY_BYTES_SQL} FROM file`)
+    },
   }],
 }
 
@@ -217,6 +261,7 @@ export const LEDGER_SCHEMA: SchemaSpec = {
  * to have a schema version row and no incarnation that is not corruption).
  */
 type MetaKey = 'incarnation' | 'version' | 'log_format' | 'seg_first' | 'seg_last' | 'logged_through' | 'segs_since_ckpt' | 'starting'
+  | 'state_bytes' | 'log_bytes_since_ckpt' | 'ckpt_bytes'
 const LOG_FORMAT_SEGMENTS = 2
 
 type Row = Record<string, SqlStorageValue>
@@ -301,6 +346,8 @@ const emptyState = (): State => ({ version: 0, files: new Map(), streams: new Ma
 
 /** A recorded segment, ready to write. */
 interface PendingSegment {
+  /** The ledger incarnation it belongs to: a segment of an older one is never applied to a newer (review S-7). */
+  incarnation: number
   first: number
   last: number
   key: string
@@ -308,8 +355,8 @@ interface PendingSegment {
   rows: { version: number; json: string }[]
   /** The bounds were recorded by this call (so must be made durable before the PUT). */
   fresh: boolean
-  /** A checkpoint to write once this segment is written: the state at `last`. */
-  checkpoint: { version: number; json: string } | null
+  /** A checkpoint to write once this segment is written: the state at `last`, encoded. */
+  checkpoint: { version: number; body: string } | null
 }
 
 /** An existing log object with other bytes, or a recorded segment whose rows are gone: never overwritten, never guessed around. */
@@ -322,6 +369,11 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   protected bucket: R2Bucket
   protected drainDelayMs: number
   protected checkpointEvery: number
+  /** Checkpoint only once the log since the last one is as large as it (false in tests that count segments only). */
+  protected checkpointByLogBytes = true
+  protected stateMaxBytes: number
+  /** Why the log is stuck (phase `stuck`), re-derived by the next drain or start after an eviction. */
+  private stuck: string | null = null
   /** Single-flight guard: drains run one after another, never interleaved. */
   private draining: Promise<unknown> = Promise.resolve()
   private refusal: SchemaTooNew | null = null
@@ -355,6 +407,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     this.bucket = env.BUCKET
     this.drainDelayMs = Number(env.LEDGER_DRAIN_DELAY_MS ?? DRAIN_DELAY_MS)
     this.checkpointEvery = Math.max(1, Number(env.LEDGER_CHECKPOINT_EVERY ?? CHECKPOINT_EVERY))
+    this.stateMaxBytes = Math.max(1, Number(env.LEDGER_STATE_MAX_BYTES ?? STATE_MAX_BYTES))
     // Local storage only inside: no R2, no network (AGENTS.md).
     void ctx.blockConcurrencyWhile(() => this.open())
   }
@@ -395,7 +448,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
 
   private isEmpty(): boolean {
     const n = (t: string) => this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM ${t}`).one().n as number
-    return n('file') === 0 && n('stream') === 0 && n('outbox') === 0 && n('meta') === 0
+    // `state_bytes` is written by migration 2 itself, so it does not make storage "used".
+    const meta = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM meta WHERE k <> 'state_bytes'`).one().n as number
+    return n('file') === 0 && n('stream') === 0 && n('outbox') === 0 && meta === 0
   }
 
   private meta(k: MetaKey): number | null {
@@ -567,12 +622,17 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
         this.needsStart = null
         this.starting = null
         this.lastError = null
+        this.stuck = null
         if (this.hasPending()) this.scheduleDrain(0)
       },
       (e: unknown) => {
         this.starting = null
         this.startFailedAt = Date.now()
         this.lastError = e instanceof Error ? e.message : String(e)
+        // A log that cannot be rebuilt from (a gap, both layouts, an unreadable or unsupported
+        // object, a missing log while data exists) is stuck until someone repairs R2; a failed
+        // read is only retried.
+        if (e instanceof LogFault) this.stuck = `${this.lastError}; operator: repair R2`
         console.error(`ledger ${this.tenant}: could not start an incarnation: ${this.lastError}`)
         // Try again even if nobody asks.
         this.setAlarmAt(Date.now() + START_RETRY_MS)
@@ -651,8 +711,17 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     for (const f of unit.files) {
       if (this.liveFile(f.key)) return invalid(`file key already live in another unit: ${f.key}`)
     }
+    // The state must stay small enough to be written as one base or checkpoint and rebuilt in
+    // one isolate (review S-2). Only new files are refused; compaction and retention shrink it.
+    const adding = unit.files.reduce((n, f) => n + entryBytes(f), 0)
+    const stateBytes = this.meta('state_bytes') ?? 0
+    if (stateBytes + adding > this.stateMaxBytes) {
+      console.error(`ledger ${this.tenant}: full: ${stateBytes} + ${adding} bytes of state would exceed ${this.stateMaxBytes}; unit ${unit.shard} ${unit.seqLo}..${unit.seqHi} refused`)
+      return { status: 'full', stateBytes, limitBytes: this.stateMaxBytes }
+    }
 
     const version = this.ctx.storage.transactionSync(() => {
+      this.setMeta('state_bytes', (this.meta('state_bytes') ?? 0) + adding)
       if (!known) this.register(unit, null)
       // Precedence (contracts/ledger.ts `LiveFile`): the version this change is about to get.
       // Units of a stream are admitted in sequence order, so a later write ranks higher.
@@ -737,6 +806,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     if (blocking.size > 0) return { status: 'conflict', missing: [], blocking: [...blocking].sort() }
 
     const version = this.ctx.storage.transactionSync(() => {
+      const delta = outputs.reduce((n, f) => n + entryBytes(f), 0) - inputs.reduce((n, f) => n + entryBytes(f), 0)
+      this.setMeta('state_bytes', Math.max(0, (this.meta('state_bytes') ?? 0) + delta))
       const gone = inputs.map((f) => ({ key: f.key, table: f.table }))
       this.bury(gone)
       for (const k of remove) this.ctx.storage.sql.exec(`DELETE FROM file WHERE key = ?`, k)
@@ -764,6 +835,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       }
       if (gone.length === 0) return null
       this.bury(gone)
+      let freed = 0
+      for (const table of named) freed += sql.exec(`SELECT ${ENTRY_BYTES_SQL} AS b FROM file WHERE tbl = ? AND day < ?`, table, req.beforeDay).one().b as number
+      this.setMeta('state_bytes', Math.max(0, (this.meta('state_bytes') ?? 0) - freed))
       for (const table of named) sql.exec(`DELETE FROM file WHERE tbl = ? AND day < ?`, table, req.beforeDay)
       return { version: this.record('expire', [], gone), removed: gone.map((x) => x.key) }
     })
@@ -866,7 +940,20 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   async drain(): Promise<{ written: number }> {
     const g = this.gate()
     if (g) await g
-    return { written: await this.drainSerial(Number.MAX_SAFE_INTEGER) }
+    try {
+      const written = await this.drainSerial(Number.MAX_SAFE_INTEGER)
+      this.stuck = null
+      return { written }
+    } catch (e) {
+      if (e instanceof LogFault) await this.noteStuck(e)
+      throw e
+    }
+  }
+
+  /** A log fault: say so in `logStatus` and the error log (review S-1). */
+  private async noteStuck(e: LogFault): Promise<void> {
+    this.stuck = `${e.message}${await this.foreignLayout()}; operator: repair R2 or call restartFromSqlite()`
+    console.error(`ledger ${this.tenant}: log stuck, drain stopped: ${this.stuck}`)
   }
 
   private drainSerial(maxSegments: number): Promise<number> {
@@ -897,12 +984,15 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       await this.drainSerial(maxSegments)
       this.failures = 0
       this.retryNotBefore = 0
+      this.stuck = null
       return false
     } catch (e) {
       this.failures++
       this.lastError = e instanceof Error ? e.message : String(e)
       const fault = e instanceof LogFault
-      if (fault) console.error(`ledger ${this.tenant}: log fault, drain stopped: ${this.lastError}`)
+      // Stuck, and saying so: nothing more counts as logged (shards keep their rows) until an
+      // operator acts. Never written around, never skipped (review S-1).
+      if (fault) await this.noteStuck(e)
       const delay = fault ? DRAIN_RETRY_MAX_MS : Math.min(DRAIN_RETRY_MAX_MS, DRAIN_RETRY_MS * 2 ** (this.failures - 1))
       this.retryNotBefore = Date.now() + delay
       return true
@@ -951,19 +1041,30 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
         this.setMeta('seg_last', last)
       })
       fresh = true
-      // A checkpoint is the state at the end of this segment, read in this same synchronous
-      // step: only possible when the segment ends at the committed version.
-      if ((this.meta('segs_since_ckpt') ?? 0) + 1 >= this.checkpointEvery && last === this.version()) {
-        checkpoint = { version: last, json: JSON.stringify(this.baseChange(inc, this.stateFromSqlite())) }
-      }
     }
     const first = rows[0]!.version
     const last = rows[rows.length - 1]!.version
+    const body = encodeLedgerSegment(this.tenant, inc, rows)
+    // A checkpoint is the state at the end of this segment, read in this same synchronous step:
+    // only possible when the segment ends at the committed version. Taken after at least
+    // `checkpointEvery` segments AND once the log written since the last checkpoint (or the base)
+    // is at least as large as it, so checkpoints cost at most as much R2 as the log (review S-2).
+    if (fresh && (this.meta('segs_since_ckpt') ?? 0) + 1 >= this.checkpointEvery && last === this.version()
+      && (!this.checkpointByLogBytes || (this.meta('log_bytes_since_ckpt') ?? 0) + body.length >= (this.meta('ckpt_bytes') ?? 0))) {
+      const state = this.stateFromSqlite()
+      // The exact size of the state, now that it is all read (the running estimate drifts).
+      let exact = 0
+      for (const f of state.files.values()) exact += entryBytes(f)
+      this.setMeta('state_bytes', exact)
+      const json = JSON.stringify(this.baseChange(inc, state))
+      checkpoint = { version: last, body: encodeLedgerSegment(this.tenant, inc, [{ version: last, json }], LEDGER_CHECKPOINT_KIND) }
+    }
     return {
+      incarnation: inc,
       first,
       last,
       key: this.objectKey(ledgerSegmentKey(this.tenant, inc, first, last)),
-      body: encodeLedgerSegment(this.tenant, inc, rows),
+      body,
       rows,
       fresh,
       checkpoint,
@@ -984,13 +1085,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       this.segmentWriteMs = { last: ms, max: Math.max(this.segmentWriteMs.max, ms) }
       this.ctx.storage.transactionSync(() => this.segmentWritten(seg))
       written += seg.rows.length
-      if (seg.checkpoint) await this.writeCheckpoint(seg.checkpoint)
+      if (seg.checkpoint) await this.writeCheckpoint(seg.checkpoint, seg.incarnation)
     }
     return written
   }
 
   /** In one transaction with nothing else: the segment is in R2; its rows go, the marks move. */
   private segmentWritten(seg: PendingSegment): void {
+    // A drain of an incarnation that has since been replaced (an operator emptied storage and
+    // rebuilt while its PUT was in flight) must not touch the new one's rows (review S-7).
+    if (this.meta('incarnation') !== seg.incarnation) return
     const sql = this.ctx.storage.sql
     sql.exec(`DELETE FROM outbox WHERE version BETWEEN ? AND ?`, seg.first, seg.last)
     for (const r of seg.rows) {
@@ -1002,16 +1106,35 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     this.dropMeta('seg_first')
     this.dropMeta('seg_last')
     this.setMeta('segs_since_ckpt', (this.meta('segs_since_ckpt') ?? 0) + 1)
+    this.setMeta('log_bytes_since_ckpt', (this.meta('log_bytes_since_ckpt') ?? 0) + seg.body.length)
   }
 
-  private async writeCheckpoint(c: { version: number; json: string }): Promise<void> {
-    const inc = this.ledgerIncarnation()
+  private async writeCheckpoint(c: { version: number; body: string }, inc: number): Promise<void> {
     try {
-      await this.putLogObject(this.objectKey(ledgerCheckpointKey(this.tenant, inc, c.version)), encodeLedgerSegment(this.tenant, inc, [c], LEDGER_CHECKPOINT_KIND))
-      this.ctx.storage.transactionSync(() => this.setMeta('segs_since_ckpt', 0))
+      await this.putLogObject(this.objectKey(ledgerCheckpointKey(this.tenant, inc, c.version)), c.body)
+      if (this.meta('incarnation') !== inc) return
+      this.ctx.storage.transactionSync(() => {
+        this.setMeta('segs_since_ckpt', 0)
+        this.setMeta('log_bytes_since_ckpt', 0)
+        this.setMeta('ckpt_bytes', c.body.length)
+      })
     } catch (e) {
       // Only an accelerator: the next segment that ends at the committed version tries again.
       console.error(`ledger ${this.tenant}: checkpoint at ${c.version} not written: ${e instanceof Error ? e.message : String(e)}`)
+      return
+    }
+    // Superseded: a rebuild starts from the newest readable checkpoint, else the base, which
+    // stays. Deleting older ones keeps checkpoints from piling up for ever (review S-2). A
+    // failure here leaves them for the next checkpoint to delete.
+    try {
+      const prefix = this.objectKey(`${ledgerIncarnationPrefix(this.tenant, inc)}ckpt-`)
+      const older = (await this.listKeys(prefix)).filter((k) => {
+        const p = parseLedgerLogKey(k)
+        return p?.type === 'checkpoint' && p.version < c.version
+      })
+      for (let i = 0; i < older.length; i += 1000) await this.bucket.delete(older.slice(i, i + 1000))
+    } catch (e) {
+      console.error(`ledger ${this.tenant}: superseded checkpoints not deleted: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -1020,14 +1143,15 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
    * as written only if its bytes are these; any other bytes are a fault (never overwritten).
    */
   private async putLogObject(key: string, body: string): Promise<void> {
-    const bytes = new TextEncoder().encode(body)
-    const created = await this.bucket.put(key, bytes, {
+    // The string itself, not an encoded copy: a base or checkpoint can be large (review S-2).
+    const created = await this.bucket.put(key, body, {
       onlyIf: { etagDoesNotMatch: '*' },
       httpMetadata: { contentType: 'application/x-ndjson' },
     })
     if (created !== null) return
     const existing = await this.bucket.get(key)
     if (existing === null) throw new Error(`ledger: ${key} was refused as existing but is not there; retry`)
+    const bytes = new TextEncoder().encode(body)
     const there = new Uint8Array(await existing.arrayBuffer())
     if (there.length !== bytes.length || !there.every((b, i) => b === bytes[i])) {
       throw new LogFault(`${key} exists with other bytes (${there.length} vs ${bytes.length}); not overwritten`)
@@ -1064,6 +1188,25 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     return this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM outbox`).one().n as number
   }
 
+  /**
+   * Whether this incarnation's prefix also holds first-layout objects (`{version}.json` or
+   * `base.json`): what a release that drained the first layout leaves behind after a rollback
+   * across this one. Text for the stuck reason; empty when none (or R2 cannot say).
+   */
+  private async foreignLayout(): Promise<string> {
+    try {
+      const inc = this.meta('incarnation')
+      if (inc === null) return ''
+      const prefix = this.objectKey(ledgerIncarnationPrefix(this.tenant, inc))
+      const first = (await this.bucket.list({ prefix, limit: 1 })).objects[0]?.key
+      return first && (CHANGE_OBJECT.test(first) || first.endsWith('/base.json'))
+        ? `; this segment incarnation also holds first-layout objects (from ${first.slice(prefix.length)}): a release that drains the first layout has run on this storage`
+        : ''
+    } catch {
+      return ''
+    }
+  }
+
   /** Operator view of the log. Answers while starting, too. */
   async logStatus(): Promise<LogStatus> {
     const sql = this.ctx.storage.sql
@@ -1071,7 +1214,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const first = ready ? this.meta('seg_first') : null
     const last = ready ? this.meta('seg_last') : null
     return {
-      phase: this.refusal ? 'refused' : this.corrupt ? 'corrupt' : this.needsStart ? 'starting' : 'ready',
+      phase: this.refusal ? 'refused' : this.corrupt ? 'corrupt' : this.stuck ? 'stuck' : this.needsStart ? 'starting' : 'ready',
       ledgerIncarnation: ready ? this.meta('incarnation') : null,
       version: ready ? this.version() : 0,
       loggedThrough: ready ? this.meta('logged_through') : null,
@@ -1082,6 +1225,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       lastError: this.corrupt ?? this.lastError,
       segmentsWritten: this.segmentsWritten,
       segmentWriteMs: this.segmentWriteMs,
+      stuck: this.stuck,
+      stateBytes: ready ? (this.meta('state_bytes') ?? 0) : 0,
+      stateLimitBytes: this.stateMaxBytes,
     }
   }
 
@@ -1097,6 +1243,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   async rebuildFromLog(): Promise<RebuildResult> {
     if (this.refusal) throw new SchemaTooNewError(this.refusal)
     if (this.starting) await this.starting.catch(() => undefined)
+    // A drain in flight finishes (or fails) before the storage is judged (review S-7).
+    await this.draining
     // Storage may have been emptied under this instance: open (create) the schema again.
     this.refusal = refusalOf(openSchema(this.ctx.storage, LEDGER_SCHEMA))
     if (this.refusal) throw new SchemaTooNewError(this.refusal)
@@ -1109,6 +1257,26 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     })
     this.corrupt = null
     this.needsStart = 'r2'
+    this.beginStart()
+    return this.starting!
+  }
+
+  /**
+   * Operator: start a new ledger incarnation from this object's own SQLite state, which holds
+   * every committed change. The way out of a stuck log (`logStatus().phase === 'stuck'`) whose
+   * outbox no longer continues what was written, for example after a release that drains the
+   * first layout ran on this storage (review S-1): the new incarnation's base, written to R2
+   * before it commits, holds everything committed, so nothing a shard was told is lost and the
+   * drain goes on in the new incarnation. The old incarnation's objects stay; a rebuild reads
+   * only the newest incarnation. Waits for the whole start.
+   */
+  async restartFromSqlite(): Promise<RebuildResult> {
+    if (this.refusal) throw new SchemaTooNewError(this.refusal)
+    if (this.corrupt) throw new LedgerUnavailableError(this.corrupt, DRAIN_RETRY_MAX_MS)
+    if (this.starting) await this.starting.catch(() => undefined)
+    if (this.meta('incarnation') === null) throw new Error('ledger: no incarnation in SQLite to restart from; use rebuildFromLog')
+    await this.draining
+    this.needsStart = 'sqlite'
     this.beginStart()
     return this.starting!
   }
@@ -1164,6 +1332,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       state = this.stateFromSqlite()
       replay = { from: 'sqlite', checkpoint: null, changesReplayed: 0, segmentsRead: 0 }
     } else if (latest === null) {
+      // No log at all. A new tenant has no data objects either: every ledger writes its base
+      // before it admits a file. Data objects without a log mean the log is not where this
+      // ledger looks (a changed CELL, a wrong bucket, a deleted prefix): starting empty would
+      // let the sweeps delete live data (review S-5). Refused until someone looks.
+      for (const table of TABLES) {
+        const data = await this.bucket.list({ prefix: this.objectKey(`data/${table}/tenant=${this.tenant}/`), limit: 1 })
+        if (data.objects.length > 0) {
+          throw new LogFault(`ledger: no change log for this tenant in R2, but it has data objects (${data.objects[0]!.key}); refusing to start empty over them`)
+        }
+      }
       state = emptyState()
       replay = { from: 'empty', checkpoint: null, changesReplayed: 0, segmentsRead: 0 }
     } else {
@@ -1171,11 +1349,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     }
     // Higher than anything in R2 and than anything this storage has used.
     const incarnation = Math.max(latest ?? 0, this.meta('incarnation') ?? 0) + 1
-    const base = this.baseChange(incarnation, state)
-    await this.putLogObject(
-      this.objectKey(ledgerSegmentKey(this.tenant, incarnation, state.version, state.version)),
-      encodeLedgerSegment(this.tenant, incarnation, [{ version: state.version, json: JSON.stringify(base) }]),
-    )
+    const baseBody = encodeLedgerSegment(this.tenant, incarnation, [{ version: state.version, json: JSON.stringify(this.baseChange(incarnation, state)) }])
+    await this.putLogObject(this.objectKey(ledgerSegmentKey(this.tenant, incarnation, state.version, state.version)), baseBody)
 
     const sql = this.ctx.storage.sql
     this.ctx.storage.transactionSync(() => {
@@ -1202,6 +1377,10 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       this.setMeta('log_format', LOG_FORMAT_SEGMENTS)
       this.setMeta('logged_through', state.version)
       this.setMeta('segs_since_ckpt', 0)
+      this.setMeta('log_bytes_since_ckpt', 0)
+      // The base is the first checkpoint: the next is due once the log is as large as it.
+      this.setMeta('ckpt_bytes', baseBody.length)
+      this.setMeta('state_bytes', sql.exec(`SELECT ${ENTRY_BYTES_SQL} AS b FROM file`).one().b as number)
       this.dropMeta('seg_first')
       this.dropMeta('seg_last')
       this.dropMeta('starting')
@@ -1245,8 +1424,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       const r = await this.replayObjects(source)
       return { ...r, from: 'objects', checkpoint: null, segmentsRead: 0 }
     }
+    // Each incarnation uses one layout; both present is corrupt (LEDGER-LOG.md, "Readers").
+    // Per-change objects `{version:012}.json` sort before `base.json`, `ckpt-` and `seg-`, so
+    // the first key under the prefix says whether any is there. Refused, never skipped: they
+    // are what a release draining the first layout logged here (review S-1).
+    const firstKey = (await this.bucket.list({ prefix, limit: 1 })).objects[0]?.key
+    if (firstKey && CHANGE_OBJECT.test(firstKey)) {
+      throw new LogFault(`ledger: incarnation ${source} holds both segments and first-layout change objects (${firstKey.slice(prefix.length)}); refusing to rebuild from either`)
+    }
     if ((await this.bucket.head(this.objectKey(ledgerBaseKey(this.tenant, source)))) !== null) {
-      throw new Error(`ledger: incarnation ${source} has both segments and a base.json`)
+      throw new LogFault(`ledger: incarnation ${source} has both segments and a base.json`)
     }
     return { ...(await this.replaySegments(source)), from: 'segments' }
   }
@@ -1254,7 +1441,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   /** Read and check one segment or checkpoint object. Unsupported or corrupt refuses the replay. */
   private async readLogObject(key: string, kind: 'segment' | 'checkpoint'): Promise<LedgerChange[]> {
     const parsed = parseLedgerLogKey(key)
-    if (!parsed || parsed.type !== kind) throw new Error(`ledger: ${key} is not a ${kind} key`)
+    if (!parsed || parsed.type !== kind) throw new LogFault(`ledger: ${key} is not a ${kind} key`)
     const o = await this.bucket.get(key)
     if (!o) throw new Error(`ledger: log object vanished during rebuild: ${key}`)
     const expected: Parameters<typeof decodeLedgerSegment>[1] =
@@ -1262,7 +1449,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
         ? { ledgerIncarnation: parsed.ledgerIncarnation, firstVersion: parsed.firstVersion, lastVersion: parsed.lastVersion, tenant: this.tenant }
         : { ledgerIncarnation: parsed.ledgerIncarnation, firstVersion: parsed.version, lastVersion: parsed.version, tenant: this.tenant, kind: LEDGER_CHECKPOINT_KIND }
     const d = decodeLedgerSegment(await o.text(), expected)
-    if (d.status !== 'ok') throw new Error(`ledger: ${key} is ${d.status}: ${d.reason}`)
+    if (d.status !== 'ok') throw new LogFault(`ledger: ${key} is ${d.status}: ${d.reason}`)
     return d.changes
   }
 
@@ -1302,12 +1489,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       for (const [j, changes] of read.entries()) {
         const seg = batch[j]!.p
         if (version !== null && seg.firstVersion !== version + 1) {
-          throw new Error(`ledger: log of incarnation ${source} is not contiguous at version ${version + 1} (next segment starts at ${seg.firstVersion})`)
+          throw new LogFault(`ledger: log of incarnation ${source} is not contiguous at version ${version + 1} (next segment starts at ${seg.firstVersion})`)
         }
         for (const c of changes) {
           if (state === null) {
             // The first segment of an incarnation starts with its base.
-            if (c.kind !== 'base') throw new Error(`ledger: incarnation ${source} does not start with a base`)
+            if (c.kind !== 'base') throw new LogFault(`ledger: incarnation ${source} does not start with a base`)
             state = this.stateFromBase(c)
           } else {
             this.apply(c, state)
@@ -1317,12 +1504,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
         }
       }
     }
-    if (state === null) throw new Error(`ledger: incarnation ${source} has no base segment`)
+    if (state === null) throw new LogFault(`ledger: incarnation ${source} has no base segment`)
     return { state, checkpoint, changesReplayed, segmentsRead: segs.length }
   }
 
   private stateFromBase(base: LedgerChange): State {
-    if (base.kind !== 'base' || !Array.isArray(base.added) || !Array.isArray(base.watermarks)) throw new Error(`ledger: version ${base.version} is not a base change`)
+    if (base.kind !== 'base' || !Array.isArray(base.added) || !Array.isArray(base.watermarks)) throw new LogFault(`ledger: version ${base.version} is not a base change`)
     const s = emptyState()
     s.version = base.version
     const units = new Map((base.units ?? []).map((u) => [u.key, { shard: u.shard, incarnation: u.incarnation, seqLo: u.seqLo, seqHi: u.seqHi }]))
@@ -1344,12 +1531,12 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     // An incarnation's log starts at its `base`. Without one there is nothing to start from:
     // an incarnation writes its base before it commits anything else.
     const baseObject = await this.bucket.get(this.objectKey(ledgerBaseKey(this.tenant, source)))
-    if (!baseObject) throw new Error(`ledger: incarnation ${source} has log objects but no base`)
+    if (!baseObject) throw new LogFault(`ledger: incarnation ${source} has log objects but no base`)
     const base = await baseObject.json<LedgerBase>()
     const why = unsupportedLedgerChange(base)
-    if (why) throw new Error(`ledger: base of incarnation ${source} is unsupported: ${why}`)
+    if (why) throw new LogFault(`ledger: base of incarnation ${source} is unsupported: ${why}`)
     if (base.kind !== 'base' || base.ledgerIncarnation !== source || !Array.isArray(base.added) || !Array.isArray(base.watermarks)) {
-      throw new Error(`ledger: base of incarnation ${source} is not a base change`)
+      throw new LogFault(`ledger: base of incarnation ${source} is not a base change`)
     }
     const state = this.stateFromBase(base)
     const pending: { version: number; key: string }[] = []
@@ -1372,9 +1559,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       for (const c of changes) {
         // COMPATIBILITY.md §3.2: a version or kind this code does not know stops the replay.
         const why = unsupportedLedgerChange(c)
-        if (why) throw new Error(`ledger: change ${c.version} of incarnation ${source} is unsupported: ${why}`)
+        if (why) throw new LogFault(`ledger: change ${c.version} of incarnation ${source} is unsupported: ${why}`)
         if (c.ledgerIncarnation !== source || c.version !== state.version + 1) {
-          throw new Error(`ledger: log of incarnation ${source} is not contiguous at version ${state.version + 1}`)
+          throw new LogFault(`ledger: log of incarnation ${source} is not contiguous at version ${state.version + 1}`)
         }
         this.apply(c, state)
         changesReplayed++
@@ -1385,7 +1572,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
 
   /** Apply one logged change to a replayed state. Throws if it does not fit the state before it. */
   private apply(c: LedgerChange, s: State): void {
-    const bad = (why: string) => new Error(`ledger: cannot replay version ${c.version}: ${why}`)
+    const bad = (why: string) => new LogFault(`ledger: cannot replay version ${c.version}: ${why}`)
     if (c.version !== s.version + 1) throw bad(`expected version ${s.version + 1}`)
     const inputs: StoredFile[] = []
     for (const k of c.removed) {

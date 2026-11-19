@@ -355,13 +355,14 @@ impl<'a> Parser<'a> {
             let arg_pos = self.pos();
             let e = self.field_or()?;
             self.expect(Tok::RParen, "')'")?;
-            // The argument must be numeric (a parse error in Tempo) and read the span.
+            // A string, status or kind argument is a syntax error in Tempo; a boolean one is
+            // rejected by validation. Whether it reads the span is checked with the filter.
             let t = self.check(&e)?;
+            if t == Type::Bool {
+                return Err(self.verr(arg_pos, format!("{name}() needs a numeric argument")));
+            }
             if !t.numeric() {
                 return Err(self.err_at(arg_pos, format!("{name}() needs a numeric argument")));
-            }
-            if !e.references_span() {
-                return Err(self.verr(arg_pos, format!("the argument of {name}() must read the span")));
             }
             return Ok(Node::Agg(op, Some(e), start));
         }
@@ -747,9 +748,7 @@ impl<'a> Parser<'a> {
                 "rootName" => Ok(FieldExpr::Intrinsic(Intrinsic::TraceRootName, w)),
                 "rootServiceName" => Ok(FieldExpr::Intrinsic(Intrinsic::TraceRootService, w)),
                 "parent" => Err(Error::unsupported("the parent intrinsic")),
-                "nestedSetLeft" | "nestedSetRight" | "nestedSetParent" => {
-                    Err(Error::unsupported(format!("the undocumented intrinsic {w}")))
-                }
+                "nestedSetLeft" | "nestedSetRight" | "nestedSetParent" => Ok(FieldExpr::Intrinsic(Intrinsic::NestedSet, w)),
                 _ => Err(self.err_at(start, format!("unknown identifier {w:?} (attributes start with '.' or a scope)"))),
             },
             other => Err(self.err_at(start, format!("unexpected {}", describe(&other)))),
@@ -880,6 +879,10 @@ impl<'a> Parser<'a> {
                 Ok(Stage::Filter(e))
             }
             Node::Spanset(op, a, b, p) => {
+                // Both operands are wrapped pipelines `( … | … )`, or neither is.
+                if is_wrapped_pipeline(&a) != is_wrapped_pipeline(&b) {
+                    return Err(self.err_at(b.pos(), "a spanset operator joins two spanset expressions or two wrapped pipelines"));
+                }
                 let l = self.spanset_operand(*a, p)?;
                 let r = self.spanset_operand(*b, p)?;
                 Ok(Stage::Op(op, Box::new(l), Box::new(r)))
@@ -937,8 +940,14 @@ impl<'a> Parser<'a> {
             }
             return Err(self.err_at(p, "a scalar filter needs an aggregate on the left"));
         }
-        if b.spanset_like() {
-            return Err(self.err_at(p, "cannot compare an aggregate with a spanset"));
+        if b.spanset_like() || has_bare_spanset(&a) || has_bare_spanset(&b) {
+            return Err(self.err_at(p, "cannot combine an aggregate with a spanset"));
+        }
+        let mut args_ok = true;
+        for_each_agg(&a, &mut |arg| args_ok &= arg.map_or(true, |e| e.references_span()));
+        for_each_agg(&b, &mut |arg| args_ok &= arg.map_or(true, |e| e.references_span()));
+        if !args_ok {
+            return Err(self.verr(p, "aggregate arguments must read the span"));
         }
         match a {
             Node::Agg(agg, arg, _) if !b_agg => {
@@ -1059,11 +1068,11 @@ impl<'a> Parser<'a> {
                         _ => Err(self.err_at(p, "expected a number")),
                     };
                 }
-                let l = self.metrics(*a)?;
-                let r = self.metrics(*b)?;
-                if is_compare(&l) || is_compare(&r) {
+                if contains_compare(&a) || contains_compare(&b) {
                     return Err(self.verr(p, "compare() cannot be used in arithmetic"));
                 }
+                let l = self.metrics(*a)?;
+                let r = self.metrics(*b)?;
                 Ok(MetricsExpr::Math { op, lhs: Box::new(l), rhs: Box::new(r), second: Vec::new() })
             }
             Node::Cmp(op, a, b, p) => {
@@ -1125,6 +1134,10 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn is_wrapped_pipeline(n: &Node) -> bool {
+    matches!(n, Node::Paren(x, _) if matches!(**x, Node::Pipe(..)))
+}
+
 fn strip_cmp(n: &Node) -> &Node {
     match n {
         Node::Cmp(_, a, _, _) => a,
@@ -1132,8 +1145,44 @@ fn strip_cmp(n: &Node) -> &Node {
     }
 }
 
-fn is_compare(_m: &MetricsExpr) -> bool {
-    false
+fn contains_compare(n: &Node) -> bool {
+    match n {
+        Node::Compare(_) => true,
+        Node::Paren(x, _) | Node::Neg(x, _) => contains_compare(x),
+        Node::Math(_, a, b, _) | Node::Cmp(_, a, b, _) | Node::Spanset(_, a, b, _) => contains_compare(a) || contains_compare(b),
+        Node::Pipe(v, _) => v.iter().any(contains_compare),
+        _ => false,
+    }
+}
+
+/// A spanset (not a wrapped scalar pipeline) used as an arithmetic operand.
+fn has_bare_spanset(n: &Node) -> bool {
+    match n {
+        Node::Math(_, a, b, _) => has_bare_spanset(a) || has_bare_spanset(b),
+        Node::Paren(x, _) => match &**x {
+            Node::Pipe(..) => !x.is_scalar_pipeline() && !matches!(&**x, Node::Pipe(v, _) if v.last().is_some_and(|l| matches!(l, Node::Agg(..)))),
+            Node::Agg(..) | Node::Num(..) => false,
+            other => has_bare_spanset(other) || other.spanset_like(),
+        },
+        other => other.spanset_like(),
+    }
+}
+
+fn for_each_agg(n: &Node, f: &mut dyn FnMut(Option<&FieldExpr>)) {
+    match n {
+        Node::Agg(_, arg, _) => f(arg.as_ref()),
+        Node::Paren(x, _) | Node::Neg(x, _) => for_each_agg(x, f),
+        Node::Math(_, a, b, _) | Node::Cmp(_, a, b, _) => {
+            for_each_agg(a, f);
+            for_each_agg(b, f);
+        }
+        Node::Pipe(v, _) => {
+            if let Some(l) = v.last() {
+                for_each_agg(l, f)
+            }
+        }
+        _ => {}
+    }
 }
 
 fn push_second(m: &mut MetricsExpr, s: SecondStage) {

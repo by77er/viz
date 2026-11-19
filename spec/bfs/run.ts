@@ -31,7 +31,7 @@ export const AMENDED: Cfg = {
   f6Register: true, readBound: true, log: 'segments', rebuild: 'strict', drainRetrySame: true, baseFirst: true, baseTombstones: false, compKey: 'unique',
   compConflictDelete: true, fpScope: 'stream', tailScope: 'stream', noRetryAcrossLoss: true, retain: false,
   sweepSteps: false, sweepAge: true, purgeSteps: false, startSteps: false, goal: 'query', sweepGone: 'both', sweepOrder: 'listFirst',
-  sweepNewerLogged: true, maxSweeps: 99,
+  sweepNewerLogged: true, maxSweeps: 99, maxRB: 0, rbFix: 'none',
 }
 
 /**
@@ -61,8 +61,8 @@ export const IMPL_V1: Cfg = {
 }
 
 /**
- * D30 (design/DECISIONS.md), compact/src/compact.ts and janitor/src/janitor.ts as of HEAD
- * 09f601d: output keys unchanged (hash of the input keys + of the bytes), each output carries
+ * D30 (design/DECISIONS.md), compact/src/compact.ts and janitor/src/janitor.ts as of 6488856
+ * (unchanged at 6ee76c8): output keys unchanged (hash of the input keys + of the bytes), each output carries
  * its inputs as R2 metadata `viz-inputs`, a step never deletes an output (not on conflict
  * either); the orphan sweep lists the prefix, then reads the ledger once, then deletes an
  * unreferenced, untombstoned output only if one of its inputs is absent from the listing and
@@ -75,7 +75,7 @@ export const D30: Partial<Cfg> = { sweep: 'inputs', sweepNewerLogged: true, swee
 export const LOG_AS_BUILT: Partial<Cfg> = { log: 'segments', drainRetrySame: true, baseFirst: true, baseTombstones: true, startSteps: true }
 
 /**
- * The code as on disk at HEAD 09f601d (2026-11-19): IMPL_V1 with D30, the segment log as
+ * The code as on disk at 6488856 (2026-11-19): IMPL_V1 with D30, the segment log as
  * built, shard.ts `readSegment` bound to (incarnation, seqLo, seqHi) and used so by flush.ts
  * (F12 fix), and `tailRead` refusing an incarnation it does not hold (`incarnation_mismatch(0)`)
  * but still answering ok/empty to incarnation 0; registration still lazy (by flush.ts), and
@@ -151,14 +151,14 @@ finding('F3_retry_after_shard_loss', 'F3: fingerprints die with the shard storag
 finding('F10_segments_overlap', 'F10 (LEDGER-LOG.md): drain PUTs v1..vk, dies before deleting the rows, a change commits, the retry PUTs v1..vk+1', { ...AMENDED, drainRetrySame: false }, ['LOG_SegmentsDisjoint'])
 finding('F10_rebuild_refuses', 'F10: same, then the ledger loses its storage: a strict replay refuses the log', { ...AMENDED, drainRetrySame: false, maxLL: 1 }, ['AV_RebuildSucceeds'])
 finding('F11_incarnation_reused', 'F11 (LEDGER-LOG.md): base is an ordinary first change; two ledger losses before it is drained', { ...AMENDED, baseFirst: false, maxLL: 2 }, ['V_IncarnationNotReused'])
-// The code as built. "As built" = HEAD 09f601d (IMPL); the findings F6, F12, F13, F14 and F15
+// The code as built. "As built" = 6488856 (IMPL); the findings F6, F12, F13, F14 and F15
 // were found against the code of 2026-11-18 evening (IMPL_V1) and are kept against it.
 const IMPL_PEEL: [string, Partial<Cfg>][] = [
   ['IMPL_1_as_built', {}],
   ['IMPL_2_assume_F3', { noRetryAcrossLoss: true }],
 ]
 for (const [name, over] of IMPL_PEEL) {
-  E.push({ name, kind: 'finding', label: `code at HEAD 09f601d (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts)${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ''}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
+  E.push({ name, kind: 'finding', label: `code at 6488856 (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts)${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ''}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
     cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: 'violated', maxStates: 4_000_000 })
 }
 E.push({ name: 'IMPL_3_fix_F6b', kind: 'finding', label: 'code at HEAD + F3 assumed + registration before writes, logged (F1/F6 fix in shard.ts); every action, every safety property', cfg: { ...IMPL, ...FAULTS, noRetryAcrossLoss: true, reg: 'logged' }, props: ALLSAFE, expect: 'holds', maxStates: 4_000_000 })
@@ -209,6 +209,11 @@ logrun('LOG_as_built_3LL', 'as LOG_as_built, three ledger losses, no compaction,
 logrun('LOG_as_built_faults', 'as LOG_as_built, + retention + shard loss, registration logged before writes (so F6(b) does not mask the log)', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxLL: 1, maxComp: 1, maxExp: 1, maxSL: 1 })
 logrun('LOG_teeth_commit_first', 'segment log teeth: the incarnation commits before its base is in R2 (the plan before F11)', { ...IMPL, baseFirst: false, startSteps: false, noRetryAcrossLoss: true, maxLL: 2, maxComp: 0, maxJobs: 1 }, 'violated', ['V_IncarnationNotReused'])
 logrun('LOG_teeth_retry_new_bounds', 'segment log teeth: a retried drain takes every pending row (F10)', { ...IMPL, drainRetrySame: false, noRetryAcrossLoss: true, maxLL: 1, maxComp: 0 }, 'violated', ['AV_RebuildSucceeds'])
+
+// review S-1 (design/reviews/segment-log-and-compaction.md): a rollback to the first-layout
+// release on segment storage, then a roll-forward; then a ledger storage loss
+logrun('LOG_S1_rollback', 'review S-1, as built: one rollback to the first-layout ledger and back, one ledger loss, retention, compaction, registration logged before writes', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 1, maxExp: 1, maxJobs: 1 }, 'violated')
+logrun('LOG_S1_heal', 'review S-1 with fix (b): on roll-forward an outbox that does not continue the segment log starts a new incarnation from SQLite; same bounds', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, rbFix: 'heal', maxLL: 1, maxComp: 1, maxExp: 1, maxJobs: 1 })
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation
 const amended = (name: string, label: string, over: Partial<Cfg>, maxStates?: number) =>

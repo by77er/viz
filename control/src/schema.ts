@@ -108,4 +108,8 @@ export const FORMATS = {
   'cursor.list': 1,
   /** A dashboard revision id (`revisionOf`, the ETag): content hash of the canonical spec. */
   'id.revision': 1,
+  /** `Tenant.notificationTarget` result (contracts/control.ts), read by the ruler's notifier: `v` 1. */
+  'rpc.notification-target': 1,
+  /** `Tenant.serviceKey` result (contracts/control.ts), read by the ruler: `v` 1. */
+  'rpc.service-key': 1,
 } as const

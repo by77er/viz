@@ -30,7 +30,12 @@ function rng(seed: number) {
   return { next, int: (n: number) => Math.floor(next() * n), chance: (p: number) => next() < p, pick: <T>(xs: readonly T[]): T => xs[Math.floor(next() * xs.length)]! }
 }
 
-const setCheckpointEvery = (l: Stub, n: number) => runInDurableObject(l, (inst: Ledger) => { (inst as unknown as { checkpointEvery: number }).checkpointEvery = n })
+/** Checkpoint every `n` segments, whatever their size (the default also waits for the log to be as large as the last checkpoint). */
+const setCheckpointEvery = (l: Stub, n: number) => runInDurableObject(l, (inst: Ledger) => {
+  const i = inst as unknown as { checkpointEvery: number; checkpointByLogBytes: boolean }
+  i.checkpointEvery = n
+  i.checkpointByLogBytes = false
+})
 const incarnationOf = async (l: Stub) => (await everything(l)).ledgerIncarnation
 /** The state without the logged marks, which a rebuild sets to the watermark by definition. */
 const committed = (d: Awaited<ReturnType<typeof dumpState>>) => ({ ...d, streams: d.streams.map(({ logged: _l, ...s }) => s) })
@@ -237,8 +242,10 @@ describe('rebuild reproduces exactly the state of a live ledger', () => {
     const live = await dumpState(l)
     const inc = await incarnationOf(l)
     const ckpts = (await listAll(`${logPrefix(tenant)}${inc}/ckpt-`)).map((key) => parseLedgerLogKey(key)!)
-    expect(ckpts.length).toBeGreaterThan(1)
+    // Only the newest is kept: each checkpoint deletes the ones it supersedes (review S-2).
+    expect(ckpts).toHaveLength(1)
     const newest = Math.max(...ckpts.map((c) => (c as { version: number }).version))
+    expect((await l.logStatus()).segmentsSinceCheckpoint).toBeLessThan(3)
     const segsAfter = (await readSegments(tenant)).filter((s) => s.ledgerIncarnation === inc && s.first > newest)
     // A checkpoint is a header and one base-kind line holding the state at its version.
     const body = await (await env.BUCKET.get(`${env.CELL}/${ledgerCheckpointKey(tenant, inc, newest)}`))!.text()
@@ -252,6 +259,36 @@ describe('rebuild reproduces exactly the state of a live ledger', () => {
     })
     expect(result).toMatchObject({ from: 'segments', checkpoint: newest, segmentsRead: segsAfter.length })
     expect(result.changesReplayed).toBe(live.version - newest)
+    expect(await dumpState(l)).toEqual(live)
+  })
+
+  it('by default a checkpoint waits until the log written since the last one is as large as it, and replaces the older one (review S-2)', async () => {
+    const { tenant, l } = open(tenantName('ckptbytes'))
+    await runInDurableObject(l, (inst: Ledger) => { (inst as unknown as { checkpointEvery: number }).checkpointEvery = 1 })
+    // One unit with a large index fragment: the state (and so the next checkpoint) is large.
+    await l.addUnit(unit(1, 1, [file('big', { index: 'i'.repeat(200_000) })]))
+    await l.drain()
+    const inc = await incarnationOf(l)
+    const ckpts = async () => (await listAll(`${logPrefix(tenant)}${inc}/ckpt-`)).map((k) => (parseLedgerLogKey(k) as { version: number }).version)
+    // The base was tiny, so the first segment (200 KB) is already as large as it: a checkpoint.
+    expect(await ckpts()).toEqual([2])
+    // Small units: no checkpoint until another 200 KB of log has been written.
+    let seq = 1
+    for (let i = 0; i < 5; i++) {
+      await l.addUnit(pair(++seq, seq))
+      await l.drain()
+    }
+    expect(await ckpts()).toEqual([2])
+    await l.addUnit(unit(++seq, seq, [file('big2', { index: 'j'.repeat(200_000) })]))
+    await l.drain()
+    const now = (await everything(l)).version
+    expect(await ckpts()).toEqual([now]) // the newer one, and the older one is gone
+    const live = await dumpState(l)
+    const result: RebuildResult = await runInDurableObject(l, async (i: Ledger, state) => {
+      await state.storage.deleteAll()
+      return i.rebuildFromLog()
+    })
+    expect(result.checkpoint).toBe(now)
     expect(await dumpState(l)).toEqual(live)
   })
 
@@ -492,6 +529,85 @@ describe('incarnation numbers are never reused (spec F11; protocol model IMPL_PL
   })
 })
 
+/** The previous release's drain (ledger/bench/asbuilt/ledger.ts), statement for statement: what a rollback across this release runs. */
+const firstLayoutDrain = (l: Stub, tenant: string) =>
+  runInDurableObject(l, async (_i, state) => {
+    const sql = state.storage.sql
+    for (;;) {
+      const row = sql.exec(`SELECT version, body FROM outbox ORDER BY version LIMIT 1`).toArray()[0]
+      if (!row) break
+      const change = JSON.parse(row.body as string) as LedgerChange
+      await env.BUCKET.put(`${env.CELL}/${ledgerLogKey(tenant, change.ledgerIncarnation, change.version)}`, row.body as string)
+      state.storage.transactionSync(() => {
+        sql.exec(`DELETE FROM outbox WHERE version = ?`, change.version)
+        const w = change.watermark
+        if (w) sql.exec(`UPDATE stream SET logged = MAX(logged, ?) WHERE shard = ? AND incarnation = ?`, w.seq, w.shard, w.incarnation)
+      })
+    }
+  })
+
+describe('a rollback to the first-layout release and back (review S-1)', () => {
+  it('after an operator restarts from SQLite, nothing a shard was told is lost and the log goes on', async () => {
+    const tenant = tenantName('rollback-heal')
+    const { l } = open(tenant)
+    await l.addUnit(pair(1, 1))
+    await l.drain()
+    await l.addUnit(pair(2, 2))
+    await firstLayoutDrain(l, tenant)
+    expect(await loggedOf(l)).toBe(2)
+    await evictDurableObject(l)
+    await l.addUnit(pair(3, 3))
+    expect(await failure(l, (i) => i.drain())).toMatch(/outbox starts at version/)
+    const before = await incarnationOf(l)
+    const r = await runInDurableObject(l, (i: Ledger) => i.restartFromSqlite())
+    expect(r).toMatchObject({ from: 'sqlite', ledgerIncarnation: before + 1 })
+    expect((await l.logStatus()).phase).toBe('ready')
+    expect(await loggedOf(l)).toBe(3) // all in the new base
+    await l.addUnit(pair(4, 4))
+    await l.drain()
+    await loseStorage(l)
+    expect(await seqOf2(l)).toBe(4)
+  })
+
+  it('a rebuild must refuse an incarnation holding both layouts, never drop what shards were told is logged', async () => {
+    const tenant = tenantName('rollback')
+    const { l } = open(tenant)
+    await l.registerStream({ shard: S, incarnation: INC })
+    await l.addUnit(pair(1, 1))
+    await l.drain()
+    await l.addUnit(pair(2, 2)) // committed, in the outbox
+    // Rollback: the previous release's drain (ledger/bench/asbuilt/ledger.ts), statement for statement.
+    await runInDurableObject(l, async (_i, state) => {
+      const sql = state.storage.sql
+      for (;;) {
+        const row = sql.exec(`SELECT version, body FROM outbox ORDER BY version LIMIT 1`).toArray()[0]
+        if (!row) break
+        const change = JSON.parse(row.body as string) as LedgerChange
+        await env.BUCKET.put(`${env.CELL}/${ledgerLogKey(tenant, change.ledgerIncarnation, change.version)}`, row.body as string)
+        state.storage.transactionSync(() => {
+          sql.exec(`DELETE FROM outbox WHERE version = ?`, change.version)
+          const w = change.watermark
+          if (w) sql.exec(`UPDATE stream SET logged = MAX(logged, ?) WHERE shard = ? AND incarnation = ?`, w.seq, w.shard, w.incarnation)
+        })
+      }
+    })
+    expect(await loggedOf(l)).toBe(2) // a shard is told 2 and may discard it
+    await evictDurableObject(l) // roll forward
+    await l.addUnit(pair(3, 3))
+    expect(await failure(l, (i) => i.drain())).toMatch(/outbox starts at version/) // stuck, and says so
+    const st = await l.logStatus()
+    expect(st.phase).toBe('stuck')
+    expect(st.stuck).toMatch(/first-layout objects \(from 000000000003\.json\).*restartFromSqlite/)
+    expect(await loggedOf(l)).toBe(2) // nothing more counts as logged
+    await loseStorage(l)
+    const outcome = await everything(l).then((p) => `rebuilt at seq ${p.watermarks.find((w) => w.shard === S)?.seq}`, (e: Error) => e.message)
+    expect(outcome).not.toMatch(/^rebuilt at seq [01]$/) // never below what a shard was told
+    expect(outcome).toMatch(/ledger_unavailable: its log could not be read \(ledger: incarnation \d+ holds both segments and first-layout change objects/)
+    expect(await l.logStatus()).toMatchObject({ phase: 'stuck', stuck: expect.stringMatching(/both segments and first-layout/) })
+  })
+
+})
+
 describe('the base is in R2 before an incarnation commits (spec F11)', () => {
   it('if the base cannot be written, nothing commits and nothing is served; once it can, the incarnation starts with its base', async () => {
     const tenant = tenantName('nobase')
@@ -506,7 +622,8 @@ describe('the base is in R2 before an incarnation commits (spec F11)', () => {
       expect(await l.logStatus()).toMatchObject({ phase: 'starting', lastError: expect.stringMatching(/R2 PUT failed/) })
       // No incarnation, no version, no change: SQLite holds only the mark that a start is due.
       const meta = await runInDurableObject(l, (_i, st) => st.storage.sql.exec(`SELECT k FROM meta ORDER BY k`).toArray().map((r) => r.k))
-      expect(meta.filter((k) => k !== 'schema_version' && k !== 'schema')).toEqual(['starting'])
+      // (`state_bytes` is written by schema migration 2, with the tables.)
+      expect(meta.filter((k) => k !== 'state_bytes')).toEqual(['starting'])
       expect(await listAll(logPrefix(tenant))).toEqual([])
     } finally {
       proto.putLogObject = real
@@ -515,6 +632,38 @@ describe('the base is in R2 before an incarnation commits (spec F11)', () => {
     expect((await l!.logStatus()).phase).toBe('ready')
     expect((await readSegments(tenant)).map((x) => [x.ledgerIncarnation, x.first, x.last])).toEqual([[1, 0, 0]])
     expect(await l!.addUnit(pair(1, 1))).toMatchObject({ status: 'ok' })
+  })
+})
+
+describe('the size of the state is bounded (review S-2)', () => {
+  it('addUnit answers full, and changes nothing, once the state would pass the limit; compaction and expiry still run and make room', async () => {
+    const { l } = open(tenantName('full'))
+    await runInDurableObject(l, (inst: Ledger) => { (inst as unknown as { stateMaxBytes: number }).stateMaxBytes = 3_000 })
+    await l.addUnit(pair(1, 1))
+    await l.addUnit(pair(2, 2))
+    const st = await l.logStatus()
+    expect(st.stateBytes).toBeGreaterThan(1_000)
+    expect(st.stateLimitBytes).toBe(3_000)
+    const before = await dumpState(l)
+    const r = await l.addUnit(unit(3, 3, [file('x', { index: 'i'.repeat(2_000) })]))
+    expect(r).toEqual({ status: 'full', stateBytes: st.stateBytes, limitBytes: 3_000 })
+    expect(await dumpState(l)).toEqual(before)
+    // A merge is still admitted while full (it shrinks the state), and so is retention.
+    const all = (await everything(l)).files
+    const merged = await l.replace({ remove: all.map((f) => f.key), add: [file('merged', { level: 1 })] })
+    expect(merged.status).toBe('ok')
+    expect((await l.logStatus()).stateBytes).toBeLessThan(st.stateBytes)
+    expect((await l.expire({ tables: ['metric_samples', 'metric_series'], beforeDay: dayOf(T0 + DAY_MS) })).removed.length).toBe(3)
+    expect((await l.logStatus()).stateBytes).toBe(0)
+    expect(await l.addUnit(unit(3, 3, [file('x', { index: 'i'.repeat(2_000) })]))).toMatchObject({ status: 'ok' })
+    // The estimate survives eviction (it is in SQLite) and a rebuild recomputes it exactly.
+    const est = (await l.logStatus()).stateBytes
+    await evictDurableObject(l)
+    expect((await l.logStatus()).stateBytes).toBe(est)
+    await l.drain()
+    await loseStorage(l)
+    await everything(l) // through the start
+    expect((await l.logStatus()).stateBytes).toBe(est)
   })
 })
 

@@ -63,6 +63,9 @@ pub enum Intrinsic {
     LinkTraceId,
     InstrumentationName,
     InstrumentationVersion,
+    /// Undocumented in Tempo (`nestedSetLeft`, `nestedSetRight`, `nestedSetParent`): type-checked
+    /// as integers, then reported unsupported.
+    NestedSet,
 }
 
 /// The static type of an expression, for validation.
@@ -104,7 +107,7 @@ impl Intrinsic {
             Intrinsic::Status => Type::Status,
             Intrinsic::Kind => Type::Kind,
             Intrinsic::Duration | Intrinsic::TraceDuration | Intrinsic::EventTimeSinceStart => Type::Duration,
-            Intrinsic::ChildCount => Type::Int,
+            Intrinsic::ChildCount | Intrinsic::NestedSet => Type::Int,
         }
     }
     /// Whether evaluating it needs every span of the trace (or `trace_index`).

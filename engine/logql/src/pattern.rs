@@ -71,41 +71,6 @@ impl Pattern {
         Ok(Pattern { nodes })
     }
 
-    /// Match `line`; returns the named captures in pattern order and whether the whole
-    /// pattern matched. On a literal that is not found, matching stops: the captures made so
-    /// far are returned with `false`.
-    pub fn matches<'l>(&self, line: &'l str) -> (Vec<(&str, &'l str)>, bool) {
-        let mut caps = Vec::new();
-        let mut pos = 0usize;
-        let mut i = 0;
-        while i < self.nodes.len() {
-            match &self.nodes[i] {
-                Node::Lit(l) => {
-                    if !line[pos..].starts_with(l.as_str()) {
-                        return (caps, false);
-                    }
-                    pos += l.len();
-                    i += 1;
-                }
-                Node::Cap(name) => {
-                    let (end, next_pos) = match self.nodes.get(i + 1) {
-                        Some(Node::Lit(l)) => match line[pos..].find(l.as_str()) {
-                            Some(off) => (pos + off, pos + off),
-                            None => return (caps, false),
-                        },
-                        _ => (line.len(), line.len()),
-                    };
-                    if let Some(n) = name {
-                        caps.push((n.as_str(), &line[pos..end]));
-                    }
-                    pos = next_pos;
-                    i += 1;
-                }
-            }
-        }
-        (caps, true)
-    }
-
     /// The `pattern` parser: anchored at the start of the line; a capture whose following
     /// literal is not found takes the rest of the line and matching stops.
     pub fn parse_captures<'l>(&self, line: &'l str) -> Vec<(&str, &'l str)> {
@@ -200,8 +165,8 @@ mod tests {
     fn documented_example() {
         let p = Pattern::parse(r#"<ip> - - <_> "<method> <uri> <_>" <status> <size> <_> "<agent>" <_>"#, true).unwrap();
         let line = r#"0.191.12.2 - - [10/Jun/2021:09:14:29 +0000] "GET /api/plugins/versioncheck HTTP/1.1" 200 2 "-" "Go-http-client/2.0" "13.76.247.102, 34.120.177.193" "TLSv1.2" "US" """#;
-        let (caps, ok) = p.matches(line);
-        assert!(ok);
+        let caps = p.parse_captures(line);
+        assert!(p.filter_matches(line));
         assert_eq!(
             caps,
             vec![

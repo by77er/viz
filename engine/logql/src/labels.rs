@@ -97,10 +97,6 @@ impl LabelSet {
         v.sort();
         v
     }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.items.iter().map(|(n, v, _)| (n.as_str(), v.as_str()))
-    }
 }
 
 /// Make an extracted key a valid label name: every character other than ASCII letters,

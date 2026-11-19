@@ -69,6 +69,8 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 
 | experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
 |---|---|---|---|---|---|---|---|
+| `LOG_as_built` IMPL_PLANNED_fixed's bounds with the segment log as built (base PUT before the commit, two-step start, F10 fix, tombstones in the base) and the code at HEAD; F3 assumed; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,002 states; every state reachable in at most 22 steps checked, no violation | 6,000,002 | 32,503,444 | 22 | 336.3 s | 9.8e-7 |
+| `LOG_as_built_2LL` as LOG_as_built, two ledger losses (F11 needed two), compaction, one flush Worker; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 25 steps checked, no violation | 6,000,001 | 31,998,907 | 25 | 275.4 s | 9.8e-7 |
 | `LOG_teeth_commit_first` segment log teeth: the incarnation commits before its base is in R2 (the plan before F11) | V_IncarnationNotReused | **violated** V_IncarnationNotReused in 7 steps | 693 | 1,638 | 7 | 0.1 s | 1.3e-14 |
 | `LOG_teeth_retry_new_bounds` segment log teeth: a retried drain takes every pending row (F10) | AV_RebuildSucceeds | **violated** AV_RebuildSucceeds in 16 steps | 160,162 | 817,710 | 16 | 9.1 s | 7e-10 |
 

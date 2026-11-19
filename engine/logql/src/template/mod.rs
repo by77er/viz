@@ -410,8 +410,8 @@ impl P<'_> {
 
 enum Item {
     Text(String),
-    /// Action tokens, position of the action body, and the first keyword.
-    Action(Vec<(T, usize)>, usize),
+    /// Action tokens.
+    Action(Vec<(T, usize)>),
 }
 
 fn split(src: &str) -> Result<Vec<Item>, String> {
@@ -452,7 +452,7 @@ fn split(src: &str) -> Result<Vec<Item>, String> {
             }
         } else {
             let toks = lex_action(body, body_start)?;
-            items.push(Item::Action(toks, body_start));
+            items.push(Item::Action(toks));
         }
         rest = close + 2;
         if trim_after {
@@ -511,7 +511,7 @@ impl Builder<'_> {
             self.i += 1;
             match item {
                 Item::Text(t) => out.push(Node::Text(t)),
-                Item::Action(toks, _) => {
+                Item::Action(toks) => {
                     let kw = match toks.first() {
                         Some((T::Ident(k), _)) => k.clone(),
                         _ => String::new(),
@@ -990,7 +990,7 @@ mod tests {
     #[test]
     fn errors_like_go() {
         assert_eq!(
-            run("{{.a | div 0}}", &[("a", "1")]).unwrap_err(),
+            run("{{.a | div 0}}", &[("a", "x")]).unwrap_err(),
             "template: line:1:7: executing \"line\" at <div 0>: error calling div: runtime error: integer divide by zero"
         );
         assert_eq!(

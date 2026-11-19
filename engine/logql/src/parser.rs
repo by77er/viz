@@ -185,6 +185,7 @@ impl<'a> Parser<'a> {
     fn unary(&mut self) -> Result<Node, Error> {
         let pos = self.pos();
         match self.peek() {
+            // A sign is only accepted on a number literal.
             Tok::Sub | Tok::Add => {
                 let neg = *self.peek() == Tok::Sub;
                 self.next();
@@ -192,9 +193,7 @@ impl<'a> Parser<'a> {
                     self.next();
                     return Ok(Node::Metric(MetricExpr::Literal(if neg { -v } else { v }), pos));
                 }
-                let inner = self.unary()?;
-                let (m, _) = self.metric(inner, "unary expression")?;
-                Ok(Node::Metric(if neg { MetricExpr::Neg(Box::new(m)) } else { m }, pos))
+                Err(self.err_here(format!("syntax error: unexpected {}, expecting NUMBER", self.peek().describe())))
             }
             _ => self.primary(),
         }

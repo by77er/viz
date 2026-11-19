@@ -336,6 +336,7 @@ fn intrinsic<'a, 't: 'a>(intr: Intrinsic, ctx: &mut TraceCtx<'t>, i: usize, b: B
         Intrinsic::LinkTraceId => b.link.map_or(Val::Nil, |l| Val::Str(Cow::Owned(hex_trimmed(&l.trace_id)))),
         Intrinsic::InstrumentationName => Val::Str(Cow::Borrowed(&span.scope_name)),
         Intrinsic::InstrumentationVersion => Val::Str(Cow::Borrowed(&span.scope_version)),
+        Intrinsic::NestedSet => Val::Nil,
     }
 }
 
