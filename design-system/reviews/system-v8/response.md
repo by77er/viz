@@ -125,7 +125,8 @@ missing class or a different alignment at one pointer all fail.
   and swatch to have its own pattern (W17).
 
 **Defects the new guards found in v8's own pages, fixed:** the navigation's focus ring cut by its strip with a coarse pointer (now
-inside, like the tabs); the legend's sort buttons and action buttons, and a sort button filling its head, with rings cut (inside); the
+inside, like the tabs, with `space-1` of side padding given back by the margin, so the ring stays off the letters: the first images
+showed it touching "Explore"); the legend's sort buttons and action buttons, and a sort button filling its head, with rings cut (inside); the
 log's "Show all … lines" ring cut by the table wrap (inside); `<b>`/`<strong>` at the browser's 700 (now the strong weight token);
 `--mark` redefined on the page state (now `--mark-size`, a component variable); and "Actions…" in a stacked folded row whose hit area
 reached the key's last words (the key's line now ends that far above it).
@@ -210,7 +211,8 @@ press guard finds a finger's press never painted on 11 screens (they do not load
 and 12 that scroll at 800 px and up, 768 px coarse or 200% zoom (`data-fold="wide"` is their fix), and screen 1's "1 proposal
 waiting", a link inside a sentence drawn as a control. As printed: `evidence/audit-full.txt`.
 
-`tools/check.mjs` on the component CSS (tokens, structure, the rendered contrast and reservation audit): @@CHECK@@. On the previews,
+`tools/check.mjs` on the component CSS (tokens, structure, the rendered contrast and reservation audit): 780 of 780 checks, 30 previews rendered in both themes at rest, hover, press and a
+finger's press with 0 failures, reserved heights equal to drawn, 0 literal values (`evidence/check.txt`). On the previews,
 the compositions and the fixtures (`--no-render`): 775 of 775 checks, 0 literal values in 45 files.
 
 `npm test`: 173 tests, **131 pass, 0 fail**, 42 skipped: the 20 chart tests, and the corpus's 111 mutants that need no browser
@@ -222,7 +224,30 @@ the compositions and the fixtures (`--no-render`): 775 of 775 checks, 0 literal 
 Both themes, 1440 and 400 px (the 400 px images with a coarse pointer and touch), same data and state; v7 left, v8 right, each
 composed by `tools/shots.mjs compare` and palette-encoded, none over 500 KB.
 
-@@IMAGES@@
+**Before and after** (`compare/`, 28 images: 14 states, both themes; v7 left, v8 right):
+
+| Image | Shows |
+|---|---|
+| `v8-m1-query-narrowed-to-node-b-{1440,400}-*` | The 36-pod panel after its query is narrowed to node-b (by `setData`, as the reviewer did, so the page's own segment still reads "Three services"): v7 one pod coloured, eleven in Other, no recolour; v8 the eight largest on node-b coloured, four in Other ("< 0.1"), "Colour the eight largest" offered (M1) |
+| `v8-m2-table-preview-{1440,400}-*` | "Memory, MiB" right-aligned beside CPU and Throttled at 1440; the folded form unchanged at 400 (M2) |
+| `v8-m2-m1-folded-list-{1440,400}-*` | "Memory, MiB" and "Restarts" right-aligned at 1440 (M2); at 400 px coarse each pod row 98 px instead of 120, the key's line and the figures' line drawn at their own height (m1) |
+| `v8-m3-segmented-preview-{1440,400}-*` | Segmented controls drawn at their own height with a coarse pointer (m3) |
+| `v8-m3-nav-focus-{1440,400}-*` | The navigation's focused link: v7's ring cut by the strip at 400 px coarse (two side bars); v8's drawn inside, clear of the letters (M3) |
+| `v8-m3-section-strong-words-{1440,400}-*` | Strong words at the type scale's strong weight, not the browser's 700 (M3, the token trace) |
+| `v8-dashboard-{1440,400}-*` | The full dashboard composition, for regressions: none seen |
+
+**Composed screens** (`images/`, 48 images): the dashboard (also in greyscale), dialog (open, and closed over its list), empty and
+error states, the long table, the folded list (1500, 400 and 320 px coarse, 200% zoom, and with its hit areas drawn), monitor,
+charts, each at 1500 px and 400 px coarse in both themes; and from the Chart preview: the query narrowed by the page's own "node-b
+only" segment, the new narrowed panel at 1500 and 320 px coarse, the picked members of Other, and the 36-pod panel's controls at
+320 px coarse with hit areas drawn. Measured as captured (`evidence/compositions-measure.txt`): 0 px sideways overflow on every
+image; with a coarse pointer, no hit area under 44 px, none covered, no drawn box reached by a neighbour; links inside sentences only
+in the monitor's prose (exempt). `tools/shots.mjs` now counts, instead of measuring, a control whose 44 px reach past the image's
+bottom edge (the first capture reported three such controls as small or covered; the page audit, which scrolls to each, found
+nothing there).
+
+Judged on the composed images: no regression found. Two defects were found on them and fixed before this run: Other's cut range at
+1440 (M1) and the navigation ring on the letters (M3).
 
 ## The flow screens
 
@@ -240,6 +265,7 @@ fold (the row as the key's target) and rings without a change of markup; their p
   selects and summaries in other cells lie above it), the row is at least `control-touch` tall and padded `space-2` at its top; the key
   cell no longer has a 44 px minimum. In the stacked form (two kept columns below 640 px) the key cell's bottom padding is
   `(control-touch − control-sm) / 2` and "Actions…" is drawn at its own height.
+- Navigation links have `space-1` of side padding and the same negative margin (no change to the layout), as tabs do. The legend's "Other" is never cut; its count gives way first.
 - Focus rings drawn inside the control (offset minus `stroke`) in the navigation, the legend's sort and action buttons, a sort button
   with a coarse pointer, and the log message's button.
 - `<b>` and `<strong>` inside `.vz` take `text-ui-strong-weight`.

@@ -249,6 +249,13 @@ describe('signals in shard tails', () => {
       const res = await run(w.a.key, q)
       expect(await res.json(), q.id).toEqual(expected.a[q.id])
     }
+    // Shards of an earlier release answer unfiltered (no signal filter): only the name rule keeps
+    // the span and log shards out of a metrics read, and the answers stay exact.
+    tailHooks.previousRelease = () => true
+    for (const q of QUERIES.filter((_, k) => k % 5 === 0)) {
+      const res = await run(w.a.key, q)
+      expect(await res.json(), `${q.id} (unfiltered shards)`).toEqual(expected.a[q.id])
+    }
   })
 
   it('a batch of another signal in a tail read is refused (503), never read as the wrong signal', async () => {

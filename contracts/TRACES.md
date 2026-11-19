@@ -1,10 +1,13 @@
 # Trace tables
 
-Status (2026-11-19): **the file layout is settled and written; reading, flushing and
-publishing are proposed.** `engine/storage` (`src/spans.rs`) writes `spans` and
-`trace_index` files from span batches (`contracts/BATCH.md`, signal 2) exactly as below, and
-reads them back for tests; `edge` decodes OTLP traces into those batches. No flush, ledger,
-query or publisher path uses them yet (stage 2). The query engine (`engine/traceql`)
+Status (2026-11-19): **the file layout is settled and written; the write side is built
+(stage 2); reading through query and publishing are proposed.** `engine/storage`
+(`src/spans.rs`) writes `spans` and `trace_index` files from span batches (`contracts/BATCH.md`,
+signal 2) exactly as below; `edge` decodes OTLP traces into those batches (behind
+`INGEST_SIGNALS`), the shards of `{pool}/traces` hold them, flush encodes each sealed segment
+through `engine/wasm` (ABI 3) into one unit of `spans` and `trace_index` files under the keys
+below, and the ledger lists them (`contracts/ledger.ts` `LedgerTable`), plans them by time and
+expires them by day. Query and publisher paths do not use them yet. The query engine (`engine/traceql`)
 evaluates over an in-memory span source with the logical shape described here (`Span`,
 `TraceSummary`), and a test reads files written here into that shape and gets the same
 answers (`engine/storage/readback`). What stays proposed is marked "proposed".
@@ -231,9 +234,9 @@ trace_index: {"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_tid":H,"max_tid":H,"min
   `max_end_unix_nano`.
 - Integers are 64-bit; a JavaScript reader must not read them as numbers.
 
-## Object keys (proposed)
+## Object keys (built, stage 2)
 
-As in `TABLES.md`, with an hour level for `spans`:
+As in `TABLES.md`, with an hour level for `spans` (`dataKeyPrefix` in `contracts/ledger.ts`):
 
 ```
 {cell}/data/spans/tenant={tenant}/day={YYYY-MM-DD}/hour={HH}/L{level}-…-{hash8}.parquet
@@ -241,8 +244,14 @@ As in `TABLES.md`, with an hour level for `spans`:
 ```
 
 The stream and compaction parts of the name follow `TABLES.md`. A flush unit's `spans`
-files and its `trace_index` file enter and leave the ledger in one change, like a metric
-samples file and its series file.
+files and its `trace_index` files enter the ledger in one change, like a metric samples file
+and its series file; retention expires both tables in one change, each file by its own `day`
+(a span's start day; a fragment's first start), so a `trace_index` file can leave a day before
+spans of its unit that started after midnight. The ledger admits a `spans` key only under the
+hour that the file's `[minTs, maxTs]` lies in, and every key only under its tenant, table and
+day. In the ledger (`FileEntry`), `minTs`/`maxTs` are milliseconds, the floor of the files'
+nanosecond bounds (`contracts/engine.ts` `EncodedSignalFile`), and `PlanRequest` is in
+milliseconds as for metrics.
 
 ## Reads (what the engine asks storage for)
 
@@ -272,9 +281,8 @@ OTLP/HTTP traces (protobuf and JSON, optionally gzip) into it; spans go to the t
 
 ## What stays proposed
 
-- Everything that reads or moves these files: flush, the ledger's tables, compaction and
-  re-aggregation of `trace_index`, the query reader and its pruning, Iceberg publication, and
-  the object keys above.
+- Compaction and re-aggregation of `trace_index`, the query reader and its pruning, and
+  Iceberg publication. (Flush, the ledger's tables, retention and the object keys are built.)
 - Nested-set columns, per-tenant promotion, sampling weights, `with(extrapolate=true)`.
 - The accept window for spans (`edge`'s default: start within 24 hours back and 5 minutes
   ahead) is a default, not a contract value.

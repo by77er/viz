@@ -13,7 +13,7 @@ import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { expect } from 'vitest'
 import { COMPACTION_INPUTS_META, compactStep, decodeCompactionInputs } from '../../compact/src/compact'
-import type { Watermark } from '../../contracts/ledger'
+import { METRIC_TABLES, TABLES, type Watermark } from '../../contracts/ledger'
 import { dataKeys, healLedgerLog } from '../../flush/test/helpers'
 import { type OrphanResult, type PurgeResult, expireTenant, purgeTenant, sweepOrphans } from '../../janitor/src/janitor'
 import type { Ledger } from '../../ledger/src/ledger'
@@ -45,7 +45,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export async function quiesce(sim: Sim, t: SimTenant): Promise<void> {
   await healLedgerLog(ledger(t))
   await ledger(t).drain()
-  for (const s of sim.shards) {
+  for (const s of [...sim.shards, ...sim.signalShards]) {
     await shard(s).seal(t.name)
     for (let i = 0; ; i++) {
       const x = await flushTenant(sim.env, engine, t.name, s)
@@ -80,7 +80,7 @@ export async function checkedPurge(sim: Sim, t: SimTenant, where: string, g: Gra
 export async function checkedOrphans(sim: Sim, t: SimTenant, where: string, g: Graces, did: Count = () => {}): Promise<OrphanResult> {
   const listed = new Map<string, number>()
   const inputsOf = new Map<string, string | undefined>()
-  for (const table of ['metric_samples', 'metric_series']) {
+  for (const table of TABLES) {
     for (const o of (await env.BUCKET.list({ prefix: `${env.CELL}/data/${table}/tenant=${t.name}/`, include: ['customMetadata'] })).objects) {
       listed.set(o.key, o.uploaded.getTime())
       inputsOf.set(o.key, o.customMetadata?.[COMPACTION_INPUTS_META])
@@ -182,7 +182,8 @@ export async function settle(sim: Sim, g: Graces, did: Count = () => {}, hooks: 
     expect(state.objects).toEqual(state.live.map((f) => f.key).sort())
     expect(state.objects).toEqual(await dataKeys(t.name))
     expect(state.tombstones).toEqual([])
-    expect(state.live.every((f) => f.level === 2)).toBe(true)
-    for (const s of sim.shards) expect(await shard(s).pendingSegments(t.name)).toEqual([])
+    // Metric files are merged to level 2; span and log files are not compacted (not built: they stay level 0).
+    expect(state.live.every((f) => f.level === ((METRIC_TABLES as readonly string[]).includes(f.table) ? 2 : 0))).toBe(true)
+    for (const s of [...sim.shards, ...sim.signalShards]) expect(await shard(s).pendingSegments(t.name)).toEqual([])
   }
 }

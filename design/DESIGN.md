@@ -131,7 +131,11 @@ every shard's contribution (§6.2).
 Spans and log records route by the same sender key (for OTLP, the resource's service name,
 namespace and instance id; for Loki push, the stream's `job` and `instance`), to shards of
 their own: the pools `{pool}/traces` and `{pool}/logs`, so a shard stream holds one signal
-(`contracts/BATCH.md`, D57; built in `edge` behind `INGEST_SIGNALS`, not yet drained by flush).
+(`contracts/BATCH.md`, D57). Built end to end on the write side behind `INGEST_SIGNALS` (off by
+default; stage 2, 2026-11-19): edge appends there, those shards seal, register (D61) and are
+flushed and recorded like any other, and their files are listed by the ledger (§4.3, §5.1).
+A tail read names the signals it wants by the batches' header byte (`signals: [1]` for a
+metrics query), so a span or log batch never reaches the metrics engine (D48).
 
 Draft 2 hashed by series id, which sent every request to every shard and made every query
 tail-read every shard. Shard count per tenant is bounded to tens; beyond that a tenant is
@@ -188,7 +192,12 @@ until then. No key is ever accepted by two shards.
    range) to the ledger. The ledger accepts it only if it extends that stream's watermark
    contiguously, and adds every file, with each file's index fragment, in one transaction.
    A metric's series rows and samples therefore become visible together, and there is no
-   separately-updated index that could miss a file.
+   separately-updated index that could miss a file. A segment of a span stream becomes one
+   unit of `spans` files (one per hour of start time) and `trace_index` files (one per day),
+   a segment of a log stream one unit of `logs` files (one per day); flush chooses the encoder
+   by the batches' signal byte and refuses a segment that mixes signals. The ledger lists these
+   tables' files in milliseconds (the floor of their nanosecond bounds), so plans and
+   precedence work for them unchanged.
 4. The shard discards a segment once the ledger has acknowledged the unit, and records how
    far it has discarded.
 
@@ -241,10 +250,12 @@ runs outside `blockConcurrencyWhile`: requests meanwhile wait at most 2 s and ar
 retryable. A checkpoint of a state larger than 1 MiB is written in parts across drains, from
 the state at its version (changes committed meanwhile keep pre-images), and a rebuild streams
 checkpoints and bases into SQLite, so nothing holds the whole state (D47). The bound left is
-time: a rebuild reads and writes the whole state while the tenant is refused, so the state is
-bounded at the largest measured (300 MiB, about 300,000 files; 20 s locally): above it
-`addUnit` answers `full`, retryably, until compaction or retention makes room
-(`contracts/LEDGER-LOG.md`, "Size").
+time: a rebuild reads and writes the whole state while the tenant is refused. The state is
+capped at 16 MiB by default (the cap of the releases before D47, kept until a release whose
+rollback floor has D47 and D55 lifts it after a rebuild and a first publication are measured
+within the CPU limit on Cloudflare; review P-2, P-3), at most at the largest measured (300 MiB,
+about 300,000 files; 20 s locally): above it `addUnit` answers `full`, retryably, until
+compaction or retention makes room (`contracts/LEDGER-LOG.md`, "Size").
 Measured on Cloudflare: 234–422 units per second with eight writers, and a rebuild of
 5,008 changes in 5.4 s (`spikes/s4-ledger-scale/`). The orphan sweeper deletes an object only if the
 ledger neither lists nor tombstones it and it can never be listed: a flush file once its
@@ -283,9 +294,15 @@ and time.
 | `metric_series` | series per day | `metric_name, series_id` | promoted label columns + full label map |
 | `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` is a plain 64-bit hash of all labels (`contracts/BATCH.md`). Putting hashes of `namespace` and `job` in its top 24 bits was measured on 200,000 series: a `{namespace=…}` query reads 1.3–2.6× fewer bytes by row group (6–17× only with page-level pruning, which the engine does in memory but does not fetch, D41), a full-metric scan is no better, and 40 bits are left to tell series apart, which is not enough (D19). Locality is to come from the sort key instead: a promoted-label column before `series_id` |
 | `metric_rollup_5m`, `_1h` | series per window | same | count, sum, min, max, last, reset-aware increase |
-| `spans` | span | `service_name` (nulls first), `span_name`, `start_unix_nano` | hour partitions; promoted attributes + typed residual maps; bloom filter on `trace_id` (`contracts/TRACES.md`, written by `engine/storage`) |
+| `spans` | span | `service_name` (nulls first), `span_name`, `start_unix_nano` | hour partitions (keys `…/day=D/hour=HH/`); promoted attributes + typed residual maps; bloom filter on `trace_id` (`contracts/TRACES.md`; written by flush through `engine/wasm`, listed by the ledger: stage 2) |
 | `trace_index` | trace per flush unit (a fragment), files per day | `trace_id` | root, start, end, counts, and the **hour partitions** that hold its spans (logical references survive compaction); fragments merge at read and compaction |
-| `logs` | record | `service_name, stream_id, ts, line, metadata` | `stream_id` hashes the stream labels as `series_id` does; labels as canonical JSON per row (dictionary-encoded), structured metadata, OTLP severity and trace ids; OTLP stream labels from a fixed list of resource attributes (D58); an advisory per-file token filter written at compaction (`contracts/LOGS.md`, format settled, not built) |
+| `logs` | record | `service_name, stream_id, ts, line, metadata` | day partitions; `stream_id` hashes the stream labels as `series_id` does; labels as canonical JSON per row (dictionary-encoded), structured metadata, OTLP severity and trace ids; OTLP stream labels from a fixed list of resource attributes (D58); an advisory per-file token filter written at compaction (`contracts/LOGS.md`, format settled, not built) |
+
+The span and log tables are written and listed as built on the write side (stage 2, behind
+`INGEST_SIGNALS`): flush, the ledger, retention and deletion. Not yet: their compaction,
+reading through `query`, and Iceberg publication (the publisher refuses a log change naming a
+table it does not know, so `INGEST_SIGNALS` stays off in a deployment with a publisher until it
+reads them).
 
 Native histograms share the samples layout and are added after float samples work. Flat
 rows are chosen over chunk blobs for openness and simplicity, pending the read-slice spike.
@@ -325,7 +342,10 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   publisher's grace passed). A publisher that cannot answer releases nothing.
   A tenant without a policy record gets the default (30 days); a record that cannot be read
   (malformed, or of a version the janitor does not know) expires nothing for that tenant and
-  is reported every hour until fixed, never replaced by the default.
+  is reported every hour until fixed, never replaced by the default. Spans (with their
+  `trace_index` files) and logs expire by the record's `trace_days` and `log_days`, each 30 days
+  when absent, in ledger changes of their own after the metric one; their tombstones go
+  through the same purge and the same publisher gate.
 - **Index fragments.** Each file's row-group offsets, key statistics and page-index
   locations are stored with its ledger row. Compaction consolidates the fragments of a
   partition into one content-addressed index object. Planning never issues one footer read

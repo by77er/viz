@@ -12,10 +12,10 @@ dedicated tenants run the same code.
 |---|---|
 | `src/shard.ts` | `Shard`: append, seal (and its notification), pending segments and tenants, read segment, recorded, tail read, active-series metering, alarm housekeeping |
 | `src/sketch.ts` | `SeriesWindow`: distinct series in a sliding window: exact set, then HyperLogLog + Bloom filter |
-| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches, the page cursor, `splitKeyRange` |
-| `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName` |
+| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches (by signal since stage 2), the page cursor, `splitKeyRange` |
+| `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName`; the derived pools of spans and logs (`signalPool`, `enabledSignals`) |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
-| `test/` | 78 tests in 9 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
+| `test/` | 85 tests in 10 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
 | `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`); registration before writes (`registration.bench.test.ts`, against the release before it frozen in `bench/prereg/`; results in `bench/results/registration.log`) |
 
 ## What is implemented
@@ -105,6 +105,24 @@ dedicated tenants run the same code.
   there. Bad options or a cursor of another read are `invalid`; an unknown `v` is
   `unsupported_version`. **Without options the answer is exactly as before** (no `page`), and
   an older shard ignores the options, so a caller knows the filter was applied only by `page`.
+- **Spans and log records** (stage 2 of traces and logs, 2026-11-19; contracts/BATCH.md
+  "Streams per signal", D57). The shards of the derived pools `{pool}/traces/{slot}` and
+  `{pool}/logs/{slot}` are ordinary shards: `append` stores a span or log batch as it stores a
+  metric one (opaque, at most `MAX_BATCH_BYTES`, sent without `seriesIds` so not metered), and
+  seal, the flush notification, the pending marker, `readSegment`, `recorded`, discard and
+  registration before writes (D61) work on their streams unchanged. `signalPool(map, signal)`
+  is the one derivation of those pool names (edge, flush's sweep and the stack use it).
+  **Tail reads by signal** (`TailFilter.signals`, an additive field of `TailReadOptions` v1):
+  a filtered read keeps only batches whose header's signal byte is listed, without reading
+  further; the time range and the series fields select metric rows only. A span or log batch
+  the read admits is returned whole, as stored (its times are nanoseconds in columns of their
+  own; the reader filters), unless the filter names `metrics`, `labels` or `keyRange`, which
+  select series such a batch does not have: then it keeps nothing. A batch of any other
+  signal is skipped when `signals` leaves it out and fails the read otherwise (never guessed
+  at). A filter without `signals` has the same canonical text, so the same cursors, as before.
+  A metrics query passes `signals: [1]`; query's span and log reads `[2]` or `[3]`. A shard of
+  an earlier release ignores the field and throws on a span or log batch under a series
+  filter, so callers still read only their signal's shards by name.
 - **Segment reads bound to what was listed** (spec F12): `readSegment(tenant, seqLo,
   incarnation, seqHi)` answers null unless the stream is still that incarnation and the
   segment is exactly that range.
@@ -260,6 +278,21 @@ BENCH=registration npm run bench  # registration before writes (D61)
 Last run, 2026-11-19: **78 passed, 0 failed**; `tsc --noEmit` clean. The suite now runs with
 the ledger in the same script (`wrangler.test.jsonc`; its drain only when a test asks).
 
+- **Stage 2, spans and logs** (`test/signals.test.ts`, 7, 2026-11-19; batches written by the
+  engine's test encoders `engine/wasm/test/signal.ts` and `vzb1.ts`, metric pages read back by
+  the engine): a `…/traces/0` and a `…/logs/0` shard store, deduplicate, seal, list, serve
+  (`readSegment`, unfiltered and filtered reads) and record span and log batches; a filtered
+  read with their signal returns them whole and in order whatever the time range, one with
+  `signals: [1]` or a series filter returns nothing; registration before writes (D61) refuses a
+  new `…/traces/1` stream until the ledger has logged it, then accepts; in a stream mixing all
+  three signals (not what edge writes) a metrics read gets only metric rows, which the engine
+  selects exactly as from the metric batches alone, with and without a time range, a metric
+  name and small pages, and a metric filter without `signals` drops the span and log batches;
+  several signals at once and pages; a cursor bound to its signals; malformed `signals` refused
+  `invalid`; a filter without `signals` keeps its pre-stage-2 cursor binding; a batch of an
+  unknown signal (9) skipped by `signals: [1, 2, 3]` and failing a read that admits it, after
+  eviction too, while the unfiltered form returns it as before.
+  **Last run (2026-11-19): 85 passed, 0 failed (10 files); `tsc --noEmit` clean.**
 - `test/registration.test.ts` (16, D61), each tied to a trace of the protocol model or a
   finding of `design/reviews/registration-before-writes.md`:
   - **spec test 1, shard half** (`R1_safety`): a new stream's appends are refused
@@ -435,6 +468,10 @@ in `scripts/mutants.mjs` as `D61:`; the others in `ledger/` and `janitor/`'s scr
 ledger's and the janitor's D61 mutants are listed in their READMEs.
 
 ## Not implemented yet
+
+- **Filtering span and log batches inside**: a span or log read gets every batch of its signal
+  above the watermark whole; a time range does not skip any of them (only metric rows are
+  filtered by time). Per-batch time bounds at append would let it skip batches.
 
 - **Skipping stored batches without scanning them.** A filtered read decodes the series table
   of every batch above the watermark. Per-batch time bounds and metric names, written at append

@@ -1,11 +1,15 @@
 # Logs table (`logs`)
 
 **Status (2026-11-19): the file layout, the ingest mapping and the batch are settled and
-written; reading, flushing, the ledger and the token filter are proposed.**
+written; flushing, the ledger and retention are built (stage 2); reading through query, the
+token filter and publishing are proposed.**
 `engine/storage` (`src/logs.rs`) writes `logs` files from log-record batches
 (`contracts/BATCH.md`, signal 3) exactly as below and reads them back; `edge` decodes OTLP
-logs and Loki push into those batches. No flush, ledger, query or publisher path uses them
-yet (stage 2). The LogQL engine (`engine/logql`, `viz-logql`) evaluates over an in-memory
+logs and Loki push into those batches (behind `INGEST_SIGNALS`); the shards of `{pool}/logs`
+hold them, flush encodes each sealed segment (`engine/wasm` ABI 3) into one unit of `logs`
+files keyed by day, and the ledger lists them, plans them by time (milliseconds, the floor of
+the file's `ts` bounds) and expires them by day (`log_days` of the tenant's retention record).
+Query and publisher paths do not use them yet. The LogQL engine (`engine/logql`, `viz-logql`) evaluates over an in-memory
 source shaped like this contract, and a test reads files written here through its
 `LogSource` seam and gets the same answers (`engine/storage/readback`). Everything still
 marked *proposed* may change, here first, before code.
@@ -216,8 +220,8 @@ property tests check that pruning on and off gives byte-identical results.
 
 ## 8. Not defined here, or still proposed
 
-- Everything that reads or moves these files: flush, the ledger's `logs` table, compaction,
-  the query reader and its pruning, Iceberg publication (*proposed*).
+- Compaction, the query reader and its pruning, Iceberg publication (*proposed*). Flush, the
+  ledger's `logs` table and retention by day are built (stage 2).
 - The token filter's builder and reader (format settled above).
 - Retention and deletion by line filter (Loki's delete API) are not designed.
 - Promoted metadata columns (`l_…`) for frequently filtered keys, a per-tenant choice of

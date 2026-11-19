@@ -48,7 +48,8 @@ And one RPC entrypoint, reachable only through a service binding (never over HTT
 Bindings: `SHARD` (Durable Object namespace), `CONFIG` (KV), `DEFAULT_POOL` (JSON `PoolMap`
 for tenants without their own), optionally `INGEST_LIMITS` (JSON overriding any field
 of `Limits`), and optionally `INGEST_SIGNALS` (`traces`, `logs` or `traces,logs`; unset in
-every deployment until stage 2, see "Needed changes").
+every deployment: stage 2 drains those shards, but the publisher must read the new tables
+first, see "Needed changes" 2).
 
 KV layout:
 
@@ -152,7 +153,8 @@ A 2xx is sent only after every append has returned `ok`.
 What `/v1/traces`, `/v1/logs` and `/loki/api/v1/push` do when enabled. Contracts:
 `contracts/BATCH.md` (signals 2 and 3, routing, "Streams per signal"), `contracts/TRACES.md`,
 `contracts/LOGS.md` §1; decisions D57 (batches and per-signal shards) and D58 (OTLP stream
-labels). Not enabled anywhere: no flush drains these shards yet ("Needed changes").
+labels). Not enabled anywhere: since stage 2 flush drains these shards and the ledger lists
+their files, but the publisher must read those tables first ("Needed changes" 2).
 
 - **Tenant** only from the credential, as for metrics (`authenticate`). A resource attribute,
   a stream label or structured metadata named `tenant`, Loki's `X-Scope-OrgID`, other headers
@@ -182,6 +184,12 @@ labels). Not enabled anywhere: no flush drains these shards yet ("Needed changes
 - **Batches** of at most `MAX_BATCH_BYTES` per slot in arrival order, fingerprinted with
   SHA-256, appended with the same `appendAll` as metrics (whole-request retry, backpressure,
   overload, `stale_epoch`, `too_large` re-split), without `seriesIds` (not metered).
+- **Wiring for stage 2** (2026-11-19, the only edge change of it): the derived pool's name comes
+  from `signalPool` in `shard/src/pool.ts` (`signalMap` keeps its 503 for a name outside
+  `POOL_NAME`), and `INGEST_SIGNALS` is read by `enabledSignals` there, so flush's full sweep and
+  the stack derive the same names and the same flag. `scripts/otel-corpus.mjs --requests` also
+  writes the requests it encodes, for the stack's end-to-end run through the real Worker
+  (`stack/tools/signals_readback.mjs`); without the flag its output is as before.
 
 **Per-item refusals.** A span or record that breaks a rule is refused on its own; the rest is
 stored. OTLP answers 200 with `partial_success` (`rejected_spans` / `rejected_log_records`
@@ -262,7 +270,8 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
   `partial_success`). Scope attributes, `target_info`, start timestamps and exemplars
   are ignored. zstd is refused with 415.
 - OTLP/gRPC. OTLP traces and logs and Loki push are decoded and appended, but only behind
-  `INGEST_SIGNALS`, and nothing drains their shards (stage 2, "Needed changes").
+  `INGEST_SIGNALS`; stage 2 drains their shards into the ledger, query and the publisher do not
+  read those tables yet ("Needed changes" 2).
 - For traces and logs: OTLP `schema_url`, the span `type` field (OTLP 1.12, development), event
   and link dropped-attribute counts, link flags, log `event_name`, resource `entity_refs`;
   Loki's service-name discovery (a Loki stream without `service_name` keeps none); Loki's
@@ -665,45 +674,31 @@ In components others own; not made here.
    ruler's README, "Needed changes"). The service key now writes only in that fallback; it needs
    `read` for queries until query has its own entrypoint.
 
-2. **Traces and logs, stage 2: what the shard, flush, ledger and query must change** before
-   `INGEST_SIGNALS` is set anywhere (2026-11-19). Today, with the flag on, span and log
-   batches are appended to the `{pool}/traces/{slot}` and `{pool}/logs/{slot}` shards and stay
-   there: their streams seal, flush cannot decode them, they are never recorded, and the
-   tenant's traces or logs get 429 once those buffers fill. Metrics are not affected (other
-   shard objects).
-   - **shard** (`shard/src/tail.ts`): `filterBatch` throws `UnreadableBatch` for a batch whose
-     signal byte (offset 4) is not 1. A filtered tail read of a traces or logs shard must
-     return such batches whole (or filter them by their own `ts` / `start` column), never
-     throw. Nothing else: `append` stores the bytes opaquely, checks `MAX_BATCH_BYTES`, and
-     without `seriesIds` meters nothing; seal, discard and `describe` do not look inside.
-   - **engine binding** (`engine/wasm`, `contracts/engine.ts`): expose
-     `viz_storage::encode_spans` and `encode_logs` (and `otel::decode_*` for tail reads) next
-     to `encodeSegment`; their output is `SignalFile { table, day, hour, bytes, rows, min_ts,
-     max_ts, index }` with times in nanoseconds.
-   - **flush** (`flush/src/flush.ts`, `keys.ts`, `sweep.ts`): read the segment's signal byte
-     (every batch of a stream has the same one; refuse a mixed segment) and call the matching
-     encoder; key `spans` files with the hour level of `contracts/TRACES.md` ("Object keys":
-     `…/day={YYYY-MM-DD}/hour={HH}/L…`) and `trace_index` and `logs` files by day; report all
-     files of the segment (spans files with their `trace_index` files, or logs files) as one
-     unit; the orphan sweep (`shardsFromPoolMaps`) must list `{pool}/traces/{slot}` and
-     `{pool}/logs/{slot}` as well.
-   - **ledger** (`contracts/ledger.ts`, `ledger/src`): `Table` gains `spans`, `trace_index` and
-     `logs`; `FileEntry.index` of these tables is the fragments of `TRACES.md` / `LOGS.md` §5
-     (a logs fragment is at most about 32 KiB with its `streams` list); retention and
-     deletion by day must cover them; a unit's `spans` and `trace_index` files enter and leave
-     together. Units keep their per-stream contiguity rule unchanged.
-   - **query** (`query/src/coordinator.ts` `shardsOf`): today every stream the ledger lists is
-     tail-read. Once `{pool}/traces` or `{pool}/logs` streams are registered, a metrics query
-     would send its metric filter to those shards, which throw (above) and fail the query.
-     Tail reads must be restricted to the query's signal (by the derived pool name). Then the
-     new readers: a `SpanSource` and a `LogSource` over files plus tail batches, resolving
-     duplicates (`(trace_id, span_id)` by file precedence; the logs row key), merging
-     `trace_index` fragments (whose counts over-count spans stored in two units:
-     `contracts/TRACES.md`), and pruning by the index fragments.
-     `engine/storage/readback` has a working `LogSource` with fragment pruning, and a
-     `SpanSource` input, to start from.
-   - **publisher**: Iceberg tables for `spans`, `trace_index` and `logs` (hour partitions from
-     `start_time`).
+2. **Traces and logs, stage 2.** The write side is **built** (2026-11-19): the shard's tail
+   filter takes `signals` and never throws on a span or log batch (`shard/`); flush encodes a
+   span segment into `spans` files by hour and `trace_index` files by day, a log segment into
+   `logs` files by day, through `engine/wasm` ABI 3, one unit per segment (`flush/`); the ledger
+   lists, plans, logs and expires those tables (`contracts/ledger.ts` `LedgerTable`, `ledger/`);
+   the janitor expires them by `trace_days` / `log_days`, purges them and sweeps their orphans
+   (`janitor/`); flush's full sweep lists the derived pools of the signals `INGEST_SIGNALS`
+   enables. End to end through this Worker, and through viz-traceql and viz-logql:
+   `stack/README.md`, "Traces and logs end to end". What remains before `INGEST_SIGNALS` is set
+   in a deployment:
+   - **publisher** (must come first wherever a publisher runs): it refuses a ledger change that
+     adds or removes a file of a table it does not know (`publisher/src/log.ts` `check`,
+     `unsupported`) and stops that tenant's publication there, metrics included; and it then
+     releases none of the tenant's keys to the janitor. It needs at least to pass over the
+     `spans`, `trace_index` and `logs` files (or to publish them: Iceberg tables with hour
+     partitions from `start_time`, `contracts/TRACES.md`, `LOGS.md`), and its typecheck to name
+     `MetricTable`/`Table` for its metric definitions as it does now (`contracts/ledger.ts`
+     keeps `Table` the metric pair for that reason; `LedgerChange.removedFiles` stays typed
+     `Table` until it reads the other tables, see the note there).
+   - **query**: its metrics tail reads should pass `signals: [1]` (`TailFilter.signals`) and its
+     span and log reads `[2]` / `[3]`; the readers over files (`query/src/signals.ts`) find the
+     files listed now: `plan` answers for the three tables in milliseconds, the floor of the
+     files' nanosecond bounds, as its `msRange` assumes.
+   - **edge**: nothing; the mapping of `registering` to 503 (D61) already covers the derived
+     pools' new streams.
 
 ## Contract issues (traces and logs, 2026-11-19)
 
@@ -716,7 +711,8 @@ What could not be settled here, or was settled in a way someone else must confir
 2. **`trace_index` counts over-count** a span stored by two units (`contracts/TRACES.md`,
    "Duplicates across units"). Exact counts need the de-duplicated spans or a compaction that
    re-aggregates fragments from them.
-3. **`contracts/ledger.ts` `Table`** does not name the new tables; the ledger must add them.
+3. **`contracts/ledger.ts` `Table`** did not name the new tables. **Resolved in stage 2** as
+   `LedgerTable` (`Table` stays the metric pair, for the code that maps every metric table).
 4. **Loki push semantics** for a request with some invalid entries (400, the rest written)
    follow Remote Write and Loki's documentation; Loki's own behaviour was not observed here.
 5. **The token filter** has a format (`contracts/LOGS.md` §6) but no builder, reader, or

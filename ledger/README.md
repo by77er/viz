@@ -106,9 +106,15 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   base would hold it (each live file's key and index fragment plus 448 bytes, calibrated
   against checkpoints written), kept with every mutation and recomputed exactly at every start
   and every one-object checkpoint. `addUnit` answers `full` (`{ status, stateBytes,
-  limitBytes }`, nothing changed, retryable) once it would pass 300 MiB (`STATE_MAX_BYTES`,
-  `LEDGER_STATE_MAX_BYTES`), about 300,000 S4-shaped files, the largest state measured.
-  Memory no longer sets it (nothing holds the state); a rebuild's duration does (below).
+  limitBytes }`, nothing changed, retryable) once it would pass the cap: **16 MiB by default**
+  (`STATE_MAX_BYTES`, the cap of the releases before D47; `LEDGER_STATE_MAX_BYTES` sets
+  another), pinned there by the review of D47/D48/D55 (P-2: a rollback to the release before
+  cannot hold or checkpoint a larger state; P-3: a rebuild and a first publication above 16 MiB
+  are not measured within a Durable Object's CPU limit on Cloudflare). The code itself handles
+  300 MiB (`STATE_MEASURED_MAX_BYTES`, about 300,000 S4-shaped files, the largest state
+  measured): memory no longer sets the bound (nothing holds the state); a rebuild's duration
+  does (below). A release lifts the default only once its rollback floor has D47 and D55 and
+  those two times are measured on Cloudflare.
   `replace` and `expire` are never refused, so compaction and retention make room.
 - **`loggedWatermarks`.** Per stream, the watermark as of the last change in a written
   segment. Shards may discard only up to it.
@@ -456,9 +462,9 @@ tell.
 - **A ledger that cannot log refuses its tenant's new streams** (D61, shards in mode
   `logged`): until the drain works again, plus its backoff (up to 60 s). `logStatus` shows
   `registrationsPending` and `pendingSince`; nothing pages on them yet.
-- **The state limit is set by time measured here, not on Cloudflare.** 300 MiB of estimated
-  state (about 300,000 files) is the largest measured: memory stayed flat, a rebuild took
-  20 s. On Cloudflare a rebuild of that size is modelled at 20–60 s, during which every
+- **The state limit is set by time measured here, not on Cloudflare.** The default cap is
+  16 MiB (above); 300 MiB of estimated state (about 300,000 files) is the largest measured:
+  memory stayed flat, a rebuild took 20 s. On Cloudflare a rebuild of that size is modelled at 20–60 s, during which every
   request of the tenant is refused (retryably); the CPU a start may use there is not
   measured. A tenant that reaches the limit gets `full` until compaction or retention make
   room; flush treats `full` as an answer it does not know and retries (fail closed), so its
@@ -469,7 +475,8 @@ tell.
   at 16 MiB). The publisher now re-bases from the newest checkpoint (parts read in order, a few
   at a time) or the base, streamed into SQLite: at 300,000 files it completed with V8's heap
   capped below the isolate's 128 MB, measured in workerd (`publisher/README.md`, "Re-base in
-  bounded memory"), and the pin is gone from `stack/wrangler.jsonc`. What is left is time: a
+  bounded memory"). What is left is time (why the cap is still 16 MiB, in the code and in
+  `stack/wrangler.jsonc`: review P-3): a
   re-base of 300,000 files took 8–17 s here and a first publication of them 27–38 s; on
   Cloudflare neither is measured, and the CPU an invocation may use there is the bound to check.
   `verify` (the scrubber, not on the publish path) still replays a tenant into memory.
@@ -513,10 +520,12 @@ tell.
   may be rolled back to).
 - **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (now latest 3, compat 2) in the release
   record and refuse a rollback below compat (COMPATIBILITY.md §6; `deploy/` "Needed changes"
-  7). The 16 MiB pin of `LEDGER_STATE_MAX_BYTES` on `viz-ingest`'s ledger is removed (item
-  below): viz-publisher must be deployed with the streaming re-base before, or with, the
-  viz-ingest that no longer pins it (the reader first; the deploy order already puts
-  viz-publisher before viz-ingest).
+  7). The state cap stays 16 MiB, both as the code's default (`STATE_MAX_BYTES`) and as
+  `LEDGER_STATE_MAX_BYTES` in viz-ingest's vars (`stack/wrangler.jsonc`, review P-2 and P-3).
+  The release that lifts it (to at most `STATE_MEASURED_MAX_BYTES`, 300 MiB) must have a
+  rollback floor with D47 and D55, deploy viz-publisher with the streaming re-base before or
+  with viz-ingest (the reader first; the deploy order already does), and come after a rebuild
+  and a first publication of such a state are measured within the CPU limit on Cloudflare.
 - **publisher**: re-base from a new incarnation's base without holding it. **Done** (2026-11-19,
   `publisher/src/log.ts`, `publisher/README.md` "Re-base in bounded memory"): the base is read
   with `readLedgerLogStream`, and where the incarnation has a checkpoint the re-base starts

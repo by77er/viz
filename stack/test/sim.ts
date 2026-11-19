@@ -15,12 +15,13 @@ import { createExecutionContext, createMessageBatch, getQueueResult } from 'clou
 import { env } from 'cloudflare:workers'
 import { expect } from 'vitest'
 import { pairFiles } from '../../compact/src/compact'
-import type { FileEntry, Tombstone } from '../../contracts/ledger'
+import { type FileEntry, TABLES, type Tombstone } from '../../contracts/ledger'
 import { type PrwSeries, bitsOf, makeKey, postWrite, setPool } from '../../edge/test/helpers'
 import { ledgerStub, read, shardStub } from '../../flush/test/helpers'
 import { type PoolMap, shardName, slotFor } from '../../shard/src/pool'
 import { type FlushMessage, Shard } from '../../shard/src/shard'
 import type { MaintMessage, StackEnv } from '../src/index'
+import { type Sender, SignalModel, checkSignals, senders, signalShards } from './signals'
 
 export const DAY_MS = 86_400_000
 export const dayOf = (ts: number): string => new Date(ts).toISOString().slice(0, 10)
@@ -71,6 +72,9 @@ export interface SimTenant {
   model: Model
   /** Series of this tenant: labels, and the slot its sender routes to. */
   series: { labels: [string, string][]; slot: number }[]
+  /** With `INGEST_SIGNALS` on (stage 2): what a reader must see of the tenant's spans and log records, and its senders of them. */
+  signals?: SignalModel
+  senders?: Sender[]
 }
 
 export interface Queued<T> {
@@ -82,6 +86,8 @@ export interface Queued<T> {
 export interface Sim {
   map: PoolMap
   shards: string[]
+  /** The shards of the derived pools `{pool}/traces` and `{pool}/logs` (stage 2); empty unless the sim sends spans and logs. */
+  signalShards: string[]
   tenants: SimTenant[]
   flushQueue: Queued<FlushMessage>[]
   maintQueue: Queued<MaintMessage>[]
@@ -98,10 +104,11 @@ let msgN = 0
 /** The value of a series at a time: deterministic, so a re-sent sample is the same row. */
 export const valueAt = (seriesIndex: number, ts: number): number => seriesIndex * 1000 + (ts % 86_400_000) / 1000
 
-export async function createSim(nTenants: number, seriesPerTenant: number): Promise<Sim> {
+export async function createSim(nTenants: number, seriesPerTenant: number, opts: { signals?: boolean } = {}): Promise<Sim> {
   const id = `${Date.now().toString(36)}${simN++}`
   const map: PoolMap = { pool: `sim-${id}`, slots: 2, spread: 2, epoch: 1 }
   const shards = [shardName(map, 0), shardName(map, 1)]
+  const sigShards = opts.signals ? signalShards(map) : []
   const tenants: SimTenant[] = []
   for (let t = 0; t < nTenants; t++) {
     const name = `sim${t}-${id}`
@@ -115,7 +122,7 @@ export async function createSim(nTenants: number, seriesPerTenant: number): Prom
         slot: slotFor(map, name, `job=${job}\u0000instance=${instance}`),
       })
     }
-    tenants.push({ name, key: await makeKey(name), model: new Model(), series })
+    tenants.push({ name, key: await makeKey(name), model: new Model(), series, ...(opts.signals ? { signals: new SignalModel(), senders: senders(map, name) } : {}) })
   }
 
   const flushQueue: Queued<FlushMessage>[] = []
@@ -129,12 +136,12 @@ export async function createSim(nTenants: number, seriesPerTenant: number): Prom
     }) as unknown as Queue<T>
   const proto = Shard.prototype as unknown as { announce(msg: FlushMessage): Promise<void> }
   const original = proto.announce
-  const mine = new Set(shards)
+  const mine = new Set([...shards, ...sigShards])
   proto.announce = async function (this: unknown, msg: FlushMessage) {
     if (mine.has(msg.shard)) flushQueue.push({ id: `m${msgN++}`, body: msg, attempts: 1 })
   }
   return {
-    map, shards, tenants, flushQueue, maintQueue, dead: [],
+    map, shards, signalShards: sigShards, tenants, flushQueue, maintQueue, dead: [],
     env: { ...env, FLUSH_QUEUE: queueOf(flushQueue), MAINT_QUEUE: queueOf(maintQueue) } as StackEnv,
     restore: () => { proto.announce = original },
   }
@@ -229,10 +236,10 @@ export interface TenantState {
 const FLUSH_FILE = /\/L0-(.+)-(\d+)-(\d+)-(\d+)-[0-9a-f]{8}\.parquet$/
 const COMPACTED_FILE = /\/L[1-9]\d*-(h\d\d|d)-[0-9a-f]{16}-[0-9a-f]{8}\.parquet$/
 
-/** Every object under the tenant's data prefix, with its size. */
+/** Every object under the tenant's data prefixes (every table's), with its size. */
 async function objectSizes(tenant: string): Promise<Map<string, number>> {
   const out = new Map<string, number>()
-  for (const table of ['metric_samples', 'metric_series']) {
+  for (const table of TABLES) {
     let cursor: string | undefined
     do {
       const page = await env.BUCKET.list({ prefix: `${env.CELL}/data/${table}/tenant=${tenant}/`, cursor })
@@ -268,6 +275,9 @@ export async function checkTenant(sim: Sim, t: SimTenant, graceMs: number, where
   const samples = (await ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files
   const series = (await ledger.plan({ table: 'metric_series', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files
   const live = [...samples, ...series]
+  // The span and log tables (stage 2): a reader sees exactly the model, and their files count in
+  // the live set like the metric files (empty for a tenant that sends none).
+  if (t.signals) live.push(...(await checkSignals(t.name, t.signals, sim.signalShards, where)).files)
   const sizes = await objectSizes(t.name)
   const objects = [...sizes.keys()].sort()
   const have = new Set(objects)

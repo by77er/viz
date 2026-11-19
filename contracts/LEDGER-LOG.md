@@ -134,16 +134,18 @@ that length), and a rebuild streams the base or a checkpoint into SQLite (below)
 with the state is **time**: a rebuild or a new incarnation reads and writes the whole state
 while requests are refused, retryably. `addUnit` answers `full` (nothing changed, retryable)
 once the state, estimated as each live file's key and index fragment plus 448 bytes, would
-exceed 300 MiB (`STATE_MAX_BYTES`; about 300,000 files of S4's shape, the largest state
-measured). `replace` and `expire` are never refused, so compaction and retention make room.
+exceed the cap: 16 MiB by default (`STATE_MAX_BYTES`, kept by the review of D47/D48/D55, P-2
+and P-3, until a release whose rollback floor has D47 and D55 lifts it after a rebuild and a
+first publication are measured within the CPU limit on Cloudflare), at most 300 MiB
+(`STATE_MEASURED_MAX_BYTES`; about 300,000 files of S4's shape, the largest state measured).
+`replace` and `expire` are never refused, so compaction and retention make room.
 Measured in workerd (2026-11-19, `ledger/bench/checkpoint.bench.test.ts`, the release before as
 the counterfactual on the same data): at 100,000 files a checkpoint blocked the object for
 2 ms at a time instead of 0.93 s and added 14 MB of process memory instead of 410 MB; at
 300,000 files (this release only) a checkpoint took 9.3 s in 272 parts, a rebuild 20 s, and the
-process peaked at 536 MB (`ledger/README.md`). Not measured on Cloudflare. **The publisher
-still reads a new incarnation's base whole** (`publisher/src/log.ts`): until it reads it with
-`readLedgerLogStream`, a state above about 16 MiB can make a publisher re-base fail
-(`ledger/README.md`, "Needed changes elsewhere").
+process peaked at 536 MB (`ledger/README.md`). Not measured on Cloudflare. The publisher
+re-bases from a base or checkpoint streamed into SQLite (D55, `publisher/README.md`, "Re-base
+in bounded memory"); it no longer reads a base whole.
 
 ## Logged
 

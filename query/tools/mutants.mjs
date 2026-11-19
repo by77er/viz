@@ -604,11 +604,11 @@ const MUTANTS = [
     replace: '  void got',
   },
   {
-    name: 'Pruning drops a matching hour: trace by ID reads the span files of the hour after each one its fragments name',
+    name: 'Pruning drops a matching hour: trace by ID keeps a span file only if its fragments name the hour after the file\'s',
     tests: ['test/signals.test.ts'],
     file: 'src/signals.ts',
-    find: '  const h = Math.floor(f.minTs / 3_600_000)',
-    replace: '  const h = Math.floor(f.minTs / 3_600_000) + 1',
+    find: 'const x = hourOf(f); return x === null || hours.has(x)',
+    replace: 'const x = hourOf(f); return x === null || hours.has(x + 1)',
   },
   {
     name: 'A cap not enforced: the rows the fragments say a span or log query decodes are not checked before fetching',

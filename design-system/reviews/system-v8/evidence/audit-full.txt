@@ -115,8 +115,8 @@ Flow screens (read only, reported): 122 finding(s)
     press         400 coarse      dark: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
     press         400 coarse      dark: a finger held on button.vz-tree-toggle "" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
     press         400 coarse      dark: a finger held on button.vz-series "p99" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)  (and at 400 coarse)
-real	6m10.973s
-user	0m31.534s
-sys	0m8.885s
+real	6m16.875s
+user	0m31.025s
+sys	0m7.938s
 
-load average at the end: 5.22 3.90 4.19 2/181 16446
+load average before: 4.89 4.66 4.08 4/208 7824; after: 3.53 4.18 4.04 2/184 20240

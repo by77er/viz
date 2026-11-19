@@ -1,7 +1,7 @@
 // A corpus of spans and logs for the read-back checks (engine/storage/readback, and
 // engine/storage/tools/otel_independent_check.py):
 //
-//   node scripts/otel-corpus.mjs OUT [seed] [scale]
+//   node scripts/otel-corpus.mjs OUT [seed] [scale] [--requests]
 //
 // 1. Generates traces (trees across services, every attribute type, Unicode, empty and
 //    long values, events, links, errors, clamped ends, orphans) and logs (OTLP and Loki
@@ -13,6 +13,11 @@
 // 4. Writes what the stored data must be, computed here from the generated model with the
 //    contracts' mapping rules (a second implementation, sharing no code with src/):
 //    OUT/expected/spans.jsonl and OUT/expected/logs.jsonl, duplicates resolved (later wins).
+//
+// 5. With `--requests`, also the requests themselves, as sent: OUT/requests/NNNNN.bin, an
+//    index.json of {file, path, contentType, contentEncoding} in sending order, and now_ms (the
+//    clock the decoders above were given), so the same requests can go through the real write
+//    path (stack/tools/signals_readback.mjs, stage 2 of traces and logs).
 //
 // Deterministic for a seed. Nothing here is copied from an incompatible project; the .proto
 // field numbers are those of opentelemetry-proto and Loki's pkg/push (both Apache-2.0).
@@ -31,6 +36,7 @@ if (!OUT) {
 }
 const SEED = Number(process.argv[3] ?? 1)
 const SCALE = Number(process.argv[4] ?? 1)
+const REQUESTS = process.argv.includes('--requests')
 
 const bundle = join(mkdtempSync(join(tmpdir(), 'viz-otel-corpus-')), 'edge.mjs')
 await build({
@@ -384,6 +390,15 @@ function asResources(part) {
 
 mkdirSync(join(OUT, 'batches'), { recursive: true })
 mkdirSync(join(OUT, 'expected'), { recursive: true })
+const sentRequests = []
+/** With `--requests`: one request as sent (its body exactly as the decoders above read it before decompression). */
+const keepRequest = (path, body, contentType, contentEncoding) => {
+  if (!REQUESTS) return
+  if (sentRequests.length === 0) mkdirSync(join(OUT, 'requests'), { recursive: true })
+  const file = `${String(sentRequests.length).padStart(5, '0')}.bin`
+  writeFileSync(join(OUT, 'requests', file), body)
+  sentRequests.push({ file, path, contentType, ...(contentEncoding ? { contentEncoding } : {}) })
+}
 let nBatch = 0
 const writeBatches = (prefix, c) => {
   if (c.rejectedTotal !== 0) throw new Error(`${prefix}: edge refused ${c.rejectedTotal}: ${c.rejectionSummary()}`)
@@ -400,6 +415,7 @@ for (const part of [...group(spans, 120), retried]) {
   if (part.length === 0) continue
   const json = chance(0.4)
   const body = tracesBody(asResources(part), json)
+  keepRequest('/v1/traces', body, json ? 'application/json' : 'application/x-protobuf')
   const c = new E.SpanCollector(limits, NOW_MS)
   ;(json ? E.decodeTracesJson : E.decodeTracesProto)(body, c)
   spanBatches += writeBatches('spans', c)
@@ -490,9 +506,13 @@ for (let i = 0; i < Math.max(otlpParts.length, lokiParts.length); i++) {
 for (const [kind, part] of queue) {
   const json = chance(0.5)
   const c = new E.LogCollector(limits, NOW_MS)
-  if (kind === 'otlp') (json ? E.decodeLogsJson : E.decodeLogsProto)(logsBody(part, json), c)
-  else {
+  if (kind === 'otlp') {
+    const body = logsBody(part, json)
+    keepRequest('/v1/logs', body, json ? 'application/json' : 'application/x-protobuf')
+    ;(json ? E.decodeLogsJson : E.decodeLogsProto)(body, c)
+  } else {
     const body = lokiBody(part, json)
+    keepRequest('/loki/api/v1/push', body, json ? 'application/json' : 'application/x-protobuf', json ? undefined : 'snappy')
     ;(json ? E.decodeLokiJson : E.decodeLokiProto)(json ? body : E.snappyDecompress(body, 1 << 30), c)
   }
   logBatches += writeBatches('logs', c)
@@ -525,4 +545,8 @@ for (const [kind, part] of queue) {
 writeFileSync(join(OUT, 'expected', 'logs.jsonl'), [...expectedLogs.values()].map((x) => JSON.stringify(x)).join('\n') + '\n')
 const summary = { seed: SEED, scale: SCALE, spans: expectedSpans.size, spanRequests, spanBatches, logs: expectedLogs.size, logRequests, logBatches, retriedSpans: retried.length }
 writeFileSync(join(OUT, 'summary.json'), JSON.stringify(summary, null, 1))
+if (REQUESTS) {
+  writeFileSync(join(OUT, 'requests', 'index.json'), JSON.stringify(sentRequests, null, 1))
+  writeFileSync(join(OUT, 'requests', 'now_ms'), String(NOW_MS))
+}
 console.log(JSON.stringify(summary))

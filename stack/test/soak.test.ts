@@ -8,6 +8,7 @@ import { consumeFlushBatch, sweepPending } from '../../flush/src/index'
 import { expireTenant } from '../../janitor/src/janitor'
 import { FLUSH_QUEUE_NAME, MAINT_QUEUE_NAME, consumeMaintBatch, engine, flushTenant, noteFlushed } from '../src/index'
 import { checkedOrphans, checkedPurge, quiesce as quiesceTenant, settle } from './settle'
+import { sendLogs, sendSpans } from './signals'
 import { DAY_MS, type Sim, type SimTenant, checkTenant, createSim, deliver, ingest, ledger, rng, shard, take } from './sim'
 
 /**
@@ -25,6 +26,15 @@ import { DAY_MS, type Sim, type SimTenant, checkTenant, createSim, deliver, inge
  * registering them the way senders do (the same request, retried while it is refused), with
  * evictions between attempts; each such request names one slot, so a refusal stores nothing
  * and the model stays exact.
+ *
+ * It runs twice: as it always has (`INGEST_SIGNALS` off: nothing of stage 2 runs, and the
+ * operations and checks are exactly the metrics soak's), and with spans and logs (stage 2 of
+ * traces and logs): every tenant also sends OTLP traces and logs through edge, to the shards of
+ * its derived pools, which seal, flush (through the same flush queue, with the same injected
+ * crashes), expire (by `trace_days` and `log_days`), purge and sweep with everything else; and
+ * every check also requires a reader to see exactly the acknowledged spans and log records,
+ * from the files and the tails (test/signals.ts). Those decisions take a generator of their own
+ * (`rs`), so the metric operations are drawn as in the run without them.
  */
 const vars = env as unknown as { SOAK_STEPS?: string; SOAK_SEED?: string }
 const STEPS = Number(vars.SOAK_STEPS ?? 400)
@@ -37,6 +47,9 @@ const GRACES = { deleteGraceMs: DELETE_GRACE, orphanGraceMs: ORPHAN_GRACE, stepM
 
 let sim: Sim
 afterAll(() => sim?.restore())
+const vars2 = env as unknown as { SOAK_SIGNALS?: string }
+/** Which runs: `off`, `on`, or both (the default). */
+const RUNS = (vars2.SOAK_SIGNALS ?? 'off,on').split(',').map((x) => x.trim() === 'on')
 
 /** `evictDurableObject`, except that an object that is not running is left alone (the runtime refuses to evict it). */
 const evict = (stub: Parameters<typeof evictDurableObject>[0]): Promise<void> =>
@@ -45,12 +58,15 @@ const evict = (stub: Parameters<typeof evictDurableObject>[0]): Promise<void> =>
   })
 
 describe('soak', () => {
-  it(`${STEPS} random operations keep every invariant (seed ${SEED})`, { timeout: 3_600_000 }, async () => {
+  for (const signals of RUNS) it(`${STEPS} random operations keep every invariant (seed ${SEED})${signals ? ', with spans and logs (INGEST_SIGNALS on)' : ''}`, { timeout: 3_600_000 }, async () => {
     const r = rng(SEED)
-    sim = await createSim(3, 30)
-    const policy = { metric_samples_days: 2 }
+    /** Stage 2's decisions, apart from the metric operations' (`r`). */
+    const rs = rng(SEED ^ 0x5157)
+    sim?.restore()
+    sim = await createSim(3, 30, { signals })
+    const policy = signals ? { metric_samples_days: 2, trace_days: 3, log_days: 1 } : { metric_samples_days: 2 }
     for (const t of sim.tenants) await env.CONFIG.put(`retention:${t.name}`, JSON.stringify(policy))
-    for (const s of sim.shards) await shard(s).configure({ sealBytes: 6000, sealAgeMs: 0, retainRecordedMs: 0, fingerprintTtlMs: 0, seriesPersistMs: 0, notifyRetryMs: 0, registration: 'logged' })
+    for (const s of [...sim.shards, ...sim.signalShards]) await shard(s).configure({ sealBytes: 6000, sealAgeMs: 0, retainRecordedMs: 0, fingerprintTtlMs: 0, seriesPersistMs: 0, notifyRetryMs: 0, registration: 'logged' })
     const maint = { deleteGraceMs: DELETE_GRACE, orphanGraceMs: ORPHAN_GRACE, maxCompactStepMs: STEP, orphanEveryMs: 0, maxCompactSteps: 3 }
     const compaction = () => ({ minL0Files: 2 + r.int(3), maxL0AgeMs: r.pick([0, 600_000]), maxInputPairs: 2 + r.int(5), maxStepMs: STEP })
     const clock = () => Date.now() + r.pick([0, 3_600_000, 3 * DAY_MS])
@@ -86,6 +102,18 @@ describe('soak', () => {
           await new Promise((x) => setTimeout(x, 100))
         }
         expect((await shard(sim.shards[slot]!).describe(t.name))?.registered, `${t.name} slot ${slot} registered`).toBe(true)
+      }
+      // Stage 2: each tenant's first spans and logs to each slot of its derived pools, resent
+      // while refused `registering` (edge answers 503), as for the metric slots.
+      if (t.signals) {
+        for (const signal of ['traces', 'logs'] as const) {
+          for (let slot = 0; slot < sim.map.slots; slot++) {
+            const sender = t.senders!.find((x) => x.slots[signal] === slot)
+            if (!sender) continue
+            const n = signal === 'traces' ? await sendSpans(t.signals, t.key, sender, rs, 2, 0) : await sendLogs(t.signals, t.key, sender, rs, 2, 0)
+            did(`warm-up ${signal} refusals`, n)
+          }
+        }
       }
       await checkTenant(sim, t, DELETE_GRACE, 'warm-up')
     }
@@ -126,9 +154,10 @@ describe('soak', () => {
       } else if (op < 63) {
         // The cron's flush sweep (no age threshold here, so it re-enqueues whatever is pending).
         const s = await sweepPending(sim.env, { olderThanMs: 0 })
-        did('sweep re-enqueued', s.enqueued.filter((m) => sim.shards.includes(m.shard)).length)
+        const ours = [...sim.shards, ...sim.signalShards]
+        did('sweep re-enqueued', s.enqueued.filter((m) => ours.includes(m.shard)).length)
         // Messages for other test files' shards are not this simulation's.
-        for (let i = sim.flushQueue.length - 1; i >= 0; i--) if (!sim.shards.includes(sim.flushQueue[i]!.body.shard)) sim.flushQueue.splice(i, 1)
+        for (let i = sim.flushQueue.length - 1; i >= 0; i--) if (!ours.includes(sim.flushQueue[i]!.body.shard)) sim.flushQueue.splice(i, 1)
         touched = []
       } else if (op < 71) {
         // The maintenance queue delivers: compaction, retention's expire is NOT in here (see below), purge, orphans.
@@ -143,6 +172,7 @@ describe('soak', () => {
               await quiesce(tt)
               const report = await (await import('../src/maintain')).maintainTenant(e, eng, tenant, o)
               if (report.expired.beforeDay !== null) tt.model.expire(report.expired.beforeDay)
+              tt.signals?.expire(report.expired)
               did('files expired', report.expired.removed.length)
               did('merges', report.compaction.merged)
               did('objects purged', report.purged.deleted.length)
@@ -163,8 +193,13 @@ describe('soak', () => {
       } else if (op < 82) {
         // Retention, with a compaction step running across it.
         await quiesce(t)
-        const x = await compactStep(sim.env, engine, t.name, { now: clock(), policy: compaction(), hooks: { afterPut: async () => { t.model.expire((await expireTenant(sim.env, t.name)).beforeDay!) } } })
-        t.model.expire((await expireTenant(sim.env, t.name)).beforeDay!)
+        const expire = async () => {
+          const e = await expireTenant(sim.env, t.name)
+          t.model.expire(e.beforeDay!)
+          t.signals?.expire(e)
+        }
+        const x = await compactStep(sim.env, engine, t.name, { now: clock(), policy: compaction(), hooks: { afterPut: expire } })
+        await expire()
         did(`retention (compaction ${x.status})`)
       } else if (op < 87) {
         await purge(t, where)
@@ -208,6 +243,27 @@ describe('soak', () => {
         }
       }
 
+      // Stage 2: spans and logs for the tenant, and the derived pools' shards sealed, alarmed and
+      // evicted now and then, all drawn from `rs`.
+      if (t.signals) {
+        const sender = t.senders![rs.int(t.senders!.length)]!
+        if (rs.chance(0.3)) did(`spans sent (refusals ${await sendSpans(t.signals, t.key, sender, rs, 1 + rs.int(4), rs.int(4))})`)
+        if (rs.chance(0.3)) did(`logs sent (refusals ${await sendLogs(t.signals, t.key, sender, rs, 1 + rs.int(6), rs.int(4))})`)
+        const s = sim.signalShards[rs.int(sim.signalShards.length)]!
+        const o = rs.int(100)
+        if (o < 6 && (await shard(s).seal(t.name))) did('signal seal by hand')
+        else if (o < 10) {
+          await runDurableObjectAlarm(shard(s))
+          touched = sim.tenants
+          did('signal shard alarm')
+        } else if (o < 13) {
+          await evict(shard(s))
+          touched = sim.tenants
+          did('signal shard evictions')
+        }
+        if (!touched.includes(t)) touched = [...touched, t]
+      }
+
       for (const x of step % 20 === 19 ? sim.tenants : touched) await checkTenant(sim, x, DELETE_GRACE, where)
     }
 
@@ -218,7 +274,8 @@ describe('soak', () => {
     // Then flush, expire, compact and delete everything, once the graces have passed and the
     // ledgers have logged their removals, and require that nothing is left (test/settle.ts).
     await settle(sim, GRACES, did)
-    console.error(`SOAK ${JSON.stringify({ steps: STEPS, seed: SEED, rows: sim.tenants.map((t) => t.model.size), dead_letters: sim.dead.length, ...count })}`)
+    console.error(`SOAK ${JSON.stringify({ steps: STEPS, seed: SEED, ...(signals ? { signals: true, spans: sim.tenants.map((t) => t.signals!.spans.size), logs: sim.tenants.map((t) => t.signals!.logs.size) } : {}), rows: sim.tenants.map((t) => t.model.size), dead_letters: sim.dead.length, ...count })}`)
     expect(sim.tenants.every((t) => t.model.size > 0)).toBe(true)
+    sim.restore()
   })
 })

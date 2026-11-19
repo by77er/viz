@@ -61,6 +61,9 @@ One row per series present in the file's day.
 ```
 
 - `level` is 0 for flush files. `shard` is the shard name with `/` replaced by `_`.
+- The span and log tables (`spans`, `trace_index`, `logs`; `contracts/TRACES.md`,
+  `contracts/LOGS.md`) use the same keys, except that a `spans` key has one more level,
+  `…/day={YYYY-MM-DD}/hour={HH}/L0-…` (`dataKeyPrefix` in `contracts/ledger.ts`).
 - **Pool and shard names** (`POOL_NAME`, `SHARD_NAME` in `contracts/ledger.ts`) are segments
   of `[A-Za-z0-9-]` joined by `/`: a pool name at most 120 characters, a shard name
   (`{pool}/{slot}`) at most 128. They never contain `_`, so the replacement above is

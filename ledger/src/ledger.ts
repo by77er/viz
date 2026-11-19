@@ -227,16 +227,22 @@ const SEGMENTS_PER_ALARM = 16
 export const CHECKPOINT_EVERY = 256
 /**
  * Default: `addUnit` refuses new files (`full`) once the state would exceed this many bytes, as
- * estimated by `entryBytes` (review S-2). Checkpoints are written in parts and a rebuild streams
- * into SQLite (contracts/LEDGER-LOG.md, "Checkpoints"; D47), so no step holds the state in
- * memory and memory no longer sets the bound (measured flat from 8,000 to 300,000 files). What
- * grows with the state is TIME: a rebuild or a new incarnation reads and writes all of it, and
- * requests are refused (retryably) meanwhile: 20 s at 300,000 files here. This is the largest
- * state measured (300,000 S4-shaped files, about 298 MiB; ledger/README.md). Raising it needs
- * that time measured on Cloudflare. The publisher still reads a new incarnation's base whole
- * (ledger/README.md, "Needed changes elsewhere").
+ * estimated by `entryBytes` (review S-2), unless `LEDGER_STATE_MAX_BYTES` says otherwise.
+ *
+ * 16 MiB, the cap of the releases before D47. This release itself handles far more: checkpoints
+ * are written in parts and a rebuild streams into SQLite (contracts/LEDGER-LOG.md,
+ * "Checkpoints"; D47), and the publisher re-bases from a base or checkpoint without holding it
+ * (D55), so memory is flat from 8,000 to 300,000 files (`STATE_MEASURED_MAX_BYTES`). What
+ * grows with the state is TIME: a rebuild or a new incarnation reads and writes all of it while
+ * requests are refused (retryably), 20 s at 300,000 files here. The default stays at 16 MiB
+ * (review of D47/D48/D55, P-2 and P-3) until a release lifts it, which needs both: a rollback
+ * floor that has D47 and D55 (a release before them cannot hold or checkpoint a larger state),
+ * and a rebuild and a first publication of such a state measured within a Durable Object's CPU
+ * limit on Cloudflare. viz-ingest also pins it in its vars (stack/wrangler.jsonc).
  */
-export const STATE_MAX_BYTES = 300 * 1024 * 1024
+export const STATE_MAX_BYTES = 16 * 1024 * 1024
+/** The largest state measured (300,000 S4-shaped files, about 298 MiB; ledger/README.md): what a release that lifts `STATE_MAX_BYTES` may set, and no more. */
+export const STATE_MEASURED_MAX_BYTES = 300 * 1024 * 1024
 /**
  * A checkpoint of a state whose estimate is at most this is written in format 1 (one object,
  * built in one step, as before): about one part's worth, so no step builds more than a part.

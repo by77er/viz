@@ -7,8 +7,8 @@ flush and for tail reads. All integers little-endian.
 | `signal` | Rows | Status |
 |---|---|---|
 | 1 | metric samples (this section and the next five) | built |
-| 2 | spans ("Spans, signal 2" below) | format settled 2026-11-19; `edge` encodes it and `engine/storage` decodes and flushes it, but no shard stores it yet (stage 2) |
-| 3 | log records ("Log records, signal 3" below) | as signal 2 |
+| 2 | spans ("Spans, signal 2" below) | built (2026-11-19): `edge` encodes it behind `INGEST_SIGNALS`; the shards of `{pool}/traces` store it; flush encodes it (`engine/wasm` ABI 3) into `spans` and `trace_index` files the ledger lists (stage 2) |
+| 3 | log records ("Log records, signal 3" below) | built as signal 2, into `logs` files, from the shards of `{pool}/logs` |
 
 Every signal has the same 16-byte header (magic, signal, flags, reserved, `n_rows`, and at
 offset 12 the size of the batch's entry table) and the same strictness: a decoder rejects
@@ -291,7 +291,7 @@ With these limits a row and its stream entry always fit one batch.
 **Row key and duplicates** (`contracts/LOGS.md` §4): `(stream_id, ts, line, metadata)`.
 Rows equal on all four are one row; the later row wins for the other columns.
 
-## Streams per signal (proposed for stage 2)
+## Streams per signal (built, stage 2)
 
 Spans and log records are appended to shards of their own, so that a shard stream (and so a
 sealed segment, a flush and a tail read) holds one signal only: for a tenant whose pool map
@@ -301,6 +301,11 @@ is `{pool, slots, spread, epoch}`, spans go to the pool `{pool}/traces` and log 
 field. The base pool name must therefore be at most 113 characters; `edge` refuses a tenant
 whose derived pool name breaks `POOL_NAME` (503). `design/DECISIONS.md` D57 gives the
 alternatives. As built, `edge` appends there only when `INGEST_SIGNALS` enables the signal.
+The derivation is one function, `signalPool` in `shard/src/pool.ts`, used by `edge`, flush's
+sweep and the stack's tests. Flush reads a segment's signal byte and refuses a segment whose
+batches are not all of one signal it flushes (`unreadable_segment`). A filtered tail read
+chooses batches by this byte (`TailFilter.signals`, `shard/src/tail.ts`): a metrics read passes
+`signals: [1]`, a span or log read `[2]` or `[3]`, and gets those batches whole.
 
 ## Routing (signals 2 and 3)
 

@@ -6,11 +6,12 @@ when, and whether that removal is durably logged is kept by the tenant's ledger
 
 | File | Contents |
 |---|---|
-| `src/janitor.ts` | `parseRetention`, `readRetention`, `retentionCutoffDay`, `expireTenant`, `purgeTenant`, `sweepOrphans` |
+| `src/janitor.ts` | `parseRetention`, `readRetention`, `retentionCutoffDay`, `cutoffDay`, `expireTenant`, `purgeTenant`, `sweepOrphans` |
 | `src/formats.ts` | `READS`: the formats the janitor reads, by version (it writes none) |
 | `test/janitor.test.ts` | 15 tests in workerd against the real `Shard`, `Ledger`, flush and compaction, and a simulated R2; 3 of them the review's R-1 and the protocol model's F15 |
 | `test/golden.test.ts` | 2 tests: the retention record (control's golden files) and the compaction inputs record (compact's) read as an independent reader |
 | `test/publication.test.ts` | 4 tests of the deletion gate: against the real `Publisher` (with a test clock) and against stand-ins that lie, refuse or hang |
+| `test/signals.test.ts` | 6 tests of the span and log tables (stage 2): the record's `trace_days` and `log_days`, their expiry, a ledger that refuses them, the publisher gate, the orphan sweep |
 | `test/worker.ts` | The test script's main: `src/index.ts` plus the publisher's test class (`TEST_PUBLISHER`) |
 
 Bindings: `LEDGER`, `BUCKET`, `CONFIG` (KV), `CELL`, and optionally `PUBLISHER` (the cell's
@@ -21,7 +22,11 @@ publisher; in production viz-publisher's namespace, bound by viz-ingest).
 ### `expireTenant(env, tenant, now)`: retention
 
 Reads `retention:<tenant>` from KV (format `kv.settings` v1, written by `control/`:
-`{"metric_samples_days": N, …}`; `v` absent means 1; other fields are ignored).
+`{"metric_samples_days": N, "trace_days": N, "log_days": N, …}`; `v` absent means 1; other
+fields are ignored). `trace_days` and `log_days` (stage 2 of traces and logs, the names
+control's settings already write) are optional: absent, each is 30 days (`DEFAULT_SIGNAL_DAYS`,
+the deployment default, whatever the metric days); present, each must be a positive safe
+integer, or the whole record is refused as below.
 
 | The record | Result |
 |---|---|
@@ -35,6 +40,19 @@ With a policy of N days it calls **one** `ledger.expire({ tables: [samples, seri
 series file leave the ledger in the same change (review R-5, `contracts/TABLES.md`, "Pairing").
 No object is touched. It returns the cutoff and `keepDays`: day D expires at 00:00 UTC on day
 D + keepDays + 1, which is how `stack/` knows when an idle tenant next has anything to expire.
+
+Then the span and log tables (stage 2), in ledger requests of their own **after** the metric
+one, so the metric expiry never depends on them: `spans` with `trace_index` by `trace_days`
+(one change: a flush unit's spans and trace_index files leave together), `logs` by
+`log_days`; one request for all three when the two give the same cutoff (the default). Each
+file goes by its own `day` (a span file's start day, a fragment file's first start). A ledger
+with none of these files removes nothing and uses no version, so a tenant that sends no spans or
+logs sees no change in its log. A ledger that refuses the request (a release before these
+tables answers `unknown table`) costs the metric expiry nothing: the result's `signals` entry
+carries the error, it is logged, and the next run tries again. `ExpireResult.signals` lists
+each request with its cutoff, `keepDays` and how many files it removed. (`stack/`'s due time
+still follows the metric `keepDays` only: a tenant whose spans or logs expire before its
+metrics is expired at its next run, not at the exact midnight.)
 
 A refusal is visible in three places: the error log of the run; `stack/`'s maintenance marker
 (`retention: <reason>`), which the hourly cron lists and logs every hour; and the run is due
@@ -81,12 +99,22 @@ Acknowledging never deletes anything. A key the publisher releases that the ledg
 offer is never deleted (`test/publication.test.ts`: half the tombstones, a live key and a key
 the ledger never had: only the released half of the tombstones goes).
 
+**Span and log files go through the same gate** (stage 2): the purge does not look at a
+tombstone's table. The publisher of this release does not publish those tables: it stops a
+tenant at the first change that names one (`unsupported`), so it releases none of that tenant's
+keys, metric or not, and with a publisher bound nothing of such a tenant is deleted (fail closed;
+tested against the real publisher in `test/signals.test.ts`). `INGEST_SIGNALS` therefore stays
+off in a deployment with a publisher until the publisher reads the span and log tables
+(what it needs: `edge/README.md`, "Needed changes" 2).
+
 ### `sweepOrphans(env, tenant, { graceMs, maxCompactStepMs, now })`: objects nothing will ever list
 
 Stated precisely, for an independent check (the protocol model's owner models it; D30).
 
-1. **List first.** Every object under `{cell}/data/{table}/tenant={tenant}/` for both tables,
-   with its upload time and custom metadata. Call this set P. An object written after the
+1. **List first.** Every object under `{cell}/data/{table}/tenant={tenant}/` for every table
+   (the metric pair, and since stage 2 `spans`, `trace_index` and `logs`; a `spans` key lies one
+   level deeper, under `hour=HH/`, which the prefix listing includes), with its upload time and
+   custom metadata. Call this set P. An object written after the
    listing is not a candidate in this run.
 2. **Then ask the ledger,** per chunk of 1,000 listed objects, in ONE consistent read
    (`orphanCheck`): which of the chunk's keys, and which inputs of the chunk's compaction
@@ -173,7 +201,9 @@ Not measured on Cloudflare; the experiment is a deployed purge of 10,000 keys
 - **A remembered policy.** The reviewer's optional second step for R-1 (keep the last policy
   read successfully and never apply a shorter one without an explicit change) is not built:
   see "Known risks" for the one path it would close.
-- **Tiers and signals.** One number per tenant, raw metric samples only.
+- **Tiers.** One number per tenant and signal, raw metric samples only (no rollup tiers).
+- **Compaction of spans and logs** (not built in `compact/`): their files stay level 0 until
+  retention removes them. The orphan sweep's compaction-output rule never meets them.
 - **Partial days.** Retention removes whole UTC days; a file is never rewritten to trim it.
 - **Tombstones of earlier ledger incarnations.** A ledger rebuilt from its log restores the
   tombstones of that log; removals logged only in an older incarnation are found by the

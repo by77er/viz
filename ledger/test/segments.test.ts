@@ -11,7 +11,7 @@ import {
   LEDGER_CHECKPOINT_KIND, decodeLedgerSegment, encodeLedgerSegment, ledgerBaseKey, ledgerCheckpointKey, ledgerLogKey, ledgerSegmentKey,
   ledgerSegmentsStartingAfter, parseLedgerLogKey, type FileEntry, type LedgerChange, type Table,
 } from '../../contracts/ledger'
-import { Ledger, type RebuildResult } from '../src/ledger'
+import { Ledger, type RebuildResult, STATE_MAX_BYTES, STATE_MEASURED_MAX_BYTES } from '../src/ledger'
 import {
   DAY_MS, INC, S, T0, breakR2, dayOf, dumpState, everything, failure, file, heal, keys, listAll, logPrefix, loggedOf, loseStorage, nm, open,
   pair, readLog, readSegments, sleep, type Stub, tenantName, unit,
@@ -685,6 +685,18 @@ describe('the size of the state is bounded (review S-2)', () => {
     await loseStorage(l)
     await everything(l) // through the start
     expect((await l.logStatus()).stateBytes).toBe(est)
+  })
+
+  it('the cap is 16 MiB unless LEDGER_STATE_MAX_BYTES says otherwise (review P-2, P-3); 300 MiB is only what was measured', async () => {
+    // This suite's ledger has no LEDGER_STATE_MAX_BYTES (wrangler.test.jsonc): the code's default.
+    expect((env as { LEDGER_STATE_MAX_BYTES?: string }).LEDGER_STATE_MAX_BYTES).toBeUndefined()
+    expect(STATE_MAX_BYTES).toBe(16 * 1024 * 1024)
+    expect(STATE_MEASURED_MAX_BYTES).toBe(300 * 1024 * 1024)
+    const { l } = open(tenantName('cap'))
+    expect((await l.logStatus()).stateLimitBytes).toBe(STATE_MAX_BYTES)
+    // The var sets it when a release lifts the cap (read in the constructor).
+    const lifted = await runInDurableObject(l, (_i: Ledger, state) => new Ledger(state, { ...env, LEDGER_STATE_MAX_BYTES: String(STATE_MEASURED_MAX_BYTES) } as never))
+    expect((lifted as unknown as { stateMaxBytes: number }).stateMaxBytes).toBe(STATE_MEASURED_MAX_BYTES)
   })
 })
 
