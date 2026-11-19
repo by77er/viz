@@ -41,7 +41,7 @@ const MUTANTS = [
   ['formats rollback: a version written since that the target does not read is accepted', 'release.mjs',
     '      const reads = readsOf(target.formats, format)\n      if (reads.includes(f.writes)) continue', '      const reads = readsOf(target.formats, format)\n      if (true) continue'],
   ['formats rollback: a newer version that declares no formats is ignored', 'release.mjs', '    if (v.formats === null) {', '    if (v.formats === null) continue\n    if (false) {'],
-  ['formats rollback: only the versions of schema-bearing Workers are read', 'release.mjs', 'new Set([...schemaWorkers(target), ...fw])', 'new Set([...schemaWorkers(target)])'],
+  ['formats rollback: only the versions of schema-bearing Workers are read', 'release.mjs', 'new Set([...schemaWorkers(target), ...fw, ...specs.map((sp) => sp.worker)])', 'new Set([...schemaWorkers(target), ...specs.map((sp) => sp.worker)])'],
   ["formats rollback: Workers workers.json declares formats for are not judged when the record names none (an old record)", 'release.mjs', '  for (const w of plan.workers) if (w.formats) out.add(stagedName(w.name, target.stage ?? undefined))\n', ''],
   ['formats: a release that declares nothing is taken to read every version (not version 1)', 'lib/formats.mjs', '  return reads ?? [1]', '  return reads ?? [1, 2, 3, 4, 5, 6, 7, 8, 9]'],
   ['formats: what a release reads is the union over its Workers, not what all of them read', 'lib/formats.mjs', '    reads = reads === null ? sorted(f.reads) : reads.filter((x) => f.reads.includes(x))', '    reads = sorted([...(reads ?? []), ...f.reads])'],

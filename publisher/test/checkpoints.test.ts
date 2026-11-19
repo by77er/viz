@@ -462,6 +462,46 @@ describe('eviction and concurrency', () => {
   })
 })
 
+describe('re-bases found while reading from a cursor', () => {
+  it('six tenants whose ledgers started new incarnations, read from their cursors at once: still one tenant\'s parts at a time, never more than six R2 operations in flight', async () => {
+    // Since review M-6 the re-bases a publish knows of from SQLite run one after another; these are
+    // found only once each tenant's incarnations are listed, six tenants at a time, and take turns.
+    const { cell, tenant } = fresh()
+    const ts = Array.from({ length: 6 }, (_, i) => tenant(`n${i}`))
+    const p = publisher(cell)
+    for (const t of ts) {
+      for (let i = 1; i <= 2; i++) await addUnit(t, pairUnit(cell, t, i, i, T0 + i * 1000), { drain: true })
+      await mirror(t, cell)
+      await dropCheckpoints(cell, t)
+    }
+    expect((await p.publish(ts)).tenants.map((x) => x.status)).toEqual(ts.map(() => 'ok'))
+    for (const t of ts) {
+      await loseLedgerStorage(t)
+      const l = ledger(t)
+      await l.plan({ table: 'metric_samples', minTs: 0, maxTs: 0 })
+      await knobs(l, { checkpointEvery: 1e9, checkpointByLogBytes: false, checkpointOneObjectBytes: -1, checkpointPartBytes: 500 })
+      for (let i = 3; i <= 5; i++) await addUnit(t, pairUnit(cell, t, i, i, T0 + i * 1000), { drain: true })
+      await knobs(l, { checkpointEvery: 1 })
+      await addUnit(t, pairUnit(cell, t, 6, 6, T0 + 6000), { drain: true })
+      await knobs(l, { checkpointEvery: 1e9 })
+      await mirror(t, cell)
+      expect((await checkpointsOf(cell, t, 2)).parts.length).toBeGreaterThan(1)
+    }
+    await p.r2()
+    const r = await p.publish(ts)
+    expect(r.tenants.map((x) => [x.status, x.rebase?.source, x.cursors.metric_samples?.ledgerIncarnation])).toEqual(ts.map(() => ['ok', 'checkpoint', 2]))
+    const seen = await p.r2()
+    expect(seen.max).toBeLessThanOrEqual(CONNECTIONS)
+    const all: string[] = []
+    for (const t of ts) all.push(...(await checkpointsOf(cell, t, 2)).parts)
+    const order = seen.gets.filter((k) => all.includes(k)).map((k) => /tenant=([^/]+)\//.exec(k)![1]!)
+    expect(order).toHaveLength(all.length)
+    expect(order.filter((t, i) => i === 0 || order[i - 1] !== t)).toHaveLength(ts.length)
+    for (const t of ts) await expectLedger(cell, t)
+    await expectVerified(p)
+  })
+})
+
 describe('the six connections on the ordinary path', () => {
   it('six tenants with a backlog of segments, read from their cursors at once: never more than six R2 operations in flight', async () => {
     const { cell, tenant } = fresh()

@@ -1,4 +1,5 @@
 import { badRequest } from './errors'
+import { FREE, type Meter } from './meter'
 import type { PbReader } from './pb'
 
 /**
@@ -70,98 +71,112 @@ export function canonKVs(kvs: readonly KV[]): KV[] {
  *   AnyValue { oneof: string_value = 1; bool_value = 2; int_value = 3; double_value = 4;
  *              ArrayValue array_value = 5; KeyValueList kvlist_value = 6; bytes_value = 7;
  *              int32 string_value_strindex = 8 (profiles only, ignored) }
+ *
+ * Every key-value entry and array element is counted against the item's meter before it is
+ * built (src/meter.ts). Once the meter is over, nothing more is built: the rest is read only
+ * to check the wire (lengths, wire types, nesting depth), exactly as when it is built, so a
+ * body that does not decode is 400 either way.
  */
-export function pbKeyValue(r: PbReader): KV {
+
+/** An AnyValue with no value set; also what is returned for a value that is not built. */
+const NONE: AnyV = { k: 'n' }
+
+/** One KeyValue: counted as one value; null when it is not built (its item is over its meter). */
+export function pbKeyValue(r: PbReader, m: Meter = FREE): KV | null {
   const end = r.len()
+  const keep = m.take()
   let key = ''
-  let value: AnyV = { k: 'n' }
+  let value: AnyV = NONE
   while (r.pos < end) {
     const tag = r.uint32()
     if (tag === 0x0a) {
       const e = r.len()
-      key = utf8Lossy(r.buf, r.pos, e)
+      if (keep) key = utf8Lossy(r.buf, r.pos, e)
       r.pos = e
-    } else if (tag === 0x12) value = pbAnyValue(r, 0)
+    } else if (tag === 0x12) value = pbAnyValue(r, 0, m)
     else r.skip(tag & 7)
   }
   r.done(end)
-  return [key, value]
+  return keep && !m.over ? [key, value] : null
 }
 
-export function pbKeyValues(r: PbReader, into: KV[]): void {
-  into.push(pbKeyValue(r))
-}
-
-export function pbAnyValue(r: PbReader, depth: number): AnyV {
+export function pbAnyValue(r: PbReader, depth: number, m: Meter = FREE): AnyV {
   if (depth > LIMITS.maxDepth) throw badRequest('malformed OTLP: attribute value nested too deeply')
   const end = r.len()
-  let value: AnyV = { k: 'n' }
+  let value: AnyV = NONE
   while (r.pos < end) {
     const tag = r.uint32()
+    const keep = !m.over
     switch (tag) {
       case 0x0a: {
         const e = r.len()
-        value = { k: 's', v: utf8Lossy(r.buf, r.pos, e) }
+        if (keep) value = { k: 's', v: utf8Lossy(r.buf, r.pos, e) }
         r.pos = e
         break
       }
       case 0x10:
         r.varint64()
-        value = { k: 'b', v: r.lo !== 0 || r.hi !== 0 }
+        if (keep) value = { k: 'b', v: r.lo !== 0 || r.hi !== 0 }
         break
       case 0x18:
         r.varint64()
-        value = { k: 'i', v: r.int64Big() }
+        if (keep) value = { k: 'i', v: r.int64Big() }
         break
       case 0x21: {
         const at = r.fixed64At()
-        // A copy: `slice` of a Node Buffer is a view, and the DataView below needs its own buffer.
-        const bits = new Uint8Array(8)
-        bits.set(r.buf.subarray(at, at + 8))
-        value = { k: 'd', v: new DataView(bits.buffer).getFloat64(0, true), bits }
+        if (keep) {
+          // A copy: `slice` of a Node Buffer is a view, and the DataView below needs its own buffer.
+          const bits = new Uint8Array(8)
+          bits.set(r.buf.subarray(at, at + 8))
+          value = { k: 'd', v: new DataView(bits.buffer).getFloat64(0, true), bits }
+        }
         break
       }
       case 0x2a: {
         const aend = r.len()
-        const items: AnyV[] = []
+        const items: AnyV[] | null = keep ? [] : null
         while (r.pos < aend) {
           const t = r.uint32()
-          if (t === 0x0a) items.push(pbAnyValue(r, depth + 1))
-          else r.skip(t & 7)
+          if (t === 0x0a) {
+            const ok = m.take()
+            const item = pbAnyValue(r, depth + 1, m)
+            if (ok && !m.over) items!.push(item)
+          } else r.skip(t & 7)
         }
         r.done(aend)
-        value = { k: 'a', v: items }
+        if (keep) value = { k: 'a', v: items! }
         break
       }
       case 0x32: {
         const kend = r.len()
-        const items: KV[] = []
+        const items: KV[] | null = keep ? [] : null
         while (r.pos < kend) {
           const t = r.uint32()
           if (t === 0x0a) {
             const kvend = r.len()
+            const ok = m.take()
             let k = ''
-            let v: AnyV = { k: 'n' }
+            let v: AnyV = NONE
             while (r.pos < kvend) {
               const kt = r.uint32()
               if (kt === 0x0a) {
                 const e = r.len()
-                k = utf8Lossy(r.buf, r.pos, e)
+                if (ok) k = utf8Lossy(r.buf, r.pos, e)
                 r.pos = e
-              } else if (kt === 0x12) v = pbAnyValue(r, depth + 1)
+              } else if (kt === 0x12) v = pbAnyValue(r, depth + 1, m)
               else r.skip(kt & 7)
             }
             r.done(kvend)
-            items.push([k, v])
+            if (ok && !m.over) items!.push([k, v])
           } else r.skip(t & 7)
         }
         r.done(kend)
-        value = { k: 'l', v: items }
+        if (keep) value = { k: 'l', v: items! }
         break
       }
       case 0x3a: {
         const e = r.len()
-        value = { k: 'y', v: Uint8Array.from(r.buf.subarray(r.pos, e)) }
+        if (keep) value = { k: 'y', v: Uint8Array.from(r.buf.subarray(r.pos, e)) }
         r.pos = e
         break
       }
@@ -276,34 +291,74 @@ export function jsonId(v: unknown, what: string): Uint8Array {
   return out
 }
 
-export function jsonAny(raw: unknown, depth: number): AnyV {
+/**
+ * An OTLP/JSON AnyValue, counted as the protobuf decoder counts (one per key-value entry and
+ * array element): an item refused for its meter in one encoding is refused in the other.
+ * Once the meter is over nothing more is built, but every value is still checked.
+ */
+export function jsonAny(raw: unknown, depth: number, m: Meter = FREE): AnyV {
   if (depth > LIMITS.maxDepth) bad('attribute value nested too deeply')
-  if (raw === undefined || raw === null) return { k: 'n' }
+  if (raw === undefined || raw === null) return NONE
   const v = object(raw, 'attribute value')
-  if (v.stringValue !== undefined && v.stringValue !== null) return { k: 's', v: text(v.stringValue, 'stringValue') }
+  const keep = !m.over
+  if (v.stringValue !== undefined && v.stringValue !== null) {
+    const s = text(v.stringValue, 'stringValue')
+    return keep ? { k: 's', v: s } : NONE
+  }
   if (v.boolValue !== undefined && v.boolValue !== null) {
     if (typeof v.boolValue !== 'boolean') bad('boolValue is not a boolean')
-    return { k: 'b', v: v.boolValue as boolean }
+    return keep ? { k: 'b', v: v.boolValue as boolean } : NONE
   }
-  if (v.intValue !== undefined && v.intValue !== null) return { k: 'i', v: jsonInt(v.intValue, 'intValue')! }
-  if (v.doubleValue !== undefined && v.doubleValue !== null) return { k: 'd', v: jsonDouble(v.doubleValue, 'doubleValue') }
+  if (v.intValue !== undefined && v.intValue !== null) {
+    const n = jsonInt(v.intValue, 'intValue')!
+    return keep ? { k: 'i', v: n } : NONE
+  }
+  if (v.doubleValue !== undefined && v.doubleValue !== null) {
+    const d = jsonDouble(v.doubleValue, 'doubleValue')
+    return keep ? { k: 'd', v: d } : NONE
+  }
   if (v.arrayValue !== undefined && v.arrayValue !== null) {
-    return { k: 'a', v: list(object(v.arrayValue, 'arrayValue').values, 'arrayValue.values').map((x) => jsonAny(x, depth + 1)) }
+    const raws = list(object(v.arrayValue, 'arrayValue').values, 'arrayValue.values')
+    const items: AnyV[] | null = keep ? [] : null
+    for (const x of raws) {
+      const ok = m.take()
+      const item = jsonAny(x, depth + 1, m)
+      if (ok && !m.over) items!.push(item)
+    }
+    return keep ? { k: 'a', v: items! } : NONE
   }
   if (v.kvlistValue !== undefined && v.kvlistValue !== null) {
-    return { k: 'l', v: list(object(v.kvlistValue, 'kvlistValue').values, 'kvlistValue.values').map((x) => jsonKV(x, depth + 1)) }
+    const raws = list(object(v.kvlistValue, 'kvlistValue').values, 'kvlistValue.values')
+    const items: KV[] | null = keep ? [] : null
+    for (const x of raws) {
+      const kv = jsonKV(x, depth + 1, m)
+      if (kv) items!.push(kv)
+    }
+    return keep ? { k: 'l', v: items! } : NONE
   }
-  if (v.bytesValue !== undefined && v.bytesValue !== null) return { k: 'y', v: fromBase64(text(v.bytesValue, 'bytesValue'), 'bytesValue') }
-  return { k: 'n' }
+  if (v.bytesValue !== undefined && v.bytesValue !== null) {
+    const b = fromBase64(text(v.bytesValue, 'bytesValue'), 'bytesValue')
+    return keep ? { k: 'y', v: b } : NONE
+  }
+  return NONE
 }
 
-function jsonKV(raw: unknown, depth: number): KV {
+/** One key-value entry, counted as one value; null when it is not built. */
+function jsonKV(raw: unknown, depth: number, m: Meter): KV | null {
   const kv = object(raw, 'attributes[]')
-  return [text(kv.key, 'attribute key'), jsonAny(kv.value, depth)]
+  const ok = m.take()
+  const key = text(kv.key, 'attribute key')
+  const value = jsonAny(kv.value, depth, m)
+  return ok && !m.over ? [key, value] : null
 }
 
-export function jsonAttrs(v: unknown): KV[] {
-  return list(v, 'attributes').map((x) => jsonKV(x, 0))
+export function jsonAttrs(v: unknown, m: Meter = FREE): KV[] {
+  const out: KV[] = []
+  for (const x of list(v, 'attributes')) {
+    const kv = jsonKV(x, 0, m)
+    if (kv) out.push(kv)
+  }
+  return out
 }
 
 // ─────────────────────── canonical OTLP JSON, plain JSON ───────────────────────
@@ -461,6 +516,10 @@ export class Buf {
     this.dv.setUint32(at, len, true)
     return len
   }
+  /** Overwrite the u32 at `at` (already written). */
+  setU32(at: number, x: number): void {
+    this.dv.setUint32(at, x >>> 0, true)
+  }
   pad8(): void {
     const k = (8 - (this.n % 8)) % 8
     this.room(k)
@@ -482,12 +541,18 @@ export const ATTR_REASONS = {
   valueTooLong: 'attribute value over 65,536 bytes',
 } as const
 
+/** What `writeAttrs` returns when the list's encoding passes the `max` it was given. */
+export const OVER_MAX = 'over the item size limit'
+
 /**
  * The typed attribute list encoding (contracts/BATCH.md): sorted by key in UTF-8 order, the
  * last of a repeated key kept, appended to `out`. Returns null, or the reason the list is
- * refused (then `out` is left as it was).
+ * refused (then `out` is left as it was): `OVER_MAX` when its bytes pass `max` (the item's
+ * own size limit), which is checked as it is written, so `out` never grows far past it. A
+ * key or value is measured before it is written: a string's UTF-16 length is at most its
+ * UTF-8 length, so one longer than its limit in UTF-16 units is over it in bytes too.
  */
-export function writeAttrs(kvs: readonly KV[], out: Buf): string | null {
+export function writeAttrs(kvs: readonly KV[], out: Buf, max = Number.POSITIVE_INFINITY): string | null {
   const sorted = kvs.length < 2 ? kvs : canonKVs(kvs)
   if (sorted.length > LIMITS.maxAttrs) return ATTR_REASONS.tooMany
   const start = out.n
@@ -497,12 +562,13 @@ export function writeAttrs(kvs: readonly KV[], out: Buf): string | null {
   }
   out.u16(sorted.length)
   for (const [k, v] of sorted) {
+    if (out.n - start > max) return fail(OVER_MAX)
     if (k === '') return fail(ATTR_REASONS.emptyKey)
-    if (out.strU16(k) > LIMITS.maxKeyBytes) return fail(ATTR_REASONS.keyTooLong)
+    if (k.length > LIMITS.maxKeyBytes || out.strU16(k) > LIMITS.maxKeyBytes) return fail(ATTR_REASONS.keyTooLong)
     switch (v.k) {
       case 's':
         out.u8(1)
-        if (out.strU32(v.v) > LIMITS.maxValueBytes) return fail(ATTR_REASONS.valueTooLong)
+        if (v.v.length > LIMITS.maxValueBytes || out.strU32(v.v) > LIMITS.maxValueBytes) return fail(ATTR_REASONS.valueTooLong)
         break
       case 'i':
         out.u8(2)
@@ -521,18 +587,21 @@ export function writeAttrs(kvs: readonly KV[], out: Buf): string | null {
         out.u8(4)
         out.u8(v.v ? 1 : 0)
         break
-      default:
+      default: {
         out.u8(5)
-        if (out.strU32(canonAny(v)) > LIMITS.maxValueBytes) return fail(ATTR_REASONS.valueTooLong)
+        const c = canonAny(v)
+        if (c.length > LIMITS.maxValueBytes || out.strU32(c) > LIMITS.maxValueBytes) return fail(ATTR_REASONS.valueTooLong)
+      }
     }
   }
+  if (out.n - start > max) return fail(OVER_MAX)
   return null
 }
 
 /** `writeAttrs` into fresh bytes: the encoding, or the reason the list is refused. */
-export function encodeAttrs(kvs: readonly KV[]): Uint8Array | string {
+export function encodeAttrs(kvs: readonly KV[], max = Number.POSITIVE_INFINITY): Uint8Array | string {
   const out = new Buf(64)
-  const why = writeAttrs(kvs, out)
+  const why = writeAttrs(kvs, out, max)
   return why ?? out.done()
 }
 

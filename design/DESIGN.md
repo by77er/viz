@@ -310,8 +310,10 @@ The span and log tables are written and listed as built on the write side (stage
 `QUERY_SIGNALS` (D62, §6.4), and both halves are joined through the gateway (stage 3), and they
 are compacted (D68, §5.2). The publisher publishes them as Iceberg tables of their own (D67, §5.3;
 before it, D64's release read them without publishing them): `INGEST_SIGNALS` may go on in a
-deployment with a publisher once a publisher release that reads them (D64's or later) is the
-oldest one a rollback of viz-publisher can reach (the rollout rule in D64).
+deployment only once viz-publisher (D64's release or later), viz-query (D62's or later) and
+viz-ingest (D63's or later) are each at that floor, in the release and as they serve; from then on
+no release or rollback may put one of them below it. The release tooling enforces both (D69,
+`deploy/README.md` "Rollback floors"), widening D64's rollout rule.
 
 Native histograms share the samples layout and are added after float samples work. Flat
 rows are chosen over chunk blobs for openness and simplicity, pending the read-slice spike.
@@ -743,12 +745,19 @@ as do the flush and maintenance messages; `UPGRADES.md` §7 lists what the other
 have to change. The deploy records each class's schema version in every release record and
 on every Worker version, marks a release forward-only when a class's `readableFrom` is above
 what the release before it knew, and refuses a rollback when any version that ran since the
-target wrote storage the target cannot open (D46; `deploy/README.md`). Format versions are not
-in that check yet. Secrets the deploy generates (control's OAuth client key) are put on the
+target wrote storage the target cannot open (D46; `deploy/README.md`). It records format versions
+the same way (`VIZ_FORMATS`, each Worker's written and read versions from its components'
+`FORMATS` maps), marks a release that writes a version the serving release does not read
+forward-only, and refuses a rollback below the reader of a version written since (D69). A switch
+that lets new data in (`INGEST_SIGNALS`) raises a rollback floor under every Worker that must read
+that data (D69). Every version a deploy run uploads carries a mark unique to the run, so the OAuth
+key is never promoted on another run's upload; a rollback across the key's creation or rotation is
+refused before anything moves (measured on Cloudflare in S9: the first leaves OAuth broken until
+the next deploy, the second Cloudflare refuses). Secrets the deploy generates (control's OAuth client key) are put on the
 version a release uploads, before anything is promoted, only when that version lacks them, and
-are never replaced except by a deploy told to (D53). A key seen on the serving version, in the
-secret list, or on a version newer than the serving one (left by a rollback) but missing from
-the upload stops the release rather than being made anew; wrangler runs that get a secret on
+are never replaced except by a deploy told to (D53). A key seen on the serving version or on a
+version newer than the serving one (left by a rollback) but missing from the upload stops the
+release rather than being made anew; wrangler runs that get a secret on
 stdin write no debug log and redact request bodies whatever the environment says.
 
 ## 12. Launch scope

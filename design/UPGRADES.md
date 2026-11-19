@@ -188,7 +188,16 @@ COMPATIBILITY §6 states them; here is how they apply today.
   written and the versions read (`FORMATS` in each `src/schema.ts`). Since 2026-11-19 the
   deploy records the first (every class's `{latest, compat}`, also on every Worker version as
   `VIZ_SCHEMAS`), marks a release forward-only by it, and refuses a rollback across it (D46,
-  `deploy/README.md`, "Release record"); format versions are not recorded yet.
+  `deploy/README.md`, "Release record"); and since D69 the second: each Worker's written and read
+  version of every format in its components' `FORMATS` maps and read lists (`VIZ_FORMATS` on every
+  version), a release forward-only when it writes a version the serving release does not read, and a
+  rollback refused below the reader of any version written since. A record from before format
+  versions is taken to read version 1 of every format.
+- **Rollback floors raised by a switch** (D69): once `INGEST_SIGNALS` has been on, no release or
+  rollback may leave viz-publisher, viz-query or viz-ingest below the release that first reads span
+  and log data (D64, D62, D63); the switch goes on only when all three are at their floors in the
+  release and as they serve. COMPATIBILITY §6 defines the floor through forward-only releases only;
+  `deploy/README.md`, "Contract issues", proposes the wording for a floor a switch raises.
 - **Forward-only** for a class when `canOpen(target.latest, newest)` fails, when a format
   version is written that the target does not read, or across a class lifecycle change (F6).
 - Today every versioned class is at version 1 with `compat` 1, so every release since this
@@ -265,7 +274,8 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
    run (the queue retries it).
 9. **deploy** (the release engineer). Put `schemaRelease` and `FORMATS` of each component in
    the release record and extend the rollback check from migration tags to COMPATIBILITY §6.
-   *Schemas done 2026-11-19 (D46); `FORMATS` not yet.*
+   *Schemas done 2026-11-19 (D46); `FORMATS` done 2026-11-19 (D69), with the floors of
+   `INGEST_SIGNALS`.*
    The gateway's bootstrap should answer 503 (not 500) when `provision` throws
    `schema_too_new`.
 10. **dashboard, app, mcp** (risk: users' edits refused). The closed `viz.dashboard/v1`

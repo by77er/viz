@@ -445,6 +445,31 @@ describe('the span and log tables, published', () => {
     await verified(p)
   })
 
+  it('a lost storage with every version hint gone too: each table is found behind R2 at its own commit and rebuilt there, one conflict each, in one publish', async () => {
+    // The hint is written after the metadata, unconditionally: a crash between the two leaves none.
+    // The rebuild before re-basing (review M-6) looks only at the hint, so here the commits find
+    // each table behind R2 instead; the conflict limit (a table each, plus one) still covers it.
+    const { cell, tenant } = fresh()
+    const t = tenant('nohint')
+    await quietLedger(t)
+    await addUnit(t, pairUnit(cell, t, 1, 1, T0 + 1000), { drain: true })
+    await addUnit(t, spanUnit(t, 1, T0 + 5 * HOUR), { drain: true })
+    await addUnit(t, logUnit(t, 1, T0 + 2000), { drain: true })
+    await mirror(t, cell)
+    const p = publisher(cell)
+    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok' })
+    const before = await icebergObjects(cell, ALL)
+    for (const table of ALL) await env.BUCKET.delete(`${cell}/iceberg/${table}/metadata/version-hint.text`)
+    await runInDurableObject(p, async (_i, state) => { await state.storage.deleteAll() })
+    await evictDurableObject(p)
+    const r = await p.publish([t])
+    expect(r.tenants[0]).toMatchObject({ status: 'ok' })
+    expect(r.conflicts).toBe(ALL.length)
+    expect(r.ops.put).toBe(ALL.length) // each rebuild writes its table's hint again; nothing else
+    expect(await icebergObjects(cell, ALL)).toEqual(before)
+    await verified(p)
+  })
+
   it('the tables this reader knows are exactly the contract\'s, and it publishes every one of them, metric tables first', () => {
     expect([...PUBLISHED_TABLES].sort()).toEqual([...CONTRACT_TABLES].sort())
     expect(UNPUBLISHED_TABLES).toEqual([])

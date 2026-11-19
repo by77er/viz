@@ -211,6 +211,15 @@ const MUTANTS = [
     name: 'review m-2: the step-up check reads the whole body (no cap on one without Content-Length)',
     changes: [['src/index.ts', '    const bytes = await readCapped(req.clone(), STEP_UP_MAX_BYTES)\n    if (bytes === null) return null\n', '    const bytes = new Uint8Array(await req.clone().arrayBuffer())\n']],
   },
+  // D70: control's introspection answers rate_limited over its limits
+  {
+    name: "D70: control's rate_limited not mapped (falls through to the retryable 503 for a status this release does not know)",
+    changes: [['src/auth.ts', "  if (r?.status === 'rate_limited') {\n    const s = retryAfterSeconds(r.retryAfterMs)\n", "  if (false as boolean) {\n    const s = retryAfterSeconds((r as { retryAfterMs: number }).retryAfterMs)\n"]],
+  },
+  {
+    name: 'D70: the 429 carries no Retry-After',
+    changes: [['src/index.ts', "  if (e.retryAfterS !== undefined) headers['Retry-After'] = String(e.retryAfterS)\n", '']],
+  },
 ]
 
 const only = process.argv.slice(2).map(Number)

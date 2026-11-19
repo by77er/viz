@@ -826,7 +826,14 @@ already drives; nothing in `src/` changed. What changed here are the tests that 
   every invariant at every step; 47 merges of spans, 27 of trace_index, 6 of logs (maintenance
   and direct steps), 2 crashed steps, 1 conflict, 3 retention-during-step conflicts, 5 old-plan
   readers verified (span and log files included), 7 orphans deleted, 1,047 objects purged, 0 dead
-  letters. A 1,500-step run and a second seed: see "How it was verified" below.
+  letters. Then, flag on, on the final code: **1,500 steps**, seed 20261118 (311 s at load average
+  10 to 15): every invariant; 182 merges of spans, 95 of trace_index, 19 of logs, 15 crashed steps,
+  3 retention-during-step conflicts, 39 old-plan readers verified, 26 orphans deleted, 4,110
+  objects purged, 0 dead letters; **400 steps, seed 7** (105 s): every invariant; 33, 23 and 7
+  merges, 8 crashed steps, 7 old-plan readers verified, 0 dead letters. The whole suite on the
+  final code (`npx vitest run --maxWorkers=2`, both soaks of 400 steps included): **50 passed,
+  1 skipped** (the corpus mode, which needs a corpus), 11 files; the gateway script
+  (`-c vitest.gateway.config.ts`): 4 of 4; `tsc --noEmit` clean.
 - **Through the engines, before and after** (`test/signals.test.ts` corpus mode and
   `tools/signals_readback.mjs`): after the flushed files are exported, the same test compacts the
   tenant to the end (every day closed: `compactTenant` until it is idle) and exports the live

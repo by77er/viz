@@ -222,8 +222,8 @@ builds it for every `logs` compaction output and reads it; no query path reads i
   ```
 
   A reader binary-searches the blocks' first tokens and scans one block. The bitsets are the
-  last `n_tokens × ceil(n_row_groups / 8)` bytes of the filter, so the blocks end where they
-  begin; `block_off[0]` is 0 and the offsets increase. Bits for row groups past
+  last `n_tokens × ceil(n_row_groups / 8)` bytes of the filter, so the blocks end where the
+  bitsets begin; `block_off[0]` is 0 and the offsets increase. Bits for row groups past
   `n_row_groups` are zero. A filter whose `n_row_groups` is not the file's, or that does not
   parse, is not used (the row groups are read).
 - **Bound.** The writer leaves the filter out (no `tok`, no `viz.token_filter`) when the file

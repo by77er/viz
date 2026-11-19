@@ -15,7 +15,7 @@ and physical deletes wait. Nothing else.
 | `src/iceberg.ts` | Table schemas (the metric pair; the span and log tables with nested types and pinned nested field ids, `SIGNAL_DEFS`), name mappings, partition specs (`hour(start_time)` for `spans`), Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 120 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `test/` | 125 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
 | `test/d64/` | This publisher as committed at `bcfe8db`, frozen: the D64 release, which reads the span and log tables and does not publish them; release N-1 of this one, and by D64's rollout rule the oldest rollback target once `INGEST_SIGNALS` is on (`test/signals.test.ts`) |
 | `test/n1/` | This publisher as committed at `9292abb`, frozen: the release before D64 (N-2 now), which stops at a span or log change; kept for the metric byte-identity counterfactual; one type-only edit, said in the file |
 | `test/fixtures/signals.json` | Real `spans`, `trace_index` and `logs` Parquet files (48 files, 485 kB) made by viz's write path from stack/test's OTLP corpus (`tools/signal_fixture.mjs`) |
@@ -66,7 +66,7 @@ deleted when there is none:
 
 | Deadline | Set by | What the alarm does |
 |---|---|---|
-| `publish` | `notify`; a publish that left tenants pending (a hole, a refusal, a backlog larger than one publish reads): `retryMs` (1 min) | publishes every pending tenant (whenever the alarm runs) |
+| `publish` | `notify`; a publish that left tenants pending (a hole, a refusal, a backlog larger than one publish reads): `retryMs` (1 min); one that stopped at a per-publish cap: `continueMs` (1 s); the alarm itself just before it publishes, `retryMs` ahead (a lease: "Bounded work per publish") | publishes the pending tenants, within the per-publish caps (whenever the alarm runs) |
 | `sweep` | a commit, or an attempt that failed: `orphanGraceMs` (1 h) later, unless one is due sooner; after a sweep that marked objects: their grace end | the orphan sweep of every table |
 | `expire:<table>` | every commit: the time at which every snapshot beyond the newest `max(2, minSnapshots)` is outside the window | a metadata-only commit that drops them all at once (none if a publish already did) |
 
@@ -176,6 +176,56 @@ ledger incarnation is re-based, and nothing in it grows with the tenant's size:
 - **What still grows:** `verify` (Not implemented); the changes read per publish from a cursor
   (Risks); one manifest of `manifestTargetEntries` files while it is written.
 
+**Bounded work per publish** (review M-6 of the D67 review, since 2026-11-19; design/DECISIONS.md
+D67). The upgrade to D67 leaves every tenant without a cursor in the span and log tables, so every
+tenant needs a re-base. Before this, the first publish re-based all of them in one invocation and
+committed only at the end; an invocation cut off by its CPU limit started again from nothing at the
+next alarm, and could be cut off again, so publication could stop for the whole cell. Now:
+
+- **Re-bases per publish.** A publish starts at most `maxRebasesPerPublish` (100) re-bases, and no
+  further one once those it started have staged `maxRebaseFilesPerPublish` (100,000) files and
+  tombstones; it always starts at least one, so a tenant larger than the cap is re-based alone. What
+  one publish stages is therefore at most the cap plus one tenant. The re-bases it knows of from
+  SQLite (a table with no cursor for the tenant) run first, one after another, least recently started
+  first, then by name (storage migration 6, `rebase`). A re-base found only while reading from a
+  cursor (a new ledger incarnation) takes its turn while the budget lasts; past it, the reader stops
+  before reading anything of it (`BaseSink.turn` answers null; status `deferred`).
+- **Progress kept.** Each publish commits what it re-based, so earlier publishes' work is never
+  redone; what one publish staged and had not committed is all an invocation cut off can lose, and
+  the cap bounds it. A re-base is recorded as started before anything of it is read: a tenant whose
+  re-base was cut off with its invocation, or keeps failing, goes behind every tenant not yet tried,
+  instead of being tried first again and holding the queue for ever. `stage` stays one scratch table
+  shared by the tenants of an attempt, emptied at its start and end; nothing in it outlives an
+  attempt (keeping a tenant's staged state across invocations: Not implemented). The row is deleted
+  once the tenant is published.
+- **Nothing starves behind the queue.** A tenant waiting for its re-base is read from the cursors it
+  has: after the upgrade its metric tables keep being committed in every publish, only its span and
+  log tables wait (report status `deferred`; it stays pending). Tenants already re-based, and those
+  that never needed one, are read in every publish. Why this order: a re-base costs in proportion to
+  the tenant's whole state, a read from a cursor in proportion to its new changes, so the cap goes on
+  re-bases alone and the metric commits of the cell never wait for the queue to drain.
+- **The alarm comes back.** A publish that left a tenant `deferred` sets the next publish
+  `continueMs` (1 s) later instead of `retryMs` (1 min). Before it publishes, the alarm writes its own
+  `publish` deadline `retryMs` ahead and sets itself there (a lease): an invocation cut off by the
+  platform runs no code after it, and still has a deadline and an alarm. (The platform also retries
+  an alarm whose handler failed, up to six times with backoff from 2 s: Cloudflare's documentation,
+  read 2026-11-19.)
+- **Tenants per publish.** A publish reads at most `maxTenantsPerPublish` (1,000) tenants' logs,
+  longest waiting first (`pending.since`); a tenant read and not finished (a hole, a refusal) goes
+  behind those not read yet, so stuck tenants never fill every publish. R2 calls are subrequests,
+  10,000 per invocation on the Paid plan by default (Cloudflare's documentation, read 2026-11-19); a
+  tenant read from its cursor costs three or four (Measurements).
+- **After a lost storage.** A tenant with no cursor in a table that R2 has metadata for while SQLite
+  has none (the table's `version-hint.text`, one GET per such table, only in a publish with a tenant
+  to re-base): the publisher's state was lost. The publish rebuilds one such table from R2 first
+  (`resync`, in one transaction) and reads no tenant; the next publish (`continueMs` later) the next
+  table; then the cursors found there make the re-bases unnecessary. Before, the first publish
+  re-based every tenant, conflicted on each table in turn, and re-based them all again after each
+  rebuild: up to six times over in one invocation. A cell whose span and log tables were never
+  committed (no span or log data) has no cursors of them in R2, so its tenants are re-based for those
+  tables once, within the caps.
+- **Measured here** (Measurements, "Capped re-bases: time per publish"): MEASURED_PLACEHOLDER
+
 **The span and log tables** (design/DECISIONS.md D67, since 2026-11-19; the D64 release before it
 read them and did not publish them). `PUBLISHED_TABLES` in `src/log.ts` is every `LedgerTable`;
 `UNPUBLISHED_TABLES` is empty. Each of `spans`, `trace_index` and `logs` is an Iceberg table with
@@ -221,10 +271,12 @@ by the same code as the metric tables:
 - **Removals** are released by the snapshot rule, as metric files are (`safeToDelete`); a file
   removed before it was ever published, one delete grace after the cursor passed it.
 - **The upgrade from the D64 release.** Storage migration 5 (additive, `readableFrom` 1) adds
-  `signal_due` and `signal_orphan` (below). A tenant D64 published has metric cursors and none for the new tables, so the first publish
-  re-bases it once (D55: from the newest checkpoint or the base, streamed into `stage`, about two
+  `signal_due` and `signal_orphan` (below). A tenant D64 published has metric cursors and none for the new tables, so it is
+  re-based once (D55: from the newest checkpoint or the base, streamed into `stage`, about two
   row writes per live file); the metric tables move on from their own cursors and are committed
-  only if their files changed (the review P-1 path when the checkpoint is above them). D64's
+  only if their files changed (the review P-1 path when the checkpoint is above them). The re-bases
+  are spread over publishes, a few per publish, and a tenant waiting for its turn keeps its metric
+  tables published from their cursors ("Bounded work per publish"). D64's
   `unpublished` records are left alone; `unpublished()` answers `[]`; reports carry no
   `unpublished` field; `status(table)` answers `published: true` for every table.
 - **A rollback to the D64 release** (the oldest a rollback may reach once `INGEST_SIGNALS` is on,
@@ -242,11 +294,12 @@ by the same code as the metric tables:
   shown with D64 on this storage, everything overdue: three forced wakes, and its alarm rests
   (with the old layout, mutant V9, it is set again at once). This release takes the earliest of
   both tables.
-- **Recovery from a lost storage** rebuilds each table from R2 at its own commit (a conflict, then a
-  retry), so a publish now allows one conflict per table plus one (six; three before, for two
-  tables). Found by the test written for it: with the old limit the first publish after a storage
-  loss threw at the fourth table (`trace_index: R2 is ahead of v0`), and only the alarm's retry
-  finished the rebuild.
+- **Recovery from a lost storage** rebuilt each table from R2 at its own commit (a conflict, then a
+  retry), so a publish allows one conflict per table plus one (six; three before, for two tables).
+  Found by the test written for it: with the old limit the first publish after a storage loss threw
+  at the fourth table (`trace_index: R2 is ahead of v0`), and only the alarm's retry finished the
+  rebuild. Since review M-6 a lost storage is rebuilt before any tenant is read, a table per publish
+  ("Bounded work per publish"); the limit stays for two writers on one cell.
 - **Cost.** A publish that moves a tenant's cursors without a commit HEADs the next metadata
   version of each such table (up to five, three more than before) to check that no other writer
   is ahead; a `spans` `metadata.json` is about 9.8 kB with one snapshot and a `spans` manifest
@@ -335,7 +388,8 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   sweep deadlines until the next commit by a release that knows them; version 3 adds `stage` and
   `live_next`, the scratch of a re-base and of a resync, `readableFrom` 1: releases 1 and 2 never
   touch them, and each is emptied by the operation that fills it, so they hold rows only while
-  it runs or after an eviction in the middle of it; version 5 (D67) adds `signal_due` and `signal_orphan`, the
+  it runs or after an eviction in the middle of it; version 6 (review M-6) adds `rebase`, when each tenant
+  waiting for a re-base last had one started, `readableFrom` 1 (releases 1 to 5 neither read nor write it); version 5 (D67) adds `signal_due` and `signal_orphan`, the
   alarm's deadlines and orphan sightings of the span and log tables, kept apart so that the D64
   release, a rollback target, never sees them ("Why migration 5"), `readableFrom` 1; version 4 adds `unpublished`, the record of the
   tables the D64 release read and did not publish (this release, D67, neither reads nor writes it), `readableFrom` 1: releases 1 to 3 neither read nor write it, and
@@ -432,8 +486,18 @@ contract change; see "Contract issues").
   a map, reads the base segment whole, and holds the table's manifest entries: at the ledger's
   limit (300,000 files) that is not expected to fit an isolate. It is an operator's tool, not on
   the publish path; streaming it (into `live_next`, say) is not done.
-- **Re-base progress across invocations.** A re-base that is cut off (an eviction, a CPU limit)
-  starts again from its checkpoint or base at the next attempt; what it staged is thrown away.
+- **Re-base progress across invocations, within one tenant.** A publish's re-bases are committed
+  together at its end, and each tenant's re-base is read, staged and diffed in one invocation. One
+  cut off (an eviction, the CPU limit) starts again from its checkpoint or base at a later publish,
+  behind the tenants not yet tried ("Bounded work per publish"); what it staged is thrown away. A
+  tenant whose re-base alone needs more CPU than an invocation has would never finish (then
+  `limits.cpu_ms`, up to 5 minutes, or a tenant's staged state kept across invocations).
+- **A rebuild from R2 in steps.** After a lost storage one table is rebuilt per publish, but each
+  rebuild reads all of its table's manifests in one invocation, so its time grows with the table's
+  files in the cell (Measurements, "Capped re-bases"). Not a cap: a step per manifest, with
+  `live_next` kept across invocations, is not done.
+- **A cap from measured CPU.** The caps are numbers in the configuration, chosen from times
+  measured here; nothing measures a publish's CPU and adjusts them.
 - **A fall-back to the base when a checkpoint is corrupt** (D55, alternative (e)): the tenant
   stops instead.
 
@@ -445,9 +509,6 @@ contract change; see "Contract issues").
   file removed by a table's newest commit is released only after a later commit to that table
   and the window; if the cell publishes nothing more, it is never released (its object stays;
   the janitor looks again every 6 h). The deleter is the janitor's purge (`janitor/README.md`).
-- **Paging over tenants.** One `publish()` reads every requested tenant's log in one
-  invocation. A cell with thousands of tenants needs the publish split across invocations
-  (R2 calls are subrequests).
 - **Publication lag.** Cursors are available (`cursors(table)`); no lag metric or alert.
 - **Removed files across a state loss.** After the publisher loses its storage, files
   removed before the loss are not reported by `safeToDelete` (they leak; nothing is
@@ -713,11 +774,13 @@ PyIceberg wrote itself (an optional `list<struct>` column with a null row reads 
 map stays null), so it is the reader's, not these tables'. TRACES.md's logical view and viz's
 reader treat a null and an empty `events` or `links` alike.
 
-### Workerd tests (120)
+### Workerd tests (125)
 
 | Area | Tests |
 |---|---|
-| The span and log tables, published (`signals.test.ts`, 13; D67) | a tenant's `spans`, `trace_index` and `logs` exactly as its ledger lists them, from a first publication and from the cursor (a log day expired: a DELETED entry), every table verified, `status` published, `unpublished()` empty; each live entry against the ledger's file: the `spans` hour = the key's hour = the hour of `minTs` and of `maxTs`, the day of the others, value and null counts for exactly the required primitive columns, the time bounds widened as said, `service_name` and `trace_id` bounds, split offsets; the partition spec with `hour`, the manifest list's hour summary, `changed-partition-count`, the nested name mapping; a publish with nothing new commits nothing; **byte-identical metric output** at two stages (units, log and metric expiries, a compaction) from four publishers with fixed ids and clock: this release on the log as written, this release on the log without span and log changes, the D64 release (`test/d64/`) on the log as written, the release before it (`test/n1/`) on the log without them (and only this release writes the span and log tables, exactly the ledger's); removals released by the snapshot rule (the never-published one after the grace, the published ones only once their last referencing snapshot expired, then the grace; never a live key); a forged `spans` file outside its key's hour stops the tenant (`inconsistent`), nothing of it published, from the cursor and in a re-base from a forged base segment; SQLite rebuilt from R2 alone after a lost storage: no new commit, every table and the `spans` hours as before, the next commit (a removal and an addition) right, the manifest list's hour ranges included; the tables known equal the contract's, all published, metric tables first; **re-base** from the base of a new incarnation (every table by difference), from a checkpoint in parts and in one object (a log tombstone released by the snapshot rule), and review P-1 (`spans` committed, `trace_index` failed, a checkpoint above `spans`' cursor: `spans` re-based by difference); **the upgrade from D64**: D64's storage taken over, every tenant re-based once, the span and log tables published, the metric tables not committed again (byte-identical objects), D64's record left alone, its released log file still released; **D64 and this release side by side**: D64 on this release's storage with every span table's deadline and orphan sighting overdue rests after its wakes (migration 5), leaves them as they were, and rolled forward this release expires and sweeps them; a rollback to D64 on this release's storage publishes the metrics, leaves the span and log tables' objects, cursors and `live` rows unchanged and releases nothing of them in seven days; rolled forward, this release catches up (a log added and one removed, a span added), verified, and releases the removed log file by the snapshot rule |
+| Bounded work per publish (`caps.test.ts`, 4; review M-6) | the D67 upgrade of five tenants (D64's storage installed) capped at two tenants' staged files: three alarm runs re-basing 2, 2, 1, each within the cap, each leaving the rest pending with the alarm at `continueMs`; every table then equal, as a reader sees it (every live `data_file` with its partition, counts and bounds, the snapshot totals, the cursor object, the table metadata without its history), to the same cell published by one uncapped publish, and verified; capped at one re-base per run: the tenant last in the queue has a new metric unit committed in the second run from its metric cursors (span and log cursors absent, status `deferred`), as does a tenant re-based already; an alarm run reset (`ctx.abort`, no `finally`) at the second re-base it started: nothing committed before changes, a publish deadline and the alarm remain, the next run takes the two tenants never started and the run after the two cut off, nobody re-based twice; paging at two tenants per publish: a tenant stuck on a hole goes behind those not read yet. After a lost storage, a table rebuilt from R2 per publish and no re-base at all (`signals.test.ts`, below) |
+| Re-bases found while reading from a cursor (`checkpoints.test.ts`, 1) | six tenants whose ledgers started new incarnations, found while read six at a time: their checkpoints' parts read one tenant at a time, at most six R2 operations in flight |
+| The span and log tables, published (`signals.test.ts`, 13; D67) | a tenant's `spans`, `trace_index` and `logs` exactly as its ledger lists them, from a first publication and from the cursor (a log day expired: a DELETED entry), every table verified, `status` published, `unpublished()` empty; each live entry against the ledger's file: the `spans` hour = the key's hour = the hour of `minTs` and of `maxTs`, the day of the others, value and null counts for exactly the required primitive columns, the time bounds widened as said, `service_name` and `trace_id` bounds, split offsets; the partition spec with `hour`, the manifest list's hour summary, `changed-partition-count`, the nested name mapping; a publish with nothing new commits nothing; **byte-identical metric output** at two stages (units, log and metric expiries, a compaction) from four publishers with fixed ids and clock: this release on the log as written, this release on the log without span and log changes, the D64 release (`test/d64/`) on the log as written, the release before it (`test/n1/`) on the log without them (and only this release writes the span and log tables, exactly the ledger's); removals released by the snapshot rule (the never-published one after the grace, the published ones only once their last referencing snapshot expired, then the grace; never a live key); a forged `spans` file outside its key's hour stops the tenant (`inconsistent`), nothing of it published, from the cursor and in a re-base from a forged base segment; SQLite rebuilt from R2 alone after a lost storage, a table per publish and then the tenant from the cursors found there, with no re-base at all: no new commit, every table and the `spans` hours as before, the next commit (a removal and an addition) right, the manifest list's hour ranges included; the tables known equal the contract's, all published, metric tables first; **re-base** from the base of a new incarnation (every table by difference), from a checkpoint in parts and in one object (a log tombstone released by the snapshot rule), and review P-1 (`spans` committed, `trace_index` failed, a checkpoint above `spans`' cursor: `spans` re-based by difference); **the upgrade from D64**: D64's storage taken over, every tenant re-based once (spread over publishes: `caps.test.ts`), the span and log tables published, the metric tables not committed again (byte-identical objects), D64's record left alone, its released log file still released; **D64 and this release side by side**: D64 on this release's storage with every span table's deadline and orphan sighting overdue rests after its wakes (migration 5), leaves them as they were, and rolled forward this release expires and sweeps them; a rollback to D64 on this release's storage publishes the metrics, leaves the span and log tables' objects, cursors and `live` rows unchanged and releases nothing of them in seven days; rolled forward, this release catches up (a log added and one removed, a span added), verified, and releases the removed log file by the snapshot rule |
 | End to end, span and log tables (`e2e-signals.test.ts`, 1) | real files from the stack's write path under two tenants, four stages (units; more units; units and retention of one tenant's logs and the other's traces, with files added and removed between publications never in any snapshot; a ledger storage loss and a re-base), every table verified at each, the published files equal the ledgers'; dumped for the readers |
 | Measurements, span and log tables (`bench-signals.test.ts`, 1) | Measurements |
 | Avro (6) | round trip across block boundaries, both codecs; empty file; compression; unsafe long and missing field refused; corrupted file refused |
@@ -733,14 +796,14 @@ reader treat a null and an empty `events` or `links` alike.
 | What is written (2) | format version, schema, partition spec, name mapping, partition values checked against the key layout, statistics, manifest list counts and ranges, summary; an unreadable index fragment |
 | Driving (3) | `notify` then alarm, which leaves only the sweep's deadline and then none; a nudge during a running publish is kept; `locationPrefix` cannot change |
 | Smoke, end to end, measurements (3) | |
-| Versioned storage (`compat.test.ts`, 6) | a fresh object at the latest version (5 since D67) with the golden schema; migrations 1..N reproduce the golden of N; version 1 equals the pre-versioning `sqlite_master` (`test/fixtures/storage/v0.json`); that dump (a cell published once) adopted and migrated to 2 with every adopted row unchanged and served; a publisher left by pre-versioning code keeps publishing after adoption, verifies clean and is not migrated again after eviction; storage of a breaking N+1, with a tenant pending and due, refused by all 12 methods, alarm re-armed, every table unchanged; storage of an additive N+1 served, written, left at N+1 |
+| Versioned storage (`compat.test.ts`, 6) | a fresh object at the latest version (6 since review M-6) with the golden schema; migrations 1..N reproduce the golden of N; version 1 equals the pre-versioning `sqlite_master` (`test/fixtures/storage/v0.json`); that dump (a cell published once) adopted and migrated to 2 with every adopted row unchanged and served; a publisher left by pre-versioning code keeps publishing after adoption, verifies clean and is not migrated again after eviction; storage of a breaking N+1, with a tenant pending and due, refused by all 12 methods, alarm re-armed, every table unchanged; storage of an additive N+1 served, written, left at N+1 |
 | Newer Iceberg metadata (`compat.test.ts`, 1) | a table evolved by a newer publisher (schema 1 with a new field id, `viz.format-version` 2): publish refused and the tenant left pending, sweep refused, nothing under `iceberg/` changed, SQLite not rebuilt from it, `verify` reports it |
 | Versioned storage, migration 2 (`compat.test.ts`, +1) | storage at golden version 1 (no `due`) migrates to 2, keeps publishing, verifies clean, uses the new table, is not migrated twice; adoption of the pre-versioning dump now ends at version 2 with every adopted row unchanged |
 | Log objects this code does not know (`compat.test.ts`, 7) | five rewrites of one real segment as a newer ledger would write it (header `v` 2, unknown header kind, change `v` 2, unknown change kind, a file of table `profiles`, which no release knows; it was `spans` until this publisher read that table): each stops the tenant before that segment, twice in a row, with the earlier segments published and the later one unread; restored, it catches up. The same for a change object of the first layout. The reader's accept and refuse rules, and its pinned versions equal the contract's |
 | Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment (left by publishing through a `[5, 5]` holding the ledger's own line) finished from the holding segment once a later one exists, without re-applying the change at the cursor; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
 | Triggers (`triggers.test.ts`, 3) | `notify` writes nothing to R2 and publishes nothing, later nudges never push the deadline back; a nudge returns false within its bound from a publisher that is slow (5 s) or refuses, and with none bound; a tenant's day of flushes and a compaction, each nudged, then the alarm settles in 5 runs (sweep, two expiries, mark, delete) to no alarm and no deadline, every remaining metadata object referenced, and 48 idle hours run no alarm and write nothing |
 | Golden formats (`golden.test.ts`, 8) | every format has a file for its version; `metadata.json` of both new metric tables (unchanged) and of the span and log tables; field ids permanent across versions, nested ones included; for every table the name mapping maps exactly the schema's file columns, nested ones included, to their ids, and `last-column-id` is the largest; Avro schemas (and a `spans` manifest's, `trace_index` and `logs` using the metric one); the cursors object and an `add_unit` change (now read from its segment) |
-| Re-base from checkpoints (`checkpoints.test.ts`, 22) | the real ledger writing parts (format 2): re-based from them, in part order, at most 4 requested ahead, at most 6 R2 operations in flight, no segment at or before the checkpoint read, verified; the same state from parts, from a format-1 checkpoint and from the base: **byte-identical Iceberg objects** (fixed ids and clock); a published tenant re-based on a new incarnation's parts, removing and adding by difference; a staged re-base across many tiny manifests with merges, and SQLite rebuilt from R2 alone equal row for row; a part deleted while the checkpoint is read (`incomplete`, nothing published, retried, published once back); a record changed with its size (bytes), a record dropped with the size made up (files), two parts swapped, a part of another attempt, records out of key order across parts, a manifest that is not one: `corrupt`, nothing published; a newer checkpoint format passed over for the base; the object reset (`ctx.abort()`) while paused at a GET mid-stream, and an R2 failure at a part then `evictDurableObject`: nothing committed, staged rows never used, the next publish complete; six tenants re-basing at once: at most six in flight, each tenant's parts in order and in one run (re-bases take turns); six tenants each with eight segments to read from their cursors: at most six in flight (36 without the slots); a checkpoint's tombstones released; the ledger release before parts (N-1) read from its format-1 checkpoint and then across its storage loss; a base segment that is not alone; golden: the ledger still writes the checked-in checkpoint bytes, which are published, and the segment golden's format-1 checkpoint is re-based from |
+| Re-base from checkpoints (`checkpoints.test.ts`, 22) | the real ledger writing parts (format 2): re-based from them, in part order, at most 4 requested ahead, at most 6 R2 operations in flight, no segment at or before the checkpoint read, verified; the same state from parts, from a format-1 checkpoint and from the base: **byte-identical Iceberg objects** (fixed ids and clock); a published tenant re-based on a new incarnation's parts, removing and adding by difference; a staged re-base across many tiny manifests with merges, and SQLite rebuilt from R2 alone (a table per publish) equal row for row; a part deleted while the checkpoint is read (`incomplete`, nothing published, retried, published once back); a record changed with its size (bytes), a record dropped with the size made up (files), two parts swapped, a part of another attempt, records out of key order across parts, a manifest that is not one: `corrupt`, nothing published; a newer checkpoint format passed over for the base; the object reset (`ctx.abort()`) while paused at a GET mid-stream, and an R2 failure at a part then `evictDurableObject`: nothing committed, staged rows never used, the next publish complete; six tenants re-basing at once: at most six in flight, each tenant's parts in order and in one run (re-bases take turns); six tenants each with eight segments to read from their cursors: at most six in flight (36 without the slots); a checkpoint's tombstones released; the ledger release before parts (N-1) read from its format-1 checkpoint and then across its storage loss; a base segment that is not alone; golden: the ledger still writes the checked-in checkpoint bytes, which are published, and the segment golden's format-1 checkpoint is re-based from |
 
 ### Mutation checks
 
@@ -1117,11 +1180,14 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
 - **During a rollback to D64, span and log publication stops** (D64 does not publish them) and the
   removed files of those tables wait (its guard sees this release's tables). Rolled forward, this
   release catches up from their cursors.
-- **The upgrade re-bases every tenant.** The first publish after deploying this release over D64's
-  storage reads every tenant's newest checkpoint or base and writes every live file to `stage`
-  (about two row writes per file, modelled $0.60 per 300,000-file tenant at $1 per million rows, a
-  price from training knowledge), and at the ledger's limit a re-base took 8–17 s here (CPU on
-  Cloudflare not measured; Risks, "CPU time of a re-base at the limit").
+- **The upgrade re-bases every tenant.** After deploying this release over D64's storage every
+  tenant's newest checkpoint or base is read and every live file written to `stage` (about two row
+  writes per file, modelled $0.60 per 300,000-file tenant at $1 per million rows, a price from
+  training knowledge), spread over publishes of at most 100,000 staged files and 100 tenants each,
+  one second apart ("Bounded work per publish"). A tenant at the ledger's limit is re-based alone,
+  and its publish is the largest (Measurements, "Capped re-bases"; CPU on Cloudflare not measured:
+  "CPU time of a re-base at the limit"). While the queue drains, a waiting tenant's span and log
+  tables are not published; its metric tables are.
 - **External readers depend on the nested name mapping** and on the projection rule for identity
   partitions: PyIceberg 0.12.0 and DuckDB 2.0.0 apply both; a reader that ignores the mapping reads
   no column of these files. PyIceberg 0.12.0 reads a null list (`events`, `links` of a span without
@@ -1194,11 +1260,18 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
   not the state's; with S4's 2,000-file units it could be large, and it is not measured.
 - **CPU time of a re-base at the limit.** At 300,000 files a re-base took 8–17 s and a first
   publication 27–38 s here (Measurements), wall time on a loaded machine with a local R2. On
-  Cloudflare an invocation's CPU is limited (30 s by default for a Durable Object, raised with
-  `limits.cpu_ms`; training knowledge, not checked here); a publish that is cut off is retried
-  by the alarm and would be cut off again. Not measured on Cloudflare. The experiment that
-  settles it: viz-publisher on Cloudflare re-basing a tenant of 300,000 files (the bench's log,
-  written to a `viz-` bucket), its CPU time read from the analytics API.
+  Cloudflare a Durable Object invocation (a request or an alarm) has 30 s of CPU by default,
+  configurable to 5 minutes with `limits.cpu_ms` (Cloudflare's documentation, "Durable Objects
+  limits" and "Workers limits", read 2026-11-19). The per-publish cap keeps a publish of many
+  tenants under that (Measurements, "Capped re-bases"), but a single tenant is re-based whole: one
+  whose re-base exceeds the limit is retried behind the others and never finishes (Not
+  implemented). Not measured on Cloudflare. The experiment that settles it: viz-publisher on
+  Cloudflare re-basing a tenant of 300,000 files (the bench's log, written to a `viz-` bucket), and
+  the upgrade bench's cell (`bench/upgrade.bench.test.ts`) at the default caps, the CPU time of each
+  publish read from the analytics API (`cpuTime` of the Durable Object's invocations).
+- **A capped backlog wakes the object once a second.** `continueMs` (1 s) between capped publishes:
+  an upgrade of a cell of 10,000,000 staged files is about 100 publishes, 100 alarm wakes. A
+  publish that leaves only tenants stuck on a hole or a refusal waits `retryMs` as before.
 - **A corrupt checkpoint stops that tenant's re-base** (explicitly: `corrupt`, retried every
   `retryMs`) until the ledger writes a newer one, which supersedes and deletes it, or an
   operator removes it. The ledger's own rebuild passes over such a checkpoint for the base; this

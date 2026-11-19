@@ -548,7 +548,7 @@ export async function readTails(c: Context, shards: string[], watermarks: Waterm
   // The end of a metrics read that stopped on its first page is not in any answer: ask the shard
   // for its stream's end, now that nothing more is read here. Every part then reads through it.
   // (A span or log read is never handed to parts: one that does not fit is refused at once, so it
-  // has no end to fix; README, "Traces and logs", "Tail reads".)
+  // has no end to fix; README, "Traces and logs", "Which shard holds which signal".)
   const ends = await Promise.all(reads.map((r) => (r.complete || r.through !== null || signal !== 1 ? null : learnEnd(c, r, known))))
   ends.forEach((why, i) => {
     if (why !== null) {
