@@ -284,7 +284,7 @@ for (const k of ['teeth', 'finding', 'd30', 'log', 'amended', 'liveness']) {
   md.push(`## ${names[k]}`, '', '| experiment | checked | result | distinct states | transitions | depth | time | P(collision) |', '|---|---|---|---|---|---|---|---|')
   for (const r of rows.filter((x) => x.kind === k)) {
     const res = r.verdict === 'violated' ? `**violated** ${r.violated} in ${r.trace.length} steps` : r.verdict === 'holds' ? 'holds (exhaustive)' : `stopped: ${r.note}`
-    md.push(`| \`${r.name}\` ${r.label} | ${r.props.length > 3 ? 'all safety' : r.props.join(', ') || (r.cfg.goal === 'clean' ? 'AG EF no leak' : 'AG EF done')} | ${res}${r.asExpected ? '' : ' (unexpected)'} | ${r.states.toLocaleString('en')} | ${r.transitions.toLocaleString('en')} | ${r.depth} | ${r.seconds} s | ${r.collisionProb} |`)
+    md.push(`| \`${r.name}\` ${r.label} | ${r.props.length > 3 ? 'all safety' : r.props.join(', ') || (r.cfg.goal === 'clean' ? 'AG EF no leak' : r.cfg.goal === 'cleanComp' ? 'AG EF no leaked compaction output' : 'AG EF done')} | ${res}${r.asExpected ? '' : ' (unexpected)'} | ${r.states.toLocaleString('en')} | ${r.transitions.toLocaleString('en')} | ${r.depth} | ${r.seconds} s | ${r.collisionProb} |`)
   }
   md.push('')
 }

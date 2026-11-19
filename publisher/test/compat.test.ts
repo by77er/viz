@@ -14,12 +14,19 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { ledgerLogKey } from '../../contracts/ledger'
+import {
+  LEDGER_CHANGE_KINDS,
+  LEDGER_CHANGE_VERSION as CONTRACT_CHANGE_VERSION,
+  LEDGER_CHECKPOINT_KIND,
+  LEDGER_SEGMENT_KIND,
+  LEDGER_SEGMENT_VERSION as CONTRACT_SEGMENT_VERSION,
+  ledgerLogKey,
+} from '../../contracts/ledger'
 import { describeSchema, type Migration, openSchema, schemaRelease, type SchemaSpec } from '../../contracts/schema'
-import { unsupported } from '../src/log'
-import { PUBLISHER_SCHEMA } from '../src/schema'
+import { LEDGER_CHANGE_VERSION, LEDGER_SEGMENT_VERSION, unsupported, unsupportedSegment } from '../src/log'
+import { FORMATS, PUBLISHER_SCHEMA } from '../src/schema'
 import { expectGolden, goldenDir } from './golden'
-import { addUnit, fresh, ledgerVersion, listKeys, metaDir, metadataVersions, mirror, pairUnit, publisher, readMetadata, T0, DAY_MS, TABLES } from './helpers'
+import { addUnit, copyLog, fresh, icebergLive, ledgerVersion, listKeys, metaDir, metadataVersions, mirror, pairUnit, publisher, putObjects, readMetadata, segmentsOf, T0, DAY_MS, TABLES } from './helpers'
 import v0 from './fixtures/storage/v0.json'
 import { type Dump, dumpOf, install, replaceWith, schemaRow, withoutVersion } from './storage'
 
@@ -175,36 +182,88 @@ describe('Iceberg metadata written by a newer publisher', () => {
   })
 })
 
-describe('ledger changes this code does not know', () => {
-  it('a change with a newer `v` or an unknown kind stops the tenant before it: the changes before it are published, nothing after, and it is retried', async () => {
+describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §8.7)', () => {
+  /** A tenant whose units are one segment each: [0,0] base, [1,2] registration and unit 1, [3,3], [4,4], [5,5]. */
+  async function logged() {
     const { cell, tenant } = fresh()
     const t = tenant('acme')
-    for (let i = 0; i < 4; i++) await addUnit(t, pairUnit(cell, t, 1 + 3 * i, 3 + 3 * i, T0 + i * 1000))
+    for (let i = 0; i < 4; i++) await addUnit(t, pairUnit(cell, t, 1 + 3 * i, 3 + 3 * i, T0 + i * 1000), { drain: true })
     await mirror(t, cell)
     const { ledgerIncarnation, version } = await ledgerVersion(t)
-    // Rewrite one logged change as a newer ledger would have written it.
-    const key = `${cell}/${ledgerLogKey(t, ledgerIncarnation, version - 1)}`
+    const seg = (await segmentsOf(cell, t, ledgerIncarnation)).find((s) => s.first === version - 1)!
+    expect(seg).toMatchObject({ first: version - 1, last: version - 1 })
+    const body = await (await env.BUCKET.get(seg.key))!.text()
+    return { cell, t, ledgerIncarnation, version, seg, body }
+  }
+
+  type Rewrite = (header: Record<string, unknown>, change: Record<string, unknown> & { added: Record<string, unknown>[] }) => void
+  const newer: [string, Rewrite, RegExp][] = [
+    ['a segment header of version 2', (h) => void (h.v = 2), /segment version 2/],
+    ['a header of an unknown kind', (h) => void (h.kind = 'viz.ledger.segment-v2'), /unknown log object kind/],
+    ['a change of version 2', (_h, c) => void (c.v = 2), /change version 2/],
+    ['a change of an unknown kind', (_h, c) => void (c.kind = 'truncate'), /unknown change kind/],
+    ['a file of a table this code does not know', (_h, c) => void (c.added[0]!.table = 'spans'), /table "spans"/],
+  ]
+  for (const [what, rewrite, reason] of newer) {
+    it(`${what} stops the tenant before that segment: the segments before it are published, nothing after, and it is retried until readable`, async () => {
+      const { cell, t, ledgerIncarnation, version, seg, body } = await logged()
+      const [h, c] = body.split('\n') as [string, string]
+      const header = JSON.parse(h) as Record<string, unknown>
+      const change = JSON.parse(c) as Parameters<Rewrite>[1]
+      rewrite(header, change)
+      await env.BUCKET.put(seg.key, `${JSON.stringify(header)}\n${JSON.stringify(change)}\n`)
+      const p = publisher(cell)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const r = (await p.publish([t])).tenants[0]!
+        expect(r).toMatchObject({ status: 'unsupported', gapAt: version - 1, cursors: { metric_samples: { ledgerIncarnation, version: version - 2 }, metric_series: { ledgerIncarnation, version: version - 2 } } })
+        expect(r.detail).toMatch(reason)
+        expect(await p.pending(), 'the tenant waits for a publisher that reads it').toEqual([t])
+        expect((await p.schedule()).due.publish).toBeDefined()
+      }
+      // Never skipped: the next segment is readable, yet nothing of it is published.
+      expect(await icebergLive(cell, 'metric_samples')).toHaveLength(2)
+      // Once a reader that knows it is back (here: the segment restored), it continues.
+      await env.BUCKET.put(seg.key, body)
+      expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: { version } } })
+      expect(await icebergLive(cell, 'metric_samples')).toHaveLength(4)
+      expect(await p.pending()).toEqual([])
+    })
+  }
+
+  it('in the first layout too: a change object of a newer version stops the tenant before it', async () => {
+    const { cell, tenant } = fresh()
+    const t = tenant('trial')
+    const old = env.LEDGER_ASBUILT.get(env.LEDGER_ASBUILT.idFromName(t))
+    for (let i = 0; i < 3; i++) {
+      const u = pairUnit(cell, t, 1 + i, 1 + i, T0 + i * 1000)
+      await putObjects(u.files)
+      expect(await old.addUnit(u)).toMatchObject({ status: 'ok' })
+    }
+    await copyLog(t, env.CELL, cell)
+    const version = (await old.plan({ table: 'metric_samples', minTs: 0, maxTs: 0 })).version
+    const key = `${cell}/${ledgerLogKey(t, 1, version - 1)}`
     const change = await (await env.BUCKET.get(key))!.json<Record<string, unknown>>()
     await env.BUCKET.put(key, JSON.stringify({ ...change, v: 2 }))
     const p = publisher(cell)
-    const r = (await p.publish([t])).tenants[0]!
-    expect(r).toMatchObject({ status: 'unsupported' })
-    expect(r.cursors.metric_samples).toEqual({ ledgerIncarnation, version: version - 2 })
-    expect(await p.pending()).toEqual([t])
-
-    // The same with a kind it has never heard of.
-    await env.BUCKET.put(key, JSON.stringify({ ...change, kind: 'checkpoint' }))
-    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'unsupported', cursors: { metric_samples: { version: version - 2 } } })
-    // Once a reader that knows it is back (here: the change restored), it continues.
+    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'unsupported', gapAt: version - 1, cursors: { metric_samples: { ledgerIncarnation: 1, version: version - 2 } } })
     await env.BUCKET.put(key, JSON.stringify(change))
     expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: { version } } })
   })
 
-  it('what the reader accepts', () => {
+  it('what the reader accepts, and that it reads exactly what the contract writes (a version bump there fails here until this reader is taught it)', () => {
     expect(unsupported({ kind: 'add_unit' })).toBeNull()
     expect(unsupported({ v: 1, kind: 'base' })).toBeNull()
     expect(unsupported({ v: 2, kind: 'add_unit' })).toMatch(/version 2/)
     expect(unsupported({ kind: 'checkpoint' })).toMatch(/unknown change kind/)
     expect(unsupported({ v: '1', kind: 'add_unit' })).toMatch(/unreadable/)
+    expect(unsupportedSegment({ v: 1, kind: LEDGER_SEGMENT_KIND })).toBeNull()
+    expect(unsupportedSegment({ v: 2, kind: LEDGER_SEGMENT_KIND })).toMatch(/segment version 2/)
+    expect(unsupportedSegment({ v: 1, kind: LEDGER_CHECKPOINT_KIND })).toMatch(/unknown log object kind/)
+    expect(unsupportedSegment({ kind: LEDGER_SEGMENT_KIND })).toMatch(/unreadable/)
+    expect(LEDGER_SEGMENT_VERSION).toBe(CONTRACT_SEGMENT_VERSION)
+    expect(LEDGER_CHANGE_VERSION).toBe(CONTRACT_CHANGE_VERSION)
+    for (const kind of LEDGER_CHANGE_KINDS) expect(unsupported({ kind }), kind).toBeNull()
+    expect(FORMATS['read.ledger-segment']).toBe(LEDGER_SEGMENT_VERSION)
+    expect(FORMATS['read.ledger-change']).toBe(LEDGER_CHANGE_VERSION)
   })
 })
