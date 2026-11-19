@@ -118,7 +118,7 @@ export interface CompiledFilter {
   all: boolean
   /** True when the filter names series (`metrics`, `labels` or `keyRange`): a span or log batch then keeps nothing. */
   series: boolean
-  /** True when the filter has a time range: span and log batches are then chosen by their recorded bounds (`keepsBounds`). */
+  /** True when the filter has a time range: span and log batches are then chosen by the bounds recorded at append (`batchTimeBounds`; `Shard.tailPage`). */
   timed: boolean
 }
 
@@ -171,16 +171,6 @@ export function compileFilter(f: TailFilter): CompiledFilter | { invalid: string
   const timed = f.minTs !== undefined || f.maxTs !== undefined
   const all = !signals && !timed && !metrics && labels.length === 0 && !key
   return { signals, minTs, maxTs, metrics, labels, present: labels.filter((l) => l.value.length > 0).length, key, canonical, all, series, timed }
-}
-
-/**
- * Whether a stored batch with these recorded bounds may hold a row in the filter's time range:
- * its `[min, max]` overlaps `[minTs, maxTs]` (both inclusive), or it has no bounds. The shard
- * applies the same test in SQL (`Shard.tailPage`); this is its statement in one place, for tests
- * and for callers that hold a batch's bounds.
- */
-export function keepsBounds(f: Pick<CompiledFilter, 'minTs' | 'maxTs'>, min: number | null, max: number | null): boolean {
-  return min === null || max === null || (max >= f.minTs && min <= f.maxTs)
 }
 
 const NS_PER_MS = 1_000_000n

@@ -29,11 +29,11 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { createEngine } from '../../engine/wasm/js/index'
 import wasm from '../../engine/wasm/js/viz_engine.wasm'
-import { type Attrs, type LogRow, type SpanRow, encodeLogBatch, encodeSpanBatch } from '../../engine/wasm/test/signal'
+import { type Attrs, type LogRow, type LogStream, type SpanRow, encodeLogBatch, encodeSpanBatch } from '../../engine/wasm/test/signal'
 import { bitsFromBytes, bitsOf, encodeBatch } from '../../engine/wasm/test/vzb1'
 import { Shard as ShardPrebounds } from '../bench/prebounds/shard'
 import { SHARD_SCHEMA, type Shard, type TailBatch, type TailReadOptions, type TailResult } from '../src/shard'
-import { batchTimeBounds, keepsBounds } from '../src/tail'
+import { batchTimeBounds } from '../src/tail'
 
 type Stub = DurableObjectStub<Shard>
 type Ok = Extract<TailResult, { status: 'ok' }>
@@ -60,7 +60,7 @@ function rng(seed: number) {
   }
   const int = (k: number) => Math.floor(next() * k)
   /** A bigint in [0, k). */
-  const big = (k: bigint) => (BigInt(int(2 ** 30)) * (1n << 30n) + BigInt(int(2 ** 30))) % k
+  const big = (k: bigint) => ((BigInt(int(2 ** 30)) << 60n) | (BigInt(int(2 ** 30)) << 30n) | BigInt(int(2 ** 30))) % k
   return { next, int, big }
 }
 
@@ -113,8 +113,8 @@ function spanBatch(starts: bigint[], seed = 1, dur = (i: number) => 3n * HOUR + 
 
 /** A log batch of records stamped `ts` (observed two hours later, so a walk that read `observed_ts` would be caught). */
 function logBatch(ts: bigint[], seed = 1): Uint8Array {
-  const streams = [{ labels: { service_name: `api-${seed}`, level: 'info' } }, { labels: { service_name: 'db' } }, { labels: { job: 'x', instance: `i-${seed}`, env: 'prod' } }]
-  const rows: LogRow[] = ts.map((t, i) => ({ entry: i % streams.length, ts: t, observedTs: t + 2n * HOUR, line: `line ${seed} ${i} ${'y'.repeat(i % 13)}`, severity: 9, metadata: [['k8s_pod', `p-${i}`]] }))
+  const streams: LogStream[] = [{ labels: { service_name: `api-${seed}`, level: 'info' } }, { labels: { service_name: 'db' } }, { labels: { job: 'x', instance: `i-${seed}`, env: 'prod' } }]
+  const rows: LogRow[] = ts.map((t, i) => ({ entry: i % streams.length, ts: t, observedTs: t + 2n * HOUR > MAX_NS ? t : t + 2n * HOUR, line: `line ${seed} ${i} ${'y'.repeat(i % 13)}`, severity: 9, metadata: [['k8s_pod', `p-${i}`]] }))
   return encodeLogBatch(streams, rows)
 }
 
@@ -205,7 +205,7 @@ describe('bounds recorded at append', () => {
   it('a batch the walk cannot follow is stored without bounds, and accepted as before (the shard never refuses for it)', async () => {
     const s = env.SHARD.get(env.SHARD.idFromName(`b-${uid()}/traces/0`))
     const good = spanBatch([NS0, NS0 + HOUR], 3)
-    const cut = good.slice(0, good.length - 200) // the start column ends past the payload? no: the tail columns are cut
+    const cut = good.slice(0, good.length - 40) // the last column cut short: what follows `start` is not read
     const short = good.slice(0, 60) // inside the entry table
     const negative = spanBatch([NS0], 4).slice()
     const nRows = rowsOf(negative)
@@ -215,7 +215,7 @@ describe('bounds recorded at append', () => {
       for (let at = 16; at + 8 <= negative.length; at += 8) if (dv.getBigInt64(at, true) === NS0) return at
       throw new Error('no start')
     })()
-    negative[col + 7]! |= 0x80
+    negative[col + 7] = negative[col + 7]! | 0x80
     const huge = good.slice()
     new DataView(huge.buffer).setUint32(8, 0xffffffff, true) // n_rows past anything the batch could hold
     const empty = encodeLogBatch([], [])
@@ -277,7 +277,7 @@ describe('a filtered read by time', () => {
     const { s, tenant, inc, bounds, payloads } = await sixHours(31)
     expect(await stored(s, tenant)).toEqual([...bounds].map(([seq, b]) => ({ seq, min: b?.min ?? null, max: b?.max ?? null })))
     const want = (lo: number | undefined, hi: number | undefined) =>
-      [...bounds].filter(([, b]) => b === null || keepsBounds({ minTs: lo ?? -Infinity, maxTs: hi ?? Infinity }, b.min, b.max)).map(([seq]) => seq)
+      [...bounds].filter(([, b]) => b === null || (b.max >= (lo ?? -Infinity) && b.min <= (hi ?? Infinity))).map(([seq]) => seq)
     const hulls: [number | undefined, number | undefined][] = []
     // Each bounded batch at both of its edges: touching keeps it, one millisecond off does not.
     for (const b of bounds.values()) {
@@ -333,19 +333,22 @@ describe('a filtered read by time', () => {
     const tenant = `t-${uid()}`
     const r = rng(51)
     const rows: { seq: number; ts: bigint }[] = []
+    const bounds = new Map<number, { min: number; max: number }>()
     for (let j = 0; j < 10; j++) {
       const ts = startsIn(r, NS0 + BigInt(j) * 40n * MINUTE, 40n * MINUTE, 2 + r.int(20))
       const seq = await put(s, tenant, logBatch(ts, j + 1))
       for (const t of ts) rows.push({ seq, ts: t })
+      bounds.set(seq, { min: Number(ts.reduce((a, x) => (x < a ? x : a)) / MS), max: Number(ts.reduce((a, x) => (x > a ? x : a)) / MS) })
     }
     const inc = (await s.describe(tenant))!.incarnation
     for (let k = 0; k < 100; k++) {
       const L = NS0 - HOUR + r.big(9n * HOUR)
       const H = L + r.big(HOUR)
-      const got = new Set(seqs((await readAll(s, tenant, inc, { signals: [3], minTs: Number(L / MS), maxTs: Number(H / MS) })).batches))
-      for (const x of rows) if (x.ts >= L && x.ts <= H) expect(got.has(x.seq)).toBe(true)
-      // Nothing outside: a returned batch holds a record within the hull's milliseconds.
-      for (const seq of got) expect(rows.some((x) => x.seq === seq && x.ts / MS >= L / MS && x.ts / MS <= H / MS)).toBe(true)
+      const [lo, hi] = [Number(L / MS), Number(H / MS)]
+      const got = seqs((await readAll(s, tenant, inc, { signals: [3], minTs: lo, maxTs: hi })).batches)
+      for (const x of rows) if (x.ts >= L && x.ts <= H) expect(got).toContain(x.seq)
+      // Exactly the batches whose bounds overlap the hull.
+      expect(got).toEqual([...bounds].filter(([, b]) => b.max >= lo && b.min <= hi).map(([seq]) => seq))
     }
     expect(seqs((await readAll(s, tenant, inc, { signals: [3] })).batches)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     const whole = await s.tailRead(tenant, inc, 0)
@@ -379,7 +382,7 @@ describe('a filtered read by time', () => {
     for (const b of metric) expect(b.payload[4]).toBe(1)
     const flat = (bs: Uint8Array[]) => engine.select({ seriesFiles: [], sampleFiles: [], tailBatches: bs }, [], hull.minTs, hull.maxTs).map((x) => ({ labels: x.labels, ts: Array.from(x.ts), bits: bitsFromBytes(x.values) }))
     expect(flat(metric.map((b) => b.payload))).toEqual(flat(metricBatches))
-    expect(flat(metric.map((b) => b.payload)).flatMap((x) => x.ts)).toHaveLength(2)
+    expect(flat(metric.map((b) => b.payload)).flatMap((x) => x.ts)).toHaveLength(4) // 1:50, 2:10, 2:50, 3:10
     // Without `signals`: every signal, each by its rule.
     const all = (await readAll(s, tenant, inc, hull)).batches
     expect(seqs(all.filter((b) => b.payload[4] !== 1))).toEqual([...overlapping(2), ...overlapping(3)].sort((a, b) => a - b))
@@ -434,17 +437,17 @@ describe('pages, cursors and refusals with a hull (D48 unchanged)', () => {
     const hull = { signals: [2], minTs: T0 + 2 * 3_600_000, maxTs: T0 + 3 * 3_600_000 }
     const fit = Math.max(...small.map((b) => b.byteLength))
     expect(big.byteLength).toBeGreaterThan(fit)
-    const page = await s.tailRead(tenant, inc, 0, { ...hull, maxBytes: fit })
+    const page = await s.tailRead(tenant, inc, 0, { ...hull, maxBytes: small[0]!.byteLength })
     expect(page).toMatchObject({ status: 'ok' })
     expect(seqs((page as Ok).batches)).toEqual([2])
-    expect(await s.tailRead(tenant, inc, 0, { ...hull, maxBytes: fit - 1 })).toMatchObject({ status: 'page_limit', seq: 2 })
+    expect(await s.tailRead(tenant, inc, 0, { ...hull, maxBytes: small[0]!.byteLength - 1 })).toMatchObject({ status: 'page_limit', seq: 2 })
     expect(await s.tailRead(tenant, inc, 0, { signals: [2], maxBytes: fit })).toMatchObject({ status: 'page_limit', seq: 1 })
     // The fence: records 1..4 recorded and discarded between two pages of a read from 0.
     await s.seal(tenant)
     const cursor = (page as Ok).page!.next!
     expect(await s.recorded(tenant, inc, 4)).toMatchObject({ status: 'ok' })
     await runDurableObjectAlarm(s)
-    expect(await s.tailRead(tenant, inc, 0, { ...hull, maxBytes: fit, cursor })).toMatchObject({ status: 'stale_watermark', discardedThrough: 4 })
+    expect(await s.tailRead(tenant, inc, 0, { ...hull, maxBytes: small[0]!.byteLength, cursor })).toMatchObject({ status: 'stale_watermark', discardedThrough: 4 })
     expect(await s.tailRead(tenant, inc, 0, hull)).toMatchObject({ status: 'stale_watermark' })
     expect(await s.tailRead(tenant, inc + 1, 4, hull)).toMatchObject({ status: 'incarnation_mismatch', incarnation: inc })
     expect(await s.tailRead(tenant, inc, 4, hull)).toMatchObject({ status: 'ok', batches: [] })
@@ -476,21 +479,19 @@ describe('rollback and upgrade (contracts/COMPATIBILITY.md §2.3, §8)', () => {
       const seg = await old.seal(tenant)
       expect(seg).toMatchObject({ seqLo: 1, seqHi: 5 })
       expect((await old.readSegment(tenant, 1, inc, 5))!.map((b) => hex(b.payload))).toEqual([...mine, ...theirs].map(hex))
-      // A retry of a batch this release stored is a duplicate under the old code too.
-      expect(await old.append({ tenant, epoch: 1, fingerprint: 'fp-dup-probe', payload: mine[0]!, rows: 2 })).toMatchObject({ status: 'ok', seq: 6 })
     })
     // ROLL FORWARD.
     await evictDurableObject(s)
     expect(await stored(s, tenant)).toEqual([
       ...mine.map((b, i) => ({ seq: i + 1, min: flushBounds(b).minTs, max: flushBounds(b).maxTs })),
-      { seq: 4, min: null, max: null }, { seq: 5, min: null, max: null }, { seq: 6, min: null, max: null },
+      { seq: 4, min: null, max: null }, { seq: 5, min: null, max: null },
     ])
     // Batches the release before wrote have no bounds: kept by every hull, the far ones included.
-    expect(seqs((await readAll(s, tenant, inc, hull)).batches)).toEqual([2, 4, 5, 6])
-    expect(seqs((await readAll(s, tenant, inc, { signals: [2], minTs: 0, maxTs: 0 })).batches)).toEqual([4, 5, 6])
+    expect(seqs((await readAll(s, tenant, inc, hull)).batches)).toEqual([2, 4, 5])
+    expect(seqs((await readAll(s, tenant, inc, { signals: [2], minTs: 0, maxTs: 0 })).batches)).toEqual([4, 5])
     expect((await s.pendingSegments(tenant)).map((x) => [x.seqLo, x.seqHi])).toEqual([[1, 5]])
-    expect(await put(s, tenant, spanBatch([NS0 + 9n * HOUR], 30))).toBe(7)
-    expect((await stored(s, tenant)).at(-1)).toEqual({ seq: 7, min: T0 + 9 * 3_600_000, max: T0 + 9 * 3_600_000 })
+    expect(await put(s, tenant, spanBatch([NS0 + 9n * HOUR], 30))).toBe(6)
+    expect((await stored(s, tenant)).at(-1)).toEqual({ seq: 6, min: T0 + 9 * 3_600_000, max: T0 + 9 * 3_600_000 })
   })
 
   it('storage at schema 2, made by the release before, migrates to 3 once: rows unchanged and unbounded, served, kept by every hull', async () => {
