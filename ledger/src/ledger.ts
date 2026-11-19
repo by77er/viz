@@ -1361,7 +1361,14 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     let files = 0
     let tombstones = 0
     let { phase, fileCursor, tombCursor } = ck
-    const full = () => lines.length > 0 && size >= this.checkpointPartBytes
+    // A record goes in unless the part already holds one and it would take the part past its
+    // budget: a part is at most `checkpointPartBytes`, or one larger record alone.
+    const fits = (line: string) => lines.length === 0 || size + line.length + 1 <= this.checkpointPartBytes
+    const add = (line: string) => {
+      lines.push(line)
+      size += line.length + 1
+    }
+    let open = true
     if (phase === 'files') {
       const live = sql.exec(`SELECT ${FILE_COLUMNS} FROM file WHERE key > ? ORDER BY key`, fileCursor)[Symbol.iterator]()
       const pre = sql.exec(`SELECT absent, ${FILE_COLUMNS} FROM ckpt_pre WHERE key > ? ORDER BY key`, fileCursor)[Symbol.iterator]()
@@ -1372,40 +1379,34 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
           phase = 'tombstones'
           break
         }
-        if (full()) break
+        // The next key in SQLite's order, from `file` or from a pre-image (which wins: it is the
+        // state at the checkpoint's version, or says the key was not live then).
         const c = a.done ? 1 : b.done ? -1 : compareKeys(a.value.key as string, b.value.key as string)
-        let row: Row | null
-        if (c < 0) {
-          row = a.value as Row
-          a = live.next()
-        } else {
-          // A pre-image: the state at the checkpoint's version, or "not live then".
-          row = b.value.absent === 0 ? (b.value as Row) : null
-          fileCursor = b.value.key as string
-          b = pre.next()
-          if (c === 0) a = live.next()
-        }
+        const row = c < 0 ? (a.value as Row) : b.value.absent === 0 ? (b.value as Row) : null
         if (row) {
-          fileCursor = row.key as string
-          const s = toStored(row)
-          const { unit, ...entry } = s
+          const { unit, ...entry } = toStored(row)
           const line = JSON.stringify({ file: unit ? { ...entry, unit } : entry })
-          lines.push(line)
-          size += line.length + 1
+          if (!fits(line)) {
+            open = false
+            break
+          }
+          add(line)
           files++
         }
+        fileCursor = (c < 0 ? a.value.key : b.value.key) as string
+        if (c >= 0) b = pre.next()
+        if (c <= 0) a = live.next()
       }
     }
-    if (phase === 'tombstones' && !full()) {
+    if (phase === 'tombstones' && open) {
       let more = false
       for (const r of sql.exec(`SELECT key, tbl, version, at FROM tombstone WHERE version <= ? AND key > ? ORDER BY key`, ck.version, tombCursor)) {
-        if (full()) {
+        const line = JSON.stringify({ tombstone: Ledger.toTombstone(r) })
+        if (!fits(line)) {
           more = true
           break
         }
-        const line = JSON.stringify({ tombstone: Ledger.toTombstone(r) })
-        lines.push(line)
-        size += line.length + 1
+        add(line)
         tombstones++
         tombCursor = r.key as string
       }
