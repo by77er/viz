@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Upload, then promote; record; roll back. Reads the manifest configure.mjs wrote.
 //
-//   node deploy/release.mjs deploy   [--stage S] [--ack "viz-ingest@v2 …"]   upload every Worker, then promote in order
+//   node deploy/release.mjs deploy   [--stage S] [--ack "viz-ingest@v2 …"] [--rotate-secret NAME]
+//                                    upload every Worker, then promote in order
 //   node deploy/release.mjs rollback --record <release.json> [--stage S] [--reason …]
-//   node deploy/release.mjs plan     [--stage S] [--ack …]                    what deploy would do; exit 3 if refused
+//   node deploy/release.mjs plan     [--stage S] [--ack …] [--rotate-secret NAME]   what deploy would do; exit 3 if refused
 //   node deploy/release.mjs status   [--stage S]                              what serves now
 //   node deploy/release.mjs current-release [--stage S]                      the release viz-ingest serves (its version tag)
 //
@@ -29,15 +30,24 @@
 //   record says so and why. A rollback refuses, naming the release and migration, when any
 //   version that ran since the target wrote storage the target cannot open (`canOpen`): that
 //   is exactly crossing a forward-only release, including one that was itself rolled back.
+// - Secrets the deploy generates (lib/secrets.mjs, D52: viz-control's OAUTH_CLIENT_KEY) are put
+//   on the version phase 1 uploaded (or, for a Worker that goes out with `wrangler deploy`, on
+//   the version it just deployed) only when that version does not carry them, value on stdin;
+//   phase 2 promotes the keyed version. Replaced only when asked (--rotate-secret,
+//   VIZ_ROTATE_SECRETS); a secret that is set now but missing from the upload is a refusal.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { currentDeployment, listScripts, listVersions, versionInfo } from './lib/cf.mjs'
+import { currentDeployment, listScripts, listSecrets, listVersions, versionInfo } from './lib/cf.mjs'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, targetName } from './lib/common.mjs'
 import { schemasOfVersion } from './lib/schemas.mjs'
+import { ROTATE_ENV, SecretRefused, ensureSecrets, parseRotate, planSecrets, rotateProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
 import { versionIdFrom, wrangler } from './lib/wrangler.mjs'
 
 export const EXIT_REFUSED = 3
+
+/** What lib/secrets.mjs needs from wrangler and the Cloudflare API. */
+const SECRET_API = { wrangler, versionInfo, listVersions, listSecrets }
 
 export function loadManifest(stage) {
   const file = join(GENERATED_DIR, targetName(stage), 'manifest.json')
@@ -265,7 +275,7 @@ async function restore(manifest, workers, reason) {
   }
 }
 
-export async function deploy({ stage, ackText = '' }) {
+export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const manifest = loadManifest(stage)
   const release = manifest.release
   const tag = release.slice(0, 40)
@@ -275,27 +285,49 @@ export async function deploy({ stage, ackText = '' }) {
   const previousFile = writeRecord(stage, 'previous.json', previous)
   const plan = planRelease(manifest, before, parseAcks(ackText))
   const forwardOnly = forwardOnlyReasons(manifest, before)
-  printPlan(manifest, plan)
+  const specs = secretsOfManifest(manifest)
+  const rotate = parseRotate(rotateText)
+  const secretsBefore = await secretsNow(specs, before, SECRET_API)
+  printPlan(manifest, plan, planSecrets(secretsBefore, rotate, plan.steps))
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
-  if (plan.problems.length) {
+  const refusals = [...plan.problems, ...rotateProblems(rotate, specs)]
+  if (refusals.length) {
     log('\nrelease: REFUSED before uploading or promoting anything:')
-    for (const p of plan.problems) log(`  - ${p}`)
-    log('  See deploy/README.md, "Durable Object migrations".')
+    for (const p of refusals) log(`  - ${p}`)
+    log('  See deploy/README.md, "Durable Object migrations" and "Worker secrets the deploy generates".')
     return { exit: EXIT_REFUSED, plan }
+  }
+  const secretActions = []
+  const withSecrets = (step, versionId) => {
+    const mine = specs.filter((s) => s.worker === step.name)
+    if (mine.length === 0) return null
+    return ensureSecrets({ worker: step.name, versionId, specs: mine, now: secretsBefore, rotate, release, tag, message, api: SECRET_API, log })
   }
 
   // Phase 1: upload (or, where a version cannot be uploaded, bundle). Nothing serves yet.
   log('\nphase 1: upload')
   const uploaded = {}
-  for (const step of plan.steps) {
-    if (step.via === 'versions') {
-      const r = await wrangler(['versions', 'upload', '--config', join(REPO_ROOT, step.config), '--tag', tag, '--message', message], { label: step.name })
-      uploaded[step.name] = versionIdFrom(r, 'version-upload')
-      log(`  ${step.name}: uploaded ${uploaded[step.name]} (serving nothing yet)`)
-    } else {
-      await wrangler(['deploy', '--dry-run', '--config', join(REPO_ROOT, step.config), '--outdir', join(GENERATED_DIR, targetName(stage), 'dry-run', step.name)], { label: step.name, quiet: true })
-      log(`  ${step.name}: bundled; goes out with wrangler deploy in phase 2 (${step.migration ? `migration ${step.migration.from ?? '(none)'} → ${step.migration.to}` : 'new Worker'})`)
+  try {
+    for (const step of plan.steps) {
+      if (step.via === 'versions') {
+        const r = await wrangler(['versions', 'upload', '--config', join(REPO_ROOT, step.config), '--tag', tag, '--message', message], { label: step.name })
+        uploaded[step.name] = versionIdFrom(r, 'version-upload')
+        log(`  ${step.name}: uploaded ${uploaded[step.name]} (serving nothing yet)`)
+        // Generated secrets go on the upload, still serving nothing; phase 2 promotes the keyed version.
+        const s = await withSecrets(step, uploaded[step.name])
+        if (s) {
+          secretActions.push(...s.actions)
+          uploaded[step.name] = s.versionId
+        }
+      } else {
+        await wrangler(['deploy', '--dry-run', '--config', join(REPO_ROOT, step.config), '--outdir', join(GENERATED_DIR, targetName(stage), 'dry-run', step.name)], { label: step.name, quiet: true })
+        log(`  ${step.name}: bundled; goes out with wrangler deploy in phase 2 (${step.migration ? `migration ${step.migration.from ?? '(none)'} → ${step.migration.to}` : 'new Worker'})`)
+      }
     }
+  } catch (e) {
+    if (!(e instanceof SecretRefused)) throw e
+    log(`\nrelease: REFUSED in phase 1, before promoting anything (uploaded versions serve nothing):\n  - ${e.message}`)
+    return { exit: EXIT_REFUSED, plan }
   }
 
   // Phase 2: promote, callees first.
@@ -312,6 +344,17 @@ export async function deploy({ stage, ackText = '' }) {
         uploaded[step.name] = versionIdFrom(r, 'deploy')
         if (step.migration) migrationApplied = true
         log(`  ${step.name}: deployed ${uploaded[step.name]}${step.migration ? ` with migration ${step.migration.to}` : ''}`)
+        // A new (or migrating) Worker had no version to put a secret on in phase 1: put it on the
+        // version just deployed and deploy the keyed one, before any later Worker (the gateway) is promoted.
+        const s = await withSecrets(step, uploaded[step.name])
+        if (s) {
+          secretActions.push(...s.actions)
+          if (s.versionId !== uploaded[step.name]) {
+            await wrangler(['versions', 'deploy', `${s.versionId}@100%`, '--config', join(REPO_ROOT, step.config), '--yes', '--message', message, ...doMode(manifest)], { label: step.name })
+            uploaded[step.name] = s.versionId
+            log(`  ${step.name}: ${s.versionId} (with its generated secrets) at 100%`)
+          }
+        }
       }
       promoted.push(step.name)
     }
@@ -336,6 +379,8 @@ export async function deploy({ stage, ackText = '' }) {
     forwardOnly: forwardOnly.length > 0,
     forwardOnlyBecause: forwardOnly,
     via: Object.fromEntries(plan.steps.map((s) => [s.name, s.via])),
+    // Generated secrets, by name: kept, created or rotated, and on which version. Never a value.
+    secrets: secretActions.map(({ worker, name, action, versionId }) => ({ worker, name, action, versionId })),
   })
   for (const w of record.workers) if (w.versionId !== uploaded[w.name]) log(`  warning: ${w.name} serves ${w.versionId}, expected ${uploaded[w.name]}`)
   const file = writeRecord(stage, 'release.json', record)
@@ -380,11 +425,29 @@ function loadPlanCodeUpdate() {
   return JSON.parse(readFileSync(join(DEPLOY_DIR, 'workers.json'), 'utf8')).durable_objects_code_update
 }
 
-function printPlan(manifest, plan) {
+function printPlan(manifest, plan, secrets = []) {
   log(`release ${manifest.release} → ${manifest.target}`)
   for (const s of plan.steps) {
     log(`  ${s.name.padEnd(22)} ${s.via === 'versions' ? 'upload, then promote' : 'wrangler deploy     '} ${s.migration ? `MIGRATION ${s.migration.from ?? '(none)'} → ${s.migration.to}` : s.exists ? '' : '(new Worker)'}`)
   }
+  for (const s of secrets) log(`  ${s.line}`)
+}
+
+/**
+ * `release.mjs plan`: what deploy would do, changing nothing (no wrangler call; Cloudflare's API
+ * is only read). A generated secret that is not set yet is reported as "would be created".
+ */
+export async function planOnly({ stage, ackText = '', rotateText = '' }) {
+  const manifest = loadManifest(stage)
+  const live = await liveState(manifest.order)
+  const plan = planRelease(manifest, live, parseAcks(ackText))
+  const specs = secretsOfManifest(manifest)
+  const rotate = parseRotate(rotateText)
+  const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)
+  const problems = [...plan.problems, ...rotateProblems(rotate, specs)]
+  printPlan(manifest, plan, secrets)
+  for (const p of problems) log(`  - ${p}`)
+  return { exit: problems.length ? EXIT_REFUSED : 0, plan, secrets: secrets.map(({ worker, name, action }) => ({ worker, name, action })), problems }
 }
 
 /** The release record as a table, to stderr and to the GitHub job summary. */
@@ -400,6 +463,8 @@ function summary(record, previous) {
     '',
     record.forwardOnly ? `**Forward-only**: no rollback may cross this release. ${record.forwardOnlyBecause.map((f) => f.why).join('; ')}` : record.kind === 'release' ? 'Not forward-only: the previous release can open everything this one writes.' : '',
     '',
+    record.secrets?.length ? `Generated secrets: ${record.secrets.map((s) => `${s.name} on ${s.worker} ${s.action}${s.action === 'kept' ? '' : ` (version \`${s.versionId}\`)`}`).join(', ')}` : '',
+    '',
     '| Worker | Version | Migration tag in force | Previous version |',
     '|---|---|---|---|',
     ...rows,
@@ -411,18 +476,16 @@ function summary(record, previous) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'ack', 'record', 'reason'] })
+    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'ack', 'record', 'reason', 'rotate-secret'] })
     checkStage(args.stage)
     const cmd = args._[0]
     const ackText = [args.ack ?? '', process.env.VIZ_ACK_MIGRATIONS ?? ''].join(' ')
-    if (cmd === 'deploy') process.exit((await deploy({ stage: args.stage, ackText })).exit)
+    const rotateText = [args['rotate-secret'] ?? '', process.env[ROTATE_ENV] ?? ''].join(' ')
+    if (cmd === 'deploy') process.exit((await deploy({ stage: args.stage, ackText, rotateText })).exit)
     else if (cmd === 'plan') {
-      const manifest = loadManifest(args.stage)
-      const plan = planRelease(manifest, await liveState(manifest.order), parseAcks(ackText))
-      printPlan(manifest, plan)
-      for (const p of plan.problems) log(`  - ${p}`)
-      console.log(JSON.stringify({ migrations: plan.migrations.map((s) => ({ worker: s.name, ...s.migration, ack: s.ack })), refused: plan.problems.length > 0 }))
-      process.exit(plan.problems.length ? EXIT_REFUSED : 0)
+      const r = await planOnly({ stage: args.stage, ackText, rotateText })
+      console.log(JSON.stringify({ migrations: r.plan.migrations.map((s) => ({ worker: s.name, ...s.migration, ack: s.ack })), secrets: r.secrets, refused: r.exit !== 0 }))
+      process.exit(r.exit)
     } else if (cmd === 'rollback') {
       if (!args.record) throw new Error('rollback needs --record <release.json>')
       process.exit((await rollback({ stage: args.stage, recordFile: args.record, reason: args.reason })).exit)
