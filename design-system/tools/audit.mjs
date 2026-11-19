@@ -306,7 +306,7 @@ function perturbedCss(tokenCss, t) {
 // a finger's press, as painted: CDP touch events held on each kind of control (v5 review, M3; mutant Y18)
 async function fingerPress(page, cdp) {
   const out = [], rgb = (v) => { v = String(v).trim(); if (!v.startsWith('#')) return v.replace(/\s*,\s*/g, ', '); const h = v.slice(1); return `rgb(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)})` }
-  const n = await page.evaluate(() => { const kinds = ['.vz-button:not([data-tone]):not([data-quiet])', '.vz-button[data-quiet]', '.vz-button[data-tone]', '.vz-segmented button', '.vz-menu [role^="menuitem"]', '.vz-sort', '.vz-tree-toggle', '.vz-legend-table tbody tr[data-key] .vz-series']
+  const n = await page.evaluate(() => { const kinds = ['.vz-button:not([data-tone]):not([data-quiet])', '.vz-button[data-quiet]', '.vz-button[data-tone]', '.vz-segmented button[aria-pressed="true"]', '.vz-segmented button:not([aria-pressed="true"])', '.vz-menu [role^="menuitem"]', '.vz-sort', '.vz-tree-toggle', '.vz-legend-table tbody tr[data-key] .vz-series'] // a chosen segment too: its press must outrank its chosen fill
     const modal = document.querySelector('dialog:modal'); let i = 0
     for (const k of kinds) { let c = 0; for (const el of document.querySelectorAll(k)) { if (c >= 2) break; if (el.disabled || el.closest('[inert], [aria-busy="true"], [hidden], .vz-sr') || (modal && !modal.contains(el)) || !el.getClientRects().length || getComputedStyle(el).visibility !== 'visible' || (el.checkVisibility && !el.checkVisibility())) continue; el.dataset.vzProbe = String(i++); c++ } }
     return i })
@@ -344,9 +344,11 @@ for (const c of configs) {
     try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => document.fonts.ready); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
     const found = await page.evaluate(audit, { coarse: !!c.coarse, words: true })
     const fine = c.w === 1500 && !c.zoom && !c.coarse, touch = c.w === 400 && !!c.coarse
-    if (fine || touch) {
+    if (fine || c.coarse) {
       if (fine) await page.keyboard.press('Shift') // keyboard modality, so a focused control shows its ring as from the keyboard
-      found.push(...await page.evaluate(guards, { fine, coarse: touch }))
+      found.push(...await page.evaluate(guards, { fine, coarse: !!c.coarse })) // hit areas at every coarse width
+    }
+    if (fine || touch) {
       if (touch) found.push(...await fingerPress(page, await ctx.newCDPSession(page)))
       await page.evaluate((th) => { if (th) document.documentElement.dataset.theme = th }, touch ? 'dark' : null) // the token trace in both themes
       found.push(...await page.evaluate(tokenTrace, { css: perturbed }))

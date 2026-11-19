@@ -97,10 +97,12 @@ describe('limits', () => {
     await setLimits(w.a.name, { maxFetchBytes: lake + tail - 1 })
     let res = await run(w.a.key, q)
     expect(res.status).toBe(422)
+    // The tail is read in pages under what the files leave (D48, D54): a read that stops at a
+    // batch it cannot tell is the last says "at least" (here it is all of it either way).
     expect(await res.json()).toEqual({
       status: 'error',
       errorType: 'execution',
-      error: `query exceeded limit max_fetch_bytes: the data files in range plus the unflushed tail is ${lake + tail} bytes, the limit is ${lake + tail - 1}. Narrow the time range, or select fewer metrics by name.`,
+      error: expect.stringMatching(new RegExp(`^query exceeded limit max_fetch_bytes: the data files in range plus the unflushed tail is (at least )?${lake + tail} bytes, the limit is ${lake + tail - 1}\\. Narrow the time range, or select fewer metrics by name\\.$`)),
     })
     // Less than the lake alone: refused from the ledger's sizes, before any file or shard is read.
     await setLimits(w.a.name, { maxFetchBytes: lake - 1 })
