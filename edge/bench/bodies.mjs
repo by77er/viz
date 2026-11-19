@@ -100,6 +100,7 @@ export function hostile(mib) {
     [`logs: record body, array of empty values, ${mib} MiB`, 'logs', false, false, () => logs(svc, record(ld(0x2a, ld(0x2a, repeat(Uint8Array.of(0x0a, 0), S / 2)))))],
     [`logs: minimal valid records (200,000)`, 'logs', false, false, () => logs(svc, repeat(record(), 200_000))],
     [`loki: entry of empty metadata, ${mib} MiB`, 'loki', false, false, () => ld(0x0a, cat(str(0x0a, '{job="a"}'), ld(0x12, cat(ld(0x0a, cat(Uint8Array.of(0x08), Uint8Array.from(varint(Number(NS / 1_000_000_000n))))), emptyKVs(S, 0x1a)))))],
+    // Valid and dense: each entry stored (its cost is the parse tree, bounded by the token limit).
     [`loki json: small entries, ${mib} MiB`, 'loki', true, false, () => {
       const parts = ['{"streams":[{"stream":{"job":"a"},"values":[']
       let size = parts[0].length
@@ -126,9 +127,10 @@ export function hostile(mib) {
     [`logs json: resource of empty attributes, ${mib} MiB`, 'logs', true, false, () => jsonRepeat('{"resourceLogs":[{"resource":{"attributes":[', '{}', ']}}]}', S)],
     [`metrics json: resource of empty attributes, ${mib} MiB`, 'metrics', true, false, () => jsonRepeat('{"resourceMetrics":[{"resource":{"attributes":[', '{}', ']}}]}', S)],
     [`traces json: attribute array of empty values, ${mib} MiB`, 'traces', true, false, () => jsonRepeat('{"resourceSpans":[{"resource":{"attributes":[{"key":"a","value":{"arrayValue":{"values":[', '{}', ']}}}]}}]}', S)],
-    // Just under the default token limit (1,048,576): the most JSON.parse can be made to build.
-    ['traces json: empty objects at the token limit', 'traces', true, false, () => te.encode('{"resourceSpans":[{"resource":{"attributes":[' + Array(1_048_570 / 2).fill('{}').join(',') + ']}}]}')],
-    ['traces json: nested arrays at the token limit', 'traces', true, false, () => te.encode('{"resourceSpans":[{"resource":{"attributes":[' + Array(1_048_570 / 2).fill('[]').join(',') + ']}}]}')],
+    // At the default token limit (1,048,576: 8 for the envelope, 2n - 1 for n items): the most
+    // JSON.parse can be made to build, accepted and then refused item by item.
+    ['traces json: empty objects at the token limit', 'traces', true, false, () => te.encode('{"resourceSpans":[{"resource":{"attributes":[' + Array(524_284).fill('{}').join(',') + ']}}]}')],
+    ['traces json: empty arrays at the token limit', 'traces', true, false, () => te.encode('{"resourceSpans":[{"resource":{"attributes":[' + Array(524_284).fill('[]').join(',') + ']}}]}')],
   ]
 }
 

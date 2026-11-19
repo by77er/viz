@@ -15,7 +15,7 @@
 // Signals REV does not decode (no spans.ts or logs.ts there, as on main) are skipped and named.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -251,4 +251,5 @@ console.log('|---|---|---|---|---|---|')
 for (const [g, t] of tally) console.log(`| ${g} | ${t.n} | ${t.rows} | ${t.rejected} | ${t.errors} | ${t.differ} |`)
 console.log(`\n${same} identical, ${differ.length} different, ${skipped} skipped (the signal does not exist at ${REV})`)
 for (const [name, a, b] of differ.slice(0, 10)) console.log(`\n${name}\n  before: ${JSON.stringify(a).slice(0, 400)}\n  after:  ${JSON.stringify(b).slice(0, 400)}`)
+rmSync(work, { recursive: true, force: true })
 process.exit(differ.length ? 1 : 0)

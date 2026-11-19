@@ -6,7 +6,7 @@
 //   node bench/memory.mjs --dump DIR         write each case's body to DIR, measure nothing
 //   MEM_SRC=/copy/of/src node bench/memory.mjs   measure another copy of src/ (a before/after pair)
 //   MEM_MIB=2 node bench/memory.mjs          hostile bodies of 2 MiB instead of 4
-//   node bench/memory.mjs --check            exit 1 if a hostile case's heap peaks above 16 MiB
+//   node bench/memory.mjs --check            exit 1 if a case's heap peaks above its budget (below)
 //
 // Each case runs in a fresh process (Node) or a fresh workerd (one isolate), with V8's
 // `--expose-gc --trace-gc`: a forced GC before the request gives the baseline, a forced GC after
@@ -17,12 +17,10 @@
 // stores (the body, collector buffers, batches) are outside it and are reported separately by
 // Node as `arrayBuffers`. workerd has no API for that, so its column is the V8 heap only.
 //
-// The bodies are built here: hostile shapes by hand on the wire (each a few bytes per item, the
-// shapes of review M-3 and the ones found while fixing it), realistic ones with protobufjs in the
-// shape of an instrumented HTTP service (bench/otel.mjs) at about 8,192 items (8,200), the OpenTelemetry
-// Collector batch processor's default `send_batch_size` (training knowledge, not verified here).
+// The bodies are in bench/bodies.mjs: hostile shapes written by hand on the wire, realistic ones
+// encoded with protobufjs at about 8,192 items.
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -184,10 +182,12 @@ const args = process.argv.slice(2)
 const wantNode = !args.includes('--workerd') || args.includes('--node')
 const wantWorkerd = !args.includes('--node') || args.includes('--workerd')
 const asJson = args.includes('--json')
-// --check: exit 1 if a hostile case's heap peaks above 16 MiB (Node or workerd): the decode
-// limits' "bytes allocated" test, for mutants a status cannot see (bench/README of mutants).
+// --check: exit 1 if any case's V8 heap peaks above its budget: 16 MiB for a protobuf (or
+// snappy) body, in Node and workerd; for a JSON body, whose parse tree only `maxJsonTokens`
+// bounds, 32 MiB in workerd and 64 MiB in Node (it peaks at 28.4 / 50.8 MiB at the token limit).
+// The decode limits' "bytes allocated" test, for what a status cannot show (edge/README.md).
 const check = args.includes('--check')
-const CHECK_MIB = 16
+const budget = (json, where) => (!json ? 16 : where === 'workerd' ? 32 : 64)
 let failures = 0
 const dumpAt = args.indexOf('--dump')
 const dump = dumpAt >= 0 ? args.splice(dumpAt, 2)[1] : null
@@ -213,11 +213,11 @@ for (const [name, path, json, snappy, make] of cases) {
   const spec = { path, json, snappy, now: NOW }
   const n = wantNode ? runNode(bundlePath, bodyFile, spec) : null
   const w = wantWorkerd ? await runWorkerd(dir, bundlePath, bodyFile, spec, port++) : null
-  if (check && !name.startsWith('realistic')) {
+  if (check) {
     for (const [where, x] of [['Node', n], ['workerd', w]]) {
-      if (x && (x.error || x.peak > CHECK_MIB)) {
+      if (x && (x.error || x.peak > budget(json, where))) {
         failures++
-        console.error(`CHECK FAILED  ${name} (${where}): ${x.error ? x.error.slice(0, 120) : `peak ${x.peak.toFixed(1)} MiB > ${CHECK_MIB}`}`)
+        console.error(`CHECK FAILED  ${name} (${where}): ${x.error ? x.error.slice(0, 120) : `peak ${x.peak.toFixed(1)} MiB > ${budget(json, where)}`}`)
       }
     }
   }
@@ -233,7 +233,8 @@ for (const [name, path, json, snappy, make] of cases) {
   const dec = (n && !n.error ? n : {}).decoded
   console.log(`| ${name} | ${size} | ${outcome}, ${rows} rows, ${rej} refused | ${dec == null ? '–' : `${(dec / MiB).toFixed(2)} MiB`} | ${f(n)} | ${n && !n.error ? n.arrayBuffersMiB.toFixed(1) : '–'} | ${f(w)} | ${n && !n.error ? n.ms.toFixed(0) : '–'} |`)
 }
+rmSync(dir, { recursive: true, force: true })
 if (check) {
-  console.log(failures ? `${failures} hostile case(s) over ${CHECK_MIB} MiB` : `every hostile case under ${CHECK_MIB} MiB`)
+  console.log(failures ? `${failures} case(s) over their heap budget` : 'every case within its heap budget')
   process.exit(failures ? 1 : 0)
 }

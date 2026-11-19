@@ -309,16 +309,17 @@ What a request holds is bounded whatever its body's shape (`contracts/BATCH.md`,
   builds every value at once; realistic OTLP and Loki JSON has one per 10 to 35 bytes (measured
   on the bodies below), hostile JSON one per 1.5.
 
-**The model.** A request holds, at most: its body (as received, at most `maxBodyBytes`, 8 MiB;
-decompressed, at most 8 MiB; while gzip inflates both and its chunks), then the decoded data (at
-most 16 MiB, in a buffer that may be up to one row larger) and its batches (about as large again)
-while the shards are written, plus the objects of the one item being decoded (at most 65,536
-values: 6.0 MiB of V8 heap measured at worst) or, for JSON, the parsed body (at most 1,048,576
-structural characters: see the table). All but the last two are ArrayBuffers. Summed at every
-limit at once that is about 50 MiB plus the JSON tree (modelled from the parts); realistic
-requests of 8,200 items hold 1.4 to 3.2 MiB of V8 heap (protobuf) and 8 to 17 MiB (JSON) at their
-peak, plus ArrayBuffers of about twice their decoded size (measured here, below). Two requests at
-every limit at once in one 128 MB isolate are not ruled out.
+**The model.** While it decodes, a request holds its body as received (at most `maxBodyBytes`,
+8 MiB) and decompressed (at most 8 MiB; gzip inflates through chunks of up to as much again), the
+decoded data so far (at most `maxDecodedBytes`, 16 MiB, in a buffer at most one row larger), and
+V8 heap: for protobuf, the item being decoded (at most 65,536 values; every protobuf body measured
+peaks at 6.9 MiB or less in workerd), for JSON, the parse tree (28.2 MiB at the token limit, the
+worst shape found) and the body's text (up to 8 MiB more, modelled). While the shards are written
+it holds the decoded data and its batches (about as large again) and no body. All but the V8 heap
+are ArrayBuffers. With every limit reached at once that is about 50 MiB for protobuf and 80 MiB for
+JSON (modelled from the parts); two such requests do not fit one 128 MB isolate. Realistic
+requests of 8,200 items (measured here) peak at 1.4 to 3.2 MiB of V8 heap as protobuf and 8.1 to
+17.1 MiB as JSON in workerd, and decode into 1.9 to 3.7 MiB (`Decoded` in the harness).
 
 **Measured here** (`node bench/memory.mjs`; 2026-11-19, one run per case; workerd 2026-11-17 local,
 V8 heap only, from `--trace-gc`: "peak" is the largest heap a GC saw before collecting, garbage
@@ -327,10 +328,53 @@ numbers are about twice workerd's). Hostile bodies are 4 MiB decompressed, each 
 item (review M-3's shapes and those found while fixing them); realistic ones have 8,200 items in
 the shape of `bench/otel.mjs`.
 
-TABLE_PLACEHOLDER
+| Body | Size | workerd peak, MiB: before → after | Node peak, MiB: before → after | Outcome: before → after | Node decode time, ms: before → after |
+|---|---|---|---|---|---|
+| traces: resource of empty KeyValues | 4.00 MiB | 139.2 → **2.7** | 245.2 → 5.3 | 0 stored → 0 stored | 878 → 44 |
+| traces: resource attribute, array of empty values | 4.00 MiB | 63.4 → **1.0** | 133.6 → 1.4 | 0 stored → 0 stored | 472 → 27 |
+| traces: empty scopes | 4.00 MiB | 49.2 → **0.2** | 69.8 → 0.3 | 0 stored → 0 stored | 16797 → 29 |
+| traces: span of empty attributes | 4.00 MiB | 159.2 → **3.4** | 270.3 → 6.4 | 0 stored, 1 refused → 0 stored, 1 refused | 1402 → 46 |
+| traces: span of empty events | 4.00 MiB | 115.7 → **0.1** | 213.5 → 0.3 | 0 stored, 1 refused → 0 stored, 1 refused | 993 → 29 |
+| traces: span name of 4 MiB | 4.00 MiB | 4.0 → **4.1** | 4.2 → 4.2 | 0 stored, 1 refused → 0 stored, 1 refused | 21 → 9 |
+| traces: minimal valid spans | 4.00 MiB | 64.9 → **3.6** | 67.8 → 6.1 | 107,546 stored → 107,546 stored | 523 → 302 |
+| traces: empty spans | 4.00 MiB | 44.4 → **1.1** | 69.8 → 1.2 | 0 stored, 2,097,152 refused → 0 stored, 2,097,152 refused | 913 → 360 |
+| traces: empty resources | 4.00 MiB | 1.0 → **1.0** | 0.8 → 0.6 | 0 stored → 0 stored | 24 → 28 |
+| traces: span attribute of nested key-value lists | 4.00 MiB | 49.0 → **6.0** | 83.7 → 11.8 | 1 stored → 0 stored, 1 refused | 391 → 89 |
+| logs: resource of empty KeyValues | 4.00 MiB | 123.7 → **2.7** | 232.9 → 5.3 | 0 stored → 0 stored | 1222 → 44 |
+| logs: empty records | 4.00 MiB | 33.8 → **1.1** | 69.8 → 1.2 | 0 stored, 2,097,152 refused → 0 stored, 2,097,152 refused | 825 → 465 |
+| logs: record of empty attributes | 4.00 MiB | 113.4 → **2.7** | 231.9 → 5.2 | 0 stored, 1 refused → 0 stored, 1 refused | 1244 → 38 |
+| logs: record body, array of empty values | 4.00 MiB | 71.4 → **1.2** | 147.5 → 1.7 | 0 stored, 1 refused → 0 stored, 1 refused | 669 → 34 |
+| logs: minimal valid records (200,000) | 2.10 MiB | 38.8 → **6.9** | 70.3 → 7.5 | 200,000 stored → 200,000 stored | 441 → 381 |
+| loki: entry of empty metadata | 4.00 MiB | 119.7 → **2.7** | 181.2 → 5.2 | 1 stored → 0 stored, 1 refused | 831 → 34 |
+| loki json: small entries | 4.00 MiB | 47.4 → **19.6** | 74.8 → 39.6 | 149,796 stored → 149,796 stored | 493 → 328 |
+| metrics: resource of empty KeyValues | 4.00 MiB | 119.7 → **5.2** | 181.2 → 8.4 | 0 stored → 0 stored | 996 → 39 |
+| metrics: resource attribute, array of empty values | 4.00 MiB | 43.1 → **1.3** | 71.4 → 1.6 | 0 stored → 0 stored | 235 → 27 |
+| metrics: a 96 KiB resource copied into 2,000 series (157 KiB body) | 157 KiB | 1.4 → **1.2** | 1.3 → 1.2 | 2,000 stored → 413 | 1250 → 113 |
+| metrics: point of distinct attribute keys, 256 KiB | 229 KiB | 2.8 → **3.2** | 4.4 → 4.9 | 0 stored, 1 refused → 0 stored, 1 refused | 363 → 36 |
+| traces json: resource of empty attributes | 4.00 MiB | 112.0 → **0.0** | 224.1 → 0.2 | 0 stored → 413 | 777 → 9 |
+| logs json: resource of empty attributes | 4.00 MiB | 112.0 → **0.0** | 224.1 → 0.2 | 0 stored → 413 | 916 → 9 |
+| metrics json: resource of empty attributes | 4.00 MiB | 135.3 → **0.0** | 222.0 → 0.2 | 0 stored → 413 | 929 → 7 |
+| traces json: attribute array of empty values | 4.00 MiB | 75.7 → **0.0** | 138.8 → 0.2 | 0 stored → 413 | 723 → 8 |
+| traces json: empty objects at the token limit | 1.50 MiB | 43.0 → **28.2** | 85.0 → 50.8 | 0 stored → 0 stored | 289 → 178 |
+| traces json: empty arrays at the token limit | 1.50 MiB | 13.5 → **11.5** | 25.6 → 21.6 | 400 → 400 | 121 → 120 |
+| realistic traces, 8,200 spans | 3.44 MiB | 7.6 → **1.6** | 12.9 → 2.6 | 8,200 stored → 8,200 stored | 180 → 151 |
+| realistic traces JSON, 8,200 spans | 7.11 MiB | 28.6 → **17.1** | 42.2 → 36.7 | 8,200 stored → 8,200 stored | 398 → 231 |
+| realistic logs, 8,200 records | 2.14 MiB | 6.4 → **1.6** | 11.9 → 2.6 | 8,200 stored → 8,200 stored | 172 → 138 |
+| realistic logs JSON, 8,200 records | 4.00 MiB | 16.8 → **12.7** | 25.4 → 14.6 | 8,200 stored → 8,200 stored | 274 → 166 |
+| realistic Loki push (snappy), 8,200 entries | 383 KiB | 3.3 → **1.4** | 6.0 → 1.6 | 8,200 stored → 8,200 stored | 139 → 112 |
+| realistic Loki push JSON, 8,200 entries | 1.64 MiB | 8.3 → **8.1** | 9.5 → 8.7 | 8,200 stored → 8,200 stored | 159 → 121 |
+| realistic metrics, 8,200 points | 1.34 MiB | 3.1 → **3.2** | 4.0 → 4.0 | 8,200 stored → 8,200 stored | 121 → 132 |
+| realistic metrics JSON, 8,200 points | 3.06 MiB | 8.5 → **9.2** | 18.1 → 18.2 | 8,200 stored → 8,200 stored | 117 → 124 |
+
+Two outcomes change, both as the contract now says ("Decode limits": entries count as received):
+the span's key-value list repeats one key two million times (OTLP forbids repeated keys; before,
+the copies collapsed into one after all were built, and it was stored) and the Loki entry's two
+million metadata pairs have empty values (dropped by the mapping; before, the entry was stored
+without them). Every other outcome is the same, and so are the batches of every realistic body
+(`bench/differential.mjs`). Node decode time is wall time of one synchronous run on a shared machine at load 7 to 9.
 
 Not measured: anything on Cloudflare (the isolate's memory as Workers reports it, under concurrent
-requests); ArrayBuffers in workerd (no API; Node's are in the table's notes).
+requests); ArrayBuffers in workerd (no API; the harness prints Node's).
 
 ## Not implemented
 
@@ -613,7 +657,7 @@ node bench/differential.mjs 530c1cd --seeds 1,2,3   # every signal: same batches
 node scripts/mutants.mjs decode:              # on a copy outside the git checkout
 ```
 
-**Last run** (2026-11-19): `npx vitest run --maxWorkers=2` **SUITE_COUNTS**; `npx tsc --noEmit`
+**Last run** (2026-11-19): `npx vitest run --maxWorkers=2` **133 passed, 0 failed** (13 files, 39 tests new); `npx tsc --noEmit`
 clean. New: `test/decode.test.ts` (spans, logs, Loki) and `test/decode-metrics.test.ts` (metrics, kept
 apart so it carries over to a tree with metrics only), bodies written by hand in `test/wire.ts`:
 
@@ -648,17 +692,72 @@ of its protobuf requests with one to three random bytes changed (33 items refuse
 refused whole, with the same reasons and messages before and after).
 
 **Memory**: the table in "Memory per request" (`node bench/memory.mjs`, before with
-`MEM_SRC` at the old sources); `node bench/memory.mjs --check` passes (every hostile case under
-16 MiB, Node and workerd).
+`MEM_SRC` at the old sources); `node bench/memory.mjs --check` passes: every case under its heap budget, 16 MiB for
+protobuf in Node and workerd, 32 MiB (workerd) and 64 MiB (Node) for JSON, whose parse tree only the
+token limit bounds.
 
 **Mutants** (`node scripts/mutants.mjs <subset>` on a copy of `contracts/`, `shard/` and `edge/`
-outside the checkout, after the copy's suite passed SUITE_COPY; each against the whole suite).
+outside the checkout, after the copy's suite passed 133 of 133 (13 files); each against the whole suite).
 `--check`: all 105 patterns apply. The four older patterns this change moved were re-anchored with
 the same intent (histograms silently dropped; a refused resource counted once; span attributes
 after the third dropped; resource and scope attributes dropped from log metadata).
 
-MUTANT_TABLE
+**Last run: 59 of 60 killed; the one survivor is killed by `bench/memory.mjs --check`.**
+Subsets: `decode:` (29), every `otel:` mutant (19, re-anchored ones included), and the metrics
+mutants this change could reach (histograms, delta sums, `exported_job`, label order, empty-valued
+labels, series ids, NaN payload, batch splitting, label sets over a batch, the snappy limit,
+Remote Write 204; 12). The other subsets do not touch the decoders.
 
+| Mutant (`decode:`) | Killed by (one of) |
+|---|---|
+| span attributes built without the meter and counted afterwards | traces: span of empty attributes, then a valid span: … built no further than the limit however large it is |
+| log record attributes built without the meter and counted afterwards | logs: record of empty attributes, then a valid record: … |
+| data point attributes built without the meter and counted afterwards (metrics) | metrics: point of empty attributes, then a valid point: … |
+| array elements built past the limit (the check after the build) | traces: span attribute, an array of empty values: … |
+| the meter is not incremented | traces: resource of empty KeyValues: … |
+| key-value list entries not counted | traces: span attribute, a key-value list of empty entries: … |
+| array elements not counted (metrics) | metrics: point attribute, an array of empty values: … |
+| Loki structured metadata not counted | Loki: entry of empty structured metadata, then a valid entry: … |
+| the span meter not reset per span | traces: span of empty attributes, then a valid span: … |
+| a scope counted without its resource | counts a resource and each of its scopes together (spans) |
+| off by one: an item of exactly the limit refused (`take` and `over` disagree: the last value is dropped and the item stored) | stores an item of exactly 65,536 values, and refuses one more (the stored content: this mutant **survived** the first run, which checked statuses only; the test now reads every value back) |
+| off by one: an item one over the limit accepted | stores a data point of exactly 65,536 values, and refuses one more |
+| off by one: a Loki label set of exactly the limit refused | stores an item of exactly 65,536 values, and refuses one more |
+| off by one: events past the 128th built (a span of 128 events loses one) | stores a span of exactly 128 events and 128 links, every one … (**survived** the first run; the test was added for it) |
+| off by one: links past the 128th built | the same |
+| a value past the limit not read (a malformed body accepted) | still reads the rest of an item it has stopped building: a malformed body is 400 |
+| invalid UTF-8 in a key not built goes unchecked (metrics) | still reads the rest of a point it has stopped building: a malformed body is 400 |
+| overlong three-byte UTF-8 accepted | `validUtf8` agrees with a fatal TextDecoder … (its first pattern deleted a line and broke the syntax, a kill that proved nothing; re-anchored to change the bound) |
+| UTF-8 surrogates accepted | still reads the rest of a point …; `validUtf8` agrees … |
+| JSON tokens off by one (a body of exactly the limit refused) | JSON bodies: more than maxJsonTokens … is 413 before parsing, as many is accepted |
+| JSON structure inside strings counted | the same |
+| series labels past maxDecodedBytes accepted (metrics) | metrics: a resource copied into more series bytes than maxDecodedBytes is refused whole (413), nothing stored |
+| span entries not charged to maxDecodedBytes | spans: a resource copied into more entries than maxDecodedBytes allows is refused whole (413) … |
+| log rows not charged to maxDecodedBytes | takes exactly maxDecodedBytes, and refuses a byte less (spans, logs) |
+| off by one: a request of exactly maxDecodedBytes refused | the same |
+| span entries found again by scope alone (resource ignored) | routes by sender: a resource takes one slot … |
+| a span row read from the wrong place (parent from span_id) | stores every span exactly, in protobuf, JSON and gzip … |
+| a log row read from the wrong place (observed from ts) | Loki push: protobuf with snappy and JSON (also gzip) store exactly the entries |
+| JSON tokens counted after parsing (same answer, the body built first) | **survives the suite** (the status is the same by construction); killed by `node bench/memory.mjs --node --check "traces json"`: the JSON hostile bodies peak at 89.4 MiB in Node with it, 0.2 MiB without |
+
+The 31 others all killed: the four re-anchored ones (histograms silently dropped: "accepts a body
+produced by protobufjs"; a refused resource counted once: "refuses each invalid span on its own and
+counts it in partial_success"; span attributes after the third dropped: "stores every span
+exactly"; resource and scope attributes dropped from log metadata: "maps OTLP resources, scopes and
+records …"), the other 16 `otel:` mutants and the other 11 metrics ones, each by the test that killed it
+before.
+
+
+**The metrics part, for `main`** (where `/v1/metrics` is live). It is self-contained:
+`src/meter.ts` (new), `src/pb.ts` (`validUtf8`, `checkUtf8` appended), `src/otlp.ts` (the decoder:
+two passes per level, meters, the point's `Map`, JSON tokens), `src/batch.ts` (the `Collector`:
+the series table's limit, its growth capped, `decoded`), `src/limits.ts` (`maxDecodedBytes`,
+`maxJsonTokens`, `maxDecompressedBytes` 8 MiB), and in `src/index.ts` only the `EMPTY` constant and
+the two lines that let the body go in `remoteWrite` and `otlpMetrics`; tests `test/wire.ts` and
+`test/decode-metrics.test.ts`. Applied to `origin/main` as exported on 2026-11-19 (8 files, one
+patch, no conflicts): `npx tsc --noEmit` clean, `npx vitest run --maxWorkers=2` **84 passed**
+(main's 71 and these 13), and `bench/differential.mjs origin/main` above shows the decoded batches
+equal `main`'s. Its contract text is `contracts/BATCH.md`, "Decode limits" (the metrics bullets).
 
 ### Decode throughput
 
@@ -806,10 +905,10 @@ typed, and every request's resource is hashed over its canonical JSON.
 - **CPU.** A request at the default limits (8 MiB decompressed) costs up to a few hundred
   ms of CPU by the numbers above (modelled from Node). Nothing has been measured on
   Cloudflare, and nothing has been run under concurrent load.
-- **Memory.** Bounded per request ("Memory per request", D71): about 50 MiB plus a JSON body's
-  parse tree with every limit reached at once (modelled), 2 to 17 MiB of V8 heap for realistic
-  requests (measured here, local workerd). Two requests at every limit in one 128 MB isolate may
-  not fit; nothing was measured on Cloudflare.
+- **Memory.** Bounded per request ("Memory per request", D71): about 50 MiB (protobuf) or 80 MiB
+  (JSON) with every limit reached at once (modelled from measured parts), 1.4 to 17.1 MiB of V8
+  heap for realistic requests (measured here, local workerd). Two requests at every limit do not
+  fit one 128 MB isolate; nothing was measured on Cloudflare or under concurrent requests.
 - **413 drops a sender's batch.** OTLP senders do not retry 413 (training knowledge: the
   Collector treats it as permanent and does not split the batch). A Collector whose batches
   exceed 8 MiB decompressed, or decode into more than 16 MiB, loses them and logs why; set its
@@ -828,7 +927,7 @@ typed, and every request's resource is hashed over its canonical JSON.
 - **Traces and logs CPU.** An 8,000-span request costs 100 to 230 ms of CPU here (Node, noisy);
   OTLP's recommended 64 MiB body would cost seconds. `maxDecompressedBytes` (8 MiB) bounds
   it; nothing was measured on Cloudflare. Two million empty spans or records (4 MiB) cost
-  0.5 to 0.7 s in Node, the most CPU per byte found.
+  0.36 to 0.47 s in Node, the most CPU per byte found.
 - **Traces and logs are refused, not truncated**, when an attribute or field is over its limit;
   senders with very long attribute values (SQL statements over 64 KiB) lose those spans and are
   told why.
