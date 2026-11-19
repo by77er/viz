@@ -50,8 +50,9 @@ pub const MAX_QUERY_BYTES: usize = 128 * 1024;
 ///   evaluation, and dropping the tree) recurses over that height.
 ///
 /// So a query refused here never reaches a recursive pass, and one accepted needs at most
-/// `MAX_DEPTH` frames of each pass. `tests/limits.rs` runs queries at the limit on a 256 KiB
-/// stack (debug build) and `tools/wasm-probe/check.mjs` runs them in the WASM build.
+/// `MAX_DEPTH` frames of each pass. `tests/limits.rs` runs queries at the limit on a bounded
+/// stack, and `tools/wasm-probe/check.mjs` runs them in the WASM build, where the costliest
+/// needs under 128 KiB of V8's stack and of the module's own (README, Verification, 7).
 pub const MAX_DEPTH: usize = 200;
 
 /// Most regular expressions in one query, and the limits each is compiled with: nesting

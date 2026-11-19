@@ -161,14 +161,16 @@ Measured here: Linux x86-64, 4 cores and 16 GB shared with other builds (load av
 9–19 during these runs), rustc 1.97.0, Go toolchain 1.27.3 (fetched), Node 22.23. Not on
 Cloudflare. `CARGO_TARGET_DIR` was outside the repository.
 
-**What `cargo test -j 2` runs** (as CI does, `deploy/ci/matrix.mjs`): offline, with no
-Go and no network: `tests/api.rs` (14 tests), `tests/props.rs` (6 properties, 48 cases
-each), `tests/limits.rs` (4 tests and 2 properties, section 7), `tests/conformance.rs` (prints `SKIPPED: … not found` and passes when the Tempo list
-has not been fetched), and the differential exporter, which is `#[ignore]`d. Nothing in the
-default run needs Tempo, its corpus or Go. Verified on the final code with `testdata/upstream/`
+**What `cargo test -j 2` runs** (as CI does, `deploy/ci/matrix.mjs`): offline, with no Go
+and no network: `tests/api.rs` (14 tests), `tests/props.rs` (6 properties, 48 cases each),
+`tests/limits.rs` (4 tests and 2 properties, section 7), `tests/conformance.rs` (prints
+`SKIPPED: … not found` and passes when the Tempo list has not been fetched), and the
+differential exporter, which is `#[ignore]`d. Nothing in the default run needs Tempo, its
+corpus or Go. Verified on the final code (limits included) with `testdata/upstream/`
 deleted, Go removed from `PATH` and `cargo test -j 2 --offline`: api 14 passed, props 6
-passed, conformance 1 passed (printed `SKIPPED`), differential 1 ignored, exit 0 (14 s with a
-warm build directory). The checks that do need them are explicit commands:
+passed, limits 6 passed, conformance 1 passed (printed `SKIPPED`), differential 1 ignored,
+exit 0, no warnings (7 s with a warm build directory). The checks that do need them are
+explicit commands:
 
 | Check | Command (from `engine/traceql`) | Needs |
 |---|---|---|
@@ -296,7 +298,9 @@ when they are event or link fields (`echo_event_choice`).
 `tests/props.rs` (proptest; generated data and the query generator of the differential
 run, 4–14 queries per case). `cargo test` runs 48 cases per property; the final run used
 `PROPTEST_CASES=2000` (release build; 36.5 s of tests, 74 s with compilation, load average
-about 10, after the last fixes): all six pass.
+about 10, after the last fixes): all six pass. Again after the limits were added, with
+`tests/limits.rs`: props 6 pass (21.9 s), limits 6 pass (7.2 s), 102 s with compilation at
+load average 5–7.
 
 | Property | |
 |---|---|
@@ -532,7 +536,7 @@ tools/godiff/             Tempo black-box harness (AGPL, test-only; see its READ
 tools/compare.py          comparison and classification
 tools/probes/             the black-box probes behind the "observed" rules
 tools/mutate.py           mutation checks on a scratch copy
-tools/wasm-probe/         WASM size and load check
+tools/wasm-probe/         WASM size, load and limits check
 examples/bench.rs         benchmark
 ```
 
