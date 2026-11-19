@@ -1,4 +1,4 @@
-import { type PoolMap, shardName, signalPool, slotFor, tenantSlots, validPoolName } from '../../shard/src/pool'
+import { DERIVED_SIGNALS, type PoolMap, shardName, signalPool, slotFor, tenantSlots, validPoolName } from '../../shard/src/pool'
 import type { AppendResult, Shard } from '../../shard/src/shard'
 import { type Batch, buildBatches, type Collector } from './batch'
 import { HttpError } from './errors'
@@ -158,6 +158,15 @@ export async function activeSeriesLimit(env: RouteEnv, tenant: string): Promise<
  */
 export const shardShare = (limit: number, map: PoolMap, tenant: string): number => Math.ceil(limit / tenantSlots(map, tenant).length)
 
+/**
+ * Whether a pool may be the base pool of a map: a valid pool name (`POOL_NAME`) that does not
+ * end in a derived pool's suffix (`/traces`, `/logs`; contracts/BATCH.md "Streams per signal").
+ * Otherwise its metric shard `{base}/{slot}` would be the same object, under the same name, as
+ * the span or log shard of the pool one level up, and readers that tell a shard's signal by its
+ * name (query's `signalOfShard`, D62) would take it for one.
+ */
+export const validBasePool = (pool: unknown): pool is string => validPoolName(pool) && !DERIVED_SIGNALS.some((s) => pool.endsWith(`/${s}`))
+
 /** A pool map of a version this code does not read. */
 const NEWER_MAP = Symbol('newer pool map')
 
@@ -167,8 +176,9 @@ function parseMap(v: unknown): PoolMap | null | typeof NEWER_MAP {
   // contracts/COMPATIBILITY.md §3.2: never route on a guess.
   if (m.v !== undefined && m.v !== 1) return NEWER_MAP
   const int = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x)
-  // contracts/TABLES.md: only pool names whose shards' key encoding is one-to-one.
-  if (!validPoolName(m.pool)) return null
+  // contracts/TABLES.md: only pool names whose shards' key encoding is one-to-one; and
+  // contracts/BATCH.md: no base pool ending in `/traces` or `/logs`.
+  if (!validBasePool(m.pool)) return null
   if (!int(m.slots) || m.slots < 1 || m.slots > 4096) return null
   if (!int(m.spread) || m.spread < 1) return null
   if (!int(m.epoch) || m.epoch < 0) return null

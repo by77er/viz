@@ -91,9 +91,9 @@ describe('versioned storage', () => {
     const after = await runInDurableObject(p, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(ownDump(dumpOf(s))) }))
     // Every migration after 1 is additive (readableFrom 1): `compat` stays 1.
     expect(after.row).toMatchObject({ version: LATEST, compat: 1 })
-    // Version 2 added the `due` table and version 3 `stage` and `live_next`, all empty; every row of the adopted tables is as it was.
-    for (const t of ['due', 'stage', 'live_next']) expect(after.dump.rows[t], t).toEqual([])
-    const { due: _due, stage: _stage, live_next: _next, ...adopted } = after.dump.rows
+    // Version 2 added the `due` table, version 3 `stage` and `live_next`, version 4 `unpublished`, all empty; every row of the adopted tables is as it was.
+    for (const t of ['due', 'stage', 'live_next', 'unpublished']) expect(after.dump.rows[t], t).toEqual([])
+    const { due: _due, stage: _stage, live_next: _next, unpublished: _unpublished, ...adopted } = after.dump.rows
     expect(canon(adopted)).toEqual(canon(V0.rows))
   })
 
@@ -152,6 +152,7 @@ describe('versioned storage', () => {
       ['pending', () => p.pending()],
       ['cursors', () => p.cursors('metric_samples')],
       ['status', () => p.status('metric_samples')],
+      ['unpublished', () => p.unpublished()],
       ['maintain', () => p.maintain()],
       ['sweep', () => p.sweep()],
       ['safeToDelete', () => p.safeToDelete(t)],
@@ -236,7 +237,8 @@ describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §
     ['a header of an unknown kind', (h) => void (h.kind = 'viz.ledger.segment-v2'), /unknown log object kind/],
     ['a change of version 2', (_h, c) => void (c.v = 2), /change version 2/],
     ['a change of an unknown kind', (_h, c) => void (c.kind = 'truncate'), /unknown change kind/],
-    ['a file of a table this code does not know', (_h, c) => void (c.added[0]!.table = 'spans'), /table "spans"/],
+    // Not `spans`, `trace_index` or `logs`: this publisher reads those (test/signals.test.ts). A table no release knows.
+    ['a file of a table this code does not know', (_h, c) => void (c.added[0]!.table = 'profiles'), /table "profiles"/],
   ]
   for (const [what, rewrite, reason] of newer) {
     it(`${what} stops the tenant before that segment: the segments before it are published, nothing after, and it is retried until readable`, async () => {

@@ -17,7 +17,11 @@ export type SignalTable = 'spans' | 'trace_index' | 'logs'
  * Every table the ledger lists files of. Additive for every reader that acts only on the tables
  * it knows; a reader that must act on every file (the publisher) refuses a change naming a table
  * it does not know (COMPATIBILITY.md §3.2), so such readers deploy first (§3.3): `edge` writes
- * the span and log tables only where `INGEST_SIGNALS` enables a signal.
+ * the span and log tables only where `INGEST_SIGNALS` enables a signal. The publisher reads all
+ * five since 2026-11-19 (it publishes the metric pair and records the others as not published:
+ * publisher/README.md, "Tables it does not publish"); `INGEST_SIGNALS` waits until that release
+ * is the publisher's rollback floor (design/DECISIONS.md, the rollout rule of the decision that
+ * made it).
  */
 export type LedgerTable = Table | SignalTable
 
@@ -298,12 +302,11 @@ export interface LedgerChange {
    * the segment log (contracts/LEDGER-LOG.md); absent in logs written before it. Additive:
    * `removed` keeps its meaning (contracts/COMPATIBILITY.md §4, never repurpose).
    */
-  removedFiles?: { key: string; table: Table }[]
-  // Since 2026-11-19 `table` here is any `LedgerTable` (a ledger with span and log files writes
-  // them). It stays typed `Table` because readers built before compile against that type and
-  // check the value at run time (the publisher refuses one it does not know); retype it as
-  // `LedgerTable` once those readers handle the span and log tables (publisher/README.md).
-  // Writers cast; readers must not trust the static type.
+  removedFiles?: { key: string; table: LedgerTable }[]
+  // Typed `LedgerTable` since 2026-11-19, which is what the ledger has written here since it
+  // listed span and log files (it was typed `Table` until the publisher read those tables).
+  // A reader still checks the value at run time: a table outside `LedgerTable` (a newer ledger's)
+  // is refused, as an unknown `kind` is (COMPATIBILITY.md §3.2).
   /** For `add_unit` and `register_stream`: the stream's watermark after the change. */
   watermark?: Watermark
   /** For `add_unit`: the sequence range admitted, so a reader can check contiguity. */

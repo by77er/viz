@@ -299,8 +299,16 @@ is `{pool, slots, spread, epoch}`, spans go to the pool `{pool}/traces` and log 
 `{pool}/logs`, with the same `slots`, `spread` and `epoch`. Shard names stay
 `{pool}/{slot}` (so `shared/c1/traces/3`), and keys, streams, watermarks and units need no new
 field. The base pool name must therefore be at most 113 characters; `edge` refuses a tenant
-whose derived pool name breaks `POOL_NAME` (503). `design/DECISIONS.md` D57 gives the
-alternatives. As built, `edge` appends there only when `INGEST_SIGNALS` enables the signal.
+whose derived pool name breaks `POOL_NAME` (503). **A base pool name never ends in `/traces`
+or `/logs`** (added 2026-11-19, stage 3): otherwise the metric shard `{base}/{slot}` of a pool
+`p/traces` would be the very object, and carry the very name, of the span shard
+`p/traces/{slot}` of a pool `p`, and readers that tell a shard's signal by its name (`query/`,
+D62) would take metric shards for span or log shards. With the rule, a shard named
+`…/traces/{slot}` or `…/logs/{slot}` is always a span or log shard and the three signals' shard
+names never meet. `edge` refuses a pool map (`pool:<tenant>` or `DEFAULT_POOL`) whose pool
+breaks it, for every signal, metrics included (503, as for a name outside `POOL_NAME`);
+`POOL_NAME` itself cannot say it, since the derived pools end so. `design/DECISIONS.md` D57
+gives the alternatives. As built, `edge` appends there only when `INGEST_SIGNALS` enables the signal.
 The derivation is one function, `signalPool` in `shard/src/pool.ts`, used by `edge`, flush's
 sweep and the stack's tests. Flush reads a segment's signal byte and refuses a segment whose
 batches are not all of one signal it flushes (`unreadable_segment`). A filtered tail read

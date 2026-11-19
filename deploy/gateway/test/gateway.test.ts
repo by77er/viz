@@ -53,6 +53,28 @@ describe('routing', () => {
     ['/oauth/authorize', 'control'],
     ['/oauth/token', 'control'],
     ['/oauth/revoke', 'control'],
+    // Traces and logs (stage 3): OTLP/HTTP traces and logs and Loki push to ingest; Tempo's and
+    // Loki's read paths to query. Each backend answers 404 for them while its flag is off.
+    ['/v1/traces', 'ingest'],
+    ['/v1/logs', 'ingest'],
+    ['/loki/api/v1/push', 'ingest'],
+    ['/api/traces/0123456789abcdef0123456789abcdef', 'query'],
+    ['/api/traces/abc', 'query'],
+    ['/api/v2/traces/0123456789abcdef0123456789abcdef', 'query'],
+    ['/api/search', 'query'],
+    ['/api/search/tags', 'query'],
+    ['/api/v2/search/tags', 'query'],
+    ['/api/search/tag/service.name/values', 'query'],
+    ['/api/v2/search/tag/resource.service.name/values', 'query'],
+    ['/api/v2/search/tag/span.http%2Froute/values', 'query'],
+    ['/api/metrics/query_range', 'query'],
+    ['/api/metrics/query', 'query'],
+    ['/loki/api/v1/query', 'query'],
+    ['/loki/api/v1/query_range', 'query'],
+    ['/loki/api/v1/labels', 'query'],
+    ['/loki/api/v1/label/service_name/values', 'query'],
+    ['/loki/api/v1/label/a%2Fb/values', 'query'],
+    ['/loki/api/v1/series', 'query'],
   ]
 
   it.each(table)('%s goes to %s, with x-viz-route', async (path, backend) => {
@@ -67,7 +89,15 @@ describe('routing', () => {
   })
 
   const notFound = [
-    '/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/v1/logs', '/healthz/x', '/app',
+    '/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/healthz/x', '/app',
+    // near misses of the trace and log paths: exact paths, one segment per path parameter
+    '/v1/traces/', '/v1/tracesx', '/v1/trace', '/v1/logs/', '/v1/logsx', '/v1/log', '/v1', '/loki/api/v1/push/', '/loki/api/v1/pushx', '/otlp/v1/logs', '/api/prom/push',
+    '/api/traces', '/api/traces/', '/api/traces/abc/x', '/api/v2/traces', '/api/v2/traces/', '/api/v3/traces/abc', '/api/tracesx/abc', '/api/v1/traces/abc', '/querier/api/traces/abc',
+    '/api/search/', '/api/searchx', '/api/v2/search', '/api/search/tagsx', '/api/search/tag', '/api/search/tag/x', '/api/search/tag//values', '/api/search/tag/x/valuesx', '/api/search/tag/x/y/values', '/api/v3/search/tags',
+    '/api/metrics', '/api/metrics/', '/api/metrics/query_rangex', '/api/metrics/queryx', '/api/echo', '/api/status/buildinfo', '/api/overrides',
+    '/loki', '/loki/api/v1', '/loki/api/v1/', '/loki/api/v1/queryx', '/loki/api/v1/query_range/', '/loki/api/v1/labelsx', '/loki/api/v1/label', '/loki/api/v1/label/', '/loki/api/v1/label//values', '/loki/api/v1/label/x',
+    '/loki/api/v1/label/x/values/y', '/loki/api/v1/seriesx', '/loki/api/v1/tail', '/loki/api/v1/index/stats', '/loki/api/v1/index/volume', '/loki/api/v1/patterns', '/loki/api/v1/detected_fields',
+    '/loki/api/v1/rules', '/loki/api/v1/delete', '/loki/api/v1/format_query', '/loki/api/v1/status/buildinfo', '/api/prom/query', '/api/prom/label',
     // near misses of the ruler's and mcp's prefixes
     '/api/v1/monitorsx', '/api/v1/monitor', '/api/v1/rules/x', '/api/v1/alerts/x', '/api/v1/rulesx', '/mcpx', '/mcp/', '/mcp/x', '/api/v1/agents', '/api/v1/agentx', '/api/v2/alerts',
     // near misses of the OAuth paths: exact paths only, and no OpenID Connect discovery (not offered)

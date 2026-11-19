@@ -255,8 +255,9 @@ span of the row groups its hours name (37 MiB at 40,000 spans an hour). These ar
 Worker's `maxSpans` (40,000) and `maxLogRows` (60,000) defaults are what they are.
 
 `node tools/check.mjs`: every check passes (no new check: the span and log operations are
-exercised through the binding in workerd by `query/test/signals.test.ts`, 18 tests, against the
-engines' in-memory answers). `query/test/engine.test.ts` asserts the 40 exports and ABI 6.
+exercised through the binding in workerd by `query/test/signals.test.ts`, 18 tests, and
+`query/test/signals.e2e.test.ts`, 2 tests over files the real flush wrote, against the engines'
+in-memory answers). `query/test/engine.test.ts` asserts the 40 exports and ABI 6.
 
 ### 2026-11-19: foreign series in the extract (ABI 5)
 

@@ -15,14 +15,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { hooks } from '../src/coordinator'
 import { shardSignalFilter } from '../src/shards'
 import { tailHooks } from '../src/tail'
-import seed1 from './fixtures/signals/seed-1.json'
-import req1 from './fixtures/signals/seed-1.requests.json'
-import seed3 from './fixtures/signals/seed-3.json'
-import req3 from './fixtures/signals/seed-3.requests.json'
 import type { Case, Fixture } from './signals-load'
 import { type Tenant, type World, api, cost, ledgerOf, shardOf, world } from './world'
 
-interface Requests {
+/** `seed-N.e2e.json` (tools/pack-requests.mjs): the corpus's requests and the fixture's cases. */
+interface Requests extends Pick<Fixture, 'seed' | 'counts' | 'cases'> {
   nowMs: number
   requests: { path: string; contentType: string; contentEncoding?: string; body: string }[]
 }
@@ -106,8 +103,16 @@ afterEach(() => {
 })
 
 describe('traces and logs end to end: the corpus through edge, the shards, flush and the ledger', () => {
-  for (const [fx, rq] of [[seed1, req1], [seed3, req3]] as unknown as [Fixture, Requests][]) {
-    it(`seed ${fx.seed}: ${rq.requests.length} requests; answers over real flushed files and tails equal the in-memory engines', with the shards' signal filter and without it`, async () => {
+  // Imported inside each test, one seed at a time: a module reaches the runner in one message of at
+  // most 32 MiB (the e2e fixture holds the requests and cases only, not the batches and files).
+  const seeds: [number, () => Promise<Requests>][] = [
+    [1, async () => (await import('./fixtures/signals/seed-1.e2e.json')).default as unknown as Requests],
+    [3, async () => (await import('./fixtures/signals/seed-3.e2e.json')).default as unknown as Requests],
+  ]
+  for (const [seed, get] of seeds) {
+    it(`seed ${seed}: answers over real flushed files and tails equal the in-memory engines', with the shards' signal filter and without it`, async () => {
+      const rq = await get()
+      const fx = rq as unknown as Fixture
       const w = await world()
       const t = w.a
       // Small segments, so the flushed part is many units and retried rows cross units.

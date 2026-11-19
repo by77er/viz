@@ -4,8 +4,16 @@
  * service binding, unchanged.
  *
  *   /api/v1/write, /api/v1/push, /v1/metrics                    → INGEST  (viz-ingest: edge)
+ *   /v1/traces, /v1/logs, /loki/api/v1/push                     → INGEST  (OTLP/HTTP traces and logs, Loki push;
+ *                                                                 edge serves them only with INGEST_SIGNALS, else 404)
  *   /api/v1/query, /query_range, /labels, /label/…, /series,
  *   /metadata, /status/…                                        → QUERY   (viz-query)
+ *   Tempo: /api/traces/<id>, /api/v2/traces/<id>, /api/search,
+ *   /api/search/tags, /api/v2/search/tags,
+ *   /api/search/tag/<tag>/values, /api/v2/search/tag/<tag>/values,
+ *   /api/metrics/query_range, /api/metrics/query                → QUERY   (viz-query serves them only with
+ *   Loki: /loki/api/v1/query, /query_range, /labels,                        QUERY_SIGNALS, else 404)
+ *   /label/<name>/values, /series                               → QUERY
  *   /api/v1/control, /api/v1/control/…                          → CONTROL (viz-control)
  *   /api/v1/rules, /api/v1/alerts, /api/v1/monitors,
  *   /api/v1/monitors/…                                          → RULER   (viz-ruler)
@@ -45,8 +53,35 @@ export type Backend = 'ingest' | 'query' | 'control' | 'ruler' | 'mcp'
 export type Route = Backend | 'health' | 'bootstrap'
 
 const INGEST_PATHS = new Set(['/api/v1/write', '/api/v1/push', '/v1/metrics'])
+/**
+ * Spans and log records (edge, behind `INGEST_SIGNALS`): the OTLP/HTTP default paths
+ * (opentelemetry.io/docs/specs/otlp/, "OTLP/HTTP Request") and Loki's push path
+ * (grafana.com/docs/loki/latest/reference/loki-http-api/, "Ingest logs"). Read 2026-11-19.
+ */
+const SIGNAL_INGEST_PATHS = new Set(['/v1/traces', '/v1/logs', '/loki/api/v1/push'])
 const QUERY_PATHS = new Set(['/api/v1/query', '/api/v1/query_range', '/api/v1/labels', '/api/v1/series', '/api/v1/metadata'])
 const QUERY_PREFIXES = ['/api/v1/label/', '/api/v1/status/']
+/**
+ * Tempo's and Loki's read paths that viz-query serves (behind `QUERY_SIGNALS`; query/src/sigroutes.ts),
+ * as their documentation writes them (grafana.com/docs/tempo/latest/api_docs/, "Query" section;
+ * grafana.com/docs/loki/latest/reference/loki-http-api/, "Query"; read 2026-11-19). Exact paths;
+ * a path parameter (`<traceid>`, `<tag>`, `<name>`) is exactly one non-empty segment. Their other
+ * paths (Tempo's `/api/echo`, `/api/status/buildinfo`, `/api/overrides`; Loki's index, volume,
+ * patterns, tail, detected fields, rules, delete, `/otlp/v1/logs`, the deprecated `/api/prom/…`)
+ * are not served and stay 404 here.
+ */
+const SIGNAL_QUERY_PATHS = new Set([
+  '/api/search',
+  '/api/search/tags',
+  '/api/v2/search/tags',
+  '/api/metrics/query_range',
+  '/api/metrics/query',
+  '/loki/api/v1/query',
+  '/loki/api/v1/query_range',
+  '/loki/api/v1/labels',
+  '/loki/api/v1/series',
+])
+const SIGNAL_QUERY_PATTERNS = [/^\/api\/(?:v2\/)?traces\/[^/]+$/, /^\/api\/(?:v2\/)?search\/tag\/[^/]+\/values$/, /^\/loki\/api\/v1\/label\/[^/]+\/values$/]
 const CONTROL_ROOT = '/api/v1/control'
 /** The ruler's Prometheus-compatible reads, and the monitors API with everything under it (ruler/src/http.ts ROUTES). */
 const RULER_PATHS = new Set(['/api/v1/rules', '/api/v1/alerts'])
@@ -58,12 +93,13 @@ const AGENT_ROOT = '/api/v1/agent'
 const MCP_OAUTH_PATHS = new Set(['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'])
 const CONTROL_OAUTH_PATHS = new Set(['/.well-known/oauth-authorization-server', '/oauth/register', '/oauth/authorize', '/oauth/token', '/oauth/revoke'])
 
-/** Which handler a path goes to, or null for 404. Exact paths, except the three prefixes. */
+/** Which handler a path goes to, or null for 404. Exact paths (one segment for a path parameter), except the prefixes. */
 export function routeOf(path: string): Route | null {
   if (path === '/healthz') return 'health'
   if (path === '/api/v1/bootstrap') return 'bootstrap'
-  if (INGEST_PATHS.has(path)) return 'ingest'
+  if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'
   if (QUERY_PATHS.has(path) || QUERY_PREFIXES.some((p) => path.startsWith(p))) return 'query'
+  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS.some((p) => p.test(path))) return 'query'
   if (path === CONTROL_ROOT || path.startsWith(`${CONTROL_ROOT}/`) || CONTROL_OAUTH_PATHS.has(path)) return 'control'
   if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'ruler'
   if (path === MCP_PATH || path === AGENT_ROOT || path.startsWith(`${AGENT_ROOT}/`) || MCP_OAUTH_PATHS.has(path)) return 'mcp'
@@ -80,7 +116,13 @@ export const HEALTH_PATHS: Record<Backend, string> = {
 }
 
 export const ENTRYPOINTS = {
-  ingest: ['POST /api/v1/write (Prometheus Remote Write 1.0)', 'POST /v1/metrics (OTLP/HTTP metrics)', 'POST /api/v1/push'],
+  ingest: [
+    'POST /api/v1/write (Prometheus Remote Write 1.0)',
+    'POST /v1/metrics (OTLP/HTTP metrics)',
+    'POST /api/v1/push',
+    'POST /v1/traces, POST /v1/logs (OTLP/HTTP traces and logs; when the deployment enables them)',
+    'POST /loki/api/v1/push (Loki push; when the deployment enables logs)',
+  ],
   query: [
     'GET|POST /api/v1/query',
     'GET|POST /api/v1/query_range',
@@ -89,6 +131,8 @@ export const ENTRYPOINTS = {
     'GET|POST /api/v1/series',
     'GET /api/v1/metadata',
     'GET /api/v1/status/buildinfo',
+    'GET /api/traces/<id>, /api/v2/traces/<id>, /api/search, /api/search/tags, /api/v2/search/tags, /api/search/tag/<tag>/values, /api/v2/search/tag/<tag>/values, /api/metrics/query_range, /api/metrics/query (Tempo; when the deployment enables traces)',
+    'GET|POST /loki/api/v1/query, /loki/api/v1/query_range, /loki/api/v1/labels, /loki/api/v1/label/<name>/values, /loki/api/v1/series (Loki; when the deployment enables logs)',
   ],
   control: [
     '/api/v1/control/… (OpenAPI: GET /api/v1/control/openapi.json)',

@@ -18,7 +18,8 @@ test worker, every server stopped.
   (`evidence/audit-new-checks-on-v7.txt`) were run against the v7 copy. The reviewer's 13 mutants were run on v7 by the reviewer
   (1 caught); here they ran against v8.
 - **`npm test`**: `chart-rules.test.mjs` and `check.test.mjs` (the corpus without its browser mutants).
-- **`tools/mutants.mjs`**: the whole corpus, @@CORPUS@@, browser mutants included, each on a copy in the scratch area.
+- **`tools/mutants.mjs`**: the whole corpus, 153 mutants, browser mutants included, each on a copy in the scratch area: **153 of 153
+  as expected** (148 caught, the 5 harmless edits pass).
 - **`tools/check.mjs`** on the component CSS (with its rendered audit), the previews, the compositions and the fixtures.
 - **`tools/audit.mjs`**: every page at its 14 configurations, the guards in both themes at both pointers, presses by finger and mouse,
   hover, the token trace and the reduced-motion pass in both themes at both pointers.
@@ -33,11 +34,11 @@ test worker, every server stopped.
 |---|---|---|
 | M1 a narrowed query leaves the screen grey beside reserved colours, nothing offered | One rule for every way the screen changes: a series not in the result is not on screen, so its slot is open as a hidden series' is; the largest series on screen in Other take open slots at once; "Colour the eight largest" offered wherever Other has members | `chart-rules.test.mjs`: the reviewer's narrowing (failing first on v7), 300 random narrowing sequences done twice (query edit, dashboard filter) that must colour alike, 400 random sequences with narrow-and-back among the moves; mutants C1, C2, C4, C14, C15; `compare/v8-m1-query-narrowed-to-node-b-*`, `images/v8-chart-query-node-b-*` |
 | M2 single-unit number columns left-aligned | `vz-right` on "Memory, MiB" (Table preview) and on "Memory, MiB" and "Restarts" (folded-list composition) | the audit's **align** check, rendered, on every page at every configuration (failing first on v7); mutants U2, U3; `compare/v8-m2-*` |
-| M3 each guard renders one context; a token redefined locally passes | Every guard in both themes and both pointers; rings and borders read as painted, against the theme's tokens; a system token is defined once, by its theme (lint), and checked on every element as rendered; custom properties, `font-variation-settings` and picked members of Other read | the reviewer's 13 (W1 to W10, W17, W23, W24) all caught; v8's own U1 to U9; the reviewer's 65 caught; @@CORPUS@@ |
+| M3 each guard renders one context; a token redefined locally passes | Every guard in both themes and both pointers; rings and borders read as painted, against the theme's tokens; a system token is defined once, by its theme (lint), and checked on every element as rendered; custom properties, `font-variation-settings` and picked members of Other read | the reviewer's 13 (W1 to W10, W17, W23, W24) all caught; v8's own U1 to U9; the reviewer's 65 (X 32, Y 20, W 13) caught; the corpus 153 of 153 as expected |
 | m1 stacked folded rows cost density | The row is its key link's target; the key's line and "Actions…" are drawn at their own height; the 44 px are the row's | rows measured below; U5, U6 and the hit-area guard; `compare/v8-m2-m1-folded-list-400-*` |
 | m2 the audit's header names v6 | Rewritten: the latest review's compositions, every guard and context | `tools/audit.mjs` lines 1 to 44 |
 | m3 a segmented control drawn taller with a coarse pointer | Drawn at its own height; a wrapped one keeps its rows apart by a gap, so the 44 px hit areas do not meet | U8 and the hit-area guard at 320 px; `compare/v8-m3-segmented-preview-*`, `images/v8-chart-controls-320-coarse-light.png` |
-| Timings | The load beside every timing, every row above the stated load "not judged" (one row this time); the load was low enough that almost every row is judged: **two are over budget, in v7 and v8 alike** (the theme change at both layouts, the phone's touch crosshair) | `speed/`, Speed below |
+| Timings | The load beside every timing; a row is judged only when most of its samples were at a load of 4 or less (the harness now applies "most" strictly). The load was low enough that most rows of run 1 are judged: **two are over budget, in v7 and v8 alike** (the theme change at both layouts, the phone's touch crosshair) | `speed/`, Speed below |
 
 ## Majors
 
@@ -133,7 +134,13 @@ reached the key's last words (the key's line now ends that far above it).
 
 **What guards it.** The reviewer's 13 (W1 to W10, W17, W23, W24, written as the review gives them) are in the corpus and all caught;
 so are v8's own nine (U1 to U9): U1 redefines `rule-control` and `focus` from script at run time, where no lint can see it, and is
-caught by the rendered focus and contrast guards. @@MUTANTS@@
+caught by the rendered focus and contrast guards. The whole corpus, on the final tree (`evidence/mutants.txt`; 23 min at a load of
+1.4 to 7.3): **153 of 153 as expected**: R1 to R17, N 13, X 32, V 17, Y 20, Z 8, W 13, U 9, C 15 and A 4 caught (148); R18 and H1 to H4
+(harmless edits) pass. Before the final run, three of v8's own were not as expected and were fixed in the checks or the corpus, not
+waved through: W7 (the waiting line moved over the plot) ran on the Panel preview, which draws no chart, and is now run on the
+reference, where the new drawn-box sampling catches it; U9 ran on the Claim preview, whose strong words have their own rule (now the
+Section preview); C1 had become equivalent under v8 (rewritten, see below). The new drawn-box sampling then found the stacked
+row's "Actions…" reaching the key's words (fixed, above).
 
 ## Minors
 
@@ -147,14 +154,21 @@ caught by the rendered focus and contrast guards. @@MUTANTS@@
 
 `tools/speed.mjs --compare`, both shipped scenarios, v7's fixture (the v7 copy, built by its own tools) and v8's alternating run by
 run, **8 runs each, not 20** (scaled down to fit a shared machine; said here). Measured on this machine, on the system's fixture page
-(a floor, not the application), CPU 4x and Fast 4G. Results: `speed/phone.json`, `speed/desktop.json`; as printed:
-`evidence/speed-phone.txt`, `evidence/speed-desktop.txt`.
+(a floor, not the application), CPU 4x and Fast 4G. The rule: a timing row is judged only when **most** of its samples were taken at
+a load of 4 or less (4 cores). The harness counted a tie (4 of 8) as judged; I corrected it (`tools/speed.mjs`, one comparison) after
+these runs, and the tables below apply the rule as written. Calibration 257 to 301 ms (context only).
 
-**Load, beside every row.** 4 cores. The load was lower in this session than in any before: the 1-minute load at the start of each run
-was 2.3 to 6.4 (median 3.2 to 3.4) on the phone and 2.8 to 5.6 (median 3.6) on the desktop, and the median load at each row's samples
-is in the tables. The rule: a timing row is judged only when most of its samples were taken at a load of 4 or less. **For the first
-time, almost every timing row is judged.** One row is not (desktop, v8, press: median load 4.2). Calibration 300 ms (context only).
-p75 (median), ms; the load is the median at that row's samples:
+- **Run 1** (`speed/phone-run1.json`, `speed/desktop-run1.json`; printed: `evidence/speed-phone-run1.txt`,
+  `evidence/speed-desktop-run1.txt`), on v8 before its last two changes (Other's legend cells, the navigation's padding; neither is on
+  a measured path beyond one pass over Other's members per legend draw). The load was lower than in any session before: at the start
+  of each run 2.3 to 6.4 (phone) and 2.8 to 5.6 (desktop). **For the first time, timing rows are judged.**
+- **Run 2** (`speed/phone-run2-final-tree.json`, `evidence/speed-phone-run2-final-tree.txt`), phone only, on the final tree: the load
+  rose from 1.2 to 6.6 halfway through, so half of every row's samples are above 4 and **no timing row of run 2 is judged**. Its
+  figures agree with run 1 (theme change: v7 151 ms, v8 173 ms at p75; worst interaction 152 and 168 ms). The desktop was not run again.
+- A first, shorter comparison (3 runs each, `evidence/speed-phone-run0-3-runs.txt`), with the load rising to 5.9 during v8's last run,
+  showed v8 over in more rows; run 1, at a lower and evenly shared load, does not.
+
+Run 1, p75 (median), ms; the load is the median at that row's samples:
 
 | Phone, 400 x 800, coarse pointer, touch | Budget | v7 | load | | v8 | load | |
 |---|---|---|---|---|---|---|---|
@@ -173,10 +187,10 @@ p75 (median), ms; the load is the median at that row's samples:
 
 | Desktop, 1440 x 900, fine pointer | Budget | v7 | load | | v8 | load | |
 |---|---|---|---|---|---|---|---|
-| Press: Run query | 50 | 24 (22) | 3.7 | within | 26 (20) | **4.2** | **not judged** |
-| Typing in the query editor | 50 | 21 (19) | 3.7 | within | 19 (17) | 4.0 | within |
-| Crosshair, 3 / 36 / 200 series | 50 | 36 / 37 / 36 | 3.7 | within | 28 / 40 / 33 | 4.0 | within |
-| Legend row toggle, 36 / 200 series | 100 | 69 (64) / 66 (51) | 3.7 | within | 75 (67) / 51 (49) | 3.9 to 4.0 | within |
+| Press: Run query | 50 | 24 (22) | 3.7 | within | 26 (20) | 4.2 | not judged |
+| Typing in the query editor | 50 | 21 (19) | 3.7 | within | 19 (17) | 4.0 | not judged |
+| Crosshair, 3 / 36 / 200 series | 50 | 36 / 37 / 36 | 3.7 | within | 28 / 40 / 33 | 4.0 | not judged |
+| Legend row toggle, 36 / 200 series | 100 | 69 (64) / 66 (51) | 3.7 | within | 75 (67) not judged / 51 (49) within | 3.9 to 4.0 | |
 | One panel to table, 36 / 200; to chart, 36 | 100 | 74 (67) / 61 (59); 52 (48) | 3.7 | within | 68 (62) / 51 (49); 50 (43) | 3.9 | within |
 | Open a menu (Share…) | 100 | 42 (38) | 3.7 | within | 47 (39) | 3.9 | within |
 | **Change theme (to dark)** | 100 | 106 (98) | 3.7 | **over** | 117 (112) | 3.9 | **over** |
@@ -186,21 +200,17 @@ p75 (median), ms; the load is the median at that row's samples:
 | Worst interaction (Event Timing) | 200 | 136 (112) | 3.6 | within | 128 (120) | 3.8 | within |
 | Layout shift: load and run; loaded scrolled to a chart | 0.05 | 0.0004; 0.0002 | 3.6 to 3.8 | within | 0.0004; 0.0002 | 3.6 to 3.8 | within |
 
-**What this says.** v8 and v7 are alike within the spread of eight runs: no row moves in one direction at both layouts beyond what
-the same version moves between runs. Nothing in v8 runs on a measured path except the colour step (O(series) per result) and a few
-rules. **Two rows are judged over budget, and were in v7 too** (and, unjudged, in every version since v4):
+**What this says.** v8 and v7 are alike within the spread of eight runs: no row moves in one direction at both layouts and in both
+runs beyond what the same version moves between runs. Nothing in v8 runs on a measured path except the colour step (O(series) per
+result), the legend's Other cells and a few rules. **Two rows are judged over budget, and were in v7 too** (and, unjudged, in every
+version since v4):
 - **Change theme**: phone 172 ms (v7) and 174 ms (v8) at p75 against 100; desktop 106 and 117. v7's trace showed where the time goes:
   style recalculation of every element (a theme change moves every colour token on the root), then paint; no script runs. **This is
-  a failure of a blocker row, now measured, and v8 does not fix it.** It is the next change to make, and it needs a decision: restyle
-  less (for example `content-visibility: auto` on panels below the fold, which would need their reserved heights given as intrinsic
-  sizes so the layout-shift rows, judged and within, do not move) or a different budget for a change made once a session. I did not make
-  either within this revision.
-- **Crosshair by touch drag, 36 series** (phone): 54 ms at p75 in both, against 50.
-
-A first, shorter comparison (3 runs each) earlier in the session, with the load rising to 5.9 during v8's last run, showed v8 over in
-more rows (`evidence/speed-phone-first-3-runs.txt`); the 8-run comparison above, at a lower and evenly shared load, does not. Both
-are kept. These runs were taken before the last change to the chart (Other's legend cells sized from Other's own figures, see M1),
-which adds one pass over Other's members per legend draw; @@SPEED-AFTER@@
+  a blocker row of the rubric, now measured as failing, and v8 does not fix it.** It is the next change to make, and it needs a
+  decision: restyle less (for example `content-visibility: auto` on panels below the fold, whose reserved heights would then have to
+  be given as intrinsic sizes so the layout-shift rows, judged and within, do not move) or a different budget for a change made once
+  a session. I did not make either within this revision.
+- **Crosshair by touch drag, 36 series** (phone): 54 ms at p75 in both, against 50; run 2 (not judged) 66 and 53.
 
 ## The page audit, final run
 

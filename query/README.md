@@ -4,7 +4,7 @@ The read path as a service: a Worker that answers the Prometheus HTTP API for on
 tenant from that tenant's Parquet files on R2 and the rows still held by its shards, and
 the `Leaf` Durable Object it reads files through. Since 2026-11-19 it also answers Tempo's
 and Loki's HTTP APIs over the tenant's span and log tables and shards, behind
-`QUERY_SIGNALS` (off by default until the write side of stage 2 lands: "Traces and logs").
+`QUERY_SIGNALS` (off by default: "Traces and logs").
 
 ```
  client ─► query Worker ──plan──► engine (WASM)            which matchers, which time ranges; split or one place
@@ -33,8 +33,9 @@ and Loki's HTTP APIs over the tenant's span and log tables and shards, behind
 | `src/shards.ts` | Which signal a shard holds (by name), the header check of every tail batch, and the shard signal filter coded against (off until it lands) |
 | `CLEANROOM.md` | The documentation the Tempo and Loki endpoints were written from |
 | `test/signals.test.ts`, `test/signals-load.ts` | Traces and logs: every endpoint against the engines' in-memory answers over three seeds, pruning on and off, tenancy, caps, signals in tails, the seam, the flag (18 tests) |
+| `test/signals.e2e.test.ts` | Traces and logs end to end: the corpus's OTLP and Loki push requests through edge, the shards, the real flush and the ledger, then every case against the in-memory answers, with and without the shards' signal filter (2 tests) |
 | `test/signals.bench.ts` | The trace and log measurements (`npm run measure -- test/signals.bench.ts`) |
-| `tools/gen-signal-fixtures.sh`, `vitest.ledger.ts` | The trace and log fixtures (git-ignored; run before the tests); the ledger lines the tests need, applied to the test bundle only |
+| `tools/gen-signal-fixtures.sh`, `tools/pack-requests.mjs` | The trace and log fixtures (git-ignored; run before the tests): per seed the corpus's batches, flushed files and cases, and its requests with the cases for the end-to-end test |
 | `wrangler.jsonc` | The production shape (not deployed to production; deployed twice as a staged copy, `deploy/README.md`) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
 | `src/meta.ts` | The label endpoints over leaves: the engine's order (code points; label sets pair by pair) and the exact union of listings (`Listing`) |
@@ -57,7 +58,7 @@ and Loki's HTTP APIs over the tenant's span and log tables and shards, behind
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
 tools/gen-signal-fixtures.sh               # the trace and log fixtures (test/fixtures/signals/, git-ignored; builds a native example)
-npx vitest run --maxWorkers=2              # 130 tests in workerd, 14 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
+npx vitest run --maxWorkers=2              # 132 tests in workerd, 15 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
 npx tsc --noEmit                           # clean
 npm run measure                            # both local measurements (split execution about 2 minutes, cardinality about 3)
 node tools/mutants.mjs                     # the mutation check, on a scratch copy of the tree (never edits this one)
@@ -534,9 +535,10 @@ fails the call (503, the RPC throws twice).
 Tempo's and Loki's HTTP APIs over a tenant's `spans`, `trace_index` and `logs` files
 (`contracts/TRACES.md`, `contracts/LOGS.md`) and the tails of its `{pool}/traces/{slot}` and
 `{pool}/logs/{slot}` shards (D57). **Off by default**: `QUERY_SIGNALS` (`traces`, `logs`, or
-both) turns the paths on; without it they are 404 as before. They stay off in production until
-the write side of stage 2 lands (shards, flush and the ledger's tables: "Needed changes
-elsewhere"). Written from the APIs' documentation only (`CLEANROOM.md`).
+both) turns the paths on; without it they are 404 as before. The write side of stage 2 (shards,
+flush, the ledger's tables: D63) landed the same day; what is left before production is the
+gateway's routes and the deployment ("Needed changes elsewhere"). Written from the APIs'
+documentation only (`CLEANROOM.md`).
 
 | Endpoint | Supports | Not supported (answered `unsupported`, 422, or as noted) |
 |---|---|---|
@@ -606,8 +608,8 @@ metrics query of a tenant with a span or log stream registered would have failed
 - span and log tails are read with paging and the signal only (no time or series fields: those
   select metric rows), under what the files leave of `maxFetchBytes`;
 
-- **the shard's own signal filter** (`TailFilter.signals`, added to `shard/src/tail.ts` by the write
-  side's engineer on 2026-11-19, while this was built) is sent with every read: `signals: [1]` for
+- **the shard's own signal filter** (`TailFilter.signals`, D63, added to `shard/src/tail.ts` by the
+  write side's engineer on 2026-11-19, while this was built) is sent with every read: `signals: [1]` for
   metrics, `[2]` or `[3]` for spans and logs (`src/shards.ts` `shardSignalFilter`; a test runs
   every endpoint without it, as before it existed). A shard of an earlier release ignores the
   field, which is why the name rule and the header check stay.
@@ -668,8 +670,18 @@ with the engines' **in-memory** sources over every batch (no Parquet, none of th
 code; trace by ID, tags and labels written out by hand from the decoded rows). The test appends
 every batch to the tenant's shards, puts each unit's files in R2 and admits them with
 `ledger.addUnit`, so the tail is what lies above the units' watermark; another tenant's data
-(the next seed) shares every shard. The ledger accepts the tables through `vitest.ledger.ts`,
-which applies to the test bundle only the two ledger lines "Needed changes elsewhere" asks for.
+(the next seed) shares every shard. (Until the ledger listed the tables, D63, a test-only
+transform applied the two ledger lines to the test bundle; it is gone.)
+
+`test/signals.e2e.test.ts` (2 tests) runs the same seeds' corpora end to end, as the write side's
+end-to-end run does (`stack/tools/signals_readback.mjs`, `otel-corpus.mjs --requests`): the 22
+or 23 OTLP traces, OTLP logs and Loki push requests, as sent, through edge (shards sealing at
+256 KiB); after the first 60 % every span and log shard is sealed and flushed by the real `Flush`
+entrypoint (engine/wasm, ABI 3) into the files the ledger lists (seed 1: 13 `spans`, 8
+`trace_index`, 16 `logs` files; seed 3: 8, 4, 16), the rest stays tail; then all 128 cases equal
+the in-memory engines' answers (1,394 and 947 file reads, 350 and 315 tail batches over the
+cases), again with no signal filter sent and the shards answering unfiltered as the previous
+release does (every other case), and with pruning off (every third).
 
 - every endpoint, 128 cases a seed, both tenants: the answer equals the in-memory one (Tempo
   bodies byte for byte without their `metrics`, which count what was inspected; Loki bodies byte
@@ -685,10 +697,12 @@ which applies to the test bundle only the two ledger lines "Needed changes elsew
   read are each 503; the signal field on; shards of the previous release (unpaged);
 - the seam: a shard that refuses a read sends the query back to the ledger and the next attempt
   answers exactly; one that keeps refusing is 503;
-- the flag: without `QUERY_SIGNALS` every Tempo and Loki path is 404.
+- the flag: without `QUERY_SIGNALS` every Tempo and Loki path is 404;
+- the signal filter: every endpoint, and metrics queries, without `signals` (as before D63) and
+  through shards answering unfiltered.
 
-Run 2026-11-19 on the final code (09:07 to 09:09 UTC, load average 6 to 7): the whole suite
-**130 of 130** in 14 files (127 s); `npx tsc --noEmit` clean; `node
+Run 2026-11-19 on the final code (09:25 to 09:27 UTC, load average 5 to 7): the whole suite
+**132 of 132** in 15 files (101 s); `npx tsc --noEmit` clean; `node
 ../engine/wasm-query/tools/check.mjs` passes (module SHA-256 `bfcda39f…`). Also in this change, at
 the coordinator's request: `split.test.ts` "a data file missing from R2…" reads whole files
 (`leafHooks.wholeReads`), so a byte range cached by an earlier test cannot answer for the deleted
@@ -1479,58 +1493,26 @@ cold and warm.
 
 ## Needed changes elsewhere (traces and logs, 2026-11-19)
 
-What `QUERY_SIGNALS` needs before it is turned on in production, for the owners of `shard/`,
-`ledger/`, `flush/`, `edge/` and the gateway (none of them edited here).
+The write side of stage 2 landed while this was built (D63): the shard's tail filter takes
+`signals` (the shape `query/` was coded against), the ledger lists `spans`, `trace_index` and
+`logs` (`LedgerTable`, a `spans` key under its hour), and flush writes their units with
+millisecond bounds, a span segment's `spans` and `trace_index` files in one unit. `query/` sends
+`signals` with every tail read and plans the new tables directly (`test/signals.e2e.test.ts` runs
+the whole path). What is left, for its owners:
 
-1. **Done by `shard/` while this was built (2026-11-19): a signal field in the tail filter.**
-   `query/` sends it (`src/shards.ts` `shardSignalFilter`, on). The shape it was coded against,
-   which is the shape that landed, `shard/src/tail.ts` `TailFilter`:
-
-   ```ts
-   /**
-    * The `VZB1` signals to keep (contracts/BATCH.md byte 4: 1 metrics, 2 spans, 3 log records).
-    * A stored batch of another signal is passed over, never an error and never returned; absent:
-    * every batch, as before. The metric fields (`metrics`, `labels`, `keyRange`, and the time
-    * range) apply to signal-1 batches only; a batch of signal 2 or 3 that is kept is returned
-    * whole. Part of the canonical text a cursor is bound to.
-    */
-   signals?: number[]
-   ```
-
-   What is left: once every shard running answers `signals`, `query/` can choose shards by the
-   filter alone instead of by name (`signalOfShard`, item 4).
-2. **`ledger/`: list the span and log tables.** `contracts/ledger.ts` names them since
-   2026-11-19 (`Table`, `TABLES`, `dataKeyPrefix`); `ledger/src/ledger.ts` still refuses them
-   (`plan` throws `ledger: unknown table`, `addUnit` answers `invalid`), so every Tempo and Loki
-   call is 503 with that reason until it accepts them. The two lines the tests apply to their
-   bundle (`vitest.ledger.ts`) are the change, or the contract's `TABLES` imported:
-
-   ```ts
-   const TABLES: readonly Table[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
-   // fileProblem: a `spans` key lies one level deeper, under `hour={HH}/` (contracts/TRACES.md)
-   if (!f.key.startsWith(p) || f.key.length === p.length || (f.table === 'spans' ? f.key.slice(p.length).replace(/^hour=\d{2}\//, '') : f.key.slice(p.length)).includes('/')) return `file key ${f.key} is not under ${p}`
-   ```
-
-   (The contract also asks the ledger to check that a `spans` file's `[minTs, maxTs]` lies in its
-   hour; `query/` reads a span file's hour from its `minTs` and does not depend on the key.)
-3. **`flush/`: span and log units as the readers here expect them**: `FileEntry.minTs`/`maxTs`
-   in milliseconds, the floor of the files' nanosecond bounds (`contracts/engine.ts`
-   `EncodedSignalFile`); a unit's `spans` files and its `trace_index` file in ONE `addUnit`
-   (contracts/TRACES.md "Object keys"), so a plan never lists a trace's fragments without its
-   spans; keys per `dataKeyPrefix`. No other field is read.
-4. **`edge/` (or wherever pool names are checked): no base pool name ending in `/traces` or
-   `/logs`**, so that `…/traces/{slot}` names only span shards while shards are told apart by
-   name (`signalOfShard`). Today such a pool would have its metric shards classified as span
-   shards: their reads would be refused by the header check (503), not misread. Unneeded once
-   item 1 is in and `query/` chooses by the filter.
-5. **The gateway (`deploy/gateway/src/index.ts`)**: route to QUERY `/api/search`,
+1. **The gateway (`deploy/gateway/src/index.ts`)**: route to QUERY `/api/search`,
    `/api/search/…`, `/api/traces/…`, `/api/v2/traces/…`, `/api/v2/search/…`,
    `/api/metrics/query`, `/api/metrics/query_range`, `/loki/api/v1/query`,
    `/loki/api/v1/query_range`, `/loki/api/v1/labels`, `/loki/api/v1/label/…`,
    `/loki/api/v1/series` (and `/api/v1/plan`, which it does not route today); to INGEST
    `/v1/traces`, `/v1/logs`, `/loki/api/v1/push`. Every other `/loki/…` path stays 404.
-6. **`deploy/`**: `QUERY_SIGNALS` on `viz-query` only after 1 to 3 are live (with 2 missing the
-   endpoints answer 503; with 3 missing they answer from nothing).
+2. **`edge/` (or wherever pool names are checked): no base pool name ending in `/traces` or
+   `/logs`**, while shards are told apart by name for shards of a release before D63, which
+   ignore `signals` (`signalOfShard`). Such a pool would have its metric shards classified as span
+   shards: their reads would be refused by the header check (503), never misread. Unneeded once
+   every shard running answers `signals` (then `query/` chooses by the filter alone).
+3. **`deploy/`**: `QUERY_SIGNALS` on `viz-query` after 1, and with `INGEST_SIGNALS` (D63: not in a
+   deployment whose publisher does not read these tables yet).
 
 ## Needed changes in other components
 
@@ -1590,7 +1572,7 @@ Traces and logs (2026-11-19): `contracts/engine.ts` gained, in a change of its o
 and LogQL result shapes and the span and log operations of the engine (`SignalEngine`), additive.
 `contracts/ledger.ts` was widened by the write side's engineer the same day (`Table` names
 `spans`, `trace_index`, `logs`; `dataKeyPrefix`); `src/signals.ts` uses it. The tail read's
-signal field is still in no contract ("Needed changes elsewhere", 1). Before that, for metrics,
+signal field is in `shard/src/tail.ts`, with the rest of the shard's RPC (item 5 below). Before that, for metrics,
 `contracts/` was not edited.
 
 1. **`contracts/engine.ts` has no place for the read path's needs**: errors with a type,
@@ -1673,9 +1655,7 @@ New with split execution, each with its alternative:
   caps (`maxSpans`, `maxLogRows`) were chosen from two sizes' memory (about 1.5 KiB a span,
   1 KiB a row) and a 128 MB isolate, not from a soak test.
 - **Shards are told apart by name** while shards of an earlier release (no signal filter) may
-  answer: a metric pool named `…/traces` or `…/logs` would have its reads refused (never misread). The ledger is not edited
-  here and still refuses the span and log tables: with the flag on, every Tempo and Loki call is
-  503 until it accepts them; the tests apply that change to their bundle only (`vitest.ledger.ts`).
+  answer: a metric pool named `…/traces` or `…/logs` would have its reads refused (never misread).
 - **A trace straddling the window from the lake into the tail** (lake spans and their fragments
   all outside the window, unflushed spans inside it) is summarised from the spans read (D62).
 - **Tempo compatibility of trace by ID** rests on Tempo's documentation and Grafana's

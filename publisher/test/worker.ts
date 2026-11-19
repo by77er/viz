@@ -1,6 +1,7 @@
 import type { Table } from '../../contracts/ledger'
 import { holding, type Store, type StoreObject } from '../src/log'
 import { Publisher, type CommitStep, type PublisherConfig, type PublisherEnv } from '../src/publisher'
+import { Publisher as PublisherN1 } from './n1/publisher'
 
 export { Ledger } from '../../ledger/src/ledger'
 export { Ledger as LedgerAsBuilt } from '../../ledger/bench/asbuilt/ledger'
@@ -249,6 +250,54 @@ export class TestPublisher extends Publisher {
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) }
     }
+  }
+
+  async advanceClock(ms: number): Promise<void> {
+    this.ctx.storage.sql.exec(`INSERT INTO test_clock (k, offset) VALUES (0, ?) ON CONFLICT (k) DO UPDATE SET offset = offset + excluded.offset`, ms)
+  }
+}
+
+/**
+ * The publisher release before this one read the span and log tables (`test/n1/`, frozen at
+ * 9292abb), with only the seams a side-by-side comparison needs: two writers' names on one cell,
+ * a persisted clock offset, and fixed ids and clock for byte-for-byte comparison. Nothing else.
+ */
+export class TestPublisherN1 extends PublisherN1 {
+  private seeded: number | null = null
+  private fixedNow: number | null = null
+
+  constructor(ctx: DurableObjectState, env: PublisherEnv) {
+    super(ctx, env)
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS test_clock (k INTEGER PRIMARY KEY, offset INTEGER NOT NULL)`)
+  }
+
+  protected override cellOf(name: string): string {
+    return name.split('~')[0] as string
+  }
+
+  protected override now(): number {
+    const r = this.ctx.storage.sql.exec(`SELECT offset FROM test_clock WHERE k = 0`).toArray()[0]
+    return (this.fixedNow ?? Date.now()) + ((r?.offset as number | undefined) ?? 0)
+  }
+
+  protected override random(n: number): Uint8Array {
+    if (this.seeded === null) return super.random(n)
+    const out = new Uint8Array(n)
+    let x = this.seeded
+    for (let i = 0; i < n; i++) {
+      x ^= x << 13
+      x ^= x >>> 17
+      x ^= x << 5
+      x >>>= 0
+      out[i] = x & 0xff
+    }
+    this.seeded = x || 1
+    return out
+  }
+
+  async determinism(seed: number, now: number): Promise<void> {
+    this.seeded = seed >>> 0 || 1
+    this.fixedNow = now
   }
 
   async advanceClock(ms: number): Promise<void> {

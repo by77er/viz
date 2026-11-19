@@ -134,7 +134,7 @@ pull request description by commit, so it stays valid after merge:
   Chart component says not to build them from it. A trace's spans (Waterfall) and log lines (Log) are
   their own components since v5.
 - The budgets have been measured only on the system's own fixture page (a floor), on a shared
-  machine. In v8's session the load was low enough to judge almost every timing row for the first time:
+  machine. In v8's session the load was low enough to judge most timing rows for the first time:
   **the theme change is over budget at both layouts** (phone 174 ms, desktop 117 ms at p75, against
   100 ms; v7 alike) and the phone's touch crosshair over 36 series is just over (54 against 50 ms); every
   other row and layout shift are within budget (`reviews/system-v8/response.md`, Speed). The theme

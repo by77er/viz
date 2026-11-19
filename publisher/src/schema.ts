@@ -67,6 +67,25 @@ CREATE TABLE IF NOT EXISTS live_next (
       PRIMARY KEY (tbl, key));
 `),
     },
+    {
+      // The tables this publisher reads and does not publish (`UNPUBLISHED_TABLES`: spans,
+      // trace_index, logs; design/DECISIONS.md D64): per tenant and table, how far the ledger log
+      // has been counted (`incarnation`, `version`), the live files counted at that point, where the
+      // count started (`origin`: 'base', a re-base's base or checkpoint, exact; 'log', the first
+      // change this publisher read that named the table), and when the table was first and last
+      // named. Additive: releases 1 to 3 neither read nor write it (and stop a tenant whose log
+      // names those tables), so each stays a rollback target of storage this release wrote.
+      version: 4,
+      name: 'unpublished: the ledger tables read and not published',
+      readableFrom: 1,
+      up: (sql) =>
+        void sql.exec(`
+CREATE TABLE IF NOT EXISTS unpublished (
+      tbl TEXT NOT NULL, tenant TEXT NOT NULL, incarnation INTEGER NOT NULL, version INTEGER NOT NULL,
+      files INTEGER NOT NULL, origin TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+      PRIMARY KEY (tbl, tenant));
+`),
+    },
   ],
 }
 

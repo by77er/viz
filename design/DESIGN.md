@@ -461,14 +461,16 @@ is pinned near the bucket so that hits concentrate.
 ### 6.4 Traces and logs
 
 As built (2026-11-19, `query/README.md` "Traces and logs", D62): the query Worker answers
-Tempo's and Loki's HTTP APIs behind `QUERY_SIGNALS`, off until the write side of stage 2 lists
-the `spans`, `trace_index` and `logs` tables in the ledger. The engines (`engine/traceql`,
+Tempo's and Loki's HTTP APIs behind `QUERY_SIGNALS` (off by default); the write side of stage 2
+(D63) flushes and lists the `spans`, `trace_index` and `logs` tables, and tail reads choose
+batches by signal (`signals`). The engines (`engine/traceql`,
 `engine/logql`, clean-room, D35, D40, D50) are linked into the read path's one WASM module
 (`engine/wasm-query`, ABI 6), which reads the files `engine/storage` writes and the span and log
 tail batches through the engines' read seams. The seam with the tail is the metrics one (§2):
 one ledger version per query, tails strictly after the plan and above its watermarks, refusals
-re-planned. Every read asks only its signal's shards and every tail batch is checked by its
-header (a batch of another signal refuses the query, never misread).
+re-planned. Every read sends its signal to the shards (`signals`), asks only its signal's shards
+(by name, for shards of a release before D63) and checks every tail batch's header (a batch of
+another signal refuses the query, never misread).
 
 - **Trace by ID:** the `trace_index` row groups whose trace-id range (from the index fragment)
   holds the id are read; the trace's fragments name its extent and the `spans` hours that hold

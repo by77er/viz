@@ -72,7 +72,9 @@ One row per series present in the file's day.
   A pool map naming another pool is refused where it is read (edge: 503); a shard object
   addressed by another name serves nothing; the ledger answers `invalid` to a unit of a
   stream named otherwise and refuses to register it. (Added 2026-11-19; every name in use
-  already fits, so nothing written before changes.)
+  already fits, so nothing written before changes.) The pool a pool map names (the base of
+  the derived span and log pools) also never ends in `/traces` or `/logs`
+  (`contracts/BATCH.md`, "Streams per signal"); edge refuses such a map in the same way.
 - `hash8` is the first 8 hex characters of the SHA-256 of the file bytes.
 - Files are written with `If-None-Match: *`.
 

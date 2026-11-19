@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { openSchema, refusalOf, type SchemaState, SchemaTooNewError } from '../../contracts/schema'
-import { TENANT_ID, type FileEntry, type Table } from '../../contracts/ledger'
+import { TENANT_ID, type FileEntry, type LedgerTable, type SignalTable, type Table } from '../../contracts/ledger'
 import { readAvro, writeAvro, type AvroCodec } from './avro'
 import {
   CURSORS_FORMAT_VERSION,
@@ -35,9 +35,11 @@ import { PUBLISHER_SCHEMA } from './schema'
 import {
   R2_CONNECTIONS,
   Slots,
+  UNPUBLISHED_TABLES,
   cursorCompare,
   holding,
   inBatches,
+  isPublished,
   listTenants,
   readTenantLog,
   replayAt,
@@ -195,6 +197,49 @@ export interface TenantReport {
   rebase?: BaseInfo
   /** The cursor each table is at after this publish. */
   cursors: Partial<Record<Table, Cursor>>
+  /**
+   * Tables of the tenant's ledger that this publisher reads and does not publish, with the live
+   * files it counts of each after this publish (`unpublished()` has the whole record). Absent for a
+   * tenant whose log has never named one, so a metric-only tenant's report is as it was.
+   */
+  unpublished?: Partial<Record<SignalTable, number>>
+}
+
+/**
+ * What the publisher records of a table it reads and does not publish, for one tenant (storage
+ * table `unpublished`, migration 4; README, "Tables it does not publish").
+ */
+export interface UnpublishedRecord {
+  table: SignalTable
+  tenant: string
+  /** The ledger version through which this table's changes have been counted. */
+  cursor: Cursor
+  /** Live files of the table at `cursor`, as counted. */
+  files: number
+  /**
+   * Where the count started. `base`: the base or checkpoint of the tenant's last re-base, so the
+   * count is the ledger's. `log`: the first change this publisher read that named the table (a
+   * release before this one never passes such a change, so nothing before it is missed, unless this
+   * publisher lost its storage since: README, Risks).
+   */
+  origin: 'base' | 'log'
+  /** The publisher's clock when the table was first and last named in what it read for the tenant. */
+  firstSeen: number
+  lastSeen: number
+}
+
+/** Where a table is (`status`). */
+export interface TableStatus {
+  /** False for a table the ledger lists and this publisher does not publish: then only `unpublished` says anything. */
+  published: boolean
+  version: number
+  snapshotId: number | null
+  seq: number
+  files: number
+  manifests: number
+  metadataKey: string | null
+  /** For a table not published: the tenants whose ledgers list it and the live files counted, in total. */
+  unpublished?: { tenants: number; files: number }
 }
 
 export interface TableReport {
@@ -620,13 +665,39 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return out
   }
 
-  /** Where a table is: metadata version, current snapshot, live files and manifests. */
-  async status(table: Table): Promise<{ version: number; snapshotId: number | null; seq: number; files: number; manifests: number; metadataKey: string | null }> {
+  /**
+   * Where a table is: metadata version, current snapshot, live files and manifests. For a table the
+   * ledger lists and this publisher does not publish (`UNPUBLISHED_TABLES`): `published: false`, no
+   * Iceberg state, and what it has counted of it.
+   */
+  async status(table: LedgerTable): Promise<TableStatus> {
     this.guard()
+    if (!isPublished(table)) {
+      if (!(UNPUBLISHED_TABLES as readonly string[]).includes(table)) throw new Error(`publisher: unknown table ${JSON.stringify(table)}`)
+      const r = this.sql.exec(`SELECT COUNT(*) AS tenants, COALESCE(SUM(files), 0) AS files FROM unpublished WHERE tbl = ?`, table).one()
+      return { published: false, version: 0, snapshotId: null, seq: 0, files: 0, manifests: 0, metadataKey: null, unpublished: { tenants: r.tenants as number, files: r.files as number } }
+    }
     const s = this.state(table)
     const files = this.sql.exec(`SELECT COUNT(*) AS n FROM live WHERE tbl = ?`, table).one().n as number
     const manifests = this.sql.exec(`SELECT COUNT(*) AS n FROM manifest WHERE tbl = ?`, table).one().n as number
-    return { version: s.version, snapshotId: s.snapshotId, seq: s.seq, files, manifests, metadataKey: s.version > 0 ? this.metaKey(table, s.version) : null }
+    return { published: true, version: s.version, snapshotId: s.snapshotId, seq: s.seq, files, manifests, metadataKey: s.version > 0 ? this.metaKey(table, s.version) : null }
+  }
+
+  /** What this publisher records of the tables it reads and does not publish: every tenant's, or one tenant's. */
+  async unpublished(tenant?: string): Promise<UnpublishedRecord[]> {
+    this.guard()
+    const rows = tenant === undefined
+      ? this.sql.exec(`SELECT * FROM unpublished ORDER BY tenant, tbl`).toArray()
+      : this.sql.exec(`SELECT * FROM unpublished WHERE tenant = ? ORDER BY tbl`, tenant).toArray()
+    return rows.map((r) => ({
+      table: r.tbl as SignalTable,
+      tenant: r.tenant as string,
+      cursor: { ledgerIncarnation: r.incarnation as number, version: r.version as number },
+      files: r.files as number,
+      origin: r.origin as 'base' | 'log',
+      firstSeen: r.first_seen as number,
+      lastSeen: r.last_seen as number,
+    }))
   }
 
   // ───────────────────────────── publish ─────────────────────────────
@@ -751,7 +822,113 @@ export class Publisher extends DurableObject<PublisherEnv> {
         if (c) (reports.get(log.tenant) as TenantReport).cursors[table] = c
       }
     }
+    // After the metric commits, and touching none of their state.
+    await this.noteUnpublished(store, logs, reports)
     return { tenants: [...reports.values()], tables }
+  }
+
+  /**
+   * The tables this publisher reads and does not publish (`UNPUBLISHED_TABLES`; README, "Tables it
+   * does not publish"). Per tenant and table: the live files the ledger lists, counted from the
+   * base or checkpoint of a re-base (staged as tombstones only, never as files) and the changes
+   * read; and the files those changes (and a re-base's tombstones) remove, which are released to
+   * the janitor one `deleteGraceMs` later, as files removed before they were ever published are:
+   * no snapshot of this publisher can reference them. Not while the cell has an Iceberg table of
+   * that name, which only a newer publisher would have written (COMPATIBILITY.md §5: never act
+   * against a newer writer's state); then nothing of that table is released.
+   *
+   * SQLite only, apart from that check. Idempotent: a row's version says how far its table has
+   * been counted, so changes at or below it are never counted again (an attempt retried after a
+   * lost conditional write reads them again). A tenant whose metric changes did not apply
+   * (`inconsistent`) is left as it was.
+   */
+  private async noteUnpublished(store: Store, logs: TenantLog[], reports: Map<string, TenantReport>): Promise<void> {
+    const sql = this.sql
+    type Note = { tenant: string; table: SignalTable; incarnation: number; version: number; files: number; origin: 'base' | 'log'; named: boolean; existed: boolean; firstSeen: number; lastSeen: number; release: string[] }
+    const notes: Note[] = []
+    for (const log of logs) {
+      if (log.status === 'no_log' || log.status === 'no_base' || log.status === 'cursor_ahead') continue
+      if (reports.get(log.tenant)?.status === 'inconsistent') continue
+      for (const table of UNPUBLISHED_TABLES) {
+        const row = sql.exec(`SELECT incarnation, version, files, origin, first_seen, last_seen FROM unpublished WHERE tbl = ? AND tenant = ?`, table, log.tenant).toArray()[0]
+        let files: number
+        let origin: 'base' | 'log'
+        let after: number
+        const release: string[] = []
+        let named = false
+        if (log.base && (!row || (row.incarnation as number) < log.incarnation || (row.version as number) < log.start)) {
+          // Counted again from the state the log was re-based from.
+          files = log.base.unpublished?.[table] ?? 0
+          origin = 'base'
+          after = log.start
+          for (const r of sql.exec(`SELECT key FROM stage WHERE tenant = ? AND tbl = ? AND tomb = 1 ORDER BY key`, log.tenant, table)) release.push(r.key as string)
+          named = files > 0 || release.length > 0
+        } else if (row && (row.incarnation as number) === log.incarnation) {
+          files = row.files as number
+          origin = row.origin as 'base' | 'log'
+          after = row.version as number
+        } else if (!row && !log.base) {
+          // Never named before in what this publisher read: a release before this one cannot have
+          // passed a change that names it, so nothing of it lies below the cursor.
+          files = 0
+          origin = 'log'
+          after = log.start
+        } else continue // a row of another incarnation and no base to count from: nothing to say
+        let version = after
+        for (const c of log.changes) {
+          if (c.version <= after) continue
+          for (const f of c.added) {
+            if (f.table !== table) continue
+            files++
+            named = true
+          }
+          for (const r of c.removedFiles) {
+            if (r.table !== table) continue
+            files--
+            named = true
+            release.push(r.key)
+          }
+          version = c.version
+        }
+        if (!row && !named) continue
+        const now = this.now()
+        notes.push({
+          tenant: log.tenant, table, incarnation: log.incarnation, version, files, origin, named, existed: row !== undefined, release,
+          firstSeen: (row?.first_seen as number | undefined) ?? now, lastSeen: named ? now : (row!.last_seen as number),
+        })
+      }
+    }
+    // Released only while no Iceberg table of that name exists in the cell (one list per table, and only when there is something to release).
+    const owned = new Map<SignalTable, boolean>()
+    for (const table of new Set(notes.filter((n) => n.release.length > 0).map((n) => n.table))) {
+      owned.set(table, (await store.list({ prefix: `${this.cell}/iceberg/${table}/`, limit: 1 })).objects.length > 0)
+    }
+    const now = this.now()
+    this.ctx.storage.transactionSync(() => {
+      for (const n of notes) {
+        sql.exec(
+          `INSERT INTO unpublished (tbl, tenant, incarnation, version, files, origin, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (tbl, tenant) DO UPDATE SET incarnation = excluded.incarnation, version = excluded.version, files = excluded.files,
+             origin = excluded.origin, last_seen = excluded.last_seen`,
+          n.table, n.tenant, n.incarnation, n.version, n.files, n.origin, n.firstSeen, n.lastSeen,
+        )
+        if (owned.get(n.table)) continue
+        for (const key of n.release) this.recordRemoved(n.table, n.tenant, key, 0, now)
+      }
+    })
+    for (const n of notes) {
+      const r = reports.get(n.tenant)
+      if (r) (r.unpublished ??= {})[n.table] = n.files
+    }
+    // Tenants read in this publish whose records did not change still report them.
+    for (const log of logs) {
+      const r = reports.get(log.tenant)
+      if (!r) continue
+      for (const row of sql.exec(`SELECT tbl, files FROM unpublished WHERE tenant = ?`, log.tenant)) {
+        const t = row.tbl as SignalTable
+        if (r.unpublished?.[t] === undefined) (r.unpublished ??= {})[t] = row.files as number
+      }
+    }
   }
 
   /**
@@ -1357,7 +1534,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     return body.length
   }
 
-  private recordRemoved(table: Table, tenant: string, key: string, removedSeq: number, freeAt: number | null): void {
+  private recordRemoved(table: LedgerTable, tenant: string, key: string, removedSeq: number, freeAt: number | null): void {
     this.sql.exec(`INSERT INTO removed (tbl, tenant, key, removed_seq, free_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tbl, key) DO NOTHING`, table, tenant, key, removedSeq, freeAt)
   }
 
