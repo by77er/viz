@@ -343,6 +343,11 @@ node --experimental-strip-types --no-warnings bench/walk.node.mjs   # the bounds
     bounds NULL, served, kept by every hull; not migrated again on the next open).
   - The D61 rollback test now expects the current schema version (3), and the adoption test checks
     that adopted rows have no bounds.
+  - **Stack** (which bundles the shard), 2026-11-19 after this change: `npx vitest run
+    --maxWorkers=2` 50 passed, 1 skipped (11 files); the gateway suite 4 of 4. Its `tsc --noEmit`
+    failed in the shared tree on two lines of `publisher/src/log.ts`, which another builder had
+    uncommitted edits in at the time; on a scratch copy with the committed publisher and this
+    shard it was clean.
 - **Measured here** (local workerd, 2026-11-19, three runs at load average 3.0 to 3.9;
   `bench/results/signaltail.txt`): eight hours of tail, one batch per ten minutes of start time,
   48 batches; spans 18.74 MB (1,500 spans a batch, about 300 B each), logs 16.79 MB (2,000
@@ -764,14 +769,22 @@ numbers as of `0e75337`):
      answers, pruning on and off, are unchanged: the shard keeps every batch holding a span inside
      the bound). With `shardSignalFilter.enabled = false` and with `tailHooks.previousRelease` (a
      shard that ignores the range) the answers are the same.
-   - Mutant: pass the window instead of the bound in `traceRounds`; `completeness.test.ts`'s
-     trace whose child lies in the tail, after the window and inside the margin, must fail.
+   - Mutant: pass the window instead of the bound in `traceRounds`. A test must fail: a trace
+     found in the window whose child span lies in the tail, in a batch of its own that starts
+     after the window and inside the margin (`completeness.test.ts` has a "child in the tail"
+     case; if its child's batch overlaps the window, add one whose batch does not).
 4. **Docs**: `query/README.md` "Traces and logs" and D62's cost paragraph (m-3's limit) then say
    a query takes the tail inside its bound; the limit that remains is a backlog of more than
    `maxFetchBytes` inside one bound (five hours for a one-hour search).
 5. **Release order**: none needed. The range is an existing field; a shard of the release before
    ignores it for span and log batches (returns them all) and the engine selects the same rows,
    so query and shard may deploy in either order.
+
+**Checked in a scratch copy** (2026-11-19; the tree at `b237b6b` with this shard and `contracts/`,
+items 1 and 2 applied to the copy's `query/src/signals.ts`, never to `query/` here): `tsc --noEmit`
+clean; `signals.test.ts`, `completeness.test.ts`, `sigcompat.test.ts` and `memory.test.ts`: 31
+passed, 1 failed, the one item 3 names (`early`: `Tail-Bytes` is now 0, the tail skipped);
+`signals.e2e.test.ts` (answers equal to the in-memory engines' over whole corpora): 2 of 2 passed.
 
 ### Registration before writes (D61)
 

@@ -1,7 +1,7 @@
 // FROZEN: shard/src/shard.ts as it stood before span and log batches carried time bounds (D72; review m-3 of
 // design/reviews/signals-end-to-end.md), at fd4b75a: schema 2, the release before it. Used as the previous release on
-// the SAME storage (test/bounds.test.ts: rollback and roll-forward). Its tail filter is frozen beside it (./tail.ts).
-// Not maintained: do not edit.
+// the SAME storage (test/bounds.test.ts: rollback, roll-forward and upgrade from schema 2) and as the "before" side of
+// bench/signaltail.bench.test.ts's appends. Its tail filter is frozen beside it (./tail.ts). Not maintained: do not edit.
 import { DurableObject } from 'cloudflare:workers'
 import { SHARD_NAME, TENANT_ID } from '../../../contracts/ledger'
 import type { Ledger } from '../../../ledger/src/ledger'
