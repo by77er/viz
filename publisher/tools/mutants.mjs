@@ -195,6 +195,8 @@ const mutants = [
     edits: [['    const read = order.slice(0, Math.max(1, cfg.maxTenantsPerPublish))', '    const read = order']] },
   { id: 'R6', what: 'starvation: a tenant waiting for its re-base is not read from the cursors it has (its metrics wait too)', file: P, tests: ['test/caps.test.ts'],
     edits: [['        if (!from) return null\n', '        if (!from || uncursored.get(tenant)!.length > 0) return null\n']] },
+  { id: 'R7', what: 'an attempt started over after a conflict stops at the first tenant it may not admit, and skips those it admitted', file: P, tests: ['test/caps.test.ts'],
+    edits: [['      if (!this.admit(cfg, budget, tenant)) continue\n', '      if (!this.admit(cfg, budget, tenant)) break\n']] },
 
   // ── never upstream of ingest (D15), and nothing while idle (D34) ──
   { id: 'I1', what: 'a nudge waits for the publisher however long it takes', file: N, tests: ['test/triggers.test.ts'],

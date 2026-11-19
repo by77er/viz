@@ -1,6 +1,7 @@
-import type { Collector } from './batch'
+import { type Collector, Reject } from './batch'
 import { badRequest } from './errors'
-import { PbReader, utf8String } from './pb'
+import { FREE, Meter, SKIM, checkJsonTokens } from './meter'
+import { PbReader, checkUtf8, utf8String } from './pb'
 
 /**
  * OTLP metrics → Prometheus-shaped samples, following the OpenTelemetry → Prometheus
@@ -18,6 +19,11 @@ import { PbReader, utf8String } from './pb'
  *  - a point flagged NO_RECORDED_VALUE becomes a Prometheus staleness marker
  *
  * The protobuf and JSON front-ends below both feed `OtlpMapper`, so the mapping exists once.
+ *
+ * Memory (edge/README.md, "Memory per request"): the attribute values of a resource and of a
+ * data point are counted while they are decoded (src/meter.ts). A resource over the limit
+ * refuses every point under it, a point over it is refused on its own ("label set too large
+ * to fit one batch": a series cannot hold 65,536 values), and neither is built past the limit.
  */
 
 type Attr = readonly [key: string, value: string]
@@ -107,9 +113,12 @@ export class OtlpMapper {
   private resourceEnd = 0
   private resourceSlot = new Map<string, number>()
   private metricEnd = 0
+  /** The current resource was over the decode limit: its points are refused. */
+  resourceOver = false
   // Scratch for one point.
   private ownNames: string[] = []
   private ownValues: string[] = []
+  private ownIndex = new Map<string, number>()
   private saved: number[] = []
 
   constructor(private readonly c: Collector) {}
@@ -149,7 +158,8 @@ export class OtlpMapper {
     this.offs[o + 3] = this.p
   }
 
-  resourceAttrs(attrs: Attr[]): void {
+  resourceAttrs(attrs: Attr[], over = false): void {
+    this.resourceOver = over
     const m = new Map<string, string>()
     let service = ''
     let namespace = ''
@@ -185,7 +195,7 @@ export class OtlpMapper {
     return null
   }
 
-  rejectPoints(reason: string, n: number): void {
+  rejectPoints(reason: string | number, n: number): void {
     this.c.reject(reason, n)
   }
 
@@ -194,16 +204,20 @@ export class OtlpMapper {
     this.p = this.metricEnd
     const names = this.ownNames
     const values = this.ownValues
+    const index = this.ownIndex
     const saved = this.saved
     names.length = values.length = saved.length = 0
+    index.clear()
     const first = this.nResource + 1
     for (let a = 0; a < attrs.length; a++) {
       const name = attrLabel(attrs[a]![0])
       let v = attrs[a]![1]
       const rs = this.resourceSlot.get(name)
-      let k = names.indexOf(name)
+      // A Map, not `indexOf`: a point may carry thousands of attributes before it is refused.
+      let k = index.get(name) ?? -1
       if (k < 0) {
         k = names.length
+        index.set(name, k)
         names.push(name)
         values.push(v)
         if (rs !== undefined) saved.push(rs, this.offs[4 * rs + 2]!, this.offs[4 * rs + 3]!)
@@ -273,47 +287,59 @@ function attrString(v: unknown): string {
 //   AnyValue        { string_value = 1; bool_value = 2; int_value = 3; double_value = 4;
 //                     ArrayValue array_value = 5; KeyValueList kvlist_value = 6; bytes_value = 7; }
 //
-// A message's fields may arrive in any order, so each level is scanned first for its
-// scalar fields and the positions of its children, and the children are read afterwards.
+// A message's fields may arrive in any order, so a level is read twice: first for its
+// scalar fields (and to count its children), then for its children in order. Nothing is kept
+// per child between the two passes.
 
 export function decodeOtlpProto(body: Uint8Array, c: Collector): void {
   const r = new PbReader(body)
   const m = new OtlpMapper(c)
   const view = new DataView(body.buffer, body.byteOffset, body.byteLength)
+  const meter = new Meter()
   while (r.pos < r.end) {
     const tag = r.uint32()
-    if (tag === 0x0a) resourceMetrics(r, m, view)
+    if (tag === 0x0a) resourceMetrics(r, m, view, meter)
     else r.skip(tag & 7)
   }
 }
 
-function resourceMetrics(r: PbReader, m: OtlpMapper, view: DataView): void {
+function resourceMetrics(r: PbReader, m: OtlpMapper, view: DataView, meter: Meter): void {
   const end = r.len()
-  const scopes: number[] = []
-  let attrs: Attr[] = []
+  const start = r.pos
+  const attrs: Attr[] = []
+  meter.reset()
+  let scopes = 0
   while (r.pos < end) {
     const tag = r.uint32()
     if (tag === 0x0a) {
       const rend = r.len()
       while (r.pos < rend) {
         const t = r.uint32()
-        if (t === 0x0a) attrs.push(keyValue(r, view))
-        else r.skip(t & 7)
+        if (t === 0x0a) {
+          const kv = keyValue(r, view, meter)
+          if (kv) attrs.push(kv)
+        } else r.skip(t & 7)
       }
       r.done(rend)
     } else if (tag === 0x12) {
-      scopes.push(r.pos)
+      scopes++
       r.pos = r.len()
     } else r.skip(tag & 7)
   }
   r.done(end)
-  m.resourceAttrs(attrs)
-  for (const at of scopes) {
-    r.pos = at
+  if (scopes === 0) return
+  m.resourceAttrs(attrs, meter.over)
+  r.pos = start
+  while (r.pos < end) {
+    const tag = r.uint32()
+    if (tag !== 0x12) {
+      r.skip(tag & 7)
+      continue
+    }
     const send = r.len()
     while (r.pos < send) {
       const t = r.uint32()
-      if (t === 0x12) metric(r, m, view)
+      if (t === 0x12) metric(r, m, view, meter)
       else r.skip(t & 7)
     }
     r.done(send)
@@ -321,12 +347,11 @@ function resourceMetrics(r: PbReader, m: OtlpMapper, view: DataView): void {
   r.pos = end
 }
 
-function metric(r: PbReader, m: OtlpMapper, view: DataView): void {
+function metric(r: PbReader, m: OtlpMapper, view: DataView, meter: Meter): void {
   const end = r.len()
+  const start = r.pos
   let name = ''
   let unit = ''
-  // [field number, position of the length prefix] of each data message.
-  const data: number[] = []
   while (r.pos < end) {
     const tag = r.uint32()
     if (tag === 0x0a || tag === 0x1a) {
@@ -335,46 +360,58 @@ function metric(r: PbReader, m: OtlpMapper, view: DataView): void {
       r.pos = e
       if (tag === 0x0a) name = s
       else unit = s
-    } else if (tag === 0x2a || tag === 0x3a || tag === 0x4a || tag === 0x52 || tag === 0x5a) {
-      data.push(tag >>> 3, r.pos)
-      r.pos = r.len()
     } else r.skip(tag & 7)
   }
   r.done(end)
-
-  for (let i = 0; i < data.length; i += 2) {
-    const field = data[i]!
-    r.pos = data[i + 1]!
-    const dend = r.len()
-    const points: number[] = []
-    let temporality = 0
-    let monotonic = false
-    while (r.pos < dend) {
-      const t = r.uint32()
-      if (t === 0x0a) {
-        points.push(r.pos)
-        r.pos = r.len()
-      } else if (t === 0x10 && (field === 7 || field === 9 || field === 10)) temporality = r.uint32()
-      else if (t === 0x18 && field === 7) monotonic = r.uint32() !== 0
-      else r.skip(t & 7)
-    }
-    r.done(dend)
-    if (field === 9) m.rejectPoints('histograms are not supported', points.length)
-    else if (field === 10) m.rejectPoints('exponential histograms are not supported', points.length)
-    else if (field === 11) m.rejectPoints('summaries are not supported', points.length)
-    else {
-      const reason = m.metric(name, unit, field === 7, temporality, monotonic)
-      if (reason !== null) m.rejectPoints(reason, points.length)
-      else for (const at of points) numberDataPoint(r, m, view, at)
-    }
+  // The data messages, in order: gauge 5, sum 7, histogram 9, exponential histogram 10, summary 11.
+  r.pos = start
+  while (r.pos < end) {
+    const tag = r.uint32()
+    if (tag === 0x2a || tag === 0x3a || tag === 0x4a || tag === 0x52 || tag === 0x5a) data(r, m, view, meter, tag >>> 3, name, unit)
+    else r.skip(tag & 7)
   }
   r.pos = end
 }
 
-function numberDataPoint(r: PbReader, m: OtlpMapper, view: DataView, at: number): void {
-  r.pos = at
+function data(r: PbReader, m: OtlpMapper, view: DataView, meter: Meter, field: number, name: string, unit: string): void {
+  const dend = r.len()
+  const dstart = r.pos
+  let points = 0
+  let temporality = 0
+  let monotonic = false
+  while (r.pos < dend) {
+    const t = r.uint32()
+    if (t === 0x0a) {
+      points++
+      r.pos = r.len()
+    } else if (t === 0x10 && (field === 7 || field === 9 || field === 10)) temporality = r.uint32()
+    else if (t === 0x18 && field === 7) monotonic = r.uint32() !== 0
+    else r.skip(t & 7)
+  }
+  r.done(dend)
+  if (field === 9) m.rejectPoints('histograms are not supported', points)
+  else if (field === 10) m.rejectPoints('exponential histograms are not supported', points)
+  else if (field === 11) m.rejectPoints('summaries are not supported', points)
+  else {
+    const reason = m.metric(name, unit, field === 7, temporality, monotonic)
+    if (reason !== null) m.rejectPoints(reason, points)
+    else if (m.resourceOver) m.rejectPoints(Reject.SeriesTooLarge, points)
+    else {
+      r.pos = dstart
+      while (r.pos < dend) {
+        const t = r.uint32()
+        if (t === 0x0a) numberDataPoint(r, m, view, meter)
+        else r.skip(t & 7)
+      }
+    }
+  }
+  r.pos = dend
+}
+
+function numberDataPoint(r: PbReader, m: OtlpMapper, view: DataView, meter: Meter): void {
   const end = r.len()
   const attrs: Attr[] = []
+  meter.reset()
   let tsMs = 0
   let flags = 0
   let doubleAt = -1
@@ -396,9 +433,11 @@ function numberDataPoint(r: PbReader, m: OtlpMapper, view: DataView, at: number)
         int = r.int64()
         doubleAt = -1
         break
-      case 0x3a:
-        attrs.push(keyValue(r, view))
+      case 0x3a: {
+        const kv = keyValue(r, view, meter)
+        if (kv) attrs.push(kv)
         break
+      }
       case 0x40:
         flags = r.uint32()
         break
@@ -407,93 +446,115 @@ function numberDataPoint(r: PbReader, m: OtlpMapper, view: DataView, at: number)
     }
   }
   r.done(end)
+  if (meter.over) return m.rejectPoints(Reject.SeriesTooLarge, 1)
   if (doubleAt >= 0) m.point(attrs, tsMs, flags, undefined, r.buf, doubleAt)
   else m.point(attrs, tsMs, flags, int)
 }
 
-function keyValue(r: PbReader, view: DataView): Attr {
+/** A KeyValue as a label: counted as one value; null when it is not built (its point or resource is over). */
+function keyValue(r: PbReader, view: DataView, meter: Meter): Attr | null {
   const end = r.len()
+  const keep = meter.take()
   let key = ''
   let value: unknown
   while (r.pos < end) {
     const tag = r.uint32()
     if (tag === 0x0a) {
       const e = r.len()
-      key = utf8String(r.buf, r.pos, e)
+      if (keep) key = utf8String(r.buf, r.pos, e)
+      else checkUtf8(r.buf, r.pos, e)
       r.pos = e
-    } else if (tag === 0x12) value = anyValue(r, view, 0)
+    } else if (tag === 0x12) value = anyValue(r, view, 0, keep ? meter : SKIM)
     else r.skip(tag & 7)
   }
   r.done(end)
-  return [key, attrString(value)]
+  return keep && !meter.over ? [key, attrString(value)] : null
 }
 
-function anyValue(r: PbReader, view: DataView, depth: number): unknown {
+/**
+ * An AnyValue as a JavaScript value (for `JSON.stringify`). Every array element and key-value
+ * entry is counted against `meter` before it is built; once it is over, the rest is only
+ * read, with the same checks (wire, nesting, UTF-8), and nothing is built.
+ */
+function anyValue(r: PbReader, view: DataView, depth: number, meter: Meter): unknown {
   if (depth > 16) throw badRequest('malformed OTLP: attribute value nested too deeply')
   const end = r.len()
   let value: unknown
   while (r.pos < end) {
     const tag = r.uint32()
+    const keep = !meter.over
     switch (tag) {
       case 0x0a: {
         const e = r.len()
-        value = utf8String(r.buf, r.pos, e)
+        if (keep) value = utf8String(r.buf, r.pos, e)
+        else checkUtf8(r.buf, r.pos, e)
         r.pos = e
         break
       }
-      case 0x10:
-        value = r.uint32() !== 0
-        break
-      case 0x18: {
-        r.varint64()
-        const n = r.int64()
-        value = Number.isSafeInteger(n) ? n : r.int64Big().toString()
+      case 0x10: {
+        const b = r.uint32() !== 0
+        if (keep) value = b
         break
       }
-      case 0x21:
-        value = view.getFloat64(r.fixed64At(), true)
+      case 0x18: {
+        r.varint64()
+        if (keep) {
+          const n = r.int64()
+          value = Number.isSafeInteger(n) ? n : r.int64Big().toString()
+        }
         break
+      }
+      case 0x21: {
+        const at = r.fixed64At()
+        if (keep) value = view.getFloat64(at, true)
+        break
+      }
       case 0x2a: {
         const aend = r.len()
-        const items: unknown[] = []
+        const items: unknown[] | null = keep ? [] : null
         while (r.pos < aend) {
           const t = r.uint32()
-          if (t === 0x0a) items.push(anyValue(r, view, depth + 1) ?? null)
-          else r.skip(t & 7)
+          if (t === 0x0a) {
+            const ok = meter.take()
+            const item = anyValue(r, view, depth + 1, meter) ?? null
+            if (ok && !meter.over) items!.push(item)
+          } else r.skip(t & 7)
         }
         r.done(aend)
-        value = items
+        if (keep) value = items
         break
       }
       case 0x32: {
         const kend = r.len()
-        const obj: Record<string, unknown> = {}
+        const obj: Record<string, unknown> | null = keep ? {} : null
         while (r.pos < kend) {
           const t = r.uint32()
           if (t === 0x0a) {
             const kvend = r.len()
+            const ok = meter.take()
             let k = ''
             let v: unknown = null
             while (r.pos < kvend) {
               const kt = r.uint32()
               if (kt === 0x0a) {
                 const e = r.len()
-                k = utf8String(r.buf, r.pos, e)
+                if (ok) k = utf8String(r.buf, r.pos, e)
+                else checkUtf8(r.buf, r.pos, e)
                 r.pos = e
-              } else if (kt === 0x12) v = anyValue(r, view, depth + 1) ?? null
+              } else if (kt === 0x12) v = anyValue(r, view, depth + 1, meter) ?? null
               else r.skip(kt & 7)
             }
             r.done(kvend)
-            obj[k] = v
+            if (ok && !meter.over) obj![k] = v
           } else r.skip(t & 7)
         }
         r.done(kend)
-        value = obj
+        if (keep) value = obj
         break
       }
       case 0x3a: {
         const e = r.len()
-        value = base64(r.buf.subarray(r.pos, e))
+        if (keep) value = base64(r.buf.subarray(r.pos, e))
         r.pos = e
         break
       }
@@ -536,6 +597,7 @@ function text(v: unknown, what: string): string {
 }
 
 export function decodeOtlpJson(body: Uint8Array, c: Collector): void {
+  checkJsonTokens(body, c.limits.maxJsonTokens)
   let root: unknown
   try {
     root = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body))
@@ -544,9 +606,11 @@ export function decodeOtlpJson(body: Uint8Array, c: Collector): void {
   }
   if (typeof root !== 'object' || root === null || Array.isArray(root)) bad('body is not an object')
   const m = new OtlpMapper(c)
+  const meter = new Meter()
   for (const rmRaw of list((root as Record<string, unknown>).resourceMetrics, 'resourceMetrics')) {
     const rm = object(rmRaw, 'resourceMetrics[]')
-    m.resourceAttrs(jsonAttrs(object(rm.resource, 'resource').attributes))
+    meter.reset()
+    m.resourceAttrs(jsonAttrs(object(rm.resource, 'resource').attributes, meter), meter.over)
     for (const smRaw of list(rm.scopeMetrics, 'scopeMetrics')) {
       for (const metricRaw of list(object(smRaw, 'scopeMetrics[]').metrics, 'metrics')) {
         const metric = object(metricRaw, 'metrics[]')
@@ -562,7 +626,8 @@ export function decodeOtlpJson(body: Uint8Array, c: Collector): void {
           const points = list(data.dataPoints, 'dataPoints')
           const reason = m.metric(name, unit, sum, temporality(data.aggregationTemporality), data.isMonotonic === true)
           if (reason !== null) m.rejectPoints(reason, points.length)
-          else for (const p of points) jsonPoint(m, object(p, 'dataPoints[]'))
+          else if (m.resourceOver) m.rejectPoints(Reject.SeriesTooLarge, points.length)
+          else for (const p of points) jsonPoint(m, object(p, 'dataPoints[]'), meter)
         }
       }
     }
@@ -578,12 +643,16 @@ function temporality(v: unknown): number {
   return bad('unknown aggregationTemporality')
 }
 
-function jsonPoint(m: OtlpMapper, p: Record<string, unknown>): void {
+function jsonPoint(m: OtlpMapper, p: Record<string, unknown>, meter: Meter): void {
   const flags = typeof p.flags === 'number' ? p.flags : 0
   let value: number | undefined
   if (p.asDouble !== undefined && p.asDouble !== null) value = jsonNumber(p.asDouble, 'asDouble')
   else if (p.asInt !== undefined && p.asInt !== null) value = jsonNumber(p.asInt, 'asInt')
-  m.point(jsonAttrs(p.attributes), nanosToMs(p.timeUnixNano), flags, value)
+  meter.reset()
+  const attrs = jsonAttrs(p.attributes, meter)
+  const ts = nanosToMs(p.timeUnixNano)
+  if (meter.over) return m.rejectPoints(Reject.SeriesTooLarge, 1)
+  m.point(attrs, ts, flags, value)
 }
 
 function jsonNumber(v: unknown, what: string): number {
@@ -606,16 +675,20 @@ function nanosToMs(v: unknown): number {
   return bad('timeUnixNano is not an unsigned integer')
 }
 
-function jsonAttrs(v: unknown): Attr[] {
+/** Attributes as labels, counted as the protobuf decoder counts: one per entry and array element. */
+function jsonAttrs(v: unknown, meter: Meter = FREE): Attr[] {
   const out: Attr[] = []
   for (const kvRaw of list(v, 'attributes')) {
     const kv = object(kvRaw, 'attributes[]')
-    out.push([text(kv.key, 'attribute key'), attrString(jsonAny(kv.value, 0))])
+    const ok = meter.take()
+    const key = text(kv.key, 'attribute key')
+    const value = jsonAny(kv.value, 0, meter)
+    if (ok && !meter.over) out.push([key, attrString(value)])
   }
   return out
 }
 
-function jsonAny(raw: unknown, depth: number): unknown {
+function jsonAny(raw: unknown, depth: number, meter: Meter): unknown {
   if (depth > 16) bad('attribute value nested too deeply')
   if (raw === undefined || raw === null) return undefined
   const v = object(raw, 'attribute value')
@@ -626,14 +699,27 @@ function jsonAny(raw: unknown, depth: number): unknown {
     return Number.isSafeInteger(n) ? n : String(v.intValue)
   }
   if (v.doubleValue !== undefined) return jsonNumber(v.doubleValue, 'doubleValue')
-  if (v.arrayValue !== undefined) return list(object(v.arrayValue, 'arrayValue').values, 'arrayValue.values').map((x) => jsonAny(x, depth + 1) ?? null)
+  if (v.arrayValue !== undefined) {
+    const keep = !meter.over
+    const items: unknown[] | null = keep ? [] : null
+    for (const x of list(object(v.arrayValue, 'arrayValue').values, 'arrayValue.values')) {
+      const ok = meter.take()
+      const item = jsonAny(x, depth + 1, meter) ?? null
+      if (ok && !meter.over) items!.push(item)
+    }
+    return items ?? undefined
+  }
   if (v.kvlistValue !== undefined) {
-    const obj: Record<string, unknown> = {}
+    const keep = !meter.over
+    const obj: Record<string, unknown> | null = keep ? {} : null
     for (const kvRaw of list(object(v.kvlistValue, 'kvlistValue').values, 'kvlistValue.values')) {
       const kv = object(kvRaw, 'kvlistValue.values[]')
-      obj[text(kv.key, 'attribute key')] = jsonAny(kv.value, depth + 1) ?? null
+      const ok = meter.take()
+      const key = text(kv.key, 'attribute key')
+      const item = jsonAny(kv.value, depth + 1, meter) ?? null
+      if (ok && !meter.over) obj![key] = item
     }
-    return obj
+    return obj ?? undefined
   }
   if (v.bytesValue !== undefined) return text(v.bytesValue, 'bytesValue')
   return undefined

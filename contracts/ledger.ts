@@ -18,9 +18,11 @@ export type SignalTable = 'spans' | 'trace_index' | 'logs'
  * it knows; a reader that must act on every file (the publisher) refuses a change naming a table
  * it does not know (COMPATIBILITY.md §3.2), so such readers deploy first (§3.3): `edge` writes
  * the span and log tables only where `INGEST_SIGNALS` enables a signal. The publisher reads all
- * five since 2026-11-19 (it publishes the metric pair and records the others as not published:
- * publisher/README.md, "Tables it does not publish"); `INGEST_SIGNALS` waits until that release
- * is the publisher's rollback floor (design/DECISIONS.md D64, "The rollout rule").
+ * five since 2026-11-19 and publishes each as an Iceberg table of its own (design/DECISIONS.md
+ * D67; publisher/README.md, "The span and log tables"); D64's release before it read the span and
+ * log tables and recorded them as not published. `INGEST_SIGNALS` waits until a publisher release
+ * that reads them (D64's or later) is the publisher's rollback floor (D64, "The rollout rule"),
+ * and, since D69, viz-query and viz-ingest are at theirs too (deploy/README.md, "Rollback floors").
  */
 export type LedgerTable = Table | SignalTable
 

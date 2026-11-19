@@ -6,7 +6,7 @@ and a TypeScript binding (`js/`) that implements the storage half of `contracts/
 | Path | Contents |
 |---|---|
 | `src/lib.rs` | The C ABI: `viz_alloc`, `viz_free`, `viz_encode_segment`, `viz_select`, `viz_merge_files`, `viz_free_file`, `viz_encode_spans`, `viz_encode_logs`, `viz_merge_signal_files`, `viz_abi_version` (4). The calling convention and every wire layout are documented at the top of the file. |
-| `js/index.ts` | `createEngine(module)`: `encodeSegment`, `select`, `mergeFiles`, (ABI 3) `encodeSpans`, `encodeLogs` (`contracts/engine.ts` `SignalFlushEngine`) and (ABI 4) `mergeSignalFiles` (`SignalMergeEngine`, declared here: "Contract issues"); `queryRange`, `queryInstant`, `selectors` throw "not built yet" |
+| `js/index.ts` | `createEngine(module)`: `encodeSegment`, `select`, `mergeFiles`, (ABI 3) `encodeSpans`, `encodeLogs` (`contracts/engine.ts` `SignalFlushEngine`) and (ABI 4) `mergeSignalFiles` (`contracts/engine.ts` `SignalMergeEngine`); `queryRange`, `queryInstant`, `selectors` throw "not built yet" |
 | `js/worker.ts` | A minimal Worker that imports the `.wasm` as a module (proof that it loads in workerd) |
 | `js/viz_engine.wasm` | Build output of `./build.sh`. Ignored by git: **build it before running any test in `engine/wasm`, `flush/` or `stack/`.** |
 | `tests/abi.rs` | The C ABI called natively with real pointers |

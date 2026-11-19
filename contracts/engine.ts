@@ -35,8 +35,9 @@ export interface EncodedFile {
 
 /**
  * One Parquet file of the span and log tables (contracts/TRACES.md, contracts/LOGS.md),
- * produced from a sealed segment of signal 2 or 3 batches by `SignalFlushEngine`. Added
- * 2026-11-19 (stage 2 of traces and logs); additive.
+ * produced from a sealed segment of signal 2 or 3 batches by `SignalFlushEngine`, or from
+ * files of one table and partition by `SignalMergeEngine` (compaction). Added 2026-11-19
+ * (stage 2 of traces and logs); additive.
  *
  * `minTs`/`maxTs` are Unix MILLISECONDS, as for every `FileEntry` the ledger lists: the
  * floor of `minNs`/`maxNs`, so a plan's millisecond range overlaps the file exactly when its
@@ -73,6 +74,48 @@ export interface SignalFlushEngine {
    * that is not signal 3.
    */
   encodeLogs(batches: Uint8Array[]): EncodedSignalFile[]
+}
+
+/**
+ * Compaction of the span and log tables (contracts/TRACES.md "Compaction", contracts/LOGS.md
+ * §4 "Compaction"; design/DECISIONS.md D68). Added 2026-11-19, ABI 4 of `engine/wasm`
+ * (`viz_merge_signal_files`; ABI 3 lacks it). Additive: `Engine.mergeFiles` still merges the
+ * metric tables only. An engine may lack this operation; compaction checks for it at run time
+ * and then merges the metric tables only.
+ */
+export interface SignalMergeEngine {
+  /**
+   * Merge whole files of ONE table and ONE partition into one file with the table's schema,
+   * sort order, page and statistics rules and a fresh index fragment. The partition is one UTC
+   * hour of one day for `spans` and one UTC day for `trace_index` and `logs`. Inputs are given
+   * in ascending precedence (contracts/ledger.ts `LiveFile`), and the later input wins:
+   *
+   *   spans        rows equal on `(trace_id, span_id)` are one row, the later input's
+   *                (within one input, the later row)
+   *   trace_index  the rows of one `trace_id` are one row, merged as TRACES.md "Merging
+   *                fragments" merges fragments (the later input's root when two claim the
+   *                same root span; at most 64 services, then `services_truncated`)
+   *   logs         rows equal on `(stream_id, ts, line, metadata)` are one row, the later
+   *                input's (within one input, the later row)
+   *
+   * The output is an `EncodedSignalFile` as `encodeSpans`/`encodeLogs` give one: `table` is
+   * `table`, `hour` the partition's hour for `spans` (0 to 23) and null otherwise, `minNs`/`maxNs`
+   * the exact nanosecond bounds and `minTs`/`maxTs` their floor in milliseconds. A `logs` output
+   * carries its token filter inside the file, located by the fragment's `tok` (LOGS.md §6, D65),
+   * unless it holds more than 524,288 distinct tokens.
+   *
+   * Limits. Output row groups are cut at 2 MiB of data (flush cuts at 16 MiB; both within the
+   * contracts' caps). Inputs and output are held in memory, so the caller bounds the bytes it
+   * passes in: compaction passes at most 8 files and 16 MiB a merge (compact/ `DEFAULT_POLICY`),
+   * which peaked at 62 MB (spans) and 81 MB (logs) of WASM memory, measured locally, not on
+   * Cloudflare (engine/wasm/README.md, "ABI 4: merges of spans, trace_index and logs").
+   *
+   * Errors. Throws, leaving the engine usable, for no inputs, inputs that hold no rows, a file
+   * that is not of `table`, rows of more than one partition (two hours of `spans`, two days
+   * otherwise) and an input that is not sorted. A `table` that is not a `SignalTable` is a
+   * `RangeError`, thrown before the engine is called.
+   */
+  mergeSignalFiles(table: SignalTable, files: Uint8Array[]): EncodedSignalFile
 }
 
 /** Prometheus-style label matcher. */

@@ -18,26 +18,11 @@
  * A trap (the Rust side is built with panic=abort) leaves an instance in an unknown state.
  * The binding then drops the instance and creates a fresh one for the next call.
  */
-import type { EncodedFile, EncodedSignalFile, Engine, Matcher, ScanInput, SeriesData, SignalFlushEngine } from '../../../contracts/engine'
+import type { EncodedFile, EncodedSignalFile, Engine, Matcher, ScanInput, SeriesData, SignalFlushEngine, SignalMergeEngine } from '../../../contracts/engine'
 import type { SignalTable, Table } from '../../../contracts/ledger'
 
+/** `contracts/engine.ts`: `SignalFlushEngine` needs ABI 3, `SignalMergeEngine` ABI 4. */
 export const ABI_VERSION = 4
-
-/**
- * Compaction of the span and log tables (contracts/TRACES.md and LOGS.md, "Compaction"). Not in
- * `contracts/engine.ts` (not this change's to edit; compact/README.md, "Contract issues"): the
- * one caller, compact/, takes it from here, and checks for it at run time.
- */
-export interface SignalMergeEngine {
-  /**
-   * Merge whole files of ONE table and one partition (an hour of `spans`, a day of `trace_index`
-   * or `logs`) into one, inputs in ascending precedence: `spans` rows equal on
-   * `(trace_id, span_id)` and `logs` rows equal on their row key collapse to the later input's;
-   * the `trace_index` rows of one trace merge into one. A `logs` output carries its token filter
-   * (LOGS.md §6). Throws for no rows, unsorted inputs, rows of two partitions, another table.
-   */
-  mergeSignalFiles(table: SignalTable, files: Uint8Array[]): EncodedSignalFile
-}
 
 interface Exports {
   memory: WebAssembly.Memory

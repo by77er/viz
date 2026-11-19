@@ -40,6 +40,9 @@ export function clearCaches(): void {
   clearMapCache()
 }
 
+/** What a request's body variable holds once decoded, so the body itself can be collected. */
+const EMPTY = new Uint8Array(0)
+
 const text = (status: number, body: string, headers: Record<string, string> = {}): Response =>
   new Response(body, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', ...headers } })
 
@@ -114,10 +117,11 @@ async function remoteWrite(req: Request, env: Env, limits: Limits): Promise<Resp
   const early = await refuseEarly(env, tenant)
   if (early) return refusal(early, (status, message, headers) => text(status, message, headers))
 
-  const compressed = await readBody(req, limits.maxBodyBytes)
-  const body = snappyDecompress(compressed, limits.maxDecompressedBytes)
+  let body = snappyDecompress(await readBody(req, limits.maxBodyBytes), limits.maxDecompressedBytes)
   const c = new Collector(limits, Date.now(), body.byteLength)
   decodeRemoteWrite(body, c)
+  // The collector keeps copies: let the body go while the shards are written.
+  body = EMPTY
 
   const outcome = await appendAll(env, tenant, c)
   if (outcome.status !== 'ok') return refusal(outcome, (status, message, headers) => text(status, message, headers))
@@ -166,6 +170,7 @@ async function otlpMetrics(req: Request, env: Env, limits: Limits): Promise<Resp
     const c = new Collector(limits, Date.now(), body.byteLength)
     if (json) decodeOtlpJson(body, c)
     else decodeOtlpProto(body, c)
+    body = EMPTY
 
     const outcome = await appendAll(env, tenant, c)
     if (outcome.status !== 'ok') return refusal(outcome, fail)
@@ -207,6 +212,7 @@ async function otlpSignal(req: Request, env: Env, limits: Limits, signal: 'trace
     const c = signal === 'traces' ? new SpanCollector(limits, now) : new LogCollector(limits, now)
     if (c instanceof SpanCollector) (json ? decodeTracesJson : decodeTracesProto)(body, c)
     else (json ? decodeLogsJson : decodeLogsProto)(body, c)
+    body = EMPTY
 
     const outcome = await appendAll(env, tenant, c, signal, (slots, max) => c.build(slots, max))
     if (outcome.status !== 'ok') return refusal(outcome, fail)
@@ -245,6 +251,7 @@ async function lokiPush(req: Request, env: Env, limits: Limits): Promise<Respons
   const c = new LogCollector(limits, Date.now())
   if (json) decodeLokiJson(body, c)
   else decodeLokiProto(body, c)
+  body = EMPTY
   const outcome = await appendAll(env, tenant, c, 'logs', (slots, max) => c.build(slots, max))
   if (outcome.status !== 'ok') return refusal(outcome, (status, message, headers) => text(status, message, headers))
   // Loki push has no partial success: entries a retry would not fix are refused with 400

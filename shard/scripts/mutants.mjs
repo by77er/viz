@@ -81,6 +81,10 @@ const mutants = [
   // ── names, versions ──
   ['names: a shard addressed outside SHARD_NAME serves', F, '    if (ctx.id.name !== undefined && !SHARD_NAME.test(ctx.id.name)) throw', '    if (false) throw', T.pool],
   ['names: a pool name with `_` is valid', 'src/pool.ts', "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && POOL_NAME.test(pool)", "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && pool !== ''", T.pool],
+  // review M-5 (design/reviews/signals-end-to-end.md): the one base-pool rule edge reads maps with and control writes them with
+  ['names: a base pool ending in /logs is valid (validBasePool narrowed)', 'src/pool.ts', '!DERIVED_SIGNALS.some((s) => pool.endsWith(`/${s}`))', "!pool.endsWith('/traces')", T.pool],
+  ['names: a base pool may contain `_` (validBasePool without POOL_NAME)', 'src/pool.ts', 'validPoolName(pool) && !DERIVED_SIGNALS', "typeof pool === 'string' && pool !== '' && !DERIVED_SIGNALS", T.pool],
+  ['names: dedicatedPool keeps `_`', 'src/pool.ts', "  pool: `tenant/${tenant.replaceAll('_', '-')}`,", '  pool: `tenant/${tenant}`,', T.pool],
   ['versions: the flush message carries no v', F, '{ v: FLUSH_MESSAGE_VERSION, tenant, shard: name }', '{ tenant, shard: name }', T.trigger],
   ['versions: storage from before sealed_at is not migrated', F, "      if (!columnsOf(sql, 'segment').has('sealed_at')) sql.exec(`ALTER TABLE segment ADD COLUMN sealed_at INTEGER NOT NULL DEFAULT 0`)", '', T.compat],
   ['versions: an unreadable series window starts empty (limit loosened)', F, '        this.unreadableWindows.add(tenant)\n', '', T.compat],

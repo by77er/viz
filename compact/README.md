@@ -287,11 +287,10 @@ in `engine/storage/README.md`.
 
 ## Contract issues
 
-- **`contracts/engine.ts` has no signal merge.** The merge is `SignalMergeEngine.mergeSignalFiles`,
-  declared next to the binding (`engine/wasm/js/index.ts`), not in the contract, which this
-  change could not edit. `compactStep` keeps taking a contract `Engine` and checks for the method
-  at run time, so `stack/src/maintain.ts` (typed against the contract) is unchanged. The
-  interface belongs in `contracts/engine.ts` beside `SignalFlushEngine`.
+None open. The signal merge's interface, which D68's change declared next to the binding, is
+`contracts/engine.ts` `SignalMergeEngine` since 2026-11-19, and `src/compact.ts` takes it from
+there. `compactStep` still takes a contract `Engine` and checks for `mergeSignalFiles` at run
+time, so `stack/src/maintain.ts` is unchanged.
 
 ## Formats (contracts/COMPATIBILITY.md)
 

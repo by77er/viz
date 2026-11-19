@@ -1,6 +1,5 @@
-import type { EncodedFile, EncodedSignalFile, Engine } from '../../contracts/engine'
+import type { EncodedFile, EncodedSignalFile, Engine, SignalMergeEngine } from '../../contracts/engine'
 import { TENANT_ID, dataKeyPrefix, type FileEntry, type LedgerTable, type LiveFile, type Plan, type SignalTable, type Table } from '../../contracts/ledger'
-import type { SignalMergeEngine } from '../../engine/wasm/js/index'
 import { putFile } from '../../flush/src/flush'
 import { hex } from '../../flush/src/keys'
 import type { Ledger } from '../../ledger/src/ledger'

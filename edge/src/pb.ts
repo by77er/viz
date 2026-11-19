@@ -133,3 +133,46 @@ export function utf8String(buf: Uint8Array, start: number, end: number): string 
     throw badRequest('malformed protobuf: invalid UTF-8 in string')
   }
 }
+
+/**
+ * Whether `buf[start..end)` is well-formed UTF-8 (Unicode Table 3-7: no overlong forms, no
+ * surrogates, nothing above U+10FFFF), without building a string: what a fatal
+ * `TextDecoder` accepts, checked where the decoder reads a string it will not keep.
+ */
+export function validUtf8(buf: Uint8Array, start: number, end: number): boolean {
+  let i = start
+  while (i < end) {
+    const c = buf[i]!
+    if (c < 0x80) {
+      i++
+      continue
+    }
+    let n: number
+    let lo = 0x80
+    let hi = 0xbf
+    if (c >= 0xc2 && c <= 0xdf) n = 1
+    else if (c >= 0xe0 && c <= 0xef) {
+      n = 2
+      if (c === 0xe0) lo = 0xa0
+      else if (c === 0xed) hi = 0x9f
+    } else if (c >= 0xf0 && c <= 0xf4) {
+      n = 3
+      if (c === 0xf0) lo = 0x90
+      else if (c === 0xf4) hi = 0x8f
+    } else return false
+    if (i + n >= end) return false
+    const c1 = buf[i + 1]!
+    if (c1 < lo || c1 > hi) return false
+    for (let k = 2; k <= n; k++) {
+      const ck = buf[i + k]!
+      if (ck < 0x80 || ck > 0xbf) return false
+    }
+    i += n + 1
+  }
+  return true
+}
+
+/** `utf8String`'s check without the string: 400 unless `buf[start..end)` is well-formed UTF-8. */
+export function checkUtf8(buf: Uint8Array, start: number, end: number): void {
+  if (!validUtf8(buf, start, end)) throw badRequest('malformed protobuf: invalid UTF-8 in string')
+}
