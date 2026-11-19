@@ -52,7 +52,8 @@ const stale = []
   if (press && !read('dist/viz-press.js')?.endsWith(press)) stale.push('dist/viz-press.js is not src/press.js: run npm run build')
   const fx = read('dist/fixture/index.html'); if (fx && (!fx.includes(viz.replace(/url\("fonts\//g, 'url("../fonts/')) || (chart && !fx.includes(chart)))) stale.push('dist/fixture/index.html inlines CSS or a chart older than the tree (v6 review, m6): run npm run build')
   const ref = read('dist/reference.html'); if (ref && !ref.includes(viz)) stale.push('dist/reference.html inlines CSS older than the tree: run npm run build') }
-const perturbed = await (async () => { const { tokenCss } = await import(pathToFileURL(join(root, 'tools/css.mjs')).href); return perturbedCss(tokenCss, JSON.parse(readFileSync(join(root, 'project/tokens.json'), 'utf8'))) })()
+const perturbed = await (async () => { const tokenCss = (await import(pathToFileURL(join(root, 'tools/css.mjs')).href)).tokenCss ?? (await import(new URL('./css.mjs', import.meta.url).href)).tokenCss // an older copy (--root) may not export it
+  return perturbedCss(tokenCss, JSON.parse(readFileSync(join(root, 'project/tokens.json'), 'utf8'))) })()
 const configs = quick
   ? [{ w: 320, coarse: true }, { w: 400, coarse: true }, { w: 720, zoom: 2 }, { w: 1500 }]
   : [...[320, 400, 560, 640, 800, 1024, 1280, 1500].map((w) => ({ w })), ...[320, 400, 768].map((w) => ({ w, coarse: true })), ...[640, 720, 750].map((w) => ({ w, zoom: 2 }))]

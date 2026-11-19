@@ -1,6 +1,6 @@
 // check.mjs's own test: the mutant corpus (tools/mutants-corpus.mjs). Every mutant must be caught by the check it names, with every literal
 // it plants reported, and every harmless edit must pass. Mutants are applied to copies outside the tree (tools/mutants.mjs).
-//   npm test                 the corpus without the rendered audit and the page audit (R, N, X, V, C and H: the 32 X mutants included)
+//   npm test                 the corpus without the rendered audit and the page audit (R, N, X, V, Y, Z, C and H: the v5 review's 32 and the v6 review's lint mutants included)
 //   VIZ_SLOW=1 npm test      the whole corpus, including the mutants only the rendered audit or tools/audit.mjs can catch
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

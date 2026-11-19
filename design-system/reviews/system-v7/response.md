@@ -15,8 +15,9 @@ against that copy. Nothing outside `design-system/` was edited; `flows/`, `revie
 All on this machine: 4 cores shared with other sessions, 16 GB. The 1-minute load average was 5.9 to 11 through the session (each
 run below gives its own). One browser at a time, at most one test worker, every server stopped.
 
-- **Failing first, on v6.** The new chart tests, the page audit's new checks and the reviewer's mutants were each run against the
-  v6 copy before any v7 result was taken.
+- **Failing first, on v6.** The new chart tests and the page audit's new checks were run against the v6 copy before the v7 change
+  they guard was made, and again at the end (`evidence/chart-rules-on-v6.txt`, `evidence/audit-new-checks-on-v6.txt`). The
+  reviewer's twenty mutants were run on v6 by the reviewer (3 caught); here they ran against v7.
 - **`npm test`**: `chart-rules.test.mjs` (17 tests) and `check.test.mjs` (the corpus without its browser mutants).
 - **`tools/mutants.mjs`**: the whole corpus, 130 mutants, browser mutants included, each on a copy in the scratch area (one base
   directory, each copy deleted after its run; the runner refuses a directory inside the tree).
@@ -70,7 +71,7 @@ audit treated text in a `vz-cut` as cut on purpose, and no composition folded a 
   hit area lies inside the row.
 
 Not taken: a third breakpoint for tables (it would have let two kept columns stay beside the key down to some width between 320 and
-640 px, but the system's rule is two widths, both tokens, and the stacked row reads well at 600 px too); a CSS grid with subgrid rows
+640 px, but the system's rule is two widths, both tokens; the cost is one line per row between 480 and 639 px, below); a CSS grid with subgrid rows
 (it aligns content-sized columns, but cannot flow the folded cells as a line); per-row wrapping (it would put a row's figures on the
 key's line in one row and under it in the next).
 
@@ -90,8 +91,9 @@ key's line in one row and under it in the next).
 Failing first: the new audit on v6 (the v6 copy, the same composition and the Table preview, quick set): **overlap** at 320 and 400 px
 coarse ("2.87" in a CPU cell lies under "c6b5-73b1d"; "912" under "checkout-api p99 latency, POST /…"), **key-width** at 320 and
 400 px coarse and at 720 px at 200% ("checkout-api p99 latency, POST /…" 45 px of a 286 px row; "cart-7d9f8c6b5-73b1d" 49 px of 286;
-the Table preview's "checkout p99 latency" 122 px of 270), and **cut** ("c6b5-73b1d" outside its cell, over its neighbour). On v7:
-none, at all 14 configurations (below).
+the Table preview's "checkout p99 latency" 122 px of 270), **cut** ("c6b5-73b1d" outside its cell, over its neighbour) and, from the
+rendered hit-area guard, the pod links' hit areas 20 px tall where they lie over the figures (`evidence/audit-new-checks-on-v6.txt`).
+On v7: none, at all 14 configurations (below).
 
 **Teeth**: Z1 (the key's minimum removed: structure), Z2 (v6's arrangement of a one-kept list, actions on the key's line and no key
 minimum: key-width, 116 px of a 286 px row at 320 px), Z3 (the cut uncapped and the link unable to shrink: cut and overlap), Z4 (the
@@ -187,8 +189,8 @@ presentation attributes are values, in markup and in markup written by script (Y
 `<link>` or `<source>`, and `matchMedia()`, are conditions checked against the breakpoint tokens (Y19); an emoji anywhere is reported
 (Y20). Selector lists are split at depth zero (`:is(a, b)` is one selector; the old split broke it).
 
-**Rendered guards** (`tools/audit.mjs`, at 1500 px with a fine pointer and at every coarse width; a finger's press and the token trace
-at 400 px coarse; a reduced-motion pass at 1500 px):
+**Rendered guards** (`tools/audit.mjs`: at 1500 px with a fine pointer; hit areas at every coarse width; a finger's press at 400 px
+coarse; a reduced-motion pass at 1500 px):
 
 | Fix | Guarded by, as rendered | Mutant |
 |---|---|---|
@@ -227,8 +229,9 @@ transition back on the progress bar, which has no press rule, so only the reduce
 
 **Result** (`tools/mutants.mjs`, the whole corpus, browser mutants included, each on a copy in the scratch area; load 6.9 to 7.8 on
 4 cores; 12 min 44 s; `evidence/final-mutants.txt`): **130 of 130 as expected**. The 52 the review asked for: **X 32 of 32 and
-Y 20 of 20 caught**, 17 of the Y's by the check they target for the first time (the lint for Y1, Y3 to Y9, Y19, Y20; the rendered
-guards for Y10 to Y15, Y17, Y18; Y2 and Y16 were caught in v6 and still are). The rest: R 18 of 18, N 13 of 13, V 17 of 17, Z 8 of 8,
+Y 20 of 20 caught**: the 17 that survived v6 by the check that targets each (the lint: Y1, Y3 to Y9, Y19, Y20, and Y5 also by the
+loop guard; the rendered guards: Y10 to Y13, Y15, Y17, Y18), Y14 now by the reduced-motion guard rather than an unrelated rule, and Y2
+and Y16 as in v6. The rest: R 18 of 18, N 13 of 13, V 17 of 17, Z 8 of 8,
 C 14 of 14, A 4 of 4 caught, H 4 of 4 harmless edits passing; every mutant with several literals had each reported. On v6 the review
 found 3 of the twenty caught (Y2, Y16, and Y14 by an unrelated rule); I did not run the Y's against the v6 copy myself, only the
 new chart tests and the new audit checks (above). Writing the Z's taught two things, each fixed: a mutant
@@ -243,7 +246,7 @@ mutants, which `tools/mutants.mjs` ran); `evidence/final-npm-test.txt`.
 |---|---|---|---|
 | m1 | Reserved-slot ties broken by slot number in the code, not in the text | The text says it: "ties: the lowest slot" (Chart README, rule 3.3) | the rule; the code comment is the same text |
 | m2 | A press flashes on a scroll that starts on a button | **Accepted, and said** (`project/README.md`, "States"): the press shows until the browser takes the gesture as a scroll, as native controls do; holding the mark back until the finger is still would put every press a frame late, which the first budget row forbids | the rule |
-| m3 | `viz-press.js` missing from the flow screens | Not mine to change (`flows/` is not edited here). The audit's press guard now reports it on every flow screen, apart from the system's pages | `tools/audit.mjs`, flow screens section |
+| m3 | `viz-press.js` missing from the flow screens | Not mine to change (`flows/` is not edited here). The audit's press guard now reports it on 11 of the 12 flow screens (the twelfth has no control it presses), apart from the system's pages | `tools/audit.mjs`, flow screens section |
 | m4 | Theme change: median 149 ms against 100 ms | Measured again and traced (Speed, below) | `speed/`, the trace table |
 | m5 | A two-line stat context in the dashboard's Now row | "The slowest route at 15:16." is now "The 6 min to 15:16.", the same words as the errors stat beside it; the label already names the route | `compare/v7-dashboard-*` |
 | m6 | `dist/fixture/index.html` older than the last CSS change | Rebuilt; and `tools/audit.mjs` now starts with a **stale** check, by content: `dist/viz.css` is what the build makes of the tree, `dist/viz-chart.js` and `dist/viz-press.js` are their sources, and the fixture and reference inline the current CSS and chart. Mutant Z7 (the CSS changed after the build) is caught | Z7; every audit run |
@@ -253,10 +256,23 @@ mutants, which `tools/mutants.mjs` ran); `evidence/final-npm-test.txt`.
 Read only, reported apart by the audit, as in v6: the folding tables of screens 1, 8 and 12 that do not fit 640 px still scroll at
 200% zoom and up to 1024 px (they need `data-fold="wide"`), screen 1's "1 proposal waiting" is a link at the end of a sentence in a
 cell, and now also: no flow screen loads `viz-press.js` (m3), so the press guard finds a finger's press never painted there (52
-controls on 11 screens). The flow screens load the system's `dist/viz.css`, so they now have v7's fold: the new overlap and key-width
+findings on 11 of the 12 screens). The flow screens load the system's `dist/viz.css`, so they now have v7's fold: the new overlap and key-width
 checks find nothing on them at any of the 14 configurations. For the flows' own revision.
 
-AUDITRESULT
+## The page audit, final run
+
+`tools/audit.mjs` on the tree as it is now (`evidence/final-audit.txt`; 4 min 37 s at a load of 7.5): 56 pages (31 previews, the
+reference, the fixture, 11 compositions, 12 flow screens) at 14 configurations (320, 400, 560, 640, 800, 1024, 1280 and 1500 px fine;
+320, 400 and 768 px coarse; 640, 720 and 750 CSS px at 200%), plus the reduced-motion pass. `dist/` fresh. **System pages: 0
+findings**, every check at every configuration: overflow, escape, cell, fold-scroll, cut, tiny, sentence-link, overlap, key-width, the
+guards, the press, the token trace, motion. Flow screens (read only, reported apart): 70 findings, all in the flows' own markup: 15
+fold-scroll and 3 sentence-link (as in v6) and 52 press (no `viz-press.js`, on 11 of the 12 screens). `tools/check.mjs` on the component
+CSS with its rendered audit: contrast and structure 777 of 777, rendered audit 0 failures, reserved heights 490.5/490.5 (fine) and
+711.5/711.5 (coarse), 0 literals; on the previews, compositions and fixtures, 772 of 772 and 0 literals in 45 files
+(`evidence/final-check.txt`, `evidence/final-lint.txt`). The new checks against the v6 copy are in
+`evidence/audit-new-checks-on-v6.txt` (folded list and Table preview, quick set: 13 overlap, 3 key-width, 12 cut and 8 hit-area
+findings; the hit-area guard also catches the review's "a target only 20.8 px tall": the pod links measure 20 px where they lie over
+the figures).
 
 ## Speed, and the theme change (v6 review, m4)
 
@@ -372,7 +388,7 @@ cannot be judged. **The row to measure first on a quiet machine.**
   control into the middle of the view, finds nothing on that page at 320, 400 or 768 px.
 - **Not done**: the flow screens (not mine to edit: their fold tables at 200% zoom, the press script, a link in a sentence); `app/`
   (on v4); a screen reader by ear; Safari and Firefox; real touch hardware (every touch here is Chromium's emulation); enlarged text as
-  distinct from zoom. No timing row is judged, for the fifth session running.
+  distinct from zoom. No timing row has been judged in any session so far (v4 to v7).
 
 ## Files
 
@@ -381,7 +397,7 @@ cannot be judged. **The row to measure first on a quiet machine.**
   `project/method.md`.
 - Components: Chart (`preview.html`: the algorithm, the note, the demo panels' words; `README.md`: rules 3 to 7 and "Why this rule"),
   Table (`README.md`: the fold; `preview.html`: monitors with real names and row actions, a pods list).
-- Tools: `lib/lint.mjs` (the gaps), `lib/structure.mjs` (the v7 fold's presence checks; selector lists split by depth), `audit.mjs`
+- Tools: `lib/lint.mjs` (the gaps; selector lists split by depth), `lib/structure.mjs` (the v7 fold's presence checks), `audit.mjs`
   (stale, overlap, key-width, the guards, the token trace, reduced motion), `css.mjs` (`tokenCss`), `mutants-corpus.mjs` (Y1 to Y20,
   Z1 to Z8, C10 to C14, C1 to C4 and C7 rewritten, A-mutants on v7's compositions), `mutants.mjs` (`after`), `reference.mjs` (its frame
   in tokens), `test/chart-rules.test.mjs` (rewritten for the decided rule).
@@ -394,6 +410,8 @@ cannot be judged. **The row to measure first on a quiet machine.**
 
 No mutant was applied in the tree: every one ran on a copy under the session's scratch area, each deleted after its run (the runner
 refuses a directory inside the tree). The v6 copy used for "before", the raw captures and the JSON outputs were deleted at the end. No
-edit is half-finished: the final runs of `check.mjs`, `npm test`, the corpus and the audit are on the tree as it is now. Servers
+edit is half-finished: the final runs of `check.mjs`, `npm test`, the corpus and the audit are on the tree as it is now, except
+that `tools/audit.mjs` changed after its full run in one line (an older copy given with `--root` may lack `tokenCss`; used for the
+v6 evidence), after which the quick set was run again on every page: 0 findings on the system's pages. Servers
 started by the audit, the harness, `shots.mjs` and the trace script stopped with them. No git command was run. No Cloudflare resource
 was touched; nothing was published.
