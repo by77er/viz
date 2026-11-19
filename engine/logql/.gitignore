@@ -1,0 +1,3 @@
+target/
+# Loki's own test files, fetched at test time as a behavioural oracle (AGPL-3.0): never committed.
+testdata/loki-oracle/

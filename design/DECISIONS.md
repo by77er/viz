@@ -1020,3 +1020,96 @@ Recording rules land through ingest's normal path, with its quotas.
 then `EVALUATOR` is bound, the HTTP path and the service key's `read` scope go, and a group is
 one call. If the platform's connection limit for service-bound callees turns out not to be
 shared (only the self-binding case was measured), the gate can admit more.
+
+## D40. TraceQL: a hand-written parser; where Tempo's documentation is silent, its evaluator's observed behaviour, not its storage shortcuts
+
+**Decision.** `engine/traceql` parses TraceQL with a hand-written lexer and recursive-descent
+/ precedence-climbing parser (no parser crate or generator). Its semantics come from Tempo's
+public documentation; where the documentation is silent (operator precedence, the metrics time
+grid, quantile buckets, how missing, empty-array and NaN values compare, result keys), from
+Tempo v3.1.1's behaviour observed as a black box. Where Tempo answers the same question two
+ways depending on its query plan (its storage layer applying a condition itself versus its
+evaluator), viz follows the evaluator; where Tempo contradicts its documentation (union
+structural operators such as `&>>` returning only some of the left-hand spans), viz follows
+the documentation. Each such difference is a named rule in the crate's differential comparison
+(`engine/traceql/README.md`). Nesting is bounded where the query is parsed: deeper than 200
+levels of parser recursion or of syntax-tree height, a regex nested deeper than 64 levels or
+compiling to more than 1 MiB, or more than 16 regexes, and `parse` refuses the query, so no
+later pass can exhaust a stack (a stack overflow traps a WASM instance; it is not an error).
+
+**Alternatives.** A permissively licensed parser crate or a parser generator (none exists for
+TraceQL; a generated parser carries grammar tables into the WASM module: `promql-parser` and
+what it pulls in, grammar tables included, are about 90% of `viz-promql`'s module,
+`engine/promql/README.md`). Reproducing every observed Tempo answer, plan artefacts included
+(byte-compatible with one Tempo release, but it would copy defects: Tempo returns nothing for
+a lone `{ !(status = error) }`, and `{ v = "1.0" || .b }` drops spans without `b`). Following
+only the documentation (leaves precedence and the metrics grid undefined). For nesting:
+explicit heap stacks in every pass (parser, validation, conversion, planning, evaluation and
+an iterative `Drop`) instead of a limit, which accepts any depth Tempo does but rewrites every
+recursive function.
+
+**Why.** The hand-written parser is small (no grammar tables in the module: the whole engine
+is 1.28 MB raw and 0.44 MB gzipped, measured here), reports positions directly, and keeps the
+clean-room record simple (D35). Tempo is the compatibility target, so its evaluator settles
+what the documentation leaves open; answers that depend on Tempo's internal plan cannot be
+specified and are not copied. One bound at `parse` covers every pass. At 200 levels the
+costliest query needs under 128 KiB of V8's stack and of the module's own (measured in Node;
+the defaults are about 1 MiB each), and real queries are far shallower.
+
+**Would change if.** Tempo documents a different semantics, or fixes the plan-dependent cases
+differently; or clients turn out to depend on a Tempo artefact (then that one rule is copied
+and recorded here). For the limits: clients send longer chains than 197 operators (generated
+`||` lists are the likely case; a chain of one associative operator could then be built as a
+balanced tree), or a Workers isolate turns out to have a much smaller stack than Node's.
+
+## D49. LogQL's vector operations run on viz-promql's evaluator, through its hooks
+
+**Decision.** `engine/logql` computes LogQL's range aggregations itself, then prints the rest of
+a metric query as PromQL whose leaves are placeholder selectors, and evaluates it with
+`viz-promql` (`query_range_expr` / `query_instant_expr` with an `EvalHooks::replace` that
+supplies the placeholders' values). Vector aggregations, binary operators with vector matching,
+`label_replace` and `vector()` therefore have one implementation for both languages. The
+translation applies the two LogQL rules that differ: a comparison between two scalars returns
+0 or 1 without `bool`, and `label_replace`'s regular expression is translated to the Go dialect.
+
+**Alternatives.** (a) A LogQL evaluator of its own for the vector layer. (b) One logical plan for
+PromQL, TraceQL and LogQL that all three lower into (§6.1), with one executor.
+
+**Why.** LogQL's documentation defines these operations as PromQL's; `viz-promql` is already
+checked against the Prometheus corpus and a Prometheus differential, and the LogQL differential
+run against Loki agrees with it except where Loki's own grouping of empty-valued labels creates
+duplicate series (`engine/logql/README.md`). (a) would duplicate about a thousand lines of subtle
+code (matching errors, compensated sums) and drift from it. (b) is the stated direction but does
+not exist yet; the hook keeps LogQL's own part small enough to move onto it later. The cost is
+that `viz-logql` links `promql-parser` (most of its 2.4 MB WASM module, none of it extra inside
+`engine/wasm-query`, which links it already) and evaluates a printed query.
+
+**Would change if.** Loki's vector semantics move away from PromQL's further than the translation
+can absorb, `viz-promql`'s evaluator changes in a way LogQL must not follow, or the shared plan of
+§6.1 is built.
+
+## D50. Where Loki's documentation is silent, viz-logql follows Loki's observed behaviour
+
+**Decision.** `engine/logql` is written clean-room from Loki's documentation (Loki is AGPL-3.0).
+Where the documentation does not decide a behaviour (window edges, error-label wording and
+precedence, parser corner cases, label-name sanitising, filter ordering, `rate_counter`'s
+arithmetic, ties at the log limit), it reproduces what Loki v3.7.10 returns when run as a black
+box, and records each finding (`engine/logql/README.md`, `CLEANROOM.md`). It departs only where
+Loki contradicts its own documentation or is inconsistent: metric queries whose samples carry
+parser errors fail even under `sum`, entries of merged streams are sorted by time, empty-valued
+labels do not produce duplicate series, and ties are broken deterministically.
+
+**Alternatives.** (a) Implement the documented behaviour only and leave the rest to judgement.
+(b) Port Loki's code. (c) Follow the documentation and Prometheus' conventions where Loki's
+differ from them.
+
+**Why.** viz serves Loki's HTTP API so that Grafana and existing queries work unchanged; a
+query that returns different lines or values than Loki is a bug to the people running it, and
+the documentation leaves dozens of observable details open. (a) gave 41 differences on the first
+generated differential run; following observed behaviour brought the run to zero unexplained
+differences over 7,895 evaluations. (b) is ruled out by the licence. (c) would be cleaner where
+Loki looks wrong (`rate_counter`) but surprises users comparing the two.
+
+**Would change if.** A Loki release changes an observed behaviour (the differential run is pinned
+to a tag and would show it), or viz decides a Loki behaviour is a bug worth diverging from; each
+divergence is then listed in the README's "Differences from Loki".

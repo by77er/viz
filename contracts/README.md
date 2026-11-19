@@ -7,6 +7,8 @@ change it here first; nothing else may redefine these.
 |---|---|
 | `BATCH.md` | The columnar batch: what `edge` produces, a shard stores opaquely, and the engine decodes |
 | `TABLES.md` | Parquet schemas, sort orders, partitioning and object keys for the metrics tables |
+| `TRACES.md` | Proposed: the `spans` table and `trace_index`, the read plan the TraceQL engine (`engine/traceql`) produces, and how missing values read. Storage does not implement it yet |
+| `LOGS.md` | Proposed: the log-records table (stream id, labels, line, structured metadata, OTLP severity and trace ids), its sort and token filter, and the `LogSource` read seam the LogQL engine (`engine/logql`) uses. Storage does not implement it yet |
 | `ledger.ts` | The tenant ledger's RPC surface: file precedence (`LiveFile`, which file wins a duplicate sample), and the proposed tombstone surface used for physical deletion |
 | `LEDGER-LOG.md` | The ledger's change log as batched segments written in the background: format, drain, checkpoints, truncation, readers. Built; replaced one object per change (whose keys `ledger.ts` keeps for readers) |
 | `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |

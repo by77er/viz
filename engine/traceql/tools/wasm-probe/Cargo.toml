@@ -1,0 +1,23 @@
+[package]
+name = "viz-traceql-wasm-probe"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+description = "Measures viz-traceql as a WebAssembly module: a C ABI over parse, search and query_range"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+viz-traceql = { path = "../.." }
+
+# engine/AGENTS.md: fat LTO, one codegen unit, opt-level 3, panic = abort.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]
