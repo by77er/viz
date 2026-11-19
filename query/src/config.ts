@@ -49,6 +49,14 @@ export interface TenantLimits extends QueryLimits {
    * `maxFiles`); below it, one place is cheaper (every leaf of a split reads every file).
    */
   splitAboveSamples: number
+  /**
+   * A query that decomposes is also split when the series it would load, estimated from
+   * the series files (`seriesEstimate` in coordinator.ts), are above this: three quarters
+   * of `maxSeries`, as `splitAboveSamples` is of `maxSamples`. Without it a query over
+   * 100,000 series with few samples each ran in one place and was refused by `maxSeries`
+   * (README, "Cardinality").
+   */
+  splitAboveSeries: number
   /** A split query: samples loaded over all leaves. Each leaf's share is at most `maxSamples`. */
   maxQuerySamples: number
   /** A split query: series loaded over all leaves. Each leaf's share is at most `maxSeries`. */
@@ -87,6 +95,7 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxFiles: 2_000,
   timeoutMs: 30_000,
   splitAboveSamples: 1_500_000,
+  splitAboveSeries: 15_000,
   maxQuerySamples: 64_000_000,
   maxQuerySeries: 640_000,
   maxQueryScanSamples: 100_000_000,

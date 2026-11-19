@@ -175,6 +175,75 @@ describe('split execution', () => {
     expect(cost(res, 'Leaf-Peak-Wasm-Bytes')).toBeGreaterThan(0)
   })
 
+  it('a query is split by itself once its series estimate is above splitAboveSeries, with leaves enough for its series, and the answer is the same', async () => {
+    const base = await run(w.a.key, rateSumBy)
+    const want = await base.text()
+    // Known from the series files' row groups before anything is fetched.
+    const est = cost(base, 'Series-Estimate')
+    expect(est).toBeGreaterThan(4)
+    await setLimits(w.a, { splitAboveSeries: est })
+    let res = await run(w.a.key, rateSumBy)
+    expect([res.headers.get('X-Viz-Execution'), await res.text()]).toEqual(['single', want])
+    await setLimits(w.a, { splitAboveSeries: est - 1 })
+    res = await run(w.a.key, rateSumBy)
+    expect([res.headers.get('X-Viz-Execution'), cost(res, 'Split-Leaves'), await res.text()]).toEqual(['split', 2, want])
+    // Leaves are sized by series too: three quarters of maxSeries a leaf gives 3 leaves here.
+    const maxSeries = Math.ceil(est / 2.25)
+    await setLimits(w.a, { splitAboveSeries: est - 1, maxSeries })
+    res = await run(w.a.key, rateSumBy)
+    expect([res.headers.get('X-Viz-Execution'), cost(res, 'Split-Leaves'), await res.text()]).toEqual(['split', 3, want])
+  })
+
+  it('/api/v1/plan says what a query would read and how it would run, from the ledger alone', async () => {
+    const params = (q: Query) =>
+      q.kind === 'range' ? { query: q.query, start: String(q.start! / 1000), end: String(q.end! / 1000), step: String(q.step! / 1000) } : { query: q.query, time: String(q.time! / 1000) }
+    const plan = async (q: Query, method: 'GET' | 'POST' = 'GET') => {
+      const res = await api(w.a.key, '/api/v1/plan', params(q), { method })
+      expect(res.status).toBe(200)
+      // Nothing but the ledger is read.
+      expect([cost(res, 'Shard-Calls'), cost(res, 'Leaf-Calls'), cost(res, 'R2-Gets'), cost(res, 'Cache-Hits'), cost(res, 'Samples-Loaded')]).toEqual([0, 0, 0, 0, 0])
+      return (await res.json<{ status: string; data: Record<string, unknown> }>()).data
+    }
+    const instant = QUERIES.find((q) => q.kind === 'instant' && q.query.includes('http_requests_total'))!
+    for (const q of [rateSumBy, instant]) {
+      for (const method of ['GET', 'POST'] as const) {
+        const p = await plan(q, method)
+        const real = await run(w.a.key, q)
+        expect(p, q.id).toEqual({
+          execution: real.headers.get('X-Viz-Execution'),
+          splitReason: real.headers.get('X-Viz-Split-Reason'),
+          leaves: 0,
+          ledgerVersion: cost(real, 'Ledger-Version'),
+          filesListed: cost(real, 'Files-Listed'),
+          filesSkipped: cost(real, 'Files-Skipped'),
+          filesToRead: cost(real, 'Files-Read'),
+          bytesToRead: cost(real, 'Bytes-Read'),
+          scanSamples: cost(real, 'Scan-Samples'),
+          seriesEstimate: cost(real, 'Series-Estimate'),
+          refusal: null,
+        })
+      }
+    }
+    // A split: the leaves it would use (the tail is not read, so they come from the lake).
+    const one = await run(w.a.key, rateSumBy)
+    await setLimits(w.a, { splitAboveSamples: cost(one, 'Scan-Samples') - 1 })
+    const real = await run(w.a.key, rateSumBy)
+    expect(await plan(rateSumBy)).toMatchObject({ execution: 'split', splitReason: '', leaves: cost(real, 'Split-Leaves'), filesToRead: cost(real, 'Files-Read') })
+    // A query the limits refuse before fetching: 200, with the refusal the query gets.
+    await setLimits(w.a, { maxScanSamples: cost(one, 'Scan-Samples') - 1 })
+    const refused = await run(w.a.key, rateSumBy)
+    expect(refused.status).toBe(422)
+    expect((await plan(rateSumBy)).refusal).toEqual({ errorType: 'execution', error: (await refused.json<{ error: string }>()).error })
+    await setLimits(w.a, null)
+    // A query that does not decompose, and one that reads nothing.
+    const quantile = QUERIES.find((q) => q.id === 'quantile')!
+    expect(await plan(quantile)).toMatchObject({ execution: 'single', splitReason: expect.stringContaining('`quantile` does not decompose') })
+    expect(await plan({ id: 'lit', kind: 'instant', query: '1 + 1', time: rateSumBy.end })).toMatchObject({ execution: 'none', filesListed: 0, refusal: null })
+    // A bad query is a 400, as for the query itself.
+    const bad = await api(w.a.key, '/api/v1/plan', { query: 'sum(' })
+    expect([bad.status, (await bad.json<{ errorType: string }>()).errorType]).toEqual([400, 'bad_data'])
+  })
+
   it('each leaf stops at its share of the budget; one that the skew pushed over is run again, and the answer is the same', async () => {
     const base = await run(w.a.key, rateSumBy)
     const want = await base.text()

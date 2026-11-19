@@ -298,13 +298,19 @@ async function main() {
       await step('close the Other group', 'legend-other')
 
       // States whose only control goes away when it is used.
-      // An error with no position in the query (too many points) offers "Run the query again";
-      // one with a position offers "Go to character N", which moves focus into the editor.
-      await page.goto(url(Q_RATE, '&step=500ms')); await page.waitForSelector('[data-testid=error-fix]')
+      // An error with no position in the query (PromQL the backend does not run) offers "Run the
+      // query again"; too many points offers "Use the automatic step", which clears the step and
+      // runs; one with a position offers "Go to character N", which moves focus into the editor.
+      await page.goto(url('limitk(1, up)')); await page.waitForSelector('[data-testid=error-fix]')
       const fixLabel = (await page.textContent('[data-testid=error-fix]')).trim()
       await page.focus('[data-testid=error-fix]'); await page.keyboard.press('Enter')
       await step(`"${fixLabel}" from the error state`, 'run')
       await page.waitForSelector('[data-testid=error-fix]')
+      await page.goto(url(Q_RATE, '&step=500ms')); await page.waitForSelector('[data-testid=error-fix]')
+      const stepLabel = (await page.textContent('[data-testid=error-fix]')).trim()
+      await page.focus('[data-testid=error-fix]'); await page.keyboard.press('Enter')
+      await ready(page)
+      await step(`"${stepLabel}" from the error state`, 'run')
       await page.goto(url(Q_BAD)); await page.waitForSelector('[data-testid=error-fix]'); await page.waitForSelector('.cm-content')
       await page.focus('[data-testid=error-fix]'); await page.keyboard.press('Enter')
       await step('"Go to character" from the error state', 'query editor')

@@ -97,7 +97,7 @@ describe('PromClient', () => {
     await expect(new PromClient({ baseUrl: 'http://mock', token: 'wrong', fetch: api.fetch }).labels()).rejects.toMatchObject({ status: 401 })
     // The cost headers come back with the result, as the real API sends them.
     expect(r.cost['x-viz-execution']).toBe('single')
-    expect(Object.keys(r.cost)).toHaveLength(28)
+    expect(Object.keys(r.cost)).toHaveLength(29)
   })
 
   it('keeps Retry-After, as seconds or as a date, on errors with and without an envelope', async () => {

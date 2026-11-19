@@ -13,6 +13,7 @@ import {
   STATUS_EXISTING,
   TABLE_NAMES,
   emptyMetadata,
+  expiryDeadline,
   liveFromEntry,
   manifestEntry,
   manifestHeader,
@@ -32,6 +33,19 @@ import {
 } from './iceberg'
 import { PUBLISHER_SCHEMA } from './schema'
 import { cursorCompare, inBatches, listTenants, readTenantLog, replayAt, type Cursor, type LogStatus, type Store, type TenantLog } from './log'
+
+/**
+ * The jobs the publisher's one alarm serves (design/DECISIONS.md D31). Each deadline is a row
+ * of `due`, in the publisher's clock; the alarm is set at the earliest and deleted when there
+ * is none, so an idle publisher has no alarm and costs nothing.
+ *
+ *   publish         tenants are pending: set by `notify` (coalescing nudges for
+ *                   `publishIntervalMs`), or by a publish that left some (retry after `retryMs`)
+ *   sweep           metadata objects may be unreferenced: a commit or a failed attempt happened
+ *                   (`orphanGraceMs` later), or the last sweep marked objects (their grace end)
+ *   expire:<table>  every snapshot beyond the newest `minSnapshots` will be outside the window
+ */
+type Job = 'publish' | 'sweep' | `expire:${Table}`
 
 /**
  * The publisher: one Durable Object per cell (the cell id is the object's name). It is the
@@ -223,7 +237,6 @@ interface TableState {
   uuid: string
 }
 
-const DAY_TABLE = /^[^/]+\/data\/([^/]+)\//
 const META_FILE = /\/v(\d+)\.metadata\.json$/
 const FANOUT = 6
 
@@ -575,11 +588,16 @@ export class Publisher extends DurableObject<PublisherEnv> {
       let last = start
       for (const c of log.changes) {
         if (c.version <= start) continue
-        for (const k of c.removed) {
-          if (work.delete(k)) dropped.push(k)
-          // `removed` holds keys of every table. One that names this table by the contract's
-          // key layout and is not live here means the log and the publication disagree.
-          else if (DAY_TABLE.exec(k)?.[1] === table) problem = `change ${c.version} removes ${k}, which is not live at version ${c.version - 1}`
+        for (const r of c.removedFiles) {
+          // `removed` holds keys of every table; `removedFiles` says which (from the ledger, or
+          // from the key layout for a log written before it). A removal of this table's file that
+          // is not live here, or of a live file as another table's, means the log and the
+          // publication disagree.
+          if (work.has(r.key) && (r.table === null || r.table === table)) {
+            work.delete(r.key)
+            dropped.push(r.key)
+          } else if (work.has(r.key)) problem = `change ${c.version} removes ${r.key} as a ${r.table} file; it is live in ${table}`
+          else if (r.table === table) problem = `change ${c.version} removes ${r.key}, which is not live at version ${c.version - 1}`
         }
         for (const f of c.added) {
           if (f.table !== table) continue

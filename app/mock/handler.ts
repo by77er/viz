@@ -35,10 +35,14 @@ export interface MockOptions {
   readlessToken?: string
 }
 
-/** The cost headers the real API sends on every answer after authentication (query/README.md). */
+/**
+ * The cost headers the real API sends on every answer after authentication (query/README.md),
+ * in its order. `X-Viz-Series-Estimate` appeared in query/src on 2026-11-19 while this list was
+ * being checked (e2e/contract.cjs found it): the contract test is what keeps this list true.
+ */
 export const COST_HEADERS = [
   'X-Viz-Ledger-Version', 'X-Viz-Plan-Attempts', 'X-Viz-Files-Listed', 'X-Viz-Files-Skipped', 'X-Viz-Files-Read',
-  'X-Viz-Scan-Samples', 'X-Viz-Bytes-Read', 'X-Viz-Cache-Hits', 'X-Viz-R2-Gets', 'X-Viz-Leaf-Calls', 'X-Viz-Leaves-Used',
+  'X-Viz-Scan-Samples', 'X-Viz-Series-Estimate', 'X-Viz-Bytes-Read', 'X-Viz-Cache-Hits', 'X-Viz-R2-Gets', 'X-Viz-Leaf-Calls', 'X-Viz-Leaves-Used',
   'X-Viz-Leaf-Rounds', 'X-Viz-Shards-Asked', 'X-Viz-Shard-Calls', 'X-Viz-Tail-Batches', 'X-Viz-Tail-Bytes',
   'X-Viz-Series-Loaded', 'X-Viz-Samples-Loaded', 'X-Viz-Engine-Ms', 'X-Viz-Wasm-Memory-Bytes', 'X-Viz-Execution',
   'X-Viz-Split-Reason', 'X-Viz-Split-Leaves', 'X-Viz-Reader-Calls', 'X-Viz-Rpc-Bytes', 'X-Viz-Leaf-Peak-Wasm-Bytes',

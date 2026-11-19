@@ -151,53 +151,102 @@ finding('F3_retry_after_shard_loss', 'F3: fingerprints die with the shard storag
 finding('F10_segments_overlap', 'F10 (LEDGER-LOG.md): drain PUTs v1..vk, dies before deleting the rows, a change commits, the retry PUTs v1..vk+1', { ...AMENDED, drainRetrySame: false }, ['LOG_SegmentsDisjoint'])
 finding('F10_rebuild_refuses', 'F10: same, then the ledger loses its storage: a strict replay refuses the log', { ...AMENDED, drainRetrySame: false, maxLL: 1 }, ['AV_RebuildSucceeds'])
 finding('F11_incarnation_reused', 'F11 (LEDGER-LOG.md): base is an ordinary first change; two ledger losses before it is drained', { ...AMENDED, baseFirst: false, maxLL: 2 }, ['V_IncarnationNotReused'])
+// The code as built. "As built" = HEAD 09f601d (IMPL); the findings F6, F12, F13, F14 and F15
+// were found against the code of 2026-11-18 evening (IMPL_V1) and are kept against it.
 const IMPL_PEEL: [string, Partial<Cfg>][] = [
   ['IMPL_1_as_built', {}],
-  ['IMPL_2_fix_F6', { unknownStream: 'refuse', reg: 'logged' }],
-  ['IMPL_3_assume_F3', { unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true }],
+  ['IMPL_2_assume_F3', { noRetryAcrossLoss: true }],
 ]
 for (const [name, over] of IMPL_PEEL) {
-  E.push({ name, kind: 'finding', label: `as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts)${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ''}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
-    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_1_as_built' ? 'violated' : 'holds', maxStates: 4_000_000 })
+  E.push({ name, kind: 'finding', label: `code at HEAD 09f601d (shard.ts, ledger.ts, flush.ts, compact.ts + janitor.ts with D30, coordinator.ts)${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ''}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
+    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: 'violated', maxStates: 4_000_000 })
 }
-finding('F6_impl_unknown_stream', 'F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss)', { ...IMPL, maxSL: 1, noRetryAcrossLoss: true }, ['I4_NoGapAtSeam'])
-finding('F12_impl_read_unbound', 'F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)', { ...IMPL, maxSL: 1, unknownStream: 'refuse', noRetryAcrossLoss: true }, ['I3_NoDuplicates'])
+E.push({ name: 'IMPL_3_fix_F6b', kind: 'finding', label: 'code at HEAD + F3 assumed + registration before writes, logged (F1/F6 fix in shard.ts); every action, every safety property', cfg: { ...IMPL, ...FAULTS, noRetryAcrossLoss: true, reg: 'logged' }, props: ALLSAFE, expect: 'holds', maxStates: 4_000_000 })
+finding('F6_impl_unknown_stream', 'F6: shard.ts (2026-11-18) tailRead answers ok/empty for a stream it lost (no client retry across the loss)', { ...IMPL_V1, maxSL: 1, noRetryAcrossLoss: true }, ['I4_NoGapAtSeam'])
+finding('F6b_impl_now', 'F6(b) in the code at HEAD: tailRead still answers ok/empty to incarnation 0, which the coordinator sends for a stream the ledger has not registered (lazy registration)', { ...IMPL, maxSL: 1, noRetryAcrossLoss: true }, ['I4_NoGapAtSeam'])
+finding('F12_impl_read_unbound', 'F12: shard.ts (2026-11-18) readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)', { ...IMPL_V1, maxSL: 1, unknownStream: 'refuse', noRetryAcrossLoss: true }, ['I3_NoDuplicates'])
 finding('F13_impl_comp_adopts_old_output', 'F13: compaction adopts an earlier step\'s output ("exists"); the sweeper judges it by the earlier upload', { ...IMPL_V1, maxComp: 1 }, ['I11_LiveFilesReadable'])
 finding('F14_impl_comp_conflict_delete', 'F14: compaction deletes its output on conflict although an identical step made it live and it has been removed since (removal not yet logged); ledger rebuild', { ...IMPL_V1, sweep: 'off', maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
-// the fixed compact/ + janitor/ (IMPL), same bounds as the findings, with the sweeper ON
-E.push({ name: 'F13_check_fixed', kind: 'finding', label: 'F13 bounds against the fixed compact/janitor (inputs rule): expect no counterexample', cfg: { ...IMPL, maxComp: 1 }, props: ['I1_AckedIsDurable', 'I11_LiveFilesReadable'], expect: 'holds', maxStates: 4_000_000 })
-E.push({ name: 'F14_check_fixed', kind: 'finding', label: 'F14 bounds against the fixed compact/janitor, sweeper on: expect no counterexample', cfg: { ...IMPL, maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, props: ['I1_AckedIsDurable', 'I11_LiveFilesReadable'], expect: 'holds', maxStates: 4_000_000 })
-E.push({ name: 'F15_check_fixed', kind: 'finding', label: 'F15 bounds against the fixed janitor (newer incarnation counts once its logged watermark > 0): expect no counterexample', cfg: { ...AMENDED, sweep: 'inputs', maxSL: 1, maxLL: 1 }, props: ['I1_AckedIsDurable', 'I11_LiveFilesReadable'], expect: 'holds', maxStates: 4_000_000 })
-E.push({ name: 'F15_check_fixed_impl', kind: 'finding', label: 'F15 bounds against the code as built now (lazy registration, inputs rule)', cfg: { ...IMPL, maxSL: 1, maxLL: 1, unknownStream: 'refuse', reg: 'logged' }, props: ['I1_AckedIsDurable', 'I11_LiveFilesReadable'], expect: 'holds', maxStates: 4_000_000 })
 finding('F15_sweeper_trusts_unlogged_registration', 'F15: janitor.ts (first version) calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild', { ...AMENDED, sweepIncLogged: false, maxSL: 1, maxLL: 1 }, ['I11_LiveFilesReadable'])
-E.push({ name: 'IMPL_ledger_2LL', kind: 'finding', label: 'as built now + F6 fix (F3 assumed), 2 ledger storage losses + compaction: the segment log as built (base first) against incarnation reuse and every other property', cfg: { ...IMPL, unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true, maxLL: 2, maxComp: 1, maxSL: 0, maxExp: 0 }, props: ALLSAFE, expect: 'holds', maxStates: 4_000_000 })
 finding('IMPL_PLANNED_fixed', 'As built with the fixes above (F6, F12, F13/F14, F15, F3 assumed), but the segment log as LEDGER-LOG.md stated it at the start of this work; ledger loss, compaction', { ...IMPL_PLANNED, unknownStream: 'refuse', noRetryAcrossLoss: true, readBound: true, compKey: 'unique', sweepIncLogged: true, maxLL: 1, maxComp: 1 }, ALLSAFE)
+
+// ---- D30: the compaction fix as built (compact.ts + janitor.ts), checked independently.
+// The F13, F14 and F15 bounds exactly as those findings were found, with D30 in place of the
+// old rules and the sweeper ON, every safety property; then the amended protocol's suite with
+// D30 and the ledger log as built; then teeth for each part of the rule.
+const d30 = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated' = 'holds', props: string[] = ALLSAFE, maxStates = 6_000_000) =>
+  E.push({ name, kind: 'd30', label, cfg, props, expect, maxStates })
+d30('D30_F13', 'F13\'s bounds (code of 2026-11-18, 1 compaction, sweeper on) with D30', { ...IMPL_V1, ...D30, maxComp: 1 })
+d30('D30_F14', 'F14\'s bounds (two compaction steps at once, retention, ledger loss) with D30 and the sweeper ON (F14 had it off)', { ...IMPL_V1, ...D30, maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 })
+d30('D30_F14_log', 'as D30_F14, ledger log as built (base first, two-step start, tombstones in the base)', { ...IMPL_V1, ...D30, ...LOG_AS_BUILT, maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 })
+d30('D30_F15', 'F15\'s bounds (amended protocol, shard loss + ledger loss) with D30\'s sweeper', { ...AMENDED, ...D30, maxSL: 1, maxLL: 1 })
+d30('D30_F15_atomic_age', 'as D30_F15 with the sweep as one atomic step and the age floor kept (the previous engineer\'s encoding)', { ...AMENDED, ...D30, sweepSteps: false, sweepAge: true, purgeSteps: false, maxSL: 1, maxLL: 1 })
+const AD = { ...AMENDED, ...D30, ...LOG_AS_BUILT }
+d30('D30_retries_faults', 'amended protocol + D30 + log as built: client retries + two flush Workers, ledger loss + shard loss', { ...AD, maxLL: 1, maxSL: 1 })
+d30('D30_maintenance_faults', 'amended + D30 + log as built: two compaction steps at once + retention + ledger loss + shard loss, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1 })
+d30('D30_maintenance_2LL', 'amended + D30 + log as built: two compaction steps at once + retention + two ledger losses, no client retry, one flush Worker', { ...AD, maxSend: 1, maxJobs: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 2, maxSL: 0 })
+d30('D30_3batches', 'amended + D30 + log as built: 3 batches, ledger loss + shard loss + compaction, no client retry', { ...AD, nb: 3, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1 })
+d30('D30_2shards', 'amended + D30 + log as built: 2 shards, ledger loss + shard loss + compaction, no client retry', { ...AD, ns: 2, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1 })
+d30('D30_2tenants', 'amended + D30 + log as built: 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry', { ...AD, nt: 2, nb: 2, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1, sameContent: true })
+d30('D30_variants', 'amended + D30 + log as built: two encoder outputs per segment, ledger loss + compaction + retention, no client retry', { ...AD, variants: 2, maxSend: 1, maxLL: 1, maxComp: 1, maxExp: 1 })
+// teeth: which parts of D30 are load-bearing
+d30('D30_teeth_not_live_only', 'D30 teeth: an input counts as gone when it is merely not live (its object may still exist)', { ...AD, sweepGone: 'notLive', maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'])
+d30('D30_teeth_absent_only', 'D30 with the live test dropped (absent from the listing alone): expected to hold, since an object is deleted only once its key can never be live', { ...AD, sweepGone: 'absent', maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 })
+d30('D30_teeth_read_first', 'D30 teeth: the sweep reads the ledger BEFORE it lists R2', { ...AD, sweepOrder: 'readFirst', maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'], 19_000_000)
+d30('D30_teeth_newer_unlogged', 'D30 teeth: a newer incarnation kills old flush files as soon as it is committed (no logged-watermark > 0 test)', { ...AMENDED, ...D30, sweepNewerLogged: false, maxSL: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'])
+d30('D30_teeth_conflict_delete', 'D30 teeth: the step deletes its outputs on conflict again (F14 back)', { ...IMPL_V1, ...D30, compConflictDelete: true, maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'])
+d30('D30_teeth_purge_unlogged', 'D30 teeth: purge deletes a removed file before its removal is logged', { ...AD, delLogged: false, maxSend: 1, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'])
+
+// ---- the ledger's segment log as built (LEDGER-LOG.md, ledger.ts): the IMPL_PLANNED bounds and more
+const logrun = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated' = 'holds', props: string[] = ALLSAFE) =>
+  E.push({ name, kind: 'log', label, cfg, props, expect, maxStates: 6_000_000 })
+logrun('LOG_as_built', 'IMPL_PLANNED_fixed\'s bounds with the segment log as built (base PUT before the commit, two-step start, F10 fix, tombstones in the base) and the code at HEAD; F3 assumed', { ...IMPL, noRetryAcrossLoss: true, maxLL: 1, maxComp: 1 })
+logrun('LOG_as_built_2LL', 'as LOG_as_built, two ledger losses (F11 needed two), compaction, one flush Worker', { ...IMPL, noRetryAcrossLoss: true, maxLL: 2, maxComp: 1, maxJobs: 1 })
+logrun('LOG_as_built_3LL', 'as LOG_as_built, three ledger losses, no compaction, one flush Worker', { ...IMPL, noRetryAcrossLoss: true, maxLL: 3, maxComp: 0, maxJobs: 1 })
+logrun('LOG_as_built_faults', 'as LOG_as_built, + retention + shard loss, registration logged before writes (so F6(b) does not mask the log)', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxLL: 1, maxComp: 1, maxExp: 1, maxSL: 1 })
+logrun('LOG_teeth_commit_first', 'segment log teeth: the incarnation commits before its base is in R2 (the plan before F11)', { ...IMPL, baseFirst: false, startSteps: false, noRetryAcrossLoss: true, maxLL: 2, maxComp: 0, maxJobs: 1 }, 'violated', ['V_IncarnationNotReused'])
+logrun('LOG_teeth_retry_new_bounds', 'segment log teeth: a retried drain takes every pending row (F10)', { ...IMPL, drainRetrySame: false, noRetryAcrossLoss: true, maxLL: 1, maxComp: 0 }, 'violated', ['AV_RebuildSucceeds'])
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation
 const amended = (name: string, label: string, over: Partial<Cfg>, maxStates?: number) =>
   E.push({ name, kind: 'amended', label, cfg: { ...AMENDED, ...over }, props: ALLSAFE, expect: 'holds', maxStates })
 amended('A_retries_faults', 'client retries + two flush Workers, ledger loss + shard loss', { maxLL: 1, maxSL: 1 }, 4_000_000)
 amended('A_maintenance_faults', 'compaction (2 steps at once) + retention + ledger loss + shard loss, no client retry', { maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1 }, 4_000_000)
-amended('A_maintenance_impl_compaction', 'as A_maintenance_faults, with compaction and sweeper as built now (keys = hash of inputs + bytes, no delete on conflict, inputs rule)', { maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1, sweep: 'inputs', compKey: 'inputs', compConflictDelete: false }, 4_000_000)
 amended('A_3batches', '3 batches, ledger loss + shard loss, no client retry', { nb: 3, maxSend: 1, maxLL: 1, maxSL: 1 }, 4_000_000)
 amended('A_2shards', '2 shards, ledger loss + shard loss + compaction, no client retry', { ns: 2, maxSend: 1, maxLL: 1, maxSL: 1, maxComp: 1 }, 4_000_000)
 amended('A_2tenants', '2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss, no client retry', { nt: 2, nb: 2, maxSend: 1, maxLL: 1, maxSL: 1, sameContent: true }, 4_000_000)
 
-// ---- liveness: AG EF (query done) on the whole graph; unbounded refusals
+// ---- liveness: AG EF (goal) on the whole graph; unbounded refusals
 // The whole graph is kept (edges in memory), so these use one flush Worker and are capped at
 // 3 M states; a run that hits the cap cannot decide AG EF and says so.
 const live = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>
   E.push({ name, kind: 'liveness', label, cfg: { ...cfg, maxJobs: 1, liveness: true }, props: [], expect, maxStates: 3_000_000 })
 live('LIVE_amended', 'amended protocol, ledger loss + shard loss, no compaction (1 send per batch; with compaction the graph passed the 3 M cap)', { ...AMENDED, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
+live('LIVE_amended_ll', 'amended protocol, ledger loss, compaction, no shard loss (1 send per batch)', { ...AMENDED, maxSend: 1, maxLL: 1, maxComp: 1 }, 'holds')
+live('LIVE_amended_sl', 'amended protocol, shard loss, no ledger loss, no compaction (1 send per batch)', { ...AMENDED, maxSend: 1, maxSL: 1 }, 'holds')
 live('LIVE_design', 'DESIGN as written, ledger loss + shard loss (1 send per batch)', { ...DESIGN, maxSend: 1, maxLL: 1, maxSL: 1 }, 'violated')
-live('LIVE_impl', 'as built, ledger loss + shard loss, no compaction (1 send per batch)', { ...IMPL, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
-live('LIVE_impl_F6_refuse_only', 'as built + tailRead refuses an unknown stream but nothing re-registers it; shard loss (1 send per batch)', { ...IMPL, unknownStream: 'refuse', f6Register: false, maxSend: 1, maxSL: 1 }, 'violated')
-live('LIVE_impl_F6_fixed', 'as built + F6 fixed completely (refuse, and register before writes, so the refusing shard re-registers), + F15 fix; ledger loss + shard loss (1 send per batch)', { ...IMPL, unknownStream: 'refuse', reg: 'logged', sweepIncLogged: true, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
+live('LIVE_impl_V1', 'code of 2026-11-18 (tailRead ok/empty for a lost stream), ledger loss + shard loss, no compaction (1 send per batch)', { ...IMPL_V1, sweep: 'inputs', compConflictDelete: false, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
+live('LIVE_impl', 'code at HEAD: tailRead refuses an incarnation it lost, but nothing re-registers the stream; shard loss (1 send per batch)', { ...IMPL, maxSend: 1, maxSL: 1 }, 'violated')
+live('LIVE_impl_F6_fixed', 'code at HEAD + F6 fixed completely (register before writes, so a refusing shard re-registers); ledger loss + shard loss (1 send per batch)', { ...IMPL, reg: 'logged', maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
+// ---- no leak (I11, second half): AG EF every object in R2 is live. Retention may remove any
+// live file (maxExp large: it eventually removes everything), no query (purge's grace is then
+// free), one flush Worker.
+const leak = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>
+  E.push({ name, kind: 'liveness', label, cfg: { ...cfg, maxJobs: 1, maxQ: 0, liveness: true, goal: 'clean' }, props: [], expect, maxStates: 3_000_000 })
+leak('LEAK_D30_maintenance', 'no leak, D30 + log as built: compaction (2 steps at once), retention of every file, ledger loss, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 4, maxLL: 1 }, 'holds')
+leak('LEAK_D30_shardloss', 'no leak, D30 + log as built: shard loss, ledger loss, retention of every file, compaction, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
+leak('LEAK_V1_shardloss', 'no leak, the rules before D30 (age-swept outputs, committed newer incarnation): same bounds as LEAK_D30_shardloss', { ...AD, sweep: 'impl', sweepIncLogged: false, sweepSteps: false, compConflictDelete: true, purgeSteps: false, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
+leak('LEAK_impl', 'no leak, code at HEAD: lazy registration, shard loss, ledger loss, retention of every file, compaction, no client retry', { ...IMPL, noRetryAcrossLoss: true, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
 
 // ------------------------------------------------------------------ main
 
+const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (isMain) main()
+
+function main(): void {
+mkdirSync(out, { recursive: true })
 const args = process.argv.slice(2)
-const kinds = new Set(['teeth', 'finding', 'amended', 'liveness'])
+const kinds = new Set(['teeth', 'finding', 'amended', 'liveness', 'd30', 'log'])
 const sel = E.filter((e) => args.length === 0 || args.includes(e.name) || (kinds.has(e.kind) && args.includes(e.kind)))
 if (sel.length === 0) {
   console.error('names:\n  ' + E.map((e) => e.name).join('\n  '))
@@ -226,17 +275,18 @@ for (const e of sel) {
 const rows = E.map((e) => join(out, `${e.name}.json`)).filter(existsSync).map((f) => JSON.parse(readFileSync(f, 'utf8')))
 const md = ['# Explicit-state results (generated by bfs/run.ts; do not edit)', '',
   'Breadth-first, exhaustive within the bounds of each row; every counterexample is a shortest one in the model.', '']
-const names: Record<string, string> = { teeth: 'Guard switched off (expect a counterexample)', finding: 'Design and implementation as written (a counterexample is a finding)', amended: 'Amended protocol (expect none; exhaustive)', liveness: 'Liveness: AG EF query-done' }
-for (const k of ['teeth', 'finding', 'amended', 'liveness']) {
+const names: Record<string, string> = { teeth: 'Guard switched off (expect a counterexample)', finding: 'Design and implementation as written (a counterexample is a finding)', d30: 'D30: the compaction fix as built (compact.ts + janitor.ts)', log: 'The ledger segment log as built', amended: 'Amended protocol (expect none; exhaustive)', liveness: 'Liveness: AG EF query-done, or every object live (no leak)' }
+for (const k of ['teeth', 'finding', 'd30', 'log', 'amended', 'liveness']) {
   md.push(`## ${names[k]}`, '', '| experiment | checked | result | distinct states | transitions | depth | time | P(collision) |', '|---|---|---|---|---|---|---|---|')
   for (const r of rows.filter((x) => x.kind === k)) {
     const res = r.verdict === 'violated' ? `**violated** ${r.violated} in ${r.trace.length} steps` : r.verdict === 'holds' ? 'holds (exhaustive)' : `stopped: ${r.note}`
-    md.push(`| \`${r.name}\` ${r.label} | ${r.props.length > 3 ? 'all safety' : r.props.join(', ') || 'AG EF done'} | ${res}${r.asExpected ? '' : ' (unexpected)'} | ${r.states.toLocaleString('en')} | ${r.transitions.toLocaleString('en')} | ${r.depth} | ${r.seconds} s | ${r.collisionProb} |`)
+    md.push(`| \`${r.name}\` ${r.label} | ${r.props.length > 3 ? 'all safety' : r.props.join(', ') || (r.cfg.goal === 'clean' ? 'AG EF no leak' : 'AG EF done')} | ${res}${r.asExpected ? '' : ' (unexpected)'} | ${r.states.toLocaleString('en')} | ${r.transitions.toLocaleString('en')} | ${r.depth} | ${r.seconds} s | ${r.collisionProb} |`)
   }
   md.push('')
 }
 md.push('## Counterexamples', '')
-for (const r of rows.filter((x) => x.trace)) md.push(`### ${r.name}`, '', r.label, '', `Violates \`${r.violated}\`.`, '', ...r.trace.map((l: string, i: number) => `${i + 1}. ${l}`), '')
+for (const r of rows.filter((x) => x.trace)) md.push(`### ${r.name}`, '', r.label, '', `Violates \`${r.violated}\`.${r.note ? ` ${r.note}.` : ''}`, '', ...r.trace.map((l: string, i: number) => `${i + 1}. ${l}`), '')
 writeFileSync(join(here, '..', 'results', 'BFS.md'), md.join('\n'))
 console.log(`\nwrote results/BFS.md; ${unexpected} not as expected`)
 process.exit(unexpected ? 1 : 0)
+}

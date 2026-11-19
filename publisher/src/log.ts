@@ -287,7 +287,7 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
     ;({ segs: refs, complete } = await listSegments(store, cell, tenant, incarnation, undefined, (s) => s.length > 0 && covered(s, s[0]!.first) > maxChanges))
     if (refs.length === 0) return null
     if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
-    after = refs[0]!.first - 1 // the base line itself is read, then dropped from `changes`
+    after = refs[0]!.first // the base's version: changes start after it
   } else {
     after = from.version
     const startAfter = `${cell}/${ledgerSegmentsStartingAfter(tenant, incarnation, after)}`
@@ -333,7 +333,7 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
   if (status === 'ok' && !complete) status = 'more'
 
   let base: LogChange | null = null
-  const start = from === null ? refs[0]!.first : after
+  const start = after
   const changes: LogChange[] = []
   const reads = take.length
   for (let i = 0; i < reads; i += READ_FANOUT) {
@@ -480,7 +480,9 @@ export async function readTenantLog(store: Store, cell: string, tenant: string, 
   const segments = await readSegmentLog(store, cell, tenant, incarnation, cursor, Math.max(1, maxChanges))
   if (segments) return segments
   // No segment at all (a re-base), or none after the cursor: the first layout, or nothing new.
-  return readObjectLog(store, cell, tenant, incarnation, cursor, Math.max(1, maxChanges))
+  const objects = await readObjectLog(store, cell, tenant, incarnation, cursor, Math.max(1, maxChanges))
+  // Nothing after the cursor in either layout: which one the incarnation uses is not known here.
+  return cursor && objects.status === 'ok' && objects.changes.length === 0 ? { ...objects, layout: null } : objects
 }
 
 /** Tenants that have a ledger log under the cell. */

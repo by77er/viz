@@ -8,6 +8,7 @@
  *   GET|POST /api/v1/series                series by `match[]`
  *   GET      /api/v1/metadata              always empty (no metadata is stored)
  *   GET      /api/v1/status/buildinfo      minimal
+ *   GET|POST /api/v1/plan                  what a query would read and how it would run, without running it
  *   GET      /healthz                      no authentication
  *
  * The tenant is the one the API key belongs to (`edge/src/auth.ts`, scope `read`). No
@@ -19,7 +20,7 @@ import { HttpError } from '../../edge/src/errors'
 import { EngineLoadError, type Grid, QueryError, type SplitPlan, createQueryEngine } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { ConfigError, type Env, tenantLimits } from './config'
-import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type SplitSpec, addStats, cardinality, gather, newCost } from './coordinator'
+import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type QueryPlan, type SplitSpec, addStats, cardinality, gather, newCost } from './coordinator'
 import { cardinalityParams, parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
 
 export { Leaf } from './leaf'
@@ -53,6 +54,7 @@ const COST_HEADERS: [string, keyof Cost][] = [
   ['X-Viz-Files-Skipped', 'filesSkipped'],
   ['X-Viz-Files-Read', 'filesRead'],
   ['X-Viz-Scan-Samples', 'scanSamples'],
+  ['X-Viz-Series-Estimate', 'seriesEstimate'],
   ['X-Viz-Bytes-Read', 'bytesRead'],
   ['X-Viz-Cache-Hits', 'cacheHits'],
   ['X-Viz-R2-Gets', 'r2Gets'],
@@ -173,6 +175,27 @@ const range: Handler = async (c, params) => {
   )
 }
 
+/**
+ * `/api/v1/plan`: what a query would read and how it would run, from one ledger read and
+ * nothing else (no shard, leaf or R2 is touched; the tail is not read, so its bytes are
+ * not in the answer). The parameters of `query_range` (`start`, `end`, `step`) or of
+ * `query` (`time`, default now). A query the limits would refuse before fetching is
+ * answered with 200 and the refusal in `refusal`, so a client can show why.
+ */
+const plan: Handler = async (c, params) => {
+  const query = required(params, 'query')
+  const isRange = params.has('start') || params.has('end') || params.has('step')
+  const t = params.get('time')
+  const instantTime = t === null || t === '' ? Math.min(Math.max(Date.now(), MIN_TS), MAX_TS) : parseTime('time', t)
+  const { start, end, step } = isRange ? rangeParams(params) : { start: instantTime, end: instantTime, step: 1 }
+  const ranges = c.engine.plan(query, start, end, step, c.limits)
+  const split = splitSpec(c, c.engine.splitPlan(query, c.limits), query, isRange ? { start, end, step } : { time: start })
+  const notEvaluated = (): string => {
+    throw new ApiError('internal', 'a plan-only request reached evaluation')
+  }
+  return gather(c, ranges, c.engine.selectors(query, start, end, step, c.limits), notEvaluated, split, (p: QueryPlan) => JSON.stringify(p))
+}
+
 /** Fetch ranges of a metadata call: one per `match[]` set, or one for every series. */
 function metaRanges(c: Context, match: string[], start: number, end: number) {
   const sets = match.length === 0 ? [[]] : c.engine.parseSelectors(match)
@@ -239,6 +262,8 @@ function route(path: string): { handler: Handler; methods: string[]; label: stri
       return { handler: tsdbStatus, methods: ['GET'], label: '' }
     case '/api/v1/status/cardinality':
       return { handler: cardinalityStatus, methods: ['GET'], label: '' }
+    case '/api/v1/plan':
+      return { handler: plan, methods: ['GET', 'POST'], label: '' }
   }
   const m = /^\/api\/v1\/label\/([^/]+)\/values$/.exec(path)
   if (!m) return null

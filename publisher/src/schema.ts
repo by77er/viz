@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS orphan (path TEXT PRIMARY KEY, since INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS pending (tenant TEXT PRIMARY KEY, since INTEGER NOT NULL);
 `),
     },
+    {
+      // The deadlines the one alarm serves (design/DECISIONS.md D31): `publish`, `sweep`,
+      // `expire:<table>`, each in the publisher's clock. Additive: a new table that release 1
+      // neither reads nor needs. Release 1 on this storage publishes only from `notify` and
+      // drops the other deadlines when it deletes its alarm; the next commit by a release that
+      // knows the table sets them again. So release 1 stays a valid rollback target.
+      version: 2,
+      name: 'due: the deadlines of the alarm-driven jobs',
+      readableFrom: 1,
+      up: (sql) => void sql.exec(`CREATE TABLE IF NOT EXISTS due (job TEXT PRIMARY KEY, at INTEGER NOT NULL);`),
+    },
   ],
 }
 
@@ -54,4 +65,10 @@ export const FORMATS = {
   'r2.cursors': 1,
   /** The ledger change log as the publisher READS it (`LedgerChange`, absent `v` = 1, the known kinds). */
   'read.ledger-change': 1,
+  /**
+   * The ledger's segment log as the publisher READS it (contracts/LEDGER-LOG.md: segment header
+   * `v` 1, kind `viz.ledger.segment`, base-first). Pinned by `test/fixtures/ledger-log/`, real
+   * segment bytes written by the ledger, and by `test/golden/formats/read.ledger-segment.v1.json`.
+   */
+  'read.ledger-segment': 1,
 } as const
