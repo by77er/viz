@@ -461,7 +461,9 @@ was a parse error with the regex crate's wording. Now matchers, label filters an
 `label_replace`, which use the names, answer `Error::Unsupported` for such a name (before: a
 parse error), since what Loki extracts for them was not observed; template functions report
 it as a `TemplateFormatErr`, as before. A `label_replace` regex is now checked with its names
-at parse time, as it is evaluated. `tests/api.rs` `regex_group_names_follow_go`. Checked on
+at parse time, as it is evaluated. The same two places now report a Unicode class (`\pL`) as
+`Error::Unsupported` too, where it was a parse error carrying the translator's "not supported"
+message; matchers and line filters still report it as a parse error. `tests/api.rs` `regex_group_names_follow_go`. Checked on
 the final code against the code before (commit e32d27f, scratch copies, same machine):
 
 | Check | Before | After |

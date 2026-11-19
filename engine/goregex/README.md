@@ -128,7 +128,8 @@ at every `[:` inside a class, so a 128 KiB pattern `[[:a[:a…]` cost O(n²) (me
 re-wraps the same atom (`a*(?i)*(?i)*…`) is refused after 1000 wraps, as Go refuses nesting
 deeper than 1000.
 
-Re-wrapping an atom (review nit on PR #4, "rewrap memmove bound") was not linear: the `(?:`
+Re-wrapping an atom (review nit on PR #4, "rewrap memmove bound"; the nit's full text is not in
+the repository or on the pull request, and this is the only re-wrap in `src/`) was not linear: the `(?:`
 that opens the wrap was inserted at the atom's start (`String::insert_str`), which moves the
 atom's text, and `MAX_WRAPS` bounded only how often one atom is wrapped, not the bytes moved.
 Nested groups each wrapped once (`((…(a)*(?)*)*(?)*…)`) moved every enclosing group's text,
@@ -150,11 +151,11 @@ runs at load average 8 to 10, the second on the final code; outputs byte-identic
 | one 1 MiB atom wrapped 999 times | 1 MiB | 52–72 ms | 41–59 ms | 0.16–0.17 s | 0.15–0.20 s |
 
 The same scratch program translated 120,000 patterns with both translators (the 100,000 of the
-differential run below and 20,000 generated nestings of groups wrapped up to three times):
+differential run above and 20,000 generated nestings of groups wrapped up to three times):
 36,019 identical translations, 83,981 refused by both, 0 different.
 
-TraceQL queries are at most 128 KiB with 16 regexes; a pattern there cost about 26 ms of
-translation before the regex crate's nesting limit refused it, natively. viz-logql itself bounds no
+TraceQL queries are at most 128 KiB with 16 regexes; such a pattern there cost 26 to 65 ms of
+translation, natively, before the regex crate's nesting limit refused it. viz-logql itself bounds no
 query length, so there the cost grew with the square of the pattern. `tests/go_rules.rs` `rewrapping_costs_linear_time` runs the
 2 MiB nested pattern and requires under 3 s (debug build).
 

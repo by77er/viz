@@ -135,6 +135,8 @@ fn regex_group_names_follow_go() {
         r#"{app="web"} | regexp "(?P<1>l)""#,
         r#"{app="web"} | regexp "(?P<a>l)(?P<a>e)""#,
         r#"label_replace(rate({app="web"}[1m]), "x", "$1", "app", "(?P<1>w)eb")"#,
+        // Unicode classes are Unsupported there too (engine/goregex, Not implemented).
+        r#"{app="web"} | regexp "(?P<a>\\pL)""#,
     ] {
         assert!(matches!(parse(q), Err(Error::Unsupported(_))), "{q}: {:?}", parse(q));
     }
