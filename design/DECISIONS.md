@@ -1240,6 +1240,10 @@ URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 wi
 - **Every request is checked by control**: audience, expiry, grant and key state. Revocation
   takes effect at `/mcp` on the next request. Codes are single use (a second use revokes the
   grant); refresh tokens rotate on every use (presenting a used one revokes the grant).
+- **Credentials name their tenant in clear** (`vza1.<tenant>.<secret>`), so the server can find
+  the tenant's object; that object holds only the credential's SHA-256, so a credential edited to
+  name another tenant matches nothing. Because a forged one can name any string, a `Tenant` object
+  nobody provisioned no longer creates storage when it is constructed: `provision` opens it.
 
 **Alternatives.** (a) `@cloudflare/workers-oauth-provider` wrapping mcp's `fetch`: grants and
 tokens in KV outside the tenant's object and its audit log, revocation bounded by KV
@@ -1271,8 +1275,6 @@ break the first downstream call after approval (then the resource retries, or co
 the key earlier); or sender-constrained tokens (DPoP) become required.
 
 ## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
-
-(D44 is taken by the OAuth contract being written beside this; this entry follows it.)
 
 **Decision.** viz-ingest exports `RecordedSamples`, a `WorkerEntrypoint` with one method,
 `write(tenant, batches)` (`contracts/ingest.ts`, `edge/src/recorded.ts`). Only a Worker whose

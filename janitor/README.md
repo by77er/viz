@@ -10,7 +10,7 @@ when, and whether that removal is durably logged is kept by the tenant's ledger
 | `src/formats.ts` | `READS`: the formats the janitor reads, by version (it writes none) |
 | `test/janitor.test.ts` | 15 tests in workerd against the real `Shard`, `Ledger`, flush and compaction, and a simulated R2; 3 of them the review's R-1 and the protocol model's F15 |
 | `test/golden.test.ts` | 2 tests: the retention record (control's golden files) and the compaction inputs record (compact's) read as an independent reader |
-| `test/publication.test.ts` | 3 tests of the deletion gate: against the real `Publisher` (with a test clock) and against stand-ins that lie, refuse or hang |
+| `test/publication.test.ts` | 4 tests of the deletion gate: against the real `Publisher` (with a test clock) and against stand-ins that lie, refuse or hang |
 | `test/worker.ts` | The test script's main: `src/index.ts` plus the publisher's test class (`TEST_PUBLISHER`) |
 
 Bindings: `LEDGER`, `BUCKET`, `CONFIG` (KV), `CELL`, and optionally `PUBLISHER` (the cell's
@@ -180,7 +180,7 @@ npx tsc --noEmit                           # clean
 Last run 2026-11-19 against the real tree (the ledger draining its log asynchronously): 17 of
 17, tsc clean.
 
-**With the deletion gate (2026-11-19):** `npx vitest run --maxWorkers=2`: **20 of 20** (3 files);
+**With the deletion gate (2026-11-19):** `npx vitest run --maxWorkers=2`: **21 of 21** (3 files);
 `npx tsc --noEmit` clean. The three gate tests were written first and **failed against the
 code before the gate** (the janitor deleted all ten removed files at once, deleted all eight
 tombstones the stand-in half-released, and deleted with a refusing publisher), then passed.
@@ -189,7 +189,10 @@ away (the ledger's own rules then allow deletion); (1) removal not published: no
 (2) published as snapshot 2, snapshot 1 retained: nothing deleted, and every file snapshot 1
 names is still in R2; (3) a day later a new commit expires snapshot 1, the publisher's grace not
 passed: nothing deleted; (4) after the grace exactly those ten are deleted, the ledger and the
-publisher forget them, and every file of every retained snapshot is still there.
+publisher forget them, and every file of every retained snapshot is still there. A fourth
+test was added while writing the mutants and failed against the first version of the loop,
+which stopped when the publisher held back the whole first answer of the ledger: keys held back
+at the head (lowest versions) no longer starve released keys behind them.
 
 Mutants (on a copy in a scratch directory, `MUTANT_FILES=janitor/,stack/ node scripts/mutants.mjs
 publication` from the copy's `stack/`): see `stack/README.md`, "The publisher wired in". The suite pins `LEDGER_DRAIN_DELAY_MS` to 60 s (`vitest.config.ts`), as
