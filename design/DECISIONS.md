@@ -350,8 +350,12 @@ the janitor runs.
 two-bucket sliding window of ids: an exact set while small, above that a HyperLogLog for
 the count and a Bloom filter for membership. A batch that would take the stream over its
 share of the tenant's limit is refused whole with the ids that are new and do not fit;
-`edge` leaves those series out, sends the rest again, and tells the sender (429 for Remote
-Write, `partial_success` for OTLP).
+`edge` leaves those series out, sends the rest again, and tells the sender: **400** for
+Remote Write, naming the limit and how many new series and samples were refused (the
+samples of existing series are written), and `partial_success` for OTLP. (This replaces
+"429 for Remote Write", reversed after review R-4: a sender that retries 429 resends the
+same new series for ever and falls behind on the series the tenant already has; Remote
+Write senders do not retry 4xx other than 429.)
 
 **Alternatives.** (a) `edge` splits a batch into one per series. (b) A HyperLogLog alone.
 (c) Refuse the whole request at the limit.
@@ -834,3 +838,113 @@ rewrite checkable. Apache-2.0 keeps every later licensing option open.
 
 **Would change if.** A clean-room engine cannot reach useful conformance in reasonable time,
 or the owner decides viz should be copyleft.
+
+## D36. The ledger answers after its SQLite commit and logs to R2 in batched segments; an incarnation's base is in R2 before it commits
+
+**Decision.** A ledger mutation commits its change to an outbox table in the same SQLite
+transaction and answers. Its alarm (200 ms after the first unlogged commit; a commit also
+starts a drain once one is due) writes every pending change as one immutable segment
+object per drain, `If-None-Match: *`, after recording the segment's bounds durably, and
+deletes those rows and advances each stream's *logged* watermark only once the PUT
+returned; a retry writes exactly the recorded segment. Shards may still discard only up to
+the logged watermark. A checkpoint (the whole state) every 256 segments bounds a rebuild.
+Starting an incarnation (a new tenant, storage loss, or storage still on the first layout)
+runs outside `blockConcurrencyWhile`: requests wait at most 2 s and are then refused as
+retryable (`ledger_unavailable`), and the incarnation's base segment is written to R2
+**before** SQLite commits the incarnation, so one incarnation number never names two
+histories. Contract: `contracts/LEDGER-LOG.md`; code: `ledger/src/ledger.ts`.
+
+**Alternatives.** (a) As built before: one R2 object per change, written before the
+mutation answers. (b) One object per change, written in the background. (c) Group commit
+on the request path: concurrent mutations share one segment PUT and are answered after it.
+(d) The log in another Durable Object or in D1 instead of R2. (e) Rebuild inside
+`blockConcurrencyWhile`, as before, with checkpoints only. (f) Commit the incarnation first
+and write its base with the first drain (the plan before the protocol model).
+
+**Why.** (a) admitted about one unit per second (S4): an R2 PUT takes 0.17–0.4 s whatever
+its size and AGENTS.md forbids one on the acknowledgement path. (b) keeps one Class A write
+per change and a strictly ordered queue of PUTs, so the drain falls behind at the rates
+that matter (17 units/s per large tenant). (c) still puts a PUT on every acknowledgement
+and couples callers' latency to R2's tail. (d) moves the durability problem rather than
+solving it, and a rebuild would depend on a second stateful service. The SQLite commit is
+already durable; what R2 adds is survival of storage loss, and the shards' discard rule
+already waits for that. (e) failed the review (R-3): a rebuild over about 600 per-change
+objects already takes 29 s on Cloudflare, where about 30 s resets the object, so the
+tenant could never serve again. (f) is the model's trace F11: two storage losses before a
+first drain start the same incarnation number with different contents.
+
+**Measured** (on Cloudflare, `spikes/s4-ledger-scale/`, 2026-11-19, n = 3, 20 s runs): with
+eight writers, 234–422 units per second against 1.7–3.3 for (a) the same day; `addUnit`
+median 16–31 ms against 2.3–4.1 s; logged watermark caught up 0.2–0.8 s after the last
+unit. Rebuild of 5,008 changes from 104 segments: 5.4 s, state identical.
+
+**Cost of it.** Changes committed but not yet in a segment when storage is lost are lost,
+as before (one drain cycle, about 0.2–1 s at load). Flush acknowledges shards a drain cycle
+later, so a flush run usually ends `awaitingLog` and its queue message is retried once.
+An outbox row is one SQLite value, so one change is limited to Cloudflare's 2 MB per value.
+
+**Would change if.** R2 PUT latency fell to a few milliseconds (then (c) is simpler); a
+tenant needed more than about 400 units per second from one ledger (then the drain's JSON
+encoding, which shares the object's thread, is the next limit: split the tenant); or
+losing one drain cycle of changes on storage loss became unacceptable (then the log must
+be on the request path again, and the ceiling goes with it).
+
+## D37. A shard refuses early when it has too much in flight, and commits concurrent appends as one group
+
+**Decision.** `append` answers `backpressure` with scope `overload` and a jittered
+`Retry-After` before it reads or writes anything when the shard already has 64 appends in
+flight or 16 MB pending. Accepted appends join an open group that commits in one SQLite
+transaction at the end of the current event (or at 4 MB); each caller is answered only
+after that transaction, with its own sequence number; a failed transaction answers every
+member with the error and stores nothing. `edge` answers an overload refusal with **503**
+and the shard's `Retry-After`, and refuses a tenant's next request before decoding it while
+every shard it may write to is inside that wait. A full buffer (tenant or shard cap) stays
+429.
+
+**Alternatives.** (a) As built: one transaction per append, and the runtime's own overload
+errors at saturation. (b) Early refusal answered 429. (c) A group window of a few
+milliseconds instead of the end of the event. (d) Larger in-flight limits (256) or none.
+
+**Why.** (a) saturated at 230–340 requests per second per shard with the 99th percentile
+near 1 s under overload, and its 503s came from the runtime after the request had queued.
+(b) Remote Write senders must retry 5xx and may retry 429; Prometheus does not retry 429
+by default, so an overload answered 429 can be dropped by the sender (training knowledge,
+the Remote Write 1.0 specification; not checked here). (c) and (d) were tried only in local
+workerd, where the clients and the shard share one thread (`shard/bench/results/tuning.log`):
+at 64 clients a 2 ms window raised throughput by a quarter and the 99th percentile from 243
+to 409 ms; at 160 clients a limit of 256 refused nothing and gave the most throughput (821/s,
+99th 270 ms), 16 the lowest latency with half the requests refused, and 64 sat between.
+Those runs do not single out 64. It was kept because it bounds what an acknowledgement can
+wait behind to about one group, and it held on Cloudflare (below); tuning it there is not
+done.
+
+**Measured** (on Cloudflare, `spikes/s3-ingest-throughput/`, 2026-11-19, n = 3, 10 s runs,
+50 series per request): at 64 clients 864–1,056 acknowledged requests per second, median
+50–59 ms, 99th 129–148 ms, against 301–340, 157–178 ms and 446–493 ms for (a) the same day;
+at 200 clients the refusals took 0–7 ms at the median and acknowledged requests kept a 99th
+percentile of 137–276 ms.
+
+**Would change if.** The runtime exposed its own queue depth (then the limit could follow
+it), or measured CPU per append changed enough that 64 in flight no longer bounds latency.
+
+## D38. Pool and shard names never contain `_`
+
+**Decision.** Pool and shard names are segments of `[A-Za-z0-9-]` joined by `/`
+(`POOL_NAME`, `SHARD_NAME` in `contracts/ledger.ts`; `contracts/TABLES.md`). `edge` refuses a
+pool map naming another (503), a shard object addressed by another name serves nothing,
+and the ledger answers `invalid` to a unit of such a stream. `dedicatedPool` turns a
+tenant id's `_` into `-`.
+
+**Alternatives.** (a) Escape the shard part of flush-file keys so any name is encoded
+one-to-one. (b) Leave names free and have the orphan sweep match a key against every
+stream whose encoding equals it.
+
+**Why.** Flush-file keys write a shard name with `/` as `_`, so pools `a/b` and `a_b` would
+give two streams of one tenant the same key part, and the orphan sweep could judge a file
+by the wrong stream's logged watermark and delete a file that may still be admitted. (a)
+changes the key format every reader parses (a format change across janitor, compact,
+publisher and the goldens) to protect names nobody uses; (b) has to guess which stream
+wrote a file. Every name in use already fits the rule, so nothing written changes.
+
+**Would change if.** Pool names have to carry characters outside the set (then (a), as a
+new key format version).
