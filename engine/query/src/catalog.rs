@@ -10,13 +10,14 @@
 //! - the cardinality report (`crate::cardinality`), which never needs samples.
 //!
 //! Row groups are decoded one at a time; a row group whose `metric_name` statistics
-//! exclude every wanted name is skipped.
+//! exclude every wanted name is skipped, and so is one the caller did not fetch (a file
+//! may be a sparse file container, `viz_storage::sparse`).
 use crate::error::QueryError;
 use bytes::Bytes;
 use parquet::basic::Type as PhysicalType;
 use parquet::column::reader::get_typed_column_reader;
 use parquet::data_type::{ByteArray, ByteArrayType, DataType, Int64Type};
-use parquet::file::reader::{FileReader, RowGroupReader, SerializedFileReader};
+use parquet::file::reader::{FileReader, RowGroupReader};
 use parquet::file::statistics::Statistics;
 
 const COLUMNS: [(&str, PhysicalType); 5] = [
@@ -69,7 +70,8 @@ pub fn for_each_series(
     want: &dyn Fn(&[u8]) -> bool,
     f: &mut dyn FnMut(SeriesRow<'_>) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    let r = SerializedFileReader::new(Bytes::copy_from_slice(bytes)).map_err(perr(file))?;
+    let src = viz_storage::sparse::Source::from_bytes(Bytes::copy_from_slice(bytes), Some(file)).map_err(|e| QueryError::internal(format!("metric_series file {file}: {e}")))?;
+    let r = viz_storage::sparse::reader(src.clone()).map_err(perr(file))?;
     let descr = r.metadata().file_metadata().schema_descr();
     if descr.num_columns() != COLUMNS.len() {
         return Err(QueryError::internal(format!("metric_series file {file}: {} columns, the table has {}", descr.num_columns(), COLUMNS.len())));
@@ -83,6 +85,9 @@ pub fn for_each_series(
     let (mut names, mut sids, mut labels, mut lo, mut hi) = (Vec::<ByteArray>::new(), Vec::<i64>::new(), Vec::<ByteArray>::new(), Vec::<i64>::new(), Vec::<i64>::new());
     for g in 0..r.num_row_groups() {
         let md = r.metadata().row_group(g);
+        if !src.has_row_group(md) {
+            continue; // not fetched: it holds no series the caller needs
+        }
         if let Some(Statistics::ByteArray(st)) = md.column(0).statistics() {
             if let (Some(a), Some(b)) = (st.min_opt(), st.max_opt()) {
                 if !want_range(a.data(), b.data()) {
