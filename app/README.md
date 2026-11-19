@@ -277,9 +277,10 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 
 `mock/` serves the Prometheus API from data that is a pure function of (series, time):
 
-- 128 series: `http_requests_total{service,route,status}` (36),
+- 328 series: `http_requests_total{service,route,status}` (36),
   `http_request_duration_seconds_{bucket,sum,count}` (48 + 8, 12 `le` buckets),
-  `pod_cpu_usage_cores` and `pod_memory_working_set_bytes` by pod (12 each), `up` (12).
+  `pod_cpu_usage_cores` and `pod_memory_working_set_bytes` by pod (12 each), `up` (12), and
+  the 200 `viz_synthetic_series` gauges of the speed harness's 200-series case.
 - 15 s scrape grid, data from 2026-01-01 UTC. Counters are exact prefix sums of a 24 h
   increment table, so they are monotonic and repeat daily. The histogram count equals the sum
   of the request counters.
@@ -291,10 +292,28 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
   quantile` with `by`/`without`; `histogram_quantile`; `abs ceil floor round clamp_min
   clamp_max time vector scalar`; arithmetic and comparison operators, `bool`, one-to-one
   `on`/`ignoring`. `rate`/`increase` use Prometheus' extrapolation; 5 minute lookback;
-  11,000-point limit.
+  11,000-point limit, counted as the real engine counts it.
 - Not in the mock: subqueries, `and/or/unless`, `group_left/right`, `@`, native histograms,
-  most other functions. These return a `bad_data` error that says so. The editor's linter
-  knows full PromQL, so it will accept queries the mock rejects.
+  most other functions. These return a 422 `unsupported` error that says so (as the real API
+  answers PromQL it does not run); a function that does not exist is 400 `bad_data`. The
+  editor's linter knows full PromQL, so it will accept queries the mock rejects.
+- Its HTTP surface is the real API's, checked request by request by `e2e/contract.cjs`
+  ("Mock and real API"): methods and statuses per endpoint, error types and wording (no
+  position in parse errors), `WWW-Authenticate`, the 29 `X-Viz-*` cost headers (most are 0:
+  the mock reads no files), CORS, gzip, sorted label sets, label endpoints bounded by `start`
+  and `end`, the query-size and nesting limits, times and steps in whole milliseconds, and,
+  with `--require-token` / `--readless-token`, the 401 and 403 answers. Values agree with
+  the real API's for the same data to 1e-9 relative (the seed writes the mock's own data).
+- It fails on request as the real API (or what is in front of it) fails, for the error
+  states: `GET /__mock/fail?kind=<k>&count=<n>` makes the next n query requests answer
+  `busy` (503 `unavailable` "the query service is busy; retry", `Retry-After: 1`),
+  `storage` (the same with "a storage component did not answer"), `config` (an unreadable
+  limits record: 503, `Retry-After: 30`), `gateway` (deploy/gateway's 502), `timeout` (503
+  `timeout`), `ratelimit` (a 429 with `Retry-After: 10` and no envelope: not the viz API) or
+  `platform` (a 503 HTML page with no `Retry-After`: what the platform sends when a Worker
+  fails; training knowledge, not verified). `/__mock/warn` adds `warnings` to the next
+  answers, which the viz API never sends. A delay longer than the query's time limit (30 s,
+  or a `timeout` parameter) is answered 503 `timeout`, as the real API does.
 
 ## Not done
 
