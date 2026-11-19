@@ -1098,6 +1098,17 @@ export const MUTANTS = [
     edits: one('src/anomalystore.ts', 'blocks: blockRanges([...store.entries.keys()]), entries: entryCount }', 'blocks: blockRanges([...dirty].filter((b) => store.entries.has(b))), entries: entryCount }'),
     tests: ['test/anomalystore.test.ts'],
   },
+  // ───────────── the flaky move test (its wait was shorter than the new shard's grid allows) ─────────────
+  {
+    name: '`for` restarts on the new shard: a moved group\'s first evaluation there starts from no alerts',
+    edits: one('src/ruler.ts', 'const result = evalAlertingRule(rule, g.compiled[i] as CompiledAlertRule, g.alerts.get(rule.key) ?? EMPTY, series, ts, {', 'const result = evalAlertingRule(rule, g.compiled[i] as CompiledAlertRule, (g.evaluations === 0 ? EMPTY : g.alerts.get(rule.key) ?? EMPTY), series, ts, {'),
+    tests: ['test/robust.test.ts'],
+  },
+  {
+    name: 'a moved group waits four intervals on its new shard before its first evaluation (its pending alerts fire late)',
+    edits: one('src/ruler.ts', '    const g = this.newGroup(spec as RuleGroup, now)\n    const keys = new Set(', '    const g = this.newGroup(spec as RuleGroup, now + 4 * spec.intervalMs)\n    const keys = new Set('),
+    tests: ['test/robust.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

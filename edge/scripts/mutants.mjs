@@ -53,7 +53,7 @@ const mutants = [
     "hi = (Math.imul(hi, 435) + (lo << 8) + (((lo >>> 16) * 435 + (((lo & 0xffff) * 435) >>> 16)) >>> 16)) | 0\n        lo = Math.imul(lo, 435)\n      }\n      out[p] = (ve - vs) & 255",
     "hi = (Math.imul(hi, 435) + (lo << 8)) | 0\n        lo = Math.imul(lo, 435)\n      }\n      out[p] = (ve - vs) & 255"],
   ['histograms silently dropped (OTLP)', 'src/otlp.ts',
-    "if (field === 9) m.rejectPoints('histograms are not supported', points.length)", 'if (field === 9) continue'],
+    "if (field === 9) m.rejectPoints('histograms are not supported', points)", 'if (field === 9) {}'],
   ['delta sums stored as if cumulative', 'src/otlp.ts', 'if (sum && temporality !== CUMULATIVE) {', 'if (sum && temporality === 0) {'],
   ['Remote Write 204 despite rejected samples', 'src/index.ts', 'if (c.rejectedTotal > 0) {', 'if (false) {'],
   ['NaN payload lost (value through a JS number)', 'src/batch.ts',
@@ -104,6 +104,29 @@ const mutants = [
     "  if (outcome.status === 'backpressure') refuse(", "  if (outcome.status === 'backpressure') return\n  if (false) refuse("],
   ['recorded: new series over the limit resolve', 'src/recorded.ts', '  if (ok.limited) {', '  if (false) {'],
   ['recorded: values parsed with Number() (hex, empty accepted)', 'src/recorded.ts', '  if (!DECIMAL.test(text)) return null\n', ''],
+  // decode limits on the metrics paths (review M-3, D71; contracts/BATCH.md "Decode limits"): counted before
+  // building, refused at the limit. The development branch has these and the span and log ones.
+  ['decode: data point attributes built without the meter and counted afterwards (metrics)', 'src/otlp.ts',
+    '        const kv = keyValue(r, view, meter)\n        if (kv) attrs.push(kv)\n        break',
+    '        const kv = keyValue(r, view, FREE)\n        if (kv) attrs.push(kv)\n        if (attrs.length > meter.cap) meter.used = meter.cap + 1\n        break'],
+  ['decode: array elements built past the limit (the check after the build) (metrics)', 'src/otlp.ts',
+    '            const item = anyValue(r, view, depth + 1, meter) ?? null\n            if (ok && !meter.over) {',
+    '            const item = anyValue(r, view, depth + 1, meter) ?? null\n            if (items) {'],
+  ['decode: the meter is not incremented', 'src/meter.ts', 'return ++this.used <= this.cap', 'return this.used <= this.cap'],
+  ['decode: array elements not counted (metrics)', 'src/otlp.ts', '            const ok = meter.take()\n            const item = anyValue(', '            const ok = !meter.over\n            const item = anyValue('],
+  ['decode: off by one, an item of exactly the limit refused', 'src/meter.ts', 'return ++this.used <= this.cap', 'return ++this.used < this.cap'],
+  ['decode: off by one, an item one over the limit accepted', 'src/meter.ts', 'return this.used > this.cap', 'return this.used > this.cap + 1'],
+  ['decode: a value past the limit not read (a malformed body accepted) (metrics)', 'src/otlp.ts',
+    '  const end = r.len()\n  let value: unknown\n  while (r.pos < end) {\n    const tag = r.uint32()\n    const keep = !meter.over',
+    '  const end = r.len()\n  if (meter.over) {\n    r.pos = end\n    return undefined\n  }\n  let value: unknown\n  while (r.pos < end) {\n    const tag = r.uint32()\n    const keep = !meter.over'],
+  ['decode: invalid UTF-8 in a key not built goes unchecked (metrics)', 'src/otlp.ts',
+    '      if (keep) key = utf8String(r.buf, r.pos, e)\n      else checkUtf8(r.buf, r.pos, e)', '      if (keep) key = utf8String(r.buf, r.pos, e)'],
+  ['decode: overlong three-byte UTF-8 accepted', 'src/pb.ts', 'if (c === 0xe0) lo = 0xa0', 'if (c === 0xe0) lo = 0x80'],
+  ['decode: UTF-8 surrogates accepted', 'src/pb.ts', '      else if (c === 0xed) hi = 0x9f\n', ''],
+  ['decode: JSON tokens off by one (a body of exactly the limit refused)', 'src/meter.ts', 'if (++n > max) throw', 'if (++n >= max) throw'],
+  ['decode: JSON structure inside strings counted', 'src/meter.ts', '    if (c === 0x22) {\n      // Skip the string', '    if (false) {\n      // Skip the string'],
+  ['decode: series labels past maxDecodedBytes accepted (metrics)', 'src/batch.ts',
+    '    if (start + bytes > L.maxDecodedBytes) throw', '    if (false) throw'],
 ]
 
 const only = check ? undefined : process.argv[2]

@@ -140,11 +140,15 @@ function bodyFor(route: Route, w: World, hostile: boolean): Record<string, unkno
 
 const fill = (route: Route, pick: (name: string) => string): string => route.path.replace(/\{([a-z]+)\}/g, (_m, name: string) => encodeURIComponent(pick(name)))
 
-function assertNoLeak(res: Res, what: string): void {
-  expect(res.text, `${what}: marker leaked`).not.toContain(MARKER)
-  expect(res.text.toLowerCase(), `${what}: marker leaked`).not.toContain(MARKER.toLowerCase())
-  expect(res.text, `${what}: tenant id leaked`).not.toContain(w.a.tenant)
-  for (const id of [...w.ids.key!, ...w.ids.proposal!, ...w.ids.entry!, ...w.aKeyIds]) expect(res.text, `${what}: an id of A's came back`).not.toContain(id)
+function assertNoLeak(res: Res, what: string, query: readonly string[] = []): void {
+  // A resolved dashboard names a variable value it ignored ("\"x\" given but not among the
+  // variable's values"); when B itself sent A's tenant id as that value, the echo is B's own input.
+  const echo = query.includes(`var.env=${w.a.tenant}`) ? String.raw`\"${w.a.tenant}\" given but not among the variable's values` : null
+  const text = echo === null ? res.text : res.text.split(echo).join(String.raw`\"(B's own value)\" given but not among the variable's values`)
+  expect(text, `${what}: marker leaked`).not.toContain(MARKER)
+  expect(text.toLowerCase(), `${what}: marker leaked`).not.toContain(MARKER.toLowerCase())
+  expect(text, `${what}: tenant id leaked`).not.toContain(w.a.tenant)
+  for (const id of [...w.ids.key!, ...w.ids.proposal!, ...w.ids.entry!, ...w.aKeyIds]) expect(text, `${what}: an id of A's came back`).not.toContain(id)
 }
 
 describe('tenant isolation', () => {
@@ -276,7 +280,7 @@ describe('tenant isolation', () => {
           const res = await call(asAgent ? w.bAgent : w.b.admin, route.method, `${path}${qs.length ? `?${qs.join('&')}` : ''}`, bodyFor(route, w, hostileBody), headers)
           const what = `${route.method} ${path}?${qs.join('&')} → ${res.status}`
           expect(res.status, what).toBeLessThan(500)
-          assertNoLeak(res, what)
+          assertNoLeak(res, what, qs)
           // ("." and ".." are resolved by URL parsing before routing, so such a path may be no route at all)
           const dots = used.some((n) => picked[n] === '.' || picked[n] === '..')
           if (nameTenant && !dots) expect(res.status, what).toBe(400)

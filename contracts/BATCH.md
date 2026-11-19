@@ -118,3 +118,34 @@ A request succeeds only if every batch is appended. If any append is refused or 
 whole request gets a retryable status (429 with `Retry-After` for backpressure, 503
 otherwise) and the sender retries all of it. `partial_success` is used only for rows
 rejected by validation, which a retry would not fix.
+
+## Decode limits (metrics; added 2026-11-19, review M-3)
+
+What `edge` builds while it decodes a metrics request (Remote Write 1.0, OTLP metrics in
+protobuf or JSON) is bounded whatever the body's shape: a protobuf key-value entry or array
+element can be two bytes on the wire and fifty in memory, and a resource's labels are copied
+into every series of it. These limits are counted while the body is read, before anything is
+built, so an item is refused at the limit instead of after it has been built. They are
+`edge`'s; nothing downstream checks them. The development branch has the same limits for spans
+and logs (signals 2 and 3), with those signals; they are not on `main`.
+
+- **Values per item.** At most **65,536 key-value entries and array elements**, at any depth,
+  counted as received, in each of: an OTLP metric resource; an OTLP data point. Every entry
+  counts, including a repeated key (which OTLP forbids: "keys MUST be unique"), an entry with
+  an empty value and an empty key-value list, which the mapping then drops. A data point over
+  the limit is refused on its own as `label set too large to fit one batch` (no series can
+  hold that many labels), and the rest of the request is decoded as before; a resource over it
+  refuses every point under it, for the same reason. Remote Write labels are flat strings,
+  read into a fixed scratch and never built as values, so this limit does not apply to them.
+- **Which reason.** A point over the values limit is refused for it after the checks that need
+  only its metric (an unsupported type, the name, the temporality), which keep their reasons.
+  The checks of the point itself (its timestamp, its labels) are not made, so a point that
+  also breaks one of those is named for the values limit. A point under the limit is checked
+  exactly as before.
+- **Decoded size per request.** At most `maxDecodedBytes` (16 MiB unless the deployment sets
+  less or more) of series table. Over it the request is refused whole: 413, nothing appended.
+  This bounds the copies a resource makes: one resource's labels in every series of it.
+- **JSON bodies.** At most `maxJsonTokens` (1,048,576 by default) structural characters (`{`,
+  `[`, `,` and `:` outside strings), counted before the body is parsed, because parsing builds
+  every value at once. Over it: 413.
+- **Body size.** `maxDecompressedBytes` is 8 MiB by default (`design/DECISIONS.md` D71).

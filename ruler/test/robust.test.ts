@@ -354,14 +354,25 @@ describe('shard splitting through the API', () => {
       expect(s.w.received.length).toBe(received)
 
       // `for` kept counting on the new shard: the pending alerts fire 3 minutes after they first appeared, not 3 minutes after the move.
+      // Each fires at the first tick of its group's grid, on the shard it now lives on, at or after
+      // activeAt + 3m. A moved group runs on its new shard's own grid (the offset hashes the shard as well
+      // as the tenant and the group), so that tick can be up to one interval later; where it falls depends
+      // on the random tenant name. Wait for exactly that tick of every pending alert. (A fixed 3m30s
+      // after the latest one was too short in about 6% of runs: the flake of PR #6, README "Verification".)
       const pendingBefore = monitorsBefore.filter((m) => m.state === 'pending')
       expect(pendingBefore.length).toBe(3)
-      const latest = Math.max(...pendingBefore.map((m) => m.activeAt as number))
-      while (world.now < latest + 3 * MIN + 30_000) await tickAll()
+      const due = new Map<string, number>()
+      for (const m of pendingBefore) {
+        const g = ok(await rulerStub(s.tenant, at.groups.get(m.group)![0]).health(s.tenant)).groups.find((x) => x.name === m.group)!
+        const holdEnds = (m.activeAt as number) + 3 * MIN
+        due.set(m.id, g.nextEvaluationMs + Math.ceil((holdEnds - g.nextEvaluationMs) / g.intervalMs) * g.intervalMs)
+      }
+      while (world.now < Math.max(...due.values())) await tickAll()
       const finalById = new Map(((await call(s.key.auth, 'GET', '/api/v1/monitors')).json.monitors as MonitorView[]).map((m) => [m.id, m]))
       for (const m of pendingBefore) {
         const now = finalById.get(m.id)!
-        expect([now.name, now.state, now.activeAt]).toEqual([m.name, 'firing', m.activeAt]) // the same alert, not a new one
+        // The same alert, not a new one, firing at the first tick its `for` allows.
+        expect([now.name, now.state, now.activeAt, now.firingSince]).toEqual([m.name, 'firing', m.activeAt, due.get(m.id)])
         expect((now.firingSince as number) - (m.activeAt as number), now.name).toBeGreaterThanOrEqual(3 * MIN)
         expect((now.firingSince as number) - (m.activeAt as number), now.name).toBeLessThan(4 * MIN) // 3m after it first appeared (plus at most one interval: the new shard's tick grid)
       }
