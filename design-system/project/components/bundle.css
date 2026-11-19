@@ -245,8 +245,9 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
      middle and a long name wraps inside the key: nothing in the key is drawn outside it (v6 review, B1). Below breakpoint-narrow a table
      with two kept columns gives the key the whole line (rule after these blocks);
    - the folded cells, label and value, on the next line;
-   - "Actions…" at the right end of the row's last line, never on the key's line, so it never takes the key's room (v6 review, B1); with a
-     coarse pointer its line is control-touch tall, so its hit area stays inside the row (flows G26).
+   - "Actions…" at the right end of the line after the key's (after the folded cells; after the kept columns when the key has its line
+     to itself), never on the key's line, so it never takes the key's room (v6 review, B1); with a coarse pointer its line is
+     control-touch tall, so its hit area stays inside the row (flows G26).
    A state in a kept column wraps between words (v5 review, B2.2). The row, not its cells, carries the hover, chosen and pressed fill, so
    the fill is whole. No gutter after a right-aligned column once the columns are folded (flows G21). The two forms are one pattern: each
    rule below has its twin in the other block (check.mjs). tools/audit.mjs fails a word whose centre is not its own element's (drawn over
@@ -271,7 +272,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold] tbody tr:hover { background: var(--hover); }
   .vz-table[data-fold] tbody tr[aria-selected="true"], .vz-table[data-fold] tbody tr[aria-current] { background: var(--rule); }
   .vz-table[data-fold] [data-priority="1"] .vz-status { white-space: normal; }
-  .vz-table[data-fold] td.vz-row-actions:not([data-key]) { order: 3; flex: none; width: auto; margin-left: auto; display: flex; align-items: center; align-self: center; padding-block: 0; }
+  .vz-table[data-fold] td.vz-row-actions:not([data-key]) { order: 3; flex: none; width: auto; margin-left: auto; display: flex; align-items: center; align-self: baseline; padding-block: 0; }
   .vz-table[data-fold] .vz-right + :not(.vz-right) { padding-left: var(--space-2); }
   .vz-table[data-fold] tbody tr:has(.vz-waterfall-span:active), .vz-table[data-fold] tbody tr:has(.vz-waterfall-span[data-pressed]) { background: var(--pressed); }
   .vz-table[data-fold] tbody tr td, .vz-table[data-fold] tbody tr:hover td, .vz-table[data-fold] tbody tr[aria-selected="true"] td, .vz-table[data-fold] tbody tr[aria-current] td, .vz-waterfall[data-fold] tbody tr:has(.vz-waterfall-span:active) td, .vz-waterfall[data-fold] tbody tr:has(.vz-waterfall-span[data-pressed]) td { background: transparent; }
@@ -296,15 +297,17 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold="wide"] tbody tr:hover { background: var(--hover); }
   .vz-table[data-fold="wide"] tbody tr[aria-selected="true"], .vz-table[data-fold="wide"] tbody tr[aria-current] { background: var(--rule); }
   .vz-table[data-fold="wide"] [data-priority="1"] .vz-status { white-space: normal; }
-  .vz-table[data-fold="wide"] td.vz-row-actions:not([data-key]) { order: 3; flex: none; width: auto; margin-left: auto; display: flex; align-items: center; align-self: center; padding-block: 0; }
+  .vz-table[data-fold="wide"] td.vz-row-actions:not([data-key]) { order: 3; flex: none; width: auto; margin-left: auto; display: flex; align-items: center; align-self: baseline; padding-block: 0; }
   .vz-table[data-fold="wide"] .vz-right + :not(.vz-right) { padding-left: var(--space-2); }
   .vz-table[data-fold="wide"] tbody tr:has(.vz-waterfall-span:active), .vz-table[data-fold="wide"] tbody tr:has(.vz-waterfall-span[data-pressed]) { background: var(--pressed); }
   .vz-table[data-fold="wide"] tbody tr td, .vz-table[data-fold="wide"] tbody tr:hover td, .vz-table[data-fold="wide"] tbody tr[aria-selected="true"] td, .vz-table[data-fold="wide"] tbody tr[aria-current] td, .vz-waterfall[data-fold="wide"] tbody tr:has(.vz-waterfall-span:active) td, .vz-waterfall[data-fold="wide"] tbody tr:has(.vz-waterfall-span[data-pressed]) td { background: transparent; }
 }
-/* Below breakpoint-narrow a row cannot hold a readable key beside two kept columns: the key takes the whole first line and the kept
-   columns open the second, under their heads, which fold the same way (v6 review, B1: a pod name was squeezed to 87 px at 400 px). */
+/* Below breakpoint-narrow a row cannot hold a readable key beside two kept columns: the key takes the whole first line, and the kept
+   columns open the second, under their heads, which fold the same way, with "Actions…" at its right end, where there is room (v6 review,
+   B1: a pod name was squeezed to 87 px at 400 px). */
 @container (max-width: 639px) {
   .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) :is(th:first-child, td[data-key]) { flex-basis: 100%; }
+  .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) td.vz-row-actions:not([data-key]) { order: 1; }
 }
 
 /* Status: a mark with its own shape, then a word. Shape and word carry the state; colour reinforces it. */

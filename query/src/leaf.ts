@@ -2,6 +2,8 @@ import { DurableObject } from 'cloudflare:workers'
 import { type FetchRange, type FilePlan, type Grid, type LeafBudget, type QueryLimits, createQueryEngine, sparseFile } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { hash32 } from '../../shard/src/pool'
+import type { Shard } from '../../shard/src/shard'
+import { type TailPart, readRests, splitKeyRange } from './tail'
 
 /**
  * A query leaf: a stateless Durable Object that reads data files from R2 for a
@@ -45,6 +47,8 @@ export interface LeafEnv {
   BUCKET: R2Bucket
   /** The pool itself: a split leaf asks other leaves to read and extract its rows. */
   LEAF: DurableObjectNamespace<Leaf>
+  /** The shards: a part of a split reads the rest of a tail that did not fit its coordinator (D48). */
+  SHARD: DurableObjectNamespace<Shard>
   CELL: string
 }
 
@@ -72,6 +76,8 @@ export const leafHooks: {
   beforeEvaluate?: (part: number, attempt: number) => Promise<void>
   /** Readers read whole files, as before 2026-11-19 (for the measurement's same-run comparison). */
   wholeReads?: boolean
+  /** Behave as a leaf of the previous release: ignore `tailParts` (a release-skew test). */
+  ignoreTailParts?: boolean
 } = {}
 
 /** One file a reader reads: its key and the size the ledger recorded. */
@@ -120,7 +126,56 @@ export interface EvaluateRequest {
   cacheTtlS: number
   pool: number
   queryId: string
+  /**
+   * New 2026-11-19 (D48): the tail did not fit the coordinator. Per shard, in order, this
+   * part's cut of what the coordinator read, and the rest to read here in this part's key
+   * range; `tails` is then empty. A leaf that reads them says so (`tail` in its answer); one
+   * of the previous release ignores them and its answer is refused by the coordinator.
+   */
+  tailParts?: TailPart[]
+  /** Bytes this part's tail may take (what was sent plus what is read): the query's `maxFetchBytes`. */
+  tailMaxBytes?: number
+  /** The tenant whose tail is read (the coordinator's, from the API key). */
+  tenant?: string
 }
+
+/** What a part read of the tail itself (present exactly when it was given `tailParts`). */
+export interface TailStats {
+  calls: number
+  batches: number
+  bytes: number
+}
+
+/**
+ * A part could not read the rest of its tail: a shard refused (`stale`: it discarded rows
+ * above the watermark; `mismatch`: another stream), the part's tail is over its byte cap,
+ * a series carries a label of the split key's `without` so the shard's key range is not the
+ * part (`strays`), or a shard answered something this release does not act on.
+ */
+export type TailRefusal =
+  | { status: 'tail'; kind: 'stale'; shard: string; incarnation: number; asked: number }
+  | { status: 'tail'; kind: 'mismatch'; shard: string; incarnation: number; asked: number }
+  | { status: 'tail'; kind: 'too_large'; bytes: number }
+  | { status: 'tail'; kind: 'strays' }
+  | { status: 'tail'; kind: 'unavailable'; reason: string }
+
+/** A cardinality part's job. */
+export interface CardinalityRequest {
+  files: FileRef[]
+  tails: Uint8Array[]
+  part: number
+  parts: number
+  start: number
+  end: number
+  caps: { maxSeries: number; maxPairs: number }
+  cacheTtlS: number
+  /** As in `EvaluateRequest` (the report's parts are ranges of `series_id`). */
+  tailParts?: TailPart[]
+  tailMaxBytes?: number
+  tenant?: string
+}
+
+export type CardinalityAnswer = { status: 'ok'; summary: Uint8Array; cacheHits: number; r2Gets: number; tail?: TailStats } | { status: 'missing'; key: string } | TailRefusal
 
 export interface EvaluateStats {
   readerCalls: number
@@ -140,7 +195,7 @@ export interface EvaluateStats {
   readerEngineMaxMs: number
 }
 
-export type EvaluateAnswer = { status: 'ok'; answer: Uint8Array; stats: EvaluateStats } | { status: 'missing'; key: string } | { status: 'refused'; reason: string }
+export type EvaluateAnswer = { status: 'ok'; answer: Uint8Array; stats: EvaluateStats; tail?: TailStats } | { status: 'missing'; key: string } | { status: 'refused'; reason: string } | TailRefusal
 
 /**
  * Cache key of a read. The object key is content-hashed (contracts/TABLES.md: `hash8` of
@@ -172,6 +227,45 @@ export function covers(have: FilePlan['read'], need: Exclude<FilePlan['read'], '
   if (have === 'whole') return true
   if (have === 'skip' || need === 'whole') return false
   return need.every(([o, l]) => have.some(([ho, hl]) => o >= ho && o + l <= ho + hl))
+}
+
+/**
+ * The part's tail from `tailParts`: per shard, what the coordinator sent and then the rest,
+ * read in the part's key range. `cut` turns a shard's rest into the part's batches; it gets
+ * `paged` false for a shard of the previous release (the whole tail, to cut exactly) and
+ * returns null when a paged rest holds rows of another part (a series whose split key is not
+ * its id), so the part is not what the shard's key range gave.
+ */
+export async function partTail(
+  env: Pick<LeafEnv, 'SHARD'>,
+  tenant: string,
+  parts: TailPart[],
+  part: number,
+  nParts: number,
+  cap: number,
+  cut: (batches: Uint8Array[], paged: boolean) => Uint8Array[] | null,
+): Promise<{ status: 'ok'; batches: Uint8Array[]; stats: TailStats } | TailRefusal> {
+  const rest = await readRests((shard) => env.SHARD.get(env.SHARD.idFromName(shard)), tenant, parts, splitKeyRange(part, nParts), cap)
+  if (rest.status === 'stale') return { status: 'tail', kind: 'stale', shard: rest.shard, incarnation: rest.incarnation, asked: rest.asked }
+  if (rest.status === 'mismatch') return { status: 'tail', kind: 'mismatch', shard: rest.shard, incarnation: rest.incarnation, asked: rest.asked }
+  if (rest.status === 'too_large') return { status: 'tail', kind: 'too_large', bytes: rest.bytes }
+  if (rest.status === 'unavailable') return { status: 'tail', kind: 'unavailable', reason: rest.reason }
+  const out: Uint8Array[] = []
+  const stats: TailStats = { calls: rest.calls, batches: 0, bytes: 0 }
+  for (let i = 0; i < parts.length; i++) {
+    out.push(...parts[i]!.batches)
+    const r = rest.reads[i]
+    if (!r || r.batches.length === 0) continue
+    stats.batches += r.batches.length
+    stats.bytes += r.bytes
+    const mine = cut(
+      r.batches.map((b) => b.payload),
+      r.paged,
+    )
+    if (mine === null) return { status: 'tail', kind: 'strays' }
+    out.push(...mine)
+  }
+  return { status: 'ok', batches: out, stats }
 }
 
 /** The Workers default cache. (Typed here because the DOM library's `CacheStorage` has no `default`.) */
@@ -335,6 +429,19 @@ export class Leaf extends DurableObject<LeafEnv> {
         stats.ownEngineMs += performance.now() - t
       }
     }
+    // The rest of the tail, read while the readers work (D48).
+    const useParts = req.tailParts !== undefined && !leafHooks.ignoreTailParts
+    const tailRead = useParts
+      ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.tailMaxBytes ?? 0, (batches, paged) => {
+          const cut = own(() => leafEngine.splitTails(batches, req.without, req.parts, req.ranges))
+          // A paged rest is this part's key range of `series_id`: rows of another part mean a
+          // series whose split key is not its id, and the part is not what the shard gave.
+          if (paged && cut.some((list, k) => k !== req.part && list.length > 0)) return null
+          return cut[req.part] ?? []
+        })
+      : null
+    // Awaited below; a rejection before then (another failure first) must not go unhandled.
+    tailRead?.catch(() => undefined)
     const handle = leafEngine.gatherNew(req.ranges, req.budget)
     openSessions++
     let open = true
@@ -376,17 +483,21 @@ export class Leaf extends DurableObject<LeafEnv> {
           }
         }),
       )
+      const tail = tailRead ? await tailRead : null
       if (missing !== null) return { status: 'missing', key: missing }
       if (refused !== null) return { status: 'refused', reason: refused }
+      if (tail && tail.status === 'tail') return tail
+      // Shards in order, each in sequence order: later batches win (ranks above every extract's).
+      const tails = tail ? tail.batches : req.tails
       if (!aborted) {
-        for (let i = 0; i < req.tails.length && !aborted; i++) aborted = own(() => leafEngine.gatherAdd(handle, req.groups.length + i, req.tails[i]!).aborted)
+        for (let i = 0; i < tails.length && !aborted; i++) aborted = own(() => leafEngine.gatherAdd(handle, req.groups.length + i, tails[i]!).aborted)
       }
       open = false
       openSessions--
       const answer = own(() => leafEngine.gatherEval(handle, req.query, req.grid, req.fragments, req.limits))
       stats.wasmMemoryBytes = leafEngine.memoryBytes()
       stats.ms = Date.now() - t0
-      return { status: 'ok', answer, stats }
+      return tail ? { status: 'ok', answer, stats, tail: tail.stats } : { status: 'ok', answer, stats }
     } finally {
       if (open) {
         openSessions--
@@ -400,16 +511,12 @@ export class Leaf extends DurableObject<LeafEnv> {
    * Cardinality: read every series file (six at a time) and summarise the series of one
    * part (a range of `series_id`s) for the report.
    */
-  async cardinality(req: {
-    files: FileRef[]
-    tails: Uint8Array[]
-    part: number
-    parts: number
-    start: number
-    end: number
-    caps: { maxSeries: number; maxPairs: number }
-    cacheTtlS: number
-  }): Promise<{ status: 'ok'; summary: Uint8Array; cacheHits: number; r2Gets: number } | { status: 'missing'; key: string }> {
+  async cardinality(req: CardinalityRequest): Promise<CardinalityAnswer> {
+    // The rest of the tail in this part's key range (D48), read while the files are. The
+    // report keeps a part's series by `series_id` itself, so batches go in as read.
+    const useParts = req.tailParts !== undefined && !leafHooks.ignoreTailParts
+    const tailRead = useParts ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.tailMaxBytes ?? 0, (batches) => batches) : null
+    tailRead?.catch(() => undefined)
     const bytes: Uint8Array[] = new Array(req.files.length)
     let cacheHits = 0
     for (let i = 0; i < req.files.length; i += MAX_READS_PER_CALL) {
@@ -422,9 +529,11 @@ export class Leaf extends DurableObject<LeafEnv> {
         bytes[i + k] = r.bytes
       }
     }
+    const tail = tailRead ? await tailRead : null
+    if (tail && tail.status === 'tail') return tail
     try {
-      const summary = leafEngine.cardinalityPart(bytes, req.tails, req.start, req.end, req.part, req.parts, req.caps)
-      return { status: 'ok', summary, cacheHits, r2Gets: req.files.length - cacheHits }
+      const summary = leafEngine.cardinalityPart(bytes, tail ? tail.batches : req.tails, req.start, req.end, req.part, req.parts, req.caps)
+      return tail ? { status: 'ok', summary, cacheHits, r2Gets: req.files.length - cacheHits, tail: tail.stats } : { status: 'ok', summary, cacheHits, r2Gets: req.files.length - cacheHits }
     } finally {
       maybeReset()
     }

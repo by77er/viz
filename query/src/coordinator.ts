@@ -23,7 +23,7 @@ import { poolMap } from '../../edge/src/route'
 import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type Grid, type LeafSummary, type QueryEngine, type QueryLimits, type QueryStats, leafSummary, planBytes, sparseFile } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
-import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult, type TailRefusal } from './leaf'
+import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type CardinalityRequest, type ReadItem, type ReadResult, type TailRefusal } from './leaf'
 import { type TailBudget, type TailFilter, type TailPart, type TailRead, readPages, tailEstimate, tailFilter } from './tail'
 
 /** Largest and smallest timestamps storage can hold (contracts/BATCH.md). */
@@ -965,31 +965,22 @@ export async function gatherSeries<T>(c: Context, ranges: FetchRange[], evaluate
         (b) => ({ ok: true as const, bytes: b }),
         (error: unknown) => ({ ok: false as const, error }),
       )
-      const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))
-      let again = false
-      shards.forEach((s, i) => {
-        const t = tails[i]!
-        if (t.status === 'refused') {
-          refused(`shard ${s}`, t.why)
-          again = true
-        }
-      })
+      // The tail filtered by the calls' window, metric names and pinned labels (exact here:
+      // a tail row lists its series only if it lies in the window, engine `meta`).
+      const tails = await readTails(c, shards, snap.watermarks, known, refused, tailFilter(ranges), c.limits.maxFetchBytes - bytes)
+      let again = tails.again
       const got = await files
       if (!got.ok) {
         if (!(got.error instanceof MissingFile)) throw got.error
         refused(`file ${got.error.key}`, got.error.message)
         again = true
       }
-      if (again) continue
-      const tailBatches = tails.flatMap((t) => (t.status === 'ok' ? t.batches : []))
-      const tailBytes = tails.reduce((a, t) => a + (t.status === 'ok' ? t.bytes : 0), 0)
-      if (bytes + tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the series files in range plus the unflushed tail', bytes + tailBytes)
+      if (again || tails.again) continue
+      if (tails.over) throw tooMuch(c, 'the series files in range plus the unflushed tail', bytes + tails.atLeast, !tails.reads.every((t) => t.complete))
       c.cost.filesRead = plans.length
       c.cost.bytesRead = bytes
-      c.cost.tailBatches = tailBatches.length
-      c.cost.tailBytes = tailBytes
       checkDeadline(c)
-      return timed(c, evaluate, { seriesFiles: got.ok ? got.bytes : [], sampleFiles: [], tailBatches })
+      return timed(c, evaluate, { seriesFiles: got.ok ? got.bytes : [], sampleFiles: [], tailBatches: tailBatchesOf(tails.reads) })
     }
   } finally {
     inFlightBytes -= reserved
@@ -1045,34 +1036,35 @@ async function runSplit<T>(
   ranges: FetchRange[],
   series: FileEntry[],
   samples: FileEntry[],
-  tails: Uint8Array[],
-  estimate: number,
-  seriesEst: number,
-): Promise<{ status: 'ok'; out: { json: string; stats: QueryStats } } | { status: 'missing'; key: string }> {
+  L: number,
+  tailFor: (part: number) => PartTail,
+): Promise<{ status: 'ok'; out: { json: string; stats: QueryStats } } | { status: 'missing'; key: string } | { status: 'tail'; refusal: TailRefusal }> {
   const pool = leafPoolSize(c.env)
-  const L = hooks.forceLeaves ?? leafCount(c.limits, pool, estimate, seriesEst)
   c.cost.splitLeaves = L
   // The query's budget, and each leaf's share of it (never more than one isolate may hold).
   const qSamples = Math.min(c.limits.maxQuerySamples, L * c.limits.maxSamples)
   const qSeries = Math.min(c.limits.maxQuerySeries, L * c.limits.maxSeries)
   const groups = readerGroups(series, samples)
   if (hooks.sampleOrder) hooks.sampleOrder(groups.flatMap((g) => g.samples.map((f) => f.key)))
-  const parts = c.engine.splitTails(tails, spec.without, L, ranges)
   const ttl = fileCacheTtl(c.env)
   const base = hash32(c.queryId)
   const used = new Set<number>()
   const leaf = (n: number) => c.env.LEAF.get(c.env.LEAF.idFromName(`leaf/${c.env.CELL}/${n % pool}`))
 
   const run = async (j: number, budget: { samples: number; series: number }): Promise<EvaluateAnswer> => {
+    const pt = tailFor(j)
     const req: EvaluateRequest = {
-      query: spec.query, grid: spec.grid, fragments: spec.fragments, without: spec.without, part: j, parts: L, ranges, groups, tails: parts[j]!,
+      query: spec.query, grid: spec.grid, fragments: spec.fragments, without: spec.without, part: j, parts: L, ranges, groups, tails: pt.tails,
       budget: { samples: budget.samples, series: budget.series, stepPoints: c.limits.maxStepPoints }, limits: c.limits, cacheTtlS: ttl, pool, queryId: c.queryId,
+      // The rest of a tail that did not fit here: the leaf reads it in its key range, under the byte cap.
+      ...(pt.tailParts ? { tailParts: pt.tailParts, tailMaxBytes: c.limits.maxFetchBytes, tenant: c.tenant } : {}),
     }
+    const sent = pt.tails.reduce((a, b) => a + b.byteLength, 0) + (pt.tailParts ?? []).reduce((a, p) => a + p.batches.reduce((x, b) => x + b.byteLength, 0), 0)
     const call = async (attempt: number): Promise<EvaluateAnswer> => {
       used.add((base + j + attempt) % pool)
       c.cost.leafCalls++
       if (hooks.beforeSplitLeaf) await hooks.beforeSplitLeaf(j, attempt)
-      c.cost.rpcBytes += parts[j]!.reduce((a, b) => a + b.byteLength, 0)
+      c.cost.rpcBytes += sent
       return leaf(base + j + attempt).evaluate(req)
     }
     let a: EvaluateAnswer
@@ -1090,6 +1082,14 @@ async function runSplit<T>(
       }
     }
     if (a.status === 'refused') throw new ApiError('unavailable', `a leaf refused to read data files: ${a.reason}`)
+    if (a.status === 'ok' && pt.tailParts) {
+      // A leaf of the previous release ignores `tailParts` and would answer without the rest
+      // of the tail: never used (contracts/COMPATIBILITY.md §3.3; retryable).
+      if (!a.tail) throw new ApiError('unavailable', 'a split leaf of an earlier release answered without reading its part of the tail; retry')
+      c.cost.shardCalls += a.tail.calls
+      c.cost.tailBatches += a.tail.batches
+      c.cost.tailBytes += a.tail.bytes
+    }
     if (a.status === 'ok') {
       const st = a.stats
       c.cost.readerCalls += st.readerCalls
@@ -1116,6 +1116,8 @@ async function runSplit<T>(
   c.cost.leavesUsed = Math.max(c.cost.leavesUsed, used.size)
   const missing = first.find((a) => a.status === 'missing')
   if (missing && missing.status === 'missing') return { status: 'missing', key: missing.key }
+  const tail = first.find((a) => a.status === 'tail')
+  if (tail && tail.status === 'tail') return { status: 'tail', refusal: tail }
   const answers = first.map((a) => (a.status === 'ok' ? a.answer : new Uint8Array()))
 
   // Leaves that stopped at their share: what they held is a lower bound of what they
@@ -1145,6 +1147,7 @@ async function runSplit<T>(
     for (let k = 0; k < stopped.length; k++) {
       const a = rerun[k]!
       if (a.status === 'missing') return { status: 'missing', key: a.key }
+      if (a.status === 'tail') return { status: 'tail', refusal: a }
       if (a.status === 'ok') answers[stopped[k]!] = a.answer
     }
   }
@@ -1192,32 +1195,28 @@ export async function cardinality(c: Context, start: number, end: number, lookba
     if (bytes > c.limits.maxQueryFetchBytes) throw tooMuch(c, `the ${files.length} series files in range`, bytes)
     const shards = await shardsOf(c, snap.watermarks)
     c.cost.shardsAsked = shards.length
-    const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))
-    let again = false
-    shards.forEach((s, i) => {
-      const t = tails[i]!
-      if (t.status === 'refused') {
-        refused(`shard ${s}`, t.why)
-        again = true
-      }
-    })
-    if (again) continue
-    const tailBatches = tails.flatMap((t) => (t.status === 'ok' ? t.batches : []))
-    const tailBytes = tails.reduce((a, t) => a + (t.status === 'ok' ? t.bytes : 0), 0)
-    if (tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the unflushed tail', tailBytes)
-    c.cost.tailBatches = tailBatches.length
-    c.cost.tailBytes = tailBytes
+    // The whole tail, paged under `maxFetchBytes`: no time or metric filter, because the report
+    // counts a tail series by the span of its rows in each batch (engine `cardinality`), which a
+    // time filter would change at the window's edges (CARDINALITY.md "What is left" 1).
+    const tails = await readTails(c, shards, snap.watermarks, known, refused, {}, c.limits.maxFetchBytes)
+    if (tails.again) continue
     c.cost.filesRead = files.length
     c.cost.bytesRead = bytes
     const pool = leafPoolSize(c.env)
+    const most = Math.max(1, Math.min(c.limits.maxLeaves, pool))
     const rows = files.reduce((a, f) => a + f.rows, 0)
     // Series in the window, from the series files alone (tail series come on top).
     const est = seriesEstimate(files, files.map(() => null))
     c.cost.seriesEstimate = est
     const per = c.limits.cardinalitySplitAboveSeries
-    const L =
-      hooks.forceLeaves ??
-      (bytes > c.limits.maxFetchBytes || est > per ? Math.min(Math.max(2, Math.ceil(rows / 250_000), Math.ceil(est / per)), Math.max(1, Math.min(c.limits.maxLeaves, pool))) : 1)
+    let L = hooks.forceLeaves ?? (bytes > c.limits.maxFetchBytes || est > per ? Math.min(Math.max(2, Math.ceil(rows / 250_000), Math.ceil(est / per)), most) : 1)
+    if (tails.over && hooks.forceLeaves === undefined) {
+      // The tail does not fit here: over leaves, each reading the rest of it in its key range
+      // (exact: a part is a range of `series_id`, D32), with its share under half the cap.
+      const t = tailEstimate(tails.reads)
+      L = Math.min(most, Math.max(L, 2, Math.ceil(t.bytes / (0.5 * c.limits.maxFetchBytes)), Math.ceil(Math.max(est, t.series) / per)))
+    }
+    if (tails.over && L === 1) throw tooMuch(c, 'the unflushed tail', tails.atLeast, !tails.reads.every((r) => r.complete))
     let summaries: Uint8Array[]
     if (L === 1) {
       c.cost.execution = 'single'
@@ -1230,31 +1229,53 @@ export async function cardinality(c: Context, start: number, end: number, lookba
         continue
       }
       const t0 = performance.now()
-      summaries = [c.engine.cardinalityPart(got, tailBatches, start, end, 0, 1, caps)]
+      summaries = [c.engine.cardinalityPart(got, tailBatchesOf(tails.reads), start, end, 0, 1, caps)]
       c.cost.engineMs += Math.round(performance.now() - t0)
     } else {
       c.cost.execution = 'split'
       c.cost.splitLeaves = L
       const refs = files.map((f) => ({ key: f.key, bytes: f.bytes }))
       const base = hash32(c.queryId)
+      // Each part gets its own series' rows of the tail (cut here by `series_id`, all of them:
+      // a part's spans are those of the whole tail), and reads the rest itself if any is left.
+      const everything = [{ matchers: [], minTs: MIN_TS, maxTs: MAX_TS }]
+      const cut = tails.reads.map((r) => (r.batches.length === 0 ? [] : c.engine.splitTails(r.batches.map((b) => b.payload), [], L, everything)))
+      const rests = tails.reads.map((r) => restOf(r, {}))
+      const leafTails = !rests.every((r) => r === null)
+      if (leafTails) c.cost.tailMode += '+leaves'
       const answers = await Promise.all(
         Array.from({ length: L }, async (_, j) => {
-          const req = { files: refs, tails: tailBatches, part: j, parts: L, start, end, caps, cacheTtlS: fileCacheTtl(c.env) }
+          const pt: PartTail = leafTails
+            ? { tails: [], tailParts: tails.reads.map((r, i) => ({ shard: r.shard, batches: cut[i]![j] ?? [], rest: rests[i]! })) }
+            : { tails: cut.flatMap((parts) => parts[j] ?? []) }
+          const req: CardinalityRequest = {
+            files: refs, tails: pt.tails, part: j, parts: L, start, end, caps, cacheTtlS: fileCacheTtl(c.env),
+            ...(pt.tailParts ? { tailParts: pt.tailParts, tailMaxBytes: c.limits.maxFetchBytes, tenant: c.tenant } : {}),
+          }
+          const sent = pt.tails.reduce((a, b) => a + b.byteLength, 0) + (pt.tailParts ?? []).reduce((a, p) => a + p.batches.reduce((x, b) => x + b.byteLength, 0), 0)
           const call = (attempt: number) => {
             c.cost.leafCalls++
-            c.cost.rpcBytes += tailBytes
+            c.cost.rpcBytes += sent
             return c.env.LEAF.get(c.env.LEAF.idFromName(`leaf/${c.env.CELL}/${(base + j + attempt) % pool}`)).cardinality(req)
           }
+          let a: Awaited<ReturnType<typeof call>>
           try {
-            return await call(0)
+            a = await call(0)
           } catch {
-            return await call(1)
+            a = await call(1)
           }
+          if (a.status === 'ok' && pt.tailParts && !a.tail) throw new ApiError('unavailable', 'a leaf of an earlier release answered the cardinality report without reading its part of the tail; retry')
+          return a
         }),
       )
       const missing = answers.find((a) => a.status === 'missing')
       if (missing && missing.status === 'missing') {
         refused(`file ${missing.key}`, `data file ${missing.key} is listed by the ledger but is not in R2`)
+        continue
+      }
+      const tail = answers.find((a) => a.status === 'tail')
+      if (tail && tail.status === 'tail') {
+        tailRefused(c, tail, known, refused, L)
         continue
       }
       summaries = answers.map((a) => (a.status === 'ok' ? a.summary : new Uint8Array()))
@@ -1263,6 +1284,11 @@ export async function cardinality(c: Context, start: number, end: number, lookba
           c.cost.rpcBytes += a.summary.byteLength
           c.cost.cacheHits += a.cacheHits
           c.cost.r2Gets += a.r2Gets
+          if (a.tail) {
+            c.cost.shardCalls += a.tail.calls
+            c.cost.tailBatches += a.tail.batches
+            c.cost.tailBytes += a.tail.bytes
+          }
         }
       }
     }

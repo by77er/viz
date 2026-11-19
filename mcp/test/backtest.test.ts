@@ -266,7 +266,11 @@ describe('truncation is explicit', () => {
   })
 
   it('intervals the ruler sent in an unknown form are counted, not hidden', async () => {
-    const { r } = await call({ monitor: CHECKOUT }, answer([CHECKOUT_INTERVALS[1]!, { state: 'exploded' } as never, null as never]))
+    const { r } = await call({ monitor: CHECKOUT }, (b) => {
+      const body = fakeBacktest(b, [CHECKOUT_INTERVALS[1]!])
+      ;(body.intervals as unknown[]).push({ state: 'exploded' }, null)
+      return { status: 200, body }
+    })
     ok(r)
     expect(r.text).toMatch(/^2 interval\(s\) in a form this server does not read are left out of the list and the counts\.$/m)
     expect(r.structured.intervals.malformed).toBe(2)

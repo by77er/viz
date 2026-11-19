@@ -243,7 +243,8 @@ export interface TailPart {
 /** The rest reads of a part, from the leaf's side. */
 export type RestOutcome =
   | { status: 'ok'; reads: (TailRead | null)[]; bytes: number; calls: number }
-  | { status: 'stale' | 'mismatch'; shard: string; incarnation: number; asked: number; calls: number }
+  | { status: 'stale'; shard: string; incarnation: number; asked: number; calls: number }
+  | { status: 'mismatch'; shard: string; incarnation: number; asked: number; calls: number }
   | { status: 'too_large'; bytes: number; calls: number }
   | { status: 'unavailable'; reason: string; calls: number }
 
