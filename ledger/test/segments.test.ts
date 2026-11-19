@@ -14,7 +14,7 @@ import {
 import { Ledger, type RebuildResult } from '../src/ledger'
 import {
   DAY_MS, INC, S, T0, breakR2, dayOf, dumpState, everything, failure, file, heal, keys, listAll, logPrefix, loggedOf, loseStorage, nm, open,
-  pair, readLog, readSegments, sleep, type Stub, tenantName,
+  pair, readLog, readSegments, sleep, type Stub, tenantName, unit,
 } from './helpers'
 
 /** mulberry32, so a failing run can be repeated from its seed. */
@@ -289,17 +289,21 @@ describe('rebuild reproduces exactly the state of a live ledger', () => {
     const real = proto.putLogObject
     let release!: () => void
     const held = new Promise<void>((r) => { release = r })
-    let entered!: () => void
-    const inPut = new Promise<void>((r) => { entered = r })
+    // A flag, not a promise: a promise resolved inside the object would carry the test's
+    // continuation into the object's I/O context.
+    let inside = false
     proto.putLogObject = async function (this: Ledger, key: string, body: string) {
-      entered()
+      inside = true
       await held // the PUT of the first segment is slow
       return real.call(this, key, body)
     }
     let first: Promise<unknown>
     try {
       first = l.drain()
-      await inPut
+      for (let i = 0; !inside; i++) {
+        expect(i).toBeLessThan(500)
+        await sleep(10)
+      }
       await l.addUnit(pair(2, 2)) // commits while the segment [1..2] is in flight
     } finally {
       proto.putLogObject = real
@@ -485,6 +489,32 @@ describe('incarnation numbers are never reused (spec F11; protocol model IMPL_PL
     const again = await l.addUnit(pair(1, 1))
     expect(again).toMatchObject({ status: 'ok' })
     expect(`${after.ledgerIncarnation}/${(again as { version: number }).version}`).not.toBe(`${before.ledgerIncarnation}/${r.status === 'ok' ? r.version : 0}`)
+  })
+})
+
+describe('the base is in R2 before an incarnation commits (spec F11)', () => {
+  it('if the base cannot be written, nothing commits and nothing is served; once it can, the incarnation starts with its base', async () => {
+    const tenant = tenantName('nobase')
+    const proto = Ledger.prototype as unknown as { putLogObject(this: Ledger, key: string, body: string): Promise<void> }
+    const real = proto.putLogObject
+    proto.putLogObject = async () => { throw new Error('injected: R2 PUT failed') }
+    let l: Stub
+    try {
+      ;({ l } = open(tenant))
+      expect(await l.plan({ table: 'metric_samples', minTs: 0, maxTs: 1 }).then(() => 'served', (e: Error) => e.message)).toMatch(/ledger_unavailable/)
+      expect(await l.addUnit(pair(1, 1)).then(() => 'served', (e: Error) => e.message)).toMatch(/ledger_unavailable/)
+      expect(await l.logStatus()).toMatchObject({ phase: 'starting', lastError: expect.stringMatching(/R2 PUT failed/) })
+      // No incarnation, no version, no change: SQLite holds only the mark that a start is due.
+      const meta = await runInDurableObject(l, (_i, st) => st.storage.sql.exec(`SELECT k FROM meta ORDER BY k`).toArray().map((r) => r.k))
+      expect(meta.filter((k) => k !== 'schema_version' && k !== 'schema')).toEqual(['starting'])
+      expect(await listAll(logPrefix(tenant))).toEqual([])
+    } finally {
+      proto.putLogObject = real
+    }
+    await runDurableObjectAlarm(l!)
+    expect((await l!.logStatus()).phase).toBe('ready')
+    expect((await readSegments(tenant)).map((x) => [x.ledgerIncarnation, x.first, x.last])).toEqual([[1, 0, 0]])
+    expect(await l!.addUnit(pair(1, 1))).toMatchObject({ status: 'ok' })
   })
 })
 

@@ -638,11 +638,14 @@ code's choice for every row marked *modelled*.
   rows reach some such states but only sample them.
 - **Two models, one reader.** Both models were written by reading the same design and code.
   Their agreement rules out many encoding slips, not a shared misreading of the text.
-- **Not replayed against the code.** No trace has been executed against `shard.ts`,
-  `ledger.ts` or the Workers. The as-built configuration and the mismatch tables come from
-  reading the code. F6, F12, F13 and F14 should each become a failing integration test
-  (`@cloudflare/vitest-plugin`, `evictDurableObject`, hooks in `flush.ts`/`compact.ts`) before
-  they are fixed.
+- **Replayed against the code: partly, by the components' owners.** The F12 trace is an
+  integration test in `shard/test/review.test.ts` and `flush/test/flush.test.ts` ("spec
+  F12"); F13 (as review R-2) and F14 in `compact/test/compact.test.ts`; F15 in
+  `janitor/test/janitor.test.ts`; F6(a) (review R-10) in `shard/test/shard.test.ts`. Each
+  failed before its fix, according to those READMEs; this pass did not re-run them (the
+  coordinator reports CI green). **F6(b) has no code test**: it is still present at HEAD
+  (`F6b_impl_now`). Within the model, `bfs/replay.ts` re-runs each recorded counterexample
+  against the configuration of the code as built (`results/REPLAY.md`).
 - **Assumed, not fixed.** The amended protocol *assumes* no client retry across a shard
   storage loss (F3), retry horizon < fingerprint TTL, grace period > query lifetime, and (for
   the liveness proxy L2 only) query attempt < `retainRecordedMs`. (e), (g) and F5 show each is

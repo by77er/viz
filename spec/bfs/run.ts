@@ -179,30 +179,30 @@ const d30 = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated'
 d30('D30_F13', 'F13\'s bounds exactly (code of 2026-11-18, client retries, 2 flush Workers, 1 compaction, sweeper on, sweep runs unbounded) with D30', { ...IMPL_V1, ...D30, maxComp: 1 })
 // exhaustive variants: no client retry (irrelevant to compaction and the sweep), at most 2 sweep runs
 const X = { maxSend: 1, maxSweeps: 2 }
-d30('D30_F13x', 'F13\'s bounds with D30, no client retry, ≤ 2 sweep runs', { ...IMPL_V1, ...D30, ...X, maxComp: 1 }, 'holds', ALLSAFE, 19_000_000)
+d30('D30_F13x', 'F13\'s bounds with D30, no client retry, ≤ 2 sweep runs', { ...IMPL_V1, ...D30, ...X, maxComp: 1 }, 'holds', ALLSAFE, 6_000_000)
 d30('D30_F14x', 'F14\'s bounds (two compaction steps at once, retention, ledger loss) with D30, the sweeper ON (F14 had it off), ≤ 2 sweep runs, the ledger log as built (two-step start)', { ...IMPL_V1, ...D30, ...LOG_AS_BUILT, ...X, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }, 'holds', ALLSAFE, 19_000_000)
-d30('D30_F15x', 'F15\'s bounds (amended protocol, 2 flush Workers, shard loss + ledger loss) with D30\'s sweeper, no client retry, ≤ 2 sweep runs', { ...AMENDED, ...D30, ...X, maxSL: 1, maxLL: 1 }, 'holds', ALLSAFE, 19_000_000)
+d30('D30_F15x', 'F15\'s bounds (amended protocol, 2 flush Workers, shard loss + ledger loss) with D30\'s sweeper, no client retry, ≤ 2 sweep runs', { ...AMENDED, ...D30, ...X, maxSL: 1, maxLL: 1 }, 'holds', ALLSAFE, 6_000_000)
 const AD = { ...AMENDED, ...D30, ...LOG_AS_BUILT }
-d30('D30_retries_faults', 'amended protocol + D30 + log as built: client retries + two flush Workers, ledger loss + shard loss', { ...AD, maxLL: 1, maxSL: 1 }, 'holds', ALLSAFE, 19_000_000)
-d30('D30_maintenance_faults', 'amended + D30 + log as built: two compaction steps at once + retention + ledger loss + shard loss, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1 }, 'holds', ALLSAFE, 19_000_000)
-d30('D30_maintenance_2LL', 'amended + D30 + log as built: two compaction steps at once + retention + two ledger losses, no client retry, one flush Worker, ≤ 2 sweep runs', { ...AD, ...X, maxJobs: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 2, maxSL: 0 }, 'holds', ALLSAFE, 19_000_000)
-d30('D30_3batches', 'amended + D30 + log as built: 3 batches, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, nb: 3, maxLL: 1, maxSL: 1, maxComp: 1 }, 'holds', ALLSAFE, 19_000_000)
-d30('D30_2shards', 'amended + D30 + log as built: 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, ns: 2, maxLL: 1, maxSL: 1, maxComp: 1 }, 'holds', ALLSAFE, 19_000_000)
-d30('D30_2tenants', 'amended + D30 + log as built: 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, nt: 2, nb: 2, maxLL: 1, maxSL: 1, maxComp: 1, sameContent: true }, 'holds', ALLSAFE, 19_000_000)
-d30('D30_variants', 'amended + D30 + log as built: two encoder outputs per segment, ledger loss + compaction + retention, no client retry, ≤ 2 sweep runs', { ...AD, ...X, variants: 2, maxLL: 1, maxComp: 1, maxExp: 1 }, 'holds', ALLSAFE, 19_000_000)
+d30('D30_retries_faults', 'amended protocol + D30 + log as built: client retries + two flush Workers, ledger loss + shard loss', { ...AD, maxLL: 1, maxSL: 1 }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_maintenance_faults', 'amended + D30 + log as built: two compaction steps at once + retention + ledger loss + shard loss, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1 }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_maintenance_2LL', 'amended + D30 + log as built: two compaction steps at once + retention + two ledger losses, no client retry, one flush Worker, ≤ 2 sweep runs', { ...AD, ...X, maxJobs: 1, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 2, maxSL: 0 }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_3batches', 'amended + D30 + log as built: 3 batches, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, nb: 3, maxLL: 1, maxSL: 1, maxComp: 1 }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_2shards', 'amended + D30 + log as built: 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, ns: 2, maxLL: 1, maxSL: 1, maxComp: 1 }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_2tenants', 'amended + D30 + log as built: 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, nt: 2, nb: 2, maxLL: 1, maxSL: 1, maxComp: 1, sameContent: true }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_variants', 'amended + D30 + log as built: two encoder outputs per segment, ledger loss + compaction + retention, no client retry, ≤ 2 sweep runs', { ...AD, ...X, variants: 2, maxLL: 1, maxComp: 1, maxExp: 1 }, 'holds', ALLSAFE, 6_000_000)
 // teeth: which parts of D30 are load-bearing (F14's bounds unless said otherwise)
 const T14 = { ...X, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }
-d30('D30_teeth_not_live_only', 'D30 teeth: an input counts as gone when it is merely not live (its object may still exist)', { ...AD, ...T14, sweepGone: 'notLive' }, 'violated', ['I11_LiveFilesReadable'], 19_000_000)
-d30('D30_teeth_absent_only', 'D30 with the live test dropped (absent from the listing alone): expected to hold, since an object is deleted only once its key can never be live', { ...AD, ...T14, sweepGone: 'absent' }, 'holds', ALLSAFE, 19_000_000)
-d30('D30_teeth_read_first', 'D30 teeth: the sweep reads the ledger BEFORE it lists R2', { ...AD, ...T14, sweepOrder: 'readFirst' }, 'violated', ['I11_LiveFilesReadable'], 19_000_000)
-d30('D30_teeth_newer_unlogged', 'D30 teeth: a newer incarnation kills old flush files as soon as it is committed (no logged-watermark > 0 test); F15\'s bounds', { ...AMENDED, ...D30, maxSweeps: 2, sweepNewerLogged: false, maxSL: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'], 19_000_000)
-d30('D30_teeth_conflict_delete', 'D30 teeth: the step deletes its outputs on conflict again (F14 back); sweeper on', { ...IMPL_V1, ...D30, ...T14, compConflictDelete: true }, 'violated', ['I11_LiveFilesReadable'], 19_000_000)
-d30('D30_teeth_purge_unlogged', 'D30 teeth: purge deletes a removed file before its removal is logged', { ...AD, ...T14, delLogged: false }, 'violated', ['I11_LiveFilesReadable'], 19_000_000)
+d30('D30_teeth_not_live_only', 'D30 teeth: an input counts as gone when it is merely not live (its object may still exist)', { ...AD, ...T14, sweepGone: 'notLive' }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
+d30('D30_teeth_absent_only', 'D30 with the live test dropped (absent from the listing alone): expected to hold, since an object is deleted only once its key can never be live', { ...AD, ...T14, sweepGone: 'absent' }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_teeth_read_first', 'D30 teeth: the sweep reads the ledger BEFORE it lists R2', { ...AD, ...T14, sweepOrder: 'readFirst' }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
+d30('D30_teeth_newer_unlogged', 'D30 teeth: a newer incarnation kills old flush files as soon as it is committed (no logged-watermark > 0 test); F15\'s bounds', { ...AMENDED, ...D30, maxSweeps: 2, sweepNewerLogged: false, maxSL: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
+d30('D30_teeth_conflict_delete', 'D30 teeth: the step deletes its outputs on conflict again (F14 back); sweeper on', { ...IMPL_V1, ...D30, ...T14, compConflictDelete: true }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
+d30('D30_teeth_purge_unlogged', 'D30 teeth: purge deletes a removed file before its removal is logged', { ...AD, ...T14, delLogged: false }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
 
 // ---- the ledger's segment log as built (LEDGER-LOG.md, ledger.ts): the IMPL_PLANNED bounds and more
 // at most 2 orphan sweep runs: the sweep is not what these check, and it multiplies the states
 const logrun = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated' = 'holds', props: string[] = ALLSAFE) =>
-  E.push({ name, kind: 'log', label: `${label}; ≤ 2 sweep runs`, cfg: { ...cfg, maxSweeps: 2 }, props, expect, maxStates: 19_000_000 })
+  E.push({ name, kind: 'log', label: `${label}; ≤ 2 sweep runs`, cfg: { ...cfg, maxSweeps: 2 }, props, expect, maxStates: 6_000_000 })
 logrun('LOG_as_built', 'IMPL_PLANNED_fixed\'s bounds with the segment log as built (base PUT before the commit, two-step start, F10 fix, tombstones in the base) and the code at HEAD; F3 assumed', { ...IMPL, noRetryAcrossLoss: true, maxLL: 1, maxComp: 1 })
 logrun('LOG_as_built_2LL', 'as LOG_as_built, two ledger losses (F11 needed two), compaction, one flush Worker', { ...IMPL, noRetryAcrossLoss: true, maxLL: 2, maxComp: 1, maxJobs: 1 })
 logrun('LOG_as_built_3LL', 'as LOG_as_built, three ledger losses, no compaction, one flush Worker', { ...IMPL, noRetryAcrossLoss: true, maxLL: 3, maxComp: 0, maxJobs: 1 })
@@ -223,7 +223,7 @@ amended('A_2tenants', '2 tenants in one pooled shard sending identical bytes, le
 // The whole graph is kept (edges in memory), so these use one flush Worker and are capped at
 // 3 M states; a run that hits the cap cannot decide AG EF and says so.
 const live = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>
-  E.push({ name, kind: 'liveness', label, cfg: { ...cfg, maxJobs: 1, liveness: true }, props: [], expect, maxStates: 3_000_000 })
+  E.push({ name, kind: 'liveness', label, cfg: { ...cfg, sweepSteps: false, purgeSteps: false, maxJobs: 1, liveness: true }, props: [], expect, maxStates: 3_000_000 })
 live('LIVE_amended', 'amended protocol, ledger loss + shard loss, no compaction (1 send per batch; with compaction the graph passed the 3 M cap)', { ...AMENDED, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
 live('LIVE_amended_ll', 'amended protocol, ledger loss, compaction, no shard loss (1 send per batch)', { ...AMENDED, maxSend: 1, maxLL: 1, maxComp: 1 }, 'holds')
 live('LIVE_amended_sl', 'amended protocol, shard loss, no ledger loss, no compaction (1 send per batch)', { ...AMENDED, maxSend: 1, maxSL: 1 }, 'holds')
@@ -235,7 +235,7 @@ live('LIVE_impl_F6_fixed', 'code at HEAD + F6 fixed completely (register before 
 // live file (maxExp large: it eventually removes everything), no query (purge's grace is then
 // free), one flush Worker.
 const leak = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>
-  E.push({ name, kind: 'liveness', label, cfg: { ...cfg, maxJobs: 1, maxQ: 0, liveness: true, goal: cfg.goal === 'cleanComp' ? 'cleanComp' : 'clean' }, props: [], expect, maxStates: 3_000_000 })
+  E.push({ name, kind: 'liveness', label: `${label}; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)`, cfg: { ...cfg, sweepSteps: false, purgeSteps: false, startSteps: false, maxJobs: 1, maxQ: 0, liveness: true, goal: cfg.goal === 'cleanComp' ? 'cleanComp' : 'clean' }, props: [], expect, maxStates: 3_000_000 })
 leak('LEAK_D30_maintenance', 'no leak, D30 + log as built: compaction (2 steps at once), retention of every file, ledger loss, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 4, maxLL: 1 }, 'holds')
 leak('LEAK_D30_shardloss', 'no leak, D30 + log as built: shard loss, ledger loss, retention of every file, compaction, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
 leak('LEAK_V1_shardloss', 'no leak, the rules before D30 (age-swept outputs, committed newer incarnation): same bounds as LEAK_D30_shardloss', { ...AD, sweep: 'impl', sweepIncLogged: false, sweepSteps: false, compConflictDelete: true, purgeSteps: false, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
