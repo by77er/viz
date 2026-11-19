@@ -285,20 +285,30 @@ def scoped_event_or_link(q):
 
 @rule("event_link_values")
 def _events(case, kinds, viz, tem):
-    # Outside a plain conjunction Tempo evaluates event (link) fields against one event's
-    # values; viz evaluates the filter once per event, as the documentation describes span
-    # events. Only spans with two or more events (links) can differ.
+    # Tempo evaluates event (link) fields per event only when its storage applies a plain
+    # conjunction itself. Otherwise each field is looked up separately: in
+    # `{ event.ev = 2 || name = "nope" }` against the first event only, and inside a
+    # structural query `{ event:name = "log" && event.ev = 1 } > { }` matched although no
+    # event has both (probes in README). viz evaluates the whole filter once per event, as
+    # the documentation describes span events. Checked: every differing trace has a span
+    # with two or more events (links).
     ev, lk = scoped_event_or_link(case["query"])
     if not (ev or lk) or case["kind"] != "search":
         return False
     d = DATA[case["dataset"]]
     traces, spans = differing(viz, tem)
-    echo_only = all(k in ("echo_value",) for k, _ in kinds)
-    if echo_only:
-        return all(("event:" in str(x) or "link:" in str(x) or True) for _, x in kinds)
-    if not spans:
-        return False
-    return all((ev and d["events"].get(s, 0) >= 2) or (lk and d["links"].get(s, 0) >= 2) for s in spans)
+    if not traces:
+        return all(k == "echo_value" for k, _ in kinds)
+    multi = {d["trace_of"][x] for x in d["events"] if (ev and d["events"][x] >= 2) or (lk and d["links"][x] >= 2)}
+    return all(t in multi for t in traces)
+
+
+@rule("event_link_values_metrics")
+def _events_m(case, kinds, viz, tem):
+    # As event_link_values, for metrics queries over data sets with multi-event spans.
+    ev, lk = scoped_event_or_link(case["query"])
+    d = DATA[case["dataset"]]
+    return case["kind"] != "search" and (ev or lk) and any(n >= 2 for n in d["events"].values())
 
 
 UNION_OPS = ("&>>", "&<<", "&>", "&<", "&~")
@@ -434,14 +444,6 @@ def _inf_avg(case, kinds, viz, tem):
             if x is None or not math.isinf(x):
                 return False
     return True
-
-
-@rule("event_link_values_metrics")
-def _events_m(case, kinds, viz, tem):
-    # As event_link_values, in a metrics query whose filters combine event or link fields
-    # with `||`, arithmetic or negation.
-    ev, lk = scoped_event_or_link(case["query"])
-    return case["kind"] != "search" and (ev or lk) and re.search(r"\|\||!\(|[-+*/%]", case["query"]) is not None
 
 
 @rule("tempo_meta_missing")

@@ -168,7 +168,50 @@ up to 3 s, floats including NaN, ±Inf, ±0.0, 1e-300 and ints up to 2^53+1. Que
 feature in "Implemented"; search with limit 100,000 and spss 100,000; metrics with steps
 30 s, 60 s, 7 s (unaligned end) and instant.
 
-RESULTS_PLACEHOLDER
+Four final runs, all on the final code (the comparison rules were last changed after
+these runs and re-applied to the same outputs):
+
+| Run | Seed | Queries | Data sets | Cases | Agree | Both reject | Classified | **Unexplained** |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| A | 1 | one feature per query | 10 | 600 | 382 | 79 | 139 | **0** |
+| B | 2 | nested (operators, pipelines, arithmetic combined) | 10 | 600 | 385 | 86 | 126 | **3** |
+| C | 3 | one feature per query | 20 | 1,200 | 741 | 145 | 310 | **4** |
+| D | 4 | nested | 20 | 1,200 | 712 | 185 | 298 | **5** |
+| **total** | | | 60 | **3,600** | **2,220** | **495** | **873** | **12** |
+
+Every one of viz's 3,105 JSON answers decoded strictly into Tempo's `SearchResponse` /
+`QueryRangeResponse` protobuf types (unknown fields rejected); none failed.
+
+Classified differences, by rule (all four runs): `ambiguous_root` 264, `event_link_values`
+119 (+52 metrics), `tempo_negation_pushdown` 95 (+14 metrics), `tempo_typed_pushdown` 62,
+`tempo_unscoped_nil` 59, `unrooted_structure` 51 (+18 metrics), `tempo_union_structural` 41
+(+6 metrics), `tempo_sum_missing_value` 33, `tempo_metrics_intrinsic_arithmetic` 23,
+`tempo_after_select` 16, `tempo_avg_negative_int` 9, `tempo_regex_error` 4,
+`tempo_meta_missing` 3, `infinite_average` 1, `tempo_zero_span_ids` 1,
+`tempo_missing_trace_id` 1, `ambiguous_root_metrics` 1.
+
+**The 12 unexplained differences are not resolved.** They are reported, not hidden; each
+may be a viz bug. Targeted probes did not reproduce them in isolation (a bare boolean in
+`||`, for example, behaves the same in both engines on small data).
+
+| Run, case | Query |
+|---|---|
+| B 320 | `{ (span.n > 200 \|\| span:kind != unspecified) && trace:id = "4d57…4f44" } !< { span:kind = unspecified } \| min_over_time(span:duration) by (span:kind, span.n)` |
+| B 350 | `{ (span.cached \|\| span.retries > -1) && span:name != "render" && kind = internal } \| count_over_time()` |
+| B 542 | `{ rootServiceName = "cache" \|\| status = ok } \| avg_over_time(span.n) by (span:kind, status)` |
+| C 368 | `{ .rint > 0 } << { span.tags != nil } \| rate()` |
+| C 593 | `{ } \| avg_over_time(span.f) by (span:kind) \| bottomk(2)` |
+| C 677 | `{ span.n <= -1 } && { .ratio != 1.5 } \| max_over_time(span.n) by (span.n) \| topk(2)` |
+| C 772 | `{ span.http.status_code > -1 } !>> { span.tags != nil } \| { trace:id = "475f…323e" }` |
+| D 595 | `{ kind != internal } \| { (instrumentation:version = "0.9" \|\| span.http.route = nil) && span.http.route != "b" }` |
+| D 828 | `{ instrumentation:version = "1.2.0" \|\| .cached } \| select(span:kind, .http.status_code)` |
+| D 911 | `({ span.n > 0 } \|\| { span:duration < 0 } \| histogram_over_time(duration) by (resource.service.name, .env)) - 0.5` |
+| D 1103 | `{ span:duration <= 2.5s } !<< { instrumentation:version = "" } \| avg_over_time(span.f)` |
+| D 1143 | `{ .region = "GET" } << { !(span:childCount > 2) && resource.rint < -1 } !~ { … } \| coalesce() \| select(…)` |
+
+To reproduce: the commands in `tools/godiff/README.md` with `VIZ_DIFF_SEED=1..4`,
+`VIZ_DIFF_DEPTH=0` (A, C) or `1` (B, D), `VIZ_DIFF_DATASETS=10` (A, B) or `20` (C, D),
+`VIZ_DIFF_QUERIES=60`; `tools/compare.py --show N` prints each unexplained case.
 
 **viz bugs found by the differential run and fixed** (each has a test in `tests/api.rs`):
 a missing attribute satisfied `!=`; an aggregate over no values satisfied `!=`; `NaN != x`
@@ -187,7 +230,7 @@ evaluator rule (below).
 |---|---|---|
 | `ambiguous_root` (+`_metrics`) | ambiguity | a trace with several root spans: Tempo and viz pick different ones (viz: `contracts/TRACES.md`). Checked: every differing trace has >1 root |
 | `unrooted_structure` (+`_metrics`) | ambiguity | structural operators over spans with a missing parent: Tempo keeps some and drops others; viz drops all. Checked: every differing trace has an unconnected span or several roots |
-| `event_link_values` (+`_metrics`), `echo_event_choice` | Tempo defect | outside a plain conjunction Tempo evaluates event fields against one event (`{ event.ev = 2 \|\| name = "nope" }` failed where the second event has `ev=2`). Checked: every differing span has ≥2 events/links |
+| `event_link_values` (+`_metrics`), `echo_event_choice` | Tempo defect | unless its storage applies a plain conjunction itself, Tempo looks each event field up separately: `{ event.ev = 2 \|\| name = "nope" }` failed where the second event has `ev=2`, and `{ event:name = "log" && event.ev = 1 } > { }` matched though no event has both. Checked: every differing trace has a span with ≥2 events/links |
 | `tempo_negation_pushdown` (+`_metrics`) | Tempo defect | a lone negated condition returns nothing (`{ !(status = error) }`); checked: Tempo's answer ⊆ viz's |
 | `tempo_typed_pushdown` | Tempo defect | Tempo's storage compares only values of the literal's type (`.n > 4.0` ignores int `n`), its evaluator compares by value (`.retries != 1.5` matched ints inside a structural query): the answer depends on Tempo's plan; viz always compares by value |
 | `tempo_unscoped_nil` | Tempo defect | `.key = nil` matches when the key is missing from either span or resource (so spans that have it on the span) |
@@ -196,18 +239,23 @@ evaluator rule (below).
 | `tempo_sum_missing_value` | Tempo defect | `sum_over_time` restarts after a span lacking the attribute: buckets `[7, missing, 1]` → 1, `[3, missing]` → no sample (avg/min/max skip it) |
 | `tempo_avg_negative_int` | Tempo defect | spanset `avg()` reads negative ints as unsigned 64-bit (2.635e18 where the mean is −285613) |
 | `tempo_zero_span_ids` | Tempo defect | span ids returned as all zeros when `span:id` is in a disjunction |
+| `tempo_after_select` | Tempo defect | stages after `select(…)` see the fields it did not name as missing: `{ } \| select(name) \| by(.foo)` put every span under `nil`, `{ } \| select(.n) \| { .foo = "bar" }` matched nothing |
 | `tempo_regex_error` | Tempo defect | "unexpected numbers of pre-compiled regexp" on a valid query |
+| `tempo_missing_trace_id` | Tempo defect | a result trace without `traceID` |
 | `tempo_meta_missing` | Tempo defect | `rootTraceName`/`durationMs` empty after `coalesce()` |
 | `infinite_average` | precision | ±Inf in a bucket: viz's exact sum gives ±Inf, Tempo's running mean NaN |
 
-Echoed span attributes are compared separately and not counted as differences: keys only
-Tempo echoes (mostly `nil` echoes) or only viz echoes are counted per kind in the report,
-and differing values occur only for event/link fields.
+Echoed span attributes are compared separately. Keys only one side echoes are counted per
+kind, not as differences (across the four runs: viz only 50,620 — viz echoes every field
+the query reads; Tempo only `nil` 21,480 and other 1,952). Differing echoed values (2,967)
+count as a difference; a case whose only differences are echoed values is classified only
+when they are event or link fields (`echo_event_choice`).
 
 ### 3. Property tests
 
 `tests/props.rs` (proptest; generated data and the query generator of the differential
-run). PROPS_PLACEHOLDER
+run, 4–14 queries per case). `cargo test` runs 48 cases per property; the final run used
+`PROPTEST_CASES=2000` (release build, 54 s): all six pass.
 
 | Property | |
 |---|---|
@@ -229,7 +277,32 @@ addition (now exact: i128 for integers, Shewchuk partials for floats, as metrics
 change at a time to the copy, runs `api`, `conformance` and `props` (48 cases), and removes
 the copy. The source tree is never modified.
 
-MUTANTS_PLACEHOLDER
+| # | Mutant | Caught by |
+|---:|---|---|
+| 1 | a missing attribute satisfies `!=` | api (`filters_compare_typed_values`, `regex_is_anchored_and_arrays_match_elements`) |
+| 2 | regex not anchored | api (`regex_is_anchored_and_arrays_match_elements`) |
+| 3 | unconnected spans take part in structural operators (right side) | api (`spanset_operators`) |
+| 4 | child relation reversed | api (`spanset_operators`) |
+| 5 | `>>` binds looser than `&&` and `\|\|` | api (`spanset_operators`) |
+| 6 | `&&` binds tighter than `\|\|` inside filters | api (`and_or_share_one_precedence_level`) |
+| 7 | metrics points by floor instead of ceil | api (`metrics_grid_counts_and_rates`, `metrics_values_and_labels`, `second_stages_and_arithmetic`) |
+| 8 | a span starting exactly at `start` is counted | api (4 tests) |
+| 9 | quantile interpolates from half the bucket bound | api (`quantiles_and_histograms_use_log2_buckets`) |
+| 10 | `rate` does not divide by the step | api (`metrics_grid_counts_and_rates`) |
+| 11 | `nil` group values kept as labels | api (`metrics_values_and_labels`) |
+| 12 | an aggregate over no values passes `!=` | api (`pipelines_aggregates_by_coalesce_select`) |
+| 13 | spansets left in evaluation order | props (`span_order_invariance`) |
+| 14 | a negated structural operator prunes traces without left-hand matches | api (`plans_say_what_a_query_reads`), props (`pruning_on_off_identical`) |
+| 15 | trace id printed with leading zeros | api (`search_json_has_tempo_shape`, `pipelines_aggregates_by_coalesce_select`) |
+| 16 | unscoped attribute looks at the resource first | api (`intrinsics_and_scopes`) |
+
+**16 of 16 caught** on the final run; the copy was restored and re-run green after each,
+then deleted. The first run caught 13: mutant 3 then filtered the left side only, which is
+an equivalent mutant (an unconnected span can relate only to unconnected spans, and the
+right side is filtered), so it was moved to the right side; mutants 5 and 16 survived
+because no test covered `>>` precedence or a key present on both span and resource, and
+`spanset_operators` and `intrinsics_and_scopes` gained those cases. The conformance suite
+caught none of these (it checks acceptance only).
 
 ### 5. WebAssembly
 
@@ -242,11 +315,11 @@ under Node 22:
 
 | | |
 |---|---:|
-| `.wasm` | **1,285,276 B** |
-| gzip -9 | **438,093 B** |
+| `.wasm` | **1,284,736 B** (final build) |
+| gzip -9 | **437,995 B** |
 | imports | **0** (instantiates with `{}`) |
 | exports | `memory`, `viz_tq_alloc`, `viz_tq_free`, `viz_tq_run` |
-| `new WebAssembly.Instance(module, {})` | 0.34 ms (mean of 200) |
+| `new WebAssembly.Instance(module, {})` | 0.34 ms and 2.2 ms (means of 200, two runs at load average 15–19) |
 | linear memory after the run | 2 MiB |
 
 The only dependency is `regex` (Unicode tables trimmed as in `viz-promql`); no
@@ -301,12 +374,12 @@ storage evaluates it on row-group statistics and skips I/O, which is not measure
 
 ## Known risks
 
-- **Tempo compatibility is not equality.** Twelve kinds of Tempo behaviour that viz does
+- **Tempo compatibility is not equality.** Fourteen kinds of Tempo behaviour that viz does
   not reproduce are listed above; clients that depend on them (for example on
   `{ !(…) }` returning nothing) will see different answers. Where the documentation states
   the behaviour, viz follows the documentation.
-- **Unexplained differences remain** in the nested-query differential run (see section 2);
-  they are not fixed or classified, and may be viz bugs.
+- **12 unexplained differences remain** in the differential run (section 2, 12 of 3,600
+  cases); they may be viz bugs.
 - **Precedence of `&&`/`||`** follows Tempo's observed behaviour, which differs from most
   languages; a later Tempo release may change it.
 - **Memory**: evaluation holds one trace at a time plus the search results and the metrics
