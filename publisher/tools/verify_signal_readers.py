@@ -278,6 +278,53 @@ def duck_scanned_files(con, sql):
     return int(m.group(1)) if m else None
 
 
+def arrow_as_iceberg(t, nullable):
+    """A pyarrow type of a Parquet file's column, as the Iceberg type it must be published as."""
+    if pyarrow.types.is_fixed_size_binary(t):
+        return f"fixed[{t.byte_width}]"
+    if pyarrow.types.is_string(t) or pyarrow.types.is_large_string(t):
+        return "string"
+    if pyarrow.types.is_int32(t):
+        return "int"
+    if pyarrow.types.is_int64(t):
+        return "long"
+    if pyarrow.types.is_float64(t):
+        return "double"
+    if pyarrow.types.is_boolean(t):
+        return "boolean"
+    if pyarrow.types.is_timestamp(t) and t.unit == "us" and t.tz in ("UTC", "+00:00"):
+        return "timestamptz"
+    if pyarrow.types.is_map(t):
+        return {"type": "map", "key": arrow_as_iceberg(t.key_type, False), "value-required": not t.item_field.nullable, "value": arrow_as_iceberg(t.item_type, t.item_field.nullable)}
+    if pyarrow.types.is_list(t):
+        return {"type": "list", "element-required": not t.value_field.nullable, "element": arrow_as_iceberg(t.value_type, t.value_field.nullable)}
+    if pyarrow.types.is_struct(t):
+        return {"type": "struct", "fields": [{"name": f.name, "required": not f.nullable, "type": arrow_as_iceberg(f.type, f.nullable)} for f in t]}
+    return f"unknown {t}"
+
+
+def without_ids(t):
+    """An Iceberg type with its ids and docs left out, to compare with a file's schema."""
+    if isinstance(t, str):
+        return t
+    if t["type"] == "struct":
+        return {"type": "struct", "fields": [{"name": f["name"], "required": f["required"], "type": without_ids(f["type"])} for f in t["fields"]]}
+    if t["type"] == "list":
+        return {"type": "list", "element-required": t["element-required"], "element": without_ids(t["element"])}
+    return {"type": "map", "key": without_ids(t["key"]), "value-required": t["value-required"], "value": without_ids(t["value"])}
+
+
+def schema_checks(root, table, fields, key):
+    """The table's schema, partition columns aside, is the Parquet file's: names, order, types, nullability, nested ones included."""
+    file_schema = pq.read_schema(os.path.join(root, key))
+    got = [{"name": f["name"], "required": f["required"], "type": without_ids(f["type"])} for f in fields if f["name"] not in ("tenant", "day")]
+    want = [{"name": f.name, "required": not f.nullable, "type": arrow_as_iceberg(f.type, f.nullable)} for f in file_schema]
+    first = next((f"{a} vs {b}" for a, b in zip(got, want) if a != b), f"{len(got)} vs {len(want)} columns")
+    check(f"schema {table}", "the Iceberg schema is the files' Parquet schema (names, order, types, nullability, nested)", got == want, first)
+    part = [f["name"] for f in fields if f["name"] in ("tenant", "day")]
+    check(f"schema {table}", "the partition columns come first, optional, and are not in the files", part == (["tenant"] if table == "spans" else ["tenant", "day"]) and all(not f["required"] for f in fields if f["name"] in part) and not set(part) & set(file_schema.names), str(part))
+
+
 def direct_rows(root, key):
     return pq.read_table(os.path.join(root, key)).to_pylist()
 
@@ -399,6 +446,8 @@ def main():
         final = os.path.join(root, info["metadata"])
         fields = schema_of(final)
         last = expected["checkpoints"][-1]
+        for key in sorted({k for cp in expected["checkpoints"] for ks in cp["tables"][table]["files"].values() for k in ks}):
+            schema_checks(root, table, fields, key)
         for cp in expected["checkpoints"]:
             c = cp["tables"][table]
             for k in [k for ks in c["files"].values() for k in ks]:

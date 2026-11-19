@@ -3,6 +3,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { FileEntry, Table } from '../../contracts/ledger'
 import { writeAvro } from '../src/avro'
+import { ledgerSegmentKey } from '../../contracts/ledger'
 import { CURSORS_KEY, MANIFEST_ENTRY_SCHEMA, manifestHeader, type ManifestEntryRecord } from '../src/iceberg'
 import type { CommitStep } from '../src/publisher'
 import {
@@ -767,6 +768,30 @@ describe('a new ledger incarnation', () => {
     expect(again.ops.put).toBe(0)
     expect((await p.cursors('metric_samples'))[a]!.ledgerIncarnation).toBe(3)
     await expectVerified(p)
+  })
+
+  it('re-bases on a new incarnation whose versions start again below the cursor (a base version the contract allows, which the ledger never writes)', async () => {
+    const { cell, tenant } = fresh()
+    const a = tenant('a')
+    const u1 = await addUnit(a, pairUnit(cell, a, 1, 1))
+    const u2 = await addUnit(a, pairUnit(cell, a, 2, 2, T0 + DAY_MS))
+    await mirror(a, cell)
+    const p = publisher(cell)
+    await p.publish()
+    const at = await ledgerVersion(a)
+    expect(at.version).toBeGreaterThan(1)
+    // Incarnation 2 in R2, forged: its base at version 1 holds u2's files and a file u1 never had.
+    const extra = fileFor(cell, a, 'metric_samples', 'L1-extra', { minTs: T0 + 2 * DAY_MS })
+    await putObjects([extra])
+    const added = [...u2.files, extra].map((f, i) => ({ ...f, precedence: i, precedenceLow: i }))
+    const header = { v: 1, kind: 'viz.ledger.segment', tenant: a, ledgerIncarnation: at.ledgerIncarnation + 1, firstVersion: 1, lastVersion: 1, changes: 1 }
+    const base = { ledgerIncarnation: at.ledgerIncarnation + 1, version: 1, at: 0, kind: 'base', added, removed: [], watermarks: [] }
+    await env.BUCKET.put(`${cell}/${ledgerSegmentKey(a, at.ledgerIncarnation + 1, 1, 1)}`, `${JSON.stringify(header)}\n${JSON.stringify(base)}\n`)
+    const r = await p.publish()
+    expect(r.tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'base', version: 1 }, cursors: { metric_samples: { ledgerIncarnation: at.ledgerIncarnation + 1, version: 1 } } })
+    expect(r.tables.metric_samples).toMatchObject({ added: 1, removed: 1 })
+    expect(await icebergLive(cell, 'metric_samples')).toEqual([u2.files[0]!.key, extra.key].sort())
+    expect(await icebergLive(cell, 'metric_samples')).not.toContain(u1.files[0]!.key)
   })
 
   it('refuses a cursor from an incarnation newer than anything in R2', async () => {

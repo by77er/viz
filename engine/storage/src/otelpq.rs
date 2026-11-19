@@ -123,6 +123,49 @@ pub(crate) fn cut_groups(weights: &[usize], opts: &SignalWriteOptions) -> Vec<(u
     out
 }
 
+/// Where the span and log writers write: chunks of at most 1 MiB, joined once at the end. A
+/// growing `Vec` doubles, holding the old and the new buffer at once (twice the file at its
+/// largest); chunks never move, and joining frees each chunk as it is copied.
+#[derive(Default)]
+pub(crate) struct Sink {
+    chunks: Vec<Vec<u8>>,
+    len: usize,
+}
+
+const SINK_CHUNK_MAX: usize = 1 << 20;
+
+impl std::io::Write for Sink {
+    fn write(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
+        let n = buf.len();
+        while !buf.is_empty() {
+            if self.chunks.last().is_none_or(|c| c.len() == c.capacity()) {
+                // 64 KiB first, then as large as what was written so far, up to 1 MiB.
+                self.chunks.push(Vec::with_capacity(self.len.clamp(64 << 10, SINK_CHUNK_MAX)));
+            }
+            let c = self.chunks.last_mut().unwrap();
+            let k = (c.capacity() - c.len()).min(buf.len());
+            c.extend_from_slice(&buf[..k]);
+            buf = &buf[k..];
+        }
+        self.len += n;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Sink {
+    /// The bytes in one buffer of exactly their length, each chunk freed once copied.
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.len);
+        for c in self.chunks {
+            out.extend_from_slice(&c);
+        }
+        out
+    }
+}
+
 /// Definition and repetition levels of one leaf column (none for a required top-level leaf).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Levels {
@@ -188,7 +231,7 @@ pub(crate) fn fba(b: &[u8]) -> FixedLenByteArray {
 
 /// Write one row group from its leaves, in schema order. Returns the byte range the row
 /// group's column chunks occupy.
-pub(crate) fn write_group(w: &mut SerializedFileWriter<Vec<u8>>, leaves: Vec<Leaf>) -> SResult<(u64, u64)> {
+pub(crate) fn write_group(w: &mut SerializedFileWriter<Sink>, leaves: Vec<Leaf>) -> SResult<(u64, u64)> {
     let mut rg = w.next_row_group().map_err(perr)?;
     let mut it = leaves.into_iter();
     while let Some(mut cw) = rg.next_column().map_err(perr)? {

@@ -3,7 +3,7 @@
 use crate::json::labels_to_json;
 use crate::otel::{self, LogRow, LogStream};
 use crate::otelpq::{
-    ba, col, cut_groups, day_of_ns, fba, foot, json_str, perr, props, schema, write_group, Leaf, Levels, SResult, SignalError, SignalFile, SignalTable,
+    ba, col, cut_groups, day_of_ns, fba, foot, json_str, perr, props, schema, write_group, Leaf, Sink, Levels, SResult, SignalError, SignalFile, SignalTable,
     SignalWriteOptions, LINE_CHUNK_BYTES, LINE_PAGE_CUT_BYTES, NS_PER_DAY,
 };
 use crate::tokens::{TokenFilterBuilder, TOKEN_FILTER_META};
@@ -153,7 +153,7 @@ fn write_logs_file(rows: &[RowRef<'_>], streams: &[StreamInfo<'_>], opts: &Signa
 /// depend only on the rows and where the groups are cut; `tokens` adds the token filter
 /// (`contracts/LOGS.md` §6), which only compaction writes.
 pub(crate) struct LogsFileWriter {
-    w: SerializedFileWriter<Vec<u8>>,
+    w: SerializedFileWriter<Sink>,
     index: String,
     groups_end: u64,
     min_ts: i64,
@@ -168,14 +168,13 @@ pub(crate) struct LogsFileWriter {
 
 impl LogsFileWriter {
     pub(crate) fn new(opts: &SignalWriteOptions) -> SResult<LogsFileWriter> {
-        Self::with_capacity(opts, None, 0)
+        Self::with_capacity(opts, None)
     }
 
-    /// The output buffer pre-sized (a merge passes its inputs' size, so the buffer does not double).
     /// `token_filter`: write the filter, unless the file has more distinct tokens than this.
-    pub(crate) fn with_capacity(opts: &SignalWriteOptions, token_filter: Option<usize>, capacity: usize) -> SResult<LogsFileWriter> {
+    pub(crate) fn with_capacity(opts: &SignalWriteOptions, token_filter: Option<usize>) -> SResult<LogsFileWriter> {
         Ok(LogsFileWriter {
-            w: SerializedFileWriter::new(Vec::with_capacity(capacity), schema(LOGS_SCHEMA), logs_props(opts)).map_err(perr)?,
+            w: SerializedFileWriter::new(Sink::default(), schema(LOGS_SCHEMA), logs_props(opts)).map_err(perr)?,
             index: String::from("{\"v\":1,\"rg\":["),
             groups_end: 4,
             min_ts: i64::MAX,
@@ -273,7 +272,7 @@ impl LogsFileWriter {
             tok = Some((off, filter.len() as u64));
         }
         self.w.finish().map_err(perr)?;
-        let bytes = std::mem::take(self.w.inner_mut());
+        let bytes = std::mem::take(self.w.inner_mut()).into_bytes();
         let (fo, fl) = match tok {
             Some((o, l)) => foot(o + l, bytes.len()),
             None => foot(self.groups_end, bytes.len()),

@@ -251,6 +251,12 @@ involved.
   `series_limit`, `too_large`, `backpressure`, `overloaded`, `unavailable`, `unauthorized`).
   Unlike Remote Write, a call with any invalid sample writes nothing at all. Re-sending is safe:
   identical batches are recognised by their fingerprint.
+- **Every error it sees carries a word** (review of D52, m-8; 2026-11-19). `writeRecorded` turns
+  anything thrown into a refusal (`asRefusal`): a refusal stays as it is, a request over the
+  limits (413) is `too_large`, and anything else (the limits configuration, the pool map or KV
+  unreadable, a shard unreachable, an unexpected error) is `unavailable`. A rejection without a
+  word therefore comes only from the platform (no entrypoint, the callee's CPU or memory limit, a
+  lost connection), which is when the ruler falls back to Remote Write (D52).
 
 ## Active-series limit
 
@@ -494,6 +500,51 @@ after the copy's suite passed 92 of 92, each against the whole suite:
 Through the gateway, the same rule is also checked end to end and the first mutant killed again
 there (`stack/README.md`, "Through the gateway").
 
+### Every error of the recorded-samples entrypoint carries a refusal word (2026-11-19)
+
+Review of D52, m-8: with any shard of the isolate marked hot, `writeRecorded` read the tenant's pool
+map in `refuseEarly` outside any `try`, so an unreadable map (invalid, of a newer version, a KV
+error) or a missing shared pool rejected with the bare error (`shard pool map is invalid`), and the
+ruler took the entrypoint for one that did not answer and sent the same batches by Remote Write.
+Errors other than 413 thrown while the samples were read were also rethrown bare. Now
+`writeRecorded` wraps the whole call and maps every error (`asRefusal`; the three inner `try`
+blocks it replaces mapped the same way). The `unavailable` row of `contracts/ingest.ts` now also
+names an unreadable limits record and an unexpected error, and says that every error the
+entrypoint sees carries a word (contract text first; no new word, since an older ruler would
+take a new one for no answer and fall back).
+
+Two tests in `test/recorded.test.ts`:
+
+- **Through the binding** (`RULER_SINK`, the review's case): a shard sheds load (`maxInFlight: 0`)
+  and the call is `overloaded`. The shard then takes load again, and a second `overloaded` proves
+  the isolate serving the entrypoint holds a hot shard. Then four tenants whose `pool:` record is
+  not JSON, names a pool outside `POOL_NAME`, names a pool ending in `/logs`, or is of a newer
+  version are each `unavailable: shard pool map …`.
+- **Each error path, with its word**, first with nothing hot and then with a shard hot: the limits
+  configuration not JSON, KV failing while the pool map is read, no shard pool configured, an
+  invalid pool map, a shard that cannot be reached, an unexpected error while the samples are read
+  (a value whose text form throws, only possible in a direct call: such a value cannot cross a
+  binding) are `unavailable`, more samples than a call may carry is `too_large`, and each word is
+  one the contract lists. With `unauthorized`, `invalid`, `series_limit`, `backpressure` and
+  `overloaded` tested above, every word is reached.
+
+**Before the change** (the 859e201 `src/recorded.ts`, in a scratch copy): both new tests fail,
+through the binding with exactly `expected 'shard pool map is invalid' to match /^unavailable:
+shard pool map /`, the table at the unexpected error (`'injected: no text form'`). **After**: `npx
+vitest run --maxWorkers=2`, **94 passed, 0 failed** (11 files); `npx tsc --noEmit` clean.
+
+**Mutants** (`node scripts/mutants.mjs recorded:` on a copy of `contracts/`, `shard/` and `edge/` in
+a scratch directory, after the copy's suite passed 94 of 94 and `--check` found all 76 patterns;
+each against the whole suite; the copy's sources compared with the shared tree afterwards: equal):
+**10 of 10 killed**, the seven earlier entrypoint mutants again (the three inner `try` blocks they
+sit beside were removed) and three new ones:
+
+| Mutant | Killed by |
+|---|---|
+| an error the entrypoint sees is rethrown without a refusal word | through the binding …; each error path …; every refusal word is one the contract lists |
+| only HTTP errors get a refusal word (KV and unexpected errors pass bare) | each error path … |
+| a request over the limits (413) is `unavailable`, not `too_large` | each error path …; every refusal word is one the contract lists |
+
 ### Decode throughput
 
 `npm run bench`, Node 22 on a shared and noisy development machine; medians of 15 runs,
@@ -609,6 +660,11 @@ typed, and every request's resource is hashed over its canonical JSON.
 
 ## Known risks
 
+- **`unavailable` also covers ingest's own bugs.** An unexpected error in the entrypoint is
+  answered `unavailable` (retryable), so a bug that fails every call is retried by the ruler
+  within each tick (3 attempts) instead of being reported as `invalid`; the message carries the
+  error, and nothing is written. The alternative, a new word, would send every older ruler to
+  Remote Write (see above).
 - **A refused recorded-sample write is an `exception` in viz-ingest's metrics** (Trial 3 on
   Cloudflare, `deploy/README.md`): the caller received each refusal in 2–4 ms and nothing was
   written, but the callee's invocation ended "canceled … hung". Not understood; not seen in
@@ -708,7 +764,11 @@ In components others own; not made here.
    release without the entrypoint) goes through Remote Write over `INGEST` with the service key
    instead; `INGEST` goes once every ingest release that may run has the entrypoint (the
    ruler's README, "Needed changes"). The service key now writes only in that fallback; it needs
-   `read` for queries until query has its own entrypoint.
+   `read` for queries until query has its own entrypoint. Since 2026-11-19 (review of D52, m-8)
+   every error the entrypoint sees carries a word, so the fallback fires only for a missing
+   entrypoint or a platform failure. Still open in the ruler, from the same finding: fall back at
+   most once per tick (when the platform fails the call, each of a tick's 3 attempts costs one RPC
+   plus one Remote Write).
 
 2. **Traces and logs, stage 2.** The write side is **built** (2026-11-19): the shard's tail
    filter takes `signals` and never throws on a span or log batch (`shard/`); flush encodes a

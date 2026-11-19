@@ -1661,7 +1661,10 @@ never past the group's budget). A rejection whose message starts with **no** ref
 the entrypoint did not answer by its contract (the viz-ingest release serving the call lacks it,
 or the platform failed the call); then, and only then, the same batches go through Remote Write
 over `INGEST` with the shard's service key, the path of the release before, and the Worker logs
-that it did. `INGEST` stays bound for this purpose for one release.
+that it did. `INGEST` stays bound for this purpose for one release. (That a word-less rejection
+means only these was not true at first: with a shard marked hot, an unreadable pool map was
+rejected bare. Since 2026-11-19 every error the entrypoint sees carries a word, an unexpected one
+`unavailable`; review of D52, m-8, `edge/README.md`.)
 
 **Alternatives.** (a) No fallback: a rejection without a refusal word is retried like
 `unavailable` and, after three attempts, the tick's samples are dropped (counted). Promotion is
@@ -2501,14 +2504,17 @@ the stack's write path, four stages: PyIceberg and DuckDB read every row and col
 as pyarrow does (1,454 checks, 0 failed; PyIceberg reads a null list as empty, counted), prune by
 tenant, hour and day, and give rows that viz-storage's readers read identically and on which
 viz-traceql and viz-logql answer identically (1,786 checks, 960 TraceQL and 576 LogQL answers, 0
-different). A first publication of 10,000 `spans` files took 1.0 s of commit and 399 kB of metadata,
-10,000 `logs` files 1.0 s and 253 kB (load average about 10).
+different). A first publication of 10,000 `spans` files took 0.8–1.0 s of commit and 399 kB of
+metadata, 10,000 `logs` files 0.8–1.0 s and 253 kB (two runs, load average 8.5–10.6).
 
 **Cost of it.** A publish that moves a tenant's cursors without a commit costs one R2 HEAD per
 table (up to five, three more than before) to check that no other writer is ahead. A `spans`
 `metadata.json` is about 9.8 kB with one snapshot (2.6 kB for a metric table: the schema has 70
 field ids and the name mapping all of them), and each of its manifests carries a 7.8 kB header.
 The upgrade re-bases every tenant once: about two `stage` row writes per live file of every table.
+A storage loss is rebuilt a table at a time, one conflict each, so a publish now gives up after six
+conflicts instead of three (found by the test of it: with three, the first publish after a loss
+threw at the fourth table and only the alarm's retry finished).
 External readers that ignore the name mapping, or the projection rule for identity partitions, see
 nothing or nulls; PyIceberg 0.12.0 shows a span without events as an empty list rather than null.
 

@@ -11,6 +11,8 @@
  *     and the release before that (`test/n1/`) on the log without them;
  *   - their removed files are released by the snapshot rule (once no retained snapshot references
  *     them, then the delete grace), as metric files are;
+ *   - a `spans` file outside its key's hour stops the tenant, from the cursor and in a re-base;
+ *   - SQLite rebuilt from R2 alone (a lost storage) holds every table, the `spans` hours included;
  *   - a re-base (D55) stages them: from the base of a new incarnation, from a checkpoint in parts or
  *     in one object, and on the review P-1 path; and the first publish after an upgrade from the
  *     D64 release re-bases every tenant once and publishes everything;
@@ -22,7 +24,7 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { TABLES as CONTRACT_TABLES, dataKeyPrefix, type FileEntry, type FlushUnit, type LedgerTable, type SignalTable } from '../../contracts/ledger'
+import { TABLES as CONTRACT_TABLES, dataKeyPrefix, ledgerSegmentKey, type FileEntry, type FlushUnit, type LedgerTable, type SignalTable } from '../../contracts/ledger'
 import { dayToInt, SIGNAL_DEFS, TABLE_NAMES, type ManifestListRecord } from '../src/iceberg'
 import { PUBLISHED_TABLES, UNPUBLISHED_TABLES } from '../src/log'
 import {
@@ -387,6 +389,53 @@ describe('the span and log tables, published', () => {
     expect(r.cursors.spans).toEqual(v)
     expect(await icebergLive(cell, 'spans')).not.toContain(bad.key)
     expect(await p.pending()).toEqual([t])
+
+    // The same in a re-base: a forged base segment (the incarnation's first) whose `added` holds such a file.
+    const u = tenant('hourbase')
+    const good = { ...signalFile(u, 'spans', 'L0-good', T0 + 2 * HOUR), precedence: 1, precedenceLow: 1 }
+    const forged = { ...signalFile(u, 'spans', 'L0-forged', T0 + 3 * HOUR), minTs: T0 + 4 * HOUR, maxTs: T0 + 4 * HOUR + 10, precedence: 2, precedenceLow: 2 }
+    const header = { v: 1, kind: 'viz.ledger.segment', tenant: u, ledgerIncarnation: 1, firstVersion: 0, lastVersion: 0, changes: 1 }
+    const base = { ledgerIncarnation: 1, version: 0, at: 0, kind: 'base', added: [good, forged], removed: [], watermarks: [] }
+    await env.BUCKET.put(`${cell}/${ledgerSegmentKey(u, 1, 0, 0)}`, `${JSON.stringify(header)}\n${JSON.stringify(base)}\n`)
+    const rb = (await p.publish([u])).tenants[0]!
+    expect(rb).toMatchObject({ status: 'inconsistent', rebase: { source: 'base', files: 2 } })
+    expect(rb.detail).toMatch(/L0-forged.*is under hour .* its start times lie in hours/)
+    expect(rb.cursors.spans).toBeUndefined()
+    expect(await icebergLive(cell, 'spans')).not.toContain(good.key)
+  })
+
+  it('SQLite rebuilt from R2 alone after the publisher lost its storage: every table, the spans hours included; nothing committed again, and the next commits are right', async () => {
+    const { cell, tenant } = fresh()
+    const t = tenant('resync')
+    const l = await quietLedger(t)
+    await addUnit(t, pairUnit(cell, t, 1, 1, T0 + 1000), { drain: true })
+    await addUnit(t, spanUnit(t, 1, T0 + 5 * HOUR), { drain: true })
+    await addUnit(t, spanUnit(t, 2, T0 + DAY_MS + 7 * HOUR), { drain: true })
+    await addUnit(t, logUnit(t, 1, T0 + 2000), { drain: true })
+    await mirror(t, cell)
+    const p = publisher(cell)
+    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok' })
+    const before = await icebergObjects(cell, ALL)
+    await runInDurableObject(p, async (_i, state) => { await state.storage.deleteAll() })
+    await evictDurableObject(p)
+    const r = await p.publish([t])
+    expect(r.ops.put).toBe(0)
+    expect(await icebergObjects(cell, ALL)).toEqual(before)
+    for (const s of SIGNALS) expect(await p.status(s)).toMatchObject({ version: 1, files: s === 'logs' ? 1 : 2 })
+    await verified(p)
+    // The next commit of spans removes day 0's file: the rewritten manifest and its list row from what the resync read.
+    expect((await l.expire({ tables: ['spans', 'trace_index'], beforeDay: dayOf(T0 + DAY_MS) })).removed).toHaveLength(2)
+    await addUnit(t, spanUnit(t, 3, T0 + DAY_MS + 9 * HOUR), { drain: true })
+    await mirror(t, cell)
+    expect((await p.publish([t])).tables.spans).toMatchObject({ added: 1, removed: 1 })
+    await asLedger(cell, t)
+    for (const s of SIGNALS) await expectEntriesOfFiles(cell, t, s)
+    const meta = await readMetadata(cell, 'spans')
+    const rows = await readAvroKey<ManifestListRecord>(keyOf(meta.snapshots.find((x) => x['snapshot-id'] === meta['current-snapshot-id'])!['manifest-list']))
+    const hours = rows.map((m) => [le32(m.partitions![1]!.lower_bound!), le32(m.partitions![1]!.upper_bound!)]).sort()
+    // One manifest for the added file, the rewritten one holding day 1's file (and day 0's as DELETED).
+    expect(hours).toEqual([[Math.floor((T0 + 5 * HOUR) / HOUR), Math.floor((T0 + DAY_MS + 7 * HOUR) / HOUR)], [Math.floor((T0 + DAY_MS + 9 * HOUR) / HOUR), Math.floor((T0 + DAY_MS + 9 * HOUR) / HOUR)]].sort())
+    await verified(p)
   })
 
   it('the tables this reader knows are exactly the contract\'s, and it publishes every one of them, metric tables first', () => {

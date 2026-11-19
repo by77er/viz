@@ -731,7 +731,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
       } catch (e) {
         // An attempt that stopped may have left objects nothing references: sweep them later.
         this.dueNoLaterThan('sweep', this.now() + cfg.orphanGraceMs)
-        if (!(e instanceof Conflict) || ++conflicts > 3) {
+        // A table found behind R2 is rebuilt at its own commit, one conflict each: after a lost
+        // storage that is one per table with metadata (five since D67, two before), plus one.
+        if (!(e instanceof Conflict) || ++conflicts > TABLE_NAMES.length + 1) {
           // Whatever was asked for is still unpublished: make sure the alarm comes back.
           const now = this.now()
           for (const t of working) {
@@ -1051,7 +1053,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const adds = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table).one())
     const removes = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant).one())
     const days = new Set<string>()
-    const part = table === 'spans' ? `day || '/' || substr(key, instr(key, '/hour='), 8)` : 'day'
+    const part = table === 'spans' ? `day || substr(key, instr(key, '/hour='), 8)` : 'day'
     for (const r of this.sql.exec(`SELECT DISTINCT ${part} AS p FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table)) days.add(r.p as string)
     for (const r of this.sql.exec(`SELECT DISTINCT ${part} AS p FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant)) days.add(r.p as string)
     return { adds, removes, days: [...days] }

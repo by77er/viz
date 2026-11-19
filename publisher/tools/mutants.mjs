@@ -163,6 +163,10 @@ const mutants = [
     edits: [['        this.recordRemoved(table, f.tenant, f.key, seq, null)', "        this.recordRemoved(table, f.tenant, f.key, seq, table === 'logs' || table === 'spans' || table === 'trace_index' ? now : null)"]] },
   { id: 'V6', what: 'a re-base stages no span or log files (D64\'s counting, without the count)', file: L, tests: ['test/signals.test.ts'],
     edits: [['    this.files++\n    this.f.push(f)', "    this.files++\n    if (f.table === 'spans' || f.table === 'trace_index' || f.table === 'logs') return\n    this.f.push(f)"]] },
+  { id: 'V8', what: 'the conflict limit of two tables kept for five: a lost storage is not rebuilt in one publish', file: P, tests: ['test/signals.test.ts'],
+    edits: [['++conflicts > TABLE_NAMES.length + 1)', '++conflicts > 3)']] },
+  { id: 'V7b', what: 'a spans file outside its key\'s hour is published (the check removed, in a re-base\'s stage)', file: P, tests: ['test/signals.test.ts'],
+    edits: [['        if (why) return { problem: `version ${start}: ${why}` }\n', '']] },
   { id: 'V7', what: 'a spans file outside its key\'s hour is published (the check removed, from the cursor)', file: P, tests: ['test/signals.test.ts'],
     edits: [["        const hour = table === 'spans' ? spanHourProblem(f) : null\n        if (hour) problem = `change ${c.version}: ${hour}`\n", '']] },
 

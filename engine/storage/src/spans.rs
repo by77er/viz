@@ -3,7 +3,7 @@
 //! `contracts/TRACES.md` states.
 use crate::otel::{self, Attr, Span, SpanEntry, Value};
 use crate::otelpq::{
-    ba, col, cut_groups, fba, foot, hex, json_str, perr, props, schema, write_group, Leaf, Levels, SResult, SignalError, SignalFile, SignalTable,
+    ba, col, cut_groups, fba, foot, hex, json_str, perr, props, schema, write_group, Leaf, Sink, Levels, SResult, SignalError, SignalFile, SignalTable,
     SignalWriteOptions, NS_PER_HOUR,
 };
 use crate::util::IdHasher;
@@ -449,7 +449,7 @@ fn write_spans_file(rows: &[RowRef<'_>], infos: &[EntryInfo<'_>], hour: i64, opt
 /// A `spans` file of one hour written one row group at a time (flush: the groups `cut_groups`
 /// makes of a segment; compaction: the groups it fills while it merges).
 pub(crate) struct SpansFileWriter {
-    w: SerializedFileWriter<Vec<u8>>,
+    w: SerializedFileWriter<Sink>,
     index: String,
     groups_end: u64,
     min_ts: i64,
@@ -461,13 +461,12 @@ pub(crate) struct SpansFileWriter {
 
 impl SpansFileWriter {
     pub(crate) fn new(hour: i64, opts: &SignalWriteOptions) -> SResult<SpansFileWriter> {
-        Self::with_capacity(hour, opts, 0)
+        Self::with_capacity(hour, opts)
     }
 
-    /// The output buffer pre-sized (a merge passes its inputs' size, so the buffer does not double).
-    pub(crate) fn with_capacity(hour: i64, opts: &SignalWriteOptions, capacity: usize) -> SResult<SpansFileWriter> {
+    pub(crate) fn with_capacity(hour: i64, opts: &SignalWriteOptions) -> SResult<SpansFileWriter> {
         Ok(SpansFileWriter {
-            w: SerializedFileWriter::new(Vec::with_capacity(capacity), schema(&spans_schema()), spans_props(opts)).map_err(perr)?,
+            w: SerializedFileWriter::new(Sink::default(), schema(&spans_schema()), spans_props(opts)).map_err(perr)?,
             index: String::from("{\"v\":1,\"rg\":["),
             groups_end: 4,
             min_ts: i64::MAX,
@@ -562,7 +561,7 @@ impl SpansFileWriter {
             return Err(SignalError::Parquet("a spans file needs at least one row".into()));
         }
         self.w.finish().map_err(perr)?;
-        let bytes = std::mem::take(self.w.inner_mut());
+        let bytes = std::mem::take(self.w.inner_mut()).into_bytes();
         let (fo, fl) = foot(self.groups_end, bytes.len());
         let mut index = self.index;
         index.push_str(&format!("],\"foot\":[{fo},{fl}]}}"));
@@ -696,7 +695,7 @@ fn write_index_file(frags: &[Fragment], day: i64, opts: &SignalWriteOptions) -> 
 
 /// A `trace_index` file of one day written one row group at a time.
 pub(crate) struct IndexFileWriter {
-    w: SerializedFileWriter<Vec<u8>>,
+    w: SerializedFileWriter<Sink>,
     index: String,
     groups_end: u64,
     min_ts: i64,
@@ -708,12 +707,12 @@ pub(crate) struct IndexFileWriter {
 
 impl IndexFileWriter {
     pub(crate) fn new(day: i64, opts: &SignalWriteOptions) -> SResult<IndexFileWriter> {
-        Self::with_capacity(day, opts, 0)
+        Self::with_capacity(day, opts)
     }
 
-    pub(crate) fn with_capacity(day: i64, opts: &SignalWriteOptions, capacity: usize) -> SResult<IndexFileWriter> {
+    pub(crate) fn with_capacity(day: i64, opts: &SignalWriteOptions) -> SResult<IndexFileWriter> {
         Ok(IndexFileWriter {
-            w: SerializedFileWriter::new(Vec::with_capacity(capacity), schema(TRACE_INDEX_SCHEMA), trace_index_props(opts)).map_err(perr)?,
+            w: SerializedFileWriter::new(Sink::default(), schema(TRACE_INDEX_SCHEMA), trace_index_props(opts)).map_err(perr)?,
             index: String::from("{\"v\":1,\"rg\":["),
             groups_end: 4,
             min_ts: i64::MAX,
@@ -776,7 +775,7 @@ impl IndexFileWriter {
             return Err(SignalError::Parquet("a trace_index file needs at least one row".into()));
         }
         self.w.finish().map_err(perr)?;
-        let bytes = std::mem::take(self.w.inner_mut());
+        let bytes = std::mem::take(self.w.inner_mut()).into_bytes();
         let (fo, fl) = foot(self.groups_end, bytes.len());
         let mut index = self.index;
         index.push_str(&format!("],\"foot\":[{fo},{fl}]}}"));

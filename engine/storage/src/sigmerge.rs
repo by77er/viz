@@ -62,11 +62,10 @@ pub fn merge_signal_files_shared(table: SignalTable, inputs: &[Bytes], opts: &Si
     if inputs.is_empty() {
         return merr("no input files");
     }
-    let capacity = inputs.iter().map(Bytes::len).sum();
     let out = match table {
-        SignalTable::Spans => merge_spans(inputs, opts, capacity)?,
-        SignalTable::TraceIndex => merge_trace_index(inputs, opts, capacity)?,
-        SignalTable::Logs => merge_logs(inputs, opts, capacity)?,
+        SignalTable::Spans => merge_spans(inputs, opts)?,
+        SignalTable::TraceIndex => merge_trace_index(inputs, opts)?,
+        SignalTable::Logs => merge_logs(inputs, opts)?,
     };
     Ok(out)
 }
@@ -133,11 +132,40 @@ impl Cutter {
 
 struct SpanIn {
     span: Span<String>,
-    entry: SpanEntry<String>,
+    /// Shared by the rows of one (resource, scope) the merge has seen ([`Entries`]).
+    entry: Rc<SpanEntry<String>>,
     service: Option<String>,
 }
 
-fn span_in(r: &Row) -> SResult<SpanIn> {
+/// One copy of each (resource, scope) entry: a row's entry is read from its columns afresh,
+/// and without this every buffered row would hold its own copy of its resource's attributes.
+#[derive(Default)]
+struct Entries {
+    by_fp: std::collections::HashMap<i64, Vec<Rc<SpanEntry<String>>>>,
+    len: usize,
+}
+
+impl Entries {
+    /// At most this many entries are remembered; past it the table starts again (rows already
+    /// buffered keep theirs).
+    const MAX: usize = 4096;
+
+    fn intern(&mut self, e: SpanEntry<String>) -> Rc<SpanEntry<String>> {
+        if let Some(x) = self.by_fp.get(&e.resource_fp).and_then(|v| v.iter().find(|x| ***x == e)) {
+            return x.clone();
+        }
+        if self.len >= Self::MAX {
+            self.by_fp.clear();
+            self.len = 0;
+        }
+        let x = Rc::new(e);
+        self.by_fp.entry(x.resource_fp).or_default().push(x.clone());
+        self.len += 1;
+        x
+    }
+}
+
+fn span_in(r: &Row, entries: &mut Entries) -> SResult<SpanIn> {
     let x = span_record(r)?;
     let d = |v: Option<i32>| v.map_or(0, |v| v as u32);
     Ok(SpanIn {
@@ -159,13 +187,13 @@ fn span_in(r: &Row) -> SResult<SpanIn> {
             events: x.events,
             links: x.links,
         },
-        entry: SpanEntry {
+        entry: entries.intern(SpanEntry {
             resource_fp: x.resource_fp,
             resource: x.resource,
             scope_name: x.scope_name.unwrap_or_default(),
             scope_version: x.scope_version.unwrap_or_default(),
             scope_attrs: x.scope_attrs.unwrap_or_default(),
-        },
+        }),
         service: x.service_name,
     })
 }
@@ -228,14 +256,26 @@ fn span_order(a: &SpanIn, b: &SpanIn) -> Ordering {
 }
 
 fn write_span_group(w: &mut SpansFileWriter, g: &[SpanIn], hour: i64) -> SResult<()> {
-    let entries: Vec<SpanEntry<&str>> = g.iter().map(|x| entry_view(&x.entry)).collect();
+    // One view and one split per distinct entry of the group, as flush has one per batch entry.
+    let mut distinct: Vec<&Rc<SpanEntry<String>>> = Vec::new();
+    let mut index: std::collections::HashMap<*const SpanEntry<String>, usize> = std::collections::HashMap::new();
+    let of: Vec<usize> = g
+        .iter()
+        .map(|x| {
+            *index.entry(Rc::as_ptr(&x.entry)).or_insert_with(|| {
+                distinct.push(&x.entry);
+                distinct.len() - 1
+            })
+        })
+        .collect();
+    let entries: Vec<SpanEntry<&str>> = distinct.iter().map(|e| entry_view(e)).collect();
     let spans: Vec<Span<&str>> = g.iter().map(|x| span_view(&x.span)).collect();
     let infos: Vec<EntryInfo<'_>> = entries.iter().map(EntryInfo::of).collect();
-    let refs: Vec<SpanRef<'_>> = spans.iter().enumerate().map(|(i, s)| SpanRef { span: s, info: i, hour }).collect();
+    let refs: Vec<SpanRef<'_>> = spans.iter().zip(&of).map(|(s, &i)| SpanRef { span: s, info: i, hour }).collect();
     w.group(&refs, &infos)
 }
 
-fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> SResult<SignalFile> {
+fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFile> {
     // Pass 1: the last occurrence of every (trace_id, span_id), by input then row: every id
     // with where it was read, sorted, the last of each id kept (32 bytes a row, sized once).
     let ids = parquet::schema::parser::parse_message_type(
@@ -276,10 +316,11 @@ fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> 
     // Pass 2: the k-way merge, keeping winners only. Every row read is of one hour, the
     // output's (a row another input wins is checked too: the inputs are one partition).
     let mut hour: Option<i64> = None;
+    let mut entries = Entries::default();
     let mut cursors: Vec<Cursor<SpanIn>> = Vec::with_capacity(inputs.len());
     for (i, b) in inputs.iter().enumerate() {
         let mut c = Cursor { rows: rows_of(b, "spans", SPANS_LEAVES)?, head: None, input: i, ordinal: 0 };
-        seek_span(&mut c, None, &winners, &mut hour)?;
+        seek_span(&mut c, None, &winners, &mut hour, &mut entries)?;
         cursors.push(c);
     }
     let mut writer: Option<SpansFileWriter> = None;
@@ -288,10 +329,10 @@ fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> 
     while let Some(i) = smallest(&cursors, span_order) {
         let c = &mut cursors[i];
         let x = c.head.take().unwrap();
-        seek_span(c, Some(&x), &winners, &mut hour)?;
+        seek_span(c, Some(&x), &winners, &mut hour, &mut entries)?;
         let h = x.span.start.div_euclid(NS_PER_HOUR);
         if writer.is_none() {
-            writer = Some(SpansFileWriter::with_capacity(h, &opts.write, capacity)?);
+            writer = Some(SpansFileWriter::with_capacity(h, &opts.write)?);
         }
         let w = {
             let e = entry_view(&x.entry);
@@ -307,6 +348,7 @@ fn merge_spans(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> 
     }
     let (Some(h), Some(mut w)) = (hour, writer) else { return merr("spans inputs hold no rows") };
     write_span_group(&mut w, &group, h)?;
+    drop((cursors, group, entries, winners));
     w.finish()
 }
 
@@ -321,11 +363,11 @@ impl Winners {
 
 /// Move cursor `c` (its head taken, `prev` the row it held) to its next winning row, checking
 /// that every row it reads sorts after the one before it.
-fn seek_span(c: &mut Cursor<SpanIn>, prev: Option<&SpanIn>, winners: &Winners, hour: &mut Option<i64>) -> SResult<()> {
+fn seek_span(c: &mut Cursor<SpanIn>, prev: Option<&SpanIn>, winners: &Winners, hour: &mut Option<i64>, entries: &mut Entries) -> SResult<()> {
     let mut skipped: Option<SpanIn> = None;
     loop {
         let Some(r) = next_row(&mut c.rows)? else { return Ok(()) };
-        let x = span_in(&r)?;
+        let x = span_in(&r, entries)?;
         let h = x.span.start.div_euclid(NS_PER_HOUR);
         if *hour.get_or_insert(h) != h {
             return merr("spans inputs hold rows of more than one hour");
@@ -348,7 +390,7 @@ fn seek_span(c: &mut Cursor<SpanIn>, prev: Option<&SpanIn>, winners: &Winners, h
 
 // ───────────────────────────── trace_index ─────────────────────────────
 
-fn merge_trace_index(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> SResult<SignalFile> {
+fn merge_trace_index(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFile> {
     let first_day: std::cell::RefCell<Option<i64>> = std::cell::RefCell::new(None);
     let mut cursors: Vec<Cursor<Fragment>> = Vec::with_capacity(inputs.len());
     let next = |c: &mut Cursor<Fragment>, prev: Option<&Fragment>| -> SResult<()> {
@@ -399,7 +441,7 @@ fn merge_trace_index(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usiz
         match day {
             None => {
                 day = Some(d);
-                writer = Some(IndexFileWriter::with_capacity(d, &opts.write, capacity)?);
+                writer = Some(IndexFileWriter::with_capacity(d, &opts.write)?);
             }
             Some(o) if o != d => return merr("trace_index inputs hold rows of more than one day"),
             _ => {}
@@ -412,6 +454,7 @@ fn merge_trace_index(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usiz
     }
     let Some(mut w) = writer else { return merr("trace_index inputs hold no rows") };
     w.group(&group)?;
+    drop((cursors, group));
     w.finish()
 }
 
@@ -494,7 +537,7 @@ fn pop_log(c: &mut Cursor<LogIn>, next: &dyn Fn(&mut Cursor<LogIn>, Option<&LogI
     Ok(x)
 }
 
-fn merge_logs(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> SResult<SignalFile> {
+fn merge_logs(inputs: &[Bytes], opts: &SignalMergeOptions) -> SResult<SignalFile> {
     let first_day: std::cell::RefCell<Option<i64>> = std::cell::RefCell::new(None);
     // Reads the next row of `c` into its head; `prev` is the row it held (taken by the caller).
     let next = |c: &mut Cursor<LogIn>, prev: Option<&LogIn>| -> SResult<()> {
@@ -543,7 +586,7 @@ fn merge_logs(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> S
         cursors.push(c);
     }
     let mut day: Option<i64> = None;
-    let mut writer = LogsFileWriter::with_capacity(&opts.write, opts.token_filter.then_some(opts.token_filter_max_tokens), capacity)?;
+    let mut writer = LogsFileWriter::with_capacity(&opts.write, opts.token_filter.then_some(opts.token_filter_max_tokens))?;
     let mut cutter = Cutter::new(&opts.write);
     let mut group: Vec<LogIn> = Vec::new();
     // A row is kept unless the next row in the merged order has the same row key (the later
@@ -575,5 +618,8 @@ fn merge_logs(inputs: &[Bytes], opts: &SignalMergeOptions, capacity: usize) -> S
     let Some(p) = pending else { return merr("logs inputs hold no rows") };
     emit(p, &mut group, &mut writer)?;
     write_log_group(&mut writer, &group)?;
+    // The readers, the buffered rows and (in `finish`) the token builder go before the filter
+    // and the footer are written, so the output buffer can grow while little else is held.
+    drop((cursors, group));
     writer.finish()
 }
