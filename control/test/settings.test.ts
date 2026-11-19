@@ -2,6 +2,7 @@ import { runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { slotFor, tenantSlots } from '../../shard/src/pool'
 import { ROUTES } from '../src/routes'
+import { authorize, newClient, pkce } from './oauth'
 import { auditOf, call, example, get, kvGet, makeKey, newTenant, post, stubOf } from './helpers'
 
 const put = (key: string, section: string, body: unknown) => call(key, 'PUT', `/settings/${section}`, body)
@@ -180,13 +181,18 @@ describe('audit log', () => {
     await once('proposals.edit', 'proposal.edit', 'PUT', `/proposals/${cp.proposal.id}`, { spec: { ...example('k8s_node_overview', 'nodes'), metadata: { ...example('k8s_node_overview', 'nodes').metadata, title: 'Nodes' } } })
     await once('proposals.apply', 'proposal.apply', 'POST', `/proposals/${cp.proposal.id}/apply`, {})
     await once('settings.put', 'settings.general', 'PUT', '/settings/general', { value: { proposalTtlDays: 10 } })
+    // OAuth: approving a client is one entry; revoking the grant is one entry (its key goes with it, in the same entry)
+    const { challenge } = await pkce()
+    const handle = (await authorize(await newClient(), challenge, { scope: 'dashboards:read' })).handle!
+    const ap = await once('oauth.approve', 'oauth.grant.approve', 'POST', '/oauth/approve', { request: handle })
+    await once('oauth.grants.revoke', 'oauth.grant.revoke', 'POST', `/oauth/grants/${ap.grant.id}/revoke`, {})
 
     // every mutating route of the API was exercised above
     expect([...done].sort()).toEqual(ROUTES.filter((r) => r.mutation).map((r) => r.op).sort())
 
     // reads, refusals and no-ops add nothing
     const before = await count()
-    for (const r of ROUTES.filter((x) => !x.mutation)) await get(t.admin, r.path.replace('{dashboard}', 'red').replace('{number}', '1').replace('{proposal}', pr.proposal.id).replace('{key}', t.adminId).replace('{section}', 'limits').replace('{entry}', 'a_x'))
+    for (const r of ROUTES.filter((x) => !x.mutation)) await get(t.admin, r.path.replace('{dashboard}', 'red').replace('{number}', '1').replace('{proposal}', pr.proposal.id).replace('{key}', t.adminId).replace('{section}', 'limits').replace('{entry}', 'a_x').replace('{grant}', ap.grant.id))
     await call(t.admin, 'PATCH', '/dashboards/red', { ops: title('x'), baseRevision: 'f'.repeat(32) }) // 409
     await post(t.admin, '/dashboards', { spec: { nope: true } }) // 422
     await post(t.admin, '/keys', { name: 'bad', scopes: ['root'] }) // 422
@@ -195,6 +201,9 @@ describe('audit log', () => {
     await call(t.admin, 'PUT', '/settings/general', { value: { proposalTtlDays: 10 } }) // unchanged
     await call(t.admin, 'PATCH', '/dashboards/red', { ops: [{ op: 'test', path: '/metadata/id', value: 'red' }], baseRevision: base }) // unchanged
     await post(null, '/keys', { name: 'anon', scopes: ['admin'] }) // 401
+    await post(t.admin, `/oauth/grants/${ap.grant.id}/revoke`, {}) // unchanged: already revoked
+    await post(t.admin, '/oauth/approve', { request: handle, scopes: ['read'] }) // 422: not asked for
+    await post(t.admin, '/oauth/approve', { request: 'nope' }) // 422
     expect(await count()).toBe(before)
 
     // the log is exactly the list of what was done, newest first

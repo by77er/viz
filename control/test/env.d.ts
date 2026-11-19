@@ -10,6 +10,8 @@ declare namespace Cloudflare {
     DEFAULT_POOL?: string
     CONTROL_CAPS?: string
     LIMIT_CEILINGS?: string
+    PUBLIC_URL?: string
+    OAUTH_CLIENT_KEY?: string
   }
 }
 

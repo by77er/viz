@@ -113,8 +113,38 @@ publisher/README.md "Needed changes" 1 and 3, design/DECISIONS.md D34 and D15.
 | an idle deployment (triggers) | the counted env now binds the real publisher: 168 hourly crons make **0 publisher calls** (and 0 shard, 0 ledger calls, 0 messages) |
 
 The four tests in `test/publisher.test.ts` that existed before the code was changed **failed
-against it** (no `nudged`, no recheck interval), and pass after it. Mutants: below, part
-"publication".
+against it** (no `nudged`, no recheck interval), and pass after it.
+
+**Mutants, part "publication" (2026-11-19)**: `node scripts/mutants.mjs publication`, run from a
+copy of the tree in a scratch directory (the script refuses a git checkout), after the copy's
+unmutated janitor gate tests (4 of 4) and stack publisher and trigger tests (13 of 13) passed:
+**15 of 15 killed**.
+
+| Mutant | Killed by |
+|---|---|
+| janitor: the deletion gate is ignored (the ledger alone decides) | janitor gate: published, then retained snapshot; both must say so |
+| janitor: a key the publisher releases is deleted although the ledger does not offer it | janitor gate: same two |
+| janitor: a publisher that cannot answer releases everything (fails open) | janitor gate: refuses or does not answer |
+| janitor: the publisher's answer is awaited without a bound | janitor gate: refuses or does not answer |
+| janitor: a held-back head starves the released keys behind it | janitor gate: held-back head |
+| janitor: what was deleted is not acknowledged to the publisher | janitor gate: published …; both must say so |
+| maintenance does not nudge the publisher | a flush leads to a maintenance run …; hangs or refuses |
+| a nudge that may not have been recorded does not make the tenant due again | hangs or refuses; the only reason … within the hour |
+| a deployment without a publisher still nudges (every tenant due hourly) | without a publisher bound |
+| the nudge waits as long as the publisher takes | hangs or refuses; the only reason … within the hour |
+| maintenance deletes without asking the publisher | hangs or refuses; waiting only for publication |
+| a removal waiting only for publication is looked at every grace (hourly) | waiting only for publication |
+| the flush path nudges the publisher | hangs or refuses (the stand-in was asked during flush) |
+| ingest asks the publisher before acknowledging | hangs or refuses (the stand-in was asked during ingest) |
+| the cron nudges the publisher (an idle deployment wakes it hourly) | triggers: an idle deployment, 0 publisher calls |
+
+**Soak, 2026-11-19, with the publisher wired in** (`SOAK_STEPS=3000 npx vitest run
+--maxWorkers=1 test/soak.test.ts`, seed 20261118, run alone among this engineer's jobs, others'
+query and ruler suites running on the machine): 3,000 steps, **every invariant held at every
+step**; 325 s; peak memory 991 MB for the process tree and 564 MB for the largest process
+(sampled every 3 s, threads not counted). The soak runs without a publisher (its env has none),
+so it checks that the wiring changed nothing for a deployment that has none; the gate's own
+behaviour is in the tests above. SOAK_STATS
 
 ## Not implemented
 
@@ -147,7 +177,10 @@ node scripts/mutants.mjs all     # mutation check, four parts
 node tools/hyparquet_check.mjs   # 4 checks agree
 ```
 
-Last run, 2026-11-19: **41 passed, 0 failed**; `tsc --noEmit` clean.
+Last run, 2026-11-19: **41 passed, 0 failed**; `tsc --noEmit` clean. With the publisher wired
+in (2026-11-19, `npx vitest run --maxWorkers=2`): **46 passed, 0 failed** (9 files); `tsc
+--noEmit` clean. (A first run during the change failed 38 tests with `LEDGER_SEGMENT_VERSION is
+not defined`: the ledger was mid-edit by its engineer; rerun once it was whole.)
 
 ### Wiring for the ledger's background log (2026-11-19)
 

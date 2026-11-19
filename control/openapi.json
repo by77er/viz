@@ -3932,6 +3932,531 @@
           }
         }
       }
+    },
+    "/api/v1/control/oauth/approve": {
+      "post": {
+        "operationId": "POST_oauth_approve",
+        "summary": "Approve an application's OAuth request (the consent step)",
+        "description": "The page at /oauth/authorize shows what an application (an MCP client) asks for and a \"request\" handle. A person approves it here, with a key of kind \"key\" holding admin (an agent key is refused with 403 approver-not-a-person). The grant holds the scopes asked for (or the subset in \"scopes\") that the approving key itself holds; admin counts for the dashboards scopes. The answer's \"redirect\" is the application's callback with the code, state and iss: open it in the browser that started the connection, within codeExpiresAt. dryRun: true shows exactly what would be granted and issues no code. Bounds per tenant: 50 clients, 50 live grants, 20 approvals an hour (429), and a key per grant counts against the key cap.",
+        "security": [
+          {
+            "apiKey": [
+              "admin"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "admin"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "description": "The handle from /oauth/authorize."
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/OAuthScope"
+                    }
+                  },
+                  "dryRun": {
+                    "type": "boolean",
+                    "description": "Run everything, report exactly what would happen, change nothing. The response carries \"dryRun\": true."
+                  }
+                },
+                "required": [
+                  "request"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Approved. The redirect is shown in this response only; null in a dry run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string"
+                    },
+                    "grant": {
+                      "$ref": "#/components/schemas/OAuthGrant"
+                    },
+                    "withheld": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/OAuthScope"
+                      }
+                    },
+                    "returnsTo": {
+                      "type": "object",
+                      "properties": {
+                        "host": {
+                          "type": "string"
+                        },
+                        "uri": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "redirect": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "description": "The callback with code, state and iss."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "codeExpiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "shownOnce": {
+                      "type": "boolean"
+                    },
+                    "kv": {
+                      "$ref": "#/components/schemas/KvState"
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "grant",
+                    "withheld",
+                    "returnsTo",
+                    "warnings",
+                    "redirect"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request (bad JSON, cursor, limit, If-Match), or a tenant was named in the request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, disabled or expired credential",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential lacks the scope, or the action is not allowed for this identity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict: stale revision or version, needs rebase, closed proposal, or a limit reached",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not valid: the body, the dashboard or the setting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many approvals in the last hour; retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/control/oauth/grants": {
+      "get": {
+        "operationId": "GET_oauth_grants",
+        "summary": "List OAuth grants",
+        "description": "What applications may act on this tenant, with which scopes, approved by whom. No credential is ever returned.",
+        "security": [
+          {
+            "apiKey": [
+              "admin"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "live (default; includes suspended) or all.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1 to 200, default 50.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "The \"next\" of the previous page.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Grants, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/OAuthGrant"
+                      }
+                    },
+                    "next": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "description": "Opaque cursor for the next page; null on the last."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "next"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request (bad JSON, cursor, limit, If-Match), or a tenant was named in the request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, disabled or expired credential",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential lacks the scope, or the action is not allowed for this identity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/control/oauth/grants/{grant}": {
+      "get": {
+        "operationId": "GET_oauth_grants_grant",
+        "summary": "One OAuth grant",
+        "security": [
+          {
+            "apiKey": [
+              "admin"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "name": "grant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The grant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "grant": {
+                      "$ref": "#/components/schemas/OAuthGrant"
+                    }
+                  },
+                  "required": [
+                    "grant"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request (bad JSON, cursor, limit, If-Match), or a tenant was named in the request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, disabled or expired credential",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential lacks the scope, or the action is not allowed for this identity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/control/oauth/grants/{grant}/revoke": {
+      "post": {
+        "operationId": "POST_oauth_grants_grant_revoke",
+        "summary": "Revoke an OAuth grant",
+        "description": "Ends it now: its tokens and code are deleted and its key removed (from KV too). The resource refuses its tokens from the next request. Revoking an ended grant changes nothing (outcome \"unchanged\").",
+        "security": [
+          {
+            "apiKey": [
+              "admin"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "name": "grant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "dryRun": {
+                    "type": "boolean",
+                    "description": "Run everything, report exactly what would happen, change nothing. The response carries \"dryRun\": true."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Revoked, or unchanged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string"
+                    },
+                    "grant": {
+                      "$ref": "#/components/schemas/OAuthGrant"
+                    },
+                    "kv": {
+                      "$ref": "#/components/schemas/KvState"
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "grant"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request (bad JSON, cursor, limit, If-Match), or a tenant was named in the request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, disabled or expired credential",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential lacks the scope, or the action is not allowed for this identity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource in the caller's tenant",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4853,6 +5378,160 @@
           "version",
           "value",
           "effective"
+        ]
+      },
+      "OAuthScope": {
+        "enum": [
+          "read",
+          "dashboards:read",
+          "dashboards:write",
+          "dashboards:apply",
+          "monitors:read"
+        ],
+        "description": "The scopes an OAuth grant may hold (contracts/oauth.ts OAUTH_SCOPES): those the agent surface checks. Never admin, write, monitors:write or monitors:ack."
+      },
+      "OAuthGrant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "live",
+              "suspended",
+              "revoked",
+              "expired"
+            ],
+            "description": "suspended: its key is disabled, so the resource refuses its tokens until the key is enabled again."
+          },
+          "client": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The application's own name for itself; not verified."
+              },
+              "redirectUris": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "registeredAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "name",
+              "redirectUris",
+              "registeredAt"
+            ]
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OAuthScope"
+            }
+          },
+          "resource": {
+            "type": "string",
+            "description": "The audience: the resource its tokens are for (the MCP endpoint)."
+          },
+          "approvedBy": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The grant ends then, whatever happens."
+          },
+          "lastUsedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "description": "Last code exchange or refresh."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "oauth:<grantId>"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revokedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revokedBy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revokeReason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "description": "person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle or expired."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "client",
+          "scopes",
+          "resource",
+          "approvedBy",
+          "createdAt",
+          "expiresAt",
+          "lastUsedAt",
+          "key",
+          "revokedAt",
+          "revokeReason"
         ]
       },
       "AuditEntry": {

@@ -13,7 +13,7 @@
  * The protocol (series, history, windows, don't-care spans, tolerance, hypotheses, decision rule)
  * is read from the frozen file; bench/smd.ts implements it.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { loadProfiles, scoreAt, nullScore, PROFILE_NAMES, type NabFile, type ProfileName, type CostMatrix } from './nab.ts'
@@ -49,6 +49,7 @@ interface Frozen {
     hypotheses: string[]
   }
   detectors: Record<string, Record<ProfileName, Choice>>
+  searched: Record<string, { label: string; scores: Record<ProfileName, number> }[]>
   nabHeldOut: Record<string, Record<ProfileName, number>> | null
 }
 const frozenText = readFileSync(join(HERE, 'smd-frozen.json'), 'utf8')
@@ -89,9 +90,20 @@ const onlyDetectors = argOf('only')?.split(',') ?? null
 const onlyMachines = argOf('machines')?.split(',').map((m) => (m.startsWith('machine-') ? m : `machine-${m}`)) ?? null
 
 const DETECTORS = Object.keys(frozen.detectors).filter((d) => d !== 'random')
+/**
+ * POST HOC, added after the frozen results had been seen (2026-11-19, about 04:20 UTC): two
+ * configurations from the same NAB grid that the freeze did not choose, scored because the
+ * frozen robust_z_quantile window (4,000 points, about 145 KB of state per series) is over the
+ * ruler's 64 KiB per-series state limit. Reported in their own table; never part of a
+ * hypothesis or a verdict.
+ */
+const POSTHOC: Record<string, { family: string; label: string }> = {
+  'robust_z_quantile window 1000 (post hoc)': { family: 'robust_z_quantile', label: 'robust_z_quantile(windowPoints=1000,k=2,spread=quantile)' },
+  'robust_z_quantile window 288 (post hoc)': { family: 'robust_z_quantile', label: 'robust_z_quantile(windowPoints=288,k=2,spread=quantile)' },
+}
 /** The robust z family: one detector call per group of configurations that differ only in k (see runGroup). */
 const ROBUST_Z = new Set(['robust_z', 'robust_z_quantile', 'robust_z_posthoc'])
-interface Job { key: string; detector: string; params: Record<string, number | string>; run: (f: NabFile, c: Ctx, key: string) => Run }
+interface Job { key: string; detector: string; family: string; params: Record<string, number | string>; run: (f: NabFile, c: Ctx, key: string) => Run }
 const jobs = new Map<string, Job>()
 /** Job keys per (detector, profile); random has one per seed. */
 const jobOf: Record<string, Record<ProfileName, string[]>> = {}
@@ -101,9 +113,14 @@ for (const d of DETECTORS) {
     const label = frozen.detectors[d]![p].label
     const cfg = GRIDS[d]!.find((c) => c.label === label)
     if (!cfg) throw new Error(`frozen ${d} ${label} not in GRIDS`)
-    jobs.set(label, { key: label, detector: d, params: cfg.params, run: (f, c) => cfg.run(f, c) })
+    jobs.set(label, { key: label, detector: d, family: d, params: cfg.params, run: (f, c) => cfg.run(f, c) })
     jobOf[d]![p] = [label]
   }
+}
+for (const [name, ph] of Object.entries(POSTHOC)) {
+  const cfg = GRIDS[ph.family]!.find((c) => c.label === ph.label)!
+  if (!jobs.has(ph.label)) jobs.set(ph.label, { key: ph.label, detector: name, family: ph.family, params: cfg.params, run: (f, c) => cfg.run(f, c) })
+  jobOf[name] = Object.fromEntries(PROFILE_NAMES.map((p) => [p, [ph.label]])) as Record<ProfileName, string[]>
 }
 jobOf.random = {} as Record<ProfileName, string[]>
 for (const p of PROFILE_NAMES) {
@@ -111,11 +128,11 @@ for (const p of PROFILE_NAMES) {
   const seeds = String(frozen.detectors.random![p].params.seeds).split(',').map(Number)
   jobOf.random[p] = seeds.map((seed) => {
     const key = `random(p=${rate},seed=${seed})`
-    jobs.set(key, { key, detector: 'random', params: { p: rate, seed }, run: (f, _c, k) => runRandom(f.values.length, k, rate, seed) })
+    jobs.set(key, { key, detector: 'random', family: 'random', params: { p: rate, seed }, run: (f, _c, k) => runRandom(f.values.length, k, rate, seed) })
     return key
   })
 }
-const selected = [...jobs.values()].filter((j) => !onlyDetectors || onlyDetectors.includes(j.detector))
+const selected = [...jobs.values()].filter((j) => !onlyDetectors || onlyDetectors.includes(j.detector) || (onlyDetectors.includes('posthoc') && j.detector in POSTHOC))
 log(`${jobs.size} distinct runs per series; this pass: ${selected.map((j) => j.key).join(', ')}`)
 
 // ───────────────────────────── run (cached per machine) ─────────────────────────────
@@ -175,7 +192,7 @@ function runMachine(name: string, prev: MachineCache | null, want: Job[]): Machi
     const cpu = (key: string, t0: NodeJS.CpuUsage) => { const u = process.cpuUsage(t0); out.cpuMs[key] = (out.cpuMs[key] ?? 0) + (u.user + u.system) / 1000 }
     // robust z family in groups
     const groups = new Map<string, Job[]>()
-    for (const j of todo.filter((j) => ROBUST_Z.has(j.detector))) {
+    for (const j of todo.filter((j) => ROBUST_Z.has(j.family))) {
       const { k: _k, ...rest } = j.params
       const g = JSON.stringify(rest)
       groups.set(g, [...(groups.get(g) ?? []), j])
@@ -193,7 +210,7 @@ function runMachine(name: string, prev: MachineCache | null, want: Job[]): Machi
         }
       }
     }
-    for (const j of todo.filter((j) => !ROBUST_Z.has(j.detector))) {
+    for (const j of todo.filter((j) => !ROBUST_Z.has(j.family))) {
       const t0 = process.cpuUsage()
       const r = j.run(f, ctx, f.path)
       cpu(j.key, t0)
@@ -217,7 +234,8 @@ for (const name of SMD_MACHINES) {
   if (!scoreOnly && (!onlyMachines || onlyMachines.includes(name)) && missing(c).length) {
     const start = performance.now()
     c = runMachine(name, c, missing(c))
-    writeFileSync(p, JSON.stringify(c))
+    writeFileSync(`${p}.tmp`, JSON.stringify(c))
+    renameSync(`${p}.tmp`, p) // atomic: another pass may be reading the cache
     log(`${name}: ${c.series.length} series (${c.excluded.length} constant, excluded), ${missing(null).length} runs, ${((performance.now() - start) / 1000).toFixed(0)} s`)
   }
   caches.push(c)
@@ -227,8 +245,8 @@ if (caches.some((c) => c === null)) {
   process.exit(0)
 }
 const complete = (key: string) => caches.every((c) => c!.series.every((s) => key in s.runs))
-const SCORED = [...DETECTORS, 'random'].filter((d) => PROFILE_NAMES.every((p) => jobOf[d]![p].every(complete)))
-const NOT_RUN = [...DETECTORS, 'random'].filter((d) => !SCORED.includes(d))
+const SCORED = [...DETECTORS, 'random', ...Object.keys(POSTHOC)].filter((d) => PROFILE_NAMES.every((p) => jobOf[d]![p].every(complete)))
+const NOT_RUN = [...DETECTORS, 'random', ...Object.keys(POSTHOC)].filter((d) => !SCORED.includes(d))
 const scoredJobs = [...jobs.keys()].filter(complete)
 log(`detectors done in ${((performance.now() - t0) / 1000).toFixed(0)} s; scoring ${SCORED.join(', ')}${NOT_RUN.length ? `; not run: ${NOT_RUN.join(', ')}` : ''}`)
 
@@ -348,7 +366,7 @@ function countsW(det: string, p: ProfileName, w: ArrayLike<number>, view: 'event
 const f1W = (det: string, p: ProfileName, w: ArrayLike<number>, view: 'event' | 'machine' = 'event') => prf(countsW(det, p, w, view)).f1
 const median = (a: number[]) => (a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]! : NaN)
 
-const ORDER = ['threshold', 'ewma', 'robust_z', 'seasonal', 'stl', 'cusum', 'pelt', 'robust_z_posthoc', 'seasonal_posthoc', 'robust_z_quantile', 'seasonal_quantile', 'random'].filter((d) => SCORED.includes(d))
+const ORDER = ['threshold', 'ewma', 'robust_z', 'seasonal', 'stl', 'cusum', 'pelt', 'robust_z_posthoc', 'seasonal_posthoc', 'robust_z_quantile', 'seasonal_quantile', 'random'].concat(Object.keys(POSTHOC)).filter((d) => SCORED.includes(d))
 const B = P.bootstrap
 interface Row {
   detector: string
@@ -393,11 +411,11 @@ for (const det of ORDER) {
   const heldName = det === 'random' ? 'random (NAB published, as onsets)' : det
   rowsOut.push({
     detector: det,
-    config: Object.fromEntries(PROFILE_NAMES.map((p) => [p, frozen.detectors[det]![p].label])) as Record<ProfileName, string>,
+    config: Object.fromEntries(PROFILE_NAMES.map((p) => [p, jobOf[det]![p][0]!.replace(/,seed=\d+/, '')])) as Record<ProfileName, string>,
     score: Object.fromEntries(PROFILE_NAMES.map((p) => [p, scoreW(det, p, ALL)])) as Record<ProfileName, number>,
     scoreStrict: Object.fromEntries(PROFILE_NAMES.map((p) => [p, scoreW(det, p, ALL, true)])) as Record<ProfileName, number>,
     nabHeldOut: frozen.nabHeldOut?.[heldName] ?? null,
-    nabInSample: Object.fromEntries(PROFILE_NAMES.map((p) => [p, frozen.detectors[det]![p].nabInSample])) as Record<ProfileName, number>,
+    nabInSample: Object.fromEntries(PROFILE_NAMES.map((p) => [p, det in POSTHOC ? frozen.searched[POSTHOC[det]!.family]!.find((x) => x.label === POSTHOC[det]!.label)!.scores[p] : frozen.detectors[det]![p].nabInSample])) as Record<ProfileName, number>,
     windowRecall: win.d / std.length / totalWindows,
     windowEventPrecision: win.s ? win.i / win.s : 0,
     event: { ...prf(ev), onsets: ev.onsets, medianDelay: median(per.flatMap((pm) => pm.event[std[0]!]!.delays)) },
@@ -464,10 +482,10 @@ const pct = (x: number) => `${(100 * x).toFixed(0)}%`
 const iv = (d: { diff: number; interval: [number, number] } | undefined) => (d ? `${d.diff >= 0 ? '+' : ''}${d.diff.toFixed(1)} [${d.interval[0].toFixed(1)}, ${d.interval[1].toFixed(1)}]` : '–')
 const ivF = (d: { diff: number; interval: [number, number] } | undefined) => (d ? `${d.diff >= 0 ? '+' : ''}${d.diff.toFixed(3)} [${d.interval[0].toFixed(3)}, ${d.interval[1].toFixed(3)}]` : '–')
 const L: string[] = []
-const rankStd = [...rowsOut].sort((a, b) => b.score.standard - a.score.standard).map((r) => r.detector)
+const rankStd = rowsOut.filter((r) => !(r.detector in POSTHOC)).sort((a, b) => b.score.standard - a.score.standard).map((r) => r.detector)
 L.push(`### SMD (${results.corpus.series} series on ${nM} machines; ${results.corpus.windows} windows from ${results.corpus.segments} labelled segments; frozen ${frozen.frozenAt}, fetched ${fetchedAt})`, '')
 L.push('| detector | SMD standard | SMD low FP | SMD low FN | NAB held-out (std / low FP / low FN) | rank (std) | vs EWMA, std [95%] | vs threshold, std [95%] |', '|---|---|---|---|---|---|---|---|')
-for (const r of rowsOut) L.push(`| ${r.detector} | ${f1(r.score.standard)} | ${f1(r.score.reward_low_FP_rate)} | ${f1(r.score.reward_low_FN_rate)} | ${r.nabHeldOut ? `${f1(r.nabHeldOut.standard)} / ${f1(r.nabHeldOut.reward_low_FP_rate)} / ${f1(r.nabHeldOut.reward_low_FN_rate)}` : '–'} | ${rankStd.indexOf(r.detector) + 1} | ${iv(r.vsEwma.standard)} | ${iv(r.vsThreshold.standard)} |`)
+for (const r of rowsOut) L.push(`| ${r.detector} | ${f1(r.score.standard)} | ${f1(r.score.reward_low_FP_rate)} | ${f1(r.score.reward_low_FN_rate)} | ${r.nabHeldOut ? `${f1(r.nabHeldOut.standard)} / ${f1(r.nabHeldOut.reward_low_FP_rate)} / ${f1(r.nabHeldOut.reward_low_FN_rate)}` : '–'} | ${r.detector in POSTHOC ? 'post hoc' : rankStd.indexOf(r.detector) + 1} | ${iv(r.vsEwma.standard)} | ${iv(r.vsThreshold.standard)} |`)
 L.push('', '| detector | config (standard) | window recall | event precision (NAB windows) | event P / R / F1 (±15 min) | F1 vs EWMA [95%] | median delay (min) | machine view P / R / F1 | false onsets per machine-day | low-FP config: machine P / R, false per machine-day |', '|---|---|---|---|---|---|---|---|---|---|')
 for (const r of rowsOut) L.push(`| ${r.detector} | ${r.config.standard} | ${pct(r.windowRecall)} | ${pct(r.windowEventPrecision)} | ${pct(r.event.precision)} / ${pct(r.event.recall)} / ${r.event.f1.toFixed(3)} | ${ivF(r.vsEwma.eventF1)} | ${r.event.medianDelay} | ${pct(r.machine.precision)} / ${pct(r.machine.recall)} / ${r.machine.f1.toFixed(3)} | ${r.machine.falsePerMachineDay.toFixed(1)} | ${pct(r.machineLowFP.precision)} / ${pct(r.machineLowFP.recall)}, ${r.machineLowFP.falsePerMachineDay.toFixed(1)} |`)
 L.push('', '| detector | low FP vs EWMA [95%] | low FP vs threshold [95%] | strict (no don\'t-care) std / low FP / low FN | CPU ms per 1,000 points |', '|---|---|---|---|---|')
@@ -475,6 +493,6 @@ for (const r of rowsOut) L.push(`| ${r.detector} | ${iv(r.vsEwma.reward_low_FP_r
 L.push('', '| hypothesis (from NAB) | held on SMD | numbers |', '|---|---|---|')
 for (const h of hyp) L.push(`| ${h.text} | ${h.held === null ? 'not run' : h.held ? 'yes' : '**no**'} | ${h.detail} |`)
 L.push('', ...Object.entries(decisions).map(([d, v]) => `- **${d}: ${v.verdict}** (${v.why})`))
-L.push('', `Interpretation ranges: ${conv.base}-based, end ${conv.endInclusive ? 'inclusive' : 'exclusive'} (agrees with test_label on ${pct(agreement[0]!.agree / agreement[0]!.rows)} of rows; next best ${pct(agreement[1]!.agree / agreement[1]!.rows)}). Seasonality detected on the history: ${Object.entries(periods).map(([k, v]) => `${k} ${v}`).join(', ')}. Constant series excluded: ${excludedCount}.${NOT_RUN.length ? ` Not run: ${NOT_RUN.join(', ')}.` : ''}`)
+L.push('', `Interpretation ranges: ${conv.base}-based, end ${conv.endInclusive ? 'inclusive' : 'exclusive'} (disagrees with test_label on ${agreement[0]!.rows - agreement[0]!.agree} of ${agreement[0]!.rows} rows; next best ${agreement[1]!.rows - agreement[1]!.agree}). Seasonality detected on the history: ${Object.entries(periods).map(([k, v]) => `${k} ${v}`).join(', ')}. Constant series excluded: ${excludedCount}.${NOT_RUN.length ? ` Not run: ${NOT_RUN.join(', ')}.` : ''}`)
 console.log(L.join('\n'))
 writeFileSync(join(OUT, 'smd-results.md'), L.join('\n') + '\n')

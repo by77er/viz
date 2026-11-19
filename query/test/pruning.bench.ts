@@ -23,6 +23,7 @@ import { describe, it } from 'vitest'
 import { clearLimitsCache } from '../src/config'
 import { hooks } from '../src/coordinator'
 import { engine } from '../src/index'
+import * as leafModule from '../src/leaf'
 import { leafHooks } from '../src/leaf'
 import { Bulk } from './bulk'
 import { type Tenant, type World, api, cost, discardAll, flushAll, sealAll, world, write } from './world'
@@ -53,12 +54,13 @@ async function load(w: World, t: Tenant, n: number): Promise<number> {
 
 async function call(t: Tenant, n: number, shape: string, path: string, params: Record<string, string> | [string, string][]): Promise<void> {
   engine.reset() // a fresh WASM instance: its memory is this call's peak at the coordinator
-  const leaf = { gets: 0, hits: 0, bytes: 0, engineMs: 0, peak: 0 }
+  const leaf = { gets: 0, hits: 0, bytes: 0, engineMs: 0, ownMs: 0, peak: 0 }
   hooks.leafStats = (_part, st) => {
     leaf.gets += st.r2Gets
     leaf.hits += st.cacheHits
     leaf.bytes += st.bytesRead
     leaf.engineMs += st.ownEngineMs + st.readerEngineMs
+    leaf.ownMs += st.ownEngineMs
     leaf.peak = Math.max(leaf.peak, st.wasmMemoryBytes)
   }
   const t0 = performance.now()
@@ -76,7 +78,7 @@ async function call(t: Tenant, n: number, shape: string, path: string, params: R
   console.log(
     `MEASURE pruning ${n} | ${shape} | HTTP ${res.status}${err} | ${res.headers.get('X-Viz-Execution') || '-'}${c('Split-Leaves') ? ` over ${c('Split-Leaves')} leaves` : ''} | pruning ${res.headers.get('X-Viz-Pruning') ?? '(none: before)'} | ` +
       `reads ${reads} (R2 ${c('R2-Gets')}, cache ${c('Cache-Hits')}), ${mib(bytes)} MiB | files ${c('Files-Read')} of ${c('Files-Listed')} | scan bound ${c('Scan-Samples')}, series estimate ${c('Series-Estimate')} | ` +
-      `wall ${wall.toFixed(0)} ms, engine ${c('Engine-Ms') + Math.round(leaf.engineMs)} ms (leaves ${Math.round(leaf.engineMs)}), coordinator WASM ${mib(c('Wasm-Memory-Bytes'))} MiB, leaf peak ${mib(leaf.peak)} MiB | answer ${body.length} B sha ${await sha(body)}`,
+      `wall ${wall.toFixed(0)} ms, engine ${c('Engine-Ms') + Math.round(leaf.engineMs)} ms (leaves ${Math.round(leaf.engineMs)}: own ${Math.round(leaf.ownMs)}, readers ${Math.round(leaf.engineMs - leaf.ownMs)}), coordinator WASM ${mib(c('Wasm-Memory-Bytes'))} MiB, leaf peak ${mib(leaf.peak)} MiB | answer ${body.length} B sha ${await sha(body)}`,
   )
 }
 
@@ -97,6 +99,12 @@ async function measureAt(w: World, t: Tenant, n: number): Promise<void> {
       await call(t, n, `one series: rate(x{pod}[5m])${tag}`, '/api/v1/query_range', { query: `rate(x{pod="${pod}"}[5m])`, ...hour })
       await call(t, n, `selective: sum by (pod)(rate(x{namespace="ns-03"}[5m]))${tag}`, '/api/v1/query_range', { query: 'sum by (pod) (rate(x{namespace="ns-03"}[5m]))', ...hour })
       await call(t, n, `full metric: sum by (job)(rate(x[5m]))${tag}`, '/api/v1/query_range', { query: 'sum by (job) (rate(x[5m]))', ...hour })
+      if ('covers' in leafModule) {
+        // This tree only: the same split with readers reading whole files, in the same run.
+        ;(leafHooks as { wholeReads?: boolean }).wholeReads = true
+        await call(t, n, `full metric, readers reading whole files (same run)${tag}`, '/api/v1/query_range', { query: 'sum by (job) (rate(x[5m]))', ...hour })
+        delete (leafHooks as { wholeReads?: boolean }).wholeReads
+      }
       await call(t, n, `label values: /label/pod/values?match[]=x${tag}`, '/api/v1/label/pod/values', [['match[]', 'x'], ['start', hour.start], ['end', hour.end]])
       await call(t, n, `series: /series?match[]=x{pod}${tag}`, '/api/v1/series', [['match[]', `x{pod="${pod}"}`], ['start', hour.start], ['end', hour.end]])
     }

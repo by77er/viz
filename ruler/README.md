@@ -741,10 +741,11 @@ data names the tenant.
 npm test                # 364 tests in 22 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 115 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 122 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming), on a scratch copy; vitest runs with at most 2 workers
 npm run bench           # the measurements below
 npm run bench:anomaly   # anomaly rules in workerd (one worker): the "Anomaly rules" measurements below
-npm run bench:history   # SLO ticks, warm-ups and 7-day backtests in workerd (one worker): the "SLO rules, warm-ups and backtests" measurements below
+npm run bench:history   # SLO ticks, warm-ups and 7-day backtests in workerd (one worker; run each `B.` case alone with -t, and MINIFLARE_WORKERD_V8_FLAGS=--max-old-space-size=128 for the heap limit): the "SLO rules, warm-ups and backtests" and "Streaming" measurements below
+npx vitest run --config vitest.measure.config.ts --maxWorkers=1 test/memory.bench.ts -t "<case>"   # the per-point calibration, one case per process
 ```
 
 `npm run independent` needs Go 1.24 and the modules in `tools/promcheck/go.sum` (they were
@@ -953,6 +954,17 @@ the new "dryRun on every write" test.
 | 113 | backtest/live: an interval's annotations taken at its end, not when the alert entered the state | history: same |
 | 114 | tenant isolation: `POST /monitors/{id}/backtest` looks the monitor up for a tenant named in the query string | history: "… only the caller's own monitors and data" |
 | 115 | compatibility: a save warms a kept rule over state rows a newer release wrote (both guards removed) | slo: "refusals change nothing … a newer release's rows are refused, kept …" |
+| 116 | window boundary: each window starts a step late (a step between windows never read) | backtest: "a recorded sequence of 90 ticks … identical intervals" (the windows' partition, every seed) (+ history) |
+| 117 | window boundary: windows overlap by a step (the boundary step read and fed twice) | backtest: same |
+| 118 | window boundary: the last step of every window not fed to the rule | backtest: same |
+| 119 | memory refusal: the rule's state left out of the window sizing | history: "across many window boundaries …" (+2 more: the refusals) |
+| 120 | memory refusal: windows sized without the series count | history: "across many window boundaries …" |
+| 121 | memory refusal: an SLO backtest's model leaves out its bucket rings | history: "refused before any plan or fetch when the modelled peak cannot fit …" |
+| 122 | memory refusal: a window holding more points than it was sized for evaluated anyway | history: "a window holding more points than the model sized it for …" |
+
+**Streaming mutants 116–122** (window boundaries and the memory refusal; `VIZ_SCRATCH=… node
+scripts/mutants.mjs 116 … 122`, on a scratch copy): 7 of 7 killed on the first run; shared tree
+unchanged.
 
 **SLO, warm-up and backtest mutants 94–115** (`VIZ_SCRATCH=… node scripts/mutants.mjs 94 … 115`, on a
 scratch copy): 94–114 on the first run, 20 killed and 102 survived (see its row); after the test
@@ -1101,27 +1113,78 @@ T. One alarm tick of a group holding one rule, warm (after its warm-up and 3 unm
 | SLO | 10 | 3.60–3.71 | 209–232 | 3 (up to 6 with transitions) | 232–234 |
 | SLO | 100 | 10.0–11.2 (single ticks up to 147) | 883–1,000 | 3 (up to 7) | 372–389 |
 
-B. A 7-day backtest at 1 minute over 100 series (one RPC; the reads planned, then handed over):
+B. Backtests: see "Streaming" below (the measurements of this table's first version, with each
+read fetched whole, held 0.4–0.6 GB; they are kept there as the counterfactual).
 
-| rule | points read | ms CPU | wall, s | intervals | peak RSS, MB |
-|---|---|---|---|---|---|
-| threshold (the alert state machine alone) | 1,008,100 | 1,473–1,683 | 2.1–3.0 | 200 | 430–442 |
-| EWMA anomaly (half-life 10) | 1,010,100 | 4,156–4,639 | 4.5–7.7 | 998 | 448–546 |
-| SLO (fine read 7 d + 3 d + 1 h, coarse 30 d) | 3,021,400 | 9,576–9,899 | 13.4–14.6 | 316 | 587–638 |
-
-**Reading it.** A burn-rate tick costs about 0.3 ms CPU more than the empty counterfactual at one
+**Reading T.** A burn-rate tick costs about 0.3 ms CPU more than the empty counterfactual at one
 series, 1.5 ms at 10 and 8–9 ms at 100 (about 0.09 ms a series: window sums over cached blocks,
 `evaluateWindows`, the working copy of the rings), and writes **3 rows whatever the number of
-series**. A warm-up is a one-off of 70–80 ms at one series and about 1 s at 100 (two reads of
-~5,100 steps fed through `evalSlo`, ~100 rows written). The 7-day backtests show what feeding
-history through the live evaluation costs: the state machine alone 1.5 s for a million points,
-EWMA 4.3 s, the SLO rule 9.7 s for three million (it reads three days more and two parts per
-series, and judges 100 series' windows at each of 10,080 steps). **These backtests would not run
-as measured on Cloudflare**: viz-query refuses a range query of more than 500,000 output points
-(`maxOutputPoints`; 11,000 steps × 100 series is 1.1 million), and the object held 0.4–0.6 GB here,
-where a Durable Object has 128 MB. One range query of 11,000 steps fits about 45 result series
-(an SLO's series count twice: two parts); longer ranges or more series need a coarser interval. Nothing here is measured on Cloudflare; what would settle the
-production cost is the same rules deployed, CPU and rows read from Cloudflare's analytics.
+series**. A warm-up is a one-off of 70–80 ms at one series and about 1 s at 100. Nothing here is
+measured on Cloudflare; what would settle the production cost is the same rules deployed, CPU and
+rows read from Cloudflare's analytics.
+
+#### Streaming (`npm run bench:history`, `test/memory.bench.ts`)
+
+**Measured here (workerd, local)**, one worker, each case in its own workerd process (a later case
+would reuse heap an earlier one freed), the process's peak resident memory (VmHWM) reset before the
+case through `HOST?reset`; **load average 5.3–11.3** (1-minute) across the runs. CPU is the workerd
+threads' time with the fake engine's own CPU (building each window's matrix in the same isolate,
+measured alone afterwards over the same windows) taken off and shown beside it. V8's old space was
+limited with `MINIFLARE_WORKERD_V8_FLAGS=--max-old-space-size=<MB>`: 128 MB is a Durable Object's
+memory, 64 MB half of it. Rules as in T (SLO) and part 12; a week at 1 minute (10,080 steps), ending
+2099-12-31; EWMA half-life 10 with a spike per series about weekly; threshold `latency_ms > 0` for
+2 m (every series fires and holds).
+
+C. Calibration, bytes of resident memory per point held (a window's engine JSON, parsed, indexed by
+step), one case per process, two runs each:
+
+| series × steps | points | peak increase, MB | bytes per point |
+|---|---|---|---|
+| 100 × 2,000 | 200,000 | 94.7–108.5 | 496–569 |
+| 1,000 × 500 | 500,000 | 208.9–211.1 | 438–443 |
+| 10 × 20,000 | 200,000 | 121.9–125.7 | 639–659 |
+| 1,000 × 70 | 70,000 | 45.8–47.6 | 686–712 |
+
+The model takes 768, above all of them.
+
+S. A 7-day backtest at 1 minute, streamed (the default 32 MiB budget):
+
+| rule | series | ms CPU (fake engine) at 128 MB heap | at 64 MB heap | windows | points read | model peak / budget, MiB | peak RSS increase, MB (128 / 64 heap) | intervals |
+|---|---|---|---|---|---|---|---|---|
+| threshold | 100 | 920–1,011 (+52–75) | 1,007 (+50) | 31 steps × 326 queries | 1,008,000 | 31.6 / 32 | 60.8 / 59.3 | 200 |
+| threshold | 1,000 | 11,050–12,400 (+670–704) | 14,624 (+950) | 31 steps × 326 queries | 10,080,000 | 31.6 / 32 | 100.9–103.6 / 76.6 | 2,000 |
+| EWMA | 100 | 4,579 (+75) | 4,472 (+82) | 345 steps × 30 queries | 1,010,000 | 32.0 / 32 | 112.3 / 88.1 | 100 |
+| EWMA | 1,000 | 49,646 (+780) | 55,451 (+810) | 26 steps × 389 queries | 10,100,000 | 32.0 / 32 | 121.6 / 107.3 | 1,005 |
+| SLO | 100 | 8,614–8,720 (+239–252) | 9,239 (+227) | 118 + 118 steps × 129 queries | 3,009,600 | 32.0 / 32 | 109.6–113.3 / 82.6 | 316 |
+| SLO | 1,000 | **refused** before any plan or fetch: state 92.7 MiB, model peak 94.1 MiB > 32 MiB | same | – | – | 94.1 / 32 | 0.4 | – |
+
+(The 1,000-series EWMA rule needs `maxAnomalyStateBytesPerRule` raised to be saved at all, and the
+1,000-series SLO rule `maxSloSeriesPerRule`; both were, so that the backtest is what is measured.
+With spikes twice a week, the 1,000-series EWMA backtest stopped at the 4 MiB the intervals may
+hold: 2,445 alerts with their explanations, an explicit `failed`.)
+
+X. The counterfactual, each read fetched whole (one window, as before this change: a 4 GiB budget),
+the same cases at a 128 MB heap:
+
+| rule | series | outcome | ms CPU | peak RSS increase, MB |
+|---|---|---|---|---|
+| threshold | 100 | completed | 1,291 | 134.3 |
+| threshold | 1,000 | **V8 fatal error: reached heap limit, JavaScript heap out of memory**; the runtime crashed and was restarted | – | – |
+| EWMA | 100 | completed, 4× the CPU of the streamed run (garbage collection near the limit) | 19,289 | 164.2 |
+| SLO | 100 | **V8 fatal error: ineffective mark-compacts near heap limit, out of memory**; the runtime crashed | – | – |
+
+**Reading it.** Streamed, every case completed under a 128 MB V8 heap and under a 64 MB one, and the
+1,000-series SLO backtest, whose bucket rings alone the model puts at 92.7 MiB, was refused before
+anything was read. Fetched whole, the 1,000-series threshold and the 100-series SLO backtests killed
+the runtime at the same 128 MB limit: on Cloudflare the object would have been reset, not refused.
+Resident memory is not what the model counts (V8 keeps garbage and reserves heap while it can): the
+peak RSS increase, 60–122 MB at 128 MB, falls to 59–107 MB at 64 MB with the same budget, and the
+runs still complete; the check is that a run sized by the model survives a heap limit, and that the
+counterfactual does not. **CPU is not bounded**: 12 s for a week of 1,000 threshold series and 50 s
+for 1,000 EWMA series (the per-point bookkeeping of the live evaluation function), over a Durable
+Object's default 30 s per request; a 1,000-series week should be backtested at a coarser step or
+over a shorter range. The alerting rule's windows are sized for 1,000 series however few there are
+(31 steps, 326 queries for a week).
 
 ### Cost model
 

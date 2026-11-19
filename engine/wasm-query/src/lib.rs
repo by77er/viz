@@ -50,7 +50,7 @@
 //! | `viz_q_series` | `limits, i64 min_ts, i64 max_ts, u32 n, str*, scan` | JSON `[{"label":"value",…},…]` |
 //! | `viz_q_scan_rows` | `u32 n_files, str index*, u32 n_ranges, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*` | `u64[n_files]`: an upper bound on the rows the ranges decode from each file. 0 = the file provably holds nothing the ranges read (skip it); `u64::MAX` = the fragment does not parse (unknown: read the file) |
 //! | `viz_q_split_plan` | `limits, str query` | JSON `{"split":true,"fragments":n,"without":[…]}` or `{"split":false,"reason":"…"}` (`viz_query::split_plan`) |
-//! | `viz_q_extract` | `key, u32 part, u32 parts, ranges, u32 n, str* (series files), u32 m, str* (sample files, precedence order)` | `u64 rows, u64 series`, then a `VZB1` batch (empty: no rows) |
+//! | `viz_q_extract` | `key, u32 part, u32 parts, ranges, u32 n, str* (series files), u32 m, str* (sample files, precedence order; whole or sparse)` | `u64 rows, u64 series, u64 strays` (ABI 3: the part's series outside its id range), then a `VZB1` batch (empty: no rows) |
 //! | `viz_q_split_tails` | `key, u32 parts, ranges, u32 n, str* (tail batches, in order)` | per part: `u32 n`, then `str*` (its batches, in order) |
 //! | `viz_q_gather_new` | `u64 samples, u64 series, u64 step_points (the leaf's budget), ranges` | `u32 handle` of a gathering session kept in the module |
 //! | `viz_q_gather_add` | `u32 handle, u32 rank, str batch` | `u8 aborted, u64 samples, u64 series` held so far |
@@ -532,9 +532,10 @@ fn do_extract(mut r: Req<'_>) -> Res<Vec<u8>> {
         return Err(Fail::Malformed(format!("part {part} of {parts}")));
     }
     let ex = split::extract(&series, &samples, &key, part, parts, &ranges)?;
-    let mut out = Vec::with_capacity(16 + ex.batch.len());
+    let mut out = Vec::with_capacity(24 + ex.batch.len());
     out.extend_from_slice(&ex.rows.to_le_bytes());
     out.extend_from_slice(&ex.series.to_le_bytes());
+    out.extend_from_slice(&ex.strays.to_le_bytes());
     out.extend_from_slice(&ex.batch);
     Ok(out)
 }

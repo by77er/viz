@@ -72,6 +72,14 @@ export const ROUTES = [
 
   r('GET', '/audit', 'audit.list', ADMIN),
   r('GET', '/audit/{entry}', 'audit.get', ADMIN),
+
+  // OAuth for agents (contracts/oauth.ts): the consent step and the grants a person manages.
+  // The OAuth endpoints a client calls (/oauth/register, /oauth/authorize, /oauth/token,
+  // /oauth/revoke) are outside this API: src/oauth-http.ts.
+  r('POST', '/oauth/approve', 'oauth.approve', ADMIN),
+  r('GET', '/oauth/grants', 'oauth.grants.list', ADMIN),
+  r('GET', '/oauth/grants/{grant}', 'oauth.grants.get', ADMIN),
+  r('POST', '/oauth/grants/{grant}/revoke', 'oauth.grants.revoke', ADMIN),
 ] as const satisfies readonly Route[]
 
 export type OpName = (typeof ROUTES)[number]['op']

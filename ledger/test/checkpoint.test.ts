@@ -456,6 +456,36 @@ describe('superseded checkpoints', () => {
   })
 })
 
+describe('a checkpoint that cannot be read whole is passed over', () => {
+  it('a part missing a record, a missing part, a part of another attempt: the rebuild empties what it loaded and uses the base, and comes back exactly', async () => {
+    for (const harm of ['drop a record', 'delete a part', 'another attempt'] as const) {
+      const { tenant, l } = open(tenantName('cktamper'))
+      await noCheckpoints(l)
+      await history(l, 14)
+      await l.replace({ remove: [pair(1, 1, T0, 'pool/1', 100).files[0]!.key], add: [file('L1-t', { level: 1 })] })
+      await inParts(l, 900)
+      await l.addUnit(pair(1, 1, T0, 'pool/9', 1))
+      await l.drain()
+      const live = await dumpState(l)
+      const inc = await incarnationOf(l)
+      const m = (await readCheckpoint(tenant, inc, live.version)).manifest
+      expect(m.parts).toBeGreaterThan(2)
+      const key = `${env.CELL}/${ledgerCheckpointPartKey(tenant, inc, live.version, m.attempt, 1)}`
+      const body = await (await env.BUCKET.get(key))!.text()
+      if (harm === 'drop a record') {
+        const lines = body.split('\n')
+        const header = JSON.parse(lines[0]!) as { records: number }
+        header.records--
+        await env.BUCKET.put(key, [JSON.stringify(header), ...lines.slice(2)].join('\n'))
+      } else if (harm === 'delete a part') await env.BUCKET.delete(key)
+      else await env.BUCKET.put(key, body.replace(`"attempt":"${m.attempt}"`, '"attempt":"00000000"'))
+      const r = await rebuild(l)
+      expect(r.checkpoint, harm).toBeNull()
+      expect(await dumpState(l), harm).toEqual(live)
+    }
+  })
+})
+
 describe('a rebuild streams into SQLite', () => {
   /**
    * Serve log objects slowly, a few bytes at a time, and note how many rows `file` holds when the

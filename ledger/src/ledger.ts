@@ -195,14 +195,16 @@ const SEGMENTS_PER_ALARM = 16
 export const CHECKPOINT_EVERY = 256
 /**
  * Default: `addUnit` refuses new files (`full`) once the state would exceed this many bytes, as
- * estimated by `entryBytes` (review S-2). Since checkpoints are written in parts and a rebuild
- * streams into SQLite (contracts/LEDGER-LOG.md, "Checkpoints"; D41), no step holds the state in
- * memory, so the bound is no longer memory: it is the time a rebuild or a new incarnation takes
- * (requests are refused, retryably, meanwhile), which grows with the state, and this is the
- * largest state measured (300,000 S4-shaped files, ledger/README.md). The publisher still reads
- * a new incarnation's base whole (ledger/README.md, "Needed changes elsewhere").
+ * estimated by `entryBytes` (review S-2). Checkpoints are written in parts and a rebuild streams
+ * into SQLite (contracts/LEDGER-LOG.md, "Checkpoints"; D41), so no step holds the state in
+ * memory and memory no longer sets the bound (measured flat from 8,000 to 300,000 files). What
+ * grows with the state is TIME: a rebuild or a new incarnation reads and writes all of it, and
+ * requests are refused (retryably) meanwhile: 20 s at 300,000 files here. This is the largest
+ * state measured (300,000 S4-shaped files, about 298 MiB; ledger/README.md). Raising it needs
+ * that time measured on Cloudflare. The publisher still reads a new incarnation's base whole
+ * (ledger/README.md, "Needed changes elsewhere").
  */
-export const STATE_MAX_BYTES = 320 * 1024 * 1024
+export const STATE_MAX_BYTES = 300 * 1024 * 1024
 /**
  * A checkpoint of a state whose estimate is at most this is written in format 1 (one object,
  * built in one step, as before): about one part's worth, so no step builds more than a part.
@@ -2030,7 +2032,11 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     // Parts in order, a few read ahead: memory is a few parts, whatever the state.
     const ahead: Promise<string>[] = []
     for (let part = 0; part < m.parts; part++) {
-      while (ahead.length < REPLAY_FANOUT - 2 && part + ahead.length < m.parts) ahead.push(read(part + ahead.length))
+      while (ahead.length < REPLAY_FANOUT - 2 && part + ahead.length < m.parts) {
+        const p = read(part + ahead.length)
+        p.catch(() => undefined) // awaited below, in order; a failure of one read ahead is reported there
+        ahead.push(p)
+      }
       const body = await ahead.shift()!
       const p = decodeLedgerCheckpointPart(body, { tenant: this.tenant, ledgerIncarnation: source, version, attempt: m.attempt, part })
       if (p.status !== 'ok') throw new LogFault(`ledger: part ${part} of ${key} is ${p.status}: ${p.reason}`)
@@ -2107,7 +2113,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       while (i < segs.length && ahead.length < REPLAY_FANOUT && (ahead.length === 0 || inFlight + segs[i]!.size <= REPLAY_BYTES_IN_FLIGHT)) {
         const seg = segs[i++]!
         inFlight += seg.size
-        ahead.push({ seg, read: this.readSegment(seg.key) })
+        const read = this.readSegment(seg.key)
+        read.catch(() => undefined) // awaited below, in order
+        ahead.push({ seg, read })
       }
       const { seg, read } = ahead.shift()!
       const changes = await read

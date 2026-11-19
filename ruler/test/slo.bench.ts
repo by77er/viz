@@ -6,13 +6,16 @@
  *      30 days, 1-minute interval: a 4,320-bucket ring and a 720-bucket ring per series), warm,
  *      at 1, 10 and 100 series, against the counterfactual of the same group with one alerting
  *      rule whose result is empty; and the warm-up (the first tick) of the same rule;
- *   B. a 7-day backtest at 1 minute over 100 series: a threshold rule (the counterfactual: the
- *      alert state machine alone), an EWMA anomaly rule, and an SLO rule.
+ *   B. a 7-day backtest at 1 minute over 100 and 1,000 series, streamed in windows (part 13): a
+ *      threshold rule, an EWMA anomaly rule and an SLO rule; one case per process (`-t "B. ewma 1000:"`),
+ *      the peak resident memory reset before it; run under `MINIFLARE_WORKERD_V8_FLAGS=--max-old-space-size=128`
+ *      to hold workerd to a Durable Object's heap;
+ *   B1. the counterfactual: the same with each read in one window (a 4 GiB budget).
  *
  * CPU is the workerd process's thread time from `/proc` (the `HOST` binding in
  * `vitest.measure.config.ts`), which includes the RPC into the object and the fake engine's work
- * (building each tick's result; the backtests' matrices are built before the measured call and
- * handed over in memory). Peak resident memory is VmHWM of the same process.
+ * (building each tick's result, and each backtest or warm-up window's matrix: that part is measured
+ * alone afterwards over the same windows and reported beside it). Peak memory is VmHWM.
  */
 import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
@@ -74,8 +77,9 @@ function latencyMatrix(series: number, start: number, end: number, step: number)
     const values: [number, string][] = []
     for (let t = start; t <= end; t += step) {
       const m = Math.round(t / MIN)
-      // A spike every 4,001 minutes per series (about twice a week): the alerts stay within the 4 MiB the intervals may hold.
-      values.push([t / 1000, String((m + k * 13) % 4001 === 0 ? 400 : 100 + ((m * 37 + k) % 7) - 3)])
+      // A spike every 10,007 minutes per series (about once a week): 1,000 series' alerts, with their
+      // explanations, stay within the 4 MiB a backtest's intervals may hold.
+      values.push([t / 1000, String((m + k * 13) % 10007 === 0 ? 400 : 100 + ((m * 37 + k) % 7) - 3)])
     }
     result.push({ metric: { svc: svc(k) }, values })
   }

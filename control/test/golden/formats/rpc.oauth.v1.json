@@ -1,0 +1,51 @@
+{
+  "format": "rpc.oauth",
+  "version": 1,
+  "token": {
+    "v": 1,
+    "status": "ok",
+    "tokens": {
+      "access_token": "vza1.<tenant>.<43 base62>",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "refresh_token": "vzr1.<tenant>.<43 base62>",
+      "scope": "read dashboards:read"
+    }
+  },
+  "error": {
+    "v": 1,
+    "status": "error",
+    "error": "invalid_grant",
+    "description": "The refresh token is unknown, expired, used or revoked."
+  },
+  "active": {
+    "v": 1,
+    "status": "active",
+    "tenant": "<tenant>",
+    "grant": "g_<22>",
+    "clientName": "Test agent",
+    "subject": "key:k_<22>",
+    "kind": "agent",
+    "name": "oauth:g_<22>",
+    "scopes": [
+      "read",
+      "dashboards:read"
+    ],
+    "mayApply": false,
+    "expiresAt": "<ms>",
+    "credential": "viz_<keyId 16>_<secret 40>"
+  },
+  "inactive": {
+    "v": 1,
+    "status": "inactive",
+    "reason": "unknown"
+  },
+  "revoked": {
+    "v": 1,
+    "status": "ok"
+  },
+  "otherTenant": {
+    "v": 1,
+    "status": "not_provisioned"
+  }
+}

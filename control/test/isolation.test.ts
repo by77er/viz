@@ -2,6 +2,8 @@ import fc from 'fast-check'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { ROUTES, type Route } from '../src/routes'
 import { type Res, auditOf, call, env, example, get, kvGet, makeKey, newTenant, post } from './helpers'
+import { OAUTH_SCOPES } from '../../contracts/oauth'
+import { approve, authorize, codeOf, exchange, newClient, pkce } from './oauth'
 
 /**
  * Tenant isolation. Tenant A is filled with one of everything, each carrying a marker
@@ -43,6 +45,7 @@ async function snapshotA(): Promise<unknown> {
     proposals,
     reviews: await Promise.all(proposals.items.map(async (p: any) => (await get(admin, `/proposals/${p.id}`)).body)),
     settings: (await get(admin, '/settings')).body,
+    grants: (await get(admin, '/oauth/grants?status=all')).body,
     audit: await auditOf(admin),
     kv,
   }
@@ -75,6 +78,14 @@ beforeAll(async () => {
   await call(a.admin, 'PUT', '/settings/limits', { value: { active_series: 123_456 } })
   await call(a.admin, 'PUT', '/settings/pool', { value: { pool: `tenant/${a.tenant}`, slots: 4, spread: 2 } })
   await call(a.admin, 'PUT', '/settings/notifications', { value: { email: [`${MARKER.toLowerCase()}@example.com`] } })
+  // An OAuth grant of A's, to a client whose name carries the marker, with tokens issued.
+  const dana = await makeKey(a.admin, ['admin', ...OAUTH_SCOPES], { name: `${MARKER} dana` })
+  const client = await newClient({ client_name: `${MARKER} agent app` })
+  const pk = await pkce()
+  const ap = await approve(dana.key, (await authorize(client, pk.challenge, { scope: 'read dashboards:read' })).handle!)
+  expect(ap.status, ap.text).toBe(201)
+  expect((await exchange(client, codeOf(ap.body.redirect).code, pk.verifier)).status).toBe(200)
+  const grantKey = (await get(a.admin, `/keys/${ap.body.grant.key.id}`)).body.key
   const audit = await auditOf(a.admin)
 
   // B: an admin key, an agent key with every scope, and one dashboard of its own (so its own routes do work)
@@ -87,12 +98,13 @@ beforeAll(async () => {
     b,
     bAgent: bAgent.key,
     ids: {
-      key: [a.adminId, ...aKeys.map((k) => k.id)],
+      key: [a.adminId, ...aKeys.map((k) => k.id), dana.id, grantKey.id],
       dashboard: ['alpha_checkout', 'alpha_nodes', 'alpha_gone'],
       proposal: [open.body.proposal.id, declined.body.proposal.id, creation.body.proposal.id],
       entry: audit.slice(0, 6).map((e) => e.id),
+      grant: [ap.body.grant.id],
     },
-    aKeyIds: [...aKeys.map((k) => k.keyId), /^viz_([^_]+)_/.exec(a.admin)![1]!],
+    aKeyIds: [...aKeys.map((k) => k.keyId), /^viz_([^_]+)_/.exec(a.admin)![1]!, dana.keyId, grantKey.prefix.slice(4)],
     aKeyName: `${MARKER} collectors`,
     aRevision: d2.body.revision,
     aCursors: [(await get(a.admin, '/audit?limit=1')).body.next, (await get(a.admin, '/dashboards?limit=1')).body.next, (await get(a.admin, '/keys?limit=1')).body.next, (await get(a.admin, '/proposals?status=all&limit=1')).body.next],
@@ -120,6 +132,8 @@ function bodyFor(route: Route, w: World, hostile: boolean): Record<string, unkno
     case 'proposals.apply': return hostile ? { changes: ['c1'] } : {}
     case 'proposals.decline': return { reason: 'beta says no' }
     case 'settings.put': return { value: { metric_samples_days: 30 }, confirmShorter: true }
+    case 'oauth.approve': return { request: 'not-a-handle' }
+    case 'oauth.grants.revoke': return {}
     default: return {}
   }
 }
@@ -238,7 +252,7 @@ describe('tenant isolation', () => {
         { weight: 5, arbitrary: fc.constantFrom(...(w.ids[name] ?? ['1', 'limits', 'retention', 'pool'])) },
         { weight: 2, arbitrary: fc.constantFrom('beta_dash', '1', '2', '0', '-1', 'limits', 'general', '..', '.', '%', '*', '_', "' OR 1=1 --", '"; DROP TABLE audit; --', w.a.tenant, `${w.a.tenant}/${w.ids[name]?.[0] ?? 'x'}`, `${w.a.tenant}:${w.ids[name]?.[0] ?? 'x'}`, `../${w.a.tenant}/${w.ids[name]?.[0] ?? 'x'}`, `${w.ids[name]?.[0] ?? 'x'}\u0000`, ` ${w.ids[name]?.[0] ?? 'x'}`, (w.ids[name]?.[0] ?? 'x').toUpperCase(), (w.ids[name]?.[0] ?? 'x').slice(0, -1)) },
         { weight: 2, arbitrary: fc.string({ maxLength: 40 }).filter((s) => s.length > 0 && !s.includes('/')) },
-        { weight: 1, arbitrary: fc.stringMatching(/^[kpa]_[A-Za-z0-9]{22}$/) },
+        { weight: 1, arbitrary: fc.stringMatching(/^[kpag]_[A-Za-z0-9]{22}$/) },
       )
     const queryArb = fc.array(
       fc.constantFrom(
@@ -252,10 +266,10 @@ describe('tenant isolation', () => {
     await fc.assert(
       fc.asyncProperty(
         fc.constantFrom(...(ROUTES as readonly Route[])),
-        hostileId('key'), hostileId('dashboard'), hostileId('proposal'), hostileId('entry'), fc.constantFrom('1', '2', '3', '99', 'x'), fc.constantFrom('general', 'retention', 'limits', 'pool', 'notifications', 'nope'),
+        hostileId('key'), hostileId('dashboard'), hostileId('proposal'), hostileId('entry'), hostileId('grant'), fc.constantFrom('1', '2', '3', '99', 'x'), fc.constantFrom('general', 'retention', 'limits', 'pool', 'notifications', 'nope'),
         queryArb, headerArb, fc.boolean(), fc.boolean(), fc.boolean(),
-        async (route, key, dashboard, proposal, entry, number, section, query, headers, hostileBody, asAgent, nameTenant) => {
-          const picked: Record<string, string> = { key, dashboard, proposal, entry, number, section }
+        async (route, key, dashboard, proposal, entry, grant, number, section, query, headers, hostileBody, asAgent, nameTenant) => {
+          const picked: Record<string, string> = { key, dashboard, proposal, entry, grant, number, section }
           const used = [...route.path.matchAll(/\{([a-z]+)\}/g)].map((m) => m[1]!)
           const path = fill(route, (n) => picked[n]!)
           const qs = [...query, ...(nameTenant ? [`tenant=${w.a.tenant}`] : [])]
@@ -280,10 +294,11 @@ describe('tenant isolation', () => {
     // A's credentials still see everything, so the snapshot was not empty by accident
     const snap: any = before
     expect(snap.dashboards.items.map((d: any) => d.name)).toEqual([`${MARKER} proposed`.replace('proposed', 'checkout'), `${MARKER} nodes`])
-    expect(snap.keys.items).toHaveLength(3)
+    expect(snap.keys.items).toHaveLength(5)
+    expect(snap.grants.items.map((g: any) => [g.status, g.client.name])).toEqual([['live', `${MARKER} agent app`]])
     expect(snap.proposals.items).toHaveLength(3)
     expect(snap.audit.length).toBeGreaterThan(10)
-    expect(Object.values(snap.kv).filter((v) => v !== null)).toHaveLength(6)
+    expect(Object.values(snap.kv).filter((v) => v !== null)).toHaveLength(8)
     void env
   })
 })

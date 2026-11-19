@@ -441,6 +441,11 @@ pub struct Extract {
     pub batch: Vec<u8>,
     pub rows: u64,
     pub series: u64,
+    /// Series of the part whose `series_id` lies in another part's range (their split key is
+    /// not their id: they carry a label of `SplitKey::without`). A reader that read only its
+    /// part's id range of the sample files (`crate::part_plan`) may have missed their rows,
+    /// and must read what `crate::sample_plan` with the part says and extract again.
+    pub strays: u64,
 }
 
 /// The rows of part `part` of `parts` in `sample_files` (in precedence order, lowest
@@ -448,7 +453,7 @@ pub struct Extract {
 /// sample files (the files written with them). Only the part's series are handed to
 /// `viz_storage::select`, so only their samples are kept in memory.
 pub fn extract(series_files: &[&[u8]], sample_files: &[&[u8]], key: &SplitKey, part: u32, parts: u32, ranges: &[FetchRange]) -> Result<Extract, QueryError> {
-    let empty = Extract { batch: Vec::new(), rows: 0, series: 0 };
+    let empty = Extract { batch: Vec::new(), rows: 0, series: 0, strays: 0 };
     if ranges.is_empty() || sample_files.is_empty() {
         return Ok(empty);
     }
@@ -477,6 +482,7 @@ pub fn extract(series_files: &[&[u8]], sample_files: &[&[u8]], key: &SplitKey, p
     if mine.is_empty() {
         return Ok(empty);
     }
+    let strays = mine.keys().filter(|id| SplitKey::part_of(**id as u64, parts) != part).count() as u64;
     // The carrier: a batch whose series table holds exactly the part's series, so that
     // `select` knows them (and no other) without the series files. Its rows sit at a
     // timestamp no range covers, so `select` never returns them.
@@ -511,12 +517,12 @@ pub fn extract(series_files: &[&[u8]], sample_files: &[&[u8]], key: &SplitKey, p
         }
     }
     if out_rows.is_empty() {
-        return Ok(empty);
+        return Ok(Extract { strays, ..empty });
     }
     let rows = out_rows.len() as u64;
     let series = out_defs.len() as u64;
     let batch = batch::encode(&out_defs, &out_rows).map_err(|e| QueryError::internal(format!("split execution: extract batch: {e}")))?;
-    Ok(Extract { batch, rows, series })
+    Ok(Extract { batch, rows, series, strays })
 }
 
 /// The tail batches cut by part: `out[j]` holds, in the input order, one batch per

@@ -154,11 +154,24 @@ fn main() {
                             let ser: Vec<Vec<u8>> = files.iter().zip(&sp).filter_map(|((_, s), p)| cut(&s.bytes, p)).collect();
                             let sref: Vec<&[u8]> = ser.iter().map(|b| &b[..]).collect();
                             let pairs: Vec<Option<usize>> = (0..files.len()).map(|i| (sp[i].read != FileRead::Skip).then(|| sp[..i].iter().filter(|p| p.read != FileRead::Skip).count())).collect();
-                            let exact = sample_plan(&sref, &m_idx, &by_name, Some(viz_query::PartFilter { key: &key, part, parts: l }), Some(&pairs), RANGE_GAP).unwrap();
-                            let mut sam = Vec::new();
                             for (i, (m, s)) in files.iter().enumerate() {
                                 gets += gets_of(&sp[i], s.bytes.len()) + gets_of(&pp[i], m.bytes.len());
                                 rbytes += sp[i].bytes(s.bytes.len() as u64) + pp[i].bytes(m.bytes.len() as u64);
+                            }
+                            // The id range is enough unless the extract finds a series of the
+                            // part outside it (the Worker's reader does the same).
+                            if optimistic {
+                                let first: Vec<Vec<u8>> = files.iter().zip(&pp).filter_map(|((m, _), p)| cut(&m.bytes, p)).collect();
+                                let fref: Vec<&[u8]> = first.iter().map(|b| &b[..]).collect();
+                                let ex = viz_query::split::extract(&sref, &fref, &key, part, l, &ranges).unwrap();
+                                if ex.strays == 0 {
+                                    all.push(ex.batch);
+                                    continue;
+                                }
+                            }
+                            let exact = sample_plan(&sref, &m_idx, &by_name, Some(viz_query::PartFilter { key: &key, part, parts: l }), Some(&pairs), RANGE_GAP).unwrap();
+                            let mut sam = Vec::new();
+                            for (i, (m, _)) in files.iter().enumerate() {
                                 let need = &exact.files[i];
                                 let covered = match (&pp[i].read, &need.read) {
                                     (_, FileRead::Skip) | (FileRead::Whole, _) => true,

@@ -29,7 +29,14 @@ throughout. One browser at a time, at most one test worker, every server stopped
 - **`tools/audit.mjs`**: every page at 14 configurations (B2).
 - **Images**: `tools/shots.mjs` before (v5 copy, v5's CSS and chart) and after, same states, composed
   side by side in `compare/`; compositions rendered and measured at 1500 px and 400 px with a coarse
-  pointer in both themes, greyscale, 200% zoom and hit areas, in `images/`. <!-- LOOKED -->
+  pointer in both themes, greyscale, 200% zoom and hit areas, in `images/`. I looked at the reviewer's two B1 sequences and values below zero on both sides, the dialog
+  composition open and closed at 400 px, 1440 px and 200% zoom, the dashboard at 1440 px, the monitor,
+  states, Table preview, secret, traces, long table, Field preview and logs at 400 px, and one composed
+  pair; not at every one of the 66 pairs and 25 composition images. Looking found two things the checks
+  had not: a time inside a status sat above its sentence's line (my markup broke Status's "one run of
+  text" rule, which nothing checked; now `check.mjs` does, mutant V17) and, in a folded row with a coarse
+  pointer, the key's words sat at the top of its 44 px line while "Actions…" was centred (the key's
+  words are now centred in the line, in both fold forms).
 - **Speed**: `tools/speed.mjs --compare`, both shipped scenarios, v5's fixture and v6's alternating run by
   run, 3 runs each (not 20: see Speed).
 

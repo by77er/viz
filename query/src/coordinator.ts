@@ -436,7 +436,8 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
     // retryable failure, never an empty tail and never a stream to re-read.
     const status: string = r.status
     if (status === 'schema_too_new') throw new ApiError('unavailable', `shard ${shard} runs a newer storage schema than this release reads (schema_too_new); retry`)
-    if (status !== 'incarnation_mismatch') throw new ApiError('unavailable', `shard ${shard} answered a status this release does not know (${status.slice(0, 40)}); retry`)
+    // (`page_limit`, a paged tail this release does not read yet, is one of these: it fails closed.)
+    if (r.status !== 'incarnation_mismatch') throw new ApiError('unavailable', `shard ${shard} answered a status this release does not know (${status.slice(0, 40)}); retry`)
     if (r.incarnation < incarnation) return { status: 'refused', why: `shard ${shard} is behind the ledger` }
     known.set(shard, r.incarnation)
     if (w) return { status: 'refused', why: `shard ${shard} has a newer stream than the ledger knows` }

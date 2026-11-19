@@ -117,6 +117,8 @@ export interface Extract {
   batch: Uint8Array
   rows: number
   series: number
+  /** The part's series whose `series_id` is in another part's range (their key leaves out a label they carry). */
+  strays: number
 }
 
 /** The fixed header of a leaf's answer (`engine/query` `LeafOutput`). */
@@ -588,7 +590,7 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
       const req = new Request().strs(without).count('part', part).count('parts', parts).ranges(ranges).files(seriesFiles).files(sampleFiles)
       return call('viz_q_extract', req, (payload) => {
         const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
-        return { rows: u64At(dv, 0), series: u64At(dv, 8), batch: payload.slice(16) }
+        return { rows: u64At(dv, 0), series: u64At(dv, 8), strays: u64At(dv, 16), batch: payload.slice(24) }
       })
     },
     splitTails,
