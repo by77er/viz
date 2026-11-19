@@ -183,7 +183,17 @@ pub enum FieldExpr {
     Unary(UnOp, Box<FieldExpr>),
     Binary(BinOp, Box<FieldExpr>, Box<FieldExpr>),
     /// A compiled regex comparison: `lhs =~ "re"` (negated for `!~`).
-    Regex { lhs: Box<FieldExpr>, re: Box<regex::Regex>, negated: bool, text: String },
+    Regex { lhs: Box<FieldExpr>, re: Box<Re>, negated: bool, text: String },
+}
+
+/// A compiled, fully anchored regex; equal when the pattern is equal.
+#[derive(Clone, Debug)]
+pub struct Re(pub regex::Regex);
+
+impl PartialEq for Re {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
 }
 
 impl FieldExpr {

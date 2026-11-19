@@ -106,6 +106,80 @@ impl Pattern {
         (caps, true)
     }
 
+    /// The `pattern` parser: anchored at the start of the line; a capture whose following
+    /// literal is not found takes the rest of the line and matching stops.
+    pub fn parse_captures<'l>(&self, line: &'l str) -> Vec<(&str, &'l str)> {
+        let mut caps = Vec::new();
+        let mut pos = 0usize;
+        let mut i = 0;
+        while i < self.nodes.len() {
+            match &self.nodes[i] {
+                Node::Lit(l) => {
+                    if !line[pos..].starts_with(l.as_str()) {
+                        return caps;
+                    }
+                    pos += l.len();
+                }
+                Node::Cap(name) => match self.nodes.get(i + 1) {
+                    Some(Node::Lit(l)) => match line[pos..].find(l.as_str()) {
+                        Some(off) => {
+                            if let Some(n) = name {
+                                caps.push((n.as_str(), &line[pos..pos + off]));
+                            }
+                            pos += off;
+                        }
+                        None => {
+                            if let Some(n) = name {
+                                caps.push((n.as_str(), &line[pos..]));
+                            }
+                            return caps;
+                        }
+                    },
+                    _ => {
+                        if let Some(n) = name {
+                            caps.push((n.as_str(), &line[pos..]));
+                        }
+                        pos = line.len();
+                    }
+                },
+            }
+            i += 1;
+        }
+        caps
+    }
+
+    /// The `|>` line filter: the first literal may occur anywhere; each capture runs to the
+    /// next occurrence of the literal after it; the pattern must consume the whole line
+    /// (so a pattern that ends in a literal must end the line).
+    pub fn filter_matches(&self, line: &str) -> bool {
+        let mut pos = 0usize;
+        for (i, n) in self.nodes.iter().enumerate() {
+            match n {
+                Node::Lit(l) => {
+                    if i == 0 {
+                        match line.find(l.as_str()) {
+                            Some(off) => pos = off + l.len(),
+                            None => return false,
+                        }
+                    } else {
+                        if !line[pos..].starts_with(l.as_str()) {
+                            return false;
+                        }
+                        pos += l.len();
+                    }
+                }
+                Node::Cap(_) => match self.nodes.get(i + 1) {
+                    Some(Node::Lit(l)) => match line[pos..].find(l.as_str()) {
+                        Some(off) => pos += off,
+                        None => return false,
+                    },
+                    _ => pos = line.len(),
+                },
+            }
+        }
+        pos == line.len()
+    }
+
     /// The literal parts, for pruning (`|>` lines contain every literal).
     pub fn literals(&self) -> Vec<&str> {
         self.nodes

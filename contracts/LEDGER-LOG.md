@@ -172,11 +172,15 @@ and `{version}.json`, read as before). Both present is corrupt.
 
 - A ledger admits at least 50 units per second on Cloudflare with eight writers, and
   `addUnit` answers in under 20 ms at the median: `spikes/s4-ledger-scale/README.md`.
+  **Measured 2026-11-19** (three 20 s runs): 234–422 units per second, met; median 16, 21
+  and 31 ms, met in one run of three. A rebuild of 5,008 changes from 104 segments took
+  5.4 s.
 - Under injected crashes between commit, segment write and row deletion, replaying the
   segments reproduces the committed state up to the last written segment, and no shard is
-  ever told to discard past it: `ledger/test/segments.test.ts`.
+  ever told to discard past it: `ledger/test/segments.test.ts`. Shown, with mutants of each
+  rule (`ledger/README.md`).
 - A fresh object with empty storage reconstructs exactly the state of a live one:
-  `ledger/test/segments.test.ts`.
+  `ledger/test/segments.test.ts`. Shown, also from checkpoints and past an unreadable one.
 - The publisher and an independent reader see the same table before and after the change
-  of log format: not shown; it needs the publisher's reader (`ledger/README.md`, "Needed
-  changes").
+  of log format: not shown here. The publisher now reads both layouts
+  (`publisher/README.md`, "Reading the log"); the comparison is the publisher's to show.

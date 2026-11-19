@@ -96,12 +96,39 @@ retried). `noteFlushed`'s write is best effort, because its message carries the 
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npm test                         # 30 tests in workerd, 6 files (soak: 400 steps)
+npx vitest run --maxWorkers=2    # 40 tests in workerd, 8 files (soak: 400 steps)
 npm run soak                     # the soak with 3,000 steps
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
 node tools/hyparquet_check.mjs   # 4 checks agree
 ```
+
+Last run, 2026-11-19: **40 passed, 0 failed**; `tsc --noEmit` clean.
+
+### Wiring for the ledger's background log (2026-11-19)
+
+The ledger now answers at its SQLite commit and logs to R2 in segments about 200 ms later
+(`contracts/LEDGER-LOG.md`, D36), so a flush run that admits units usually ends
+`awaitingLog` and the flush queue's retry is what tells the shard `recorded`. The script's
+bindings did not change (the drain delay is the ledger's default). The tests that expected
+one flush run to record changed with it, the way production gets there:
+
+- `test/world.ts` `flushAll` and `drainLedger`: flush through the `Flush` entrypoint; while a
+  run ends `awaitingLog`, run the ledger's drain (what its alarm does; inside the object, so a
+  drain failing on a broken log is a result, not an unhandled rejection) and flush again, at
+  most five times. `test/compaction.property.test.ts` and the hooked runs of `e2e.test.ts`
+  use `flushSettled` (`flush/test/helpers.ts`), the same loop.
+- `test/e2e.test.ts` `loggedUnits` reads the change log as segments (`decodeLedgerSegment`,
+  each checked against its key) instead of one object per change; the concurrent-flush test
+  settles the units the concurrent runs admitted before it asks a later run to find nothing.
+- `test/triggers.test.ts`: the simulated queue redelivers a retried message at once, where
+  the real one waits `retryDelaySeconds` (5 s at least); before a redelivery the drain of that
+  tenant's ledger runs, as the wait would have let it. The idle test drains each ledger before
+  each settling maintenance run (a removal is deletable once it is logged).
+- The idle test then found a ledger alarm left behind after an explicit drain had written
+  everything. AGENTS.md wants an alarm deleted when there is nothing to do; the ledger now
+  does that (`ledger/test/segments.test.ts`, "a drain that writes everything deletes the
+  alarm").
 
 ### Triggers (`test/auto.test.ts`, `test/triggers.test.ts`)
 

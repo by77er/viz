@@ -605,95 +605,17 @@ One weakness found this way: the coarse-pointer version of the sideways-scroll c
 fail on the "toolbar fields" mutant; the fine-pointer 400 px checks did. Why was not
 investigated.
 
-### Speed after the review fixes (4, 36 and 200 series, with typing)
+### Earlier measurements
 
-Measured here with `e2e/measure.cjs` (then `node e2e/summarise.cjs`): Chromium, CPU throttled
-4x, network shaped to DevTools' Fast 4G, 1440x900, a fresh context per run, 75th percentile of
-20 runs (median, maximum). Three cases: 4 series and 36 series from the mock, and 200
-synthetic series answered by the harness through request interception (the mock has 128).
-Each run also types a 60-character query one key at a time (keydown to the end of the next
-frame, each key waited for) and moves the crosshair 30 times. Before is the app as the
-review saw it (a copy kept in the session), after is this change; both were built against
-the same snapshot of `design-system/dist`, because the system was being edited during the
-session, and measured in alternating batches of five runs because the machine was shared:
-load average 3.2 to 13.7 on 4 cores. On an idle machine every figure is lower. The files are
-`e2e/measurements/fixes-{before,after}-{4,36,200}.json`.
+The review fixes' before/after tables (4, 36 and 200 series, with typing; Chromium, 4x CPU,
+Fast 4G, 1440 x 900, 20 runs, load 3.2 to 13.7) are in
+`../design-system/reviews/app-restyle/fixes/FIXES.md` and in
+`e2e/measurements/fixes-{before,after}-{4,36,200}.json` (`node e2e/summarise.cjs`). The
+restyle's table (four series, no typing) is in `../design-system/reviews/app-restyle/PR.md`.
+What the review fixes left, as they recorded it (this change's section above says what
+became of it):
 
-"Response to paint" as the harness first defined it starts after the app has parsed the body:
-the harness's copy of the body (`res.clone().text()`) resolves after the app's own `text()`
-and `JSON.parse` (checked in a page). `responseFull` is measured from the last byte (Resource
-Timing `responseEnd`) and includes reading and parsing.
-
-#### 4 series (sum by (service) (rate(http_requests_total[5m])))
-
-Runs: before 20, after 20.
-
-| What | Budget | Before | After | Within budget after? |
-|---|---|---|---|---|
-| Press on Run query: pointerdown to the pressed frame | 50 ms | 25 (22, 97) | 24 (21, 36) | yes |
-| Click on Run query to the busy state painted | 100 ms | 59 (37, 105) | 48 (38, 159) | yes |
-| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 40 (33, 75) | 33 (27, 40) | yes |
-| Typing: the slowest key of a run (not a budget figure) |  | 109 (65, 8003) | 56 (49, 115) |  |
-| Typing: keys over 50 ms, of 60 |  | 7 (5, 27) | 2 (0, 9) |  |
-| Crosshair: pointer move to the next frame | 50 ms | 32 (29, 46) | 29 (25, 34) | yes |
-| Chart to table | 100 ms | 79 (59, 240) | 49 (39, 80) | yes |
-| Table to text | 100 ms | 65 (55, 159) | 44 (36, 64) | yes |
-| Text to chart | 100 ms | 58 (47, 104) | 42 (36, 90) | yes |
-| Open the time picker | 100 ms | 105 (75, 159) | 81 (62, 176) | yes |
-| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 67 (52, 189) | 42 (38, 74) | yes |
-| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 77 (65, 199) | 54 (48, 82) | yes |
-| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 96 (72, 152) | 64 (56, 136) | yes |
-| Worst interaction, Event Timing, the whole run | 200 ms | 120 (72, 7944) | 80 (64, 136) | yes |
-| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
-| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
-
-#### 36 series (sum by (service, route, status) (rate(http_requests_total[5m])))
-
-Runs: before 20, after 20.
-
-| What | Budget | Before | After | Within budget after? |
-|---|---|---|---|---|
-| Press on Run query: pointerdown to the pressed frame | 50 ms | 22 (20, 34) | 23 (19, 46) | yes |
-| Click on Run query to the busy state painted | 100 ms | 56 (43, 196) | 43 (35, 55) | yes |
-| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 42 (38, 47) | 33 (29, 46) | yes |
-| Typing: the slowest key of a run (not a budget figure) |  | 77 (62, 148) | 64 (53, 122) |  |
-| Typing: keys over 50 ms, of 60 |  | 6 (4, 11) | 2 (1, 10) |  |
-| Crosshair: pointer move to the next frame | 50 ms | 44 (42, 55) | 32 (31, 38) | yes |
-| Chart to table | 100 ms | 98 (89, 133) | 69 (56, 86) | yes |
-| Table to text | 100 ms | 90 (73, 125) | 89 (61, 107) | yes |
-| Text to chart | 100 ms | 66 (55, 91) | 46 (37, 63) | yes |
-| Open the time picker | 100 ms | 76 (59, 141) | 80 (70, 160) | yes |
-| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 116 (105, 134) | 116 (87, 169) | **no**, 116 ms |
-| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 166 (149, 241) | 160 (132, 250) | **no**, 160 ms |
-| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 96 (72, 136) | 96 (80, 112) | yes |
-| Worst interaction, Event Timing, the whole run | 200 ms | 96 (88, 136) | 104 (88, 144) | yes |
-| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
-| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
-
-#### 200 series (viz_synthetic_series)
-
-Runs: before 20, after 20.
-
-| What | Budget | Before | After | Within budget after? |
-|---|---|---|---|---|
-| Press on Run query: pointerdown to the pressed frame | 50 ms | 29 (21, 44) | 32 (24, 38) | yes |
-| Click on Run query to the busy state painted | 100 ms | 48 (38, 93) | 51 (43, 142) | yes |
-| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 47 (42, 68) | 41 (38, 46) | yes |
-| Typing: the slowest key of a run (not a budget figure) |  | 143 (108, 237) | 146 (123, 232) |  |
-| Typing: keys over 50 ms, of 60 |  | 13 (8, 29) | 9 (7, 15) |  |
-| Crosshair: pointer move to the next frame | 50 ms | 81 (70, 114) | 35 (31, 42) | yes |
-| Chart to table | 100 ms | 330 (228, 897) | 135 (77, 194) | **no**, 135 ms |
-| Table to text | 100 ms | 124 (106, 289) | 108 (74, 160) | **no**, 108 ms |
-| Text to chart | 100 ms | 129 (114, 178) | 46 (41, 107) | yes |
-| Open the time picker | 100 ms | 77 (67, 153) | 89 (76, 283) | yes |
-| Response to paint, after the body is parsed (the harness's original figure) | 100 ms | 424 (349, 966) | 156 (118, 1085) | **no**, 156 ms |
-| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 761 (620, 1226) | 489 (403, 2276) | **no**, 489 ms |
-| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 296 (216, 512) | 160 (112, 264) | yes |
-| Worst interaction, Event Timing, the whole run | 200 ms | 296 (216, 512) | 168 (144, 264) | yes |
-| Layout shift, first load | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
-| Layout shift, query run | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
-
-**Still missed, and why.** 36 series, response to paint (116 ms; 160 ms from the last byte),
+**Still missed after the review fixes, and why.** 36 series, response to paint (116 ms; 160 ms from the last byte),
 not improved: about 30 ms of script at 4x to prepare and draw a new result, then a minor GC
 of 10 to 55 ms because every sample is a boxed number, plus about 45 ms to read and parse the
 body. 200 series, response to paint (156 ms; 489 ms from the last byte): `JSON.parse` of the
@@ -716,45 +638,6 @@ nothing; the digest and the JSON text are kept per result; the coarse-pointer me
 one object. From earlier in this change: the draft lives in the editor, at most eight series
 are drawn by default, the legend and table are capped, and the crosshair is drawn outside
 React.
-
-### Speed of the restyle (four series, no typing)
-
-The table the restyle was submitted with, kept as it was. The review found that its claim
-("every 75th percentile is inside its budget") held only for four series and without typing;
-the section above measures typing and 36 and 200 series.
-
-Measured here with `e2e/measure.cjs` on the built app and the mock: Chromium, CPU throttled 4x,
-network shaped to DevTools' Fast 4G, 1440x900, a fresh context per run, 75th percentile of 20
-runs (median, maximum). Before is the app as it was before the restyle, built from an
-untouched copy. The two were measured in alternating batches of five runs because the
-machine was shared (load average 8 to 12 during the runs); on an idle machine every figure
-is lower. The fixture dashboard the design system names does not exist yet, so the page is
-Explore with a four-series query over three hours.
-
-| What | Budget | Before | After |
-|---|---|---|---|
-| Press on Run query: pointerdown to the frame with the pressed fill | 50 ms | 18 ms (13, 37) | 23 ms (20, 84) |
-| Click on Run query to the busy state painted | 100 ms | no busy state | 51 ms (39, 86) |
-| Chart to table | 100 ms | not a form | 64 ms (54, 150) |
-| Table to text (before: chart to text) | 100 ms | 69 ms (62, 88) | 61 ms (47, 75) |
-| Text to chart | 100 ms | 132 ms (108, 155) | 59 ms (53, 83) |
-| Open the time picker | 100 ms | 82 ms (67, 109) | 73 ms (67, 94) |
-| Response arrived to result painted | 100 ms | 93 ms (82, 134) | 68 ms (62, 238) |
-| Worst interaction in the run (Event Timing duration) | 200 ms | 112 ms (96, 144) | 64 ms (56, 80) |
-| Longest input delay | part of the 50 ms | 11 ms (6, 28) | 16 ms (7, 44) |
-| Layout shift, first load | 0.05 | 0.0175 | 0.0000 |
-| Layout shift, query run (standard, and counting shifts within 500 ms of input) | 0.05 | 0.0000, 0.0000 | 0.0000, 0.0000 |
-
-Every 75th percentile is inside its budget. Single runs are not: of 20 "after" runs on the
-loaded machine, one press took 84 ms, two chart-to-table changes took 102 and 150 ms, and two
-results took 135 and 238 ms to paint. The press is 5 ms slower than before at the 75th
-percentile and the longest input delay 5 ms longer; the cause was not found.
-
-What made the difference: the chart stays mounted and laid out while another form is shown;
-new data for the same series goes into the existing plot instead of a new canvas; the chart
-draws in the same frame as the rest of the result; the form changes in local state and the
-URL is updated after the frame; tokens are read from the style once per theme; the crosshair
-readout reuses its rows and moves by transform.
 
 ### Bundle (built assets)
 

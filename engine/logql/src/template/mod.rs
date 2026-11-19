@@ -615,6 +615,17 @@ impl Template {
         Ok(Template { nodes, src: src.to_string(), constant })
     }
 
+    /// The output of a template without actions.
+    pub fn render_constant(&self) -> String {
+        self.nodes
+            .iter()
+            .map(|n| match n {
+                Node::Text(t) => t.as_str(),
+                _ => "",
+            })
+            .collect()
+    }
+
     /// Execute with `data` as the root map. `name` is used in error messages (`line`,
     /// `label`).
     pub fn execute(&self, name: &str, ctx: &Ctx<'_>) -> Result<String, String> {

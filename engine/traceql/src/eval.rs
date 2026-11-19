@@ -245,7 +245,7 @@ fn eval<'a, 't: 'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'t>, i: usize, b: Bindi
         },
         FieldExpr::Regex { lhs, re, negated, .. } => {
             let v = eval(lhs, ctx, i, b);
-            Val::Bool(regex_match(&v, re, *negated))
+            Val::Bool(regex_match(&v, &re.0, *negated))
         }
         FieldExpr::Binary(op, l, r) => match op {
             BinOp::And => {

@@ -149,6 +149,15 @@ describe('the matrix parser (typed arrays, as the body arrives)', () => {
       expect(sameMatrix(m, fromJson(text))).toBeNull()
     }
     expect(() => parseMatrix('{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[[+1,"2"]]}]}}')).toThrow(NotAMatrix)
+    // A time JSON does not allow is refused as JSON.parse refuses it, in the compact form and the spaced one
+    // (the mutation run of this change found no check here: a leading zero was accepted unnoticed).
+    for (const t of ['01', '00', '-01', '0123', '.5', '5.', '1.e3', '-']) {
+      for (const pair of [`[${t},"2"]`, `[ ${t} , "2" ]`]) {
+        const text = `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[[0,"1"],${pair}]}]}}`
+        expect(() => JSON.parse(text), t).toThrow()
+        expect(() => parseMatrix(text), t).toThrow(NotAMatrix)
+      }
+    }
   })
 
   it('reports what is not a matrix, with the body when it is JSON', () => {

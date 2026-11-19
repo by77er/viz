@@ -236,16 +236,18 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// Spanset operators and arithmetic between pipelines, by precedence:
-    /// `||` < `&&` < structural < `+ -` < `* / %` < `^`.
+    /// Spanset operators and arithmetic between pipelines, by precedence: every spanset
+    /// operator (`&&`, `||` and the structural ones) shares one level and is
+    /// left-associative, as Tempo evaluates them (`{a} || {b} && {c}` is `({a} || {b}) && {c}`);
+    /// then `+ -` < `* / %` < `^`.
     fn binary(&mut self, min: u8) -> Result<Node, Error> {
         self.enter()?;
         let mut lhs = self.atom()?;
         loop {
             let pos = self.pos();
             let (prec, op): (u8, Option<Result<SpansetOp, BinOp>>) = match self.peek() {
-                Tok::OrOr => (1, Some(Ok(SpansetOp::Or))),
-                Tok::AndAnd => (2, Some(Ok(SpansetOp::And))),
+                Tok::OrOr => (3, Some(Ok(SpansetOp::Or))),
+                Tok::AndAnd => (3, Some(Ok(SpansetOp::And))),
                 Tok::Desc => (3, Some(Ok(SpansetOp::Descendant))),
                 Tok::Anc => (3, Some(Ok(SpansetOp::Ancestor))),
                 Tok::Gt if lhs.spanset_like() => (3, Some(Ok(SpansetOp::Child))),
@@ -366,6 +368,9 @@ impl<'a> Parser<'a> {
         match name.as_str() {
             "by" => {
                 let list = self.field_list(start, "by")?;
+                if list.len() > 1 {
+                    return Err(self.err_at(start, "by() in a spanset pipeline takes one expression"));
+                }
                 for e in &list {
                     self.check(e)?;
                     if !e.references_span() {
@@ -582,7 +587,7 @@ impl<'a> Parser<'a> {
                     .size_limit(1 << 20)
                     .build()
                     .map_err(|e| self.verr(pos, format!("invalid regex {text:?}: {e}")))?;
-                FieldExpr::Regex { lhs: Box::new(lhs), re: Box::new(re), negated: op == BinOp::NRe, text }
+                FieldExpr::Regex { lhs: Box::new(lhs), re: Box::new(Re(re)), negated: op == BinOp::NRe, text }
             } else {
                 FieldExpr::Binary(op, Box::new(lhs), Box::new(rhs))
             };
