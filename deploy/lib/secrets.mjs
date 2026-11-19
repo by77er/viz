@@ -31,6 +31,14 @@ export const GENERATED_SECRETS = [
 
 export const ROTATE_ENV = 'VIZ_ROTATE_SECRETS'
 
+/**
+ * The var every version a run uploads carries (`wrangler versions upload --var`), a value unique to
+ * that run (review of D53, m-11). `versions secret put` builds the keyed version from whatever
+ * version is newest when Cloudflare applies it, with that version's vars: the keyed version's
+ * VIZ_DEPLOY_RUN says whose upload the key went on.
+ */
+export const RUN_VAR = 'VIZ_DEPLOY_RUN'
+
 /** A refusal: nothing was promoted, and nothing will be until a person decides (exit 3). */
 export class SecretRefused extends Error {}
 

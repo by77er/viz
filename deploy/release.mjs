@@ -51,7 +51,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { currentDeployment, listScripts, listSecrets, listVersions, versionInfo } from './lib/cf.mjs'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJsonc, stagedName, targetName } from './lib/common.mjs'
-import { floorDeployProblems, floorRollbackProblems, floorRules } from './lib/floors.mjs'
+import { floorDeployProblems, floorRollbackProblems, floorRules, floorsOfVersion } from './lib/floors.mjs'
 import { formatsMap, formatsOfVersion, readsOf } from './lib/formats.mjs'
 import { schemasOfVersion } from './lib/schemas.mjs'
 import { ROTATE_ENV, RUN_VAR, SecretRefused, ensureSecrets, parseRotate, planSecrets, rotateProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
@@ -112,8 +112,9 @@ export function planRelease(manifest, live, acks) {
 /**
  * Live state of each Worker: exists, migration tag in force, the versions serving now, their
  * release tag, and what the serving version declares it knows of each class (`schemas`, from
- * its VIZ_SCHEMAS var) and of each format (`formats`, from VIZ_FORMATS); each null when it
- * declares nothing or more than one version serves.
+ * its VIZ_SCHEMAS var), of each format (`formats`, from VIZ_FORMATS) and which rollback floors its
+ * code is stamped at (`floors`, from VIZ_FLOORS); each null when it declares nothing or more than
+ * one version serves.
  */
 export async function liveState(names) {
   const scripts = await listScripts()
@@ -121,7 +122,7 @@ export async function liveState(names) {
   for (const name of names) {
     const s = scripts.find((x) => x.id === name)
     if (!s) {
-      out[name] = { exists: false, migrationTag: null, versions: [], release: null, schemas: null, formats: null }
+      out[name] = { exists: false, migrationTag: null, versions: [], release: null, schemas: null, formats: null, floors: null }
       continue
     }
     const dep = await currentDeployment(name)
@@ -129,13 +130,15 @@ export async function liveState(names) {
     let release = null
     let schemas = null
     let formats = null
+    let floors = null
     if (versions.length === 1) {
       const v = await versionInfo(name, versions[0].version_id)
       release = annotation(v, 'workers/tag')
       schemas = schemasOfVersion(v)
       formats = formatsOfVersion(v)
+      floors = floorsOfVersion(v)
     }
-    out[name] = { exists: true, migrationTag: s.migration_tag ?? null, versions, release, schemas, formats }
+    out[name] = { exists: true, migrationTag: s.migration_tag ?? null, versions, release, schemas, formats, floors }
   }
   return out
 }
@@ -529,8 +532,8 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
   if ((target.stage ?? null) !== (stage ?? null)) throw new Error(`the record is for ${target.target}, not ${targetName(stage)}`)
   const names = target.workers.map((w) => w.name)
   const rules = floorRules(plan, stage)
-  // The readers of the floor rules too: a record that does not name one leaves the serving one.
-  const now = await api.liveState([...new Set([...names, ...rules.map((r) => r.reader)])])
+  // Every Worker a floor rule names too: one the record does not name keeps what serves now.
+  const now = await api.liveState([...new Set([...names, ...rules.flatMap((r) => r.floors.map((f) => f.worker))])])
   const problems = []
   for (const w of target.workers) {
     if (!w.versionId) problems.push(`${w.name}: the record has no single version to restore`)
