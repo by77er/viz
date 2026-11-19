@@ -21,8 +21,9 @@ import type { PromMatrix } from '../../contracts/engine'
 import type { SloDetail, SloRuleV2 } from '../contracts-proposal/rules.v2'
 import { parseRuleFile } from '../src/rules'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
-import { evalSlo, newSloRt, sloGeometry, type SloRt } from '../src/slo'
-import type { Series } from '../src/statemachine'
+import { warmSlo } from '../src/history'
+import { evalSlo, newSloRt, readSloRows, sloGeometry, type SloRow, type SloRt } from '../src/slo'
+import { toSeries, type Series } from '../src/statemachine'
 import { Crash, T0, tenantWorld, world } from './harness'
 import { MIN, notifierStub, ok, rulerStub, runNotifierUntil, setup, vec } from './helpers'
 
@@ -170,8 +171,11 @@ describe('the sentence: which windows burned, how fast, how much budget is left'
     if (!ev.ok) throw new Error(ev.error)
     const page = ev.flagged.find((f) => f.metric.severity === 'page')!
     const d = JSON.parse(page.annotations.slo_detail!) as SloDetail
-    // Independently: the coarse ring holds the current hour (one bucket so far) and the 719 before it.
-    const buckets = (g.coarseBuckets - 1) * (g.coarseMs / MIN) + 1
+    // Independently: the coarse ring ends at the hour holding this minute and holds the 719 hours before it.
+    const n = at(0) / MIN
+    const m = g.coarseMs / MIN
+    const k = Math.ceil(n / m)
+    const buckets = n - (k - g.coarseBuckets) * m
     const remaining = 1 - (600 + N) / (buckets * N) / (1 - 0.999)
     const longBurn = N / (60 * N) / (1 - 0.999)
     const shortBurn = N / (5 * N) / (1 - 0.999)
@@ -216,7 +220,7 @@ async function rig(opts: { slo?: Record<string, unknown>; extra?: unknown[]; bad
     return times.indexOf(t)
   }
   w.evaluate = (q, t) => {
-    if (!q.includes('viz_slo_part')) return vec([{ job: 'api' }, 0])
+    if (!q.includes('viz_slo_part')) return vec()
     const i = live(t)
     const out: [Record<string, string>, number][] = []
     for (const l of series(i)) {
@@ -251,36 +255,80 @@ async function rig(opts: { slo?: Record<string, unknown>; extra?: unknown[]; bad
     rule: async () => ok(await stub.rules(tenant)).rules.find((x) => x.name === 'CheckoutSLO')!,
     rows: () => runInDurableObject(stub, (_i, s) => s.storage.sql.exec('SELECT tenant, grp, rule_key, part, block, body FROM slo_state ORDER BY tenant, grp, rule_key, part, block').toArray()),
     writes: async () => ok(await stub.health(tenant)).counters.sqlRowsWritten,
+    /**
+     * The object's stored state, decoded, against a reference run in this test: the same warm-up
+     * reads and the same buckets at the same query times, through the pure functions, without
+     * evictions, replays or crashes.
+     */
+    reference: async () => {
+      const rule = ok(await stub.listGroups(tenant)).groups[0]!.sloRules![0] as SloRuleV2
+      const reads = w.rangeCalls.slice(0, 2).map(([promql, fromMs, toMs, stepMs]) => ({ promql, fromMs, toMs, stepMs }))
+      const fine = reads.find((x) => x.stepMs === MIN)!
+      const coarse = reads.find((x) => x.stepMs !== MIN) ?? null
+      const warm = warmSlo(rule, MIN, fine, coarse, w.range!(fine.promql, fine.fromMs, fine.toMs, fine.stepMs) as PromMatrix, coarse ? (w.range!(coarse.promql, coarse.fromMs, coarse.toMs, coarse.stepMs) as PromMatrix) : null)
+      if (!warm.ok) throw new Error(warm.error)
+      for (const t of times) {
+        const ev = evalSlo(rule, warm.rt, toSeries((await w.evaluate(rule.expr, t)) as never), t, MIN)
+        if (!ev.ok) throw new Error(ev.error)
+      }
+      const rows = (await runInDurableObject(stub, (_i, s) => s.storage.sql.exec('SELECT part, block, body FROM slo_state WHERE tenant = ?', tenant).toArray())) as unknown as SloRow[]
+      const stored = readSloRows(rule, MIN, rows)
+      if ('error' in stored) throw new Error(stored.error)
+      return { stored: decode(stored.rt), reference: decode(warm.rt) }
+    },
+  }
+}
+
+/** A rule's state as plain data: the counters, and per series its last outcome and the buckets each ring holds. */
+function decode(rt: SloRt) {
+  const ring = (r: { size: number; get(s: number): [number, number] }, last: number | null) => {
+    if (last === null) return []
+    const out: (number | null)[] = []
+    for (let s = last - r.size + 1; s <= last; s++) {
+      const [b, t] = r.get(s)
+      out.push(b === b ? b : null, t === t ? t : null)
+    }
+    return out
+  }
+  return {
+    origin: rt.origin,
+    lastSlot: rt.lastSlot,
+    lastCoarse: rt.lastCoarse,
+    lastTs: rt.lastTs,
+    series: [...rt.series.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, s]) => ({ k, labels: s.labels, last: s.last, seenAt: s.seenAt, fine: ring(s.fine, rt.lastSlot), coarse: ring(s.coarse, rt.lastCoarse) })),
   }
 }
 
 describe('in the Ruler object', () => {
   it('one query per SLO rule per tick, in the group\'s one batch call; the page fires on the first bad minute and the ticket on the fifth, each routed by severity with the sentence', async () => {
-    const r = await rig({ batch: true, extra: [{ alert: 'Up', expr: 'up == 0' }], bad: (i) => (i >= 2 && i < 12 ? 1000 : 0) })
+    const r = await rig({ batch: true, extra: [{ alert: 'Up', expr: 'up == 0' }], bad: (i) => (i >= 2 && i < 7 ? 1000 : 0) })
     const notifier = notifierStub(r.tenant)
     ok(await notifier.setConfig(r.tenant, {
       route: { receiver: 'tickets', group_by: ['alertname', 'severity'], group_wait: '0s', group_interval: '1m', repeat_interval: '4h', routes: [{ match: { severity: 'page' }, receiver: 'pager' }] },
       receivers: [{ name: 'tickets', webhook_configs: [{ url: 'https://tickets.test/hook' }] }, { name: 'pager', webhook_configs: [{ url: 'https://pager.test/hook' }] }],
     }))
     const states: { i: number; page: string | null; ticket: string | null }[] = []
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       await r.tick()
       await runNotifierUntil(notifier, r.tenant, world.now)
       const alerts = (await r.rule()).alerts
       states.push({ i, page: alerts.find((a) => a.labels.severity === 'page')?.state ?? null, ticket: alerts.find((a) => a.labels.severity === 'ticket')?.state ?? null })
     }
     // ONE batch call per tick, with the alerting rule's expression and the SLO's one expression.
-    expect(r.w.batchCalls).toHaveLength(20)
+    expect(r.w.batchCalls).toHaveLength(40)
     for (const call of r.w.batchCalls) expect(call.map((q) => q.promql)).toEqual(['up == 0', 'label_replace(sum(increase(requests_total[1m])), "viz_slo_part", "total", "", "") or label_replace(sum(increase(errors_total[1m])), "viz_slo_part", "bad", "", "")'])
-    // Errors from the third minute: page after 1 bucket (formula 51.8 s), tickets after 5 (4.32 min).
+    // Five minutes of total outage from the third: page after 1 bucket (formula 51.8 s), ticket after 5
+    // (4.32 min); the page holds while the 6 h / 30 m alert burns (5,000 bad events of 30,000 in its
+    // short window) and resolves when the outage leaves that window, 30 minutes after it ended.
     expect(states.find((s) => s.page === 'firing')!.i).toBe(2)
     expect(states.find((s) => s.ticket === 'firing')!.i).toBe(6)
+    expect(states.find((s) => s.i > 2 && s.page !== 'firing')!.i).toBe(36)
     const pages = r.w.received.filter((x) => x.url.startsWith('https://pager.test'))
     const tickets = r.w.received.filter((x) => x.url.startsWith('https://tickets.test'))
     type Body = { status: string; alerts: { status: string; labels: Record<string, string>; annotations: Record<string, string> }[] }
     const firstPage = (pages[0]!.body as Body).alerts[0]!
     expect(firstPage.labels).toMatchObject({ alertname: 'CheckoutSLO', severity: 'page' })
-    expect(firstPage.annotations.slo).toMatch(/^error budget burning at 16\.7× over 1 hour and 200× over 5 minutes \(page threshold 14\.4×\); 2\.31% of the 30 days budget for a 99\.9% objective was spent in the last 1 hour; 99\.\d+% of the budget is left over the last 30 days, spent in [\d.]+ days at this rate$/)
+    expect(firstPage.annotations.slo).toMatch(/^error budget burning at 16\.7× over 1 hour and 200× over 5 minutes \(page threshold 14\.4×\); 2\.31% of the 30 days budget for a 99\.9% objective was spent in the last 1 hour; 97\.7% of the budget is left over the last 30 days, spent in [\d.]+ days at this rate$/)
     expect(JSON.parse(firstPage.annotations.slo_detail!)).toMatchObject({ v: 1, severity: 'page', threshold: 14.4, budgetCoveredMs: 30 * DAY })
     expect((tickets[0]!.body as Body).alerts[0]!.labels).toMatchObject({ alertname: 'CheckoutSLO', severity: 'ticket' })
     // The page resolves once the short window cools; it was sent once firing and once resolved.
@@ -288,56 +336,53 @@ describe('in the Ruler object', () => {
     expect((await r.rule()).slo).toMatchObject({ status: 'ok', series: 1, stateSeries: 1, burning: { page: 0 }, warmup: { status: 'done' } })
   })
 
-  it('state is rows: the head and the current block of each ring, three rows a steady tick; eviction and replays give exactly the rows and alerts of a run without them', async () => {
-    const bad = (i: number) => (i >= 5 && i < 9 ? 600 : i % 3)
-    const a = await rig({ bad })
-    const b = await rig({ bad })
-    await a.tick()
-    await b.tick()
-    // Three rows a steady tick (head, fine block, coarse block), whatever happens in the rule.
-    for (let i = 1; i < 30; i++) {
-      const before = await a.writes()
-      await a.tick()
-      const written = (await a.writes()) - before
-      const transitions = (await a.rule()).alerts.length
-      if (transitions === 0 && i > 12) expect(written, `tick ${i}`).toBe(3)
-      // B: evicted every third tick, and every tick replayed once after an eviction.
-      if (i % 3 === 0) await evictDurableObject(b.stub)
-      await b.tick()
+  it('state is rows: the head and the current block of each ring, three rows a steady tick; with evictions and replays the stored state is exactly a run without them', async () => {
+    const r = await rig({ bad: (i) => (i >= 5 && i < 9 ? 600 : i % 3) })
+    await r.tick()
+    const written: number[] = []
+    for (let i = 1; i < 40; i++) {
+      const states = async () => JSON.stringify((await r.rule()).alerts.map((x) => [x.fingerprint, x.state]))
+      const before = [await r.writes(), await states()] as const
+      await r.tick()
+      // A tick in which no alert changed writes the rings only.
+      if ((await states()) === before[1]) written.push((await r.writes()) - before[0])
+      if (i % 3 === 0) await evictDurableObject(r.stub)
       if (i % 4 === 0) {
-        await evictDurableObject(b.stub)
-        await runInDurableObject(b.stub, (inst) => inst.alarm())
+        // The same tick again, after an eviction: nothing may advance twice.
+        await r.rule()
+        await evictDurableObject(r.stub)
+        await runInDurableObject(r.stub, (inst) => inst.alarm())
       }
     }
-    const strip = (rows: Record<string, unknown>[]) => rows.map(({ tenant: _t, ...rest }) => rest)
-    expect(strip(await b.rows())).toEqual(strip(await a.rows()))
-    expect((await b.rule()).alerts.map(({ fingerprint, state, firedAt, resolvedAt }) => ({ fingerprint, state, firedAt, resolvedAt }))).toEqual((await a.rule()).alerts.map(({ fingerprint, state, firedAt, resolvedAt }) => ({ fingerprint, state, firedAt, resolvedAt })))
-    // Bounded: the head, at most the blocks of the 3-day ring plus one, and of the 30-day ring plus one.
-    const g = sloGeometry(a.saved.groups[0] ? (ok(await a.stub.listGroups(a.tenant)).groups[0]!.sloRules![0] as SloRuleV2).slo : ({} as never), MIN)
-    expect((await a.rows()).length).toBeLessThanOrEqual(1 + g.fineSize / 60 + 1 + g.coarseSize / 24 + 1)
+    // Three rows (head, fine block, coarse block); a fourth when a block leaves a ring and is deleted.
+    expect(written.length).toBeGreaterThan(20)
+    expect(written.every((n) => n === 3 || n === 4), JSON.stringify(written)).toBe(true)
+    expect(written.filter((n) => n === 3).length).toBeGreaterThan(written.length * 0.9)
+    const { stored, reference } = await r.reference()
+    expect(stored).toEqual(reference)
+    expect(stored.series[0]!.last!.page, 'it paged during the run').toBeNull()
+    expect((await r.rule()).alerts.some((a) => a.labels.severity === 'page'), 'a page alert was raised (and resolved)').toBe(true)
+    // Bounded: the head, the blocks of the 3-day ring (one more while one leaves), the same for the 30-day ring.
+    const rule = ok(await r.stub.listGroups(r.tenant)).groups[0]!.sloRules![0] as SloRuleV2
+    const g = sloGeometry(rule.slo, MIN)
+    expect((await r.rows()).length).toBeLessThanOrEqual(1 + g.fineSize / 60 + 1 + g.coarseSize / 24 + 1)
   })
 
   it('a crash inside the commit transaction persists neither the alerts nor the rings; the retry gives what a run without the crash gives', async () => {
-    const bad = (i: number) => (i === 4 ? 1000 : 0)
-    const a = await rig({ bad })
-    const b = await rig({ bad })
-    for (let i = 0; i < 4; i++) {
-      await a.tick()
-      await b.tick()
-    }
-    const before = await a.rows()
-    a.w.faults.add('ruler:commit')
-    world.now = Math.max(world.now, ok(await a.stub.health(a.tenant)).alarmAtMs!)
-    const crashed = await runInDurableObject(a.stub, (inst) => inst.alarm()).then(() => 'ok', (e) => (e instanceof Crash || /injected crash/.test(String(e)) ? 'crashed' : String(e)))
+    const r = await rig({ bad: (i) => (i === 4 ? 1000 : 0) })
+    for (let i = 0; i < 4; i++) await r.tick()
+    const before = await r.rows()
+    r.w.faults.add('ruler:commit')
+    world.now = Math.max(world.now, ok(await r.stub.health(r.tenant)).alarmAtMs!)
+    const crashed = await runInDurableObject(r.stub, (inst) => inst.alarm()).then(() => 'ok', (e) => (e instanceof Crash || /injected crash/.test(String(e)) ? 'crashed' : String(e)))
     expect(crashed).toBe('crashed')
-    expect(await a.rows()).toEqual(before)
-    expect((await a.rule()).alerts).toEqual([])
-    await evictDurableObject(a.stub)
-    expect(await runDurableObjectAlarm(a.stub)).toBe(true)
-    await b.tick()
-    const strip = (rows: Record<string, unknown>[]) => rows.map(({ tenant: _t, ...rest }) => rest)
-    expect(strip(await a.rows())).toEqual(strip(await b.rows()))
-    expect((await a.rule()).alerts.map((x) => [x.labels.severity, x.state])).toEqual([['page', 'firing']])
+    expect(await r.rows()).toEqual(before)
+    expect((await r.rule()).alerts).toEqual([])
+    await evictDurableObject(r.stub)
+    expect(await runDurableObjectAlarm(r.stub)).toBe(true)
+    const { stored, reference } = await r.reference()
+    expect(stored).toEqual(reference)
+    expect((await r.rule()).alerts.map((x) => [x.labels.severity, x.state])).toEqual([['page', 'firing']])
   })
 
   it('refusals change nothing: more series than max_series, parts that do not pair up; a newer release\'s rows are refused, kept, and carried by a shard move', async () => {
@@ -369,12 +414,15 @@ describe('in the Ruler object', () => {
       st.storage.sql.exec('INSERT INTO slo_state (tenant, grp, rule_key, part, block, body) VALUES (?, ?, ?, ?, 0, ?)', r.tenant, 'slos/1m', key, 'head', newer)
     })
     await evictDurableObject(r.stub)
+    // Alerts as stored (a steady alert's value is refreshed in memory only, so compare after the reload).
+    const stored = (await r.rule()).alerts
+    expect(stored.map((a) => [a.fingerprint, a.state])).toEqual(before.alerts.map((a) => [a.fingerprint, a.state]))
     const handed = r.w.ingestCalls.length
     await r.tick()
     s = await r.rule()
     expect([s.health, s.slo!.status]).toEqual(['err', 'state_unreadable'])
     expect(s.lastError).toMatch(/^state_unreadable: slo_state row version 2 is not 1/)
-    expect(s.alerts).toEqual(before.alerts)
+    expect(s.alerts).toEqual(stored)
     expect(r.w.ingestCalls.length).toBe(handed)
     expect((await r.rows()).map((x) => x.body)).toEqual([newer])
     const bundle = ok(await r.stub.exportGroup(r.tenant, 'slos/1m')).bundle

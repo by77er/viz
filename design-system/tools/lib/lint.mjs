@@ -4,7 +4,8 @@
 //   0 of any unit (no amount); 1lh (the current line's own height, used to centre a mark on a first line); whole numbers (a count, an order,
 //   a multiple or a fraction 1/n of a token inside calc()); integer fr (proportions of a layout); 0%, 50%, 100% only where they are geometry
 //   (sizes, positions, translate, background-position, clip-path, the select's two hard-stop gradients); transparent and currentColor;
-//   z-index of two digits; line-height: 1; linear only in an animation driven by a scroll timeline (it maps scroll to the edge, not time).
+//   z-index of two digits; line-height: 1; linear only in an animation driven by a scroll timeline (it maps scroll to the edge, not time);
+//   data custom properties (DATA_PROPS) in style attributes; in script, values built at run time (a ${…} or a concatenation).
 // Everything else is reported, by kind. A line containing `token-lint-ignore: <reason>` is skipped; the reason is required.
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
@@ -21,6 +22,9 @@ const TIMING_PROPS = /^(transition|transition-timing-function|animation|animatio
 const UNIT_KIND = (u) => (/^(s|ms)$/.test(u) ? 'duration' : /^(deg|grad|rad|turn)$/.test(u) ? 'angle' : /^(hz|khz)$/.test(u) ? 'frequency' : /^(dpi|dpcm|dppx|x)$/.test(u) ? 'resolution' : 'length')
 const GEOMETRY_PCT = /^(width|height|min-width|min-height|max-width|max-height|inline-size|block-size|min-inline-size|max-inline-size|inset|inset-inline|inset-block|top|right|bottom|left|transform|translate|background-position|background-size|clip-path|margin|margin-left|margin-right|margin-top|margin-bottom|margin-inline|margin-block|flex|flex-basis|transform-origin)$/
 const HOVER_OK = /^(color|background|background-color|border-color|border-(top|right|bottom|left|inline|block)-color|text-decoration|text-decoration-(line|color|thickness|style)|outline-color|fill|stroke|cursor|transition|transition-duration)$/
+// Custom properties that carry data, not design: a waterfall span's start and length as fractions of its trace, a chart's legend rows and note
+// lines from its last result. Allowed in style attributes and script only, where data is written; never in a stylesheet.
+const DATA_PROPS = new Set(['--at', '--len', '--legend-rows', '--legend-notes'])
 const SIZE_KW = /^(xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger)$/
 
 // Walks a value AST; `report(kind, text)` for each literal. ctx: { prop, rule (selector text), scroll (the rule has a scroll timeline), select (the
@@ -46,6 +50,7 @@ function lintValue(node, ctx, report) {
         if (!Number.isInteger(v)) report('number', n.value); return }
       case 'Hash': report('colour', '#' + n.value); return
       case 'Identifier': { const id = n.name.toLowerCase()
+        if (id.startsWith('--')) return // a custom property's name, inside var()
         if (NAMED.has(id)) { report('colour', n.name); return }
         if (prop === 'font-weight' && !/^(inherit|initial|unset)$/.test(id)) { report('weight', n.name); return }
         if (prop === 'font-size' && SIZE_KW.test(id)) { report('size', n.name); return }
@@ -79,7 +84,7 @@ function lintProperty(prop, value, ctx, report) {
   if (prop === 'mix-blend-mode' && id !== 'normal') report('blend', `${prop}: ${text}`)
   if (prop === 'text-shadow' && id !== 'none') report('shadow', `text-shadow: ${text}`)
   if (prop === 'letter-spacing' && !/^(0|normal|inherit|var\(--text-[a-z-]+-track\))$/.test(id)) report('tracking', `letter-spacing: ${text}`)
-  if (/^border(-(top|bottom)-(left|right)|-(start|end)-(start|end))?-radius$/.test(prop)) for (const part of text.split(/\s+|\//).filter(Boolean)) if (!/^(0|inherit|var\(--radius-\d\))$/.test(part)) report('radius', `${prop}: ${text}`)
+  if (/^border(-(top|bottom)-(left|right)|-(start|end)-(start|end))?-radius$/.test(prop)) for (const part of (value.children?.toArray?.() ?? []).filter((c) => c.type !== 'WhiteSpace' && !(c.type === 'Operator' && c.value === '/')).map((c) => csstree.generate(c))) if (!/^(0|inherit|var\(--radius-\d\))$/.test(part)) { report('radius', `${prop}: ${text} (radii are radius tokens; nothing is fully rounded)`); break }
   if (prop === 'font-size' && !/^(inherit|var\(--text-[a-z-]+-size\)|max\(var\(--text-[a-z-]+-size\),calc\(100%\*var\(--qty-scale\)\)\))$/.test(id.replace(/\s+/g, ''))) report('size', `font-size: ${text} (a type style's size, nothing computed: micro is the smallest text)`)
   if (prop === 'font' && !/^(inherit|var\(--text-[a-z-]+\))$/.test(id)) report('size', `font: ${text}`)
   if (prop === 'box-shadow' || prop === '-webkit-box-shadow') {
@@ -110,7 +115,7 @@ export function lintCss(text, { file, line0 = 0, report, tokens, declarationsOnl
     node.block.children.forEach((d) => {
       if (d.type !== 'Declaration') return
       const prop = d.property.toLowerCase(), dline = d.loc.start.line; decls.push([prop, csstree.generate(d.value).trim(), d.value, !!d.important])
-      if (ignored(dline)) return
+      if (ignored(dline) || (declarationsOnly && DATA_PROPS.has(prop))) return
       const hits = [], r = (kind, what) => hits.push([kind, what])
       lintValue(d.value, { prop, scroll, select, tokens }, r); lintProperty(prop, d.value, { tokens }, r)
       if (sel.some((x) => x.includes(':hover')) && !HOVER_OK.test(prop) && !prop.startsWith('--')) r('hover', `${prop} under :hover in "${sel.find((x) => x.includes(':hover'))}": hover may change colour only; nothing appears, moves or resizes on hover (a phone has none)`)
@@ -139,8 +144,8 @@ export function lintScript(text, { file, line0 = 0, report, tokens, test = false
   for (const m of code.matchAll(/\.style\.cssText\s*\+?=\s*(['"`])((?:(?!\1)[\s\S])*)\1/g)) { if (skip(m.index)) continue; lintCss(runtime(m[2]), { file, line0: line0 + lineAt(m.index) - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[lineAt(m.index) - 1]] }) }
   // el.style.fontWeight = 600 / '600' ; el.style.setProperty('opacity', '.5')
   const kebab = (p) => p.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())
-  for (const m of code.matchAll(/\.style\.([a-zA-Z]+)\s*=\s*(?:(['"`])((?:(?!\2).)*)\2|(-?[\d.]+)\b)/g)) { if (skip(m.index) || m[1] === 'cssText') continue; const v = m[3] ?? m[4]; lintCss(`${kebab(m[1])}: ${runtime(v)}`, { file, line0: line0 + lineAt(m.index) - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[lineAt(m.index) - 1]] }) }
-  for (const m of code.matchAll(/\.style\.setProperty\(\s*(['"])([\w-]+)\1\s*,\s*(?:(['"`])((?:(?!\3).)*)\3|(-?[\d.]+))/g)) { if (skip(m.index)) continue; lintCss(`${m[2]}: ${runtime(m[4] ?? m[5])}`, { file, line0: line0 + lineAt(m.index) - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[lineAt(m.index) - 1]] }) }
+  for (const m of code.matchAll(/\.style\.([a-zA-Z]+)\s*=\s*(?:(['"`])((?:(?!\2).)*)\2|(-?[\d.]+)\b)(?=\s*(?:[;,)}]|$))/gm)) { if (skip(m.index) || m[1] === 'cssText') continue; const v = m[3] ?? m[4]; lintCss(`${kebab(m[1])}: ${runtime(v)}`, { file, line0: line0 + lineAt(m.index) - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[lineAt(m.index) - 1]] }) }
+  for (const m of code.matchAll(/\.style\.setProperty\(\s*(['"])([\w-]+)\1\s*,\s*(?:(['"`])((?:(?!\3).)*)\3|(-?[\d.]+))(?=\s*\))/g)) { if (skip(m.index)) continue; lintCss(`${m[2]}: ${runtime(m[4] ?? m[5])}`, { file, line0: line0 + lineAt(m.index) - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[lineAt(m.index) - 1]] }) }
 }
 
 // HTML: <style> as CSS, style attributes (any quoting) as CSS, inline scripts as script, colours anywhere else in the text.

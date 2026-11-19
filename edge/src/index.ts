@@ -9,6 +9,8 @@ import { snappyDecompress } from './snappy'
 
 // For now the shard is deployed in the same script as the edge Worker.
 export { Shard } from '../../shard/src/shard'
+// The ruler's recorded samples, over a service binding (contracts/ingest.ts).
+export { RecordedSamples } from './recorded'
 
 export interface Env extends RouteEnv {
   /** JSON overriding any of `Limits` (src/limits.ts). */

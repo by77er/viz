@@ -1,22 +1,29 @@
-// Checks the token system against its own rules. Exits non-zero on any failure.
+// Checks the token system and the components against their own rules. Exits non-zero on any failure.
 //   node tools/check.mjs [paths…] [--no-render]
 //   1. Tokens: contrast of every text, control, mark and series pairing in both themes; the series palette as a palette (lightness steps
 //      between neighbours, colour-vision separation of neighbours and within each dash group, distance from every status and action
-//      colour, lightness band, chroma); press against hover and chosen; status-info apart from blue; the scrim translucent.
-//   2. Component CSS, read as CSS (rules, not lines): the swatch keeps its ground ring wherever a rule touches its box-shadow, the crosshair
-//      dot keeps its ground edge, no rule paints a fill on a chart's surface, and every media or container condition is a breakpoint token.
+//      colour, lightness band, chroma); Other set apart in lightness from every slot; press against hover and chosen; disabled ink set apart
+//      from muted ink; status-info apart from blue; the scrim translucent; micro the smallest type size.
+//   2. Component CSS, parsed (css-tree), checked as rules (tools/lib/structure.mjs): colour confined to toned buttons, status marks, chart
+//      series and the focus ring; one shadow, for overlays; a press never eased, with a [data-pressed] twin for every :active; nothing
+//      revealed or moved on hover; and the presence of every fix earlier reviews asked for (focus ring, coarse hit areas, the chart's
+//      reservation from the coarse sizes, dashed slots, emphasis, touch-action, reduced motion, the swatch ring, a positioned table wrap,
+//      the fold pattern and its two forms in step, the caption as one run of text, links in sentences, a cut link's underline).
 //   3. Rendered audit (when src/components.css is checked, unless --no-render): every component preview in both themes, at rest, with
-//      legend rows chosen, under a forced hover and a forced press. Every piece of text is measured against the fill actually behind it
-//      (4.5:1), and every series swatch and line against its ring or its surface (3:1). This is what a person sees, so an override anywhere
-//      in the CSS cannot slip past it.
-//   4. Source lint: no literal colours, lengths, durations, opacity, angles, non-geometric percentages or unitless weights, line heights,
-//      line clamps and scales in component CSS. In .html, <style> blocks and style="" attributes are CSS; elsewhere in .html, .js and .ts colours are linted
-//      everywhere and lengths and durations inside quoted strings. A line with `token-lint-ignore: <reason>` is skipped; the reason is required.
-// The mutants this is tested against, and which check catches each: tools/mutants.mjs (run it after changing this file).
+//      legend rows chosen, under a forced hover, a forced press (:active) and a finger's press ([data-pressed]). Every piece of text is
+//      measured against the fill actually behind it (4.5:1), and every series swatch and line against its ring or its surface (3:1). And,
+//      with a fine and a coarse pointer, every chart that reserves its height reserves exactly what it draws.
+//   4. Literal values (tools/lib/lint.mjs, on css-tree and parse5): any design value written out instead of taken from a token, at any
+//      depth of a value, in component CSS, in <style> blocks and style attributes (either quote) in HTML, and in CSS written by script
+//      (style attributes in templates, cssText, style.<prop> = …, setProperty), plus colours anywhere in script; conditions must use the
+//      breakpoint tokens. A line with `token-lint-ignore: <reason>` is skipped; the reason is required.
+// The mutants this is tested against, and which check catches each: tools/mutants-corpus.mjs, run by tools/mutants.mjs and npm test.
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { buildCss } from './css.mjs'
+import { lintCss, lintHtml, lintScript } from './lib/lint.mjs'
+import { structure } from './lib/structure.mjs'
 const root = new URL('..', import.meta.url).pathname
 const args = process.argv.slice(2), render = !args.includes('--no-render'), paths = args.filter((a) => !a.startsWith('--'))
 const t = JSON.parse(readFileSync(root + 'project/tokens.json', 'utf8'))
@@ -103,44 +110,25 @@ for (const th of themes) for (const other of ['hover', 'rule']) { const r = rati
 // The scrim says "not available" without hiding what the dialog is about: translucent, neither invisible nor opaque.
 for (const th of themes) { checked++; const m = String(v('scrim', th)).match(/^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)$/); if (!m) fail(`scrim [${th}] is not an rgba() colour: it must be the one translucent colour`); else if (+m[1] < 0.3 || +m[1] > 0.75) fail(`scrim [${th}] alpha ${m[1]} outside 0.30–0.75: the page must stay recognisable and the dialog must stand off it`) }
 
+// Disabled reads as disabled: below text contrast, still visible, and set apart from muted ink (v5 review, X25).
+for (const th of themes) { const d = v('ink-disabled', th); checked += 3
+  if (ratio(d, v('ink-muted', th)) < 1.5) fail(`ink-disabled is ${ratio(d, v('ink-muted', th)).toFixed(2)}:1 from ink-muted [${th}] (< 1.5): a disabled control would read as enabled`)
+  if (ratio(d, v('sunken', th)) >= 4.5) fail(`ink-disabled reaches text contrast on sunken [${th}]: it must read as unavailable`)
+  if (ratio(d, v('sunken', th)) < 2) fail(`ink-disabled is ${ratio(d, v('sunken', th)).toFixed(2)}:1 on sunken [${th}] (< 2): a disabled label must still be seen`) }
+// Other is set apart in lightness from every slot, so in greyscale its band's edges are not read as a slot's line (v5 review, m5).
+const OTHER_STEP = { light: 1.3, dark: 1.15 }
+for (const th of themes) for (const i of S) { checked++; const r = ratio(v('series-other', th), v(`series-${i}`, th)); if (r < OTHER_STEP[th]) fail(`series-other beside series-${i} [${th}]  lightness ${r.toFixed(2)}:1 < ${OTHER_STEP[th]}: in greyscale Other's edge reads as that slot`) }
+// micro is the smallest text (v5 review, X32)
+{ const styles = t.type.groups.flatMap((g) => g.styles), micro = parseFloat(styles.find((x) => x.name === 'micro').fontSize); for (const x of styles) { checked++; if (parseFloat(x.fontSize) < micro) fail(`type style ${x.name} is ${x.fontSize}, below micro (${micro}px), the smallest text`) } }
+
 // ---- 2. component CSS, as CSS ----
-function parseCss(text) { // -> [{ sel: [selectors], decls: [[prop, value]], cond: [conditions], line }]
-  const src = text.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, ' ')), out = []
-  const walk = (s, from, to, cond) => { let i = from
-    while (i < to) { const open = s.indexOf('{', i); if (open < 0 || open >= to) break
-      let depth = 1, j = open + 1; while (j < to && depth) { if (s[j] === '{') depth++; else if (s[j] === '}') depth--; j++ }
-      const prelude = s.slice(i, open).trim(), line = s.slice(0, open).split('\n').length
-      if (prelude.startsWith('@')) walk(s, open + 1, j - 1, [...cond, prelude])
-      else { const sel = []; let d = 0, cur = ''; for (const ch of prelude) { if (ch === '(') d++; if (ch === ')') d--; if (ch === ',' && !d) { sel.push(cur.trim()); cur = '' } else cur += ch } sel.push(cur.trim())
-        const decls = s.slice(open + 1, j - 1).split(';').map((x) => x.trim()).filter(Boolean).map((x) => { const k = x.indexOf(':'); return [x.slice(0, k).trim(), x.slice(k + 1).trim().replace(/\s+/g, ' ')] })
-        out.push({ sel, decls, cond, line }) }
-      i = j }
-  }
-  walk(src, 0, src.length, []); return out
-}
-const compPath = root + 'src/components.css', comp = readFileSync(compPath, 'utf8'), rules = parseCss(comp)
-const lastCompound = (sel) => sel.split(/[\s>+~]+/).filter(Boolean).pop() ?? ''
-// The swatch's ground ring: the base rule has it, and any rule that touches the swatch's box-shadow keeps it (a switched-off swatch has its own
-// inset Other edge instead). Read as CSS, so reformatting cannot fool it and an override anywhere is found.
-{ const RING = '0 0 0 var(--stroke) var(--ground)', OFF = 'inset 0 0 0 var(--hairline) var(--series-other)'; let base = false
-  for (const r of rules) for (const s of r.sel) if (/\.vz-swatch\b/.test(lastCompound(s))) for (const [p, val] of r.decls) if (p === 'box-shadow') { checked++
-    if (s === '.vz-swatch' && val === RING) base = true
-    else if (val !== RING && !(/\[data-off\]/.test(s) && val === OFF)) fail(`${s} sets box-shadow: ${val} (line ${r.line}): the swatch must keep its ground ring (${RING}); a pressed row puts series below 3:1 without it`) }
-  checked++; if (!base) fail(`.vz-swatch has lost its ground ring (${RING})`) }
-{ let ok = false; for (const r of rules) for (const s of r.sel) if (s === '.vz-plot .vz-dot[data-series]') for (const [p, val] of r.decls) if (p === 'stroke') { checked++; if (val === 'var(--ground)') ok = true; else fail(`${s} stroke ${val} (line ${r.line}): the crosshair dot keeps its ground edge`) }
-  checked++; if (!ok) fail('.vz-plot .vz-dot[data-series] has lost its ground edge') }
-// A row that is one control (a legend row, a span in a waterfall) shows its focus ring round the whole row, drawn by the cells: an outline on the
-// row is painted under its positioned first cell (v4's legend ring showed only beside the figures).
-for (const btn of ['.vz-series', '.vz-waterfall-span']) { checked++; const ring = rules.filter((r) => r.sel.some((x) => x.includes(`:has(${btn}:focus-visible)`) && /\btd(:first-child|:last-child)?$/.test(x)) && r.decls.some(([p, val]) => p === 'box-shadow' && /var\(--focus\)/.test(val)))
-  if (ring.length < 3) fail(`the row of ${btn} has no focus ring drawn by its cells (td, first and last cell, box-shadow in focus): a keyboard user cannot see which row is focused`) }
-// Slots 5 to 8 are told from 1 to 4 by their dash where hue and lightness repeat: each must carry a pattern, and lines must draw it.
-for (const i of [5, 6, 7, 8]) { checked++; if (!rules.some((r) => r.sel.includes(`[data-series="${i}"]`) && r.decls.some(([p]) => p === '--pattern'))) fail(`[data-series="${i}"] has no --pattern: slots 5 to 8 must be dashed, the second channel beside colour`) }
-{ checked++; if (!rules.some((r) => r.sel.includes('.vz-plot .vz-line[data-series]') && r.decls.some(([p, val]) => p === 'stroke-dasharray' && /var\(--pattern/.test(val)))) fail('.vz-plot .vz-line[data-series] does not draw --pattern: dashed slots would be drawn solid') }
-// A chart's surface is its panel's (ground, or raised in an overlay). No rule paints the plot or the chart itself: series are measured against ground and raised only.
-for (const r of rules) for (const s of r.sel) { const last = lastCompound(s); if (/^(svg)?\.vz-(plot|chart)(\[[^\]]*\]|:[\w-]+(\([^)]*\))?)*$/.test(last)) for (const [p] of r.decls) if (/^(background|background-color|fill)$/.test(p)) { checked++; fail(`${s} sets ${p} (line ${r.line}): a chart has no fill of its own; series are only checked on ground and raised`) } }
-// Breakpoints: media and container conditions cannot read tokens, so every width in a condition is a breakpoint token (or one less, as a maximum).
+const compPath = root + 'src/components.css', comp = readFileSync(compPath, 'utf8')
 const bps = Object.entries(flatTok).filter(([k]) => k.startsWith('breakpoint-')).map(([, val]) => parseFloat(val)), bpOk = new Set(bps.flatMap((b) => [b, b - 1]))
-for (const r of rules) for (const c of r.cond) for (const m of c.matchAll(/(\d+(?:\.\d+)?)px/g)) { checked++; if (!bpOk.has(+m[1])) fail(`condition "${c}" (line ${r.line}) uses ${m[1]}px, which is not a breakpoint token (${bps.join(', ')}px)`) }
+const colourTokens = new Set([...t.color.tokens.map((k) => k.name), 'series'])
+let hits = 0
+const report = (kind, f, line, m) => { hits += m.length; console.log(`LITERAL ${kind}  ${f.replace(root, '')}:${line}  ${m.join(' ')}`) }
+const rules = lintCss(comp, { file: compPath, report, tokens: colourTokens, breakpoints: bpOk })
+checked += structure(rules, { fail, tokens: colourTokens })
 
 // ---- 3. rendered audit ----
 async function audit() {
@@ -149,7 +137,7 @@ async function audit() {
   const names = readdirSync(dir).filter((n) => { try { return statSync(`${dir}${n}/preview.html`).isFile() } catch { return false } }).filter((n) => n !== 'Cover')
   const part = (n) => { const h = readFileSync(`${dir}${n}/preview.html`, 'utf8'); return { style: (h.match(/<style>([\s\S]*?)<\/style>/g) ?? []).join('').replace(/<\/?style>/g, ''), scripts: h.match(/<script>[\s\S]*?<\/script>/g) ?? [], inner: h.slice(h.indexOf('<body'), h.lastIndexOf('</body>')).replace(/<body[^>]*>/, '').replace(/<script>[\s\S]*?<\/script>/g, '') } }
   const parts = names.map(part), column = (th) => `<div data-theme="${th}" class="vz" style="padding:var(--space-6)">${parts.map((p, i) => `<section data-c="${names[i]}">${p.inner}</section>`).join('')}</div>`
-  const html = `<!doctype html><html><head><meta charset="utf-8"><style>${viz}body{margin:0}${parts.map((p) => p.style).join('').replace(/html,body\{margin:0\}|body\{padding:[^}]*\}/g, '')}</style></head><body>${column('light')}${column('dark')}${[...new Set(parts.flatMap((p) => p.scripts))].join('\n')}</body></html>`
+  var html = `<!doctype html><html><head><meta charset="utf-8"><style>${viz}body{margin:0}${parts.map((p) => p.style).join('').replace(/html,body\{margin:0\}|body\{padding:[^}]*\}/g, '')}</style></head><body>${column('light')}${column('dark')}${[...new Set(parts.flatMap((p) => p.scripts))].join('\n')}</body></html>`
   const browser = await chromium.launch(), page = await browser.newPage({ viewport: { width: 1200, height: 900 } }), cdp = await page.context().newCDPSession(page)
   page.on('pageerror', (e) => fail(`audit page error: ${e.message}`))
   await page.setContent(html, { waitUntil: 'load' }); await page.waitForTimeout(200)
@@ -192,56 +180,36 @@ async function audit() {
     for (const c of charts.filter((x) => x.querySelectorAll('tbody tr[data-key]').length > 3).slice(0, 2)) c.querySelectorAll('tbody tr[data-key] .vz-series')[1]?.dispatchEvent(new FocusEvent('focusin', { bubbles: true })) })
   results.push(...await measure('at rest'))
   for (const [name, states] of [['hover', ['hover']], ['press', ['hover', 'active']]]) results.push(...await forced('tr, button, a, summary, label, [role^="menuitem"], .vz-plot, .vz-sort', states, name))
+  // a finger's press: data-pressed (viz-press.js) on every pressable and its ancestors, as a held finger leaves it
+  await page.evaluate(() => { for (const e of document.querySelectorAll('button, a[href], summary, [role^="menuitem"], tr[data-key], .vz-sort')) for (let x = e; x && x !== document.body; x = x.parentElement) x.setAttribute('data-pressed', '') })
+  results.push(...await measure('finger press'))
   await browser.close()
+  // the chart's reserved height is what it draws, with a fine and with a coarse pointer (v4 review, B2): every chart that sets --legend-rows
+  for (const coarse of [false, true]) {
+    const b2 = await chromium.launch(), p2 = await b2.newPage({ viewport: { width: coarse ? 400 : 1200, height: 900 }, ...(coarse ? { hasTouch: true, isMobile: true } : {}) })
+    await p2.setContent(html.replace(column('dark'), ''), { waitUntil: 'load' }); await p2.waitForTimeout(300)
+    const gaps = await p2.evaluate(() => [...document.querySelectorAll('.vz-chart')].filter((c) => /--legend-rows/.test(c.getAttribute('style') || '')).map((c) => { const reserved = parseFloat(getComputedStyle(c).minHeight); c.style.minHeight = '0px'; const drawn = c.getBoundingClientRect().height; c.style.minHeight = ''; return [c.closest('section[data-c]')?.dataset.c, Math.round(reserved * 10) / 10, Math.round(drawn * 10) / 10] }))
+    await b2.close()
+    for (const [where, reserved, drawn] of gaps) { checked++; if (Math.abs(reserved - drawn) > 1) results.push(`${coarse ? 'coarse' : 'fine'} pointer: ${where} chart reserves ${reserved} px and draws ${drawn} px: it would move what is under it when its data arrives`) }
+    console.log(`reserved height: ${gaps.length} chart(s) with a ${coarse ? 'coarse' : 'fine'} pointer, reserved against drawn: ${gaps.map((g) => g[1] + '/' + g[2]).join(', ')}`)
+  }
   const uniq = [...new Set(results)]; checked += 3
   for (const r of uniq) fail('rendered ' + r)
-  console.log(`rendered audit: ${names.length} previews, both themes, at rest, hover and press: ${uniq.length} failure(s)`)
+  console.log(`rendered audit: ${names.length} previews, both themes, at rest, hover, press and a finger's press, and reserved heights: ${uniq.length} failure(s)`)
 }
 const targets = paths.length ? paths.map((p) => resolve(p)) : [compPath]
 if (render && targets.some((p) => p === compPath || p === resolve(root, 'src') || p === resolve(root, '.') || p.startsWith(root + 'project'))) await audit()
 console.log(`contrast and structure: ${checked - failed}/${checked} checks pass`)
 
-// ---- 4. source lint ----
+// ---- 4. literal values in other files ----
 const files = []
-const walk = (p) => { const s = statSync(p); if (s.isDirectory()) { for (const f of readdirSync(p)) if (!['node_modules', 'dist', '.wrangler', 'bundle.css'].includes(f)) walk(join(p, f)) } else if (['.css', '.tsx', '.ts', '.jsx', '.js', '.mjs', '.html'].includes(extname(p))) files.push(p) }
-targets.forEach(walk)
-const colour = /#[0-9a-fA-F]{3,8}\b|\b(?:rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|hwb|color)\(/g
-const cssRules = [
-  ['colour', colour],
-  ['length', /(?<![\w-])\d*\.?\d+(?:px|rem|em|ch|vw|vh|pt|cm|mm|in)\b/g],
-  ['duration', /(?<![\w-])\d*\.?\d+ms\b|(?<![\w-])\d*\.\d+s\b|(?<![\w-])[1-9]\d*s\b/g],
-  ['opacity', /\bopacity\s*:/g],
-  ['angle', /(?<![\w-])-?\d*\.?\d+(?:deg|turn|rad|grad)\b/g],
-  ['percentage', /(?<![\w-])\d*\.?\d+%/g],
-  ['unitless', /\bline-clamp\s*:\s*\d+|\bfont-weight\s*:\s*\d+|\bline-height\s*:\s*(?!1\s*[;}]|1$|normal|var)[\d.]+|\bscale\s*\(\s*-?[\d.]+|\bz-index\s*:\s*(?!-?[0-9]{1,2}\s*[;}]|-?[0-9]{1,2}$)\d+/g],
-]
-const GEOMETRY = new Set(['0%', '50%', '100%']) // geometry, not a design value
-let hits = 0
-const report = (kind, f, line, m) => { hits += m.length; console.log(`LITERAL ${kind}  ${f.replace(root, '')}:${line}  ${m.join(' ')}`) }
-function lintCss(text, f, lineOf = (i) => i + 1, inCondition) {
-  const conds = new Set(); for (const r of parseCss(text)) for (const c of r.cond) conds.add(c)
-  text.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, ' ')).split('\n').forEach((line, i) => {
-    if (/token-lint-ignore/.test(text.split('\n')[i])) { if (!/token-lint-ignore:\s*\S/.test(text.split('\n')[i])) report('ignore-without-reason', f, lineOf(i), ['token-lint-ignore']); return }
-    const code = line.replace(/@(media|container)[^{]*/g, '') // conditions are checked against the breakpoint tokens above
-    for (const [kind, re] of cssRules) { let m = code.match(re); if (!m) continue; if (kind === 'percentage') m = m.filter((x) => !GEOMETRY.has(x)); if (m.length) report(kind, f, lineOf(i), m) }
-  })
-}
+const walk = (p) => { const st = statSync(p); if (st.isDirectory()) { for (const f of readdirSync(p)) if (!['node_modules', 'dist', '.wrangler', 'bundle.css'].includes(f)) walk(join(p, f)) } else if (['.css', '.tsx', '.ts', '.jsx', '.js', '.mjs', '.html'].includes(extname(p))) files.push(p) }
+targets.filter((p) => p !== compPath).forEach(walk); files.splice(0, files.length, ...files.filter((f) => f !== compPath))
 for (const f of files) {
   const text = readFileSync(f, 'utf8'), ext = extname(f)
-  if (ext === '.css') { lintCss(text, f); continue }
-  const lines = text.split('\n'), test = /\.test\.[a-z]+$/.test(f) // test files hold query text such as "rate(x[30s])"; only colours are linted there
-  let inStyle = false, styleStart = 0, styleText = []
-  lines.forEach((raw, i) => {
-    if (ext === '.html') {
-      if (inStyle || /<style>/.test(raw)) { const open = raw.indexOf('<style>'), close = raw.indexOf('</style>'); if (!inStyle) { inStyle = true; styleStart = i; styleText = [] } styleText.push(raw.slice(open >= 0 ? open + 7 : 0, close >= 0 ? close : undefined)); if (close >= 0) { inStyle = false; lintCss(styleText.join('\n'), f, (k) => styleStart + k + 1) } if (open >= 0 && close < 0 || inStyle) return; raw = raw.slice(close + 8) }
-      for (const m of raw.matchAll(/\sstyle="([^"]*)"/g)) if (!/token-lint-ignore/.test(raw)) lintCss(`x{${m[1]}}`, f, () => i + 1)
-    }
-    if (/token-lint-ignore/.test(raw)) { if (!/token-lint-ignore:\s*\S/.test(raw)) report('ignore-without-reason', f, i + 1, ['token-lint-ignore']); return }
-    const code = raw.replace(/\/\*.*?\*\//g, '').replace(/\sstyle="[^"]*"/g, '')
-    const quoted = test ? '' : (code.match(/(['"`])(?:(?!\1).)*\1/g) ?? []).join(' ')
-    const m1 = code.match(colour); if (m1) report('colour', f, i + 1, m1)
-    for (const [kind, re] of cssRules.slice(1, 3)) { const m = quoted.match(re); if (m) report(kind, f, i + 1, m) }
-  })
+  if (ext === '.css') lintCss(text, { file: f, report, tokens: colourTokens, breakpoints: bpOk })
+  else if (ext === '.html') lintHtml(text, { file: f, report, tokens: colourTokens, breakpoints: bpOk })
+  else lintScript(text, { file: f, report, tokens: colourTokens, test: /\.test\.[a-z]+$/.test(f) }) // test files hold query text such as "rate(x[30s])"; only colours are linted there
 }
-console.log(`literal values: ${hits} in ${files.length} file(s)`)
+console.log(`literal values: ${hits} in ${files.length + 1} file(s)`)
 process.exit(failed || hits ? 1 : 0)

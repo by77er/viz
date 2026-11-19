@@ -10,6 +10,7 @@ change it here first; nothing else may redefine these.
 | `ledger.ts` | The tenant ledger's RPC surface: file precedence (`LiveFile`, which file wins a duplicate sample), and the proposed tombstone surface used for physical deletion |
 | `LEDGER-LOG.md` | The ledger's change log as batched segments written in the background: format, drain, checkpoints, truncation, readers. Built; replaced one object per change (whose keys `ledger.ts` keeps for readers) |
 | `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |
+| `ingest.ts` | The ingest Worker's service surface for other viz Workers: the `RecordedSamples` entrypoint, where the ruler writes recording-rule samples, authenticated by its service binding (D41) |
 | `control.ts` | The control plane's service surface over its Durable Object binding: the tenant's default notification destination and service keys (D39) |
 | `engine.ts` | The JavaScript face of the Rust/WASM engine |
 | `COMPATIBILITY.md` | What every component does so that release N and N±1 can run side by side: versioned storage, versioned formats, readers before writers, expand then contract, rollback rules |
