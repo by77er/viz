@@ -2,14 +2,23 @@
 
 Status (2026-11-19): **the file layout is settled and written; the write side is built
 (stage 2), and so is compaction of both tables (section "Compaction", below), and both tables
-are published as Iceberg tables (section "Iceberg publication", built 2026-11-19); reading
-through query is proposed.** `engine/storage`
+are published as Iceberg tables (section "Iceberg publication", built 2026-11-19); the query
+path reads them behind `QUERY_SIGNALS`, which stays off (below).** `engine/storage`
 (`src/spans.rs`) writes `spans` and `trace_index` files from span batches (`contracts/BATCH.md`,
 signal 2) exactly as below; `edge` decodes OTLP traces into those batches (behind
 `INGEST_SIGNALS`), the shards of `{pool}/traces` hold them, flush encodes each sealed segment
 through `engine/wasm` (ABI 3) into one unit of `spans` and `trace_index` files under the keys
 below, and the ledger lists them (`contracts/ledger.ts` `LedgerTable`), plans them by time and
-expires them by day; the publisher publishes them (design/DECISIONS.md D67). The query path does not use them yet. The query engine (`engine/traceql`)
+expires them by day; the publisher publishes them (design/DECISIONS.md D67). The query Worker
+reads both tables and the span tails behind `QUERY_SIGNALS`, off by default (design/DECISIONS.md
+D62: "The query Worker answers Tempo's and Loki's APIs (behind `QUERY_SIGNALS`, …) in one place:
+files through the leaf pool, the signal's shard tails, one engine call"; `query/README.md`,
+"Traces and logs"). The flag stays off until the adversarial review's two findings against D62
+are fixed (design/reviews/signals-end-to-end.md, verdict "Reject as written"): **M-1**, a found
+trace's fragments that lie outside the query's window are never read, so its hull, summary and
+trace-level matches can come from part of its spans; **M-2**, the query caps bound rows and
+compressed bytes, not the memory a query takes. Until then nothing here describes what a query
+over these tables guarantees. The query engine (`engine/traceql`)
 evaluates over an in-memory span source with the logical shape described here (`Span`,
 `TraceSummary`), and a test reads files written here into that shape and gets the same
 answers (`engine/storage/readback`). What stays proposed is marked "proposed".
@@ -57,7 +66,9 @@ rules in `TABLES.md` apply unless this file says otherwise.
   can decode it. `edge` produces it; storage copies it.
 - **Duplicates.** `(trace_id, span_id)` identifies a span; within a file it is unique, and
   across files the file of higher precedence wins (`contracts/BATCH.md`, signal 2, "Row key").
-  Readers de-duplicate on it (proposed: no reader exists yet).
+  Readers de-duplicate on it, as compaction does (section "Compaction", D68): the query path's
+  engine lets the later of two rows with one key win (`contracts/engine.ts` `SignalEngine`; D62,
+  behind `QUERY_SIGNALS`, which stays off: see the status above).
 
 ## `spans`
 
@@ -315,7 +326,10 @@ milliseconds as for metrics.
 Predicates are trees of comparisons on single columns with `and`/`or`, conservative
 (a reader may ignore any of them, or evaluate them on row-group statistics only). Results
 must be identical with pruning on and off; the engine's property tests check this for its
-in-memory source, and any storage reader must be tested the same way.
+in-memory source, and any storage reader must be tested the same way. The query path's reader
+does not meet this yet: a trace whose fragments lie partly outside a search's window is answered
+from part of its spans with pruning on (design/reviews/signals-end-to-end.md M-1), and
+`QUERY_SIGNALS` stays off until it does.
 
 ## Ingest batch
 
@@ -354,8 +368,10 @@ one per cell, beside the metric tables (`{cell}/iceberg/spans/`, `{cell}/iceberg
 ## What stays proposed
 
 - Re-aggregation of `trace_index` from de-duplicated spans (compaction merges fragments; it
-  does not read spans), and the query reader and its pruning. (Flush, compaction, the ledger's
-  tables, retention, the object keys and Iceberg publication are built.)
+  does not read spans). (Flush, compaction, the ledger's tables, retention, the object keys and
+  Iceberg publication are built; the query reader and its pruning by index fragment are built
+  behind `QUERY_SIGNALS` (D62), which stays off until the review's M-1 and M-2 are fixed: see the
+  status above.)
 - Nested-set columns, per-tenant promotion, sampling weights, `with(extrapolate=true)`.
 - The accept window for spans (`edge`'s default: start within 24 hours back and 5 minutes
   ahead) is a default, not a contract value.

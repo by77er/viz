@@ -3,15 +3,25 @@
 **Status (2026-11-19): the file layout, the ingest mapping and the batch are settled and
 written; flushing, the ledger, retention and compaction are built (stage 2), and compaction
 writes the token filter (§6: its place in the file settled 2026-11-19, its reader built in
-`engine/storage`); publishing as an Iceberg table is built (§9, 2026-11-19); using the filter in
-query is proposed.**
+`engine/storage`); publishing as an Iceberg table is built (§9, 2026-11-19); the query path
+reads the table behind `QUERY_SIGNALS`, which stays off (below); using the filter in query is
+proposed.**
 `engine/storage` (`src/logs.rs`) writes `logs` files from log-record batches
 (`contracts/BATCH.md`, signal 3) exactly as below and reads them back; `edge` decodes OTLP
 logs and Loki push into those batches (behind `INGEST_SIGNALS`); the shards of `{pool}/logs`
 hold them, flush encodes each sealed segment (`engine/wasm` ABI 3) into one unit of `logs`
 files keyed by day, and the ledger lists them, plans them by time (milliseconds, the floor of
 the file's `ts` bounds) and expires them by day (`log_days` of the tenant's retention record).
-The publisher publishes them (§9, design/DECISIONS.md D67); the query path does not use them yet. The LogQL engine (`engine/logql`, `viz-logql`) evaluates over an in-memory
+The publisher publishes them (§9, design/DECISIONS.md D67). The query Worker reads them and the
+log tails behind `QUERY_SIGNALS`, off by default (design/DECISIONS.md D62: "The query Worker
+answers Tempo's and Loki's APIs (behind `QUERY_SIGNALS`, …) in one place: files through the leaf
+pool, the signal's shard tails, one engine call"; `query/README.md`, "Traces and logs"). The flag
+stays off until the adversarial review's two findings against D62 are fixed
+(design/reviews/signals-end-to-end.md, verdict "Reject as written"). The one about logs is
+**M-2**: the query caps (`maxLogRows`, the bytes fetched) bound rows and compressed bytes, not the
+memory a query takes, so a tenant's own long lines can take one query past the isolate; **M-1** is
+about traces. Until both are fixed nothing here describes what a query over this table
+guarantees. The LogQL engine (`engine/logql`, `viz-logql`) evaluates over an in-memory
 source shaped like this contract, and a test reads files written here through its
 `LogSource` seam and gets the same answers (`engine/storage/readback`). Everything still
 marked *proposed* may change, here first, before code.
@@ -257,9 +267,11 @@ property tests check that pruning on and off gives byte-identical results.
 
 ## 8. Not defined here, or still proposed
 
-- The query reader and its pruning, the use of the token filter by a query (*proposed*).
-  Flush, compaction (with the token filter's builder and reader), the ledger's `logs` table,
-  retention by day and Iceberg publication (§9) are built.
+- The use of the token filter by a query (*proposed*). Flush, compaction (with the token
+  filter's builder and reader), the ledger's `logs` table, retention by day and Iceberg
+  publication (§9) are built; the query reader and its pruning by stream and time are built
+  behind `QUERY_SIGNALS` (D62), which stays off until the review's M-1 and M-2 are fixed (see the
+  status above).
 - Retention and deletion by line filter (Loki's delete API) are not designed.
 - Promoted metadata columns (`l_…`) for frequently filtered keys, a per-tenant choice of
   OTLP stream labels (the list above is the default), Loki's service-name discovery (viz

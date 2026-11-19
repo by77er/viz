@@ -309,7 +309,9 @@ and time.
 
 The span and log tables are written and listed as built on the write side (stage 2, behind
 `INGEST_SIGNALS`): flush, the ledger, retention and deletion; `query` reads them behind
-`QUERY_SIGNALS` (D62, §6.4), and both halves are joined through the gateway (stage 3), and they
+`QUERY_SIGNALS` (D62, §6.4; off, and to stay off until the review of spans and logs' M-1, trace
+completeness, and M-2, memory under the query caps, are fixed: `design/reviews/signals-end-to-end.md`),
+and both halves are joined through the gateway (stage 3), and they
 are compacted (D68, §5.2). The publisher publishes them as Iceberg tables of their own (D67, §5.3;
 before it, D64's release read them without publishing them): `INGEST_SIGNALS` may go on in a
 deployment only once viz-publisher (D64's release or later), viz-query (D62's or later) and
