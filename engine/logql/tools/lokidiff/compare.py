@@ -28,6 +28,15 @@ KNOWN = [
      "mock querier returns their entries concatenated, not sorted by time as the HTTP API documents, and "
      "applies the limit to that order. viz returns entries sorted by time",
      lambda c, l, d: d == 'ORACLE_UNSORTED'),
+    ('loki-empty-labels-without-label_replace',
+     "series carry empty-valued labels (from `logfmt --keep-empty` or absent parser parameters) into "
+     "`without (...)` grouping or `label_replace`: Loki groups by the label set with the empty labels "
+     "but outputs it without them, so its result holds duplicate label sets (observed: "
+     "`sum without (app)` returns two series `{y=\"1\"}`). viz keeps the empty-valued labels and "
+     "returns distinct series",
+     lambda c, l, d: d is not None and re.search(r'\bwithout\b|label_replace', c['query']) is not None
+     and c.get('viz_ok') and any('""' in json.dumps(s.get('metric', {})) or any(v == '' for v in s.get('metric', {}).values())
+                                 for s in c['viz_data'].get('result', []) if isinstance(s, dict))),
 ]
 
 

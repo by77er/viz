@@ -847,7 +847,13 @@ starts a drain once one is due) writes every pending change as one immutable seg
 object per drain, `If-None-Match: *`, after recording the segment's bounds durably, and
 deletes those rows and advances each stream's *logged* watermark only once the PUT
 returned; a retry writes exactly the recorded segment. Shards may still discard only up to
-the logged watermark. A checkpoint (the whole state) every 256 segments bounds a rebuild.
+the logged watermark. A checkpoint (the whole state) is written after at least 256 segments
+and only once the log since the last checkpoint is as large as it, and replaces the older
+one; segments are kept. The state is bounded: `addUnit` answers `full` above 16 MiB of
+estimated state. The release is forward-only for the ledger's storage (schema migration 2,
+`readableFrom` 2); after a rollback that drained the first layout anyway, the roll-forward
+restarts the incarnation from SQLite, and a rebuild refuses an incarnation holding both
+layouts.
 Starting an incarnation (a new tenant, storage loss, or storage still on the first layout)
 runs outside `blockConcurrencyWhile`: requests wait at most 2 s and are then refused as
 retryable (`ledger_unavailable`), and the incarnation's base segment is written to R2
@@ -859,7 +865,11 @@ mutation answers. (b) One object per change, written in the background. (c) Grou
 on the request path: concurrent mutations share one segment PUT and are answered after it.
 (d) The log in another Durable Object or in D1 instead of R2. (e) Rebuild inside
 `blockConcurrencyWhile`, as before, with checkpoints only. (f) Commit the incarnation first
-and write its base with the first drain (the plan before the protocol model).
+and write its base with the first drain (the plan before the protocol model). For
+checkpoints: (g) every N segments (as first built); (h) the state written as many lines
+across several drains from a snapshot, with a rebuild that streams into SQLite. For the
+rollout: (i) two releases, readers first; (j) after a rollback, stay stuck until an operator
+acts.
 
 **Why.** (a) admitted about one unit per second (S4): an R2 PUT takes 0.17–0.4 s whatever
 its size and AGENTS.md forbids one on the acknowledgement path. (b) keeps one Class A write
@@ -873,6 +883,16 @@ objects already takes 29 s on Cloudflare, where about 30 s resets the object, so
 tenant could never serve again. (f) is the model's trace F11: two storage losses before a
 first drain start the same incarnation number with different contents.
 
+For checkpoints, (g) failed review S-2: a checkpoint is the whole state, so at a busy tenant's
+write rate it costs seconds of blocked object and tens of GB of R2 a day per tenant; tying it
+to the log's volume bounds both by the log. (h) is the real fix for large states and is not
+built: until it is, the size limit keeps a base, a checkpoint and a rebuild inside one
+isolate, and refuses (retryably, explicitly) rather than letting the object reset. For the
+rollout, (i) had no earlier release to protect (no ledger was in production); the boundary is
+made real by the version row instead. (j) is what happens for any other break in the log;
+the rollback's own signature is healed at once because SQLite holds every committed change
+and the protocol model checks that fix (review S-1).
+
 **Measured** (on Cloudflare, `spikes/s4-ledger-scale/`, 2026-11-19, n = 3, 20 s runs): with
 eight writers, 234–422 units per second against 1.7–3.3 for (a) the same day; `addUnit`
 median 16–31 ms against 2.3–4.1 s; logged watermark caught up 0.2–0.8 s after the last
@@ -885,9 +905,10 @@ An outbox row is one SQLite value, so one change is limited to Cloudflare's 2 MB
 
 **Would change if.** R2 PUT latency fell to a few milliseconds (then (c) is simpler); a
 tenant needed more than about 400 units per second from one ledger (then the drain's JSON
-encoding, which shares the object's thread, is the next limit: split the tenant); or
-losing one drain cycle of changes on storage loss became unacceptable (then the log must
-be on the request path again, and the ceiling goes with it).
+encoding, which shares the object's thread, is the next limit: split the tenant); a tenant
+needs more live files than the size limit allows (then (h)); or losing one drain cycle of
+changes on storage loss became unacceptable (then the log must be on the request path
+again, and the ceiling goes with it).
 
 ## D37. A shard refuses early when it has too much in flight, and commits concurrent appends as one group
 
