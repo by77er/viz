@@ -263,6 +263,12 @@ async function analytics() {
       workersInvocationsAdaptive(limit:100,filter:{scriptName:$n,datetime_geq:$s,datetime_leq:$u}){sum{requests subrequests errors} quantiles{cpuTimeP50 cpuTimeP99}}}}}`,
     { a: A, n: WORKER, s: since, u: until },
   )
+  const r2 = await gql(
+    `query($a:String!,$b:String!,$s:Time!,$u:Time!){viewer{accounts(filter:{accountTag:$a}){
+      r2OperationsAdaptiveGroups(limit:100,filter:{bucketName:$b,datetime_geq:$s,datetime_leq:$u}){sum{requests} dimensions{actionType}}
+      r2StorageAdaptiveGroups(limit:10,filter:{bucketName:$b,datetime_geq:$s,datetime_leq:$u}){max{objectCount payloadSize metadataSize}}}}}`,
+    { a: A, b: BUCKET, s: since, u: until },
+  )
   const ns = ((await api('GET', 'workers/durable_objects/namespaces?per_page=100')).json?.result ?? []).filter((n) => n.script === WORKER)
   const dobj = ns.length
     ? await gql(
@@ -272,8 +278,8 @@ async function analytics() {
         { a: A, ids: ns.map((n) => n.id), s: since.slice(0, 13) + ':00:00Z', u: until },
       )
     : null
-  save('analytics.json', { window: { since, until }, catalog, workers, durableObjects: dobj })
-  console.log(JSON.stringify({ window: { since, until }, catalog, workers, durableObjects: dobj }, null, 1).slice(0, 6000))
+  save('analytics.json', { window: { since, until }, catalog, workers, durableObjects: dobj, r2 })
+  console.log(JSON.stringify({ window: { since, until }, catalog, workers, durableObjects: dobj, r2 }, null, 1).slice(0, 8000))
 }
 
 async function down() {

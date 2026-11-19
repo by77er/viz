@@ -112,6 +112,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `LEAK_D30_ll` no leak, D30 + log as built: compaction, retention (2 removals), ledger loss, no shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | holds (exhaustive) | 1,640,059 | 10,097,949 | 56 | 172.4 s | 7.3e-8 |
 | `LEAK_D30_sl` no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,090,381 | 6,619,573 | 52 | 130.1 s | 3.2e-8 |
 | `LEAK_V1_sl` no leak, the rules before D30: same bounds as LEAK_D30_sl; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,226,068 | 7,552,989 | 53 | 135.9 s | 4.1e-8 |
+| `LEAK_D30_sl_comp` no leaked compaction output, D30 + log as built: compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | stopped: memory bound: stopped at 3,000,001 states (depth 34); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,001 | 15,451,988 | 34 | 221.7 s | 2.4e-7 |
 
 ## Counterexamples
 

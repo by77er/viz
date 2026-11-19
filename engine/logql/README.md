@@ -141,9 +141,11 @@ x86-64, 4 cores and 16 GB shared with other builds (load average 7 to 15 during 
 rustc 1.97.0, Go 1.24.7 (and go1.26.10 for the harness), Node 22.23. Measured here, not on
 Cloudflare, on 2026-11-19.
 
-`cargo test` runs: unit tests (25), `tests/api.rs` (7), `tests/conformance.rs` (1, the
-oracle), `tests/props.rs` (7 properties), the doc test; `tests/differential.rs` holds the
-two ignored exporters.
+`cargo test` runs offline and needs no Go: unit tests (25), `tests/api.rs` (7),
+`tests/semantics.rs` (10, rules observed in Loki), `tests/conformance.rs` (1; it reports
+itself skipped unless `tools/oracle/fetch.sh` was run), `tests/props.rs` (7 properties) and
+the doc test. The differential exporters in `tests/differential.rs` are `#[ignore]`d; the
+oracle fetch, the Loki harness and the mutation run are explicit commands (below).
 
 ### (a) Conformance: Loki's test tables as a behavioural oracle
 
@@ -155,7 +157,20 @@ the result line and labels. Without the files the test says it is skipped and pa
 
 | table | pass | fail | skip | not extracted |
 |---|---:|---:|---:|---:|
-FILL_CONFORMANCE
+| `ParseTestCases` (accepted / rejected) | 194 | 1 | 3 | 0 |
+| `TestParseSampleExpr_equalityMatcher` | 13 | 0 | 0 | 0 |
+| `TestParseLogSelectorExpr_equalityMatcher` | 7 | 0 | 0 | 0 |
+| `Test_jsonParser_Parse` | 11 | 4 | 0 | 1 |
+| `TestJSONExpressionParser` | 27 | 0 | 0 | 2 |
+| `TestLogfmtParser_parse` (non-strict and strict) | 21 | 3 | 0 | 1 |
+| `TestLogfmtParser_keepEmpty` | 2 | 2 | 0 | 0 |
+| `TestLogfmtExpressionParser` | 10 | 0 | 0 | 0 |
+| `Test_regexpParser_Parse` | 5 | 0 | 0 | 0 |
+| `Test_PatternParser` | 4 | 0 | 0 | 0 |
+| `Test_unpackParser_Parse` | 9 | 0 | 0 | 1 |
+| `Test_lineFormatter_Format` | 51 | 0 | 1 | 0 |
+| `Test_labelsFormatter_Format` | 17 | 0 | 5 | 5 |
+| **total** | **371** | **10** | **9** | **10** |
 
 - **Fail** cases are pinned with their reason in `tests/conformance_known_failures.txt`; the
   test fails on any other failure, and on a pinned case that passes. 7 are invalid UTF-8 in
@@ -185,7 +200,25 @@ byte-size fields, some that do not convert) and queries covering the feature lis
 queries and 10 metric queries per data set, 40% of the metric ones also as instant queries,
 plus literals). `tools/lokidiff/compare.py` compares and classifies.
 
-FILL_DIFF
+Final run: five generator seeds (7, 11, 12, 21, 33) × 60 data sets = 300 data sets, 1,924
+streams, 75,458 rows; a third of the data sets put rows on whole seconds so rows fall exactly
+on window edges and on other streams' timestamps.
+
+| queries | evaluations | agree | both fail | explained difference | unexplained |
+|---|---:|---:|---:|---:|---:|
+| log (range) | 3,600 | 3,558 | 10 | 32 | 0 |
+| metric, range | 3,000 | 2,816 | 159 | 25 | 0 |
+| metric, instant | 1,195 | 1,164 | 28 | 3 | 0 |
+| literals | 86 | 86 | 0 | 0 | 0 |
+| **total** | **7,881** | **7,624** | **197** | **60** | **0** |
+
+"Both fail" is mostly metric queries whose samples carry errors (171: JSONParserErr 94,
+SampleExtractionErr 36, LogfmtParserErr 26, LabelFilterErr 15), 5 many-to-one matches
+without `group_left`, and 21 generated queries both reject (for example a grouping on
+`sum_over_time`). Values agree within 1e-9 relative (labels, timestamps and log lines
+exactly). Explained differences by class: `loki-empty-labels-without-label_replace` 24,
+`oracle-merged-streams-unsorted` 17, `oracle-merged-streams` 15,
+`loki-sum-ignores-parser-errors` 2, `loki-topk-ties-nondeterministic` 2.
 
 Every difference is classified; none is unexplained. The classes (each a rule in
 `compare.py` with its evidence):
