@@ -9,6 +9,7 @@
     "mutants": "node scripts/mutants.mjs",
     "measure": "vitest run test/examples.test.ts -t measurements --reporter=verbose",
     "conformance": "node scripts/conformance.mjs",
+    "oauth-client": "node scripts/oauth-client.mjs",
     "spike:libs": "vitest run --config test/spike/vitest.config.ts"
   },
   "dependencies": {

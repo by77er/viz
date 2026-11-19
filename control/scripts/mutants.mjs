@@ -30,7 +30,8 @@ const mutants = [
     ...FROM_QUERY,
     ['src/index.ts', 'await rpc.invoke(identity, match.route.op as OpName, input)', "await rpc.invoke({ ...identity, tenant: url.searchParams.get('tenant') ?? identity.tenant }, match.route.op as OpName, input)"],
     ['src/tenant.ts', INVOKE_TENANT_CHECK, ''],
-    ['src/tenant.ts', 'if (id.keyId !== undefined) {', 'if (false) {'],
+    // (Since the review of D44 the object checks every identity's key; trusting what it is told is now this.)
+    ['src/tenant.ts', '      const live = await this.resolveKey(id.tenant, id.keyId)\n', "      const live = { subject: id.subject, kind: id.kind as 'key', name: id.name ?? '', scopes: id.scopes }\n"],
   ]],
   ['secret stored in clear', [['src/ops-keys.ts', 't.tenant, keyId, id, sha256Hex(secret))', 't.tenant, keyId, id, secret)']]],
   ['list returning the stored secret material', [['src/ops-keys.ts', '    prefix: `viz_${row.key_id}`,', "    prefix: `viz_${row.key_id}`,\n    secretSha256: t.one<{ s: string }>('SELECT secret_sha256 AS s FROM key_secrets WHERE tenant = ? AND key_id = ?', t.tenant, row.key_id)?.s ?? null,"]]],
@@ -103,7 +104,7 @@ const mutants = [
   ['whoami: mayApply ignores the tenant setting (agents with the scope always may)', [['src/tenant.ts', 'mayApply: mayApply(t, c) } })', "mayApply: c.id.scopes.includes('dashboards:apply') || c.id.scopes.includes('admin') } })"]]],
   ['versioned: migration 2 declared forward-only (readableFrom 2)', [['src/schema.ts', "      readableFrom: 1,\n      up: (sql) => {\n        if (!columnsOf", "      readableFrom: 2,\n      up: (sql) => {\n        if (!columnsOf"]]],
   ['versioned: released migration 2 edited in place (the column is not added)', [['src/schema.ts', "if (!columnsOf(sql, 'proposals').has('spec')) sql.exec(V2)", 'void columnsOf']]],
-  ['health: /healthz is not served (or needs a credential)', [['src/index.ts', "      if (new URL(req.url).pathname === '/healthz') return health(req, env)\n", '']]],
+  ['health: /healthz is not served (or needs a credential)', [['src/index.ts', "      if (pathname === '/healthz') return health(req, env)\n", '']]],
   // 59–65: the service surface (contracts/control.ts) and the notification settings it serves.
   ['service: notificationTarget answers for any tenant (the tenant check dropped)', [['src/tenant.ts', "    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }\n    return notificationTarget(this)", "    if (this.tenant === '') return { v: 1, status: 'not_provisioned' }\n    return notificationTarget(this)"]]],
   ['service: serviceKey issues for any tenant (the tenant check dropped)', [['src/tenant.ts', "    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }\n    if (!Object.hasOwn(SERVICE_KEYS, service))", "    if (this.tenant === '') return { v: 1, status: 'not_provisioned' }\n    if (!Object.hasOwn(SERVICE_KEYS, service))"]]],
@@ -112,6 +113,54 @@ const mutants = [
   ['service: a service key a person disabled is replaced (access the tenant withdrew comes back)', [['src/ops-keys.ts', "  if (row && row.disabled === 1) return { v: 1, status: 'disabled', name }\n", '']]],
   ['service: a rotation keeps the previous secret live', [['src/ops-keys.ts', "  t.run('DELETE FROM key_secrets WHERE tenant = ? AND key = ?', t.tenant, row.id)\n  bumpRevocation(t, now)\n  const { keyId, secret } = mint()", "  bumpRevocation(t, now)\n  const { keyId, secret } = mint()"]]],
   ['service: a person may create a key under the reserved service: prefix', [['src/ops-keys.ts', '  if (name.startsWith(SERVICE_KEY_PREFIX)) {', '  if (name.startsWith(SERVICE_KEY_PREFIX) && false) {']]],
+  // 66–90: OAuth for agents (D44, contracts/oauth.ts)
+  ['oauth: a grant holds scopes its approver\'s key does not', [['src/ops-oauth.ts', 'const granted = wanted.filter((s) => mine.has(s))', 'const granted = wanted']]],
+  ['oauth: admin stands for every grantable scope', [['src/oauth.ts', '  if (out.has(\'admin\')) for (const s of ADMIN_IMPLIES) out.add(s)', '  if (out.has(\'admin\')) for (const s of OAUTH_SCOPES) out.add(s)']]],
+  ['oauth: an agent key may approve', [['src/ops-oauth.ts', "  if (c.id.kind === 'agent') throw new Problem(403, 'approver-not-a-person',", "  if (false) throw new Problem(403, 'approver-not-a-person',"]]],
+  ['oauth: approving needs only dashboards:write, not admin', [['src/routes.ts', "r('POST', '/oauth/approve', 'oauth.approve', ADMIN)", "r('POST', '/oauth/approve', 'oauth.approve', D_WRITE)"]]],
+  ['oauth: the PKCE verifier is not checked at the token endpoint', [['src/ops-oauth.ts', '    if (!pkceMatches(req.code_verifier!, row.challenge))', '    if (false)']]],
+  ['oauth: plain PKCE (or none) accepted at /oauth/authorize', [['src/oauth-http.ts', "  if (q.get('code_challenge_method') !== 'S256') return back(", "  if (false) return back("]]],
+  ['oauth: a used code is accepted again', [['src/ops-oauth.ts', '    if (row.used_at !== null) {\n      // A code used twice', '    if (false) {\n      // A code used twice']]],
+  ['oauth: code reuse refused but what it issued not revoked', [['src/ops-oauth.ts', "      if (g) revokeGrant(t, g, SYSTEM, now, 'code-reuse')\n", '']]],
+  ['oauth: refresh tokens not rotated (a used one stays valid)', [['src/ops-oauth.ts', "    t.run('UPDATE oauth_tokens SET rotated_at = ? WHERE tenant = ? AND hash = ?', now, t.tenant, hash)\n", '']]],
+  ['oauth: refresh token reuse refused but the grant not revoked', [['src/ops-oauth.ts', "      if (g) revokeGrant(t, g, SYSTEM, now, 'refresh-reuse')\n", '']]],
+  ['oauth: redirect URI matched as a prefix at /oauth/authorize (open redirect)', [['src/oauth-http.ts', 'if (redirectUri === null || !reg.uris.includes(redirectUri))', 'if (redirectUri === null || !reg.uris.some((u) => redirectUri.startsWith(u)))']]],
+  ['oauth: redirect URI not checked at the token endpoint', [['src/ops-oauth.ts', "    if (req.redirect_uri !== row.redirect_uri) return", '    if (false) return']]],
+  ['oauth: an error is redirected to the client\'s callback automatically (302)', [['src/oauth-http.ts', "  return page(400, `viz: the application asked for something this server does not grant.", "  return Response.redirect(link, 302) ?? page(400, `viz: the application asked for something this server does not grant."]]],
+  ['oauth: the client id\'s signature is not checked (tampered or forged registrations accepted)', [['src/oauth.ts', "  const ok = await crypto.subtle.verify('HMAC', await hmacKey(secret, 'verify'), mac, utf8(m[1]!))", '  const ok = mac.length === 32']]],
+  ['oauth: an unapproved registration never expires', [['src/ops-oauth.ts', '    if (c.now - reg.iat * 1000 > OAUTH_LIFETIMES.unboundRegistrationSeconds * 1000) {', '    if (false) {']]],
+  ['oauth: an expired access token is accepted', [['src/ops-oauth.ts', "  if (row.expires_at <= now) return inactive('expired')", '']]],
+  ['oauth: the audience is not checked (a token for another resource is accepted)', [['src/ops-oauth.ts', "  if (!sameResource(resource, g.resource)) return inactive('audience')", '']]],
+  ['oauth: revoking a grant leaves its tokens', [['src/ops-oauth.ts', "  t.run('DELETE FROM oauth_tokens WHERE tenant = ? AND grant_id = ?', t.tenant, g.id)\n", '']]],
+  ['oauth: revoking a grant leaves its key (live in KV for the data path)', [['src/ops-oauth.ts', '  if (keyOf(t, g)) dropKey(t, g.key!, now)\n', '']]],
+  ['oauth: a suspended grant (its key disabled) still works at the resource', [['src/ops-oauth.ts', "  if (k.disabled === 1 || a === 'disabled') return inactive('suspended')", "  if (a === 'disabled') return inactive('suspended')"]]],
+  ['oauth: introspection answers for another tenant\'s object (tenant check dropped)', [['src/tenant.ts', "    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }\n    const kind = typeof token === 'string' ? parseCredential(token) : null", "    if (this.tenant === '') return { v: 1, status: 'not_provisioned' }\n    const kind = typeof token === 'string' ? parseCredential(token) : null"]]],
+  ['oauth: the token endpoint takes the tenant from a form field', [['src/oauth-http.ts', 'const r = await tenantStub(env, cred.tenant).oauthToken(cred.tenant, request)', 'const r = await tenantStub(env, form.tenant ?? cred.tenant).oauthToken(form.tenant ?? cred.tenant, request)']]],
+  ['oauth: a code is stored in clear, not hashed', [['src/ops-oauth.ts', '    t.tenant, hashCredential(p.code!), p.grantId, req.code_challenge,', '    t.tenant, p.code!, p.grantId, req.code_challenge,'], ['src/ops-oauth.ts', "  const hash = hashCredential(req.code)\n  const gone = 'The authorization code", "  const hash = req.code\n  const gone = 'The authorization code"]]],
+  ['oauth: an error body repeats the presented code', [['src/ops-oauth.ts', "  const gone = 'The authorization code is unknown, expired or already used.'", "  const gone = `The authorization code ${req.code} is unknown, expired or already used.`"]]],
+  ['oauth: a code nobody exchanged leaves its grant (and key) live', [['src/ops-oauth.ts', "  for (const g of open('id IN (SELECT grant_id FROM oauth_codes WHERE tenant = ? AND used_at IS NULL AND expires_at <= ?)', t.tenant, now)) revokeGrant(t, g, SYSTEM, now, 'not-exchanged')\n", '']]],
+  ['oauth: a grant\'s key can be rotated through the keys API (its sealed copies go stale)', [['src/ops-keys.ts', "  guardGrantKey(row, 'rotated')\n", '']]],
+  ['oauth: introspection ignores the approver\'s key (a grant outlives it, or works while it is disabled)', [['src/ops-oauth.ts', '  const a = approver(t, cur, now)', "  const a = 'live' as 'live' | 'disabled' | 'gone'"]]],
+  ['oauth: a credential naming an unprovisioned tenant creates storage for it (the object migrates on construction)', [['src/tenant.ts', '      if (empty) {\n        this.unopened = true', '      if (false) {\n        this.unopened = true']]],
+  // ---- the review of D44 (design/reviews/d44-d52-d53-d60.md): each undoes one fix ----
+  ['review M-1: OAuthIntrospection answers any caller (props.caller not checked)', [['src/introspection.ts', "  if (typeof caller !== 'string' || !OAUTH_INTROSPECTION_CALLERS.includes(caller)) return { v: 1, status: 'unauthorized' }", '']]],
+  ['review M-1: invoke accepts an identity without a key, as the caller states it', [['src/tenant.ts',
+    "      if (typeof id.keyId !== 'string') throw new Problem(401, 'unauthenticated', 'Only an API key is accepted here.', 'Send \"Authorization: Bearer viz_<keyId>_<secret>\".')\n      // The key must still be live here, whatever KV or a cache said a moment ago.\n      const live = await this.resolveKey(id.tenant, id.keyId)\n      if (!live) throw new Problem(401, 'unauthenticated', 'The API key is disabled, expired or deleted.', 'Use a key that is enabled and not expired.')\n      if ('status' in live) throw schemaProblem(live)\n      const identity: Identity = { ...id, ...live }",
+    "      let identity: Identity = id\n      if (id.keyId !== undefined) {\n        const live = await this.resolveKey(id.tenant, id.keyId)\n        if (!live) throw new Problem(401, 'unauthenticated', 'The API key is disabled, expired or deleted.', 'Use a key that is enabled and not expired.')\n        if ('status' in live) throw schemaProblem(live)\n        identity = { ...id, ...live }\n      }"]]],
+  ['review M-1: a grant whose approver is not a key counts as live (approver check fails open)', [['src/ops-oauth.ts', "  if (id === null) return 'gone'", "  if (id === null) return 'live'"]]],
+  ['review M-1: approve accepts an approver that is not a key', [['src/ops-oauth.ts', "  if (!c.id.subject.startsWith('key:')) throw new Problem(403, 'approver-not-a-key',", "  if (false) throw new Problem(403, 'approver-not-a-key',"]]],
+  ['review M-2: the token endpoint asks the object without checking the tag', [['src/oauth-http.ts', "  if (!(await credentialTagValid(oauthConfig(env).clientKey, presented))) return oauthError(400, 'invalid_grant', 'The credential is unknown, expired or revoked.')\n", '']]],
+  ['review M-2: revocation asks the object without checking the tag', [['src/oauth-http.ts', " || !(await credentialTagValid(oauthConfig(env).clientKey, form.token))) return json(200, null)", ') return json(200, null)']]],
+  ['review M-2: OAuthIntrospection asks the object without checking the tag', [['src/introspection.ts', '  if (!(await credentialTagValid(oauthConfig(env).clientKey, token))) return unknown\n', '']]],
+  ['review M-2: any credential of the right shape passes the tag check', [['src/oauth.ts', '  return sameString(await tagOf(secret, credential.slice(0, cut)), credential.slice(cut))', '  return cut > 0']]],
+  ['review M-2: the token endpoint re-arms the alarm after a request that wrote nothing', [['src/tenant.ts', '    if (this.rowsWritten !== before) await this.settle()\n    return out', '    await this.settle()\n    return out']]],
+  ['review M-2: revocation re-arms the alarm after a request that wrote nothing', [['src/tenant.ts', "    if (this.rowsWritten !== before) await this.settle()\n    return { v: 1, status: 'ok' }", "    await this.settle()\n    return { v: 1, status: 'ok' }"]]],
+  ['review M-2: a request that wrote something does not re-arm the alarm or publish', [['src/tenant.ts', '    if (this.rowsWritten !== before) await this.settle()\n    return out', '    return out']]],
+  ['review m-1: an approver key\'s expiry is no alarm deadline', [['src/ops-oauth.ts', '    if (expires !== null) out.push(expires)\n', '']]],
+  ['review m-2: a body without Content-Length is read whole before its size is checked', [['src/oauth-http.ts', '    if (size > max) {\n      await reader.cancel().catch(() => {})\n      return null\n    }\n    parts.push(value)', '    parts.push(value)'], ['src/oauth-http.ts', '  const out = new Uint8Array(size)\n', '  if (size > max) return null\n  const out = new Uint8Array(size)\n']]],
+  ['review m-3: a redirect URI may carry non-ASCII (bidirectional, invisible) characters', [['src/oauth.ts', "  if (/[^\\x20-\\x7e]/.test(u)) return 'must be ASCII", "  if (false) return 'must be ASCII"]]],
+  ['review m-5: the approval warns to approve only what one started for loopback redirects only', [['src/ops-oauth.ts', '  warnings.push(`Approve only a connection you started yourself,', '  if (isLoopback(req.redirect_uri)) warnings.push(`Approve only a connection you started yourself,']]],
+  ['review m-5: the authorize page warns for loopback redirects only', [['src/oauth-http.ts', "    '              Approve only a connection you started yourself, in the application you mean to connect:',\n    '              anyone can make a link to this page and send it to you.',", "    ...(isLoopback(redirectUri) ? ['              Approve only a connection you started yourself, in the application you mean to connect:', '              anyone can make a link to this page and send it to you.'] : []),"]]],
 ]
 
 const only = process.argv[2]
@@ -141,7 +190,7 @@ for (const [name, edits] of mutants) {
     } catch (e) {
       const out = String(e.stdout ?? '') + String(e.stderr ?? '')
       const tests = /Tests\s+(\d+) failed/.exec(out)
-      const files = [...new Set([...out.matchAll(/FAIL\s+(test\/[a-z]+\.test\.ts)/g)].map((m) => m[1].replace('test/', '').replace('.test.ts', '')))]
+      const files = [...new Set([...out.matchAll(/FAIL\s+(test\/[a-z-]+\.test\.ts)/g)].map((m) => m[1].replace('test/', '').replace('.test.ts', '')))]
       // Only a test that ran and failed kills a mutant. A suite that crashed, hung or was
       // killed gave no result: reported as such and counted as not killed (rerun it).
       if (tests) {

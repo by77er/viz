@@ -164,7 +164,7 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
         const from = to - 7 * DAY + MIN
         let rule: Record<string, unknown>
         if (kind === 'threshold') rule = { alert: 'Up', expr: 'latency_ms > 0', for: '2m' }
-        else if (kind === 'ewma') rule = { alert: 'Latency', expr: 'latency_ms', anomaly: { params: { halfLifePoints: 10, minPoints: 5 }, max_series: series } }
+        else if (kind === 'ewma') rule = { alert: 'Latency', expr: 'latency_ms', anomaly: { detector: 'ewma', params: { halfLifePoints: 10, minPoints: 5 }, max_series: series } }
         else {
           rule = { alert: 'CheckoutSLO', slo: { objective: 0.999, sli: SLI, max_series: series } }
           if (series > 100) ok(await stub.configure(tenant, { limits: { maxSloSeriesPerRule: series } } as never))

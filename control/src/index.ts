@@ -1,10 +1,14 @@
 import { Problem } from './errors'
 import { type Identity, type IdentityEnv, identify } from './identity'
+import { OAUTH_PATHS, readCapped, serveOAuth } from './oauth-http'
 import { type OpInput, type OpName, type OpResult, PREFIX, matchRoute } from './routes'
 import type { TenantEnv } from './tenant'
 import spec from '../openapi.json'
 
 export { Tenant } from './tenant'
+// The agent surface's one question (contracts/oauth.ts OAUTH_INTROSPECTION_ENTRYPOINT): bound by
+// mcp/ as a service binding naming it, instead of the Tenant class.
+export { OAuthIntrospection } from './introspection'
 export { clearAuthCache } from '../../edge/src/auth'
 
 /**
@@ -14,6 +18,11 @@ export { clearAuthCache } from '../../edge/src/auth'
  * (`identify`), turning the request into an operation from the route table, and handing
  * it to the caller's own Tenant object. Which object that is comes from the credential
  * alone; a request that tries to name a tenant is refused.
+ *
+ * It also serves the OAuth authorization server's public endpoints for agents
+ * (`/.well-known/oauth-authorization-server`, `/oauth/…`: src/oauth-http.ts, D44), and exports
+ * `OAuthIntrospection`, the entrypoint the agent surface checks access tokens through
+ * (src/introspection.ts).
  */
 export interface Env extends IdentityEnv, TenantEnv {
   /** Comma-separated origins allowed to call from a browser. */
@@ -62,10 +71,9 @@ const problemResult = (p: Problem): OpResult => ({ status: p.status, body: p.bod
 
 async function readBody(req: Request): Promise<unknown> {
   if (req.method === 'GET' || !req.body) return undefined
-  const declared = Number(req.headers.get('Content-Length') ?? '0')
-  if (declared > MAX_BODY_BYTES) throw new Problem(413, 'body-too-large', `The request body may be at most ${MAX_BODY_BYTES} bytes.`, 'Send a smaller request.')
-  const bytes = new Uint8Array(await req.arrayBuffer())
-  if (bytes.length > MAX_BODY_BYTES) throw new Problem(413, 'body-too-large', `The request body may be at most ${MAX_BODY_BYTES} bytes.`, 'Send a smaller request.')
+  // Read with a cap: a body without Content-Length is never buffered past it.
+  const bytes = await readCapped(req, MAX_BODY_BYTES)
+  if (bytes === null) throw new Problem(413, 'body-too-large', `The request body may be at most ${MAX_BODY_BYTES} bytes.`, 'Send a smaller request.')
   if (bytes.length === 0) return undefined
   const type = (req.headers.get('Content-Type') ?? '').split(';')[0]!.trim().toLowerCase()
   if (type !== 'application/json' && type !== 'application/json-patch+json') {
@@ -141,7 +149,9 @@ export function createWorker(hooks: Hooks = {}): ExportedHandler<Env> {
 
   return {
     async fetch(req, env): Promise<Response> {
-      if (new URL(req.url).pathname === '/healthz') return health(req, env)
+      const pathname = new URL(req.url).pathname
+      if (pathname === '/healthz') return health(req, env)
+      if (OAUTH_PATHS.has(pathname)) return serveOAuth(req, env)
       const cors = corsHeaders(req, env)
       if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
       try {

@@ -1,4 +1,5 @@
 import { SERVICE_KEYS, SERVICE_KEY_PREFIX, type ServiceKeyResult, type ServiceName } from '../../contracts/control'
+import { GRANT_KEY_PREFIX } from '../../contracts/oauth'
 import { sha256Hex } from '../../dashboard/src/index.ts'
 import { DAY_MS } from './caps'
 import { Problem, invalid, notFound } from './errors'
@@ -105,10 +106,13 @@ export function purgeStaleSecrets(t: Tenant, now: number): void {
 
 const mint = (): { keyId: string; secret: string } => ({ keyId: randomId(16), secret: randomId(40) })
 
+/** A key id and secret, made outside a transaction (OAuth seals the secret before it commits the key). */
+export const mintKey = (): { keyId: string; secret: string } => mint()
+
 /** Insert a key and queue its KV record. Returns the one and only copy of the full key. */
-export function newKey(t: Tenant, actor: Actor, now: number, k: { name: string; scopes: string[]; kind: 'key' | 'agent'; expiresAt: number | null }): { view: Record<string, unknown>; secret: string } {
+export function newKey(t: Tenant, actor: Actor, now: number, k: { name: string; scopes: string[]; kind: 'key' | 'agent'; expiresAt: number | null }, preset?: { keyId: string; secret: string }): { view: Record<string, unknown>; secret: string } {
   const id = `k_${randomId(22)}`
-  const { keyId, secret } = mint()
+  const { keyId, secret } = preset ?? mint()
   t.run(
     'INSERT INTO keys (tenant, id, name, kind, scopes, key_id, created_at, created_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     t.tenant, id, k.name, k.kind, JSON.stringify(k.scopes), keyId, now, JSON.stringify(actor), k.expiresAt,
@@ -116,6 +120,26 @@ export function newKey(t: Tenant, actor: Actor, now: number, k: { name: string; 
   t.run('INSERT INTO key_secrets (tenant, key_id, key, secret_sha256, valid_until) VALUES (?, ?, ?, ?, NULL)', t.tenant, keyId, id, sha256Hex(secret))
   publishKey(t, id, now)
   return { view: keyView(t, load(t, id), now), secret: `viz_${keyId}_${secret}` }
+}
+
+/**
+ * A grant's key (`oauth:<grantId>`) has its secret sealed under the grant's tokens: a rotation
+ * would leave every token pointing at a dead secret, and a delete would leave a grant without a
+ * key. Both go through the grant. Disable and enable work as for any key (they suspend the grant).
+ */
+function guardGrantKey(row: KeyRow, verb: string): void {
+  if (!row.name.startsWith(GRANT_KEY_PREFIX)) return
+  const grant = row.name.slice(GRANT_KEY_PREFIX.length)
+  throw new Problem(409, 'grant-key', `This key belongs to the OAuth grant ${grant}; it cannot be ${verb} on its own.`, `Revoke the grant instead: POST /api/v1/control/oauth/grants/${grant}/revoke. To suspend it, disable the key.`, { grant })
+}
+
+/** Remove a key: its KV records, secrets, usage and row; bump the revocation generation. Inside the caller's transaction. */
+export function dropKey(t: Tenant, id: string, now: number): void {
+  for (const s of t.all<{ key_id: string }>('SELECT key_id FROM key_secrets WHERE tenant = ? AND key = ?', t.tenant, id)) t.publish(`key:${s.key_id}`, null, now)
+  t.run('DELETE FROM key_secrets WHERE tenant = ? AND key = ?', t.tenant, id)
+  t.run('DELETE FROM key_usage WHERE tenant = ? AND key = ?', t.tenant, id)
+  t.run('DELETE FROM keys WHERE tenant = ? AND id = ?', t.tenant, id)
+  bumpRevocation(t, now)
 }
 
 /** A tenant must not lock itself out: its last live admin key cannot be disabled or deleted. */
@@ -157,6 +181,10 @@ const create: Op = (t, c) => {
   if (name.startsWith(SERVICE_KEY_PREFIX)) {
     // Service keys are issued by viz (contracts/control.ts): a person's key under such a name would be taken over by the service.
     throw invalid(`Key names starting with "${SERVICE_KEY_PREFIX}" are reserved for keys viz issues to its own services.`, 'Choose another name.', { field: 'name' })
+  }
+  if (name.startsWith(GRANT_KEY_PREFIX)) {
+    // A grant's key (contracts/oauth.ts) is made when a person approves an OAuth client.
+    throw invalid(`Key names starting with "${GRANT_KEY_PREFIX}" are reserved for the keys of OAuth grants.`, 'Choose another name.', { field: 'name' })
   }
   if (!Array.isArray(b.scopes) || b.scopes.length === 0 || !b.scopes.every((s) => typeof s === 'string' && (SCOPES as readonly string[]).includes(s))) {
     throw invalid('"scopes" must be a non-empty list of known scopes.', `Choose from: ${SCOPES.join(', ')}.`, { field: 'scopes' })
@@ -206,6 +234,7 @@ const rotate: Op = (t, c) => {
     throw invalid('"overlapSeconds" must be 0 or at least 60.', 'The overlap is a KV expiration, which cannot be shorter than 60 seconds. Use 0 to end the old secret now.', { field: 'overlapSeconds' })
   }
   const row = load(t, c.input.params.key!)
+  guardGrantKey(row, 'rotated')
   const before = keyView(t, row, c.now)
   purgeStaleSecrets(t, c.now)
   if (overlap === 0) {
@@ -233,12 +262,9 @@ const remove: Op = (t, c) => {
     throw invalid('Deleting a key needs its name repeated as confirmation.', 'Send {"confirmName": "<the key\'s exact name>"} in the body (or ?confirmName=). To stop a key without deleting it, disable it.', { field: 'confirmName' })
   }
   guardLastAdmin(t, row, c.now, 'delete')
+  guardGrantKey(row, 'deleted')
   const before = keyView(t, row, c.now)
-  for (const s of t.all<{ key_id: string }>('SELECT key_id FROM key_secrets WHERE tenant = ? AND key = ?', t.tenant, row.id)) t.publish(`key:${s.key_id}`, null, c.now)
-  t.run('DELETE FROM key_secrets WHERE tenant = ? AND key = ?', t.tenant, row.id)
-  t.run('DELETE FROM key_usage WHERE tenant = ? AND key = ?', t.tenant, row.id)
-  t.run('DELETE FROM keys WHERE tenant = ? AND id = ?', t.tenant, row.id)
-  bumpRevocation(t, c.now)
+  dropKey(t, row.id, c.now)
   t.audit(c.actor, c.now, 'key.delete', 'key', row.id, before, null)
   return { status: 200, body: { deleted: row.id } }
 }

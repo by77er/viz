@@ -92,7 +92,10 @@ export function harness(opts: { prom?: PromOptions; deps?: Partial<Deps>; env?: 
     now: () => NOW_MS,
     ...(opts.deps ?? {}),
   })
-  const e = { ...env, ...(opts.env ?? {}) }
+  // The agent surface gets what production binds: not the Tenant namespace, which is here for the
+  // tests' own setup only (provisioning); OAuth tokens are checked through OAUTH (review of D44, M-1).
+  const { TENANT: _setupOnly, ...bound } = env
+  const e = { ...bound, ...(opts.env ?? {}) }
   return { worker, prom, ruler, fetch: (req) => worker.fetch!(req as never, e as never, ctx) as Promise<Response> }
 }
 

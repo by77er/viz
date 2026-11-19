@@ -1,0 +1,1340 @@
+{
+ "frozenAt": "2026-11-19T02:27:28.097Z",
+ "statement": "Written by bench/freeze.ts from NAB alone, before any SMD file was fetched and before any detector was run on SMD. Nothing below may be changed after SMD is scored; a change is a new experiment, reported as such.",
+ "nab": {
+  "manifestSha256": "8dabfac302d638e47671f44ccdba3f8fa6e79b42cab74118f9d02ce806cb8414",
+  "files": 58,
+  "windows": 116,
+  "heldOutResultsSha256": "e444670d088934bed6f50f49fdcd5ed36a6995968a9baf07b280ec33d7ef4f2a"
+ },
+ "code": {
+  "src": "440d314d8af6720956f2956e60a4f45df058262fa9d01b14cdaee29e41cdad68",
+  "bench/adapters.ts": "f27191493513e2e0b690e766466cff8929669003d14ca8e5da2be50bb2640f68",
+  "bench/nab.ts": "766f072015090aeae487878831ad7f17542c661adf772f44b5c66d20a1d381be"
+ },
+ "protocol": {
+  "dataset": {
+   "name": "SMD (Server Machine Dataset), from OmniAnomaly: Su et al., \"Robust Anomaly Detection for Multivariate Time Series through Stochastic Recurrent Neural Network\", KDD 2019",
+   "source": "https://raw.githubusercontent.com/NetManAIOps/OmniAnomaly/master/ServerMachineDataset/{train,test,test_label,interpretation_label}/machine-*.txt",
+   "licence": "MIT: the repository LICENSE (Copyright (c) 2021 NetManAIOps-OmniAnomaly), read 2026-11-19; the README gives no separate terms for the data. Fetched at run time into bench/data/smd/ (git-ignored); nothing is stored in the repository.",
+   "machines": 28,
+   "dimensions": 38,
+   "stepMs": 60000,
+   "originMs": 1546300800000,
+   "note": "SMD has no timestamps; rows are taken as 1 minute apart (the paper's granularity) from a fixed origin. Parameters are in points, as chosen on NAB (mostly 5-minute data), so their span in time is 5 times shorter here: part of what is tested."
+  },
+  "corpus": "One series per (machine, dimension): the training half followed by the test half. A series whose values are all equal over both halves is excluded: it cannot carry a signal.",
+  "history": "The training half is history: never scored; it is the adapters' probationary period (the static threshold's range, seasonality detection) and warms every detector, which runs causally over history and test as one series. The whole test half is scored (no NAB probation inside it).",
+  "segments": "Per series: the ranges in interpretation_label that list its dimension (dimensions 1-based). Machine segments: maximal runs of 1 in test_label. The index base and inclusivity of interpretation_label ranges are taken as the convention that best matches test_label (reported with the results).",
+  "windows": {
+   "rule": "NAB's labeler applied to segments: width w = floor(fraction · nTest / k), k = number of the series' segments; window = [start − floor(w/2), end + floor(w/2)], clipped to the test half; overlapping windows merged.",
+   "fraction": 0.1
+  },
+  "dontCare": "For a series, a machine segment that does not list its dimension, widened by the tolerance on both sides, is not scored outside the series' own windows: an alarm there is neither true nor false (the labels say the machine was anomalous, not whether this dimension showed it). The same spans are excluded from event precision.",
+  "scoring": "NAB's scorer (bench/nab.ts: scaled sigmoid, first detection per window, FP weighting, three cost profiles), detections = alarm onsets, normalised over the corpus: 100·(raw − null)/(perfect − null), perfect = windows · tpWeight. Each profile is scored with the configuration frozen for that profile.",
+  "event": {
+   "rule": "Event-level, with a fixed tolerance: a series segment is detected if an alarm onset of that series lies in [start − tolerance, end + tolerance]; an onset is true if it lies in such a span of any segment of its series, false otherwise (onsets in don't-care spans excluded). Precision = true onsets / counted onsets; recall = detected segments / segments; F1 = 2PR/(P+R); pooled over the corpus. Delay = first matching onset − segment start, in points. Computed with each profile's configuration; the standard profile's is the headline.",
+   "tolerancePoints": 15,
+   "why": "A quarter of an hour at 1-minute steps: about a `for: 5m` plus two evaluation intervals. Chosen before any SMD result; not varied."
+  },
+  "machineView": "Secondary: a machine is flagged while any of its series is flagged; its alarm onsets are the onsets of that union. Events = machine segments; same tolerance; also unmatched onsets per machine-day of test data.",
+  "bootstrap": {
+   "unit": "machine",
+   "resamples": 2000,
+   "seed": 20261119,
+   "interval": 0.95,
+   "what": "paired differences of the normalised score (per profile) and of event F1 against EWMA and the static threshold"
+  },
+  "trivial": "Random: each row flagged with probability p (seeded, data never read); p frozen per profile on NAB; reported as the mean over seeds 1-5.",
+  "omitted": "seasonal_daily (a daily period forced where none is detected) is not run: it existed on NAB because a 750-row probation could be too short to detect a daily period; SMD's history is 2-3 weeks. It would also add about 40 minutes of CPU.",
+  "hypotheses": [
+   "H1: robust_z_quantile > ewma (standard)",
+   "H2: seasonal_quantile > ewma (standard)",
+   "H3: ewma > threshold (standard)",
+   "H4: threshold > ewma (reward_low_FP_rate)",
+   "H5: robust_z (MAD) < threshold and seasonal (MAD) < threshold (standard)",
+   "H6: cusum, stl and pelt < threshold (standard)",
+   "H7: robust_z_quantile > robust_z_posthoc (MAD with k up to 40): the spread, not only a larger k (standard)",
+   "H8: threshold > random (standard)"
+  ],
+  "decision": "The quantile spread (robust_z_quantile; separately seasonal_quantile) GENERALISES if, on SMD, standard profile: its normalised score exceeds both EWMA's and the static threshold's, its event F1 exceeds EWMA's, and the 95% machine-bootstrap interval of its score minus EWMA's lies above 0. Point estimates in its favour with an interval that includes 0: NOT CONFIRMED. Otherwise: DOES NOT GENERALISE. D33 says the quantile spread becomes the default for non-paging rules if it holds; anything short of GENERALISES leaves D33 as it is on that point."
+ },
+ "detectors": {
+  "threshold": {
+   "standard": {
+    "label": "threshold(m=0.5)",
+    "params": {
+     "m": 0.5
+    },
+    "nabInSample": 29.05505635461447
+   },
+   "reward_low_FP_rate": {
+    "label": "threshold(m=1)",
+    "params": {
+     "m": 1
+    },
+    "nabInSample": 17.739360642114924
+   },
+   "reward_low_FN_rate": {
+    "label": "threshold(m=0.5)",
+    "params": {
+     "m": 0.5
+    },
+    "nabInSample": 36.03670423640965
+   }
+  },
+  "ewma": {
+   "standard": {
+    "label": "ewma(halfLifePoints=100,k=8)",
+    "params": {
+     "halfLifePoints": 100,
+     "k": 8
+    },
+    "nabInSample": 30.139800783890983
+   },
+   "reward_low_FP_rate": {
+    "label": "ewma(halfLifePoints=100,k=8)",
+    "params": {
+     "halfLifePoints": 100,
+     "k": 8
+    },
+    "nabInSample": 3.916733410859187
+   },
+   "reward_low_FN_rate": {
+    "label": "ewma(halfLifePoints=100,k=6)",
+    "params": {
+     "halfLifePoints": 100,
+     "k": 6
+    },
+    "nabInSample": 40.801253307155456
+   }
+  },
+  "robust_z": {
+   "standard": {
+    "label": "robust_z(windowPoints=1000,k=10)",
+    "params": {
+     "windowPoints": 1000,
+     "k": 10
+    },
+    "nabInSample": -105.86352735028397
+   },
+   "reward_low_FP_rate": {
+    "label": "robust_z(windowPoints=1000,k=10)",
+    "params": {
+     "windowPoints": 1000,
+     "k": 10
+    },
+    "nabInSample": -282.3965103746525
+   },
+   "reward_low_FN_rate": {
+    "label": "robust_z(windowPoints=1000,k=10)",
+    "params": {
+     "windowPoints": 1000,
+     "k": 10
+    },
+    "nabInSample": -45.57568490018938
+   }
+  },
+  "seasonal": {
+   "standard": {
+    "label": "seasonal(seasons=1,k=9,adapt=robust)",
+    "params": {
+     "seasons": 1,
+     "k": 9,
+     "adapt": "robust"
+    },
+    "nabInSample": -65.81251857197063
+   },
+   "reward_low_FP_rate": {
+    "label": "seasonal(seasons=1,k=9,adapt=robust)",
+    "params": {
+     "seasons": 1,
+     "k": 9,
+     "adapt": "robust"
+    },
+    "nabInSample": -202.7619731658435
+   },
+   "reward_low_FN_rate": {
+    "label": "seasonal(seasons=1,k=9,adapt=robust)",
+    "params": {
+     "seasons": 1,
+     "k": 9,
+     "adapt": "robust"
+    },
+    "nabInSample": -18.875012381313834
+   }
+  },
+  "stl": {
+   "standard": {
+    "label": "stl(k=9)",
+    "params": {
+     "k": 9
+    },
+    "nabInSample": -352.20559432940314
+   },
+   "reward_low_FP_rate": {
+    "label": "stl(k=9)",
+    "params": {
+     "k": 9
+    },
+    "nabInSample": -795.4257019004448
+   },
+   "reward_low_FN_rate": {
+    "label": "stl(k=9)",
+    "params": {
+     "k": 9
+    },
+    "nabInSample": -203.48189047247567
+   }
+  },
+  "cusum": {
+   "standard": {
+    "label": "cusum(k=1,h=20)",
+    "params": {
+     "k": 1,
+     "h": 20
+    },
+    "nabInSample": 15.134935090480552
+   },
+   "reward_low_FP_rate": {
+    "label": "cusum(k=1,h=20)",
+    "params": {
+     "k": 1,
+     "h": 20
+    },
+    "nabInSample": -51.196258794432104
+   },
+   "reward_low_FN_rate": {
+    "label": "cusum(k=1,h=20)",
+    "params": {
+     "k": 1,
+     "h": 20
+    },
+    "nabInSample": 38.82558891089508
+   }
+  },
+  "pelt": {
+   "standard": {
+    "label": "pelt(minShift=8)",
+    "params": {
+     "minShift": 8
+    },
+    "nabInSample": -123.48925348973043
+   },
+   "reward_low_FP_rate": {
+    "label": "pelt(minShift=8)",
+    "params": {
+     "minShift": 8
+    },
+    "nabInSample": -321.33495194128494
+   },
+   "reward_low_FN_rate": {
+    "label": "pelt(minShift=8)",
+    "params": {
+     "minShift": 8
+    },
+    "nabInSample": -55.88938738395846
+   }
+  },
+  "robust_z_quantile": {
+   "standard": {
+    "label": "robust_z_quantile(windowPoints=4000,k=2,spread=quantile)",
+    "params": {
+     "windowPoints": 4000,
+     "k": 2,
+     "spread": "quantile"
+    },
+    "nabInSample": 46.79705252181036
+   },
+   "reward_low_FP_rate": {
+    "label": "robust_z_quantile(windowPoints=4000,k=2,spread=quantile)",
+    "params": {
+     "windowPoints": 4000,
+     "k": 2,
+     "spread": "quantile"
+    },
+    "nabInSample": 33.70658260056538
+   },
+   "reward_low_FN_rate": {
+    "label": "robust_z_quantile(windowPoints=4000,k=1.5,spread=quantile)",
+    "params": {
+     "windowPoints": 4000,
+     "k": 1.5,
+     "spread": "quantile"
+    },
+    "nabInSample": 55.578089529598955
+   }
+  },
+  "seasonal_quantile": {
+   "standard": {
+    "label": "seasonal_quantile(seasons=1,k=2,adapt=robust,spread=quantile)",
+    "params": {
+     "seasons": 1,
+     "k": 2,
+     "adapt": "robust",
+     "spread": "quantile"
+    },
+    "nabInSample": 41.42723341860455
+   },
+   "reward_low_FP_rate": {
+    "label": "seasonal_quantile(seasons=1,k=3,adapt=robust,spread=quantile)",
+    "params": {
+     "seasons": 1,
+     "k": 3,
+     "adapt": "robust",
+     "spread": "quantile"
+    },
+    "nabInSample": 22.683268784487254
+   },
+   "reward_low_FN_rate": {
+    "label": "seasonal_quantile(seasons=1,k=2,adapt=robust,spread=quantile)",
+    "params": {
+     "seasons": 1,
+     "k": 2,
+     "adapt": "robust",
+     "spread": "quantile"
+    },
+    "nabInSample": 49.744592394012244
+   }
+  },
+  "robust_z_posthoc": {
+   "standard": {
+    "label": "robust_z_posthoc(windowPoints=1000,k=40)",
+    "params": {
+     "windowPoints": 1000,
+     "k": 40
+    },
+    "nabInSample": -2.4272907131368493
+   },
+   "reward_low_FP_rate": {
+    "label": "robust_z_posthoc(windowPoints=1000,k=40)",
+    "params": {
+     "windowPoints": 1000,
+     "k": 40
+    },
+    "nabInSample": -40.69642885438197
+   },
+   "reward_low_FN_rate": {
+    "label": "robust_z_posthoc(windowPoints=50,k=40)",
+    "params": {
+     "windowPoints": 50,
+     "k": 40
+    },
+    "nabInSample": 13.193856695950762
+   }
+  },
+  "seasonal_posthoc": {
+   "standard": {
+    "label": "seasonal_posthoc(seasons=3,k=25,adapt=robust)",
+    "params": {
+     "seasons": 3,
+     "k": 25,
+     "adapt": "robust"
+    },
+    "nabInSample": 6.3529840277300895
+   },
+   "reward_low_FP_rate": {
+    "label": "seasonal_posthoc(seasons=3,k=40,adapt=robust)",
+    "params": {
+     "seasons": 3,
+     "k": 40,
+     "adapt": "robust"
+    },
+    "nabInSample": -25.81980668275935
+   },
+   "reward_low_FN_rate": {
+    "label": "seasonal_posthoc(seasons=3,k=25,adapt=robust)",
+    "params": {
+     "seasons": 3,
+     "k": 25,
+     "adapt": "robust"
+    },
+    "nabInSample": 22.051414639175974
+   }
+  },
+  "random": {
+   "standard": {
+    "label": "random(p=0.003)",
+    "params": {
+     "p": 0.003,
+     "seeds": "1,2,3,4,5"
+    },
+    "nabInSample": 8.669058340468485
+   },
+   "reward_low_FP_rate": {
+    "label": "random(p=0.0001)",
+    "params": {
+     "p": 0.0001,
+     "seeds": "1,2,3,4,5"
+    },
+    "nabInSample": -0.5430883805528992
+   },
+   "reward_low_FN_rate": {
+    "label": "random(p=0.003)",
+    "params": {
+     "p": 0.003,
+     "seeds": "1,2,3,4,5"
+    },
+    "nabInSample": 23.767877974104856
+   }
+  }
+ },
+ "nabHeldOut": {
+  "threshold": {
+   "standard": 21.83808248290832,
+   "reward_low_FP_rate": 5.488962327116124,
+   "reward_low_FN_rate": 32.74429169241132
+  },
+  "ewma": {
+   "standard": 30.13980078389096,
+   "reward_low_FP_rate": 3.9167334108591136,
+   "reward_low_FN_rate": 40.80125330715542
+  },
+  "robust_z": {
+   "standard": -105.86352735027778,
+   "reward_low_FP_rate": -282.39651037464085,
+   "reward_low_FN_rate": -45.57568490018592
+  },
+  "seasonal": {
+   "standard": -76.44387560925256,
+   "reward_low_FP_rate": -223.31224637460423,
+   "reward_low_FN_rate": -26.24994006134108
+  },
+  "seasonal_daily": {
+   "standard": -104.10176493605235,
+   "reward_low_FP_rate": -274.82254185180966,
+   "reward_low_FN_rate": -45.83795823323054
+  },
+  "stl": {
+   "standard": -352.2055943293988,
+   "reward_low_FP_rate": -795.4257019004369,
+   "reward_low_FN_rate": -203.48189047247283
+  },
+  "cusum": {
+   "standard": 15.134935090480527,
+   "reward_low_FP_rate": -51.19625879443211,
+   "reward_low_FN_rate": 38.82558891089507
+  },
+  "pelt": {
+   "standard": -123.4892534897228,
+   "reward_low_FP_rate": -321.3349519412713,
+   "reward_low_FN_rate": -55.88938738395377
+  },
+  "robust_z_posthoc": {
+   "standard": -5.0551221758374565,
+   "reward_low_FP_rate": -40.69642885438204,
+   "reward_low_FN_rate": -4.696260385502351
+  },
+  "robust_z_quantile": {
+   "standard": 44.76029994958229,
+   "reward_low_FP_rate": 33.70658260056534,
+   "reward_low_FN_rate": 52.2539930698365
+  },
+  "seasonal_quantile": {
+   "standard": 41.42723341860455,
+   "reward_low_FP_rate": 18.83695236799955,
+   "reward_low_FN_rate": 48.05939122475437
+  },
+  "seasonal_posthoc": {
+   "standard": 4.712444079988057,
+   "reward_low_FP_rate": -26.59510222857056,
+   "reward_low_FN_rate": 22.051414639176365
+  },
+  "random (NAB published, as onsets)": {
+   "standard": 16.14429475366934,
+   "reward_low_FP_rate": 5.880551173933674,
+   "reward_low_FN_rate": 26.451242719978993
+  }
+ },
+ "searched": {
+  "threshold": [
+   {
+    "label": "threshold(m=0)",
+    "scores": {
+     "standard": -55.54298986823178,
+     "reward_low_FP_rate": -187.70861280333372,
+     "reward_low_FN_rate": -10.017165659281305
+    }
+   },
+   {
+    "label": "threshold(m=0.05)",
+    "scores": {
+     "standard": -5.79880203023856,
+     "reward_low_FP_rate": -78.95753543033933,
+     "reward_low_FN_rate": 19.98470669248388
+    }
+   },
+   {
+    "label": "threshold(m=0.1)",
+    "scores": {
+     "standard": -3.4495283948676403,
+     "reward_low_FP_rate": -72.21014741910402,
+     "reward_low_FN_rate": 20.688820150547237
+    }
+   },
+   {
+    "label": "threshold(m=0.25)",
+    "scores": {
+     "standard": 20.22471652008543,
+     "reward_low_FP_rate": -18.972324521208677,
+     "reward_low_FN_rate": 34.74751216281559
+    }
+   },
+   {
+    "label": "threshold(m=0.5)",
+    "scores": {
+     "standard": 29.05505635461447,
+     "reward_low_FP_rate": 11.710220509726707,
+     "reward_low_FN_rate": 36.03670423640965
+    }
+   },
+   {
+    "label": "threshold(m=1)",
+    "scores": {
+     "standard": 23.990765808176032,
+     "reward_low_FP_rate": 17.739360642114924,
+     "reward_low_FN_rate": 26.91338410200223
+    }
+   }
+  ],
+  "ewma": [
+   {
+    "label": "ewma(halfLifePoints=10,k=3)",
+    "scores": {
+     "standard": -237.5808085388373,
+     "reward_low_FP_rate": -564.7338554932029,
+     "reward_low_FN_rate": -127.6400792557767
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=10,k=4)",
+    "scores": {
+     "standard": -87.11345429805331,
+     "reward_low_FP_rate": -256.35734609570886,
+     "reward_low_FN_rate": -29.34000401479442
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=10,k=6)",
+    "scores": {
+     "standard": -3.6553157817359097,
+     "reward_low_FP_rate": -78.25435948580406,
+     "reward_low_FN_rate": 22.850479134014098
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=10,k=8)",
+    "scores": {
+     "standard": 12.49170749677466,
+     "reward_low_FP_rate": -39.75967414558575,
+     "reward_low_FN_rate": 31.316310744976217
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=30,k=3)",
+    "scores": {
+     "standard": -171.1593247778632,
+     "reward_low_FP_rate": -428.7644262529352,
+     "reward_low_FN_rate": -84.22115904731136
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=30,k=4)",
+    "scores": {
+     "standard": -36.40139988551375,
+     "reward_low_FP_rate": -152.08140636430733,
+     "reward_low_FN_rate": 3.605963294714383
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=30,k=6)",
+    "scores": {
+     "standard": 16.38065192605006,
+     "reward_low_FP_rate": -36.58606131745593,
+     "reward_low_FN_rate": 35.63307829552767
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=30,k=8)",
+    "scores": {
+     "standard": 21.981703083559008,
+     "reward_low_FP_rate": -12.077915311844833,
+     "reward_low_FN_rate": 34.482054929269246
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=100,k=3)",
+    "scores": {
+     "standard": -132.47188501931888,
+     "reward_low_FP_rate": -346.30880141181456,
+     "reward_low_FN_rate": -60.15367047264965
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=100,k=4)",
+    "scores": {
+     "standard": -14.794890543189474,
+     "reward_low_FP_rate": -107.49325537392447,
+     "reward_low_FN_rate": 17.435590212585534
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=100,k=6)",
+    "scores": {
+     "standard": 24.994983409009,
+     "reward_low_FP_rate": -17.67925777949181,
+     "reward_low_FN_rate": 40.801253307155456
+    }
+   },
+   {
+    "label": "ewma(halfLifePoints=100,k=8)",
+    "scores": {
+     "standard": 30.139800783890983,
+     "reward_low_FP_rate": 3.916733410859187,
+     "reward_low_FN_rate": 39.92078672949055
+    }
+   }
+  ],
+  "robust_z": [
+   {
+    "label": "robust_z(windowPoints=50,k=3.5)",
+    "scores": {
+     "standard": -364.57535823919255,
+     "reward_low_FP_rate": -818.6459904462351,
+     "reward_low_FN_rate": -212.30311238934686
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=50,k=5)",
+    "scores": {
+     "standard": -219.5148853984879,
+     "reward_low_FP_rate": -522.8105855275172,
+     "reward_low_FN_rate": -117.32026842657802
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=50,k=7)",
+    "scores": {
+     "standard": -158.5898203418427,
+     "reward_low_FP_rate": -395.351499737691,
+     "reward_low_FN_rate": -78.42769631984915
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=50,k=10)",
+    "scores": {
+     "standard": -122.6791158999522,
+     "reward_low_FP_rate": -315.10986337205344,
+     "reward_low_FN_rate": -57.07343358847399
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=288,k=3.5)",
+    "scores": {
+     "standard": -298.16792922375623,
+     "reward_low_FP_rate": -682.4206733852499,
+     "reward_low_FN_rate": -169.18091833307892
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=288,k=5)",
+    "scores": {
+     "standard": -188.57694893782818,
+     "reward_low_FP_rate": -460.41012415852964,
+     "reward_low_FN_rate": -96.69497745280489
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=288,k=7)",
+    "scores": {
+     "standard": -137.47404799829928,
+     "reward_low_FP_rate": -351.69589370826213,
+     "reward_low_FN_rate": -64.63787107932595
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=288,k=10)",
+    "scores": {
+     "standard": -117.2343106183682,
+     "reward_low_FP_rate": -301.6576948252806,
+     "reward_low_FN_rate": -54.30563236626863
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=1000,k=3.5)",
+    "scores": {
+     "standard": -286.44147748044224,
+     "reward_low_FP_rate": -657.1601914067198,
+     "reward_low_FN_rate": -161.93799648121444
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=1000,k=5)",
+    "scores": {
+     "standard": -185.56969674890226,
+     "reward_low_FP_rate": -453.50091292993443,
+     "reward_low_FN_rate": -94.97749898202666
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=1000,k=7)",
+    "scores": {
+     "standard": -130.19027370956692,
+     "reward_low_FP_rate": -336.54451355710603,
+     "reward_low_FN_rate": -60.069377875343584
+    }
+   },
+   {
+    "label": "robust_z(windowPoints=1000,k=10)",
+    "scores": {
+     "standard": -105.86352735028397,
+     "reward_low_FP_rate": -282.3965103746525,
+     "reward_low_FN_rate": -45.57568490018938
+    }
+   }
+  ],
+  "seasonal": [
+   {
+    "label": "seasonal(seasons=1,k=4,adapt=robust)",
+    "scores": {
+     "standard": -239.23401996943866,
+     "reward_low_FP_rate": -571.3739156311601,
+     "reward_low_FN_rate": -127.30543860031548
+    }
+   },
+   {
+    "label": "seasonal(seasons=1,k=4,adapt=agile)",
+    "scores": {
+     "standard": -261.75139451924974,
+     "reward_low_FP_rate": -612.8695027164845,
+     "reward_low_FN_rate": -143.46644692087912
+    }
+   },
+   {
+    "label": "seasonal(seasons=1,k=6,adapt=robust)",
+    "scores": {
+     "standard": -107.92890414660637,
+     "reward_low_FP_rate": -300.22180092455915,
+     "reward_low_FN_rate": -42.35490161497913
+    }
+   },
+   {
+    "label": "seasonal(seasons=1,k=6,adapt=agile)",
+    "scores": {
+     "standard": -117.55666653703518,
+     "reward_low_FP_rate": -317.8861945618985,
+     "reward_low_FN_rate": -49.34812251894303
+    }
+   },
+   {
+    "label": "seasonal(seasons=1,k=9,adapt=robust)",
+    "scores": {
+     "standard": -65.81251857197063,
+     "reward_low_FP_rate": -202.7619731658435,
+     "reward_low_FN_rate": -18.875012381313834
+    }
+   },
+   {
+    "label": "seasonal(seasons=1,k=9,adapt=agile)",
+    "scores": {
+     "standard": -72.7740468331273,
+     "reward_low_FP_rate": -215.28486132264362,
+     "reward_low_FN_rate": -23.803387543924032
+    }
+   },
+   {
+    "label": "seasonal(seasons=3,k=4,adapt=robust)",
+    "scores": {
+     "standard": -255.05976847401854,
+     "reward_low_FP_rate": -603.2947471945957,
+     "reward_low_FN_rate": -137.85593760336866
+    }
+   },
+   {
+    "label": "seasonal(seasons=3,k=4,adapt=agile)",
+    "scores": {
+     "standard": -267.61116463876573,
+     "reward_low_FP_rate": -623.0091228752854,
+     "reward_low_FN_rate": -147.94767297756792
+    }
+   },
+   {
+    "label": "seasonal(seasons=3,k=6,adapt=robust)",
+    "scores": {
+     "standard": -112.01087466008548,
+     "reward_low_FP_rate": -308.938621020776,
+     "reward_low_FN_rate": -44.788858968792674
+    }
+   },
+   {
+    "label": "seasonal(seasons=3,k=6,adapt=agile)",
+    "scores": {
+     "standard": -120.83653551039897,
+     "reward_low_FP_rate": -324.0126813077512,
+     "reward_low_FN_rate": -51.53470183451885
+    }
+   },
+   {
+    "label": "seasonal(seasons=3,k=9,adapt=robust)",
+    "scores": {
+     "standard": -72.42982249692281,
+     "reward_low_FP_rate": -215.70934365874285,
+     "reward_low_FN_rate": -23.286548331281924
+    }
+   },
+   {
+    "label": "seasonal(seasons=3,k=9,adapt=agile)",
+    "scores": {
+     "standard": -77.14709517627719,
+     "reward_low_FP_rate": -225.15984866226665,
+     "reward_low_FN_rate": -26.431396784184802
+    }
+   }
+  ],
+  "stl": [
+   {
+    "label": "stl(k=4)",
+    "scores": {
+     "standard": -838.0381207587196,
+     "reward_low_FP_rate": -1770.5839974262815,
+     "reward_low_FN_rate": -526.7955287816782
+    }
+   },
+   {
+    "label": "stl(k=6)",
+    "scores": {
+     "standard": -521.5180585705604,
+     "reward_low_FP_rate": -1135.1219042400587,
+     "reward_low_FN_rate": -316.3568666332462
+    }
+   },
+   {
+    "label": "stl(k=9)",
+    "scores": {
+     "standard": -352.20559432940314,
+     "reward_low_FP_rate": -795.4257019004448,
+     "reward_low_FN_rate": -203.48189047247567
+    }
+   }
+  ],
+  "cusum": [
+   {
+    "label": "cusum(k=0.5,h=5)",
+    "scores": {
+     "standard": -40.471071716798704,
+     "reward_low_FP_rate": -173.96637240262956,
+     "reward_low_FN_rate": 5.20319356811108
+    }
+   },
+   {
+    "label": "cusum(k=0.5,h=10)",
+    "scores": {
+     "standard": -25.932946610205086,
+     "reward_low_FP_rate": -139.5784972296465,
+     "reward_low_FN_rate": 13.4584953633112
+    }
+   },
+   {
+    "label": "cusum(k=0.5,h=20)",
+    "scores": {
+     "standard": -6.033535839905689,
+     "reward_low_FP_rate": -97.24225891136527,
+     "reward_low_FN_rate": 25.862700244660306
+    }
+   },
+   {
+    "label": "cusum(k=1,h=5)",
+    "scores": {
+     "standard": -17.10712448960356,
+     "reward_low_FP_rate": -123.23721278725102,
+     "reward_low_FN_rate": 19.629733098884707
+    }
+   },
+   {
+    "label": "cusum(k=1,h=10)",
+    "scores": {
+     "standard": 3.080690959579215,
+     "reward_low_FP_rate": -79.80781581603524,
+     "reward_low_FN_rate": 32.226207766156264
+    }
+   },
+   {
+    "label": "cusum(k=1,h=20)",
+    "scores": {
+     "standard": 15.134935090480552,
+     "reward_low_FP_rate": -51.196258794432104,
+     "reward_low_FN_rate": 38.82558891089508
+    }
+   }
+  ],
+  "pelt": [
+   {
+    "label": "pelt(minShift=2)",
+    "scores": {
+     "standard": -343.89659662301773,
+     "reward_low_FP_rate": -779.7891276994778,
+     "reward_low_FN_rate": -197.65520234637972
+    }
+   },
+   {
+    "label": "pelt(minShift=4)",
+    "scores": {
+     "standard": -213.65530251134314,
+     "reward_low_FP_rate": -513.3943570956329,
+     "reward_low_FN_rate": -112.26445454779207
+    }
+   },
+   {
+    "label": "pelt(minShift=8)",
+    "scores": {
+     "standard": -123.48925348973043,
+     "reward_low_FP_rate": -321.33495194128494,
+     "reward_low_FN_rate": -55.88938738395846
+    }
+   }
+  ],
+  "robust_z_quantile": [
+   {
+    "label": "robust_z_quantile(windowPoints=288,k=1,spread=quantile)",
+    "scores": {
+     "standard": -81.9740883267766,
+     "reward_low_FP_rate": -255.1109365379002,
+     "reward_low_FN_rate": -23.040196815552285
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=288,k=1.5,spread=quantile)",
+    "scores": {
+     "standard": 32.21304830812598,
+     "reward_low_FP_rate": -7.975826267632232,
+     "reward_low_FN_rate": 47.050078182428805
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=288,k=2,spread=quantile)",
+    "scores": {
+     "standard": 38.668684117399145,
+     "reward_low_FP_rate": 17.6717931258054,
+     "reward_low_FN_rate": 47.04349056102473
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=288,k=3,spread=quantile)",
+    "scores": {
+     "standard": 33.817579154831954,
+     "reward_low_FP_rate": 21.808282339043828,
+     "reward_low_FN_rate": 38.924363114715554
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=1000,k=1,spread=quantile)",
+    "scores": {
+     "standard": -27.97686505471492,
+     "reward_low_FP_rate": -143.418327267492,
+     "reward_low_FN_rate": 11.808526745132157
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=1000,k=1.5,spread=quantile)",
+    "scores": {
+     "standard": 41.89501931161902,
+     "reward_low_FP_rate": 15.784651342942164,
+     "reward_low_FN_rate": 52.06794390889545
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=1000,k=2,spread=quantile)",
+    "scores": {
+     "standard": 40.42049915515614,
+     "reward_low_FP_rate": 25.62085322367067,
+     "reward_low_FN_rate": 46.77458564366734
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=1000,k=3,spread=quantile)",
+    "scores": {
+     "standard": 30.977939782532445,
+     "reward_low_FP_rate": 23.31715191788846,
+     "reward_low_FN_rate": 34.44506330329751
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=4000,k=1,spread=quantile)",
+    "scores": {
+     "standard": -1.610848697626968,
+     "reward_low_FP_rate": -87.9420692692083,
+     "reward_low_FN_rate": 28.52380201767356
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=4000,k=1.5,spread=quantile)",
+    "scores": {
+     "standard": 46.72920325991564,
+     "reward_low_FP_rate": 25.105501454707984,
+     "reward_low_FN_rate": 55.578089529598955
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=4000,k=2,spread=quantile)",
+    "scores": {
+     "standard": 46.79705252181036,
+     "reward_low_FP_rate": 33.70658260056538,
+     "reward_low_FN_rate": 52.749759152471285
+    }
+   },
+   {
+    "label": "robust_z_quantile(windowPoints=4000,k=3,spread=quantile)",
+    "scores": {
+     "standard": 32.52541466496179,
+     "reward_low_FP_rate": 26.655848488077314,
+     "reward_low_FN_rate": 35.47671322491704
+    }
+   }
+  ],
+  "seasonal_quantile": [
+   {
+    "label": "seasonal_quantile(seasons=1,k=1,adapt=robust,spread=quantile)",
+    "scores": {
+     "standard": -158.8863183145688,
+     "reward_low_FP_rate": -409.9594054933921,
+     "reward_low_FN_rate": -74.3150168074137
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=1,k=1,adapt=agile,spread=quantile)",
+    "scores": {
+     "standard": -119.41883094595428,
+     "reward_low_FP_rate": -328.3154079613773,
+     "reward_low_FN_rate": -48.865427527188025
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=1,k=1.5,adapt=robust,spread=quantile)",
+    "scores": {
+     "standard": 33.67923649649297,
+     "reward_low_FP_rate": -7.764727864825642,
+     "reward_low_FN_rate": 49.17696226202983
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=1,k=1.5,adapt=agile,spread=quantile)",
+    "scores": {
+     "standard": 25.917515325368594,
+     "reward_low_FP_rate": -20.761679374948777,
+     "reward_low_FN_rate": 43.14041251576298
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=1,k=2,adapt=robust,spread=quantile)",
+    "scores": {
+     "standard": 41.42723341860455,
+     "reward_low_FP_rate": 20.906924036441477,
+     "reward_low_FN_rate": 49.744592394012244
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=1,k=2,adapt=agile,spread=quantile)",
+    "scores": {
+     "standard": 36.5943543872406,
+     "reward_low_FP_rate": 14.797265074315506,
+     "reward_low_FN_rate": 45.37324775241329
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=1,k=3,adapt=robust,spread=quantile)",
+    "scores": {
+     "standard": 32.63645801697095,
+     "reward_low_FP_rate": 22.683268784487254,
+     "reward_low_FN_rate": 36.98752373545191
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=1,k=3,adapt=agile,spread=quantile)",
+    "scores": {
+     "standard": 32.404202601138856,
+     "reward_low_FP_rate": 22.477259380642984,
+     "reward_low_FN_rate": 36.83268679156385
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=3,k=1,adapt=robust,spread=quantile)",
+    "scores": {
+     "standard": -185.8074392585337,
+     "reward_low_FP_rate": -463.7334711244161,
+     "reward_low_FN_rate": -92.26243077005705
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=3,k=1,adapt=agile,spread=quantile)",
+    "scores": {
+     "standard": -142.68805413058337,
+     "reward_low_FP_rate": -373.7678918994588,
+     "reward_low_FN_rate": -64.66559930544646
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=3,k=1.5,adapt=robust,spread=quantile)",
+    "scores": {
+     "standard": 29.35407888191696,
+     "reward_low_FP_rate": -18.504002625957064,
+     "reward_low_FN_rate": 46.86823649599063
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=3,k=1.5,adapt=agile,spread=quantile)",
+    "scores": {
+     "standard": 21.121552090823823,
+     "reward_low_FP_rate": -31.328967200986643,
+     "reward_low_FN_rate": 40.23046001457222
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=3,k=2,adapt=robust,spread=quantile)",
+    "scores": {
+     "standard": 39.19500601264956,
+     "reward_low_FP_rate": 15.68274113572423,
+     "reward_low_FN_rate": 48.54379711188133
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=3,k=2,adapt=agile,spread=quantile)",
+    "scores": {
+     "standard": 35.16958963917038,
+     "reward_low_FP_rate": 10.952459939912494,
+     "reward_low_FN_rate": 44.71076090887224
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=3,k=3,adapt=robust,spread=quantile)",
+    "scores": {
+     "standard": 32.52423509669448,
+     "reward_low_FP_rate": 20.260361724542513,
+     "reward_low_FN_rate": 37.77477742078484
+    }
+   },
+   {
+    "label": "seasonal_quantile(seasons=3,k=3,adapt=agile,spread=quantile)",
+    "scores": {
+     "standard": 30.934885169127398,
+     "reward_low_FP_rate": 18.718473085363946,
+     "reward_low_FN_rate": 36.140498158728626
+    }
+   }
+  ],
+  "robust_z_posthoc": [
+   {
+    "label": "robust_z_posthoc(windowPoints=50,k=15)",
+    "scores": {
+     "standard": -84.52701364913253,
+     "reward_low_FP_rate": -228.59169463715534,
+     "reward_low_FN_rate": -35.374330938502446
+    }
+   },
+   {
+    "label": "robust_z_posthoc(windowPoints=50,k=25)",
+    "scores": {
+     "standard": -36.63410550952703,
+     "reward_low_FP_rate": -123.26838514078165,
+     "reward_low_FN_rate": -6.6066450523292195
+    }
+   },
+   {
+    "label": "robust_z_posthoc(windowPoints=50,k=40)",
+    "scores": {
+     "standard": -3.4850770250387857,
+     "reward_low_FP_rate": -49.88441545925336,
+     "reward_low_FN_rate": 13.193856695950762
+    }
+   },
+   {
+    "label": "robust_z_posthoc(windowPoints=288,k=15)",
+    "scores": {
+     "standard": -94.36683991219539,
+     "reward_low_FP_rate": -246.76025680557902,
+     "reward_low_FN_rate": -42.50892775755566
+    }
+   },
+   {
+    "label": "robust_z_posthoc(windowPoints=288,k=25)",
+    "scores": {
+     "standard": -28.566183261255723,
+     "reward_low_FP_rate": -105.86595287815618,
+     "reward_low_FN_rate": -1.802742863826586
+    }
+   },
+   {
+    "label": "robust_z_posthoc(windowPoints=288,k=40)",
+    "scores": {
+     "standard": -4.854908183208636,
+     "reward_low_FP_rate": -45.60364676398682,
+     "reward_low_FN_rate": 9.40707270544696
+    }
+   },
+   {
+    "label": "robust_z_posthoc(windowPoints=1000,k=15)",
+    "scores": {
+     "standard": -91.97360617389037,
+     "reward_low_FP_rate": -243.24507414832348,
+     "reward_low_FN_rate": -40.62608227684659
+    }
+   },
+   {
+    "label": "robust_z_posthoc(windowPoints=1000,k=25)",
+    "scores": {
+     "standard": -27.731495976050518,
+     "reward_low_FP_rate": -102.60731789011389,
+     "reward_low_FN_rate": -1.820997317367924
+    }
+   },
+   {
+    "label": "robust_z_posthoc(windowPoints=1000,k=40)",
+    "scores": {
+     "standard": -2.4272907131368493,
+     "reward_low_FP_rate": -40.69642885438197,
+     "reward_low_FN_rate": 11.02548435216138
+    }
+   }
+  ],
+  "seasonal_posthoc": [
+   {
+    "label": "seasonal_posthoc(seasons=1,k=15,adapt=robust)",
+    "scores": {
+     "standard": -21.579468855636563,
+     "reward_low_FP_rate": -102.45032128706231,
+     "reward_low_FN_rate": 6.590698923827797
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=1,k=15,adapt=agile)",
+    "scores": {
+     "standard": -25.828542796548533,
+     "reward_low_FP_rate": -109.82245311718616,
+     "reward_low_FN_rate": 3.4706266413806715
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=1,k=25,adapt=robust)",
+    "scores": {
+     "standard": 3.273632489529632,
+     "reward_low_FP_rate": -43.882307279728884,
+     "reward_low_FN_rate": 19.998513613708894
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=1,k=25,adapt=agile)",
+    "scores": {
+     "standard": -0.3909262231742935,
+     "reward_low_FP_rate": -48.8248278363373,
+     "reward_low_FN_rate": 16.693405506388924
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=1,k=40,adapt=robust)",
+    "scores": {
+     "standard": 6.32010941670113,
+     "reward_low_FP_rate": -25.826427150517603,
+     "reward_low_FN_rate": 17.71915340423729
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=1,k=40,adapt=agile)",
+    "scores": {
+     "standard": 6.09099189373356,
+     "reward_low_FP_rate": -26.26048238113463,
+     "reward_low_FN_rate": 17.56640838892557
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=3,k=15,adapt=robust)",
+    "scores": {
+     "standard": -27.205337154092426,
+     "reward_low_FP_rate": -113.6304192516129,
+     "reward_low_FN_rate": 2.8401200581910757
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=3,k=15,adapt=agile)",
+    "scores": {
+     "standard": -33.33009226850189,
+     "reward_low_FP_rate": -125.16184540725061,
+     "reward_low_FN_rate": -1.5304063399209988
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=3,k=25,adapt=robust)",
+    "scores": {
+     "standard": 6.3529840277300895,
+     "reward_low_FP_rate": -37.703708198756,
+     "reward_low_FN_rate": 22.051414639175974
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=3,k=25,adapt=agile)",
+    "scores": {
+     "standard": 1.8840014934355789,
+     "reward_low_FP_rate": -44.70325522080688,
+     "reward_low_FN_rate": 18.497380305968033
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=3,k=40,adapt=robust)",
+    "scores": {
+     "standard": 6.310708094932282,
+     "reward_low_FP_rate": -25.81980668275935,
+     "reward_low_FN_rate": 17.712885856391452
+    }
+   },
+   {
+    "label": "seasonal_posthoc(seasons=3,k=40,adapt=agile)",
+    "scores": {
+     "standard": 6.124668802132325,
+     "reward_low_FP_rate": -26.191885268359258,
+     "reward_low_FN_rate": 17.58885966119149
+    }
+   }
+  ],
+  "random": [
+   {
+    "label": "random(p=0.0001)",
+    "scores": {
+     "standard": 0.9687439798709633,
+     "reward_low_FP_rate": -0.5430883805528992,
+     "reward_low_FN_rate": 1.565369549798992
+    }
+   },
+   {
+    "label": "random(p=0.0003)",
+    "scores": {
+     "standard": 3.158590871253579,
+     "reward_low_FP_rate": -1.1424922250072211,
+     "reward_low_FN_rate": 4.9792904658930865
+    }
+   },
+   {
+    "label": "random(p=0.001)",
+    "scores": {
+     "standard": 7.873526638624517,
+     "reward_low_FP_rate": -5.457369011161707,
+     "reward_low_FN_rate": 13.122580977473444
+    }
+   },
+   {
+    "label": "random(p=0.003)",
+    "scores": {
+     "standard": 8.669058340468485,
+     "reward_low_FP_rate": -31.684974262448815,
+     "reward_low_FN_rate": 23.767877974104856
+    }
+   },
+   {
+    "label": "random(p=0.01)",
+    "scores": {
+     "standard": -56.756265713936195,
+     "reward_low_FP_rate": -192.58357433724552,
+     "reward_low_FN_rate": -10.136361050670594
+    }
+   }
+  ]
+ },
+ "tuningSeconds": 500.523321222
+}

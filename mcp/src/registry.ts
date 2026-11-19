@@ -8,6 +8,7 @@ import { query } from './tools/query'
 import { getDashboard, listRevisions, readDashboard, searchDashboards } from './tools/dashboards'
 import { writeDashboard } from './tools/write'
 import { annotate, getMonitor, getSchemaTool, listMonitors } from './tools/misc'
+import { backtestMonitor } from './tools/backtest'
 import { ToolError } from './tool'
 import { clean, cleanDeep, fenced, MAX } from './untrusted'
 
@@ -28,6 +29,7 @@ export const TOOLS: ToolDef[] = [
   writeDashboard,
   listMonitors,
   getMonitor,
+  backtestMonitor,
   annotate,
 ]
 

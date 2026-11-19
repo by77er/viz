@@ -8,6 +8,10 @@
 import { describe, expect, it } from 'vitest'
 import { revisionOf } from '../../dashboard/src/index.ts'
 import { FORMATS } from '../src/schema'
+import { OAUTH_SCOPES } from '../../contracts/oauth'
+import { decodeRequest, encodeRequest, seal, signRegistration, unseal, verifyClientId } from '../src/oauth'
+import { RESOURCE, approve, authorize, codeOf, connect, newClient, pkce } from './oauth'
+import { goldenFile } from './golden'
 import { decodeCursor, encodeCursor } from '../src/util'
 import { expectGolden, goldenDir } from './golden'
 import { EXAMPLES, call, makeKey, newTenant, post } from './helpers'
@@ -82,5 +86,66 @@ describe('golden formats: every format this component writes has a golden file f
   it('id.revision: the revision id (ETag) of each example dashboard', () => {
     const ids = Object.fromEntries(Object.entries(EXAMPLES).map(([name, spec]) => [name, revisionOf(spec as never)]))
     expectGolden(file('id.revision'), { format: 'id.revision', version: FORMATS['id.revision'], ids })
+  })
+
+  it('credential.oauth: the shapes of codes, access and refresh tokens handed to clients', async () => {
+    const t = await newTenant('golden')
+    const dana = await makeKey(t.admin, ['admin', ...OAUTH_SCOPES], { name: 'dana' })
+    const c = await connect(dana.key)
+    const shape = (s: string) => s.replace(`.${t.tenant}.`, '.<tenant>.').replace(/\.[A-Za-z0-9]{43}$/, '.<43 base62>')
+    expectGolden(file('credential.oauth'), { format: 'credential.oauth', version: FORMATS['credential.oauth'], code: shape(c.code), access: shape(c.access), refresh: shape(c.refresh) })
+  })
+
+  it('id.oauth-client, oauth.request, oauth.sealed: fixed inputs give fixed bytes, and the decoders read the checked-in ones', async () => {
+    const key = 'golden-registration-key-0123456789abcdef'
+    const registration = { v: 1 as const, n: 'AAAAAAAAAAAAAAAA', iat: 1_800_000_000, name: 'Golden client', uris: ['http://127.0.0.1:33418/callback'] }
+    expectGolden(file('id.oauth-client'), { format: 'id.oauth-client', version: FORMATS['id.oauth-client'], key, registration, clientId: await signRegistration(key, registration) })
+    const g1 = goldenFile(file('id.oauth-client')) as { clientId: string }
+    expect(await verifyClientId(key, g1.clientId)).toEqual(registration)
+
+    const request = { v: 1 as const, client_id: g1.clientId, redirect_uri: registration.uris[0]!, scope: ['read' as const, 'dashboards:read' as const], code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', state: 'xyz', resource: 'https://vis.bitcru.sh/mcp' }
+    expectGolden(file('oauth.request'), { format: 'oauth.request', version: FORMATS['oauth.request'], request, handle: encodeRequest(request) })
+    expect(decodeRequest((goldenFile(file('oauth.request')) as { handle: string }).handle)).toEqual(request)
+
+    const credential = `vza1.golden.${'a'.repeat(43)}`
+    const aad = 'golden/g_AAAAAAAAAAAAAAAAAAAAAA'
+    const plaintext = 'the grant key secret, forty base62 chars'
+    expectGolden(file('oauth.sealed'), { format: 'oauth.sealed', version: FORMATS['oauth.sealed'], credential, aad, plaintext, iv: '000000000000000000000000', sealed: await seal(credential, plaintext, aad, new Uint8Array(12)) })
+    const g2 = goldenFile(file('oauth.sealed')) as { sealed: string }
+    expect(await unseal(credential, g2.sealed, aad)).toBe(plaintext)
+    expect(await unseal(credential, g2.sealed, 'golden/g_other')).toBeNull()
+  })
+
+  it('rpc.oauth: the token, introspection and revocation results, as the endpoints and the agent surface read them', async () => {
+    const t = await newTenant('golden')
+    const dana = await makeKey(t.admin, ['admin', ...OAUTH_SCOPES], { name: 'dana' })
+    const client = await newClient()
+    const { verifier, challenge } = await pkce()
+    const ap = await approve(dana.key, (await authorize(client, challenge, { scope: 'read dashboards:read' })).handle!)
+    const stub = env.TENANT.get(env.TENANT.idFromName(t.tenant))
+    const token = await stub.oauthToken(t.tenant, { grant_type: 'authorization_code', client_id: client, code: codeOf(ap.body.redirect).code, code_verifier: verifier, redirect_uri: 'http://127.0.0.1:33418/callback', resource: RESOURCE })
+    if (token.status !== 'ok') throw new Error(JSON.stringify(token))
+    const access = token.tokens.access_token
+    const active = await stub.introspectAccessToken(t.tenant, access, RESOURCE)
+    const scrubbed = (v: unknown) =>
+      JSON.parse(
+        JSON.stringify(v)
+          .replaceAll(t.tenant, '<tenant>')
+          .replace(/(vz[a-z]1)\.<tenant>\.[A-Za-z0-9]{43}/g, '$1.<tenant>.<43 base62>')
+          .replace(/viz_[A-Za-z0-9]{16}_[A-Za-z0-9]{40}/g, 'viz_<keyId 16>_<secret 40>')
+          .replace(/g_[A-Za-z0-9]{22}/g, 'g_<22>')
+          .replace(/k_[A-Za-z0-9]{22}/g, 'k_<22>')
+          .replace(/"expiresAt":\d{13}/g, '"expiresAt":"<ms>"'),
+      )
+    expectGolden(file('rpc.oauth'), {
+      format: 'rpc.oauth',
+      version: FORMATS['rpc.oauth'],
+      token: scrubbed(token),
+      error: await stub.oauthToken(t.tenant, { grant_type: 'refresh_token', client_id: client, refresh_token: `vzr1.${t.tenant}.${'b'.repeat(43)}` }),
+      active: scrubbed(active),
+      inactive: await stub.introspectAccessToken(t.tenant, `vza1.${t.tenant}.${'c'.repeat(43)}`, RESOURCE),
+      revoked: await stub.oauthRevoke(t.tenant, access, client),
+      otherTenant: await stub.introspectAccessToken('someone-else', access, RESOURCE),
+    })
   })
 })

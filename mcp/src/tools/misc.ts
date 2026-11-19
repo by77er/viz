@@ -69,7 +69,7 @@ export const getSchemaTool: ToolDef = {
 const STATE_ORDER: Record<string, number> = { firing: 0, pending: 1, error: 2, no_data: 3, unknown: 4, ok: 5 }
 const MONITOR_ID = '^[A-Za-z0-9_:.-]{1,200}$'
 
-function needRuler(s: Session) {
+export function needRuler(s: Session) {
   if (!s.monitors) throw new ToolError('not-available-yet', 'Monitors are not connected to this deployment (no ruler binding).', 'Ask the operator to bind RULER.', { status: 501 })
   return s.monitors
 }

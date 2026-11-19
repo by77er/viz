@@ -2,7 +2,7 @@ import fc from 'fast-check'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { BASE, type Harness, type Key, NOW, controlCall, controlFetcher, createDashboard, example, harness, makeKey, mcpClient, newTenant, reset, rest, snapshot, telemetry, type TestTenant } from './helpers'
 import { httpControlClient } from '../src/clients'
-import { monitorView } from './fake/services'
+import { fakeBacktest, monitorView } from './fake/services'
 import { TOOLS } from '../src/registry'
 
 /**
@@ -51,6 +51,8 @@ beforeAll(async () => {
   aProposal = p.body.proposal.id
   h.ruler.monitors.set(A.tenant, [{ view: monitorView({ id: A_MONITOR, name: `ALPHA-SECRET monitor ${ONLY_A}`, state: 'firing' }), history: [] }])
   h.ruler.monitors.set(B.tenant, [{ view: monitorView({ id: 'mon_b2b2b2b2b2b2b2b2', name: 'beta monitor' }), history: [] }])
+  // A's backtests would carry A's labels and explanations; B's ruler answers are B's own (empty).
+  h.ruler.backtests.set(A.tenant, (b) => ({ status: 200, body: fakeBacktest(b, [{ fingerprint: `alpha-${ONLY_A}`, labels: { alertname: 'x', customer: `ALPHA-SECRET-customer-${ONLY_A}` }, state: 'firing', startMs: NOW * 1000 - 600_000, endMs: NOW * 1000, open: true, annotations: { summary: `ALPHA-SECRET ${ONLY_A}` } }]) }))
   await createDashboard(B.admin, example('k8s_node_overview'))
   bKey = await makeKey(B.admin, ['read', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'monitors:read'], { kind: 'agent' })
 })
@@ -76,6 +78,8 @@ const TARGETED: [string, Record<string, unknown>][] = [
   ['write_dashboard', { id: A_DASH, mode: 'apply', base_revision: '0'.repeat(32), ops: [{ op: 'replace', path: '/metadata/title', value: 'x' }] }],
   ['list_monitors', {}],
   ['get_monitor', { id: A_MONITOR }],
+  ['backtest_monitor', { monitor: { name: A_MONITOR, query: `sum(rate(${A_METRIC}[5m]))`, condition: { op: '>', threshold: 0 } } }],
+  ['backtest_monitor', { monitor: { name: 'x', expr: `${A_METRIC}{customer="ALPHA-SECRET-customer"} > 0`, labels: { tenant: 'alpha' } }, start: 'now-1h' }],
   ['get_schema', {}],
   ['annotate', { text: 'x', dashboard: A_DASH }],
 ]

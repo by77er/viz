@@ -13,11 +13,20 @@
   },
   // Local only (miniflare): the key store edge's `authenticate` reads, and control writes.
   "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-ruler-test-config" }],
-  // The production wiring's callees, as fakes in this same Worker (test/harness.ts): each checks
-  // the presented API key with edge's real `authenticate` and takes the tenant from it.
+  // The production wiring's callees, as fakes in this same Worker (test/harness.ts). QUERY and
+  // INGEST check the presented API key with edge's real `authenticate` and take the tenant from
+  // it; SINK is viz-ingest's RecordedSamples entrypoint, bound as production binds it (the
+  // binding's props name the caller; the tenant is an argument).
   "services": [
     { "binding": "QUERY", "service": "viz-ruler-test", "entrypoint": "FakeQuery" },
-    { "binding": "INGEST", "service": "viz-ruler-test", "entrypoint": "FakeIngest" }
+    { "binding": "INGEST", "service": "viz-ruler-test", "entrypoint": "FakeIngest" },
+    { "binding": "SINK", "service": "viz-ruler-test", "entrypoint": "FakeRecordedSamples", "props": { "caller": "viz-ruler" } },
+    // An ingest release from before the entrypoint. workerd refuses to start with a binding to an
+    // entrypoint the callee does not export, so it is stood in for by one without `write` (the
+    // Remote Write fake): the call fails outside the entrypoint's contract, as it would there.
+    { "binding": "OLD_SINK", "service": "viz-ruler-test", "entrypoint": "FakeIngest", "props": { "caller": "viz-ruler" } },
+    // The entrypoint through a binding whose props name a caller it does not allow.
+    { "binding": "OTHER_SINK", "service": "viz-ruler-test", "entrypoint": "FakeRecordedSamples", "props": { "caller": "viz-mcp" } }
   ],
   "vars": { "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}" },
   "migrations": [

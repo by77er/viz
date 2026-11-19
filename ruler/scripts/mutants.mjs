@@ -392,12 +392,14 @@ export const MUTANTS = [
   },
   {
     name: 'anomaly: detector state is never written to SQLite (memory only)',
-    edits: one('src/ruler.ts', 'for (const { rule, anomaly } of staged) if (anomaly?.changed) this.writeAnomalyState(g.spec.name, rule.key, anomaly.json)', 'void staged'),
+    // Pattern brought up to date (the rows are a planned write, `AnomalyWrite`, since store.anomaly-state v2).
+    edits: one('src/ruler.ts', 'for (const { rule, anomaly } of staged) if (anomaly?.changed && anomaly.write) this.writeAnomalyState(g.spec.name, rule.key, anomaly.write)', 'void staged'),
     tests: ['test/anomaly.test.ts'],
   },
   {
     name: 'anomaly: the constructor does not rebuild detector state from SQLite',
-    edits: one('src/ruler.ts', '      rt.series = read.series\n      rt.json = read.json\n      rt.status = { ...rt.status, stateSeries', '      rt.status = { ...rt.status, stateSeries'),
+    // Pattern brought up to date (store.anomaly-state v2 adds what is known of the rows, `rt.store`).
+    edits: one('src/ruler.ts', '      rt.series = read.series\n      rt.json = read.json\n      rt.store = read.store\n      rt.status = { ...rt.status, stateSeries', '      rt.status = { ...rt.status, stateSeries'),
     tests: ['test/anomaly.test.ts'],
   },
   {
@@ -426,12 +428,12 @@ export const MUTANTS = [
     tests: ['test/anomaly.test.ts'],
   },
   {
-    name: 'anomaly: the default EWMA uses the library\'s parameters (half-life 30, k 4: 0.0 on NAB) instead of the held-out ones',
+    name: 'anomaly: the ruler\'s evidence-based defaults dropped (the library\'s own: robust z with the MAD, EWMA 30 / 4, which scored 0.0 on NAB)',
     edits: one('src/anomaly.ts', '{ ...libraryDefaults(detector), ...guide.defaults }', '{ ...libraryDefaults(detector) }'),
     tests: ['test/anomaly.test.ts'],
   },
   {
-    name: 'anomaly: severity page without a detector defaults to EWMA, not the static threshold',
+    name: 'anomaly: severity page without a detector gets the non-paging default, not the static threshold',
     edits: one('src/anomaly.ts', "detector = givenSeverity === 'page' ? DEFAULT_PAGE_DETECTOR : DEFAULT_DETECTOR", 'detector = DEFAULT_DETECTOR'),
     tests: ['test/anomaly.test.ts'],
   },
@@ -452,7 +454,8 @@ export const MUTANTS = [
   },
   {
     name: 'anomaly: a row per series (state rows of one byte, so every series gets its own)',
-    edits: one('src/ruler.ts', 'const rows = stateRows(json)', 'const rows = stateRows(json, 1)'),
+    // Pattern brought up to date (version 1 rows are planned in anomaly.ts since store.anomaly-state v2).
+    edits: one('src/anomaly.ts', 'function planV1(json: Map<string, string>, prev: StoreMeta): AnomalyWrite {\n  const rows = stateRows(json)', 'function planV1(json: Map<string, string>, prev: StoreMeta): AnomalyWrite {\n  const rows = stateRows(json, 1)'),
     tests: ['test/anomaly.test.ts'],
   },
   {
@@ -645,7 +648,8 @@ export const MUTANTS = [
   },
   {
     name: 'warm-up: the state is written outside the warm-up\'s transaction (a crash leaves it half-written)',
-    edits: one('src/ruler.ts', '        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, rt.json))', '        this.writeAnomalyState(g.spec.name, rule.key, rt.json)\n        finish(done)'),
+    // Pattern brought up to date (the warm-up's rows are a planned write since store.anomaly-state v2).
+    edits: one('src/ruler.ts', '        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, write))', '        this.writeAnomalyState(g.spec.name, rule.key, write)\n        finish(done)'),
     tests: ['test/history.test.ts'],
   },
   {
@@ -769,7 +773,149 @@ export const MUTANTS = [
     edits: one('src/ruler.ts', '      if (room < budgets.warmupCpuMs && room < CPU.base / 1000) {', '      if (room < CPU.base / 1000) {'),
     tests: ['test/history.test.ts'],
   },
-  // ───────────── planning what is fetched: counts, windows by points, every window planned ─────────────
+
+  // ───────────── recorded samples through viz-ingest's RecordedSamples entrypoint (D45, D52) ─────────────
+  {
+    name: 'entrypoint, tenant: the tenant argument is dropped (the batches are passed first)',
+    edits: one('src/recorded.ts', 'await binding.write(tenant, batches)', 'await (binding as any).write(batches)'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, tenant: one tenant per isolate (the first Ruler object\'s tenant is passed for every object)',
+    edits: [
+      { file: 'src/recorded.ts', find: 'export function recordedSamplesSink(', replace: 'let firstTenant: string | null = null\nexport function recordedSamplesSink(' },
+      { file: 'src/recorded.ts', find: 'await binding.write(tenant, batches)', replace: 'await binding.write((firstTenant ??= tenant), batches)' },
+    ],
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, acknowledgement: the sink returns before the RPC resolves (its result is not awaited)',
+    edits: one('src/recorded.ts', 'await binding.write(tenant, batches)', 'void binding.write(tenant, batches).catch(() => {})'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, acknowledgement: the tick does not wait for the sink (the next batch is evaluated before the samples are written)',
+    edits: one('src/ruler.ts', 'await Promise.race([this.sink().write(batch.map((p) => p.batch)), timeout])', 'void this.sink().write(batch.map((p) => p.batch)).catch(() => {})'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: every refusal is retryable (unauthorized, invalid, series_limit retried)',
+    edits: one('src/recorded.ts', 'RECORDED_SAMPLES_RETRYABLE.includes(refusal)', 'true'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: the tick retries a refusal the sink says is permanent',
+    edits: one('src/ruler.ts', '          if (e instanceof SinkError && !e.retryable) break\n', ''),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: overload and backpressure are not retried (only unavailable is)',
+    edits: one('src/recorded.ts', 'RECORDED_SAMPLES_RETRYABLE.includes(refusal)', "refusal === 'unavailable'"),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: an overloaded ingest is retried at once (the hint is ignored)',
+    edits: one('src/recorded.ts', ', retryHintMs(message))', ', 0)'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: too_large is not split (reported like invalid)',
+    edits: one('src/recorded.ts', "if (refusal === 'too_large' && batches.length > 1) {", 'if (false) {'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: a split stops at the first half that fails (the batches after it are not sent)',
+    edits: one('src/recorded.ts', 'first ??= e', 'throw e'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, fallback: every rejection, refusals included, goes to Remote Write',
+    edits: one('src/recorded.ts', 'if (refusal === null) {', 'if (refusal === null || fallback) {'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, fallback: none (an ingest release without the entrypoint loses the samples of a rollback window)',
+    edits: one('src/recorded.ts', 'if (!fallback) throw', 'if (true) throw'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, fallback: Remote Write whenever INGEST is bound (the entrypoint is never used)',
+    edits: one('src/ruler.ts', 'if (binding) return recordedSamplesSink(binding, this.tenant, remote)', 'if (binding && !remote) return recordedSamplesSink(binding, this.tenant, remote)'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, duplicates: a replayed tick names its batches by wall-clock time (not the same batch again)',
+    edits: one('src/ruler.ts', 'batch: { id: `${this.tenant}/${this.shard}/${g.spec.name}/${rule.key}@${ts}`', 'batch: { id: `${this.tenant}/${this.shard}/${g.spec.name}/${rule.key}@${ts}#${Date.now()}`'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, health: /healthz does not count a missing sink',
+    edits: one('src/index.ts', "  if (!env.SINK && !env.INGEST) missing.push('SINK')\n", ''),
+    tests: ['test/wiring.test.ts'],
+  },
+  // ───────────── anomaly defaults (D33 replaced, 2026-11-19): robust z with the quantile spread ─────────────
+  {
+    name: 'default (D33): flipped back to EWMA',
+    edits: one('src/anomaly.ts', "export const DEFAULT_DETECTOR: AnomalyDetector = 'robust_z'", "export const DEFAULT_DETECTOR: AnomalyDetector = 'ewma'"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'default (D33): robust z without a spread defaults to the MAD',
+    edits: one('src/anomaly.ts', "export const ROBUST_Z_DEFAULTS = { windowPoints: 1500, k: 2, spread: 'quantile',", "export const ROBUST_Z_DEFAULTS = { windowPoints: 1500, k: 2, spread: 'mad',"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'default (D33): seasonal without a spread defaults to the MAD',
+    edits: one('src/anomaly.ts', "export const SEASONAL_DEFAULTS = { seasons: 1, k: 2, adapt: 'robust', spread: 'quantile',", "export const SEASONAL_DEFAULTS = { seasons: 1, k: 2, adapt: 'robust', spread: 'mad',"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: a stored rule that named no detector is resolved at evaluation (today\'s default runs instead of the stored EWMA)',
+    edits: one('src/anomaly.ts', 'const det = DETECTORS[spec.detector] as unknown as { detect(', 'const det = DETECTORS[spec.given.length === 0 ? DEFAULT_DETECTOR : spec.detector] as unknown as { detect('),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: today\'s defaults merged over the stored parameters at evaluation (a stored MAD rule runs the quantile spread)',
+    edits: one('src/anomaly.ts', 'const params = { ...spec.params, stepMs: intervalMs, unit: spec.unit }', 'const params = { ...spec.params, ...(DETECTOR_GUIDE[spec.detector]?.defaults ?? {}), stepMs: intervalMs, unit: spec.unit }'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: a rule saved again takes today\'s defaults (the stored rule is not consulted)',
+    edits: one('src/ruler.ts', 'parseRuleFile(file, this.cfg, (group) => this.groups.get(group)?.spec.anomalyRules)', 'parseRuleFile(file, this.cfg)'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: a rule saved again keeps the stored detector but takes today\'s parameter defaults',
+    edits: one('src/anomaly.ts', 'for (const [k, old] of Object.entries(PREVIOUS_DEFAULTS.params[detector] ?? {})) {', 'for (const [k, old] of Object.entries({} as Record<string, AnomalyParamValue>)) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: a monitor saved again is matched by name, not by its id (renamed, it takes today\'s default)',
+    edits: one('src/rules.ts', 'if (monitorId !== null) return stored.find((r) => r.monitor?.id === monitorId) ?? null', 'if (monitorId === null && false) return null'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'default window: 1,781 points (the save-time estimate\'s edge, 36 bytes a point) instead of 1,500',
+    edits: one('src/anomaly.ts', "export const ROBUST_Z_DEFAULTS = { windowPoints: 1500,", "export const ROBUST_Z_DEFAULTS = { windowPoints: 1781,"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'evidence: the default window\'s SMD score labelled confirmed (it is post hoc: only 4,000 was frozen)',
+    edits: one('src/anomaly.ts', "{ kind: 'post_hoc', data: 'SMD', config: 'quantile spread, window 1,500, k 2 (this default)'", "{ kind: 'confirmed', data: 'SMD', config: 'quantile spread, window 1,500, k 2 (this default)'"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'the 4,000-point configuration: refused without saying what it is',
+    edits: one('src/anomaly.ts', "(confirmed ? `. This is the configuration frozen on NAB and confirmed on SMD", "(false ? `. This is the configuration frozen on NAB and confirmed on SMD"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'PREVIOUS_DEFAULTS: robust z\'s earlier k wrong (3 instead of 3.5)',
+    edits: one('src/anomaly.ts', "robust_z: { spread: 'mad', windowPoints: 288, k: 3.5 },", "robust_z: { spread: 'mad', windowPoints: 288, k: 3 },"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  // ───────────── PR #3's last fix, ported (were 131–141 on main; 158–168 here) ─────────────
+  // planning what is fetched: counts, windows by points, every window planned
   {
     name: 'window plans: the run is checked against the whole read and the counts only, not the windows as fetched (the finding: each window re-reads its look-back and files)',
     edits: one('src/history.ts', '  if (over(total)) {', '  if (over(first)) {'),
@@ -824,6 +970,133 @@ export const MUTANTS = [
     name: 'SLO validation: a severity label from the group\'s labels reported at the rule',
     edits: one('src/rules.ts', 'ownSeverity ? `${rp}.labels.severity` : `${gp}.labels.severity`', '`${rp}.labels.severity`'),
     tests: ['test/slo.test.ts'],
+  },
+  // ───────────── over_budget names its budget (`exceeded`, contract version 5) ─────────────
+  {
+    name: 'exceeded: a plan over in samples named bytes (the plan\'s two budgets confused)',
+    edits: one('src/history.ts', "    exceeded: p.scanSamples > budget.scanSamples ? 'scan_samples' : 'bytes',", "    exceeded: 'bytes',"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'exceeded: more than 1,000 range queries named memory',
+    edits: one('src/history.ts', "exceeded: 'queries', plan: null,", "exceeded: 'memory', plan: null,"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'exceeded: the HTTP answer leaves it out (null whatever the run said)',
+    edits: one('src/http.ts', "exceeded: r.exceeded ?? null,", 'exceeded: null,'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'exceeded: a refused warm-up does not say which budget',
+    edits: one('src/ruler.ts', "plan: run.plan, exceeded: run.exceeded, message:", 'plan: run.plan, message:'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'the queries refusal says nothing was fetched though the series counts were read',
+    edits: one('src/history.ts', ", ...(counted.some((x) => x) ? { countsRead: true } : {}) }", ' }'),
+    tests: ['test/history.test.ts'],
+  },
+  // ───────────── windowed detector state as Float64 ring blocks (store.anomaly-state v2, D60) ─────────────
+  {
+    name: 'ring blocks: values stored at the wrong float width (Float32 precision)',
+    edits: one('src/anomalystore.ts', 'view.setFloat64(i * 8, v === 0 ? 0 : v, true)', 'view.setFloat64(i * 8, v === 0 ? 0 : Math.fround(v), true)'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'ring blocks: the block boundary off by one (a block\'s last slot taken for the next block\'s)',
+    edits: one('src/anomalystore.ts', 'const blockOf = (slot: number, B: number) => Math.floor(slot / B)', 'const blockOf = (slot: number, B: number) => Math.floor((slot + 1) / B)'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'ring blocks: every block written at every tick (not only the head and the current block)',
+    edits: one('src/anomalystore.ts', '      if (dirty.has(b)) continue\n', '      dirty.add(b)\n      if (dirty.has(b)) continue\n'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'ring blocks: the reader keeps points the window evicted since their block was written',
+    edits: one('src/anomalystore.ts', 'if (ti <= after || (lastTs !== null && ti > lastTs)) continue', 'if (lastTs !== null && ti > lastTs) continue'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'ring blocks: a block is rewritten only for a pruned series (one series gone quiet keeps every other series\' old entries)',
+    edits: one('src/anomalystore.ts', '        if (!l || l.lo === null || blockOf(l.lo, B) > b) {\n          dirty.add(b)', '        if (!l) {\n          dirty.add(b)'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'version gate ignored: version 2 written whatever the gate says',
+    edits: one('src/anomaly.ts', '  const v2 = writeVersion === 2 && WINDOWED.has(spec.detector)', '  const v2 = WINDOWED.has(spec.detector)'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'conversion: version 1 rows left beside version 2 ones (not deleted when the format changes)',
+    edits: one('src/anomalystore.ts', '  const purge = full || prev.version !== 2 || prev.rewrite', '  const purge = full || prev.rewrite'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'rows renumbered by a release without version 2 are not rewritten under their own chunks',
+    edits: [
+      { file: 'src/anomalystore.ts', find: '      if (chunk !== HEAD_CHUNK + (body.i as number)) store.rewrite = true', replace: '      if (false) store.rewrite = true' },
+      { file: 'src/anomalystore.ts', find: '      if (chunk !== body.b) store.rewrite = true', replace: '      if (false) store.rewrite = true' },
+    ],
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'CPU model: robust z priced by its stored (ring block) size, not by the points it scans',
+    edits: one('src/history.ts', '  const bytes = cpuStateBytes(rule, intervalMs)', '  const bytes = rule.anomaly.stateBytesPerSeries'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'save-time estimate: the blocks a window spans counted one short',
+    edits: one('src/anomaly.ts', 'const blocksSpanned = (slots: number) => Math.ceil(Math.max(0, slots - 1) / ANOMALY_BLOCK) + 1', 'const blocksSpanned = (slots: number) => Math.ceil(slots / ANOMALY_BLOCK)'),
+    tests: ['test/anomaly.test.ts', 'test/anomalystore.test.ts'],
+  },
+  {
+    name: 'readers first broken: this release writes version 2 while gated off (the gate shipped on)',
+    edits: one('src/schema.ts', 'export const ANOMALY_STATE_WRITE: 1 | 2 = 1', 'export const ANOMALY_STATE_WRITE: 1 | 2 = 2'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'readers first broken: gated off, this release cannot read version 2 (the next release\'s rows refused after a rollback)',
+    edits: one('src/anomaly.ts', '    if (v !== ANOMALY_STATE_VERSION && v !== 2) return', '    if (v !== ANOMALY_STATE_VERSION) return'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  // review of D60 (design/reviews/d44-d52-d53-d60.md, m-12): the head's block list
+  {
+    name: 'review m-12: the reader checks no block against the head (a missing block is read as a shorter window)',
+    edits: [
+      { file: 'src/anomalystore.ts', find: "  const listed = expandRanges(h.blocks, Math.max(blocks.length, 1) * 4 + 1024)\n  if (listed === null || !Number.isSafeInteger(h.entries)) return { error: 'anomaly_state head does not list its blocks' }\n", replace: '  const listed = [...new Set(blocks.map((b) => b.b))]\n' },
+      { file: 'src/anomalystore.ts', find: '  if (held !== h.entries) return', replace: '  if (false) return' },
+    ],
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: a block row the head lists may be missing (neither the missing check nor the count)',
+    edits: [
+      { file: 'src/anomalystore.ts', find: '  if (missing.length > 0) return', replace: '  if (false) return' },
+      { file: 'src/anomalystore.ts', find: '  if (present.size !== blocks.length || present.size !== listed.length) return', replace: '  if (present.size !== blocks.length) return' },
+    ],
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: a partial block (one series\' entry gone) is read (entries not counted)',
+    edits: one('src/anomalystore.ts', '  if (held !== h.entries) return', '  if (false) return'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: a block row the head does not list is accepted',
+    edits: one('src/anomalystore.ts', '  if (present.size !== blocks.length || present.size !== listed.length) return', '  if (present.size !== blocks.length) return'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: a head without the block list is read (the format before the review)',
+    edits: one('src/anomalystore.ts', "  if (listed === null || !Number.isSafeInteger(h.entries)) return { error: 'anomaly_state head does not list its blocks' }", "  if (listed === null || !Number.isSafeInteger(h.entries)) return readV2(rows.map((r) => (r.body.part === 'head' ? { ...r, body: { ...r.body, blocks: blockRanges(blocks.map((b) => b.b)), entries: blocks.reduce((n, b) => n + b.series.length, 0) } } : r)))"),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: the writer lists only the blocks this write touched',
+    edits: one('src/anomalystore.ts', 'blocks: blockRanges([...store.entries.keys()]), entries: entryCount }', 'blocks: blockRanges([...dirty].filter((b) => store.entries.has(b))), entries: entryCount }'),
+    tests: ['test/anomalystore.test.ts'],
   },
 ]
 

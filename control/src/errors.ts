@@ -17,7 +17,7 @@ export interface ProblemBody {
 const TITLES: Record<number, string> = {
   400: 'Bad request', 401: 'Not authenticated', 403: 'Not allowed', 404: 'Not found', 405: 'Method not allowed',
   409: 'Conflict', 412: 'Precondition failed', 413: 'Too large', 415: 'Unsupported media type',
-  422: 'Not valid', 428: 'Precondition required', 500: 'Internal error', 503: 'Unavailable',
+  422: 'Not valid', 428: 'Precondition required', 429: 'Too many requests', 500: 'Internal error', 503: 'Unavailable',
 }
 
 export class Problem extends Error {

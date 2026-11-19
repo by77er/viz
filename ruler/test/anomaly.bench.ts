@@ -8,7 +8,10 @@
  *      warm in-memory state, each changed series re-serialised as it is stored; 100 series;
  *   C. the whole alarm tick of a group holding one such rule (fake evaluator, alert state
  *      machine, the state rows written to SQLite in the commit), against the counterfactual of the
- *      same group with an alerting rule that returns nothing.
+ *      same group with an alerting rule that returns nothing;
+ *   D. robust z at the default window (1,500 points), and at 4,000, stored as version 1 (JSON) and
+ *      as version 2 (Float64 ring blocks, design D60) by the gate, at 18 and at 100 series: bytes a
+ *      series, rows and bytes written per tick, CPU per tick (`npm run bench:anomaly -- -t "D."`).
  *
  * CPU is the workerd process's thread time from `/proc` (the `HOST` binding in
  * `vitest.measure.config.ts`); wall time is `Date.now()` around each call, which moves in workerd
@@ -20,7 +23,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { DAY_MS, DETECTORS, WEEK_MS } from '../../anomaly/src/index.ts'
 import type { AnomalyRuleV2, RulerConfig } from '../contracts-proposal/rules.v2'
-import { anomalyLimits, evalAnomaly, newAnomalyRt, readStateRows, stateRows } from '../src/anomaly'
+import { anomalyLimits, estimateStateBytes, evalAnomaly, fullAnomalyWrite, newAnomalyRt, readStateRows, stateRows, type SeriesState } from '../src/anomaly'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
 import { parseRuleFile } from '../src/rules'
 import { fingerprint } from '../src/util'
@@ -173,6 +176,75 @@ describe('anomaly rules in workerd: CPU and wall time per detector', () => {
       expect(last.scored + last.warming, c.label).toBe(S)
       if (c.detector !== 'cusum') expect(last, `${c.label}: every series scored`).toMatchObject({ status: 'ok', scored: S })
     }
+  })
+
+  it('D. robust z, the state as version 1 (JSON) against version 2 (Float64 ring blocks): bytes a series, rows and bytes written per tick, CPU per tick, at 18 and 100 series', async () => {
+    const T = 30
+    note(`\nD. robust z (quantile spread, k 2) at a 1-minute interval, the alarm tick of one group in the Ruler object, ${T} measured ticks after 3 unmeasured, 3 runs (ranges are min–max); warm state from the library over the window and 20 more points, written by the ruler's own code in the version measured`)
+    note('| window | series | version | stored bytes a series | rows written per tick | bytes written per tick | ms CPU per tick | estimate a series (save) | load average |')
+    note('|---|---|---|---|---|---|---|---|---|')
+    const one = async (windowPoints: number, S: number, version: 1 | 2) => {
+      const { tenant, stub, w } = await setup({ heartbeatMs: 24 * H, limits: { maxAnomalyStateBytesPerSeries: 400_000, maxAnomalyStateBytesPerRule: 64_000_000, maxAnomalyStateBytesPerObject: 256_000_000 } })
+      w.anomalyStateWrite = version
+      const entry = { alert: 'Bench', expr: 'bench_metric', anomaly: { detector: 'robust_z', params: { windowPoints }, max_series: S } }
+      const saved = ok(await stub.saveGroups(tenant, { groups: [{ name: 'bench', interval: '1m', rules: [entry] }] }))
+      const first = saved.groups[0]!.nextEvaluationMs
+      const p = parseRuleFile({ groups: [{ name: 'bench', interval: '1m', rules: [entry] }] }, { ...DEFAULT_RULER_CONFIG, limits: { ...DEFAULT_RULER_CONFIG.limits, maxAnomalyStateBytesPerSeries: 400_000, maxAnomalyStateBytesPerRule: 64_000_000, maxAnomalyStateBytesPerObject: 256_000_000 } })
+      const rule = p.groups[0]!.anomalyRules![0] as AnomalyRuleV2
+      expect(saved.groups[0]!.rules[0]!.key).toBe(rule.key)
+      // Warm state: the library over the window and 20 points more, ending one interval before the first tick.
+      const n = windowPoints + 20
+      const labels = Array.from({ length: S }, (_, j) => ({ service: `svc-${String(j).padStart(3, '0')}`, region: 'eu-west-1' }))
+      const all = labels.map((_l, j) => make(n + T + 3, MIN, 1000 + j, j % 7))
+      const series = new Map<string, SeriesState>()
+      for (let j = 0; j < S; j++) {
+        const ts = Float64Array.from({ length: n }, (_x, i) => first - (n - i) * MIN)
+        const r = det('robust_z').detect({ ts, values: all[j]!.values.subarray(0, n) }, { ...rule.anomaly.params, stepMs: MIN }, null)
+        series.set(fingerprint(labels[j]!), { labels: labels[j]!, state: r.state, last: null, seenAt: ts[n - 1]! })
+      }
+      const rows = fullAnomalyWrite(rule, MIN, series, version).upserts
+      await runInDurableObject(stub, (_i, s) => {
+        s.storage.sql.exec('DELETE FROM warmup WHERE tenant = ?', tenant)
+        for (const r of rows) s.storage.sql.exec('INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, ?, ?)', tenant, 'bench', rule.key, r.chunk, r.body)
+      })
+      await evictDurableObject(stub)
+      const vectors = Array.from({ length: T + 3 }, (_, i) => vec(...labels.map((l, j): [Record<string, string>, number] => [l, all[j]!.values[n + i]!])))
+      w.evaluate = (q, t) => (q === 'bench_metric' ? vectors[Math.round((t - first) / MIN)]! : vec())
+      const table = () => runInDurableObject(stub, (_i, s) => new Map(s.storage.sql.exec('SELECT chunk, body FROM anomaly_state WHERE tenant = ?', tenant).toArray().map((r) => [r.chunk as number, r.body as string])))
+      for (let i = 0; i < 3; i++) {
+        world.now = first + i * MIN
+        expect(await runDurableObjectAlarm(stub)).toBe(true)
+      }
+      let cpuNs = 0
+      let bytes = 0
+      let rowsW = 0
+      let load: number[] = []
+      for (let i = 3; i < T + 3; i++) {
+        const before = await table()
+        const r0 = ok(await stub.health(tenant)).counters.sqlRowsWritten
+        world.now = first + i * MIN
+        const a = await host()
+        await runDurableObjectAlarm(stub)
+        const b = await host()
+        cpuNs += b.ns - a.ns
+        load = b.loadavg
+        rowsW += ok(await stub.health(tenant)).counters.sqlRowsWritten - r0
+        const after = await table()
+        for (const [c, body] of after) if (before.get(c) !== body) bytes += new TextEncoder().encode(body).length
+      }
+      const st = ok(await stub.rules(tenant)).rules[0]!
+      expect(st.health).toBe('ok')
+      expect(st.anomaly).toMatchObject({ status: 'ok', scored: S })
+      const stored = [...(await table()).values()].reduce((x, body) => x + new TextEncoder().encode(body).length, 0)
+      return { perSeries: stored / S, rows: rowsW / T, bytes: bytes / T, cpu: cpuNs / 1e6 / T, load, estimate: estimateStateBytes('robust_z', rule.anomaly.params, MIN, version) }
+    }
+    for (const [windowPoints, S] of [[1500, 18], [1500, 100], [4000, 22]] as const) {
+      for (const version of [1, 2] as const) {
+        const runs = [await one(windowPoints, S, version), await one(windowPoints, S, version), await one(windowPoints, S, version)]
+        note(`| ${windowPoints} | ${S} | ${version} | ${range(runs.map((r) => r.perSeries), 0)} | ${range(runs.map((r) => r.rows), 1)} | ${range(runs.map((r) => r.bytes), 0)} | ${range(runs.map((r) => r.cpu))} | ${runs[0]!.estimate} | ${load(runs.at(-1)!.load)} |`)
+      }
+    }
+    console.log(`\n${report.join('\n')}`)
   })
 
   it('C. the whole tick in the object: one group with one 100-series anomaly rule, against the same group with an alerting rule that returns nothing', async () => {

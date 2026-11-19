@@ -135,6 +135,30 @@ export function runPelt(f: NabFile, minShift: number, window = 576, every = 12):
   return { scores, flags }
 }
 
+/**
+ * Trivial baseline (not a detector): each row is flagged with probability p, independently,
+ * from a seeded generator keyed by the file's path; the data are never read. Used to show what
+ * a scoring rule gives by chance (bench/freeze.ts, bench/smd-run.ts).
+ */
+export function runRandom(n: number, key: string, p: number, seed: number): Run {
+  let h = (seed ^ 0x9e3779b9) >>> 0
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 2654435761) >>> 0
+  let a = h
+  const rnd = () => { // mulberry32
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  const scores = new Float64Array(n)
+  const flags = new Uint8Array(n)
+  for (let i = 0; i < n; i++) if (rnd() < p) { flags[i] = 1; scores[i] = 1 }
+  return { scores, flags }
+}
+export const RANDOM_RATES = [1e-4, 3e-4, 1e-3, 3e-3, 1e-2]
+export const RANDOM_SEEDS = [1, 2, 3, 4, 5]
+
 // ───────────────────────────── grids ─────────────────────────────
 
 const grid = (detector: string, axes: Record<string, (number | string)[]>, make: (p: Record<string, number | string>) => Config['run']): Config[] => {

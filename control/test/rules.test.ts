@@ -6,9 +6,12 @@ import proposals from '../src/ops-proposals.ts?raw'
 import settings from '../src/ops-settings.ts?raw'
 import index from '../src/index.ts?raw'
 import tenant from '../src/tenant.ts?raw'
+import oauthOps from '../src/ops-oauth.ts?raw'
+import oauthHttp from '../src/oauth-http.ts?raw'
+import oauthLib from '../src/oauth.ts?raw'
 
 /** House rules (AGENTS.md, "Durable Objects") that can be checked by reading the source. */
-const sources: Record<string, string> = { audit, dashboards, keys, proposals, settings, tenant }
+const sources: Record<string, string> = { audit, dashboards, keys, proposals, settings, tenant, oauthOps, oauthHttp, oauthLib }
 
 /** Every SQL string literal in a source file: quoted with ', " or `, starting with a statement keyword. */
 function statements(src: string): string[] {
@@ -27,10 +30,12 @@ describe('house rules, read from the source', () => {
         if (/^INSERT/.test(sql)) expect(sql, `${file}: ${sql}`).toMatch(/\(\s*tenant\b/)
         // The one statement that cannot: reading which tenant this object belongs to.
         else if (sql.includes("FROM tenant_meta WHERE k = 'bound'")) continue
+        // Nor this one: whether the object has any storage at all (an unprovisioned object writes none).
+        else if (sql.startsWith("SELECT name FROM sqlite_master WHERE type = 'table'")) continue
         else expect(sql, `${file}: ${sql}`).toMatch(/\btenant = \?|\$\{where\.join|s\.tenant = \?/)
       }
     }
-    expect(seen).toBeGreaterThan(70)
+    expect(seen).toBeGreaterThan(100)
   })
 
   it('the audit table is only ever inserted into, and KV is only written from the outbox', () => {
@@ -55,5 +60,13 @@ describe('house rules, read from the source', () => {
     expect(index).not.toMatch(/searchParams\.get\('tenant'\)|headers\.get\('X-(Scope|Tenant)/i)
     expect([...index.matchAll(/idFromName\(/g)]).toHaveLength(1)
     expect(index).toContain('idFromName(identity.tenant)')
+    // The OAuth endpoints pick a Tenant object in one place, by the tenant the presented credential
+    // names (whose object holds only that credential's hash), and read no tenant from anything else.
+    expect([...oauthHttp.matchAll(/idFromName\(/g)]).toHaveLength(1)
+    expect(oauthHttp).toContain('env.TENANT.idFromName(tenant)')
+    expect([...oauthHttp.matchAll(/tenantStub\(env, ([a-z.]+)\)/g)].map((m) => m[1])).toEqual(['cred.tenant', 'cred.tenant'])
+    expect(oauthHttp).not.toMatch(/searchParams\.get\('tenant'\)|form\.tenant|headers\.get\('X-/i)
+    // nothing OAuth logs a request's parameters: the one log line names the path and the error's class
+    for (const src of [oauthOps, oauthHttp, oauthLib]) expect([...src.matchAll(/console\.(log|error|warn|info)\(([^)]*)\)/g)].map((m) => m[2])).toEqual(src === oauthHttp ? ["'control: oauth endpoint failed', path, e instanceof Error ? e.name : 'error'"] : [])
   })
 })

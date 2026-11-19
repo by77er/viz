@@ -28,6 +28,10 @@ const MUTANTS = [
   ['configure: a class with no declared schema is deployed', 'configure.mjs', '    if (!declared) throw new Error(', '    if (false) throw new Error('],
   ['configure: versions do not carry VIZ_SCHEMAS', 'configure.mjs', '  if (schemas.length > 0) vars[SCHEMAS_VAR] = schemasVar(schemas)\n', ''],
   ['schemas: compat recorded as the latest version', 'lib/schemas.mjs', '      compat: rel.compat,', '      compat: rel.latest,'],
+  // review of D44 (design/reviews/d44-d52-d53-d60.md, M-1)
+  ['configure: a Durable Object class of another Worker is bound without being listed in binds_classes', 'configure.mjs', "      if (!Object.hasOwn(worker.binds_classes ?? {}, `${owner}:${b.class_name}`)) {", '      if (false) {'],
+  ["mcp/wrangler.jsonc: viz-mcp binds control's Tenant class again (its binding before the review)", '../mcp/wrangler.jsonc', '  "services": [\n', '  "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant", "script_name": "viz-control" }] },\n  "services": [\n'],
+  ["mcp/wrangler.jsonc: viz-mcp's OAUTH binding without the entrypoint (control's default fetch instead)", '../mcp/wrangler.jsonc', '"entrypoint": "OAuthIntrospection", ', ''],
 ]
 
 try {

@@ -1,0 +1,17 @@
+{
+  "format": "oauth.request",
+  "version": 1,
+  "request": {
+    "v": 1,
+    "client_id": "vzk1.eyJ2IjoxLCJuIjoiQUFBQUFBQUFBQUFBQUFBQSIsImlhdCI6MTgwMDAwMDAwMCwibmFtZSI6IkdvbGRlbiBjbGllbnQiLCJ1cmlzIjpbImh0dHA6Ly8xMjcuMC4wLjE6MzM0MTgvY2FsbGJhY2siXX0.ZL5_CHYKI4-j35GljAgP405IQ7DKbBCNHoeTEZrt7Vs",
+    "redirect_uri": "http://127.0.0.1:33418/callback",
+    "scope": [
+      "read",
+      "dashboards:read"
+    ],
+    "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+    "state": "xyz",
+    "resource": "https://vis.bitcru.sh/mcp"
+  },
+  "handle": "eyJ2IjoxLCJjbGllbnRfaWQiOiJ2emsxLmV5SjJJam94TENKdUlqb2lRVUZCUVVGQlFVRkJRVUZCUVVGQlFTSXNJbWxoZENJNk1UZ3dNREF3TURBd01Dd2libUZ0WlNJNklrZHZiR1JsYmlCamJHbGxiblFpTENKMWNtbHpJanBiSW1oMGRIQTZMeTh4TWpjdU1DNHdMakU2TXpNME1UZ3ZZMkZzYkdKaFkyc2lYWDAuWkw1X0NIWUtJNC1qMzVHbGpBZ1A0MDVJUTdES2JCQ05Ib2VURVpydDdWcyIsInJlZGlyZWN0X3VyaSI6Imh0dHA6Ly8xMjcuMC4wLjE6MzM0MTgvY2FsbGJhY2siLCJzY29wZSI6WyJyZWFkIiwiZGFzaGJvYXJkczpyZWFkIl0sImNvZGVfY2hhbGxlbmdlIjoiRTlNZWxob2EyT3d2RnJFTVRKZ3VDSGFvZUsxdDhVUldidUdKU3N0dy1jTSIsInN0YXRlIjoieHl6IiwicmVzb3VyY2UiOiJodHRwczovL3Zpcy5iaXRjcnUuc2gvbWNwIn0"
+}
