@@ -34,6 +34,8 @@
  *   (`admin` counts as the dashboards scopes control lets it stand for, and is never granted).
  * - Only a person approves: an identity of kind `key` or `user` with `admin`, never an agent.
  *   A grant follows its approver's key: suspended while it is disabled, ended once it is deleted.
+ *   Until a person (`user`) can be checked the same way, the check fails closed: an approver whose
+ *   subject is not `key:<id>` is refused at approval, and a grant recorded with one is ended.
  * - Every RPC result carries `v` (COMPATIBILITY.md §3.1); a caller refuses a `v` it does not know.
  *   Nothing here throws for bad input.
  *
@@ -100,11 +102,22 @@ export const OAUTH_LIMITS = {
 // ---- credentials ----
 
 /**
- * `<prefix>1.<tenant>.<secret>`: the secret is 43 base62 characters (about 256 bits). The tenant
- * is `contracts/ledger.ts` TENANT_ID, which has no `.`. Format version 1 is the `1` in the prefix.
+ * `<prefix>1.<tenant>.<secret>`: the secret is 43 base62 characters. The tenant is
+ * `contracts/ledger.ts` TENANT_ID, which has no `.`. Format version 1 is the `1` in the prefix.
+ *
+ * The 43 characters are `CREDENTIAL_TAG.randomChars` characters from a CSPRNG (about 160 bits;
+ * this is what makes the credential unguessable) followed by a `CREDENTIAL_TAG.tagChars`-character
+ * tag: the first 16 bytes of HMAC-SHA-256, under a key derived (HKDF-SHA-256, salt
+ * `CREDENTIAL_TAG.salt`) from control's `OAUTH_CLIENT_KEY`, of `<prefix>1.<tenant>.<random>`, each
+ * byte as `BASE62[byte % 62]`. The tag lets control refuse a made-up credential in the Worker,
+ * before the tenant's object is asked (review of D44, M-2); it does not make a credential valid:
+ * only the tenant's object, which holds the SHA-256 of the whole credential, says that. Replacing
+ * `OAUTH_CLIENT_KEY` therefore ends every code and token too (a client connects again). Added
+ * 2026-11-19, before any release issued a credential.
  */
 export const OAUTH_CREDENTIAL = /^(vzc|vza|vzr)1\.([A-Za-z0-9_-]{1,64})\.([A-Za-z0-9]{43})$/
 export const CREDENTIAL_PREFIX = { code: 'vzc1', access: 'vza1', refresh: 'vzr1' } as const
+export const CREDENTIAL_TAG = { randomChars: 27, tagChars: 16, salt: 'viz.oauth.credential-tag/v1' } as const
 export type CredentialKind = keyof typeof CREDENTIAL_PREFIX
 
 export function parseCredential(s: string): { kind: CredentialKind; tenant: string } | null {
@@ -163,7 +176,7 @@ export interface OAuthGrantView {
   revokeReason: string | null
 }
 
-// ---- the RPCs (over the Tenant Durable Object binding, by script_name, like control.ts) ----
+// ---- the RPCs on the Tenant object (control/ only: its Worker and its own entrypoints) ----
 
 /** The token endpoint's form, as received (RFC 6749 §4.1.3, §6; RFC 8707). */
 export interface TokenRequest {
@@ -228,4 +241,44 @@ export interface TenantOAuthRpc {
   oauthRevoke(tenant: string, token: string, clientId: string): Promise<RevokeResult>
   /** For the resource: is this access token live, for this resource, and who is it. */
   introspectAccessToken(tenant: string, token: string, resource: string): Promise<IntrospectionResult>
+}
+
+// ---- the resource's entrypoint: what the agent surface (mcp/) may ask control, and nothing else ----
+
+/**
+ * A named `WorkerEntrypoint` export of viz-control (added 2026-11-19, review of D44, M-1). The agent
+ * surface binds it as a service binding naming the entrypoint, with its own name in `props`:
+ *
+ *   { "binding": "OAUTH", "service": "viz-control", "entrypoint": "OAuthIntrospection",
+ *     "props": { "caller": "viz-mcp" } }
+ *
+ * It replaces the agent surface's binding to the `Tenant` Durable Object class, which could call
+ * every method of every tenant's object (`invoke` with any identity, `provision`, `serviceKey`,
+ * `notificationTarget`). This entrypoint does one thing: introspect an access token.
+ *
+ * - The tenant is the one the token names. There is no tenant argument: a caller cannot point the
+ *   question at a tenant other than the token's, and the tenant's object still holds only the
+ *   token's hash, so a token edited to name another tenant matches nothing there.
+ * - A call whose `ctx.props.caller` is not in `OAUTH_INTROSPECTION_CALLERS` is answered
+ *   `unauthorized` and reaches no object.
+ * - A token that is not shaped like an access token, or does not carry this deployment's tag
+ *   (`CREDENTIAL_TAG`), is `inactive` (`unknown`) and reaches no object.
+ * - Results are `IntrospectionResult` (version 1, above) plus `unauthorized`. Nothing throws for bad
+ *   input.
+ */
+export const OAUTH_INTROSPECTION_ENTRYPOINT = 'OAuthIntrospection'
+
+/** Callers allowed to introspect: the value of `props.caller` on their binding. */
+export const OAUTH_INTROSPECTION_CALLERS: readonly string[] = ['viz-mcp']
+
+/** What a caller's service binding carries in `props`. */
+export interface OAuthIntrospectionProps {
+  caller: string
+}
+
+export type OAuthIntrospectionResult = IntrospectionResult | { v: 1; status: 'unauthorized' }
+
+export interface OAuthIntrospectionRpc {
+  /** Is this access token live, for `resource` (the caller's own canonical URI), and who is it. Read only. */
+  introspectAccessToken(token: string, resource: string): Promise<OAuthIntrospectionResult>
 }
