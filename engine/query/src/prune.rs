@@ -231,21 +231,22 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
                 Some(d) => d.clone(),
                 None => {
                     let labels = if need_labels { Some(catalog::parse_labels(row.labels_json)?) } else { None };
-                    let mine = match (part, &labels) {
+                    let labels_or = || labels.as_ref().ok_or_else(|| QueryError::internal("sample plan: labels were not read"));
+                    let mine = match part {
                         None => true,
                         Some(p) if p.key.without.is_empty() => SplitKey::part_of(row.series_id as u64, p.parts) == p.part,
-                        Some(p) => SplitKey::part(p.key, labels.as_ref().expect("labels were read"), p.parts) == p.part,
+                        Some(p) => p.key.part(labels_or()?, p.parts) == p.part,
                     };
-                    let hits: Vec<bool> = rs
-                        .iter()
-                        .map(|r| {
-                            if r.name_only {
-                                r.name.as_deref() == Some(row.metric_name)
-                            } else {
-                                r.ms.iter().all(|m| m.matches(labels.as_ref().expect("labels were read")))
-                            }
-                        })
-                        .collect();
+                    let mut hits: Vec<bool> = Vec::with_capacity(rs.len());
+                    for r in rs.iter() {
+                        let hit = if r.name_only {
+                            r.name.as_deref() == Some(row.metric_name)
+                        } else {
+                            let l = labels_or()?;
+                            r.ms.iter().all(|m| m.matches(l))
+                        };
+                        hits.push(hit);
+                    }
                     decided.insert(row.series_id, (mine, hits.clone()));
                     (mine, hits)
                 }
