@@ -615,7 +615,7 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 161 tests in 20 files, in workerd (at most 2 workers)
+npm test             # 164 tests in 20 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
 npm run mutants      # 137 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
@@ -900,6 +900,12 @@ What the tests establish:
 
 ### Rate limits in front of OAuth (D70)
 
+**Runs** (2026-11-19, `npx tsc --noEmit && npx vitest run --maxWorkers=2` in `control/`): `tsc`
+clean; 164 of 164 in 20 files, 49 s with the machine's load average about 11. That count includes 3
+settings tests another builder added to the worktree meanwhile; the scratch copy the mutants ran in
+(taken before them) passed 161 of 161. 13 of the tests are this change's: `ratelimit.test.ts` (12)
+and `oauth-cost.test.ts` (1).
+
 **Does the test runner have the binding?** Yes: `@cloudflare/vitest-plugin` 1.8.4 passes miniflare's
 `ratelimits` option through, and miniflare 5.20261117.0-beta implements it (a SQLite-backed object
 per namespace; windows aligned to the clock; exact counts; a refused call does not count, as on
@@ -1159,6 +1165,44 @@ Mutant 9 is the closest faithful form of "audit entry skipped on failure then re
 design allows: the audit row cannot be skipped separately, because it is in the same
 transaction as the change. The test that pins it: a create that is refused after its first
 insert, then retried, yields one dashboard and one entry.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 114 | rate limit (D70): the source limit is not asked | oauth-cost, ratelimit (5) |
+| 115 | rate limit (D70): the token endpoint reads its body before the source limit | oauth-review, ratelimit (2) |
+| 116 | rate limit (D70): an IPv6 source is counted by its whole address, not its /64 | ratelimit (1) |
+| 117 | rate limit (D70): the source is taken from `X-Forwarded-For`, a header the client writes | oauth-cost, ratelimit (4) |
+| 118 | rate limit (D70): the token endpoint counts a credential before its tag is checked (a made-up one spends the tenant's budget) | ratelimit (1) |
+| 119 | rate limit (D70): the token endpoint has no per-client limit | ratelimit (1) |
+| 120 | rate limit (D70): the tenant is asked before the client (a looping client spends its tenant's budget) | ratelimit (1) |
+| 121 | rate limit (D70): the token endpoint has no per-tenant limit | ratelimit (1) |
+| 122 | rate limit (D70): revocation is not limited per tenant | ratelimit (1) |
+| 123 | rate limit (D70): introspection has no per-token limit | ratelimit (1) |
+| 124 | rate limit (D70): introspection has no per-tenant limit | ratelimit (1) |
+| 125 | rate limit (D70): introspection counts a token before its tag is checked (a made-up one spends the tenant's budget) | ratelimit (1) |
+| 126 | rate limit (D70): a bearer over its limit is told its token is inactive (the client discards it) | ratelimit (1) |
+| 127 | rate limit (D70): a limiter that fails, fails closed | ratelimit (2) |
+| 128 | rate limit (D70): an absent limiter fails closed | isolation, forged-cost, golden, oauth-cost, oauth-review, oauth, ratelimit, settings (56) |
+| 129 | rate limit (D70): a limiter call has no time limit (a hung limiter hangs every OAuth request) | ratelimit (1) |
+| 130 | rate limit (D70): the refusal carries no `Retry-After` | ratelimit (7) |
+| 131 | rate limit (D70): the refusal uses an error code clients do not know (`rate_limited`) | ratelimit (7) |
+| 132 | rate limit (D70): refreshes per grant are not limited in the object | ratelimit (2) |
+| 133 | rate limit (D70): the per-grant limit is checked after the presented token is spent | ratelimit (1) |
+| 134 | rate limit (D70): the per-grant limit is checked before reuse detection (a rotated token at the limit no longer ends the grant) | ratelimit (1) |
+| 135 | rate limit (D70): the per-grant limit counts every grant of the tenant (one loop refuses the others) | oauth-cost, ratelimit (3) |
+
+**114–135** (rate limits in front of OAuth, D70; positions 116–137 in `scripts/mutants.mjs`, whose
+order runs two ahead of this table's numbers since before this change) were run on 2026-11-19 in a
+copy of `control/`, `contracts/`, `edge/src`, `shard/src`, `ruler/src`, `mcp/src` and `dashboard/`
+in a scratch directory outside git, after its unmutated suite passed 161 of 161 there
+(`node scripts/mutants.mjs "rate limit (D70)"`): **22 of 22 killed, first run.** Most are caught by
+`ratelimit.test.ts` alone, as expected of new behaviour; the source-limit mutants also fail
+`oauth-cost.test.ts`'s limiter rows, and "reads its body before the source limit" also fails the m-2
+body-cap test in `oauth-review.test.ts`. "A limiter call has no time limit" is killed by the test's
+own 30 s timeout, the hung check never answering. Afterwards the copy's `control/src`, `control/test`
+and `contracts/` were compared with the worktree's: equal, but for `src/ops-settings.ts` and
+`test/settings.test.ts`, which another builder changed in the worktree after the copy was taken, and
+`scripts/mutants.mjs`, to which they appended. 1–113 were not re-run in this change.
 
 ## Known risks
 
