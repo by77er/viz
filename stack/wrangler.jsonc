@@ -40,6 +40,10 @@
   "triggers": { "crons": ["7 * * * *"] },
   "vars": {
     "CELL": "cell-0",
-    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
+    // The ledger's state cap (ledger/README.md, D47). The ledger itself handles 300 MiB, but the
+    // publisher still reads a new base checkpoint whole, so the cap stays at the 16 MiB it was
+    // built for until the publisher streams checkpoint parts. Remove this line then.
+    "LEDGER_STATE_MAX_BYTES": "16777216"
   }
 }
