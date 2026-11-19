@@ -234,7 +234,7 @@ function makeCopy() {
 
 function runTests(dir, tests) {
   const out = join(dir, 'report.json')
-  spawnSync('npx', ['vitest', 'run', ...tests, '--reporter=json', `--outputFile=${out}`], { cwd: dir, encoding: 'utf8', timeout: 600_000 })
+  spawnSync('npx', ['vitest', 'run', ...tests, '--maxWorkers=2', '--reporter=json', `--outputFile=${out}`], { cwd: dir, encoding: 'utf8', timeout: 600_000 })
   let report = null
   try { report = JSON.parse(readFileSync(out, 'utf8')) } catch { /* no report: treat as error */ }
   if (!report) return { failed: -1, killers: [] }
