@@ -1,5 +1,6 @@
 import { Problem } from './errors'
 import { type Identity, type IdentityEnv, identify } from './identity'
+import { OAUTH_PATHS, serveOAuth } from './oauth-http'
 import { type OpInput, type OpName, type OpResult, PREFIX, matchRoute } from './routes'
 import type { TenantEnv } from './tenant'
 import spec from '../openapi.json'
@@ -14,6 +15,9 @@ export { clearAuthCache } from '../../edge/src/auth'
  * (`identify`), turning the request into an operation from the route table, and handing
  * it to the caller's own Tenant object. Which object that is comes from the credential
  * alone; a request that tries to name a tenant is refused.
+ *
+ * It also serves the OAuth authorization server's public endpoints for agents
+ * (`/.well-known/oauth-authorization-server`, `/oauth/…`: src/oauth-http.ts, D44).
  */
 export interface Env extends IdentityEnv, TenantEnv {
   /** Comma-separated origins allowed to call from a browser. */
@@ -141,7 +145,9 @@ export function createWorker(hooks: Hooks = {}): ExportedHandler<Env> {
 
   return {
     async fetch(req, env): Promise<Response> {
-      if (new URL(req.url).pathname === '/healthz') return health(req, env)
+      const pathname = new URL(req.url).pathname
+      if (pathname === '/healthz') return health(req, env)
+      if (OAUTH_PATHS.has(pathname)) return serveOAuth(req, env)
       const cors = corsHeaders(req, env)
       if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
       try {

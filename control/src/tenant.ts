@@ -11,11 +11,14 @@ import { issueServiceKey, keyOps, newKey, purgeStaleSecrets } from './ops-keys'
 import { mayApply, purgeDashboards } from './ops-dashboards'
 import { notificationTarget, settingsOps } from './ops-settings'
 import { SERVICE_INSTANCE, SERVICE_KEYS, type NotificationTargetResult, type ServiceKeyResult, type TenantServiceRpc } from '../../contracts/control'
+import { type IntrospectionResult, type RevokeResult, type TenantOAuthRpc, type TokenRequest, type TokenResult, parseCredential } from '../../contracts/oauth'
+import { type OAuthConfig, type OAuthEnv, oauthConfig } from './oauth'
+import { exchangeCode, introspect, oauthDeadlines, oauthOps, prepareApprove, refreshTokens, revokeToken, sweepOAuth } from './ops-oauth'
 import { type OpInput, type OpName, type OpResult, routeOf } from './routes'
 import { TENANT_SCHEMA } from './schema'
 import { randomId } from './util'
 
-export interface TenantEnv {
+export interface TenantEnv extends OAuthEnv {
   CONFIG: KVNamespace
   CONTROL_CAPS?: string
   LIMIT_CEILINGS?: string
@@ -29,6 +32,8 @@ export interface Ctx {
   input: OpInput
   now: number
   dryRun: boolean
+  /** What the operation's prepare step (`PREPARE`) made before the transaction, if it has one. */
+  prepared?: unknown
 }
 
 export type Op = (t: Tenant, c: Ctx) => OpResult
@@ -58,6 +63,16 @@ const OPS: Record<OpName, Op> = {
   ...proposalOps,
   ...settingsOps,
   ...auditOps,
+  ...oauthOps,
+}
+
+/**
+ * Asynchronous work an operation needs before its transaction (which is synchronous): WebCrypto.
+ * It must not read or write stored state, so nothing can change between it and the transaction
+ * that depends on it.
+ */
+const PREPARE: Partial<Record<OpName, (t: Tenant, input: OpInput) => Promise<unknown>>> = {
+  'oauth.approve': (t, input) => prepareApprove(t, input.body),
 }
 
 /**
@@ -73,12 +88,14 @@ const OPS: Record<OpName, Op> = {
  * - One alarm, at the earliest of: a proposal expiring, a deleted dashboard due for
  *   purging, an unpublished outbox row. Absent when there is none.
  */
-export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc {
+export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc, TenantOAuthRpc {
   /** Replaceable in tests to make KV fail. Never state. */
   kv: KVNamespace
   caps: Caps
   /** The tenant this object belongs to, from SQLite; '' until it is provisioned. */
   tenant = ''
+  /** No storage yet (never provisioned): opened, and migrated, by `provision` only. */
+  private unopened = false
   private draining: Promise<boolean> = Promise.resolve(true)
 
   /** What opening storage found (contracts/schema.ts). Anything but `ok` and the object serves nothing and writes nothing. */
@@ -91,6 +108,16 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
     // Versioned storage: migrate, or refuse storage a newer release wrote (contracts/COMPATIBILITY.md §2).
     // Local SQLite only, so holding off other events for it is allowed (AGENTS.md).
     void ctx.blockConcurrencyWhile(async () => {
+      // An object nobody provisioned holds no storage, and opening it writes none: a credential that
+      // merely names a tenant (an OAuth token is `vza1.<tenant>.…`) must not create storage for any
+      // name it likes. Such an object answers "not provisioned" everywhere; `provision` opens it.
+      const empty = ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' LIMIT 1").toArray().length === 0
+      if (empty) {
+        this.unopened = true
+        // Version 0: nothing recorded, nothing to refuse. Nothing reads or writes tables until provision.
+        this.schema = { status: 'ok', component: TENANT_SCHEMA.component, version: 0, compat: 0, known: TENANT_SCHEMA.migrations.length, migrated: [], adopted: false }
+        return
+      }
       this.schema = openSchema(ctx.storage, TENANT_SCHEMA)
       if (this.schema.status !== 'ok') return
       const bound = ctx.storage.sql.exec("SELECT tenant FROM tenant_meta WHERE k = 'bound'").toArray()[0]
@@ -103,7 +130,17 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
     return refusalOf(this.schema)
   }
 
+  /** Where the authorization server and its one resource are, and the registration signing key (contracts/oauth.ts). */
+  get oauth(): OAuthConfig {
+    return oauthConfig(this.env)
+  }
+
   // ---- SQL helpers ----
+
+  /** One synchronous transaction, for operations that run in phases around asynchronous crypto (ops-oauth.ts). */
+  transaction<T>(fn: () => T): T {
+    return this.ctx.storage.transactionSync(fn)
+  }
 
   all<T = Row>(query: string, ...bindings: SqlStorageValue[]): T[] {
     return this.ctx.storage.sql.exec(query, ...bindings).toArray() as T[]
@@ -198,6 +235,7 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
     if (d !== null) deadlines.push(d)
     const o = this.one<{ m: number | null }>('SELECT MIN(created_at) AS m FROM outbox WHERE tenant = ?', t)!.m
     if (o !== null) deadlines.push(Date.now() + OUTBOX_RETRY_MS)
+    deadlines.push(...oauthDeadlines(this, Date.now()))
     return deadlines.length ? this.ctx.storage.setAlarm(Math.min(...deadlines)) : this.ctx.storage.deleteAlarm()
   }
 
@@ -244,6 +282,7 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
       expireProposals(this, SYSTEM, now)
       purgeDashboards(this, SYSTEM, now)
       purgeStaleSecrets(this, now)
+      sweepOAuth(this, now)
     })
     await this.drain()
     await this.schedule()
@@ -257,6 +296,11 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
    * an HTTP route would have to take a tenant from the request.
    */
   async provision(tenant: string, keyName = 'first admin key'): Promise<{ key: string; id: string }> {
+    if (this.unopened && TENANT_ID.test(tenant)) {
+      // The first write this object ever makes: open (create) its storage now.
+      this.schema = openSchema(this.ctx.storage, TENANT_SCHEMA)
+      this.unopened = false
+    }
     const refused = this.refusal()
     if (refused) throw new SchemaTooNewError(refused)
     if (!TENANT_ID.test(tenant)) throw new Error('tenant id must match [A-Za-z0-9_-]{1,64}')
@@ -351,6 +395,57 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
     return out
   }
 
+  // ---- OAuth (contracts/oauth.ts): the token endpoint, revocation, and introspection for the resource ----
+
+  /** After a commit that may have queued KV writes (a grant's key removed): arm the alarm, publish, re-arm. */
+  private async settle(): Promise<void> {
+    const scheduled = this.schedule()
+    await this.drain()
+    await scheduled
+    await this.schedule()
+  }
+
+  /** The token endpoint for this tenant's codes and refresh tokens. The credential must name this tenant. */
+  async oauthToken(tenant: string, req: TokenRequest): Promise<TokenResult> {
+    const refused = this.refusal()
+    if (refused) return refused
+    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }
+    const r = req as Partial<TokenRequest> | null
+    if (!r || typeof r !== 'object' || typeof r.grant_type !== 'string' || typeof r.client_id !== 'string') return { v: 1, status: 'error', error: 'invalid_request', description: 'grant_type and client_id are required.' }
+    const presented = r.grant_type === 'authorization_code' ? r.code : r.refresh_token
+    const kind = typeof presented === 'string' ? parseCredential(presented) : null
+    // A credential naming another tenant can match nothing here; say so without looking.
+    if (kind && kind.tenant !== this.tenant) return { v: 1, status: 'error', error: 'invalid_grant', description: 'The credential is unknown, expired or revoked.' }
+    const now = Date.now()
+    let out: TokenResult
+    if (r.grant_type === 'authorization_code') out = await exchangeCode(this, r as TokenRequest, now)
+    else if (r.grant_type === 'refresh_token') out = await refreshTokens(this, r as TokenRequest, now)
+    else return { v: 1, status: 'error', error: 'unsupported_grant_type', description: 'grant_type must be authorization_code or refresh_token.' }
+    await this.settle()
+    return out
+  }
+
+  /** RFC 7009 for this tenant's tokens. Always ok for a token it does not know. */
+  async oauthRevoke(tenant: string, token: string, clientId: string): Promise<RevokeResult> {
+    const refused = this.refusal()
+    if (refused) return refused
+    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }
+    const now = Date.now()
+    this.transaction(() => revokeToken(this, token, clientId, now))
+    await this.settle()
+    return { v: 1, status: 'ok' }
+  }
+
+  /** For the agent surface (by Durable Object binding): is this access token live, for `resource`, and who is it. Read only. */
+  async introspectAccessToken(tenant: string, token: string, resource: string): Promise<IntrospectionResult> {
+    const refused = this.refusal()
+    if (refused) return refused
+    if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }
+    const kind = typeof token === 'string' ? parseCredential(token) : null
+    if (!kind || kind.kind !== 'access' || kind.tenant !== this.tenant || typeof resource !== 'string') return { v: 1, status: 'inactive', reason: 'unknown' }
+    return introspect(this, token, resource, Date.now())
+  }
+
   /** Run one operation of the HTTP API for an identity the Worker has established. */
   async invoke(id: Identity, op: OpName, input: OpInput): Promise<OpResult> {
     try {
@@ -373,6 +468,8 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
       const body = input.body as { dryRun?: unknown } | undefined | null
       const dryRun = route.mutation && (body?.dryRun === true || input.query.dryRun?.[0] === 'true')
       const c: Ctx = { id: identity, actor: { subject: identity.subject, kind: identity.kind, name: identity.name ?? null }, input, now, dryRun }
+      const prepare = PREPARE[op]
+      if (prepare) c.prepared = await prepare(this, input)
       if (!route.mutation) return OPS[op](this, c)
 
       const { result, committed, queued } = this.mutate(c, OPS[op])
