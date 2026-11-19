@@ -114,12 +114,26 @@ const loadClient = (t: Tenant, id: string): ClientRow | undefined => t.one<Clien
 const keyOf = (t: Tenant, g: GrantRow) =>
   g.key === null ? undefined : t.one<{ id: string; name: string; key_id: string; disabled: number; expires_at: number | null }>('SELECT id, name, key_id, disabled, expires_at FROM keys WHERE tenant = ? AND id = ?', t.tenant, g.key)
 
+/**
+ * The approver's own key: a grant is never broader than it, also later. While it is disabled the
+ * grant is suspended; once it is deleted or expired the grant is dead (and the alarm ends it).
+ * Identities other than keys (people, later) are not checked here yet.
+ */
+function approver(t: Tenant, g: GrantRow, now: number): 'live' | 'disabled' | 'gone' {
+  const by = JSON.parse(g.created_by) as Actor
+  if (!by.subject.startsWith('key:')) return 'live'
+  const k = t.one<{ disabled: number; expires_at: number | null }>('SELECT disabled, expires_at FROM keys WHERE tenant = ? AND id = ?', t.tenant, by.subject.slice(4))
+  if (!k || (k.expires_at !== null && k.expires_at <= now)) return 'gone'
+  return k.disabled === 1 ? 'disabled' : 'live'
+}
+
 function status(t: Tenant, g: GrantRow, now: number): GrantStatus {
   if (g.revoked_at !== null) return g.revoke_reason === 'expired' ? 'expired' : 'revoked'
   if (g.expires_at <= now) return 'expired'
   const k = keyOf(t, g)
-  if (!k) return 'revoked'
-  return k.disabled === 1 ? 'suspended' : 'live'
+  const a = approver(t, g, now)
+  if (!k || a === 'gone') return 'revoked'
+  return k.disabled === 1 || a === 'disabled' ? 'suspended' : 'live'
 }
 
 export function grantView(t: Tenant, g: GrantRow, now: number): OAuthGrantView {
@@ -309,7 +323,7 @@ type Spent = { error: TokenResult } | { grant: GrantRow; sealed: string; scopes:
 
 /** Revoked, expired, or its key gone: nothing more may be issued for it. A disabled (suspended) key still rotates; the resource refuses it. */
 function issuable(t: Tenant, g: GrantRow, now: number): boolean {
-  if (g.revoked_at !== null || g.expires_at <= now) return false
+  if (g.revoked_at !== null || g.expires_at <= now || approver(t, g, now) === 'gone') return false
   const k = keyOf(t, g)
   return k !== undefined && (k.expires_at === null || k.expires_at > now)
 }
@@ -457,7 +471,9 @@ export async function introspect(t: Tenant, token: string, resource: string, now
   const cur = loadGrant(t, g.id)
   const k = cur ? keyOf(t, cur) : undefined
   if (!cur || cur.revoked_at !== null || !k || !t.one('SELECT hash FROM oauth_tokens WHERE tenant = ? AND hash = ?', t.tenant, row.hash)) return inactive('revoked')
-  if (k.disabled === 1) return inactive('suspended')
+  const a = approver(t, cur, now)
+  if (a === 'gone') return inactive('revoked')
+  if (k.disabled === 1 || a === 'disabled') return inactive('suspended')
   if (k.expires_at !== null && k.expires_at <= now) return inactive('expired')
   const live = t.one<{ s: string }>('SELECT secret_sha256 AS s FROM key_secrets WHERE tenant = ? AND key = ? AND key_id = ?', t.tenant, k.id, k.key_id)
   if (!live || !sameString(sha256Hex(secret), live.s)) return inactive('revoked')
@@ -487,6 +503,7 @@ export function sweepOAuth(t: Tenant, now: number): void {
   for (const g of open('expires_at <= ?', now)) revokeGrant(t, g, SYSTEM, now, 'expired')
   for (const g of open('id IN (SELECT grant_id FROM oauth_codes WHERE tenant = ? AND used_at IS NULL AND expires_at <= ?)', t.tenant, now)) revokeGrant(t, g, SYSTEM, now, 'not-exchanged')
   for (const g of open('last_used_at IS NOT NULL AND last_used_at <= ?', now - OAUTH_LIFETIMES.refreshSeconds * 1000)) revokeGrant(t, g, SYSTEM, now, 'idle')
+  for (const g of open('expires_at > ?', now)) if (approver(t, g, now) === 'gone') revokeGrant(t, g, SYSTEM, now, 'approver-gone')
   t.run("DELETE FROM oauth_tokens WHERE tenant = ? AND (expires_at <= ? OR (kind = 'refresh' AND rotated_at IS NOT NULL AND rotated_at <= ?))", t.tenant, now, now - OAUTH_LIFETIMES.rotatedRefreshKeepSeconds * 1000)
   t.run('DELETE FROM oauth_codes WHERE tenant = ? AND expires_at <= ?', t.tenant, now)
   t.run('DELETE FROM oauth_grants WHERE tenant = ? AND revoked_at IS NOT NULL AND revoked_at <= ?', t.tenant, now - KEEP_CLOSED_MS)
