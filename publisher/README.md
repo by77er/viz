@@ -294,7 +294,8 @@ checkpoints). The pool sets `LEDGER_DRAIN_DELAY_MS` to 60 s, so a ledger drains 
 says (`drain()`, `mirror`), and `LEDGER_CHECKPOINT_EVERY` to 3, so most logs carry checkpoints
 the publisher must not read. Before this change, against that ledger, 45 of 59 tests failed:
 the ledger writes no per-change objects any more, and it admits only keys under its own cell,
-which the tests' file keys were not.
+which the tests' file keys were not. `wrangler deploy --dry-run` bundles the production entry
+(111 KiB; nothing uploaded).
 
 ### Fixtures and the ledger
 
@@ -408,7 +409,7 @@ attempted was readable.
 `node_modules` linked) to `$MUTANT_DIR` outside the shared tree, applies one mutant at a time
 to the copy, runs the suites it names with at most 2 workers, and restores the copy's file.
 The shared tree is only read (AGENTS.md). Run on 2026-11-19 on the final code:
-**FINAL_COUNT**
+**34 mutants, 34 killed, 0 survived** (01:39 to 01:48, all suites the mutants name).
 
 The three properties asked for with the segment reader: **stop at an unknown version** (S1,
 S2, S3, M19), **never skip a hole** (S4, S5, S6, M3), **never block ingest** (I1, I2, I3; I4 and
@@ -416,7 +417,40 @@ I5 for "nothing while idle").
 
 | # | Mutation | Result (tests failing) | A test that fails |
 |---|---|---|---|
-FINAL_TABLE
+| M1 | skip the conditional write (metadata is written unconditionally) | killed (1) | lets only one of two writers create a metadata version; the other takes its state and retries |
+| M2 | apply log entries out of order (changes replayed newest first) | killed (31) | applies a log in version order and records the ledger version it reflects |
+| M3 | ignore a gap in the versions (first layout) | killed (1) | is still read, and a current ledger that takes the tenant over is followed into segments |
+| M4 | publish gross instead of net changes (a removal of a not-yet-published file is ignored) | killed (3) | applies a log in version order and records the ledger version it reflects |
+| M5 | drop DELETED handling (a removed file stays a live entry in the rewritten manifest) | killed (10) | never publishes a file that was added and removed between two publications |
+| M6 | removed files are not taken out of the manifests at all | killed (10) | never publishes a file that was added and removed between two publications |
+| M7 | sweep without a grace period (an unreferenced object is deleted when first seen) | killed (5) | converges after a crash right after "manifests-written" |
+| M8 | cursor saved before the metadata is written | killed (2) | converges after a crash right after "metadata-written" |
+| M9 | wrong partition value (day off by one) | killed (29) | applies a log in version order and records the ledger version it reflects |
+| M10 | sweep on a stale view (no check that R2 has a newer metadata version) | killed (1) | does not delete the files of a commit that is in flight |
+| M11 | sweep treats only the current snapshot as referenced | killed (7) | converges after a crash right after "manifests-written" |
+| M12 | a removed file is handed to deletion while a retained snapshot references it | killed (2) | never publishes a file that was added and removed between two publications |
+| M13 | snapshot expiry does not keep a minimum of two | killed (2) | expires snapshots from maintain() when no publish does it |
+| M14 | a lost conditional write is treated as success | killed (1) | lets only one of two writers create a metadata version; the other takes its state and retries |
+| M15 | re-base ignores the new base (an older incarnation cursor continues as if nothing happened) | killed (1) | re-bases from the base of the new incarnation: removes what is gone, adds what is new |
+| M16 | the publisher serves storage a newer release wrote (guard removed) | killed (1) | refuses storage a newer release migrated past what it knows: every method throws schema_too_new, the alarm is re-armed, nothing written |
+| M17 | a refusing publisher publishes from its alarm (and writes) | killed (1) | refuses storage a newer release migrated past what it knows: every method throws schema_too_new, the alarm is re-armed, nothing written |
+| M18 | rebuilds its view from metadata a newer publisher wrote (no check in resync) | killed (1) | is never committed over, rebuilt from or swept against; publication waits and nothing in R2 changes |
+| M19 | a ledger change of an unknown version is applied as if it were known (first layout) | killed (1) | in the first layout too: a change object of a newer version stops the tenant before it |
+| M20 | a released migration edited in place (version 1 loses an index) | killed (2) | a fresh publisher is at the latest version, and its schema is the golden file |
+| M21 | a field id reassigned (tenant of metric_samples takes the next id) | killed (2) | iceberg.metadata: a new table's metadata.json, for both tables |
+| M22 | the cursors object changes shape without a format version | killed (1) | r2.cursors and read.ledger-change: the cursors object a commit writes, and the change the ledger logs |
+| S1 | a segment of an unknown version or kind is skipped and the segments after it applied | killed (5) | a segment header of version 2 stops the tenant before that segment: the segments before it are published, nothing after, and it is retried until readable |
+| S2 | the reader claims a segment version it was not taught (its pin raised to 2) | killed (1) | what the reader accepts, and that it reads exactly what the contract writes (a version bump there fails here until this reader is taught it) |
+| S3 | a file of a table this code does not know is ignored instead of refused | killed (1) | a file of a table this code does not know stops the tenant before that segment: the segments before it are published, nothing after, and it is retried until readable |
+| S4 | a hole between two segments is read past | killed (1) | stops at a hole in the versions, reports it, and continues once the hole is filled |
+| S5 | a hole right after the cursor is read past (no segment holds cursor + 1) | killed (1) | stops at a hole in the versions, reports it, and continues once the hole is filled |
+| S6 | overlapping segments are accepted | killed (1) | refuses overlapping segments (a retried drain that took other rows) and stops before them |
+| S7 | a cursor inside a segment re-reads that segment from its start (changes at or below the cursor applied again) | killed (1) | advances over whole segments only, and finishes a cursor that sits inside one |
+| I1 | a nudge waits for the publisher however long it takes | killed (1) | a nudge never holds or fails its caller: a slow publisher, a refusing one, none at all |
+| I2 | a refused nudge throws into its caller (the maintenance run): both the rejection handler and the catch removed | killed (1) | a nudge never holds or fails its caller: a slow publisher, a refusing one, none at all |
+| I3 | notify publishes at once instead of leaving it to the alarm | killed (3) | notify only records the nudge: no R2 operation, nothing published until the alarm, and later nudges never push the deadline back |
+| I4 | the alarm keeps itself alive when nothing is due (an hourly wake) | killed (1) | maintenance runs nudge, the alarm publishes, expires and sweeps, then is gone; 48 idle hourly ticks wake nothing and write nothing |
+| I5 | a commit does not schedule the sweep of what it stopped referencing | killed (1) | maintenance runs nudge, the alarm publishes, expires and sweeps, then is gone; 48 idle hourly ticks wake nothing and write nothing |
 
 **What did not die at first, and what was done** (first full run of this set, before the last
 test changes: 31 of 34 killed):
@@ -434,6 +468,9 @@ test changes: 31 of 34 killed):
 - **I2** as first written (only the rejection handler rethrows) was equivalent: the outer
   `catch` in `nudge` turns the rejection into `false` as well. Redefined to remove both layers;
   killed.
+
+Before this change (the versioning work), M18 survived its first run until the test required
+that the publisher's own SQLite is not rebuilt from metadata it does not understand.
 
 M8 is caught by the crash injected after the metadata write, not by one before it: the test
 seams sit after each step, and the mutant saves the cursor between two of them. M2 and M9

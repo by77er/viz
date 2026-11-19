@@ -33,8 +33,11 @@ not notice), and no reader defined what to do with a format it had not seen.
 - **Implemented** in `control/` (Tenant), `ruler/` (Ruler, Notifier, RulerIndex) and
   `publisher/` (Publisher, plus its R2 formats and its reading of the ledger log), with
   migration, refusal and golden-format tests and 26 mutants, all killed (§8).
-- **Not yet** in shard, ledger, query, flush, edge, janitor, compact: §7 lists what each must
-  do, in priority order. The ledger and the shard come first; they hold acknowledged data.
+- **Implemented on the write path** (2026-11-19) in `ledger/` (Ledger, its log formats and
+  their readers), `shard/` (Shard, the series-window format, the flush message) and `edge/`
+  (unknown shard statuses, versioned KV records): §7 items 1, 3 and 4, §8.
+- **Not yet, or only in part,** in query, flush, janitor, compact: §7 lists what each must do,
+  in priority order.
 
 ## 2. What the platform does (verified 2026-11-18)
 
@@ -213,7 +216,9 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
 
 ## 7. Needed changes in components owned by others (priority order)
 
-1. **ledger** (risk: I1/I2, a wrong rebuild re-bases every reader). Version the storage with
+1. **ledger: done** (2026-11-19; `ledger/README.md`, "Versioned storage" in "What is
+   implemented"; `ledger/test/compat.test.ts`, goldens `schema/v1`, `formats/ledger.segment.v1`,
+   `formats/ledger.checkpoint.v1`). What was asked: (risk: I1/I2, a wrong rebuild re-bases every reader). Version the storage with
    `openSchema` (`ledger.Ledger`); migration 1 = today's schema plus `columnsOf` checks that
    add `prec`/`prec_lo` to objects created before D22. Change "storage is new" from "no
    `meta.incarnation`" to "no tables and no `viz_schema`"; storage with a version row and no
@@ -228,11 +233,14 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
    header `v` or `kind`, change `v` or `kind`, or file table stops that tenant before the
    segment (`publisher/src/log.ts`, `publisher/README.md`). Golden: real segment bytes from the
    ledger (`publisher/test/golden/formats/read.ledger-segment.v1.json`).
-3. **shard** (risk: I1/I7). Version the storage (`shard.Shard`); migration 1 adds
+3. **shard: done** (2026-11-19; `shard/README.md`; `shard/test/compat.test.ts`, goldens
+   `schema/v1`, `formats/series-window.v1`, `formats/queue.flush.v1`; the flush message now
+   carries `v`). What was asked: (risk: I1/I7). Version the storage (`shard.Shard`); migration 1 adds
    `segment.sealed_at` where missing (the known gap). The sketch BLOB gets a version byte
    (byte 0 is a kind today; refuse an unknown one instead of reading it as an exact list).
    Under refusal, `append` answers a retryable status (as `backpressure`), never `ok`.
-4. **edge** (risk: I7, I3). Treat any `AppendResult` status it does not know as a failure of
+4. **edge: done** (2026-11-19; `edge/README.md`; `edge/test/overload.test.ts`). What was
+   asked: (risk: I7, I3). Treat any `AppendResult` status it does not know as a failure of
    the whole request (503), never as stored. KV readers check `v` (absent = 1) and refuse a
    newer one (keep the last good value or 503; never authenticate, never loosen a limit). A
    new `VZB` version is encoded only after flush's and query's decoders read it.
