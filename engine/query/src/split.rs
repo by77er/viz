@@ -446,6 +446,12 @@ pub struct Extract {
     /// part's id range of the sample files (`crate::part_plan`) may have missed their rows,
     /// and must read what `crate::sample_plan` with the part says and extract again.
     pub strays: u64,
+    /// Series some range selects whose `series_id` is in this part's range but whose split key
+    /// is another part's (they carry a label of `SplitKey::without`): another part's strays.
+    /// A reader that read only its part's id range of the SERIES files cannot see its own
+    /// strays; if no part finds a foreign series, there are none (every stray is some part's
+    /// foreign series, seen by the reader of the part its id is in). (ABI 5, 2026-11-19.)
+    pub foreign: u64,
 }
 
 /// The rows of part `part` of `parts` in `sample_files` (in precedence order, lowest
@@ -453,7 +459,7 @@ pub struct Extract {
 /// sample files (the files written with them). Only the part's series are handed to
 /// `viz_storage::select`, so only their samples are kept in memory.
 pub fn extract(series_files: &[&[u8]], sample_files: &[&[u8]], key: &SplitKey, part: u32, parts: u32, ranges: &[FetchRange]) -> Result<Extract, QueryError> {
-    let empty = Extract { batch: Vec::new(), rows: 0, series: 0, strays: 0 };
+    let empty = Extract { batch: Vec::new(), rows: 0, series: 0, strays: 0, foreign: 0 };
     if ranges.is_empty() {
         return Ok(empty);
     }
@@ -465,13 +471,19 @@ pub fn extract(series_files: &[&[u8]], sample_files: &[&[u8]], key: &SplitKey, p
     // The part's series that some range may select, by series_id.
     let mut mine: HashMap<i64, LabelSet> = HashMap::new();
     let mut seen: HashMap<i64, bool> = HashMap::new();
+    let mut foreign = 0u64;
     for (fi, f) in series_files.iter().enumerate() {
         catalog::for_each_series(f, fi, &want_range, &want, &mut |row| {
             if seen.contains_key(&row.series_id) {
                 return Ok(());
             }
             let labels = catalog::parse_labels(row.labels_json)?;
-            let keep = key.part(&labels, parts) == part && !filter.intervals(&labels).is_empty();
+            let selected = !filter.intervals(&labels).is_empty();
+            let own = key.part(&labels, parts) == part;
+            if selected && !own && SplitKey::part_of(row.series_id as u64, parts) == part {
+                foreign += 1;
+            }
+            let keep = own && selected;
             seen.insert(row.series_id, keep);
             if keep {
                 mine.insert(row.series_id, labels);
@@ -480,13 +492,13 @@ pub fn extract(series_files: &[&[u8]], sample_files: &[&[u8]], key: &SplitKey, p
         })?;
     }
     if mine.is_empty() {
-        return Ok(empty);
+        return Ok(Extract { foreign, ..empty });
     }
     // Counted whatever sample files were given: a reader that read none of them (its id range
     // held nothing) must still learn of a series of its part outside that range.
     let strays = mine.keys().filter(|id| SplitKey::part_of(**id as u64, parts) != part).count() as u64;
     if sample_files.is_empty() {
-        return Ok(Extract { strays, ..empty });
+        return Ok(Extract { strays, foreign, ..empty });
     }
     // The carrier: a batch whose series table holds exactly the part's series, so that
     // `select` knows them (and no other) without the series files. Its rows sit at a
@@ -522,12 +534,12 @@ pub fn extract(series_files: &[&[u8]], sample_files: &[&[u8]], key: &SplitKey, p
         }
     }
     if out_rows.is_empty() {
-        return Ok(Extract { strays, ..empty });
+        return Ok(Extract { strays, foreign, ..empty });
     }
     let rows = out_rows.len() as u64;
     let series = out_defs.len() as u64;
     let batch = batch::encode(&out_defs, &out_rows).map_err(|e| QueryError::internal(format!("split execution: extract batch: {e}")))?;
-    Ok(Extract { batch, rows, series, strays })
+    Ok(Extract { batch, rows, series, strays, foreign })
 }
 
 /// The tail batches cut by part: `out[j]` holds, in the input order, one batch per

@@ -21,7 +21,7 @@
  */
 import type { Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData } from '../../../contracts/engine'
 
-export const ABI_VERSION = 4
+export const ABI_VERSION = 5
 
 /** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
 export interface QueryLimits {
@@ -119,6 +119,12 @@ export interface Extract {
   series: number
   /** The part's series whose `series_id` is in another part's range (their key leaves out a label they carry). */
   strays: number
+  /**
+   * ABI 5: series some range selects whose `series_id` is in this part's range but whose key is
+   * another part's (another part's strays). With series files read by the part's id range, no
+   * part can see its own strays; if no part has a foreign series, there are none.
+   */
+  foreign: number
 }
 
 /** The fixed header of a leaf's answer (`engine/query` `LeafOutput`). */
@@ -601,7 +607,7 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
       const req = new Request().strs(without).count('part', part).count('parts', parts).ranges(ranges).files(seriesFiles).files(sampleFiles)
       return call('viz_q_extract', req, (payload) => {
         const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
-        return { rows: u64At(dv, 0), series: u64At(dv, 8), strays: u64At(dv, 16), batch: payload.slice(24) }
+        return { rows: u64At(dv, 0), series: u64At(dv, 8), strays: u64At(dv, 16), foreign: u64At(dv, 24), batch: payload.slice(32) }
       })
     },
     splitTails,

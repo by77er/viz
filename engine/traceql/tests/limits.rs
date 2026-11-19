@@ -18,8 +18,8 @@ use shapes::{fill, FLAT, NESTED};
 use viz_traceql::*;
 
 /// Stack for every query here. Debug frames are 5 to 10 times larger than release ones: at
-/// the limit the costliest shape (a 200-term `rate() + rate() + ...`) needs 2.6 MiB in the
-/// debug build and 280 KiB in the release build, natively.
+/// the limit the costliest shape (a 100-term `rate() + rate() + ...`) needs 1.3 MiB in the
+/// debug build and 144 KiB in the release build, natively (README, Verification, 7).
 /// A query that escaped the limits recurses thousands of levels and overflows either.
 const STACK: usize = if cfg!(debug_assertions) { 4 << 20 } else { 512 << 10 };
 

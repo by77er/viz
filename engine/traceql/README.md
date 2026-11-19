@@ -518,10 +518,11 @@ requires Tempo's answer. What Tempo does, and what changed:
 | what Go refuses | `\1`, `\8`, `\18`, `\u` and `\U` escapes, `\e`, `\Z`, `\cA`, `\N`, `\C`, `(?x)`, `(?u)`, `(?i-)`, `x**`, `x{2}{3}`, `x*??`, `a++`, `x{1001}`, `(?:a{10}){101}`, `(?:a{2,}){600}`, `[\b]`, `[\Q]\E]`, `[a-\d]`, `[[:foo:]]`, `(?P<a.b>x)`, `(?'n'x)`, `a)(b` are refused | most were accepted | refused |
 | Unicode classes | supported: `\pL`, `\p{Greek}`, `\PL`, `\pN`, `\pZ` (`\p{greek}` is an error, raised by Tempo's storage rather than its parser) | a compile error in the release build (no Unicode tables), Rust's semantics in test builds (their dev-dependencies enable the tables) | `Error::Unsupported` (`engine/goregex/README.md`) |
 
-Against the recorded answers, the code before this change gave a different answer (a
-different match, an acceptance where Tempo refuses, or a refusal where Tempo accepts) for
-BEFORE_COUNT of the 278 patterns other than Unicode classes; it now gives Tempo's answer for all 278, and
-the 11 Unicode-class patterns are Unsupported. The translator is also checked against Go's
+Against the recorded answers, the code before this change (a scratch copy with the old regex
+compilation) gave a different answer for 98 of the 278 patterns other than Unicode classes:
+28 matched different subjects, 37 were refused where Tempo accepts and 33 accepted where Tempo
+refuses. It now gives Tempo's answer for all 278 (207 accepted, 71 refused), and the 11
+Unicode-class patterns are Unsupported. The translator is also checked against Go's
 own `regexp` on 100,000 generated patterns (`engine/goregex/README.md`: 0 differences, apart
 from surrogate escapes, on which Go itself is inconsistent).
 

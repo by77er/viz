@@ -460,6 +460,33 @@ describe('eviction and concurrency', () => {
   })
 })
 
+describe('the six connections on the ordinary path', () => {
+  it('six tenants with a backlog of segments, read from their cursors at once: never more than six R2 operations in flight', async () => {
+    const { cell, tenant } = fresh()
+    const ts = Array.from({ length: 6 }, (_, i) => tenant(`b${i}`))
+    for (const t of ts) {
+      await addUnit(t, pairUnit(cell, t, 1, 1), { drain: true })
+      await mirror(t, cell)
+    }
+    const p = publisher(cell)
+    expect((await p.publish(ts)).tenants.map((x) => x.status)).toEqual(ts.map(() => 'ok'))
+    // Eight more units each, a segment each: a reader fetches up to six segments at once, for
+    // six tenants at once. Without the shared slots that is 36 GETs in flight.
+    for (const t of ts) {
+      for (let i = 2; i <= 9; i++) await addUnit(t, pairUnit(cell, t, i, i, T0 + i * 1000), { drain: true })
+      await mirror(t, cell)
+    }
+    await p.r2()
+    const r = await p.publish(ts)
+    expect(r.tenants.map((x) => x.status)).toEqual(ts.map(() => 'ok'))
+    const seen = await p.r2()
+    expect(seen.gets.filter((k) => k.includes('/seg-')).length).toBe(6 * 8)
+    expect(seen.max).toBeGreaterThan(2)
+    expect(seen.max).toBeLessThanOrEqual(CONNECTIONS)
+    for (const t of ts) await expectLedger(cell, t)
+  })
+})
+
 describe('tombstones in a checkpoint', () => {
   it('files added and removed before the checkpoint, never published, are released once no snapshot can reference them', async () => {
     const { cell, tenant } = fresh()

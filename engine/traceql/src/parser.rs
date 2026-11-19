@@ -68,12 +68,12 @@ pub const MAX_QUERY_BYTES: usize = 128 * 1024;
 pub const MAX_DEPTH: usize = 100;
 
 /// Most regular expressions in one query, and the limits each is compiled with: nesting
-/// (as the regex parser counts it in the pattern: each group, repetition, alternation and
-/// concatenation is a level; the regex compiler recurses over it), compiled size and
-/// lazy-DFA cache. A regex compiled at the size limit was measured to hold about 1.3 MiB,
-/// so a query's regexes hold at most about 26 MiB of a 128 MB isolate (16 x 1.3 MiB, plus
-/// 16 x 256 KiB of cache), whatever the query text. 1 MiB still compiles `\w{20}` (Unicode
-/// classes are large).
+/// (as the regex parser counts it in the translated pattern: each group, repetition,
+/// alternation, concatenation and bracketed class is a level; the regex compiler recurses
+/// over it), compiled size and lazy-DFA cache. A regex compiled at the size limit was
+/// measured to hold about 1.3 MiB, so a query's regexes hold at most about 26 MiB of a 128 MB
+/// isolate (16 x 1.3 MiB, plus 16 x 256 KiB of cache), whatever the query text. 1 MiB compiles
+/// `.{1000}` but not four of them; Go's own bound refuses any count above 1000 before that.
 pub const MAX_REGEXES: usize = 16;
 pub const REGEX_NEST_LIMIT: u32 = 64;
 pub const REGEX_SIZE_LIMIT: usize = 1 << 20;

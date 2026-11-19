@@ -114,9 +114,9 @@ interface Row {
   spanId: Uint8Array
   flags: number
   severity: number
-  line: Uint8Array
-  severityText: Uint8Array
-  metadata: Uint8Array
+  /** The line, severity text and metadata lie back to back in the collector's heap from `at`. */
+  at: number
+  lens: [number, number, number]
   size: number
 }
 
@@ -143,7 +143,7 @@ function pairs(raw: readonly [string, string][], nameReason: string, valueReason
   for (const [n, v] of raw) {
     if (v === '') continue
     if (!NAME.test(n) || n.length > LOG.maxNameBytes) return nameReason
-    if (v.includes('\u0000') || utf8(v).length > LOG.maxValueBytes) return valueReason
+    if (v.includes('\u0000') || (v.length * 3 > LOG.maxValueBytes && utf8(v).length > LOG.maxValueBytes)) return valueReason
     out.push([n, v])
   }
   out.sort((a, b) => cmpUtf8(a[0], b[0]))
@@ -161,6 +161,7 @@ export class LogCollector {
   private readonly routeIdx = new Map<string, number>()
   readonly rows: Row[] = []
   rowSeries = new Uint32Array(0)
+  private readonly heap = new Buf(1 << 16)
 
   received = 0
   rejectedTotal = 0
@@ -256,29 +257,26 @@ export class LogCollector {
     if (!(x.severity >= 0 && x.severity <= 24)) return this.reject(LogReject.severity)
     if (x.traceId.length !== 0 && x.traceId.length !== 16) return this.reject(LogReject.traceId)
     if (x.spanId.length !== 0 && x.spanId.length !== 8) return this.reject(LogReject.spanId)
-    const line = utf8(x.line)
-    if (line.length > LOG.maxLine) return this.reject(LogReject.line)
-    const severityText = utf8(x.severityText)
-    if (severityText.length > LOG.maxSeverityText) return this.reject(LogReject.severityText)
-    const md = pairs(x.metadata, LogReject.mdName, LogReject.mdValue, LogReject.mdDup)
-    if (typeof md === 'string') return this.reject(md)
-    if (md.length > LOG.maxMetadata) return this.reject(LogReject.mdTooMany)
-    const mb = new Buf(16)
-    mb.u16(md.length)
-    let total = 0
-    for (const [n, v] of md) {
-      const nb = utf8(n)
-      const vb = utf8(v)
-      total += nb.length + vb.length
-      mb.u16(nb.length)
-      mb.bytes(nb)
-      mb.u16(vb.length)
-      mb.bytes(vb)
+    const h = this.heap
+    const at = h.n
+    const undo = (reason: string): void => {
+      h.n = at
+      this.reject(reason)
     }
-    if (total > LOG.maxMetadataBytes) return this.reject(LogReject.mdTooLarge)
+    const lineLen = h.str(x.line)
+    if (lineLen > LOG.maxLine) return undo(LogReject.line)
+    const stLen = h.str(x.severityText)
+    if (stLen > LOG.maxSeverityText) return undo(LogReject.severityText)
+    const md = pairs(x.metadata, LogReject.mdName, LogReject.mdValue, LogReject.mdDup)
+    if (typeof md === 'string') return undo(md)
+    if (md.length > LOG.maxMetadata) return undo(LogReject.mdTooMany)
+    const m0 = h.n
+    h.u16(md.length)
+    let total = 0
+    for (const [n, v] of md) total += h.strU16(n) + h.strU16(v)
+    if (total > LOG.maxMetadataBytes) return undo(LogReject.mdTooLarge)
     if (this.rows.length >= this.limits.maxLogRecords) throw tooLarge(`more than ${this.limits.maxLogRecords} log records in one request`)
     this.received++
-    const metadata = mb.done()
     this.rows.push({
       entry: stream,
       tsLo: x.ts[0],
@@ -289,10 +287,9 @@ export class LogCollector {
       spanId: x.spanId.length === 0 ? ZERO8 : x.spanId,
       flags: x.flags >>> 0,
       severity: x.severity,
-      line,
-      severityText,
-      metadata,
-      size: LOG.rowFixedBytes + line.length + severityText.length + metadata.length,
+      at,
+      lens: [lineLen, stLen, h.n - m0],
+      size: LOG.rowFixedBytes + (h.n - at),
     })
   }
 
@@ -340,7 +337,7 @@ export class LogCollector {
   }
 
   private encode(rows: Row[], local: Map<number, number>): Batch {
-    const b = new Buf(1024)
+    const b = new Buf(1 << 16)
     b.bytes(new Uint8Array([0x56, 0x5a, 0x42, 0x31, 3, 0, 0, 0]))
     b.u32(rows.length)
     b.u32(local.size)
@@ -356,16 +353,21 @@ export class LogCollector {
     fixed((r) => b.bytes(r.spanId))
     fixed((r) => b.u32(r.flags))
     fixed((r) => b.u8(r.severity))
-    for (const col of ['line', 'severityText', 'metadata'] as const) {
+    const heap = this.heap.b
+    for (let col = 0; col < 3; col++) {
       b.pad8()
       let off = 0
       b.u32(0)
       for (const r of rows) {
-        off += r[col].length
+        off += r.lens[col]!
         b.u32(off)
       }
       b.pad8()
-      for (const r of rows) b.bytes(r[col])
+      for (const r of rows) {
+        let from = r.at
+        for (let k = 0; k < col; k++) from += r.lens[k]!
+        b.bytes(heap.subarray(from, from + r.lens[col]!))
+      }
     }
     b.pad8()
     return { bytes: b.done(), rows: rows.length }

@@ -967,6 +967,32 @@ export const MUTANTS = [
     edits: one('src/rules.ts', 'ownSeverity ? `${rp}.labels.severity` : `${gp}.labels.severity`', '`${rp}.labels.severity`'),
     tests: ['test/slo.test.ts'],
   },
+  // ───────────── over_budget names its budget (`exceeded`, contract version 5) ─────────────
+  {
+    name: 'exceeded: a plan over in samples named bytes (the plan\'s two budgets confused)',
+    edits: one('src/history.ts', "    exceeded: p.scanSamples > budget.scanSamples ? 'scan_samples' : 'bytes',", "    exceeded: 'bytes',"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'exceeded: more than 1,000 range queries named memory',
+    edits: one('src/history.ts', "exceeded: 'queries', plan: null,", "exceeded: 'memory', plan: null,"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'exceeded: the HTTP answer leaves it out (null whatever the run said)',
+    edits: one('src/http.ts', "exceeded: r.exceeded ?? null,", 'exceeded: null,'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'exceeded: a refused warm-up does not say which budget',
+    edits: one('src/ruler.ts', "plan: run.plan, exceeded: run.exceeded, message:", 'plan: run.plan, message:'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'the queries refusal says nothing was fetched though the series counts were read',
+    edits: one('src/history.ts', ", ...(counted.some((x) => x) ? { countsRead: true } : {}) }", ' }'),
+    tests: ['test/history.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

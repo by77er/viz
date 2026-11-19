@@ -429,6 +429,38 @@ export class Buf {
     this.b.set(x, this.n)
     this.n += x.length
   }
+  /** A string's UTF-8 bytes (ASCII written directly); returns how many. */
+  str(s: string): number {
+    this.room(3 * s.length)
+    const b = this.b
+    const start = this.n
+    let p = start
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i)
+      if (c >= 128) {
+        p = start + enc.encodeInto(s, b.subarray(start)).written
+        break
+      }
+      b[p++] = c
+    }
+    this.n = p
+    return p - start
+  }
+  /** A string with a u16 (or u32) length in front; returns its byte length. */
+  strU16(s: string): number {
+    const at = this.n
+    this.u16(0)
+    const len = this.str(s)
+    this.dv.setUint16(at, len & 0xffff, true)
+    return len
+  }
+  strU32(s: string): number {
+    const at = this.n
+    this.u32(0)
+    const len = this.str(s)
+    this.dv.setUint32(at, len, true)
+    return len
+  }
   pad8(): void {
     const k = (8 - (this.n % 8)) % 8
     this.room(k)
@@ -452,28 +484,26 @@ export const ATTR_REASONS = {
 
 /**
  * The typed attribute list encoding (contracts/BATCH.md): sorted by key in UTF-8 order, the
- * last of a repeated key kept. Returns the bytes, or the reason the list is refused.
+ * last of a repeated key kept, appended to `out`. Returns null, or the reason the list is
+ * refused (then `out` is left as it was).
  */
-export function encodeAttrs(kvs: readonly KV[]): Uint8Array | string {
-  const sorted = canonKVs(kvs)
+export function writeAttrs(kvs: readonly KV[], out: Buf): string | null {
+  const sorted = kvs.length < 2 ? kvs : canonKVs(kvs)
   if (sorted.length > LIMITS.maxAttrs) return ATTR_REASONS.tooMany
-  const out = new Buf(64)
+  const start = out.n
+  const fail = (why: string): string => {
+    out.n = start
+    return why
+  }
   out.u16(sorted.length)
   for (const [k, v] of sorted) {
-    if (k === '') return ATTR_REASONS.emptyKey
-    const kb = utf8(k)
-    if (kb.length > LIMITS.maxKeyBytes) return ATTR_REASONS.keyTooLong
-    out.u16(kb.length)
-    out.bytes(kb)
+    if (k === '') return fail(ATTR_REASONS.emptyKey)
+    if (out.strU16(k) > LIMITS.maxKeyBytes) return fail(ATTR_REASONS.keyTooLong)
     switch (v.k) {
-      case 's': {
-        const b = utf8(v.v)
-        if (b.length > LIMITS.maxValueBytes) return ATTR_REASONS.valueTooLong
+      case 's':
         out.u8(1)
-        out.u32(b.length)
-        out.bytes(b)
+        if (out.strU32(v.v) > LIMITS.maxValueBytes) return fail(ATTR_REASONS.valueTooLong)
         break
-      }
       case 'i':
         out.u8(2)
         out.big(v.v)
@@ -491,16 +521,19 @@ export function encodeAttrs(kvs: readonly KV[]): Uint8Array | string {
         out.u8(4)
         out.u8(v.v ? 1 : 0)
         break
-      default: {
-        const b = utf8(canonAny(v))
-        if (b.length > LIMITS.maxValueBytes) return ATTR_REASONS.valueTooLong
+      default:
         out.u8(5)
-        out.u32(b.length)
-        out.bytes(b)
-      }
+        if (out.strU32(canonAny(v)) > LIMITS.maxValueBytes) return fail(ATTR_REASONS.valueTooLong)
     }
   }
-  return out.done()
+  return null
+}
+
+/** `writeAttrs` into fresh bytes: the encoding, or the reason the list is refused. */
+export function encodeAttrs(kvs: readonly KV[]): Uint8Array | string {
+  const out = new Buf(64)
+  const why = writeAttrs(kvs, out)
+  return why ?? out.done()
 }
 
 /** A canonical OTLP JSON list with the same limits as a typed list, or the reason it is refused. */

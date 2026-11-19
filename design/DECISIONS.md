@@ -1109,15 +1109,16 @@ is 1.28 MB raw and 0.43 MB gzipped, measured here), reports positions directly, 
 clean-room record simple (D35). Tempo is the compatibility target, so its evaluator settles
 what the documentation leaves open; answers that depend on Tempo's internal plan cannot be
 specified and are not copied. On regexes Tempo is Go's `regexp`: of 289 probe patterns on 70
-subjects, viz now gives Tempo's answer for every one but the Unicode classes (before: 80 of the
-first 210 differed), and the shared translator agrees with Go's own `regexp` on 100,000
+subjects, viz now gives Tempo's answer for every one but the 11 Unicode classes (before, 98 of
+the other 278 differed: 28 matched differently, 37 were refused and 33 accepted against Tempo),
+and the shared translator agrees with Go's own `regexp` on 100,000
 generated patterns (`engine/goregex/README.md`). One bound at `parse` covers every pass. The
 bound is 100 because nothing legitimate comes near it: measured with `nesting()`, Tempo's own
 284 parseable examples nest at most 10 levels and the 3,600 generated differential queries at
 most 12. At 100 the costliest query needs 144 KiB of native stack (278 KiB at 200), and in Node
-it runs with V8's stack cut to 96 KB and the module's to 128 KiB (at 200 it needed 128 KB of
-V8's; the defaults are about 1 MiB each); one bound for all three engines is simpler to state
-to users and to the query Worker.
+it runs with V8's stack cut to 96 KB and the module's to 128 KiB (at 200 it trapped at 96 KB;
+the defaults are about 1 MiB each); one bound for all three engines is simpler to state to
+users and to the query Worker.
 
 **Would change if.** Tempo documents a different semantics, or fixes the plan-dependent cases
 differently; or clients turn out to depend on a Tempo artefact (then that one rule is copied

@@ -640,7 +640,7 @@ saying so (`warming: the engine failed the read (…); tried again at the next t
 attempts it is `failed` and the rule starts cold. A crash inside the commit writes nothing and the
 retried alarm warms again to the same state; a finished warm-up is never read again (not after an
 eviction, not after a move). The status is `RuleStatus.anomaly.warmup` / `.slo.warmup`
-(`WarmupStatus`: status, reads, plan, budget, points, attempts, message), in `/api/v1/rules`'s
+(`WarmupStatus`: status, reads, plan, budget, points, attempts, message, and for a refusal over a budget `exceeded`: part 12), in `/api/v1/rules`'s
 object form and in the monitor views; a pending warm-up shows the rule as `warming`. Both budgets
 are `RulerLimits` (`configure` changes them). Rules saved before this release, and rules carried
 over a save with their state, are not warmed.
@@ -654,8 +654,12 @@ fetches is planned before it is fetched, against `RulerLimits.maxBacktestScanSam
 and `maxBacktestBytes` (128 MiB), and read in windows sized to `maxBacktestMemoryBytes` (32 MiB,
 part 13): past any of them the answer is `over_budget` (HTTP 422 `over_budget` with `plan`,
 `budget` and the memory model's `memory`); nothing is fetched, or, when the windows' own plans are
-what is over, only the series counts were (the message says which). An engine failure is `failed`
-(502).
+what is over, only the series counts were (the message says which). **`exceeded` names the budget**
+(`HistoryBudget`, contracts/rules.ts version 5): `scan_samples` or `bytes` (the plans; samples when
+both are over), `queries` (windows that would take more than 1,000 range queries), `memory` (the
+rule's state and one step at its bound do not fit), `cpu` (part 14); null when what refused it is
+not a budget of the ruler's (the engine's own limits would refuse the read, or its plan did not
+price it). A refused warm-up's status carries the same field. An engine failure is `failed` (502).
 
 - **Alerting rules** through the same evaluation as part 4, in as few queries as the series allow:
   a week at 1 minute of a few series is two range queries (its series count, then one window) and
@@ -815,7 +819,7 @@ bound (it was not counted because that fits one window per engine piece, so this
 windows costs, so a run the check allows is never stopped part-way. Over the budget the run is
 refused: "only the series counts were read", or, when nothing was counted, "nothing was fetched".
 When every read was counted the projection is the run's final account (tested). An answer carries
-`cost.cpu: { modelledMs, budgetMs }`; an `over_budget` refusal carries `cpu` (HTTP 422, beside
+`cost.cpu: { modelledMs, budgetMs }`; an `over_budget` refusal carries `cpu` and `exceeded: "cpu"` (HTTP 422, beside
 `plan`, `budget` and `memory`). (Before the series counts of part 13, the projection was made
 before each window from the most series a window had shown, and could stop a run part-way.)
 
@@ -1318,6 +1322,20 @@ the new "dryRun on every write" test.
 | 166 | window boundary (counted windows): windows overlap by a step | history: same |
 | 167 | SLO state: a series first evaluated at query time 0 treated as never evaluated | slo: "a series first evaluated at query time 0 keeps that bucket …" |
 | 168 | SLO validation: a severity label from the group's labels reported at the rule | slo: "problems come back with a path and a fix …" |
+| 169 | `exceeded`: a plan over in samples named bytes | history: "over the budget nothing is fetched: the warm-up is refused with the plan's numbers …" (+2 more: the backtests of every kind, the monitors API) |
+| 170 | `exceeded`: more than 1,000 range queries named memory | history: "windows that would take more than 1,000 range queries: refused over the queries budget …" |
+| 171 | `exceeded`: the HTTP answer leaves it out (null whatever the run said) | history: "POST /monitors/backtest takes an SLO or anomaly monitor …" (+3 more: memory, CPU, queries over HTTP) |
+| 172 | `exceeded`: a refused warm-up does not say which budget | history: "over the budget nothing is fetched …" (+3 more: the engine's refusal as null, memory, CPU) |
+| 173 | the queries refusal says nothing was fetched though the series counts were read | history: "windows that would take more than 1,000 range queries …" |
+
+**`over_budget` names its budget: mutants 169–173** (`VIZ_SCRATCH=<scratch> node scripts/mutants.mjs
+104 105 106 120 122 123 124 125 158 163 164 169 … 173`, on a scratch copy, deleted after): **16 of 16
+killed on the first run** (the five new ones, and the eleven whose `history.ts` refusals the field
+touched), shared tree unchanged; all 173 patterns match exactly once. On viz-mcp's side, five
+mutants of `backtest_monitor`'s reading were run on a scratch copy of `mcp/` (outside git; not added
+to `mcp/scripts/mutants.mjs`, outside this change), each killed by `mcp/test/backtest.test.ts`: the
+field ignored (numbers and wording only), a value it does not know guessed from the numbers, null
+read as an older ruler, the client dropping the field, `queries` mapped to the memory model's state.
 
 **PR #3's last fix, ported: mutants 158–168** (main's 131–141, renumbered after this tree's 131–157;
 `VIZ_SCRATCH=<scratch> node scripts/mutants.mjs 22 24 33 34 35 38 43 44 45 82 … 168`, on a scratch
@@ -1864,18 +1882,28 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
 18. **The memory and CPU budgets of parts 13 and 14 are proposed, not in `contracts/rules.ts`**:
     `RulerLimitsV2` (`rules.v2.ts`) adds `maxWarmupMemoryBytes`, `maxBacktestMemoryBytes`,
     `maxWarmupCpuMs` and `maxBacktestCpuMs`, which `configure` accepts; they belong in `RulerLimits`
-    as a contract version 5 (additive), not made here because these changes were confined to
-    `ruler/`. A memory or CPU refusal of a warm-up, and a warm-up waiting for the next alarm, are
-    reported in its status's `message` (with the model's numbers), not in fields, so the stored
-    format `store.warmup` v1 is unchanged (a waiting warm-up is `pending` with `attempts` unchanged);
-    a backtest's answer carries `cost.memory`, `cost.cpu`, `over_budget.memory` and
-    `over_budget.cpu` (`rules.v2.ts`, `openapi.json`).
+    in a later contract version (additive; version 5 is `exceeded`, item 20), not made here because
+    these changes were confined to `ruler/`. A memory or CPU refusal of a warm-up is named in its
+    status's `exceeded` (item 20) with the model's numbers in `message`; a warm-up waiting for the
+    next alarm is `pending` with `attempts` unchanged, said in `message`. The stored format
+    `store.warmup` v1 takes `exceeded` as an optional field (a release before it ignores it and
+    may drop it on rewrite, harmlessly). A backtest's answer carries `cost.memory`, `cost.cpu`,
+    `over_budget.memory`, `over_budget.cpu` and `over_budget.exceeded` (`rules.v2.ts`, `openapi.json`).
 19. **Recorded samples (part 15):** `contracts/ingest.ts` is used as adopted, unchanged. Two gaps
     the ruler works around: `RulerHealth.counters` has no field for writes that fell back to
     Remote Write (the Worker logs a line instead; a counter would be an additive field, like
     the budgets of item 18); and `Sink.write` reports one outcome for a whole flush,
     so after a `too_large` split every rule of the flush shows the error, even those whose
     batches were written (a per-batch result would need a new method, not a changed one).
+20. **`over_budget` names its budget: contract version 5 of `contracts/rules.ts`**, changed first,
+    additively: the type `HistoryBudget` (`scan_samples`, `bytes`, `queries`, `memory`, `cpu`) and
+    the optional `WarmupStatus.exceeded`; `contracts-proposal/rules.ts` is its copy again (imports
+    apart, checked with `diff`). The backtest's `over_budget` answer is the ruler's own
+    (`rules.v2.ts`, `BacktestResponse`, marked "contract version 5") and `openapi.json`
+    (`OverBudget.exceeded`, required: this release always sends it; `Warmup.exceeded`). A caller that
+    does not know a value must treat it as a budget it cannot name. viz-mcp's `backtest_monitor`
+    reads the field first and keeps its numbers-then-wording reading for a ruler older than it
+    (`mcp/src/tools/backtest.ts`; the field is passed through by `mcp/src/clients.ts`).
 13. **Design text to update** (not done: outside `ruler/`): DESIGN §7 should say
     "one batch per group per tick, split only before a rule reading a series recorded
     earlier in the same tick", name the `RulerIndex` registry as the sweeper's source,

@@ -6,6 +6,7 @@ import {
   Buf,
   checkedList,
   encodeAttrs,
+  writeAttrs,
   type KV,
   bad,
   canonList,
@@ -70,7 +71,11 @@ export const SpanReject = {
 const zero = (b: Uint8Array): boolean => b.every((x) => x === 0)
 const ZERO8 = new Uint8Array(8)
 
-/** One accepted span, ready to be written into a batch. */
+/**
+ * One accepted span, ready to be written into a batch. Its variable-length columns (name,
+ * trace_state, status message, attributes, events, links) lie back to back in the
+ * collector's heap from `at`, with these lengths.
+ */
 interface Row {
   entry: number
   traceId: Uint8Array
@@ -84,12 +89,8 @@ interface Row {
   dropped: [number, number, number]
   kind: number
   status: number
-  name: Uint8Array
-  traceState: Uint8Array
-  statusMessage: Uint8Array
-  attrs: Uint8Array
-  events: Uint8Array
-  links: Uint8Array
+  at: number
+  lens: [number, number, number, number, number, number]
   /** Bytes in a batch: fixed columns, offsets, variable data. */
   size: number
 }
@@ -126,6 +127,8 @@ export class SpanCollector {
   private readonly routeIdx = new Map<string, number>()
   readonly rows: Row[] = []
   rowSeries = new Uint32Array(0)
+  /** The variable-length bytes of every accepted span. */
+  private readonly heap = new Buf(1 << 16)
 
   received = 0
   rejectedTotal = 0
@@ -235,48 +238,43 @@ export class SpanCollector {
     }
     if (s.events.length > SPAN.maxEvents) return no(SpanReject.events)
     if (s.links.length > SPAN.maxLinks) return no(SpanReject.links)
-    const name = utf8(s.name)
-    const traceState = utf8(s.traceState)
-    const statusMessage = utf8(s.statusMessage)
-    if (name.length > SPAN.maxString || traceState.length > SPAN.maxString || statusMessage.length > SPAN.maxString) return no(SpanReject.field)
-    const a = encodeAttrs(attrs)
-    if (typeof a === 'string') return no(a)
-
-    const ev = new Buf(64)
-    ev.u16(s.events.length)
+    const h = this.heap
+    const at = h.n
+    const undo = (reason: string): void => {
+      h.n = at
+      no(reason)
+    }
+    const nameLen = h.str(s.name)
+    const tsLen = h.str(s.traceState)
+    const smLen = h.str(s.statusMessage)
+    if (nameLen > SPAN.maxString || tsLen > SPAN.maxString || smLen > SPAN.maxString) return undo(SpanReject.field)
+    const a0 = h.n
+    const why = writeAttrs(attrs, h)
+    if (why !== null) return undo(why)
+    const e0 = h.n
+    h.u16(s.events.length)
     for (const e of s.events) {
-      if (e.hi >= 0x80000000) return no(SpanReject.eventTime)
-      const n = utf8(e.name)
-      if (n.length > SPAN.maxString) return no(SpanReject.field)
+      if (e.hi >= 0x80000000) return undo(SpanReject.eventTime)
+      h.i64(e.lo, e.hi)
+      if (h.strU16(e.name) > SPAN.maxString) return undo(SpanReject.field)
       const j = e.attrs.length === 0 ? '[]' : checkedList(e.attrs)
-      if (j.startsWith('!')) return no(`event ${j.slice(1)}`)
-      const jb = utf8(j)
-      ev.i64(e.lo, e.hi)
-      ev.u16(n.length)
-      ev.bytes(n)
-      ev.u32(jb.length)
-      ev.bytes(jb)
+      if (j.startsWith('!')) return undo(`event ${j.slice(1)}`)
+      h.strU32(j)
     }
-    const lk = new Buf(64)
-    lk.u16(s.links.length)
+    const l0 = h.n
+    h.u16(s.links.length)
     for (const l of s.links) {
-      if (l.traceId.length !== 16 || zero(l.traceId) || l.spanId.length !== 8 || zero(l.spanId)) return no(SpanReject.link)
-      const ts = utf8(l.traceState)
-      if (ts.length > SPAN.maxString) return no(SpanReject.field)
+      if (l.traceId.length !== 16 || zero(l.traceId) || l.spanId.length !== 8 || zero(l.spanId)) return undo(SpanReject.link)
+      h.bytes(l.traceId)
+      h.bytes(l.spanId)
+      if (h.strU16(l.traceState) > SPAN.maxString) return undo(SpanReject.field)
       const j = l.attrs.length === 0 ? '[]' : checkedList(l.attrs)
-      if (j.startsWith('!')) return no(`link ${j.slice(1)}`)
-      const jb = utf8(j)
-      lk.bytes(l.traceId)
-      lk.bytes(l.spanId)
-      lk.u16(ts.length)
-      lk.bytes(ts)
-      lk.u32(jb.length)
-      lk.bytes(jb)
+      if (j.startsWith('!')) return undo(`link ${j.slice(1)}`)
+      h.strU32(j)
     }
-    const events = ev.done()
-    const links = lk.done()
-    const size = SPAN.rowFixedBytes + name.length + traceState.length + statusMessage.length + a.length + events.length + links.length
-    if (size > SPAN.maxRowBytes) return no(SpanReject.tooLarge)
+    const lens: Row['lens'] = [nameLen, tsLen, smLen, e0 - a0, l0 - e0, h.n - l0]
+    const size = SPAN.rowFixedBytes + (h.n - at)
+    if (size > SPAN.maxRowBytes) return undo(SpanReject.tooLarge)
     if (this.rows.length >= this.limits.maxSpans) throw tooLarge(`more than ${this.limits.maxSpans} spans in one request`)
     this.rows.push({
       entry,
@@ -291,12 +289,8 @@ export class SpanCollector {
       dropped: s.dropped,
       kind: s.kind,
       status: s.statusCode,
-      name,
-      traceState,
-      statusMessage,
-      attrs: a,
-      events,
-      links,
+      at,
+      lens,
       size,
     })
   }
@@ -347,7 +341,7 @@ export class SpanCollector {
   }
 
   private encode(rows: Row[], local: Map<number, number>): Batch {
-    const b = new Buf(1024)
+    const b = new Buf(1 << 16)
     b.bytes(new Uint8Array([0x56, 0x5a, 0x42, 0x31, 2, 0, 0, 0]))
     b.u32(rows.length)
     b.u32(local.size)
@@ -370,16 +364,21 @@ export class SpanCollector {
     })
     fixed((r) => b.u8(r.kind))
     fixed((r) => b.u8(r.status))
-    for (const col of ['name', 'traceState', 'statusMessage', 'attrs', 'events', 'links'] as const) {
+    const heap = this.heap.b
+    for (let col = 0; col < 6; col++) {
       b.pad8()
       let off = 0
       b.u32(0)
       for (const r of rows) {
-        off += r[col].length
+        off += r.lens[col]!
         b.u32(off)
       }
       b.pad8()
-      for (const r of rows) b.bytes(r[col])
+      for (const r of rows) {
+        let from = r.at
+        for (let k = 0; k < col; k++) from += r.lens[k]!
+        b.bytes(heap.subarray(from, from + r.lens[col]!))
+      }
     }
     b.pad8()
     return { bytes: b.done(), rows: rows.length }

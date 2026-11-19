@@ -50,7 +50,7 @@
 //! | `viz_q_series` | `limits, i64 min_ts, i64 max_ts, u32 n, str*, scan` | JSON `[{"label":"value",…},…]` |
 //! | `viz_q_scan_rows` | `u32 n_files, str index*, u32 n_ranges, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*` | `u64[n_files]`: an upper bound on the rows the ranges decode from each file. 0 = the file provably holds nothing the ranges read (skip it); `u64::MAX` = the fragment does not parse (unknown: read the file) |
 //! | `viz_q_split_plan` | `limits, str query` | JSON `{"split":true,"fragments":n,"without":[…]}` or `{"split":false,"reason":"…"}` (`viz_query::split_plan`) |
-//! | `viz_q_extract` | `key, u32 part, u32 parts, ranges, u32 n, str* (series files), u32 m, str* (sample files, precedence order; whole or sparse)` | `u64 rows, u64 series, u64 strays` (ABI 3: the part's series outside its id range), then a `VZB1` batch (empty: no rows) |
+//! | `viz_q_extract` | `key, u32 part, u32 parts, ranges, u32 n, str* (series files), u32 m, str* (sample files, precedence order; whole or sparse)` | `u64 rows, u64 series, u64 strays` (ABI 3: the part's series outside its id range), `u64 foreign` (ABI 5: series in its id range whose key is another part's), then a `VZB1` batch (empty: no rows) |
 //! | `viz_q_split_tails` | `key, u32 parts, ranges, u32 n, str* (tail batches, in order)` | per part: `u32 n`, then `str*` (its batches, in order) |
 //! | `viz_q_gather_new` | `u64 samples, u64 series, u64 step_points (the leaf's budget), ranges` | `u32 handle` of a gathering session kept in the module |
 //! | `viz_q_gather_add` | `u32 handle, u32 rank, str batch` | `u8 aborted, u64 samples, u64 series` held so far |
@@ -63,7 +63,7 @@
 //! | `viz_q_sample_plan` | `u64 gap, u8 has_part, [key, u32 part, u32 parts], ranges (the reads), u32 n, str* (series files, whole or sparse), u32 m, str* (sample files' index fragments), u32 k, u32* (per sample file, the index of its series file; u32::MAX: unknown; k = 0: no pairs)` | `u32 n`, JSON `{"series":n,"files":[plan, …]}` (n bytes), then the carrier batch (`VZB1`; empty: none): the matchers resolved against the series files, how to read each sample file, and the selected series to evaluate with instead of the series files (`viz_query::sample_plan`) |
 //! | `viz_q_part_plan` | `u64 gap, u32 part, u32 parts, ranges, u32 n, str* (sample files' index fragments)` | JSON `[plan, …]`: one split part's row groups by its `series_id` range, from the fragments alone (`viz_query::part_plan`) |
 //! | `viz_q_meta_part` | `u8 kind (0 label names, 1 label values, 2 series), limits, i64 min_ts, i64 max_ts, u32 part, u32 parts, str label (values; empty otherwise), u32 n, str* (match[]), scan` | ABI 4: `u32 k`, then per `match[]` set for names and values (one for series) `u32 n, i64 series_id[n]`: the series listed in this part, then the JSON of `viz_q_label_names` / `_label_values` / `_series` over the series of part `part` of `parts` by `series_id` (`viz_query::MetaPart`) |
-//! | `viz_q_abi_version` | (no request) | returns 4 |
+//! | `viz_q_abi_version` | (no request) | returns 5 |
 //!
 //! `key` is `u32 n, str*`: the labels left out of the split key (`viz_query::SplitKey`).
 //! A `plan` is `{"rows":n|null,"read":"skip"|"whole"|[[offset,length],…]}`: `rows` bounds the
@@ -78,7 +78,7 @@ use std::collections::{BTreeSet, HashMap};
 use viz_query::split::{self, Gathered, Grid, LeafBudget, LeafOutput};
 use viz_query::{EvalOptions, FetchRange, FileRead, Limits, MatchOp, Matcher, Options, PartFilter, QueryError, ScanInput, SplitKey, SplitPlan, Stats};
 
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 const OK: u32 = 0;
 const MALFORMED: u32 = 5;
 
@@ -588,6 +588,7 @@ fn do_extract(mut r: Req<'_>) -> Res<Vec<u8>> {
     out.extend_from_slice(&ex.rows.to_le_bytes());
     out.extend_from_slice(&ex.series.to_le_bytes());
     out.extend_from_slice(&ex.strays.to_le_bytes());
+    out.extend_from_slice(&ex.foreign.to_le_bytes());
     out.extend_from_slice(&ex.batch);
     Ok(out)
 }

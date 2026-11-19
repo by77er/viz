@@ -451,8 +451,10 @@ ruler sent in a form this server does not read are counted and said.
 | no answer within 55 s | `ruler-timeout` (504) | a smaller run; nothing is cached |
 
 For anomaly and SLO monitors the remedies say that the warm-up before `start` is read too and a
-shorter range does not reduce it. Which budget refused is read from the numbers where they show
-it, else from the ruler's wording (see "Contract issues"). Every remedy figure is a linear
+shorter range does not reduce it. Which budget refused is the ruler's `exceeded` field (contracts/rules.ts
+`HistoryBudget`; null: the query service refused or did not price the read, told apart by the ruler's
+words; a value this tool does not know: `unknown`, never guessed); from a ruler older than the field,
+the numbers where they show it, else the ruler's wording. Every remedy figure is a linear
 estimate from the ruler's own models (cost ∝ steps × series), so it says "about".
 
 ### Connecting
@@ -625,7 +627,7 @@ with a deadline and partial results; the budget hook.
 
 ```
 npm install
-npm test               # 218 tests in 11 files, in workerd (npx vitest run --maxWorkers=2)
+npm test               # 219 tests in 11 files, in workerd (npx vitest run --maxWorkers=2)
 npx tsc --noEmit       # clean
 npm run mutants        # 39 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md); vitest with at most 2 workers
 npm run conformance    # the official conformance suite against wrangler dev on 127.0.0.1:8921
@@ -648,7 +650,7 @@ takes about 25–75 s on a shared machine. Last run 2026-11-19: 218 of 218 pass 
 | `budget.test.ts` | 6 | `page()` property (400 runs): length ≤ budget, every item exactly once, progress. Ten pageable calls with a random budget per page (40 runs): length ≤ budget on every page, pages concatenate to exactly the full result. `read_dashboard` at random budgets (15 runs). Schema parts reassemble at the smallest budget, nothing cut. Cursors bound to tool and arguments; ranges pinned |
 | `isolation.test.ts` | 9 | Below |
 | `injection.test.ts` | 8 | Below |
-| `backtest.test.ts` | 26 | `backtest_monitor` against the fake ruler. The example above exactly, over REST and MCP; the request (one POST, the caller's key, the monitor as given, the defaults as absolute milliseconds and a duration); no fires; more than 11,000 steps (raised with a note, or refused with the bound before the ruler is asked); anomaly and SLO explanations and warm-up; paging at 800 tokens with a moving clock (each page one request over the same pinned range, pages concatenate to every interval once); 1,200 intervals (1,000 listed, the rest counted by state); long values cut with a count; malformed intervals counted; the worst-case page at 800 tokens fits whole; each `over_budget` kind (plan, engine limit, unpriced, memory state, memory windows, CPU for threshold and anomaly) with its numbers and remedy; the ruler's problems with paths and arguments; this tool's own argument errors with paths; 502, 503 with `Retry-After`, 401, 403, 404, a timeout; MCP refusals; scopes; no write (only the backtest POST, no `dryRun`, no monitor created, control plane and query service untouched); tenant isolation; the fake's shapes against ruler/openapi.json |
+| `backtest.test.ts` | 27 | `backtest_monitor` against the fake ruler. The example above exactly, over REST and MCP; the request (one POST, the caller's key, the monitor as given, the defaults as absolute milliseconds and a duration); no fires; more than 11,000 steps (raised with a note, or refused with the bound before the ruler is asked); anomaly and SLO explanations and warm-up; paging at 800 tokens with a moving clock (each page one request over the same pinned range, pages concatenate to every interval once); 1,200 intervals (1,000 listed, the rest counted by state); long values cut with a count; malformed intervals counted; the worst-case page at 800 tokens fits whole; each `over_budget` kind (plan, engine limit, unpriced, memory state, memory windows, CPU for threshold and anomaly) with its numbers and remedy; the ruler's problems with paths and arguments; this tool's own argument errors with paths; 502, 503 with `Retry-After`, 401, 403, 404, a timeout; MCP refusals; scopes; no write (only the backtest POST, no `dryRun`, no monitor created, control plane and query service untouched); tenant isolation; the fake's shapes against ruler/openapi.json; `over_budget` with the ruler's `exceeded` (each value decides over misleading numbers and words; null with the query service's words; a value it does not know is not guessed), and without it (an older ruler) |
 | `units.test.ts` | 79 | The parser on every PromQL query of the examples, 55 valid and 16 invalid expressions (message and column), 2,000 generated queries the app mock's parser accepts; `clean()` idempotent and bounded (1,000 runs); cleaned text never closes the block early (1,000 runs); did-you-mean |
 
 **The scripted agent task** (`e2e.test.ts`), each step using the previous step's output:
@@ -1039,11 +1041,10 @@ the package's footer; `design/DECISIONS.md` D25–D29 and DESIGN §8. Still open
 
 ## Contract issues
 
-- **`over_budget` does not name the budget that refused.** `plan`, `memory` and `cpu` are numbers or
-  null; both memory refusals, the query service's own refusal and an unpriced read all have
-  `plan: null`, so `backtest_monitor` falls back on the ruler's wording (`whichBudget`). Closest
-  faithful thing: numbers first, then the wording, and `unknown` when neither says. Needed: a
-  field such as `budget: "plan" | "memory" | "cpu"` and a reason.
+- ~~**`over_budget` does not name the budget that refused.**~~ Resolved 2026-11-19: the ruler's
+  answer carries `exceeded` (`scan_samples`, `bytes`, `queries`, `memory`, `cpu`, or null for the
+  query service's own refusal or an unpriced read; contracts/rules.ts version 5), which
+  `whichBudget` reads first. The numbers-then-wording reading stays for a ruler older than the field.
 - **Problems found after a monitor is planned use rule-file paths.** `POST /monitors/backtest`
   with a monitor reports what `Ruler.backtest` finds as `rule.expr`, `rule.slo.alerts[1].long_window`,
   `stepMs`, not the monitor's field names (`POST /monitors` maps them back; the backtest route does
