@@ -15,7 +15,9 @@ import { REPO_ROOT } from '../lib/common.mjs'
  * TypeScript components. `wasm`: needs the built engines (artifact `wasm-engines`).
  * `install`: other directories whose node_modules a test imports from. `needs`: directories
  * without which the component cannot run at all. `optional`: test files that import from a
- * directory that may be absent, excluded (tsc and vitest) when it is.
+ * directory that may be absent, excluded (tsc and vitest) when it is; `imports` is the text in
+ * that file that makes it depend on `needs`, and deploy/test/matrix.test.mjs fails once the file
+ * no longer contains it, so an exclusion cannot outlive its reason.
  */
 export const TS = [
   { dir: 'shard' },
@@ -24,8 +26,8 @@ export const TS = [
   { dir: 'flush', wasm: true },
   { dir: 'compact', wasm: true },
   { dir: 'janitor', wasm: true },
-  { dir: 'stack', wasm: true, install: ['bench'], optional: [{ file: 'test/e2e.test.ts', needs: 'bench/package.json', why: 'imports hyparquet from bench/node_modules' }] },
-  { dir: 'query', wasm: true, optional: [{ file: 'test/http.test.ts', needs: 'app/src/api/client.ts', why: "imports the app's API client from app/src/api/client.ts" }] },
+  { dir: 'stack', wasm: true, install: ['bench'], optional: [{ file: 'test/e2e.test.ts', needs: 'bench/package.json', imports: 'bench/node_modules/hyparquet', why: 'imports hyparquet from bench/node_modules' }] },
+  { dir: 'query', wasm: true },
   { dir: 'control' },
   { dir: 'dashboard' },
   { dir: 'anomaly' },
