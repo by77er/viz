@@ -1,17 +1,20 @@
 // Mutation checks (AGENTS.md, "Tests must have teeth").
 //
-// Each mutant breaks one property in the source on purpose. The script applies it, runs the
-// named test files, requires at least one test to fail, and restores the source. A mutant that
-// survives, or whose pattern no longer matches exactly once, is printed and makes the script
-// exit non-zero (a stale pattern is a check that silently stopped running).
+// Each mutant breaks one property in the source on purpose. The script copies the component to
+// a fresh scratch directory (never the shared tree: AGENTS.md, Evidence), applies the mutant to
+// the copy, runs the named test files there, requires at least one test to fail, and deletes
+// the copy. A mutant that survives, or whose pattern no longer matches exactly once, is printed
+// and makes the script exit non-zero (a stale pattern is a check that silently stopped running).
 // Kills are read from vitest's JSON report, not from its console output.
 //
-//   node scripts/mutants.mjs           run all
-//   node scripts/mutants.mjs 3 7       run mutants 3 and 7
-//   node scripts/mutants.mjs --list    print the list
+//   node scripts/mutants.mjs                 run all
+//   node scripts/mutants.mjs 3 7             run mutants 3 and 7
+//   node scripts/mutants.mjs --list          print the list
+//   node scripts/mutants.mjs --verify-clean  read-only: every original present once, no mutant text in the tree
+//   MUTANT_SCRATCH=<dir>                     where the copies go (default: the OS temp directory)
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -149,16 +152,28 @@ export const MUTANTS = [
   },
 ]
 
-function runTests(tests) {
-  const dir = mkdtempSync(join(tmpdir(), 'anomaly-mutant-'))
+/** A throw-away copy of the component: sources copied, node_modules and NAB data linked (read only). */
+function makeCopy() {
+  const base = process.env.MUTANT_SCRATCH || tmpdir()
+  mkdirSync(base, { recursive: true })
+  const dir = mkdtempSync(join(base, 'anomaly-mutant-'))
+  for (const d of ['src', 'test', 'bench', 'scripts']) {
+    cpSync(join(root, d), join(dir, d), { recursive: true, filter: (p) => !p.includes(`${join(root, 'bench', 'data')}`) && !p.includes(`${join(root, 'bench', 'out')}`) })
+  }
+  for (const f of ['package.json', 'tsconfig.json']) cpSync(join(root, f), join(dir, f))
+  symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir')
+  symlinkSync(join(root, 'bench', 'data'), join(dir, 'bench', 'data'), 'dir')
+  return dir
+}
+
+function runTests(dir, tests) {
   const out = join(dir, 'report.json')
-  spawnSync('npx', ['vitest', 'run', ...tests, '--reporter=json', `--outputFile=${out}`], { cwd: root, encoding: 'utf8', timeout: 600_000 })
+  spawnSync('npx', ['vitest', 'run', ...tests, '--reporter=json', `--outputFile=${out}`], { cwd: dir, encoding: 'utf8', timeout: 600_000 })
   let report = null
   try { report = JSON.parse(readFileSync(out, 'utf8')) } catch { /* no report: treat as error */ }
-  rmSync(dir, { recursive: true, force: true })
   if (!report) return { failed: -1, killers: [] }
   const killers = []
-  for (const f of report.testResults ?? []) for (const a of f.assertionResults ?? []) if (a.status === 'failed') killers.push(`${f.name.replace(root + '/', '')} > ${a.fullName}`)
+  for (const f of report.testResults ?? []) for (const a of f.assertionResults ?? []) if (a.status === 'failed') killers.push(`${f.name.replace(dir + '/', '')} > ${a.fullName}`)
   return { failed: report.numFailedTests ?? killers.length, killers }
 }
 
@@ -166,6 +181,22 @@ const args = process.argv.slice(2)
 if (args.includes('--list')) {
   MUTANTS.forEach((m, i) => console.log(`${i + 1}. ${m.name}`))
   process.exit(0)
+}
+if (args.includes('--verify-clean')) {
+  // read-only check of the shared tree: no mutant applied, no pattern gone stale
+  let problems = 0
+  MUTANTS.forEach((m, i) => {
+    for (const e of m.edits) {
+      const s = readFileSync(join(root, e.file), 'utf8')
+      const originals = s.split(e.find).length - 1
+      // count the mutant text outside the original (several mutants are a prefix of their original)
+      const masked = s.split(e.find).join('\u0000')
+      const mutated = e.replace.includes(e.find) ? 0 : masked.split(e.replace).length - 1
+      if (originals !== 1 || mutated !== 0) { problems++; console.log(`#${i + 1} ${e.file}: original ×${originals}, mutant ×${mutated}`) }
+    }
+  })
+  console.log(problems ? `${problems} problem(s)` : `clean: all ${MUTANTS.length} mutants absent, every original present once`)
+  process.exit(problems ? 1 : 0)
 }
 const pick = args.length ? args.map(Number) : MUTANTS.map((_, i) => i + 1)
 let bad = 0
@@ -182,11 +213,13 @@ for (const k of pick) {
     if (count !== 1) { stale = true; console.log(`#${k} STALE: pattern found ${count} times in ${e.file}`); break }
   }
   if (stale) { bad++; lines.push(`| ${k} | ${m.name} | STALE |`); continue }
+  const dir = makeCopy()
   try {
-    const current = new Map(originals)
-    for (const e of m.edits) { const p = join(root, e.file); current.set(p, current.get(p).replace(e.find, e.replace)) }
+    // edits go to the copy only; the shared tree is read, never written
+    const current = new Map()
+    for (const e of m.edits) { const p = join(dir, e.file); current.set(p, (current.get(p) ?? originals.get(join(root, e.file))).replace(e.find, e.replace)) }
     for (const [p, s] of current) writeFileSync(p, s)
-    const r = runTests(m.tests)
+    const r = runTests(dir, m.tests)
     if (r.failed > 0) {
       console.log(`#${k} killed: ${m.name}\n    by ${r.killers.slice(0, 3).join('\n       ')}${r.killers.length > 3 ? `\n       (+${r.killers.length - 3} more)` : ''}`)
       lines.push(`| ${k} | ${m.name} | killed by ${r.killers.length}: ${r.killers[0]} |`)
@@ -196,9 +229,10 @@ for (const k of pick) {
       lines.push(`| ${k} | ${m.name} | SURVIVED |`)
     }
   } finally {
-    for (const [p, s] of originals) writeFileSync(p, s)
+    rmSync(dir, { recursive: true, force: true })
   }
 }
 console.log(`\n${pick.length - bad}/${pick.length} mutants killed`)
+mkdirSync(join(root, 'bench/out'), { recursive: true })
 writeFileSync(join(root, 'bench/out/mutants.md'), `| # | mutant | result |\n|---|---|---|\n${lines.join('\n')}\n`)
 process.exit(bad ? 1 : 0)
