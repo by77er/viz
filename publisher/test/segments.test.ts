@@ -9,7 +9,7 @@
  *   - The first layout, written by the frozen as-built ledger, is still read, and so is the
  *     segment incarnation a current ledger starts when it takes such a tenant over.
  *   - The reader's rules: a cursor inside a segment, overlapping segments, both layouts in one
- *     incarnation, whole segments per publish, checkpoints never read.
+ *     incarnation, whole segments per publish. (Checkpoints: test/checkpoints.test.ts.)
  */
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
@@ -301,21 +301,6 @@ describe('reading segments', () => {
     expect(r.tenants[0]).toMatchObject({ status: 'corrupt', cursors: { metric_samples: { version: 2 } } })
     expect(r.tenants[0]!.detail).toMatch(/overlap/)
     expect(await icebergLive(cell, 'metric_samples')).toEqual([u1.files[0]!.key])
-  })
-
-  it('never reads a checkpoint, even an unreadable one', async () => {
-    const { cell, tenant } = fresh()
-    const t = tenant('ckpt')
-    for (let i = 1; i <= 4; i++) await addUnit(t, pairUnit(cell, t, i, i, T0 + i * 1000), { drain: true })
-    await mirror(t, cell)
-    const ckpts = (await listKeys(`${cell}/ledger/tenant=${t}/1/`)).filter((k) => k.includes('/ckpt-'))
-    expect(ckpts.length).toBeGreaterThan(0)
-    for (const k of ckpts) await env.BUCKET.put(k, 'not a checkpoint')
-    const p = publisher(cell)
-    const r = await p.publish([t])
-    expect(r.tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: await ledgerVersion(t) } })
-    for (const table of TABLES) expect(await icebergLive(cell, table)).toEqual(await liveKeys(t, table))
-    await expectVerified(p)
   })
 
   it('takes the table of a removed file from removedFiles, and refuses removedFiles that disagree with removed', async () => {

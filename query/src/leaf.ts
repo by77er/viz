@@ -253,7 +253,12 @@ export async function partTail(
   const out: Uint8Array[] = []
   const stats: TailStats = { calls: rest.calls, batches: 0, bytes: 0 }
   for (let i = 0; i < parts.length; i++) {
-    out.push(...parts[i]!.batches)
+    // What the coordinator read, cut by id as the shard cuts a key range: checked the same way.
+    if (parts[i]!.batches.length > 0) {
+      const mine = cut(parts[i]!.batches, true)
+      if (mine === null) return { status: 'tail', kind: 'strays' }
+      out.push(...mine)
+    }
     const r = rest.reads[i]
     if (!r || r.batches.length === 0) continue
     stats.batches += r.batches.length

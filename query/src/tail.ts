@@ -182,6 +182,95 @@ export async function readPages(
 }
 
 /**
+ * A `VZB1` batch cut by `series_id` into `parts`: part `j` holds the rows of the series whose
+ * id (unsigned) is in `splitKeyRange(j, parts)`, in their order, with those series' entries
+ * copied as stored and every timestamp and value copied as bytes; null for a part with no
+ * row, and the batch itself for a part that holds every row. The same bytes the shard's
+ * filter returns for that key range (`shard/src/tail.ts` `filterBatch`; tested against it),
+ * in one pass for all parts, without the engine: the coordinator cuts what it read of a tail
+ * that did not fit, holding about twice its bytes and nothing per series.
+ */
+export function cutById(payload: Uint8Array, parts: number): (Uint8Array | null)[] {
+  const bad = (why: string) => new Error(`not a VZB1 batch: ${why}`)
+  if (!Number.isSafeInteger(parts) || parts < 1 || parts > 1 << 16) throw new RangeError('cutById: bad parts')
+  if (payload.length < 16 || payload[0] !== 0x56 || payload[1] !== 0x5a || payload[2] !== 0x42 || payload[3] !== 0x31 || payload[4] !== 1) throw bad('header')
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+  const nRows = dv.getUint32(8, true)
+  const nSeries = dv.getUint32(12, true)
+  const starts = new Uint32Array(nSeries + 1)
+  const partOf = new Uint32Array(nSeries)
+  const TWO32 = 4294967296
+  let p = 16
+  for (let s = 0; s < nSeries; s++) {
+    starts[s] = p
+    if (p + 12 > payload.length) throw bad('series table')
+    // part = floor(id * parts / 2^64), exactly: hi * parts and lo * parts are below 2^53.
+    const lo = dv.getUint32(p, true)
+    const hi = dv.getUint32(p + 4, true)
+    partOf[s] = Math.floor((hi * parts + Math.floor((lo * parts) / TWO32)) / TWO32)
+    const nLabels = dv.getUint32(p + 8, true)
+    p += 12
+    for (let l = 0; l < 2 * nLabels; l++) {
+      if (p + 2 > payload.length) throw bad('label')
+      p += 2 + dv.getUint16(p, true)
+      if (p > payload.length) throw bad('label')
+    }
+  }
+  starts[nSeries] = p
+  const pad8 = (n: number) => (n + 7) & ~7
+  const idxAt = pad8(p)
+  const tsAt = idxAt + pad8(4 * nRows)
+  const valAt = tsAt + 8 * nRows
+  if (valAt + 8 * nRows !== payload.length) throw bad('row arrays')
+  const rows: number[][] = Array.from({ length: parts }, () => [])
+  for (let i = 0; i < nRows; i++) {
+    const s = dv.getUint32(idxAt + 4 * i, true)
+    if (s >= nSeries) throw bad('series index')
+    rows[partOf[s]!]!.push(i)
+  }
+  return rows.map((kept, j) => {
+    if (kept.length === 0) return null
+    const used = new Uint8Array(nSeries)
+    for (const i of kept) used[dv.getUint32(idxAt + 4 * i, true)] = 1
+    if (kept.length === nRows) {
+      let every = true
+      for (let s = 0; s < nSeries && every; s++) if (!used[s]) every = false
+      if (every) return payload
+    }
+    const remap = new Int32Array(nSeries).fill(-1)
+    let table = 0
+    let n = 0
+    for (let s = 0; s < nSeries; s++) {
+      if (!used[s] || partOf[s] !== j) continue
+      remap[s] = n++
+      table += starts[s + 1]! - starts[s]!
+    }
+    const m = kept.length
+    const oIdx = pad8(16 + table)
+    const oTs = oIdx + pad8(4 * m)
+    const oVal = oTs + 8 * m
+    const out = new Uint8Array(oVal + 8 * m)
+    const ov = new DataView(out.buffer)
+    out.set(payload.subarray(0, 8), 0)
+    ov.setUint32(8, m, true)
+    ov.setUint32(12, n, true)
+    let q = 16
+    for (let s = 0; s < nSeries; s++) {
+      if (remap[s]! < 0) continue
+      out.set(payload.subarray(starts[s]!, starts[s + 1]!), q)
+      q += starts[s + 1]! - starts[s]!
+    }
+    for (let k = 0; k < m; k++) {
+      const i = kept[k]!
+      ov.setUint32(oIdx + 4 * k, remap[dv.getUint32(idxAt + 4 * i, true)]!, true)
+      out.set(payload.subarray(tsAt + 8 * i, tsAt + 8 * i + 8), oTs + 8 * k)
+      out.set(payload.subarray(valAt + 8 * i, valAt + 8 * i + 8), oVal + 8 * k)
+    }
+    return out
+  })
+}
+
+/**
  * The series ids in `VZB1` batches (contracts/BATCH.md: a 16-byte header, then per series
  * `u64 series_id, u32 n_labels`, labels as `u16 len, bytes` pairs). Only to size a split.
  */
@@ -235,7 +324,11 @@ export function tailEstimate(reads: TailRead[]): { bytes: number; series: number
  */
 export interface TailPart {
   shard: string
-  /** This part's rows of what the coordinator read (cut by key), in order. */
+  /**
+   * This part's rows of what the coordinator read, cut by `series_id` (`cutById`, the same
+   * cut as the shard's key range), in order. A part whose split key leaves labels out checks
+   * them as it checks the rest.
+   */
   batches: Uint8Array[]
   /**
    * The rest of the tail, above the last batch the coordinator read: the part reads it with

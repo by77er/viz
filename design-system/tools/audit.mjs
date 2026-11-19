@@ -250,7 +250,7 @@ function guards({ fine, coarse }) {
       if (strip && strip !== document.body) { const b = strip.getBoundingClientRect(); if (r.left < b.left - 0.5 || r.right > b.right + 0.5) continue }
       const cx = Math.max(22, Math.min(innerWidth - 22, r.left + r.width / 2)), cy = r.top + r.height / 2
       if (owner(cx, cy) !== el) { const at = document.elementFromPoint(cx, cy); if (!(at && el.contains(at))) say('hit-area', `${name(el)} is covered at its centre by ${at ? name(at) : 'nothing'} with a coarse pointer`); continue }
-      const tall = owner(cx, cy - 21.5) === el && owner(cx, cy + 21.5) === el, wide = owner(cx - 21.5, cy) === el && owner(cx + 21.5, cy) === el
+      const tall = owner(cx, cy - 21) === el && owner(cx, cy + 21) === el, wide = owner(cx - 21, cy) === el && owner(cx + 21, cy) === el // 44 px, less a pixel at each end where two areas meet and hit testing snaps
       if (!tall || !wide) say('hit-area', `${name(el)}: hit area under 44 px ${!tall ? 'tall' : 'wide'} with a coarse pointer (drawn ${Math.round(r.width)} x ${Math.round(r.height)} px)`)
     }
     scrollTo(0, 0)

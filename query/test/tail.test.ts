@@ -21,7 +21,7 @@ import { encodeBatch, type Row } from '../../engine/wasm/test/vzb1'
 import { type TenantLimits, clearLimitsCache } from '../src/config'
 import { hooks } from '../src/coordinator'
 import { leafHooks } from '../src/leaf'
-import { seriesIdsOf, tailEstimate, tailFilter, tailHooks, type TailRead } from '../src/tail'
+import { cutById, seriesIdsOf, splitKeyRange, tailEstimate, tailFilter, tailHooks, type TailRead } from '../src/tail'
 import { QUERIES, type Query, type Tenant, type World, api, cost, expected, ingest, run, shardOf, workload, world, write } from './world'
 
 const sec = (ms: number): string => String(ms / 1000)
@@ -440,6 +440,31 @@ describe('the filter a read sends (tailFilter)', () => {
     expect(tailFilter([r([{ name: '__name__', op: '=', value: 'm' }, { name: 'job', op: '=', value: 'x' }]), r([{ name: '__name__', op: '=~', value: 'm|n' }])])).toEqual({ minTs: 10, maxTs: 20 })
     expect(tailFilter([r([{ name: 'env', op: '=', value: '' }])], false)).toEqual({ labels: [{ name: 'env', value: '' }] })
     expect(tailFilter([])).toEqual({})
+  })
+
+  it('cutById gives each part exactly the bytes the shard\'s key-range filter gives it (random batches, 1 to 40 parts)', () => {
+    let seed = 11
+    const rnd = (n: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed % n
+    }
+    let cuts = 0
+    for (let trial = 0; trial < 300; trial++) {
+      const series = Array.from({ length: 1 + rnd(30) }, (_, i) => ({ __name__: `m${rnd(3)}`, i: `${i}`, ...(rnd(2) ? { x: 'é'.repeat(rnd(3)) || 'y' } : {}) }))
+      const rows: Row[] = Array.from({ length: rnd(60) }, () => ({ series: rnd(series.length), ts: rnd(1000), bits: BigInt(rnd(1 << 30)) }))
+      const batch = encodeBatch(series, rows)
+      const parts = 1 + rnd(40)
+      const got = cutById(batch, parts)
+      expect(got.length).toBe(parts)
+      for (let j = 0; j < parts; j++) {
+        const f = compileFilter({ keyRange: splitKeyRange(j, parts) })
+        if ('invalid' in f) throw new Error(f.invalid)
+        const want = filterBatch(batch, f)
+        expect(got[j] ? [...got[j]!] : null, `trial ${trial}, part ${j} of ${parts}`).toEqual(want ? [...want.bytes] : null)
+        if (got[j]) cuts++
+      }
+    }
+    expect(cuts).toBeGreaterThan(500)
   })
 
   it('sizes a split from what a read saw: series ids, and the stored batches left', () => {

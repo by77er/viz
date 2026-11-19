@@ -24,7 +24,7 @@ import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
 import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type CardinalityRequest, type ReadItem, type ReadResult, type TailRefusal } from './leaf'
-import { type TailBudget, type TailFilter, type TailPart, type TailRead, readPages, tailEstimate, tailFilter } from './tail'
+import { type TailBudget, type TailFilter, type TailPart, type TailRead, cutById, readPages, tailEstimate, tailFilter } from './tail'
 
 /** Largest and smallest timestamps storage can hold (contracts/BATCH.md). */
 export const MIN_TS = 0
@@ -482,6 +482,13 @@ async function readTails(c: Context, shards: string[], watermarks: Watermark[], 
   return { again: false, reads, bytes, over, atLeast: bytes + reads.reduce((a, r) => a + r.overBytes, 0) }
 }
 
+/** Batches cut by `series_id` into `parts` (`cutById`): per part, its non-empty cuts in order. */
+const cutAll = (batches: Uint8Array[], parts: number): Uint8Array[][] => {
+  const out: Uint8Array[][] = Array.from({ length: parts }, () => [])
+  for (const b of batches) cutById(b, parts).forEach((x, j) => x && out[j]!.push(x))
+  return out
+}
+
 /** The tail's batches in the order the engine reads them: shards in name order, each in sequence order. */
 const tailBatchesOf = (reads: TailRead[]): Uint8Array[] => reads.flatMap((r) => r.batches.map((b) => b.payload))
 
@@ -742,13 +749,12 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       const est = tailEstimate(reads)
       const most = Math.max(1, Math.min(c.limits.maxLeaves, pool))
       L = hooks.forceLeaves ?? Math.min(most, Math.max(leafCount(c.limits, pool, scan + Math.ceil(est.bytes / 20), Math.max(seriesEst, est.series)), Math.ceil(est.bytes / (0.5 * c.limits.maxFetchBytes))))
-      const cut = reads.map((r) => (r.batches.length === 0 ? [] : c.engine.splitTails(r.batches.map((b) => b.payload), spec.without, L, ranges)))
+      // What was read is cut here by `series_id` (bytes copied, no engine: `cutById`); each part
+      // cuts its share by its split key and reads the rest of each shard's tail itself.
+      const cut = reads.map((r) => cutAll(r.batches.map((b) => b.payload), L))
       const rests = reads.map((r) => restOf(r, filter))
-      if (rests.every((r) => r === null)) tailFor = (j) => ({ tails: cut.flatMap((parts) => parts[j] ?? []) })
-      else {
-        c.cost.tailMode += '+leaves'
-        tailFor = (j) => ({ tails: [], tailParts: reads.map((r, i) => ({ shard: r.shard, batches: cut[i]![j] ?? [], rest: rests[i]! })) })
-      }
+      if (rests.some((r) => r !== null)) c.cost.tailMode += '+leaves'
+      tailFor = (j) => ({ tails: [], tailParts: reads.map((r, i) => ({ shard: r.shard, batches: cut[i]![j]!, rest: rests[i]! })) })
     }
     checkDeadline(c)
     const r = await runSplit(c, spec, ranges, series, samples, L, tailFor)
@@ -1240,8 +1246,7 @@ export async function cardinality(c: Context, start: number, end: number, lookba
       const base = hash32(c.queryId)
       // Each part gets its own series' rows of the tail (cut here by `series_id`, all of them:
       // a part's spans are those of the whole tail), and reads the rest itself if any is left.
-      const everything = [{ matchers: [], minTs: MIN_TS, maxTs: MAX_TS }]
-      const cut = tails.reads.map((r) => (r.batches.length === 0 ? [] : c.engine.splitTails(r.batches.map((b) => b.payload), [], L, everything)))
+      const cut = tails.reads.map((r) => cutAll(r.batches.map((b) => b.payload), L))
       const rests = tails.reads.map((r) => restOf(r, {}))
       const leafTails = !rests.every((r) => r === null)
       if (leafTails) c.cost.tailMode += '+leaves'

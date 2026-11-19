@@ -79,7 +79,14 @@ async function three(label: string, t: Tenant, path: string, params: Record<stri
 }
 
 describe('the tail, filtered and paged (local)', () => {
-  it('100,000 series, about 22 MB unflushed', async () => {
+  // The shard's case: seven scrapes in one Remote Write request, so labels are sent once (about 22 MB).
+  it('100,000 series, seven minutes in one request (about 22 MB unflushed)', async () => measure('A', 7), 1_800_000)
+  // One scrape per request, as a scraper sends them: every batch repeats its series' labels.
+  it('100,000 series, one request a minute (about 68 MB unflushed)', async () => measure('B', 1), 1_800_000)
+})
+
+async function measure(name: string, perWrite: number): Promise<void> {
+  {
     const w: World = await world()
     const t = w.a
     // Large enough that seven minutes stay unflushed and unrefused (the defaults: 4 MiB seals, 64 MiB a tenant).
@@ -93,8 +100,8 @@ describe('the tail, filtered and paged (local)', () => {
     await flushAll(w, [t])
     await discardAll(w)
     // ...then seven minutes left in the tails (sealed segments not flushed, and the open one).
-    for (let k = 0; k < 7; k++) await write(t, bulk.series(1))
-    console.log(`MEASURE dataset: ${N} series (${M}, 60 s), 10 minutes flushed + 7 minutes in the tails; loading took ${((performance.now() - t0) / 1000).toFixed(0)} s`)
+    for (let k = 0; k < 7; k += perWrite) await write(t, bulk.series(perWrite))
+    console.log(`MEASURE dataset ${name}: ${N} series (${M}, 60 s), 10 minutes flushed + 7 minutes in the tails, ${perWrite} scrape(s) per request; loading took ${((performance.now() - t0) / 1000).toFixed(0)} s`)
 
     hooks.sequentialLeaves = true
     leafHooks.resetBeforeEvaluate = true
@@ -116,13 +123,13 @@ describe('the tail, filtered and paged (local)', () => {
         // Before: the shards' whole tails, as the previous release answers.
         tailHooks.previousRelease = () => true
         await setLimits(t, {})
-        const refusedBefore = await three(`before (default limits): ${what}`, t, path, params)
+        const refusedBefore = await three(`${name} before (default limits): ${what}`, t, path, params)
         await setLimits(t, { maxFetchBytes: 64 << 20 })
-        const before = await three(`before (maxFetchBytes 64 MiB): ${what}`, t, path, params)
+        const before = await three(`${name} before (maxFetchBytes 64 MiB): ${what}`, t, path, params)
         // After: this release, default limits.
         delete tailHooks.previousRelease
         await setLimits(t, {})
-        const after = await three(`after (default limits): ${what}`, t, path, params)
+        const after = await three(`${name} after (default limits): ${what}`, t, path, params)
         if (before.status === 200 && after.status === 200) {
           expect(after.body, what).toBe(before.body)
           console.log(`MEASURE   identical bodies (${after.body.length} B); before refused with the default limits: ${refusedBefore.status !== 200}`)
@@ -134,8 +141,8 @@ describe('the tail, filtered and paged (local)', () => {
       delete leafHooks.resetBeforeEvaluate
       delete tailHooks.previousRelease
     }
-  })
-})
+  }
+}
 
 function shardOf(_w: World, name: string) {
   return env.SHARD.get(env.SHARD.idFromName(name))

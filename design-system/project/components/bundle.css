@@ -193,8 +193,8 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
 .vz-segmented button:first-child { border-left: 0; border-radius: var(--radius-1) 0 0 var(--radius-1); }
 .vz-segmented button:last-child { border-radius: 0 var(--radius-1) var(--radius-1) 0; }
 .vz-segmented button:hover { background: var(--hover); color: var(--ink); }
-.vz-segmented button:active, .vz-segmented button[data-pressed] { transition-duration: 0s; background: var(--pressed); }
 .vz-segmented button[aria-pressed="true"] { background: var(--rule); color: var(--ink); font: var(--text-ui-strong); box-shadow: inset 0 calc(-1 * var(--stroke)) 0 var(--ink); }
+.vz-segmented button:active, .vz-segmented button[data-pressed] { transition-duration: 0s; background: var(--pressed); } /* after the chosen fill: pressing the chosen segment shows a press too (v7: the rendered press guard found the chosen fill winning) */
 .vz-segmented button:focus-visible { outline-offset: var(--hairline); z-index: 1; }
 
 /* Tabs */
@@ -694,6 +694,7 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
   .vz-link:not(:is(p, li, .vz-help, .vz-secondary, .vz-text, .vz-page-sub) .vz-link, .vz-table td[data-key] .vz-link), :is(.vz-links, .vz-timeline) > li > .vz-link, .vz-change > .vz-link { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .vz-links { gap: 0; }
   .vz-controls, .vz-dialog-actions, .vz-banner, .vz-secret-row, .vz-notice { row-gap: calc(var(--control-touch) - var(--control-sm)); } /* wrapped rows: even two rows of small buttons keep 44px between centres */
+  .vz-panel > .vz-controls { margin-block: var(--space-1); } /* a row of controls in a panel keeps a small button's 44 px hit area off the plot or table under it (v7: the rendered hit-area guard found it reaching 2 px into a plot) */
   .vz-table tr:has(a, button, input, select) td { height: calc(var(--control-touch) + var(--hairline)); } /* rows that hold a control; a table of figures keeps its density */
   .vz-table th:has(.vz-sort) { padding-block: 0; }
   .vz-sort { min-height: var(--control-touch); margin-block: 0; }
