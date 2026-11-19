@@ -62,8 +62,9 @@ against `a)`).
   forms; the differential run lists the other shapes apart (below).
 - **Keeping a group name the `regex` crate cannot hold**: a name that starts with a digit
   (`(?P<1>x)`) or one used twice. Go accepts both; with `names = true` they are
-  `Error::Unsupported` (renaming them would change what a caller extracts). Without names, and in
-  `compile_anchored` and `compile_unanchored`, they are accepted as plain groups.
+  `Error::Unsupported` (renaming them would change what a caller extracts), and only for a
+  pattern Go accepts: a later error Go refuses (`(?P<1>a)\8`) is `Error::Invalid` first.
+  Without names, and in `compile_anchored` and `compile_unanchored`, they are plain groups.
 
 ## Verification
 
@@ -131,18 +132,26 @@ Re-wrapping an atom (review nit on PR #4, "rewrap memmove bound") was not linear
 that opens the wrap was inserted at the atom's start (`String::insert_str`), which moves the
 atom's text, and `MAX_WRAPS` bounded only how often one atom is wrapped, not the bytes moved.
 Nested groups each wrapped once (`((…(a)*(?)*)*(?)*…)`) moved every enclosing group's text,
-O(n²). The opens are now recorded as (offset, count) and written in one pass at the end
+O(n²). The opens are now records (offset, count) written in one pass at the end
 (`Translator::assemble`), so a wrap costs constant work and every recorded offset stays valid.
-Measured here (scratch program, both translators on the same patterns, best of three, outputs
-byte-identical):
+The records are linked in offset order as they are made, without a sort: an atom's record goes
+after the last record made before the atom began, which precedes every record made inside it
+(a group's contents are wrapped before the group is). A first version sorted the records at
+the end; that sort alone added 6.8 KB to TraceQL's WebAssembly module.
+Measured here (scratch program, both translators on the same patterns, best of three; two
+runs at load average 8 to 10, the second on the final code; outputs byte-identical):
 
 | Pattern | Size | Before, release | After, release | Before, debug | After, debug |
 |---|---:|---:|---:|---:|---:|
-| nested groups, each wrapped once | 128 KiB | 26.5 ms | 2.2 ms | | |
-| | 512 KiB | 459 ms | 18 ms | | |
-| | 1 MiB | 1.88 s | 0.035 s | 1.97 s | 0.16 s |
-| | 2 MiB | | | 9.26 s | 0.29 s |
-| one 1 MiB atom wrapped 999 times | 1 MiB | 0.052 s | 0.059 s | 0.17 s | 0.15 s |
+| nested groups, each wrapped once | 128 KiB | 26–65 ms | 2.0–2.2 ms | | |
+| | 512 KiB | 0.46–0.59 s | 9–18 ms | | |
+| | 1 MiB | 1.9–2.7 s | 27–35 ms | 2.0–2.4 s | 0.16–0.19 s |
+| | 2 MiB | | | 9.3–10.5 s | 0.29–0.30 s |
+| one 1 MiB atom wrapped 999 times | 1 MiB | 52–72 ms | 41–59 ms | 0.16–0.17 s | 0.15–0.20 s |
+
+The same scratch program translated 120,000 patterns with both translators (the 100,000 of the
+differential run below and 20,000 generated nestings of groups wrapped up to three times):
+36,019 identical translations, 83,981 refused by both, 0 different.
 
 TraceQL queries are at most 128 KiB with 16 regexes; a pattern there cost about 26 ms of
 translation before the regex crate's nesting limit refused it, natively. viz-logql itself bounds no
@@ -151,7 +160,13 @@ query length, so there the cost grew with the square of the pattern. `tests/go_r
 
 **WebAssembly.** Built inside `engine/traceql/tools/wasm-probe` and
 `engine/logql/wasm-check` (0 imports in both; their READMEs have the numbers). TraceQL's
-module no longer links the Unicode Perl-class tables.
+module no longer links the Unicode Perl-class tables. The group-name and re-wrap changes
+(2026-11-19) add 5,193 bytes to TraceQL's probe module (1,276,692 to 1,281,885; gzip 429,017
+to 431,339; same flags, same TraceQL source, measured here): the record list, and a
+`BTreeSet` of the names kept (a sorted `Vec` of names, tried first, cost about twice as much). Both
+modules: 0 imports; TraceQL's `check.mjs` 0 traps and 0 failures; LogQL's `limits.mjs` 12
+refused, 12 evaluated, no trap; `cargo build --release --target wasm32-unknown-unknown`
+builds this crate alone.
 
 **Mutation checks** are run from the two engines' scripts on scratch copies (this crate is
 copied next to the engine's copy): `engine/traceql/tools/mutate.py` mutants 27–32 change this
@@ -160,12 +175,14 @@ bound dropped, `{` as an error, parentheses unbalanced: all caught by `tests/go_
 unit tests and by TraceQL's Tempo test; mutant 31, one of the two balance checks removed, is
 equivalent and survives); `engine/logql/tools/mutate.py` mutant 30 (nesting limit lifted:
 caught by LogQL's `limits` and `props`). For group names and re-wrapping (2026-11-19):
-TraceQL's mutants 33–42, **10 of 10 caught** (a leading digit refused, Unicode letters
-accepted in names, the Unsupported check removed or narrowed to digits, `compile_anchored`
-keeping names, `(?<=` as Perl syntax: by `group_names_are_gos` or `named_groups`, the first two
-also by TraceQL's Tempo test; re-wraps never written, written unsorted (a panic on nested
-re-wraps), a second wrap at one offset not counted: by `rewraps_are_assembled_in_place`; the
-per-wrap insert restored, which changes no output: only by `rewrapping_costs_linear_time`);
+TraceQL's mutants 33–43 on the final code, **11 of 11 caught** (a leading digit refused,
+Unicode letters accepted in names, the Unsupported check removed or blind to repeats,
+`compile_anchored` keeping names, `(?<=` as Perl syntax, a leading digit Unsupported before
+Go's refusal of a later error: by `group_names_are_gos` or `named_groups`, the first two also
+by TraceQL's Tempo test; re-wraps never written, a group's record linked out of offset order
+(a panic on nested re-wraps), a second wrap of one atom not counted: by
+`rewraps_are_assembled_in_place`; the per-wrap insert restored, which changes no output: only
+by `rewrapping_costs_linear_time`);
 LogQL's mutants 31–33, 3 of 3 caught by its `api` suite (`engine/logql/README.md` (h)).
 
 ## Known risks

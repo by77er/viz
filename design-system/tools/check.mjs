@@ -199,8 +199,14 @@ async function audit() {
     const read = () => p2.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => { const cs = getComputedStyle(c); return { where: `${c.closest('section[data-c]')?.dataset.c} "${(c.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? c.dataset.view ?? '').trim().slice(0, 40)}"`, shown: c.getClientRects().length > 0, reserved: Math.round(parseFloat(cs.minHeight) * 10) / 10, rows: cs.getPropertyValue('--legend-rows').trim(), cv: cs.contentVisibility } }))
     await p2.setContent(light.replace(/<script>[\s\S]*?<\/script>/g, ''), { waitUntil: 'load' }); const markup = await read()
     await p2.setContent(light, { waitUntil: 'load' }); await p2.waitForTimeout(300); const drawnNow = await read()
-    const drawn = await p2.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => { c.style.setProperty('content-visibility', 'visible', 'important'); c.style.setProperty('min-height', '0px', 'important'); const h = c.getBoundingClientRect().height; c.style.removeProperty('min-height'); c.style.removeProperty('content-visibility'); return { h: Math.round(h * 10) / 10, rows: c.querySelectorAll('.vz-legend-table tbody tr').length } }))
+    const measureDrawn = () => p2.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => { c.style.setProperty('content-visibility', 'visible', 'important'); c.style.setProperty('min-height', '0px', 'important'); const h = c.getBoundingClientRect().height; c.style.removeProperty('min-height'); c.style.removeProperty('content-visibility'); return { h: Math.round(h * 10) / 10, rows: c.querySelectorAll('.vz-legend-table tbody tr').length } }))
+    const drawn = await measureDrawn()
+    // and after the legend changes on the page: "Show 20 more of Other" pressed on every chart that offers it (the reservation follows what
+    // the legend draws, so a chart skipped off screen later is still the height it draws)
+    const grown = await p2.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => { const b = c.querySelector('[data-more]'); if (b && c.getClientRects().length) { b.click(); return true } return false }))
+    const afterMore = grown.some(Boolean) ? await read() : [], drawnMore = grown.some(Boolean) ? await measureDrawn() : []
     await b2.close()
+    grown.forEach((g, i) => { if (!g) return; checked++; if (Math.abs(afterMore[i].reserved - drawnMore[i].h) > 1) results.push(`${coarse ? 'coarse' : 'fine'} pointer, ${width} px: ${afterMore[i].where} chart, after "Show 20 more of Other", reserves ${afterMore[i].reserved} px and draws ${drawnMore[i].h} px: skipped off screen it would be the wrong height`) })
     const at = `${coarse ? 'coarse' : 'fine'} pointer, ${width} px`
     if (markup.length !== drawnNow.length) results.push(`${at}: the previews' scripts add or remove charts (${markup.length} in the markup, ${drawnNow.length} drawn): reservations cannot be compared`)
     else drawnNow.forEach((c, i) => { if (!c.shown) return; const d = drawn[i], m = markup[i]; checked += 3

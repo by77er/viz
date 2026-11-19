@@ -22,5 +22,8 @@ body{margin:0}.sheet{display:grid;grid-template-columns:1fr 1fr}.side{padding:va
 ${extra}</style></head><body><div class="sheet">${col('light')}${col('dark')}</div><script>${press}</script>${scripts}</body></html>`)
 mkdirSync(root + 'dist/preview', { recursive: true })
 for (const n of names) { const b = body(n), style = b.style.replace(/<\/?style>/g, '')
-  writeFileSync(`${root}dist/preview/${n}.html`, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz ${n}</title>${preload('../')}<link rel="stylesheet" href="../viz.css"><style>html{background:var(--ground)}${style}</style></head><body class="vz">${b.inner}<script src="../viz-press.js"></script>${b.scripts.join('\n')}</body></html>`) }
+  // a preview that holds a chart of the reference's (data-demo) and is not the Chart preview loads the chart's script, so its chart is drawn on
+  // its own page as on the reference (v9: the Panel preview's chart was an empty box there)
+  const chart = n !== 'Chart' && /class="vz-chart"[^>]*data-demo=/.test(b.inner) ? '<script src="../viz-chart.js"></script>' : ''
+  writeFileSync(`${root}dist/preview/${n}.html`, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz ${n}</title>${preload('../')}<link rel="stylesheet" href="../viz.css"><style>html{background:var(--ground)}${style}</style></head><body class="vz">${b.inner}<script src="../viz-press.js"></script>${chart}${b.scripts.join('\n')}</body></html>`) }
 console.log('wrote dist/reference.html and dist/preview/*.html (' + names.length + ')')

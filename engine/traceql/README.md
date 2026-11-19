@@ -395,15 +395,19 @@ source tree is never modified. A suite that dies of a stack overflow is reported
 | 37 | `compile_anchored` keeps names (refuses a name Go accepts) | goregex (`named_groups`) |
 | 38 | `(?<=` and `(?<!` read as Perl syntax rather than as a named group (Go's wording) | goregex (`group_names_are_gos`) |
 | 39 | recorded re-wraps never written | regex_dialect, goregex (`rewraps_are_assembled_in_place`) |
-| 40 | recorded re-wraps written in recording order, not by offset (a panic on nested re-wraps) | goregex (`rewraps_are_assembled_in_place`) |
-| 41 | a second re-wrap at the same offset not counted | goregex (`rewraps_are_assembled_in_place`) |
+| 40 | a group's re-wrap linked after the last record, not before the records made inside it (out of offset order: a panic on nested re-wraps) | goregex (`rewraps_are_assembled_in_place`) |
+| 41 | a second re-wrap of the same atom not counted | goregex (`rewraps_are_assembled_in_place`) |
 | 42 | each re-wrap inserted at the atom's start again (the quadratic version; same output) | goregex (`rewrapping_costs_linear_time`) |
+| 43 | names kept: a leading digit is Unsupported at once, before Go's refusal of a later error | goregex (`group_names_are_gos`) |
 
-Mutants 33–42 (group names and re-wrapping in `engine/goregex`, the PR #4 review nits) were
-run on 2026-11-19 with `--only 33,…,42`: **10 of 10 caught**, the copies restored and re-run
-green, then deleted. The goregex column names the first failing test binary's failures (cargo
-stops at the first). Mutant 42 changes no output: only the timing test, on a 2 MiB nested
-pattern, can see it. The conformance suite skipped (Tempo's examples are not in the tree).
+Mutants 33–43 (group names and re-wrapping in `engine/goregex`, the PR #4 review nits) were
+run on 2026-11-19 on the final code with `--only 33,…,43`: **11 of 11 caught**, the copies
+restored and re-run green, then deleted (an earlier run of 33–42 on an intermediate version,
+which sorted the re-wrap records, also caught 10 of 10). The goregex column names the failures
+of the first failing test binary (cargo stops there). Mutant 42 changes no output: only the
+timing test, on a 2 MiB nested pattern, can see it. The conformance suite skipped in these runs
+(Tempo's examples are not in the tree); fetched into a scratch copy and run separately after
+the changes, it gives the same table as before (282 valid queries accepted, 0 failures).
 
 **31 of 32 caught** on the final run of 2026-11-19 (final code: regex dialect, `MAX_DEPTH`
 100); the copies were restored and re-run green after each, then deleted. Mutants 1–24 are
@@ -433,8 +437,8 @@ under Node 22:
 
 | | |
 |---|---:|
-| `.wasm` | **1,275,756 B** (2026-11-19, with `engine/goregex` and `MAX_DEPTH` 100; 1,284,354 B before) |
-| gzip -9 (Node `zlib`, as `check.mjs` reports) | **428,833 B** (436,541 B before) |
+| `.wasm` | **1,281,885 B** (2026-11-19, after `engine/goregex`'s group-name and re-wrap changes; 1,276,692 B before them, same source and flags, both measured then; 1,275,756 B when `engine/goregex` and `MAX_DEPTH` 100 came in, 1,284,354 B before that) |
+| gzip -9 (Node `zlib`, as `check.mjs` reports) | **431,339 B** (429,017 B before the group-name and re-wrap changes; 428,833 B, and 436,541 B, at the earlier points) |
 | imports | **0** (instantiates with `{}`) |
 | exports | `memory`, `viz_tq_alloc`, `viz_tq_free`, `viz_tq_run` |
 | `new WebAssembly.Instance(module, {})` | 0.33 and 0.51 ms in two runs of the 2026-11-19 build at load average about 10; before, 0.23 ms at load average 5.5, 0.24–0.34 ms and 2.2 ms at 8–19 (means of 200) |

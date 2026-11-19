@@ -68,7 +68,7 @@ pub const MAX_REPEAT: u32 = 1000;
 /// level deeper, and Go refuses nesting deeper than about 1000 (observed: 999 stacked stars
 /// accepted, 1000 refused). The `regex` crate's nesting limit refuses such patterns far
 /// earlier. A wrap costs the translator constant work whatever the atom's length: the `(?:`
-/// that opens it is recorded, not inserted, and written when the output is assembled
+/// that opens it is recorded (`Open`), not inserted, and written when the output is assembled
 /// (`Translator::assemble`).
 const MAX_WRAPS: u32 = 1000;
 
@@ -173,6 +173,10 @@ struct Atom {
     assertion: bool,
     /// Times it has been wrapped in a group to be repeated again.
     wraps: u32,
+    /// The re-wrap record its own record follows in offset order: the last record when the atom
+    /// began (records made inside a group come after it), and its own record once wrapped.
+    after: usize,
+    open: usize,
 }
 
 /// An open group.
@@ -180,7 +184,22 @@ struct Frame {
     start: usize,
     /// Largest `Atom::product` among the group's finished atoms, all branches.
     product: u32,
+    /// The last re-wrap record when the group began (`Atom::after` of the group).
+    after: usize,
 }
+
+/// `n` copies of `(?:` to write at byte `at` of the output, where an atom was re-wrapped to be
+/// repeated again (`a*(?i)*`). Records are linked in offset order from record 0 (`next`): an
+/// atom's record goes after the last record made before the atom began, which is before every
+/// record made inside it. So the output is assembled in one pass with no sort and no insert.
+struct Open {
+    at: usize,
+    n: u32,
+    next: usize,
+}
+
+/// No record: the end of the list, or an atom not wrapped yet.
+const NONE: usize = usize::MAX;
 
 struct Translator<'a> {
     src: &'a str,
@@ -199,15 +218,16 @@ struct Translator<'a> {
     /// Position of the next `:]` at or after `posix_from` (a monotone search: linear time).
     posix_from: usize,
     posix_next: Option<usize>,
-    /// Where a repetition re-wrapped an atom: (byte offset in `out`, how many `(?:` open there).
-    /// Recorded rather than inserted, so that every offset stays valid and a wrap costs constant
-    /// work; [`Translator::assemble`] writes them in one pass at the end.
-    opens: Vec<(usize, u32)>,
-    /// With `names`: every name kept, and the first group whose name starts with a digit. Rust
-    /// cannot hold such a name or a repeat; both are checked once the pattern is known to be
-    /// valid in Go (`names_held`), so that Go's refusal of a later error comes first.
-    kept: Vec<String>,
-    digit_name: Option<String>,
+    /// Where a repetition re-wrapped an atom, recorded rather than inserted so that every offset
+    /// stays valid and a wrap costs constant work; [`Translator::assemble`] writes them at the
+    /// end. Record 0 heads the list; `last_open` has the largest offset so far.
+    opens: Vec<Open>,
+    last_open: usize,
+    /// With `names`: the names kept, and why the first one Rust cannot hold (a leading digit, or a
+    /// repeat) cannot be kept. Reported once the pattern is known to be valid in Go
+    /// (`names_held`), so that Go's refusal of a later error comes first.
+    kept: std::collections::BTreeSet<String>,
+    unholdable: Option<String>,
 }
 
 fn invalid(msg: impl Into<String>) -> Error {
@@ -222,15 +242,16 @@ impl<'a> Translator<'a> {
             i: 0,
             out: String::with_capacity(src.len() + 16),
             names,
-            frames: vec![Frame { start: 0, product: 0 }],
+            frames: vec![Frame { start: 0, product: 0, after: 0 }],
             last: None,
             just_repeated: false,
             pending_flags: String::new(),
             posix_from: 0,
             posix_next: None,
-            opens: Vec::new(),
-            kept: Vec::new(),
-            digit_name: None,
+            opens: vec![Open { at: 0, n: 0, next: NONE }],
+            last_open: 0,
+            kept: std::collections::BTreeSet::new(),
+            unholdable: None,
         }
     }
 
@@ -291,35 +312,30 @@ impl<'a> Translator<'a> {
 
     /// With `names`, after a pattern Go accepts: Unsupported if a name cannot be kept in Rust
     /// (one that starts with a digit, or one used twice).
-    fn names_held(&mut self) -> Result<(), Error> {
-        let cannot = |why: String| Error::Unsupported(format!("{why} is valid in Go but cannot be kept as a group name"));
-        if let Some(g) = &self.digit_name {
-            return Err(cannot(format!("the name in `{g}`, which starts with a digit,")));
-        }
-        self.kept.sort_unstable();
-        match self.kept.windows(2).find(|w| w[0] == w[1]) {
-            Some(w) => Err(cannot(format!("`{}`, a name used twice,", w[0]))),
+    fn names_held(&self) -> Result<(), Error> {
+        match &self.unholdable {
+            Some(why) => Err(Error::Unsupported(format!("{why} is valid in Go but cannot be kept as a group name"))),
             None => Ok(()),
         }
     }
 
-    /// The output with every recorded `(?:` written at its offset: one pass, linear in the
-    /// output. Offsets are sorted first (an atom inside a group is wrapped before the group is);
-    /// all insertions are the same text, so their order at one offset does not matter.
-    fn assemble(mut self) -> String {
-        if self.opens.is_empty() {
+    /// The output with every recorded `(?:` written at its offset: one pass along the list of
+    /// records, which is in offset order, linear in the output.
+    fn assemble(self) -> String {
+        if self.opens.len() == 1 {
             return self.out;
         }
-        self.opens.sort_unstable_by_key(|&(at, _)| at);
-        let extra: usize = self.opens.iter().map(|&(_, n)| 3 * n as usize).sum();
+        let extra: usize = self.opens.iter().map(|o| 3 * o.n as usize).sum();
         let mut s = String::with_capacity(self.out.len() + extra);
-        let mut from = 0;
-        for &(at, n) in &self.opens {
-            s.push_str(&self.out[from..at]);
-            for _ in 0..n {
+        let (mut from, mut id) = (0, self.opens[0].next);
+        while id != NONE {
+            let o = &self.opens[id];
+            s.push_str(&self.out[from..o.at]);
+            for _ in 0..o.n {
                 s.push_str("(?:");
             }
-            from = at;
+            from = o.at;
+            id = o.next;
         }
         s.push_str(&self.out[from..]);
         s
@@ -345,7 +361,7 @@ impl<'a> Translator<'a> {
         self.finish_atom();
         let start = self.out.len();
         self.out.push_str(text);
-        self.last = Some(Atom { start, product: 1, repeated: false, assertion, wraps: 0 });
+        self.last = Some(Atom { start, product: 1, repeated: false, assertion, wraps: 0, after: self.last_open, open: NONE });
         self.just_repeated = false;
     }
 
@@ -399,9 +415,16 @@ impl<'a> Translator<'a> {
             a.wraps += 1;
             // The `(?:` goes before the atom: recorded, not inserted (`assemble`), since an
             // insert here would move the atom's text once per wrap.
-            match self.opens.last_mut() {
-                Some((at, n)) if *at == a.start => *n += 1,
-                _ => self.opens.push((a.start, 1)),
+            if a.open == NONE {
+                let id = self.opens.len();
+                self.opens.push(Open { at: a.start, n: 1, next: self.opens[a.after].next });
+                self.opens[a.after].next = id;
+                if self.last_open == a.after {
+                    self.last_open = id;
+                }
+                a.open = id;
+            } else {
+                self.opens[a.open].n += 1;
             }
             self.out.push(')');
         }
@@ -461,7 +484,7 @@ impl<'a> Translator<'a> {
         self.finish_atom();
         let start = self.out.len();
         self.out.push_str(text);
-        self.frames.push(Frame { start, product: 0 });
+        self.frames.push(Frame { start, product: 0, after: self.last_open });
         self.just_repeated = false;
     }
 
@@ -499,11 +522,15 @@ impl<'a> Translator<'a> {
             return Err(invalid(format!("invalid named capture: `{}`", self.text(self.i, k + 1))));
         }
         let text = if self.names {
-            if self.digit_name.is_none() && name.starts_with(|c: char| c.is_ascii_digit()) {
-                self.digit_name = Some(self.text(self.i, k + 1));
+            if self.unholdable.is_none() {
+                if name.starts_with(|c: char| c.is_ascii_digit()) {
+                    self.unholdable = Some(format!("the name in `{}`, which starts with a digit,", self.text(self.i, k + 1)));
+                } else if self.kept.contains(&name) {
+                    self.unholdable = Some(format!("`{name}`, a name used twice,"));
+                }
             }
             let text = format!("(?P<{name}>");
-            self.kept.push(name);
+            self.kept.insert(name);
             text
         } else {
             "(".to_string()
@@ -569,7 +596,7 @@ impl<'a> Translator<'a> {
         self.finish_atom();
         let f = self.frames.pop().expect("an open group");
         self.out.push(')');
-        self.last = Some(Atom { start: f.start, product: f.product.max(1), repeated: false, assertion: false, wraps: 0 });
+        self.last = Some(Atom { start: f.start, product: f.product.max(1), repeated: false, assertion: false, wraps: 0, after: f.after, open: NONE });
         self.just_repeated = false;
         self.i += 1;
         Ok(())

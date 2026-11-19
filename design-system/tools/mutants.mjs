@@ -47,7 +47,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   const esc = (s) => String(s).replace(/\|/g, '\\|').slice(0, 150)
   console.log(`\n\nload average ${load} on ${cpus().length} cores\n\n| Mutant | What was broken | Run | Expected | Result | First line the check printed |\n|---|---|---|---|---|---|`)
   for (const r of rows) console.log(`| ${r.id} | ${esc(r.what)} | ${r.run} | ${r.expect === 'fail' ? 'caught' : 'passes'} | ${r.ok ? (r.expect === 'fail' ? 'caught' : 'passes') : '**' + (r.expect === 'fail' ? (r.got === 'pass' ? 'SURVIVED' : 'CAUGHT, but not every literal: ' + r.missing.join(' ')) : 'REFUSED') + '**'} | ${esc(r.first)} |`)
-  const bad = rows.filter((r) => !r.ok), groups = {}; for (const r of rows) { const g = r.id.replace(/\d+$/, ''); (groups[g] ??= [0, 0])[1]++; if (r.ok) groups[g][0]++ }
+  const bad = rows.filter((r) => !r.ok), groups = {}; for (const r of rows) { const g = r.id.replace(/\d.*$/, ''); (groups[g] ??= [0, 0])[1]++; if (r.ok) groups[g][0]++ }
   console.log('\n' + Object.entries(groups).map(([g, [ok, n]]) => `${g}: ${ok} of ${n} as expected`).join('; '))
   console.log(bad.length ? `${bad.length} mutant(s) not as expected: ${bad.map((r) => r.id).join(', ')}` : 'Every mutant caught; every harmless edit passes.')
   if (opt('--json')) writeFileSync(opt('--json'), JSON.stringify({ at: new Date().toISOString(), load, cores: cpus().length, rows }, null, 1))

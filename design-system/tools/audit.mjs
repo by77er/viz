@@ -24,18 +24,30 @@
 //   key-width     a key in a folded table narrower than key-min of its row (v6 review, B1: 87 px of a 368 px row);
 //   align         a table column of bare numbers (one unit, in its head) whose figures or head do not end at the cell's right edge, as
 //                 rendered (v7 review, M2: "Memory, MiB" and "Restarts" left-aligned);
-//   stale         dist/ not what the build makes of the tree: dist/viz.css, and the fixture page's inlined CSS (v6 review, m6).
+//   stale         dist/ not what the build makes of the tree: dist/viz.css, and the fixture page's inlined CSS (v6 review, m6);
+//   reserve       a chart whose reserved height (min-height: what it is while skipped off screen or waiting for its data) is not what it
+//                 draws, laid out, whether or not it sets --legend-rows (v9; the v8 review's B1), read as the page opened;
+//   skip          a chart that does not compute content-visibility: auto, read as the page opened (v9; the v8 review's V4);
+//   font          a page that does not preload the sans face (v9: a reload moved the previews' charts when it arrived);
+//   reload-shift  after every configuration, at 1500 px with a fine pointer and 400 px with a coarse one: every page with a chart reloaded
+//                 while scrolled to each chart (--quick: the middle one and the last), and jumped to each after load: a layout shift of
+//                 0.05 or more, or a chart that does not land where it was (v9; the v8 review's B1). --reload-only runs this alone;
+//                 --no-reload leaves it out.
 // The guards (each fix the reviews asked for, as rendered; in both themes, at 1500 px with a fine pointer and at 400 px with a coarse one,
 // hit areas at every coarse width; v7 review, M3):
-//   focus         a focused control's ring: stroke wide in the theme's focus, offset by stroke (or drawn inside where its box clips), 3:1 on
-//                 what is behind it, cut by no ancestor; also with a mouse over it; a legend row's and a waterfall span's ring drawn by cells;
+//   focus         a focused control's ring: stroke wide in the theme's focus, offset by stroke (or drawn inside where its box clips, and then
+//                 a hairline clear of the ink of its words: v9, the v8 review's V10), 3:1 on what is behind it, cut by no ancestor; also with a
+//                 mouse over it; a legend row's and a waterfall span's ring drawn by cells;
 //   contrast      a control's border (buttons, inputs, selects, segmented controls, checkboxes) under 3:1 on what is behind it, as painted;
 //   hit-area      a control whose hit area, found by hit testing 21 px around its centre, is under 44 px or covered, or part of what it
 //                 draws (nine points of each box it draws) taken by another control's hit area (every coarse width);
 //   press         a press by a real pointer (a finger at the coarse width, a mouse at the fine one) that does not paint the press token;
 //   guard         the table wrap unpositioned, a dashed slot drawn solid (also hovered), emphasis undone (also hovered), picked members of
 //                 Other that look alike, a kept state that does not wrap;
-//   motion        an animation that loops, and, in the reduced-motion pass (both pointers, both themes), anything that moves;
+//   motion        an animation that loops; a colour eased, read from what each element computes (whatever the spelling: a custom property
+//                 in transition-property, a logical longhand, all), at rest and under a hovering mouse; a transition running in the frame a
+//                 change of theme is drawn (v9; the v8 review's V2b and V3); and, in the reduced-motion pass (both pointers, both themes),
+//                 anything that moves;
 //   token         a colour, length, duration, weight or curve that does not move when every token is moved, an opacity other than 1, a
 //                 font-variation-settings, and a token whose value on an element is not its theme's (redefined below the theme).
 // And, on the compositions at 1500 px:
@@ -413,8 +425,8 @@ function eased(colour) {
 }
 // A change of theme, as drawn: the theme is set and the transitions running in the frame it is drawn are counted (v9; the v8 review's V2b
 // and V3: speed.mjs counts them on the fixture only, which has no input). Returns [count, what the first one eases].
-function themeTo(th) { document.documentElement.dataset.theme = th
-  return new Promise((done) => requestAnimationFrame(() => { const t = document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running'), a = t[0]
+function themeTo([th, colour]) { document.documentElement.dataset.theme = th
+  return new Promise((done) => requestAnimationFrame(() => { const t = document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running' && new RegExp(colour).test(a.transitionProperty)), a = t[0] // colours only: a measured bar still moving from load is not the theme's
     done([t.length, a ? `<${a.effect?.target?.tagName?.toLowerCase()}${typeof a.effect?.target?.className === 'string' ? '.' + a.effect.target.className.trim().split(/\s+/).join('.') : ''}> ${a.transitionProperty}` : '']) })) }
 // What content-visibility: auto skips off screen is drawn as it is on screen: the audit scrolls a control to the middle and hit-tests it
 // in the same task, before the browser could render what came into view, so every such element is laid out now, keeping the containment
@@ -505,7 +517,7 @@ for (const c of reloadOnly ? [] : configs) {
     const fine = c.w === 1500 && !c.zoom && !c.coarse, touch = c.w === 400 && !!c.coarse
     if (fine || c.coarse) for (const theme of ['light', 'dark']) { // every guard in both themes, at both pointers (v7 review, M3)
       const tag = (list) => list.map(([k, m]) => [k, `${theme}: ${m}`])
-      const [running, first] = await page.evaluate(themeTo, theme) // light, then dark: the second is a change of every colour (v9)
+      const [running, first] = await page.evaluate(themeTo, [theme, COLOUR_PROP]) // light, then dark: the second is a change of every colour (v9)
       if (running) found.push(['motion', `a change of theme to ${theme} leaves ${running} transition(s) running in the frame it is drawn (the first: ${first}): no colour is eased`])
       if (fine || touch) found.push(...tag(await page.evaluate(eased, COLOUR_PROP))) // as computed, nothing held still (v9)
       if (fine) await page.keyboard.press('Shift') // keyboard modality, so a focused control shows its ring as from the keyboard
@@ -517,6 +529,9 @@ for (const c of reloadOnly ? [] : configs) {
       }
     }
     if (c.w === 1500 && !c.zoom && !c.coarse && /compositions|fixture/.test(p)) found.push(...(await page.evaluate(words)))
+    // the sans face preloaded in the head (project/README.md, Type), so text is drawn in it from the first frame and nothing rewraps when it
+    // arrives (v9: the previews and the reference did not preload it, and a reload moved their charts by 0.01 to 0.02 when it came)
+    if (c.w === 1500 && !c.zoom && !c.coarse && !(await page.evaluate(() => !!document.querySelector('head link[rel="preload"][as="font"][href*="SchibstedGrotesk"]')))) found.push(['font', 'the page does not preload the sans face (link rel="preload" as="font" in its head): its text rewraps when the face arrives'])
     for (const e of errors) found.push(['script', e])
     for (const [kind, msg] of found) results.push({ page: p, config: label(c), kind, msg })
   }

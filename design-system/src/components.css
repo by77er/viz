@@ -11,6 +11,7 @@
   --mark-size: var(--mark); /* a status mark's size: the mark token, larger on the page's state line (PageHeader); the token itself is never redefined */
 }
 .vz *, .vz *::before, .vz *::after { box-sizing: border-box; }
+.vz [hidden] { display: none !important; } /* the hidden attribute hides, whatever display a component gives its element (v9: the fixture's hidden "Pods" chart and its hidden view were drawn, because .vz-chart and .vz-page set display; the audit's reservation check found the empty chart) */
 .vz :focus-visible { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
 @media (prefers-reduced-motion: reduce) { .vz * { transition: none !important; } .vz *:not(.vz-table-wrap, .vz-nav, .vz-tabs) { animation: none !important; } } /* a strip's edge follows the scroll, not the clock: it is not motion */
 /* Text that only a screen reader reads: a live region beside a visual readout, a skip link at rest. */

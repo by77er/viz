@@ -135,6 +135,16 @@ kinds of observation shaped the code:
 Nothing was inferred from Tempo's source, and the Tempo-specific defects listed in the
 README were established only from its answers.
 
+### Follow-up of 2026-11-19: the regex corpus's metadata (PR #4 review nit)
+
+The `about` and `tempo` fields of `testdata/regex_dialect.json` were rewritten from the file
+itself (its subjects, patterns and recorded answers), `tools/probes/regex_dialect.py` and
+`tools/godiff/` (`README.md`, `go.mod`): viz's own files. No Tempo source was read and Tempo
+was not run again; the recorded answers are unchanged. `engine/goregex`'s group-name rule was
+checked against Go's documentation and Go run as a black box (`engine/goregex/CLEANROOM.md`).
+For a conformance run, Tempo's `test_examples.yaml` was fetched by `tools/fetch_tempo_tests.sh`
+into a scratch copy of this crate, used as an accept/reject oracle, and deleted with the copy.
+
 ## Statement
 
 I followed the rules above for the whole of this work: I did not read Tempo's

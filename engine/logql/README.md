@@ -469,6 +469,7 @@ the final code against the code before (commit e32d27f, scratch copies, same mac
 | `cargo test -j 2 --offline` | (section (g)'s counts, not re-run) | unit 22, api 9 (8 and the new test), conformance 1 (skips without the oracle), limits 5, props 8, semantics 10, doc 1: all pass |
 | Loki oracle (`tools/oracle/fetch.sh` into the scratch copies, then `--test conformance`) | 371 pass, 10 pinned failures, 9 skipped, 10 not extracted | identical table |
 | Differential exports, seeds 7, 11, 12, 21, 33 at 60 rounds (7,895 evaluations, 436 with a named group) | | **byte-identical** case files; the Loki harness was not rebuilt |
+| WASM (`wasm-check`, final code) | | 0 imports; `limits.mjs` 12 refused, 12 evaluated, no trap; module 2,443,459 bytes (no build of the code before was made to compare) |
 | Mutants 31–33 (`tools/mutate.py --only 31,32,33 --suites unit,api,semantics,limits,props`, scratch copies) | | **3 of 3 caught**, each by `api` only: 31, the `regexp` stage reports such a name as a parse error; 32, `label_replace`'s regex checked without names (the name passes the parser); 33, matchers keep names (`compile_anchored` in `engine/goregex` refuses `(?P<1>…)`) |
 
 ## Differences from Loki (by design or undecidable)

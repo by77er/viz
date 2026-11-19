@@ -10,20 +10,22 @@
 //       legend rows never changes a colour.
 //   P2  a query edited to series it does not share and edited back returns every series in its own colour;
 //   P3  a series on screen is grey only while all eight slots are held on screen ("what a person sees wins": a slot whose series is
-//       hidden or away is open, v8), and then "Colour the eight largest" is offered; a series coming on screen takes its own slot back
+//       hidden or away is open, v8); a series coming on screen takes its own slot back
 //       whenever no other series on screen holds it; hidden series never gain a slot; a series that takes a colour (other than its own
 //       slot back) is never smaller than a series left grey;
 //   P4  the readout's "highest" is the highest of every drawn series, members of Other included;
 //   P5  the text form's threshold lines, Other line and note are computed over every drawn series, members of Other included;
 //   P6  the legend note never claims a colour that is not drawn: its counts are the legend's, and "larger than a coloured series" needs
 //       a coloured series;
-//   P7  "Colour the eight largest" colours the eight largest series on screen, largest in slot 1, and nothing hidden or away.
+//   P7  "Colour the eight largest" colours the eight largest series on screen, largest in slot 1, and nothing hidden or away;
+//   P8  "Colour the eight largest" is offered exactly when one of the eight largest series on screen is not coloured, so pressing it
+//       always changes a colour (v9: the lead's decision on the v8 review's m3), and pressing it then colours each of them.
 // Fixed cases: the v7 review's narrowed query (M1), done both ways, the v6 review's sequences D and E (B2), each blocker example of the
 // review rubric's Many series row, the v5 review's
 // sequences under the v7 rule, flow screen 5, and one case per rule of v5's M2 (negative values, precision, threshold scope, small
 // negative values).
 //   node --test tools/test/chart-rules.test.mjs            (VIZ_DS_ROOT=<other copy> runs it against another version of the system;
-//                                                          VIZ_NO_OFFER=1 leaves out the check that the recolour is offered, to see an older
+//                                                          VIZ_NO_OFFER=1 leaves out P8, the check of when the recolour is offered, to see an older
 //                                                          version's colour failures apart from that one)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -94,8 +96,14 @@ function checkStep(view, prev, ctx) {
   // or away is open, like a free one: v8, the v7 review's M1)
   const grey = [...screen].filter((k) => !slots.get(k)), heldOnScreen = [1, 2, 3, 4, 5, 6, 7, 8].filter((i) => own.has(i) && screen.has(own.get(i)))
   if (grey.length) assert.equal(heldOnScreen.length, 8, `P3 ${ctx.what}: ${grey.length} on screen in Other (the largest ${podOf(grey.sort((a, b) => view.rank(b) - view.rank(a))[0])}) while only ${heldOnScreen.length} slots are held on screen`)
-  // P3: wherever a series on screen is grey, "Colour the eight largest" is offered
-  if (grey.length && !process.env.VIZ_NO_OFFER) assert.ok(actions(view.m).includes('recolour'), `P3 ${ctx.what}: ${grey.length} grey on screen and "Colour the eight largest" is not offered`)
+  // P8 (v9: the lead's decision on the v8 review's m3, "every response meaningful"): "Colour the eight largest" is offered exactly when
+  // pressing it would change a colour, that is, when one of the eight largest series on screen is not coloured; pressing it then colours
+  // every one of them. (Before v9: offered wherever a series on screen was grey, also when the eight largest were already coloured.)
+  if (!process.env.VIZ_NO_OFFER) {
+    const top8 = [...screen].sort((a, b) => view.rank(b) - view.rank(a) || (a < b ? -1 : 1)).slice(0, 8), greyTop = top8.filter((k) => !slots.get(k)), offered = actions(view.m).includes('recolour')
+    if (greyTop.length) assert.ok(offered, `P8 ${ctx.what}: ${podOf(greyTop[0])}, one of the eight largest on screen, is grey and "Colour the eight largest" is not offered`)
+    else assert.ok(!offered, `P8 ${ctx.what}: the eight largest on screen are all coloured and "Colour the eight largest" is offered: pressing it would colour no series that is grey`)
+    if (offered) { const copy = JSON.parse(JSON.stringify(view.map)); R.recolour(copy, view.m); const left = greyTop.find((k) => !R.slotOf(copy, k)); assert.ok(!left, `P8 ${ctx.what}: pressing "Colour the eight largest" would leave ${podOf(left)}, one of the eight largest, grey`) } }
   // P3: a series coming on screen takes its own slot back whenever no other series on screen holds it
   for (const k of screen) if (prev && !prev.has(k) && !ctx.recoloured) { const had = ctx.lastOn.get(k)
     if (had && slots.get(k) !== had) assert.ok(screen.has(own.get(had)) && own.get(had) !== k, `P3 ${ctx.what}: ${podOf(k)} came back ${slots.get(k) ? 'in slot ' + slots.get(k) : 'grey'} while slot ${had}, its own, is held by no series on screen`) }
@@ -302,10 +310,22 @@ test('M1 (v7 review), image 03: a query narrowed to node-b colours the eight lar
   for (const k of top) assert.ok(a.view.slot(k) > 0, `${podOf(k)}, among the eight largest on screen, is grey after the query was narrowed`)
   assert.equal(a.view.m.coloured.length, 8)
   for (const s of narrow.series) { const k = keyOf(s.labels); assert.equal(a.view.slot(k), b.view.slot(k), `${podOf(k)}: slot ${a.view.slot(k)} narrowed by the query, ${b.view.slot(k)} by a filter`) }
-  assert.ok(actions(a.view.m).includes('recolour'), '"Colour the eight largest" offered while pods are grey')
+  assert.ok(!actions(a.view.m).includes('recolour'), 'the eight largest on node-b are coloured: "Colour the eight largest" would change nothing and is not offered (v9: the v8 review\'s m3)')
   a.step('the query edited back', (v) => v.show(D.s36())); b.step('the filter cleared', (v) => { v.serverOut = null; v.show(D.s36()) })
   for (const s of s36.series) { const k = keyOf(s.labels); assert.equal(a.view.slot(k), b.view.slot(k), `${podOf(k)} after the round trip: ${a.view.slot(k)} by the query, ${b.view.slot(k)} by the filter`) }
-  assert.ok(actions(a.view.m).includes('recolour'))
+  assert.ok(actions(a.view.m).includes('recolour'), 'widened back, seven of the eight largest are in Other: "Colour the eight largest" is offered')
+})
+test('m3 (v8 review), image 02: "Colour the eight largest" is offered only when pressing it would change a colour', () => {
+  const { view, step } = stepper(), s36 = D.s36(), top8 = ranked(s36).slice(0, 8).map((s) => s.key)
+  step('36 pods, at load', (v) => v.show(s36)); for (const k of top8) assert.ok(view.slot(k) > 0)
+  assert.deepEqual([...actions(view.m)], ['more'], 'at load the eight largest are coloured: only "Show 20 more of Other" is offered (v8 offered the recolour too, image 02 panel 1)')
+  { const copy = JSON.parse(JSON.stringify(view.map)); R.recolour(copy, view.m); for (const s of view.m.listed) assert.equal(R.slotOf(copy, s.key), view.slot(s.key), `pressed at load it would change ${podOf(s.key)}: the test's premise is wrong`) }
+  step('the query narrowed to node-b', (v) => v.show(onNode(s36, 'node-b'))); assert.deepEqual([...actions(view.m)], ['more'], 'narrowed: the eight largest on node-b took the colours; nothing to offer')
+  step('and widened back', (v) => v.show(D.s36())); assert.deepEqual([...actions(view.m)], ['more', 'recolour'], 'widened back: seven of the eight largest are in Other (image 02, panel 3)')
+  step('colour the eight largest', (v) => { v.recolour(); v.show(D.s36()) }, { recoloured: true })
+  for (const k of top8) assert.ok(view.slot(k) > 0, `${podOf(k)} coloured after the recolour`)
+  assert.deepEqual([...actions(view.m)], ['more'], 'once pressed, the recolour is no longer offered: pressing it again would change nothing (image 02, panel 4)')
+  step('a pod larger than all arrives', (v) => v.show({ ...D.s36(), series: [...D.s36().series, newPod()] })); assert.deepEqual([...actions(view.m)], ['more', 'recolour'], 'a larger pod in Other: offered again')
 })
 // Twin views: one narrows and widens by editing its query, the other by a dashboard filter; the colours must agree after every step, and
 // each must hold the properties. Legend rows toggled at random change what is drawn and never a colour.
