@@ -82,7 +82,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `jobs` | Workflows | Compaction, rollups, retention, orphan sweep, scrubbing, investigations. As built, compaction, retention and deletion are a per-tenant maintenance run on a queue (§5.2) | scheduled or triggered |
 | Heavy worker | Container (fronted by a Durable Object) | The same engine for work that exceeds isolate limits | on demand |
 
-Supporting services: Queues (ledger → publisher, notification fan-out), KV (API-key and
+Supporting services: Queues (seals → flush, maintenance, notification fan-out), KV (API-key and
 shard-map cache, read stale-tolerantly), Cache API (accelerator only), AI Gateway, Secrets
 Store, and later Dynamic Workers for tenant-supplied adapter code.
 
@@ -278,8 +278,11 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
 ### 5.3 Iceberg publication
 
 The publisher applies ledger changes to the cell's Iceberg tables every few minutes, only
-when something changed. The queue is only a nudge: changes are applied strictly in ledger
-version order per tenant, and anything missing is read from the ledger's R2 log. A removed
+when something changed. As built (D34), each tenant's maintenance run nudges the cell's
+publisher, which publishes from its own alarm a couple of minutes later; an idle cell has no
+alarm and nothing calls it. The nudge is only that: changes are applied strictly in ledger
+version order per tenant, read from the ledger's R2 log (segments, in whole segments; a hole
+or a segment it cannot read stops that tenant there, never skipped). A removed
 file is physically deleted only after the removal is published and every snapshot that
 referenced it has expired. Each snapshot points at an object
 recording which ledger version of each tenant it reflects. A scrubber checks continuously

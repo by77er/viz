@@ -757,3 +757,60 @@ copied from `anomaly/README.md` and must be changed with it.
 incidents labelled on viz's own tenants): then it becomes the default for non-paging rules; a
 wider grid moves EWMA's parameters; viz's own labelled incidents rank the detectors
 differently; or a detector gains a calibrated false-alarm rate that makes it fit to page.
+
+## D34. The publisher is nudged by the maintenance run and driven by its own alarm; no cron, no queue
+
+**Decision.** Every maintenance run (`stack/src/maintain.ts`, the consumer of `viz-maint`)
+ends by nudging its cell's publisher with `nudge(PUBLISHER, cell, [tenant])`
+(`publisher/src/nudge.ts`): one RPC to `Publisher.notify`, which writes the tenant to
+`pending` and a `publish` deadline (`publishIntervalMs`, 2 min, after the first nudge, so
+nudges coalesce into one commit per table). The nudge is best effort and bounded (2 s); if it
+is not recorded, the run marks the tenant due an hour later, so the hourly cron runs it again
+and it nudges again. The publisher's one alarm serves every deadline it has, kept as rows of
+`due` (storage migration 2, additive): `publish` (and its retry after a hole, a refusal or a
+backlog, `retryMs`), `sweep` (an orphan grace period after a commit or a failed attempt, then
+the grace end of what it marked) and `expire:<table>` (when every snapshot beyond the newest
+two has left the window, so one expiry drops them all). The alarm is set at the earliest
+deadline and deleted when there is none. Nothing on the ingest or flush path, and nothing in
+the cron, calls the publisher. As built in `publisher/`; the stack's two lines are in
+`publisher/README.md`, "Needed changes".
+
+**Alternatives.** (a) The ledger's drain nudges after writing a segment: the exact moment a
+change becomes readable, but it puts a publisher call on the drain, which shards wait on for
+`logged` (D15), and on every drain (up to five a second per busy tenant), in the component
+that most needs to stay simple. (b) A `viz-publish` queue fed by the ledger or by flush: a
+send, three queue operations and a consumer invocation per message where one RPC does, and
+the queue's retries are not needed (the publisher's `pending` row is the durable part).
+(c) The hourly cron calls `publish()`: lists every tenant's log every hour and wakes the
+publisher every hour while idle. (d) The flush consumer's `onFlushed` nudges: covers units
+but not the ledger changes the maintenance run makes (compaction, retention). (e) No
+deadlines table: the expiry and sweep schedule cannot survive the alarm being re-set for a
+publish, so they would need a periodic wake.
+
+**Why.** Every ledger change comes from a flush or a maintenance run, and every flush that
+changed something already causes a maintenance run (D18, R-11(b)); a run's own `replace` or
+`expire` leaves tombstones, whose purge brings another run once the removal is logged. So a
+nudge at the end of each run reaches the publisher after every change is in R2, at the cost
+of one RPC per run, with no new state outside the publisher and no change to the ledger. A
+change logged after the publisher read the log (the drain runs 200 ms after the commit) is
+published at the next nudge; the purge's run guarantees one. A ledger that starts a new
+incarnation without any change starts it from what R2 holds, which is what was published, so
+the re-base can wait for the next nudge. Idle cost: zero. A deployment whose maintenance
+markers are not due sends no nudge (stack/test/triggers.test.ts), and after its last commit
+the publisher's alarm runs a bounded number of times (5 in `publisher/test/triggers.test.ts`:
+a sweep, one expiry per table, the sweep that marks and the one that deletes) and is deleted.
+
+**Cost.** Publication lags a change by up to `publishIntervalMs` after its maintenance run,
+and by up to the delete grace (1 h) in the rare case that the drain was later than the
+publish. A tenant stopped by a hole, a corrupt or an unsupported segment is retried every
+`retryMs` (1 min) for as long as it lasts: a wake and a few R2 operations per minute, not
+backed off. One SQLite table more in the publisher (migration 2, `readableFrom` 1: release 1
+on this storage publishes on nudges and loses only the expiry and sweep deadlines). The
+publisher was never deployed, so the bootstrapping rule (COMPATIBILITY.md §6, no migration 2
+before the first versioned release is the floor) protects no deployment here; the first
+release deployed carries both migrations.
+
+**Would change if.** Maintenance runs stop following every flush (then the flush consumer
+nudges as well); publication must be fresher than a few minutes (then the ledger's drain
+nudges, with the call kept off its critical path); or the nudge RPC rate to one publisher
+object becomes a hot spot (then the maintenance consumer nudges once per batch).

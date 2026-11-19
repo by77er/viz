@@ -346,3 +346,48 @@ whose `delete` runs an append and `seal` for tenant `b` and whose next `put` thr
 and assert the marker exists. R-7: an env whose `SHARD.get(...).pendingTenants` throws, a
 `flush-pending:` marker for it, a `maint:<t>` marker with `due: 0`, and a recording
 `MAINT_QUEUE`; `handleScheduled` must enqueue `{ tenant: t }`.
+
+## Dispositions
+
+### compact/, janitor/, flush/ and the stack's cron and maintenance (2026-11-19)
+
+By the storage-path engineer, after the review; the reviewer has not seen these. "Failed
+before" means the test was run against the code without the fix and failed as quoted in the
+component README; "mutant" means the fix was reverted in a copy of the tree (never in the
+checkout) and the named test failed. Mutant runs of 2026-11-19 on such a copy:
+`MUTANT_FILES=compact/,janitor/,flush/,stack/ node scripts/mutants.mjs all` from `stack/`, 74 of
+74 killed (38 of them the "review" part, which reverts these fixes one by one), and
+`flush/scripts/mutants.mjs`, 20 of 20; table in `stack/README.md`. Suites green on the real tree
+when written: compact 24/24, janitor 17/17, flush 45/45 (`vitest --maxWorkers=2`), tsc clean.
+The "failed before" runs of R-2, F14 and F15 were made before a container restart, against a
+stable copy of the code of `dc2a1c3`, and not repeated; the mutants that revert each part of
+that fix were run and killed.
+
+| # | Disposition | What was done | Shown by |
+|---|---|---|---|
+| R-1 | **Fixed** | `janitor/src/janitor.ts` `parseRetention`/`readRetention`: no record means the default (30 days); a record that cannot be read (not JSON, not an object, `v` ≠ 1, `metric_samples_days` not a positive safe integer) is `unreadable` and `expireTenant` expires nothing (`refused: <reason>`, error log). `stack/src/maintain.ts` writes the reason into the tenant's marker, looks again within the hour, and the hourly cron logs every refused tenant. The optional "remembered policy" is not built; the one path it would close (a just-created record read as absent at another KV location) is in `janitor/README.md`, "Known risks" | `janitor/test/janitor.test.ts` "review R-1" (the reviewer's test, ported; failed before: both files of that day removed); "an unreadable record refuses the whole run"; ten unreadable records in "retention policy". Mutants: fall back to the default; no record refused; unknown version read; refusal not in the marker; refused tenant not looked at within the hour: 5 of 5 killed |
+| R-2 (and spec F13, F14, F15) | **Fixed**, by a different design from the one suggested | `DECISIONS.md` D30 (alternatives: the model's step-unique keys, an intent in the ledger, refreshing or re-PUTting, never adopting). Output keys unchanged; every output carries its inputs as R2 metadata `viz-inputs` = `{"v":1,"inputs":[…]}` checked against its `inputs16`; a step never deletes an output, not even on `conflict` (F14); the sweep deletes an unreferenced output only when one of its inputs is not live and its object is absent from the sweep's listing, which no clock or rebuild can undo (R-2, F13). F15: a newer incarnation makes an older one's flush files dead only once its logged watermark is above 0. Precise statement for the model: `compact/README.md` and `janitor/README.md`; `DESIGN.md` §4.3 rewritten; `stack/README.md`'s "each step is safe to run twice" is now true | `compact/test/compact.test.ts`: "an adopted output survives a sweep…" (the reviewer's test, ported), "the review sequence exactly", "spec F14", "a leftover whose inputs are gone for good…"; `janitor/test/janitor.test.ts` "spec F15". The first three and F15 failed before (against a stable copy of the code of `dc2a1c3`; the deleted outputs, and the live pair with no objects). Mutants: the sweep judging outputs by age only, a tombstoned or a missing-but-live input counted as gone, outputs written without their record, the record not checked against the key, of an unknown version, or naming another tenant or day, a conflicted step deleting its outputs, an unknown `replace` answer taken for a conflict, F15's rule removed: all killed |
+| R-7 | **Fixed** | `stack/src/index.ts` `handleScheduled` runs the flush sweep and the maintenance sweep with `Promise.allSettled`; each failure, each unsent batch and each unreadable retention record is logged, and the invocation fails only after both ran. `flush/src/sweep.ts`: shards are asked six at a time with `Promise.allSettled`; a shard that throws is reported and skipped; found streams are sent in batches of 100 as soon as there are enough. At most 500 shards per cron, a window of the sorted marked shards that moves on by 500 each hour, so every marked shard is visited within ceil(n/500) hours with no state. Limit cited: 10,000 subrequests per invocation on the Paid plan (configurable up to 10 M), a subrequest being any request to R2, KV or D1; whether a Durable Object call counts is not stated, so it is assumed to (developers.cloudflare.com/workers/platform/limits/, read 2026-11-19) | `stack/test/cron.test.ts` "a tenant whose maintenance is due is still enqueued" (the reviewer's setup; failed before per the review), "the shards before and after a failing one are still swept", "a listing that fails stops only its own sweep", "asks at most maxShards shards per cron, and successive hourly crons visit every marked shard". Mutants: 4 of 4 killed |
+| R-11(b) | **Fixed** | `FlushResult.changed`: the run admitted a unit, created an object, or saw a segment it handled become recorded. The consumer calls `onFlushed` (the stack's maintenance request) only after such a run, whatever its status, or after any run of a group with a redelivered message (an earlier delivery may have changed things and failed before or inside the request). Eventual maintenance: every maintenance run leaves a marker due at its next work, which the cron enqueues. Residual, as before the fix: a tenant whose first-ever requests all fail through the whole retry span of the flush message and which then goes idle has no marker, so nothing is due until its next flush | `flush/test/consumer.test.ts`, "review R-11(b)": a duplicate delivery asks for nothing; a redelivery after a failed request asks again; a run that admitted and then stopped still asks. Mutants: 4 of 4 killed |
+| R-11(c) | **Fixed** | `stack/src/maintain.ts` `settleMarker`: the marker is written only if it changed; a refused write is retried after 1, 2 and 4 s before the run fails (then the message is retried). Cited: KV allows one write per second per key and answers more with 429, advising exponential backoff (developers.cloudflare.com/kv/platform/limits/, …/kv/api/write-key-value-pairs/, read 2026-11-19). `noteFlushed`'s write stays best effort; its message carries the same facts | `stack/test/cron.test.ts`, "review R-11(c)": two runs of one tenant that finish together both succeed; an unchanged marker is not written again. Mutants: 2 of 2 killed |
+| R-12 (flush part) | **Fixed** | `consumeDeadLetters` writes the batch as ONE object `{"v":2,"letters":[…]}` (format `r2.dead-letters` v2; v1 still read), then acknowledges; if the write fails every message is retried. Junk on the flush queue and on the maintenance queue is written the same way, one object per batch | `flush/test/consumer.test.ts`, "review R-12" (3 tests); `flush/test/golden.test.ts` (both versions read). Mutants: 2 of 2 killed |
+| `DESIGN.md` §4.3, `stack/README.md` (last section of the review) | **Done** | §4.3's orphan-sweeper sentence now states D30 and F15's rule; the stack README states the graces as built and that a step run twice is only wasted work since D30 | — |
+| R-3, R-4, R-5, R-6, R-8, R-9, R-10, R-11(a), R-12 (shard and ledger parts) | Not in these components | For the owners of `ledger/`, `shard/` and `edge/`. The janitor's `expire` call already takes both tables in one change (R-5's call site; its owner may revise it) | — |
+
+**Related work in the same change, not findings of this review.**
+
+- **Spec F12** (`flush/src/flush.ts`): flush reads a segment with `readSegment(tenant, seqLo,
+  incarnation, seqHi)` and stops with `shard_incarnation_changed` when the shard answers null
+  because its stream changed incarnation. `flush/test/flush.test.ts` "spec F12" reproduces the
+  model's trace `F12_impl_read_unbound` (listing, shard storage loss, a new batch sealed as
+  `inc 2, 1..1`, then the read); it failed without the bound read (the run ended `ok` with
+  incarnation 2's batch admitted as incarnation 1) and passes. Mutants: 2, both killed.
+- **Message versions** (`contracts/COMPATIBILITY.md` §3.2): flush and maintenance messages
+  carry `v` (absent = 1); a message of another version is retried with backoff, never run and
+  never dead-lettered, even when its body looks invalid. Tests: `flush/test/consumer.test.ts`
+  and `stack/test/cron.test.ts`, "…carry a version"; golden readers. Mutants: 6 readers and 4 encodings, all killed.
+- **Found while doing this, not fixed:** flush-file keys replace a shard's `/` with `_`
+  (`contracts/TABLES.md`) and pool names are unrestricted, so two of a tenant's streams can
+  share a key name (pools `a/b` and `a_b`); the orphan sweep would then judge a file by the
+  wrong stream. Not reachable with the pool names in use. Needs a contract change (an
+  injective name, or no `_` in pool names): `janitor/README.md`, "Contract issues".

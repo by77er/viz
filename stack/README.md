@@ -209,6 +209,18 @@ end each tenant's R2 prefix is exactly its ledger's live set, all level 2. Two e
 3,000-step runs in this review (before the precedence change) also held, as did the
 previous engineer's three. `npm test` runs 400 steps (about 20 s).
 
+**Run of 2026-11-19** (after the write-path review's fixes: D30's compaction-output rule, F12,
+F15, R-7, R-11(b)/(c), R-12; the ledger draining its log in the background at its default
+200 ms; run alone among this engineer's jobs, on a machine loaded by others, load average
+about 11 on 4 cores): `SOAK_STEPS=3000 npx vitest run --maxWorkers=1 test/soak.test.ts`, seed
+20261118: 3,000 steps, **every invariant held at every step**; 666 s; peak memory 1,004 MB for
+the whole process tree, 568 MB for the largest process (sampled every 3 s). 901 acknowledged
+requests (193 repeats), 584 segments admitted through 1,297 delivered flush messages (508
+retried, injected failures and `awaiting_log`), 510 merges, 15 conflicts and 32 more under a
+concurrent retention, 30 crashed steps, 3,440 files expired, 8,508 objects purged, 134 orphans
+deleted (each checked against its rule when deleted, compaction outputs against D30's inputs
+rule), 100 evictions, 57 ledger-log outages, 59 old-plan readers verified, 0 dead letters.
+
 **What failed during development.** In this review, one 3,000-step run passed every
 step and then failed its final sanity check that every tenant still has rows: a maintenance
 run with a policy clock three days ahead had expired all of one tenant's data after its
