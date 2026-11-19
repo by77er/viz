@@ -14,7 +14,7 @@ dedicated tenants run the same code.
 | `src/sketch.ts` | `SeriesWindow`: distinct series in a sliding window: exact set, then HyperLogLog + Bloom filter |
 | `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName` |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
-| `test/` | 54 tests in 7 files, run inside the Workers runtime |
+| `test/` | 55 tests in 7 files, run inside the Workers runtime |
 | `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`) |
 
 ## What is implemented
@@ -153,13 +153,13 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 54 tests in workerd, 7 files
+npx vitest run --maxWorkers=2   # 55 tests in workerd, 7 files
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
 ```
 
-Last run, 2026-11-19: **54 passed, 0 failed**; `tsc --noEmit` clean.
+Last run, 2026-11-19: **55 passed, 0 failed**; `tsc --noEmit` clean.
 
 - `test/shard.test.ts` (isolation, sequencing, fences, R-10), `test/pool.test.ts` (routing,
   names), `test/trigger.test.ts` (the seal notification, its outbox, the marker; the

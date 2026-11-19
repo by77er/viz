@@ -1201,6 +1201,28 @@ export const PROPS: Record<string, Prop> = {
       return g.every((x, i) => i === 0 || g[i - 1]![1]! < x[0]!)
     }),
   },
+  /**
+   * Witness for F16 (no-leak half of I11 under D30): a compaction output nobody lists whose input
+   * is a flush file nobody lists, of an incarnation its shard no longer holds, that the sweep
+   * keeps. That flush file is deleted only once its stream logs a unit of a newer incarnation,
+   * i.e. only if the tenant writes to that shard again; until then the output is kept too.
+   */
+  W_NoLeakBehindLostFlush: {
+    name: 'W_NoLeakBehindLostFlush',
+    holds: (c, s) => !s.obj.some(([k, f]) => {
+      const F = FILES[f!]!
+      const L = s.L[F.t]!
+      const tomb = (key: number) => L.tb.some((x) => FILES[x[0]!]!.key === key)
+      if (!F.comp || liveKey(L, k!) || tomb(k!)) return false
+      const present = (key: number) => s.obj.some((o) => o[0] === key)
+      return F.ins.some((i) => {
+        const X = FILES[i]!
+        if (X.comp || !present(X.key) || liveKey(L, X.key) || tomb(X.key)) return false
+        const [sh, , inc] = ROWS[X.rows[0]!]!
+        return s.sh[sh!]![X.t]!.i !== inc && !doomed(c, L, X.key, i, true, present)
+      })
+    }),
+  },
   /** A rebuild from R2 never refuses (the ledger stays available). */
   AV_RebuildSucceeds: { name: 'AV_RebuildSucceeds', holds: (_c, s) => s.L.every((L) => !L.dn) },
   /** §4.3: "a rebuilt ledger starts a new ledger incarnation, so versions are never reused". */

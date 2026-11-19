@@ -247,7 +247,9 @@ export function check(c: Cfg, o: Opts): Result {
       if (tab.n > (o.maxStates ?? DEFAULT_MAX_STATES)) {
         next.close()
         rmSync(dir, { recursive: true, force: true })
-        return { ...finish('stopped'), note: `memory bound: stopped at ${tab.n.toLocaleString('en')} states; every state reachable in at most ${depth} steps checked, no violation` }
+        return { ...finish('stopped'), note: keepGraph
+          ? `memory bound: stopped at ${tab.n.toLocaleString('en')} states (depth ${depth}); the graph is incomplete, so AG EF is NOT decided`
+          : `memory bound: stopped at ${tab.n.toLocaleString('en')} states; every state reachable in at most ${depth} steps checked, no violation` }
       }
     }
     next.close()
