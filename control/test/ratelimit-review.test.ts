@@ -99,11 +99,12 @@ describe('B-1, R1 and R1b: a dead credential at the token endpoint spends at mos
     const l = limited(AFTER_TAG)
     const statuses: number[] = []
     for (let i = 0; i < 13; i++) statuses.push((await l.refresh(madeUpClientId(i), dead.refresh)).status)
-    // Before the fix: 13 × 400, each reaching the object. Now: 3 reach it, then its own allowance refuses it.
-    expect(statuses).toEqual([400, 400, 400, ...new Array(10).fill(429)])
-    expect(l.gets.length).toBe(3)
+    const gets = l.gets.length
     const r = await l.refresh(victim.clientId, victim.refresh)
     expect(r.status, JSON.stringify(r.body)).toBe(200)
+    // Before the fix: 13 × 400, each reaching the object. Now: 3 reach it, then its own allowance refuses it.
+    expect(statuses).toEqual([400, 400, 400, ...new Array(10).fill(429)])
+    expect(gets).toBe(3)
   })
 
   it('R1b: a dead credential sent with the victim client\'s own id spends nothing of that client\'s: it refreshes', async () => {
@@ -125,11 +126,11 @@ describe('B-1, R2: revocation counts the token itself first', () => {
     const l = limited(AFTER_TAG)
     const statuses: number[] = []
     for (let i = 0; i < 13; i++) statuses.push((await l.revoke(dead.clientId, dead.access)).status)
-    expect(statuses).toEqual([200, 200, 200, ...new Array(10).fill(429)])
     const rf = await l.refresh(victim.clientId, victim.refresh)
     expect(rf.status, JSON.stringify(rf.body)).toBe(200)
     const rv = await l.revoke(victim.clientId, rf.body.refresh_token)
     expect(rv.status, JSON.stringify(rv.body)).toBe(200)
+    expect(statuses).toEqual([200, 200, 200, ...new Array(10).fill(429)])
   })
 })
 
@@ -150,9 +151,12 @@ describe('B-1, R3: introspection', () => {
     const live = await connect(admin)
     const old = await Promise.all([1, 2, 3, 4, 5].map(() => expired('access', tenant)))
     const l = limited(AFTER_TAG)
-    for (const t of old) for (let i = 0; i < 3; i++) expect(await l.introspect(t)).toEqual({ v: 1, status: 'inactive', reason: 'expired' })
-    expect(l.gets).toEqual([])
+    const seen: unknown[] = []
+    for (const t of old) for (let i = 0; i < 3; i++) seen.push(await l.introspect(t))
+    const gets = l.gets.length
     expect((await l.introspect(live.access)).status).toBe('active')
+    expect(seen).toEqual(new Array(15).fill({ v: 1, status: 'inactive', reason: 'expired' }))
+    expect(gets).toBe(0)
   })
 
   it('a former client\'s expired refresh tokens and codes, 13 each, at the token endpoint and revocation: nothing reaches the object and the live client refreshes', async () => {

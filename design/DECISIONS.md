@@ -2963,7 +2963,8 @@ rollback that keeps each Worker at its floor.
 model S9's measurements: `deploy/README.md`, "How it was verified"): 36 new tests; of the 35 tests in
 the two files that drive the real deploy, plan and rollback, 23 fail against the release tool as it
 was before this change (the rest are the earlier secrets tests and a negative control; the other 13
-new tests are unit tests of new functions); mutants in a scratch copy: FINAL_MUTANTS_D69, listed there.
+new tests are unit tests of new functions); mutants in a scratch copy: release 41 of 41 killed, secrets 31 of 31 (first runs 40 of 41 and 30 of
+31; each survivor was fixed by a test or a corrected mutant, as listed there).
 
 **Cost of it.** Configure bundles more source (the `FORMATS` maps). A rollback reads one more version
 per format-bearing Worker per version since its target; a rollback below a floor, and a release

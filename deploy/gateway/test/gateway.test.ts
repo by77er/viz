@@ -240,7 +240,8 @@ describe('health', () => {
     expect(asked).toEqual(['/healthz'])
     // control's own route answers (control/src/index.ts, run here on this Worker's bindings), without a credential
     const direct = await env.CONTROL.fetch(new Request('https://gateway.internal/healthz'))
-    expect([direct.status, await direct.text()]).toEqual([200, 'ok\n'])
+    // Its first line is `ok`; since D70 the lines after it say whether OAuth can issue (control/src/index.ts `health`).
+    expect([direct.status, (await direct.text()).split('\n')[0]]).toEqual([200, 'ok'])
     // and it is not the OpenAPI document any more: the old probe would have needed none of control's bindings
     const misconfigured = await control.fetch!(new Request('https://gateway.internal/healthz') as never, { ...env, TENANT: undefined } as never, {} as ExecutionContext)
     expect(misconfigured.status).toBe(503)

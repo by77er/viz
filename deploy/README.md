@@ -646,9 +646,14 @@ All measured here unless it says Cloudflare.
   `test/d64` (schema 4, reads the three) and `src/` (schema ≥ 4, publishes them)).
 
   **Suites, at the end** (`cd deploy`): `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`
-  FINAL_VITEST; `node --test --test-concurrency=2 'test/*.test.mjs'` FINAL_NODE (52 before this change:
+  **178 of 178**; `node --test --test-concurrency=2 'test/*.test.mjs'` **88 of 88** (52 before this change:
   release-checks 14 new, secrets 12 → 21, release 11 → 19, configure 22 → 27). `bash -n deploy.sh`
-  clean; shellcheck is not installed here, so deploy.sh's changed lines were not linted.
+  clean; shellcheck is not installed here, so deploy.sh's changed lines were not linted. One gateway
+  test had started to fail meanwhile through no change here: control's `/healthz` now answers `ok`
+  and then lines on OAuth's key and rate limiters (D70, committed by control's builder), and the
+  test pinned the whole body `ok\n`; it now checks the status and the first line, which is what
+  control documents ("the gateway reads only the status"). The gateway's mutants were not re-run
+  (its source did not change; the test still checks the path asked and the 503s).
 
   **Mutants**, each run in a fresh copy of the tree in a scratch directory (node_modules linked; the
   scripts refuse a git work tree), whose unmutated tests the scripts check first; at most 2 test
@@ -662,7 +667,8 @@ All measured here unless it says Cloudflare.
   was not a kill: *the secret check of a rollback is never run* left a parenthesis unbalanced, the
   test file did not load, and the script counted its failure; the replacement is fixed, and both
   scripts now count a test file that does not load as NO RUN. Final runs, on the final code:
-  FINAL_MUTANTS. The new mutants and the tests that killed them:
+  `mutants-release.mjs` **41 of 41 killed**, `mutants-secrets.mjs` **31 of 31 killed**, every kill
+  a named test failing. The new mutants and the tests that killed them:
 
   | Mutant (release, 26 new; 15 earlier) | Killed by |
   |---|---|
