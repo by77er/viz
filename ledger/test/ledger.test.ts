@@ -123,6 +123,16 @@ describe('atomicity of a unit', () => {
     expect((await everything(l, 'metric_series')).files).toEqual([])
   })
 
+  it('refuses a stream whose shard name does not match SHARD_NAME (contracts/TABLES.md: the key encoding must be one-to-one)', async () => {
+    const { l } = open()
+    // `a_b/0` and `a/b/0` would both write `a_b_0` into a flush file's key.
+    expect(await l.addUnit(unit(1, 1, [file('x.parquet')], 'a_b/0'))).toMatchObject({ status: 'invalid', reason: expect.stringMatching(/SHARD_NAME/) })
+    expect(await failure(l, (i) => i.registerStream({ shard: 'a_b/0', incarnation: 1 }))).toMatch(/SHARD_NAME/)
+    for (const bad of ['a//b', '/a', 'a/', 'a b/0', 'x'.repeat(129)]) expect(await l.addUnit(unit(1, 1, [file('y.parquet')], bad))).toMatchObject({ status: 'invalid' })
+    expect(await l.addUnit(unit(1, 1, [file('z.parquet')], 'a/b/0'))).toMatchObject({ status: 'ok' })
+    expect((await everything(l)).watermarks.map((w) => w.shard)).toEqual(['a/b/0'])
+  })
+
   it('refuses a key that is not under this tenant\'s prefix for its table and day (review R-8)', async () => {
     const { tenant, l } = open()
     await l.registerStream({ shard: S, incarnation: INC })

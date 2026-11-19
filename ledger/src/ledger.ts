@@ -21,6 +21,7 @@ import {
   type LedgerJanitorRpc,
   type LiveFile,
   PRECEDENCE_PER_VERSION,
+  SHARD_NAME,
   type OrphanCheck,
   type Tombstone,
   type LedgerRpc,
@@ -254,6 +255,8 @@ function filesProblem(files: FileEntry[], prefix: (f: FileEntry) => string): str
 function refProblem(ref: StreamRef): string | null {
   if (typeof ref !== 'object' || ref === null) return 'stream reference is not an object'
   if (typeof ref.shard !== 'string' || ref.shard === '') return 'shard must be a non-empty string'
+  // contracts/TABLES.md: the key encoding of a shard name is one-to-one only for these names.
+  if (!SHARD_NAME.test(ref.shard)) return `shard name ${JSON.stringify(ref.shard.slice(0, 140))} does not match SHARD_NAME`
   if (!isCount(ref.incarnation)) return 'incarnation must be a non-negative integer'
   return null
 }

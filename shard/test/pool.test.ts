@@ -1,5 +1,7 @@
+import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { dedicatedPool, shardName, slotFor, tenantSlots, type PoolMap } from '../src/pool'
+import { SHARD_NAME } from '../../contracts/ledger'
+import { dedicatedPool, shardName, slotFor, tenantSlots, validPoolName, type PoolMap } from '../src/pool'
 
 const pool: PoolMap = { pool: 'cell-1', slots: 16, spread: 2, epoch: 1 }
 const tenants = Array.from({ length: 400 }, (_, i) => `tenant-${i}`)
@@ -48,5 +50,21 @@ describe('pool routing', () => {
     const d = dedicatedPool('acme', 4, 1)
     expect(tenantSlots(d, 'acme')).toEqual([0, 1, 2, 3])
     expect(shardName(d, 2)).toBe('tenant/acme/2')
+    // Tenant ids may contain `_`, pool names may not (contracts/TABLES.md).
+    expect(dedicatedPool('acme_eu', 2, 1).pool).toBe('tenant/acme-eu')
+    expect(validPoolName(dedicatedPool('acme_eu', 2, 1).pool)).toBe(true)
+  })
+
+  it('accepts only pool names whose shards\' key encoding is one-to-one (POOL_NAME: no `_`)', () => {
+    for (const ok of ['shared/c1', 'tenant/acme-eu', 'e2e-x1', 'a/b/c', 'x'.repeat(120)]) expect(validPoolName(ok), ok).toBe(true)
+    for (const bad of ['', 'a_b', 'shared/c_1', 'a//b', '/a', 'a/', 'a b', 'a.b', 'x'.repeat(121), 7, null]) expect(validPoolName(bad), String(bad)).toBe(false)
+    // Every shard of a valid pool has a valid name, up to the largest slot a map may have.
+    expect(SHARD_NAME.test(shardName({ pool: 'x'.repeat(120), slots: 4096, spread: 1, epoch: 1 }, 4095))).toBe(true)
+  })
+
+  it('a shard object addressed by a name outside SHARD_NAME serves nothing', async () => {
+    const s = env.SHARD.get(env.SHARD.idFromName(`bad_name-${Date.now().toString(36)}/0`))
+    const outcome = await s.describe('t').then(() => 'served', (e: Error) => e.message)
+    expect(outcome).toMatch(/SHARD_NAME/)
   })
 })

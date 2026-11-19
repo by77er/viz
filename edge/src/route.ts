@@ -1,4 +1,4 @@
-import { type PoolMap, shardName, slotFor, tenantSlots } from '../../shard/src/pool'
+import { type PoolMap, shardName, slotFor, tenantSlots, validPoolName } from '../../shard/src/pool'
 import type { AppendResult, Shard } from '../../shard/src/shard'
 import { type Batch, buildBatches, type Collector } from './batch'
 import { HttpError } from './errors'
@@ -134,7 +134,8 @@ function parseMap(v: unknown): PoolMap | null | typeof NEWER_MAP {
   // contracts/COMPATIBILITY.md §3.2: never route on a guess.
   if (m.v !== undefined && m.v !== 1) return NEWER_MAP
   const int = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x)
-  if (typeof m.pool !== 'string' || m.pool === '') return null
+  // contracts/TABLES.md: only pool names whose shards' key encoding is one-to-one.
+  if (!validPoolName(m.pool)) return null
   if (!int(m.slots) || m.slots < 1 || m.slots > 4096) return null
   if (!int(m.spread) || m.spread < 1) return null
   if (!int(m.epoch) || m.epoch < 0) return null
