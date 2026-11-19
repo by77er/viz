@@ -445,6 +445,8 @@ export interface SeriesState {
   state: unknown
   last: {
     ts: number
+    /** How the point at `ts` was scored, so that a replay of that tick reports it the same way. */
+    status: 'ok' | 'warming' | 'missing'
     flag: boolean
     value: number | null
     score: number
@@ -544,19 +546,25 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
     if (before?.last && before.last.ts >= ts) {
       // A replayed tick (an alarm retried, or re-run after eviction): reproduce its outcome.
       entry = before
+      const st = before.last.status
+      if (st === 'missing') counts.missing++
+      else if (st === 'warming') {
+        counts.warming++
+        warmingMessage ??= `needs ${spec.history.minPoints} points before scoring`
+      } else counts.scored++
     } else {
       const r = det.detect({ ts: Float64Array.of(ts), values: Float64Array.of(s.value) }, params, before?.state ?? null)
       const p = r.points[0]!
       if (p.status === 'missing') {
         // NaN or ±Inf: not scored, and a gap is not a recovery: keep the previous flag.
         counts.missing++
-        entry = { labels: s.metric, state: before?.state ?? r.state, last: before?.last ? { ...before.last, ts } : { ts, flag: false, value: null, score: 0, explanation: null }, seenAt: ts }
+        entry = { labels: s.metric, state: before?.state ?? r.state, last: before?.last ? { ...before.last, ts, status: 'missing' } : { ts, status: 'missing', flag: false, value: null, score: 0, explanation: null }, seenAt: ts }
       } else {
         if (p.status === 'warming') {
           counts.warming++
           warmingMessage ??= r.summary.message ?? `needs ${spec.history.minPoints} points before scoring`
         } else counts.scored++
-        entry = { labels: s.metric, state: r.state, last: { ts, flag: p.status === 'ok' && p.anomalous, value: p.value, score: p.score, explanation: p.anomalous ? (p.explanation ?? null) : null }, seenAt: ts }
+        entry = { labels: s.metric, state: r.state, last: { ts, status: p.status === 'warming' ? 'warming' : 'ok', flag: p.status === 'ok' && p.anomalous, value: p.value, score: p.score, explanation: p.anomalous ? (p.explanation ?? null) : null }, seenAt: ts }
       }
       next.set(key, entry)
       json.set(key, entryJson(key, entry))

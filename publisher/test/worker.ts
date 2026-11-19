@@ -18,6 +18,8 @@ export class TestPublisher extends Publisher {
   private pause: { step: CommitStep; table?: Table } | null = null
   private waiting: (() => void) | null = null
   private reached: (() => void) | null = null
+  private notifyDelayMs = 0
+  private notifyFails = false
 
   constructor(ctx: DurableObjectState, env: PublisherEnv) {
     super(ctx, env)
@@ -43,6 +45,25 @@ export class TestPublisher extends Publisher {
       this.reached?.()
       await new Promise<void>((resolve) => { this.waiting = resolve })
     }
+  }
+
+  /** A publisher that is slow to answer a nudge, or refuses it (as one refusing newer storage would). */
+  async misbehave(opts: { notifyDelayMs?: number; notifyFails?: boolean }): Promise<void> {
+    this.notifyDelayMs = opts.notifyDelayMs ?? 0
+    this.notifyFails = opts.notifyFails ?? false
+  }
+
+  override async notify(tenants: string[]): Promise<void> {
+    if (this.notifyFails) throw new Error('injected: notify refused')
+    if (this.notifyDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.notifyDelayMs))
+    return super.notify(tenants)
+  }
+
+  /** The deadlines the alarm serves, by job (the `due` table), and the alarm itself. */
+  async schedule(): Promise<{ due: Record<string, number>; alarm: number | null; now: number }> {
+    const due: Record<string, number> = {}
+    for (const r of this.ctx.storage.sql.exec(`SELECT job, at FROM due ORDER BY job`).toArray()) due[r.job as string] = r.at as number
+    return { due, alarm: await this.ctx.storage.getAlarm(), now: this.now() }
   }
 
   async failAt(step: CommitStep, table?: Table): Promise<void> {

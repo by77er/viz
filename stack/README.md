@@ -23,6 +23,8 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 | `test/e2e.test.ts` | 6 end-to-end tests that drive flush by hand |
 | `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
 | `test/triggers.test.ts` | 8 tests of the triggers, the maintenance marker, the orphan-sweep flag and the idle deployment |
+| `test/cron.test.ts` | 7 tests: the cron with a failing shard, listing or send (review R-7), the bound on shards per cron, the marker under KV's write rate (R-11(c)), maintenance message versions |
+| `test/golden.test.ts`, `test/golden/` | 3 tests: golden files of the maintenance message and marker, and the marker reader's refusal of an unknown version |
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
 | `test/precedence.property.test.ts` | 6 seeded runs: random rewrites of the same samples always read back as the latest write |
 | `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
@@ -36,10 +38,11 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 |---|---|---|
 | A shard seals a segment (size, or age in its alarm) | `{tenant, shard}` on the flush queue, written with the seal | `shard/` |
 | A flush message is delivered | `flushTenant` for that stream; acknowledged only when everything sealed is recorded; otherwise retried with backoff, then dead-lettered to R2 | `flush/src/consumer.ts` |
-| A flush run ends ok | `{tenant}` on the maintenance queue, and the tenant's maintenance marker exists | `noteFlushed` |
+| A flush run changed something (admitted a unit, created an object, or saw a segment recorded), or a redelivered flush message ran | `{v:1, tenant, wrote:true}` on the maintenance queue, and the tenant's maintenance marker exists. A duplicate delivery that found nothing asks for nothing (review R-11(b)); a request that is still missed is made up by the cron, because every run leaves a marker due at its next work | `noteFlushed`, `flush/src/consumer.ts` |
 | A maintenance message is delivered | `maintainTenant`: retention expire, up to 8 compaction merges, deletion of what the ledger calls deletable, and (at most daily, and only while objects may have been written since the last sweep that found nothing to wait for) the orphan sweep; then the marker is rewritten with the next time anything can be due, or deleted if the tenant has nothing left | `src/maintain.ts` |
-| The cron fires (hourly) | (1) streams of shards with a pending marker whose segments have waited 10 minutes are re-enqueued; (2) tenants whose maintenance marker is due are enqueued | `sweepPending`, `enqueueDue` |
-| A message exhausts its retries | written to `{cell}/dead-letters/{queue}/…json` and logged; the next sweep re-enqueues the work | `consumeDeadLetters` |
+| The cron fires (hourly) | (1) streams of shards with a pending marker whose segments have waited 10 minutes are re-enqueued, at most 500 shards per cron (a window that moves on each hour); (2) tenants whose maintenance marker is due are enqueued. The two sweeps run independently; a shard, a listing or a send that fails stops neither the other sweep nor the rest of its own, and every failure (and every retention record that cannot be read) is logged and fails the invocation after everything else ran (review R-7) | `handleScheduled`, `sweepPending`, `enqueueDue` |
+| A message exhausts its retries | the batch is written to ONE object `{cell}/dead-letters/{queue}/…json` (review R-12) and logged; the next sweep re-enqueues the work | `consumeDeadLetters` |
+| A message of a version this release does not know (`v` other than 1) | retried with backoff, never run and never dead-lettered (contracts/COMPATIBILITY.md §3.2) | `consumeFlushBatch`, `consumeMaintBatch` |
 
 **Idle means free.** Both sweeps read KV only. A shard has a `flush-pending:` key only
 while it has unrecorded segments; a tenant's `maint:` key carries the time it is next due
@@ -60,8 +63,18 @@ policies should enqueue `{tenant}` on the maintenance queue when it changes one.
 
 **The two graces and the step deadline** (defaults; `MAINTENANCE` JSON overrides):
 a removed file's object is deleted 1 h after its removal is logged; an unreferenced flush
-file after 24 h and only below its stream's logged watermark; a compaction step gives up
-after 5 min, and an unreferenced compaction output is deleted after 24 h.
+file after 24 h and only below its stream's logged watermark (or once a newer incarnation
+of its stream has a logged unit); a compaction step gives up after 5 min; an unreferenced
+compaction output is deleted only once one of its inputs is gone for good (not live, its
+object deleted), and not before it is 24 h old (`DECISIONS.md` D30; `janitor/README.md`).
+
+**The marker and KV's write rate** (review R-11(c)). KV takes one write per second per key
+and answers more with 429, advising retries with exponential backoff
+(developers.cloudflare.com/kv/platform/limits/ and …/kv/api/write-key-value-pairs/, read
+2026-11-19). Two maintenance runs of one tenant can finish within a second (a flush's
+message and the cron's, in different batches). A run writes its marker only if it changed,
+and retries a refused write after 1 s, 2 s and 4 s before failing (then the message is
+retried). `noteFlushed`'s write is best effort, because its message carries the same facts.
 
 ## Not implemented
 
@@ -74,7 +87,8 @@ after 5 min, and an unreferenced compaction output is deleted after 24 h.
   step function (see `compact/README.md`).
 - **Alerting** on dead letters; they are written to R2 and to the error log only.
 - **Concurrency limits** on maintenance (two messages for one tenant in different batches
-  run two maintenance runs; each step is safe to run twice, it is only wasted work).
+  run two maintenance runs; each step is safe to run twice, it is only wasted work. Before
+  D30 that was not true together with the orphan sweep: review R-2).
 - Nothing was deployed to Cloudflare. Queue delivery, cron and KV metadata are miniflare's.
 
 ## How it was verified

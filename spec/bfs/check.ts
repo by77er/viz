@@ -283,8 +283,8 @@ export function check(c: Cfg, o: Opts): Result {
   for (let i = 0; i < n; i++) {
     if (!good[i]) {
       // ids are assigned in breadth-first order: the first bad id is a shallowest one
-      const r = fail(c.goal === 'clean' ? 'LIVE_NoLeak' : 'LIVE_QueryCanComplete', i)
-      if (c.goal === 'clean') {
+      const r = fail(c.goal === 'clean' ? 'LIVE_NoLeak' : c.goal === 'cleanComp' ? 'LIVE_NoLeakComp' : 'LIVE_QueryCanComplete', i)
+      if (c.goal !== 'query') {
         const last = rebuildState(c, tab, parent, i)
         r.note = `from the last state of the trace no continuation deletes every unlisted object; unlisted then: ${orphans(c, last).join('; ')}`
       } else r.note = 'from the last state of the trace no continuation completes the query'

@@ -223,7 +223,7 @@ describe('versioned storage: upgrade to version 2 (anomaly rules)', () => {
   it('Ruler storage at version 1 with data migrates to version 2 (one empty table, compat 1), keeps every row and alert, serves anomaly rules, survives eviction and is not migrated twice', async () => {
     const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN })
     ok(await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Down', expr: 'up == 0' }] }] }))
-    w.evaluate = (q) => (q === 'up == 0' ? vec([{ __name__: 'up', instance: 'a' }, 0]) : vec([{ service: 'api' }, 100]))
+    w.evaluate = (q, t) => (q === 'up == 0' ? vec([{ __name__: 'up', instance: 'a' }, 0]) : vec([{ service: 'api' }, 100 + (Math.round(t / MIN) % 5)]))
     world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
     // The same storage as release 1 (migration 1 only) would have left it: no anomaly_state, version 1.
@@ -244,16 +244,26 @@ describe('versioned storage: upgrade to version 2 (anomaly rules)', () => {
 
     // It serves anomaly rules from there on, and their state survives eviction without a second migration.
     ok(await stub.saveGroups(tenant, { groups: [{ name: 'a', interval: '1m', rules: [{ alert: 'Latency', expr: 'latency', anomaly: { params: { minPoints: 2, halfLifePoints: 5 } } }] }] }))
-    for (let i = 0; i < 3; i++) {
-      world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
-      expect(await runDurableObjectAlarm(stub)).toBe(true)
+    // Groups g and a tick at different offsets: run alarms until a has been evaluated `n` more times.
+    const latency = async () => ok(await stub.rules(tenant)).rules.find((r) => r.name === 'Latency')!
+    const evaluateA = async (n: number) => {
+      for (let seen = 0, last = (await latency()).lastEvaluationMs; seen < n; ) {
+        world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+        expect(await runDurableObjectAlarm(stub)).toBe(true)
+        const at = (await latency()).lastEvaluationMs
+        if (at !== last) [seen, last] = [seen + 1, at]
+      }
     }
+    await evaluateA(4)
     const before = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), state: s.storage.sql.exec('SELECT body FROM anomaly_state WHERE tenant = ?', tenant).toArray() }))
     expect(before.state).toHaveLength(1)
     await evictDurableObject(stub)
     expect(await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), reopen: openSchema(s.storage, RULER_SCHEMA) }))).toMatchObject({ row: before.row, reopen: { status: 'ok', migrated: [] } })
+    // The state is back; how the last evaluation went is not stored (as for every rule's health) until the next one.
     const status = ok(await stub.rules(tenant)).rules.find((r) => r.name === 'Latency')!.anomaly!
-    expect([status.stateSeries, status.status]).toEqual([1, 'ok'])
+    expect([status.stateSeries, status.status]).toEqual([1, 'unknown'])
+    await evaluateA(1)
+    expect((await latency()).anomaly).toMatchObject({ status: 'ok', stateSeries: 1, scored: 1 })
   })
 
   it('a release that knows only migration 1 may open version 2 (its compat is 1): the previous release stays a rollback target', () => {

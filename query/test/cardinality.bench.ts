@@ -97,43 +97,54 @@ async function measureAt(w: World, t: Tenant, n: number): Promise<void> {
   hooks.sequentialLeaves = true
   leafHooks.resetBeforeEvaluate = true
   try {
-    const hour = { start: sec(END - HOUR), end: sec(END), step: '60' }
-    const tenMin = { start: sec(END - 600_000), end: sec(END), step: '60' }
-    const one = `${M}{instance="10.0.0.5:9100"}`
-    const cases: [string, Record<string, string>, number][] = [
-      [`sum by (job)(rate(${M}[5m]))`, hour, 61],
-      [`sum by (job)(rate(${M}[5m]))`, tenMin, 11],
-    ]
-    for (const [query, range, points] of cases) {
-      const span = range === hour ? '1 h' : '10 min'
-      await setLimits(t, {})
-      const now = await call(`${n} series: ${query}, ${span}, step 60 s, series rule ON`, t, '/api/v1/query_range', { query, ...range })
-      if (now.status === 200) checkBulkRates(JSON.parse(now.body).data, points, 60_000, n / JOBS)
-      await setLimits(t, { splitAboveSeries: 1e15 })
-      const before = await call(`${n} series: ${query}, ${span}, step 60 s, series rule OFF (the rule before)`, t, '/api/v1/query_range', { query, ...range })
-      if (now.status === 200 && before.status === 200) expect(before.body).toBe(now.body)
-      const plan = await call(`${n} series: /api/v1/plan of ${query}, ${span}`, t, '/api/v1/plan', { query, ...range })
-      console.log(`MEASURE   plan: ${plan.body}`)
-    }
-    await setLimits(t, {})
-    // One series of the metric: every file of the metric is still decoded (no series pruning).
-    await call(`${n} series: rate(one series[5m]), 1 h`, t, '/api/v1/query_range', { query: `rate(${one}[5m])`, ...hour })
-    await call(`${n} series: sum(rate(one series[5m])), 1 h`, t, '/api/v1/query_range', { query: `sum(rate(${one}[5m]))`, ...hour })
-    // The label endpoints Grafana's variables use.
-    await call(`${n} series: /label/instance/values?match[]=${M}, 1 h`, t, '/api/v1/label/instance/values', [['match[]', M], ['start', hour.start], ['end', hour.end]])
-    await call(`${n} series: /series?match[]=one series, 1 h`, t, '/api/v1/series', [['match[]', one], ['start', hour.start], ['end', hour.end]])
-    // The cardinality report over the hour: one place, then over 8 leaves (each part reads every series file).
-    const card = await call(`${n} series: /status/cardinality?range=1h`, t, '/api/v1/status/cardinality', { range: '1h', end: sec(END) })
-    hooks.forceLeaves = 8
-    const card8 = await call(`${n} series: /status/cardinality?range=1h over 8 leaves`, t, '/api/v1/status/cardinality', { range: '1h', end: sec(END) })
-    delete hooks.forceLeaves
-    if (card.status === 200 && card8.status === 200) expect(card8.body).toBe(card.body)
-    await call(`${n} series: /status/tsdb, the hour`, t, '/api/v1/status/tsdb', { start: sec(END - HOUR), end: sec(END) })
+    // Warm-up: the first call in an isolate compiles the engine.
+    await api(t.key, '/api/v1/query', { query: '1 + 1', time: sec(END) })
+    await suite(t, n, 'lake + the last 10 minutes in the tails')
+    await sealAll(w, [t])
+    await flushAll(w, [t])
+    await discardAll(w)
+    await suite(t, n, 'everything flushed')
   } finally {
     delete hooks.sequentialLeaves
     delete leafHooks.resetBeforeEvaluate
     delete hooks.forceLeaves
   }
+}
+
+async function suite(t: Tenant, n: number, moment: string): Promise<void> {
+  console.log(`MEASURE -- ${n} series, ${moment} --`)
+  const hour = { start: sec(END - HOUR), end: sec(END), step: '60' }
+  const tenMin = { start: sec(END - 600_000), end: sec(END), step: '60' }
+  const one = `${M}{instance="10.0.0.5:9100"}`
+  const cases: [string, Record<string, string>, number][] = [
+    [`sum by (job)(rate(${M}[5m]))`, hour, 61],
+    [`sum by (job)(rate(${M}[5m]))`, tenMin, 11],
+  ]
+  for (const [query, range, points] of cases) {
+    const span = range === hour ? '1 h' : '10 min'
+    await setLimits(t, {})
+    const now = await call(`${n} series, ${moment}: ${query}, ${span}, step 60 s, series rule ON`, t, '/api/v1/query_range', { query, ...range })
+    if (now.status === 200) checkBulkRates(JSON.parse(now.body).data, points, 60_000, n / JOBS)
+    await setLimits(t, { splitAboveSeries: 1e15 })
+    const before = await call(`${n} series, ${moment}: ${query}, ${span}, step 60 s, series rule OFF (the rule before)`, t, '/api/v1/query_range', { query, ...range })
+    if (now.status === 200 && before.status === 200) expect(before.body).toBe(now.body)
+    await setLimits(t, {})
+    const plan = await call(`${n} series, ${moment}: /api/v1/plan of ${query}, ${span}`, t, '/api/v1/plan', { query, ...range })
+    console.log(`MEASURE   plan: ${plan.body}`)
+  }
+  // One series of the metric: every file of the metric is still decoded (no series pruning).
+  await call(`${n} series, ${moment}: rate(one series[5m]), 1 h`, t, '/api/v1/query_range', { query: `rate(${one}[5m])`, ...hour })
+  await call(`${n} series, ${moment}: sum(rate(one series[5m])), 1 h`, t, '/api/v1/query_range', { query: `sum(rate(${one}[5m]))`, ...hour })
+  // The label endpoints Grafana's variables use.
+  await call(`${n} series, ${moment}: /label/instance/values?match[]=${M}, 1 h`, t, '/api/v1/label/instance/values', [['match[]', M], ['start', hour.start], ['end', hour.end]])
+  await call(`${n} series, ${moment}: /series?match[]=one series, 1 h`, t, '/api/v1/series', [['match[]', one], ['start', hour.start], ['end', hour.end]])
+  // The cardinality report over the hour: one place, then over 8 leaves (each part reads every series file).
+  const card = await call(`${n} series, ${moment}: /status/cardinality?range=1h`, t, '/api/v1/status/cardinality', { range: '1h', end: sec(END) })
+  hooks.forceLeaves = 8
+  const card8 = await call(`${n} series, ${moment}: /status/cardinality?range=1h over 8 leaves`, t, '/api/v1/status/cardinality', { range: '1h', end: sec(END) })
+  delete hooks.forceLeaves
+  if (card.status === 200 && card8.status === 200) expect(card8.body).toBe(card.body)
+  await call(`${n} series, ${moment}: /status/tsdb, the hour`, t, '/api/v1/status/tsdb', { start: sec(END - HOUR), end: sec(END) })
 }
 
 describe('high cardinality (local)', () => {

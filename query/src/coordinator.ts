@@ -432,24 +432,40 @@ const tooMuch = (c: Context, what: string, bytes: number): ApiError =>
  * How many series a query loads, summed over its reads as `max_series` counts them,
  * estimated from the series files before anything is fetched. `rows` is, per file, the
  * rows of the row groups the reads touch (`scanRows`; `null` when the fragment does not
- * parse, then the file's rows). A `metric_series` file holds one row per series. Flush
- * files of one shard repeat that shard's series and different shards hold different
- * series, so: per shard its largest flush file, summed over the shards, and at least the
- * largest compaction output (which holds every shard's series of its span). Row groups
- * hold every metric of a file, so for a small metric among large ones this is high; a
- * series only in the tail is not in it. Used to decide a split and its size, never to refuse.
+ * parse, then the file's rows). A `metric_series` file holds one row per series.
+ *
+ * Different shards hold different series, so shards add up. Within a shard, files that
+ * cover the same time hold different series (segments cut by size while one scrape
+ * arrives) and files of different times repeat them (segments cut by time), so a shard
+ * counts as its largest sum over files that overlap one file in time. A compaction output
+ * holds every shard's series of its span: the estimate is at least the largest. Row groups
+ * hold every metric of a file, so for a small metric among large ones this is high; it is
+ * low when a shard's segments are shorter than a scrape interval, and a series only in the
+ * tail is not in it. Used to decide a split and its size, never to refuse.
  */
-export function seriesEstimate(files: Pick<FileEntry, 'key' | 'rows'>[], rows: (number | null)[]): number {
-  const perShard = new Map<string, number>()
+export function seriesEstimate(files: Pick<FileEntry, 'key' | 'rows' | 'minTs' | 'maxTs'>[], rows: (number | null)[]): number {
+  const perShard = new Map<string, { minTs: number; maxTs: number; n: number }[]>()
   let merged = 0
   files.forEach((f, i) => {
     const n = rows[i] ?? f.rows
     const m = /\/L0-(.+)-\d+-\d+-\d+-[0-9a-f]{8}\.parquet$/.exec(f.key)
-    if (m) perShard.set(m[1]!, Math.max(perShard.get(m[1]!) ?? 0, n))
-    else merged = Math.max(merged, n)
+    if (!m) merged = Math.max(merged, n)
+    else perShard.set(m[1]!, [...(perShard.get(m[1]!) ?? []), { minTs: f.minTs, maxTs: f.maxTs, n }])
   })
   let flush = 0
-  for (const n of perShard.values()) flush += n
+  for (const list of perShard.values()) {
+    list.sort((a, b) => a.minTs - b.minTs)
+    let most = 0
+    for (const f of list) {
+      let sum = 0
+      for (const g of list) {
+        if (g.minTs > f.maxTs) break
+        if (g.maxTs >= f.minTs) sum += g.n
+      }
+      most = Math.max(most, sum)
+    }
+    flush += most
+  }
   return Math.max(flush, merged)
 }
 

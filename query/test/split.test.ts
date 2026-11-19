@@ -9,7 +9,7 @@
 import { env } from 'cloudflare:workers'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { type TenantLimits, clearLimitsCache } from '../src/config'
-import { hooks } from '../src/coordinator'
+import { hooks, leafCount, seriesEstimate } from '../src/coordinator'
 import { cacheUrl, fileCache, leafHooks } from '../src/leaf'
 import { QUERIES, type Query, type Tenant, type World, api, cost, discardAll, expected, flushAll, ingest, run, sealAll, workload, world } from './world'
 
@@ -91,6 +91,37 @@ async function compare(t: Tenant, leaves: number[], moment: string): Promise<num
   delete hooks.forceLeaves
   return splits
 }
+
+describe('sizing a split by series', () => {
+  const key = (shard: string, lo: number, level = 0) => `cell-0/data/metric_series/tenant=t/day=2026-11-18/L${level}-${shard}-1-${lo}-${lo + 9}-0123abcd.parquet`
+  const f = (k: string, minTs: number, maxTs: number, rows: number) => ({ key: k, minTs, maxTs, rows })
+
+  it('seriesEstimate: shards add up; size-cut segments of one span add up; time slices of a shard repeat its series', () => {
+    // One shard, three segments cut by size over the same ten minutes: different series.
+    const sized = [f(key('p_0', 1), 0, 599, 100), f(key('p_0', 11), 0, 599, 100), f(key('p_0', 21), 0, 599, 50)]
+    expect(seriesEstimate(sized, [null, null, null])).toBe(250)
+    // The same shard cut by time: each slice holds the shard's series again.
+    const sliced = [f(key('p_0', 1), 0, 599, 250), f(key('p_0', 11), 600, 1199, 250), f(key('p_0', 21), 1200, 1799, 240)]
+    expect(seriesEstimate(sliced, [null, null, null])).toBe(250)
+    // Two shards add up; the row-group counts from scanRows replace the files' rows.
+    const two = [...sliced, f(key('p_1', 1), 0, 599, 400), f(key('p_1', 11), 600, 1199, 300)]
+    expect(seriesEstimate(two, [null, null, null, null, null])).toBe(650)
+    expect(seriesEstimate(two, [10, 20, 30, 5, null])).toBe(30 + 300)
+    // A compaction output holds every shard's series of its span: at least that.
+    const merged = { key: 'cell-0/data/metric_series/tenant=t/day=2026-11-18/L1-h03-0123456789abcdef-0123abcd.parquet', minTs: 0, maxTs: 3_599_999, rows: 2_000 }
+    expect(seriesEstimate([...two, merged], [null, null, null, null, null, null])).toBe(2_000)
+    expect(seriesEstimate([], [])).toBe(0)
+  })
+
+  it('leafCount: enough leaves for the samples and for the series, at least 2, at most maxLeaves and the pool', () => {
+    const limits = { maxSamples: 2_000_000, maxSeries: 20_000, maxLeaves: 32 }
+    expect(leafCount(limits, 32, 0, 0)).toBe(2)
+    expect(leafCount(limits, 32, 6_000_000, 0)).toBe(4)
+    expect(leafCount(limits, 32, 6_000_000, 100_000)).toBe(7)
+    expect(leafCount(limits, 32, 0, 1_000_000)).toBe(32)
+    expect(leafCount(limits, 8, 0, 1_000_000)).toBe(8)
+  })
+})
 
 describe('split execution equals one place', () => {
   let w: World

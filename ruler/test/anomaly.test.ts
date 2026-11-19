@@ -262,6 +262,7 @@ describe('state is rebuilt from SQLite alone', () => {
     for (let i = 0; i < 6; i++) await r.tick()
     const at = world.now
     const before = await r.rows()
+    const reported = (await r.status()).anomaly!
     const calls = r.w.evalCalls.length
     await evictDurableObject(r.stub)
     // The same evaluation time again, as an at-least-once alarm would deliver it.
@@ -269,6 +270,9 @@ describe('state is rebuilt from SQLite alone', () => {
     expect(world.now).toBe(at)
     expect(r.w.evalCalls.length, 'the replayed tick did evaluate').toBeGreaterThan(calls)
     expect(await r.rows()).toEqual(before)
+    // and reports what the first run reported.
+    const { status, scored, warming, missing, anomalous, series } = reported
+    expect((await r.status()).anomaly).toMatchObject({ status, scored, warming, missing, anomalous, series })
   })
 
   it('a crash inside the commit transaction persists neither the alerts nor the detector state; the retry gives what a run without the crash gives', async () => {
