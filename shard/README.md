@@ -582,15 +582,49 @@ pool of its own" and the second. The same rule is mutated from control's suite (
 `../shard/src/pool.ts` in the copy, were killed by edge's own tests (a pool outside `POOL_NAME`,
 and a base pool ending in `/traces` or `/logs`, refused with 503).
 
+**Run of 2026-11-19, time bounds of span and log batches (D72)**, on a copy of `contracts/`,
+`shard/`, `ledger/{src,bench}` and `engine/wasm/{js,test}` in the session's scratch directory
+(outside git) whose unmutated suite passed 98 of 98; `node scripts/mutants.mjs "D72:"`, each
+against `test/bounds.test.ts` (the migration's against `test/compat.test.ts`): **13 of 13
+killed**.
+
+| Mutant | Killed by (`bounds.test.ts` unless named) |
+|---|---|
+| hull lower edge off by one (`max_ts > minTs`) | "returns exactly the batches whose bounds overlap the hull…"; "traces (D62): every span that starts inside a nanosecond bound…" |
+| hull upper edge off by one (`min_ts < maxTs`) | the same two |
+| recorded min one ms late | "a span or log batch's row holds the floor in ms…"; "random batches…: the walk agrees with the flush" |
+| recorded max one ms early | the same two |
+| recorded bounds rounded up, not floored | the same two |
+| old rows (no bounds) dropped instead of kept (`min_ts IS NULL OR …` removed) | "a batch the walk cannot follow is stored without bounds…"; "returns exactly the batches…" |
+| the signal filter ignored (`signals` check removed from `filterBatch`) | "signals still choose batches when the read has a hull…" |
+| span bounds read from `end`, not `start` | "a span or log batch's row holds the floor…"; "a batch the walk cannot follow…" |
+| log bounds read from `observed_ts`, not `ts` | "a span or log batch's row holds the floor…"; "random batches…" |
+| a type-5 resource attribute not walked | the same two |
+| a batch the walk cannot follow refuses the append (throws) | "a batch the walk cannot follow is stored without bounds, and accepted…" |
+| bounds computed but not stored (nothing skipped) | "a span or log batch's row holds the floor…"; "returns exactly the batches…" |
+| migration 3 adds no column | `compat.test.ts` "a fresh shard records shard.Shard at the latest version…", "adopts dc2a1c3 storage…" |
+
+Run again on the same copy because their code moved: the twelve `tail:` mutants (11 killed; "values
+copied as numbers" survives, as before, equivalent: above), "group commit: an append is answered
+before its group commits" (its pattern re-anchored to the new `Pending` field; killed) and the three
+`versions:` mutants (killed). The other mutants of the script were not re-run for this change.
+
 ## Not implemented yet
 
-- **Filtering span and log batches inside**: a span or log read gets every batch of its signal
-  above the watermark whole; a time range does not skip any of them (only metric rows are
-  filtered by time). Per-batch time bounds at append would let it skip batches.
+- **The query does not send a time range on span and log reads** (`query/` is not this
+  component's; the exact change is under "Needed changes elsewhere"). Until it does, the bounds
+  are recorded and nothing is skipped: m-3's limit stands in production.
+- **Filtering rows inside span and log batches**: a batch the range keeps is returned whole, with
+  any rows it holds outside the range (the reader selects rows). Batches whose spans spread over
+  hours (late senders, long spans) are kept whole for any range they touch.
+- **Bounds of stored rows**: nothing is backfilled; rows from before schema 3, and rows the release
+  before writes after a rollback, are read by every range until they leave the tail.
 
-- **Skipping stored batches without scanning them.** A filtered read decodes the series table
-  of every batch above the watermark. Per-batch time bounds and metric names, written at append
-  (a schema change and work on the append path), would let it skip batches outside the range.
+- **Skipping metric batches without scanning them.** A filtered metrics read decodes the series
+  table of every batch above the watermark. The same columns could hold a metric batch's time
+  bounds (its `ts` column is found from the end of the batch) and let a read skip batches outside
+  the range; not done (D72 (g): D48 measured that metric batches span most of a tail's times).
+  Metric names per batch are not recorded either.
 - **Key ranges of a split that leaves labels out** (`sum without (…)`): the split key is then a
   hash of the other labels, not `series_id`; a filtered read cannot select it, and the
   coordinator keeps cutting such tails itself (`engine.splitTails`).
@@ -631,8 +665,20 @@ and a base pool ending in `/traces` or `/logs`, refused with 503).
 
 ## Known risks
 
-- **A filtered read costs the shard CPU in proportion to its whole tail** (above), once per
-  query per shard, on the object that acknowledges appends. 22 MB took 30–140 ms here. A tenant
+- **Span and log bounds are only as good as the walk** (D72). The shard derives them from the
+  bytes every reader decodes, and a batch it cannot follow gets none (kept by every range). A
+  batch the walk follows to a wrong column would need lengths that lead somewhere other than
+  where the engine's strict decoder goes; then that decoder refuses the batch at flush as well
+  (`unreadable_segment`). Tested against the engine's flush on 150 random batches and the
+  contract's every attribute type; `edge`'s encoder itself is not run in these tests (the stack's
+  suite runs edge, shard and query together, but query sends no range yet).
+- **Deciding to skip a span or log batch walks SQLite's overflow pages to its bounds**, which the
+  record stores after the payload (training knowledge of SQLite's format). Here a read that
+  skipped 48 batches of 0.4 MB took 4–6 ms; on Cloudflare not measured.
+
+- **A filtered read costs the shard CPU in proportion to its whole tail** (above; for a span or
+  log read with a time range, the batches it keeps, D72), once per query per shard, on the object
+  that acknowledges appends. 22 MB took 30–140 ms here. A tenant
   with many concurrent queries over a large tail adds that much to its shard's thread each.
 
 - **A sealing group's acknowledgement waits for the queue send**, and once per marker
@@ -653,6 +699,79 @@ and a base pool ending in `/traces` or `/logs`, refused with 503).
   measured**: a pooled shard serves tenants whose ledgers may be on another continent.
 
 ## Needed changes elsewhere
+
+### Time bounds of span and log batches (D72; review m-3)
+
+**`query/`** (not edited here; its owner was re-reviewing it read-only). The shard side is done
+and needs nothing from callers to stay correct; this is what makes a span or log query take only
+the tail inside its range. One function and its four calls, in `query/src/signals.ts` (line
+numbers as of `0e75337`):
+
+1. `readSignalTail` (line 136) takes the nanosecond bound its caller reads rows in, and sends it
+   as the shard's time range, each end floored to milliseconds (`msRange`, already imported at
+   line 32):
+
+   ```ts
+   /**
+    * The tails of a signal's shards above the plan's watermarks, under what the files leave of
+    * `maxFetchBytes`; null: refused, read the ledger again. `bound` is the nanosecond range the
+    * caller selects rows in (inclusive): the shard skips span and log batches whose time bounds,
+    * recorded at append, lie outside it (D72; contracts/BATCH.md "Tail reads of spans and log
+    * records by time"), and returns every other batch whole. A shard of an earlier release
+    * ignores the range for these batches and returns them all, as before.
+    */
+   async function readSignalTail(
+     c: Context,
+     signal: 'traces' | 'logs',
+     watermarks: Watermark[],
+     lakeBytes: number,
+     rf: ReturnType<typeof refusals>,
+     bound: { lo: bigint; hi: bigint },
+   ): Promise<Uint8Array[] | null> {
+     const shards = await signalShards(c.env, c.tenant, signal, watermarks)
+     c.cost.shardsAsked = shards.length
+     // The signal (`readTails` adds it) and the bound's milliseconds, each end floored: every batch
+     // holding a row inside the bound is returned (D72). Series fields stay unsent: they select
+     // metric rows only (shard/src/tail.ts). Paged under ONE budget over the signal's shards, each
+     // page checked against the query's deadline (`readShared`, review of D54 M-2 and m-7).
+     const t = await readTails(c, shards, watermarks, rf.known, rf.refused, msRange(bound.lo, bound.hi), c.limits.maxFetchBytes - lakeBytes, signalByte(signal))
+     if (t.again) return null
+     if (t.over) throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + t.atLeast, !t.exact)
+     return t.reads.flatMap((r) => r.batches.map((b) => b.payload))
+   }
+   ```
+
+2. The four calls pass the range their engine call selects rows in. **A trace query passes its
+   bound (the window widened by `traceMarginMs`), never the window or the hull**: the engine
+   reads every span starting inside the bound (D62).
+   - `logQuery` (line 200): `readSignalTail(c, 'logs', p.watermarks, r.bytes, rf, { lo, hi })`,
+     the selectors' hull computed at lines 185–186.
+   - `logLabels` (line 233): `readSignalTail(c, 'logs', p.watermarks, r.bytes, rf, { lo: startNs, hi: endNs })`.
+   - `traceRounds` (line 290): `readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, bound)`.
+   - `spansIn` (line 392): `readSignalTail(c, 'traces', p.watermarks, r.bytes, rf, window)`.
+
+   `msRange` clamps to `[0, floor(MAX_NS / 10⁶)]`, inside what `compileFilter` accepts; trace by ID
+   without a hint passes `[0, MAX_NS]`, which keeps everything.
+3. **Tests** (`query/test/`):
+   - `signals.test.ts` "max_spans and max_rows as the engine decodes: … the ones outside the query do
+     not": its `early` case (a search whose window, with the margin, ends days before the data)
+     expects `Tail-Bytes > 0`; after the change it is **0** (the tail is skipped: m-3's fix), while
+     the `logs` case (a selector no stream matches, over the data's time) keeps `> 0`. Split the
+     assertion accordingly.
+   - Add, next to it: a tenant whose span and log tails lie in one hour; a search, a tag query and
+     a log query an hour later than the data plus the margin answer 200 with `Tail-Bytes` 0, and
+     the same queries over the data's hour answer exactly as before (`completeness.test.ts`'s
+     answers, pruning on and off, are unchanged: the shard keeps every batch holding a span inside
+     the bound). With `shardSignalFilter.enabled = false` and with `tailHooks.previousRelease` (a
+     shard that ignores the range) the answers are the same.
+   - Mutant: pass the window instead of the bound in `traceRounds`; `completeness.test.ts`'s
+     trace whose child lies in the tail, after the window and inside the margin, must fail.
+4. **Docs**: `query/README.md` "Traces and logs" and D62's cost paragraph (m-3's limit) then say
+   a query takes the tail inside its bound; the limit that remains is a backlog of more than
+   `maxFetchBytes` inside one bound (five hours for a one-hour search).
+5. **Release order**: none needed. The range is an existing field; a shard of the release before
+   ignores it for span and log batches (returns them all) and the engine selects the same rows,
+   so query and shard may deploy in either order.
 
 ### Registration before writes (D61)
 
