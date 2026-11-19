@@ -171,5 +171,7 @@ locally (`shard/bench/results/tuning.log`: group commit alone; in-flight limits 
 pending bytes). Nothing was tuned on Cloudflare.
 
 **Not measured:** where the 30–40 ms of an unloaded acknowledgement goes; billed rows
-written per request (the analytics API had not reported the window when this was written);
+written per request (the analytics API's `durableObjectsPeriodicGroups` returned nothing for
+these namespaces and this window, asked at 01:30 and 03:03 UTC, after they were deleted; S4's
+namespaces, also deleted, did report);
 several tenants on one pooled shard; OTLP; sustained load with flush running.

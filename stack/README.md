@@ -272,6 +272,20 @@ concurrent retention, 30 crashed steps, 3,440 files expired, 8,508 objects purge
 deleted (each checked against its rule when deleted, compaction outputs against D30's inputs
 rule), 100 evictions, 57 ledger-log outages, 59 old-plan readers verified, 0 dead letters.
 
+**Run of 2026-11-19, final code of the storage-path work** (the segment-log review's fixes:
+the stuck and self-healing log, the state limit, checkpoints by log volume, no empty start over
+data, the stalled-leftover rule; early refusal and group commit; the name rule; run alone among
+this engineer's jobs, machine load average 12–14 from others):
+`SOAK_STEPS=3000 npx vitest run --maxWorkers=1 test/soak.test.ts`, seed 20261118: 3,000
+steps, **every invariant held at every step**; 367 s; peak memory 996 MB for the process tree
+and 563 MB for the largest process (sampled every 3 s, threads not counted twice). 881
+acknowledged requests (180 repeats), 586 segments admitted through 1,427 delivered flush
+messages (535 retried), 391 merges, 4 conflicts and 12 more under a concurrent retention, 26
+crashed steps, 1,724 files expired, 5,214 objects purged, 66 orphans deleted, 106 evictions,
+58 ledger-log outages, 60 old-plan readers verified, 0 dead letters. An earlier 3,000-step run
+the same night, before the review's fixes, also held (228 s); its memory figure for the whole
+tree was wrong (the sampler summed threads) and is not reported.
+
 **What failed during development.** In this review, one 3,000-step run passed every
 step and then failed its final sanity check that every tenant still has rows: a maintenance
 run with a policy clock three days ahead had expired all of one tenant's data after its
