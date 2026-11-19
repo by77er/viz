@@ -115,7 +115,9 @@ export function pbAnyValue(r: PbReader, depth: number): AnyV {
         break
       case 0x21: {
         const at = r.fixed64At()
-        const bits = r.buf.slice(at, at + 8)
+        // A copy: `slice` of a Node Buffer is a view, and the DataView below needs its own buffer.
+        const bits = new Uint8Array(8)
+        bits.set(r.buf.subarray(at, at + 8))
         value = { k: 'd', v: new DataView(bits.buffer).getFloat64(0, true), bits }
         break
       }
@@ -159,7 +161,7 @@ export function pbAnyValue(r: PbReader, depth: number): AnyV {
       }
       case 0x3a: {
         const e = r.len()
-        value = { k: 'y', v: r.buf.slice(r.pos, e) }
+        value = { k: 'y', v: Uint8Array.from(r.buf.subarray(r.pos, e)) }
         r.pos = e
         break
       }

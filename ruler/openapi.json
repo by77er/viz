@@ -3871,6 +3871,23 @@
        "null"
       ],
       "description": "Unix milliseconds"
+     },
+     "exceeded": {
+      "oneOf": [
+       {
+        "enum": [
+         "scan_samples",
+         "bytes",
+         "queries",
+         "memory",
+         "cpu"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "With status refused over a budget: which one (contracts/rules.ts `HistoryBudget`, contract version 5), as for a backtest's over_budget. Absent or null otherwise, and in statuses stored before the field existed"
      }
     }
    },
@@ -4200,6 +4217,7 @@
     "type": "object",
     "required": [
      "error",
+     "exceeded",
      "plan",
      "budget"
     ],
@@ -4207,6 +4225,23 @@
     "properties": {
      "error": {
       "$ref": "#/components/schemas/ErrorBody"
+     },
+     "exceeded": {
+      "oneOf": [
+       {
+        "enum": [
+         "scan_samples",
+         "bytes",
+         "queries",
+         "memory",
+         "cpu"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Which budget the run was over (contracts/rules.ts `HistoryBudget`, contract version 5): scan_samples or bytes (the engine's plan against maxBacktestScanSamples / maxBacktestBytes; scan_samples when both), queries (more than 1,000 range queries), memory (the memory model), cpu (the CPU model). Null when what refused it is not a budget of the ruler: the engine's own limits would refuse the read, or its cost could not be asked. The numbers are in plan, budget, memory and cpu; a value a client does not know is a budget it cannot name"
      },
      "plan": {
       "oneOf": [

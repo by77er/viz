@@ -94,6 +94,21 @@ Dependencies (not Tempo): the source of the `regex` 1.13.2 and `regex-syntax` 0.
 (MIT/Apache-2.0) in the local cargo registry, read for their default limits (compiled size
 10 MiB, lazy-DFA cache 2 MiB, nesting 250) when the regex limits were set.
 
+### Follow-up of 2026-11-19: regex dialect and nesting bound
+
+The same rules held (one engineer, an AI agent, Claude). Tempo's source was not read; no git
+command was run. Sources added:
+
+| Source | Used for |
+|---|---|
+| https://grafana.com/docs/tempo/latest/traceql/construct-traceql-queries/ (fetched again) | its statements on regexes: "TraceQL uses Golang regular expressions", regexes "are treated as fully anchored" |
+| Tempo v3.1.1 through `tools/godiff`, rebuilt from the Go module proxy in a scratch directory (`GOMODCACHE`, `GOCACHE` outside the repository; deleted afterwards) | the regex probes: `tools/probes/regex_dialect.py` built one trace whose spans carry 70 subject strings and ran 289 patterns in four query forms (plain, `\|\|`, structural, `!~`); the answers are recorded in `testdata/regex_dialect.json` (Tempo's output on viz's data, not Tempo material) |
+| `go doc regexp/syntax` and Go 1.24.7's `regexp` run as a black box (scratch programs) | Go's dialect, which Tempo's answers matched (`engine/goregex/CLEANROOM.md`) |
+| Tempo's example list (`tools/fetch_tempo_tests.sh`, git-ignored) | as before, accept/reject oracle; also measured for nesting depth with `nesting()` (query strings only) |
+
+The regex translation itself lives in `engine/goregex` (shared with viz-logql), whose
+`CLEANROOM.md` lists its own sources.
+
 ## Fetched at test time (never committed)
 
 | What | From | Where it lives | Use |

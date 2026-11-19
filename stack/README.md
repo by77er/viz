@@ -177,7 +177,7 @@ letters.
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npx vitest run --maxWorkers=2    # 41 tests in workerd, 8 files (soak: 400 steps)
+npx vitest run --maxWorkers=2    # 47 tests in workerd, 10 files (soak: 400 steps)
 npm run soak                     # the soak with 3,000 steps
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
@@ -187,7 +187,11 @@ node tools/hyparquet_check.mjs   # 4 checks agree
 Last run, 2026-11-19: **41 passed, 0 failed**; `tsc --noEmit` clean. With the publisher wired
 in (2026-11-19, `npx vitest run --maxWorkers=2`): **46 passed, 0 failed** (9 files); `tsc
 --noEmit` clean. (A first run during the change failed 38 tests with `LEDGER_SEGMENT_VERSION is
-not defined`: the ledger was mid-edit by its engineer; rerun once it was whole.)
+not defined`: the ledger was mid-edit by its engineer; rerun once it was whole.) After the
+soak's end-phase fix (2026-11-19, `test/settle.ts`, `test/settle.test.ts`; "The end phase judged
+the end state before the ledger had logged" below): **47 passed, 0 failed** (10 files, 91 s);
+`tsc --noEmit` clean; `ledger/`, `janitor/` and `compact/` unchanged and green alongside it
+(101, 21 and 24 tests; `tsc --noEmit` clean in each).
 
 ### Wiring for the ledger's background log (2026-11-19)
 
@@ -383,6 +387,107 @@ caused by the code under test was seen in the soak or the property test; the bug
 while building were caught earlier, by the unit suites (a tombstone's time differing by
 1 ms from its logged change after a rebuild; a native ABI test crashing on a 32-bit
 pointer field).
+
+### The end phase judged the end state before the ledger had logged (fixed 2026-11-19)
+
+**Symptom.** The soak at its default length and seed failed now and then at its end-state
+check `expect(state.objects).toEqual(state.live.map((f) => f.key).sort())`: R2 still held
+objects the ledger no longer listed (level-0 flush files of two days, a level-2 file; 26
+objects against 4 live in CI, 28 against 6 locally). The same commit passed one CI run and
+failed another.
+
+**Cause: a test bug.** The soak breaks a ledger's log now and then. While it is broken every
+drain fails and the ledger backs off (1 s doubling to 60 s, `contracts/LEDGER-LOG.md`). The
+soak heals it by hand (`healLedgerLog`, then `drain()`): the explicit drain writes everything,
+but the backoff stays until it ends, and only then does the ledger drain its next commits (its
+alarm is set at the end of the backoff). A log that recovers by itself leaves the same window:
+the ledger cannot know R2 is back until it tries again. When a tenant's outage came late in a
+run, the end phase committed its expiry and merges inside that backoff, slept for the graces
+(3.2 s) and purged. `deletable` refuses a tombstone whose removal is not logged (contract rule
+1), so those removals' objects stayed, and the end state was judged before the ledger got to
+log them. Nothing was deleted that should not have been, and nothing is stuck: the ledger logs
+them when the backoff ends, and in production a maintenance run whose purge left
+`waiting > 0` comes back after max(grace, 60 s) (`src/maintain.ts`).
+
+**Evidence** (a scratch copy with read-only probes of the ledger's backoff, alarm and outbox,
+and every leftover key classified by the gate that kept it; main's code, and the same on the
+development branch's):
+
+- A natural failure (seed 6, 400 steps; the soak is not deterministic for a seed, since
+  timing changes which operations run): one tenant's log broken at step 365 and healed only
+  by the end phase's `quiesce`. At the end phase's last commit the ledger still had 4
+  failures, `lastError` "injected R2 failure" and its alarm 3,969 ms ahead; at the purge,
+  3.3 s later, version 111 was still in the outbox and the alarm 666 ms away. All 6 leftover
+  objects were tombstones of version 111 (the last merge), 3,340 ms old (grace 1,500 ms), not
+  logged. The other tenants had no backoff and nothing left.
+- The same condition forced (scratch only: just before the end phase, every tenant's log
+  broken, the ledger's alarm run until it backs off 16 s, then healed by hand): 5 of 5 runs
+  failed, the first with exactly "expected [ …(28) ] to deeply equal [ …(6) ]". 246 leftover
+  objects in 15 tenant ends (192 level 0, 8 level 1, 46 level 2), **every one a tombstone
+  whose removal was not logged at the purge**; the orphan sweep judged none of them (it leaves
+  tombstoned keys to the purge), and every ledger's alarm was set about 12 s ahead, at the end
+  of its backoff.
+- On the development branch's code, forced the same way: 3 of 3 runs failed, 202 leftover
+  objects, every one an unlogged tombstone.
+- Not the cause, in every failing run examined here: an undelivered alarm (it was set, at the
+  end of the backoff, and not yet due); the compaction-output rule (D30) or F15 (no leftover
+  was unreferenced, so the orphan sweep had nothing to judge; the level-2 leftovers were
+  tombstoned files, refused by the purge's rule like the rest). The CI and local failures were
+  not instrumented; their leftovers match this pattern.
+
+**Fix: the end phase waits for the real condition.** It moved to `test/settle.ts`, shared
+with its regression test. After the graces it waits until each tenant's ledger has logged
+everything it committed (`outboxDepth() === 0`), by the ledger's own drain (no `drain()`
+call), as an operator or the next maintenance run would; then it purges and sweeps exactly as
+before. The wait is bounded at 75 s (the longest backoff is 60 s): a ledger that does not
+drain by then fails the soak with its `logStatus`. No sleep was lengthened and no check in
+purge or orphans changed; in a run without a late outage the wait is zero. The soak's summary
+line counts the tenants that waited and for how long. In the same change the soak's eviction
+step leaves alone an object that has not run yet (seed 10 failed at step 0 with "Cannot evict
+Durable Object: it is not currently running"; a test bug unrelated to the end phase).
+
+**Regression test** (`test/settle.test.ts`): one tenant, two flushed requests, then the
+outage (log broken while a flush commits, the ledger's alarm run until the drain backs off for
+16 s), healed by hand; then the end phase, with a check that when the graces have passed its
+removals are still unlogged (the failing timing, asserted, so a slow machine cannot turn the
+test into one that proves nothing).
+
+**Runs** (each one `SOAK_STEPS=400 npx vitest run --maxWorkers=1 test/soak.test.ts`, one at
+a time, measured here on a machine shared with other engineers' jobs, load average 6–15). A
+natural failure needs a tenant's outage late in a run, so it is rare here; "outage forced"
+is the same soak with, in a scratch copy only, every tenant's log broken until its ledger backs
+off 16 s and then healed by hand just before the end phase: the same workload with and without
+the fix.
+
+| Code | Workload | Runs | Failed |
+|---|---|---|---|
+| main, before | default seed (5 of them pinned to one CPU) | 15 | 0 |
+| main, before | seed 6 | 5 | 0 |
+| main, before, with read-only probes | default seed; seeds 1–10 once each | 7; 10 | 0; 2 (seed 6: this failure; seed 10: the eviction) |
+| main, before | outage forced, default seed | 5 | **5** (first: "expected [ …(28) ] to deeply equal [ …(6) ]") |
+| main, after | default seed; seeds 1–10 once each | 12; 10 | 0; 0 |
+| main, after | outage forced, default seed | 10 | **0** (each end phase waited about 12.4 s for the logs) |
+| dev, before | default seed; seeds 1–6 and 10 once each | 8; 7 | 0; 2 (seed 5: this failure, "expected [ …(12) ] to deeply equal [ …(6) ]"; seed 10: the eviction) |
+| dev, before, with probes | outage forced, default seed | 3 | **3** (202 leftover objects, every one an unlogged tombstone) |
+| dev, after | default seed; seeds 1–6 and 10 once each | 10; 7 | 0; 0 |
+| dev, after | outage forced, default seed | 5 | **0** (each end phase waited about 12.3–12.6 s) |
+
+In the natural runs after the fix no end phase happened to find a ledger backing off (the
+summary line's `end:` counts were absent), so those runs show that nothing else broke; the
+forced runs show the fix.
+
+**Mutants** (each in a scratch copy, never in this tree):
+
+| Mutant | Caught by |
+|---|---|
+| The end phase does not wait for the logs (the `awaitLogged` call removed) | `test/settle.test.ts`, at the end-state check, "expected [ …(10) ] to deeply equal [ …(2) ]": 3 of 3 runs on main's code, 3 of 3 on the development branch's |
+| The ledger sets no alarm for a commit made during a backoff (main's `scheduleDrain` returns early), so a tenant whose drain backs off never drains by itself: the product bug this could have been | `test/settle.test.ts`: "ledger did not log its changes within 75000 ms" with its `logStatus` (`alarmAt: null`, `pending: 1`) |
+| The ledger sets no alarm for the last commits at all (`afterCommit` without `scheduleDrain`) | `test/settle.test.ts`, already while setting up the outage (no alarm to run) |
+
+The regression test passes on the fixed code in about 20 s (it waits out the backoff): 3 of 3
+runs on main's code, 3 of 3 on the development branch's. "main" is main's stack, ledger,
+janitor, compact and flush; "dev" is the development branch's (ledger checkpoints in parts,
+D47), whose soak, `test/sim.ts` and end phase are the same files.
 
 ### Mutation checks (`node scripts/mutants.mjs all`)
 
@@ -596,6 +701,16 @@ had the adversarial review `AGENTS.md` asks for protocol changes.
 - **Graces are real time in the soak**, scaled to 1–1.5 s; a deletion is checked against
   its rule when it happens, but a machine that stalls for seconds changes which
   operations a run exercises. Two runs with one seed are not identical.
+- **The soak's end phase can take up to a minute longer** when a ledger is still backing off
+  from an outage (it waits for the ledger's own drain, bounded at 75 s; the longest backoff is
+  60 s). Rare in natural runs: none of 39 runs after the fix waited.
+- **A ledger's backoff outlives a successful `drain()`** (seen while fixing the soak; not
+  changed here). After an explicit `drain()` the failure count, the backoff and
+  `logStatus().lastError` stay until the alarm's next drain, so commits made meanwhile are
+  logged up to the rest of the backoff (at most 60 s) late: shards keep their rows and purges
+  wait that much longer. Nothing counts as logged early, so no safety rule is touched; the
+  alarm's own successful drain clears all three. Whether `drain()` (contract: "what the alarm
+  does") should clear them too is for `ledger/` to decide; the soak no longer depends on it.
 - **Files that disagree** are now ordered by the ledger's precedence (D22) and tested with
   rewrites (`test/precedence.property.test.ts`); the soak's model still sends one value per
   `(series, ts)`. Admission order equals write order across streams only once the

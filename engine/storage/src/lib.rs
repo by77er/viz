@@ -41,5 +41,5 @@ pub use pq::{EncodedFile, FileIndex, RowGroupIndex, Table, WriteOptions, MAX_ROW
 pub use select::{select, select_with, MatchOp, Matcher, ScanInput, SelectOptions, SeriesData};
 pub use logs::{encode_logs, encode_logs_with, FRAGMENT_MAX_LABEL_BYTES, FRAGMENT_MAX_STREAMS};
 pub use otelpq::{day_of_ns, SignalError, SignalFile, SignalTable, SignalWriteOptions, NS_PER_DAY, NS_PER_HOUR, SIGNAL_ROW_GROUP_BYTES, SIGNAL_ROW_GROUP_ROWS};
-pub use otelread::{read_logs, read_spans, read_trace_index, LogRecord, SpanRecord};
+pub use otelread::{read_logs, read_logs_row_groups, read_spans, read_trace_index, LogRecord, SpanRecord};
 pub use spans::{encode_spans, encode_spans_with, merge_fragments, Fragment, PROMOTED_RESOURCE, PROMOTED_SPAN};

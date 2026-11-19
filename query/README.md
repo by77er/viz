@@ -59,11 +59,11 @@ password of Basic auth.
 
 | Endpoint | Methods | Notes |
 |---|---|---|
-| `/api/v1/query` | GET, POST | `query`, `time` (default: now), `timeout` |
-| `/api/v1/query_range` | GET, POST | `query`, `start`, `end`, `step`, `timeout` |
-| `/api/v1/labels` | GET, POST | `match[]` (repeatable), `start`, `end` |
-| `/api/v1/label/<name>/values` | GET | `match[]`, `start`, `end`; the name is URL-decoded |
-| `/api/v1/series` | GET, POST | `match[]` (at least one), `start`, `end` |
+| `/api/v1/query` | GET, POST | `query`, `time` (default: now), `timeout`, `limit` |
+| `/api/v1/query_range` | GET, POST | `query`, `start`, `end`, `step`, `timeout`, `limit` |
+| `/api/v1/labels` | GET, POST | `match[]` (repeatable), `start`, `end`, `limit` |
+| `/api/v1/label/<name>/values` | GET | `match[]`, `start`, `end`, `limit`; the name is URL-decoded |
+| `/api/v1/series` | GET, POST | `match[]` (at least one), `start`, `end`, `limit` |
 | `/api/v1/metadata` | GET | always `{}`: no metric metadata is stored. Present because the app's client calls it |
 | `/api/v1/status/buildinfo` | GET | minimal: `version` is `0.1.0-viz`, the other fields empty |
 | `/api/v1/status/tsdb` | GET | Prometheus' cardinality statistics, over a window of the tenant's data (default the last day; `start`, `end` or `range`, viz extensions), `limit` items per list (default 10, at most 10,000). "Cardinality report" below |
@@ -77,9 +77,21 @@ password of Basic auth.
   `1m30s`, `1h`, `500ms`; units in descending order, as Prometheus requires). POST bodies
   are `application/x-www-form-urlencoded`, merged with the URL's parameters. Decimal
   seconds become milliseconds on the digits, with no float multiplication.
-- **The envelope.** `{"status":"success","data":…}` or
-  `{"status":"error","errorType":…,"error":…}`. The `data` of a query is the engine's
-  JSON text, passed through unparsed: sample values never become JavaScript numbers.
+- **The envelope.** `{"status":"success","data":…}` (with `"warnings":[…]` after `data` when
+  there are some) or `{"status":"error","errorType":…,"error":…}`. The `data` of a query is
+  the engine's JSON text, passed through unparsed: sample values never become JavaScript numbers.
+- **`limit`** (since 2026-11-19), as the Prometheus HTTP API documentation states it (read
+  2026-11-19 at prometheus.io/docs/prometheus/latest/querying/api/: "limit=<number>: Maximum
+  number of returned series. Optional. 0 means disabled." on all five endpoints; for queries
+  "Doesn't affect scalars or strings but truncates the number of series for matrices and
+  vectors") and as Prometheus' `web/api/v1/api.go` applies it (read the same day; Apache-2.0):
+  the first `limit` items of the sorted list (series of a query as the engine ordered them),
+  and the warning `results truncated due to limit` when some were cut. Parsed as Prometheus'
+  `parseLimitParam`: absent or empty is 0, a negative one is 400 `invalid parameter "limit":
+  limit must be non-negative`, anything not an integer is 400 too. A query result is cut in
+  its JSON text, between series, never parsed. The cap on series listed
+  (`maxMetadataSeries`) binds before the limit (Prometheus has none; a smaller listing kept
+  in the engine is not built).
 
 | `errorType` | HTTP | When |
 |---|---|---|
@@ -320,7 +332,7 @@ could loosen a limit. Unknown fields are ignored. Records are cached for 30 s pe
 | `maxLeaves` | 32 | (not an error) the most parts a query is split into |
 | `maxCardinalitySeries`, `maxCardinalityPairs` | 1,000,000, 400,000 | the cardinality report: 422 `cardinality report exceeded limit max_series` / `max_pairs`. The pair cap was 2,000,000 until 2026-11-19: the coordinator's merge holds about 130 bytes of WASM memory per pair or triple (CARDINALITY.md) |
 | `cardinalitySplitAboveSeries` | 50,000 | (not an error) the cardinality report is counted over leaves above this many series in its series files |
-| `maxMetadataSeries` | 200,000 | the label endpoints: 422 `… max_series: N series listed, …`. They read series files only (no sample is loaded), so `maxSamples`, `maxSeries` and `maxScanSamples` do not bind them; `maxFetchBytes` and `maxFiles` do, over the series files and the tail (new 2026-11-19) |
+| `maxMetadataSeries` | 200,000 | the label endpoints: 422 `… max_series: N series listed, …`. They read series files only (no sample is loaded), so `maxSamples`, `maxSeries` and `maxScanSamples` do not bind them; `maxFiles` does, and `maxFetchBytes` decides one place or over leaves (each part's waves under half of it; since 2026-11-19). Over leaves `N` is the parts' distinct series added up (one place stops counting at the cap plus one) |
 
 **Why the byte cap is 16 MiB and why there is a scan cap.** A cap near 64 MiB of Parquet
 was considered first. Measured here, that is not safe, for two reasons.
@@ -445,6 +457,24 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   series that has samples in a file on both sides of the window but none inside counts as
   in it (at most one file's span at each edge: ten minutes for flush files).
 
+### Label endpoints over leaves (since 2026-11-19)
+
+`/labels`, `/label/<name>/values` and `/series` read series files and the tail only (above).
+When the series files the window needs pass `maxFetchBytes`, or the tail does not fit the
+coordinator (D54), they are counted over `L` leaves, as the cardinality report is: part `j`
+lists the series whose `series_id` is in its key range (engine `metaPart`), reading its row
+groups of every series file (`partPlan`; a file of under 100,000 series is one row group, read
+whole by every part) **in waves of at most half of `maxFetchBytes`**, each wave a call to the
+engine, and its part of the tail (what the coordinator read, cut by id, and the rest read in
+its key range). The engine returns the ids of the series each call listed, so a series in many
+files counts once; the part refuses past `maxMetadataSeries`. The coordinator merges the parts'
+lists in the engine's order (code points, which is UTF-8 byte order; label sets pair by pair)
+and adds their counts per `match[]` set against `maxMetadataSeries`: the answer is
+byte-identical to one place (`meta.test.ts`). `L` is the series in the files over
+`cardinalitySplitAboveSeries` (50,000), at least 2, more if the tail needs it. A part's file it
+cannot read sends the call back to the ledger; a leaf of the previous release (no `meta` call)
+fails the call (503, the RPC throws twice).
+
 ### Release skew (contracts/COMPATIBILITY.md)
 
 - **Every shard status is handled by name.** `tailRead` answers `ok`, `stale_watermark`
@@ -500,17 +530,17 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
 - **A real time limit on the engine.** The engine has no clock; the deadline is checked
   between phases and a timer races the I/O. A query inside the engine runs to its end,
   bounded by the sample, step-point and scan limits.
-- **Prometheus features**: the `limit`, `lookback_delta`, `stats` and `cost` parameters
+- **Prometheus features**: the `lookback_delta`, `stats` and `cost` parameters
   (and `max_series`, `max_samples_read`, `max_query_duration`), which are ignored,
-  warnings and infos, exemplars, `/api/v1/metadata` content, `/targets`, `/rules`,
+  warnings and infos other than `limit`'s, exemplars, `/api/v1/metadata` content, `/targets`, `/rules`,
   `/alerts`, `/query_exemplars`, remote read, `DELETE` on series, native histograms.
   Everything `engine/promql/README.md` lists as not implemented returns `unsupported`
   (422) or `bad_data`.
-- **Label endpoints over leaves.** `labels`, `label values` and `series` read series files
-  and the tail only (since 2026-11-19), in one place: when the series files of the window pass
-  `maxFetchBytes` (an hour of about 120,000 series, a ten-minute unit of 1,000,000) they are
-  refused. Counting them over leaves, as the cardinality report is, is not built. With no
-  `start` and `end` they cover all time, as in Prometheus.
+- **Label endpoints, what is left.** Over leaves (since 2026-11-19, above) every part reads
+  every series file of under 100,000 series whole (one row group), so `L` parts read the
+  files `L` times (from the Cache API after the first); the listing is not cut by `limit` in
+  the engine (the whole part is listed, then the first `limit` kept); a call over all time
+  reads every series file of the tenant (no default window, as in Prometheus).
 - **Statistics for the label endpoints**: `X-Viz-Samples-Loaded` and `-Series-Loaded`
   are 0 for them (they load no samples; the series listed are not reported).
 - **Asked for by the app** (`app/README.md`, "Needed changes in query/"), not done here:
@@ -559,6 +589,25 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
 All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node 22.23,
 workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing in this
 section ran on Cloudflare (the Worker itself did, in two staged trials: `deploy/README.md`).
+
+**After the label endpoints over leaves and `limit` (2026-11-19, ABI 4; 06:44 to 06:46 UTC,
+load average 5.0 to 7.6):** `npx vitest run --maxWorkers=2`: **110 tests, all passing** in 13
+files (101 s), against `viz_query.wasm` rebuilt from this tree (SHA-256 `2f181edc…`); `npx tsc
+--noEmit`: clean; the mutation tool's unmutated run at 06:52 to 06:55 passed in full again.
+`engine/query` `cargo test -j 2`: 57 passed; `node ../engine/wasm-query/tools/check.mjs`: every
+check passes. New: `test/meta.test.ts` (9 tests): 12 label calls (Grafana's variable queries
+among them) over 1, 2, 3 and 7 parts give the one-place bytes at the three moments (all tail,
+lake and tail, all lake; 2 tenants, 216 comparisons); by themselves when the series files pass
+`maxFetchBytes` (each part in several waves); the cap counts distinct series over parts and
+waves (at the cap 200, one under it 422 naming `max_series`, one place and over 2 and 5 parts);
+`limit` on the 12 calls (1, 2, all, all plus one, 0; one place and over 3 parts: the first items,
+the warning exactly when cut) and on the 69 queries (matrices and vectors cut, more than 5 of
+them, scalars and strings untouched), bad limits 400 with Prometheus' words; a query result cut
+in its text whatever its strings hold (`limitResult`); a tail too large for the coordinator
+(parts read the rest, the same bytes; a previous-release leaf 503); a series file missing from
+R2 (back to the ledger, 503 after 4 reads, never a shorter list); values with characters above
+U+FFFF and in U+E000 to U+FFFD sorted by code point as the engine sorts them, over leaves too,
+and tenants apart. Changed: `engine.test.ts` (28 exports, ABI 4).
 
 **After the filtered, paged tail (2026-11-19, D48/D54; 06:13 to 06:15 UTC, load average 8.9
 to 10.5):** `npx vitest run --maxWorkers=2`: **101 tests, all passing** in 12 files (102 s);
@@ -756,6 +805,12 @@ run had two invariance tests failing (a count of tail batches that depends on wh
 senders went, since relaxed), which cannot kill a mutant and killed none; the re-run's
 unmutated suite passed in full. Rows 47 to 60 of the table below.
 
+**The label endpoints over leaves and `limit` (2026-11-19, mutants 61 to 70, on a scratch tree,
+06:52 to 06:58 UTC, load average 7.7 to 9.3): 10 of 10 killed**, the unmutated suite first passing
+in full, the shared tree's files unchanged (`c011da469efe0f4f` before and after). Two more in
+Rust (`engine/query`, on a scratch copy): the part filter dropped for tail series, and for file
+rows, each killed by both tests of `tests/meta_parts.rs`.
+
 `node tools/mutants.mjs` applies one change to the source, runs the whole suite,
 restores the source, and prints the failing tests. It first confirms that every mutant
 applies and runs the unmutated suite; a test that fails there (another component
@@ -835,6 +890,16 @@ rebuilt module had the same SHA-256 as before the run.
 | 58 | a part's tail is not capped by `maxFetchBytes` | tail › a part whose shard refuses…; over a part's cap; the cardinality report… |
 | 59 | **a shard that discarded above a part's watermark is an empty rest** | tail › a part whose shard refuses a page of the rest… |
 | 60 | `cutById` ignores the low word of the id (edge ids in the wrong part) | tail › cutById puts ids at the very edges of every part… (only it: random ids never land on an edge) |
+| 61 | **the cap over leaves takes the largest part, not the sum** | meta › the cap on series listed…; (`limit` on queries, after it) |
+| 62 | **a part counts a series once per wave it is listed in** | meta › the cap…; `limit` (3 tests) |
+| 63 | each part lists every series (the part is not passed to the engine) | meta › the cap…; `limit` (3 tests) |
+| 64 | **names and values merged in UTF-16 order** | meta › names and values sort by code point… (only it) |
+| 65 | the parts' series concatenated, not sorted | meta › every label call over 1, 2, 3 and 7 parts…; by itself… (7 tests) |
+| 66 | series files over `maxFetchBytes` read in one place anyway | meta › by itself…; the cap… (3 tests) |
+| 67 | **a series file a part cannot read is left out of its listing** | meta › a series file missing from R2… (only it) |
+| 68 | a negative `limit` accepted | meta › `limit`… |
+| 69 | a query result cut one series late | meta › `limit` on queries…; `limitResult` |
+| 70 | a label list cut by `limit` carries no warning | meta › `limit`… |
 
 **Run 2026-11-19, 01:16 to 01:53 UTC, all 43 mutants on a scratch copy** (load average 7 to
 21): **43 of 43 killed, none survived, none invalid**; the unmutated suite passed first in

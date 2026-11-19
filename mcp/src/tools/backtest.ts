@@ -65,7 +65,7 @@ export const MONITOR_ARG: JsonSchema = {
     anomaly: {
       type: 'object',
       additionalProperties: false,
-      description: 'Anomaly monitor: a detector scores query. Defaults: detector ewma (threshold when severity is page), severity ticket, maxSeries 100, for 0s, keepFiringFor 10m.',
+      description: 'Anomaly monitor: a detector scores query. Defaults (ruler design D33): detector robust_z with the quantile spread (window 1,500 points, k 2), or threshold when severity is page (give params.above or params.below); severity ticket; maxSeries 100, or as many as fit the per-rule state limit (fewer for robust_z and seasonal); for 0s; keepFiringFor 10m. ewma was the default before 2026-11-19 and is kept by monitors saved then.',
       properties: {
         detector: { type: 'string', enum: ['ewma', 'threshold', 'robust_z', 'seasonal', 'cusum'] },
         params: { type: 'object', additionalProperties: { type: ['number', 'string', 'boolean', 'null'] }, description: 'The detector\'s parameters by name.' },
@@ -336,12 +336,29 @@ function costLine(c: Cost | null): string {
 type BudgetName = 'plan' | 'memory' | 'cpu' | 'unknown'
 type Reason = 'plan-over' | 'engine-limit' | 'unpriced' | 'memory-state' | 'memory-windows' | 'cpu' | 'unknown'
 
+/** The ruler's `exceeded` (contracts/rules.ts `HistoryBudget`) → this tool's budget and reason. */
+const BY_FIELD: Record<string, { budget: BudgetName; reason: Reason }> = {
+  scan_samples: { budget: 'plan', reason: 'plan-over' },
+  bytes: { budget: 'plan', reason: 'plan-over' },
+  queries: { budget: 'memory', reason: 'memory-windows' },
+  memory: { budget: 'memory', reason: 'memory-state' },
+  cpu: { budget: 'cpu', reason: 'cpu' },
+}
+
 /**
- * Which budget refused. The numbers decide where they can; where they cannot (both memory
- * refusals carry `plan: null`, as do the engine's own refusal and an unpriced read), the ruler's
- * wording does (ruler/src/history.ts). README "Contract issues": `over_budget` has no field naming it.
+ * Which budget refused. The ruler says so in `exceeded`: a budget it names is taken as it is; null
+ * means it was not a budget of the ruler's (the query service would refuse the read, or did not
+ * price it: the two are told apart by the ruler's words); a value this tool does not know is a
+ * budget it cannot name. A ruler older than the field (`exceeded` absent): the numbers decide where
+ * they can, and where they cannot (both memory refusals carry `plan: null`, as do the engine's own
+ * refusal and an unpriced read), the ruler's wording does (ruler/src/history.ts).
  */
 export function whichBudget(ob: OverBudgetView, message: string): { budget: BudgetName; reason: Reason } {
+  if (typeof ob.exceeded === 'string') return BY_FIELD[ob.exceeded] ?? { budget: 'unknown', reason: 'unknown' }
+  if (ob.exceeded === null) {
+    if (/^the engine's plan did not say/i.test(message)) return { budget: 'plan', reason: 'unpriced' }
+    return { budget: 'plan', reason: 'engine-limit' }
+  }
   if (ob.cpu) return { budget: 'cpu', reason: 'cpu' }
   if (ob.plan && ob.budget && (ob.plan.scanSamples > ob.budget.scanSamples || ob.plan.bytesToRead > ob.budget.bytesToRead)) return { budget: 'plan', reason: 'plan-over' }
   if (ob.memory && ob.memory.peakBytes > ob.memory.budgetBytes) return { budget: 'memory', reason: 'memory-state' }
@@ -375,7 +392,8 @@ function overBudget(ob: OverBudgetView, rulerMessage: string, ctx: Ctx): ToolErr
   }
   let ratio: number | null = null
   let what: string
-  let outcome = 'Nothing was fetched.'
+  // Every refusal comes before any window is read; a long read's series counts may have been.
+  let outcome = 'No window was read; nothing was kept.'
   const remedies: (string | null)[] = []
   const notes: string[] = []
   switch (reason) {
@@ -398,6 +416,7 @@ function overBudget(ob: OverBudgetView, rulerMessage: string, ctx: Ctx): ToolErr
       break
     case 'memory-state': {
       const m = ob.memory!
+      outcome = 'Nothing was fetched.'
       ratio = m.peakBytes / m.budgetBytes
       what = `its memory model puts this monitor's state and one step of its series at ${bytesText(m.peakBytes)}; the budget is ${bytesText(m.budgetBytes)}`
       remedies.push(`make the monitor hold fewer series: ${fewer(ratio)}`)
@@ -411,7 +430,6 @@ function overBudget(ob: OverBudgetView, rulerMessage: string, ctx: Ctx): ToolErr
       remedies.push('shorten the range', stateful ? null : 'use a coarser step', 'narrow the query to fewer series, so each window holds more steps')
       break
     case 'cpu': {
-      outcome = 'It read the first window to count the series; nothing was kept.'
       const c = ob.cpu
       if (c) {
         ratio = c.modelledMs / c.budgetMs
@@ -446,7 +464,7 @@ function overBudget(ob: OverBudgetView, rulerMessage: string, ctx: Ctx): ToolErr
     status: 422,
     detail: `ruler: ${clean(rulerMessage, { max: MAX.long })}`,
     data: { message: clean(rulerMessage, { max: MAX.long }) },
-    meta: { refusal: { budget, reason, over: ratio, plan: ob.plan, limits: ob.budget, memory: ob.memory, cpu: ob.cpu, remedy } },
+    meta: { refusal: { budget, reason, exceeded: typeof ob.exceeded === 'string' && ob.exceeded in BY_FIELD ? ob.exceeded : null, over: ratio, plan: ob.plan, limits: ob.budget, memory: ob.memory, cpu: ob.cpu, remedy } },
   })
 }
 

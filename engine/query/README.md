@@ -229,6 +229,20 @@ group of at most six files' worth of its part) while gathering, or one selector'
 evaluation. The coordinator weighs the stopped leaves (see `query/` README, "Split
 execution"). What remains, inside `viz_storage::select`, is in "Not implemented".
 
+### The label calls over parts (2026-11-19)
+
+`src/meta.rs` (`label_names_part`, `label_values_part`, `series_part`, `MetaPart`), for
+`query/`'s label endpoints over leaves. A listing restricted to the series whose `series_id`
+(unsigned) is in one part of a split (`SplitKey::part_of`, the cardinality report's parts), in
+files and in tail batches, with the `series_id`s of the series it listed. Parts are disjoint in
+series, so their listings union to the whole and their series add up to the whole's; the ids
+let a caller list a part's files in several calls (waves) and count distinct series exactly
+together. `max_series` bounds each call. Tested by `tests/meta_parts.rs` (a property over
+random histories, layouts, windows, 1 to 8 parts and five matcher sets: unions, sums and ids
+equal the whole's; `/series` refuses a non-selective set in every part; a part over its own cap
+is refused). Mutants (on a scratch copy, 2026-11-19): the part filter dropped for tail series,
+and for file rows: each **killed** by both tests.
+
 ### Series-level pruning and the series-only read (2026-11-19)
 
 `src/prune.rs`, `src/meta.rs`; `contracts/TABLES.md` "The index fragment" and "Reading part of
@@ -311,6 +325,10 @@ own report.
 
 All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 1.97.0, Node 22.23), not on Cloudflare.
+
+**2026-11-19, the label calls over parts:** `cargo test -j 2`: **57 tests, all passing** in 11
+targets (the 55 below and `tests/meta_parts.rs`, 2), 06:47 to 06:52 UTC at a load average of 7.7
+to 7.9, against `engine/storage` as it was at 06:41 (`src/*.rs` SHA-256 `f55f874a7f4df43c…`).
 
 **2026-11-19, series-level pruning and the series-only read:** `cargo test -j 2` with two
 test threads: **55 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,

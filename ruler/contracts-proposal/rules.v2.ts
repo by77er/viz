@@ -55,6 +55,7 @@ import type {
   SloRuleStatus,
   SloSeverity,
   WarmupStatus,
+  HistoryBudget,
   SaveGroupsResult,
   Silence,
   ValidationError,
@@ -426,6 +427,12 @@ export type BacktestResponse =
   | {
       status: 'over_budget'
       message: string
+      /**
+       * EXTENDED (contract version 5): which budget it was over (`HistoryBudget`); null when what
+       * refused it is not a budget of the ruler (the engine's own limits would refuse the read, or
+       * its cost could not be asked). The numbers are in `plan`, `budget`, `memory` and `cpu`.
+       */
+      exceeded: HistoryBudget | null
       plan: { scanSamples: number; bytesToRead: number; queries: number } | null
       budget: { scanSamples: number; bytesToRead: number }
       /** The memory model's peak and budget; null when the refusal came from the engine's plan before sizing. */

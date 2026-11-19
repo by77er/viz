@@ -49,6 +49,7 @@ node tools/check.mjs          # load proof and size report, in Node
 | `filePlan(indexes, ranges, gap?)` | `viz_q_file_plan` | How to read each file from its fragment, by name and time: `{rows, read}` with `read` `'skip'`, `'whole'` or `[[offset, length], …]` (the footer and the row groups needed) |
 | `samplePlan(seriesFiles, indexes, reads, part?, pairs?, gap?)` | `viz_q_sample_plan` | Series-level pruning: the reads' matchers resolved against the series files; per sample file its plan (for the series of its own series file when `pairs` says which), the exact series count, and a `carrier` batch of the selected series to evaluate with instead of the series files |
 | `partPlan(indexes, ranges, part, parts, gap?)` | `viz_q_part_plan` | A split part's plans from the fragments alone: the row groups of its `series_id` range |
+| `metaPart(kind, input, name, match, minTs, maxTs, part, parts, limits?)` | `viz_q_meta_part` | ABI 4: one part of a label call over leaves (`'names'`, `'values'`, `'series'`): what the call lists of the series whose `series_id` is in the part (`engine/query` `MetaPart`), as JSON text, and per `match[]` set the `series_id`s of the series listed, so that a part's files can be listed in several calls and counted exactly together |
 | `sparseFile(size, segments)`, `planBytes(plan, size)`, `RANGE_GAP` | (JavaScript only) | A sparse file container (`VZS1`) of the ranges read, which every call accepts in place of a whole file; the bytes a plan reads; the join distance (64 KiB) |
 | `memoryBytes()`, `instances()`, `reset()` | | The instance's linear memory (its high-water mark), how many instances were created, and dropping the instance so the memory can be reclaimed |
 
@@ -81,6 +82,10 @@ node tools/check.mjs          # load proof and size report, in Node
   binding's) throws `EngineLoadError`, whose message starts with `ENGINE_LOAD_PREFIX`
   (so it is recognisable after an RPC boundary). The query Worker answers it with 500:
   retrying in the same deployment cannot help (`query/test/http.test.ts`).
+- **ABI version 4** (2026-11-19; was 3): `viz_q_meta_part` was added (the label endpoints
+  over leaves, `query/README.md`); no other operation changed. Built against `engine/storage`
+  as it was at 06:41 UTC (`src/*.rs` concatenated in name order, SHA-256 `f55f874a7f4df43c…`;
+  another engineer was changing its log and trace modules, which the read path does not call).
 - **ABI version 3** (2026-11-19; was 2): `viz_q_file_plan`, `viz_q_sample_plan` and
   `viz_q_part_plan` were added, and any file of a `scan` may be a sparse file container. No
   operation changed its request; the label calls (`viz_q_label_names`, `_values`,
@@ -129,7 +134,7 @@ its 3,672 functions declare `v128` locals (a module built without `+simd128` has
 | `js/viz_query.wasm` | **3,078,525** (was 2,639,443 before split execution and the cardinality report) |
 | `gzip -9` | **958,971** (was 809,660) |
 | imports | **0** |
-| exports | 24: `memory`, `viz_alloc`, `viz_free`, `viz_q_abi_version` and the twenty operations |
+| exports | 28 since ABI 4: `memory`, `viz_alloc`, `viz_free`, `viz_q_abi_version` and twenty-four operations (24 with twenty operations before ABI 3) |
 
 For comparison: `engine/query/wasm` (the whole engine, write half included) is
 3,618,108 bytes, 1,034,617 gzip. Leaving out the Parquet writer and the merge saves about
@@ -168,6 +173,14 @@ copied into linear memory, which agrees with the native figure in
 `engine/query/README.md` (20.2 MiB of heap above the inputs). Through the Worker, with
 24 small files instead of 2 and the last ten minutes in two tail batches, the same query
 peaked at 21.6 MiB (`query/README.md`, "Measurements").
+
+### 2026-11-19: the label endpoints over leaves (ABI 4)
+
+Rebuilt with `./build.sh` (`-j 2`): **3,165,181 bytes, 988,705 gzip**, SHA-256
+`2f181edc670513d4…` (was 3,152,742 and 983,968). `node tools/check.mjs`: every check passes,
+two new: `metaPart` over 1, 2, 3 and 8 parts unions to `labelNames`, `labelValues` and `series`
+and its series ids add up to the whole's; a part over its cap is a typed `max_series` error.
+`engine/query`: `cargo test -j 2`, 57 passed in 11 targets (new: `tests/meta_parts.rs`, 2).
 
 ### 2026-11-19: series-level pruning (ABI 3)
 

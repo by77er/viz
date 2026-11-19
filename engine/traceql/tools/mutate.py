@@ -3,9 +3,11 @@
 scratch directory (never in place: others commit and snapshot the tree), run the suites,
 and report which suite caught each mutant.
 
-Usage: python3 -I tools/mutate.py <scratch-dir>
-The scratch directory receives a copy of the crate and its own CARGO_TARGET_DIR; it is
-removed at the end. The original sources are never written.
+Usage: python3 -I tools/mutate.py <scratch-dir> [--only N,M,...]
+The scratch directory receives a copy of the crate, a copy of the shared regex crate
+(engine/goregex, a path dependency, so `../goregex` resolves to the copy) and its own
+CARGO_TARGET_DIR; all are removed at the end. The original sources are never written.
+Mutants of the regex crate are also run against its own tests (suite `goregex`).
 """
 import os, shutil, subprocess, sys
 
@@ -15,7 +17,7 @@ MUTANTS = [
     ("missing attribute satisfies !=", "src/value.rs",
      "    if a.is_nil() || b.is_nil() {\n        return false;\n    }",
      "    if a.is_nil() || b.is_nil() {\n        return op == BinOp::Neq;\n    }"),
-    ("regex not anchored", "src/parser.rs", 'format!("^(?s:{text})$")', 'format!("(?s:{text})")'),
+    ("regex not anchored", "src/parser.rs", "viz_goregex::Wrap::Anchored", "viz_goregex::Wrap::DotNl"),
     ("unconnected spans take part in structural operators", "src/eval.rs",
      "let r: Vec<usize> = r.iter().copied().filter(|&i| connected[i]).collect();",
      "let r: Vec<usize> = r.iter().copied().filter(|&i| connected[i] || true).collect();"),
@@ -54,11 +56,9 @@ MUTANTS = [
      "Scope::None => attr(&span.resource, name).or_else(|| attr(&span.attrs, name)),"),
     # Nesting and regex limits (tests/limits.rs).
     ("tree height not bounded (chains build trees of any height)", "src/parser.rs",
-     "        let h = h + 1;\n        if h > MAX_DEPTH {",
-     "        let h = h + 1;\n        if h > usize::MAX - 1 {"),
+     "        if h > MAX_DEPTH {", "        if h > usize::MAX - 1 {"),
     ("tree height bound off by one", "src/parser.rs",
-     "        let h = h + 1;\n        if h > MAX_DEPTH {",
-     "        let h = h + 1;\n        if h > MAX_DEPTH + 1 {"),
+     "        if h > MAX_DEPTH {", "        if h > MAX_DEPTH + 1 {"),
     ("parser recursion not bounded", "src/parser.rs",
      "        if self.depth > MAX_DEPTH {", "        if self.depth > usize::MAX - 1 {"),
     ("unary minus before a spanset or number recurses uncounted", "src/parser.rs",
@@ -68,15 +68,42 @@ MUTANTS = [
      "            self.enter()?;\n            let (e, h) = self.field_or()?;\n            self.leave();",
      "            let (e, h) = self.field_or()?;"),
     ("regex nesting at the regex crate's default (250)", "src/parser.rs",
-     ".nest_limit(REGEX_NEST_LIMIT + 2)", ".nest_limit(250)"),
+     "nest: REGEX_NEST_LIMIT + 2 }", "nest: 250 }"),
     ("regex size at the regex crate's default (10 MiB)", "src/parser.rs",
-     ".size_limit(REGEX_SIZE_LIMIT)", ".size_limit(10 << 20)"),
+     "size: REGEX_SIZE_LIMIT,", "size: 10 << 20,"),
     ("regexes per query not counted", "src/parser.rs",
      "        if self.regexes > MAX_REGEXES {", "        if self.regexes > usize::MAX - 1 {"),
+    # The nesting bound (100, D40) and Go's regex dialect (tests/regex_dialect.rs).
+    ("nesting limit loosened back to 200", "src/parser.rs",
+     "pub const MAX_DEPTH: usize = 100;", "pub const MAX_DEPTH: usize = 200;"),
+    ("Unicode classes back on: the pattern is compiled untranslated, as before", "src/parser.rs",
+     "viz_goregex::compile(text, viz_goregex::Wrap::Anchored, false, &limits).map_err(",
+     'regex::RegexBuilder::new(&format!("^(?s:{text})$")).nest_limit(limits.nest).size_limit(limits.size)'
+     '.dfa_size_limit(limits.dfa_size).build().map_err(|e| viz_goregex::Error::Invalid(e.to_string())).map_err('),
+    ("Unicode classes back on: \\d \\w \\s passed to Rust as written", "../goregex/src/lib.rs",
+     'let text = if e.is_ascii_lowercase() { format!("[{body}]") } else { format!("[^{body}]") };',
+     'let text = format!("\\\\{e}"); let _ = body;'),
+    ("Unicode word boundary", "../goregex/src/lib.rs", "'b' => \"(?-u:\\\\b)\",", "'b' => \"\\\\b\","),
+    ("Go's bound on nested counted repetitions dropped", "../goregex/src/lib.rs",
+     "if (min >= 2 || m >= 2) && u64::from(m) * u64::from(a.product) > u64::from(MAX_REPEAT) {",
+     "if false && u64::from(m) * u64::from(a.product) > u64::from(MAX_REPEAT) {"),
+    ("a `{` that starts no repetition is an error, not a literal", "../goregex/src/lib.rs",
+     "self.literal('{' as u32);", "return Err(invalid(\"`{` starts no repetition\"));"),
+    ("an unmatched `)` passed through (wrapping then rebalances it)", "../goregex/src/lib.rs",
+     'return Err(invalid(format!("unexpected ): `{}`", self.src)));',
+     "self.out.push(')'); self.i += 1; return Ok(());"),
+    # Mutant 31 is equivalent: the unclosed-`(` check refuses every pattern in which an unmatched
+    # `)` could be rebalanced by the wrapper. Both checks off is the real regression.
+    ("parentheses not balanced at all (unmatched `)` passed, unclosed `(` allowed)", "../goregex/src/lib.rs",
+     ['return Err(invalid(format!("unexpected ): `{}`", self.src)));',
+      'if self.frames.len() > 1 {\n            return Err(invalid(format!("missing closing ): `{}`", self.src)));'],
+     ["self.out.push(')'); self.i += 1; return Ok(());",
+      'if false {\n            return Err(invalid(format!("missing closing ): `{}`", self.src)));']),
 ]
 
 SUITES = [
     ("api", ["cargo", "test", "-j", "2", "--test", "api"]),
+    ("regex_dialect", ["cargo", "test", "-j", "2", "--test", "regex_dialect"]),
     ("conformance", ["cargo", "test", "-j", "2", "--test", "conformance"]),
     ("props", ["cargo", "test", "-j", "2", "--test", "props", "--", "--test-threads", "2"]),
     ("limits", ["cargo", "test", "-j", "2", "--test", "limits", "--", "--test-threads", "2"]),
@@ -100,23 +127,36 @@ AND_HELPER = '''
 
 def main():
     scratch = os.path.abspath(sys.argv[1])
+    only = [int(x) for x in sys.argv[sys.argv.index("--only") + 1].split(",")] if "--only" in sys.argv else None
     copy = os.path.join(scratch, "traceql-mutants")
-    if os.path.exists(copy):
-        shutil.rmtree(copy)
+    goregex = os.path.join(scratch, "goregex")
+    for d in (copy, goregex):
+        if os.path.exists(d):
+            shutil.rmtree(d)
     shutil.copytree(CRATE, copy, ignore=shutil.ignore_patterns("target", ".work", "godiff", "__pycache__"))
+    shutil.copytree(os.path.join(os.path.dirname(CRATE), "goregex"), goregex, ignore=shutil.ignore_patterns("target", "__pycache__"))
     env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(scratch, "target-mutants"), PROPTEST_CASES="48")
+    goregex_env = dict(env, CARGO_TARGET_DIR=os.path.join(scratch, "target-mutants-goregex"))
     results = []
-    for name, path, old, new in MUTANTS:
+    for number, (name, path, old, new) in enumerate(MUTANTS, 1):
+        if only and number not in only:
+            continue
         f = os.path.join(copy, path)
         original = open(f).read()
-        assert original.count(old) == 1, f"{name}: pattern not found exactly once in {path}"
-        mutated = original.replace(old, new)
+        mutated = original
+        # A mutant is one replacement, or a list of them applied together.
+        for o, n in (zip(old, new) if isinstance(old, list) else [(old, new)]):
+            assert mutated.count(o) == 1, f"{name}: pattern not found exactly once in {path}"
+            mutated = mutated.replace(o, n)
         if "field_and_only" in new:
             mutated = mutated.replace("\n    fn field_cmp(&mut self) -> Hp<FieldExpr> {", AND_HELPER, 1)
         open(f, "w").write(mutated)
         caught = []
-        for suite, cmd in SUITES:
-            r = subprocess.run(cmd, cwd=copy, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        suites = [(s, c, copy, env) for s, c in SUITES]
+        if path.startswith("../goregex/"):
+            suites.append(("goregex", ["cargo", "test", "-j", "2"], goregex, goregex_env))
+        for suite, cmd, cwd, e in suites:
+            r = subprocess.run(cmd, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             if r.returncode != 0:
                 failing = [l.split()[1] for l in r.stdout.splitlines() if l.startswith("test ") and l.rstrip().endswith("FAILED")]
                 if not failing and "overflowed its stack" in r.stdout:
@@ -124,12 +164,13 @@ def main():
                 caught.append(f"{suite} ({', '.join(failing) or 'build failed'})")
         open(f, "w").write(original)
         results.append((name, caught))
-        print(f"{name}: {'; '.join(caught) or 'NOT CAUGHT'}", flush=True)
-    # The copy is restored after every mutant; confirm it is green, then remove it.
+        print(f"{number}. {name}: {'; '.join(caught) or 'NOT CAUGHT'}", flush=True)
+    # The copies are restored after every mutant; confirm they are green, then remove them.
     clean = all(subprocess.run(cmd, cwd=copy, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0 for _, cmd in SUITES)
-    print(f"restored copy green: {clean}")
-    shutil.rmtree(copy)
-    shutil.rmtree(env["CARGO_TARGET_DIR"], ignore_errors=True)
+    clean = clean and subprocess.run(["cargo", "test", "-j", "2"], cwd=goregex, env=goregex_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    print(f"restored copies green: {clean}")
+    for d in (copy, goregex, env["CARGO_TARGET_DIR"], goregex_env["CARGO_TARGET_DIR"]):
+        shutil.rmtree(d, ignore_errors=True)
     survivors = [n for n, c in results if not c]
     print(f"{len(results) - len(survivors)} of {len(results)} mutants caught; survivors: {survivors}")
 

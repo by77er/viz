@@ -293,6 +293,12 @@ export interface BacktestView {
 
 /** The ruler's 422 `over_budget` (ruler/openapi.json `OverBudget`): refused whole, nothing kept. */
 export interface OverBudgetView {
+  /**
+   * Which budget, as the ruler names it (`HistoryBudget` in contracts/rules.ts: scan_samples, bytes,
+   * queries, memory, cpu; at most 32 characters, as sent); null when the ruler says it was not a
+   * budget of its own; absent from a ruler older than the field.
+   */
+  exceeded?: string | null
   plan: { scanSamples: number; bytesToRead: number; queries: number } | null
   budget: { scanSamples: number; bytesToRead: number } | null
   memory: { peakBytes: number; budgetBytes: number } | null
@@ -339,7 +345,9 @@ function overBudgetOf(body: Record<string, unknown>): OverBudgetView {
     }
     return out
   }
+  const exceeded = typeof body.exceeded === 'string' ? { exceeded: body.exceeded.slice(0, 32) } : body.exceeded === null ? { exceeded: null } : {}
   return {
+    ...exceeded,
     plan: pick(body.plan, ['scanSamples', 'bytesToRead', 'queries'] as const),
     budget: pick(body.budget, ['scanSamples', 'bytesToRead'] as const),
     memory: pick(body.memory, ['peakBytes', 'budgetBytes'] as const),

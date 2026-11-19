@@ -1309,7 +1309,7 @@ the new "dryRun on every write" test.
 | 157 | `PREVIOUS_DEFAULTS`: robust z's earlier k wrong (3 instead of 3.5) | anomaly: "saved again unchanged …" (+1 more, the fixture pin) |
 | 158 | window plans: the run checked against the whole read and the counts only, not the windows as fetched (the review's finding) | history: "a long look-back expression: each window re-reads its look-back …" |
 | 159 | window plans: a group's plan counted once, not for every window in it | history: "past MAX_WINDOW_PLANS windows they are planned in contiguous groups …" |
-| 160 | window plans: a group's plan spans its first window only | history: same (**survived the first run**: with a plan of day files every 20-minute window cost the same, so the first window times the group equalled the sum; the test's plan now also grows with how late a range ends; then killed) |
+| 160 | window plans: a group's plan spans its first window only | history: same (as 133 on main it **survived main's first run**: with a plan of day files every 20-minute window cost the same, so the first window times the group equalled the sum; the test's plan now also grows with how late a range ends; then killed) |
 | 161 | counting: no read counted (windows are the engine's pieces, sized by nothing) | history: "across many window boundaries …" (+2 more) |
 | 162 | counting: counted windows cut at the rule's bound, not by the points counted | history: "a plain alerting backtest over a week of three series …" |
 | 163 | counting: a count above the rule's bound accepted | history: "a window holding more points than the model sized it for …" (its counted case) |
@@ -1319,9 +1319,22 @@ the new "dryRun on every write" test.
 | 167 | SLO state: a series first evaluated at query time 0 treated as never evaluated | slo: "a series first evaluated at query time 0 keeps that bucket …" |
 | 168 | SLO validation: a severity label from the group's labels reported at the rule | slo: "problems come back with a path and a fix …" |
 
-**PR #3's last fix, ported: mutants 158–168** (main's 131–141, renumbered) — PORT_RESULTS
+**PR #3's last fix, ported: mutants 158–168** (main's 131–141, renumbered after this tree's 131–157;
+`VIZ_SCRATCH=<scratch> node scripts/mutants.mjs 22 24 33 34 35 38 43 44 45 82 … 168`, on a scratch
+copy, deleted after): **96 of 96 killed on the first run**, shared tree unchanged. That is the eleven
+ported mutants; every mutant whose pattern the port rewrote (104–106, 120, 122–125, as on main) or
+whose code moved under it (107–119, 121, 126–130, and 94–103, 114, 115 for `slo.ts`); every mutant
+added since the branch point (131–157: the recorded-samples entrypoint and the anomaly defaults);
+and every earlier one whose tests the port changed (22, 24, 33–35, 38, 43–45 use `monitors.test.ts`
+or `backtest.test.ts`; 82–93 use `wiring.test.ts`). Mutant 160 (main's 133) survived main's first run;
+here it was killed the first time, because the strengthened test came with the port. All 168
+patterns match the source exactly once (checked by loading `MUTANTS` without running them). Not
+re-run: 1–21, 23, 25–32, 36, 37, 39–42, 46–81 (their files and tests are unchanged by the port; 46–50 need
+Go, which is installed but was not run).
 
-**On main (PR #3) these were 131–141.** (the review of PR #3: windows were planned as whole reads; `VIZ_SCRATCH=… node scripts/mutants.mjs …`, on a scratch copy of the PR worktree's ruler, deleted after): 131–141, 10 of 11 killed on the first run, 133 survived (see its row), then killed. Patterns brought up to date for the new code and re-run: 104, 105, 106, 120, 122, 123, 124, 125 (all killed); re-run because the code they guard moved: 107–113, 116–119, 121, 126–130 (all killed), and 94–103, 114, 115 (slo.ts changed: all 12 killed). Mutants 1–93 were not re-run in this change; all 141 patterns match the source exactly once.
+On main (PR #3) these were 131–141: 10 of 11 killed on main's first run, 133 survived (with a plan
+of day files every 20-minute window cost the same, so the first window times the group equalled
+the sum; the test's plan now also grows with how late a range ends), then killed.
 
 **Anomaly-default mutants 146–157** (D33 replaced; `VIZ_SCRATCH=<scratch> node scripts/mutants.mjs
 68 69 146 … 157`, on a scratch copy): **14 of 14 killed on the first run** (68 and 69 renamed, their

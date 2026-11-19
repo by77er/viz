@@ -152,7 +152,7 @@ describe('warming a new rule from history', () => {
     expect(w.rangeCalls).toEqual([])
     const m = (await call(key.auth, 'GET', `/api/v1/monitors/${created.json.id}`)).json.monitor
     expect(m.anomaly.status).toMatchObject({ status: 'warming', warming: 3 })
-    expect(m.anomaly.status.warmup).toMatchObject({ status: 'refused', plan: { scanSamples: 5_000_000, bytesToRead: 40 << 20, queries: 1 }, budget: { scanSamples: 3_000_000, bytesToRead: 16 << 20 }, points: 0 })
+    expect(m.anomaly.status.warmup).toMatchObject({ status: 'refused', exceeded: 'scan_samples', plan: { scanSamples: 5_000_000, bytesToRead: 40 << 20, queries: 1 }, budget: { scanSamples: 3_000_000, bytesToRead: 16 << 20 }, points: 0 })
     expect(m.anomaly.status.warmup.message).toMatch(/^over budget: the read would scan 5000000 samples and 41943040 bytes in 1 range query; the budget is 3000000 samples and 16777216 bytes; nothing was fetched and the rule started cold$/)
     // The budget is a limit like the others: raised, a new rule is warmed.
     ok(await stub.configure(tenant, { limits: { maxWarmupScanSamples: 10_000_000, maxWarmupBytes: 64 << 20 } }))
@@ -168,7 +168,7 @@ describe('warming a new rule from history', () => {
     r.plan({ scanSamples: 9, bytesToRead: 9, seriesEstimate: 3, refusal: { errorType: 'execution', error: 'query exceeded limit max_files: 2400 data files to read, the limit is 2000. Narrow the time range.' } })
     await r.tick()
     expect(r.log.filter((x) => x.startsWith('range'))).toEqual([])
-    expect((await r.rule()).anomaly!.warmup).toMatchObject({ status: 'refused', plan: null, message: 'the engine would refuse the read: execution: query exceeded limit max_files: 2400 data files to read, the limit is 2000. Narrow the time range.; nothing was fetched and the rule started cold' })
+    expect((await r.rule()).anomaly!.warmup).toMatchObject({ status: 'refused', exceeded: null, plan: null, message: 'the engine would refuse the read: execution: query exceeded limit max_files: 2400 data files to read, the limit is 2000. Narrow the time range.; nothing was fetched and the rule started cold' })
   })
 
   it('an engine failure is retried at the next tick (the rule waits, and says so), then given up after three attempts: the rule starts cold', async () => {
@@ -331,7 +331,7 @@ describe('backtests: the rule\'s own evaluation over history, in time order', ()
     const T = T0 - DAY
     for (const rule of [{ alert: 'Hot', expr: 'latency_ms > 300' }, ewma(), sloEntry()]) {
       const res = await r.stub.backtest(r.tenant, rule, T, T + DAY, MIN)
-      expect(res).toMatchObject({ status: 'over_budget', budget: { scanSamples: 20_000_000, bytesToRead: 128 << 20 } })
+      expect(res).toMatchObject({ status: 'over_budget', exceeded: 'scan_samples', budget: { scanSamples: 20_000_000, bytesToRead: 128 << 20 } })
       expect(res.status === 'over_budget' && res.message).toMatch(/^over budget: the read would scan \d+ samples .* the budget is 20000000 samples and 134217728 bytes\. Nothing was fetched/)
     }
     expect(r.log.filter((x) => x.startsWith('range'))).toEqual([])
@@ -365,7 +365,11 @@ describe('backtests through the monitors API', () => {
     const ranges = a.w.rangeCalls.length
     a.plan({ scanSamples: 30_000_000, bytesToRead: 0, seriesEstimate: 1, refusal: null })
     const over = await call(ka.auth, 'POST', `/api/v1/monitors/${saved.json.id}/backtest`, { fromMs: T - 2 * HOUR, toMs: T })
-    expect([over.status, over.json.error.code, over.json.budget]).toEqual([422, 'over_budget', { scanSamples: 20_000_000, bytesToRead: 128 << 20 }])
+    expect([over.status, over.json.error.code, over.json.exceeded, over.json.budget]).toEqual([422, 'over_budget', 'scan_samples', { scanSamples: 20_000_000, bytesToRead: 128 << 20 }])
+    // Bytes alone over: named as bytes.
+    a.plan({ scanSamples: 1, bytesToRead: 200 << 20, seriesEstimate: 1, refusal: null })
+    const bytes = await call(ka.auth, 'POST', `/api/v1/monitors/${saved.json.id}/backtest`, { fromMs: T - 2 * HOUR, toMs: T })
+    expect([bytes.status, bytes.json.error.code, bytes.json.exceeded]).toEqual([422, 'over_budget', 'bytes'])
     expect(a.w.rangeCalls.length).toBe(ranges)
     const wrongStep = await call(ka.auth, 'POST', `/api/v1/monitors/${saved.json.id}/backtest`, { fromMs: T - HOUR, toMs: T, step: '5m' })
     expect([wrongStep.status, wrongStep.json.problems?.[0]?.path]).toEqual([422, 'stepMs'])
@@ -461,12 +465,12 @@ describe('streaming: history is read and evaluated in windows sized to a memory 
     ok(await stub.configure(tenant, { limits: { maxBacktestMemoryBytes: 4 << 20 } } as never))
     const T = T0 - DAY
     const tooSmall = await stub.backtest(tenant, { alert: 'S', slo: { objective: 0.999, sli: SLI, max_series: 100 } }, T, T + HOUR, MIN)
-    expect(tooSmall).toMatchObject({ status: 'over_budget', plan: null, memory: { budgetBytes: 4 << 20 } })
+    expect(tooSmall).toMatchObject({ status: 'over_budget', exceeded: 'memory', plan: null, memory: { budgetBytes: 4 << 20 } })
     expect(tooSmall.status === 'over_budget' && tooSmall.message).toMatch(/^over the memory budget: holding this rule's state \([\d.]+ MiB\) and one step of 200 series would take [\d.]+ MiB; the budget is 4\.0 MiB\. Nothing was fetched/)
     // 1,000 series of SLO state (the limit raised to allow the rule) is about 80 MB of rings: refused at the default 32 MiB.
     ok(await stub.configure(tenant, { limits: { maxBacktestMemoryBytes: 32 << 20, maxSloSeriesPerRule: 1000 } } as never))
     const thousand = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { rule: { alert: 'S', slo: { objective: 0.999, sli: SLI, max_series: 1000 } }, fromMs: T, toMs: T + 7 * DAY - MIN, step: '1m' })
-    expect([thousand.status, thousand.json.error.code, thousand.json.plan]).toEqual([422, 'over_budget', null])
+    expect([thousand.status, thousand.json.error.code, thousand.json.exceeded, thousand.json.plan]).toEqual([422, 'over_budget', 'memory', null])
     expect(thousand.json.memory.peakBytes).toBeGreaterThan(80_000_000)
     expect(w.planCalls).toEqual([])
     expect(w.rangeCalls).toEqual([])
@@ -477,7 +481,7 @@ describe('streaming: history is read and evaluated in windows sized to a memory 
     ok(await r.stub.configure(r.tenant, { limits: { maxWarmupMemoryBytes: 1 << 20 } } as never))
     await r.tick()
     expect(r.log.filter((x) => !x.startsWith('query'))).toEqual([])
-    expect((await r.rule()).anomaly!.warmup).toMatchObject({ status: 'refused', plan: null, message: expect.stringMatching(/^over the memory budget: holding this rule's state \(2\.0 MiB\) and one step of 100 series would take [\d.]+ MiB; the budget is 1\.0 MiB; nothing was fetched and the rule started cold$/) })
+    expect((await r.rule()).anomaly!.warmup).toMatchObject({ status: 'refused', exceeded: 'memory', plan: null, message: expect.stringMatching(/^over the memory budget: holding this rule's state \(2\.0 MiB\) and one step of 100 series would take [\d.]+ MiB; the budget is 1\.0 MiB; nothing was fetched and the rule started cold$/) })
   })
 
   it('a window holding more points than the model sized it for (more series than the rule allows) stops the run with that reason', async () => {
@@ -535,7 +539,8 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
     ok((await limits(r as never, { maxBacktestCpuMs: 20 })) as never)
     const key = await apiKey(r.tenant)
     const http = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { rule: ewma(), fromMs: T, toMs: T + DAY, step: '1m' })
-    expect([http.status, http.json.error.code, http.json.cpu]).toEqual([422, 'over_budget', { modelledMs: res.cpu!.modelledMs, budgetMs: 20 }])
+    expect([http.status, http.json.error.code, http.json.exceeded, http.json.cpu]).toEqual([422, 'over_budget', 'cpu', { modelledMs: res.cpu!.modelledMs, budgetMs: 20 }])
+    expect(res.exceeded).toBe('cpu')
   })
 
   it('a read not counted (one window holds it at the rule\'s bound) is priced at that bound, before anything is fetched; an allowed run costs at most its projection; a tighter max_series is the remedy', async () => {
@@ -561,7 +566,7 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
     await s.tick()
     expect(s.w.rangeCalls).toHaveLength(1)
     const st = await s.rule('CheckoutSLO')
-    expect(st.slo!.warmup).toMatchObject({ status: 'refused', attempts: 1, message: expect.stringMatching(/^over the CPU budget: its 2 windows hold \d+ points by the series counts, or at the rule's bound where not counted; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 3 ms\. Only the series counts were read; the rule started cold$/) })
+    expect(st.slo!.warmup).toMatchObject({ status: 'refused', exceeded: 'cpu', attempts: 1, message: expect.stringMatching(/^over the CPU budget: its 2 windows hold \d+ points by the series counts, or at the rule's bound where not counted; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 3 ms\. Only the series counts were read; the rule started cold$/) })
     expect(st.slo!.warmup!.finishedAt).not.toBeNull()
     // Cold, not waiting: evaluated at this tick.
     expect(s.log.filter((x) => x.startsWith('query'))).toHaveLength(1)
@@ -675,6 +680,30 @@ describe('planning what is fetched: a read is counted, cut into windows by the p
     expect(fetched).toHaveLength(8)
     expect(bt.cost!.scanSamples).toBe(fetched.reduce((n, [q, s0, e]) => n + cost(q, s0, e), 0))
     expect(bt.cost!.scanSamples).toBe(Number(planned))
+  })
+
+  it('windows that would take more than 1,000 range queries: refused over the queries budget once the series counts are read, no window fetched; one step at the bound over the memory budget is refused over memory before anything', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 6 * HOUR })
+    w.range = many(200)
+    w.count = () => 200
+    const rule = { alert: 'Busy', expr: 'latency_ms > 0' }
+    const T = Math.floor((T0 - 10 * DAY) / DAY) * DAY
+    const to = T + 7 * DAY - MIN
+    ok((await lim(stub as never, tenant, { maxBacktestMemoryBytes: 1 << 20 })) as never)
+    const least = await stub.backtest(tenant, rule, T, to, MIN)
+    if (least.status !== 'over_budget') throw new Error(JSON.stringify(least).slice(0, 400))
+    expect([least.exceeded, least.plan, w.rangeCalls]).toEqual(['memory', null, []])
+    // One step at the rule's bound (1,000 alerts) fits; 200 series a step then fit 5 steps a window: 2,016 windows of a week.
+    ok((await lim(stub as never, tenant, { maxBacktestMemoryBytes: least.memory!.peakBytes })) as never)
+    const res = await stub.backtest(tenant, rule, T, to, MIN)
+    if (res.status !== 'over_budget') throw new Error(JSON.stringify(res).slice(0, 400))
+    expect([res.exceeded, res.plan, res.cpu]).toEqual(['queries', null, null])
+    expect(res.message).toMatch(/^over the memory budget: windows that fit [\d.]+ MiB would take \d+ range queries; at most 1000\. Only the series counts were read: /)
+    expect(w.rangeCalls.length).toBeGreaterThan(0)
+    expect(w.rangeCalls.every((c) => c[0] === `count(${rule.expr})`)).toBe(true)
+    const key = await apiKey(tenant)
+    const http = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { rule, fromMs: T, toMs: to, step: '1m' })
+    expect([http.status, http.json.error.code, http.json.exceeded]).toEqual([422, 'over_budget', 'queries'])
   })
 
   it('past MAX_WINDOW_PLANS windows they are planned in contiguous groups, each group\'s plan counted for every window in it: at least what is fetched, and refused at one sample less than that', async () => {

@@ -562,7 +562,7 @@ function backtestAnswer(r: Exclude<Awaited<ReturnType<RulerStub['backtest']>>, {
   if (r.status === 'invalid') throw invalid(r.errors)
   if (r.status === 'failed') throw new ApiError(502, 'evaluation_failed', r.error)
   // Refused, whole: the read is over the backtest budget (or its cost is unknown), or the CPU model's projection is over its budget.
-  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, plan: r.plan, budget: r.budget, memory: r.memory ?? null, cpu: r.cpu ?? null })
+  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, exceeded: r.exceeded ?? null, plan: r.plan, budget: r.budget, memory: r.memory ?? null, cpu: r.cpu ?? null })
   const { status: _s, ...result } = r
   return json(200, result)
 }

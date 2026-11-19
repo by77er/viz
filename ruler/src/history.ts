@@ -18,7 +18,7 @@
  * where the windows fall changes nothing in the result.
  */
 import type { PromMatrix } from '../../contracts/engine'
-import type { AlertingRuleV2, AnomalyRuleV2, BacktestResult, HistoryPlan, HistoryPlanner, RangeEvaluator, SloRuleV2, WarmupStatus } from '../contracts-proposal/rules.v2'
+import type { AlertingRuleV2, AnomalyRuleV2, BacktestResult, HistoryBudget, HistoryPlan, HistoryPlanner, RangeEvaluator, SloRuleV2, WarmupStatus } from '../contracts-proposal/rules.v2'
 import { evalAnomaly, newAnomalyRt, serializeAnomaly, type AnomalyLimits, type AnomalyRt } from './anomaly'
 import { INTERVALS_MAX_BYTES, IntervalTracker, resultOf } from './backtest'
 import type { CompiledAlertRule } from './rules'
@@ -208,9 +208,10 @@ export type Streamed =
    * Refused before any window is read: nothing kept. Over the memory model, a budget or a plan's
    * refusal before anything is fetched; over the budget by the windows' plans, or over the CPU
    * budget, after the series counts (`countsRead`, when a read was counted). `defer`: it would fit
-   * a run with the whole of `deferBelowMs`.
+   * a run with the whole of `deferBelowMs`. `exceeded`: the budget it was over; null when the
+   * engine's plan refused the read or did not price it (not a budget of the ruler).
    */
-  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean; countsRead?: boolean }
+  | { ok: false; refused: string; exceeded: HistoryBudget | null; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean; countsRead?: boolean }
   /** A window could not be evaluated (or held more than the model allows); what came before it was. */
   | { ok: false; failed: string }
 
@@ -303,7 +304,7 @@ const keyOf = (r: Read) => `${r.stepMs} ${r.fromMs} ${r.toMs} ${r.promql}`
  */
 export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluator, streams: Stream[], budget: Budget, memoryBudget: number, fixedBytes: number, cpuBudget: CpuBudget = { budgetMs: Infinity }): Promise<Streamed> {
   const bound = sizeWindows(streams, fixedBytes, memoryBudget)
-  if (!bound.ok) return { ok: false, refused: bound.refused, plan: null, sizing: { peakBytes: bound.peakBytes, budgetBytes: bound.budgetBytes } }
+  if (!bound.ok) return { ok: false, refused: bound.refused, exceeded: 'memory', plan: null, sizing: { peakBytes: bound.peakBytes, budgetBytes: bound.budgetBytes } }
   const pointsPerWindow = Math.floor((memoryBudget - fixedBytes) / MEMORY.perPoint)
   // A count query holds one point a step.
   const countSteps = Math.min(MAX_STEPS_PER_QUERY, pointsPerWindow)
@@ -331,6 +332,8 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
   const over = (p: PlanSum) => p.scanSamples > budget.scanSamples || p.bytesToRead > budget.bytesToRead
   const refuse = (p: PlanSum, how: string, countsRead: boolean, sizing: { peakBytes: number; budgetBytes: number }): Streamed => ({
     ok: false,
+    // Samples when both are over: the first the budget names.
+    exceeded: p.scanSamples > budget.scanSamples ? 'scan_samples' : 'bytes',
     refused: `over budget: the read would scan ${p.scanSamples} samples and ${p.bytesToRead} bytes in ${p.queries} range quer${p.queries === 1 ? 'y' : 'ies'}${how}; the budget is ${budget.scanSamples} samples and ${budget.bytesToRead} bytes`,
     plan: p,
     sizing,
@@ -344,13 +347,13 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
     for (const [j, { read }] of readsOf(s).entries()) {
       for (const p of pieces(read)) {
         const plan = await planOf(p)
-        if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+        if (typeof plan === 'string') return { ok: false, refused: plan, exceeded: null, plan: null, sizing: null }
         add(first, plan)
       }
       if (!counted[i]) continue
       for (const p of pieces({ ...read, promql: countExpr(read.promql) }, countSteps)) {
         const plan = await planOf(p)
-        if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+        if (typeof plan === 'string') return { ok: false, refused: plan, exceeded: null, plan: null, sizing: null }
         add(first, plan)
         countReads[i]!.push({ j, read: p })
       }
@@ -372,7 +375,7 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
         for (const r of [w.read, ...w.companions]) {
           if (!r) continue
           const plan = await planOf(r)
-          if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+          if (typeof plan === 'string') return { ok: false, refused: plan, exceeded: null, plan: null, sizing: null }
           add(total, plan)
         }
       }
@@ -422,7 +425,8 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
   const peakPoints = Math.max(0, ...countReads.flat().map((c) => stepsOf(c.read)), ...windows.flatMap((ws, i) => ws.map((w) => w.points ?? stepsOf(w.read) * boundOf(streams[i]!))))
   const sizing: Sizing = { windowSteps: windows.map((ws) => Math.max(...ws.map((w) => stepsOf(w.read)))), peakBytes: fixedBytes + peakPoints * MEMORY.perPoint, budgetBytes: memoryBudget, queries: fetches }
   if (fetches > MAX_HISTORY_QUERIES) {
-    return { ok: false, refused: `over the memory budget: windows that fit ${mb(memoryBudget)} would take ${fetches} range queries; at most ${MAX_HISTORY_QUERIES}`, plan: null, sizing: { peakBytes: sizing.peakBytes, budgetBytes: memoryBudget } }
+    // Only counted reads can need this many windows, so the counts were read.
+    return { ok: false, refused: `over the memory budget: windows that fit ${mb(memoryBudget)} would take ${fetches} range queries; at most ${MAX_HISTORY_QUERIES}`, exceeded: 'queries', plan: null, sizing: { peakBytes: sizing.peakBytes, budgetBytes: memoryBudget }, ...(counted.some((x) => x) ? { countsRead: true } : {}) }
   }
 
   // 3. The counted streams' windows, planned as they will be fetched (or bounded by groups of them).
@@ -437,7 +441,7 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
         for (const r of [w.read, ...w.companions]) {
           if (!r) continue
           const plan = await planOf(r)
-          if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+          if (typeof plan === 'string') return { ok: false, refused: plan, exceeded: null, plan: null, sizing: null }
           add(total, plan)
         }
       }
@@ -451,14 +455,14 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
       const group = ws.slice(a, a + size)
       const span = { ...s.read, fromMs: group[0]!.read.fromMs, toMs: group.at(-1)!.read.toMs }
       const main = await planOf(span)
-      if (typeof main === 'string') return { ok: false, refused: main, plan: null, sizing: null }
+      if (typeof main === 'string') return { ok: false, refused: main, exceeded: null, plan: null, sizing: null }
       add(total, main, group.length)
       for (const [j, c] of (s.companions ?? []).entries()) {
         const cs = clip(c.read, span)
         const n = group.filter((w) => w.companions[j]).length
         if (!cs || n === 0) continue
         const plan = await planOf(cs)
-        if (typeof plan === 'string') return { ok: false, refused: plan, plan: null, sizing: null }
+        if (typeof plan === 'string') return { ok: false, refused: plan, exceeded: null, plan: null, sizing: null }
         add(total, plan, n)
       }
     }
@@ -486,6 +490,7 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
     const how = counted.every((x) => x) ? 'by the series counts' : anyCounted ? 'by the series counts, or at the rule\'s bound where not counted' : 'at the rule\'s bound'
     return {
       ok: false,
+      exceeded: 'cpu',
       refused: `over the CPU budget: its ${totalWindows} window${totalWindows === 1 ? ' holds' : 's hold'} ${pointsUp} points ${how}; the whole run would take about ${cpuText(projected)} of CPU (modelled), the budget is ${cpuText(budgetUs)}. ${anyCounted ? 'Only the series counts were read' : 'Nothing was fetched'}`,
       plan: total,
       sizing,
@@ -551,7 +556,7 @@ export function warmupStatus(reads: Read[], budget: Budget): WarmupStatus {
 /** What a warm-up or a backtest ends with. `points` were read and fed. */
 export type HistoryRun<T> =
   | { ok: true; value: T; plan: PlanSum; sizing: Sizing; points: number; cpu: CpuAccount }
-  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean; countsRead?: boolean }
+  | { ok: false; refused: string; exceeded: HistoryBudget | null; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean; countsRead?: boolean }
   | { ok: false; failed: string }
 
 /** The engine and the budgets a run reads with. */

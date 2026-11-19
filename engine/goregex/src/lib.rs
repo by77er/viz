@@ -60,9 +60,11 @@ impl From<Error> for String {
 /// product is above it, are refused.
 pub const MAX_REPEAT: u32 = 1000;
 
-/// How often an already repeated atom may be wrapped to repeat it again (`a*(?i)*(?i)*…`);
-/// Go refuses nesting deeper than 1000. Bounds the translator's work on such input.
-const MAX_WRAPS: usize = 1000;
+/// How often one atom may be wrapped to repeat it again (`a*(?i)*(?i)*…`): each wrap nests it a
+/// level deeper, and Go refuses nesting deeper than about 1000 (observed: 999 stacked stars
+/// accepted, 1000 refused). The `regex` crate's nesting limit refuses such patterns far
+/// earlier; this bounds the translator's own work (each wrap moves the atom's text).
+const MAX_WRAPS: u32 = 1000;
 
 const DIGIT: &str = "0-9";
 const WORD: &str = "0-9A-Za-z_";
@@ -158,6 +160,8 @@ struct Atom {
     repeated: bool,
     /// An empty-width assertion (`^ $ \A \z \b \B`), which Rust repeats only inside a group.
     assertion: bool,
+    /// Times it has been wrapped in a group to be repeated again.
+    wraps: u32,
 }
 
 /// An open group.
@@ -181,7 +185,6 @@ struct Translator<'a> {
     /// A flag group `(?i)` read since the last atom. It is written before the next atom, so
     /// that a repetition after it can still apply to the atom before it (`a(?i)*`).
     pending_flags: String,
-    wraps: usize,
     /// Position of the next `:]` at or after `posix_from` (a monotone search: linear time).
     posix_from: usize,
     posix_next: Option<usize>,
@@ -203,7 +206,6 @@ impl<'a> Translator<'a> {
             last: None,
             just_repeated: false,
             pending_flags: String::new(),
-            wraps: 0,
             posix_from: 0,
             posix_next: None,
         }
@@ -283,7 +285,7 @@ impl<'a> Translator<'a> {
         self.finish_atom();
         let start = self.out.len();
         self.out.push_str(text);
-        self.last = Some(Atom { start, product: 1, repeated: false, assertion });
+        self.last = Some(Atom { start, product: 1, repeated: false, assertion, wraps: 0 });
         self.just_repeated = false;
     }
 
@@ -331,10 +333,10 @@ impl<'a> Translator<'a> {
         if a.repeated || a.assertion {
             // Go repeats a repetition when something empty stands between them (`a*(?i)*`),
             // and repeats assertions (`^*`); Rust needs a group for both.
-            if self.wraps >= MAX_WRAPS {
+            if a.wraps >= MAX_WRAPS {
                 return Err(invalid(format!("expression nests too deeply: `{}`", self.src)));
             }
-            self.wraps += 1;
+            a.wraps += 1;
             self.out.insert_str(a.start, "(?:");
             self.out.push(')');
         }
@@ -487,7 +489,7 @@ impl<'a> Translator<'a> {
         self.finish_atom();
         let f = self.frames.pop().expect("an open group");
         self.out.push(')');
-        self.last = Some(Atom { start: f.start, product: f.product.max(1), repeated: false, assertion: false });
+        self.last = Some(Atom { start: f.start, product: f.product.max(1), repeated: false, assertion: false, wraps: 0 });
         self.just_repeated = false;
         self.i += 1;
         Ok(())

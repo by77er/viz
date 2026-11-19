@@ -65,13 +65,32 @@ fn bad<T>(m: impl Into<String>) -> SResult<T> {
 }
 
 fn rows(bytes: &[u8], table: &str, leaves: usize) -> SResult<Vec<Row>> {
+    rows_of(bytes, table, leaves, None)
+}
+
+/// Rows of the whole file, or of the row groups `groups` (in the order given).
+fn rows_of(bytes: &[u8], table: &str, leaves: usize, groups: Option<&[usize]>) -> SResult<Vec<Row>> {
     let r = SerializedFileReader::new(Bytes::copy_from_slice(bytes)).map_err(perr)?;
     let d = r.metadata().file_metadata().schema_descr();
     if d.root_schema().name() != table || d.num_columns() != leaves {
         return bad(format!("not a {table} file: schema {} with {} columns", d.root_schema().name(), d.num_columns()));
     }
-    let it = r.get_row_iter(None).map_err(perr)?;
-    it.map(|x| x.map_err(perr)).collect()
+    match groups {
+        None => r.get_row_iter(None).map_err(perr)?.map(|x| x.map_err(perr)).collect(),
+        Some(gs) => {
+            let mut out = Vec::new();
+            for &g in gs {
+                if g >= r.num_row_groups() {
+                    return bad(format!("row group {g} of {}", r.num_row_groups()));
+                }
+                let rg = r.get_row_group(g).map_err(perr)?;
+                for x in rg.get_row_iter(None).map_err(perr)? {
+                    out.push(x.map_err(perr)?);
+                }
+            }
+            Ok(out)
+        }
+    }
 }
 
 fn get<'a>(row: &'a Row, name: &str) -> SResult<&'a Field> {
@@ -384,7 +403,17 @@ pub fn read_trace_index(bytes: &[u8]) -> SResult<Vec<Fragment>> {
 
 /// Read every row of a `logs` file, in file order.
 pub fn read_logs(bytes: &[u8]) -> SResult<Vec<LogRecord>> {
-    rows(bytes, "logs", 13)?
+    logs_from(rows(bytes, "logs", 13)?)
+}
+
+/// Read the rows of row groups `groups` of a `logs` file (a reader that pruned by the index
+/// fragment), in the order given.
+pub fn read_logs_row_groups(bytes: &[u8], groups: &[usize]) -> SResult<Vec<LogRecord>> {
+    logs_from(rows_of(bytes, "logs", 13, Some(groups))?)
+}
+
+fn logs_from(rows: Vec<Row>) -> SResult<Vec<LogRecord>> {
+    rows
         .iter()
         .map(|r| {
             let labels_json = s(get(r, "labels")?, "labels")?;

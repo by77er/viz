@@ -34,6 +34,9 @@
  * from history (`WarmupStatus`, on the status of anomaly and SLO rules), and five optional
  * `RulerLimits`. Every rule file, stored group and config valid under version 3 is valid and
  * means the same.
+ * Version 5 (2026-11-19, additively): `WarmupStatus.exceeded` and the type `HistoryBudget` name the
+ * budget a refused warm-up was over. A reader that does not know the field ignores it (it reads
+ * `message`, as before); a status stored without it means the same as before.
  */
 
 import type { PromScalar, PromVector } from './engine'
@@ -394,6 +397,18 @@ export interface AnomalyRuleStatus {
  */
 export type WarmupState = 'pending' | 'done' | 'refused' | 'failed' | 'not_needed'
 
+/**
+ * ADDED (contract version 5). The budget a warm-up or a backtest was refused over:
+ *   scan_samples  the engine's plan of what it reads: samples (`maxWarmupScanSamples`, `maxBacktestScanSamples`)
+ *   bytes         the same plan: bytes (`maxWarmupBytes`, `maxBacktestBytes`); `scan_samples` when both are over
+ *   queries       the range queries the run would make, when its windows cannot be fewer than the ruler's cap (1,000)
+ *   memory        the ruler's memory model: the rule's state and one step of its series do not fit
+ *   cpu           the ruler's CPU model of the whole run
+ * An enum callers act on: a value a caller does not know must be treated as a budget it cannot name
+ * (show `message`), never as "not refused".
+ */
+export type HistoryBudget = 'scan_samples' | 'bytes' | 'queries' | 'memory' | 'cpu'
+
 export interface WarmupStatus {
   status: WarmupState
   /** The history read, or that would have been read: [fromMs, toMs] at `stepMs`, per query. */
@@ -407,6 +422,13 @@ export interface WarmupStatus {
   message: string | null
   /** When it finished (done, refused, failed); null while pending. */
   finishedAt: number | null
+  /**
+   * ADDED (contract version 5). With status `refused` over a budget: which one (`plan` and `budget`
+   * hold the plan's numbers, `message` every number). Null or absent otherwise: not refused, or
+   * refused for something that is not a budget (the engine's own plan refused the read, its cost
+   * could not be asked, the rule's own limits, state a newer release wrote).
+   */
+  exceeded?: HistoryBudget | null
 }
 
 // ───────────────────────────── SLO burn-rate rules (contract version 4) ─────────────────────────────

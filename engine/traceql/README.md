@@ -16,7 +16,8 @@ no parser crate or generator: there is no permissively licensed TraceQL grammar 
 and a hand-written parser carries no grammar tables into the WASM module (the PromQL
 parser's tables are about 90% of `viz-promql`'s module) and reports positions directly.
 Its recursion and the trees it builds are bounded, so no query can exhaust the stack
-("Limits" below; D40). The only runtime dependency is `regex` (MIT/Apache-2.0).
+("Limits" below; D40). Runtime dependencies: `engine/goregex` (viz's Go regex dialect, shared
+with viz-logql) and `regex` (MIT/Apache-2.0).
 
 ```rust
 use viz_traceql::{search, query_range, plan, MemSource, RangeRequest, SearchRequest, Trace};
@@ -43,13 +44,16 @@ let p = plan(query, start, end)?;                       // columns, predicates, 
 | `align_request(&RangeRequest)` | Tempo's query-frontend alignment of range requests, as observed |
 | `SearchResponse::to_json`, `MetricsResponse::to_json` | Tempo's HTTP JSON (protobuf-JSON: 64-bit integers as strings, `AnyValue` objects, empty fields omitted) |
 | `matching_spansets(query, &Trace)` | Spansets of one trace (for storage-side checks) |
+| `nesting(query)` | How deep a query nests as `MAX_DEPTH` counts it (to measure real queries against the limit) |
 
 ## Implemented
 
 Everything here is covered by `tests/api.rs` and the differential run unless noted.
 
 - **Spanset filters** `{ … }` with `&&`, `||`, `!`, parentheses; comparisons `= != > >= < <=`,
-  regex `=~ !~` (Rust `regex`, RE2-like, fully anchored `^(?s:…)$`), arithmetic `+ - * / % ^`,
+  regex `=~ !~` (Go's dialect as Tempo uses it: ASCII `\w \d \s \b`, `\Q…\E`, octal escapes,
+  Go's refusals; fully anchored, `.` matching a newline; translated by `engine/goregex`,
+  section 8), arithmetic `+ - * / % ^`,
   unary `-`; literals: int, float, duration (`ns us µs ms s m h`, compound `1h30m`), string
   (Go escapes), `true`/`false`, `nil`, status (`ok error unset`), kind (`server client
   producer consumer internal unspecified`), `minInt`, `maxInt`.
@@ -105,6 +109,7 @@ Everything here is covered by `tests/api.rs` and the differential run unless not
 | quantiles, histograms | integer values ≥ 2 (durations in ns) go to bucket `2^ceil(log2 v)` (through f64); floats and smaller values are not counted; quantile rank `ceil(p·N)` clamped to `[1, N]`, interpolated exponentially from the previous non-empty bucket's bound (half its own for the first); durations reported in seconds | 9 probe groups (`tests/api.rs`, `quantiles_and_histograms_use_log2_buckets`) |
 | `topk`/`bottomk` | per point; ties broken by labels (Tempo: arbitrary) | |
 | search order | most recent trace first, then trace id (Tempo: first found) | |
+| `=~`, `!~` | Go's `regexp` dialect, anchored on the parsed pattern with `.` matching `\n`: `\w \d \s \b` ASCII, `(?i)` simple case folding, `\Q…\E` (unterminated: literal to the end), octal, `\<` literal, `x{,5}` literal, counts above 1000 refused | 289 patterns on 70 subjects (`testdata/regex_dialect.json`, section 8); `a.b` matched `a\nb`, `a\|ab` matched `ab`, `\Qa)` matched `a)` |
 
 ### Limits: refused with an error, never a crash
 
@@ -117,17 +122,22 @@ bounds that tree and nothing else needs a guard. A query past a limit gets
 | Limit | Value | What counts |
 |---|---|---|
 | `MAX_QUERY_BYTES` | 128 KiB | query text |
-| `MAX_DEPTH`, parser recursion | 200 | counted on the way down: braces, unary operators, the right side of `^`, each precedence level entered, parentheses two levels each |
-| `MAX_DEPTH`, tree height | 200 | counted on the way up: a chain `a && b && c`, `x + y + z` or `{ } >> { } >> { }` is parsed by a loop but builds a tree one level deeper per operator |
-| `REGEX_NEST_LIMIT` | 64 | nesting in a pattern as the regex parser counts it (each group, repetition, alternation, concatenation); the regex compiler recurses over it |
-| `REGEX_SIZE_LIMIT` | 1 MiB per regex | compiled size (still compiles `\w{20}`; Unicode classes are large) |
+| `MAX_DEPTH`, parser recursion | 100 | counted on the way down: braces, unary operators, the right side of `^`, each precedence level entered, parentheses two levels each |
+| `MAX_DEPTH`, tree height | 100 | counted on the way up: a chain `a && b && c`, `x + y + z` or `{ } >> { } >> { }` is parsed by a loop but builds a tree one level deeper per operator |
+| `REGEX_NEST_LIMIT` | 64 | nesting in the translated pattern as the regex parser counts it (each group, repetition, alternation, concatenation, bracketed class; a Go `\d` or `\b` becomes a class or group, one level); the regex compiler recurses over it |
+| `REGEX_SIZE_LIMIT` | 1 MiB per regex | compiled size (`.{1000}` fits, four of them do not; Go's own bound of 1000 per count applies first) |
 | `REGEX_DFA_SIZE_LIMIT` | 256 KiB per regex | lazy-DFA cache |
 | `MAX_REGEXES` | 16 per query | with the two above, at most about 26 MiB of a 128 MB isolate (measured: a regex at the size limit holds about 1.3 MiB) |
 
-In practice: 98 nested parentheses, 197 operators in one chain, about 195 unary operators.
+In practice: 48 nested parentheses, 97 operators in one chain, about 95 unary operators.
 `tests/common/shapes.rs` lists 25 shapes with the exact largest accepted `n`. Long flat
 queries are not nesting: 5,000 pipeline stages, `topk` stages, `by` fields, quantiles or
 hints run. How this was verified is in Verification, section 7.
+
+The bound is 100, as viz-logql's and `engine/query`'s for PromQL (D40; it was 200). Measured
+with `nesting()`: Tempo's 284 examples that parse nest at most 10 levels and the 3,600
+generated differential queries at most 12, so 100 refuses nothing seen, with 8 times the
+headroom of the deepest; it halves the stack a query at the limit needs (section 7).
 
 ## Not implemented
 
@@ -150,10 +160,13 @@ Each returns `Error::Unsupported`, or a parse error where Tempo also rejects it.
   for missing fields, repeats keys, and echoes the matched array element).
 - Span ids are compared without leading zeros on both sides (Tempo did not match
   `span:id` for ids with a leading zero byte).
-- Queries past the limits above: nesting deeper than 200 levels, more than 16 regexes, a
+- Queries past the limits above: nesting deeper than 100 levels, more than 16 regexes, a
   regex nested deeper than 64 levels or compiling to more than 1 MiB. Tempo (Go, growable
   stacks) accepts them; viz refuses them with `Error::Validation` rather than risk the
   isolate.
+- Unicode classes in regexes (`\pL`, `\p{Greek}`, `\P…`): `Error::Unsupported`. Tempo
+  supports them (`\p{Greek}+` matched the Greek subjects); Go's and Rust's names and script
+  semantics differ (`engine/goregex/README.md`), so viz refuses rather than answer differently.
 
 ## Verification
 
@@ -163,7 +176,8 @@ Cloudflare. `CARGO_TARGET_DIR` was outside the repository.
 
 **What `cargo test -j 2` runs** (as CI does, `deploy/ci/matrix.mjs`): offline, with no Go
 and no network: `tests/api.rs` (14 tests), `tests/props.rs` (6 properties, 48 cases each),
-`tests/limits.rs` (4 tests and 2 properties, section 7), `tests/conformance.rs` (prints
+`tests/limits.rs` (4 tests and 2 properties, section 7), `tests/regex_dialect.rs` (1 test:
+289 patterns against Tempo's recorded answers, section 8), `tests/conformance.rs` (prints
 `SKIPPED: … not found` and passes when the Tempo list has not been fetched), and the
 differential exporter, which is `#[ignore]`d. Nothing in the default run needs Tempo, its
 corpus or Go. Verified on the final code (limits included) with `testdata/upstream/`
@@ -177,6 +191,8 @@ explicit commands:
 | Conformance against Tempo's example list | `tools/fetch_tempo_tests.sh && cargo test --test conformance -- --nocapture` | network (raw.githubusercontent.com); the file lands in git-ignored `testdata/upstream/` |
 | Differential run against Tempo | the commands in `tools/godiff/README.md` | Go and the Go module proxy (fetches Tempo v3.1.1 and toolchain go1.27.3, about 1.1 GB, outside the repository) |
 | Black-box probes | `VIZ_TQ_WORK=$SCRATCH python3 -I tools/probes/probe.py <queries.txt> [search\|range\|instant]` | the godiff binary in `$SCRATCH/bin` |
+| Regex probes against Tempo (re-record the answers `tests/regex_dialect.rs` checks) | `VIZ_TQ_WORK=$SCRATCH python3 -I tools/probes/regex_dialect.py testdata/regex_dialect.json [--record]` | the godiff binary in `$SCRATCH/bin` |
+| The regex translator against Go's `regexp` | `engine/goregex/README.md` | Go (standard library only) |
 | Long property run | `PROPTEST_CASES=2000 cargo test --release --test props` (and `--test limits`) | |
 | Mutation checks | `python3 -I tools/mutate.py $SCRATCH` (copies the crate; never edits it) | |
 | WASM size, load and limits | `tools/wasm-probe`: `cargo build --release --target wasm32-unknown-unknown` with the flags below, then `node check.mjs <module>` (exits non-zero on imports or any limit failure; add `node --stack-size=128` and `-C link-arg=-zstack-size=131072` for the margin check) | Node, the `wasm32-unknown-unknown` target |
@@ -196,7 +212,10 @@ explicit commands:
 
 0 failures: no rejected query is accepted and no accepted query is rejected. The 2 + 1
 Unsupported answers are listed above; `testdata/conformance_known_failures.txt` is empty.
-Without the fetched file the test prints `SKIPPED` and passes.
+Without the fetched file the test prints `SKIPPED` and passes. Unchanged after the regex and
+nesting changes of 2026-11-19 (same table). The test also prints how deep the examples nest
+as `MAX_DEPTH` counts it (`nesting()`): of the 284 that parse, the deepest is 10 levels
+(`{ !("test" != .c || ((true && .b) || 3 < .a)) }`), and all 284 are at 10 or less.
 
 ### 2. Differential run against Tempo v3.1.1 (black box)
 
@@ -246,6 +265,15 @@ An earlier pass of these four runs left 12 cases unexplained. Each was settled b
 | B 350, D 828, D 1143 | a bare boolean attribute in `\|\|` requires the attribute to exist in Tempo | rule `tempo_bare_bool_or` |
 | D 595 | a missing attribute satisfies `!=` in Tempo when the same filter also tests it against `nil` | rule `tempo_nil_ne_missing` |
 | C 593 | an infinite average (viz) is NaN in Tempo and shifts which series `bottomk` keeps | rule `infinite_average`, extended to `topk`/`bottomk` at those points |
+
+**Re-run on 2026-11-19, after the regex dialect and the nesting bound changed** (Tempo v3.1.1
+rebuilt in scratch): viz's four case files are byte-identical to those of the code before the
+change (exported from a scratch copy with the old regex compilation), and the comparison gives
+the table above exactly (2,225 / 495 / 880 / **0** unexplained; 3,105 answers decoded by
+Tempo's types). 479 of the 3,600 cases use `=~` or `!~`, but the generated data are ASCII and
+the generated patterns simple (`x.*`, `a|b`), so the dialect cannot change their answers;
+section 8 tests the dialect. The exporter prints the deepest nesting of the generated
+queries: 10, 12, 10 and 11 levels for runs A to D.
 
 To reproduce: the commands in `tools/godiff/README.md` with `VIZ_DIFF_SEED=1..4`,
 `VIZ_DIFF_DEPTH=0` (A, C) or `1` (B, D), `VIZ_DIFF_DATASETS=10` (A, B) or `20` (C, D),
@@ -371,15 +399,17 @@ under Node 22:
 
 | | |
 |---|---:|
-| `.wasm` | **1,284,354 B** (final build, with the limits) |
-| gzip -9 (Node `zlib`, as `check.mjs` reports) | **436,541 B** |
+| `.wasm` | **1,275,756 B** (2026-11-19, with `engine/goregex` and `MAX_DEPTH` 100; 1,284,354 B before) |
+| gzip -9 (Node `zlib`, as `check.mjs` reports) | **428,833 B** (436,541 B before) |
 | imports | **0** (instantiates with `{}`) |
 | exports | `memory`, `viz_tq_alloc`, `viz_tq_free`, `viz_tq_run` |
-| `new WebAssembly.Instance(module, {})` | 0.23 ms (final build, load average 5.5); earlier builds 0.24–0.34 ms and 2.2 ms at load average 8–19 (means of 200) |
-| linear memory (peak; it never shrinks) | 2.1 MiB after the six queries below; 18 MiB after all the limit checks of section 7 (128 KiB queries, 16 regexes) |
+| `new WebAssembly.Instance(module, {})` | 0.33 and 0.51 ms in two runs of the 2026-11-19 build at load average about 10; before, 0.23 ms at load average 5.5, 0.24–0.34 ms and 2.2 ms at 8–19 (means of 200) |
+| linear memory (peak; it never shrinks) | 2.0 MiB after the six queries below; 18 MiB after all the limit checks of section 7 (128 KiB queries, 16 regexes) |
 
-The only dependency is `regex` (Unicode tables trimmed as in `viz-promql`); no
-`wasm-bindgen`, `js-sys` or clock code is linked. The probe answered a search, a structural
+The dependencies are `engine/goregex` and `regex` with `std`, `perf` and `unicode-case`
+only: Go's `\w \d \s` are ASCII, so the Unicode Perl-class tables are no longer linked (the
+module is 8.6 KB smaller net, with the translator in); no `wasm-bindgen`, `js-sys` or clock
+code is linked. The probe answered a search, a structural
 search, two metrics queries, a parse error and an Unsupported query; its timings include
 generating 2,000 spans inside the module and are not a benchmark.
 
@@ -426,40 +456,74 @@ An overflow aborts the test binary, so a regression cannot pass quietly.
 | `each_shape_runs_at_its_limit_and_is_refused_one_past_it` | 25 nesting shapes (field parentheses, `!`, unary minus, `&&` `\|\|` `+` `*` `^` and comparison chains, spanset parentheses and chains, `>>` chains, nested `>`, nested pipelines, metrics parentheses, `+` chains and unary minus, thresholds, scalar-filter constants, aggregate, `by()` and metrics arguments, a 64-level regex inside parentheses): the largest accepted `n` equals the recorded one, that query evaluates, `n + 1` gets the depth error |
 | `far_past_the_limit_is_refused_not_crashed` | each shape repeated to fill 128 KiB (up to 65,000 levels): the depth error |
 | `long_flat_queries_are_not_nesting` | 5 flat shapes repeated 5,000 times run |
-| `regexes_are_bounded_in_nesting_size_and_number` | 64-level pattern accepted, 65 refused, 65,000 refused; `x{100000}` (compiles under the regex crate's default 10 MiB) refused; `\w{16}` accepted; 16 regexes run, 17 refused |
-| `random_deep_nesting_never_crashes` (property) | random stacks of 7 field, 7 spanset and 4 metrics wrappers, 0 to 3,000 deep each: accepted queries evaluate, the rest get Parse, Validation or Unsupported. In a run of 300 cases, 126 were accepted and evaluated and 174 refused for depth |
+| `regexes_are_bounded_in_nesting_size_and_number` | 64-level pattern accepted, 65 refused, 65,000 refused; `.{1000}` accepted and four of them (which compile under the regex crate's default 10 MiB) refused for size; `x{100000}` refused by Go's count bound; 16 regexes run, 17 refused |
+| `random_deep_nesting_never_crashes` (property) | random stacks of 7 field, 7 spanset and 4 metrics wrappers, 0 to 3,000 deep each: accepted queries evaluate, the rest get Parse, Validation or Unsupported. In a run of 300 cases at `MAX_DEPTH` 100, 132 were accepted and evaluated and 168 refused for depth |
 | `repeated_token_soup_never_crashes` (property) | a random 1–3 token unit from 28 tokens (unbalanced brackets, operators, strings, calls) repeated up to 30,000 times: no crash, no evaluation error |
 
-**Stack needed at the limit** (measured here: the smallest thread stack, found by bisection,
-on which the at-limit query runs through every entry point):
+**Stack needed at the limit** (measured here: the smallest thread stack, found by bisection
+in 1 KiB steps, on which the at-limit query runs through every entry point; a scratch
+program running each attempt in its own process, built with this crate's profiles):
 
-| Shape at its limit | debug, native | release, native |
-|---|---:|---:|
-| `rate() + rate() + …` (199 terms) | 2,621 KiB | 278 KiB |
-| 98 field parentheses around a 64-level regex | 1,597 KiB | 224 KiB |
-| 98 spanset parentheses | 1,526 KiB | 219 KiB |
-| 98 field parentheses | 1,328 KiB | 195 KiB |
-| 197-term spanset `&&` chain | 1,016 KiB | 129 KiB |
-| 197-term field `&&` chain | 462 KiB | 52 KiB |
+| Shape at its limit | `MAX_DEPTH` 100: debug | release | `MAX_DEPTH` 200 (before): debug | release |
+|---|---:|---:|---:|---:|
+| `rate() + rate() + …` (99 terms; 199 before) | 1,320 KiB | 144 KiB | 2,621 KiB | 278 KiB |
+| field parentheses around a 64-level regex (48; 98) | 945 KiB | 133 KiB | 1,597 KiB | 224 KiB |
+| spanset parentheses (48; 98) | 772 KiB | 114 KiB | 1,526 KiB | 219 KiB |
+| field parentheses (48; 98) | 675 KiB | 103 KiB | 1,328 KiB | 195 KiB |
+| spanset `&&` chain (97 terms; 197) | 515 KiB | 68 KiB | 1,016 KiB | 129 KiB |
+| field `&&` chain (97 terms; 197) | 242 KiB | 31 KiB | 462 KiB | 52 KiB |
 
-Field parentheses first needed 638 KiB in release at 197 levels. Two changes brought them
-down: error construction, regex compilation and function-call parsing were moved out of
-the recursive functions (`#[inline(never)]`, 379 KiB), and a parenthesis now counts two
-levels, as spanset parentheses already did (195 KiB at 98).
+Halving the bound about halved the stack, except where the regex compiler's own recursion
+(the 64-level pattern, unchanged) dominates. Field parentheses first needed 638 KiB in
+release at 197 levels. Two changes brought them down: error construction, regex compilation
+and function-call parsing were moved out of the recursive functions (`#[inline(never)]`,
+379 KiB), and a parenthesis now counts two levels, as spanset parentheses already did
+(195 KiB at 98).
 
 **In WebAssembly** (`tools/wasm-probe/check.mjs`, Node 22, release module). Every shape at
 its limit runs, one past it and filled to 128 KiB gets the depth error, and the flat
-shapes and regex limits behave as natively. There are 0 traps with V8's stack cut to
-128 KB (`node --stack-size=128`) and the module's own stack linked at 128 KiB
-(`-C link-arg=-zstack-size=131072`), both at once. The defaults are about 984 KB and
-1 MiB, so the margin is at least 7×. At `--stack-size=96` the regex-in-parentheses shape traps
-(`RangeError`). A shadow-stack overflow traps (`memory access out of bounds`; the stack is
-placed first in memory), it does not corrupt data.
+shapes and regex limits behave as natively. At `MAX_DEPTH` 100 there are 0 traps with V8's
+stack cut to 96 KB (`node --stack-size=96`) and the module's own stack linked at 128 KiB
+(`-C link-arg=-zstack-size=131072`), both at once; at 200 the regex-in-parentheses shape
+trapped at 96 KB. It still traps at 64 KB of V8's stack (`RangeError`) or a 64 KiB module
+stack (`memory access out of bounds`), the only shape that does. The defaults are about 984 KB
+and 1 MiB, so the margin is at least 8× (10× for V8's). A shadow-stack overflow traps (the
+stack is placed first in memory), it does not corrupt data.
 
 **Nothing else changed.** The four differential exports (A–D, 3,600 cases, 530 regex
 matches) were produced by the code before and after this change: viz's answers are
 byte-identical, so the comparison with Tempo (0 unexplained) still holds. Tempo's example
-list gives the same table (282 accepted, 0 failures).
+list gives the same table (282 accepted, 0 failures). The same held again when the bound went
+from 200 to 100 (section 2).
+
+### 8. Regex dialect against Tempo (black box)
+
+`tools/probes/regex_dialect.py` builds one trace, a root and 70 child spans, each holding one
+subject string as `span.s` (ASCII, Latin, Greek, Arabic-Indic digits, CJK, the Kelvin sign,
+long s, ß and ẞ, final sigma, the Ohm sign, titlecase digraphs, dotted and dotless i, control
+characters, NBSP, em space, U+FFFD, 1,000 `x`). It runs 289 patterns through Tempo v3.1.1
+(`tools/godiff`) in four forms: `{ span.s =~ P }`, `{ span.s =~ P || span.zz = 1 }`,
+`{ name = "root" } > { span.s =~ P }` and `{ span.s !~ P }`, with `P` as a backtick string.
+All four forms agreed on every pattern, so Tempo's storage-side and evaluator-side matching
+are the same. The answers are recorded in `testdata/regex_dialect.json`;
+`tests/regex_dialect.rs` runs the same forms through viz (and a search with pruning on) and
+requires Tempo's answer. What Tempo does, and what changed:
+
+| Case | Tempo v3.1.1 (observed) | viz before | viz now |
+|---|---|---|---|
+| `\w \d \s \b` and their negations | ASCII-only: `\w+` does not match `é`, `日本` or the Kelvin sign; `\d` does not match `١`; `\s` is space, `\t \n \f \r` (not `\v`, NBSP, em space); `.*\bfoo\b.*` matches `éfooé` | Unicode-aware: matched all of those | as Tempo |
+| `(?i)` | simple case folding: `k K` and the Kelvin sign; `s S ſ`; `ß ẞ`; `σ ς Σ`; `ω` and the Ohm sign; `ǅ ǆ Ǆ`; `i I` but not `İ ı`; `(?i)\w` includes the Kelvin sign and `ſ`, `(?i)\W` excludes them; a flag lasts across later alternatives (`a(?i)b\|c` matches `C`) | the same folding, applied to Unicode classes | as Tempo |
+| anchoring | full, with `.` matching `\n` (`ab`, `bc`, `b` do not match `abc`; `a.b` matches `a\nb`, `(?-s:a.b)` does not), on the parsed pattern: `a\|ab` matches `ab`, `\Qa)` matches `a)`, `a)\|(b` is refused | `^(?s:…)$` around the text: `a)\|(b` was accepted and became `^a` or `b$` | as Tempo |
+| Go-only syntax | `\Q…\E`; octal `\101`, `\0`, `\17` (`\08` is NUL then `8`); `\<a\>` is literal; `x{,5}`, `x{01}`, `a{`, `{` are literal; `a\b{start}` is a boundary then `{start}`; `[a&&b]`, `[a~~b]`, `[[a]` have literal members; `(?ii)`, `(?i-i)` (clears), `(?)`; `a(?i)*` repeats `a`; `^*`; `\x{D800}` matches U+FFFD | refused, or matched differently (`\<`, `\b{start}`, `&&`, `~~`) | as Tempo |
+| what Go refuses | `\1`, `\8`, `\18`, `\u` and `\U` escapes, `\e`, `\Z`, `\cA`, `\N`, `\C`, `(?x)`, `(?u)`, `(?i-)`, `x**`, `x{2}{3}`, `x*??`, `a++`, `x{1001}`, `(?:a{10}){101}`, `(?:a{2,}){600}`, `[\b]`, `[\Q]\E]`, `[a-\d]`, `[[:foo:]]`, `(?P<a.b>x)`, `(?'n'x)`, `a)(b` are refused | most were accepted | refused |
+| Unicode classes | supported: `\pL`, `\p{Greek}`, `\PL`, `\pN`, `\pZ` (`\p{greek}` is an error, raised by Tempo's storage rather than its parser) | a compile error in the release build (no Unicode tables), Rust's semantics in test builds (their dev-dependencies enable the tables) | `Error::Unsupported` (`engine/goregex/README.md`) |
+
+Against the recorded answers, the code before this change gave a different answer (a
+different match, an acceptance where Tempo refuses, or a refusal where Tempo accepts) for
+BEFORE_COUNT of the 278 patterns other than Unicode classes; it now gives Tempo's answer for all 278, and
+the 11 Unicode-class patterns are Unsupported. The translator is also checked against Go's
+own `regexp` on 100,000 generated patterns (`engine/goregex/README.md`: 0 differences, apart
+from surrogate escapes, on which Go itself is inconsistent).
 
 ## Integration (not part of this crate; what it needs)
 
@@ -493,12 +557,13 @@ list gives the same table (282 accepted, 0 failures).
 - **Memory**: evaluation holds one trace at a time plus the search results and the metrics
   accumulators (series × points); `Limits` bounds series and points; nothing bounds span
   count per trace or result size beyond `limit`/`spss`.
-- **Regex dialect**: Rust `regex`, not Go `regexp`; both are RE2-like. Lead, not verified
-  against Tempo: Rust's `\w`, `\d`, `\s` and `\b` are Unicode-aware by default, while Go's
-  are ASCII-only (training knowledge), so `=~ "\w+"` may match non-ASCII values that Tempo
-  does not. A probe with a non-ASCII value would settle it.
-- **Stack in Workers**: the limits leave at least 7× headroom on Node's default V8 stack
-  and on the module's 1 MiB stack. The stack size of a Workers isolate was not measured.
+- **Regex dialect**: Go's, checked against Tempo on 289 patterns (section 8) and the
+  translator against Go's `regexp` on 100,000. Not covered: Unicode classes (refused; Tempo
+  accepts them), surrogate escapes (Go's own answer depends on the pattern's shape; viz
+  applies one rule), and case folding of characters assigned between Unicode 15.0 (Go 1.24's
+  tables) and 16.0 (`regex-syntax` 0.8.12's).
+- **Stack in Workers**: the limits leave at least 8× headroom on the module's 1 MiB stack and
+  10× on Node's default V8 stack. The stack size of a Workers isolate was not measured.
 - **Work per query**: a query within the limits can still be expensive. Each metrics
   function in an arithmetic expression scans the source once, and parentheses allow
   thousands of them in 128 KiB. Structural operators cost about |left| × |right| × depth
@@ -531,10 +596,11 @@ tests/api.rs              behaviour on a hand-made trace set (Tempo's observed a
 tests/conformance.rs      Tempo's example list as an oracle (fetched at test time)
 tests/props.rs            properties; tests/common: data and query generators
 tests/limits.rs           nesting and regex limits; tests/common/shapes.rs: the nesting shapes
+tests/regex_dialect.rs    regexes against Tempo's recorded answers (testdata/regex_dialect.json)
 tests/differential.rs     exporter for the differential run (ignored test)
 tools/godiff/             Tempo black-box harness (AGPL, test-only; see its README)
 tools/compare.py          comparison and classification
-tools/probes/             the black-box probes behind the "observed" rules
+tools/probes/             the black-box probes behind the "observed" rules (regex_dialect.py: section 8)
 tools/mutate.py           mutation checks on a scratch copy
 tools/wasm-probe/         WASM size, load and limits check
 examples/bench.rs         benchmark

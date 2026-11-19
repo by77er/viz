@@ -94,8 +94,13 @@ r.data_json();   // {"resultType":"matrix","result":[...],"stats":{...}}: Loki's
   (`ToLower ToUpper Replace Trim TrimLeft TrimRight TrimPrefix TrimSuffix TrimSpace`).
   `addf`/`subf`/`mulf`/`divf` compute in decimal (division to 16 places), as Loki's do.
   Execution errors set `TemplateFormatErr` with Go's message format.
-- **Regular expressions** use Go's RE2 dialect: `\d \w \s \b` are ASCII-only, `\Q…\E` and
-  octal escapes work (translated for Rust's `regex`, `src/goregex.rs`).
+- **Regular expressions** use Go's RE2 dialect, translated for Rust's `regex` by
+  `engine/goregex` (shared with viz-traceql): `\d \w \s \b` are ASCII-only, `\Q…\E`, octal
+  escapes, escaped punctuation (`\<` is a literal), a `{` that starts no repetition, literal
+  `[ && ~~ --` in classes, repeated and cancelled flags work as in Go; what Go refuses is
+  refused (flags other than `i m s U`, unknown escapes, stacked repetitions, counts above 1000
+  alone or multiplied through nesting, unbalanced parentheses). The rules and their evidence
+  are in `engine/goregex/README.md`.
 
 ## Not implemented
 
@@ -108,8 +113,11 @@ Each returns `Error::Unsupported` (or a parse error where Loki's grammar has no 
 - `toDateInZone` with a zone other than UTC (the engine has no time-zone database; `Local`
   is UTC); `now` without `Options::now_ns` (a `TemplateFormatErr` on the line, as any
   function error).
-- Unicode character classes in regexes (`\p{Greek}`): the regex fails to compile (an error,
-  never a different match).
+- Unicode character classes in regexes (`\p{Greek}`, `\pL`): refused by the translator (a
+  parse or query error, never a different match). Before the translator moved to
+  `engine/goregex` they compiled with Rust's semantics: `cargo tree` shows the `regex` crate
+  built with its default features in this crate (through promql-parser's `cfgrammar`), so
+  the Unicode tables were linked, although this README said they failed to compile.
 - Instant log queries (Loki's HTTP API refuses them too); `interval` for log range queries;
   live tail; the label, series, volume, patterns and detected-fields endpoints (the engine
   answers queries only).
@@ -146,7 +154,7 @@ the engine recurses over its input is bounded, and refuses rather than overflows
 | Template blocks (`if`/`with`/`range`; each `else if` is a level) | 100 | parse error "template nested more than 100 levels deep" |
 | Template parentheses within one action | 100 | the same |
 | JSON in `json`, `unpack` and `fromJson` | 128 levels | `JSONParserErr` "Malformed JSON error" (`fromJson`: no value) |
-| Regular expressions (all of them, through `src/goregex.rs`) | `regex`'s nesting limit (250) and 16 MiB compiled size | parse error (matchers, `regexp`), query error (line filters), `TemplateFormatErr` (template functions) |
+| Regular expressions (all of them, through `engine/goregex`) | `regex`'s nesting limit (250) and 16 MiB compiled size; Go's bound of 1000 per counted repetition | parse error (matchers, `regexp`), query error (line filters), `TemplateFormatErr` (template functions) |
 | Template execution | 1,000,000 steps; `repeat` output 1 MiB | `TemplateFormatErr` |
 
 100 is the bound `engine/query` applies to PromQL (`Limits::max_depth`); a query at the limit
@@ -164,7 +172,8 @@ x86-64, 4 cores and 16 GB shared with other builds (load average 7 to 15 during 
 rustc 1.97.0, Go 1.24.7 (and go1.26.10 for the harness), Node 22.23. Measured here, not on
 Cloudflare, on 2026-11-19.
 
-`cargo test` runs offline and needs no Go: unit tests (25), `tests/api.rs` (8),
+`cargo test` runs offline and needs no Go: unit tests (22; the regex translator's 3 moved to
+`engine/goregex` with it, section (g)), `tests/api.rs` (8),
 `tests/semantics.rs` (10, rules observed in Loki), `tests/limits.rs` (5, pathological
 nesting), `tests/conformance.rs` (1; it reports itself skipped unless
 `tools/oracle/fetch.sh` was run), `tests/props.rs` (8 properties) and
@@ -418,9 +427,9 @@ per line: the next things to optimise. Native, not WASM, and not measured on Clo
   non-object; logfmt; label filters; templates; unwrap); other malformations may be worded
   differently. Parse-error messages have Loki's `parse error at line L, col C:` prefix but
   not always its wording.
-- **Time zones**: UTC only. **Regexes**: Go RE2 semantics translated to Rust's `regex`;
-  constructs outside the translation (Unicode classes) fail to compile rather than match
-  differently.
+- **Time zones**: UTC only. **Regexes**: Go RE2 semantics translated to Rust's `regex`
+  (`engine/goregex`); constructs outside the translation (Unicode classes) are refused rather
+  than matched differently.
 
 ## Known risks
 
@@ -463,7 +472,7 @@ src/lexer.rs, parser.rs, ast.rs   tokens, recursive-descent parser and validatio
 src/pipeline.rs, labels.rs        compiled stages, stage order, label sets and error labels
 src/json.rs, jsonwalk.rs          JSON reader; the json/unpack parsers with Loki's error wording
 src/logfmt.rs, pattern.rs, ip.rs  logfmt scanner, pattern parser and filter, ip() matching
-src/goregex.rs, text.rs           Go regex dialect, Go strings/durations/byte sizes/floats
+src/text.rs                       Go strings/durations/byte sizes/floats (Go regexes: engine/goregex)
 src/template/                     text/template subset, functions, Go fmt, Go time layouts
 src/eval.rs                       log queries, range aggregations, translation to viz-promql
 src/source.rs, output.rs, lib.rs  LogSource and MemSource, Loki JSON, public API

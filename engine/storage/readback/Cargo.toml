@@ -1,0 +1,20 @@
+[package]
+name = "viz-storage-readback"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "Reads span and log files written by viz-storage back through viz-traceql and viz-logql, and compares with their in-memory sources. A test tool, never shipped."
+publish = false
+
+[dependencies]
+viz-storage = { path = ".." }
+viz-traceql = { path = "../../traceql" }
+viz-logql = { path = "../../logql" }
+serde_json = "1"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+
+[profile.release]
+opt-level = 2
+debug = false
+
+[workspace]

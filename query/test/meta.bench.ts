@@ -2,9 +2,9 @@
  * Local measurement of the label endpoints over leaves (CARDINALITY.md "What is left" 3):
  * `npm run measure -- test/meta.bench.ts`.
  *
- *   C   150,000 series of one metric (`mb_requests_total{job, instance}`, 20 jobs) at 60 s for
- *       an hour, flushed in ten-minute units on two shards: about 20 MiB of series files in
- *       the hour, over `maxFetchBytes` (16 MiB).
+ *   C   190,000 series of one metric (`mb_requests_total{job, instance}`, 20 jobs) at 60 s for
+ *       an hour, flushed in ten-minute units on two shards: about 19 MiB of series files in
+ *       the hour, over `maxFetchBytes` (16 MiB). (150,000 made 14.8 MiB: one place.)
  *   D   100,000 series, ten minutes flushed and seven in the tails, one request a minute
  *       (about 68 MiB of tail; `tail.bench.ts` dataset B).
  *
@@ -78,32 +78,35 @@ async function compare(name: string, t: Tenant, calls: [string, string, [string,
 }
 
 describe('label endpoints over leaves (local)', () => {
-  it('C: 150,000 series over an hour, about 20 MiB of series files', async () => {
+  it('C: 190,000 series over an hour, about 19 MiB of series files', async () => {
     const w: World = await world()
     const t = w.a
     const M = 'mb_requests_total'
     await setLimits(t, {})
     const t0 = performance.now()
-    const bulk = new Bulk(END - HOUR + 60_000, 60_000, 150_000, labelsOf(M))
+    const bulk = new Bulk(END - HOUR + 60_000, 60_000, 190_000, labelsOf(M))
     while (bulk.nextTs <= END) {
-      await write(t, bulk.series(Math.min(10, (END - bulk.nextTs) / 60_000 + 1)))
+      // Edge takes at most 100,000 series a request: two requests per ten minutes.
+      const scrape = bulk.series(Math.min(10, (END - bulk.nextTs) / 60_000 + 1))
+      await write(t, scrape.slice(0, 95_000))
+      await write(t, scrape.slice(95_000))
       await sealAll(w, [t])
       await flushAll(w, [t])
       await discardAll(w)
     }
-    console.log(`MEASURE dataset C: 150000 series (${M}, 60 s), one hour flushed in ten-minute units on 2 shards; loading took ${((performance.now() - t0) / 1000).toFixed(0)} s`)
+    console.log(`MEASURE dataset C: 190000 series (${M}, 60 s), one hour flushed in ten-minute units on 2 shards; loading took ${((performance.now() - t0) / 1000).toFixed(0)} s`)
     await api(t.key, '/api/v1/query', { query: '1 + 1', time: sec(END) })
     const win: [string, string][] = [['start', sec(END - HOUR)], ['end', sec(END)]]
     await compare('C', t, [
       ['/label/job/values?match[]=m, 1 h', '/api/v1/label/job/values', [['match[]', M], ...win]],
-      ['/label/instance/values?match[]=m, 1 h (150,000 values)', '/api/v1/label/instance/values', [['match[]', M], ...win]],
+      ['/label/instance/values?match[]=m, 1 h (190,000 values)', '/api/v1/label/instance/values', [['match[]', M], ...win]],
       ['/label/instance/values?match[]=m&limit=100, 1 h', '/api/v1/label/instance/values', [['match[]', M], ['limit', '100'], ...win]],
       ['/labels?match[]=m, 1 h', '/api/v1/labels', [['match[]', M], ...win]],
-      ['/series?match[]=m{job="job-07"}, 1 h (7,500 series)', '/api/v1/series', [['match[]', `${M}{job="job-07"}`], ...win]],
+      ['/series?match[]=m{job="job-07"}, 1 h (9,500 series)', '/api/v1/series', [['match[]', `${M}{job="job-07"}`], ...win]],
     ])
   }, 1_800_000)
 
-  it('D: 100,000 series, about 68 MiB unflushed', async () => {
+  it.skip('D (already measured in this run) : 100,000 series, about 68 MiB unflushed', async () => {
     const w: World = await world()
     const t = w.a
     const M = 'md_requests_total'
