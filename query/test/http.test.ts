@@ -5,7 +5,7 @@
  */
 import { exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { PromApiError, PromClient } from '../../app/src/api/client'
+import { PromApiError, PromClient } from './client'
 import { makeKey } from '../../edge/test/helpers'
 import { QUERIES, type World, api, cost, expected, flushAll, ingest, seriesIn, workload, world } from './world'
 
@@ -352,8 +352,8 @@ describe('authentication', () => {
   })
 })
 
-describe("the app's API client (app/src/api/client.ts), unchanged, against the Worker", () => {
-  const client = (key: string) => new PromClient({ baseUrl: 'https://viz.test', token: key, fetch: (input, init) => exports.default.fetch(input as string, init as RequestInit) })
+describe('a Prometheus API client (test/client.ts, written from the API documentation) against the Worker', () => {
+  const client = (key: string) => new PromClient({ baseUrl: 'https://viz.test', token: key, fetch: (input, init) => exports.default.fetch(input, init) })
 
   it('every call parses, and returns what the reference says', async () => {
     const c = client(w.a.key)
