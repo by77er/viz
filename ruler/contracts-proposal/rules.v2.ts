@@ -23,6 +23,10 @@
  *   6. `WebhookConfig.secret`: outbound requests are signed (`SIGNATURE_HEADER`).
  *   7. `AlertUpdate.generator` names the monitor so the notifier can key its log by it.
  *   8. `RulerIndexRpc`: the registry of ruler objects the cron sweeper walks.
+ *   9. (with contract version 4) SLO rules carry the same viz fields as alerting rules; group
+ *      bundles carry SLO state and warm-up status; `HistoryPlanner` (the engine's plan of a range
+ *      read, for budgets); backtests of anomaly and SLO rules, with each alert's annotations and
+ *      an `over_budget` refusal; `POST /api/v1/monitors/{id}/backtest`; SLO monitors.
  */
 import type { PromMatrix, PromScalar, PromVector } from '../../contracts/engine'
 import type {
@@ -45,6 +49,12 @@ import type {
   RulerLimits,
   RulerRpc,
   NotifierRpc,
+  SloHistory,
+  SloRule,
+  SloRuleInput,
+  SloRuleStatus,
+  SloSeverity,
+  WarmupStatus,
   SaveGroupsResult,
   Silence,
   ValidationError,
@@ -97,6 +107,24 @@ export interface ValidatedSelector {
   /** The selector's range (0 for an instant selector) and offset. */
   rangeMs: number
   offsetMs: number
+}
+
+/**
+ * ADDED (with contract version 4). What a range read would cost, from the engine's plan, before
+ * anything is fetched (viz-query's `/api/v1/plan` with `start`, `end`, `step`): samples the data
+ * files in range hold, their bytes, and the refusal the engine's own limits would give (or null).
+ * The tail of the shards is not in it.
+ */
+export interface HistoryPlan {
+  scanSamples: number
+  bytesToRead: number
+  seriesEstimate: number
+  refusal: { errorType: string; error: string } | null
+}
+
+/** ADDED (with contract version 4). Implemented by the engine binding (`plan`) or viz-query's `/api/v1/plan`. */
+export interface HistoryPlanner {
+  plan(promql: string, startMs: number, endMs: number, stepMs: number): Promise<HistoryPlan>
 }
 
 /** ADDED. Save-time PromQL validation; implemented by the engine binding when it exists. */
@@ -183,8 +211,22 @@ export interface AnomalyRuleV2 extends AnomalyRule {
   monitor?: MonitorMeta
 }
 
-/** Every rule a group can hold: `RuleGroup.rules` and `RuleGroup.anomalyRules`. */
-export type AnyRuleV2 = RuleV2 | AnomalyRuleV2
+/** EXTENDED (`SloRuleInput`, contract version 4): the viz fields of an alerting entry. "No data" means the SLI returned no series. */
+export interface SloRuleInputV2 extends SloRuleInput {
+  no_data?: NoDataMode
+  no_data_for?: string
+  no_data_expr?: string
+  monitor?: MonitorMeta
+}
+
+/** EXTENDED (`SloRule`). As for `AlertingRuleV2`, neither field is part of the rule key. */
+export interface SloRuleV2 extends SloRule {
+  noData?: NoDataPolicy
+  monitor?: MonitorMeta
+}
+
+/** Every rule a group can hold: `RuleGroup.rules`, `RuleGroup.anomalyRules` and `RuleGroup.sloRules`. */
+export type AnyRuleV2 = RuleV2 | AnomalyRuleV2 | SloRuleV2
 
 /** EXTENDED (`RulerConfig`). */
 export interface RulerConfigV2 extends RulerConfig {
@@ -243,6 +285,8 @@ export interface RuleSnapshot {
   rule: AnyRuleV2
   /** EXTENDED. Anomaly rules only. */
   anomaly?: AnomalyRuleStatus
+  /** EXTENDED (contract version 4). SLO rules only. */
+  slo?: SloRuleStatus
   health: 'ok' | 'err' | 'unknown'
   lastError: string | null
   lastEvaluationMs: number | null
@@ -264,7 +308,7 @@ export interface GroupSnapshot {
 
 /** ADDED. A group with everything needed to continue it on another shard. */
 export interface GroupBundle {
-  spec: { name: string; intervalMs: number; queryOffsetMs: number; limit: number; rules: RuleV2[]; anomalyRules?: AnomalyRuleV2[] }
+  spec: { name: string; intervalMs: number; queryOffsetMs: number; limit: number; rules: RuleV2[]; anomalyRules?: AnomalyRuleV2[]; sloRules?: SloRuleV2[] }
   /** rule key → alerts. */
   alerts: Record<string, Alert[]>
   /** monitor id → its transition log. */
@@ -274,6 +318,10 @@ export interface GroupBundle {
    * order), so a moved rule keeps scoring where it was. Absent: the rules start cold.
    */
   anomalyState?: Record<string, string[]>
+  /** EXTENDED (contract version 4). SLO rule key → its stored state rows (`slo_state`: part, block, body). Absent: the rules start cold. */
+  sloState?: Record<string, { part: string; block: number; body: string }[]>
+  /** EXTENDED (contract version 4). Anomaly and SLO rule key → its warm-up status, so a moved rule is not warmed again. */
+  warmup?: Record<string, WarmupStatus>
 }
 
 /** ADDED. A span during which one alert instance would have been pending or firing. */
@@ -287,6 +335,12 @@ export interface BacktestInterval {
   /** Still in this state at the last step. */
   open: boolean
   noData: boolean
+  /**
+   * EXTENDED (with contract version 4). The annotations the alert carried when it entered this
+   * state, templates expanded: for an anomaly or SLO alert, the explanation it would have been sent
+   * with (`anomaly`, `slo` and their `_detail` annotations).
+   */
+  annotations?: Record<string, string>
 }
 
 export interface BacktestResult {
@@ -316,12 +370,28 @@ export interface BacktestResult {
     /** Plain statement of what this step can and cannot show. */
     note: string
   }
+  /** EXTENDED (with contract version 4). The kind of rule backtested; absent means `alert`. */
+  kind?: 'alert' | 'anomaly' | 'slo'
+  /**
+   * EXTENDED (with contract version 4). Anomaly and SLO rules: the history read before `fromMs` and
+   * fed through the rule's evaluation (no alerts) so that its state at `fromMs` is what it would
+   * have been live, as a warm-up leaves it. Null for alerting rules.
+   */
+  warmup?: { reads: { fromMs: number; toMs: number; stepMs: number }[]; points: number } | null
+  /** EXTENDED (with contract version 4). What the engine's plan said before the fetch, summed over the range queries. */
+  cost?: { scanSamples: number; bytesToRead: number; queries: number; budget: { scanSamples: number; bytesToRead: number } }
 }
 
 export type BacktestResponse =
   | ({ status: 'ok' } & BacktestResult)
   | { status: 'invalid'; errors: ValidationError[] }
   | { status: 'failed'; error: string }
+  /**
+   * EXTENDED (with contract version 4). Refused before anything was fetched: the engine's plan of the
+   * read is over the backtest budget (`RulerLimits.maxBacktest*`), the engine's own limits would
+   * refuse it, or its cost could not be asked. Never answered with a part of the range.
+   */
+  | { status: 'over_budget'; message: string; plan: { scanSamples: number; bytesToRead: number; queries: number } | null; budget: { scanSamples: number; bytesToRead: number } }
   | Refused
 
 /** EXTENDED (`RulerRpc`). */
@@ -504,6 +574,35 @@ export interface MonitorInput {
    * `ticket`, `for` 0s (alarms are onsets), `keepFiringFor` 10m.
    */
   anomaly?: MonitorAnomalyInput
+  /**
+   * EXTENDED (with contract version 4). An SLO monitor: no `query` or `condition`; the SLI is the
+   * expression and the burn-rate alerts decide (the SRE Workbook's by default).
+   */
+  slo?: MonitorSloInput
+}
+
+/** ADDED (with contract version 4). The `slo` field of a monitor document: the rule file's `slo` block in the API's spelling. */
+export interface MonitorSloInput {
+  objective: number
+  window?: string
+  sli: { good: string; total: string } | { bad: string; total: string } | { errorRatio: string }
+  alerts?: { severity: SloSeverity; longWindow: string; shortWindow: string; burnRate: number }[]
+  minEvents?: number
+  minCoverage?: number
+  maxSeries?: number
+}
+
+/** ADDED (with contract version 4). What the Monitor screens show of an SLO monitor. */
+export interface MonitorSloView {
+  objective: number
+  windowMs: number
+  sli: SloRuleV2['slo']['sli']
+  alerts: SloRuleV2['slo']['alerts']
+  minEvents: number
+  minCoverage: number
+  maxSeries: number
+  history: SloHistory
+  status: SloRuleStatus | null
 }
 
 /** ADDED. The `anomaly` field of a monitor document. */
@@ -623,6 +722,8 @@ export interface MonitorView {
   historyRecorded: boolean
   /** EXTENDED. Set for an anomaly monitor, null otherwise. */
   anomaly: MonitorAnomalyView | null
+  /** EXTENDED (with contract version 4). Set for an SLO monitor, null otherwise. */
+  slo: MonitorSloView | null
 }
 
 export type { CostClass, SaveGroupsResult }

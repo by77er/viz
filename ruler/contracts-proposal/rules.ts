@@ -28,6 +28,12 @@
  * notification body (`JsonNotification`), and the reserved receiver `CONTROL_RECEIVER` through
  * which the destination a person set in control (`contracts/control.ts`) is reached. A config
  * valid under version 2 is valid and means the same (`format` defaults to `alertmanager`).
+ * Version 4 (2026-11-19, additively): SLO burn-rate rules (an alerting entry with an `slo` block,
+ * kept in the new optional `RuleGroup.sloRules`; one new enum value `'slo'` in `RuleStatus.kind`
+ * and `SavedRule.kind`, which callers must not act on as another kind), warming detector state
+ * from history (`WarmupStatus`, on the status of anomaly and SLO rules), and five optional
+ * `RulerLimits`. Every rule file, stored group and config valid under version 3 is valid and
+ * means the same.
  */
 
 import type { PromScalar, PromVector } from '../../contracts/engine'
@@ -85,8 +91,11 @@ export interface RuleGroupInput {
   limit?: number
   /** Labels added to every rule in the group; a rule's own label wins. */
   labels?: Record<string, string>
-  /** EXTENDED (contract version 2): an entry may also be an `AnomalyRuleInput` (an alerting entry with an `anomaly` block). */
-  rules: (AlertingRuleInput | RecordingRuleInput | AnomalyRuleInput)[]
+  /**
+   * EXTENDED (contract version 2): an entry may also be an `AnomalyRuleInput` (an alerting entry with
+   * an `anomaly` block). EXTENDED (contract version 4): or an `SloRuleInput` (with an `slo` block).
+   */
+  rules: (AlertingRuleInput | RecordingRuleInput | AnomalyRuleInput | SloRuleInput)[]
 }
 
 export interface AlertingRuleInput {
@@ -154,6 +163,13 @@ export interface RuleGroup {
    * alerting rule (which would fire for every series) or as a recording rule (see "anomaly rules").
    */
   anomalyRules?: AnomalyRule[]
+  /**
+   * EXTENDED (contract version 4). The group's SLO burn-rate rules, evaluated in the same tick and
+   * the same batch, after the anomaly rules. Absent means none. Kept out of `rules` and
+   * `anomalyRules` for the same reason: a release that predates them never evaluates one as
+   * another kind (see "SLO burn-rate rules").
+   */
+  sloRules?: SloRule[]
 }
 
 /** A problem with a document, addressed so a UI can point at it. */
@@ -183,8 +199,8 @@ export interface ValidationError {
 export const ANOMALY_DETECTORS = ['ewma', 'threshold', 'robust_z', 'seasonal', 'cusum'] as const
 /**
  * Not in the list, on purpose: `stl` and `pelt` (batch fits; explanations for a scheduled job, not
- * pagers), `burn_rate` (two series per bucket; SLOs compile to recording rules instead) and the
- * cross-series detector (one vector, no per-series state). A reader that meets a name it does not
+ * pagers), `burn_rate` (two series per bucket; an SLO is its own rule kind since contract version 4,
+ * "SLO burn-rate rules") and the cross-series detector (one vector, no per-series state). A reader that meets a name it does not
  * know refuses the rule; it never substitutes another detector.
  */
 export type AnomalyDetector = (typeof ANOMALY_DETECTORS)[number]
@@ -335,6 +351,239 @@ export interface AnomalyRuleStatus {
   stateBytes: number
   /** States of series absent longer than the detector's lookback, dropped since the object started. */
   pruned: number
+  /** EXTENDED (contract version 4). How warming the rule from history went; absent for a rule saved before warm-up existed. */
+  warmup?: WarmupStatus
+}
+
+// ───────────────────────────── warming from history (contract version 4) ─────────────────────────────
+//
+// ADDED 2026-11-19, additively. A new anomaly or SLO rule (a new rule key: a new detector,
+// parameter, interval or SLI is a new rule) does not start cold: before its first evaluation the
+// ruler reads its history class with the engine's range query, at the rule's interval, and feeds
+// those points through the rule's own evaluation in time order, so its state is what it would be
+// had the rule run all along. The cost is asked first (the engine's plan, nothing fetched); over
+// the budget (`RulerLimits.maxWarmup*`) the warm-up is refused as a whole, never fetched in part,
+// and the rule starts cold, saying so here.
+
+/**
+ *   pending      not run yet, or a transient failure that is retried at the next tick (`attempts`)
+ *   done         the state was filled from `points` points of history
+ *   refused      over the budget, or the engine's plan refused the read: nothing was fetched; the rule
+ *                started cold (`message` says why, `plan` and `budget` the numbers)
+ *   failed       the engine failed `attempts` times; the rule started cold
+ *   not_needed   nothing to read (a detector without history)
+ */
+export type WarmupState = 'pending' | 'done' | 'refused' | 'failed' | 'not_needed'
+
+export interface WarmupStatus {
+  status: WarmupState
+  /** The history read, or that would have been read: [fromMs, toMs] at `stepMs`, per query. */
+  reads: { fromMs: number; toMs: number; stepMs: number }[]
+  /** What the engine's plan said before anything was fetched, summed over the range queries; null until asked. */
+  plan: { scanSamples: number; bytesToRead: number; queries: number } | null
+  budget: { scanSamples: number; bytesToRead: number }
+  /** Points fed through the rule's evaluation (summed over series). */
+  points: number
+  attempts: number
+  message: string | null
+  /** When it finished (done, refused, failed); null while pending. */
+  finishedAt: number | null
+}
+
+// ───────────────────────────── SLO burn-rate rules (contract version 4) ─────────────────────────────
+//
+// ADDED 2026-11-19, additively (contracts/COMPATIBILITY.md §4): nothing above changes meaning. A
+// rule file without an `slo` block means what it meant; a stored group without `sloRules` is read
+// as having none.
+//
+// An SLO is an objective (0.999), a compliance window (30 days) and an SLI: good and total events,
+// bad and total events, or an error ratio. The rule raises the multi-window, multi-burn-rate
+// alerts of the Google SRE Workbook (chapter 5, "Alerting on SLOs", approach 6): an alert fires
+// while the burn rate is above its threshold over BOTH its long and its short window. Defaults
+// are the workbook's (`anomaly/` `SRE_WORKBOOK_RULES`): page 1 h / 5 m at 14.4×, page 6 h / 30 m at
+// 6×, ticket 1 d / 2 h at 3×, ticket 3 d / 6 h at 1×.
+//
+// Evaluation: ONE expression per rule per tick (`SloRule.expr`, derived): the events of the last
+// interval (one bucket), good or bad and total, distinguished by the label `SLO_PART_LABEL`. The
+// ruler keeps each series' buckets for the longest window, and coarser buckets for the compliance
+// window (to say how much budget is left), as state (warmed from history, contract version 4). An
+// alert carries `severity` (`page` or `ticket`): one alert per series and severity, firing while any
+// alert of that severity fires. Its sentence (`SLO_ANNOTATION`) says which windows burned, how
+// fast, and how much budget is left; the numbers are `SloDetail` JSON (`SLO_DETAIL_ANNOTATION`).
+
+/**
+ * The SLI, as PromQL. Each expression must contain `$window`, which the ruler replaces with the
+ * bucket width: the group interval each tick (so `increase(x[$window])` is one bucket's events),
+ * or a coarser width when it reads the compliance window. `rate()` works too (only ratios and
+ * `min_events` see the unit).
+ *   { good, total }   bad = total - good; a series in `good` without one in `total` is an error;
+ *                     a `total` series without a `good` one counts as all bad
+ *   { bad, total }    a `total` series without a `bad` one counts as no errors
+ *   { error_ratio }   one value per bucket, each bucket weighted equally (time-weighted, not by events)
+ */
+export type SloSliInput = { good: string; total: string } | { bad: string; total: string } | { error_ratio: string }
+
+export interface SloAlertInput {
+  severity: 'page' | 'ticket'
+  long_window: string
+  short_window: string
+  /** Fires above this multiple of the budget rate, over both windows (strictly greater, as the workbook's `>`). */
+  burn_rate: number
+}
+
+/** The `slo` block of a rule-file entry. */
+export interface SloSpecInput {
+  /** The target fraction of good events, 0 < objective < 1, e.g. 0.999. */
+  objective: number
+  /** The compliance window. Default "30d". */
+  window?: string
+  sli: SloSliInput
+  /** Default: the SRE Workbook's four (above). */
+  alerts?: SloAlertInput[]
+  /** Low-traffic guard: events a long window must hold before its alert may fire. Default 0. */
+  min_events?: number
+  /** Fraction of a window's buckets that must be present for the window to count. Default 0.9. */
+  min_coverage?: number
+  /** Most series the SLI may return; above it the evaluation is refused, never cut. Default 10. */
+  max_series?: number
+  /** Written by the ruler's own export: which fields the author gave. */
+  given?: string[]
+}
+
+/** A rule-file entry: `alert`, `for`, `keep_firing_for`, labels and annotations, and an `slo` block. No `expr`: the SLI is the expression. */
+export interface SloRuleInput {
+  alert: string
+  slo: SloSpecInput
+  for?: string
+  keep_firing_for?: string
+  labels?: Record<string, string>
+  annotations?: Record<string, string>
+}
+
+export type SloSeverity = 'page' | 'ticket'
+
+export interface SloBurnAlert {
+  severity: SloSeverity
+  longMs: number
+  shortMs: number
+  burnRate: number
+}
+
+export interface SloSli {
+  kind: 'good_total' | 'bad_total' | 'error_ratio'
+  /** As written, with `$window`. Null when the kind has no such expression. */
+  good: string | null
+  bad: string | null
+  total: string | null
+  errorRatio: string | null
+}
+
+/** What an SLO rule reads, classified with the PromQL thresholds (design §7). */
+export interface SloHistory {
+  /** What each evaluation reads: one bucket. */
+  tick: CostClass
+  /** What warming the rule from history reads: the longest alert window in buckets, and the compliance window in coarse buckets. */
+  coldStart: CostClass
+  /** The longest alert window: kept as buckets of `bucketMs` (the group interval). */
+  lookbackMs: number
+  bucketMs: number
+  /** The compliance window: kept as buckets of `budgetBucketMs`, to say how much budget is left. */
+  budgetLookbackMs: number
+  budgetBucketMs: number
+  reason: string
+}
+
+export interface SloSpec {
+  objective: number
+  windowMs: number
+  sli: SloSli
+  /** Every alert, resolved at save (defaults written out, COMPATIBILITY.md §7). */
+  alerts: SloBurnAlert[]
+  minEvents: number
+  minCoverage: number
+  maxSeries: number
+  /** The fields the author gave; the others are defaults. */
+  given: string[]
+  history: SloHistory
+  /** Estimated stored state of one series, in bytes. */
+  stateBytesPerSeries: number
+}
+
+export interface SloRule {
+  kind: 'slo'
+  /** The `alertname` of its alerts. */
+  name: string
+  /** The per-tick query, derived from the SLI with `$window` = the group interval: both parts, in one expression. */
+  expr: string
+  slo: SloSpec
+  forMs: number
+  keepFiringForMs: number
+  /** Without `severity`: each alert's `severity` is the burn-rate alert's. */
+  labels: Record<string, string>
+  annotations: Record<string, string>
+  /** Hash of `slo`, name, objective, window, SLI, alerts and labels: any change is a new rule with fresh state. */
+  key: string
+  /** The per-tick expression's class; the cold start is in `slo.history`. */
+  cost: RuleCost
+}
+
+/** The label that tells the two parts of `SloRule.expr` apart (`good`, `bad`, `total`). Reserved: an SLI may not return it. */
+export const SLO_PART_LABEL = 'viz_slo_part'
+/** The annotation holding the alert's sentence. */
+export const SLO_ANNOTATION = 'slo'
+/** The annotation holding the numbers behind it, as `SloDetail` JSON. */
+export const SLO_DETAIL_ANNOTATION = 'slo_detail'
+
+/** `SLO_DETAIL_ANNOTATION`'s value. Every number in the sentence is one of these. Fractions are 0..1. */
+export interface SloDetail {
+  v: 1
+  severity: SloSeverity
+  longWindowMs: number
+  shortWindowMs: number
+  longBurnRate: number
+  shortBurnRate: number
+  threshold: number
+  objective: number
+  windowMs: number
+  /** Fraction of the compliance window's budget spent within the long window. */
+  spentInLongWindow: number
+  /** Fraction of the budget left over the compliance window (negative once overspent); null with no events on record. */
+  budgetRemaining: number | null
+  /** How much of the compliance window the remaining-budget figure covers (less than `windowMs` until that much history exists). */
+  budgetCoveredMs: number
+  /** At the long window's burn rate, time until the remaining budget is spent; null if not burning or already spent. */
+  exhaustionMs: number | null
+  longEvents: number
+  at: number
+}
+
+/**
+ * How an SLO rule's last evaluation went.
+ *   ok                    evaluated
+ *   warming               some window has less than `min_coverage` of its buckets (`message` says which)
+ *   series_cap_exceeded   refused: the SLI returned more than `maxSeries` series
+ *   invalid_result        refused: the parts do not pair up (a good or bad series without a total)
+ *   state_unreadable      refused: the stored state is in a format this release does not read
+ *   unknown               not evaluated yet
+ * A refused evaluation changes no state and no alert.
+ */
+export type SloEvalStatus = 'ok' | 'warming' | 'series_cap_exceeded' | 'invalid_result' | 'state_unreadable' | 'unknown'
+
+export interface SloRuleStatus {
+  status: SloEvalStatus
+  message: string | null
+  series: number
+  maxSeries: number
+  /** Series whose page / ticket alert condition held at the last evaluation. */
+  burning: { page: number; ticket: number }
+  warming: number
+  /** The lowest remaining-budget fraction over the series, and the history it covers; null with no events. */
+  budgetRemaining: number | null
+  budgetCoveredMs: number
+  stateSeries: number
+  stateBytes: number
+  pruned: number
+  warmup?: WarmupStatus
 }
 
 // ───────────────────────────── alert state ─────────────────────────────
@@ -365,8 +614,11 @@ export interface Alert {
 export interface RuleStatus {
   group: string
   name: string
-  /** EXTENDED (contract version 2): `anomaly`. A caller that does not know a kind must not act on the rule as if it were another. */
-  kind: 'alert' | 'record' | 'anomaly'
+  /**
+   * EXTENDED (contract version 2): `anomaly`; (contract version 4): `slo`. A caller that does not
+   * know a kind must not act on the rule as if it were another.
+   */
+  kind: 'alert' | 'record' | 'anomaly' | 'slo'
   key: string
   cost: RuleCost
   /** `unknown` until first evaluated. */
@@ -376,6 +628,8 @@ export interface RuleStatus {
   alerts: Alert[]
   /** EXTENDED (contract version 2). Present for anomaly rules only. */
   anomaly?: AnomalyRuleStatus
+  /** EXTENDED (contract version 4). Present for SLO rules only. */
+  slo?: SloRuleStatus
 }
 
 // ───────────────────────────── Ruler RPC ─────────────────────────────
@@ -402,6 +656,19 @@ export interface RulerLimits {
    * the object's memory (state is kept in memory between ticks). Default 16,777,216.
    */
   maxAnomalyStateBytesPerObject?: number
+  /** EXTENDED (contract version 4). Hard cap on `SloSpec.maxSeries`. Default 100. SLO state counts against `maxAnomalyStateBytesPerObject`. */
+  maxSloSeriesPerRule?: number
+  /**
+   * EXTENDED (contract version 4). What one warm-up may read, as the engine's plan estimates it before
+   * anything is fetched (samples the data files in range hold, and their bytes), summed over its
+   * range queries. Default 3,000,000 samples and 16 MiB: what one query of viz-query may read in
+   * one place (query/README.md, `maxScanSamples`, `maxFetchBytes`).
+   */
+  maxWarmupScanSamples?: number
+  maxWarmupBytes?: number
+  /** EXTENDED (contract version 4). The same for one backtest. Default 20,000,000 samples and 128 MiB. */
+  maxBacktestScanSamples?: number
+  maxBacktestBytes?: number
 }
 
 export interface RulerConfig {
@@ -438,12 +705,14 @@ export type Refused = WrongTenant | SchemaTooNew
 
 export interface SavedRule {
   name: string
-  /** EXTENDED (contract version 2): `anomaly`. */
-  kind: 'alert' | 'record' | 'anomaly'
+  /** EXTENDED (contract version 2): `anomaly`; (contract version 4): `slo`. */
+  kind: 'alert' | 'record' | 'anomaly' | 'slo'
   key: string
   cost: RuleCost
   /** EXTENDED (contract version 2). Anomaly rules only: what the detector reads per tick and at a cold start. */
   history?: AnomalyHistory
+  /** EXTENDED (contract version 4). SLO rules only: what the rule reads per tick and to warm up. */
+  slo?: SloHistory
 }
 
 export type SaveGroupsResult =

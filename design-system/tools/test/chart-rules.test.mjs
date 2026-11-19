@@ -124,7 +124,7 @@ function runSequence(seed, steps) {
     else if (op === 'clear' && filtered) {
       if (view.serverOut) for (const k of filtered) result.add(k)
       view.clientFilter = null; view.serverOut = null; show('clear the filter')
-      if (v6 || true) for (const [k, s] of snapshot) assert.equal(view.slot(k), s, `P2 ${log.join(' > ')}: ${k} came back in slot ${view.slot(k)}, had ${s}`)
+      for (const [k, s] of snapshot) assert.equal(view.slot(k), s, `P2 ${log.join(' > ')}: ${k} came back in slot ${view.slot(k)}, had ${s}`)
       filtered = null; snapshot = null
     } else if (op === 'edit-and-back' && !filtered) {
       const before = new Map([...result].map((k) => [k, view.slot(k)])), other = universe(r, 30), saved = new Set(result)
@@ -133,12 +133,12 @@ function runSequence(seed, steps) {
       // the edited query: another service's pods (keys made unique by the service label)
       view.show(specOf(u, q2)); log.push('edit the query'); prev = null
       result.clear(); for (const k of saved) result.add(k)
-      show('edit it back')
+      show('edit it back', { claimedBack: new Set([...before].filter(([, s]) => s).map(([k]) => k)) })
       for (const [k, s] of before) assert.equal(view.slot(k), s, `P2 ${log.join(' > ')}: ${k} came back in slot ${view.slot(k)}, had ${s}`)
       for (const k of q2) u.delete(k)
     } else if (op === 'open-other') { view.st.open = (view.st.open + 20) % 60; show('show more of Other') }
     else if (op === 'pick' && v6) { const m = view.m, k = m.other[Math.floor(r() * m.other.length)]?.key; if (!k) continue; if (view.st.picked.has(k)) { view.st.picked.delete(k); view.st.pickOrder = view.st.pickOrder.filter((q) => q !== k) } else if (view.st.pickOrder.length < 3) { view.st.picked.add(k); view.st.pickOrder.push(k) } show('pick a member of Other') }
-    else if (op === 'recolour' && v6 && !filtered) { R.recolour(view.map, view.m); show('colour the eight largest', { recoloured: true }); view.st.picked.clear(); view.st.pickOrder = [] }
+    else if (op === 'recolour' && v6 && !filtered) { R.recolour(view.map, view.m); view.st.picked.clear(); view.st.pickOrder = []; show('colour the eight largest', { recoloured: true }) }
   }
 }
 
@@ -162,6 +162,13 @@ test('B1, image 02: edit the query to another service and back: every colour ret
   view.show(D.s36())
   for (const [k, s] of before) assert.equal(view.slot(k), s, `${k.match(/pod=([^,]+)/)[1]}: slot ${view.slot(k)}, had ${s}`)
   if (v6) { assert.equal(view.m.coloured.length, 8); assert.equal(view.facts.note.text, '8 coloured by size when first seen; 28 in Other') }
+})
+
+test('B1, flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1', () => {
+  const view = new View(), cart = { unit: 'cores', agg: 'max', t0: T0, step: STEP, series: [{ labels: { service: 'cart' }, values: Array(12).fill(0.4) }] }
+  view.show(cart); assert.equal(view.slot(keyOf({ service: 'cart' })), 1)
+  const pods = D.many(36, 36); view.show(pods); view.show(cart)
+  assert.equal(view.slot(keyOf({ service: 'cart' })), 1, 'cart came back grey or in another colour')
 })
 
 test('B1: a filter in the query (not the chart) applied and cleared, with pods arriving meanwhile', () => {
