@@ -22,8 +22,9 @@
 //   response    selector, url, expect    click on it; from the moment the response whose URL contains `url` arrives -> end of the first
 //               [, before]               frame in which `expect` matches. `before` is script run first (to clear what `expect` looks for). Budget 100 ms.
 //   shift       -                        cumulative layout shift over the whole run, load included (shifts within 500 ms of input excluded).
-//   load-shift  hash                     a separate load of the page at url#hash, so it opens scrolled to that region before its data arrives
-//                                        (as a reload does): cumulative layout shift until ready and 500 ms after. Budget 0.05.
+//   load-shift  hash [, delay]           a separate load of the page at url#hash, so it opens scrolled to that region before its data arrives
+//                                        (as a reload does), every data response held `delay` ms more: cumulative layout shift until ready
+//                                        and 500 ms after. Budget 0.05.
 //   inp         -                        the longest interaction of the run by Event Timing (8 ms steps). Budget 200 ms.
 // "End of the frame" is a task posted from inside the requestAnimationFrame callback of that frame, which runs after its style, layout and
 // paint. When the condition is first seen inside a frame callback, the task is posted from that same callback, never from the next frame.
@@ -96,6 +97,7 @@ for (let run = 0; run < runs; run++) {
   // layout shift on a load that opens scrolled to a region: a page of its own, before the run's page
   for (const m of sc.measure.filter((x) => x.type === 'load-shift')) {
     const { ctx, page } = await newPage()
+    if (m.delay) await page.route(/\/data\/[^/]+\.json/, async (r) => { await new Promise((d) => setTimeout(d, m.delay)); await r.continue() }) // results arrive after the page has painted, as on a slow link
     try { await page.goto(url + '#' + m.hash, { waitUntil: 'load' }); await page.waitForSelector(sc.ready ?? 'body', { timeout: 60000 }); await page.waitForTimeout(500); results[m.name].push(await page.evaluate(() => window.__speed.shift)); loads[m.name].push(load1) } catch (e) { console.log(`run ${run + 1}: ${m.name}: ${e.message}`) }
     await ctx.close()
   }

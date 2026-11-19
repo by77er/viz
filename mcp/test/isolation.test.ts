@@ -1,6 +1,7 @@
 import fc from 'fast-check'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { BASE, type Harness, type Key, NOW, controlCall, createDashboard, example, grantScope, harness, makeKey, mcpClient, newTenant, reset, rest, snapshot, telemetry, type TestTenant } from './helpers'
+import { BASE, type Harness, type Key, NOW, controlCall, controlFetcher, createDashboard, example, harness, makeKey, mcpClient, newTenant, reset, rest, snapshot, telemetry, type TestTenant } from './helpers'
+import { httpControlClient } from '../src/clients'
 import { monitorView } from './fake/services'
 import { TOOLS } from '../src/registry'
 
@@ -44,16 +45,14 @@ beforeAll(async () => {
   const spec = example('service_red', A_DASH)
   spec.metadata.title = `ALPHA-SECRET board ${ONLY_A}`
   await createDashboard(A.admin, spec)
-  aKey = await makeKey(A.admin, ['read', 'dashboards:read', 'dashboards:write'], { kind: 'agent' })
-  await grantScope(A, aKey, 'monitors:read')
+  aKey = await makeKey(A.admin, ['read', 'dashboards:read', 'dashboards:write', 'monitors:read'], { kind: 'agent' })
   const base = (await controlCall(A.admin, 'GET', `/dashboards/${A_DASH}`)).body.revision
   const p = await controlCall(aKey.key, 'POST', `/dashboards/${A_DASH}/proposals`, { message: `ALPHA-SECRET proposal ${ONLY_A}`, baseRevision: base, changes: [{ name: 'x', reason: `ALPHA-SECRET reason ${ONLY_A}`, ops: [{ op: 'replace', path: '/metadata/title', value: `ALPHA-SECRET 2 ${ONLY_A}` }] }] })
   aProposal = p.body.proposal.id
   h.ruler.monitors.set(A.tenant, [{ view: monitorView({ id: A_MONITOR, name: `ALPHA-SECRET monitor ${ONLY_A}`, state: 'firing' }), history: [] }])
   h.ruler.monitors.set(B.tenant, [{ view: monitorView({ id: 'mon_b2b2b2b2b2b2b2b2', name: 'beta monitor' }), history: [] }])
   await createDashboard(B.admin, example('k8s_node_overview'))
-  bKey = await makeKey(B.admin, ['read', 'dashboards:read', 'dashboards:write', 'dashboards:apply'], { kind: 'agent' })
-  await grantScope(B, bKey, 'monitors:read')
+  bKey = await makeKey(B.admin, ['read', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'monitors:read'], { kind: 'agent' })
 })
 
 /** Calls with A's identifiers, made with B's key. */
@@ -184,19 +183,38 @@ describe('credentials', () => {
     expect(r.status).toBe(401)
   })
 
-  it('a key whose scopes the control plane does not know is read as an agent with edge\'s scopes', async () => {
+  it('a key that is in KV but not in the control plane is refused: control issues monitors:read, so it is asked and says the key is not live', async () => {
     const keyId = 'edgeonly' + NOW
     const secret = 'S'.repeat(40)
     const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret)))].map((b) => b.toString(16).padStart(2, '0')).join('')
     const { env } = await import('cloudflare:test')
     await env.CONFIG.put(`key:${keyId}`, JSON.stringify({ tenant: B.tenant, secretSha256: digest, scopes: ['monitors:read'] }))
     const key = `viz_${keyId}_${secret}`
-    // The control plane knows none of its scopes (403 no-scopes); edge's verifier does. It is read
-    // as an agent with edge's scopes: monitors work (as at the ruler), nothing else does.
-    const r = await rest(h, key, 'list_monitors', {})
+    for (const tool of ['list_monitors', 'search_dashboards', 'get_schema']) expect((await rest(h, key, tool, {})).status, tool).toBe(401)
+  })
+
+  it('a control release that does not know the key\'s scopes (403 no-scopes, as an older one could during a deploy): read as an agent with edge\'s scopes, which may not apply', async () => {
+    const k = await makeKey(B.admin, ['read', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'monitors:read'], { kind: 'key', name: 'person with every scope' })
+    const older = harness({
+      deps: {
+        control: (_e, auth) => {
+          const real = httpControlClient(controlFetcher, auth)
+          return { call: async (method, path, opts) => (path === '/whoami' ? { status: 403, body: { code: 'no-scopes' } } : real.call(method, path, opts)) }
+        },
+      },
+    })
+    for (const [k2, v] of h.prom.storages) older.prom.storages.set(k2, v)
+    for (const [k2, v] of h.ruler.monitors) older.ruler.monitors.set(k2, v)
+    const r = await rest(older, k.key, 'list_monitors', {})
     expect(r.status).toBe(200)
     expect(r.structured.data.items.map((m: any) => m.id)).toEqual(['mon_b2b2b2b2b2b2b2b2'])
-    expect((await rest(h, key, 'search_dashboards', {})).status).toBe(403)
-    expect((await rest(h, key, 'query', { expr: 'up' })).status).toBe(403)
+    // edge's scopes, but the kind and the right to apply were not confirmed: apply is refused, nothing written
+    const before = await snapshot(B)
+    const base = (await controlCall(B.admin, 'GET', '/dashboards/k8s_node_overview')).body.revision
+    const apply = await rest(older, k.key, 'write_dashboard', { id: 'k8s_node_overview', mode: 'apply', base_revision: base, ops: [{ op: 'replace', path: '/metadata/title', value: 'x' }] })
+    expect(apply.status).toBe(403)
+    expect(apply.structured.error.code).toBe('apply-refused')
+    expect(apply.text).toMatch(/did not say whether this key may apply/)
+    expect(await snapshot(B)).toBe(before)
   })
 })

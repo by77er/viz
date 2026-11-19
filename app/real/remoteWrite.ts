@@ -50,7 +50,7 @@ function lenField(field: number, bytes: Uint8Array, out: Bytes): void {
 const utf8 = (s: string) => new TextEncoder().encode(s)
 
 /** WriteRequest { repeated TimeSeries timeseries = 1 } with Label { name = 1, value = 2 } and Sample { double value = 1, int64 timestamp = 2 }. */
-export function encodeWriteRequest(series: WriteSeries[]): Uint8Array {
+export function encodeWriteRequest(series: WriteSeries[]): Uint8Array<ArrayBuffer> {
   const out = new Bytes()
   const f = new DataView(new ArrayBuffer(8))
   for (const s of series) {
@@ -76,7 +76,7 @@ export function encodeWriteRequest(series: WriteSeries[]): Uint8Array {
 }
 
 /** Snappy block format, literals only. */
-export function snappyLiterals(input: Uint8Array): Uint8Array {
+export function snappyLiterals(input: Uint8Array): Uint8Array<ArrayBuffer> {
   const out = new Bytes()
   varint(input.length, out)
   for (let off = 0; off < input.length; off += 65536) {
@@ -96,7 +96,7 @@ export function snappyLiterals(input: Uint8Array): Uint8Array {
   return out.bytes().slice()
 }
 
-export const remoteWriteBody = (series: WriteSeries[]): Uint8Array => snappyLiterals(encodeWriteRequest(series))
+export const remoteWriteBody = (series: WriteSeries[]): Uint8Array<ArrayBuffer> => snappyLiterals(encodeWriteRequest(series))
 
 export function remoteWriteHeaders(key: string): Record<string, string> {
   return {

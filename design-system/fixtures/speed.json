@@ -102,7 +102,8 @@
    "name": "Layout shift, loaded scrolled to CPU by pod",
    "type": "load-shift",
    "hash": "panel-pods",
-   "budget": 0.05
+   "budget": 0.05,
+   "delay": 800
   },
   {
    "name": "Worst interaction (Event Timing)",

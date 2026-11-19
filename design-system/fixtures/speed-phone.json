@@ -95,31 +95,36 @@
    "name": "Layout shift, loaded scrolled to CPU by pod",
    "type": "load-shift",
    "hash": "panel-pods",
-   "budget": 0.05
+   "budget": 0.05,
+   "delay": 800
   },
   {
    "name": "Layout shift, loaded scrolled to Latency by route",
    "type": "load-shift",
    "hash": "panel-routes",
-   "budget": 0.05
+   "budget": 0.05,
+   "delay": 800
   },
   {
    "name": "Layout shift, loaded scrolled to Request rate",
    "type": "load-shift",
    "hash": "panel-services",
-   "budget": 0.05
+   "budget": 0.05,
+   "delay": 800
   },
   {
    "name": "Layout shift, loaded scrolled to CPU by pod, every namespace",
    "type": "load-shift",
    "hash": "panel-pods-all",
-   "budget": 0.05
+   "budget": 0.05,
+   "delay": 800
   },
   {
    "name": "Layout shift, loaded scrolled to the backtest",
    "type": "load-shift",
    "hash": "panel-backtest",
-   "budget": 0.05
+   "budget": 0.05,
+   "delay": 800
   },
   {
    "name": "Worst interaction (Event Timing)",

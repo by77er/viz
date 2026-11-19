@@ -1,4 +1,4 @@
-import { env, runInDurableObject } from 'cloudflare:test'
+import { env } from 'cloudflare:test'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { createWorker as createControlWorker } from '../../control/src/index'
 import type { Tenant } from '../../control/src/tenant'
@@ -53,22 +53,6 @@ export async function makeKey(admin: string, scopes: string[], opts: { name?: st
   if (res.status !== 201) throw new Error(`makeKey: ${res.status} ${JSON.stringify(res.body)}`)
   const [, keyId] = /^viz_([A-Za-z0-9]+)_/.exec(res.body.secret)!
   return { key: res.body.secret, id: res.body.key.id, keyId: keyId! }
-}
-
-/**
- * Give a key a scope the control plane cannot issue yet (`monitors:read`, see README "Needed
- * changes"): the key's row and its KV record both gain it, as they will once control knows it.
- */
-export async function grantScope(t: TestTenant, k: Key, scope: string): Promise<void> {
-  await runInDurableObject(stubOf(t.tenant), async (inst: Tenant) => {
-    const row = inst.one<{ scopes: string }>('SELECT scopes FROM keys WHERE tenant = ? AND id = ?', t.tenant, k.id)!
-    const scopes = [...new Set([...(JSON.parse(row.scopes) as string[]), scope])]
-    inst.run('UPDATE keys SET scopes = ? WHERE tenant = ? AND id = ?', JSON.stringify(scopes), t.tenant, k.id)
-  })
-  const rec = JSON.parse((await env.CONFIG.get(`key:${k.keyId}`))!) as { scopes: string[] }
-  rec.scopes = [...new Set([...rec.scopes, scope])]
-  await env.CONFIG.put(`key:${k.keyId}`, JSON.stringify(rec))
-  clearAuthCache()
 }
 
 export async function setAgentsMayApply(t: TestTenant, value: boolean): Promise<void> {

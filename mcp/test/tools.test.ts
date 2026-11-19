@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { getSchema } from '../../dashboard/src/index.ts'
-import { BASE, type Harness, type Key, NOW, controlCall, createDashboard, example, grantScope, harness, makeKey, mcp, newTenant, reset, rest, telemetry, type TestTenant } from './helpers'
+import { BASE, type Harness, type Key, NOW, controlCall, createDashboard, example, harness, makeKey, mcp, newTenant, reset, rest, telemetry, type TestTenant } from './helpers'
 import { monitorView } from './fake/services'
 import { dataRegions } from '../src/untrusted'
 
@@ -288,8 +288,8 @@ describe('monitors', () => {
   })
 
   it('list firing first, and get one with its alerts and history', async () => {
-    const k = await makeKey(t.admin, ['read'], { kind: 'agent' })
-    await grantScope(t, k, 'monitors:read')
+    // A key the control plane issues with the ruler's scope (no stand-in: control knows monitors:read).
+    const k = await makeKey(t.admin, ['read', 'monitors:read'], { kind: 'agent' })
     const list = await rest(h, k.key, 'list_monitors', {})
     ok(list)
     expect(list.structured.data.items.map((x: any) => x.state)).toEqual(['firing', 'ok'])
@@ -302,8 +302,7 @@ describe('monitors', () => {
   })
 
   it('without a ruler binding they say so', async () => {
-    const k = await makeKey(t.admin, ['read'], { kind: 'agent' })
-    await grantScope(t, k, 'monitors:read')
+    const k = await makeKey(t.admin, ['read', 'monitors:read'], { kind: 'agent' })
     const none = harness({ deps: { monitors: () => null } })
     const r = await rest(none, k.key, 'list_monitors', {})
     expect(r.status).toBe(501)
