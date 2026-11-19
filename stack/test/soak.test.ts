@@ -19,6 +19,12 @@ import { DAY_MS, type Sim, type SimTenant, checkTenant, createSim, deliver, inge
  *
  * Graces are real time, scaled down: a removed file may be deleted after DELETE_GRACE, an
  * unreferenced flush file after ORPHAN_GRACE, and a compaction step gives up after STEP.
+ *
+ * The shards run in registration mode `logged` (D57): a new stream takes no write until its
+ * registration is in its ledger's log. Every stream is new at the start, so the run begins by
+ * registering them the way senders do (the same request, retried while it is refused), with
+ * evictions between attempts; each such request names one slot, so a refusal stores nothing
+ * and the model stays exact.
  */
 const vars = env as unknown as { SOAK_STEPS?: string; SOAK_SEED?: string }
 const STEPS = Number(vars.SOAK_STEPS ?? 400)
@@ -44,7 +50,7 @@ describe('soak', () => {
     sim = await createSim(3, 30)
     const policy = { metric_samples_days: 2 }
     for (const t of sim.tenants) await env.CONFIG.put(`retention:${t.name}`, JSON.stringify(policy))
-    for (const s of sim.shards) await shard(s).configure({ sealBytes: 6000, sealAgeMs: 0, retainRecordedMs: 0, fingerprintTtlMs: 0, seriesPersistMs: 0, notifyRetryMs: 0 })
+    for (const s of sim.shards) await shard(s).configure({ sealBytes: 6000, sealAgeMs: 0, retainRecordedMs: 0, fingerprintTtlMs: 0, seriesPersistMs: 0, notifyRetryMs: 0, registration: 'logged' })
     const maint = { deleteGraceMs: DELETE_GRACE, orphanGraceMs: ORPHAN_GRACE, maxCompactStepMs: STEP, orphanEveryMs: 0, maxCompactSteps: 3 }
     const compaction = () => ({ minL0Files: 2 + r.int(3), maxL0AgeMs: r.pick([0, 600_000]), maxInputPairs: 2 + r.int(5), maxStepMs: STEP })
     const clock = () => Date.now() + r.pick([0, 3_600_000, 3 * DAY_MS])
@@ -61,6 +67,28 @@ describe('soak', () => {
       afterAddUnit: () => { if (r.chance(p)) throw new Error('injected: crash after addUnit') },
       afterRecorded: () => { if (r.chance(p)) throw new Error('injected: crash after recorded') },
     })
+
+    // Registration before writes: each tenant's first request to each slot is refused
+    // `registering` (edge as built answers it 429; it is to answer 503: shard/README.md, "Needed
+    // changes elsewhere") until the ledger has logged the registration. The sender retries the
+    // same bytes; the shard and the ledger are evicted between attempts half the time.
+    const t0 = Date.now()
+    for (const t of sim.tenants) {
+      for (let slot = 0; slot < sim.shards.length; slot++) {
+        const seed = SEED * 31 + sim.tenants.indexOf(t) * 7 + slot
+        for (let attempt = 0; ; attempt++) {
+          const status = await ingest(sim, t, rng(seed), 4, 3, 0, t0, slot)
+          if (status === 204) break
+          did(`warm-up ${status}`)
+          expect(attempt, `warm-up of ${t.name} slot ${slot}`).toBeLessThan(150)
+          if (r.chance(0.5)) await evict(shard(sim.shards[slot]!))
+          if (r.chance(0.5)) await evict(ledger(t))
+          await new Promise((x) => setTimeout(x, 100))
+        }
+        expect((await shard(sim.shards[slot]!).describe(t.name))?.registered, `${t.name} slot ${slot} registered`).toBe(true)
+      }
+      await checkTenant(sim, t, DELETE_GRACE, 'warm-up')
+    }
 
     for (let step = 0; step < STEPS; step++) {
       const where = `step ${step}`

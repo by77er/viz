@@ -9,8 +9,12 @@ import type { AppendResult } from '../src/shard'
 import { Shard } from '../src/shard'
 export { Shard }
 export { Shard as ShardAsBuilt } from './asbuilt/shard'
+/** The release before registration before writes (D57), for bench/registration.bench.test.ts. */
+export { Shard as ShardPrereg } from './prereg/shard'
+/** The tenants' ledgers, in the same script as in viz-ingest (D57). */
+export { Ledger } from '../../ledger/src/ledger'
 
-interface Env { SHARD: DurableObjectNamespace<Shard>; SHARD_ASBUILT: DurableObjectNamespace<Shard> }
+interface Env { SHARD: DurableObjectNamespace<Shard>; SHARD_ASBUILT: DurableObjectNamespace<Shard>; SHARD_PREREG: DurableObjectNamespace<Shard> }
 
 /**
  * A batch the size edge makes for a Remote Write request of `series` series with one sample
@@ -35,8 +39,29 @@ async function sha(bytes: Uint8Array): Promise<string> {
 }
 
 export class Client extends DurableObject<Env> {
-  async run(kind: 'asbuilt' | 'new', shard: string, tenant: string, client: number, seconds: number, series: number): Promise<{ lat: number[]; codes: string[]; status: Record<string, number>; acked: string[]; refused: string[] }> {
-    const ns = kind === 'asbuilt' ? this.env.SHARD_ASBUILT : this.env.SHARD
+  /**
+   * A sender's first request to a new stream (D57): sent, and sent again after each refusal's
+   * `Retry-After` (`roundUp`: rounded up to whole seconds, as edge writes the header) until it
+   * is acknowledged. Returns the time from the first send to the acknowledgement.
+   */
+  async firstAck(shard: string, tenant: string, roundUp: boolean): Promise<{ ms: number; refusals: number; codes: string[] }> {
+    const stub = this.env.SHARD.get(this.env.SHARD.idFromName(shard))
+    const { payload, seriesIds } = batchFor(0, 0, 50)
+    const fingerprint = await sha(payload)
+    const codes: string[] = []
+    const t0 = performance.now()
+    for (let refusals = 0; refusals < 100; refusals++) {
+      const r = await stub.append({ tenant, epoch: 1, fingerprint, payload, rows: 50, seriesIds, seriesLimit: 1_000_000 })
+      if (r.status === 'ok') return { ms: performance.now() - t0, refusals, codes }
+      codes.push(r.status === 'backpressure' ? `backpressure:${r.scope}` : r.status)
+      const wait = r.status === 'backpressure' ? r.retryAfterMs : 1000
+      await new Promise((res) => setTimeout(res, roundUp ? Math.max(1, Math.ceil(wait / 1000)) * 1000 : wait))
+    }
+    throw new Error(`no acknowledgement after 100 refusals: ${codes.join(' ')}`)
+  }
+
+  async run(kind: 'asbuilt' | 'new' | 'prereg', shard: string, tenant: string, client: number, seconds: number, series: number): Promise<{ lat: number[]; codes: string[]; status: Record<string, number>; acked: string[]; refused: string[] }> {
+    const ns = kind === 'asbuilt' ? this.env.SHARD_ASBUILT : kind === 'prereg' ? this.env.SHARD_PREREG : this.env.SHARD
     const stub = ns.get(ns.idFromName(shard))
     const lat: number[] = []
     const codes: string[] = []

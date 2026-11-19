@@ -64,7 +64,7 @@
 .vz-text-data-strong { font: var(--text-data-strong); }
 .vz-text-code { font: var(--text-code); }
 .vz-text-micro { font: var(--text-micro); }
-/* viz components, v7. Source of project/components/bundle.css. Every value is a token; lint: tools/check.mjs.
+/* viz components, v8. Source of project/components/bundle.css. Every value is a token; lint: tools/check.mjs.
    Media and container conditions cannot read custom properties: they write the breakpoint tokens (breakpoint-narrow 640px,
    breakpoint-wide 1200px) as 639px and 1199px maximums, and check.mjs fails any other width in a condition. */
 
@@ -241,7 +241,8 @@ th[aria-sort="ascending"] .vz-sort::after { visibility: visible; border-bottom-c
 th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: var(--space-1) var(--space-1) 0; border-top-color: currentColor; }
 /* Fold form (v7): below breakpoint-narrow of table width (breakpoint-wide with data-fold="wide") a fold table keeps its key and its
    data-priority="1" columns (one or two) as columns and folds the rest into a line under them. Per row, in order:
-   - the key's line: the key, then the kept columns, each keep wide (a quarter of the row) and never narrower than its longest phrase
+   - the whole row is the key link's target (v8: a folded row is read and tapped as one item, so its key's line needs no touch height of its
+     own; other controls in the row, "Actions…", lie above it); the key's line: the key, then the kept columns, each keep wide (a quarter of the row) and never narrower than its longest phrase
      that cannot break ("for 10 min"), and aligned down the list because their width does not depend on their words; the key takes the
      rest and never less than key-min (half the row). Its link, and a vz-cut in it, shrink with it, so a long identifier is cut in the
      middle and a long name wraps inside the key: nothing in the key is drawn outside it (v6 review, B1). Below breakpoint-narrow a table
@@ -262,6 +263,9 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold] th, .vz-table[data-fold] td { display: block; position: static; height: auto; min-width: 0; border-bottom: 0; box-shadow: none; white-space: normal; padding-left: var(--space-2); }
   .vz-table[data-fold] td { padding-block: var(--space-1); }
   .vz-table[data-fold] th:first-child, .vz-table[data-fold] td[data-key] { flex: 1 1 0; min-width: var(--key-min); position: relative; }
+  .vz-table[data-fold] tbody tr { position: relative; }
+  .vz-table[data-fold] tbody td[data-key] { position: static; }
+  .vz-table[data-fold] tbody td:not([data-key]) :is(a, button, input, select, summary) { position: relative; z-index: 1; }
   .vz-table[data-fold] td[data-key] { display: flex; align-items: center; }
   .vz-table[data-fold] td[data-key] > * { min-width: 0; }
   .vz-table[data-fold] [data-priority="1"] { flex: 0 0 var(--keep); min-width: min-content; order: 1; }
@@ -287,6 +291,9 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold="wide"] th, .vz-table[data-fold="wide"] td { display: block; position: static; height: auto; min-width: 0; border-bottom: 0; box-shadow: none; white-space: normal; padding-left: var(--space-2); }
   .vz-table[data-fold="wide"] td { padding-block: var(--space-1); }
   .vz-table[data-fold="wide"] th:first-child, .vz-table[data-fold="wide"] td[data-key] { flex: 1 1 0; min-width: var(--key-min); position: relative; }
+  .vz-table[data-fold="wide"] tbody tr { position: relative; }
+  .vz-table[data-fold="wide"] tbody td[data-key] { position: static; }
+  .vz-table[data-fold="wide"] tbody td:not([data-key]) :is(a, button, input, select, summary) { position: relative; z-index: 1; }
   .vz-table[data-fold="wide"] td[data-key] { display: flex; align-items: center; }
   .vz-table[data-fold="wide"] td[data-key] > * { min-width: 0; }
   .vz-table[data-fold="wide"] [data-priority="1"] { flex: 0 0 var(--keep); min-width: min-content; order: 1; }
@@ -310,6 +317,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 @container (max-width: 639px) {
   .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) :is(th:first-child, td[data-key]) { flex-basis: 100%; }
   .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) td.vz-row-actions:not([data-key]) { order: 1; }
+  @media (pointer: coarse) { .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) td.vz-row-actions:not([data-key]) { min-height: 0; } } /* in the middle line its 44 px hit area reaches into the row's own lines above and below, not past the row: the line stays as tall as the figures (v7 review, m1: density) */
 }
 
 /* Status: a mark with its own shape, then a word. Shape and word carry the state; colour reinforces it. */
@@ -704,7 +712,8 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
   .vz-table th:has(.vz-sort) { padding-block: 0; }
   .vz-sort { min-height: var(--control-touch); margin-block: 0; }
   .vz-sort:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* it fills its head, at the top of a table that scrolls: the ring is drawn inside (v8: the rendered focus guard at the coarse pointer) */
-  .vz-table[data-fold] td[data-key], .vz-table[data-fold] td.vz-row-actions { min-height: var(--control-touch); } /* the key's line and the line "Actions…" ends: their targets keep 44 px inside the row */
+  .vz-table[data-fold] tbody tr, .vz-table[data-fold] td.vz-row-actions { min-height: var(--control-touch); } /* the row is the key's target, at least 44 px; the line "Actions…" ends keeps its 44 px inside the row */
+  .vz-table[data-fold] tbody tr { padding-top: var(--space-2); } /* 22 px from the row's top to the middle of the key's first line: a finger on the name has 44 px of its own row around it */
   .vz-tabs button, .vz-nav a { padding-block: var(--space-3); } /* a scrolling strip clips overflow, so the hit area has to be real height */
   .vz-segmented { row-gap: calc(var(--control-touch) - var(--control-md) + 2 * var(--hairline)); } /* a segmented control that wraps (320 px) keeps its segments' 44 px hit areas apart by space between its rows; they are drawn at their own height (v7 review, m3) */
   .vz-menu [role^="menuitem"] { height: var(--control-touch); }

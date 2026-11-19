@@ -146,10 +146,12 @@ export const INGEST = { INGEST_LIMITS: JSON.stringify({ acceptBackMs: 4 * DAY_MS
 /**
  * One Remote Write request: `nSeries` random series of the tenant, each with `nSamples`
  * samples on a one-minute grid, `daysBack` days ago. Recorded in the model only if acknowledged.
+ * With `slot`, only series that route to that slot (one shard: a refusal then stores nothing).
  */
-export async function ingest(sim: Sim, t: SimTenant, r: Rng, nSeries: number, nSamples: number, daysBack: number, now = Date.now()): Promise<number> {
+export async function ingest(sim: Sim, t: SimTenant, r: Rng, nSeries: number, nSamples: number, daysBack: number, now = Date.now(), slot?: number): Promise<number> {
   const picked = new Set<number>()
-  while (picked.size < Math.min(nSeries, t.series.length)) picked.add(r.int(t.series.length))
+  const eligible = t.series.map((x, i) => (slot === undefined || x.slot === slot ? i : -1)).filter((i) => i >= 0)
+  while (picked.size < Math.min(nSeries, eligible.length)) picked.add(eligible[r.int(eligible.length)]!)
   // The newest sample is at least two minutes old; older days use the same time of day.
   const base = Math.floor((now - 120_000) / 60_000) * 60_000 - daysBack * DAY_MS
   const body: PrwSeries[] = []

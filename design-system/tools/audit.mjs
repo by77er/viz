@@ -1,7 +1,8 @@
 // The rendered page audit: what only shows when a page is laid out, at every width a person uses.
 //   node tools/audit.mjs [--root <copy of design-system>] [--quick] [--json out.json] [page.html …]
 // Pages (default): every component preview as a page of its own (dist/preview/, built by tools/reference.mjs), dist/reference.html,
-// dist/fixture/index.html, the latest review's compositions (reviews/system-v6/compositions/), and, read only and reported apart, the flow
+// dist/fixture/index.html, the compositions of the latest review that has them (reviews/system-vN/compositions/, the highest N), and, read
+// only and reported apart, the flow
 // screens (flows/dist/). Configurations: a fine pointer at 320, 400, 560, 640, 800, 1024, 1280 and 1500 px; a coarse pointer with touch at
 // 320, 400 and 768 px; 200% zoom of 1280, 1440 and 1500 px windows (640, 720 and 750 CSS px at twice the scale). --quick: 320, 400 coarse,
 // 720 at 200% and 1500.
@@ -24,6 +25,18 @@
 //   align         a table column of bare numbers (one unit, in its head) whose figures or head do not end at the cell's right edge, as
 //                 rendered (v7 review, M2: "Memory, MiB" and "Restarts" left-aligned);
 //   stale         dist/ not what the build makes of the tree: dist/viz.css, and the fixture page's inlined CSS (v6 review, m6).
+// The guards (each fix the reviews asked for, as rendered; in both themes, at 1500 px with a fine pointer and at 400 px with a coarse one,
+// hit areas at every coarse width; v7 review, M3):
+//   focus         a focused control's ring: stroke wide in the theme's focus, offset by stroke (or drawn inside where its box clips), 3:1 on
+//                 what is behind it, cut by no ancestor; also with a mouse over it; a legend row's and a waterfall span's ring drawn by cells;
+//   contrast      a control's border (buttons, inputs, selects, segmented controls, checkboxes) under 3:1 on what is behind it, as painted;
+//   hit-area      a control whose hit area, found by hit testing 21 px around its centre, is under 44 px or covered (every coarse width);
+//   press         a press by a real pointer (a finger at the coarse width, a mouse at the fine one) that does not paint the press token;
+//   guard         the table wrap unpositioned, a dashed slot drawn solid (also hovered), emphasis undone (also hovered), picked members of
+//                 Other that look alike, a kept state that does not wrap;
+//   motion        an animation that loops, and, in the reduced-motion pass (both pointers, both themes), anything that moves;
+//   token         a colour, length, duration, weight or curve that does not move when every token is moved, an opacity other than 1, a
+//                 font-variation-settings, and a token whose value on an element is not its theme's (redefined below the theme).
 // And, on the compositions at 1500 px:
 //   figure        an element marked data-figure="<chart id>|<series label value>|last|min|max" that does not show what that chart's model
 //                 holds for that series, or elements marked data-same="<name>" that show different numbers;
@@ -271,7 +284,7 @@ function guards({ fine, coarse, hitOnly }) {
     // dashed slots (v4 review M1; mutants Y13, W3) and the patterns of picked members of Other: solid, dashed, dotted, each told apart (W17)
     for (const sw of document.querySelectorAll(dashed)) { if (!visible(sw) || sw.closest('[data-off]') || sw.closest('[data-error]')) continue; const bad = window.__vzSwatch(sw); if (bad) say('guard', bad) }
     for (const chart of document.querySelectorAll('.vz-chart')) { const lines = [...chart.querySelectorAll('svg.vz-plot .vz-line[data-series="picked"]')]; if (lines.length < 2) continue
-      const dash = lines.map((l) => cs(l).strokeDasharray), sws = [...chart.querySelectorAll('tbody .vz-swatch[data-series="picked"]')].map((w) => { const t = cs(w); return [t.borderTopStyle, t.borderTopWidth, t.borderLeftStyle, t.borderLeftWidth, t.backgroundColor, t.height].join(' ') })
+      const dash = lines.map((l) => cs(l).strokeDasharray).map((d) => (/^(none|[0.]+(px)?([,\s]+[0.]+(px)?)*)$/.test(d.trim()) ? 'none' : d)), sws = [...chart.querySelectorAll('tbody .vz-swatch[data-series="picked"]')].map((w) => { const t = cs(w); return [t.borderTopStyle, t.borderTopWidth, t.borderLeftStyle, t.borderLeftWidth, t.backgroundColor, t.height].join(' ') })
       if (new Set(dash).size < dash.length) say('guard', `the ${dash.length} members of Other picked out in ${name(chart.closest('.vz-panel')?.querySelector('.vz-panel-title') ?? chart)} are drawn with ${new Set(dash).size} patterns (${dash.join(' / ')}): two look alike`)
       if (sws.length >= 2 && new Set(sws).size < sws.length) say('guard', `the swatches of the members of Other picked out in ${name(chart)} look alike (${sws.join(' / ')})`) }
     // emphasis from the legend, by keyboard focus (v4 review; mutants Y15, W4)
@@ -305,6 +318,10 @@ function guards({ fine, coarse, hitOnly }) {
         if (!(at && el.contains(at))) say('hit-area', `${name(el)} is covered at its centre by ${at ? name(at) : 'nothing'} with a coarse pointer`); continue }
       const tall = owner(cx, cy - 21) === el && owner(cx, cy + 21) === el, wide = owner(cx - 21, cy) === el && owner(cx + 21, cy) === el // 44 px, less a pixel at each end where two areas meet and hit testing snaps
       if (!tall || !wide) say('hit-area', `${name(el)}: hit area under 44 px ${!tall ? 'tall' : 'wide'} with a coarse pointer (drawn ${Math.round(r.width)} x ${Math.round(r.height)} px)`)
+      // its drawn box, sampled: another control's hit area or box reaching into it takes those taps (a plot's data starts under its strip)
+      const top0 = el.matches('.vz-plot') ? r.top + (parseFloat(cs(el).getPropertyValue('--strip')) || 0) : r.top, h0 = r.bottom - top0
+      for (const fx of [0.1, 0.5, 0.9]) for (const fy of [0.15, 0.5, 0.85]) { const x = r.left + r.width * fx, y = top0 + h0 * fy; if (x < 0 || x >= innerWidth || y < 0 || y >= innerHeight) continue
+        const o = owner(x, y); if (o && o !== el && !el.contains(o) && !o.contains(el) && !o.closest('.vz-menu, .vz-dialog, .vz-scrim, .vz-tooltip, .vz-notice[data-floating], dialog')) { say('hit-area', `${name(el)}: part of its drawn box (at ${Math.round(fx * 100)}%, ${Math.round(fy * 100)}%) belongs to ${name(o)} with a coarse pointer`); break } }
     }
     scrollTo(0, 0)
   }
