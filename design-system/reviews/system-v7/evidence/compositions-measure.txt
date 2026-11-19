@@ -36,3 +36,6 @@ v7-folded-list-320-coarse-dark: sideways overflow 0px; smallest text 13px; tabul
   SMALL 73x36.5  <button> Actions for cart-7d9f8c6b5-85167
 v7-folded-list-400-coarse-hit-areas-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 26 hit areas, 1 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
   SMALL 355.3x41.3  <a> checkout-api-7d9f8c6b5-4623a
+v7-folded-list-zoom-200-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+v7-dialog-list-closed-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 12 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-dialog-list-closed-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 12 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
