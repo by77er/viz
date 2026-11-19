@@ -589,7 +589,7 @@ describe('a re-base (D55) over the span and log tables', () => {
     await asLedger(cell, t)
     await verified(p)
     const after = await runInDurableObject(p, (_i, s) => ({ dump: dumpOf(s), row: schemaRow(s) }))
-    expect(after.row).toMatchObject({ version: 5, compat: 1 })
+    expect(after.row).toMatchObject({ version: 6, compat: 1 })
     // The D64 release's record is left as it was; this release reports nothing unpublished.
     expect(after.dump.rows.unpublished).toEqual(wrote.dump.rows.unpublished)
     expect(await p.unpublished()).toEqual([])
@@ -680,7 +680,7 @@ describe('this release and the D64 release side by side (D64 is the oldest rollb
     await now.configure({ deleteGraceMs: 60_000 })
     expect((await now.publish([t])).tenants[0]).toMatchObject({ status: 'ok' })
     const wroteN = await runInDurableObject(now, (_i, s) => ({ dump: dumpOf(s), row: schemaRow(s) }))
-    expect(wroteN.row).toMatchObject({ version: 5, compat: 1 })
+    expect(wroteN.row).toMatchObject({ version: 6, compat: 1 })
     const signalObjects = await icebergObjects(cell, SIGNALS)
     expect(Object.keys(signalObjects).length).toBeGreaterThan(10)
 
@@ -703,7 +703,7 @@ describe('this release and the D64 release side by side (D64 is the oldest rollb
     expect(await old.safeToDelete(t)).toEqual([])
     expect(await icebergObjects(cell, SIGNALS)).toEqual(signalObjects)
     const wroteD64 = await runInDurableObject(old, (_i, s) => ({ dump: dumpOf(s), row: schemaRow(s) }))
-    expect(wroteD64.row).toMatchObject({ version: 5, compat: 1 }) // additive: D64 serves it and leaves the version alone
+    expect(wroteD64.row).toMatchObject({ version: 6, compat: 1 }) // additive: D64 serves it and leaves the version alone
     const cursorsOf = (d: typeof wroteN.dump, tbl: string) => d.rows.cursor!.filter((c) => c.tbl === tbl)
     for (const s of SIGNALS) expect(cursorsOf(wroteD64.dump, s), s).toEqual(cursorsOf(wroteN.dump, s))
     expect(wroteD64.dump.rows.live!.filter((x) => SIGNALS.includes(x.tbl as SignalTable))).toEqual(wroteN.dump.rows.live!.filter((x) => SIGNALS.includes(x.tbl as SignalTable)))

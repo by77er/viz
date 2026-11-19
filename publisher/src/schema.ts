@@ -104,6 +104,19 @@ CREATE TABLE IF NOT EXISTS signal_due (job TEXT PRIMARY KEY, at INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS signal_orphan (path TEXT PRIMARY KEY, since INTEGER NOT NULL);
 `),
     },
+    {
+      // When a re-base of each tenant still waiting for one last started (the publisher's clock), so
+      // that a publish, which starts only a few (review M-6, design/DECISIONS.md D67), takes them
+      // least recently started first: a re-base that keeps failing, or that is cut off with its
+      // invocation (written before it reads anything), goes to the back instead of holding every
+      // other tenant's up. A row is deleted once its tenant is published. Additive: releases 1 to 5
+      // neither read nor write it (the D64 release, a rollback target, re-bases every tenant at once
+      // as before), so each stays a rollback target.
+      version: 6,
+      name: 'rebase: when each waiting re-base last started',
+      readableFrom: 1,
+      up: (sql) => void sql.exec(`CREATE TABLE IF NOT EXISTS rebase (tenant TEXT PRIMARY KEY, started INTEGER NOT NULL);`),
+    },
   ],
 }
 

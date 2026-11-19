@@ -150,6 +150,10 @@ test('floors: once a kept viz-ingest version set INGEST_SIGNALS, a release with 
   assert.match(q.log, new RegExp(`${QUERY}: this release is below its floor`))
   // At every floor with the switch off: allowed (the data stays; every Worker reads it).
   await shipped('r4')
+  // The newest viz-ingest version (r4) has the switch off; an older one (r2) had it on: still refused.
+  const older = await ship('r5', { publisher: 3 })
+  assert.equal(older.exit, 3, older.log)
+  assert.match(older.log, /\(release r2\) set INGEST_SIGNALS=traces/)
 })
 
 test('floors: a rollback that would leave any of them below its floor after the switch was on is refused, for the whole release or one Worker; nothing is restored', async () => {
@@ -182,6 +186,19 @@ test('floors: rollbacks at or above every floor stay allowed: to the release bef
   // The data the switch let in is still there: below the floors stays refused.
   const below = await back(r0)
   assert.equal(below.result.exit, 3, below.log)
+})
+
+test('floors: a Worker the record does not name is judged as it serves (put below its floor outside the tool)', async () => {
+  const r0 = await shipped('r0', { query: false })
+  const r1 = await shipped('r1')
+  await shipped('r2', { signals: 'traces' })
+  // Someone deploys r0's viz-query by hand (wrangler, not release.mjs): it serves below its floor.
+  const s = readState()
+  s.workers[QUERY].deployment = [{ version_id: r0.workers.find((w) => w.name === QUERY).versionId, percentage: 100 }]
+  writeState(s)
+  const partial = await back({ ...r1, workers: r1.workers.filter((w) => w.name !== QUERY) })
+  assert.equal(partial.result.exit, 3, partial.log)
+  assert.match(partial.result.problems.join('\n'), new RegExp(`^${QUERY}: this rollback would leave serving version .*\\(release r0\\), below its floor`))
 })
 
 test('floors: while the switch was never on, they refuse nothing', async () => {

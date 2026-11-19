@@ -91,9 +91,9 @@ describe('versioned storage', () => {
     const after = await runInDurableObject(p, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(ownDump(dumpOf(s))) }))
     // Every migration after 1 is additive (readableFrom 1): `compat` stays 1.
     expect(after.row).toMatchObject({ version: LATEST, compat: 1 })
-    // Version 2 added the `due` table, version 3 `stage` and `live_next`, version 4 `unpublished`, version 5 `signal_due` and `signal_orphan`, all empty; every row of the adopted tables is as it was.
-    for (const t of ['due', 'stage', 'live_next', 'unpublished', 'signal_due', 'signal_orphan']) expect(after.dump.rows[t], t).toEqual([])
-    const { due: _due, stage: _stage, live_next: _next, unpublished: _unpublished, signal_due: _sdue, signal_orphan: _sorphan, ...adopted } = after.dump.rows
+    // Version 2 added the `due` table, version 3 `stage` and `live_next`, version 4 `unpublished`, version 5 `signal_due` and `signal_orphan`, version 6 `rebase`, all empty; every row of the adopted tables is as it was.
+    for (const t of ['due', 'stage', 'live_next', 'unpublished', 'signal_due', 'signal_orphan', 'rebase']) expect(after.dump.rows[t], t).toEqual([])
+    const { due: _due, stage: _stage, live_next: _next, unpublished: _unpublished, signal_due: _sdue, signal_orphan: _sorphan, rebase: _rebase, ...adopted } = after.dump.rows
     expect(canon(adopted)).toEqual(canon(V0.rows))
   })
 

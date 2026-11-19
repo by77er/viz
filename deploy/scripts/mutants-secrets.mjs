@@ -30,11 +30,17 @@ const MUTANTS = [
   ['phase 2: a new viz-control keeps serving the version without the key', 'release.mjs', '          if (s.versionId !== uploaded[step.name]) {', '          if (false) {'],
   ['plan mode puts the secret', 'release.mjs', '  const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)\n',
     "  const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)\n  for (const step of plan.steps) for (const v of live[step.name]?.versions ?? []) await ensureSecrets({ worker: step.name, versionId: v.version_id, specs: specs.filter((s) => s.worker === step.name), now: [], rotate, release: manifest.release, tag: 'x', message: 'x', api: SECRET_API }).catch(() => {})\n"],
-  ['an unknown name to rotate is ignored instead of refused', 'release.mjs', '  const refusals = [...plan.problems, ...rotateProblems(rotate, specs)]', '  const refusals = [...plan.problems]'],
+  ['an unknown name to rotate is ignored instead of refused', 'release.mjs', '  const refusals = [...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs)]', '  const refusals = [...plan.problems, ...floors.problems]'],
   ['lib/wrangler.mjs: the value is not written to stdin', 'lib/wrangler.mjs', '    if (input !== undefined) child.stdin.end(input)', '    if (input !== undefined) child.stdin.end()'],
   // review of D53 (design/reviews/d44-d52-d53-d60.md)
   ["m-10: a run with a secret on stdin keeps the deploy's own log settings (sanitising off, debug log on disk)", 'lib/wrangler.mjs', ", ...(input !== undefined ? SECRET_RUN_ENV : {}) },", ' },'],
   ['m-9: a key on a version newer than the serving one (left by a rollback) is not seen, and a new one is made', 'lib/secrets.mjs', '    if (newestServing !== Infinity) {', '    if (false) {'],
+  // review of D53, m-11: another run of the same release between the check and the put
+  ["m-11: the keyed version's VIZ_DEPLOY_RUN is not checked after the put (another run's upload is keyed and promoted)", 'lib/secrets.mjs', '    if (plainVar(made, RUN_VAR) !== run) {', '    if (false) {'],
+  ["m-11: the newest version's VIZ_DEPLOY_RUN is not checked before the put", 'lib/secrets.mjs', '    if (plainVar(base, RUN_VAR) !== run) {', '    if (false) {'],
+  ['m-11: uploads do not carry VIZ_DEPLOY_RUN', 'release.mjs', "'--tag', tag, '--message', message, ...runVar], { label: step.name })", "'--tag', tag, '--message', message], { label: step.name })"],
+  ["m-11: phase 2's wrangler deploy does not carry VIZ_DEPLOY_RUN", 'release.mjs', '...doMode(manifest), ...runVar], { label: step.name })', '...doMode(manifest)], { label: step.name })'],
+  ['m-11: every run has the same VIZ_DEPLOY_RUN', 'release.mjs', "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}${randomUUID()}`", "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}00000000-0000-4000-8000-000000000000`"],
 ]
 
 try {
@@ -47,7 +53,7 @@ try {
 
 const run = () => {
   try {
-    execFileSync('node', ['--test', '--test-concurrency=1', 'test/secrets.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 300_000 })
+    execFileSync('node', ['--test', '--test-concurrency=1', 'test/secrets.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 600_000 })
     return { failed: false, detail: '' }
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '')

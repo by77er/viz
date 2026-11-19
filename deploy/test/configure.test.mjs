@@ -389,6 +389,8 @@ test('formats: a Worker that writes a version it does not read, or one format at
     // Read lists intersect; `read.…` entries are skipped; a format only read has writes null.
     assert.deepEqual(readFormats(src('w', { writes: [rel('b.ts#FORMATS')], reads: [rel('b.ts#READS')] })), [{ worker: 'w', format: 'x.one', writes: 3, reads: [2, 3] }, { worker: 'w', format: 'x.two', writes: null, reads: [1] }])
     assert.deepEqual(readFormats(src('w', { writes: [rel('a.ts#FORMATS')] })), [{ worker: 'w', format: 'x.one', writes: 2, reads: [2] }])
+    // Two read lists of one format in one Worker: it reads what both read. None in common: refused.
+    assert.throws(() => readFormats(src('w', { reads: [rel('b.ts#READS')], reads_of: { 'x.one': rel('a.ts#ONLY_1') } })), /w: the read lists of x\.one have no version in common/)
     assert.throws(() => readFormats(src('w', { writes: [rel('a.ts#NOPE')] })), /does not export NOPE/)
     assert.throws(() => formatSources([{ name: 'w', formats: { write: [] } }]), /"write" is not one of/)
   } finally {
