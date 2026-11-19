@@ -2404,11 +2404,29 @@ select metric rows only, and a span or log batch it admits is returned whole. Re
 `trace_days` and `log_days` from the record control already writes, 30 days each when absent,
 and expires them in ledger requests of their own after the metric one.
 
+**Retention, revised 2026-11-19 after review B-1 and m-1** (`design/reviews/signals-end-to-end.md`).
+This replaces two parts of the first D63: a present but unreadable `trace_days` or `log_days`
+refused the whole record (metrics included), and control's "shorter" check compared only the
+fields a new value named, so a PUT that left a field out dropped it to the default unconfirmed.
+Now: (1) the janitor reads each signal field on its own. One that is present but not a positive
+integer stops that signal only: its tables expire nothing until it is fixed, the metric tables and
+the other signal expire as usual, and the run reports the field as `refused` (looked at hourly,
+shown in the maintenance marker, as a refused record is). A bad `metric_samples_days` still refuses
+the whole record (review R-1). (2) Control's `PUT /settings/retention` stays a replace, like every
+section's. A shortening is judged on what the readers keep, before and after, with each absent field
+at its reader's default: 30 days for spans and logs (the janitor's `DEFAULT_SIGNAL_DAYS`); a rollup
+tier, which has no reader yet, counts as shortened when it was set and is left out. So a PUT that
+leaves out `trace_days` or `log_days`, or sets one below the default for the first time, needs
+`confirmShorter` like any other shortening, and the refusal names the fields left out (`leftOut`).
+
 **Alternatives.** Time: (a) nanoseconds in `FileEntry` as decimal strings or a second pair of
 fields. Units: (b) one unit per hour of a span segment. Types: (c) widen `Table` in place;
 (d) make `FileEntry` and `LedgerChange` generic over the table. Tails: (e) filter span and log
 rows by time inside the shard; (f) a `signals` field only, other fields refusing span batches.
 Retention: (g) traces and logs inherit `metric_samples_days` when the record does not name them.
+Control's check (revised): (h) merge the fields a PUT leaves out from the stored value, so PUT
+becomes a patch for this section; (i) merge and compare effective policies both. A bad signal field
+(revised): (j) refuse the whole record (the first D63); (k) read it as the default.
 
 **Why.** (a) A Unix nanosecond does not fit a JS number, and every reader of the ledger (query's
 planner, compaction's pairing, the publisher) would need a second time model; the floor is exact

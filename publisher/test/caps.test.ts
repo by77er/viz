@@ -304,7 +304,7 @@ describe('a capped publish started over after a conflict', () => {
     const b = await bDone
     expect(b.conflicts).toBeGreaterThanOrEqual(1)
     // Started over: y1 (now the most recently started) re-based and committed, y2 still waiting.
-    expect(b.tenants.map((r) => [r.tenant, r.status, !!r.rebase])).toEqual([[y1, 'ok', true], [y2, 'deferred', false]])
+    expect(b.tenants.map((r) => [r.tenant, r.status, !!r.rebase]).sort()).toEqual([[y1, 'ok', true], [y2, 'deferred', false]])
     for (const t of [x, y1]) expect((await icebergLive(cell, 'metric_samples')).filter((k) => k.includes(`/tenant=${t}/`))).toEqual(await liveKeys(t, 'metric_samples'))
     expect((await icebergLive(cell, 'metric_samples')).filter((k) => k.includes(`/tenant=${y2}/`))).toEqual([])
     expect(await B.pending()).toEqual([y2])

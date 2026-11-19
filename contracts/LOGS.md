@@ -100,7 +100,9 @@ the tenant, which comes from the credential.
 `metadata` is Parquet's standard `MAP` (`repeated group key_value { required key; required
 value }`). Limits, enforced by `edge` on ingest and refused per record with a reason (built):
 a line is at most 256 KiB; a stream has at most 32 labels; a row has at most 128 metadata
-entries, together at most 64 KiB; `severity_text` is at most 1,024 bytes.
+entries, together at most 64 KiB; `severity_text` is at most 1,024 bytes. While decoding, a
+record, resource, scope or Loki label set with more than 65,536 values as received is refused
+before it is built (contracts/BATCH.md, "Decode limits").
 
 ## 3. What LogQL sees
 

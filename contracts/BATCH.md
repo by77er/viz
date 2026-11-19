@@ -132,6 +132,42 @@ whole request gets a retryable status (429 with `Retry-After` for backpressure, 
 otherwise) and the sender retries all of it. `partial_success` is used only for rows
 rejected by validation, which a retry would not fix.
 
+## Decode limits (every signal; added 2026-11-19, review M-3)
+
+What `edge` builds while it decodes a request is bounded whatever the body's shape: a protobuf
+key-value entry or array element can be two bytes on the wire and fifty in memory, and a
+resource is copied into every series or entry it has. These limits are counted while the body
+is read, before anything is built, so an item is refused at the limit instead of after it has
+been built. They are `edge`'s; nothing downstream checks them.
+
+- **Values per item.** At most **65,536 key-value entries and array elements**, at any depth,
+  counted as received, in each of: a span with its events and links; a resource with one of
+  its scopes (spans); a log resource; a log scope; a log record (its body and attributes) or a
+  Loki entry (its structured metadata); a Loki stream's label set; a metric resource; a metric
+  data point. Every entry counts, including a repeated key (which OTLP forbids: "keys MUST be
+  unique"), an entry with an empty value and an empty key-value list, which the mappings
+  then drop. An item over the limit is refused on its own, and the rest of the request is
+  decoded as before; a resource or scope over it refuses every span, record or point under
+  it. A data point (or every point of a resource) over it is refused as `label set too large
+  to fit one batch`: no series can hold that many labels.
+- **Events and links** past the 128th of a span are read but not built; the span is refused
+  for its events or links, as before.
+- **Which reason.** An item over the values limit is refused for it after the checks that need
+  only its scalar fields (ids, kind, status, timestamps, event and link counts), which keep
+  their reasons. The checks that need its attributes are not made, so an item that also breaks
+  one of those is named for the values limit. An item under the limit is checked exactly as
+  before. Likewise a span whose attribute list passes 256 KiB while it is encoded is refused
+  as over 256 KiB without the keys after that point being checked.
+- **Decoded size per request.** At most `maxDecodedBytes` (16 MiB unless the deployment sets
+  less or more) of decoded data: the series table for metrics, the entries (or streams) and
+  rows for spans and logs. Over it the request is refused whole: 413, nothing appended. This
+  bounds the copies a resource makes: one resource's labels in every series of it, one
+  resource's attributes in every (resource, scope) entry.
+- **JSON bodies.** At most `maxJsonTokens` (1,048,576 by default) structural characters
+  (`{`, `[`, `,` and `:` outside strings), counted before the body is parsed, because parsing
+  builds every value at once. Over it: 413.
+- **Body size.** `maxDecompressedBytes` is 8 MiB by default (`design/DECISIONS.md` D71).
+
 ## Rules common to signals 2 and 3
 
 Settled 2026-11-19 with the first encoder (`edge/src/spans.ts`, `edge/src/logs.ts`) and
@@ -243,7 +279,8 @@ enums, a start or end outside the timestamp range or a start outside the accept 
 attribute with an empty key, more than 128 attributes in a list, a key over 1,024 bytes, a
 value over 65,536 bytes, more than 128 events or links, a link whose ids have the wrong
 length, a field over its limit and a row over 256 KiB are refused; every span of a resource
-whose entry would be over 256 KiB is refused. A span whose end is before its start is
+whose entry would be over 256 KiB is refused; so is a span, and every span of a resource and
+scope, over the decode limits ("Decode limits"). A span whose end is before its start is
 stored with `end = start` and the span attribute `viz.clamped_end = true` (bool).
 
 Not carried (not in `contracts/TRACES.md`'s tables): `schema_url`, the span's

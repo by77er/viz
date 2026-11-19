@@ -4,6 +4,8 @@
 //   node bench/memory.mjs --node traces      only Node, only cases whose name contains "traces"
 //   node bench/memory.mjs --workerd --json   workerd only, one JSON line per case
 //   node bench/memory.mjs --dump DIR         write each case's body to DIR, measure nothing
+//   MEM_SRC=/copy/of/src node bench/memory.mjs   measure another copy of src/ (a before/after pair)
+//   MEM_MIB=2 node bench/memory.mjs          hostile bodies of 2 MiB instead of 4
 //
 // Each case runs in a fresh process (Node) or a fresh workerd (one isolate), with V8's
 // `--expose-gc --trace-gc`: a forced GC before the request gives the baseline, a forced GC after
@@ -129,7 +131,15 @@ function hostile(mib) {
       const n = Math.min(Math.floor(S / 39), 200_000)
       return traces(svc, cat(...Array.from({ length: n }, (_, i) => span(i))))
     }],
+    [`traces: empty spans, ${mib} MiB`, 'traces', false, false, () => traces(svc, repeat(Uint8Array.of(0x12, 0), S / 2))],
+    [`traces: empty resources, ${mib} MiB`, 'traces', false, false, () => repeat(Uint8Array.of(0x0a, 0), S / 2)],
+    [`traces: span attribute of nested key-value lists, ${mib} MiB`, 'traces', false, false, () => {
+      // KeyValue { key "a", value { kvlist_value { values: N x KeyValue { key "b", value { kvlist_value {} } } } } }
+      const inner = ld(0x0a, cat(str(0x0a, 'b'), ld(0x12, ld(0x32, new Uint8Array(0)))))
+      return traces(svc, span(0, ld(0x4a, cat(str(0x0a, 'a'), ld(0x12, ld(0x32, repeat(inner, Math.floor(S / inner.length))))))))
+    }],
     [`logs: resource of empty KeyValues, ${mib} MiB`, 'logs', false, false, () => logs(emptyKVs(S), new Uint8Array(0))],
+    [`logs: empty records, ${mib} MiB`, 'logs', false, false, () => logs(svc, repeat(Uint8Array.of(0x12, 0), S / 2))],
     [`logs: record of empty attributes, ${mib} MiB`, 'logs', false, false, () => logs(svc, record(emptyKVs(S, 0x32)))],
     [`logs: record body, array of empty values, ${mib} MiB`, 'logs', false, false, () => logs(svc, record(ld(0x2a, ld(0x2a, repeat(Uint8Array.of(0x0a, 0), S / 2)))))],
     [`logs: minimal valid records (200,000)`, 'logs', false, false, () => logs(svc, repeat(record(), 200_000))],
@@ -147,6 +157,11 @@ function hostile(mib) {
     }],
     [`metrics: resource of empty KeyValues, ${mib} MiB`, 'metrics', false, false, () => metrics(emptyKVs(S), new Uint8Array(0))],
     [`metrics: resource attribute, array of empty values, ${mib} MiB`, 'metrics', false, false, () => metrics(arrayOfEmpty(S), new Uint8Array(0))],
+    [`metrics: a 96 KiB resource copied into 2,000 series (157 KiB body)`, 'metrics', false, false, () => {
+      const res = cat(...Array.from({ length: 12 }, (_, i) => kv(`k${i}`, 'v'.repeat(8000))))
+      const pts = cat(...Array.from({ length: 2000 }, (_, i) => ld(0x0a, cat(fixed64(0x19, NS), fixed64(0x21, 0), ld(0x3a, cat(str(0x0a, 'p'), ld(0x12, str(0x0a, String(i)))))))))
+      return metrics(res, ld(0x12, cat(str(0x0a, 'm'), ld(0x2a, pts))))
+    }],
     [`metrics: point of distinct attribute keys, 256 KiB`, 'metrics', false, false, () => {
       const n = Math.floor((256 << 10) / 16)
       return metrics(svc, gaugeWithPoint(cat(...Array.from({ length: n }, (_, i) => ld(0x3a, cat(str(0x0a, `k${i}`), ld(0x12, str(0x0a, '1'))))))))
@@ -265,18 +280,21 @@ message Timestamp { int64 seconds = 1; int32 nanos = 2; }
 
 // ───────────────────────────── bundle ─────────────────────────────
 
+/** The sources measured: edge's own, or another copy of them (MEM_SRC=/path/to/src, to compare). */
+const SRC = process.env.MEM_SRC ?? './src'
+
 async function bundle(dir) {
   const { build } = await import('esbuild')
   const out = join(dir, 'edge.mjs')
   await build({
     stdin: {
       contents: [
-        `export { SpanCollector, decodeTracesProto, decodeTracesJson } from './src/spans'`,
-        `export { LogCollector, decodeLogsProto, decodeLogsJson, decodeLokiProto, decodeLokiJson } from './src/logs'`,
-        `export { DEFAULT_LIMITS } from './src/limits'`,
-        `export { snappyDecompress } from './src/snappy'`,
-        `export { decodeOtlpProto, decodeOtlpJson } from './src/otlp'`,
-        `export { Collector, buildBatches } from './src/batch'`,
+        `export { SpanCollector, decodeTracesProto, decodeTracesJson } from '${SRC}/spans'`,
+        `export { LogCollector, decodeLogsProto, decodeLogsJson, decodeLokiProto, decodeLokiJson } from '${SRC}/logs'`,
+        `export { DEFAULT_LIMITS } from '${SRC}/limits'`,
+        `export { snappyDecompress } from '${SRC}/snappy'`,
+        `export { decodeOtlpProto, decodeOtlpJson } from '${SRC}/otlp'`,
+        `export { Collector, buildBatches } from '${SRC}/batch'`,
       ].join('\n'),
       resolveDir: join(HERE, '..'), loader: 'ts',
     },
