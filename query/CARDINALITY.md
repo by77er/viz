@@ -254,6 +254,10 @@ At 10,000 series (same run) every answer is identical and the queries read as be
 label calls read 14 objects and 1.3 MiB instead of 28 and 3.2 MiB, 65 to 84 ms of engine time
 instead of 249.
 
+(Both counterfactuals ran before a last fix to the split extract's count of stray series, made
+when it was given no sample file at all; no series of these workloads is a stray, so the
+figures are unaffected.)
+
 **What it costs.** A resolved query reads in two rounds (series files, then sample row
 groups): one more round trip of 55 to 203 ms on Cloudflare (modelled from S1); and it parses
 every label set of the metric in the window (138 ms natively for 100,000 series against 96

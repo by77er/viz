@@ -821,6 +821,13 @@ the module; `internal` is a fourth error type.
 
 ## Known risks
 
+- **A resolved query parses labels twice in a split.** The coordinator's `sample_plan` parses
+  every label set of the metric in the window, and each split reader's extract parses its
+  series files' again; one place avoids the second parse with the carrier, a split does not.
+- **Partial reads rest on the planners.** A row group left out of a sparse file is skipped
+  without an error; `may_hold`, `part_sids` and `strays` are what make that safe (property
+  tests and mutants above and in `engine/storage`).
+
 - **Split execution reads whole files per part** (see "Split execution": `L`-fold reads and
   `series_id` decodes). Fine for a few parts; the fix is row-group reads by key range.
 - **The cardinality merge is quadratic in parts.** `Summary::merge` rebuilds its hash maps
