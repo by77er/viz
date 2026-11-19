@@ -242,7 +242,7 @@ both versions. p75 (median), ms; load is the median at the samples.
 
 What can be read from it, without judging: the press by finger is a mechanism, not a timing (v5 never
 paints while the finger is held, in every run, at every load); the rows that were missing now have
-numbers; **"Change theme" is over its budget at both layouts in every run (119 to 153 ms)**, which is
+numbers; **"Change theme" is over its budget at both layouts in every run (114 to 153 ms)**, which is
 the row to measure first on a quiet machine (a theme change restyles every element of a page with a
 200-series chart; if it holds, the fix is to change the theme between frames of a view switch or to
 reduce what the theme restyles); "One panel to table, 36 series" and the worst interaction are over in
@@ -304,7 +304,10 @@ outside the tree (the runner refuses a directory inside it).
 
 **Result.** v5's `check.mjs` against the reviewer's 32 (each applied to a copy of v5): **2 of 32
 caught** (X24, X26), as the review found (`evidence/x-mutants-v5.txt`). v6, the whole corpus
-(`evidence/final-mutants.txt`, `tools/mutants.mjs`, browser mutants included): <!-- CORPUS-NUMBERS -->
+(`evidence/final-mutants.txt`, `tools/mutants.mjs`, browser mutants included): **97 of 97 as expected**: R 18 of 18, N 13 of 13, **X 32 of 32**, V 17 of 17, C 9 of 9, A 4 of 4
+caught, and H 4 of 4 harmless edits passing; every multi-literal mutant had each of its literals reported.
+`npm test`: 107 tests, 96 passed, 0 failed, 11 skipped (the corpus's browser mutants, which
+`tools/mutants.mjs` ran).
 Three things the corpus taught on the way, each fixed: under `npm test` the chart mutants "survived"
 because the nested test runner inherited the parent's `NODE_TEST_CONTEXT` and reported to it instead of
 running (the runner now clears it); A2 survived three times, because the property it breaks (a state cut
@@ -371,7 +374,13 @@ that do not fit 640 px and so scroll at 200% zoom (1, 8 and 12 use `data-fold`; 
 are `data-fold="wide"`), and on screen 1 a link at the end of a sentence in a table cell (a cell's words
 cannot be told from a standalone link by CSS; make it the cell's own link or put the sentence in a `p`).
 
-<!-- FLOWS-AUDIT -->
+The final audit of the flow screens as they are on disk (v5 markup, now on v6's CSS), 14 configurations:
+no screen scrolls the page sideways any more (12 and 7 did at 320 px and 12 at 200% zoom); 18 findings
+remain, all in the flows' own markup: the folding tables of screens 1 ("Dashboards", 273 px at 800 px),
+8 ("Keys", 16 px) and 12 ("Silences", 184 px; "Routes", 48 px at 200% zoom) do not fit 640 px and need
+`data-fold="wide"`, and screen 1's "1 proposal waiting" is a link at the end of a sentence in a table
+cell. The same run found one regression of mine, now fixed: the first v6 rule for m1 exempted links in a
+`dd`, which took the 44 px from flow 4's standalone "Checkout latency" (a key-value value stands alone).
 
 **B1 on screen 5.** The coordinator's sequence (cart, then 36 pods, then cart) is a fixed test: on v5 cart
 returns grey, on v6 in slot 1.
@@ -449,8 +458,11 @@ No class was renamed or removed. What changes under existing markup:
   press script), `speed.json` and `speed-phone.json` (the missing rows), `README.md`.
 - `package.json` (scripts; `css-tree` 3.2.1 and `parse5` 8.0.1 as exact dev dependencies) and
   `package-lock.json`; `node_modules/` is ignored.
-- `reviews/system-v6/`: this file, `compositions/` (v5's ten, fixed), `shots-compare.json` and
-  `shots.json`, `compare/`, `images/`, `speed/`.
+- `reviews/system-v6/`: this file, `compositions/` (v5's ten, fixed), `shots-compare.json` (the pairs) and
+  `shots.json` (the compositions), `compare/` (66 pairs, v5 left, v6 right, palette-encoded keeping each
+  image's 256 most frequent colours exactly; at most 1.4% of an image's pixels moved), `images/` (25),
+  `speed/` (`phone.json`, `desktop.json`), `evidence/` (the failing-first runs on v5 and the final runs
+  on v6, as printed).
 - `README.md` (version 6, tools, history, the flows' status).
 
 ## Housekeeping

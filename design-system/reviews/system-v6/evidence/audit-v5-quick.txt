@@ -1,0 +1,52 @@
+320 coarse       done, 28 finding(s) so far, 12 s400 coarse       done, 45 finding(s) so far, 25 s720 at 200%      done, 63 finding(s) so far, 36 s1500             done, 77 finding(s) so far, 47 s
+
+43 pages x 4 configurations (320 coarse; 400 coarse; 720 at 200%; 1500)
+
+System pages: 77 finding(s)
+  dist/preview/Cover.html
+    overflow      320 coarse      page scrolls sideways by 640 px: <div.cover> "vizMetrics, logs and traces, rea"  (and at 400 coarse, 720 at 200%)
+  dist/preview/Table.html
+    overflow      320 coarse      page scrolls sideways by 249 px: nothing unclipped found past the edge  (and at 400 coarse)
+    escape        320 coarse      <span.vz-sr> "Actions" is placed absolutely inside <div.vz-table-wrap> "ServiceStateRequests, req/sError", which clips or scrolls, but its containing block is the page: the clip does not hold it  (and at 400 coarse, 720 at 200%, 1500)
+    fold-scroll   320 coarse      <table.vz-table> "MonitorStateNowThresholdNotifies" folds (data-fold) but scrolls 7 px sideways at this width  (and at 720 at 200%)
+    cut           320 coarse      "min" in <span.vz-qty> "10 min" is outside its cell, over its neighbour (280 to 303, visible 225 to 296)
+  dist/preview/Waterfall.html
+    cut           320 coarse      "failed" in <span.vz-status> "1 failed" is outside its cell, over its neighbour (200 to 233, visible 24 to 225)
+    fold-scroll   720 at 200%     <table.vz-table.vz-waterfall> "Spans of trace 4bf9…4736" folds (data-fold) but scrolls 31 px sideways at this width
+  dist/reference.html
+    overflow      320 coarse      page scrolls sideways by 257 px: <div.vz-segmented> "Services shown", <div.vz-segmented> "Services shown"
+    escape        320 coarse      <span.vz-sr> "Actions" is placed absolutely inside <div.vz-table-wrap> "ServiceStateRequests, req/sError", which clips or scrolls, but its containing block is the page: the clip does not hold it  (and at 320 coarse, 400 coarse, 400 coarse, 720 at 200%, 720 at 200%, 1500, 1500)
+    fold-scroll   320 coarse      <table.vz-table> "MonitorStateNowThresholdNotifies" folds (data-fold) but scrolls 11 px sideways at this width  (and at 320 coarse, 720 at 200%, 720 at 200%, 1500, 1500)
+    cut           320 coarse      "Threshold" in <th.vz-label> "Threshold" is outside its cell, over its neighbour (229 to 292, visible 221 to 288)  (and at 320 coarse)
+    cut           320 coarse      "min" in <span.vz-qty> "5 min" is outside its cell, over its neighbour (268 to 292, visible 221 to 288)  (and at 320 coarse, 320 coarse)
+    cut           320 coarse      "failed" in <span.vz-status> "1 failed" is outside its cell, over its neighbour (208 to 241, visible 32 to 221)
+    overflow      400 coarse      page scrolls sideways by 177 px: nothing unclipped found past the edge
+    fold-scroll   720 at 200%     <table.vz-table.vz-waterfall> "Spans of trace 4bf9…4736" folds (data-fold) but scrolls 47 px sideways at this width  (and at 720 at 200%, 1500, 1500)
+    fold-scroll   720 at 200%     <table.vz-table.vz-log> "Log lines from checkout-api, new" folds (data-fold) but scrolls 22 px sideways at this width  (and at 720 at 200%)
+  reviews/system-v5/compositions/dialog.html
+    fold-scroll   320 coarse      <table.vz-table> "DashboardStateWhat it answersCha" folds (data-fold) but scrolls 48 px sideways at this width  (and at 400 coarse, 720 at 200%)
+    cut           320 coarse      "budget" in <span.vz-status> "Burning budget" is outside its cell, over its neighbour (307 to 352, visible 229 to 304)  (and at 400 coarse)
+    cut           320 coarse      "Actions…" in <button.vz-button> "Actions for Checkout latency" is outside its cell, over its neighbour (215 to 270, visible 198 to 214)  (and at 400 coarse)
+    cut           320 coarse      "Actions…" in <button.vz-button> "Actions for Ingest pipeline" is outside its cell, over its neighbour (203 to 257, visible 186 to 202)  (and at 400 coarse)
+    cut           320 coarse      "Actions…" in <button.vz-button> "Actions for Storefront overview" is outside its cell, over its neighbour (196 to 250, visible 179 to 195)  (and at 400 coarse)
+    overflow      720 at 200%     page scrolls sideways by 38 px: nothing unclipped found past the edge
+    escape        720 at 200%     <span.vz-sr> "Actions" is placed absolutely inside <div.vz-table-wrap> "DashboardStateWhat it answersCha", which clips or scrolls, but its containing block is the page: the clip does not hold it  (and at 1500)
+    caption       1500            "12 dashboards, most recently changed first" over 3 rows
+    caption       1500            "12 dashboards, most recently changed first", but row 2 (3 d ago, by Sam) comes after 12 d ago, by Dana
+    age           1500            "12 d ago, by Dana": an age beyond a day is a date and time ("17 Nov, 09:30")
+    age           1500            "3 d ago, by Sam": an age beyond a day is a date and time ("17 Nov, 09:30")
+  reviews/system-v5/compositions/secret.html
+    fold-scroll   320 coarse      <table.vz-table> "NameLast usedKeyAccessActions in" folds (data-fold) but scrolls 102 px sideways at this width  (and at 400 coarse)
+    cut           320 coarse      "created" in <span.vz-status> "Never, created just now" is outside its cell, over its neighbour (298 to 347, visible 229 to 304)  (and at 400 coarse)
+    cut           320 coarse      "just" in <span.vz-status> "Never, created just now" is outside its cell, over its neighbour (351 to 375, visible 229 to 304)  (and at 400 coarse)
+    cut           320 coarse      "now" in <span.vz-status> "Never, created just now" is outside its cell, over its neighbour (378 to 406, visible 229 to 304)  (and at 400 coarse)
+    cut           320 coarse      "Actions…" in <button.vz-button> "Actions…" is outside its cell, over its neighbour (257 to 312, visible 240 to 256)  (and at 320 coarse, 400 coarse, 400 coarse)
+    escape        720 at 200%     <span.vz-sr> "Actions" is placed absolutely inside <div.vz-table-wrap> "NameLast usedKeyAccessActions in", which clips or scrolls, but its containing block is the page: the clip does not hold it  (and at 1500)
+  dist/preview/Log.html
+    fold-scroll   720 at 200%     <table.vz-table.vz-log> "Log lines from checkout-api, new" folds (data-fold) but scrolls 6 px sideways at this width
+  reviews/system-v5/compositions/logs.html
+    fold-scroll   720 at 200%     <table.vz-table.vz-log> "Log lines from checkout-api, new" folds (data-fold) but scrolls 6 px sideways at this width
+  reviews/system-v5/compositions/traces.html
+    caption       1500            "13 spans in the order they started, 10 shown. The strongest bars and names are where the time went." over 10 rows
+
+Flow screens (read only, reported): 0 finding(s)
