@@ -433,7 +433,7 @@ describe('eviction and concurrency', () => {
     await expectVerified(p)
   })
 
-  it('six tenants re-basing at once, each from parts: never more than six R2 operations in flight', async () => {
+  it('six tenants re-basing at once, each from parts: never more than six R2 operations in flight, and one tenant\'s parts at a time', async () => {
     const { cell, tenant } = fresh()
     const ts = Array.from({ length: 6 }, (_, i) => tenant(`c${i}`))
     for (const t of ts) await scenario(cell, t, 'parts', 500)
@@ -444,10 +444,17 @@ describe('eviction and concurrency', () => {
     const seen = await p.r2()
     expect(seen.max).toBeGreaterThan(2) // they do overlap
     expect(seen.max).toBeLessThanOrEqual(CONNECTIONS)
+    const all: string[] = []
     for (const t of ts) {
       const { parts } = await checkpointsOf(cell, t, 1)
       expect(seen.gets.filter((k) => k.includes(`tenant=${t}/`) && parts.includes(k)), t).toEqual(parts)
+      all.push(...parts)
     }
+    // Re-bases take turns: the part reads of each tenant form one run, never interleaved with
+    // another's, so the parts held at once are one window whatever the number of tenants.
+    const order = seen.gets.filter((k) => all.includes(k)).map((k) => /tenant=([^/]+)\//.exec(k)![1]!)
+    const runs = order.filter((t, i) => i === 0 || order[i - 1] !== t)
+    expect(runs).toHaveLength(ts.length)
     for (const t of ts) await expectLedger(cell, t)
     await expectVerified(p)
   })

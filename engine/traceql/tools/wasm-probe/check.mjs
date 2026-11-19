@@ -102,12 +102,12 @@ for (const [name, kind, make] of FLAT) {
 const nestRe = n => `{ name =~ "${rep('(', n)}x${rep(')', n)}" }`;
 const regex = {
   nest64: attempt(S, nestRe(64)), nest65: attempt(S, nestRe(65)), nestFar: attempt(S, nestRe(fill(nestRe))),
-  size: attempt(S, '{ name =~ "x{100000}" }'),
+  size: attempt(S, '{ name =~ ".{1000}.{1000}.{1000}.{1000}" }'), sizeFits: attempt(S, '{ name =~ ".{1000}|op.*" }'),
   unicode: attempt(S, '{ name =~ "\\\\w{2}|\\\\w{16}" }'),
   count16: attempt(S, `{ ${Array(16).fill('name =~ "op.*"').join(' && ')} }`),
   count17: attempt(S, `{ ${Array(17).fill('name =~ "op.*"').join(' && ')} }`),
 };
-for (const k of ['nest64', 'unicode', 'count16']) if (isErr(regex[k])) failures.push(`regex ${k} (within the limits): ${regex[k].slice(0, 120)}`);
+for (const k of ['nest64', 'unicode', 'count16', 'sizeFits']) if (isErr(regex[k])) failures.push(`regex ${k} (within the limits): ${regex[k].slice(0, 120)}`);
 for (const k of ['nest65', 'nestFar', 'size', 'count17']) if (!isErr(regex[k])) failures.push(`regex ${k}: ${regex[k].slice(0, 120)}`);
 // Linear memory never shrinks: these are peaks (a trap replaces the instance).
 const memoryAfterLimits = inst.exports.memory.buffer.byteLength;

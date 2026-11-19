@@ -761,7 +761,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
    */
   private stageSink(): BaseSink {
     const sql = this.sql
+    // Re-bases of one publish read their checkpoint or base one at a time (memory: one window of parts).
+    const turns = new Slots(1)
     return {
+      turn: () => turns.take(),
       reset: (tenant) => void sql.exec(`DELETE FROM stage WHERE tenant = ?`, tenant),
       files: (tenant, files) =>
         this.ctx.storage.transactionSync(() => {

@@ -158,7 +158,8 @@ export class SpanCollector {
 
   rejectionSummary(): string {
     const s = [...this.rejected].map(([r, n]) => `${n} ${r}`).join('; ')
-    return s.length > 512 ? `${s.slice(0, 509)}...` : s
+    // Bounded, as the OTLP specification asks of partial-success messages; long enough to name every reason.
+    return s.length > 2048 ? `${s.slice(0, 2045)}...` : s
   }
 
   /**

@@ -129,8 +129,11 @@ ledger incarnation is re-based, and nothing in it grows with the tenant's size:
 - **Six connections.** Every R2 operation of a publish, sweep, maintenance or verify takes a slot
   of one `Slots` of `R2_CONNECTIONS` (6) per invocation, a GET until its body has been read or
   cancelled. So the tenants read six at a time, the segments of each six at a time, the parts
-  window and the commit's writes never have more than six in flight together. Tested from under
-  the store (`test/checkpoints.test.ts`): six tenants re-basing from parts at once, at most six.
+  window and the commit's writes never have more than six in flight together. Re-bases of one
+  publish take turns reading their checkpoint or base (`BaseSink.turn`), so the parts held at once
+  are one window whatever the number of tenants. Tested from under the store
+  (`test/checkpoints.test.ts`): six tenants re-basing from parts at once, at most six in flight,
+  each tenant's part reads one unbroken run.
 - **What is checked of parts.** Each part's header against its key and manifest (tenant,
   incarnation, version, attempt, part number) and its record count against its lines (the
   contract's decoder); every record one file or one tombstone; files in strictly ascending key
@@ -441,8 +444,8 @@ manifest lists and the manifests are the real locations of the dumped files. The
 refuses to run if the directory has moved. What this does not show is a read through
 `s3://`.
 
-`tools/verify_readers.py export`, run on 2026-11-19 on the export of the segment-reading
-publisher, in a fresh virtualenv with PyIceberg 0.12.0 (pyarrow 26.0.1) via
+`tools/verify_readers.py export`, run on 2026-11-19 on the export of the streaming re-base (and before it on that of the segment-reading
+publisher), in a fresh virtualenv with PyIceberg 0.12.0 (pyarrow 26.0.1) via
 `StaticTable.from_metadata` and DuckDB 2.0.0 (iceberg and avro extensions as installed for
 DuckDB 2.0.0) via `iceberg_scan`: **504 checks, 0 failed** (240 PyIceberg, 256 DuckDB, 8
 content hashes). For both tables, for each of the four stages (after a compaction, after a
@@ -618,6 +621,102 @@ A manifest costs about 3.9 kB of header (the schemas) plus about 34 bytes per fi
 snapshot, 5.7 kB with four), so at one commit every 5 minutes and a 24-hour window it is
 about 290 kB per commit (modelled from that slope, not measured).
 
+### Re-base: memory and time
+
+Measured here, in local workerd (`bench/rebase.bench.test.ts`, 2026-11-19, load average 5–11 on
+the shared machine, printed per run): not on Cloudflare. The bench writes a tenant's log with
+the contract's encoders, S4-shaped (keys of about 130 characters, a version-1 index fragment of
+three row groups, about 500 characters; half samples, half series, over 30 days; tombstones for
+1% of the files), so that N files have the ledger's estimated state N × (key + fragment + 448
+bytes): **300,000 files is 299 MiB**, the limit. Incarnation 1 is a base of N files, a segment
+adding a unit, and a checkpoint at that version in the variant's format: **parts** (format 2, 246
+parts at 300,000), **one** (format 1, one object; the ledger writes it only up to 1 MiB, written
+here at every size to compare), **base** (no checkpoint: the 254 MB base segment, streamed),
+**before** (the base, published by the frozen publisher from before this change, `bench/before/`).
+Steps: the tenant's first publication (N + 2 files added), a re-base onto incarnation 2 (the
+same files and a unit, a checkpoint of the same format), one unit from the cursor, and a resync
+(the publisher's SQLite deleted: the re-base read again, R2's tables rebuilt into SQLite, the
+attempt restarted, nothing to commit).
+
+**The counterfactual: same data, one object or parts.** Every after-variant publishes with fixed
+ids and clock (`random()` and `now()` seams) and prints a SHA-256 of every Iceberg object it
+wrote: at 600, 32,040, 100,020 and 300,000 files the three variants wrote **byte-identical**
+manifests, manifest lists, cursor objects, `metadata.json` and hints (one distinct digest set per
+size), and every tuning step below kept them identical. `test/checkpoints.test.ts` shows the
+same on the real ledger's parts, format-1 checkpoint and base.
+
+**Memory: the isolate's heap capped.** workerd does not enforce the 128 MB isolate limit, and in
+this pool the publisher shares one V8 heap with the test runner (which also writes the log), so
+resident memory says little. Each variant ran in its own process with V8's heap capped
+(`MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=<MB> --max-semi-space-size=4"`, young
+generation 3 × 4 MB on top); a run that does not fit dies with "JavaScript heap out of memory".
+
+| Files (estimated state) | Publisher, read from | Old space 24 MB | 32 MB | 48 MB | 100 MB | 128 MB | 512 MB |
+|---|---|---|---|---|---|---|---|
+| 8,040 (8 MiB) | before, base | | completes | | | | |
+| 32,040 (32 MiB) | before, base | | | out of heap (first publication) | | completes | |
+| 100,020 (100 MiB) | before, base | | | | | out of heap (first publication) | completes |
+| 8,040 | this, parts | completes | | | | | |
+| 32,040 | this, parts | completes | completes | | | | |
+| 300,000 (299 MiB) | this, parts | out of heap (first publication) | **completes** | | completes | | |
+| 300,000 | this, base | | **completes** | | completes | | |
+| 300,000 | this, one object | | **completes** | | completes | | |
+
+So **the publisher's peak for a 299 MiB state is under 32 MB of old space plus 12 MB of young
+generation, with the test runner in the same heap**: under the isolate's 128 MB with room to
+spare, every step, every format. Some growth with size is left: at 8,040 and 32,040 files the
+first publication fits in 24 MB, at 300,000 it does not (what grows was not found; it is under
+8 MB across a ninefold larger state). The publisher before this change needed more than 128 MB
+at 100,020 files.
+
+Resident memory of the workerd process, sampled every 100 ms (`../ledger/bench/rss.mjs`,
+`bench/phases.mjs`), growth during each phase, uncapped: this publisher at most +28 MB at 100,020
+files (+0 to +22 MB from parts), at most +3 MB at 300,000 (capped runs); the publisher before,
++63 MB (first publication), +27 MB (re-base) and +88 MB (resync) at 32,040 files, and +190 MB,
++153 MB and +138 MB at 100,020.
+
+**Time** (seconds, wall, from outside the object; the uncapped pass at 32,040 and 100,020 files,
+load 7–8; at 300,000 the capped runs, the range over two runs, load 5–10):
+
+| Files | Publisher, read from | First publication | Re-base | One unit from the cursor | Resync |
+|---|---|---|---|---|---|
+| 32,040 | this, parts | 2.7 | 0.7 | 0.02 | 2.7 |
+| 32,040 | this, base | 2.9 | 2.3 | 0.08 | 4.7 |
+| 32,040 | this, one object | 3.8 | 1.4 | 0.05 | 4.5 |
+| 32,040 | before | 2.7 | 0.3 | 0.14 | 2.8 |
+| 100,020 | this, parts | 8.8 | 2.4 | 0.08 | 10.5 |
+| 100,020 | this, base | 12.0 | 6.4 | 0.05 | 17.7 |
+| 100,020 | this, one object | 10.6 | 4.3 | 0.02 | 15.5 |
+| 100,020 | before | 12.1 | 1.3 | 0.23 | 8.5 |
+| 300,000 | this, parts | 27.5–29.7 | 8.0–8.3 | 0.17–0.18 | 28.9–31.8 |
+| 300,000 | this, base | 30.3–34.1 | 9.6–13.4 | 0.16–0.28 | 30.9–42.1 |
+| 300,000 | this, one object | 37.7–38.3 | 16.9–17.0 | 0.23 | 42.9–50.7 |
+| 300,000 | before | does not fit an isolate | | | |
+
+- **What got slower.** A re-base: the state is written to SQLite and diffed there instead of in a
+  map (2.4 s against 1.3 s at 100,020 files, from parts; from the base, which is parsed a
+  character at a time, 6.4 s). A resync step reads the re-base twice (once before the conflict
+  that sends it to R2, once after) and then rebuilds through `live_next`. A first publication
+  is about as fast as before (8.8 s against 12.1 s at 100,020).
+- **Parts are the fastest start**: their lines are parsed whole (`JSON.parse`), a base's elements
+  by `JsonObjectStream`; four parts are read while one is applied.
+- **Tuning steps, in order, each measured on the same data and required to keep the output
+  identical:** (1) statistics computed only for added files, at their manifest, not for every
+  staged file (the re-base at 100,020 files from parts 6.4 s → 2.3 s, the resync step 22.7 s →
+  9.2 s; a re-base that publishes few files computes few); (2) manifest entries built as the
+  Avro encoder reaches them instead of all 10,000 of a manifest first (the first publication at
+  300,000 files went from out of heap at 48 MB to fitting 32 MB); (3) a resync decodes manifests
+  record by record into `live_next`, 500 per transaction (the resync step went from out of heap
+  at 48 MB to fitting 32 MB). Not tried: one manifest in flight instead of two, keeping a base's
+  members other than files out of the parser. The cap search at 300,000 was rerun after each.
+- **After these runs** one change came: re-bases of one publish take turns reading their
+  checkpoint or base. It does nothing for a single tenant, which is what the bench measures; the
+  suite (98 tests) and the mutants ran on the code with it.
+- **On Cloudflare** none of this is measured: R2 reads there take tens of milliseconds each (a
+  re-base from parts is 247 GETs, four at a time) and the CPU an invocation may use is limited
+  (Risks). Modelled, the reads add 3–12 s to a 300,000-file re-base from parts (247 reads of
+  about 0.05 s, four at a time to one at a time); the CPU time is the open question.
+
 ## Risks
 
 - **Refusals stall publication, not ingest.** A refusing publisher (newer storage) or a table
@@ -675,7 +774,7 @@ about 290 kB per commit (modelled from that slope, not measured).
   not). A change is one ledger SQLite value (at most 2 MB), so this is up to the changes' size,
   not the state's; with S4's 2,000-file units it could be large, and it is not measured.
 - **CPU time of a re-base at the limit.** At 300,000 files a re-base took 8–17 s and a first
-  publication 30–38 s here (Measurements), wall time on a loaded machine with a local R2. On
+  publication 27–38 s here (Measurements), wall time on a loaded machine with a local R2. On
   Cloudflare an invocation's CPU is limited (30 s by default for a Durable Object, raised with
   `limits.cpu_ms`; training knowledge, not checked here); a publish that is cut off is retried
   by the alarm and would be cut off again. Not measured on Cloudflare. The experiment that
@@ -741,7 +840,15 @@ In components others own; not edited from here. **1, 2 and 3 are done** (2026-11
    and say how a cursor inside the newest segment is finished (Contract issues 10, 11).
 5. **ledger/README.md** still describes one R2 object per change, with no segments, checkpoints
    or `removedFiles`; the publisher was written against `contracts/LEDGER-LOG.md` and
-   `ledger/src/ledger.ts` instead.
+   `ledger/src/ledger.ts` instead. (Since done by the ledger's engineer.)
+6. **contracts/LEDGER-LOG.md** (the ledger's owner): the publisher now reads checkpoints, and no
+   longer reads a base whole (Contract issues 12–14). Not edited from here.
+7. **deploy**: viz-publisher with the streaming re-base must run before, or together with, a
+   viz-ingest whose ledger is no longer pinned at 16 MiB (`stack/wrangler.jsonc` no longer pins
+   it): readers first. The deploy already deploys viz-publisher before viz-ingest. Rolling
+   viz-publisher back below this release while a tenant is above about 16 MiB brings back the
+   old risk (a re-base that does not fit), for that tenant's re-bases only; its storage
+   (migration 3, additive) is readable by the release before.
 
 ## Contract issues
 

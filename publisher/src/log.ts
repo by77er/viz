@@ -230,6 +230,12 @@ export interface BaseSink {
   files(tenant: string, files: FileEntry[]): void
   /** Removed files whose objects may still exist (tombstones), removed at or below that version. */
   tombstones(tenant: string, tombstones: { key: string; table: Table }[]): void
+  /**
+   * Waits for this tenant's turn to read a checkpoint or base, and returns its release. The
+   * publisher gives one turn at a time, so tenants re-basing in the same publish hold one window
+   * of parts between them, not one each. Absent: no turns.
+   */
+  turn?(): Promise<() => void>
 }
 
 /** What a re-base started from. Its files are in the `BaseSink`, not here. */
@@ -761,28 +767,34 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
   let baseSegment: SegmentRef | null = null
   let cursor = from
   if (from === null) {
-    const ck = await readNewestCheckpoint(store, cell, tenant, incarnation, sink)
-    if (ck.status === 'corrupt' || ck.status === 'unsupported' || ck.status === 'incomplete') {
-      // Never a partial publish: no base, so nothing read from it is used.
-      if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
-      return result(ck.status, { detail: ck.reason })
-    }
-    if (ck.status === 'ok') {
-      // Only a segment incarnation has checkpoints. From here on, as from a cursor at its version.
-      if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
-      base = ck.info
-      cursor = { ledgerIncarnation: incarnation, version: ck.info.version }
-    } else {
-      // No checkpoint: the first segment starts with the base; list from it.
-      ;({ segs: refs, complete } = await listSegments(store, cell, tenant, incarnation, undefined, (s) => s.length > 0 && covered(s, s[0]!.first) > maxChanges))
-      if (refs.length === 0) return null
-      if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
-      after = refs[0]!.first // the base's version: changes start after it
-      baseSegment = refs[0]!
-      const passedOver = (ck as { passedOver: string[] }).passedOver
-      const b = await readBaseSegment(store, tenant, incarnation, baseSegment, sink, passedOver)
-      if (b.status !== 'ok') return result(b.status, { detail: b.reason, start: after, ...(b.status === 'unsupported' ? { gapAt: baseSegment.first } : {}) })
-      return readAfter(store, tenant, incarnation, refs, complete, after, maxChanges, b.info, b.changes, baseSegment)
+    // One tenant's checkpoint or base at a time (the publisher's turns): released on every way out.
+    const done = (await sink.turn?.()) ?? (() => {})
+    try {
+      const ck = await readNewestCheckpoint(store, cell, tenant, incarnation, sink)
+      if (ck.status === 'corrupt' || ck.status === 'unsupported' || ck.status === 'incomplete') {
+        // Never a partial publish: no base, so nothing read from it is used.
+        if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
+        return result(ck.status, { detail: ck.reason })
+      }
+      if (ck.status === 'ok') {
+        // Only a segment incarnation has checkpoints. From here on, as from a cursor at its version.
+        if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
+        base = ck.info
+        cursor = { ledgerIncarnation: incarnation, version: ck.info.version }
+      } else {
+        // No checkpoint: the first segment starts with the base; list from it.
+        ;({ segs: refs, complete } = await listSegments(store, cell, tenant, incarnation, undefined, (s) => s.length > 0 && covered(s, s[0]!.first) > maxChanges))
+        if (refs.length === 0) return null
+        if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
+        after = refs[0]!.first // the base's version: changes start after it
+        baseSegment = refs[0]!
+        const b = await readBaseSegment(store, tenant, incarnation, baseSegment, sink, (ck as { passedOver: string[] }).passedOver)
+        if (b.status !== 'ok') return result(b.status, { detail: b.reason, start: after, ...(b.status === 'unsupported' ? { gapAt: baseSegment.first } : {}) })
+        done()
+        return readAfter(store, tenant, incarnation, refs, complete, after, maxChanges, b.info, b.changes, baseSegment)
+      }
+    } finally {
+      done()
     }
   }
   after = (cursor as Cursor).version

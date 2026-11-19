@@ -407,7 +407,7 @@ tell.
   at a time) or the base, streamed into SQLite: at 300,000 files it completed with V8's heap
   capped below the isolate's 128 MB, measured in workerd (`publisher/README.md`, "Re-base in
   bounded memory"), and the pin is gone from `stack/wrangler.jsonc`. What is left is time: a
-  re-base of 300,000 files took 8–17 s here and a first publication of them 30–38 s; on
+  re-base of 300,000 files took 8–17 s here and a first publication of them 27–38 s; on
   Cloudflare neither is measured, and the CPU an invocation may use there is the bound to check.
   `verify` (the scrubber, not on the publish path) still replays a tenant into memory.
 - **A rollback below this release with a state above 16 MiB** opens (the schema change is

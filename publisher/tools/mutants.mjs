@@ -131,6 +131,8 @@ const mutants = [
     edits: [['export const R2_CONNECTIONS = 6', 'export const R2_CONNECTIONS = Number.MAX_SAFE_INTEGER']] },
   { id: 'C3', what: 'no window of parts (the connection limit kept): every part read ahead into memory', file: L, tests: ['test/checkpoints.test.ts'],
     edits: [['export const PART_WINDOW = 4', 'export const PART_WINDOW = Number.MAX_SAFE_INTEGER']] },
+  { id: 'C4', what: 're-bases of one publish read their checkpoints all at once (no turns): a window of parts per tenant', file: P, tests: ['test/checkpoints.test.ts'],
+    edits: [['      turn: () => turns.take(),\n', '']] },
   { id: 'K8', what: 'a re-base that stopped still hands on its base: what it staged is published', file: L, tests: ['test/checkpoints.test.ts'],
     edits: [["      return result(ck.status, { detail: ck.reason })", "      return result('ok', { detail: ck.reason, base: { version: 0, source: 'checkpoint', format: 2, files: 0, tombstones: 0, objects: 0, window: 0, passedOver: [] } })"]] },
 

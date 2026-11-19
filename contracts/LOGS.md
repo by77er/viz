@@ -59,8 +59,8 @@ are dropped, as for metrics), at most 8,192 bytes, with no NUL byte.
   attribute: every record of that resource or scope).
 - **Values** are the attribute's plain JSON text (`contracts/BATCH.md`): a string as is,
   `true`, `42`, `1.5`, `["a",1]`, base64 for bytes. Empty values are dropped.
-- **Line**: a string body is the line; any other body is its plain JSON text; no body is
-  `""`.
+- **Line**: a string body is the line; any other body is its plain JSON text; no body, or
+  a body with no value set, is `""`.
 - **Timestamp**: `time_unix_nano`, else `observed_time_unix_nano`. A record with neither is
   refused (Loki would use the time of ingestion; viz does not, because a retried request
   would then store the record again under a new timestamp).

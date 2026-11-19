@@ -1820,8 +1820,8 @@ re-base right after a ledger storage loss does here (a new incarnation has no ch
 its 256th segment); reading the newest checkpoint is added so that a publisher that re-bases
 late, or after losing its own storage, does not read every segment since the base, and because
 the base is one object of about 250 MB at the limit while parts are 1 MiB reads, a few at a
-time. Measured here at 300,000 files: a re-base took 8.0 s from parts, 13.4 s from the base and
-17.0 s from a format-1 checkpoint of the same state, all with identical output.
+time. Measured here at 300,000 files: a re-base took 8.0–8.3 s from parts, 9.6–13.4 s from the base
+and about 17 s from a format-1 checkpoint of the same state, all with identical output.
 (c) doubles a start's writes in the ledger, which owns that choice. (d) needs its input in key
 order: parts are, a base is not promised to be (the contract says nothing of `added`'s order),
 and the changes after the start must be merged in as well. (e) would hide a corrupt checkpoint,
@@ -1832,18 +1832,20 @@ proportion to the tenant: 300,000 keys of about 130 characters are tens of MB of
 **Measured** (here, local workerd, `publisher/bench/`, 2026-11-19, load average 7–9; not on
 Cloudflare): at 300,000 S4-shaped files (an estimated state of 299 MiB), a first publication, a
 re-base onto a new incarnation, a publish from the cursor and a resync from R2 all completed
-with V8's old space capped at 100 MB (plus 12 MB of young generation, under the isolate's 128 MB),
-from parts, from the base and from a format-1 checkpoint, with byte-identical Iceberg output;
-with the old space at 32 MB the first publication ran out of heap. The publisher before this
-change, on the same data, ran out of heap at 32,000 files with the old space at 48 MB, and grew
-the process by up to 226 MB at 100,000 files.
+with V8's old space capped at 32 MB (plus 12 MB of young generation; the test runner shares that
+heap), from parts, from the base and from a format-1 checkpoint, with byte-identical Iceberg
+output; at 24 MB the first publication ran out of heap. Two of the tuning steps that got it
+there: manifest entries built as the Avro encoder reaches them, and a resync decoding manifests
+record by record (each was out of heap at 48 MB before). The publisher before this change, on
+the same data, needed more than 48 MB at 32,000 files and more than 128 MB at 100,000, and grew
+the process by up to 226 MB there.
 
 **Cost of it.** A re-base writes every file of the tenant to `stage` and deletes it after
 (about two row writes per file, 600,000 at the limit: modelled at about $0.60 per re-base at
 $1 per million rows written, a price from training knowledge); a first publication also writes
 each added file's statistics into its row once. Re-bases are slower than holding the state in
 memory: at 100,000 files 2.3 s from parts against 1.0 s for the publisher before (which could
-not reach 300,000), and a first publication of 300,000 files took 30–38 s. The commit writes two
+not reach 300,000 in an isolate), and a first publication of 300,000 files took 27–38 s. The commit writes two
 manifests at a time instead of four. A corrupt checkpoint stops that tenant's re-base until the
 ledger writes a newer one or an operator removes it. The publisher becomes a reader of the
 checkpoint format, which `contracts/LEDGER-LOG.md` says only the ledger reads; a newer format
