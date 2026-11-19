@@ -180,8 +180,9 @@ letters.
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npx vitest run --maxWorkers=2    # 47 tests in workerd, 10 files (soak: 400 steps)
-npm run soak                     # the soak with 3,000 steps
+npx vitest run --maxWorkers=2    # 50 tests (and 1 skipped) in workerd, 11 files (soaks: 400 steps, flag off and on)
+npm run soak                     # the soaks with 3,000 steps (SOAK_SIGNALS=off or on for one)
+node tools/signals_readback.mjs WORK 1 1    # stage 2 through the engines (Rust, -j 2; PyArrow and DuckDB if installed)
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
 node tools/hyparquet_check.mjs   # 4 checks agree
@@ -195,6 +196,15 @@ soak's end-phase fix (2026-11-19, `test/settle.ts`, `test/settle.test.ts`; "The 
 the end state before the ledger had logged" below): **47 passed, 0 failed** (10 files, 91 s);
 `tsc --noEmit` clean; `ledger/`, `janitor/` and `compact/` unchanged and green alongside it
 (101, 21 and 24 tests; `tsc --noEmit` clean in each).
+
+**Stage 2 of traces and logs, the drain fix and the restored state cap (2026-11-19):** **50
+passed, 1 skipped, 0 failed** (11 files, 143 s; the skipped one is the corpus mode of
+`test/signals.test.ts`, which runs only under `tools/signals_readback.mjs`); `tsc --noEmit`
+clean. The soak ran twice, flag off and on, 400 steps each, every invariant held (summaries
+below, "Traces and logs end to end"); `test/settle.test.ts` passed in 17 s, its end phase waiting
+for the log after the graces. `wrangler.jsonc` and `wrangler.test.jsonc` again set
+`LEDGER_STATE_MAX_BYTES` to 16 MiB (review of D47/D48/D55, P-2 and P-3); `deploy/`'s
+`node --test test/configure.test.mjs` (the two files equal but for the publisher): 20 of 20.
 
 ### Wiring for the ledger's background log (2026-11-19)
 
@@ -696,6 +706,29 @@ for those touched) also requires the reader to see exactly the model's spans and
 files and tails, every live signal file to be in R2 at its size under the tenant's prefix, and
 nothing leaked; the end phase requires R2 to be exactly the ledger's live set (metric files at
 level 2, signal files at level 0) with nothing pending in any shard.
+
+**Flag off: the soak as before.** With `INGEST_SIGNALS` off no stage-2 code runs in the soak
+(no signal model, no derived shards, no `rs` draws), its metric operations come from the same
+generator in the same order, and its policy and checks are the old ones (`checkTenant` lists
+every table's prefix, which holds nothing more for these tenants). The soak is not
+deterministic for a seed (timing decides which operations run, "Known risks"), so "identical"
+is shown two ways. Byte for byte where it is deterministic: the engine's metric outputs equal
+the previous build's (`engine/wasm/tools/same_metrics.mjs`, 21 of 21), flush's golden files are
+unchanged, and `test/signals.test.ts` flushes the same Remote Write request to identical bytes
+with the flag off and on. And by distribution, 400 steps, seed 20261118, this machine at load
+average 6–8, every run passing every invariant at every step:
+
+| | Runs | Final rows per tenant | Acknowledged requests | Segments admitted | Files expired | Objects purged | Merges | Orphans deleted | Dead letters |
+|---|---|---|---|---|---|---|---|---|---|
+| the code before this change (a scratch copy of HEAD) | 5 | from [15, 15, 268] to [188, 178, 30] | 106–122 | 79–111 | 136–316 | 548–638 | 28–53 | 6–14 | 0 |
+| this change, flag off | 4 | from [15, 44, 45] to [265, 206, 141] | 108–113 | 87–93 | 208–298 | 564–596 | 26–41 | 6–16 | 0 |
+
+Flag on, the same seed (two runs: 85 s alone, and inside the full suite): 400 steps, every
+invariant held; in the suite's run 104 traces and 123 logs requests acknowledged after the
+warm-up (1–4 spans and 1–6 records each; the warm-up's 30 + 30 refusals were `registering`,
+resent until logged), 118 segments admitted (metric and signal), 427 files expired, 813 objects
+purged; at the end 37/74/62 spans and 16/21/44 log records left per tenant after retention, read
+back exactly from files.
 
 **The engines** (`node tools/signals_readback.mjs WORK SEED SCALE`): `edge/scripts/otel-corpus.mjs
 --requests` writes an OTLP corpus (protobufjs- and JSON-encoded traces and logs, Loki push with

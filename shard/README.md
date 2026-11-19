@@ -444,6 +444,12 @@ copy): V8 keeps a NaN's bits through that path, signalling NaNs included, so the
 staleness marker cannot tell; the byte copy is what BATCH.md asks for and is right by reading.
 In all: **30 of 32 killed**, R-12 and this one surviving.
 
+**Run of 2026-11-19, stage 2 of traces and logs** (a scratch copy of the tree; against
+`test/signals.test.ts`): **"metrics tail reads returning span batches"** (the `signals` check
+removed from `filterBatch`, so a read with `signals: [1]` keeps span and log batches) is
+**killed** by "a metrics read (`signals: [1]`) gets only metric rows…" and by both derived-pool
+tests ("a traces shard … like a metrics shard", "a logs shard …"). 1 of 1.
+
 **Run of 2026-11-19, registration before writes (D61)**, on a copy of `contracts/`, `shard/`,
 `ledger/`, `flush/`, `janitor/`, `compact/`, `publisher/` and `engine/wasm/` in a scratch
 directory, each mutant against the registration tests of the components named (the shard's are

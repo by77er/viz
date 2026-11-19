@@ -281,7 +281,8 @@ spans with trace_index in one change and logs in another, by day, with tombstone
 and `removedFiles` in the log; `drain()` after four failed drains: the next commit's alarm is at
 the usual delay and the background drain logs it within 2 s. `test/segments.test.ts` gained
 "the cap is 16 MiB unless LEDGER_STATE_MAX_BYTES says otherwise". `test/review-inflight.test.ts`
-is the reviewer's P-4 test, copied unchanged.
+is the reviewer's P-4 test, copied unchanged. **Last run (2026-11-19): 120 passed, 0 failed**
+(9 files); `tsc --noEmit` clean.
 
 ```
 npm install

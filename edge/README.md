@@ -189,7 +189,10 @@ their files, but the publisher must read those tables first ("Needed changes" 2)
   `POOL_NAME`), and `INGEST_SIGNALS` is read by `enabledSignals` there, so flush's full sweep and
   the stack derive the same names and the same flag. `scripts/otel-corpus.mjs --requests` also
   writes the requests it encodes, for the stack's end-to-end run through the real Worker
-  (`stack/tools/signals_readback.mjs`); without the flag its output is as before.
+  (`stack/tools/signals_readback.mjs`); without the flag its output is as before. Run after it
+  (2026-11-19): `npx vitest run`, **91 passed, 0 failed** (11 files); `tsc --noEmit` clean; the
+  corpus at seed 1 (no `--requests`) writes the same batches and expected rows as before (the
+  generator's draws are unchanged: requests are written after they are built).
 
 **Per-item refusals.** A span or record that breaks a rule is refused on its own; the rest is
 stored. OTLP answers 200 with `partial_success` (`rejected_spans` / `rejected_log_records`

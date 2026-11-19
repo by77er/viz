@@ -687,16 +687,21 @@ which applies to the test bundle only the two ledger lines "Needed changes elsew
   answers exactly; one that keeps refusing is 503;
 - the flag: without `QUERY_SIGNALS` every Tempo and Loki path is 404.
 
-Run 2026-11-19 (08:35 UTC, load average 3): the whole suite **129 of 129** in 14 files (82 s),
-then 130 with the signal-field test; `npx tsc --noEmit` clean; `node
-../engine/wasm-query/tools/check.mjs` passes. Also added (shard/README.md, "Needed changes
+Run 2026-11-19 on the final code (09:07 to 09:09 UTC, load average 6 to 7): the whole suite
+**130 of 130** in 14 files (127 s); `npx tsc --noEmit` clean; `node
+../engine/wasm-query/tools/check.mjs` passes (module SHA-256 `bfcda39f…`). Also in this change, at
+the coordinator's request: `split.test.ts` "a data file missing from R2…" reads whole files
+(`leafHooks.wholeReads`), so a byte range cached by an earlier test cannot answer for the deleted
+object (it failed on PR #5's CI depending on test order); `meta.test.ts` and `fence.test.ts`, the
+other tests that delete an object, use worlds whose keys nothing has read before and needed no
+change. Also added (shard/README.md, "Needed changes
 elsewhere", R2 item 2): `fence.test.ts` "registration before writes (D61)": spec F6(b) (shards in
 mode `logged`; flushed and logged after the plan, then the shards lose their storage: the exact
 answer, `Plan-Attempts` 2) and the F6 liveness trace (never flushed, storage lost: 200 without the
 rows in two attempts, then one), both against the real coordinator.
 
-**Mutants (on a scratch tree, `node tools/mutants.mjs 74 75 76 77 78 79`)**: see "Mutation
-check", rows 74 to 79.
+**Mutants (on a scratch tree, `node tools/mutants.mjs 74 75 76 77 78 79 80`)**: 7 of 7 killed,
+after two findings ("Mutation check", rows 74 to 80).
 
 ## Not implemented
 
@@ -1048,6 +1053,22 @@ in full, the shared tree's files unchanged (`c011da469efe0f4f` before and after)
 Rust (`engine/query`, on a scratch copy): the part filter dropped for tail series, and for file
 rows, each killed by both tests of `tests/meta_parts.rs`.
 
+**Traces and logs (2026-11-19, mutants 74 to 80, on a scratch tree, 08:47 to 09:3x UTC, load
+average 4 to 7): 7 of 7 killed in the end, after two findings.** (1) The first form of the hour
+mutant (the hour computed one too high) **survived**: it made every file's hour unknown, and an
+unknown hour is kept, so it pruned less instead of dropping a match; it was rewritten to keep a
+file only if the fragments name the hour after its own (row 77), which is killed. (2) Row 74
+**survived its first run**: the shard's own signal filter landed in the tree during the run, and
+it skips span batches in a metrics read whose filter names metrics, so asking those shards did
+nothing wrong; the test now also reads through shards of the previous release (unfiltered), where
+only the name rule keeps the span shards out, and the re-run killed it. Row 75 was added for the
+filter (asking for the wrong signal). One run was invalid as a whole: a type error appeared in
+`flush/` (another engineer mid-edit) after the tool's baseline, and every mutant was reported
+INVALID; the tool now counts only type errors in the directories it copies. The shared tree's
+mutated files were unchanged by every run (the tool's hash before and after), except one run
+during which another engineer changed `src/`-adjacent files it hashes (it reports that; it writes
+only to the scratch tree).
+
 `node tools/mutants.mjs` applies one change to the source, runs the whole suite,
 restores the source, and prints the failing tests. It first confirms that every mutant
 applies and runs the unmutated suite; a test that fails there (another component
@@ -1140,12 +1161,13 @@ rebuilt module had the same SHA-256 as before the run.
 | 71 | **a part that saw a foreign series is ignored** (no second run with whole series files) | tail › a series whose split key is not its id (lake) |
 | 72 | a reader does not report the foreign series it saw (first read) | tail › the same (one such series alone) |
 | 73 | a split leaf does not add up its readers' foreign series | tail › the same |
-| 74 | **wrong signal from the tail**: metrics reads ask every shard the ledger names, span and log shards included | (filled by the run below) |
-| 75 | **wrong signal from the tail**: a batch of another signal is read as the one asked for (no header check) | |
-| 76 | **pruning drops a matching hour**: trace by ID reads the span files of the hour after each one its fragments name | |
-| 77 | **a cap not enforced**: the rows the fragments say a span or log query decodes are not checked before fetching | |
-| 78 | **tenant from the query string** (Tempo search: `orgId`) | |
-| 79 | **a result shape field renamed**: trace by ID answers `resourceSpans` for `batches` (Rust; rebuilds the module) | |
+| 74 | **wrong signal from the tail**: metrics reads ask every shard the ledger names, span and log shards included | signals › a metrics query of a tenant whose ledger names span and log streams… (with unfiltered shards; see below) |
+| 75 | **wrong signal from the tail**: every tail read asks the shards for signal 1, span and log reads included | signals › every seed; pruning on and off; … (9 tests) |
+| 76 | **wrong signal from the tail**: a batch of another signal is read as the one asked for (no header check) | signals › a batch of another signal in a tail read is refused (503)… (only it) |
+| 77 | **pruning drops a matching hour**: trace by ID keeps a span file only if its fragments name the hour after the file's | signals › every seed; pruning on and off; … (8 tests) |
+| 78 | **a cap not enforced**: the rows the fragments say a span or log query decodes are not checked before fetching | signals › max_spans and max_log_rows from the fragments, before any fetch (only it) |
+| 79 | **tenant from the query string** (Tempo search: `orgId`) | signals › the tenant comes from the key only… (only it) |
+| 80 | **a result shape field renamed**: trace by ID answers `resourceSpans` for `batches` (Rust; rebuilds the module) | signals › every seed; pruning on and off; … (9 tests) |
 
 **Run 2026-11-19, 01:16 to 01:53 UTC, all 43 mutants on a scratch copy** (load average 7 to
 21): **43 of 43 killed, none survived, none invalid**; the unmutated suite passed first in

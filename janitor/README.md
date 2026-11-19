@@ -219,6 +219,29 @@ Not measured on Cloudflare; the experiment is a deployed purge of 10,000 keys
 
 ## How it was verified
 
+**Stage 2 of traces and logs (2026-11-19).** `npx vitest run --maxWorkers=2`: **31 passed, 0
+failed** (5 files; 25 before, plus `test/signals.test.ts`, 6); `tsc --noEmit` clean. The three
+existing tests that compared a policy object whole now include `trace_days` and `log_days`.
+`test/signals.test.ts` (span and log batches from `engine/wasm/test/signal.ts`, flushed by the
+real flush into the real ledger): the record's two fields, absent, present and unreadable (four
+bad values, each refusing the record); expiry of a tenant with spans and logs on three days
+under `trace_days` 5 and `log_days` 1 (two ledger changes; the right files of each table
+removed, objects untouched until the purge deletes exactly them after the grace) and under equal
+days (one request for the three tables); a ledger refusing the span and log tables (`unknown
+table`, a release before them, as a stand-in namespace) leaves the metric expiry done and the
+error in `signals`; the real publisher, reading a copy of the tenant's log, stops it
+(`unsupported`) and releases nothing, so nothing is deleted; a stand-in publisher releasing two of
+three keys gets exactly those two deleted; the orphan sweep lists the six objects of the three
+tables (spans under `hour=HH/`), deletes the three leftovers of a dead run and keeps the live
+files and another tenant's.
+
+**Mutants (2026-11-19)**, each on a scratch copy (never this checkout), against
+`test/signals.test.ts`: **3 of 3 killed**. "Retention skipping the logs table" (the `logs`
+group left out of `expireTenant`): killed by "by their own days, spans with trace_index in one
+change, logs on their own…" and two more. "Spans expired without their trace_index" (`TRACE_TABLES`
+without `trace_index`): killed by the same three. "The orphan sweep lists metric tables only":
+killed by "lists every table of the tenant…".
+
 ```
 (cd ../engine/wasm && ./build.sh)
 npm ci && npx vitest run --maxWorkers=2    # 25 tests in workerd, 4 files
