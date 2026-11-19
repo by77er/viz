@@ -328,18 +328,22 @@ describe('the token endpoint', () => {
     expect((await sql(t.tenant, 'SELECT COUNT(*) AS n FROM oauth_clients WHERE tenant = ?', t.tenant))[0]!.n).toBe(1)
   })
 
-  it('a PKCE verifier mismatch is refused, spends the code, and the right verifier afterwards revokes the grant', async () => {
+  it('a PKCE verifier mismatch is refused, spends the code and ends its grant (key gone); the right verifier afterwards is refused', async () => {
     const t = await newTenant('pkce')
     const dana = await personKey(t.admin)
     const { client, code, verifier, grant } = await connectCode(dana)
+    const keyId = (await grantKeyId(t.tenant, grant))!
     const other = await pkce()
     const bad = await exchange(client, code, other.verifier)
     expect(bad.status).toBe(400)
     expect(bad.body.error).toBe('invalid_grant')
     expect(bad.text).not.toContain(code)
+    // nothing was issued and the code is spent: the grant can never issue, so it ends now
+    expect(await grantOf(dana, grant)).toMatchObject({ status: 'revoked', revokeReason: 'exchange-failed', revokedBy: { subject: 'system:oauth' }, key: null })
+    expect(await kvGet(`key:${keyId}`)).toBeNull()
     const good = await exchange(client, code, verifier)
     expect(good.status).toBe(400)
-    expect((await grantOf(dana, grant)).revokeReason).toBe('code-reuse')
+    expect(good.body.error).toBe('invalid_grant')
     // malformed verifiers are refused the same way
     const again = await connectCode(dana)
     for (const v of ['', 'short', 'x'.repeat(129), `${again.verifier}!`]) expect((await exchange(again.client, again.code, v)).body.error).toBe('invalid_grant')
@@ -377,9 +381,12 @@ describe('the token endpoint', () => {
       const r = await run(x)
       expect(r.status, what).toBe(400)
       expect(['invalid_grant', 'invalid_target'], what).toContain(r.body.error)
-      // spent: the legitimate exchange now fails too
+      // spent: the legitimate exchange now fails too, and the grant ended with the failure
       expect((await exchange(x.client, x.code, x.verifier)).status, what).toBe(400)
+      expect((await grantOf(dana, x.grant)).revokeReason, what).toBe('exchange-failed')
     }
+    // failed exchanges leave nothing live to count against the grant and key limits
+    expect((await sql(t.tenant, 'SELECT COUNT(*) AS n FROM oauth_grants WHERE tenant = ? AND revoked_at IS NULL', t.tenant))[0]!.n).toBe(0)
     const x = await connectCode(dana)
     await sql(t.tenant, 'UPDATE oauth_codes SET expires_at = ? WHERE tenant = ?', Date.now() - 1, t.tenant)
     expect((await exchange(x.client, x.code, x.verifier)).body.error).toBe('invalid_grant')

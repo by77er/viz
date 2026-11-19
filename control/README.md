@@ -314,8 +314,9 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
   every use**; a used one is kept a day, and presenting it again (or presenting any refresh token
   with another client's id) **revokes the grant**. A refresh may narrow the scope, never widen it.
 - A grant ends at 90 days, when its code was never exchanged (alarm, `not-exchanged`), when its
-  refresh token went unused 30 days (`idle`), on reuse (`code-reuse`, `refresh-reuse`,
-  `wrong-client`), by the client (RFC 7009, `client`) or by a person
+  refresh token went unused 30 days (`idle`), when its code is spent by a failed exchange
+  (`exchange-failed`: wrong verifier, client, redirect URI or resource; nothing was issued, so it
+  could never issue), on reuse (`code-reuse`, `refresh-reuse`, `wrong-client`), by the client (RFC 7009, `client`) or by a person
   (`POST /oauth/grants/{id}/revoke`, `person`). Ending a grant deletes its tokens and code and
   its key (from KV too, revocation generation bumped), in one transaction, one audit entry. Ended
   grants stay listed 90 days (`GET /oauth/grants?status=all`); a client with no live grant is
@@ -591,7 +592,10 @@ What the tests establish:
   forged handle asking for `admin` is refused.
   *Code reuse*: refused, and the access token, the refresh token, every token row and the grant
   key's KV record are gone, the grant `revoked` with `code-reuse` by `system:oauth`, audited. Codes
-  are bound to client, redirect URI and resource; an expired code is refused.
+  are bound to client, redirect URI and resource; an expired code is refused. A failed exchange
+  (PKCE mismatch, another client, redirect URI or resource) ends the grant at once
+  (`exchange-failed`, key gone), so nothing lingers live against the grant and key limits; found by
+  the review of #6, and the mutant that skips that revocation is caught by both tests.
   *Refresh rotation and reuse detection*: each refresh issues a new pair; the first refresh token
   presented again revokes the grant (the newest access and refresh tokens die); narrowing works,
   widening is `invalid_scope`; a refresh token presented by another client revokes its grant.
