@@ -11,6 +11,7 @@ import type { PromMatrix } from '../../contracts/engine'
 import type { Alert, AlertingRuleV2, BacktestInterval, BacktestResult } from '../contracts-proposal/rules.v2'
 import type { CompiledAlertRule } from './rules'
 import { evalAlertingRule, isNoDataAlert, type AlertEvalOptions, type Series } from './statemachine'
+export type { Series }
 import { formatDuration, parseSampleValue } from './util'
 
 /** Prometheus refuses range queries of more than 11,000 points per series; so does this. */
@@ -78,17 +79,31 @@ export function summarize(intervals: BacktestInterval[]): BacktestResult['summar
   }
 }
 
-export function runBacktest(input: BacktestInput): { ok: true; result: BacktestResult } | { ok: false; error: string } {
-  const { rule, compiled, fromMs, toMs, stepMs } = input
-  const main = index(input.matrix)
-  const presence = input.presence ? index(input.presence) : null
+/** What one step gives the alert state machine: the rule's result, and what "no data" is decided on. */
+export type StepInput = { series: Series[]; presence: Series[] | null } | { error: string }
+
+export interface Tracked {
+  ok: true
+  intervals: BacktestInterval[]
+  steps: number
+}
+
+/**
+ * Run the alert state machine over [fromMs, toMs] at `stepMs`, with `step(ts)` giving each
+ * step's result, and turn the states into intervals. Each interval keeps the annotations its
+ * alert carried when it entered the state (templates expanded, an anomaly or SLO alert's
+ * explanation among them). Every kind of backtest goes through here.
+ */
+export function trackIntervals(rule: AlertingRuleV2, compiled: CompiledAlertRule, opts: AlertEvalOptions, fromMs: number, toMs: number, stepMs: number, step: (ts: number) => StepInput): Tracked | { ok: false; error: string } {
   let alerts: ReadonlyMap<string, Alert> = new Map()
   const open = new Map<string, BacktestInterval>()
   const intervals: BacktestInterval[] = []
   let steps = 0
   for (let ts = fromMs; ts <= toMs; ts += stepMs) {
     steps++
-    const r = evalAlertingRule(rule, compiled, alerts, seriesAt(main, ts), ts, input.opts, presence ? seriesAt(presence, ts) : null)
+    const input = step(ts)
+    if ('error' in input) return { ok: false, error: `at ${new Date(ts).toISOString()}: ${input.error}` }
+    const r = evalAlertingRule(rule, compiled, alerts, input.series, ts, opts, input.presence)
     if (!r.ok) return { ok: false, error: `at ${new Date(ts).toISOString()}: ${r.error}` }
     alerts = r.alerts
     for (const fp of new Set([...open.keys(), ...alerts.keys()])) {
@@ -102,23 +117,28 @@ export function runBacktest(input: BacktestInput): { ok: true; result: BacktestR
         open.delete(fp)
       }
       if (a && state) {
-        const next: BacktestInterval = { fingerprint: fp, labels: a.labels, state, startMs: ts, endMs: toMs, open: true, noData: isNoDataAlert(a) }
+        const next: BacktestInterval = { fingerprint: fp, labels: a.labels, state, startMs: ts, endMs: toMs, open: true, noData: isNoDataAlert(a), annotations: a.annotations }
         intervals.push(next)
         open.set(fp, next)
       }
     }
   }
   intervals.sort((a, b) => a.startMs - b.startMs || (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0))
+  return { ok: true, intervals, steps }
+}
+
+export function resultOf(t: Tracked, fromMs: number, toMs: number, stepMs: number, resolution: BacktestResult['resolution']): BacktestResult {
+  return { fromMs, toMs, stepMs, steps: t.steps, intervals: t.intervals, summary: summarize(t.intervals), resolution }
+}
+
+export function runBacktest(input: BacktestInput): { ok: true; result: BacktestResult } | { ok: false; error: string } {
+  const { rule, compiled, fromMs, toMs, stepMs } = input
+  const main = index(input.matrix)
+  const presence = input.presence ? index(input.presence) : null
+  const t = trackIntervals(rule, compiled, input.opts, fromMs, toMs, stepMs, (ts) => ({ series: seriesAt(main, ts), presence: presence ? seriesAt(presence, ts) : null }))
+  if (!t.ok) return t
   return {
     ok: true,
-    result: {
-      fromMs,
-      toMs,
-      stepMs,
-      steps,
-      intervals,
-      summary: summarize(intervals),
-      resolution: { stepMs, liveIntervalMs: input.liveIntervalMs, edgeErrorMs: Math.max(stepMs, input.liveIntervalMs), note: resolutionNote(rule, stepMs, input.liveIntervalMs) },
-    },
+    result: resultOf(t, fromMs, toMs, stepMs, { stepMs, liveIntervalMs: input.liveIntervalMs, edgeErrorMs: Math.max(stepMs, input.liveIntervalMs), note: resolutionNote(rule, stepMs, input.liveIntervalMs) }),
   }
 }

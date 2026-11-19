@@ -241,8 +241,8 @@ live('LIVE_impl_F6_fixed', 'code at HEAD + F6 fixed completely (register before 
 // ---- no leak (I11, second half): AG EF every object in R2 is live. Retention may remove any
 // live file (maxExp large: it eventually removes everything), no query (purge's grace is then
 // free), one flush Worker.
-const leak = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>
-  E.push({ name, kind: 'liveness', label: `${label}; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)`, cfg: { ...cfg, sweepSteps: false, purgeSteps: false, startSteps: false, maxJobs: 1, maxQ: 0, liveness: true, goal: cfg.goal === 'cleanComp' ? 'cleanComp' : 'clean' }, props: [], expect, maxStates: 3_000_000 })
+const leak = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated', maxStates = 3_000_000) =>
+  E.push({ name, kind: 'liveness', label: `${label}; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)`, cfg: { ...cfg, sweepSteps: false, purgeSteps: false, startSteps: false, maxJobs: 1, maxQ: 0, liveness: true, goal: cfg.goal === 'cleanComp' ? 'cleanComp' : 'clean' }, props: [], expect, maxStates })
 leak('LEAK_D30_maintenance', 'no leak, D30 + log as built: compaction (2 steps at once), retention of every file, ledger loss, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 4, maxLL: 1 }, 'holds')
 leak('LEAK_D30_shardloss', 'no leak, D30 + log as built: shard loss, ledger loss, retention of every file, compaction, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
 leak('LEAK_V1_shardloss', 'no leak, the rules before D30 (age-swept outputs, committed newer incarnation): same bounds as LEAK_D30_shardloss', { ...AD, sweep: 'impl', sweepIncLogged: false, compConflictDelete: true, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
@@ -251,8 +251,9 @@ const LS = { maxSend: 1, maxCJobs: 1, maxComp: 1, maxExp: 2, maxLL: 1 }
 leak('LEAK_D30_ll', 'no leak, D30 + log as built: compaction, retention (2 removals), ledger loss, no shard loss', { ...AD, ...LS }, 'holds')
 leak('LEAK_D30_sl', 'no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss', { ...AD, ...LS, maxLL: 0, maxSL: 1 }, 'violated')
 leak('LEAK_V1_sl', 'no leak, the rules before D30: same bounds as LEAK_D30_sl', { ...AD, ...LS, sweep: 'impl', sweepIncLogged: false, compConflictDelete: true, maxLL: 0, maxSL: 1 }, 'violated')
-leak('LEAK_D30_sl_comp', 'no leaked compaction output, D30 + log as built: compaction, retention (2 removals), ledger loss + shard loss', { ...AD, ...LS, maxSL: 1, goal: 'cleanComp' }, 'violated')
-leak('LEAK_V1_sl_comp', 'no leaked compaction output, the rules before D30: same bounds as LEAK_D30_sl_comp', { ...AD, ...LS, sweep: 'impl', sweepIncLogged: false, compConflictDelete: true, maxSL: 1, goal: 'cleanComp' }, 'holds')
+// compaction outputs only: one retention removal is enough to release an output (one input gone)
+leak('LEAK_D30_sl_comp', 'no leaked compaction output, D30 + log as built: compaction, retention (1 removal), ledger loss + shard loss', { ...AD, ...LS, maxExp: 1, maxSL: 1, goal: 'cleanComp' }, 'violated', 8_000_000)
+leak('LEAK_V1_sl_comp', 'no leaked compaction output, the rules before D30: same bounds as LEAK_D30_sl_comp', { ...AD, ...LS, maxExp: 1, sweep: 'impl', sweepIncLogged: false, compConflictDelete: true, maxSL: 1, goal: 'cleanComp' }, 'holds', 8_000_000)
 E.push({ name: 'W_leak_behind_lost_flush', kind: 'd30', label: 'F16 witness: an unlisted compaction output kept because an input is an unlisted flush file of an incarnation its shard lost, which the sweep keeps (D30 + log as built, ledger loss + shard loss, compaction)', cfg: { ...AD, maxSend: 1, maxSweeps: 2, maxComp: 1, maxCJobs: 1, maxExp: 1, maxLL: 1, maxSL: 1 }, props: ['W_NoLeakBehindLostFlush'], expect: 'violated', maxStates: 6_000_000 })
 
 // ------------------------------------------------------------------ main

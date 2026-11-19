@@ -133,7 +133,7 @@ export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
     name: 'seasonal',
     inRules: true,
     goodFor: 'Values wrong for the time of day or week (4 of 4 phase-wrong artificial anomalies caught against 1 of 4 without it; nyc_taxi). Needs periodMs and several seasons of history.',
-    notFor: 'Paging on NAB-like series in general, and series without a season. Warms up live for `seasons` periods (no backfill yet).',
+    notFor: 'Paging on NAB-like series in general, and series without a season. A new rule is warmed from `seasons` periods of history when that read fits the warm-up budget; otherwise it warms up live for that long.',
     pageAllowed: true,
     defaultSeverity: 'ticket',
     defaults: {},
@@ -182,7 +182,7 @@ export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
     name: 'burn_rate',
     inRules: false,
     goodFor: 'SLO error-budget alerts (SRE Workbook multi-window, multi-burn-rate).',
-    notFor: 'Rules here: it needs good and total counts per bucket; SLOs are to compile to recording rules, which is not built.',
+    notFor: 'An anomaly rule: it needs good and total counts per bucket. Write an SLO rule instead (an `slo` block: objective, window, SLI), which raises these alerts.',
     pageAllowed: false,
     defaultSeverity: null,
     defaults: {},
@@ -426,7 +426,7 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
     c.warn(`${path}.for`, `EWMA accepts a new level after ${params.acceptAfter} anomalous points (${formatDuration(params.acceptAfter * intervalMs)} here), so a level shift may stop being flagged before "for" (${formatDuration(forMs)}) is satisfied`, 'Alarms are onsets: use a short "for" and keep_firing_for to hold the alert.')
   }
   if (history.minPoints * intervalMs > 24 * 3_600_000) {
-    c.warn(`${path}.detector`, `the detector scores nothing until it has seen ${history.minPoints} points (${formatDuration(history.minPoints * intervalMs)}); there is no backfill from history yet`, 'Expect the rule to report "warming" for that long.')
+    c.warn(`${path}.detector`, `the detector scores nothing until it has seen ${history.minPoints} points (${formatDuration(history.minPoints * intervalMs)})`, 'A new rule is warmed from that much history when the read fits the warm-up budget; otherwise expect it to report "warming" for that long.')
   }
   return { detector, params, given, unit, severity, maxSeries, history, stateBytesPerSeries }
 }
@@ -510,8 +510,12 @@ export function detailOf(e: Explanation, score: number, detector: AnomalyDetecto
  * One evaluation of an anomaly rule at `ts` (the query time) over `series` (the expression's
  * result). Pure. Refuses, changing nothing, when the expression returned more than `maxSeries`
  * series or when the state would not fit the limits.
+ *
+ * `serialize: false` (a run over history: a warm-up or a backtest) skips writing each series'
+ * stored form and the size limits at every point; the caller serialises once at the end
+ * (`serializeAnomaly`). The detector and everything it decides are the same.
  */
-export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series[], ts: number, intervalMs: number, limits: AnomalyLimits, ruleAnnotations: Record<string, string>): AnomalyEval {
+export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series[], ts: number, intervalMs: number, limits: AnomalyLimits, ruleAnnotations: Record<string, string>, serialize = true): AnomalyEval {
   const spec = rule.anomaly
   const base: AnomalyRuleStatus = { ...emptyStatus(spec.maxSeries), series: series.length, pruned: prev.pruned }
   const refuse = (status: 'series_cap_exceeded' | 'state_limit_exceeded' | 'state_unreadable', message: string): AnomalyEval => ({
@@ -572,7 +576,7 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
         entry = { labels: s.metric, state: r.state, last: { ts, status: p.status === 'warming' ? 'warming' : 'ok', flag: p.status === 'ok' && p.anomalous, value: p.value, score: p.score, explanation: p.anomalous ? (p.explanation ?? null) : null }, seenAt: ts }
       }
       next.set(key, entry)
-      json.set(key, entryJson(key, entry))
+      if (serialize) json.set(key, entryJson(key, entry))
       changed = true
     }
     if (entry.last?.flag) {
@@ -600,7 +604,7 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
     changed = true
   }
   let total = 0
-  for (const [key, j] of json) {
+  for (const [key, j] of serialize ? json : []) {
     const bytes = byteLength(j)
     if (bytes > limits.maxAnomalyStateBytesPerSeries) {
       return refuse('state_limit_exceeded', `state_limit_exceeded: the detector state of one series (${key.slice(0, 120)}) is ${bytes} bytes; the limit is ${limits.maxAnomalyStateBytesPerSeries}. Nothing was scored and no state or alert changed.`)
@@ -620,6 +624,21 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
     pruned: prev.pruned + pruned,
   }
   return { ok: true, next, json, flagged, present: series, status, changed, pruned }
+}
+
+/** After a run over history: every series' stored form, within the limits, or why not. */
+export function serializeAnomaly(series: Map<string, SeriesState>, limits: AnomalyLimits): { ok: true; json: Map<string, string>; bytes: number } | { ok: false; error: string } {
+  const json = new Map<string, string>()
+  let total = 0
+  for (const [key, s] of series) {
+    const j = entryJson(key, s)
+    const bytes = byteLength(j)
+    if (bytes > limits.maxAnomalyStateBytesPerSeries) return { ok: false, error: `state_limit_exceeded: the detector state of one series (${key.slice(0, 120)}) would be ${bytes} bytes; the limit is ${limits.maxAnomalyStateBytesPerSeries}` }
+    total += bytes
+    json.set(key, j)
+  }
+  if (total > limits.maxAnomalyStateBytesPerRule) return { ok: false, error: `state_limit_exceeded: the rule's detector state would be ${total} bytes for ${json.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}` }
+  return { ok: true, json, bytes: total }
 }
 
 function sumBytes(json: Map<string, string>): number {

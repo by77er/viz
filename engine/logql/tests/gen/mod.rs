@@ -137,11 +137,11 @@ pub fn dataset(rng: &mut Rng) -> Value {
             continue;
         }
         let count = 10 + rng.below(60);
-        let mut ts = T0 + rng.below(30) as i64 * S + rng.below(S as u64) as i64;
-        let mut entries = Vec::new();
-        // A third of the data sets put rows on whole seconds, so that rows fall exactly on
-        // window edges (`(t - range, t]`) and query bounds.
+        // A third of the streams put rows on whole seconds, so that rows fall exactly on
+        // window edges (`(t - range, t]`), on query bounds and on other streams' timestamps.
         let whole = rng.chance(33);
+        let mut ts = T0 + rng.below(30) as i64 * S + if whole { 0 } else { rng.below(S as u64) as i64 };
+        let mut entries = Vec::new();
         for _ in 0..count {
             ts += if whole { (1 + rng.below(20)) as i64 * S } else { 1 + rng.below(20 * S as u64) as i64 };
             entries.push(json!({"ts": ts.to_string(), "line": line(rng)}));

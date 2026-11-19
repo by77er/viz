@@ -83,6 +83,8 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `LOG_teeth_commit_first` segment log teeth: the incarnation commits before its base is in R2 (the plan before F11) | V_IncarnationNotReused | **violated** V_IncarnationNotReused in 7 steps | 693 | 1,638 | 7 | 0.1 s | 1.3e-14 |
 | `LOG_teeth_retry_new_bounds` segment log teeth: a retried drain takes every pending row (F10) | AV_RebuildSucceeds | **violated** AV_RebuildSucceeds in 16 steps | 160,162 | 817,710 | 16 | 9.1 s | 7e-10 |
 | `LOG_S1_rollback` review S-1, as built: one rollback to the first-layout ledger and back, one ledger loss, retention, compaction, registration logged before writes; ≤ 2 sweep runs | all safety | **violated** I5_DiscardOnlyLogged in 14 steps | 30,553 | 105,857 | 14 | 3.6 s | 2.5e-11 |
+| `LOG_S1_rollback_I1` review S-1, as built, carried through to acknowledged-row loss; ≤ 2 sweep runs | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 17 steps | 126,352 | 513,762 | 17 | 14 s | 4.3e-10 |
+| `LOG_S1_rollback_I11` review S-1, as built, carried through to a listed file with no object (a removal the first-layout drain logged, purged, then undone by the rebuild); ≤ 2 sweep runs | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 19 steps | 458,026 | 1,979,349 | 19 | 42.9 s | 5.7e-9 |
 | `LOG_S1_heal` review S-1 with fix (b): on roll-forward an outbox that does not continue the segment log starts a new incarnation from SQLite; same bounds; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 23 steps checked, no violation | 6,000,001 | 29,063,372 | 23 | 330.6 s | 9.8e-7 |
 
 ## Amended protocol (expect none; exhaustive)
@@ -113,6 +115,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `LEAK_D30_sl` no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,090,381 | 6,619,573 | 52 | 130.1 s | 3.2e-8 |
 | `LEAK_V1_sl` no leak, the rules before D30: same bounds as LEAK_D30_sl; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,226,068 | 7,552,989 | 53 | 135.9 s | 4.1e-8 |
 | `LEAK_D30_sl_comp` no leaked compaction output, D30 + log as built: compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | stopped: memory bound: stopped at 3,000,001 states (depth 34); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,001 | 15,451,988 | 34 | 221.7 s | 2.4e-7 |
+| `LEAK_V1_sl_comp` no leaked compaction output, the rules before D30: same bounds as LEAK_D30_sl_comp; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | stopped: memory bound: stopped at 3,000,002 states (depth 33); the graph is incomplete, so AG EF is NOT decided | 3,000,002 | 15,555,218 | 33 | 233.3 s | 2.4e-7 |
 
 ## Counterexamples
 
@@ -1143,6 +1146,56 @@ Violates `I5_DiscardOnlyLogged`.
 12. ledger first-layout drain: PUT change v2 as a per-change object
 13. ledger drain: delete outbox rows v2..v2, advance logged
 14. recorded(s0, ..1)
+
+### LOG_S1_rollback_I1
+
+review S-1, as built, carried through to acknowledged-row loss; ≤ 2 sweep runs
+
+Violates `I1_AckedIsDurable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. addUnit(s0 inc 1 1..1) admitted
+10. ledger drain: delete outbox rows v1..v1, advance logged
+11. RELEASE ROLLBACK: the first-layout ledger runs on segment storage
+12. ledger first-layout drain: PUT change v2 as a per-change object
+13. ledger drain: delete outbox rows v2..v2, advance logged
+14. recorded(s0, ..1)
+15. discard(s0, ..1)
+16. RELEASE ROLL-FORWARD
+17. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
+
+### LOG_S1_rollback_I11
+
+review S-1, as built, carried through to a listed file with no object (a removal the first-layout drain logged, purged, then undone by the rebuild); ≤ 2 sweep runs
+
+Violates `I11_LiveFilesReadable`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. flush: pendingSegments(s0) -> inc 1 1..1
+7. flush readSegment(s0 inc 1 1..1)
+8. flush PUT L0(s0 inc1 1..1)
+9. addUnit(s0 inc 1 1..1) admitted
+10. ledger drain: delete outbox rows v1..v1, advance logged
+11. ledger drain: PUT segment v2..v2
+12. ledger drain: delete outbox rows v2..v2, advance logged
+13. RELEASE ROLLBACK: the first-layout ledger runs on segment storage
+14. expire L0(s0 inc1 1..1)
+15. ledger first-layout drain: PUT change v3 as a per-change object
+16. ledger drain: delete outbox rows v3..v3, advance logged
+17. RELEASE ROLL-FORWARD
+18. purge: delete L0(s0 inc1 1..1)
+19. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
 
 ### LIVE_design
 

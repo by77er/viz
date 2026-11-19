@@ -201,7 +201,7 @@ queries and 10 metric queries per data set, 40% of the metric ones also as insta
 plus literals). `tools/lokidiff/compare.py` compares and classifies.
 
 Final run: five generator seeds (7, 11, 12, 21, 33) × 60 data sets = 300 data sets, 1,924
-streams, 75,458 rows; a third of the data sets put rows on whole seconds so rows fall exactly
+streams, 75,458 rows; a third of the streams put rows on whole seconds so rows fall exactly
 on window edges and on other streams' timestamps.
 
 | queries | evaluations | agree | both fail | explained difference | unexplained |

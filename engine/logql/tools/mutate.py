@@ -85,6 +85,7 @@ def main():
     loki_cases = sys.argv[sys.argv.index('--loki-cases') + 1] if '--loki-cases' in sys.argv else None
     loki = sys.argv[sys.argv.index('--loki') + 1] if '--loki' in sys.argv else None
     only = [int(x) for x in sys.argv[sys.argv.index('--only') + 1].split(',')] if '--only' in sys.argv else None
+    pick = sys.argv[sys.argv.index('--suites') + 1].split(',') if '--suites' in sys.argv else None
     copy = os.path.join(work, 'logql')
     if os.path.exists(copy):
         shutil.rmtree(copy)
@@ -97,6 +98,8 @@ def main():
               ('semantics', ['cargo', 'test', '-q', '--test', 'semantics']),
               ('conformance', ['cargo', 'test', '-q', '--test', 'conformance']),
               ('props', ['cargo', 'test', '-q', '--test', 'props', '--', '--test-threads', '2'])]
+    if pick:
+        suites = [x for x in suites if x[0] in pick]
     seed_rounds = None
     if loki_cases:
         m = re.search(r'cases(\d+)\.json$', loki_cases)
@@ -120,7 +123,7 @@ def main():
                     result['build'] = 'mutant does not compile'
                     break
                 result[name] = 'caught' if code != 0 else 'not caught'
-            if loki_cases and 'build' not in result:
+            if loki_cases and 'build' not in result and (not pick or 'differential' in pick):
                 outp = os.path.join(work, 'mutant_cases.json')
                 code, out = run(['cargo', 'test', '-q', '--test', 'differential', 'export_cases', '--', '--ignored'], copy,
                                 dict(env, VIZ_DIFF_OUT=outp, VIZ_DIFF_SEED=seed_rounds[0], VIZ_DIFF_ROUNDS=seed_rounds[1]))
@@ -130,7 +133,7 @@ def main():
             open(f, 'w').write(src)
         rows.append((mid, desc, result))
         print(mid, desc, result, flush=True)
-    names = [n for n, _ in suites] + (['differential'] if loki_cases else [])
+    names = [n for n, _ in suites] + (['differential'] if loki_cases and (not pick or 'differential' in pick) else [])
     print()
     print('| # | mutation | ' + ' | '.join(names) + ' |')
     print('|---:|---|' + '---|' * len(names))

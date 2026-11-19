@@ -285,13 +285,18 @@ async function analytics() {
 async function down() {
   const log = []
   if (existsSync(urlFile) && existsSync(keyFile)) {
+    // Catalog tables first (purge), then every object left in the bucket, each step on its own.
     try {
       log.push({ drop: await call('/drop', { ns: 'cell_0', names: ['metric_samples', 'metric_series'], purge: true }) })
       const bench = [...[2, 4, 8].map((n) => `contend_rest_${n}_${RUN}`), 'unknown_alone', 'unknown_interfere', `latency_rest_${RUN}`, 'probe']
       log.push({ drop: await call('/drop', { ns: 'bench', names: bench, purge: true }) })
+    } catch (e) {
+      log.push({ drop: String(e).slice(0, 300) })
+    }
+    try {
       log.push({ wipe: await call('/wipe', { prefix: '' }) })
     } catch (e) {
-      log.push({ error: String(e) })
+      log.push({ wipe: String(e).slice(0, 300) })
     }
     try {
       wr(['delete', '--name', WORKER, '--force'])

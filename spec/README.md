@@ -227,14 +227,13 @@ one at a time against the amended protocol (the `F…` rows).
 
 In short. **Design as written** (`DESIGN_1`–`7`): F11 (2 steps) → with it fixed, F1 (5) → F10
 (6) → F2 (15, through a retention removal; still the shortest after F3 is assumed away) →
-with the as-built sweeper, F15 (17) → with every fix: no violation among the 19 million states
-reachable in at most 23 steps (the run stopped at the memory bound, so this is bounded-depth,
-not complete). **Code as built** (`IMPL_1`–`5`): F6(b) (11 steps) → with F6 fixed, F15 (17) →
-with F15 fixed, and again with step-unique compaction keys: no violation among the 6 million
-states reachable in at most 20 steps (bounded). F13 and F14 need more than 20 steps once
-registration precedes writes, so they do not appear there; their own runs below show them (19
-and 21 steps with the code's lazy registration). F3 and F12 are shadowed by shorter findings in
-the peel and isolated below.
+with the as-built sweeper, F15 (17) → with every fix: no violation among the 6.5 million
+states reachable in at most 21 steps (`DESIGN_7`, recorded before this pass; bounded-depth,
+not complete). **Code as built at 6488856** (`IMPL_1`–`3`, with D30, the segment log as
+built and the F12 fix): F6(b) at 11 steps, also with F3 assumed away (`IMPL_2`); with
+registration before writes as well (`IMPL_3`): no violation among the 4 million states
+reachable in at most 19 steps (bounded). F3 is shadowed by F6(b) and isolated below; F12, F13,
+F14 and F15 are isolated against the code of 2026-11-18 (`IMPL_V1`), where they were found.
 
 <!-- BEGIN BFS_FINDINGS -->
 | Experiment | Checked | Result | Steps | Distinct states | Time | Shortest counterexample |
@@ -417,7 +416,7 @@ Ordered by severity. "Trace" is the shortest counterexample the explicit-state c
 (step by step in `results/BFS.md`; the `viz.qnt`/TLC trace, where there is one, in
 `results/RESULTS.md`). Findings against the design quote the sentence; findings against the
 code name the file. F1–F9 were found by the earlier pass on `viz.qnt` and are re-confirmed by
-the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
+the second checker (F4, F5, F7 by TLC only); F10–F15 are new; F16 is against D30 (2026-11-19).
 
 ### F1 (critical, design) — Stream registration is not covered by "committed and logged"
 
@@ -656,6 +655,31 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
 - Forwarding it to `Shard.recorded` is guard (c): data lost after a rebuild in 12 steps.
   `flush.ts` correctly uses `loggedWatermarks()`. Rename it `committedWatermark` or drop it, and
   say on `Shard.recorded` that its only legitimate source is `loggedWatermarks()`.
+
+### F16 (minor, D30: `janitor.ts` + `compact.ts`) — An unlisted compaction output built on a never-swept flush file is never deleted either
+
+- **Code.** Since D30 the sweep deletes an unlisted output only once one of its inputs is
+  absent from R2. A flush file of a shard incarnation that was lost before its unit stayed
+  admitted is kept for ever (`pending_unit`) while the ledger still names that incarnation
+  (or a newer one whose logged watermark is 0). That flush-file leak is older than D30: the
+  same 11-step trace leaks under both rules (`LEAK_D30_sl`, `LEAK_V1_sl`: a flush Worker
+  PUTs, the shard loses its storage, the Worker dies; the tenant writes nothing more there).
+  D30 adds the outputs built on such a file: they are kept as long as it is.
+- **Witness** (`W_leak_behind_lost_flush`, 19 steps): units 1..1 and 2..2 admitted, not yet
+  logged → a compaction step reads both → the shard loses its storage (rows above the logged
+  watermark: a declared loss) → the ledger loses its storage; the rebuild drops both
+  admissions → the step PUTs its output. The two flush files and the output are unlisted; the
+  sweep keeps both flush files (the ledger's incarnation of the stream is still 1, logged
+  watermark 0), so it keeps the output. Before D30 the output went by age.
+- **Bound.** The objects in flight when a shard loss coincides with a ledger rollback, for
+  as long as the tenant writes nothing to that shard: the next write starts a new
+  incarnation, its first logged unit makes the old files dead, and the outputs follow.
+  Also kept for ever, by design: an output whose `viz-inputs` cannot be read (written before
+  D30, or in a newer format: `unknown_inputs`). No leak without a shard loss:
+  `LEAK_D30_ll` (compaction, retention, ledger loss) holds, the whole graph checked.
+- **Fix (optional).** Report `pending_unit` objects older than a day in the sweep's result
+  and the maintenance report, so an operator sees them; deleting them needs the shard's word
+  that it no longer holds the incarnation, which the sweep does not ask today.
 
 ### F11 (minor in the plan as it stood; fixed during this work) — Without `base.json` a ledger incarnation number can be reused
 
