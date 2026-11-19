@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest'
 import { DETECTORS } from '../../anomaly/src/index.ts'
 import type { AnomalyRuleStatus, AnomalyRuleV2, DetectorGuide, MonitorView, RuleGroup } from '../contracts-proposal/rules.v2'
 import spec from '../openapi.json'
-import { ANOMALY_ROW_BYTES, anomalyLimits, DEFAULT_DETECTOR, evalAnomaly, newAnomalyRt, PREVIOUS_DEFAULTS, readAnomalyRows, readStateRows, ROBUST_Z_DEFAULTS, SEASONAL_DEFAULTS, stateRows } from '../src/anomaly'
+import { ANOMALY_ROW_BYTES, anomalyLimits, DEFAULT_DETECTOR, estimateStateBytes, evalAnomaly, newAnomalyRt, PREVIOUS_DEFAULTS, readAnomalyRows, readStateRows, ROBUST_Z_DEFAULTS, SEASONAL_DEFAULTS, stateRows } from '../src/anomaly'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
 import { parseRuleFile } from '../src/rules'
 import { exportRuleFile, importRuleFile } from '../src/rulefile'
@@ -183,8 +183,7 @@ describe('bounds: series cap, state limits, rows per tick', () => {
     expect(bad).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.max_series' }] })
     const seasonal = await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '10s', rules: [{ alert: 'S', expr: LAT, anomaly: { detector: 'seasonal', params: { periodMs: 7 * 24 * 60 * MIN, seasons: 4 } } }] }] })
     expect(seasonal).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.params', message: expect.stringMatching(/bytes of state per series/) }] })
-    // 50 × about 24.8 KB (2,000 points as ring blocks) is over 1 MiB.
-    const perRule = await stub.saveGroups(tenant, { groups: [{ name: 'g', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', max_series: 50, params: { windowPoints: 2000 } } }] }] })
+    const perRule = await stub.saveGroups(tenant, { groups: [{ name: 'g', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', max_series: 50, params: { windowPoints: 1000 } } }] }] })
     expect(perRule).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.max_series', message: expect.stringMatching(/would exceed the 1048576-byte limit per rule/) }] })
   })
 
@@ -426,14 +425,15 @@ describe('the monitors API', () => {
     const res = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'checkout latency', query: LAT, anomaly: {} })
     expect(res.status).toBe(201)
     expect(res.json).toMatchObject({ group: 'anomalies/1m', cost: { class: 'tail' }, history: { tick: 'tail', coldStart: 'rollup', minPoints: 20, lookbackMs: 1500 * MIN } })
-    // About 18.8 KB of state a series (Float64 ring blocks; 55 KB as JSON, when it was 18): 55 series fit the 1 MiB a rule may keep, and the save says so.
-    expect(res.json.warnings).toEqual([{ path: 'anomaly.maxSeries', message: expect.stringMatching(/^max_series defaults to 55 here, not 100: robust_z with these parameters may keep about 18772 bytes/), fix: expect.any(String) }])
+    // About 55 KB of state a series as JSON (what this release writes): 18 series fit the 1 MiB a rule may keep, and the save says so.
+    // (The release that writes ring blocks: about 18.8 KB, 55 series; anomalystore.test.ts.)
+    expect(res.json.warnings).toEqual([{ path: 'anomaly.maxSeries', message: expect.stringMatching(/^max_series defaults to 18 here, not 100: robust_z with these parameters may keep about 55400 bytes/), fix: expect.any(String) }])
     const ruler = rulerStub(tenant)
     world.now = Math.max(world.now, ok(await ruler.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(ruler)).toBe(true)
     const m = (await call(key.auth, 'GET', `/api/v1/monitors/${res.json.id}`)).json.monitor as MonitorView
     expect(m).toMatchObject({ state: 'warming', query: LAT, condition: null, forMs: 0, keepFiringForMs: 10 * MIN, labels: { severity: 'ticket' } })
-    expect(m.anomaly).toMatchObject({ detector: 'robust_z', given: [], severity: 'ticket', maxSeries: 55, params: { windowPoints: 1500, k: 2, spread: 'quantile', spreadQuantile: 0.99, windowMs: 0, minPoints: 20 }, status: { status: 'warming', series: 2 } })
+    expect(m.anomaly).toMatchObject({ detector: 'robust_z', given: [], severity: 'ticket', maxSeries: 18, params: { windowPoints: 1500, k: 2, spread: 'quantile', spreadQuantile: 0.99, windowMs: 0, minPoints: 20 }, status: { status: 'warming', series: 2 } })
     expect(m.anomaly!.status!.message).toMatch(/^2 of 2 series warming: /)
     expect(m.anomaly!.guide.evidence).toMatchObject({ kind: 'held_out', defaultsValidated: true, nab: { standard: 42.6 } })
     expect(m.thresholdText).toBe('robust_z: 2 × the 0.99 quantile deviation from the trailing median')
@@ -551,8 +551,8 @@ describe('the monitors API', () => {
       monitor: (await call(a.key.auth, 'GET', `/api/v1/monitors/${id}`)).json.monitor.anomaly,
     })
     const before = await state()
-    // The head row and the block of the two ticks' points (`store.anomaly-state` v2).
-    expect(before.rows.length).toBe(2)
+    // One version 1 row; the head and a block where the gate writes version 2.
+    expect(before.rows.length).toBeGreaterThan(0)
     const sneaky: Record<string, string>[] = [{}, { 'X-Scope-OrgID': a.tenant }, { 'X-Tenant': a.tenant }]
     for (const h of sneaky) {
       for (const q of ['', `?tenant=${a.tenant}`, `?orgId=${a.tenant}`]) {
@@ -663,12 +663,13 @@ describe('defaults across an upgrade (D33 replaced on 2026-11-19: robust z with 
     // The very document the author saved before the change.
     const again = ok(await r.stub.saveGroups(r.tenant, before20261119.input))
     expect(again.groups[0]!.rules.map((x) => x.key)).toEqual(OLD_RULES.map((x) => x.key))
-    // Everything stored is kept but the size estimate, which is the stored form's: robust z and
-    // seasonal are smaller as Float64 ring blocks (`store.anomaly-state` v2) than as JSON.
+    // Everything stored is kept but the size estimate, which follows the stored form the gate writes
+    // (the same as stored while it writes JSON; smaller for robust z and seasonal as ring blocks).
     const noSize = ({ stateBytesPerSeries: _s, ...a }: AnomalyRuleV2['anomaly']) => a
     expect((await storedRules(r)).map((x) => noSize(x.anomaly))).toEqual(OLD_RULES.map((x) => noSize(x.anomaly)))
-    expect((await storedRules(r)).map((x) => x.anomaly.stateBytesPerSeries)).toEqual([OLD_RULES[0]!.anomaly.stateBytesPerSeries, 5332, 7995])
+    expect((await storedRules(r)).map((x) => x.anomaly.stateBytesPerSeries)).toEqual(OLD_RULES.map((x) => estimateStateBytes(x.anomaly.detector, x.anomaly.params, MIN)))
     expect(OLD_RULES.map((x) => x.anomaly.stateBytesPerSeries)).toEqual([1400, 11768, 8340])
+    expect(OLD_RULES.map((x) => estimateStateBytes(x.anomaly.detector, x.anomaly.params, MIN, 2))).toEqual([1400, 5332, 7995])
     expect(new Set((await r.rows()).map((x) => x.rule_key)), 'the detector state carried over').toEqual(keys)
     expect(again.warnings).toEqual(expect.arrayContaining([
       { path: 'groups[0].rules[0].anomaly.detector', message: 'this rule keeps detector ewma, the default when it was saved; a new rule would get robust_z with the quantile spread (design D33)', fix: expect.any(String) },
@@ -712,30 +713,23 @@ describe('defaults across an upgrade (D33 replaced on 2026-11-19: robust z with 
     expect((await get()).anomaly).toMatchObject({ detector: 'robust_z', params: { ...ROBUST_Z_DEFAULTS } })
   })
 
-  it('the 4,000-point configuration confirmed on SMD stays nameable: as Float64 ring blocks it fits the per-series state limit (22 series a rule); under a lower limit it is refused at save with why and what fits', async () => {
+  it('the 4,000-point configuration confirmed on SMD stays nameable: refused at save over the per-series state limit, with why and what fits; accepted where the operator raised the limit (as ring blocks, the next release, it fits: anomalystore.test.ts)', async () => {
     const { tenant, stub } = await setup()
     const save = (anomaly: Record<string, unknown>) => stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly }] }] })
-    // About 47 KB a series (68 blocks of 60 slots), whatever the values; 145 KB as JSON, which was refused.
-    const fits = ok(await save({ detector: 'robust_z', params: { windowPoints: 4000 } }))
-    expect(fits.warnings).toEqual([expect.objectContaining({ path: 'groups[0].rules[0].anomaly.max_series', message: expect.stringMatching(/^max_series defaults to 22 here, not 100: robust_z with these parameters may keep about 46996 bytes/) })])
-    expect(ok(await stub.listGroups(tenant)).groups[0]!.anomalyRules![0]!.anomaly).toMatchObject({ maxSeries: 22, stateBytesPerSeries: 46996 })
-    // Under a per-series limit it does not fit, the refusal says what it is and the longest window that fits.
-    const lowered = await setup({ limits: { maxAnomalyStateBytesPerSeries: 40_000 } })
-    expect(await lowered.stub.saveGroups(lowered.tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', params: { windowPoints: 4000 } } }] }] })).toMatchObject({
+    expect(await save({ detector: 'robust_z', params: { windowPoints: 4000 } })).toMatchObject({
       status: 'invalid',
       errors: [{
         path: 'groups[0].rules[0].anomaly.params',
-        message: 'robust_z with these parameters keeps about 46996 bytes of state per series at a 1m interval; the limit is 40000. This is the configuration frozen on NAB and confirmed on SMD (42.8); its window is over this ruler\'s per-series state limit',
-        fix: expect.stringMatching(/^Use a shorter window: at most 3361 points fit 40000 bytes a series; the default is 1500 \(NAB held out 42.6, SMD 42.5 post hoc\)\. A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries\.$/),
+        message: 'robust_z with these parameters keeps about 145400 bytes of state per series at a 1m interval; the limit is 65536. This is the configuration frozen on NAB and confirmed on SMD (42.8); its window is over this ruler\'s per-series state limit',
+        fix: expect.stringMatching(/^Use a shorter window: windowPoints 1500, the default, is the largest whose state fits 65,536 bytes a series for any values \(NAB held out 42.6, SMD 42.5 post hoc\)\. A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries\.$/),
       }],
     })
-    // At the default limit, the longest window that fits is about 5,600 points.
-    expect(await save({ detector: 'robust_z', params: { windowPoints: 6000 } })).toMatchObject({ status: 'invalid', errors: [{ fix: expect.stringMatching(/^Use a shorter window: at most 5641 points fit 65536 bytes a series/) }] })
-    ok(await save({ detector: 'robust_z', params: { windowPoints: 5641 }, max_series: 1 }))
+    const raised = await setup({ limits: { maxAnomalyStateBytesPerSeries: 160_000 } })
+    const okd = ok(await raised.stub.saveGroups(raised.tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', params: { windowPoints: 4000 } } }] }] }))
+    expect(okd.warnings).toEqual([expect.objectContaining({ path: 'groups[0].rules[0].anomaly.max_series', message: expect.stringMatching(/^max_series defaults to 7 here/) })])
     // spread "mad", given: the library's own defaults, as before, and the evidence against it.
-    // (288 points as ring blocks: about 5.3 KB a series, so the default of 100 series fits and is not warned about.)
     const mad = ok(await save({ detector: 'robust_z', params: { spread: 'mad' } }))
-    expect(mad.warnings.map((w) => w.path)).toEqual(['groups[0].rules[0].anomaly.params.spread'])
+    expect(mad.warnings.map((w) => w.path)).toEqual(['groups[0].rules[0].anomaly.max_series', 'groups[0].rules[0].anomaly.params.spread'])
     expect(ok(await stub.listGroups(tenant)).groups[0]!.anomalyRules![0]!.anomaly.params).toMatchObject({ spread: 'mad', windowPoints: 288, k: 3.5 })
     // seasonal named without a spread: the configuration frozen on NAB and confirmed on SMD.
     const seasonal = ok(await save({ detector: 'seasonal', params: { periodMs: 60 * MIN } }))
@@ -793,7 +787,7 @@ describe('defaults across an upgrade (D33 replaced on 2026-11-19: robust z with 
     if (!r2.ok) throw new Error(r2.error)
     const v2 = r2.write!.perSeries.get(fingerprint(labels))!
     expect(r2.write!.store.version).toBe(2)
-    expect(v2).toBeLessThanOrEqual(rule.anomaly.stateBytesPerSeries)
+    expect(v2).toBeLessThanOrEqual(estimateStateBytes('robust_z', rule.anomaly.params, MIN, 2))
     expect(v2).toBeLessThan(bytes / 2.5)
     const small = libraryBatch('robust_z', { ...rule.anomaly.params }, ts, ts.map((_t, i) => i % 7))
     const rtSmall = newAnomalyRt(rule)

@@ -21,10 +21,11 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'c
 import { describe, expect, it } from 'vitest'
 import { DETECTORS } from '../../anomaly/src/index.ts'
 import type { AnomalyRuleV2, RuleGroup } from '../contracts-proposal/rules.v2'
-import { anomalyLimits, evalAnomaly, newAnomalyRt, readAnomalyRows, type AnomalyRt } from '../src/anomaly'
+import { anomalyLimits, estimateStateBytes, evalAnomaly, maxRobustWindow, newAnomalyRt, readAnomalyRows, type AnomalyRt } from '../src/anomaly'
 import { ANOMALY_BLOCK, base64ToF64, emptyStore, f64ToBase64, HEAD_CHUNK, planV2, type AnomalyWrite } from '../src/anomalystore'
 import { anomalyCpu, anomalyStateBytes } from '../src/history'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
+import { ANOMALY_STATE_READS, ANOMALY_STATE_WRITE } from '../src/schema'
 import { parseRuleFile } from '../src/rules'
 import { fingerprint, hash64 } from '../src/util'
 import before20261119 from './fixtures/anomaly/before-2026-11-19.json'
@@ -222,8 +223,9 @@ describe('results do not change: the ruler\'s evaluation from version 2 rows equ
     }
     // 120 points span at most 3 blocks of 60: within the per-series estimate at every tick, and the
     // rule within the estimate of its series; quiet's 3 old blocks and x's and y's 3 current ones.
-    expect(Math.max(...most)).toBeLessThanOrEqual(rule.anomaly.stateBytesPerSeries)
-    expect(Math.max(...totals.slice(300))).toBeLessThanOrEqual(3 * rule.anomaly.stateBytesPerSeries)
+    const est = estimateStateBytes('robust_z', rule.anomaly.params, MIN, 2)
+    expect(Math.max(...most)).toBeLessThanOrEqual(est)
+    expect(Math.max(...totals.slice(300))).toBeLessThanOrEqual(3 * est)
     const blocks = table.list().filter((x) => x.chunk > HEAD_CHUNK + 1e6)
     expect(blocks.length).toBeLessThanOrEqual(6)
     expect(rt.series.size).toBe(3)
@@ -234,15 +236,19 @@ describe('results do not change: the ruler\'s evaluation from version 2 rows equ
     expect(back.series).toEqual(rt.series)
   })
 
-  it('the CPU and memory models price robust z by the points it scans, not by its stored size: as calibrated, whatever the version', () => {
+  it('the caps in effect follow the version written (JSON in this release: 18 series at the default window); the ring blocks of the next release bring 55, and the 4,000-point window within the limit; the CPU and memory models price robust z by the points it scans either way', () => {
     const rule = parsed({}, '1m', DEFAULT_RULER_CONFIG)
-    expect(rule.anomaly).toMatchObject({ stateBytesPerSeries: 18772, maxSeries: 55 })
-    // 1.5 + 3 + 0.0063 × 55,400 (the window's size as JSON, which the price was calibrated against).
+    expect(rule.anomaly).toMatchObject({ stateBytesPerSeries: estimateStateBytes('robust_z', rule.anomaly.params, MIN), maxSeries: Math.floor(1_048_576 / estimateStateBytes('robust_z', rule.anomaly.params, MIN)) })
+    const size = (version: 1 | 2, windowPoints = 1500) => estimateStateBytes('robust_z', { ...rule.anomaly.params, windowPoints }, MIN, version)
+    expect([size(1), Math.floor(1_048_576 / size(1)), size(1, 4000), maxRobustWindow(65_536, 1)]).toEqual([55_400, 18, 145_400, 1781])
+    expect([size(2), Math.floor(1_048_576 / size(2)), size(2, 4000), Math.floor(1_048_576 / size(2, 4000)), maxRobustWindow(65_536, 2)]).toEqual([18_772, 55, 46_996, 22, 5641])
+    // 1.5 + 3 + 0.0063 × 55,400 (the window's size as JSON, which the price was calibrated against), whatever is written.
     expect(anomalyCpu(rule, MIN)).toBeCloseTo(1.5 + 3 + 0.0063 * 55_400, 6)
     expect(anomalyStateBytes(rule, MIN)).toBe(rule.anomaly.maxSeries * 55_400 * 3)
-    const confirmed = parsed({ detector: 'robust_z', params: { windowPoints: 4000 } }, '1m', DEFAULT_RULER_CONFIG)
-    expect(confirmed.anomaly).toMatchObject({ stateBytesPerSeries: 46996, maxSeries: 22 })
+    const confirmed = parsed({ detector: 'robust_z', params: { windowPoints: 4000 } }, '1m', { ...DEFAULT_RULER_CONFIG, limits: { ...DEFAULT_RULER_CONFIG.limits, maxAnomalyStateBytesPerSeries: 160_000 } })
     expect(anomalyCpu(confirmed, MIN)).toBeCloseTo(1.5 + 3 + 0.0063 * 145_400, 6)
+    // A rule stored by the release that writes ring blocks (a smaller stateBytesPerSeries) is priced the same.
+    expect(anomalyCpu({ ...rule, anomaly: { ...rule.anomaly, stateBytesPerSeries: 18_772 } }, MIN)).toBe(anomalyCpu(rule, MIN))
   })
 })
 
@@ -392,15 +398,17 @@ describe('compatibility: read both, write the gate\'s version; refuse what a new
   }
   const vOf = (rows: { body: string }[]) => [...new Set(rows.map((x) => (JSON.parse(x.body) as { v: number }).v))]
 
-  it('version 1 rows are read and rewritten as version 2 at the next tick (the gate on); with the gate at 1, version 2 rows are read and rewritten as version 1; the alerts and the state are those of a run that never changed', async () => {
+  it('readers first: this release (the gate as shipped) writes version 1; the next (the gate on) reads those rows and rewrites them as version 2 at the next tick; rolled back to this release, it reads version 2 and rewrites it as version 1; the alerts and the state are those of a run that never changed', async () => {
     const ref = await one(2)
-    const cv = await one(1)
+    // This release, its gate as shipped (ANOMALY_STATE_WRITE): reads versions 1 and 2, writes 1.
+    const cv = await one(ANOMALY_STATE_WRITE)
+    expect(ANOMALY_STATE_READS).toEqual([1, 2])
     for (let k = 0; k < 100; k++) {
       await tick(ref.stub, ref.tenant)
       await tick(cv.stub, cv.tenant)
     }
     expect(vOf(await rowsOf(cv.stub, cv.tenant))).toEqual([1])
-    // The gate turned on (a release that writes version 2), the object evicted: it reads version 1 and converts.
+    // The next release (the gate on), the object evicted: it reads version 1 and converts.
     cv.w.anomalyStateWrite = 2
     await evictDurableObject(cv.stub)
     for (let k = 0; k < 30; k++) {
@@ -410,8 +418,8 @@ describe('compatibility: read both, write the gate\'s version; refuse what a new
     const rows = await rowsOf(cv.stub, cv.tenant)
     expect(vOf(rows)).toEqual([2])
     expect(rows[0]!.chunk).toBe(HEAD_CHUNK)
-    // The gate back at 1 (a rollback to a readers-first release): it reads version 2 and writes 1.
-    cv.w.anomalyStateWrite = 1
+    // Rolled back to this release (its gate as shipped): it reads the version 2 rows the next one wrote, and writes 1.
+    cv.w.anomalyStateWrite = ANOMALY_STATE_WRITE
     await evictDurableObject(cv.stub)
     for (let k = 0; k < 10; k++) {
       await tick(ref.stub, ref.tenant)
