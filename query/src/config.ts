@@ -117,6 +117,14 @@ export interface TenantLimits extends QueryLimits {
   /** TraceQL metrics: series in the answer, and points per series (the engine's `Limits`). */
   maxTraceSeries: number
   maxTracePoints: number
+  /**
+   * Parts of one query (a split, the cardinality report, a label call over leaves) that may read
+   * the rest of a tail that did not fit the coordinator themselves. Each such read scans every
+   * shard's whole tail for the tenant, on the object that acknowledges writes (D48 "Cost of it"),
+   * so a query costs each shard (1 + parts) scans; past this the query is refused (D54, review
+   * M-3). See README "Measurements" for the time one scan takes.
+   */
+  maxTailReadParts: number
 }
 
 /**
@@ -154,6 +162,7 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxLogRows: 60_000,
   maxTraceSeries: 10_000,
   maxTracePoints: 11_000,
+  maxTailReadParts: 16,
 }
 
 /** A configuration that cannot be trusted: the query is refused (503), never run on a guess. */

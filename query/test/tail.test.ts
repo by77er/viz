@@ -543,7 +543,7 @@ describe('the filter a read sends (tailFilter)', () => {
   it('sizes a split from what a read saw: series ids, and the stored batches left', () => {
     const b = encodeBatch([{ __name__: 'm', i: '1' }, { __name__: 'm', i: '2' }], [{ series: 0, ts: 1, bits: 0n }, { series: 1, ts: 1, bits: 0n }])
     expect(seriesIdsOf([b, b]).size).toBe(2)
-    const read: TailRead = { status: 'ok', shard: 's', incarnation: 1, above: 10, through: 30, batches: [{ seq: 11, payload: b }], bytes: b.byteLength, paged: true, complete: false, overBytes: 0, overLast: false, calls: 1, scannedBatches: 10, scannedBytes: 10 * b.byteLength }
+    const read: TailRead = { status: 'ok', shard: 's', incarnation: 1, above: 10, through: 30, batches: [{ seq: 11, payload: b }], bytes: b.byteLength, paged: true, filtered: true, complete: false, overBytes: 0, overSeq: null, overLast: false, resume: null, calls: 1, scannedBatches: 10, scannedBytes: 10 * b.byteLength }
     // 10 batches left of the 20 above the watermark, each like the 10 seen, of which a tenth was kept.
     const est = tailEstimate([read])
     expect(est.bytes).toBe(b.byteLength + Math.ceil(10 * b.byteLength * 0.1))

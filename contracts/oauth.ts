@@ -97,7 +97,27 @@ export const OAUTH_LIMITS = {
   stateLength: 512,
   /** A registration request body, in bytes. */
   registrationBytes: 8_192,
+  /**
+   * Refresh tokens issued per grant in any 60 s (the code exchange's included), counted exactly in
+   * the tenant's object (D68). Over it, `/oauth/token` refuses a refresh with `rate_limited` before
+   * the presented token is spent: a client stuck in a refresh loop writes at most this many times a
+   * minute, from any number of Cloudflare locations.
+   */
+  refreshesPerGrantPerMinute: 6,
 } as const
+
+/**
+ * Refused by a rate limit before anything was read or written (D68): retryable, nothing happened,
+ * and a credential presented with the request is not spent. `retryAfterMs`: when to try again.
+ * Added 2026-11-19 within version 1 of `TokenResult` and `OAuthIntrospectionResult`
+ * (COMPATIBILITY.md §4, "new statuses that callers already fail closed on": control's own Worker
+ * reads the first; the agent surface answers a status it does not know with a retryable 503).
+ */
+export interface RateLimited {
+  v: 1
+  status: 'rate_limited'
+  retryAfterMs: number
+}
 
 // ---- credentials ----
 
@@ -201,6 +221,8 @@ export type TokenResult =
   /** The description never contains a credential. */
   | { v: 1; status: 'error'; error: TokenErrorCode; description: string }
   | { v: 1; status: 'not_provisioned' }
+  /** A refresh over `OAUTH_LIMITS.refreshesPerGrantPerMinute` for its grant; the presented token is not spent. */
+  | RateLimited
   | SchemaTooNew
 
 export type InactiveReason = 'unknown' | 'expired' | 'revoked' | 'suspended' | 'audience'
@@ -263,8 +285,10 @@ export interface TenantOAuthRpc {
  *   `unauthorized` and reaches no object.
  * - A token that is not shaped like an access token, or does not carry this deployment's tag
  *   (`CREDENTIAL_TAG`), is `inactive` (`unknown`) and reaches no object.
- * - Results are `IntrospectionResult` (version 1, above) plus `unauthorized`. Nothing throws for bad
- *   input.
+ * - Results are `IntrospectionResult` (version 1, above) plus `unauthorized` and `rate_limited`
+ *   (D68: too many introspections of this token, or of this token's tenant, in this Cloudflare
+ *   location; checked after the tag and before the tenant's object, so only a credential this
+ *   deployment made counts). Nothing throws for bad input.
  */
 export const OAUTH_INTROSPECTION_ENTRYPOINT = 'OAuthIntrospection'
 
@@ -276,7 +300,7 @@ export interface OAuthIntrospectionProps {
   caller: string
 }
 
-export type OAuthIntrospectionResult = IntrospectionResult | { v: 1; status: 'unauthorized' }
+export type OAuthIntrospectionResult = IntrospectionResult | { v: 1; status: 'unauthorized' } | RateLimited
 
 export interface OAuthIntrospectionRpc {
   /** Is this access token live, for `resource` (the caller's own canonical URI), and who is it. Read only. */

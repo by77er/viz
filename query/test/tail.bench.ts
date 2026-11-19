@@ -26,7 +26,7 @@ import { clearLimitsCache } from '../src/config'
 import { hooks } from '../src/coordinator'
 import { engine } from '../src/index'
 import { leafHooks } from '../src/leaf'
-import { tailHooks } from '../src/tail'
+import { splitKeyRange, tailHooks } from '../src/tail'
 import { Bulk, JOBS } from './bulk'
 import { type Tenant, type World, api, cost, discardAll, flushAll, sealAll, world, write } from './world'
 
@@ -79,13 +79,21 @@ async function three(label: string, t: Tenant, path: string, params: Record<stri
 }
 
 describe('the tail, filtered and paged (local)', () => {
+  // Review of D54, M-2: a tail that fits the coordinator, cut by part there (before: in the
+  // engine; now: in JavaScript). Only this case: `npm run measure -- test/tail.bench.ts -t 'cut by part'`.
+  it('a tail that fits, cut by part at the coordinator: its memory (20,000 and 60,000 series)', async () => cutMemory(), 1_800_000)
+  // Review of D54, M-3: the shard's time for one part's read of the rest, on A and B, without the cases.
+  it('the shard scans: one part\'s read of its key range, datasets A and B', async () => {
+    await measure('A', 7, false)
+    await measure('B', 1, false)
+  }, 3_600_000)
   // The shard's case: seven scrapes in one Remote Write request, so labels are sent once (about 22 MB).
   it('100,000 series, seven minutes in one request (about 22 MB unflushed)', async () => measure('A', 7), 1_800_000)
   // One scrape per request, as a scraper sends them: every batch repeats its series' labels.
   it('100,000 series, one request a minute (about 68 MB unflushed)', async () => measure('B', 1), 1_800_000)
 })
 
-async function measure(name: string, perWrite: number): Promise<void> {
+async function measure(name: string, perWrite: number, cases = true): Promise<void> {
   {
     const w: World = await world()
     const t = w.a
@@ -102,6 +110,8 @@ async function measure(name: string, perWrite: number): Promise<void> {
     // ...then seven minutes left in the tails (sealed segments not flushed, and the open one).
     for (let k = 0; k < 7; k += perWrite) await write(t, bulk.series(perWrite))
     console.log(`MEASURE dataset ${name}: ${N} series (${M}, 60 s), 10 minutes flushed + 7 minutes in the tails, ${perWrite} scrape(s) per request; loading took ${((performance.now() - t0) / 1000).toFixed(0)} s`)
+    await scans(name, w, t)
+    if (!cases) return
 
     hooks.sequentialLeaves = true
     leafHooks.resetBeforeEvaluate = true
@@ -140,6 +150,95 @@ async function measure(name: string, perWrite: number): Promise<void> {
       delete hooks.forceLeaves
       delete leafHooks.resetBeforeEvaluate
       delete tailHooks.previousRelease
+    }
+  }
+}
+
+/**
+ * Review of D54, M-3: what one part's read of the rest costs a shard. A part reads its key
+ * range of the tenant's tail with the query's filter, and the shard scans every stored batch
+ * above the watermark to find it (D48, "Cost of it"). Timed at the caller, in the same process
+ * (an RPC here is a copy in memory), three parts of 8 and of 32, each read followed to its end.
+ */
+async function scans(name: string, w: World, t: Tenant): Promise<void> {
+  for (const s of w.shards) {
+    const d = await shardOf(w, s).describe(t.name)
+    if (!d) continue
+    for (const L of [8, 32]) {
+      const ms: number[] = []
+      let scanned = 0
+      let kept = 0
+      let calls = 0
+      for (const j of [0, 1, 2]) {
+        const t0 = performance.now()
+        let cursor: string | undefined
+        for (;;) {
+          const r = await shardOf(w, s).tailRead(t.name, d.incarnation, d.discardedThrough, { v: 1, metrics: [M], keyRange: splitKeyRange(j, L), maxBytes: 16 << 20, ...(cursor === undefined ? {} : { cursor }) })
+          calls++
+          if (r.status !== 'ok' || !r.page) throw new Error(`shard ${s}: ${r.status}`)
+          scanned += r.page.scannedBytes
+          kept += r.batches.reduce((a, b) => a + b.payload.byteLength, 0)
+          if (r.page.next === null) break
+          cursor = r.page.next
+        }
+        ms.push(performance.now() - t0)
+      }
+      console.log(
+        `MEASURE ${name} shard ${s.slice(-6)}: one part of ${L} reads its key range (local): ${ms.map((x) => x.toFixed(0)).join(' / ')} ms, ${mib(scanned / 3)} MiB scanned per read in ${(calls / 3).toFixed(0)} call(s), ${mib(kept / 3)} MiB kept; ` +
+          `${((scanned / 3 / 2 ** 20) / (ms.reduce((a, b) => a + b, 0) / 3 / 1000)).toFixed(0)} MiB/s; a split of ${L} whose tail does not fit asks the shard for ${L + 1} such scans`,
+      )
+    }
+  }
+}
+
+/** Review of D54, M-2 (the reviewer's measurement, at two sizes): the coordinator's memory cutting a tail that fits, and that of the rest read by parts. */
+async function cutMemory(): Promise<void> {
+  const BASE = Date.UTC(2026, 9, 1, 12)
+  for (const n of [20_000, 60_000]) {
+    const w = await world()
+    const t = w.a
+    for (const s of w.shards) await shardOf(w, s).configure({ tenantMaxBytes: 256 << 20 })
+    await setLimits(t, {})
+    for (let s = 0; s < 3; s++) {
+      for (let c = 0; c < n; c += 5000) {
+        await write(t, Array.from({ length: 5000 }, (_, k) => ({ labels: { __name__: 'rv_big', job: 'j', instance: 'i', k: `series-${String(c + k).padStart(6, '0')}` }, samples: [[BASE + s * 15_000, s] as [number, number]] })))
+      }
+    }
+    const q = { query: 'sum(rv_big)', time: sec(BASE + 60_000) }
+    // The reference, in one place with the series and sample limits raised (60,000 series are over one place's).
+    await setLimits(t, { maxSeries: 200_000, maxSamples: 10_000_000 })
+    engine.reset()
+    const one = await api(t.key, '/api/v1/query', q)
+    const want = await one.text()
+    await setLimits(t, {})
+    const tail = cost(one, 'Tail-Bytes')
+    console.log(`MEASURE cut ${n} series: tail ${mib(tail)} MiB; one place (limits raised, the reference): HTTP ${one.status}, coordinator WASM ${mib(cost(one, 'Wasm-Memory-Bytes'))} MiB, ${want.slice(0, 120)}`)
+    hooks.forceLeaves = 4
+    hooks.sequentialLeaves = true
+    leafHooks.resetBeforeEvaluate = true
+    try {
+      for (const [label, cap] of [['the tail fits, cut at the coordinator', undefined], ['the tail over the cap (1 B), the rest read by the parts', 1]] as const) {
+        if (cap === undefined) delete hooks.tailCap
+        else hooks.tailCap = cap
+        for (let i = 0; i < 3; i++) {
+          engine.reset()
+          console.log(`MEASURE mark ${Date.now()} start ${n} ${label} ${i}`)
+          const t0 = performance.now()
+          const res = await api(t.key, '/api/v1/query', q)
+          const body = await res.text()
+          const wall = performance.now() - t0
+          console.log(`MEASURE mark ${Date.now()} end ${n} ${label} ${i}`)
+          console.log(
+            `MEASURE cut ${n} series, ${label}, 4 leaves (local), run ${i}: HTTP ${res.status}, same body ${body === want}, ${res.headers.get('X-Viz-Tail-Mode')}, wall ${wall.toFixed(0)} ms, ` +
+              `coordinator WASM ${mib(cost(res, 'Wasm-Memory-Bytes'))} MiB, leaf peak WASM ${mib(cost(res, 'Leaf-Peak-Wasm-Bytes'))} MiB, RPC ${mib(cost(res, 'Rpc-Bytes'))} MiB, shard calls ${cost(res, 'Shard-Calls')}`,
+          )
+        }
+      }
+    } finally {
+      delete hooks.forceLeaves
+      delete hooks.sequentialLeaves
+      delete hooks.tailCap
+      delete leafHooks.resetBeforeEvaluate
     }
   }
 }

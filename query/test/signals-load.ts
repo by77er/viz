@@ -44,6 +44,16 @@ const hexOf = (b: ArrayBuffer): string => [...new Uint8Array(b)].map((x) => x.to
 const sha = async (b: Uint8Array): Promise<string> => hexOf(await crypto.subtle.digest('SHA-256', b as Uint8Array<ArrayBuffer>))
 const NS_PER_MS = 1_000_000n
 
+/** Batches (base64) appended to one shard for the tenant, in order, as edge would. */
+export async function appendBatches(w: World, t: Tenant, shard: string, batches: string[]): Promise<void> {
+  const stub = shardOf(shard)
+  for (const b64 of batches) {
+    const payload = unb64(b64)
+    const r = await stub.append({ tenant: t.name, epoch: w.map.epoch, fingerprint: await sha(payload), payload, rows: 1 })
+    if (r.status !== 'ok') throw new Error(`append to ${shard}: ${JSON.stringify(r)}`)
+  }
+}
+
 /** Every batch of a signal appended to the tenant's shard of that signal (slot 0), in order; each unit's files to R2 and the ledger. */
 export async function loadSignal(w: World, t: Tenant, signal: 'traces' | 'logs', fx: SignalFx): Promise<{ shard: string; files: number }> {
   const shard = `${w.map.pool}/${signal}/0`
@@ -51,11 +61,7 @@ export async function loadSignal(w: World, t: Tenant, signal: 'traces' | 'logs',
   // The ledger starts before any object of the tenant is in R2, as it does in production (a
   // ledger that finds data objects and no change log refuses to start empty over them).
   await ledgerOf(t).loggedWatermarks()
-  for (const b64 of fx.batches) {
-    const payload = unb64(b64)
-    const r = await stub.append({ tenant: t.name, epoch: w.map.epoch, fingerprint: await sha(payload), payload, rows: 1 })
-    if (r.status !== 'ok') throw new Error(`append to ${shard}: ${JSON.stringify(r)}`)
-  }
+  await appendBatches(w, t, shard, fx.batches)
   const inc = (await stub.describe(t.name))!.incarnation
   let files = 0
   for (const u of fx.units) {

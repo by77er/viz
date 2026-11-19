@@ -221,7 +221,7 @@ traces over-counted, all of them traces with a retried span in another unit.
 
 `compact/` merges the files of each table by the rules of `TABLES.md` ("Object keys":
 `inputs16`, levels, precedence) and design/DECISIONS.md D30 (every output carries its inputs,
-a step never deletes its outputs), with these differences:
+a step never deletes its outputs), with these differences (D68):
 
 - **`spans` is merged per hour, never across hours.** The inputs of a merge are files of one
   hour of one day (one `…/day=D/hour=HH/` prefix), and so is its output: level 1 while the

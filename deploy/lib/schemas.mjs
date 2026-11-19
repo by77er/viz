@@ -17,7 +17,7 @@ const require = createRequire(join(DEPLOY_DIR, 'package.json'))
 /** `"ledger/src/ledger.ts#LEDGER_SCHEMA"` → `{ module, name }`. */
 export function parseSource(ref, where) {
   const m = /^([A-Za-z0-9_./-]+\.ts)#([A-Za-z_][A-Za-z0-9_]*)$/.exec(ref ?? '')
-  if (!m || m[1].includes('..')) throw new Error(`${where}: a schema source is "<path from the repository root>.ts#<EXPORT>", got ${JSON.stringify(ref)}`)
+  if (!m || m[1].includes('..')) throw new Error(`${where}: a source is "<path from the repository root>.ts#<EXPORT>", got ${JSON.stringify(ref)}`)
   return { module: m[1], name: m[2] }
 }
 
@@ -29,14 +29,16 @@ export function schemaSources(workers) {
 }
 
 /**
- * Load the specs. Returns, per source, `{ class, component, latest, compat, migrations:
- * [{version, readableFrom, name}] }`, checked by contracts/schema.ts's own `checkSpec`.
+ * The values of exported constants, read from the sources without running any Worker (the
+ * mechanism above): `refs` is `[{ module, name }]`, the result `[value]` in the same order, and
+ * `extra` names more `{ module, name }` exports to return by name (e.g. contracts/schema.ts's
+ * `schemaRelease`). lib/formats.mjs reads the `FORMATS` maps and read lists with it.
  */
-export function readSchemas(sources) {
-  if (sources.length === 0) return []
+export function evaluateExports(refs, extra = []) {
+  if (refs.length === 0 && extra.length === 0) return { values: [], extra: {} }
   const { buildSync } = require('esbuild')
-  const lines = sources.map((s, i) => `export { ${s.name} as spec${i} } from ${JSON.stringify(join(REPO_ROOT, s.module))}`)
-  lines.push(`export { schemaRelease } from ${JSON.stringify(join(REPO_ROOT, 'contracts', 'schema.ts'))}`)
+  const lines = refs.map((s, i) => `export { ${s.name} as value${i} } from ${JSON.stringify(join(REPO_ROOT, s.module))}`)
+  for (const e of extra) lines.push(`export { ${e.name} } from ${JSON.stringify(join(REPO_ROOT, e.module))}`)
   let code
   try {
     const out = buildSync({
@@ -46,7 +48,7 @@ export function readSchemas(sources) {
     })
     code = out.outputFiles[0].text
   } catch (e) {
-    throw new Error(`reading the Durable Object schemas: ${(e.errors ?? []).map((x) => `${x.location?.file ?? ''}:${x.location?.line ?? ''} ${x.text}`).join('; ') || e.message}`)
+    throw new Error(`reading component sources (${refs.concat(extra).map((r) => `${r.module}#${r.name}`).join(', ')}): ${(e.errors ?? []).map((x) => `${x.location?.file ?? ''}:${x.location?.line ?? ''} ${x.text}`).join('; ') || e.message}`)
   }
   const stub = { DurableObject: class {}, WorkerEntrypoint: class {}, RpcTarget: class {}, WorkflowEntrypoint: class {}, env: {} }
   const module = { exports: {} }
@@ -57,8 +59,19 @@ export function readSchemas(sources) {
   }
   vm.runInNewContext(code, sandbox, { filename: 'schemas-bundle.js', timeout: 10_000 })
   const m = module.exports
+  return { values: refs.map((_, i) => m[`value${i}`]), extra: Object.fromEntries(extra.map((e) => [e.name, m[e.name]])) }
+}
+
+/**
+ * Load the specs. Returns, per source, `{ class, component, latest, compat, migrations:
+ * [{version, readableFrom, name}] }`, checked by contracts/schema.ts's own `checkSpec`.
+ */
+export function readSchemas(sources) {
+  if (sources.length === 0) return []
+  const { values, extra } = evaluateExports(sources, [{ module: 'contracts/schema.ts', name: 'schemaRelease' }])
+  const m = { schemaRelease: extra.schemaRelease }
   return sources.map((s, i) => {
-    const spec = m[`spec${i}`]
+    const spec = values[i]
     if (!spec || !Array.isArray(spec.migrations)) throw new Error(`${s.module} does not export a SchemaSpec named ${s.name}`)
     const rel = m.schemaRelease(spec) // runs checkSpec: versions 1..n, readableFrom in range
     return {

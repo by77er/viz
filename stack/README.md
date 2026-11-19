@@ -745,7 +745,8 @@ their objects. Every check (`checkTenant`, every 20 steps for all tenants and af
 for those touched) also requires the reader to see exactly the model's spans and records, from
 files and tails, every live signal file to be in R2 at its size under the tenant's prefix, and
 nothing leaked; the end phase requires R2 to be exactly the ledger's live set (metric files at
-level 2, signal files at level 0) with nothing pending in any shard.
+level 2, signal files at level 0 until 2026-11-19; at level 2 since they are compacted, below)
+with nothing pending in any shard.
 
 **Flag off: the soak as before.** With `INGEST_SIGNALS` off no stage-2 code runs in the soak
 (no signal model, no derived shards, no `rs` draws), its metric operations come from the same
@@ -796,6 +797,53 @@ after the run.
 
 **Mutants** of stage 2 are listed in the READMEs of `shard/`, `flush/`, `ledger/` and
 `janitor/`, each run on a scratch copy: 10 of 10 killed.
+
+## Compaction of spans, trace_index and logs (2026-11-19)
+
+compact/ now merges the span and log tables (compact/README.md, "Spans, trace_index and logs";
+design/DECISIONS.md D68), through the same maintenance runs and the same step function the soak
+already drives; nothing in `src/` changed. What changed here are the tests that see it:
+
+- **The soak with `INGEST_SIGNALS` on** (`test/soak.test.ts`): its compaction steps (alone, two at
+  once, crashing after their PUT, with retention between PUT and `replace`, inside maintenance
+  runs with clocks hours and days ahead) now merge span and log files too, and every check
+  (`checkTenant`, after each step for the tenants it touched and every 20 steps for all) requires
+  the reader to see exactly the model's spans and records from merged files and tails; the
+  old-plan reader also takes its plan of `spans`, `trace_index` and `logs` and, after four
+  compaction steps, a purge and an orphan sweep, reads every file of that old plan to the same
+  rows (hyparquet); the end requires every live file at level 2, spans under their hour named
+  after it (`test/settle.ts`), and R2 to be exactly the live set. Its summary counts merges per
+  table. Run 2026-11-19, 400 steps, seed 20261118, flag on, alone (61 s, load average 4 to 6):
+  every invariant at every step; 47 merges of spans, 27 of trace_index, 6 of logs (maintenance
+  and direct steps), 2 crashed steps, 1 conflict, 3 retention-during-step conflicts, 5 old-plan
+  readers verified (span and log files included), 7 orphans deleted, 1,047 objects purged, 0 dead
+  letters. A 1,500-step run and a second seed: see "How it was verified" below.
+- **Through the engines, before and after** (`test/signals.test.ts` corpus mode and
+  `tools/signals_readback.mjs`): after the flushed files are exported, the same test compacts the
+  tenant to the end (every day closed: `compactTenant` until it is idle) and exports the live
+  files again; `tools/signals-readback` checks the second export as the first (every row equal to
+  the expected one, duplicates resolved by precedence; TraceQL and LogQL over the files equal to
+  the in-memory engines), compares every answer with the one over the flushed files, and runs the
+  LogQL queries a third way, with row groups skipped by the outputs' token filters (four queries
+  were added whose literals imply tokens: `|= "error: connection refused"`, `|= "level=error msg="`,
+  `|= " starting worker"`, a `count_over_time` of `|= " status=500 "`). Results, 2026-11-19:
+
+  | Seed, scale | Flushed files (units) | After compaction | TraceQL before = after | LogQL before = after | Merged fragments differing | Checks, failures |
+  |---|---|---|---|---|---|---|
+  | 1, 2 | 223 (84) | 8 files, all level 2, 32 merges | 30 of 30 | 22 of 22 | 0 of 300 traces | 76,148, 0 |
+  | 2, 3 | 319 (124) | 8 files, 48 merges | 30 of 30 | 22 of 22 | 0 of 450 | 114,340, 0 |
+  | 3, 3 | 301 (115) | 8 files, 46 merges | 30 of 30 | 22 of 22 | 0 of 450 | 111,208, 0 |
+
+  Against the in-memory engines, after compaction: TraceQL 60 of 60 identical (files, and files
+  with the engine's pruning), LogQL 66 of 66 (files, pruned by fragment, pruned by fragment and
+  token filter). The token filters skipped **no** row group on these corpora: a compacted day of
+  them is one or two row groups holding every common token, so the third way checks that the
+  filter never drops a needed row group, not that it saves reads (engine/storage/README.md
+  measures that). PyArrow and DuckDB read the flushed export: 0 failures (286,153, 413,795 and
+  408,688 checks).
+- **A bug in the export, found by it**: files were base64-encoded in pieces of 32,768 bytes, not a
+  multiple of 3, so a file over 32 KiB carried padding inside its text and the script read only
+  its first piece. Pieces are now 32,766 bytes. (Compacted files were the first to exceed it.)
 
 ## Through the gateway (stage 3 of traces and logs, 2026-11-19)
 

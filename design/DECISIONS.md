@@ -2447,7 +2447,7 @@ every tenant after a resync).
 
 ## D65. A `logs` file's token filter lives inside its Parquet object, between the last row group and the footer; its place is in the fragment (`tok`) and the file's metadata
 
-(Written 2026-11-19, with compaction of the span and log tables, D66. Replaces the placement
+(Written 2026-11-19, with compaction of the span and log tables, D68. Replaces the placement
 `contracts/LOGS.md` §6 gave before, which was never built; the filter's bytes are unchanged.)
 
 **Decision.** Compaction writes a `logs` output's token filter (`VZT1`, contracts/LOGS.md §6)
@@ -2593,3 +2593,59 @@ fallback only); a promoted attribute is added (a schema change: this release ref
 a schema id it did not write, so that needs a release that evolves the schema); compaction of
 `spans` ever merges across hours (then the hour comes from the files' bounds, not the key); or
 readers that matter turn out to ignore the name mapping.
+
+## D68. Spans, `trace_index` and logs are compacted by the metric step, each table on its own: spans per hour and never across one, `trace_index` and logs per day; merges stream their inputs and cut row groups at 2 MiB
+
+(Written 2026-11-19. Contracts: `contracts/TRACES.md` and `LOGS.md`, "Compaction"; the token
+filter's place is D65.)
+
+**Decision.** `compactStep` (compact/) looks at the metric tables first and, when they have no
+job, at `spans`, `trace_index` and `logs` in turn, each with the metric policy (open-hour level-1
+merges, closed-day level-2 merges, 8 inputs and 16 MB a step, the step deadline), the metric
+keys (`L{level}-{span}-{inputs16}-{hash8}`), D30's inputs record, one `replace`, and nothing ever
+deleted by a step. A unit of the policy is one file; nothing pairs the trace tables (a fragment
+names hours, never files). `spans` files stay hour-pure: an open hour's bucket is the file's hour,
+a closed day's spans become one level-2 file per hour, and an output's key is under its hour and
+named after it at both levels (`hour=HH/L2-hHH-…`). The engine merges them (`engine/storage`
+`merge_signal_files`, engine/wasm ABI 4 `mergeSignalFiles`): `spans` rows equal on
+`(trace_id, span_id)` and `logs` rows equal on their row key keep the later input's, `trace_index`
+rows of one trace are merged as the contract merges fragments (the later input's root on a tie,
+at most 64 services). Each input is read row by row and the output written one row group at a
+time, in 1 MiB chunks the binding copies out one by one, with row groups cut at 2 MiB of data
+(flush keeps 16 MiB). An engine without the merge compacts metrics only.
+
+**Alternatives.** (a) Pair `spans` with `trace_index` like a metric pair (one job, both tables,
+one `replace`). (b) Merge spans per day like metrics (files no longer hour-pure). (c)
+Re-aggregate `trace_index` from the merged spans (exact counts, no over-count of retried spans).
+(d) Decode whole inputs into memory and re-run flush's encoder over them. (e) Keep 16 MiB row
+groups and lower the step budget for these tables. (f) A separate compactor for traces and logs.
+
+**Why.** (a) would tie two partitionings (hour and day) into one job for no reader's benefit:
+nothing reads the two tables as a pair, and both are expired by each file's own day. (b) breaks
+the hour partitions the key, the ledger's `spans` admission rule, the publisher's `hour(start_time)`
+partition (D67) and the read path's hour hull rely on. (c) needs every span of a trace, which lie
+in up to 24 hour files and other days: a step would read most of a day. Query summaries are
+computed from spans already (D62); the fragments' extents and hours, which queries use, are exact
+either way. (d) and 16 MiB groups were measured: a merge at the step budget peaked at 193 MB of
+WASM memory (spans) with whole output row groups of 16 MiB decoded, 87 MB for one 1.9 MB input;
+with streamed inputs, 2 MiB groups, interned span entries, a chunked output and a token builder
+of about 12 bytes a token, the largest step peaks at 62 MB (spans) and 81 MB (logs, 16 MB in,
+22 MB out with its filter), against metrics' 70 (`engine/storage/README.md`, "Compaction of spans
+and logs"). (e) was not wanted: the task fixed the step budget; and smaller row groups cost only
+fragment bytes. (f) would duplicate D30's machinery and its proofs.
+
+**Cost.** More row groups per merged file (49 in a 16 MB spans file instead of 7; about 130 bytes
+of ledger state each). The isolate holds the inputs and the output on the JS side besides the
+WASM peak: about 81 + 16 + 22 MB for the largest logs step (modelled; not measured on
+Cloudflare). A span id re-sent with a start in another hour is two rows in two hours' files,
+which no merge brings together; after a merge of one hour a reader's precedence order between the
+two can change (`contracts/TRACES.md`, "Compaction"). The token filter adds about a quarter to a
+logs file whose lines carry unique ids (25% measured on the benchmark's lines). Merges are
+CPU-bound at about 5 MB/s (spans) and 9 MB/s (logs) natively here, so a step at the budget takes
+3–4 s natively and 4–6 s in WASM (measured here, not on Cloudflare).
+
+**Would change if.** A Container takes merges over the Worker budget (then 16 MiB row groups and
+larger steps); the binding streams the output to JS during the merge (then the WASM peak drops by
+the output); `trace_index` must count retried spans once (then (c), at the cost above); or reads
+need traces across hours together (then hour-pure spans would be revisited with the publisher's
+partition).

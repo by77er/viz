@@ -2,7 +2,7 @@
 // run the tests that should notice, expect them to FAIL, restore the source.
 //   node scripts/mutants.mjs [part] [substring of a mutant name]      (from stack/)
 //   MUTANT_FILES=compact/,janitor/ node scripts/mutants.mjs all          only mutants in those files
-// Parts: trigger, compaction, precedence, deletion, limit, review, publication, gateway. Paths are
+// Parts: trigger, signals, compaction, precedence, deletion, limit, review, publication, gateway. Paths are
 // relative to the root of the tree the script sits in.
 //
 // AGENTS.md (Evidence): mutants are applied to a COPY of the tree in a scratch area, never in
@@ -35,6 +35,7 @@ const T = {
   janitorUnit: ['janitor', `npx vitest run ${W} test/janitor.test.ts`],
   janitorGolden: ['janitor', `npx vitest run ${W} test/golden.test.ts`],
   compactGolden: ['compact', `npx vitest run ${W} test/golden.test.ts`],
+  compactSignals: ['compact', `npx vitest run ${W} test/signals.test.ts`],
   flushGolden: ['flush', `npx vitest run ${W} test/golden.test.ts`],
   flushUnit: ['flush', `npx vitest run ${W} test/flush.test.ts`],
   cron: ['stack', `npx vitest run ${W} test/cron.test.ts`],
@@ -84,6 +85,23 @@ const mutants = [
     "orphansAt: existing?.orphansAt ?? Date.now(), sweep: true })", "orphansAt: existing?.orphansAt ?? Date.now(), sweep: existing?.sweep ?? false })"],
   ['trigger', 'a merge that crashed does not mark the orphan sweep as needed', 'stack/src/maintain.ts', T.triggers,
     "    if (!marker.sweep) await writeMarker(env, tenant, { ...marker, sweep: true }).catch(() => undefined)\n", ''],
+
+  // ── Signals: compaction of spans, trace_index and logs (D30 for the new tables) ──
+  ['signals', 'an output deleted by its own step when replace conflicts', 'compact/src/compact.ts', T.compactSignals,
+    "  if (r.status === 'conflict') return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [] }\n  throw new Error(`compact: the ledger answered replace with ${JSON.stringify((r as { status?: unknown }).status)}; nothing was swapped, retry`)\n}\n\nexport interface CompactRun",
+    "  if (r.status === 'conflict') {\n    await env.BUCKET.delete(output.key)\n    return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [] }\n  }\n  throw new Error(`compact: the ledger answered replace with ${JSON.stringify((r as { status?: unknown }).status)}; nothing was swapped, retry`)\n}\n\nexport interface CompactRun"],
+  ['signals', 'an output deleted by its own step when it gives up after its PUT', 'compact/src/compact.ts', T.compactSignals,
+    "  await opts.hooks?.afterPut?.([output])\n", "  try {\n    await opts.hooks?.afterPut?.([output])\n  } catch (e) {\n    await env.BUCKET.delete(output.key)\n    throw e\n  }\n"],
+  ['signals', 'a span merged across hours: a closed day\'s spans merged as one partition', 'compact/src/compact.ts', T.compactSignals,
+    "partitions.set(p.hour, [...(partitions.get(p.hour) ?? []), p])", "partitions.set(undefined, [...(partitions.get(undefined) ?? []), p])"],
+  ['signals', 'a spans output keyed as a day file (no hour level)', 'compact/src/compact.ts', T.compactSignals,
+    "p.table === 'spans' ? p.hour : undefined)}L${p.level}", "undefined)}L${p.level}"],
+  ['signals', 'signal outputs written without their inputs record', 'compact/src/compact.ts', T.compactSignals,
+    "  const put = await putFile(env.BUCKET, key, out.bytes, digest, { [COMPACTION_INPUTS_META]: record })", "  const put = await putFile(env.BUCKET, key, out.bytes, digest, {})"],
+  ['signals', 'the inputs record of a spans output accepts files of another hour', 'compact/src/compact.ts', T.compactGolden,
+    ": [dataKeyPrefix(cell!, table as SignalTable, tenant!, day!, hour === undefined ? undefined : Number(hour))]", ": [dataKeyPrefix(cell!, table as SignalTable, tenant!, day!)]"],
+  ['signals', 'signal inputs merged in key order, not precedence', 'compact/src/compact.ts', T.compactSignals,
+    "  const ordered = [...job.inputs].sort(byPrecedence).map((u) => u.files[0]!)", "  const ordered = [...job.inputs].sort((a, b) => (a.key < b.key ? 1 : -1)).map((u) => u.files[0]!)"],
 
   // ── Part 2: compaction ──
   ['compaction', 'samples and series swapped in two replaces (not paired)', 'compact/src/compact.ts', T.compact,

@@ -35,6 +35,7 @@ describe('limits', () => {
       maxQueryFiles: 20_000, maxLeaves: 32, maxCardinalitySeries: 1_000_000, maxCardinalityPairs: 400_000, cardinalitySplitAboveSeries: 50_000,
       maxMetadataSeries: 200_000,
       maxSpans: 40_000, maxLogRows: 60_000, maxTraceSeries: 10_000, maxTracePoints: 11_000,
+      maxTailReadParts: 16,
     })
   })
 

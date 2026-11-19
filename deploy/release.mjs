@@ -35,19 +35,40 @@
 //   the version it just deployed) only when that version does not carry them, value on stdin;
 //   phase 2 promotes the keyed version. Replaced only when asked (--rotate-secret,
 //   VIZ_ROTATE_SECRETS); a secret that is set now but missing from the upload is a refusal.
+//   Every version a run uploads carries VIZ_DEPLOY_RUN, unique to the run; the keyed version must
+//   carry this run's, or the key went on another run's upload and nothing is promoted (m-11).
+// - Formats (contracts/COMPATIBILITY.md §6, D69): the record and every version (VIZ_FORMATS) name
+//   the version of each format a Worker writes and the versions it reads (lib/formats.mjs). A
+//   release that writes a version the serving release does not read is FORWARD-ONLY; a rollback
+//   refuses when any version newer than the target's wrote a version the target does not read.
+// - Rollback floors a writer's switch raises (lib/floors.mjs, D64, D69): a release that sets
+//   INGEST_SIGNALS on viz-ingest is refused unless its viz-publisher and the one serving now read
+//   the span and log tables (publisher.Publisher schema 4 or later); once any kept viz-ingest
+//   version set it, a release or a rollback that would leave a publisher below that is refused.
+import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { currentDeployment, listScripts, listSecrets, listVersions, versionInfo } from './lib/cf.mjs'
-import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, targetName } from './lib/common.mjs'
+import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJsonc, stagedName, targetName } from './lib/common.mjs'
+import { floorDeployProblems, floorRollbackProblems, floorRules } from './lib/floors.mjs'
+import { formatsMap, formatsOfVersion, readsOf } from './lib/formats.mjs'
 import { schemasOfVersion } from './lib/schemas.mjs'
-import { ROTATE_ENV, SecretRefused, ensureSecrets, parseRotate, planSecrets, rotateProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
+import { ROTATE_ENV, RUN_VAR, SecretRefused, ensureSecrets, parseRotate, planSecrets, rotateProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
 import { versionIdFrom, wrangler } from './lib/wrangler.mjs'
 
 export const EXIT_REFUSED = 3
 
 /** What lib/secrets.mjs needs from wrangler and the Cloudflare API. */
 const SECRET_API = { wrangler, versionInfo, listVersions, listSecrets }
+/** What lib/floors.mjs reads from the Cloudflare API. */
+const FLOOR_API = { versionInfo, listVersions }
+
+/** deploy/workers.json, as release.mjs reads it at deploy and rollback time. */
+const loadWorkersPlan = () => JSON.parse(readFileSync(join(DEPLOY_DIR, 'workers.json'), 'utf8'))
+
+/** A value unique to one run of `release.mjs deploy` (m-11): every version it uploads carries it as VIZ_DEPLOY_RUN. */
+export const newRunId = () => `${process.env.GITHUB_RUN_ID ? `gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}${randomUUID()}`
 
 export function loadManifest(stage) {
   const file = join(GENERATED_DIR, targetName(stage), 'manifest.json')

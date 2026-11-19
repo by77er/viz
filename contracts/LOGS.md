@@ -128,7 +128,7 @@ The mapping from a row:
 - **Partitioning and keys**: one tenant and one UTC day (of `ts`) per file, with the object
   keys and levels of `TABLES.md` and table name `logs`. Hour-level clustering comes from
   compaction levels as for metrics (research 04 suggests hour partitions for large tenants).
-- **Compaction** (built 2026-11-19, `compact/`, design/DECISIONS.md D30): the files of one day
+- **Compaction** (built 2026-11-19, `compact/`, design/DECISIONS.md D30 and D68): the files of one day
   are merged as metric files are (level 1 per open hour bucket, `L1-h{HH}`; level 2 per closed
   day, `L2-d`; `inputs16` over the input keys; inputs in ascending precedence; the same
   per-step limits). Rows equal on the row key are one row, the input of higher precedence

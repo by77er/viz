@@ -1,0 +1,52 @@
+# Run 3, the full desktop scenario, v8 as handed off (before) against the final tree (after)
+BEFORE: http://127.0.0.1:8901/fixture/index.html
+8 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 2.0 to 4.1 (median 3.2) on 4 cores; at the end 3.5 4.2 6.3. Calibration task 298 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 23 ms | 20 ms | 28 ms | 8 | 3.1 (2.0 to 4.2) | within |
+| Typing in the query editor | 50 ms | 17 ms | 15 ms | 35 ms | 8 | 3.2 (2.0 to 4.6) | within |
+| Crosshair, 3 series | 50 ms | 28 ms | 24 ms | 34 ms | 8 | 3.2 (2.0 to 4.6) | within |
+| Crosshair, 36 series | 50 ms | 42 ms | 35 ms | 46 ms | 8 | 3.2 (2.0 to 4.6) | within |
+| Crosshair, 200 series | 50 ms | 35 ms | 30 ms | 51 ms | 8 | 3.2 (2.0 to 4.6) | within |
+| Legend row toggle, 36 series | 100 ms | 89 ms | 71 ms | 101 ms | 8 | 3.2 (2.0 to 4.6) | within |
+| Legend row toggle, 200 series | 100 ms | 66 ms | 52 ms | 85 ms | 8 | 3.2 (2.0 to 4.6) | within |
+| One panel to table, 36 series | 100 ms | 69 ms | 61 ms | 71 ms | 8 | 3.2 (2.0 to 4.5) | within |
+| One panel to chart, 36 series | 100 ms | 49 ms | 46 ms | 66 ms | 8 | 3.2 (2.0 to 4.5) | within |
+| One panel to table, 200 series | 100 ms | 79 ms | 65 ms | 105 ms | 8 | 3.2 (2.0 to 4.5) | within |
+| Open a menu (Share…) | 100 ms | 43 ms | 38 ms | 46 ms | 8 | 3.2 (2.0 to 4.5) | within |
+| Change theme (to dark) | 100 ms | 128 ms | 122 ms | 158 ms | 8 | 3.2 (2.0 to 4.5) | **OVER** |
+| Change theme: transitions still running when it is drawn | 0 | 93 | 93 | 93 | 8 | 3.2 (2.0 to 4.5) | **OVER** |
+| Run a query: request sent and waiting state shown | 100 ms | 44 ms | 35 ms | 64 ms | 8 | 3.2 (2.0 to 4.5) | within |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | 40 ms | 39 ms | 79 ms | 8 | 3.3 (2.0 to 4.5) | within |
+| Response to paint, 36 series | 100 ms | 30 ms | 18 ms | 54 ms | 8 | 3.3 (2.4 to 4.5) | within |
+| Response to paint, 200 series | 100 ms | 30 ms | 29 ms | 35 ms | 8 | 3.3 (2.4 to 4.5) | within |
+| Layout shift, load and run | 0.05 | 0.0004 | 0.0004 | 0.0004 | 8 | 3.3 (2.4 to 4.5) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0002 | 0.0002 | 0.0002 | 8 | 3.2 (2.0 to 4.1) | within |
+| Worst interaction (Event Timing) | 200 ms | 144 ms | 144 ms | 168 ms | 8 | 3.3 (2.4 to 4.5) | within |
+AFTER: http://127.0.0.1:8900/fixture/index.html
+8 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 2.4 to 4.5 (median 3.3) on 4 cores; at the end 3.5 4.2 6.3. Calibration task 298 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 24 ms | 14 ms | 45 ms | 8 | 3.3 (2.6 to 4.5) | within |
+| Typing in the query editor | 50 ms | 16 ms | 16 ms | 19 ms | 8 | 3.3 (2.6 to 4.3) | within |
+| Crosshair, 3 series | 50 ms | 30 ms | 26 ms | 34 ms | 8 | 3.3 (2.6 to 4.3) | within |
+| Crosshair, 36 series | 50 ms | 38 ms | 33 ms | 57 ms | 8 | 3.3 (2.5 to 4.3) | within |
+| Crosshair, 200 series | 50 ms | 35 ms | 34 ms | 36 ms | 8 | 3.3 (2.5 to 4.3) | within |
+| Legend row toggle, 36 series | 100 ms | 62 ms | 56 ms | 73 ms | 8 | 3.3 (2.5 to 4.3) | within |
+| Legend row toggle, 200 series | 100 ms | 50 ms | 49 ms | 55 ms | 8 | 3.2 (2.5 to 4.3) | within |
+| One panel to table, 36 series | 100 ms | 53 ms | 51 ms | 77 ms | 8 | 3.2 (2.5 to 4.3) | within |
+| One panel to chart, 36 series | 100 ms | 39 ms | 32 ms | 47 ms | 8 | 3.2 (2.5 to 4.3) | within |
+| One panel to table, 200 series | 100 ms | 52 ms | 41 ms | 70 ms | 8 | 3.2 (2.5 to 4.3) | within |
+| Open a menu (Share…) | 100 ms | 22 ms | 17 ms | 29 ms | 8 | 3.2 (2.5 to 4.3) | within |
+| Change theme (to dark) | 100 ms | 72 ms | 69 ms | 109 ms | 8 | 3.2 (2.5 to 4.3) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 8 | 3.2 (2.5 to 4.3) | within |
+| Run a query: request sent and waiting state shown | 100 ms | 27 ms | 25 ms | 31 ms | 8 | 3.2 (2.5 to 4.3) | within |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | 30 ms | 26 ms | 43 ms | 8 | 3.2 (2.5 to 4.3) | within |
+| Response to paint, 36 series | 100 ms | 26 ms | 18 ms | 35 ms | 8 | 3.3 (2.5 to 4.3) | within |
+| Response to paint, 200 series | 100 ms | 32 ms | 24 ms | 53 ms | 8 | 3.3 (2.9 to 4.1) | within |
+| Layout shift, load and run | 0.05 | 0.0004 | 0.0004 | 0.0004 | 8 | 3.3 (2.9 to 4.1) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0002 | 0.0002 | 0.0002 | 8 | 3.3 (2.4 to 4.5) | within |
+| Worst interaction (Event Timing) | 200 ms | 104 ms | 88 ms | 160 ms | 8 | 3.3 (2.9 to 4.1) | within |
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).

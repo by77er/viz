@@ -128,12 +128,12 @@ New modules; the metrics code and its outputs are untouched (the golden files of
 - **Spans and logs, stage 2**: a query-path reader in this crate (one exists since 2026-11-19 in
   `engine/wasm-query/src/sigfiles.rs`: row groups chosen from the index fragments, decoded through
   the record API row group by row group, tail batches merged in; column readers with page index
-  and bloom filters are not built), compaction and merge of
-  `spans`, `trace_index` and `logs` files (including re-aggregating `trace_index` from
-  de-duplicated spans), the nested-set columns, per-tenant promotion, the token filter's
-  builder and reader (format in `contracts/LOGS.md` §6), a WASM binding for `encode_spans` /
-  `encode_logs`, and zstd. The readers here (`read_*`) use the record API and hold a whole
-  file's rows.
+  and bloom filters are not built), re-aggregating `trace_index` from de-duplicated spans
+  (compaction merges fragments; D68), the nested-set columns, per-tenant promotion, a query that
+  reads the token filter (the reader is here, `tokens::TokenFilter`; no query path calls it), and
+  zstd. The readers here (`read_*`) use the record API and hold a whole file's rows.
+- **Compaction merges are CPU-bound and row-at-a-time** (the record API, about 5 MB/s of spans and
+  9 MB/s of logs natively): a column-at-a-time merge was not built.
 
 ## How it was verified
 

@@ -21,9 +21,14 @@
 //   node run.mjs analytics --tree T --since ISO --until ISO
 //                                                  Workers and Durable Object invocations of viz-s9-control (GraphQL)
 //   node run.mjs leftovers --tree T                anything named viz-s9-… that is still on the account
+//   node run.mjs lag --tree T [--trials N]         after the experiment: `wrangler versions secret put` of a
+//                                                  throwaway secret S9_LAG_PROBE (random value on stdin, never
+//                                                  shown), then the version API polled every 100 ms until the new
+//                                                  version lists it: how long release.mjs's check after a put
+//                                                  would have to wait (R1's first run failed on it)
 //
 // No secret is ever read, printed or written by this script. The OAuth key exists only inside
-// release.mjs and wrangler. Which key serves is judged by whether a client id registered (signed)
+// release.mjs and wrangler (S9_LAG_PROBE's value only in this process and wrangler's stdin). Which key serves is judged by whether a client id registered (signed)
 // under an earlier release still verifies (/oauth/authorize answers 200) or not (400 "not
 // registered"). The API token is read from the environment by the worktree's lib/cf.mjs and by
 // wrangler, never placed on a command line.
@@ -322,7 +327,54 @@ async function leftovers() {
   console.log(JSON.stringify(await left(STAGE), null, 2))
 }
 
-const cmds = { inventory, kv, configure, 'deploy-r0': deployR0, versions, probe, analytics, leftovers }
+async function lag() {
+  const cf = await mod('lib/cf.mjs')
+  const { secretNamesOf } = await mod('lib/secrets.mjs')
+  const { SECRET_RUN_ENV } = await mod('lib/wrangler.mjs')
+  const { randomBytes } = await import('node:crypto')
+  const bin = join(DEPLOY, 'node_modules', '.bin', 'wrangler')
+  const trials = Number(A.trials ?? 3)
+  const out = []
+  for (let t = 1; t <= trials; t++) {
+    const t0 = Date.now()
+    const text = await new Promise((res, rej) => {
+      const c = spawn(bin, ['versions', 'secret', 'put', 'S9_LAG_PROBE', '--name', WORKER, '--message', `s9 lag probe ${t}`], {
+        cwd: DEPLOY,
+        env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: 'true', FORCE_COLOR: '0', ...SECRET_RUN_ENV },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      let s = ''
+      c.stdout.on('data', (d) => (s += d))
+      c.stderr.on('data', (d) => (s += d))
+      c.on('error', rej)
+      c.on('close', (code) => (code === 0 ? res(s) : rej(new Error(`wrangler versions secret put exited ${code}`))))
+      c.stdin.end(randomBytes(32).toString('base64url'))
+    })
+    const putMs = Date.now() - t0
+    const m = /Created version ([0-9a-f-]{36})/i.exec(text)
+    if (!m) throw new Error('no version id in wrangler output')
+    const id = m[1]
+    const t1 = Date.now()
+    const polls = []
+    for (;;) {
+      const j = await cf.cf('GET', `/workers/scripts/${WORKER}/versions/${id}`, undefined, { okStatuses: [404] })
+      const names = j.status === 404 ? null : secretNamesOf(j.result)
+      polls.push({ ms: Date.now() - t1, status: j.status, bindings: j.result?.resources?.bindings?.length ?? null, lists: names?.includes('S9_LAG_PROBE') ?? false })
+      if (polls.at(-1).lists || Date.now() - t1 > 30000) break
+      await sleep(100)
+    }
+    const first = polls[0]
+    const ok = polls.find((p) => p.lists)
+    const r = { trial: t, version: id, putMs, polls: polls.length, first, listedAfterMs: ok?.ms ?? null, statuses: [...new Set(polls.map((p) => `${p.status}${p.status === 200 ? (p.lists ? ' listed' : ` not listed (${p.bindings} bindings)`) : ''}`))] }
+    console.error(JSON.stringify(r))
+    out.push(r)
+    await sleep(2000)
+  }
+  console.log(JSON.stringify(out, null, 2))
+  if (A.out) writeFileSync(A.out, JSON.stringify(out, null, 2) + '\n')
+}
+
+const cmds = { inventory, kv, configure, 'deploy-r0': deployR0, versions, probe, analytics, leftovers, lag }
 const cmd = cmds[A._[0]]
 if (!cmd) {
   console.error(`usage: run.mjs ${Object.keys(cmds).join('|')} --tree <worktree> …`)

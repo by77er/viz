@@ -9,7 +9,8 @@ larger, sorted files (`design/DESIGN.md` §5.2). Stateless; the ledger is the on
 | `src/formats.ts` | `FORMATS`: what this component writes that another release reads, with its version (contracts/COMPATIBILITY.md §3.1) |
 | `src/index.ts` | `Compact` entrypoint (RPC `compactTenant`), `CompactWorkflow` (the same step function as a Workflow), one engine per isolate |
 | `test/compact.test.ts` | 18 tests in workerd against the real `Shard`, `Ledger`, flush and a simulated R2, 4 of them the interleavings of review R-2 and the protocol model's F13/F14 |
-| `test/golden.test.ts`, `test/golden/` | 5 tests: golden files of the output key and the inputs record, and the record's reader |
+| `test/signals.test.ts` | 10 tests: compaction of `spans`, `trace_index` and `logs` (open hour, closed day, an engine without the merge) and D30's cases for those tables |
+| `test/golden.test.ts`, `test/golden/` | 6 tests: golden files of the output key (metric and signal shapes) and the inputs record, and the record's reader (a spans output's inputs are of its own hour) |
 | `test/workflow.test.ts` | 1 test: the Workflow run under `introspectWorkflowInstance` |
 
 Bindings: `LEDGER`, `BUCKET`, `CELL`; `COMPACT` (the Workflow). `SHARD` only for tests.
@@ -101,6 +102,35 @@ queue retry gives the same guarantee for an idempotent step and keeps one mechan
 compaction, retention and deletion. The Workflow is the wrapper to use for a backlog too
 large for queue invocations; nothing starts it yet.
 
+## Spans, trace_index and logs (2026-11-19, design/DECISIONS.md D68)
+
+When the metric tables have nothing to merge, `compactStep` looks at `spans`, `trace_index` and
+`logs` in turn (`SIGNAL_TABLES`), each table on its own: one `ledger.plan`, `chooseJob` over
+one-file units (`signalUnit`), and the metric step's sequence for the job it finds (`signalStep`):
+GET the inputs (six at a time), `engine.mergeSignalFiles(table, inputs in ascending precedence)`
+(engine/wasm ABI 4), the same `row_count` refusal (and for `spans` the output's hour must be the
+job's), the inputs record, `putFile` with `If-None-Match: *` (adopting an identical object), the
+step deadline, ONE `replace({ remove: inputs, add: [output] })`, and the same answers (`merged`,
+`conflict` with nothing deleted, `invalid`, a thrown unknown answer). `JobSummary.table` names
+the table. An engine without `mergeSignalFiles` (a plain `contracts/engine.ts` `Engine`) gets
+the metric behaviour only: the span and log tables are left as they are.
+
+- **`spans` never cross an hour.** A spans unit carries its hour partition (`Unit.hour`, from the
+  key's `hour=HH/`). An open hour's bucket is that hour; a closed day's candidates are grouped by
+  hour, so a closed day's spans become one level-2 file per hour. The output key is
+  `…/day=D/hour=HH/L{1|2}-hHH-{inputs16}-{hash8}.parquet` (`compactedKey` takes the hour for
+  `spans` at both levels and refuses a spans key without it).
+- **`trace_index` and `logs`** merge per day as metrics do (`L1-hHH` for an open hour's bucket,
+  clamped to 23 for a trace_index file whose newest end is in the next day; `L2-d`).
+- **Nothing pairs them.** A unit is one file and a merge's inputs and output are of one table;
+  `inputs16` and the inputs record list that table's keys only.
+- **The inputs record** keeps its format (`r2.compaction-inputs` v1). `decodeCompactionInputs`,
+  which the janitor's orphan sweep calls, now reads span and log outputs: a spans output's inputs
+  must lie under its own `…/day=D/hour=HH/` prefix, a trace_index or logs output's under its own
+  table and day, a metric output's under the two metric tables of its day, each directly (no
+  deeper `/`). A janitor of the release before reads such an output as `unknown_inputs` and keeps
+  it (never deletes it): safe, and why no version changed.
+
 ## The index fragment of an output (2026-11-19)
 
 Outputs carry the fragment `engine.mergeFiles` writes (`engine/storage`), which since
@@ -160,7 +190,12 @@ settles it is a merge run in a deployed Worker (`design/VERIFICATION.md` §4).
 
 - **A Container** for merges over the Worker budget, and therefore 128 MB day files.
 - **Streaming merge.** Inputs and output are whole in memory.
-- **Rollups**, index-fragment consolidation, and anything for tables other than metrics.
+- **Rollups** and index-fragment consolidation. (Spans, trace_index and logs are compacted since
+  2026-11-19, D68; re-aggregating `trace_index` from de-duplicated spans is not built: merged
+  fragments keep counting a span retried into two units twice, as query-time merging does.)
+- **A longer close for span and log days.** Their accept window is 24 h (edge's default), the
+  metric one 1 h, but the policy closes every day 2 h after it ends: late span and log files for
+  a closed day become small level-2 files (merged with the day's other files under 4 MB).
 - **A creation time on files**, so "older than M minutes" is by data time.
 - **Starting the Workflow** from the stack; it is built and tested, not wired.
 - **A Parquet format marker** (`viz.format`, design/UPGRADES.md §7 item 7) in the outputs:
@@ -173,9 +208,29 @@ settles it is a merge run in a deployed Worker (`design/VERIFICATION.md` §4).
 
 ```
 (cd ../engine/wasm && ./build.sh)
-npm ci && npx vitest run --maxWorkers=2    # 24 tests in workerd, 3 files
+npm ci && npx vitest run --maxWorkers=2    # 34 tests in workerd, 4 files
 npx tsc --noEmit                           # clean
 ```
+
+**Spans and logs (2026-11-19).** `npx vitest run --maxWorkers=2`: **34 of 34** (10 new in
+`test/signals.test.ts`, 1 new and 1 extended in `test/golden.test.ts`); `tsc --noEmit` clean; the
+janitor's suite (31 of 31, it imports `decodeCompactionInputs`) and flush's (59 of 59, they share
+the engine module) pass unchanged. Files are read back with **hyparquet**, which shares no code
+with viz:
+
+| Test | What it asserts |
+|---|---|
+| open hour: spans, then trace_index, then logs | the step takes spans first (metric tables empty): one level-1 file under `hour=12/` named `L1-h12-…`, its content hash in the key, its inputs record decoding to the job's inputs, the ledger listing it alone; then trace_index (trace 99's four fragments one row of four spans), then idle; a reader sees the same spans (the rewritten root with its later name), traces and log rows (the repeated row once, the later severity) before and after; the logs output's `tok` points at `VZT1` and equals the footer's `viz.token_filter` |
+| closed day | spans over three hours become three level-2 files, `hour=HH/L2-hHH-…`; trace_index and logs one `L2-d` file each; the reader's rows never change |
+| an engine without the merge | idle; the four spans files stay |
+| D30, spans and logs: crash after PUT | the output exists, unlisted, rows unchanged; the retry answers `exists` with a sweep 25 h on run between its PUT and its replace (review R-2): nothing deleted, one level-1 object, rows unchanged |
+| D30, spans and logs: three steps at once | every result `merged` or `conflict`, one output object, rows unchanged |
+| D30, spans and logs: retention during a step | an old day's merge; retention expires the day (spans with trace_index, logs) after the PUT: `conflict`, the output left in R2, the expired day not back; the sweep keeps the output while the expired inputs exist and deletes exactly it once they are purged; nothing of that day left |
+| a spans output's record under its hour | the record names that hour's files; the same record with another hour's keys is refused; the leftover is kept a year on while its inputs are live |
+| golden | the key shapes of spans (both levels, under the hour), trace_index and logs outputs are pinned with the metric ones (`key.compaction-output.v1.json`, fields added; the metric fields unchanged); a spans record is refused for another hour, another table, metric keys; a logs record read back; a logs record under a spans key refused |
+
+**Mutants** (`stack/scripts/mutants.mjs signals`, on a copy of the tree in a scratch directory):
+see "Mutants of the span and log compaction" below.
 
 Last run 2026-11-19 against the real tree, with the ledger draining its log asynchronously
 (`contracts/LEDGER-LOG.md`): 24 of 24, tsc clean. The suite pins `LEDGER_DRAIN_DELAY_MS` to 60 s
@@ -209,6 +264,14 @@ The property test for I8 and the soak are in `stack/` (`test/compaction.property
 `test/soak.test.ts`). Mutants: `stack/scripts/mutants.mjs compaction` and `review` (run on a
 copy, never in the checkout); results in `stack/README.md`.
 
+## Contract issues
+
+- **`contracts/engine.ts` has no signal merge.** The merge is `SignalMergeEngine.mergeSignalFiles`,
+  declared next to the binding (`engine/wasm/js/index.ts`), not in the contract, which this
+  change could not edit. `compactStep` keeps taking a contract `Engine` and checks for the method
+  at run time, so `stack/src/maintain.ts` (typed against the contract) is unchanged. The
+  interface belongs in `contracts/engine.ts` beside `SignalFlushEngine`.
+
 ## Formats (contracts/COMPATIBILITY.md)
 
 `src/formats.ts` lists what compaction writes for another release: `key.compaction-output` v1
@@ -219,6 +282,14 @@ an independent reader. A reader refuses a record whose `v` it does not know by k
 object (§3.2).
 
 ## Known risks
+
+- **Memory of a span or log step at the budget** is close to an isolate's: the WASM peak is 62 MB
+  (spans) and 81 MB (logs whose lines carry unique ids, 16 MB in, 22 MB out), and the JS side
+  holds the inputs as fetched and the copied-out output besides, about 119 MB for that logs step
+  (modelled; engine/wasm/README.md). Not measured on Cloudflare.
+- **A span id re-sent with a start in another hour** lies in two hours' files, which no merge
+  joins; after a merge of one hour, precedence can order the older copy above the newer one
+  (contracts/TRACES.md, "Compaction"). A retried OTLP request carries the same start.
 
 - **Hours left unmerged.** The precedence rule (no merge jumps over an overlapping file)
   can stop an open hour's merges while a segment of the neighbouring hour that straddles

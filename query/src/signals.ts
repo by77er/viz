@@ -131,7 +131,9 @@ async function readSignalTail(
 ): Promise<Uint8Array[] | null> {
   const shards = await signalShards(c.env, c.tenant, signal, watermarks)
   c.cost.shardsAsked = shards.length
-  // No filter: the shard's filter reads metric batches only (shard/src/tail.ts); paged under the budget.
+  // No filter but the signal (`readTails` adds it): the time and series fields select metric rows
+  // only (shard/src/tail.ts). Paged under ONE budget over the signal's shards, each page checked
+  // against the query's deadline (`readShared`, review of D54 M-2 and m-7).
   const t = await readTails(c, shards, watermarks, rf.known, rf.refused, {}, c.limits.maxFetchBytes - lakeBytes, signalByte(signal))
   if (t.again) return null
   if (t.over) throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + t.atLeast, !t.exact)

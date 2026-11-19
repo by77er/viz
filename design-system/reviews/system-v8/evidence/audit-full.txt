@@ -1,3 +1,4 @@
+# node tools/audit.mjs on the final tree (after the theme work)
 56 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
 System pages: 0 finding(s)
 Flow screens (read only, reported): 122 finding(s)
@@ -115,8 +116,6 @@ Flow screens (read only, reported): 122 finding(s)
     press         400 coarse      dark: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
     press         400 coarse      dark: a finger held on button.vz-tree-toggle "" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
     press         400 coarse      dark: a finger held on button.vz-series "p99" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)  (and at 400 coarse)
-real	6m16.875s
-user	0m31.025s
-sys	0m7.938s
-
-load average before: 4.89 4.66 4.08 4/208 7824; after: 3.53 4.18 4.04 2/184 20240
+real	6m58.461s
+user	0m31.813s
+sys	0m6.944s

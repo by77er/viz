@@ -303,12 +303,12 @@ and time.
 | `metric_rollup_5m`, `_1h` | series per window | same | count, sum, min, max, last, reset-aware increase |
 | `spans` | span | `service_name` (nulls first), `span_name`, `start_unix_nano` | hour partitions (keys `…/day=D/hour=HH/`); promoted attributes + typed residual maps; bloom filter on `trace_id` (`contracts/TRACES.md`; written by flush through `engine/wasm`, listed by the ledger: stage 2) |
 | `trace_index` | trace per flush unit (a fragment), files per day | `trace_id` | root, start, end, counts, and the **hour partitions** that hold its spans (logical references survive compaction); fragments merge at read and compaction |
-| `logs` | record | `service_name, stream_id, ts, line, metadata` | day partitions; `stream_id` hashes the stream labels as `series_id` does; labels as canonical JSON per row (dictionary-encoded), structured metadata, OTLP severity and trace ids; OTLP stream labels from a fixed list of resource attributes (D58); an advisory per-file token filter written at compaction (`contracts/LOGS.md`, format settled, not built) |
+| `logs` | record | `service_name, stream_id, ts, line, metadata` | day partitions; `stream_id` hashes the stream labels as `series_id` does; labels as canonical JSON per row (dictionary-encoded), structured metadata, OTLP severity and trace ids; OTLP stream labels from a fixed list of resource attributes (D58); an advisory per-file token filter written at compaction, inside the Parquet object between the last row group and the footer (`contracts/LOGS.md` §6, D65; built, not yet read by query) |
 
 The span and log tables are written and listed as built on the write side (stage 2, behind
 `INGEST_SIGNALS`): flush, the ledger, retention and deletion; `query` reads them behind
-`QUERY_SIGNALS` (D62, §6.4), and both halves are joined through the gateway (stage 3). Not yet:
-their compaction. The publisher publishes them as Iceberg tables of their own (D67, §5.3;
+`QUERY_SIGNALS` (D62, §6.4), and both halves are joined through the gateway (stage 3), and they
+are compacted (D68, §5.2). The publisher publishes them as Iceberg tables of their own (D67, §5.3;
 before it, D64's release read them without publishing them): `INGEST_SIGNALS` may go on in a
 deployment with a publisher once a publisher release that reads them (D64's or later) is the
 oldest one a rollback of viz-publisher can reach (the rollout rule in D64).
@@ -331,6 +331,13 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   precedence wins: the ledger ranks a flush file by when it admitted it and gives a merge's
   output its inputs' range, refusing a merge that would jump over an overlapping file
   (D22).
+- **Spans, `trace_index` and logs** (D68) are compacted by the same step and policy, each table
+  on its own, after the metric tables: spans per hour and never across one (a closed day's spans
+  become one file per hour, keyed under the hour), `trace_index` and logs per day. Spans and log
+  rows keep the later input's version of a row key; a trace's `trace_index` rows merge into one.
+  Every logs output carries its token filter (D65). Those merges stream their inputs and cut row
+  groups at 2 MiB of data, so the largest step peaks at 62 MB (spans) and 81 MB (logs) of WASM
+  memory (measured locally).
 - **When it runs (as built).** Compaction, retention, deletion and the orphan sweep are one
   per-tenant maintenance run, consumed from a queue. A flush that changed something
   (admitted a unit, wrote an object, or saw a segment recorded) asks for one; so does the
@@ -514,7 +521,8 @@ another signal refuses the query, never misread).
   `contracts/TRACES.md` and written by `engine/storage`; flush writes them (stage 2, D63).
 - **Logs:** row groups are chosen from each file's stream list and times; rows of streams no
   selector matches, or outside every selector's range, are dropped before they are held. One
-  place, bounded by `maxLogRows`; the per-file token filter (no builder yet), split execution
+  place, bounded by `maxLogRows`; using the per-file token filter (compaction writes it, D65; no
+  query reads it yet), split execution
   and partial results with a cursor are not built. Labels and series come from the fragments'
   stream lists without reading data where the lists exist.
 
