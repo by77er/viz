@@ -2223,3 +2223,61 @@ reads are then refused by the header check, not misread.
 every shard running answers the signal filter (then tails are chosen by it and the name rule goes);
 `trace_index` re-aggregation at compaction removes the over-count (then (a) for search over
 compacted data); or projection by the plan's columns cuts the memory per span (then larger caps).
+
+## D63. Span and log files enter the ledger as metric files do: one unit per segment, millisecond bounds, a `spans` key under its hour; `Table` keeps its meaning and the ledger's tables are `LedgerTable`; a tail read chooses batches by signal and returns span and log batches whole
+
+(Written 2026-11-19, stage 2 of traces and logs, the write side. The read side is D62.)
+
+**Decision.** Flush chooses the encoder by the batches' signal byte and reports a span or log
+segment as ONE unit, exactly as a metric segment: `spans` files (one per hour of start time,
+keyed `…/day=D/hour=HH/`) with `trace_index` files (one per day), or `logs` files (one per day).
+The ledger lists them with `minTs`/`maxTs` in milliseconds, the floor of the files' nanosecond
+bounds, so plans, precedence, `replace` and `expire` are unchanged; it admits a `spans` key only
+under the hour its `[minTs, maxTs]` lies in. In `contracts/ledger.ts` the table names a ledger
+lists are a new union, `LedgerTable`; `Table` stays the metric pair (and
+`LedgerChange.removedFiles` stays typed `Table`, with a note) until the publisher reads the new
+tables. A filtered tail read takes `signals` (the header byte); the time range and series fields
+select metric rows only, and a span or log batch it admits is returned whole. Retention reads
+`trace_days` and `log_days` from the record control already writes, 30 days each when absent,
+and expires them in ledger requests of their own after the metric one.
+
+**Alternatives.** Time: (a) nanoseconds in `FileEntry` as decimal strings or a second pair of
+fields. Units: (b) one unit per hour of a span segment. Types: (c) widen `Table` in place;
+(d) make `FileEntry` and `LedgerChange` generic over the table. Tails: (e) filter span and log
+rows by time inside the shard; (f) a `signals` field only, other fields refusing span batches.
+Retention: (g) traces and logs inherit `metric_samples_days` when the record does not name them.
+
+**Why.** (a) A Unix nanosecond does not fit a JS number, and every reader of the ledger (query's
+planner, compaction's pairing, the publisher) would need a second time model; the floor is exact
+for overlap (a millisecond range `[a, b]` covers nanoseconds `[a·10⁶, b·10⁶ + 999,999]`), and
+`query/` had already planned in milliseconds (`msRange`). (b) would break "everything one sealed
+segment produced is admitted atomically" and the watermark's contiguity for no gain: a unit's
+files are few (at most 26 for a segment across the 24 h accept window). (c) is what the change
+means, but the publisher maps every `Table` (`Record<Table, TableDef>`), so widening it failed
+the publisher's typecheck and, through their imports of its sources, compact's and the janitor's
+(tried); the publisher is not this change's to edit. `LedgerTable` fails none, and
+`removedFiles` is the one field the publisher's log reader pushes into its own `Table`-typed
+list. (d) carries the same lie as the note, with more
+machinery. (e) means rewriting span and log batches (variable-length columns, entry tables) on
+the shard's thread for a filter the reader applies anyway; whole batches keep the shard opaque to
+them, as it is on append. (f) would make an older caller's metric filter throw on a span batch,
+as before: keeping nothing is the answer a series filter gives a batch with no series. (g) ties
+the volume a tenant keeps of its largest signals to a number chosen for metrics (a tenant keeping
+metrics for 400 days would keep logs as long); control already writes separate fields.
+
+**Measured** (here, workerd, load average 8; `flush/README.md`, "Spans and logs"): a ~3.3 MB
+segment flushes in 134–388 ms (spans) and 86–218 ms (logs); 94 bytes in R2 per span (with its
+trace_index share) and 158 per log record for the test workloads. End to end through edge and
+three OTLP corpora: every row and every TraceQL (60) and LogQL (36) answer identical to the
+in-memory engines' (`stack/README.md`, "Traces and logs end to end").
+
+**Cost of it.** `removedFiles`' static type is narrower than what the ledger writes until the
+publisher is updated (readers check it at run time, as the publisher does). A span or log read
+gets every batch of its signal above the watermark, whatever its time range. `INGEST_SIGNALS`
+must stay off in any deployment with a publisher until the publisher reads these tables (it
+stops a tenant at the first change naming one).
+
+**Would change if.** The publisher reads the span and log tables (then `removedFiles` and
+`Table` are retyped, and `Table` may become the full union); span tails grow large enough that
+per-batch time bounds at append pay (then (e) at batch granularity); or tenants ask for traces
+and logs to follow their metric retention (then (g), or a control-side default).

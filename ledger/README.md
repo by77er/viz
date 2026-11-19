@@ -17,6 +17,8 @@ authority on what is visible. It implements `LedgerRpc`, `LedgerAdminRpc` and
 | `test/compat.test.ts` | 9 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8), including that the release before opens this storage |
 | `test/tombstone.test.ts`, `test/precedence.test.ts` | 8 and 5 tests |
 | `test/registration.test.ts` | 5 tests of registration before writes (D61): `logged` and `loggedIncarnation`, and a rollback to the release before and back on the same storage (review B-1) |
+| `test/signals.test.ts` | 4 tests: the span and log tables (stage 2) and the backoff fix of `drain()` |
+| `test/review-inflight.test.ts` | The adversarial review of D47's P-4 test (mutations while a checkpoint part's PUT is in flight), copied from the reviewer |
 | `bench/prereg/` | The release before D61, frozen: run on the ledger's own storage by `test/registration.test.ts` (a rollback), and as the older ledger of `shard/`'s skew tests |
 | `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`); checkpoints and rebuilds against the frozen release before checkpoints in parts (`bench/before/`, `44649de`; `checkpoint.bench.test.ts`, results in `bench/results/checkpoint.txt`); `rss.mjs` samples the processes' memory |
 
@@ -60,6 +62,25 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   ledger that cannot log while shards refuse its tenant's new streams (review m-1).
 - **`plan`.** Files of one table overlapping the range, in ascending precedence, with every
   watermark, the ledger incarnation and the version, read with no `await` in between.
+- **The span and log tables** (stage 2 of traces and logs, 2026-11-19; `contracts/ledger.ts`
+  `LedgerTable`). `spans`, `trace_index` and `logs` files are admitted, planned, replaced,
+  expired, tombstoned, logged, checkpointed and rebuilt exactly as metric files: nothing in the
+  storage or the log format changed, only the set of table names `fileProblem`, `plan` and
+  `expire` accept (`TABLES`), and the start-over-data check lists every table's prefix. Their
+  `minTs`/`maxTs` are milliseconds (the floor of the files' nanosecond bounds), so plans and
+  precedence work unchanged. Every key must lie directly under its tenant, table and day; a
+  `spans` key one level deeper, under `hour={HH}/`, where HH is the hour of `day` that the file's
+  `[minTs, maxTs]` lies in (`invalid` otherwise: no hour level, another hour, times across two
+  hours or outside the day). `expire({ tables: ['spans', 'trace_index'] })` removes a flush
+  unit's two tables in one change, each file by its own day. A ledger of the release before
+  replays such changes (its rebuild does not check table names) and answers `unknown table` to
+  a plan or expiry naming them.
+- **`drain()` ends the backoff** (2026-11-19): a drain asked for that succeeds clears the
+  failure count and the retry time, as one by the alarm or a commit always did, so the next
+  commits are logged at the usual delay instead of when the old backoff would have run out.
+  Before, a successful `drain()` left the backoff of earlier failures in place
+  (`stack/README.md`, "Known risks", which relied on it to force its regression test's timing;
+  that test now forces the backoff without an explicit drain).
 - **`replace`.** Swaps iff every input is live; otherwise `conflict` with the missing keys
   (or `blocking` keys, below). A retried swap that already happened is `ok`.
 - **`expire`.** `{ table }` or `{ tables }` (review R-5, a contract change): every named
@@ -246,6 +267,22 @@ files is modelled at 20–60 s on Cloudflare (20 s here; R2 reads of 272 parts f
 
 ## How it was verified
 
+**Stage 2 and the review items (2026-11-19).** `npx vitest run --maxWorkers=2`: see the last
+run below; `tsc --noEmit` clean, the frozen copies in `bench/` changed by type annotations only
+(`contracts/ledger.ts`'s `Table` is now the metric pair, `LedgerTable` every table).
+`test/signals.test.ts` (4): a unit of a traces stream (two `spans` files of two hours and a
+`trace_index` file) and one of a logs stream beside a metric unit: plans by millisecond ranges
+at the hour's edges, every stream's watermark, the log's `add_unit` changes naming their tables,
+and a rebuild from the log equal to the state before; twelve unacceptable keys `invalid`, the
+stream not registered by them (no hour level, another hour, hour 24, times across two hours or
+on another day, a level below the hour, another tenant's spans, trace_index and logs, a logs file
+under another table's prefix, a trace_index key with an hour, an unknown table); retention of
+spans with trace_index in one change and logs in another, by day, with tombstones of every table
+and `removedFiles` in the log; `drain()` after four failed drains: the next commit's alarm is at
+the usual delay and the background drain logs it within 2 s. `test/segments.test.ts` gained
+"the cap is 16 MiB unless LEDGER_STATE_MAX_BYTES says otherwise". `test/review-inflight.test.ts`
+is the reviewer's P-4 test, copied unchanged.
+
 ```
 npm install
 npx vitest run --maxWorkers=2     # 106 tests in workerd, 7 files
@@ -357,6 +394,15 @@ because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 te
 
 
 ## Mutation checks
+
+**Run of 2026-11-19, stage 2 of traces and logs and the drain fix**, each on a scratch copy of
+the tree (never this checkout), against `test/signals.test.ts`, **3 of 3 killed**:
+
+| Mutant | Killed by |
+|---|---|
+| a new table not tenant-scoped: the key prefix of `spans`, `trace_index` and `logs` files takes the tenant from the key instead of the ledger's own | "a spans key lies under the hour its times lie in; every key under the tenant, table and day; otherwise `invalid`" (another tenant's spans, trace_index and logs files admitted) |
+| a spans key accepted under whatever hour its key names | the same test (another hour, hour 24) |
+| `drain()` does not clear the backoff | "after failed drains and a healed log, an explicit drain lets the next commit be logged at the usual delay" (the commit's alarm stays at the old backoff's end) |
 
 `node scripts/mutants.mjs` on a copy of `contracts/` and `ledger/` in a scratch directory
 (the script refuses to run in the git checkout: AGENTS.md); each mutant against the test files

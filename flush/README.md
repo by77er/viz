@@ -6,10 +6,10 @@ that the tenant's ledger lists (`design/DESIGN.md` §4.3). It keeps no state.
 | File | Contents |
 |---|---|
 | `src/flush.ts` | `flushTenant(env, engine, tenant, shardName, opts?)`: the whole procedure, with every answer of the shard, the ledger and R2 handled |
-| `src/keys.ts` | `dataFileKey`: object keys exactly per `contracts/TABLES.md` |
+| `src/keys.ts` | `dataFileKey`: object keys exactly per `contracts/TABLES.md` (and the `hour=HH/` level of a `spans` key, `contracts/TRACES.md`) |
 | `src/index.ts` | The Worker: `Flush` entrypoint (RPC `flushTenant(tenant, shardName)`; `POST /flush`; `queue`), one engine per isolate |
 | `src/consumer.ts` | `consumeFlushBatch`: the flush queue's consumer; `consumeDeadLetters`, `listDeadLetters` |
-| `src/sweep.ts` | `sweepPending`: re-enqueue streams whose segments are still pending, found through KV markers, at most `maxShards` per sweep; `shardsFromPoolMaps`, `rotation` |
+| `src/sweep.ts` | `sweepPending`: re-enqueue streams whose segments are still pending, found through KV markers, at most `maxShards` per sweep; `shardsFromPoolMaps` (with the derived pools of the signals `INGEST_SIGNALS` enables), `rotation` |
 | `src/formats.ts` | `FORMATS` and `READS`: the formats flush writes and reads, by version (contracts/COMPATIBILITY.md §3.1) |
 | `test/flush.test.ts` | 21 tests in workerd against the real `Shard` and `Ledger` objects and a simulated R2, one of them the protocol model's F12 |
 | `test/consumer.test.ts` | 18 tests of the consumer, the dead-letter path, the sweep, and the review's R-11(b) and R-12 |
@@ -17,6 +17,8 @@ that the tenant's ledger lists (`design/DESIGN.md` §4.3). It keeps no state.
 | `test/helpers.ts` | Test fixtures shared with `compact/`, `janitor/` and `stack/`: `flushSettled`, ledger fault injection, an independent reader of the ledger's log |
 | `test/read.ts` | A reference read path ("what would a query see now?") used by these tests and by `stack/` |
 | `test/measure.test.ts` | Local timings (1 test) |
+| `test/signals.test.ts` | 8 tests of span and log segments (stage 2): units, keys, bytes, crashes, refusals, the full sweep |
+| `test/measure-signals.test.ts` | Local timings and bytes of span and log flushes (2 tests) |
 | `scripts/mutants.mjs` | Mutation check (run on a copy of the tree, never in the checkout) |
 
 Bindings: `SHARD`, `LEDGER` (Durable Object namespaces), `BUCKET` (R2), `CELL` (default `cell-0`).
@@ -36,13 +38,25 @@ For each pending segment of the tenant in that shard, in sequence order:
    its own name. Refused (`segment_incomplete`) if the shard no longer holds every batch of a
    segment it lists.
 2. `engine.encodeSegment` — one `metric_samples` and one `metric_series` file per UTC day.
+   For a segment of a span or log stream (stage 2 of traces and logs; the shards of
+   `{pool}/traces` and `{pool}/logs`), chosen by the batches' signal byte (offset 4):
+   `engine.encodeSpans` (one `spans` file per UTC hour of start time, then one `trace_index`
+   file per UTC day of the fragments' first start) or `engine.encodeLogs` (one `logs` file per
+   UTC day), `engine/wasm` ABI 3. A segment whose batches are not all of one signal flush knows
+   (1, 2, 3), an engine without the encoder (an older binding), or an encoder output of another
+   signal's table stops the run before any PUT: `unreadable_segment` (retried; nothing guessed).
+   The ledger's `minTs`/`maxTs` for these files are the floor in milliseconds of their
+   nanosecond bounds (`EncodedSignalFile`).
 3. For each file: SHA-256, then the key
    `{cell}/data/{table}/tenant={tenant}/day={day}/L0-{shard}-{incarnation}-{seqLo}-{seqHi}-{hash8}.parquet`
+   (a `spans` file one level deeper, `…/day={day}/hour={HH}/L0-…`; `dataKeyPrefix` in
+   `contracts/ledger.ts`; `dataFileKey` refuses an hour on any other table, or none on spans)
    and a `PUT` with `If-None-Match: *` (`onlyIf: { etagDoesNotMatch: '*' }`), sending the
    SHA-256 so R2 verifies the upload and keeps the digest. If the object exists it counts
    as written **only if its size and SHA-256 equal this file's** (R2's stored digest, or the
    object is read and hashed when it has none); otherwise the run stops with `object_conflict`.
-4. `ledger.addUnit` — **all files of the segment as one unit**.
+4. `ledger.addUnit` — **all files of the segment as one unit** (a span segment's `spans` and
+   `trace_index` files together; the unit and watermark rules are the metric ones).
 5. `ledger.loggedWatermarks()`.
 6. `shard.recorded(tenant, incarnation, logged)` with the **logged** watermark, never the
    committed one. If the log has not caught up the shard is told nothing new, the result
@@ -168,6 +182,10 @@ at the tail)**, plus a second, cheaper run about 5 s later to record it in the s
 segments of one run go in sequence, because each unit must extend the watermark.
 
 ## Not implemented
+
+- **Splitting a span segment by hour into several units**: one unit holds every hour's spans
+  file of a segment (up to 26 files for a segment spanning the 24 h accept window), well under
+  the ledger's 4,096 files a unit.
 
 - Flushing several streams of one queue batch concurrently.
 - The queue wiring in THIS package's `wrangler.jsonc`: the queue and its consumer are bound in `stack/`. The `queue` method here is the same code, not exercised by a real queue from this directory.
@@ -312,6 +330,61 @@ Against the end-to-end suite in `stack/` alone, 8 of the first 18 were killed (1
 16, 17, 18; not re-run since). The others need states that suite does not construct (a
 squatting object, a ledger behind or ahead, a recreated shard), which is what
 `test/flush.test.ts` is for.
+
+### Spans and logs (stage 2, 2026-11-19)
+
+```
+npx vitest run --maxWorkers=2 test/signals.test.ts                                  # 8 tests
+npx vitest run --maxWorkers=1 test/measure-signals.test.ts --reporter=verbose       # MEASURE lines
+```
+
+**Tests** (`test/signals.test.ts`, 8; batches from the engine's independent test encoder
+`engine/wasm/test/signal.ts`, files read back with **hyparquet**, which shares no code with
+viz): a span stream (`pool-…/traces/0`) with two sealed segments, rows across an hour and a day
+boundary: two units, the first of three `spans` files (hours 22, 23 of one day and 00 of the
+next) and two `trace_index` files, each key exactly the prescribed one built from the object's
+own bytes, each object's SHA-256 that of `engine.encodeSpans` over the segment's batches; every
+span read once by hyparquet; the ledger plans the hour's file for a millisecond range inside it
+and lists every trace_index file; the watermark at 4, nothing pending, a second run changes
+nothing. A crash after the PUTs and one after `addUnit` converge to the same objects and one
+unit. A log stream: one unit of two `logs` files across midnight, day keys (no hour level),
+the repeated batch stored once, rows and metadata as sent. Refused with `unreadable_segment`,
+nothing written or admitted and the segment still pending: spans and metrics in one segment,
+spans and logs in one segment, a signal flush does not know (9), and an engine without the span
+encoder (the same segment then flushes with the full engine). The full sweep lists
+`{pool}/traces/*` and `{pool}/logs/*` only for the signals `INGEST_SIGNALS` enables, and none
+for a base pool too long for derived names.
+
+**Last run (2026-11-19): 59 passed, 0 failed (7 files; 49 before, plus 8 and 2); `tsc --noEmit`
+clean.** The metric tests and the golden files of every format are unchanged and pass.
+
+**Mutants (2026-11-19)**, each on a scratch copy of the tree (never this checkout), against
+the test files named: a span segment flushed as metrics (`encodeSegment` for signal 2): killed
+by "one unit per segment: spans files by hour…" and three more; a log file keyed by hour
+(`hour=00/`): killed by "one unit per segment of logs files by day…" (the ledger refuses the key);
+a segment of mixed signals flushed by its first batch: killed by the two mixed-segment refusal
+tests. The other stage-2 mutants are in `shard/`, `ledger/` and `janitor/`'s READMEs.
+
+**Measured here** (local workerd under vitest, 1 ms timers; NOT Cloudflare; the machine shared,
+load average 8 on 4 cores; `test/measure-signals.test.ts`, two runs of three segments each).
+Segments of 4 batches of about 0.85 MB (3.38 MB of span batches, 10,788 spans; 3.23 MB of log
+batches, 10,929 records), the workload described in the test's header. "Flush" is the wall
+time of `flushTenant` for one segment (read, encode, SHA-256, PUTs to local R2, `addUnit`, the
+logged mark); "encode" the synchronous WASM call inside it.
+
+| | spans (with their trace_index) | log records |
+|---|---|---|
+| flush, rows per second (six segments) | 28,000 – 80,000 | 50,000 – 127,000 |
+| encode alone, rows per second | 41,000 – 159,000 | 110,000 – 341,000 |
+| flush wall time per ~3.3 MB segment | 134 – 388 ms | 86 – 218 ms |
+| bytes in R2 per row (Parquet, snappy) | **94** (spans 89, trace_index 5) | **158** |
+| batch bytes per row (what edge sends the shard) | 314 | 295 |
+| WASM linear memory after the runs | 23 – 26 MB | 17 MB |
+
+The first segment of each run was the slowest (a cold instance). Bytes per row depend on the
+workload: these log lines carry a random request id and random words (little to compress);
+spans carry a high-cardinality user id and SQL in 30%. Not measured: CPU other than the encode
+call, R2 latency on Cloudflare.
 
 ### Measurements (local workerd under vitest, 1 ms timers; not Cloudflare)
 

@@ -31,12 +31,15 @@ hourly cron. It is deployed as viz-ingest (`deploy/`).
 | `test/golden.test.ts`, `test/golden/` | 3 tests: golden files of the maintenance message and marker, and the marker reader's refusal of an unknown version |
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
 | `test/precedence.property.test.ts` | 6 seeded runs: random rewrites of the same samples always read back as the latest write |
-| `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
+| `test/soak.test.ts` | The soak, twice: as before (`INGEST_SIGNALS` off) and with spans and logs (on); 400 steps each in `npm test`, `npm run soak` for 3,000; `SOAK_SIGNALS=off` or `on` for one |
+| `test/signals.ts` | Spans and logs in the simulation: the model, OTLP senders through edge, the reader (hyparquet over files, edge's test decoder over tails) and its check |
+| `test/signals.test.ts` | 2 tests (and a third driven by `tools/signals_readback.mjs`): traces and logs end to end; nothing of it with the flag off |
 | `test/settle.ts` | The soak's checked purge and orphan sweep and its end phase, shared with `test/settle.test.ts` |
-| `test/settle.test.ts` | 1 test: the end phase reaches its end state while a ledger's drain is still backing off (regression test for the soak's end-phase failure of 2026-11-19) |
+| `test/settle.test.ts` | 1 test: the end phase reaches its end state while a ledger's drain is still backing off, the backoff forced with no explicit drain after the outage (regression test for the soak's end-phase failure of 2026-11-19) |
 | `test/sim.ts`, `test/world.ts` | Simulated deployments: tenants, real requests, queues under test control, the model, the invariants |
 | `scripts/mutants.mjs` | Mutation check for the four new parts |
 | `tools/hyparquet_check.mjs` | Reads one produced Parquet file with hyparquet, in Node |
+| `tools/signals_readback.mjs`, `tools/signals-readback/` | An OTLP corpus through this Worker's write path, its files read back by viz-storage's readers, viz-traceql, viz-logql, PyArrow and DuckDB |
 
 ## What now happens without anyone calling it
 
@@ -658,6 +661,69 @@ the shard's own batches for that segment; sort order).
 The flush mutants (`flush/scripts/mutants.mjs --stack`) run against this suite killed 8 of
 18 when it was written (see `flush/README.md`); that run was not repeated for this work.
 
+## Traces and logs end to end (stage 2, 2026-11-19)
+
+The write side of spans and log records, through this one script with `INGEST_SIGNALS` on:
+OTLP traces (protobuf and JSON), OTLP logs and Loki push through edge → the shards of
+`{pool}/traces` and `{pool}/logs` → seal → the flush queue → flush (`engine/wasm` ABI 3) →
+`spans` + `trace_index` / `logs` files in R2 → the ledger, then retention, purge and the orphan
+sweep (`janitor/`). Nothing of it runs with the flag off (the default).
+
+**`test/signals.test.ts`** (in `npm test`):
+
+- *End to end*: one tenant sends metrics, OTLP/JSON spans and logs from eight senders over four
+  UTC days, OTLP/protobuf spans (edge's test-side protobuf writer) and a Loki push; before any
+  flush a reader sees every span and record from the tails alone (read with `signals: [2]` /
+  `[3]` and decoded by edge's test decoder), and a metric shard's read with `signals: [2, 3]` is
+  empty; after flushing it sees exactly the same from files (hyparquet) and nothing pending.
+  Every derived stream's unit holds `spans` and `trace_index` files, or `logs` files only; every
+  key names its table, tenant, day, stream and the first 8 hex digits of its object's SHA-256,
+  a spans key its hour with `[minTs, maxTs]` inside it; the `trace_index` rows count every span.
+- *Flag off*: `/v1/traces`, `/v1/logs` and `/loki/api/v1/push` answer 404, no derived shard holds
+  a stream for the tenant, the ledger names only the metric stream, and the same Remote Write
+  request flushed for a tenant with the flag off and one with it on gives files of identical
+  bytes.
+
+**The soak with the flag on** (`test/soak.test.ts`, second run; the first is the metrics soak
+exactly as before, its operations drawn from the same generator in the same order): every
+tenant also registers its derived pools' slots (resent while edge answers 503 `registering`),
+then sends OTLP spans and logs through edge in about 30% of the steps each, over four days; the
+derived shards are sealed by hand, alarmed and evicted now and then; their seal notifications
+go through the same flush queue with the same injected crashes, duplicates and retries;
+retention expires them by `trace_days` 3 and `log_days` 1; purge and the orphan sweep judge
+their objects. Every check (`checkTenant`, every 20 steps for all tenants and after each step
+for those touched) also requires the reader to see exactly the model's spans and records, from
+files and tails, every live signal file to be in R2 at its size under the tenant's prefix, and
+nothing leaked; the end phase requires R2 to be exactly the ledger's live set (metric files at
+level 2, signal files at level 0) with nothing pending in any shard.
+
+**The engines** (`node tools/signals_readback.mjs WORK SEED SCALE`): `edge/scripts/otel-corpus.mjs
+--requests` writes an OTLP corpus (protobufjs- and JSON-encoded traces and logs, Loki push with
+snappy, every attribute type, Unicode, retries, a 256 KiB line) with the expected rows computed
+from its model; the corpus mode of `test/signals.test.ts` posts every request through edge in
+workerd (shards sealing at 256 KiB, so duplicates cross units), flushes everything and prints
+the ledger's live files; `tools/signals-readback` (Rust, a copy of `engine/storage/readback`
+with its own flushing replaced by these files) reads them with viz-storage's readers, resolves
+duplicates by the ledger's precedence, recomputes each unit's `trace_index`, and runs 30 TraceQL
+and 18 LogQL queries through the engines' read seams (`SpanSource`; `LogSource` with fragment
+pruning on and off) against the in-memory engines over the expected rows; then
+`engine/storage/tools/otel_independent_check.py` reads the same files with PyArrow and DuckDB.
+
+| Seed, scale | Requests | Units | Files | Spans, log rows | Rust checks | TraceQL identical | LogQL identical | trace_index merged: equal / over-count (cross-unit duplicates) / wrong | PyArrow + DuckDB checks |
+|---|---|---|---|---|---|---|---|---|---|
+| 1, 1 | 63 | 47 | 125 | 1,005, 2,675 | 19,094, **0 failed** | 60 of 60 (30 non-empty) | 36 of 36 (18 non-empty) | 128 / 22 / 0 | 139,513, **0 failed** |
+| 2, 2 | 120 | 83 | 214 | 1,886, 6,115 | 40,893, **0 failed** | 60 of 60 (30) | 36 of 36 (18) | 248 / 52 / 0 | 284,107, **0 failed** |
+| 3, 2 | 120 | 84 | 216 | 1,858, 5,691 | 38,219, **0 failed** | 60 of 60 (30) | 36 of 36 (17) | 256 / 44 / 0 | 272,096, **0 failed** |
+
+(2026-11-19, PyArrow 26.0.1, DuckDB 2.0.0. A first run of each seed without the Python step gave
+the same Rust results with 45, 77 and 81 units: how segments seal varies with timing.)
+`trace_index` over-counts exactly the traces with a span retried into another unit, as
+`contracts/TRACES.md` says. The tool builds with `cargo -j 2` into its own `target/`, deleted
+after the run.
+
+**Mutants** of stage 2 are listed in the READMEs of `shard/`, `flush/`, `ledger/` and
+`janitor/`, each run on a scratch copy: 10 of 10 killed.
+
 ## Contract changes made during integration
 
 Two comments in `contracts/ledger.ts` and one sentence in `contracts/BATCH.md`. No type,
@@ -704,13 +770,17 @@ had the adversarial review `AGENTS.md` asks for protocol changes.
 - **The soak's end phase can take up to a minute longer** when a ledger is still backing off
   from an outage (it waits for the ledger's own drain, bounded at 75 s; the longest backoff is
   60 s). Rare in natural runs: none of 39 runs after the fix waited.
-- **A ledger's backoff outlives a successful `drain()`** (seen while fixing the soak; not
-  changed here). After an explicit `drain()` the failure count, the backoff and
-  `logStatus().lastError` stay until the alarm's next drain, so commits made meanwhile are
-  logged up to the rest of the backoff (at most 60 s) late: shards keep their rows and purges
-  wait that much longer. Nothing counts as logged early, so no safety rule is touched; the
-  alarm's own successful drain clears all three. Whether `drain()` (contract: "what the alarm
-  does") should clear them too is for `ledger/` to decide; the soak no longer depends on it.
+- **A ledger's backoff outlived a successful `drain()`** until 2026-11-19; `ledger/` now clears
+  it (failure count and retry time) on a successful `drain()`, as the alarm's drain does. The
+  regression test (`test/settle.test.ts`) relied on the old behaviour to force its timing; it
+  now forces the backoff without an explicit drain (the log breaks after the end phase's own
+  `drain()`, the alarm runs until the drain backs off 16 s, the log is healed by hand, nothing
+  more), and still asserts that the removals are unlogged when the graces have passed and that
+  the end phase waits for them.
+- **Spans and logs in the soak** are checked against a model of what was acknowledged, read
+  from files (hyparquet) and tails; `trace_index` is checked only in the end-to-end run (a
+  unit's spans and trace_index files may leave on different days, so the soak checks no
+  pairing for them). They are never compacted (not built), so their files stay level 0.
 - **Files that disagree** are now ordered by the ledger's precedence (D22) and tested with
   rewrites (`test/precedence.property.test.ts`); the soak's model still sends one value per
   `(series, ts)`. Admission order equals write order across streams only once the
