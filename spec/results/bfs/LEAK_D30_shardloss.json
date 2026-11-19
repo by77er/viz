@@ -69,5 +69,5 @@
   "depth": 32,
   "seconds": 286.2,
   "collisionProb": 2.4e-7,
-  "note": "memory bound: stopped at 3,000,002 states; every state reachable in at most 32 steps checked, no violation"
+  "note": "memory bound: stopped at 3,000,002 states (depth 32); the graph is incomplete, so AG EF is NOT decided"
 }

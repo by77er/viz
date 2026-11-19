@@ -52,7 +52,7 @@ def norm_search(resp):
                 spans[s["spanID"]] = (int(s.get("startTimeUnixNano", 0)), int(s.get("durationNanos", 0)), kvs(s.get("attributes")))
             sets.append({"spans": spans, "matched": ss.get("matched", 0), "attrs": kvs(ss.get("attributes"))})
         stats = {k: (v.get("spanCount", 0), v.get("errorCount", 0)) for k, v in (t.get("serviceStats") or {}).items()}
-        traces[t["traceID"]] = {
+        traces[t.get("traceID", "")] = {
             "root": (t.get("rootServiceName", ""), t.get("rootTraceName", "")),
             "start": int(t.get("startTimeUnixNano", 0)),
             "dur": t.get("durationMs", 0),
@@ -313,7 +313,7 @@ def _union(case, kinds, viz, tem):
     return case["kind"] == "search" and any(op in case["query"] for op in UNION_OPS) and subset_of_viz(viz, tem)
 
 
-INT_KEYS = ("n", "retries", "http.status_code", "rint", "ev")
+INT_KEYS = ("n", "retries", "http.status_code", "rint", "ev", "codes")
 FLOAT_KEYS = ("f", "ratio")
 
 
@@ -456,6 +456,21 @@ def _meta_missing(case, kinds, viz, tem):
             return d[2][1] == "" and d[1][1] != ""
         return False
     return bool(kinds) and all(empty(k, d) for k, d in kinds)
+
+
+@rule("tempo_after_select")
+def _after_select(case, kinds, viz, tem):
+    # Stages after `select(...)` see the fields it did not name as missing in Tempo:
+    # `{ } | select(name) | by(.foo)` grouped every span under nil, and
+    # `{ } | select(.n) | { .foo = "bar" }` matched nothing (probe in README). viz's
+    # select() only adds fields to the output. The query must have a stage after select().
+    return re.search(r"select\([^)]*\)\s*\|", case["query"]) is not None
+
+
+@rule("tempo_missing_trace_id")
+def _missing_id(case, kinds, viz, tem):
+    # Tempo returned a trace without a traceID (every generated trace has one).
+    return case["kind"] == "search" and any(not t.get("traceID") for t in tem.get("traces") or [])
 
 
 @rule("ambiguous_root_metrics")

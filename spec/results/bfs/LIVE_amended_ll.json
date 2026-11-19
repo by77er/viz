@@ -62,12 +62,12 @@
   "props": [],
   "expect": "holds",
   "maxStates": 3000000,
-  "asExpected": true,
+  "asExpected": false,
   "verdict": "stopped",
   "states": 3000002,
   "transitions": 15730125,
   "depth": 36,
   "seconds": 371.4,
   "collisionProb": 2.4e-7,
-  "note": "memory bound: stopped at 3,000,002 states; every state reachable in at most 36 steps checked, no violation"
+  "note": "memory bound: stopped at 3,000,002 states (depth 36); the graph is incomplete, so AG EF is NOT decided"
 }
