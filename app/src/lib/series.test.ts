@@ -89,12 +89,21 @@ describe('alignMatrix in one pass (B3)', () => {
       { numRuns: 500 },
     )
   })
-  it('keeps the API\'s millisecond grid for a sub-second step: a missing step is a gap, not a bridged line', () => {
-    // A 0.1 s step as the API answers it (times are whole milliseconds), with the third step missing.
-    const text = '{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"a":"x"},"values":[[1794994200,"1"],[1794994200.1,"2"],[1794994200.3,"4"],[1794994200.4,"5"]]}]}}'
-    const a = alignSeries(parseMatrix(text).series, 1794994200, 1794994200.4, 0.1)
-    expect(a.xs).toHaveLength(5)
-    expect([...a.series[0]!.values]).toEqual([1, 2, NaN, 4, 5])
+  it('keeps the API\'s millisecond grid for steps of milliseconds: a missing step is a gap, not a bridged line', () => {
+    // Steps as the API answers them (times are whole milliseconds), the third step missing. As
+    // doubles near 1.8e9 s such times are up to 1e-4 of a 1 ms step off the exact grid
+    // (a 0.1 s step stays within 1e-6 of a step at this epoch, so it alone would not tell).
+    for (const [step, times] of [
+      [0.1, ['1794994200', '1794994200.1', '1794994200.3', '1794994200.4']],
+      [0.002, ['1794994200', '1794994200.002', '1794994200.006', '1794994200.008']],
+      [0.001, ['1794994200.007', '1794994200.008', '1794994200.01', '1794994200.011']],
+    ] as const) {
+      const text = `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"a":"x"},"values":[${times.map((t, i) => `[${t},"${i + 1}"]`).join(',')}]}]}}`
+      const start = Number(times[0])
+      const a = alignSeries(parseMatrix(text).series, start, Math.round((start + 4 * step) * 1000) / 1000, step)
+      expect(a.xs, String(step)).toHaveLength(5)
+      expect([...a.series[0]!.values], String(step)).toEqual([1, 2, NaN, 3, 4])
+    }
   })
   it('turns every value that cannot be drawn into a gap', () => {
     const a = alignMatrix({ resultType: 'matrix', result: [{ metric: {}, values: [[0, 'NaN'], [15, '+Inf'], [30, '-Inf'], [45, '2.5'], [60, 'Inf']] }] }, 0, 60, 15)

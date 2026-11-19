@@ -68,8 +68,9 @@ export function alignSeries(result: readonly SampleColumns[], start: number, end
   const byName = (a: AlignedSeries, b: AlignedSeries) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
   const n = Math.floor((end - start) / step + 1e-9) + 1
   // A sample is on the grid when it is within 5 µs of a grid time. The API's times are whole
-  // milliseconds; as doubles near 1.8e9 s they are off by about 0.2 µs, which for a 0.1 s step
-  // is 2e-6 of a step (a tolerance in steps, as before, sent such results down the slow path).
+  // milliseconds; as doubles near 1.8e9 s they are off by up to about 0.1 µs, which for a 1 ms
+  // step is 1e-4 of a step (a tolerance of 1e-6 steps, as before, sent the API's answers to
+  // steps of a few milliseconds down the slow path, where a missing step is no gap).
   const tolerance = 5e-6 / step
 
   // The usual case, in one pass: every sample is on the grid, so its index is computed, not

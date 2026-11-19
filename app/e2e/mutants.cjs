@@ -140,7 +140,7 @@ const SETS = {
         '  const start = Math.floor(startSec / step) * step\n  const end = Math.max(start + step, Math.floor(endSec / step) * step)\n  return { start, end, step }'),
       one('parser: the body text the JSON form reads is the first piece only (the lazy join)', 'src/api/matrix.ts',
         "return (this.joined ??= this.chunks.join(''))", "return (this.joined ??= this.chunks[0] ?? '')"),
-      one('alignment: the grid tolerance is a fraction of a step (sub-second steps leave the grid)', 'src/lib/series.ts',
+      one('alignment: the grid tolerance is a fraction of a step (steps of a few milliseconds leave the grid)', 'src/lib/series.ts',
         '  const tolerance = 5e-6 / step\n', '  const tolerance = 1e-6\n'),
     ],
   },
