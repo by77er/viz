@@ -8,10 +8,15 @@
  * the threshold as the author wrote it, who changed it) is the rule's `monitor` block.
  */
 import {
+  ANOMALY_DETECTORS,
   RECEIVER_LABEL,
   type Acknowledgement,
   type AlertingRuleInputV2,
   type AlertingRuleV2,
+  type AnomalyRuleInputV2,
+  type AnomalyRuleV2,
+  type AnomalySpecInput,
+  type DetectorGuide,
   type AlertNotifyState,
   type ConditionOp,
   type DescribeResult,
@@ -27,6 +32,7 @@ import {
   type TimelineEntry,
   type ValidationError,
 } from '../contracts-proposal/rules.v2'
+import { DETECTOR_GUIDE } from './anomaly'
 import { bareRuleId } from './ruler'
 import { DEADMAN_GROUP, ruleKey } from './rules'
 import { isNoDataAlert } from './statemachine'
@@ -34,7 +40,15 @@ import { formatDuration, hash64, labelsKey, parseDuration } from './util'
 
 const OPS: ConditionOp[] = ['>', '>=', '<', '<=', '==', '!=']
 const MODES: NoDataMode[] = ['ok', 'alerting', 'keep']
-const FIELDS = ['name', 'expr', 'query', 'condition', 'for', 'keepFiringFor', 'interval', 'group', 'description', 'message', 'runbookUrl', 'owner', 'notify', 'noData', 'noDataFor', 'startInvestigation', 'labels', 'annotations', 'dryRun']
+const FIELDS = ['name', 'expr', 'query', 'condition', 'anomaly', 'for', 'keepFiringFor', 'interval', 'group', 'description', 'message', 'runbookUrl', 'owner', 'notify', 'noData', 'noDataFor', 'startInvestigation', 'labels', 'annotations', 'dryRun']
+const ANOMALY_FIELDS = ['detector', 'params', 'unit', 'severity', 'maxSeries']
+/**
+ * Defaults of an anomaly monitor beyond the detector's (`anomaly.ts`): alarms are onsets (the
+ * held-out evaluation scored the first flagged point of each run), so no `for`; the alert is held
+ * for 10 minutes after the last flagged point so that it does not resolve and re-fire on every
+ * gap between flags (a choice, not a measured one).
+ */
+export const ANOMALY_MONITOR_DEFAULTS = { for: '0s', keepFiringFor: '10m' } as const
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -42,9 +56,9 @@ export const DEFAULT_MONITOR_INTERVAL = '1m'
 /** Monitors with the same interval share a group (one batch per tick) until it holds this many. */
 export const MONITOR_GROUP_CAP = 500
 
-export function defaultGroup(interval: string, n: number): string {
+export function defaultGroup(interval: string, n: number, prefix: 'monitors' | 'anomalies' = 'monitors'): string {
   const ms = parseDuration(interval)
-  const base = `monitors/${ms === null ? interval : formatDuration(ms)}`
+  const base = `${prefix}/${ms === null ? interval : formatDuration(ms)}`
   return n <= 1 ? base : `${base}/${n}`
 }
 
@@ -54,10 +68,12 @@ export function derivedMonitorId(group: string, name: string, labels: Record<str
 }
 
 export interface MonitorPlan {
-  rule: AlertingRuleInputV2
+  rule: AlertingRuleInputV2 | AnomalyRuleInputV2
   /** Null: the caller picks the default group for `interval`. */
   group: string | null
   interval: string
+  /** An anomaly monitor: default groups are `anomalies/<interval>`, apart from threshold monitors. */
+  anomaly: boolean
 }
 
 /**
@@ -86,9 +102,31 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
   const exprText = str('expr', 16_384)
   const query = str('query', 16_000)
   let condition: MonitorMeta['condition'] = null
-  if (exprText !== undefined && (query !== undefined || m.condition !== undefined)) err('expr', 'give either "expr", or "query" with "condition", not both', 'Remove one of them.')
+  let anomaly: AnomalySpecInput | null = null
+  if (m.anomaly !== undefined) {
+    // An anomaly monitor: `query` is what to watch; the detector decides when it alerts.
+    const a = m.anomaly
+    if (!isObject(a)) err('anomaly', 'anomaly must be an object', 'Send {} for the default detector (ewma), or { "detector": "...", "params": {...} }.')
+    else {
+      for (const k of Object.keys(a)) if (!ANOMALY_FIELDS.includes(k)) err(`anomaly.${k}`, `unknown field "${k}"`, `anomaly has: ${ANOMALY_FIELDS.join(', ')}.`)
+      if (a.detector !== undefined && (typeof a.detector !== 'string' || !(ANOMALY_DETECTORS as readonly string[]).includes(a.detector))) {
+        const guide = typeof a.detector === 'string' ? DETECTOR_GUIDE[a.detector] : undefined
+        err('anomaly.detector', guide && !guide.inRules ? `"${a.detector}" cannot run in a monitor: ${guide.notFor}` : `unknown detector ${JSON.stringify(a.detector)}`, `Use one of ${ANOMALY_DETECTORS.join(', ')}; leave it out for ewma. GET /api/v1/monitors/detectors says what each is for.`)
+      }
+      if (a.maxSeries !== undefined && (typeof a.maxSeries !== 'number' || !Number.isInteger(a.maxSeries))) err('anomaly.maxSeries', 'maxSeries must be a whole number', 'Give the most series the query may return, e.g. 100.')
+      anomaly = {}
+      if (a.detector !== undefined) anomaly.detector = a.detector as AnomalySpecInput['detector']
+      if (a.params !== undefined) anomaly.params = a.params as AnomalySpecInput['params']
+      if (a.unit !== undefined) anomaly.unit = a.unit as string
+      if (a.severity !== undefined) anomaly.severity = a.severity as AnomalySpecInput['severity']
+      if (a.maxSeries !== undefined) anomaly.max_series = a.maxSeries as number
+    }
+    if (exprText !== undefined) err('expr', 'an anomaly monitor watches "query"', 'Move the expression to "query"; it is the series to watch, not a comparison.')
+    if (m.condition !== undefined) err('condition', 'an anomaly monitor has no condition: the detector decides', 'Remove "condition", or remove "anomaly" for a threshold monitor.')
+    if (query === undefined && exprText === undefined) err('query', 'an anomaly monitor needs "query", the series to watch', 'Give the query from Explore, e.g. sum by (service) (rate(http_requests_total[5m])).')
+  } else if (exprText !== undefined && (query !== undefined || m.condition !== undefined)) err('expr', 'give either "expr", or "query" with "condition", not both', 'Remove one of them.')
   else if (exprText === undefined && query === undefined) err('query', 'a monitor needs "query" with "condition", or "expr"', 'Give the query from Explore and the threshold to compare it with.')
-  else if (query !== undefined) {
+  else if (query !== undefined && anomaly === null) {
     const c = m.condition
     if (!isObject(c)) err('condition', 'a monitor written as a query needs a condition', 'Add { "op": ">", "threshold": 0.5 }.')
     else {
@@ -126,8 +164,8 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
   const owner = str('owner', 256) ?? ''
   const description = str('description', 4096)
   const message = str('message', 4096)
-  const forText = str('for', 32)
-  const keep = str('keepFiringFor', 32)
+  const forText = str('for', 32) ?? (anomaly ? ANOMALY_MONITOR_DEFAULTS.for : undefined)
+  const keep = str('keepFiringFor', 32) ?? (anomaly ? ANOMALY_MONITOR_DEFAULTS.keepFiringFor : undefined)
   const noDataFor = str('noDataFor', 32)
   if (errors.length > 0 || name === undefined) return { ok: false, errors }
 
@@ -135,10 +173,11 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
   if (message !== undefined && message !== '') annotations.summary = message
   if (description !== undefined && description !== '') annotations.description = description
   if (runbookUrl !== undefined && runbookUrl !== '') annotations.runbook_url = runbookUrl
-  const rule: AlertingRuleInputV2 = {
+  const rule: AlertingRuleInputV2 | AnomalyRuleInputV2 = {
     alert: name,
-    expr: condition ? `(${condition.query}) ${condition.op} ${condition.threshold}` : (exprText as string),
+    expr: condition ? `(${condition.query}) ${condition.op} ${condition.threshold}` : anomaly ? (query as string) : (exprText as string),
   }
+  if (anomaly) (rule as AnomalyRuleInputV2).anomaly = anomaly
   if (forText !== undefined) rule.for = forText
   if (keep !== undefined) rule.keep_firing_for = keep
   if (Object.keys(labels).length > 0) rule.labels = labels
@@ -147,14 +186,17 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
     rule.no_data = noData as NoDataMode
     if (noData === 'alerting') rule.no_data_for = noDataFor ?? '0s'
     // The comparison is empty whenever the system is healthy; only the bare query tells "no data" apart.
+    // (An anomaly monitor's query is already bare: no data means it returned no series.)
     if (condition) rule.no_data_expr = condition.query
   }
   rule.monitor = { ...meta, owner, startInvestigation: m.startInvestigation === true, condition }
-  return { ok: true, plan: { rule, group, interval } }
+  return { ok: true, plan: { rule, group, interval, anomaly: anomaly !== null } }
 }
 
 const RULE_PATHS: [RegExp, (m: RegExpExecArray, viaCondition: boolean) => string][] = [
   [/^expr$/, (_m, c) => (c ? 'query' : 'expr')],
+  [/^anomaly\.max_series$/, () => 'anomaly.maxSeries'],
+  [/^anomaly(\..*)?$/, (m) => m[0]],
   [/^no_data_expr$/, () => 'query'],
   [/^alert$/, () => 'name'],
   [/^for$/, () => 'for'],
@@ -167,7 +209,7 @@ const RULE_PATHS: [RegExp, (m: RegExpExecArray, viaCondition: boolean) => string
   [new RegExp(`^labels\\.${RECEIVER_LABEL}$`), () => 'notify'],
 ]
 
-/** Rewrite the ruler's rule-file paths (`groups[0].rules[3].for`) into the monitor's field names. */
+/** Rewrite the ruler's rule-file paths (`groups[0].rules[3].for`) into the monitor's field names. `viaCondition`: the monitor was written with `query` (a condition or an anomaly monitor). */
 export function monitorPaths(errors: ValidationError[], ruleIndex: number, viaCondition: boolean): ValidationError[] {
   const prefix = `groups[0].rules[${ruleIndex}]`
   return errors.map((e) => {
@@ -185,18 +227,40 @@ export function monitorPaths(errors: ValidationError[], ruleIndex: number, viaCo
 
 // ───────────────────────────── views ─────────────────────────────
 
-export function monitorIdOf(group: string, rule: AlertingRuleV2): string {
+export function monitorIdOf(group: string, rule: AlertingRuleV2 | AnomalyRuleV2): string {
   return rule.monitor?.id ?? bareRuleId(group, rule.key)
 }
 
-export function thresholdText(rule: AlertingRuleV2): string | null {
+const num = (v: unknown) => (typeof v === 'number' ? String(v) : '?')
+
+/** One line for the list: what the detector flags, e.g. `ewma: 8 σ from a 100-point mean`. */
+export function anomalyText(rule: AnomalyRuleV2): string {
+  const a = rule.anomaly
+  const p = a.params
+  const u = a.unit ? ` ${a.unit}` : ''
+  switch (a.detector) {
+    case 'ewma':
+      return `ewma: ${num(p.k)} σ from a ${num(p.halfLifePoints)}-point mean`
+    case 'threshold':
+      return `threshold: ${[typeof p.above === 'number' ? `> ${p.above}${u}` : '', typeof p.below === 'number' ? `< ${p.below}${u}` : ''].filter(Boolean).join(' or ')}`
+    case 'robust_z':
+      return `robust_z: ${num(p.k)} ${p.spread === 'quantile' ? `× the ${num(p.spreadQuantile)} quantile deviation` : 'robust σ'} from the trailing median`
+    case 'seasonal':
+      return `seasonal: ${num(p.k)} ${p.spread === 'quantile' ? '× the quantile deviation' : 'robust σ'} from the same phase of ${num(p.seasons)} × ${typeof p.periodMs === 'number' ? formatDuration(p.periodMs) : '?'}`
+    case 'cusum':
+      return `cusum: a mean shift beyond h = ${num(p.h)} σ`
+  }
+}
+
+export function thresholdText(rule: AlertingRuleV2 | AnomalyRuleV2): string | null {
+  if (rule.kind === 'anomaly') return anomalyText(rule) + (rule.forMs > 0 ? ` for ${formatDuration(rule.forMs)}` : '')
   const c = rule.monitor?.condition
   if (!c) return null
   return `${c.op} ${c.threshold}${c.unit ? ` ${c.unit}` : ''}${rule.forMs > 0 ? ` for ${formatDuration(rule.forMs)}` : ''}`
 }
 
 /** The static part of a rule's alert labels: where its alerts are routed when their templates add nothing. */
-export function routingLabels(rule: AlertingRuleV2, externalLabels: Record<string, string> = {}): Record<string, string> {
+export function routingLabels(rule: AlertingRuleV2 | AnomalyRuleV2, externalLabels: Record<string, string> = {}): Record<string, string> {
   const out: Record<string, string> = { ...externalLabels }
   for (const [k, v] of Object.entries(rule.labels)) if (!v.includes('{{') && v !== '') out[k] = v
   out.alertname = rule.name
@@ -209,11 +273,13 @@ function monitorState(snap: RuleSnapshot, alerts: MonitorAlertView[]): MonitorSt
   if (snap.health === 'err') return 'error'
   if (alerts.length > 0) return 'pending'
   if (snap.health === 'unknown') return 'unknown'
+  // An anomaly monitor whose detector has scored nothing yet is not "ok": it is not watching yet.
+  if (snap.anomaly?.status === 'warming') return 'warming'
   return 'ok'
 }
 
 export function monitorView(group: GroupSnapshot, shard: string, snap: RuleSnapshot, notify: DescribeResult | undefined): MonitorView {
-  const rule = snap.rule as AlertingRuleV2
+  const rule = snap.rule as AlertingRuleV2 | AnomalyRuleV2
   const states = new Map<string, AlertNotifyState>((notify?.alerts ?? []).map((a) => [a.fingerprint, a]))
   const alerts: MonitorAlertView[] = snap.alerts
     .filter((a) => a.state !== 'inactive')
@@ -257,7 +323,7 @@ export function monitorView(group: GroupSnapshot, shard: string, snap: RuleSnaps
     value: alerts[0]?.value ?? null,
     thresholdText: thresholdText(rule),
     expr: rule.expr,
-    query: c?.query ?? null,
+    query: c?.query ?? (rule.kind === 'anomaly' ? rule.expr : null),
     condition: c ? { op: c.op, threshold: c.threshold, unit: c.unit } : null,
     forMs: rule.forMs,
     keepFiringForMs: rule.keepFiringForMs,
@@ -281,6 +347,20 @@ export function monitorView(group: GroupSnapshot, shard: string, snap: RuleSnaps
     silencedUntil: allSilenced ? Math.min(...(silences as number[])) : null,
     alerts,
     historyRecorded: rule.monitor !== undefined,
+    anomaly:
+      rule.kind === 'anomaly'
+        ? {
+            detector: rule.anomaly.detector,
+            params: rule.anomaly.params,
+            given: rule.anomaly.given,
+            unit: rule.anomaly.unit,
+            severity: rule.anomaly.severity,
+            maxSeries: rule.anomaly.maxSeries,
+            history: rule.anomaly.history,
+            status: snap.anomaly ?? null,
+            guide: DETECTOR_GUIDE[rule.anomaly.detector] as DetectorGuide,
+          }
+        : null,
   }
 }
 
@@ -309,7 +389,7 @@ export function mergeTimelines(parts: Timeline[]): Timeline {
  * through the API have a history. A rule that already exists keeps who created it; it is
  * marked as edited only if something that changes its behaviour or text changed.
  */
-export function adoptMonitors(file: unknown, existing: Map<string, AlertingRuleV2>, by: string, now: number): void {
+export function adoptMonitors(file: unknown, existing: Map<string, AlertingRuleV2 | AnomalyRuleV2>, by: string, now: number): void {
   const groups = isObject(file) && Array.isArray(file.groups) ? file.groups : []
   for (const g of groups) {
     if (!isObject(g) || typeof g.name !== 'string' || !Array.isArray(g.rules) || g.name === DEADMAN_GROUP) continue
@@ -321,11 +401,16 @@ export function adoptMonitors(file: unknown, existing: Map<string, AlertingRuleV
       const given = isObject(r.monitor) ? (r.monitor as Partial<MonitorMeta>) : null
       const id = typeof given?.id === 'string' ? given.id : derivedMonitorId(g.name, r.alert, labels)
       const old = existing.get(id)
-      const same =
+      const sameForAndText =
         old !== undefined &&
-        old.key === ruleKey('alert', r.alert, r.expr, labels) &&
         old.forMs === (typeof r.for === 'string' ? (parseDuration(r.for) ?? -1) : 0) &&
         JSON.stringify(old.annotations) === JSON.stringify(isObject(r.annotations) ? r.annotations : {})
+      // An anomaly entry is the same rule when its expression, detector and every given parameter are.
+      const a = isObject(r.anomaly) ? r.anomaly : null
+      const sameAnomaly = (o: AnomalyRuleV2) =>
+        a !== null && o.expr === r.expr && o.name === r.alert && o.anomaly.detector === (a.detector ?? o.anomaly.detector) &&
+        Object.entries(isObject(a.params) ? a.params : {}).every(([k, v]) => o.anomaly.params[k] === v)
+      const same = old !== undefined && sameForAndText && (old.kind === 'anomaly' ? sameAnomaly(old) : a === null && old.key === ruleKey('alert', r.alert, r.expr, labels))
       r.monitor = {
         id,
         owner: given?.owner ?? old?.monitor?.owner ?? '',

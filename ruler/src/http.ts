@@ -16,6 +16,7 @@ import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
 import type {
   AlertingRuleV2,
+  AnomalyRuleV2,
   DescribeItem,
   DescribeResult,
   GroupBundle,
@@ -31,7 +32,8 @@ import type {
   Timeline,
   ValidationError,
 } from '../contracts-proposal/rules.v2'
-import { adoptMonitors, defaultGroup, mergeTimelines, MONITOR_GROUP_CAP, monitorIdOf, monitorPaths, monitorView, planMonitor, routingLabels } from './monitors'
+import { DEFAULT_DETECTOR, DEFAULT_PAGE_DETECTOR, DETECTOR_GUIDE } from './anomaly'
+import { adoptMonitors, ANOMALY_MONITOR_DEFAULTS, defaultGroup, mergeTimelines, MONITOR_GROUP_CAP, monitorIdOf, monitorPaths, monitorView, planMonitor, routingLabels } from './monitors'
 import { assign, DEFAULT_PLACEMENT, shardOf, type GroupSize, type PlacementLimits } from './placement'
 import { indexName } from './registry'
 import { exportRuleFile, importRuleFile, ruleFileDocument } from './rulefile'
@@ -256,14 +258,15 @@ interface Found {
   shard: string
   group: GroupSnapshot
   snap: RuleSnapshot
-  rule: AlertingRuleV2
+  /** A monitor is an alerting rule or an anomaly rule. */
+  rule: AlertingRuleV2 | AnomalyRuleV2
 }
 
 function alertingRules(groups: { shard: string; group: GroupSnapshot }[]): Found[] {
   const out: Found[] = []
   for (const { shard, group } of groups) {
     if (group.name === DEADMAN_GROUP) continue
-    for (const snap of group.rules) if (snap.rule.kind === 'alert') out.push({ shard, group, snap, rule: snap.rule })
+    for (const snap of group.rules) if (snap.rule.kind !== 'record') out.push({ shard, group, snap, rule: snap.rule })
   }
   return out
 }
@@ -290,7 +293,7 @@ async function listMonitors(c: Call): Promise<Response> {
   const filter = c.url.searchParams.get('filter') ?? 'all'
   if (!['all', 'attention', 'silenced'].includes(filter)) throw new ApiError(400, 'bad_request', 'filter must be all, attention or silenced')
   const monitors = all.filter((m) => (filter === 'attention' ? NEEDS_ATTENTION.has(m.state) : filter === 'silenced' ? m.silencedUntil !== null : true))
-  const counts: Record<string, number> = { firing: 0, pending: 0, no_data: 0, error: 0, ok: 0, unknown: 0 }
+  const counts: Record<string, number> = { firing: 0, pending: 0, no_data: 0, error: 0, ok: 0, unknown: 0, warming: 0 }
   for (const m of all) counts[m.state] = (counts[m.state] ?? 0) + 1
   const evaluated = groups.map((g) => g.group.lastEvaluationMs).filter((t): t is number => t !== null)
   const watchdog = groups.find((g) => g.group.name === DEADMAN_GROUP)
@@ -327,11 +330,11 @@ async function receiverNames(c: Call): Promise<string[] | null> {
 }
 
 /** The default group for an interval: the first `monitors/<interval>[/<n>]` with room, or the one that already holds the monitor. */
-function pickGroup(found: { group: GroupSnapshot }[], interval: string, id: string): string {
+function pickGroup(found: { group: GroupSnapshot }[], interval: string, id: string, prefix: 'monitors' | 'anomalies' = 'monitors'): string {
   for (let n = 1; ; n++) {
-    const name = defaultGroup(interval, n)
+    const name = defaultGroup(interval, n, prefix)
     const g = found.find((f) => f.group.name === name)?.group
-    if (!g || g.rules.length < MONITOR_GROUP_CAP || g.rules.some((r) => r.rule.kind === 'alert' && r.rule.monitor?.id === id)) return name
+    if (!g || g.rules.length < MONITOR_GROUP_CAP || g.rules.some((r) => r.rule.kind !== 'record' && r.rule.monitor?.id === id)) return name
   }
 }
 
@@ -348,10 +351,14 @@ async function writeMonitor(c: Call, existing: Found | null): Promise<Response> 
   const planned = planMonitor(body, meta, await receiverNames(c))
   if (!planned.ok) throw invalid(planned.errors)
   const { rule, interval } = planned.plan
-  const viaCondition = rule.monitor?.condition !== null && rule.monitor?.condition !== undefined
+  // Written with `query` (a condition, or the series an anomaly monitor watches): errors on `expr` belong to `query`.
+  const viaCondition = (rule.monitor?.condition !== null && rule.monitor?.condition !== undefined) || planned.plan.anomaly
   const groups = await c.groups()
-  const sameInterval = existing !== null && parseDuration(interval) === existing.group.intervalMs
-  const group = planned.plan.group ?? (sameInterval ? (existing as Found).group.name : pickGroup(groups, interval, meta.id))
+  // An anomaly monitor goes in its own default group: a release that predates anomaly rules,
+  // during a rollback, then never rewrites a group holding them when a threshold monitor is edited.
+  const prefix = planned.plan.anomaly ? 'anomalies' : 'monitors'
+  const sameInterval = existing !== null && parseDuration(interval) === existing.group.intervalMs && (existing.rule.kind === 'anomaly') === planned.plan.anomaly
+  const group = planned.plan.group ?? (sameInterval ? (existing as Found).group.name : pickGroup(groups, interval, meta.id, prefix))
   if (group === DEADMAN_GROUP) throw invalid([{ path: 'group', message: 'group names starting with "viz:" are reserved', fix: 'Choose another name.' }])
   const size = groups.find((g) => g.group.name === group)?.group.rules.length ?? 0
   const adds = existing !== null && existing.group.name === group ? 0 : 1
@@ -364,7 +371,7 @@ async function writeMonitor(c: Call, existing: Found | null): Promise<Response> 
     ok(await c.ruler(existing.shard).removeRule(c.tenant, existing.group.name, meta.id))
   }
   const savedRule = saved.groups[0]?.rules[saved.ruleIndex ?? 0]
-  return json(existing || dryRun ? 200 : 201, {
+  const body: Record<string, unknown> = {
     dryRun,
     id: meta.id,
     group,
@@ -372,7 +379,10 @@ async function writeMonitor(c: Call, existing: Found | null): Promise<Response> 
     cost: savedRule?.cost ?? null,
     expr: rule.expr,
     warnings: monitorPaths(saved.warnings, saved.ruleIndex ?? 0, viaCondition),
-  })
+  }
+  // An anomaly monitor: what its detector reads per tick and to warm up (design §7 classes).
+  if (savedRule?.history) body.history = savedRule.history
+  return json(existing || dryRun ? 200 : 201, body)
 }
 
 async function deleteMonitor(c: Call): Promise<Response> {
@@ -470,8 +480,8 @@ async function listGroups(c: Call): Promise<Response> {
   return json(200, { groups: doc.groups.map((g, i) => ({ ...g, shard: (all[i] as { shard: string }).shard })) })
 }
 
-async function existingMonitors(c: Call): Promise<Map<string, AlertingRuleV2>> {
-  const out = new Map<string, AlertingRuleV2>()
+async function existingMonitors(c: Call): Promise<Map<string, AlertingRuleV2 | AnomalyRuleV2>> {
+  const out = new Map<string, AlertingRuleV2 | AnomalyRuleV2>()
   for (const f of alertingRules(await c.groups())) if (f.rule.monitor) out.set(f.rule.monitor.id, f.rule)
   return out
 }
@@ -493,7 +503,7 @@ async function deleteGroup(c: Call): Promise<Response> {
   if (name === DEADMAN_GROUP) throw new ApiError(409, 'reserved', 'the built-in watchdog group cannot be deleted; turn it off in the ruler config')
   const held = (await c.groups()).filter((g) => g.group.name === name)
   if (held.length === 0) throw notFound(`group ${name}`)
-  const ids = held.flatMap((g) => g.group.rules.flatMap((r) => (r.rule.kind === 'alert' && r.rule.monitor ? [r.rule.monitor.id] : [])))
+  const ids = held.flatMap((g) => g.group.rules.flatMap((r) => (r.rule.kind !== 'record' && r.rule.monitor ? [r.rule.monitor.id] : [])))
   if (!dryRun) {
     for (const g of (await c.locations()).filter((x) => x.name === name)) ok(await c.ruler(g.shard).deleteGroup(c.tenant, name))
     await forget(c, ids)
@@ -546,6 +556,20 @@ async function backtest(c: Call): Promise<Response> {
   if (r.status === 'failed') throw new ApiError(502, 'evaluation_failed', r.error)
   const { status: _s, ...result } = r
   return json(200, result)
+}
+
+/**
+ * What each detector is for, its defaults and the evidence behind them (anomaly/README.md, NAB
+ * held-out). The same text is in openapi.json and ruler/README.md; this is the copy the code uses.
+ */
+async function detectors(_c: Call): Promise<Response> {
+  return json(200, {
+    default: DEFAULT_DETECTOR,
+    defaultForPage: DEFAULT_PAGE_DETECTOR,
+    monitorDefaults: { ...ANOMALY_MONITOR_DEFAULTS, severity: 'ticket' },
+    detectors: Object.values(DETECTOR_GUIDE),
+    source: 'Numenta Anomaly Benchmark, held-out protocol: parameters chosen on one half of the files, scored on the other (anomaly/README.md). Not measured on viz\'s own data.',
+  })
 }
 
 async function getNotifier(c: Call): Promise<Response> {
@@ -654,7 +678,8 @@ async function promRules(c: Call): Promise<Response> {
       if (snap.lastError !== null && snap.lastError !== '') tail.lastError = snap.lastError
       tail.evaluationTime = (snap.lastDurationMs ?? 0) / 1000
       tail.lastEvaluation = promTime(snap.lastEvaluationMs)
-      if (r.kind === 'alert') {
+      // An anomaly rule is an alerting rule to Prometheus' API: its query is the watched expression.
+      if (r.kind !== 'record') {
         if (type === 'record') continue
         const states = snap.alerts.map((a) => a.state)
         rules.push({
@@ -690,7 +715,7 @@ async function promRules(c: Call): Promise<Response> {
 
 async function promAlertsRoute(c: Call): Promise<Response> {
   const alerts: Record<string, unknown>[] = []
-  for (const { group } of await c.groups()) for (const snap of group.rules) if (snap.rule.kind === 'alert') alerts.push(...promAlerts(snap))
+  for (const { group } of await c.groups()) for (const snap of group.rules) if (snap.rule.kind !== 'record') alerts.push(...promAlerts(snap))
   return json(200, { status: 'success', data: { alerts } })
 }
 
@@ -722,6 +747,7 @@ export const ROUTES: RouteDef[] = [
   route('GET', '/api/v1/monitors/rulefile', 'monitors:read', exportFile),
   route('POST', '/api/v1/monitors/rulefile', 'monitors:write', importFile, true),
   route('POST', '/api/v1/monitors/backtest', 'monitors:read', backtest),
+  route('GET', '/api/v1/monitors/detectors', 'monitors:read', detectors),
   route('GET', '/api/v1/monitors/notifier', 'monitors:read', getNotifier),
   route('PUT', '/api/v1/monitors/notifier', 'monitors:write', putNotifier, true),
   route('GET', '/api/v1/monitors/silences', 'monitors:read', listSilences),
@@ -735,7 +761,7 @@ export const ROUTES: RouteDef[] = [
   route('POST', '/api/v1/monitors/{id}/silence', 'monitors:ack', silence, true),
 ]
 
-const RESERVED = new Set(['groups', 'rulefile', 'backtest', 'notifier', 'silences'])
+const RESERVED = new Set(['groups', 'rulefile', 'backtest', 'notifier', 'silences', 'detectors'])
 const ID_RE = /^(mon|r)_[0-9a-f]{16}$/
 
 function match(def: RouteDef, segments: string[]): Record<string, string> | null {

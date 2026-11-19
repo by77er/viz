@@ -1,0 +1,11 @@
+{
+  // Spike S3 re-run load generator (see ../README.md). Deployed only for the measurement, then deleted.
+  "name": "viz-spike-s3-loadgen",
+  "main": "loadgen.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "durable_objects": { "bindings": [{ "name": "CLIENT", "class_name": "Client" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Client"] }],
+  "services": [{ "binding": "NEW", "service": "viz-spike-s3-new" }, { "binding": "ASBUILT", "service": "viz-spike-s3-asbuilt" }]
+}

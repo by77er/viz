@@ -6,7 +6,7 @@ import type { Segment } from '../../shard/src/shard'
 import { STALE_NAN } from '../../engine/wasm/test/vzb1'
 import { type FlushOptions, type FlushResult, dataFileKey, engine, flushTenant } from '../src/index'
 import {
-  DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, discardRecorded, healLedgerLog, ledgerStub, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex,
+  DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, discardRecorded, flushSettled, healLedgerLog, ledgerStub, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex,
   shardStub, someSamples, stream,
 } from './helpers'
 import { StaleTail } from './read'
@@ -574,5 +574,43 @@ describe('entry points', () => {
     await expect(flush('a/b', 'pool/0')).rejects.toThrow(/tenant id must match/)
     await expect(flush('ok', '')).rejects.toThrow(/shard name/)
     expect(shardStub).toBeDefined()
+  })
+})
+
+// spec/README.md F12 (the protocol model's trace `F12_impl_read_unbound`): a flush that listed a
+// segment before the shard lost its storage must not read the new incarnation's batches under
+// the old incarnation's name.
+describe('spec F12: a flush read is bound to the incarnation it was listed in', () => {
+  it('the shard loses its storage between the listing and the read; the new incarnation\'s batch is not filed under the old one', async () => {
+    const s = stream('f12')
+    const old = new Sent()
+    await append(s.shard, s.tenant, someSamples(s.tenant, T0, 20, 1), old)
+    const listed = (await s.shard.seal(s.tenant))!
+    const fresh = new Sent()
+    const r = await flushTenant(env, engine, s.tenant, s.shardName, {
+      hooks: {
+        afterList: async () => {
+          // After the worker listed (inc 1, 1..1): the shard loses its storage, a new batch arrives
+          // in a new incarnation with sequence number 1 again, and is sealed.
+          await runInDurableObject(s.shard, async (_i, state) => { await state.storage.deleteAll() })
+          await evictDurableObject(s.shard)
+          await new Promise((x) => setTimeout(x, 3))
+          await append(s.shard, s.tenant, someSamples(s.tenant, T0 + 600_000, 20, 2), fresh)
+          const seg = (await s.shard.seal(s.tenant))!
+          expect(seg).toMatchObject({ seqLo: 1, seqHi: 1 })
+          expect(seg.incarnation).toBeGreaterThan(listed.incarnation)
+        },
+      },
+    })
+    expect(r).toMatchObject({ status: 'error', reason: 'shard_incarnation_changed' })
+    // Nothing of the new incarnation was admitted under the old one's name.
+    expect((await liveKeys(s.ledger)).filter((k) => k.includes(`-${listed.incarnation}-1-1-`))).toEqual([])
+    // The next run files the new batch under its own incarnation; the rows lost with the old
+    // storage are lost (and visible as such through the ledger's incarnation boundary), not misfiled.
+    const again = await flushSettled(env, engine, s.tenant, s.shardName)
+    expect(again).toMatchObject({ status: 'ok', awaitingLog: false })
+    const keys = await liveKeys(s.ledger)
+    expect(keys.every((k) => !k.includes(`-${listed.incarnation}-`))).toBe(true)
+    expect((await read(s.tenant, [s.shardName])).canon).toEqual(fresh.canon())
   })
 })

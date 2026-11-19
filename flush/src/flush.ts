@@ -71,7 +71,7 @@ export type FlushFailure =
   | 'stale_incarnation'
   /** The ledger still refused the incarnation after it was registered. */
   | 'incarnation_mismatch'
-  /** The shard's stream changed incarnation while this run was in progress. */
+  /** The shard's stream changed incarnation while this run was in progress (also: a segment listed in one incarnation can no longer be read in it). */
   | 'shard_incarnation_changed'
   /** The shard refused the recorded mark as not contiguous. */
   | 'shard_not_contiguous'
@@ -110,6 +110,8 @@ export interface FlushResult {
 
 /** Fault-injection points for tests. A hook that throws stands for a crash at that point. */
 export interface FlushHooks {
+  /** After the pending list was read, before any segment is. */
+  afterList?(pending: Segment[]): void | Promise<void>
   afterPut?(segment: Segment, files: FlushedFile[]): void | Promise<void>
   afterAddUnit?(segment: Segment, result: AddUnitResult): void | Promise<void>
   afterRecorded?(segment: Segment): void | Promise<void>
@@ -189,7 +191,14 @@ interface Ctx {
 
 /** Steps 1 to 3: read, encode, write. Returns the unit to report and what was written. */
 async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; files: FlushedFile[] }> {
-  const batches = await c.shard.readSegment(c.tenant, seg.seqLo)
+  // Bound to the incarnation and range the segment was listed with: after a storage loss the
+  // shard may hold another incarnation's batches under the same sequence numbers, which must
+  // never be filed under the old name (spec/README.md F12). The shard answers null then.
+  const batches = await c.shard.readSegment(c.tenant, seg.seqLo, seg.incarnation, seg.seqHi)
+  if (batches === null) {
+    const now = await c.shard.describe(c.tenant)
+    if (now?.incarnation !== seg.incarnation) throw new Stop('shard_incarnation_changed', `stream ${c.shardName} is now incarnation ${now?.incarnation ?? 'none'}; segment ${seg.seqLo}..${seg.seqHi} was listed in ${seg.incarnation}`)
+  }
   // A pending segment still has every payload: the shard discards only after `recorded`.
   // If it does not (another run recorded it and it has since been discarded), say so.
   const complete =
@@ -300,6 +309,7 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
     for (let restarts = 0; ; restarts++) {
       try {
         const pending = await c.shard.pendingSegments(tenant)
+        await c.hooks.afterList?.(pending)
         out.remaining = 0
         if (pending.length === 0) break
         if (incarnation !== null && pending[0]!.incarnation !== incarnation) {
