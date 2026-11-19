@@ -427,16 +427,26 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
 ## How it was verified
 
 All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node 22.23,
-workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18. Nothing ran on
+workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing ran on
 Cloudflare.
 
-`npm test`: **62 tests, all passing**, in 8 files, in five full runs that day (three
-consecutive after the mutation check: 39 s, 40 s, 45 s while other engineers' suites ran
-on the same cores; the last at 22:27 UTC against the sources fingerprinted under "Known
-risks"). `npx tsc --noEmit`: clean. `engine/query`: `cargo test`, 37 passed
-(3 min 9 s). `engine/promql`: `cargo test`, 26 passed, 1 ignored. `node
-../engine/wasm-query/tools/check.mjs`: 12 of 12. `node tools/gen-fixtures.mjs` reproduces
-both fixture files byte for byte.
+**After split execution and the cardinality report (2026-11-19, about 01:00 UTC, load
+average near 20):** `npx vitest run --maxWorkers=2`: **78 tests, all passing**, in 10 files
+(102 s): the 62 earlier ones, 8 in `split.test.ts`, 5 in `cardinality.test.ts`, 2 release-
+skew tests in `fence.test.ts` and 1 in `http.test.ts`. `npx tsc --noEmit`: clean.
+`engine/query`: `cargo test`, 47 passed; a soak of its two split properties at 120 cases
+each passed. `engine/promql`: 27 passed, 1 ignored. `node
+../engine/wasm-query/tools/check.mjs`: 12 of 12. `node tools/gen-fixtures.mjs` was re-run
+with the reference's new aggregations: `workload.json` is byte-identical, `expected.json`
+changed only in the `stddev` query (16th and 17th significant digits, both tenants).
+Two things in other components changed under these tests and were followed here: the
+ledger now lists files by precedence (`leaves.test.ts`), and flush tells a shard
+`recorded` only at the ledger's logged watermark, so `flushAll` in `test/world.ts` runs the
+ledger's alarm and flushes again (without it no shard discarded, and four tests that need
+an all-lake moment failed).
+
+Before (2026-11-18): `npm test`: 62 tests, all passing, in 8 files, in five full runs that
+day (39 to 45 s); `engine/query` 37 passed; `engine/promql` 26 passed, 1 ignored.
 
 ### The reference
 
@@ -541,10 +551,15 @@ run against the Worker**, and no response was compared with a running Prometheus
 
 `node tools/mutants.mjs` applies one change to the source, runs the whole suite,
 restores the source, and prints the failing tests. It first confirms that every mutant
-applies and that the unmutated suite passes, and counts a mutant that does not type-check
-as invalid. Mutant 8 changes Rust and rebuilds the WASM module before and after.
+applies and runs the unmutated suite; a test that fails there (another component
+mid-edit) cannot kill a mutant, and a mutant is invalid only if it adds a type error that
+the unmutated sources do not have (the tool compares with a baseline since a ledger edit
+left type errors in `ledger/` for a while). Vitest runs with two workers. Mutant 8 changes
+Rust and rebuilds the WASM module before and after. **The tool edits `src/` in place:
+build, test or snapshot nothing from `query/` while it runs** (a CI snapshot taken during
+`engine/query`'s mutation run tested a mutant; see that README).
 
-Last run 2026-11-18, against the sources and module described here: **26 of 26 mutants
+Run 2026-11-18 for mutants 1 to 26 (before split execution; 10 since rewritten): **26 of 26
 killed, none survived, none invalid**; the unmutated suite passed first; 6 min 54 s.
 After the run every source was back (each mutant's text found exactly once again) and the
 rebuilt module had the same SHA-256 as before the run.
@@ -577,6 +592,26 @@ rebuilt module had the same SHA-256 as before the run.
 | 24 | CORS echoes any origin | http › CORS |
 | 25 | the series files are not handed to the engine | invariance › the three placements |
 | 26 | after the refusal bound the query answers from what it has | fence › discarded for good; a shard behind the ledger; a missing file (3 tests) |
+| 27 | **split by file instead of by series** (each leaf reads some file groups and keeps every series in them) | split › the table + 64 at 1, 2, 7, 32 leaves; split by itself; budgets; reruns; … (7 tests) |
+| 28 | **the tail evaluated apart from the lake** (each leaf gets another leaf's tail rows) | split › the same 7 tests |
+| 29 | **a leaf's partial merged twice when a leaf was retried** | split › a reader or a split leaf that fails once is retried, nothing counted twice |
+| 30 | **the per-leaf budget not enforced** | split › each leaf stops at its share; a leaf over its share is run again |
+| 31 | **a query that does not decompose sent to the leaves anyway** | split › the table at 1, 2, 7, 32 leaves; the fallback test |
+| 32 | reader groups of eight reads | leaves › files go to the readers in precedence order (groups of at most six); split › the table |
+| 33 | **cardinality counts the tenant named by a `tenant` parameter** | cardinality › never counts another tenant's series |
+| 34 | **churn counts series that existed before the range** (the look-back window is not read) | cardinality › churn; caps (2 tests) |
+| 35 | a split query's result checked against one leaf's share instead of the query's budget | split › budgets; reruns (2 tests) |
+| 36 | an unknown shard status falls through to the stream-mismatch path | fence › release skew: an unknown status or schema_too_new is a retryable 503 |
+| 37 | an engine that does not load answered as a retryable 503 | http › an engine that does not load is a 500 |
+
+Mutants 27 to 37 are new with split execution, the cardinality report and the
+compatibility fixes; mutant 10 was rewritten for the precedence order (it now sorts by
+key). **Run 2026-11-19 (mutants 10 and 27 to 37): 12 of 12 killed, none survived, none
+invalid**; the unmutated suite was run first. The kinds of mutant asked for are rows 27 (by
+file), 33 and 34 of this table, 29 (retry counted twice), 30 (budget), 31 (not
+decomposable), 28 (tail apart from the lake), and, in `engine/query`'s table, 32 to 41
+(`topk` k too small, `avg` as a mean of means, merge order, precedence, limit replay,
+rounding).
 
 The ten kinds of mutant the task names are rows 1, 4, 5, 6, 8, 11 and 12, 3, 13, 16 (and
 15), 17 and 18. Fourteen mutants are caught by exactly one test (1 to 3, 10, 13 to 16, 18,

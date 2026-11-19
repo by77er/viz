@@ -169,14 +169,22 @@ export interface OrphanResult {
 /**
  * Can this unreferenced flush file ever be admitted? Not if its stream's LOGGED watermark
  * has reached its range (a unit for that range is answered as a replay and adds no file),
- * and not if the ledger has a newer incarnation of the stream (a lower one is refused).
- * Anything else may be the files of a unit that is about to be reported.
+ * and not if the ledger has a newer incarnation of the stream whose registration is LOGGED
+ * (a lower one is then refused for good). Anything else may be the files of a unit that is
+ * about to be reported.
+ *
+ * `orphanCheck` reports each stream's COMMITTED incarnation with the logged watermark of that
+ * incarnation. A registration that is committed but not logged can be rolled back by a
+ * rebuild, after which a late `addUnit` of the older incarnation is admitted again
+ * (spec/README.md F15). The log is a prefix of versions and a unit's version is above its
+ * stream's registration, so a logged watermark above 0 for the newer incarnation proves the
+ * registration is logged; at 0 this keeps the file.
  */
 function flushFileState(m: RegExpExecArray, logged: Watermark[]): 'dead' | 'pending_unit' | 'unknown_stream' {
   const [, shard, inc, , seqHi] = m
   const w = logged.find((x) => x.shard.replaceAll('/', '_') === shard)
   if (!w) return 'unknown_stream'
-  if (w.incarnation > Number(inc)) return 'dead'
+  if (w.incarnation > Number(inc)) return w.seq > 0 ? 'dead' : 'pending_unit'
   return w.incarnation === Number(inc) && w.seq >= Number(seqHi) ? 'dead' : 'pending_unit'
 }
 

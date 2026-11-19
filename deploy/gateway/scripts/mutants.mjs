@@ -22,6 +22,8 @@ const MUTANTS = [
   ['a query prefix is too wide', "const QUERY_PREFIXES = ['/api/v1/label/', '/api/v1/status/']", "const QUERY_PREFIXES = ['/api/v1/label', '/api/v1/status/']"],
   ['control prefix matches /api/v1/controls', 'path.startsWith(`${CONTROL_ROOT}/`)', 'path.startsWith(CONTROL_ROOT)'],
   ['healthy when any backend is', 'const healthy = results.every((r) => r.ok)', 'const healthy = results.some((r) => r.ok)'],
+  ['control health probes the OpenAPI document again', "  control: '/healthz',", "  control: '/api/v1/control/openapi.json',"],
+  ['bootstrap answers a schema_too_new refusal with 500', '    if (/^schema_too_new/.test(message)) {', '    if (false) {'],
   ['a throwing backend crashes the gateway', 'res = await env[BINDING[backend]].fetch(req)\n  } catch (e) {', 'res = await env[BINDING[backend]].fetch(req)\n  } catch (e) {\n    throw e'],
 ]
 

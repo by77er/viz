@@ -269,6 +269,20 @@ describe('storage written by another release', () => {
     expect((await get(t.admin, '/dashboards/later')).body).toMatchObject({ number: 2, spec: { metadata: { title: 'Edited by release 1' } } })
   })
 
+  it('a stored spec is validated again when reviewed and applied: one that does not pass is shown with its errors and never applied', async () => {
+    const { t, agent, dana } = await setup()
+    const id = (await post(agent.key, '/proposals', { spec: SPEC('checked'), message: 'm' })).body.proposal.id
+    const bad = SPEC('checked')
+    delete bad.metadata.intent
+    await runInDurableObject(stubOf(t.tenant), (_i, s) => void s.storage.sql.exec('UPDATE proposals SET spec = ? WHERE tenant = ? AND id = ?', JSON.stringify(bad), t.tenant, id))
+    const review = (await get(dana.key, `/proposals/${id}`)).body.review
+    expect(review).toMatchObject({ result: null, errors: validate(bad).errors })
+    const before = await snapshot(t.admin)
+    const res = await post(dana.key, `/proposals/${id}/apply`)
+    expect([res.status, res.body.code]).toEqual([422, 'invalid-dashboard'])
+    expect(await snapshot(t.admin)).toBe(before)
+  })
+
   it('purging a deleted dashboard keeps an open proposal to create one under its id, which can then be applied', async () => {
     const { t, agent, dana } = await setup()
     const id = (await post(agent.key, '/proposals', { spec: SPEC('recycled'), message: 'm' })).body.proposal.id

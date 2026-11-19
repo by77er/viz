@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { compactStep } from '../../compact/src/compact'
 import { flushTenant } from '../../flush/src/flush'
-import { DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, healLedgerLog, liveKeys, read, someSamples, stream } from '../../flush/test/helpers'
+import { DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, healLedgerLog, liveKeys, loseLedgerStorage, read, someSamples, stream } from '../../flush/test/helpers'
 import { canonOf } from '../../flush/test/read'
 import { engine } from '../../flush/src/index'
 import { DEFAULT_RETENTION, expireTenant, parseRetention, purgeTenant, readRetention, retentionCutoffDay, sweepOrphans } from '../src/index'
@@ -292,5 +292,44 @@ describe('orphan sweep', () => {
     expect(await dataKeys(a.tenant)).toEqual(objects)
     expect((await dataKeys(b.tenant)).length).toBe(4)
     await expect(sweepOrphans(env, '../x', NOW)).rejects.toThrow(/tenant id/)
+  })
+})
+
+// spec/README.md F15 (the protocol model's trace `F15_sweeper_trusts_unlogged_registration`):
+// the sweep must not call an older incarnation's file dead on a registration that is not logged.
+describe('spec F15: a newer incarnation counts only once its registration is logged', () => {
+  it('worker 2 adopts worker 1\'s file; a newer incarnation registers unlogged; the sweep runs; a rebuild rolls it back', async () => {
+    const s = stream('f15')
+    const sent = new Sent()
+    await append(s.shard, s.tenant, someSamples(s.tenant, T0, 24, 1), sent)
+    await s.shard.seal(s.tenant)
+    const inc = (await s.shard.pendingSegments(s.tenant))[0]!.incarnation
+    // Worker 1 reads the segment, PUTs its files, and dies before addUnit.
+    await expect(flushTenant(env, engine, s.tenant, s.shardName, { hooks: { afterPut: () => { throw new Error('worker 1 dies') } } })).rejects.toThrow('worker 1 dies')
+    const files = await dataKeys(s.tenant)
+    expect(files).toHaveLength(2)
+    // Worker 2 reads the same segment and its PUTs find worker 1's objects. Before its
+    // addUnit: a newer incarnation of the stream registers, committed but NOT logged; the
+    // sweep runs a day later; the ledger then loses its storage and the rebuild rolls the
+    // registration back.
+    let swept: string[] = []
+    const w2 = await flushTenant(env, engine, s.tenant, s.shardName, {
+      hooks: {
+        afterPut: async (_seg, put) => {
+          expect(put.map((f) => f.put)).toEqual(['exists', 'exists'])
+          await breakLedgerLog(s.ledger)
+          await s.ledger.registerStream({ shard: s.shardName, incarnation: inc + 1 })
+          swept = (await sweepOrphans(env, s.tenant, { graceMs: 0, now: Date.now() + DAY_MS })).deleted
+          await loseLedgerStorage(s.ledger)
+        },
+      },
+    })
+    // Worker 2's addUnit for the old incarnation is admitted by the rebuilt ledger.
+    expect(w2.status).toBe('ok')
+    expect(swept).toEqual([])
+    const live = await liveKeys(s.ledger)
+    expect(live).toEqual(files)
+    expect(await exists(live), 'every listed file has its object').toEqual([true, true])
+    expect((await read(s.tenant, [s.shardName])).canon).toEqual(sent.canon())
   })
 })

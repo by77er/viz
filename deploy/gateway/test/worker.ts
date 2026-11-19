@@ -58,7 +58,7 @@ export class FakeQuery extends WorkerEntrypoint {
   }
 }
 /** Echoes like the others, except `/healthz`, which is control's real health route (control/src/index.ts) on this Worker's bindings. */
-export class FakeControl extends WorkerEntrypoint<Env> {
+export class FakeControl extends WorkerEntrypoint<Cloudflare.Env> {
   fetch(req: Request) {
     if (new URL(req.url).pathname === '/healthz') return control.fetch!(req as never, this.env as never, this.ctx)
     return echo('control', req)
