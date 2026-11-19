@@ -204,13 +204,17 @@ describe('caps: refused before anything is fetched, or by the engine as it decod
     }
   })
 
-  it('max_spans and max_log_rows from the fragments, before any fetch', async () => {
+  it('max_spans and max_log_rows from the fragments, before any span or log file is fetched', async () => {
     const { w, fx } = await capped({ maxSpans: 10, maxLogRows: 10 })
-    for (const [prefix, name] of [['search/0/', 'max_spans'], ['loki/0/', 'max_log_rows']] as const) {
+    // A search reads its trace_index files first (a fragment is not a span: they are held under
+    // the byte budget, not counted against max_spans); no spans file is fetched.
+    const indexBytes = fx.spans.units.flatMap((u) => u.files).filter((f) => f.table === 'trace_index').reduce((a, f) => a + unb64(f.bytes).byteLength, 0)
+    for (const [prefix, name, most] of [['search/0/', 'max_spans', indexBytes], ['loki/0/', 'max_log_rows', 0]] as const) {
       const res = await call(w.a.key, pick(fx, prefix))
       const text = await res.text()
       expect([res.status, text.includes(name)]).toEqual([422, true])
-      expect(cost(res, 'R2-Gets') + cost(res, 'Cache-Hits')).toBe(0)
+      expect([prefix, cost(res, 'Bytes-Read') <= most]).toEqual([prefix, true])
+      if (most === 0) expect(cost(res, 'R2-Gets') + cost(res, 'Cache-Hits')).toBe(0)
     }
   })
 
