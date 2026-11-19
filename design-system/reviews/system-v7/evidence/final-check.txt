@@ -1,0 +1,5 @@
+reserved height: 1 chart(s) with a fine pointer, reserved against drawn: 490.5/490.5
+reserved height: 1 chart(s) with a coarse pointer, reserved against drawn: 711.5/711.5
+rendered audit: 30 previews, both themes, at rest, hover, press and a finger's press, and reserved heights: 0 failure(s)
+contrast and structure: 777/777 checks pass
+literal values: 0 in 1 file(s)

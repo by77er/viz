@@ -20,10 +20,10 @@
 import type { ScanInput } from '../../contracts/engine'
 import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
-import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type Grid, type LeafSummary, type QueryEngine, type QueryLimits, type QueryStats, leafSummary, planBytes, sparseFile } from '../../engine/wasm-query/js/index'
+import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type Grid, type LeafSummary, QueryError, type QueryEngine, type QueryLimits, type QueryStats, leafSummary, planBytes, sparseFile } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
-import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type CardinalityRequest, type ReadItem, type ReadResult, type TailRefusal } from './leaf'
+import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type CardinalityRequest, type MetaAnswer, type MetaRequest, type ReadItem, type ReadResult, type TailRefusal } from './leaf'
 import { type TailBudget, type TailFilter, type TailPart, type TailRead, cutById, readPages, tailEstimate, tailFilter } from './tail'
 
 /** Largest and smallest timestamps storage can hold (contracts/BATCH.md). */
@@ -166,6 +166,8 @@ export interface Context {
   deadlineWhy?: string
   /** Spreads this query's reads over the leaf pool differently from any other query's. */
   queryId: string
+  /** Prometheus warnings for the envelope (`results truncated due to limit`). */
+  warnings?: string[]
 }
 
 // ───────────────────────────────── ledger ─────────────────────────────────
@@ -933,15 +935,78 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
   }
 }
 
+/** What a label endpoint lists (`/labels`, `/label/<name>/values`, `/series`), for a call over leaves. */
+export interface MetaSpec {
+  kind: 'names' | 'values' | 'series'
+  name: string
+  match: string[]
+  start: number
+  end: number
+  /** The engine's limits for the call (`maxSeries` is `maxMetadataSeries`). */
+  limits: QueryLimits
+}
+
+/** Code-point order, which is UTF-8 byte order (the engine sorts by bytes); JavaScript's `<` compares UTF-16 units. */
+export function byCodePoint(a: string, b: string): number {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    const x = a.codePointAt(i)!
+    const y = b.codePointAt(i)!
+    if (x !== y) return x - y
+    if (x > 0xffff) i++
+  }
+  return a.length - b.length
+}
+
+/** Label sets in the engine's order: their (name, value) pairs, sorted by name, compared pair by pair; a prefix first. */
+function byLabels(a: Record<string, string>, b: Record<string, string>): number {
+  const pa = Object.entries(a).sort((x, y) => byCodePoint(x[0], y[0]))
+  const pb = Object.entries(b).sort((x, y) => byCodePoint(x[0], y[0]))
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    const c = byCodePoint(pa[i]![0], pb[i]![0]) || byCodePoint(pa[i]![1], pb[i]![1])
+    if (c !== 0) return c
+  }
+  return pa.length - pb.length
+}
+
+/**
+ * The parts' listings of a label call merged as one place lists them: names and values a
+ * sorted union, series a sorted concatenation (parts are disjoint in series); the counts of
+ * series listed added per `match[]` set and checked against the call's cap, as one place
+ * checks each set's. The answer is the JSON one place gives (`JSON.stringify` of the list).
+ */
+export function mergeMeta(kind: MetaSpec['kind'], answers: { json: string; listed: number[] }[], maxSeries: number): string {
+  const sets = Math.max(0, ...answers.map((a) => a.listed.length))
+  for (let i = 0; i < sets; i++) {
+    const n = answers.reduce((x, a) => x + (a.listed[i] ?? 0), 0)
+    if (n > maxSeries) throw new QueryError('execution', `query exceeded limit max_series: ${n} series listed, the limit is ${maxSeries}`, { name: 'max_series', max: maxSeries, reached: n })
+  }
+  if (kind === 'series') {
+    const all = answers.flatMap((a) => JSON.parse(a.json) as Record<string, string>[])
+    all.sort(byLabels)
+    return JSON.stringify(all.filter((x, i) => i === 0 || byLabels(all[i - 1]!, x) !== 0))
+  }
+  const all = answers.flatMap((a) => JSON.parse(a.json) as string[])
+  all.sort(byCodePoint)
+  return JSON.stringify(all.filter((x, i) => i === 0 || all[i - 1] !== x))
+}
+
 /**
  * The label endpoints (CARDINALITY.md, item 3): a series-only read. Only the
  * `metric_series` files the ranges can touch (by name and time, range-read to the row
- * groups of the ranges' metrics) and every shard's tail, from one ledger version with the
- * same fence as a query; no sample file is listed for reading, fetched or decoded. "In the
- * range" is decided per file (contracts/TABLES.md). Bounded by `maxFetchBytes` and
- * `maxFiles` over what is read, and in the engine by `maxMetadataSeries` (`evaluate` passes it).
+ * groups of the ranges' metrics) and every shard's tail (filtered by the calls' window,
+ * metric names and pinned labels: exact here), from one ledger version with the same fence
+ * as a query; no sample file is listed for reading, fetched or decoded. "In the range" is
+ * decided per file (contracts/TABLES.md). In one place under `maxFetchBytes` and `maxFiles`
+ * over what is read, and in the engine `maxMetadataSeries` (`evaluate` passes it).
+ *
+ * **Over leaves** (2026-11-19) when the series files or the tail do not fit one place: each
+ * part lists the series whose `series_id` is in its range, from its row groups of every
+ * series file and its part of the tail (read by it when the tail did not fit here, D54),
+ * under `maxFetchBytes` of its own; the coordinator merges the lists and adds up the counts
+ * (`mergeMeta`). `evaluate` answers one place; the result is JSON text either way.
  */
-export async function gatherSeries<T>(c: Context, ranges: FetchRange[], evaluate: (input: ScanInput) => T): Promise<T> {
+export async function gatherSeries(c: Context, ranges: FetchRange[], meta: MetaSpec, evaluate: (input: ScanInput) => string): Promise<string> {
   const minTs = Math.min(...ranges.map((r) => r.minTs))
   const maxTs = Math.max(...ranges.map((r) => r.maxTs))
   const have = new Map<string, Uint8Array>()
@@ -952,6 +1017,7 @@ export async function gatherSeries<T>(c: Context, ranges: FetchRange[], evaluate
     refusals.set(who, n)
     if (n > MAX_REFUSALS) throw new ApiError('unavailable', `${why}, and the ledger does not catch up; retry later`)
   }
+  const filter = tailFilter(ranges)
   let reserved = 0
   try {
     for (let attempt = 1; ; attempt++) {
@@ -959,27 +1025,30 @@ export async function gatherSeries<T>(c: Context, ranges: FetchRange[], evaluate
       const snap = await snapshot(c, minTs, maxTs)
       c.cost.ledgerVersion = snap.version
       if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
-      const plans = toPlanned(snap.series, c.engine.filePlan(snap.series.map((f) => f.index), ranges))
+      const listedFiles = snap.series
+      const plans = toPlanned(listedFiles, c.engine.filePlan(listedFiles.map((f) => f.index), ranges))
       c.cost.filesListed = snap.series.length + snap.samples.length
       c.cost.filesSkipped = c.cost.filesListed - plans.length
       c.cost.pruning = 'series-only'
       const bytes = sumPlanned(plans)
       if (plans.length > c.limits.maxFiles) throw new ApiError('execution', `query exceeded limit max_files: ${plans.length} series files to read, the limit is ${c.limits.maxFiles}. Narrow the time range.`)
-      if (bytes > c.limits.maxFetchBytes) throw tooMuch(c, `the ${plans.length} series files in range`, bytes)
-      if (reserved === 0) {
+      // Series files over one place's budget: over leaves (each reads its ids' row groups).
+      const leaves = hooks.forceLeaves !== undefined || bytes > c.limits.maxFetchBytes
+      if (leaves && bytes > c.limits.maxQueryFetchBytes) throw tooMuch(c, `the ${plans.length} series files in range`, bytes)
+      if (!leaves && reserved === 0) {
         if (inFlightBytes > 0 && inFlightBytes + bytes > (hooks.isolateBudgetBytes ?? ISOLATE_BUDGET_BYTES)) throw new ApiError('unavailable', 'the query service is busy; retry')
         reserved = Math.max(bytes, 1)
         inFlightBytes += reserved
       }
       const shards = await shardsOf(c, snap.watermarks)
       c.cost.shardsAsked = shards.length
-      const files = fetchFiles(c, plans, have).then(
-        (b) => ({ ok: true as const, bytes: b }),
-        (error: unknown) => ({ ok: false as const, error }),
-      )
-      // The tail filtered by the calls' window, metric names and pinned labels (exact here:
-      // a tail row lists its series only if it lies in the window, engine `meta`).
-      const tails = await readTails(c, shards, snap.watermarks, known, refused, tailFilter(ranges), c.limits.maxFetchBytes - bytes)
+      const files = leaves
+        ? Promise.resolve({ ok: true as const, bytes: [] as Uint8Array[] })
+        : fetchFiles(c, plans, have).then(
+            (b) => ({ ok: true as const, bytes: b }),
+            (error: unknown) => ({ ok: false as const, error }),
+          )
+      const tails = await readTails(c, shards, snap.watermarks, known, refused, filter, c.limits.maxFetchBytes - (leaves ? 0 : bytes))
       let again = tails.again
       const got = await files
       if (!got.ok) {
@@ -988,11 +1057,89 @@ export async function gatherSeries<T>(c: Context, ranges: FetchRange[], evaluate
         again = true
       }
       if (again || tails.again) continue
-      if (tails.over) throw tooMuch(c, 'the series files in range plus the unflushed tail', bytes + tails.atLeast, !tails.exact)
-      c.cost.filesRead = plans.length
-      c.cost.bytesRead = bytes
       checkDeadline(c)
-      return timed(c, evaluate, { seriesFiles: got.ok ? got.bytes : [], sampleFiles: [], tailBatches: tailBatchesOf(tails.reads) })
+      if (!leaves && !tails.over) {
+        c.cost.execution = 'single'
+        c.cost.filesRead = plans.length
+        c.cost.bytesRead = bytes
+        return timed(c, evaluate, { seriesFiles: got.ok ? got.bytes : [], sampleFiles: [], tailBatches: tailBatchesOf(tails.reads) })
+      }
+      // ── Over leaves: each part lists its `series_id` range. ──
+      have.clear()
+      const pool = leafPoolSize(c.env)
+      const most = Math.max(1, Math.min(c.limits.maxLeaves, pool))
+      const est = tailEstimate(tails.reads)
+      const L = hooks.forceLeaves ?? Math.min(most, Math.max(2, Math.ceil((bytes + (tails.over ? est.bytes : tails.bytes)) / (0.5 * c.limits.maxFetchBytes))))
+      c.cost.execution = 'split'
+      c.cost.splitLeaves = L
+      const cut = tails.reads.map((r) => cutAll(r.batches.map((b) => b.payload), L))
+      const rests = tails.reads.map((r) => restOf(r, filter))
+      const leafTails = rests.some((r) => r !== null)
+      if (leafTails) c.cost.tailMode += '+leaves'
+      const refs: FileRef[] = plans.map((p) => ({ key: p.f.key, bytes: p.f.bytes, index: listedFiles.find((f) => f.key === p.f.key)!.index }))
+      const base = hash32(c.queryId)
+      const answers = await Promise.all(
+        Array.from({ length: L }, async (_, j) => {
+          const pt: PartTail = leafTails ? { tails: [], tailParts: tails.reads.map((r, i) => ({ shard: r.shard, batches: cut[i]![j]!, rest: rests[i]! })) } : { tails: cut.flatMap((parts) => parts[j]!) }
+          const req: MetaRequest = {
+            kind: meta.kind, name: meta.name, match: meta.match, start: meta.start, end: meta.end, ranges, files: refs, part: j, parts: L, limits: meta.limits,
+            maxBytes: c.limits.maxFetchBytes, tails: pt.tails, cacheTtlS: fileCacheTtl(c.env),
+            ...(pt.tailParts ? { tailParts: pt.tailParts, tenant: c.tenant } : {}),
+          }
+          const sent = pt.tails.reduce((a, b) => a + b.byteLength, 0) + (pt.tailParts ?? []).reduce((a, p) => a + p.batches.reduce((x, b) => x + b.byteLength, 0), 0)
+          const call = (attempt: number) => {
+            c.cost.leafCalls++
+            c.cost.rpcBytes += sent
+            return c.env.LEAF.get(c.env.LEAF.idFromName(`leaf/${c.env.CELL}/${(base + j + attempt) % pool}`)).meta(req)
+          }
+          let a: MetaAnswer
+          try {
+            a = await call(0)
+          } catch {
+            try {
+              a = await call(1)
+            } catch (e) {
+              throw new ApiError('unavailable', `a leaf failed twice listing its part: ${e instanceof Error ? e.message : String(e)}`)
+            }
+          }
+          if (a.status === 'ok' && pt.tailParts && !a.tail) throw new ApiError('unavailable', 'a leaf of an earlier release answered a label call without reading its part of the tail; retry')
+          return a
+        }),
+      )
+      c.cost.leavesUsed = Math.max(c.cost.leavesUsed, Math.min(L, pool))
+      const missing = answers.find((a) => a.status === 'missing')
+      if (missing && missing.status === 'missing') {
+        refused(`file ${missing.key}`, `data file ${missing.key} is listed by the ledger but is not in R2`)
+        continue
+      }
+      const tail = answers.find((a) => a.status === 'tail')
+      if (tail && tail.status === 'tail') {
+        tailRefused(c, tail, known, refused, L)
+        continue
+      }
+      const error = answers.find((a) => a.status === 'error')
+      if (error && error.status === 'error') throw new QueryError(error.errorType, error.message, error.limit)
+      const large = answers.find((a) => a.status === 'too_large')
+      if (large && large.status === 'too_large') throw tooMuch(c, `the series files and unflushed tail of one of ${L} parts`, large.bytes, true)
+      const oks = answers.filter((a): a is Extract<MetaAnswer, { status: 'ok' }> => a.status === 'ok')
+      c.cost.filesRead = plans.length
+      for (const a of oks) {
+        c.cost.bytesRead += a.bytesRead
+        c.cost.cacheHits += a.cacheHits
+        c.cost.r2Gets += a.r2Gets
+        c.cost.rpcBytes += a.json.length
+        if (a.tail) {
+          c.cost.shardCalls += a.tail.calls
+          c.cost.tailBatches += a.tail.batches
+          c.cost.tailBytes += a.tail.bytes
+        }
+      }
+      const t0 = performance.now()
+      try {
+        return mergeMeta(meta.kind, oks, meta.limits.maxSeries)
+      } finally {
+        c.cost.engineMs += Math.round(performance.now() - t0)
+      }
     }
   } finally {
     inFlightBytes -= reserved

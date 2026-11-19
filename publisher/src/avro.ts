@@ -185,11 +185,12 @@ const BLOCK_RECORDS = 2000
 
 /**
  * Write an Avro object container file. `metadata` is added to the header next to
- * `avro.schema` and `avro.codec`.
+ * `avro.schema` and `avro.codec`. `records` is iterated once and encoded as it comes, a block
+ * of `BLOCK_RECORDS` at a time, so a generator need not hold them all.
  */
 export async function writeAvro(
   schema: AvroSchema,
-  records: readonly unknown[],
+  records: Iterable<unknown>,
   metadata: Record<string, string>,
   codec: AvroCodec = 'deflate',
   /** The 16-byte sync marker; random unless given (a writer that must repeat its bytes passes one). */
@@ -208,15 +209,20 @@ export async function writeAvro(
   o.raw(sync)
   const parts: Uint8Array[] = [o.take()]
   const block = new Out()
-  for (let at = 0; at < records.length; at += BLOCK_RECORDS) {
-    const end = Math.min(records.length, at + BLOCK_RECORDS)
-    for (let i = at; i < end; i++) encode(block, schema, records[i], '$')
+  let count = 0
+  const flush = async () => {
     let data = block.take()
     if (codec === 'deflate') data = await pipe(data, new CompressionStream('deflate-raw'))
-    o.long(end - at)
+    o.long(count)
     o.long(data.length)
     parts.push(o.take(), data, sync)
+    count = 0
   }
+  for (const r of records) {
+    encode(block, schema, r, '$')
+    if (++count === BLOCK_RECORDS) await flush()
+  }
+  if (count > 0) await flush()
   const total = parts.reduce((n, p) => n + p.length, 0)
   const file = new Uint8Array(total)
   let n = 0

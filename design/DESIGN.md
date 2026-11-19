@@ -466,9 +466,15 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   lives in the ruler's SQLite per (rule, series), written as whole batches per row in the
   transaction that commits the alerts, and is rebuilt from there after eviction; a per-rule
   series cap and state limits refuse an evaluation rather than drop series. Defaults follow
-  held-out evidence (D33): EWMA, or a static threshold for pages; the robust z-score and the
-  seasonal baseline are opt-in, since with the MAD spread both scored below a static
-  threshold on held-out data; STL, CUSUM and PELT explain changes and do not page. Seasonal
+  evidence on data they were not chosen on (D33): a rule that does not page uses the robust
+  z-score with a tail-aware spread (the 99th percentile of |x − median| over 1,500 points),
+  which beat EWMA and a static threshold held out on NAB and on a second benchmark of server
+  metrics never used to choose it, where EWMA, the earlier default, fell below the threshold;
+  pages use a static threshold; the seasonal baseline is opt-in, for values wrong for their
+  time of day; with the MAD spread, robust z and the seasonal baseline both scored below a
+  static threshold; STL, CUSUM and PELT explain changes and do not page.
+  Defaults are written out when a rule is saved, so a changed default never changes a stored
+  rule, and a rule saved again keeps the defaults it was stored with. Seasonal
   decomposition, changepoint detection and log-template frequency shifts are scheduled jobs
   (not built). Foundation models in a Container are an opt-in later tier.
 - **SLOs** are a rule kind too (`contracts/rules.ts`, version 4): an objective, a compliance

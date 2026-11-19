@@ -21,7 +21,7 @@
  */
 import type { Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData } from '../../../contracts/engine'
 
-export const ABI_VERSION = 3
+export const ABI_VERSION = 4
 
 /** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
 export interface QueryLimits {
@@ -281,6 +281,15 @@ export interface QueryEngine {
   cardinalityPart(seriesFiles: Uint8Array[], tailBatches: Uint8Array[], startMs: number, endMs: number, part: number, parts: number, caps: CardinalityCaps): Uint8Array
   /** Cardinality: merge the parts and render `/api/v1/status/tsdb` and `/api/v1/status/cardinality` (`data` objects, JSON text). */
   cardinalityReport(summaries: Uint8Array[], limit: number, startMs: number, endMs: number, lookbackStartMs: number, caps: CardinalityCaps): { tsdb: string; cardinality: string }
+  /**
+   * One part of a label call over leaves (ABI 4): what `labelNames` (`kind` 'names'),
+   * `labelValues` ('values', of `name`) or `series` ('series') list of the series whose
+   * `series_id` is in part `part` of `parts`, as the engine wrote it (JSON text), and how many
+   * series were listed: one count per `match[]` set for names and values (one when there is
+   * none), one for series. Parts are disjoint: their listings union to the whole and their
+   * counts add up to the whole's.
+   */
+  metaPart(kind: 'names' | 'values' | 'series', input: ScanInput, name: string, match: string[], minTs: number, maxTs: number, part: number, parts: number, limits?: QueryLimits): { json: string; listed: number[] }
   /** Size of the instance's linear memory now, which is also its peak: it only grows. */
   memoryBytes(): number
   /** How many times a WASM instance has been created (1, plus one per trap or reset). */
@@ -319,6 +328,7 @@ type Op =
   | 'viz_q_file_plan'
   | 'viz_q_sample_plan'
   | 'viz_q_part_plan'
+  | 'viz_q_meta_part'
 type Module = Exports & Record<Op, (ptr: number, len: number) => number>
 
 const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
@@ -651,6 +661,16 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     },
     partPlan: (indexes, ranges, part, parts, gap = RANGE_GAP) =>
       call('viz_q_part_plan', new Request().u64(limit('gap', gap)).count('part', part).count('parts', parts).ranges(ranges).strs(indexes), json<FilePlan[]>),
+    metaPart: (kind, input, name, match, minTs, maxTs, part, parts, limits = DEFAULT_LIMITS) => {
+      const k = kind === 'names' ? 0 : kind === 'values' ? 1 : 2
+      const req = new Request().u8(k).limits(limits).i64(time('minTs', minTs)).i64(time('maxTs', maxTs)).count('part', part).count('parts', parts).str(name).strs(match).scan(input)
+      return call('viz_q_meta_part', req, (payload) => {
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        const n = dv.getUint32(0, true)
+        const listed = Array.from({ length: n }, (_, i) => u64At(dv, 4 + 8 * i))
+        return { listed, json: text.decode(payload.subarray(4 + 8 * n)) }
+      })
+    },
     memoryBytes: () => (x ? x.memory.buffer.byteLength : 0),
     instances: () => created,
     reset: () => {

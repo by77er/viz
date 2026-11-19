@@ -675,8 +675,11 @@ impl<'a> Parser<'a> {
         Ok((lhs, h))
     }
 
-    /// Compiles the pattern of `=~` / `!~`, fully anchored, within the limits of
-    /// [`MAX_REGEXES`].
+    /// Compiles the pattern of `=~` / `!~` within the limits of [`MAX_REGEXES`]. TraceQL's
+    /// regexes are Go's (Tempo's documentation and observed behaviour: `\w`, `\d`, `\s`, `\b`
+    /// ASCII-only, `\Q…\E`, octal escapes, Go's errors), fully anchored with `.` matching a
+    /// newline (`^(?s:…)$`, observed); `viz_goregex` translates them. Unicode classes are
+    /// Unsupported. Group names are dropped: matching does not use them.
     #[inline(never)]
     fn regex(&mut self, text: &str, pos: usize) -> Result<regex::Regex, Error> {
         self.regexes += 1;
@@ -684,13 +687,12 @@ impl<'a> Parser<'a> {
             return Err(self.verr(pos, format!("more than {MAX_REGEXES} regular expressions in one query")));
         }
         // The anchoring `^(?s:…)$` adds two levels (a concatenation and a group) to the
-        // nesting the regex parser counts in the user's pattern.
-        regex::RegexBuilder::new(&format!("^(?s:{text})$"))
-            .nest_limit(REGEX_NEST_LIMIT + 2)
-            .size_limit(REGEX_SIZE_LIMIT)
-            .dfa_size_limit(REGEX_DFA_SIZE_LIMIT)
-            .build()
-            .map_err(|e| self.verr(pos, format!("invalid regex {text:?}: {e}")))
+        // nesting the regex parser counts in the translated pattern.
+        let limits = viz_goregex::Limits { size: REGEX_SIZE_LIMIT, dfa_size: REGEX_DFA_SIZE_LIMIT, nest: REGEX_NEST_LIMIT + 2 };
+        viz_goregex::compile(text, viz_goregex::Wrap::Anchored, false, &limits).map_err(|e| match e {
+            viz_goregex::Error::Unsupported(m) => Error::Unsupported(format!("regex {text:?}: {m}")),
+            viz_goregex::Error::Invalid(m) => self.verr(pos, format!("invalid regex {text:?}: {m}")),
+        })
     }
 
     fn field_add(&mut self) -> Hp<FieldExpr> {

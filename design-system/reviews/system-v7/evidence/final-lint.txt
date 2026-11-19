@@ -1,0 +1,2 @@
+contrast and structure: 772/772 checks pass
+literal values: 0 in 45 file(s)

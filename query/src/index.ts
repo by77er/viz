@@ -21,7 +21,7 @@ import { EngineLoadError, type Grid, QueryError, type SplitPlan, createQueryEngi
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { ConfigError, type Env, tenantLimits } from './config'
 import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type QueryPlan, type SplitSpec, addStats, cardinality, gather, gatherSeries, newCost, timedOut } from './coordinator'
-import { cardinalityParams, parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
+import { cardinalityParams, limitParam, parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
 
 export { Leaf } from './leaf'
 export type { Env } from './config'
@@ -104,9 +104,20 @@ function cors(req: Request, env: Env): Record<string, string> {
 
 const JSON_TYPE = { 'Content-Type': 'application/json' }
 
-/** `data` is JSON text: the engine's results go out exactly as the engine wrote them. */
-function success(data: string, headers: Record<string, string>): Response {
-  return new Response(`{"status":"success","data":${data}}`, { status: 200, headers: { ...JSON_TYPE, ...headers } })
+/** `data` is JSON text: the engine's results go out exactly as the engine wrote them. `warnings` only when there are some (Prometheus' envelope). */
+function success(data: string, headers: Record<string, string>, warnings: string[] = []): Response {
+  const w = warnings.length > 0 ? `,"warnings":${JSON.stringify(warnings)}` : ''
+  return new Response(`{"status":"success","data":${data}${w}}`, { status: 200, headers: { ...JSON_TYPE, ...headers } })
+}
+
+/** Prometheus' warning when `limit` cut a result (`web/api/v1/api.go`). */
+export const TRUNCATED = 'results truncated due to limit'
+
+/** The first `limit` items of a sorted list (0: all), with Prometheus' warning when some were cut. */
+function truncate<T>(c: Context, list: T[], limit: number): T[] {
+  if (limit <= 0 || list.length <= limit) return list
+  c.warnings = [...(c.warnings ?? []), TRUNCATED]
+  return list.slice(0, limit)
 }
 
 function failure(errorType: string, error: string, headers: Record<string, string>): Response {
@@ -211,27 +222,29 @@ function metaRanges(c: Context, match: string[], start: number, end: number) {
  */
 const metaLimits = (c: Context) => ({ ...c.limits, maxSeries: c.limits.maxMetadataSeries })
 
-const labels: Handler = async (c, params) => {
+/**
+ * The three label endpoints: one place, or over leaves when the series files or the tail do
+ * not fit one place (`gatherSeries`), with the same answer; then Prometheus' `limit`: the
+ * first `limit` of the sorted list, and a warning when some were cut (as Prometheus does for
+ * these three). The cap on series listed (`maxMetadataSeries`) binds before the limit.
+ */
+async function listing(c: Context, params: URLSearchParams, kind: 'names' | 'values' | 'series', name: string): Promise<string> {
   const { start, end } = windowParams(params)
   const match = params.getAll('match[]')
+  if (kind === 'series' && match.length === 0) throw new ApiError('bad_data', 'no match[] parameter provided')
+  const limit = limitParam(params)
   const ranges = metaRanges(c, match, start, end)
-  return gatherSeries(c, ranges, (input) => JSON.stringify(c.engine.labelNames(input, match, start, end, metaLimits(c))))
+  const limits = metaLimits(c)
+  const json = await gatherSeries(c, ranges, { kind, name, match, start, end, limits }, (input) =>
+    JSON.stringify(kind === 'names' ? c.engine.labelNames(input, match, start, end, limits) : kind === 'values' ? c.engine.labelValues(input, name, match, start, end, limits) : c.engine.series(input, match, start, end, limits)),
+  )
+  if (limit === 0) return json
+  return JSON.stringify(truncate(c, JSON.parse(json) as unknown[], limit))
 }
 
-const labelValues: Handler = async (c, params, label) => {
-  const { start, end } = windowParams(params)
-  const match = params.getAll('match[]')
-  const ranges = metaRanges(c, match, start, end)
-  return gatherSeries(c, ranges, (input) => JSON.stringify(c.engine.labelValues(input, label, match, start, end, metaLimits(c))))
-}
-
-const series: Handler = async (c, params) => {
-  const { start, end } = windowParams(params)
-  const match = params.getAll('match[]')
-  if (match.length === 0) throw new ApiError('bad_data', 'no match[] parameter provided')
-  const ranges = metaRanges(c, match, start, end)
-  return gatherSeries(c, ranges, (input) => JSON.stringify(c.engine.series(input, match, start, end, metaLimits(c))))
-}
+const labels: Handler = (c, params) => listing(c, params, 'names', '')
+const labelValues: Handler = (c, params, label) => listing(c, params, 'values', label)
+const series: Handler = (c, params) => listing(c, params, 'series', '')
 
 /**
  * Prometheus' `/api/v1/status/tsdb`: cardinality of the tenant over a window (default the
@@ -300,6 +313,7 @@ async function api(req: Request, env: Env, path: string, corsHeaders: Record<str
 
   const cost = newCost()
   let headers = corsHeaders
+  let warnings: string[] = []
   try {
     // The ONLY source of the tenant.
     const { tenant } = await authenticate(req, env.CONFIG, 'read')
@@ -312,12 +326,13 @@ async function api(req: Request, env: Env, path: string, corsHeaders: Record<str
     let data: string
     try {
       data = await Promise.race([r.handler(c, params, r.label), t.promise])
+      warnings = c.warnings ?? []
     } finally {
       t.cancel()
       headers = { ...corsHeaders, ...costHeaders(cost) }
       if (engine.memoryBytes() > RESET_WASM_ABOVE) engine.reset()
     }
-    return success(data, headers)
+    return success(data, headers, warnings)
   } catch (e) {
     // The engine could not be loaded: retrying cannot help, so 500, not a retryable 503.
     if (e instanceof EngineLoadError) {

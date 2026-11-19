@@ -721,46 +721,81 @@ first thing to build if tenants hit the cap. (c) No caps: an isolate dies instea
 **Would change if.** Tenants hit the pair cap in practice (build (b), then raise the cap), or a
 report over a window wider than the caps allow is needed (then (a), labelled approximate).
 
-## D33. Anomaly rules page on EWMA or a static threshold; the other detectors explain
+## D33. Anomaly rules that do not page default to robust z with the quantile spread; pages stay on a static threshold; the other detectors explain
 
-**Decision.** An anomaly rule (`contracts/rules.ts`, version 2) that names no detector uses
-EWMA with the parameters chosen on held-out data (half-life 100 points, k 8) and severity
-`ticket`. With `severity: page` and no detector it is a static threshold, and the author must
-give the level. The robust z-score (MAD), the seasonal baseline (MAD) and CUSUM can be named;
-the save then warns with their held-out score, and CUSUM may not page (default `info`). STL and
-PELT are not rule detectors: they are for scheduled jobs and explanations; burn rate is to
-compile to recording rules (that clause is replaced by D42: an SLO is its own rule kind). The 99th-percentile ("quantile") spread can be chosen, is marked
-unvalidated in the warning and in the guide, and is never a default. The guide, with the kind
-of evidence behind each line (held out, post hoc, not scorable), is served at
-`GET /api/v1/monitors/detectors` from one copy in `ruler/src/anomaly.ts`.
+(Rewritten 2026-11-19. **This replaces the earlier D33**, "Anomaly rules page on EWMA or a static
+threshold; the other detectors explain", which made EWMA the default for rules that do not page and
+marked the quantile spread as unvalidated. Its "would change if" came true: the quantile spread held
+its score on data it had not seen. Its clause that burn rate was to compile to recording rules had
+already been replaced by D42: an SLO is its own rule kind.)
 
-**Alternatives.** (a) The design's first choice: robust z-scores against a seasonal baseline.
-(b) The robust z-score with the quantile spread, the best held-out score among the library's
-detectors (44.8). (c) No default: the author must pick. (d) Static thresholds only, no anomaly
-rules. (e) The library's own EWMA defaults (half-life 30, k 4).
+**Decision.** An anomaly rule (`contracts/rules.ts`, version 2; the text of its defaults changed with
+no version change, since the stored form did not) that names no detector and does not page uses the
+robust z-score with the quantile spread: k 2 times the 99th percentile of |x − median| over the
+trailing 1,500 points, severity `ticket`. With `severity: page` and no detector it is a static
+threshold, and the author gives the level. `robust_z` and `seasonal` named without a spread get the
+quantile spread with the configuration frozen on NAB (robust z as above; seasonal 1 season, k 2,
+adapt robust); `spread: "mad"` gets the library's own defaults, with a warning that quotes both
+benchmarks. EWMA stays nameable, warned with both numbers. CUSUM defaults to `info` and may not
+page; STL and PELT are not rule detectors; burn rate is the SLO rule kind (D42). The window is the
+largest whose stored state fits the per-series limit (64 KiB) for any values; the configuration
+frozen with a 4,000-point window can be named and is refused at save over that limit, with what it
+is and what fits. Defaults are resolved and written out when a rule is saved, so every rule stored
+before keeps what it was saved with; a rule saved again over a stored one (the same group, and the
+same monitor id, or the same name and expression) keeps, for each field it leaves out, the stored
+value that was the default when it was stored, and the save says so. The guide, served at
+`GET /api/v1/monitors/detectors` from one copy in `ruler/src/anomaly.ts`, labels every number with
+its kind of evidence: held out, confirmed or not confirmed on unseen data, post hoc.
 
-**Why.** On the Numenta Anomaly Benchmark, held out (parameters and threshold chosen on one
-half of the files, scored on the other, alarms as onsets; `anomaly/README.md`), standard
-profile: static threshold 21.8, EWMA 30.1 (window recall 59% against 41%), MAD robust z −105.9,
-MAD seasonal −76.4, STL −352.2, CUSUM 15.1, PELT −123.5. (a) scored below the threshold it is
-meant to beat: on heavy-tailed series the MAD describes only the bulk. (b) was found after
-seeing those results, so its score is optimistic by an unknown amount until confirmed on data
-it has not seen. (e) scored 0.0 under NAB's own protocol. EWMA lost to the threshold in the
-low-false-positive profile (3.9 against 5.5), the profile that matters for waking someone, hence
-the threshold for pages. (c) leaves every author to rediscover this; (d) loses EWMA's recall and
-the seasonal baseline's one strength, values wrong for their time of day (4 of 4 artificial
-daily anomalies against 1 of 4 without it), which stays available with its numbers shown.
+**Alternatives.** (a) Keep EWMA (the earlier D33). (b) The confirmed configuration as frozen, window
+4,000: raise the per-series state limit to about 150 KB, or store the window incrementally (blocks
+of rows, a point appended each tick) and raise the limit for this detector. (c) A window of 1,000
+points (about 37 KB, 28 series a rule). (d) The window in time on 5-minute rollups (4,000 points =
+14 days), which SMD did not test. (e) The window at the edge of the save-time estimate (1,781
+points at 36 bytes a point). (f) Resolve defaults at evaluation, so that every rule follows today's
+defaults. (g) Resolve them afresh at every save, stored rule or not. (h) The quantile spread for
+pages too.
 
-**Cost.** A page needs a level someone can state. EWMA's event precision on NAB was 22%: most
-of its alarms were not at a labelled anomaly, hence `ticket`. The evidence is NAB only (58 files
-of about two weeks each), nothing measured on viz's own data, and half-life 100 and k 8 were the
-largest values of the grid searched, so the optimum may lie beyond it. The guide's numbers are
-copied from `anomaly/README.md` and must be changed with it.
+**Why.** On SMD (28 servers' metrics; every parameter frozen on NAB before SMD was fetched;
+`anomaly/README.md`) the frozen robust z with the quantile spread scored 42.8 (NAB held out 44.8),
+the static threshold 16.4 and EWMA 10.4: robust z − EWMA +32.4 [20.7, 48.7] (95%, machine
+bootstrap), event F1 0.441 against 0.206, which is the earlier D33's condition met by a rule written
+in advance. EWMA did not hold (below the threshold in every profile), so (a) keeps a default that
+failed on data it had not seen. The frozen window needs about 145 KB of state a series, over the
+ruler's 64 KiB. The rule the project lead set: measure, held out on NAB, the largest window that
+fits, and adopt it if it beats EWMA and the threshold held out on NAB and on SMD; else keep EWMA.
+1,500 points is that window by the longest number encoding (39.7 bytes a point; 60.9 KB a series
+with eight labels and an explanation, measured here). Measured here (`ruler/tools/anomaly-default/`):
+NAB held out (window fixed, k chosen on each half) 42.6 / 29.7 / 55.4 (standard / low FP / low FN),
+against EWMA 30.1 / 3.9 / 40.8 and the threshold 21.8 / 5.5 / 32.7; SMD (window 1,500, k 2)
+42.5 / 21.2 / 50.8, +32.0 [20.6, 48.1] over EWMA and +26.0 [14.6, 35.1] over the threshold. The SMD
+figure is **post hoc**: only the 4,000-point window was pre-registered, and k was fixed at the frozen
+2 before the run. (c) scored lower on both (NAB 39.4, SMD 37.6, post hoc) and below the threshold in
+SMD's low-FP profile (9.9 against 15.5). (e) passes the save check, but values that print long reach
+72 KB and are refused at run time. (b) needs a storage change and a larger budget; (d) is untested.
+(f) would change stored rules at the upgrade; (g) would change a rule whenever a pipeline re-applies
+an unchanged rule file. (h): on SMD the quantile spread's low-FP lead over the threshold is not
+significant (+7.5 [−8.8, 19.7] at 4,000 points, +5.7 [−12.4, 19.0] at 1,500) and it raised about
+eight times the threshold's unmatched alarms per machine-day (12.2 against 1.5).
 
-**Would change if.** The quantile spread holds its score on data it has not seen (TSB-AD, or
-incidents labelled on viz's own tenants): then it becomes the default for non-paging rules; a
-wider grid moves EWMA's parameters; viz's own labelled incidents rank the detectors
-differently; or a detector gains a calibrated false-alarm rate that makes it fit to page.
+**Cost.** State: about 55 KB a series (estimate; 1.4 KB for EWMA), so a default rule keeps at most
+18 series (1 MiB a rule; it was 100), and a shard holds about 16 such rules at their cap (16 MiB).
+CPU, by the D51 model (extrapolated: its robust z prices were calibrated at 3,992 and 11,768 bytes of
+state, here 55,400): 0.35 ms a point, so a warm-up costs 0.53 s a series and the 5 s budget warms
+about 9 series; a rule with more starts cold and warms live (it scores after 20 points; its window is
+full after 25 h at a 1-minute interval). In Node here the per-point cost grew 4.4–5.6 times from 288
+to 1,500 points, the model 4.5 times; it is not measured in workerd at this size. Each tick
+serialises and writes each series' state (whole batches per row: 2 or 3 rows a tick at 18 series).
+The 4,000-point configuration, where its limit is raised: 0.92 ms a point by the same model (3.7 s
+to warm one series), at most 7 series a rule. A rule saved again may keep EWMA indefinitely; each
+such save warns. The evidence is two public benchmarks, nothing measured on viz's own data, and the
+chosen window's SMD score is post hoc.
+
+**Would change if.** viz's own labelled incidents rank the detectors differently; a third benchmark
+contradicts SMD; the window's state can be stored incrementally (then the frozen 4,000 points, or a
+window in time on rollups); the CPU model, measured in workerd at 1,500 points, prices warm-ups
+higher (then a smaller window or a larger budget); or a detector gains a calibrated false-alarm rate
+fit to page.
 
 ## D34. The publisher is nudged by the maintenance run and driven by its own alarm; no cron, no queue
 
@@ -1128,7 +1163,7 @@ long as the longest alert window and a ring of about 720 coarse buckets over the
 window, as rows (a head and blocks of 60 and 24 buckets; three rows a tick), warmed from history
 when the rule is new (D43). The alerts are the SRE Workbook's (anomaly/'s `SRE_WORKBOOK_RULES`,
 judged by its `evaluateWindows`), one alert per series and severity (`page`, `ticket`). A window
-counts once 90% of its buckets have data (`min_coverage`). This replaces D33's "burn rate is to
+counts once 90% of its buckets have data (`min_coverage`). This replaces the earlier D33's "burn rate is to
 compile to recording rules".
 
 **Alternatives.** (a) Compile to recording rules, as Sloth and Pyrra do: one recording rule per

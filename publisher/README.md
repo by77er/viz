@@ -110,6 +110,60 @@ segment. When nothing is new, one more list looks for the first layout. A cursor
 newest segment (this reader never leaves one; another release might) waits until the ledger
 writes the next segment, which the "starts above `version + 1`" rule then catches.
 
+**Re-base in bounded memory** (design/DECISIONS.md D55, since 2026-11-19; it lifted production's
+16 MiB pin of the ledger's state, `stack/wrangler.jsonc`). A tenant with no cursor in the newest
+ledger incarnation is re-based, and nothing in it grows with the tenant's size:
+
+- **Where it starts.** The incarnation's newest checkpoint whose format this code reads: format 1
+  (`ckpt-{version}.jsonl`, one `base` line) or format 2 (that key is a manifest naming parts
+  `ckpt-{version}-{attempt}/{part}.jsonl` of at most 1 MiB). A checkpoint of a format it does not
+  read is passed over (it is only a shortcut; `rebase.passedOver` in the report says so). Without
+  one, the base, the first line of the first segment. Then the segments after it, as from a
+  cursor at its version. Each tenant's report says what it started from (`rebase`: source,
+  format, version, files, tombstones, objects read, the most parts in flight).
+- **How it is read.** A base line or a format-1 checkpoint with `readLedgerLogStream`
+  (`contracts/ledger.ts`): one element at a time, files and tombstones into SQLite (`stage`) 256
+  per transaction, every other member parsed an element at a time and dropped. Format 2: the
+  manifest, then the parts in order, at most `PART_WINDOW` (4) requested ahead of the one being
+  applied, a part per transaction.
+- **Six connections.** Every R2 operation of a publish, sweep, maintenance or verify takes a slot
+  of one `Slots` of `R2_CONNECTIONS` (6) per invocation, a GET until its body has been read or
+  cancelled. So the tenants read six at a time, the segments of each six at a time, the parts
+  window and the commit's writes never have more than six in flight together. Tested from under
+  the store (`test/checkpoints.test.ts`): six tenants re-basing from parts at once, at most six.
+- **What is checked of parts.** Each part's header against its key and manifest (tenant,
+  incarnation, version, attempt, part number) and its record count against its lines (the
+  contract's decoder); every record one file or one tombstone; files in strictly ascending key
+  order (SQLite's, UTF-8 bytes) across parts, then tombstones likewise; at the end the files,
+  tombstones and bytes (as R2 stored them) of all parts against the manifest's. The format has no
+  per-part size or digest (Contract issues 13).
+- **When it cannot be read whole.** A part the manifest names that is not there: `incomplete`.
+  The ledger deletes a superseded checkpoint's parts once the newer manifest is in R2, so a
+  reader that listed the older manifest can meet this; the next publish lists again and starts
+  from the newer one. A manifest or part that is not what it should be: `corrupt`. Either way
+  the reader returns no base: nothing of the tenant is committed, its cursors do not move, it
+  stays pending and the alarm retries every `retryMs`. What was staged is deleted at the end
+  of the attempt, and at the start of the next one if an eviction cut it short.
+- **The difference.** The changes read after the start are applied to `stage`, checked as
+  ever (`inconsistent` for a removal of a key not live or an addition of a live one). The commit
+  then takes what the tenant adds (`stage` not in `live`) and removes (`live` not in `stage`) in
+  SQL: counts and sums by aggregate, the manifests to rewrite by `DISTINCT`, the added files a
+  page of 1,000 at a time in `(day, key)` order into manifests of `manifestTargetEntries`, two
+  manifests written at once, each entry built as the Avro encoder reaches it. Statistics are
+  computed only for added files and kept in their `stage` row; after the commit point one
+  transaction inserts and deletes `live` rows by key range, in SQL. A tenant read from its cursor
+  is planned as before, but with a point lookup in `live` per key the changes touch instead of
+  loading its published keys; merges of small manifests read `live` a page at a time.
+- **Tombstones.** A checkpoint or base carries the tombstones of removed files whose objects may
+  remain. Those neither published nor live in the new state are recorded as removed by the
+  commit's snapshot, and released once no older snapshot is retained (the conservative rule,
+  since the publisher cannot know whether an earlier publication referenced them). Without this a
+  re-base from a checkpoint would never release the files added and removed before it.
+- **Resync** (SQLite rebuilt from R2) fills `live_next` a manifest at a time, two in flight, and
+  swaps it into `live` in one transaction, so an eviction midway leaves SQLite as it was.
+- **What still grows:** `verify` (Not implemented); the changes read per publish from a cursor
+  (Risks); one manifest of `manifestTargetEntries` files while it is written.
+
 **Net changes.** A commit holds the difference between what is published and the ledgers'
 live sets after the changes read. A file added and removed between two publications is in
 no manifest of any snapshot. Catching up after any number of ledger versions is one commit
@@ -190,7 +244,10 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   `blockConcurrencyWhile` (`publisher.Publisher`, version 1 = the schema the pre-versioning
   code created; version 2 adds `due`, the alarm's deadlines, `readableFrom` 1, so release 1
   stays a rollback target: on this storage it publishes on nudges and drops the expiry and
-  sweep deadlines until the next commit by a release that knows them). Storage a newer release migrated past what this code may read is refused:
+  sweep deadlines until the next commit by a release that knows them; version 3 adds `stage` and
+  `live_next`, the scratch of a re-base and of a resync, `readableFrom` 1: releases 1 and 2 never
+  touch them, and each is emptied by the operation that fills it, so they hold rows only while
+  it runs or after an eviction in the middle of it). Storage a newer release migrated past what this code may read is refused:
   every method throws `SchemaTooNewError` (message `schema_too_new: …`; its results are reports,
   not status unions, and its future callers, a queue consumer and a cron, retry on an
   exception), and the alarm only re-arms itself.
@@ -218,7 +275,11 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   incarnations, a checkpoint, a compaction with `removedFiles`, retention and a unit in one
   segment), with what each stage must publish. One test publishes those checked-in bytes stage
   by stage; another re-runs the scenario on the current ledger and requires the same bytes
-  (only `at` differs), so a change of segment format without a new version fails here. A further test requires that, across
+  (only `at` differs), so a change of segment format without a new version fails here. And
+  `read.ledger-checkpoint.v2.json`: a real log with a checkpoint in parts (17 parts, files,
+  tombstones) written by the current `Ledger`; one test re-base-publishes those bytes, another
+  requires the ledger to still write them (only `at` and the attempt name differ). The format-1
+  checkpoint in `read.ledger-segment.v1.json` is re-based from too. A further test requires that, across
   every golden version and the code, a column keeps its field id and an id names one column.
 
 ## The partition columns
@@ -252,6 +313,15 @@ tenant, which is the point of the partitioning); having flush write the two colu
 contract change; see "Contract issues").
 
 ## Not implemented
+
+- **`verify` in bounded memory.** The scrubber still replays each tenant's log from its base into
+  a map, reads the base segment whole, and holds the table's manifest entries: at the ledger's
+  limit (300,000 files) that is not expected to fit an isolate. It is an operator's tool, not on
+  the publish path; streaming it (into `live_next`, say) is not done.
+- **Re-base progress across invocations.** A re-base that is cut off (an eviction, a CPU limit)
+  starts again from its checkpoint or base at the next attempt; what it staged is thrown away.
+- **A fall-back to the base when a checkpoint is corrupt** (D55, alternative (e)): the tenant
+  stops instead.
 
 - **No backoff for a stuck tenant.** A tenant stopped by a hole, a corrupt or unsupported
   segment or an inconsistent change is retried every `retryMs` (1 min) for as long as it lasts.
@@ -568,12 +638,36 @@ about 290 kB per commit (modelled from that slope, not measured).
   briefly name an older (still valid) version, and a sweep by a writer with a stale view
   is protected only by its staleness check and the grace period.
 - **`verify` cost.** It reads every segment of every tenant since the incarnation's base and
-  does one HEAD per data file. Checkpoints would bound it, but they are for the ledger's
-  rebuild only (contracts/LEDGER-LOG.md), so this grows with the incarnation.
+  does one HEAD per data file, and it holds each tenant's replayed live set and the table's
+  manifest entries in memory (Not implemented). It does not start from a checkpoint, so this
+  grows with the incarnation.
 - **Clock.** Snapshot expiry, the orphan grace period and the delete grace period use the
   Durable Object's clock.
 - **Memory and time for a very large catch-up.** All changes read in one publish are held
-  in memory (bounded by `maxChangesPerTenant` = 2,000 per tenant, not across tenants).
+  in memory (bounded by `maxChangesPerTenant` = 2,000 per tenant, not across tenants), and so
+  are the files they add (a tenant read from its cursor is planned in memory; a re-based one is
+  not). A change is one ledger SQLite value (at most 2 MB), so this is up to the changes' size,
+  not the state's; with S4's 2,000-file units it could be large, and it is not measured.
+- **CPU time of a re-base at the limit.** At 300,000 files a re-base took 8–17 s and a first
+  publication 30–38 s here (Measurements), wall time on a loaded machine with a local R2. On
+  Cloudflare an invocation's CPU is limited (30 s by default for a Durable Object, raised with
+  `limits.cpu_ms`; training knowledge, not checked here); a publish that is cut off is retried
+  by the alarm and would be cut off again. Not measured on Cloudflare. The experiment that
+  settles it: viz-publisher on Cloudflare re-basing a tenant of 300,000 files (the bench's log,
+  written to a `viz-` bucket), its CPU time read from the analytics API.
+- **A corrupt checkpoint stops that tenant's re-base** (explicitly: `corrupt`, retried every
+  `retryMs`) until the ledger writes a newer one, which supersedes and deletes it, or an
+  operator removes it. The ledger's own rebuild passes over such a checkpoint for the base; this
+  publisher refuses rather than read around it (D55, "would change if").
+- **Row writes of a re-base.** Every file of a re-based tenant is written to `stage` and deleted
+  after (about two row writes per file; a first publication also updates each added row with
+  its statistics): about 600,000 at the limit, modelled at $0.60 per re-base at $1 per million
+  rows written (the price is training knowledge). A re-base happens at a ledger storage loss,
+  a new tenant, or a publisher storage loss.
+- **Key order.** Manifests are filled in `(tenant, day, key)` order; `stage` is read in SQLite's
+  order and in-memory adds in JavaScript's. They agree for ASCII, which tenant ids, days and the
+  key layout are; for other keys the order of entries in a manifest could differ, not what it
+  holds.
 - **House rule not followed to the letter.** AGENTS.md wants every SQL statement that
   touches tenant data to name the tenant. The publisher is a cell-level object whose
   manifests are shared by tenants, so the statements that rewrite or merge a manifest and
@@ -672,3 +766,24 @@ Recorded here because this work could not change `contracts/`, `ledger/`, `engin
    in between did not touch that table.
 9. The partition-column choice and the DELETED-entry choice are decisions between real
    alternatives and should get entries in `design/DECISIONS.md`.
+12. **The publisher now reads checkpoints; contracts/LEDGER-LOG.md says nothing but the ledger
+    does** (not edited from here: the contract is the ledger's). "Checkpoints": "A checkpoint is
+    only an accelerator for a rebuild. Nothing else reads it"; "Truncation": "(only the ledger's
+    rebuild reads them)"; "Versions": "the publisher never reads checkpoints"; "Size": "The
+    publisher still reads a new incarnation's base whole ... until it reads it with
+    `readLedgerLogStream`". Proposed text: a re-base (the publisher) starts from the newest
+    checkpoint it reads, else the base, both streamed; a checkpoint of a format a reader does not
+    know is passed over for the base (so checkpoint formats still need no readers-first
+    release); the ledger may delete a superseded checkpoint's parts while a reader reads them,
+    and the reader then stops (`incomplete`) and lists again. And in "Readers of the log": the
+    publisher's re-base is from the newest checkpoint or the base.
+13. **A checkpoint manifest names no per-part size or digest.** It carries `parts`, `files`,
+    `tombstones` and `bytes` (all parts, called "informational"). The publisher checks every part
+    against its key and these totals, `bytes` included (the ledger writes it from each PUT's
+    stored size, so it is exact), but a change inside one record that keeps its length is not
+    detectable, and a part can only be judged once all have been read. Proposal: the manifest
+    lists each part's size and SHA-256 (format 3); readers check each part as it arrives.
+14. **A base's `added` has no promised order.** Checkpoint parts are in key order (stated); a
+    base's elements are written from SQLite in key order but the contract does not say so. With
+    it stated, a re-base could merge a base against what is published without staging it (D55,
+    "would change if").

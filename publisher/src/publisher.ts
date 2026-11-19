@@ -1188,7 +1188,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
     for (const o of outputs.call(this)) {
       const at = written.length
       written.push(null as unknown as ManifestInfo)
-      const records = o.parts.map((p) => manifestEntry(table, p.file, p.status, this.uri(cfg, p.file.key), snapshotId))
+      // Each entry is built as the encoder reaches it: a manifest holds its files, not their records too.
+      const records = (function* (uri: (key: string) => string) {
+        for (const p of o.parts) yield manifestEntry(table, p.file, p.status, uri(p.file.key), snapshotId)
+      })((key) => this.uri(cfg, key))
       const info = { ...summarise(o.parts, seq, snapshotId), path: o.path }
       const sync = this.random(16)
       writing.push(

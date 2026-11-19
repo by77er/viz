@@ -62,7 +62,8 @@
 //! | `viz_q_file_plan` | `u64 gap, ranges, u32 n, str* (index fragments)` | JSON `[plan, …]`, one per fragment: how to read each file by name and time (`viz_query::file_plan`) |
 //! | `viz_q_sample_plan` | `u64 gap, u8 has_part, [key, u32 part, u32 parts], ranges (the reads), u32 n, str* (series files, whole or sparse), u32 m, str* (sample files' index fragments), u32 k, u32* (per sample file, the index of its series file; u32::MAX: unknown; k = 0: no pairs)` | `u32 n`, JSON `{"series":n,"files":[plan, …]}` (n bytes), then the carrier batch (`VZB1`; empty: none): the matchers resolved against the series files, how to read each sample file, and the selected series to evaluate with instead of the series files (`viz_query::sample_plan`) |
 //! | `viz_q_part_plan` | `u64 gap, u32 part, u32 parts, ranges, u32 n, str* (sample files' index fragments)` | JSON `[plan, …]`: one split part's row groups by its `series_id` range, from the fragments alone (`viz_query::part_plan`) |
-//! | `viz_q_abi_version` | (no request) | returns 3 |
+//! | `viz_q_meta_part` | `u8 kind (0 label names, 1 label values, 2 series), limits, i64 min_ts, i64 max_ts, u32 part, u32 parts, str label (values; empty otherwise), u32 n, str* (match[]), scan` | ABI 4: `u32 k, u64 listed[k]` (series listed in this part: per `match[]` set for names and values, one for series), then the JSON of `viz_q_label_names` / `_label_values` / `_series` over the series of part `part` of `parts` by `series_id` (`viz_query::MetaPart`) |
+//! | `viz_q_abi_version` | (no request) | returns 4 |
 //!
 //! `key` is `u32 n, str*`: the labels left out of the split key (`viz_query::SplitKey`).
 //! A `plan` is `{"rows":n|null,"read":"skip"|"whole"|[[offset,length],…]}`: `rows` bounds the
@@ -77,7 +78,7 @@ use std::collections::{BTreeSet, HashMap};
 use viz_query::split::{self, Gathered, Grid, LeafBudget, LeafOutput};
 use viz_query::{EvalOptions, FetchRange, FileRead, Limits, MatchOp, Matcher, Options, PartFilter, QueryError, ScanInput, SplitKey, SplitPlan, Stats};
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 const OK: u32 = 0;
 const MALFORMED: u32 = 5;
 
@@ -426,6 +427,53 @@ fn do_series(mut r: Req<'_>) -> Res<Vec<u8>> {
     Ok(viz_query::labels_to_json(&viz_query::series_with(&input, &sets, min_ts, max_ts, &opts.limits)?).into_bytes())
 }
 
+/// One part of a label call over leaves: what the call lists of that part's series, with how
+/// many series were listed (per `match[]` set for names and values, as their caps count).
+fn do_meta_part(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let kind = r.u8("kind")?;
+    let opts = r.limits()?;
+    let (min_ts, max_ts) = (r.i64("min_ts")?, r.i64("max_ts")?);
+    let (part, parts) = (r.u32("part")?, r.u32("parts")?);
+    let name = r.str("label name")?;
+    let sets = parse_sets(&r.strs("selector")?)?;
+    let input = r.scan()?;
+    r.end()?;
+    if parts == 0 || part >= parts {
+        return Err(Fail::Malformed(format!("part {part} of {parts}")));
+    }
+    let p = Some(viz_query::MetaPart { part, parts });
+    let mut counts: Vec<u64> = Vec::new();
+    let json = match kind {
+        0 | 1 => {
+            let sets = if sets.is_empty() { vec![Vec::new()] } else { sets };
+            let mut all = BTreeSet::new();
+            for set in &sets {
+                let (v, n) = if kind == 0 {
+                    viz_query::label_names_part(&input, set, min_ts, max_ts, &opts.limits, p)?
+                } else {
+                    viz_query::label_values_part(&input, name, set, min_ts, max_ts, &opts.limits, p)?
+                };
+                counts.push(n);
+                all.extend(v);
+            }
+            viz_query::to_json(&all.into_iter().collect::<Vec<String>>())?
+        }
+        2 => {
+            let (v, n) = viz_query::series_part(&input, &sets, min_ts, max_ts, &opts.limits, p)?;
+            counts.push(n);
+            viz_query::labels_to_json(&v)
+        }
+        k => return Err(Fail::Malformed(format!("meta kind {k}"))),
+    };
+    let mut out = Vec::with_capacity(4 + 8 * counts.len() + json.len());
+    out.extend_from_slice(&(counts.len() as u32).to_le_bytes());
+    for c in counts {
+        out.extend_from_slice(&c.to_le_bytes());
+    }
+    out.extend_from_slice(json.as_bytes());
+    Ok(out)
+}
+
 fn do_scan_rows(mut r: Req<'_>) -> Res<Vec<u8>> {
     let n = r.u32("n_files")?;
     let raw = r.items(n, "index fragment")?;
@@ -709,3 +757,4 @@ export!(viz_q_card_report, do_card_report);
 export!(viz_q_file_plan, do_file_plan);
 export!(viz_q_sample_plan, do_sample_plan);
 export!(viz_q_part_plan, do_part_plan);
+export!(viz_q_meta_part, do_meta_part);

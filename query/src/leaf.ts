@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
-import { type FetchRange, type FilePlan, type Grid, type LeafBudget, type QueryLimits, createQueryEngine, sparseFile } from '../../engine/wasm-query/js/index'
+import { type FetchRange, type FilePlan, type Grid, type LeafBudget, QueryError, type QueryLimits, createQueryEngine, planBytes, sparseFile } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { hash32 } from '../../shard/src/pool'
 import type { Shard } from '../../shard/src/shard'
@@ -174,6 +174,43 @@ export interface CardinalityRequest {
   tailMaxBytes?: number
   tenant?: string
 }
+
+/**
+ * A part of a label call over leaves (`/labels`, `/label/<name>/values`, `/series`; new
+ * 2026-11-19): the series whose `series_id` is in part `part` of `parts`, from the series
+ * files (only the row groups of the part's ids, by name and time) and the part's tail.
+ */
+export interface MetaRequest {
+  kind: 'names' | 'values' | 'series'
+  /** The label of `/label/<name>/values` (empty otherwise). */
+  name: string
+  match: string[]
+  start: number
+  end: number
+  /** The call's fetch ranges (one per `match[]` set), to plan the series files' reads. */
+  ranges: FetchRange[]
+  /** Series files, with their fragments. */
+  files: FileRef[]
+  part: number
+  parts: number
+  /** The call's limits (`maxSeries` is `maxMetadataSeries`). */
+  limits: QueryLimits
+  /** Bytes this part may hold: its reads of the series files plus its tail. */
+  maxBytes: number
+  tails: Uint8Array[]
+  tailParts?: TailPart[]
+  tenant?: string
+  cacheTtlS: number
+}
+
+export type MetaAnswer =
+  | { status: 'ok'; json: string; listed: number[]; files: number; bytesRead: number; cacheHits: number; r2Gets: number; engineMs: number; tail?: TailStats }
+  | { status: 'missing'; key: string }
+  /** The part's reads of the series files and its tail are over `maxBytes`. */
+  | { status: 'too_large'; bytes: number }
+  /** The engine's answer (a limit, a bad matcher): the coordinator reports it as one place would. */
+  | { status: 'error'; errorType: QueryError['errorType']; message: string; limit?: { name: string; max: number; reached: number } }
+  | TailRefusal
 
 export type CardinalityAnswer = { status: 'ok'; summary: Uint8Array; cacheHits: number; r2Gets: number; tail?: TailStats } | { status: 'missing'; key: string } | TailRefusal
 
@@ -539,6 +576,62 @@ export class Leaf extends DurableObject<LeafEnv> {
     try {
       const summary = leafEngine.cardinalityPart(bytes, tail ? tail.batches : req.tails, req.start, req.end, req.part, req.parts, req.caps)
       return tail ? { status: 'ok', summary, cacheHits, r2Gets: req.files.length - cacheHits, tail: tail.stats } : { status: 'ok', summary, cacheHits, r2Gets: req.files.length - cacheHits }
+    } finally {
+      maybeReset()
+    }
+  }
+
+  /**
+   * A part of a label call over leaves: plan this part's row groups of every series file from
+   * the fragments (`partPlan`: by name, time and the part's `series_id` range), read them and
+   * the part's tail under `maxBytes`, and list the part's series (engine `metaPart`).
+   */
+  async meta(req: MetaRequest): Promise<MetaAnswer> {
+    const t0 = performance.now()
+    let engineMs = 0
+    const plans: FilePlan[] = req.files.every((f) => typeof f.index === 'string')
+      ? leafEngine.partPlan(req.files.map((f) => f.index!), req.ranges, req.part, req.parts)
+      : req.files.map(() => ({ rows: null, read: 'whole' as const }))
+    engineMs += performance.now() - t0
+    const wanted = req.files.map((f, i) => ({ f, read: plans[i]!.read })).filter((x) => x.read !== 'skip') as { f: FileRef; read: 'whole' | [number, number][] }[]
+    const fileBytes = wanted.reduce((a, x) => a + planBytes({ rows: null, read: x.read }, x.f.bytes), 0)
+    if (fileBytes > req.maxBytes) return { status: 'too_large', bytes: fileBytes }
+    // The rest of the tail in this part's key range, while the files are read; under what the files leave.
+    const useParts = req.tailParts !== undefined && !leafHooks.ignoreTailParts
+    const tailRead = useParts ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.maxBytes - fileBytes, (batches) => batches) : null
+    tailRead?.catch(() => undefined)
+    const stats = { cacheHits: 0, r2Gets: 0, bytesRead: 0 }
+    const items: { i: number; item: ReadItem; length: number }[] = []
+    wanted.forEach(({ f, read }, i) => {
+      if (read === 'whole') items.push({ i, item: { key: f.key }, length: f.bytes })
+      else for (const [offset, length] of read) items.push({ i, item: { key: f.key, offset, length }, length })
+    })
+    const got = await inWaves(items, MAX_READS_PER_CALL, (x) => this.one(x.item, req.cacheTtlS))
+    const parts: { offset: number; bytes: Uint8Array }[][] = wanted.map(() => [])
+    for (let k = 0; k < items.length; k++) {
+      const r = got[k]!
+      const { i, item, length } = items[k]!
+      if (r.status !== 'ok') return { status: 'missing', key: item.key }
+      // A short read would be a silent hole in a file: refuse it (as a missing file: back to the ledger).
+      if (r.bytes.byteLength !== length) return { status: 'missing', key: item.key }
+      if (r.cached) stats.cacheHits++
+      else stats.r2Gets++
+      stats.bytesRead += r.bytes.byteLength
+      parts[i]!.push({ offset: item.offset ?? 0, bytes: r.bytes })
+    }
+    const files = wanted.map(({ f, read }, i) => (read === 'whole' ? parts[i]![0]!.bytes : sparseFile(f.bytes, parts[i]!)))
+    const tail = tailRead ? await tailRead : null
+    if (tail && tail.status === 'tail') return tail
+    if (fileBytes + (tail ? tail.batches.reduce((a, b) => a + b.byteLength, 0) : 0) > req.maxBytes) return { status: 'too_large', bytes: fileBytes + (tail ? tail.stats.bytes : 0) }
+    const t1 = performance.now()
+    try {
+      const out = leafEngine.metaPart(req.kind, { seriesFiles: files, sampleFiles: [], tailBatches: tail ? tail.batches : req.tails }, req.name, req.match, req.start, req.end, req.part, req.parts, req.limits)
+      engineMs += performance.now() - t1
+      const ok: MetaAnswer = { status: 'ok', json: out.json, listed: out.listed, files: wanted.length, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs: Math.round(engineMs) }
+      return tail ? { ...ok, tail: tail.stats } : ok
+    } catch (e) {
+      if (e instanceof QueryError) return { status: 'error', errorType: e.errorType, message: e.message, ...(e.limit ? { limit: e.limit } : {}) }
+      throw e
     } finally {
       maybeReset()
     }

@@ -16,9 +16,15 @@
 //!
 //! Limits: `max_series` bounds the distinct series listed (an `execution` error names it).
 //! No samples are loaded, so `max_samples` does not apply.
+//!
+//! **Parts** (query/ "label endpoints over leaves", 2026-11-19): a listing can be restricted to
+//! the series whose `series_id` (unsigned) falls in one part of a split ([`MetaPart`], the
+//! same parts as the cardinality report's). Parts are disjoint in series, so their listings
+//! union to the whole and the counts of series listed add up to the whole's count.
 use crate::catalog;
 use crate::error::{Limit, QueryError};
 use crate::limits::Limits;
+use crate::split::SplitKey;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use viz_promql::{CompiledMatcher, MatchOp, Matcher, NAME_LABEL};
@@ -27,16 +33,36 @@ use viz_storage::ScanInput;
 /// A label set: pairs sorted by name (UTF-8 byte order), including `__name__`.
 pub type Labels = Vec<(String, String)>;
 
-/// Every distinct series (by label set) that matches at least one of `sets` and is in
-/// `[min_ts, max_ts]` as decided per file, in label order. `max_series` bounds how many.
-pub fn listed(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i64, limits: &Limits) -> Result<Vec<Labels>, QueryError> {
-    listed_as(input, sets, min_ts, max_ts, limits, &|l| l)
+/// Part `part` of `parts` of a listing: the series whose `series_id`, read as an unsigned
+/// integer, falls in that part's key range (`SplitKey::part_of`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetaPart {
+    pub part: u32,
+    pub parts: u32,
 }
 
-/// [`listed`], keeping of each listed series only what `keep` makes of its labels (the
+impl MetaPart {
+    fn holds(&self, series_id: i64) -> bool {
+        SplitKey::part_of(series_id as u64, self.parts.max(1)) == self.part
+    }
+}
+
+/// Every distinct series (by label set) that matches at least one of `sets` and is in
+/// `[min_ts, max_ts]` as decided per file, in label order (`max_series` bounds how many),
+/// keeping of each listed series only what `keep` makes of its labels (the
 /// label calls keep names, or one value), so a large listing holds little. Results are
-/// sorted and de-duplicated after `keep`; `max_series` counts series before it.
-fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i64, limits: &Limits, keep: &dyn Fn(Labels) -> Labels) -> Result<Vec<Labels>, QueryError> {
+/// sorted and de-duplicated after `keep`; `max_series` counts series before it. With `part`,
+/// only that part's series; the second value is how many series were listed.
+fn listed_as(
+    input: &ScanInput<'_>,
+    sets: &[&[Matcher]],
+    min_ts: i64,
+    max_ts: i64,
+    limits: &Limits,
+    keep: &dyn Fn(Labels) -> Labels,
+    part: Option<MetaPart>,
+) -> Result<(Vec<Labels>, u64), QueryError> {
+    let mine = |id: i64| part.is_none_or(|p| p.holds(id));
     let compiled: Vec<Vec<CompiledMatcher>> =
         sets.iter().map(|s| s.iter().map(|m| m.compile()).collect::<Result<Vec<_>, _>>()).collect::<Result<_, _>>().map_err(QueryError::from_promql)?;
     // Names, when every set pins `__name__` with `=`: row groups of other names are not read.
@@ -54,7 +80,7 @@ fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i6
     let seen: RefCell<HashMap<i64, Option<u32>>> = RefCell::new(HashMap::new());
     let labels_for = |sids: &[i64]| {
         let s = seen.borrow();
-        sids.iter().any(|x| !s.contains_key(x))
+        sids.iter().any(|x| mine(*x) && !s.contains_key(x))
     };
     let mut matched: Vec<(Labels, bool)> = Vec::new(); // (labels, listed)
     let mut count = 0u64;
@@ -71,8 +97,8 @@ fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i6
     };
     for (fi, f) in input.series_files.iter().enumerate() {
         catalog::for_each_series_with(f, fi, &want_range, &want, &labels_for, &mut |row| {
-            if row.min_ts > max_ts || row.max_ts < min_ts {
-                return Ok(()); // not in the window in this file
+            if row.min_ts > max_ts || row.max_ts < min_ts || !mine(row.series_id) {
+                return Ok(()); // not in the window in this file, or another part's
             }
             let known = seen.borrow().get(&row.series_id).copied();
             let slot = match known {
@@ -103,7 +129,7 @@ fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i6
             }
         }
         for (s, hit) in b.series().iter().zip(in_window) {
-            if !hit {
+            if !hit || !mine(s.series_id) {
                 continue;
             }
             let known = seen.borrow().get(&s.series_id).copied();
@@ -127,7 +153,7 @@ fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i6
     let mut out: Vec<Labels> = matched.into_iter().filter(|(_, l)| *l).map(|(l, _)| l).collect();
     out.sort_unstable();
     out.dedup();
-    Ok(out)
+    Ok((out, count))
 }
 
 /// Names of all labels (sorted, unique) on series that match `matchers` (none: every
@@ -138,12 +164,18 @@ pub fn label_names(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
 
 /// [`label_names`] with explicit limits.
 pub fn label_names_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max_ts: i64, limits: &Limits) -> Result<Vec<String>, QueryError> {
+    Ok(label_names_part(input, matchers, min_ts, max_ts, limits, None)?.0)
+}
+
+/// [`label_names_with`] over one part's series (none: every series), with how many series were listed.
+pub fn label_names_part(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max_ts: i64, limits: &Limits, part: Option<MetaPart>) -> Result<(Vec<String>, u64), QueryError> {
     let mut names = BTreeSet::new();
     let keep = |l: Labels| l.into_iter().map(|(n, _)| (n, String::new())).collect();
-    for l in listed_as(input, &[matchers], min_ts, max_ts, limits, &keep)? {
+    let (listed, count) = listed_as(input, &[matchers], min_ts, max_ts, limits, &keep, part)?;
+    for l in listed {
         names.extend(l.into_iter().map(|(n, _)| n));
     }
-    Ok(names.into_iter().collect())
+    Ok((names.into_iter().collect(), count))
 }
 
 /// Values of label `name` (sorted, unique) on series that match `matchers` (none: every
@@ -161,12 +193,26 @@ pub fn label_values_with(
     max_ts: i64,
     limits: &Limits,
 ) -> Result<Vec<String>, QueryError> {
+    Ok(label_values_part(input, name, matchers, min_ts, max_ts, limits, None)?.0)
+}
+
+/// [`label_values_with`] over one part's series (none: every series), with how many series were listed.
+pub fn label_values_part(
+    input: &ScanInput<'_>,
+    name: &str,
+    matchers: &[Matcher],
+    min_ts: i64,
+    max_ts: i64,
+    limits: &Limits,
+    part: Option<MetaPart>,
+) -> Result<(Vec<String>, u64), QueryError> {
     let mut values = BTreeSet::new();
     let keep = |l: Labels| l.into_iter().filter(|(n, _)| n == name).collect();
-    for l in listed_as(input, &[matchers], min_ts, max_ts, limits, &keep)? {
+    let (listed, count) = listed_as(input, &[matchers], min_ts, max_ts, limits, &keep, part)?;
+    for l in listed {
         values.extend(l.into_iter().map(|(_, v)| v));
     }
-    Ok(values.into_iter().collect())
+    Ok((values.into_iter().collect(), count))
 }
 
 /// Label sets (sorted, unique) of the series that match at least one of `matcher_sets`
@@ -178,6 +224,11 @@ pub fn series(input: &ScanInput<'_>, matcher_sets: &[Vec<Matcher>], min_ts: i64,
 
 /// [`series`] with explicit limits (`max_series` applies to the union of the sets).
 pub fn series_with(input: &ScanInput<'_>, matcher_sets: &[Vec<Matcher>], min_ts: i64, max_ts: i64, limits: &Limits) -> Result<Vec<Labels>, QueryError> {
+    Ok(series_part(input, matcher_sets, min_ts, max_ts, limits, None)?.0)
+}
+
+/// [`series_with`] over one part's series (none: every series), with how many were listed.
+pub fn series_part(input: &ScanInput<'_>, matcher_sets: &[Vec<Matcher>], min_ts: i64, max_ts: i64, limits: &Limits, part: Option<MetaPart>) -> Result<(Vec<Labels>, u64), QueryError> {
     if matcher_sets.is_empty() {
         return Err(QueryError::bad_data("no match[] parameter provided"));
     }
@@ -185,7 +236,7 @@ pub fn series_with(input: &ScanInput<'_>, matcher_sets: &[Vec<Matcher>], min_ts:
         check_selective(set)?;
     }
     let sets: Vec<&[Matcher]> = matcher_sets.iter().map(|s| s.as_slice()).collect();
-    listed(input, &sets, min_ts, max_ts, limits)
+    listed_as(input, &sets, min_ts, max_ts, limits, &|l| l, part)
 }
 
 /// Prometheus refuses a selector whose matchers all match the empty string (`{}`,

@@ -148,3 +148,20 @@ export function cardinalityParams(params: URLSearchParams, now: number): { start
   }
   return { start, end, lookbackStart: Math.max(MIN_TS, start - lookback), limit }
 }
+
+/**
+ * Prometheus' `limit` (the HTTP API documentation, read 2026-11-19: "limit=<number>: Maximum
+ * number of returned series. Optional. 0 means disabled." on `/labels`,
+ * `/label/<name>/values`, `/series`, `/query` and `/query_range`). Absent or empty is 0. As
+ * Prometheus parses it (`parseLimitParam`, `strconv.Atoi`): a decimal integer with an optional
+ * sign; a negative one is refused with its words, "limit must be non-negative".
+ */
+export function limitParam(params: URLSearchParams): number {
+  const text = params.get('limit')
+  if (text === null || text === '') return 0
+  if (!/^[+-]?\d+$/.test(text)) throw bad('limit', `${JSON.stringify(text.slice(0, 40))} is not an integer`)
+  const n = Number(text)
+  if (!Number.isSafeInteger(n)) throw bad('limit', `${text.slice(0, 40)} is out of range`)
+  if (n < 0) throw bad('limit', 'limit must be non-negative')
+  return n === 0 ? 0 : n
+}

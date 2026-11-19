@@ -163,10 +163,13 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `P_F15x` proposed at F15's bounds (2 flush Workers, shard loss + ledger loss), no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 23 steps checked, no violation | 6,000,001 | 30,664,070 | 23 | 233.3 s | 9.8e-7 |
 | `P_teeth_newer_committed` F16 fix teeth: a newer incarnation kills old flush files once COMMITTED (not logged); F15's bounds | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 17 steps | 247,553 | 944,654 | 17 | 11.5 s | 1.7e-9 |
 | `LEAK_P_sl` no leak, proposed: compaction, retention (2 removals), shard loss, no ledger loss (LEAK_D30_sl's bounds); sweep, purge and ledger start as single steps | AG EF no leak | holds (exhaustive) | 1,093,981 | 6,633,999 | 52 | 67.2 s | 3.2e-8 |
-| `LEAK_P_sl_comp` no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp's bounds); sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 22 steps (unexpected) | 1,455,431 | 7,901,787 | 51 | 89.7 s | 5.7e-8 |
-| `LEAK_P_llsl` no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss; sweep, purge and ledger start as single steps | AG EF no leak | **violated** LIVE_NoLeak in 22 steps (unexpected) | 1,455,431 | 7,901,787 | 51 | 79.2 s | 5.7e-8 |
-| `LEAK_P_teeth_no_trigger` F16 fix teeth: the janitor does not ask the shard (the rule alone); LEAK_P_sl_comp's bounds; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 19 steps | 1,359,999 | 7,444,824 | 51 | 65.3 s | 5e-8 |
-| `LEAK_P_teeth_wm_rule` F16 fix teeth: the sweep keeps the rule as built (a newer incarnation counts once it has a logged UNIT); LEAK_P_sl_comp's bounds; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 19 steps | 1,426,412 | 7,737,349 | 51 | 65.1 s | 5.5e-8 |
+| `LEAK_P_sl_comp` no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp's bounds). Expected to stop at the retention bound, not at F16: the one removal is undone by the rebuild and not refunded; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 22 steps | 1,455,431 | 7,901,787 | 51 | 81.4 s | 5.7e-8 |
+| `LEAK_P_llsl` no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss. As LEAK_P_sl_comp: the retention bound; sweep, purge and ledger start as single steps | AG EF no leak | **violated** LIVE_NoLeak in 22 steps | 1,455,431 | 7,901,787 | 51 | 57.7 s | 5.7e-8 |
+| `LEAK_P_sl_comp2` no leaked compaction output, proposed: compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | holds (exhaustive) | 6,258,237 | 38,309,631 | 58 | 372.8 s | 0.0000011 |
+| `LEAK_P_llsl2` no leak of any object, proposed: compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps | AG EF no leak | holds (exhaustive) | 6,258,237 | 38,309,631 | 58 | 319.4 s | 0.0000011 |
+| `LEAK_D30_sl_comp2` no leaked compaction output, D30 + log as built (amended protocol, as LEAK_D30_sl_comp): compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 19 steps | 6,061,928 | 37,377,086 | 58 | 325.5 s | 0.000001 |
+| `LEAK_P_teeth_no_trigger` F16 fix teeth: the janitor does not ask the shard (the rule alone); LEAK_P_sl_comp2's bounds; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 19 steps | 6,062,003 | 37,382,318 | 58 | 305.1 s | 0.000001 |
+| `LEAK_P_teeth_wm_rule` F16 fix teeth: the sweep keeps the rule as built (a newer incarnation counts once it has a logged UNIT); LEAK_P_sl_comp2's bounds; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 19 steps | 6,205,134 | 38,004,071 | 58 | 311.9 s | 0.000001 |
 
 ## Counterexamples
 
@@ -1493,7 +1496,7 @@ Violates `I11_LiveFilesReadable`.
 
 ### LEAK_P_sl_comp
 
-no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp's bounds); sweep, purge and ledger start as single steps
+no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp's bounds). Expected to stop at the retention bound, not at F16: the one removal is undone by the rebuild and not refunded; sweep, purge and ledger start as single steps
 
 Violates `LIVE_NoLeakComp`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc2 1..1) (sweep keeps it); L0(s0 inc2 2..2) (sweep keeps it); L1(L0(s0 inc2 1..1)+L0(s0 inc2 2..2)) (sweep keeps it).
 
@@ -1522,7 +1525,7 @@ Violates `LIVE_NoLeakComp`. from the last state of the trace no continuation del
 
 ### LEAK_P_llsl
 
-no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss; sweep, purge and ledger start as single steps
+no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss. As LEAK_P_sl_comp: the retention bound; sweep, purge and ledger start as single steps
 
 Violates `LIVE_NoLeak`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc2 1..1) (sweep keeps it); L0(s0 inc2 2..2) (sweep keeps it); L1(L0(s0 inc2 1..1)+L0(s0 inc2 2..2)) (sweep keeps it).
 
@@ -1549,9 +1552,35 @@ Violates `LIVE_NoLeak`. from the last state of the trace no continuation deletes
 21. expire L1(L0(s0 inc2 1..1)+L0(s0 inc2 2..2))
 22. LEDGER STORAGE LOSS -> rebuild from R2
 
+### LEAK_D30_sl_comp2
+
+no leaked compaction output, D30 + log as built (amended protocol, as LEAK_D30_sl_comp): compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps
+
+Violates `LIVE_NoLeakComp`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc1 1..1) (sweep keeps it); L0(s0 inc1 2..2) (sweep keeps it); L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)) (sweep keeps it).
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush readSegment(s0 inc 1 1..1)
+10. flush PUT L0(s0 inc1 1..1)
+11. addUnit(s0 inc 1 1..1) admitted
+12. flush: pendingSegments(s0) -> inc 1 2..2
+13. flush readSegment(s0 inc 1 2..2)
+14. SHARD STORAGE LOSS(s0)
+15. flush PUT L0(s0 inc1 2..2)
+16. addUnit(s0 inc 1 2..2) admitted
+17. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+18. LEDGER STORAGE LOSS -> rebuild from R2
+19. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+
 ### LEAK_P_teeth_no_trigger
 
-F16 fix teeth: the janitor does not ask the shard (the rule alone); LEAK_P_sl_comp's bounds; sweep, purge and ledger start as single steps
+F16 fix teeth: the janitor does not ask the shard (the rule alone); LEAK_P_sl_comp2's bounds; sweep, purge and ledger start as single steps
 
 Violates `LIVE_NoLeakComp`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc1 1..1) (sweep keeps it); L0(s0 inc1 2..2) (sweep keeps it); L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)) (sweep keeps it).
 
@@ -1577,7 +1606,7 @@ Violates `LIVE_NoLeakComp`. from the last state of the trace no continuation del
 
 ### LEAK_P_teeth_wm_rule
 
-F16 fix teeth: the sweep keeps the rule as built (a newer incarnation counts once it has a logged UNIT); LEAK_P_sl_comp's bounds; sweep, purge and ledger start as single steps
+F16 fix teeth: the sweep keeps the rule as built (a newer incarnation counts once it has a logged UNIT); LEAK_P_sl_comp2's bounds; sweep, purge and ledger start as single steps
 
 Violates `LIVE_NoLeakComp`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc1 1..1) (sweep keeps it); L0(s0 inc1 2..2) (sweep keeps it); L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)) (sweep keeps it).
 

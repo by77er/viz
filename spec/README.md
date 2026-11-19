@@ -483,7 +483,7 @@ Larger bounds, by random simulation only (not exhaustive):
 <!-- END TLC_SIM -->
 
 Total: <!-- BEGIN TOTAL -->
-304 minutes of wall time in total (sum over all runs recorded in results/)
+412 minutes of wall time in total (sum over all runs recorded in results/)
 <!-- END TOTAL -->
 
 ## Findings
@@ -859,6 +859,47 @@ Every run on the code as built (`IMPL`: D30, the segment log as built, `readSegm
 depth, not exhaustive). Liveness rows decide AG EF on the whole graph.
 
 <!-- BEGIN BFS_PROPOSED -->
+| Experiment | Checked | Result | Steps | Distinct states | Depth | Time | Shortest counterexample |
+|---|---|---|---|---|---|---|---|
+| `R1_safety` R1 (registration committed before writes): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss | all safety | **I4_NoGapAtSeam** violated | 15 | 855,875 | 15 | 47.4 s | register(inc 1) → append(b0) → seal(..1) → list(inc1 1..1) → read(inc1 1..1) → put(1..1) → LEDGER-LOSS+rebuild → inc 2 → start: PUT base(inc 2) → start: commit(inc 2) → plan → addUnit(inc1 1..1, registers) → drainPUT(v1-v2) → SHARD-LOSS → tail(inc0 >0)=∅ → done{} |
+| `LIVE_R1_sl` R1 (registration committed before writes): shard loss (1 send per batch) | AG EF query done | holds (exhaustive) |  | 315,394 | 36 | 17.3 s |  |
+| `LIVE_R1_llsl` R1 (registration committed before writes): ledger loss + shard loss (1 send per batch) | AG EF query done | holds (exhaustive) |  | 1,167,703 | 40 | 54.3 s |  |
+| `R2_safety` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 19 steps checked, no violation |  | 4,000,002 | 19 | 159.3 s |  |
+| `R2_2shards` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 4,000,003 states; every state reachable in at most 18 steps checked, no violation |  | 4,000,003 | 18 | 150.9 s |  |
+| `R2_2tenants` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 18 steps checked, no violation |  | 4,000,002 | 18 | 186.2 s |  |
+| `LIVE_R2_sl` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): shard loss (1 send per batch) | AG EF query done | holds (exhaustive) |  | 156,911 | 38 | 7.2 s |  |
+| `LIVE_R2_llsl` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): ledger loss + shard loss (1 send per batch) | AG EF query done | holds (exhaustive) |  | 667,064 | 42 | 24.2 s |  |
+| `R3_safety` R3 (registration logged before writes; coordinator settles a lost incarnation): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss | all safety | stopped: memory bound: stopped at 4,000,001 states; every state reachable in at most 20 steps checked, no violation |  | 4,000,001 | 20 | 207.1 s |  |
+| `R3_2shards` R3 (registration logged before writes; coordinator settles a lost incarnation): 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 4,000,001 states; every state reachable in at most 18 steps checked, no violation |  | 4,000,001 | 18 | 157.1 s |  |
+| `R3_2tenants` R3 (registration logged before writes; coordinator settles a lost incarnation): 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 4,000,001 states; every state reachable in at most 19 steps checked, no violation |  | 4,000,001 | 19 | 266.5 s |  |
+| `LIVE_R3_sl` R3 (registration logged before writes; coordinator settles a lost incarnation): shard loss (1 send per batch) | AG EF query done | holds (exhaustive) |  | 152,052 | 38 | 8.6 s |  |
+| `LIVE_R3_llsl` R3 (registration logged before writes; coordinator settles a lost incarnation): ledger loss + shard loss (1 send per batch) | AG EF query done | holds (exhaustive) |  | 645,027 | 42 | 35.7 s |  |
+| `R4_safety` R4 (registration committed before writes; coordinator re-checks unregistered shards after its tail reads): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss | all safety | stopped: memory bound: stopped at 4,000,001 states; every state reachable in at most 16 steps checked, no violation |  | 4,000,001 | 16 | 224.4 s |  |
+| `R4_2shards` R4 (registration committed before writes; coordinator re-checks unregistered shards after its tail reads): 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 15 steps checked, no violation |  | 4,000,002 | 15 | 185 s |  |
+| `R4_2tenants` R4 (registration committed before writes; coordinator re-checks unregistered shards after its tail reads): 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 15 steps checked, no violation |  | 4,000,002 | 15 | 177.7 s |  |
+| `LIVE_R4_sl` R4 (registration committed before writes; coordinator re-checks unregistered shards after its tail reads): shard loss (1 send per batch) | AG EF query done | holds (exhaustive) |  | 446,490 | 37 | 26.8 s |  |
+| `LIVE_R4_llsl` R4 (registration committed before writes; coordinator re-checks unregistered shards after its tail reads): ledger loss + shard loss (1 send per batch) | AG EF query done | holds (exhaustive) |  | 1,641,569 | 41 | 96.4 s |  |
+| `F6b_bounds_R1` F6(b)'s bounds (code as built, shard loss) with R1 (registration committed before writes) | I4_NoGapAtSeam | stopped: memory bound: stopped at 4,000,001 states; every state reachable in at most 19 steps checked, no violation |  | 4,000,001 | 19 | 294.5 s |  |
+| `F6b_bounds_R2` F6(b)'s bounds (code as built, shard loss) with R2 (registration logged before writes; shard registers on a read naming a lost incarnation) | I4_NoGapAtSeam | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 23 steps checked, no violation |  | 4,000,002 | 23 | 393.4 s |  |
+| `F6b_bounds_R3` F6(b)'s bounds (code as built, shard loss) with R3 (registration logged before writes; coordinator settles a lost incarnation) | I4_NoGapAtSeam | stopped: memory bound: stopped at 4,000,003 states; every state reachable in at most 23 steps checked, no violation |  | 4,000,003 | 23 | 400.5 s |  |
+| `F6b_bounds_R4` F6(b)'s bounds (code as built, shard loss) with R4 (registration committed before writes; coordinator re-checks unregistered shards after its tail reads) | I4_NoGapAtSeam | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 18 steps checked, no violation |  | 4,000,002 | 18 | 267.1 s |  |
+| `LIVE_R2_teeth_no_read_trigger` R2 teeth: nothing registers a fresh incarnation on a read (only a write does): shard loss | AG EF query done | **LIVE_QueryCanComplete** violated | 6 | 143,799 | 38 | 6.8 s | register(inc 1) → drainPUT(v1) → regLogged → append(b0) → append(b1) → SHARD-LOSS |
+| `LIVE_R3_teeth_no_settle` R3 teeth: the coordinator does not settle a lost incarnation: shard loss | AG EF query done | **LIVE_QueryCanComplete** violated | 6 | 143,799 | 38 | 6 s | register(inc 1) → drainPUT(v1) → regLogged → append(b0) → append(b1) → SHARD-LOSS |
+| `R_teeth_lost_read_as_empty` R2/R3 teeth: tailRead answers ok/empty to an incarnation it does not hold (no refusal, so no re-plan); shard loss | I4_NoGapAtSeam | **I4_NoGapAtSeam** violated | 15 | 95,270 | 15 | 5.5 s | register(inc 1) → drainPUT(v1) → regLogged → append(b0) → seal(..1) → list(inc1 1..1) → read(inc1 1..1) → put(1..1) → drainCommit → plan → addUnit(inc1 1..1) → drainPUT(v2) → SHARD-LOSS → tail(inc1 >0)=∅ → done{} |
+| `P_safety` proposed (as built + R2 + F16 fix): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss | all safety | stopped: memory bound: stopped at 4,000,001 states; every state reachable in at most 19 steps checked, no violation |  | 4,000,001 | 19 | 155.5 s |  |
+| `P_maintenance` proposed: two compaction steps at once + retention + ledger loss + shard loss, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 21 steps checked, no violation |  | 4,000,002 | 21 | 167.9 s |  |
+| `P_F13x` proposed at F13's bounds (1 compaction, sweeper on), no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,002 states; every state reachable in at most 28 steps checked, no violation |  | 6,000,002 | 28 | 356.3 s |  |
+| `P_F14x` proposed at F14's bounds (two compaction steps at once, retention, ledger loss), sweeper on, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,002 states; every state reachable in at most 31 steps checked, no violation |  | 6,000,002 | 31 | 282.4 s |  |
+| `P_F15x` proposed at F15's bounds (2 flush Workers, shard loss + ledger loss), no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 23 steps checked, no violation |  | 6,000,001 | 23 | 233.3 s |  |
+| `P_teeth_newer_committed` F16 fix teeth: a newer incarnation kills old flush files once COMMITTED (not logged); F15's bounds | I11_LiveFilesReadable | **I11_LiveFilesReadable** violated | 17 | 247,553 | 17 | 11.5 s | register(inc 1) → drainPUT(v1) → regLogged → append(b0) → seal(..1) → list(inc1 1..1) → read(inc1 1..1) → SHARD-LOSS → register(inc 2) → put(1..1) → sweepList → sweepRead→doomed L0(s0 inc1 1..1) → LEDGER-LOSS+rebuild → inc 2 → start: PUT base(inc 2) → start: commit(inc 2) → addUnit(inc1 1..1) → sweep(L0(s0 inc1 1..1)) |
+| `LEAK_P_sl` no leak, proposed: compaction, retention (2 removals), shard loss, no ledger loss (LEAK_D30_sl's bounds); sweep, purge and ledger start as single steps | AG EF no leak | holds (exhaustive) |  | 1,093,981 | 52 | 67.2 s |  |
+| `LEAK_P_sl_comp` no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp's bounds). Expected to stop at the retention bound, not at F16: the one removal is undone by the rebuild and not refunded; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **LIVE_NoLeakComp** violated; left: L0(s0 inc2 1..1) (sweep keeps it); L0(s0 inc2 2..2) (sweep keeps it); L1(L0(s0 inc2 1..1)+L0(s0 inc2 2..2)) (sweep keeps it) | 22 | 1,455,431 | 51 | 81.4 s | register(inc 1) → SHARD-LOSS → register(inc 2) → drainPUT(v1-v2) → regLogged → append(b0) → seal(..1) → append(b1) → seal(..2) → list(inc2 1..1) → read(inc2 1..1) → put(1..1) → addUnit(inc2 1..1) → list(inc2 2..2) → read(inc2 2..2) → put(2..2) → addUnit(inc2 2..2) → compRead → compPut → replace → expire(L1(L0(s0 inc2 1..1)+L0(s0 inc2 2..2))) → LEDGER-LOSS+rebuild |
+| `LEAK_P_llsl` no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss. As LEAK_P_sl_comp: the retention bound; sweep, purge and ledger start as single steps | AG EF no leak | **LIVE_NoLeak** violated; left: L0(s0 inc2 1..1) (sweep keeps it); L0(s0 inc2 2..2) (sweep keeps it); L1(L0(s0 inc2 1..1)+L0(s0 inc2 2..2)) (sweep keeps it) | 22 | 1,455,431 | 51 | 57.7 s | register(inc 1) → SHARD-LOSS → register(inc 2) → drainPUT(v1-v2) → regLogged → append(b0) → seal(..1) → append(b1) → seal(..2) → list(inc2 1..1) → read(inc2 1..1) → put(1..1) → addUnit(inc2 1..1) → list(inc2 2..2) → read(inc2 2..2) → put(2..2) → addUnit(inc2 2..2) → compRead → compPut → replace → expire(L1(L0(s0 inc2 1..1)+L0(s0 inc2 2..2))) → LEDGER-LOSS+rebuild |
+| `LEAK_P_sl_comp2` no leaked compaction output, proposed: compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | holds (exhaustive) |  | 6,258,237 | 58 | 372.8 s |  |
+| `LEAK_P_llsl2` no leak of any object, proposed: compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps | AG EF no leak | holds (exhaustive) |  | 6,258,237 | 58 | 319.4 s |  |
+| `LEAK_D30_sl_comp2` no leaked compaction output, D30 + log as built (amended protocol, as LEAK_D30_sl_comp): compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **LIVE_NoLeakComp** violated; left: L0(s0 inc1 1..1) (sweep keeps it); L0(s0 inc1 2..2) (sweep keeps it); L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)) (sweep keeps it) | 19 | 6,061,928 | 58 | 325.5 s | register(inc 1) → drainPUT(v1) → regLogged → append(b0) → seal(..1) → append(b1) → seal(..2) → list(inc1 1..1) → read(inc1 1..1) → put(1..1) → addUnit(inc1 1..1) → list(inc1 2..2) → read(inc1 2..2) → SHARD-LOSS → put(2..2) → addUnit(inc1 2..2) → compRead → LEDGER-LOSS+rebuild → compPut |
+| `LEAK_P_teeth_no_trigger` F16 fix teeth: the janitor does not ask the shard (the rule alone); LEAK_P_sl_comp2's bounds; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **LIVE_NoLeakComp** violated; left: L0(s0 inc1 1..1) (sweep keeps it); L0(s0 inc1 2..2) (sweep keeps it); L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)) (sweep keeps it) | 19 | 6,062,003 | 58 | 305.1 s | register(inc 1) → drainPUT(v1) → regLogged → append(b0) → seal(..1) → append(b1) → seal(..2) → list(inc1 1..1) → read(inc1 1..1) → put(1..1) → addUnit(inc1 1..1) → list(inc1 2..2) → read(inc1 2..2) → SHARD-LOSS → put(2..2) → addUnit(inc1 2..2) → compRead → LEDGER-LOSS+rebuild → compPut |
+| `LEAK_P_teeth_wm_rule` F16 fix teeth: the sweep keeps the rule as built (a newer incarnation counts once it has a logged UNIT); LEAK_P_sl_comp2's bounds; sweep, purge and ledger start as single steps | AG EF no leaked compaction output | **LIVE_NoLeakComp** violated; left: L0(s0 inc1 1..1) (sweep keeps it); L0(s0 inc1 2..2) (sweep keeps it); L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)) (sweep keeps it) | 19 | 6,205,134 | 58 | 311.9 s | register(inc 1) → drainPUT(v1) → regLogged → append(b0) → seal(..1) → append(b1) → seal(..2) → list(inc1 1..1) → read(inc1 1..1) → put(1..1) → addUnit(inc1 1..1) → list(inc1 2..2) → read(inc1 2..2) → SHARD-LOSS → put(2..2) → addUnit(inc1 2..2) → compRead → LEDGER-LOSS+rebuild → compPut |
 <!-- END BFS_PROPOSED -->
 
 - **R1 fails.** `R1_safety`: I4 in 15 steps, F6(b) again by another road: the registration is
@@ -873,10 +914,11 @@ depth, not exhaustive). Liveness rows decide AG EF on the whole graph.
   states reachable in 19 (R2), 20 (R3) and 16 (R4) steps with client retries, two flush
   Workers, compaction, retention, a ledger loss and a shard loss; in 18, 18 and 15 steps with
   two shards, and 18, 19 and 15 with two tenants sharing a shard (4 million states each). At
-  F6(b)'s own bounds I4 holds to 19 (R1), 23 (R2, R3) and 18 (R4) steps; F6(b)'s trace is 11. R4's depth is the shallowest (its committed registration and the
-  lazy paths it keeps allow more interleavings per step); it still covers R1's 15-step trace,
-  and replaying that trace against R4 (`results/REPLAY.md`) shows the re-check refusing the
-  attempt.
+  F6(b)'s own bounds I4 holds to 19 (R1), 23 (R2, R3) and 18 (R4) steps; F6(b)'s trace is
+  11. R4's depth is the shallowest (its committed registration and the lazy paths it keeps
+  allow more interleavings per step); it still covers R1's 15-step trace, and replaying that
+  trace against R4 (`results/REPLAY.md`) shows the re-check refusing the attempt at its last
+  step.
 - **All four are live** (AG EF query done, whole graph): with a shard loss, and with a ledger
   loss and a shard loss (`LIVE_R*_sl`, `LIVE_R*_llsl`). `LIVE_impl`'s dead end (8 steps) is
   gone.
@@ -892,15 +934,18 @@ depth, not exhaustive). Liveness rows decide AG EF on the whole graph.
 - **The F16 fix** (`PROPOSED` = as built + R2 + `F16FIX`). Safety, I11's safety half
   included: no violation within 19 steps (client retries, both faults), 21 (two compaction
   steps at once, retention, both faults), and 28, 31 and 23 at F13's, F14's and F15's bounds,
-  whose traces are 19, 21 and 17 steps (4 or 6 million states; bounded depth). The old flush-file leak is closed
-  (`LEAK_P_sl` holds where `LEAK_D30_sl` leaked in 11 steps), and so is F16: with two
-  retention removals `LEAK_P_sl_comp2` and `LEAK_P_llsl2` LEAK2, where D30 as built leaks at
-  the same bounds (`LEAK_D30_sl_comp2`, LEAK_BASE). Each half of the fix is load-bearing:
-  without the janitor's call to the shard, or with the sweep's rule as built, F16 is back
-  (LEAK_TEETH); counting a newer incarnation once merely committed brings F15 back
-  (`P_teeth_newer_committed`, I11 in 17 steps: the janitor's registration of incarnation 2 is
-  rolled back by a ledger rebuild after the sweep judged incarnation 1's file dead, and the
-  late `addUnit` lists it with no object).
+  whose traces are 19, 21 and 17 steps (4 or 6 million states; bounded depth). The old
+  flush-file leak is closed (`LEAK_P_sl` holds on its whole graph where `LEAK_D30_sl` leaked in
+  11 steps), and so is F16: with two retention removals `LEAK_P_sl_comp2` (no compaction
+  output leaks) and `LEAK_P_llsl2` (no object of any kind leaks) hold on their whole graphs
+  (6.3 million states each), where D30 as built leaks at the same bounds
+  (`LEAK_D30_sl_comp2`: F16's 19-step trace). Each half of the fix is load-bearing: without
+  the janitor's call to the shard (`LEAK_P_teeth_no_trigger`), or with the sweep's rule as
+  built (`LEAK_P_teeth_wm_rule`), F16's 19-step trace is back; counting a newer incarnation
+  once merely committed brings F15 back (`P_teeth_newer_committed`, I11 in 17 steps: the
+  registration of incarnation 2, made for the tenant's next write, is rolled back by a ledger
+  rebuild after the sweep judged incarnation 1's file dead, and a flush Worker's late `addUnit`
+  lists it with no object).
 - **A bounds artefact, reported as found.** At `LEAK_D30_sl_comp`'s bounds (one retention
   removal) the proposal still has a dead end, at 22 steps (`LEAK_P_sl_comp`, `LEAK_P_llsl`):
   the one removal is spent on the compaction output, the ledger rebuild undoes it (it was not
@@ -933,10 +978,11 @@ to matter.
 
 **Cost of R2 on the acknowledgement path:** per stream lifetime (a tenant's first write to a
 shard, or the first after that shard lost its storage), 1 + k shard→ledger round trips, k the
-number of refused attempts until the registration is logged (1–2 at the measured PUT times, 3 at the slowest seen),
-and a first acknowledgement 0.5–1.5 s after the first append (modelled); per append afterwards,
-none. No R2 PUT on any acknowledgement path. The F16 fix adds nothing there: one shard RPC per
-stream with a pending flush file of its named incarnation, per sweep run.
+number of refused attempts until the registration is logged (1–2 at the measured PUT times,
+3 at the slowest seen), and a first acknowledgement 0.5–1.5 s after the first append
+(modelled); per append afterwards, none. No R2 PUT on any acknowledgement path. The F16 fix
+adds nothing there: one shard RPC per stream with a pending flush file of its named
+incarnation, per sweep run.
 
 ### Contract changes this implies (not made; for `contracts/`, in their own commit)
 
@@ -988,10 +1034,12 @@ The shard's surface (`shard/src/shard.ts`; it is not in `contracts/`):
 - **`ledger/`.** `stream.logged_inc` (schema change): in `segmentWritten`, for each drained
   change with a watermark, `logged_inc = MAX(logged_inc, watermark.incarnation)` for its shard
   (no incarnation filter); a rebuild or restore sets `logged_inc = incarnation`; `register`
-  does not touch it. Migration: `logged_inc = incarnation` unless the outbox still holds a
-  change naming `(shard, incarnation)`, else `prev_incarnation ?? 0` (exact: a committed change
-  not in the outbox is logged). `registerStream` returns `logged = logged_inc >= ref.incarnation`;
-  `loggedWatermarks` and `orphanCheck` return `loggedIncarnation`.
+  does not touch it. Migration: `logged_inc = incarnation` if the outbox holds no change
+  naming `(shard, incarnation)` (exact: a committed change not in the outbox is logged);
+  otherwise `prev_incarnation ?? 0` (conservative: a value too low only keeps old flush files
+  longer and makes a shard wait for the drain). `registerStream` returns
+  `logged = logged_inc >= ref.incarnation`; `loggedWatermarks` and `orphanCheck` return
+  `loggedIncarnation`.
 - **`janitor/`.** `flushFileState`: dead iff `loggedIncarnation > inc`, or
   `incarnation === inc && seq >= seqHi` (old rule only when `loggedIncarnation` is absent: an
   older ledger). For each `pending_unit` file whose incarnation is the one the ledger names,
@@ -1030,22 +1078,24 @@ storage loss as `deleteAll` and eviction), and each has a mutant that must make 
    never at the commit; after `rebuildFromLog` it equals `incarnation`; the migration rule on a
    ledger whose outbox still holds a registration. Mutant: set `logged_inc` at the commit (test
    6 must fail too).
-5. **"spec F16"** (`janitor/` + shard + ledger), the 19 steps of `W_leak_behind_lost_flush`: two
-   units, a compaction step reads both, the shard loses its storage, the ledger loses its storage
-   (both admissions rolled back), the step PUTs its output. Sweep 1 keeps all three objects and
+5. **"spec F16"** (`janitor/` + shard + ledger), the 19 steps of `LEAK_D30_sl_comp2` (F16's
+   witness with the registration first): two units admitted, not yet logged, a compaction step
+   reads both, the shard loses its storage, the ledger loses its storage (both admissions rolled
+   back), the step PUTs its output. Sweep 1 keeps all three objects and
    calls `ensureStream` (the shard registers a fresh incarnation); after the drain, a later
    sweep deletes both flush files and then the output (an input absent and not live). Mutants:
    no `ensureStream` call (`LEAK_P_teeth_no_trigger`), the rule as built
    (`LEAK_P_teeth_wm_rule`): the three objects stay.
 6. **"spec F15", adapted** (`janitor/`), `P_teeth_newer_committed`'s trace: an old-incarnation
-   flush file is kept while the newer incarnation (registered by `ensureStream`) is only
-   committed; a rebuild then rolls the registration back and the late `addUnit` makes the file
-   live with its object. Mutant: count the committed incarnation.
+   flush file is kept while a newer incarnation's registration (in the trace, for the tenant's
+   next write; `ensureStream` makes the same one) is only committed; a rebuild then rolls the
+   registration back and the flush Worker's late `addUnit` makes the file live with its object.
+   Mutant: count the committed incarnation.
 
 ### What remains unproven
 
 - **Bounded depth.** The safety rows stopped at their state caps (4 or 6 million states;
-  every state within 16 to 25 steps checked, depending on the row). Only the liveness and leak
+  every state within 15 to 31 steps checked, depending on the row). Only the liveness and leak
   rows covered their whole graphs, at small bounds: one send per batch, one flush Worker, no
   compaction in the `LIVE_*` rows, no query in the `LEAK_*` rows. AG EF with strong fairness,
   not a temporal formula under weak fairness.
@@ -1063,7 +1113,7 @@ storage loss as `deleteAll` and eviction), and each has a mutant that must make 
   on under R2; under R4 a stream whose registration was rolled back and whose shard has left the
   tenant's pool is not asked at all), S5 (a lower incarnation after a clock step back: the
   shard's registration throws), a rolling upgrade with shards of both releases, more than one
-  shard loss in a run, a second shard of a tenant losing its storage while the first recovers.
+  shard storage loss in a run.
 - **Not run:** R3 and R4 with the F16 fix; R1, R3 and R4 at the compaction-heavy bounds of
   `P_F13x`–`P_F15x`.
 - **Costs are modelled**, from parts measured on Cloudflare (s4: 15–47 ms Worker→ledger round
@@ -1176,4 +1226,6 @@ choice for every row marked *modelled*.
   publisher and Iceberg, rollups and hour closure, quotas and back-pressure, cross-tenant
   quotas. Two tenants are modelled only in one pooled shard with tiny bounds.
 - **Fixes are modelled as rules.** That an amended run passes says the rule is sufficient
-  within the bounds, not that an implementation of the rule is right.
+  within the bounds, not that an implementation of the rule is right. The same holds for
+  "Proposed fixes" (R1–R4, the F16 fix): model only, nothing built; what they leave unproven
+  is listed at the end of that section.
