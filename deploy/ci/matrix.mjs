@@ -20,7 +20,7 @@ import { REPO_ROOT } from '../lib/common.mjs'
  * no longer contains it, so an exclusion cannot outlive its reason.
  */
 export const TS = [
-  { dir: 'shard' },
+  { dir: 'shard', wasm: true },
   { dir: 'edge' },
   { dir: 'ledger' },
   { dir: 'flush', wasm: true },
