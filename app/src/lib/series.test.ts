@@ -31,11 +31,12 @@ function reference(data: PromMatrixData, start: number, end: number, step: numbe
     indexOf = (t) => map.get(t) ?? -1
   }
   const series = data.result.map((s) => {
-    const values: (number | null)[] = new Array(xs.length).fill(null)
+    // Gaps were null; the views now keep them as NaN in a Float64Array.
+    const values = new Float64Array(xs.length).fill(NaN)
     for (const [t, v] of s.values) {
       const num = parseSampleValue(v)
       const i = indexOf(t)
-      if (i >= 0) values[i] = Number.isFinite(num) ? num : null
+      if (i >= 0) values[i] = Number.isFinite(num) ? num : NaN
     }
     return { key: seriesKey(s.metric), labels: s.metric, name: seriesName(s.metric), values }
   })
@@ -75,6 +76,6 @@ describe('alignMatrix in one pass (B3)', () => {
   })
   it('turns every value that cannot be drawn into a gap', () => {
     const a = alignMatrix({ resultType: 'matrix', result: [{ metric: {}, values: [[0, 'NaN'], [15, '+Inf'], [30, '-Inf'], [45, '2.5'], [60, 'Inf']] }] }, 0, 60, 15)
-    expect(a.series[0]!.values).toEqual([null, null, null, 2.5, null])
+    expect([...a.series[0]!.values]).toEqual([NaN, NaN, NaN, 2.5, NaN])
   })
 })

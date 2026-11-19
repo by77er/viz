@@ -216,8 +216,9 @@ describe('series', () => {
     )
     expect(a.xs).toEqual([100, 115, 130, 145, 160])
     expect(a.series.map((s) => s.name)).toEqual(['{s="a"}', '{s="b"}'])
-    expect(a.series[1]!.values).toEqual([1, 2, null, null, 5])
-    expect(a.series[0]!.values).toEqual([null, null, null, null, 7])
+    // Gaps are NaN in the views' Float64Arrays (they were null).
+    expect([...a.series[1]!.values]).toEqual([1, 2, NaN, NaN, 5])
+    expect([...a.series[0]!.values]).toEqual([NaN, NaN, NaN, NaN, 7])
     expect(seriesStats(a.xs, a.series[1]!.values)).toEqual({ last: 5, lastAt: 160, min: 1, max: 5, mean: 8 / 3, count: 3 })
   })
   it('shortens names to the labels that differ', () => {

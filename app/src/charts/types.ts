@@ -17,8 +17,8 @@ export interface ChartSeries {
   colorVar: string
   /** Folded into Other: drawn first, as a hairline, so the coloured series stay on top. */
   other?: boolean
-  /** One value per x; null is a gap and is never bridged. */
-  values: (number | null)[]
+  /** One value per x; null or NaN is a gap and is never bridged. */
+  values: ArrayLike<number | null>
 }
 
 export interface RenderInfo {

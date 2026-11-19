@@ -22,7 +22,8 @@ export interface AssignInput {
   /** Canonical identity of the series (lib/series seriesKey). */
   key: string
   name: string
-  values: readonly (number | null)[]
+  /** One value per x; a gap is null, or NaN (a Float64Array). */
+  values: ArrayLike<number | null>
 }
 
 export interface Ranked {
@@ -36,7 +37,7 @@ export interface AssignPolicy {
   /** How many series may have a colour. */
   slots: number
   /** The size of a series, for ranking. */
-  measure: (values: readonly (number | null)[]) => number | null
+  measure: (values: ArrayLike<number | null>) => number | null
   /** Sort order of candidates for a free slot: negative when `a` goes first. */
   compare: (a: Ranked, b: Ranked) => number
   /** What the Other group carries for drawing: nothing, or the sum of its members. */
@@ -61,10 +62,11 @@ export interface Assigned {
   other: OtherGroup | null
 }
 
-export function meanOf(values: readonly (number | null)[]): number | null {
+export function meanOf(values: ArrayLike<number | null>): number | null {
   let sum = 0
   let n = 0
-  for (const v of values) {
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
     if (v == null || !Number.isFinite(v)) continue
     sum += v
     n++

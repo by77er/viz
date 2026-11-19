@@ -2,9 +2,9 @@ import { type Dashboard, type Issue, type PatchOp, applyOps, diff, lint, parsePo
 import { DAY_MS } from './caps'
 import { Problem, invalid, notFound } from './errors'
 import type { Actor } from './identity'
-import { type DashRow, baseOf, checkTenantBytes, commitRevision, dashboardView, invalidDashboard, loadDashboard, parseOps, specAt, staleProblem } from './ops-dashboards'
+import { type DashRow, baseOf, checkTenantBytes, commitRevision, createdSummary, dashboardView, idHolder, insertDashboard, invalidDashboard, loadDashboard, mayApply, mustValidate, parseOps, requireFreeId, specAt, staleProblem } from './ops-dashboards'
 import { general } from './ops-settings'
-import type { Ctx, Op, Tenant } from './tenant'
+import { type Ctx, NoChange, type Op, type Tenant } from './tenant'
 import type { OpResult } from './routes'
 import { decodeCursor, encodeCursor, fields, isRecord, iso, pageLimit, randomId, str, utf8Length } from './util'
 
@@ -15,6 +15,12 @@ import { decodeCursor, encodeCursor, fields, isRecord, iso, pageLimit, randomId,
  * against a base revision. Nothing changes until someone with the right to apply accepts
  * it, whole or change by change. Whenever it is shown or applied it is evaluated against
  * the dashboard as it is NOW, never against the base it was written for.
+ *
+ * A proposal can also CREATE a dashboard (`POST /proposals` with a whole spec): the same
+ * review, apply, edit, decline and expiry, applied whole. Stored as a row with
+ * `base_number` 0 and the spec in `spec` (schema version 2, `src/schema.ts`). Applying one
+ * needs the right to write dashboards directly (`mayApply`), as a direct create does: an
+ * agent only proposes, unless the tenant lets agents apply.
  */
 
 export interface Change {
@@ -40,9 +46,19 @@ interface PropRow {
   reason: string | null
   applied_number: number | null
   applied_changes: string | null
+  bytes: number
+  /** The whole proposed spec, for a proposal that creates a dashboard (schema version 2); otherwise null. */
+  spec: string | null
 }
 
-const COLUMNS = 'id, dashboard, base_revision, base_number, message, changes, status, created_at, by, editors, expires_at, resolved_at, resolved_by, reason, applied_number, applied_changes'
+const COLUMNS = 'id, dashboard, base_revision, base_number, message, changes, status, created_at, by, editors, expires_at, resolved_at, resolved_by, reason, applied_number, applied_changes, bytes, spec'
+
+/**
+ * A proposal that creates a dashboard. Both conditions: a release that does not know the
+ * `spec` column may have rewritten the row as an ordinary proposal (with `base_number` >= 1)
+ * and left the column behind.
+ */
+const isCreation = (row: PropRow): row is PropRow & { spec: string } => row.base_number === 0 && row.spec !== null
 const CHANGE_NAME = /^[a-z][a-z0-9_-]{0,47}$/
 
 function load(t: Tenant, id: string): PropRow {
@@ -56,8 +72,10 @@ const statusOf = (row: PropRow, now: number): PropRow['status'] => (row.status =
 
 function view(row: PropRow, now: number, withOps: boolean): Record<string, unknown> {
   const changes = JSON.parse(row.changes) as Change[]
+  const creation = isCreation(row)
   return {
     id: row.id,
+    kind: creation ? 'create' : 'patch',
     dashboard: row.dashboard,
     status: statusOf(row, now),
     message: row.message,
@@ -73,6 +91,7 @@ function view(row: PropRow, now: number, withOps: boolean): Record<string, unkno
     declineReason: row.reason,
     appliedNumber: row.applied_number,
     appliedChanges: row.applied_changes === null ? null : (JSON.parse(row.applied_changes) as string[]),
+    ...(creation && withOps ? { spec: JSON.parse(row.spec) as Dashboard } : {}),
   }
 }
 
@@ -216,6 +235,112 @@ function review(dash: DashRow, ev: Evaluation): Record<string, unknown> {
 }
 
 const hasApplyScope = (c: Ctx): boolean => c.id.scopes.includes('dashboards:apply') || c.id.scopes.includes('admin')
+
+// ---- proposals that create a dashboard ----
+
+/**
+ * The review of a proposed new dashboard, against the tenant as it is now: the spec is
+ * validated again (it is about to become a dashboard), and the id must still be free.
+ */
+function reviewCreation(t: Tenant, row: PropRow & { spec: string }): Record<string, unknown> {
+  const spec = JSON.parse(row.spec) as unknown
+  const v = validate(spec)
+  const holder = idHolder(t, row.dashboard)
+  const reasons: string[] = []
+  if (holder === 'live') reasons.push(`A dashboard with id "${row.dashboard}" exists now; this proposal can no longer be applied.`)
+  if (holder === 'deleted') reasons.push(`A deleted dashboard holds the id "${row.dashboard}"; it would have to be purged first.`)
+  if (!v.ok) reasons.push(`The spec is not a valid dashboard (${v.errors.length} error${v.errors.length === 1 ? '' : 's'}).`)
+  const ok = v.ok && holder === null
+  return {
+    kind: 'create',
+    current: null,
+    exists: holder !== null,
+    moved: false,
+    needsRebase: false,
+    reasons,
+    changes: [],
+    summary: v.ok ? createdSummary(spec as Dashboard) : [],
+    result: ok ? { revision: revisionOf(spec as Dashboard), number: 1, lint: lint(spec as Dashboard) } : null,
+    errors: v.errors,
+  }
+}
+
+/**
+ * Store a proposal to create `spec`, or (with `existing`) replace the spec of one. Retrying
+ * the same proposal is idempotent: the caller who already has an open proposal for the same
+ * spec gets that one back (200, outcome "unchanged") and nothing is written.
+ */
+function proposeCreation(t: Tenant, c: Ctx, spec: Dashboard, message: string, existing?: PropRow): OpResult {
+  const id = spec.metadata.id
+  if (existing && id !== existing.dashboard) {
+    throw invalid('A proposal cannot change the id of the dashboard it creates.', `Keep /metadata/id "${existing.dashboard}", or decline this proposal and propose the dashboard under the new id.`, { path: '/metadata/id' })
+  }
+  requireFreeId(t, id, true)
+  const text = JSON.stringify(spec)
+  const specBytes = utf8Length(text)
+  if (specBytes > t.caps.maxSpecBytes) {
+    throw new Problem(413, 'spec-too-large', `The dashboard is ${specBytes} bytes; the most is ${t.caps.maxSpecBytes}.`, 'Split it into several dashboards, or move repeated panels into a fragment.', { bytes: specBytes, limitBytes: t.caps.maxSpecBytes })
+  }
+  const bytes = specBytes + utf8Length(message)
+  const revision = revisionOf(spec)
+  let pid: string
+  if (existing) {
+    pid = existing.id
+    const editors = JSON.parse(existing.editors) as Actor[]
+    const by = JSON.parse(existing.by) as Actor
+    if (c.actor.subject !== by.subject && !editors.some((e) => e.subject === c.actor.subject)) editors.push(c.actor)
+    checkTenantBytes(t, Math.max(0, bytes - existing.bytes))
+    t.run('UPDATE proposals SET message = ?, spec = ?, editors = ?, bytes = ? WHERE tenant = ? AND id = ?', message, text, JSON.stringify(editors), bytes, t.tenant, pid)
+    t.audit(c.actor, c.now, 'proposal.edit', 'proposal', pid, view(existing, c.now, true), view(load(t, pid), c.now, true))
+  } else {
+    const open = t.all<PropRow>(`SELECT ${COLUMNS} FROM proposals WHERE tenant = ? AND dashboard = ? AND status = 'open' AND expires_at > ?`, t.tenant, id, c.now)
+    const same = open.find((r) => isCreation(r) && (JSON.parse(r.by) as Actor).subject === c.actor.subject && revisionOf(JSON.parse(r.spec) as Dashboard) === revision)
+    if (same && isCreation(same)) throw new NoChange({ status: 200, body: { outcome: 'unchanged', proposal: view(same, c.now, true), review: reviewCreation(t, same) } })
+    if (open.length >= t.caps.maxOpenProposalsPerDashboard) {
+      throw new Problem(409, 'too-many-proposals', `There are already ${open.length} open proposals for "${id}", the most there may be.`, 'Apply or decline some of them first.')
+    }
+    checkTenantBytes(t, bytes)
+    pid = `p_${randomId(22)}`
+    t.run(
+      "INSERT INTO proposals (tenant, id, dashboard, base_revision, base_number, message, changes, status, created_at, by, editors, expires_at, bytes, spec) VALUES (?, ?, ?, '', 0, ?, '[]', 'open', ?, ?, '[]', ?, ?, ?)",
+      t.tenant, pid, id, message, c.now, JSON.stringify(c.actor), c.now + general(t).proposalTtlDays * DAY_MS, bytes, text,
+    )
+    t.audit(c.actor, c.now, 'proposal.create', 'proposal', pid, null, view(load(t, pid), c.now, true))
+  }
+  const row = load(t, pid) as PropRow & { spec: string }
+  return { status: existing ? 200 : 202, body: { outcome: existing ? 'edited' : 'proposed', proposal: view(row, c.now, true), review: reviewCreation(t, row) } }
+}
+
+/** POST /proposals: propose a new dashboard for a person to review and apply. */
+const createDashboard: Op = (t, c) => {
+  const b = fields(c.input.body, ['spec', 'message', 'dryRun'], 'request body')
+  const message = str(b.message, 'message', { max: 500 })!
+  return proposeCreation(t, c, mustValidate(b.spec), message)
+}
+
+/** Apply a proposal that creates a dashboard: whole, by someone who may create dashboards directly. */
+function applyCreation(t: Tenant, c: Ctx, row: PropRow & { spec: string }, b: Record<string, unknown>): OpResult {
+  // The same rule as a direct create: a person, or an agent only where the tenant allows agents to apply.
+  if (!mayApply(t, c)) {
+    throw new Problem(403, 'agents-may-not-apply', 'An agent may not apply a proposal that creates a dashboard in this tenant.', 'A person with dashboards:apply reviews and applies it. An admin can allow agents to apply with the general setting "agentsMayApply".')
+  }
+  if (b.changes !== undefined) throw invalid('A proposal to create a dashboard is applied whole; it has no named changes.', 'Leave out "changes".', { field: 'changes' })
+  if (baseOf(c, b, false) !== undefined) throw invalid('A proposal to create a dashboard has no base revision.', 'Leave out "baseRevision" and If-Match.', { field: 'baseRevision' })
+  const by = JSON.parse(row.by) as Actor
+  const spec = mustValidate(JSON.parse(row.spec))
+  const message = str(b.message, 'message', { max: 500, optional: true }) ?? row.message
+  const { summary, ...rev } = insertDashboard(t, c.actor, c.now, spec, { owner: null, message, kind: 'apply', proposal: row.id, proposedBy: by })
+  t.run(
+    "UPDATE proposals SET status = 'applied', resolved_at = ?, resolved_by = ?, applied_number = ?, applied_changes = '[]' WHERE tenant = ? AND id = ? AND status = 'open'",
+    c.now, JSON.stringify(c.actor), rev.number, t.tenant, row.id,
+  )
+  t.audit(c.actor, c.now, 'proposal.apply', 'proposal', row.id, null, { dashboard: row.dashboard, created: true, ...rev, appliedChanges: [], skippedChanges: [], proposedBy: by, summary })
+  return {
+    status: 200,
+    body: { outcome: 'applied', proposal: view(load(t, row.id), c.now, false), dashboard: dashboardView(loadDashboard(t, row.dashboard)), ...rev, appliedChanges: [], skippedChanges: [], summary, lint: lint(spec) },
+    headers: { ETag: `"${rev.revision}"` },
+  }
+}
 
 /** Validate changes against the current revision and store them as a proposal. Shared by PATCH and POST …/proposals. */
 export function createProposal(t: Tenant, c: Ctx, dash: DashRow, base: string, message: string, changes: Change[], existing?: PropRow): OpResult {

@@ -45,6 +45,28 @@ describe('retention policy', () => {
   })
 })
 
+// Review R-1 (design/reviews/write-path-completion.md), ported from the reviewer's
+// janitor/test/review.test.ts: a record the tenant wrote for a LONGER period than the default,
+// with a typo, must not be replaced by the 30-day default.
+describe('review R-1: a retention record that cannot be read', () => {
+  it('a 365-day policy with a trailing comma does not expire a 100-day-old file', async () => {
+    const s = stream('rv-ret')
+    await append(s.shard, s.tenant, someSamples(s.tenant, T0 - 100 * DAY_MS, 24, 0), new Sent())
+    await s.shard.seal(s.tenant)
+    await append(s.shard, s.tenant, someSamples(s.tenant, T0, 24, 1), new Sent())
+    await s.shard.seal(s.tenant)
+    expect(await flushTenant(env, engine, s.tenant, s.shardName)).toMatchObject({ status: 'ok' })
+    expect(await liveKeys(s.ledger)).toHaveLength(4)
+
+    await env.CONFIG.put(`retention:${s.tenant}`, '{"metric_samples_days": 365,}')
+    const r = await expireTenant(env, s.tenant, T0)
+    // The tenant asked for 365 days. A record that cannot be read stops expiry (refuse
+    // rather than guess); it does not apply a shorter default.
+    expect(r.removed).toEqual([])
+    expect(await liveKeys(s.ledger)).toHaveLength(4)
+  })
+})
+
 describe('expire and purge', () => {
   it('expires whole days past the policy from both tables, and touches no object', async () => {
     const t = await tenantWith('j1', 4, (i) => [5, 3, 2, 0][i]!)

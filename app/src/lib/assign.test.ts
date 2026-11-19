@@ -82,7 +82,7 @@ describe('series assignment (M2)', () => {
     const byMax = assignSeries([series('flat', 5), { key: 'k:spiky', name: 'spiky', values: [0, 0, 100] }], null, {
       ...DEFAULT_POLICY,
       slots: 1,
-      measure: (v) => Math.max(...v.map((x) => x ?? -Infinity)),
+      measure: (v) => Math.max(...Array.from(v, (x) => x ?? -Infinity)),
     })
     expect(byMax.coloured).toEqual(['k:spiky'])
     expect(assignSeries(four, null, { ...DEFAULT_POLICY, slots: 2 }).coloured).toEqual(['k:checkout', 'k:orders'])

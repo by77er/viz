@@ -132,7 +132,15 @@ function flushFileState(m: RegExpExecArray, logged: Watermark[]): 'dead' | 'pend
   return w.incarnation === Number(inc) && w.seq >= Number(seqHi) ? 'dead' : 'pending_unit'
 }
 
-export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { graceMs?: number; maxCompactStepMs?: number; now?: number } = {}): Promise<OrphanResult> {
+/** Fault-injection points (tests). A hook that runs other work stands for a concurrent job at that point. */
+export interface SweepHooks {
+  /** After the listing, before the ledger is asked. */
+  afterList?(keys: string[]): void | Promise<void>
+  /** After the ledger was asked, before the doomed objects of that chunk are deleted. */
+  beforeDelete?(doomed: string[]): void | Promise<void>
+}
+
+export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { graceMs?: number; maxCompactStepMs?: number; now?: number; hooks?: SweepHooks } = {}): Promise<OrphanResult> {
   const ledger = ledgerOf(env, tenant)
   const now = opts.now ?? Date.now()
   const graceMs = opts.graceMs ?? DEFAULT_ORPHAN_GRACE_MS
@@ -152,6 +160,7 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
     } while (cursor)
   }
   out.listed = objects.length
+  await opts.hooks?.afterList?.(objects.map((o) => o.key))
 
   // 2. Then ask the ledger, in one consistent read per thousand keys.
   for (let i = 0; i < objects.length; i += 1000) {
@@ -175,6 +184,7 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
         out.kept.push({ key: o.key, why: 'unknown_name' }) // not ours to judge
       }
     }
+    await opts.hooks?.beforeDelete?.(doomed)
     if (doomed.length > 0) await env.BUCKET.delete(doomed)
     out.deleted.push(...doomed)
   }

@@ -29,9 +29,20 @@ export function columnOf(x: number, xMin: number, xMax: number, columns: number)
   return c < 0 ? 0 : c >= columns ? columns - 1 : c
 }
 
+/** A series as the renderer takes it: an array with null for a gap (uPlot draws NaN as a value and bridges it). */
+function withNulls(s: ArrayLike<number | null>): (number | null)[] {
+  const out = new Array<number | null>(s.length)
+  for (let i = 0; i < s.length; i++) {
+    const v = s[i]
+    out[i] = v == null || v !== v ? null : v
+  }
+  return out
+}
+
+/** Input values: a gap is null, or NaN (the views keep series in Float64Arrays); the output always has null. */
 export function downsampleMinMax(
   xs: readonly number[],
-  series: readonly (readonly (number | null)[])[],
+  series: readonly ArrayLike<number | null>[],
   columns: number,
 ): DownsampleResult {
   const n = xs.length
@@ -39,7 +50,7 @@ export function downsampleMinMax(
   if (n <= cols * 2) {
     return {
       xs: xs.slice(),
-      series: series.map((s) => s.slice()),
+      series: series.map(withNulls),
       downsampled: false,
       sourceIndex: xs.map((_, i) => i),
     }
@@ -81,7 +92,7 @@ export function downsampleMinMax(
       let maxAt = -1
       for (let i = lo; i < hi; i++) {
         const v = s[i]
-        if (v == null) continue
+        if (v == null || v !== v) continue
         if (v < min) {
           min = v
           minAt = i

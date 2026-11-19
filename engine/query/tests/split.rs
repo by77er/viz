@@ -443,3 +443,34 @@ fn signed_zeros_give_the_same_bits_in_any_order() {
         }
     }
 }
+
+/// Regression: the input proptest found in CI (a run that caught mutant 36 applied to the
+/// source): `min by (g)` over 1e-300, -0 and +0 in one group, split over parts in every
+/// order, must give -0 as one place does.
+#[test]
+fn min_by_group_over_signed_zeros_regression() {
+    let mk = |vals: &[Option<f64>]| -> Vec<viz_promql::SeriesV> {
+        vals.iter()
+            .enumerate()
+            .map(|(i, v)| viz_promql::SeriesV {
+                labels: Arc::new(vec![("g".into(), format!("{}", i % 3)), ("i".into(), format!("{i:02}"))]),
+                drop_name: false,
+                vals: vec![None, *v, None],
+            })
+            .collect()
+    };
+    // Series 0, 3 and 6 are group 0: 1e-300, -0 and +0 at the middle step.
+    let v = mk(&[Some(1e-300), None, None, Some(-0.0), None, None, Some(0.0)]);
+    let whole = viz_query::agg::finish(&partial_of("min by (g) (x)", &v, 3, &[]));
+    assert_eq!(whole[0].vals[1].map(f64::to_bits), Some((-0.0f64).to_bits()));
+    for sides in [[0u8, 0, 0, 1, 1, 1, 2], [2, 0, 0, 1, 0, 0, 0], [1, 1, 1, 0, 2, 2, 2], [0, 1, 2, 2, 1, 0, 1]] {
+        let parts: Vec<Vec<viz_promql::SeriesV>> = (0..3u8).map(|p| v.iter().enumerate().filter(|(i, _)| sides[*i] == p).map(|(_, s)| s.clone()).collect()).collect();
+        for order in [[0usize, 1, 2], [2, 1, 0], [1, 2, 0]] {
+            let mut m = partial_of("min by (g) (x)", &parts[order[0]], 3, &[]);
+            for k in &order[1..] {
+                m.merge(partial_of("min by (g) (x)", &parts[*k], 3, &[])).unwrap();
+            }
+            assert_eq!(bits(&viz_query::agg::finish(&m)), bits(&whole), "parts {sides:?} merged in order {order:?}");
+        }
+    }
+}

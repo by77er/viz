@@ -7,7 +7,8 @@
 export interface DigestInput {
   /** Epoch seconds, ascending, shared by all series. */
   xs: readonly number[]
-  series: readonly { name: string; values: readonly (number | null)[] }[]
+  /** A gap is null, or NaN (a Float64Array). */
+  series: readonly { name: string; values: ArrayLike<number | null> }[]
 }
 
 export type Trend = 'rising' | 'falling' | 'flat' | 'unknown'
@@ -37,7 +38,7 @@ export interface Digest {
 /** A fitted change smaller than this fraction of the mean magnitude reads as "flat". */
 export const FLAT_THRESHOLD = 0.05
 
-export function digestOne(xs: readonly number[], name: string, values: readonly (number | null)[]): SeriesDigest {
+export function digestOne(xs: readonly number[], name: string, values: ArrayLike<number | null>): SeriesDigest {
   let n = 0
   let min = Infinity
   let max = -Infinity
