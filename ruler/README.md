@@ -886,6 +886,35 @@ the new "dryRun on every write" test.
 | 91 | wiring, six connections: a gate per evaluator instead of one per object | wiring: same |
 | 92 | wiring, credential: a refused key replaced at once (a rotation and an audit entry per 401 while KV propagates) | wiring: "a refused key is kept while KV may still be propagating …" (**survived the first run**: the in-memory minimum interval between requests to control hid the missing propagation grace; the test now evicts the object, after which only the key's stored age protects; then killed) |
 | 93 | wiring, control destination: a tenant config may define `viz:default` itself | wiring: "the Alertmanager form through a tenant route that names viz:default …" |
+| 94 | SLO thresholds: a burn rate equal to the threshold counts as burning (`>=`, applied to the scratch copy of `anomaly/`'s `evaluateWindows`, which the rule calls) | slo: "the threshold is strict: a burn rate exactly at it does not fire …" |
+| 95 | SLO thresholds: the short window ignored (both windows read the long one) | slo: "error ratio 0.01 … within one bucket of the formula's time" (+5 more, incl. the library agreement) |
+| 96 | SLO thresholds: `min_coverage` ignored | slo: "a window counts only once min_coverage of its buckets have data …" (+2 more) |
+| 97 | SLO thresholds: the default alerts lose the 6 h / 30 m page | slo: "the table the library reproduces …" (+3 more) |
+| 98 | SLO windows: the current bucket left out of every window | slo: "error ratio 1 …" (+ every other ratio) |
+| 99 | SLO windows: a block's cached sums not invalidated when a bucket in it is set | slo: "error ratio 0.02 …" (+ more) |
+| 100 | SLO state: the rings not rebuilt from SQLite in the constructor | slo: "state is rows … with evictions and replays the stored state is exactly a run without them" (+2 more) |
+| 101 | SLO state: a replayed tick advances the rings again (replay guard off by one) | slo: same |
+| 102 | tenant isolation: SLO state loaded without the tenant in the `WHERE` clause | slo: "every statement on SLO state names the tenant …" (**survived the first run**: the foreign head held one series, as many as the tenant's own, and the loader reads one head; the test now adds a foreign block for the tenant's own series key and compares the stored state with a pure reference run; then killed) |
+| 103 | tenant isolation: deleting a group deletes SLO state without naming the tenant | slo: same |
+| 104 | warm-up budget: the planned cost never compared with the budget | history: "over the budget nothing is fetched …" (+2 more, backtests) |
+| 105 | warm-up budget: the budget checked only after the fetch (an over-budget read made, then refused) | history: same (+2 more) |
+| 106 | warm-up budget: a read the engine's plan refuses made anyway | history: "a read the engine's own limits would refuse is refused too …" |
+| 107 | warm-up budget: warm-ups held to the larger backtest budget | history: "over the budget nothing is fetched …" (+1 more) |
+| 108 | warm-up: the state written outside the warm-up's transaction | history: "a crash in the warm-up's transaction writes nothing …" |
+| 109 | warm-up: a finished warm-up not recorded (read again after an eviction) | history: "an anomaly rule: the first tick plans then reads exactly …" (+1 more) |
+| 110 | backtest/live: an anomaly backtest starts cold | history: "an anomaly rule: over data it fired on live, a backtest from its creation gives the same alerts …" |
+| 111 | backtest/live: an SLO backtest without the coarse history | history: "an SLO rule: over data it paged and ticketed on live …" |
+| 112 | backtest/live: an SLO backtest feeds each step the previous step's buckets | history: same |
+| 113 | backtest/live: an interval's annotations taken at its end, not when the alert entered the state | history: same |
+| 114 | tenant isolation: `POST /monitors/{id}/backtest` looks the monitor up for a tenant named in the query string | history: "… only the caller's own monitors and data" |
+| 115 | compatibility: a save warms a kept rule over state rows a newer release wrote (both guards removed) | slo: "refusals change nothing … a newer release's rows are refused, kept …" |
+
+**SLO, warm-up and backtest mutants 94–115** (`VIZ_SCRATCH=… node scripts/mutants.mjs 94 … 115`, on a
+scratch copy): 94–114 on the first run, 20 killed and 102 survived (see its row); after the test
+was strengthened, 102 killed. 115 was added with the fix it guards (a save could warm a rule over
+a newer release's rows; found by reading the code, not by a test) and killed. Mutant 94 edits the
+copy of `anomaly/` in the scratch directory, never `anomaly/` itself. Mutants 1–93 were not
+re-run in this change; the whole suite passes (counts below).
 
 **Production wiring mutants 82–93** (`VIZ_SCRATCH=… node scripts/mutants.mjs 11 53 82 … 93`, a
 scratch copy that now also holds `control/src` and `dashboard/src`, which the tests bind):

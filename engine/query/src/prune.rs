@@ -251,7 +251,10 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
     let want_range = |lo: &[u8], hi: &[u8]| lo > hi || names.as_ref().is_none_or(|s| s.range(lo.to_vec()..=hi.to_vec()).next().is_some());
 
     // series_id -> (in the part, which reads match), decided once from its labels.
-    let decided: RefCell<HashMap<i64, (bool, Vec<bool>)>> = RefCell::new(HashMap::new());
+    // series_id -> its decision (in the part, which reads match) in `decisions`, made once
+    // from its labels; the same series comes back in file after file of a day.
+    let decided: RefCell<HashMap<i64, u32>> = RefCell::new(HashMap::new());
+    let mut decisions: Vec<(bool, Vec<bool>)> = Vec::new();
     // A row group's labels are decoded only if it holds an id not decided yet.
     let labels_for = |sids: &[i64]| need_labels && {
         let d = decided.borrow();
@@ -262,9 +265,9 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
     let mut selected: Vec<SeriesDef> = Vec::new();
     for (fi, f) in series_files.iter().enumerate() {
         catalog::for_each_series_with(f, fi, &want_range, &want, &labels_for, &mut |row| {
-            let known = decided.borrow().get(&row.series_id).cloned();
-            let (mine, hits) = match known {
-                Some(d) => d,
+            let known = decided.borrow().get(&row.series_id).copied();
+            let at = match known {
+                Some(i) => i as usize,
                 None => {
                     let parse = rs.iter().any(|r| !r.name_only) || (part_needs_labels && carries(row.labels_json));
                     let labels = if parse { Some(catalog::parse_labels(row.labels_json)?) } else { None };
@@ -285,21 +288,26 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
                         hits.push(hit);
                     }
                     if carry && mine && hits.iter().any(|h| *h) {
-                        if let Some(l) = labels.clone() {
+                        if let Some(l) = labels {
                             selected.push(SeriesDef { series_id: row.series_id, labels: l });
                         }
                     }
-                    decided.borrow_mut().insert(row.series_id, (mine, hits.clone()));
-                    (mine, hits)
+                    decisions.push((mine, hits));
+                    decided.borrow_mut().insert(row.series_id, (decisions.len() - 1) as u32);
+                    decisions.len() - 1
                 }
             };
+            let (mine, hits) = &decisions[at];
             if !mine {
                 return Ok(());
             }
             for (r, hit) in rs.iter_mut().zip(hits) {
-                if hit {
+                if *hit {
                     // Wanted whatever its time here: the row groups' own times decide.
-                    let v = r.sids.entry(row.metric_name.to_vec()).or_default();
+                    let v = match r.sids.get_mut(row.metric_name) {
+                        Some(v) => v,
+                        None => r.sids.entry(row.metric_name.to_vec()).or_default(),
+                    };
                     if v.last() != Some(&row.series_id) {
                         v.push(row.series_id);
                     }

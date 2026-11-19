@@ -184,9 +184,9 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
 @container (max-width: 639px) { .vz-range { grid-template-columns: minmax(0, 1fr); } }
 
 /* Segmented control: choosing a view. The chosen segment is marked, not inverted, so it never outranks the primary action. */
-.vz-segmented { display: inline-flex; border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-2); background: var(--ground); }
+.vz-segmented { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: var(--hairline) solid var(--rule-control); border-radius: var(--radius-2); background: var(--ground); } /* wider than its room (320 px), its segments wrap rather than widen the page */
 .vz-segmented button {
-  position: relative; height: calc(var(--control-md) - 2 * var(--hairline)); padding: 0 var(--space-3); font: var(--text-ui); color: var(--ink-secondary);
+  position: relative; flex: 1 0 auto; height: calc(var(--control-md) - 2 * var(--hairline)); padding: 0 var(--space-3); font: var(--text-ui); color: var(--ink-secondary);
   background: transparent; border: 0; border-left: var(--hairline) solid var(--rule); cursor: pointer; white-space: nowrap;
   transition: background-color var(--duration-fast) var(--ease);
 }
@@ -294,7 +294,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 }
 
 /* Status: a mark with its own shape, then a word. Shape and word carry the state; colour reinforces it. */
-.vz-status { display: inline-flex; align-items: flex-start; gap: var(--space-2); white-space: nowrap; color: var(--ink); } /* the mark is centred on the first line, so a status that wraps (in a folded table's kept column) keeps it there */
+.vz-status { display: inline-flex; align-items: flex-start; gap: var(--space-2); color: var(--ink); } /* its words wrap when there is no room (a long state at 320 px, a folded table's kept column), and the mark stays centred on the first line; in a table cell that does not fold they stay on one line, as the cell's words do */
 .vz-status::before, .vz-mark { content: ""; display: inline-block; flex: none; width: var(--mark); height: var(--stroke); background: var(--ink-muted); } /* unknown: a dash */
 .vz-status[data-state="critical"]::before, .vz-mark[data-state="critical"] { height: var(--mark); background: var(--status-critical); } /* solid square */
 .vz-status[data-state="warn"]::before, .vz-mark[data-state="warn"] { width: calc(var(--mark) - var(--space-half)); height: calc(var(--mark) - var(--space-half)); margin-inline: var(--hairline); background: var(--status-warn); transform: rotate(var(--diagonal)); box-shadow: inset 0 0 0 var(--hairline) var(--status-warn-edge); } /* diamond */
@@ -325,7 +325,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .vz-panel-title { font: var(--text-ui-strong); margin: 0; }
 .vz-panel-meta { font: var(--text-small); color: var(--ink-muted); display: flex; flex-wrap: wrap; gap: 0 var(--space-2); }
-.vz-panel-meta > * { white-space: nowrap; }
+.vz-panel-meta > * { min-width: 0; } /* each part stays on one line while it fits one; a part longer than the line wraps rather than widen the page (flows 12 at 320 px) */
 .vz-panel-note { color: var(--ink); font-weight: var(--text-ui-strong-weight); } /* "Showing the previous query", "Not updating" */
 /* The region under the head. Every view in it starts with a strip of words about the data, never the data: a chart's strip above the plot
    (unit and marker words), a table's caption. The waiting line lies over that strip: it reserves nothing, moves nothing, and never covers
@@ -564,13 +564,15 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 @container (max-width: 639px) {
   .vz-waterfall[data-fold] tbody tr { align-items: center; }
   .vz-waterfall[data-fold] td[data-key] { display: flex; align-items: center; padding-left: calc(var(--space-1) + var(--depth, 0) * var(--space-3)); } /* toggle and name on one line */
-  .vz-waterfall[data-fold] .vz-waterfall-span { flex-wrap: wrap; column-gap: var(--space-2); } /* "3 spans inside, 1 failed" goes under the name rather than cutting it */
+  .vz-waterfall[data-fold] .vz-waterfall-span { flex-wrap: wrap; column-gap: var(--space-2); }
+  .vz-waterfall[data-fold] .vz-waterfall-inside { min-width: 0; white-space: normal; } /* "3 spans inside, 1 failed" goes under the name rather than cutting it */
   .vz-waterfall[data-fold] .vz-waterfall-time { flex: 0 0 100%; order: 1; width: auto; min-width: 0; padding-block: var(--space-1); } /* the bars keep one scale: a line of their own, the table's full width */
 }
 @container (max-width: 1199px) {
   .vz-waterfall[data-fold="wide"] tbody tr { align-items: center; }
   .vz-waterfall[data-fold="wide"] td[data-key] { display: flex; align-items: center; padding-left: calc(var(--space-1) + var(--depth, 0) * var(--space-3)); } /* toggle and name on one line */
-  .vz-waterfall[data-fold="wide"] .vz-waterfall-span { flex-wrap: wrap; column-gap: var(--space-2); } /* "3 spans inside, 1 failed" goes under the name rather than cutting it */
+  .vz-waterfall[data-fold="wide"] .vz-waterfall-span { flex-wrap: wrap; column-gap: var(--space-2); }
+  .vz-waterfall[data-fold="wide"] .vz-waterfall-inside { min-width: 0; white-space: normal; } /* "3 spans inside, 1 failed" goes under the name rather than cutting it */
   .vz-waterfall[data-fold="wide"] .vz-waterfall-time { flex: 0 0 100%; order: 1; width: auto; min-width: 0; padding-block: var(--space-1); } /* the bars keep one scale: a line of their own, the table's full width */
 }
 @media (pointer: coarse) { .vz-tree-toggle, .vz-tree-gap { width: var(--control-touch); height: var(--control-touch); margin-right: 0; } .vz-log-tail > .vz-button { margin-block: calc((var(--control-touch) - var(--control-sm)) / 2); } }
@@ -671,7 +673,7 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
   /* A link that stands alone is a control. A link inside running text (a paragraph, a list item, a help line, a definition, prose) is text
      and keeps its line; it is never the main path (v5 review, m1). In a list of links and in a timeline line, a link that is the item's own
      child stands alone: a sentence with a link in it goes in a p there. A key link fills its cell, which is control-touch tall. */
-  .vz-link:not(:is(p, li, dd, .vz-help, .vz-secondary, .vz-text, .vz-page-sub) .vz-link, .vz-table td[data-key] .vz-link), :is(.vz-links, .vz-timeline) > li > .vz-link { display: inline-flex; align-items: center; min-height: var(--control-touch); }
+  .vz-link:not(:is(p, li, dd, .vz-help, .vz-secondary, .vz-text, .vz-page-sub) .vz-link, .vz-table td[data-key] .vz-link), :is(.vz-links, .vz-timeline) > li > .vz-link, .vz-change > .vz-link { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .vz-links { gap: 0; }
   .vz-controls, .vz-dialog-actions, .vz-banner, .vz-secret-row, .vz-notice { row-gap: calc(var(--control-touch) - var(--control-sm)); } /* wrapped rows: even two rows of small buttons keep 44px between centres */
   .vz-table tr:has(a, button, input, select) td { height: calc(var(--control-touch) + var(--hairline)); } /* rows that hold a control; a table of figures keeps its density */

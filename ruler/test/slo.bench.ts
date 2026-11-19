@@ -110,6 +110,11 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
       }
       ok(await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [kind === 'slo' ? sloRule(100) : { alert: 'Nothing', expr: 'nothing_here' }] }] }))
       void firstTick
+      // The warm-up's two reads, built before the first tick is measured (the fake engine runs in
+      // the same isolate: building them inside the call would be measured as the ruler's CPU).
+      const at = ok(await stub.health(tenant)).alarmAtMs!
+      const reads = sloWarmReads(parsed, MIN, at - MIN)
+      for (const r of [reads.fine, reads.coarse]) if (r) cache.set(`${r.fromMs} ${r.toMs} ${r.stepMs}`, sloMatrix(series, r.fromMs, r.toMs, r.stepMs))
       const tick = async () => {
         world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
         expect(await runDurableObjectAlarm(stub)).toBe(true)
@@ -132,7 +137,8 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
       }
       const status = ok(await stub.rules(tenant)).rules[0]!
       if (kind === 'slo') expect(status.slo).toMatchObject({ series, warmup: { status: 'done' } })
-      note(`| ${kind === 'slo' ? 'SLO, 4 alerts' : 'counterfactual: alerting rule, empty result'} | ${series} | ${median(cpu).toFixed(2)} (${range(cpu)}) | ${kind === 'slo' ? `${warm.cpuMs.toFixed(0)} (includes generating the fake history)` : '–'} | ${range(rows, 0)} | ${load(last)} | ${peak.toFixed(0)} |`)
+      expect(cache.size, 'the warm-up read exactly the pre-built ranges').toBe(kind === 'slo' ? 2 : 2)
+      note(`| ${kind === 'slo' ? 'SLO, 4 alerts' : 'counterfactual: alerting rule, empty result'} | ${series} | ${median(cpu).toFixed(2)} (${range(cpu)}) | ${kind === 'slo' ? warm.cpuMs.toFixed(0) : '–'} | ${range(rows, 0)} | ${load(last)} | ${peak.toFixed(0)} |`)
     }
   })
 
@@ -161,7 +167,12 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
         matrices.set(MIN, sloMatrix(series, reads.fine.fromMs, to, MIN))
         if (reads.coarse) matrices.set(reads.coarse.stepMs, sloMatrix(series, reads.coarse.fromMs, reads.coarse.toMs, reads.coarse.stepMs))
       }
-      w.range = (_q, _s, _e, step) => matrices.get(step)!
+      // The engine answers the range asked for (a read over 11,000 steps comes as two pieces).
+      w.range = (_q, start, end, step) => {
+        const m = matrices.get(step)!
+        const whole = m.result.every((x) => x.values[0]![0] * 1000 >= start && x.values.at(-1)![0] * 1000 <= end)
+        return whole ? m : { resultType: 'matrix', result: m.result.map((x) => ({ metric: x.metric, values: x.values.filter(([t]) => t * 1000 >= start && t * 1000 <= end) })) }
+      }
       const points = [...matrices.values()].reduce((n, m) => n + m.result.reduce((x, s) => x + s.values.length, 0), 0)
       let res: Awaited<ReturnType<typeof stub.backtest>> | null = null
       const m = await measure(async () => {

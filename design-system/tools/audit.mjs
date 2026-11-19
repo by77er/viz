@@ -53,7 +53,10 @@ function audit({ coarse, words }) {
   const isCB = (e) => { const s = cs(e); return s.position !== 'static' || s.transform !== 'none' || s.filter !== 'none' || /layout|paint|strict|content/.test(s.contain) || s.willChange.includes('transform') }
   // overflow
   const over = document.documentElement.scrollWidth - vw
-  if (over > 0) { const culprits = []; for (const e of document.body.querySelectorAll('*')) { if (!shown(e)) continue; const r = e.getBoundingClientRect(), p = e.parentElement?.getBoundingClientRect(); if (r.right > vw + 0.5 && r.width > 0 && (!p || p.right <= vw + 0.5)) { let c = e.parentElement; while (c && c !== document.body && !clips(c)) c = c.parentElement; culprits.push(name(e)) } if (culprits.length > 3) break } out.push(['overflow', `page scrolls sideways by ${over} px: ${culprits.join(', ')}`]) }
+  // what sticks out: the outermost elements past the window's right edge that no box of theirs clips
+  if (over > 0) { const culprits = []; for (const e of document.body.querySelectorAll('*')) { if (!shown(e)) continue; const r = e.getBoundingClientRect(), p = e.parentElement?.getBoundingClientRect(); if (!(r.right > vw + 0.5 && r.width > 0 && (!p || p.right <= vw + 0.5))) continue
+      let c = e.parentElement, held = false; while (c && c !== document.body) { if (clips(c) && c.getBoundingClientRect().right <= vw + 0.5) { held = true; break } c = c.parentElement } if (!held) culprits.push(name(e)); if (culprits.length > 3) break }
+    out.push(['overflow', `page scrolls sideways by ${over} px: ${culprits.join(', ') || 'nothing unclipped found past the edge'}`]) }
   // escapes: absolutely placed inside a clipping box, with its containing block outside that box
   for (const e of document.body.querySelectorAll('*')) { const s = cs(e); if (s.position !== 'absolute' || !e.getClientRects().length) continue
     let clip = null; for (let x = e.parentElement; x && x !== document.body; x = x.parentElement) if (clips(x)) { clip = x; break }

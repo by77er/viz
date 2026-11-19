@@ -11,10 +11,12 @@
       { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" },
       // The same class under another namespace: a second object of the same tenant with its
       // own (empty) storage, reading the same R2 log.
-      { "name": "LEDGER_REPLICA", "class_name": "LedgerReplica" }
+      { "name": "LEDGER_REPLICA", "class_name": "LedgerReplica" },
+      // The release before checkpoints in parts, reading the same R2 log.
+      { "name": "LEDGER_BEFORE", "class_name": "LedgerBefore" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt", "LedgerReplica"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt", "LedgerReplica"] }, { "tag": "v2", "new_sqlite_classes": ["LedgerBefore"] }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
   "vars": { "CELL": "cell-0" }
 }

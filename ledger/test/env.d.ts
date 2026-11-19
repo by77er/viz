@@ -3,6 +3,7 @@ declare namespace Cloudflare {
     LEDGER: DurableObjectNamespace<import('../src/ledger').Ledger>
     LEDGER_ASBUILT: DurableObjectNamespace<import('../bench/asbuilt/ledger').Ledger>
     LEDGER_REPLICA: DurableObjectNamespace<import('./worker').LedgerReplica>
+    LEDGER_BEFORE: DurableObjectNamespace<import('../bench/before/ledger').Ledger>
     BUCKET: R2Bucket
     CELL: string
     LEDGER_DRAIN_DELAY_MS: string
