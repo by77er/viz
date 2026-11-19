@@ -683,7 +683,7 @@
    "get": {
     "operationId": "listDetectors",
     "summary": "What each anomaly detector is for, its defaults and the evidence behind them",
-    "description": "Scores are from the Numenta Anomaly Benchmark under a held-out protocol (parameters chosen on one half of the files, scored on the other). Nothing here was measured on viz's own data; a configuration chosen after seeing the results is marked as such and is never a default.",
+    "description": "Scores are NAB's normalised score in its three cost profiles, from the Numenta Anomaly Benchmark under a held-out protocol (parameters chosen on one half of the files, scored on the other) and from the Server Machine Dataset (SMD), with every parameter frozen on NAB before SMD was fetched. Each line of a detector's evidence says which kind it is: held_out, confirmed or not_confirmed on SMD, or post_hoc (chosen or scored after seeing the results it is compared with). Nothing here was measured on viz's own data.",
     "tags": [
      "monitors"
     ],
@@ -3308,7 +3308,7 @@
    },
    "AnomalyInput": {
     "type": "object",
-    "description": "An anomaly monitor: `query` is the series to watch (a gauge, or rate() of a counter) and a detector, not a condition, decides when it alerts. Defaults follow held-out evidence (GET /api/v1/monitors/detectors): detector ewma with halfLifePoints 100 and k 8, or threshold when severity is page; severity ticket (info for cusum); for 0s and keepFiringFor 10m; maxSeries 100.",
+    "description": "An anomaly monitor: `query` is the series to watch (a gauge, or rate() of a counter) and a detector, not a condition, decides when it alerts. Defaults follow the evidence (GET /api/v1/monitors/detectors; design D33): detector robust_z with the quantile spread (windowPoints 1500, k 2, spreadQuantile 0.99), or threshold when severity is page; severity ticket (info for cusum); for 0s and keepFiringFor 10m; maxSeries 100, or what fits the per-rule state limit (18 for the default detector). Until 2026-11-19 the default was ewma; monitors saved then keep it, and a monitor saved again keeps the defaults it was stored with for every field it leaves out.",
     "properties": {
      "detector": {
       "enum": [
@@ -3318,7 +3318,7 @@
        "seasonal",
        "cusum"
       ],
-      "description": "Default ewma; threshold when severity is page (then params.above or params.below is required). stl, pelt and burn_rate are refused: they explain, they do not page."
+      "description": "Default robust_z (the quantile spread); threshold when severity is page (then params.above or params.below is required). stl, pelt and burn_rate are refused: they explain, they do not page."
      },
      "params": {
       "type": "object",
@@ -3330,7 +3330,7 @@
         "null"
        ]
       },
-      "description": "The detector's parameters by name (anomaly/src/detectors). Not stepMs (the interval) or unit (use unit). Unknown names and wrong types are refused."
+      "description": "The detector's parameters by name (anomaly/src/detectors). Not stepMs (the interval) or unit (use unit). Unknown names and wrong types are refused. For robust_z and seasonal, spread defaults to quantile with the configuration chosen on NAB and checked on SMD; spread mad gets the library's own defaults."
      },
      "unit": {
       "type": "string",
@@ -3515,7 +3515,7 @@
         "null"
        ]
       },
-      "description": "Parameters the ruler fills in beyond the library's own"
+      "description": "Parameters the ruler fills in beyond the library's own (for robust_z and seasonal: those of the quantile spread; with spread mad given, the library's apply)"
      },
      "required": {
       "type": "array",
@@ -3535,14 +3535,16 @@
        "kind": {
         "enum": [
          "held_out",
+         "confirmed",
          "post_hoc",
          "none",
          "not_scorable"
-        ]
+        ],
+        "description": "The evidence behind the defaults; see lines for each number"
        },
        "defaultsValidated": {
         "type": "boolean",
-        "description": "True only when the defaults are the configuration scored on held-out data"
+        "description": "True only when the defaults were scored on data they were not chosen on (held out on NAB, or frozen and then scored on SMD)"
        },
        "nab": {
         "oneOf": [
@@ -3568,10 +3570,78 @@
          {
           "type": "null"
          }
-        ]
+        ],
+        "description": "NAB held-out scores of the defaults, null when not scored"
        },
        "note": {
         "type": "string"
+       },
+       "lines": {
+        "type": "array",
+        "description": "Every number the guide gives, with the kind of evidence behind it (added 2026-11-19)",
+        "items": {
+         "type": "object",
+         "required": [
+          "kind",
+          "data",
+          "config",
+          "score",
+          "text"
+         ],
+         "properties": {
+          "kind": {
+           "enum": [
+            "held_out",
+            "confirmed",
+            "not_confirmed",
+            "post_hoc",
+            "not_scorable"
+           ],
+           "description": "held_out: chosen on one half of NAB, scored on the other. confirmed / not_confirmed: frozen on NAB before SMD was fetched; on SMD the rule written in advance said the hypothesis held / did not hold. post_hoc: chosen or scored after seeing the results it is compared with. not_scorable: checked another way"
+          },
+          "data": {
+           "enum": [
+            "NAB",
+            "SMD",
+            "SRE Workbook",
+            "synthetic"
+           ]
+          },
+          "config": {
+           "type": "string",
+           "description": "The configuration scored"
+          },
+          "score": {
+           "oneOf": [
+            {
+             "type": "object",
+             "required": [
+              "standard",
+              "lowFp",
+              "lowFn"
+             ],
+             "properties": {
+              "standard": {
+               "type": "number"
+              },
+              "lowFp": {
+               "type": "number"
+              },
+              "lowFn": {
+               "type": "number"
+              }
+             }
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "text": {
+           "type": "string"
+          }
+         }
+        }
        }
       }
      }

@@ -18,12 +18,13 @@ import {
   LEDGER_CHANGE_KINDS,
   LEDGER_CHANGE_VERSION as CONTRACT_CHANGE_VERSION,
   LEDGER_CHECKPOINT_KIND,
+  LEDGER_CHECKPOINT_VERSION as CONTRACT_CHECKPOINT_VERSION,
   LEDGER_SEGMENT_KIND,
   LEDGER_SEGMENT_VERSION as CONTRACT_SEGMENT_VERSION,
   ledgerLogKey,
 } from '../../contracts/ledger'
 import { describeSchema, type Migration, openSchema, schemaRelease, type SchemaSpec } from '../../contracts/schema'
-import { LEDGER_CHANGE_VERSION, LEDGER_SEGMENT_VERSION, unsupported, unsupportedSegment } from '../src/log'
+import { LEDGER_CHANGE_VERSION, LEDGER_CHECKPOINT_VERSION, LEDGER_SEGMENT_VERSION, unsupported, unsupportedSegment } from '../src/log'
 import { FORMATS, PUBLISHER_SCHEMA } from '../src/schema'
 import { expectGolden, goldenDir } from './golden'
 import { addUnit, copyLog, dropCheckpoints, fresh, icebergLive, ledgerVersion, listKeys, metaDir, metadataVersions, mirror, pairUnit, publisher, putObjects, readMetadata, segmentsOf, T0, DAY_MS, TABLES } from './helpers'
@@ -295,6 +296,9 @@ describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §
     expect(unsupportedSegment({ kind: LEDGER_SEGMENT_KIND })).toMatch(/unreadable/)
     expect(LEDGER_SEGMENT_VERSION).toBe(CONTRACT_SEGMENT_VERSION)
     expect(LEDGER_CHANGE_VERSION).toBe(CONTRACT_CHANGE_VERSION)
+    // Checkpoints this reader re-bases from: a newer format is passed over for the base
+    // (test/checkpoints.test.ts), but a bump in the contract still shows here.
+    expect(LEDGER_CHECKPOINT_VERSION).toBe(CONTRACT_CHECKPOINT_VERSION)
     for (const kind of LEDGER_CHANGE_KINDS) expect(unsupported({ kind }), kind).toBeNull()
     expect(FORMATS['read.ledger-segment']).toBe(LEDGER_SEGMENT_VERSION)
     expect(FORMATS['read.ledger-change']).toBe(LEDGER_CHANGE_VERSION)

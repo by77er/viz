@@ -40,10 +40,9 @@
   "triggers": { "crons": ["7 * * * *"] },
   "vars": {
     "CELL": "cell-0",
-    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
-    // The ledger's state cap (ledger/README.md, D47). The ledger itself handles 300 MiB, but the
-    // publisher still reads a new base checkpoint whole, so the cap stays at the 16 MiB it was
-    // built for until the publisher streams checkpoint parts. Remove this line then.
-    "LEDGER_STATE_MAX_BYTES": "16777216"
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"
+    // No LEDGER_STATE_MAX_BYTES: the ledger's own limit, 300 MiB (D47), applies. The 16 MiB pin
+    // that stood here until the publisher re-based streaming is gone (D55; publisher/README.md,
+    // "Re-base in bounded memory": 300,000 files re-based under a capped heap).
   }
 }

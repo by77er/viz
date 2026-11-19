@@ -367,8 +367,9 @@ tell.
   progress (below), a base written in one pass, and the time measured on Cloudflare. Plans
   that page (below) are the other half of a large tenant.
 - **A base in parts.** A new incarnation's base is still one line (it is what the publisher
-  re-bases from); this ledger writes it in pieces and reads it element by element, but the
-  publisher reads it whole (Needed changes).
+  re-bases from); this ledger writes it in pieces and reads it element by element, and since
+  2026-11-19 so does the publisher (`publisher/README.md`, "Re-base in bounded memory"), so a
+  base in parts is not needed for memory, only, perhaps, for time.
 - **Pruning the log.** No segment or old incarnation is ever deleted from R2; superseded
   checkpoints are (LEDGER-LOG.md, "Truncation").
 - **Keeping rebuild progress.** A reset during a rebuild starts it again from the newest
@@ -400,12 +401,15 @@ tell.
   room; flush treats `full` as an answer it does not know and retries (fail closed), so its
   shards fill and its senders get 429. Nothing alerts on it except the error log and
   `logStatus`.
-- **The publisher reads a new incarnation's base whole** (`publisher/src/log.ts`). Above
-  about 16 MiB of state (what the limit used to be) a re-base after a ledger storage loss may
-  not fit a publisher isolate, and one publisher serves a whole cell: its publishing stops
-  (Iceberg readers see older data; nothing is lost; deletes wait). Until the publisher reads
-  the base with the contract's `readLedgerLogStream`, deployments should keep
-  `LEDGER_STATE_MAX_BYTES` at 16777216 (Needed changes).
+- **A publisher re-base at the limit is slow, not large** (since 2026-11-19; until then the
+  publisher read a new incarnation's base whole and production pinned `LEDGER_STATE_MAX_BYTES`
+  at 16 MiB). The publisher now re-bases from the newest checkpoint (parts read in order, a few
+  at a time) or the base, streamed into SQLite: at 300,000 files it completed with V8's heap
+  capped below the isolate's 128 MB, measured in workerd (`publisher/README.md`, "Re-base in
+  bounded memory"), and the pin is gone from `stack/wrangler.jsonc`. What is left is time: a
+  re-base of 300,000 files took 8–17 s here and a first publication of them 30–38 s; on
+  Cloudflare neither is measured, and the CPU an invocation may use there is the bound to check.
+  `verify` (the scrubber, not on the publish path) still replays a tenant into memory.
 - **A rollback below this release with a state above 16 MiB** opens (the schema change is
   additive) but its rebuild holds the state in memory; such a tenant is stuck, not lost, after a
   storage loss in the rollback window.
@@ -443,13 +447,18 @@ tell.
   for incarnation 0 answered `ok` and empty under lazy registration) is open, documented.
 - **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (now latest 3, compat 2) in the release
   record and refuse a rollback below compat (COMPATIBILITY.md §6; `deploy/` "Needed changes"
-  7). Until the publisher change below is deployed, set `LEDGER_STATE_MAX_BYTES=16777216` on
-  `viz-ingest`'s ledger (the old limit).
-- **publisher**: re-base from a new incarnation's base without holding it: read the first
-  segment with `readLedgerLogStream(body, 1, onElement, onLine)` from `contracts/ledger.ts`
-  (elements of `added`, `tombstones` and `units` arrive one at a time; the other members come
-  back in `streamed`) instead of `decodeLedgerSegment(await o.text())`, and diff against the
-  published state in pieces. Same for `verify`. Checkpoints stay unread by the publisher.
+  7). The 16 MiB pin of `LEDGER_STATE_MAX_BYTES` on `viz-ingest`'s ledger is removed (item
+  below): viz-publisher must be deployed with the streaming re-base before, or with, the
+  viz-ingest that no longer pins it (the reader first; the deploy order already puts
+  viz-publisher before viz-ingest).
+- **publisher**: re-base from a new incarnation's base without holding it. **Done** (2026-11-19,
+  `publisher/src/log.ts`, `publisher/README.md` "Re-base in bounded memory"): the base is read
+  with `readLedgerLogStream`, and where the incarnation has a checkpoint the re-base starts
+  from the newest one instead (format 1 streamed the same way; format 2 manifest first, then
+  the parts in order, each checked against it); files go into SQLite and the diff against
+  what is published is done there. This makes the publisher a reader of checkpoints, which
+  `contracts/LEDGER-LOG.md` says nothing else is (`publisher/README.md`, "Contract issues").
+  Not done: `verify`, which still replays a tenant into memory.
 - **flush** may handle `full` explicitly (today it retries it as unknown, which is safe).
 
 ## Contract issues

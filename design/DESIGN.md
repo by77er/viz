@@ -315,7 +315,10 @@ makes the tenant due again within the hour. The publisher publishes from its own
 couple of minutes later; an idle cell has no alarm and nothing calls it. The nudge is only
 that: changes are applied strictly in ledger
 version order per tenant, read from the ledger's R2 log (segments, in whole segments; a hole
-or a segment it cannot read stops that tenant there, never skipped). A removed
+or a segment it cannot read stops that tenant there, never skipped). A tenant it has no cursor
+for in the newest ledger incarnation is re-based from that incarnation's newest checkpoint, or
+its base, streamed into SQLite and diffed against what is published there, so the publisher's
+memory does not grow with a tenant's size (D55). A removed
 file is physically deleted only after the removal is published and every snapshot that
 referenced it has expired (the janitor asks the publisher before each purge). Each snapshot
 points at an object
@@ -628,6 +631,6 @@ are never replaced except by a deploy told to (D53).
 | ~~The ledger admits about one flush unit per second~~ (measured, `spikes/s4-ledger-scale/`) | **Fixed** (D36): it answers after the SQLite commit and logs in batched background segments; 234–422 units per second with eight writers, measured on Cloudflare 2026-11-19 |
 | A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6) | Not fixed. Register a new incarnation with the ledger before the shard accepts its first write (spec F1), across shard, ledger, flush and query |
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
-| A tenant's ledger holds at most 300 MiB of state, about 300,000 live files: memory no longer bounds it (checkpoints in parts, a rebuild that streams; D47), the time a rebuild takes does (20 s here at that size, modelled 20–60 s on Cloudflare, the tenant refused meanwhile) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. Until the publisher reads a new incarnation's base in pieces, deployments keep it at 16 MiB (`ledger/README.md`) |
+| A tenant's ledger holds at most 300 MiB of state, about 300,000 live files: memory no longer bounds it (checkpoints in parts, a rebuild that streams; D47), the time a rebuild takes does (20 s here at that size, modelled 20–60 s on Cloudflare, the tenant refused meanwhile) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. The publisher re-bases such a tenant streaming, from its newest checkpoint or its base, in bounded memory (measured at 300,000 files under a capped heap, `publisher/README.md`), so production runs at the full limit since 2026-11-19 (before, 16 MiB) |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |

@@ -1717,3 +1717,75 @@ append others do not).
 (a) costs little and the coordinator need not read first); the split key stops leaving out
 `__type__`/`__unit__` for series that carry them, or shards can cut by a key that leaves labels
 out; or the tail contract moves into `contracts/` with a size field (then (e) is free).
+
+## D55. The publisher re-bases a tenant from its newest checkpoint, else its base, streamed into SQLite; a re-base that cannot be read whole publishes nothing
+
+**Decision.** When the publisher meets a ledger incarnation it has no cursor in (a new tenant, a
+new incarnation after a ledger storage loss, the publisher's own storage loss), it starts from
+the newest checkpoint of that incarnation whose format it reads (1: one object; 2: a manifest
+and parts), else from the base at the head of the incarnation's first segment, then reads the
+segments after it as before. Nothing holds the state: a base line or a format-1 checkpoint is
+parsed element by element (`readLedgerLogStream`), parts are read in order with at most four
+requested ahead, and every R2 operation of a publish takes one of six shared slots (a GET until
+its body has been read). Files and tombstones go into a SQLite table, `stage` (publisher storage
+migration 3, additive); the changes read after the starting point are applied to it; the commit
+takes what the tenant adds and removes as `stage` against `live`, in SQL, and writes manifests a
+page at a time, two at once. A resync from R2 fills `live_next` a manifest at a time and swaps it
+in in one transaction. Each part is checked against its key and its manifest (tenant,
+incarnation, version, attempt, part number, record count), records must be in strictly
+ascending key order across parts, and the parts must add up to the manifest's files, tombstones
+and bytes. Any disagreement stops the tenant (`corrupt`), and so does a part that is not there
+(`incomplete`). Neither publishes anything of the checkpoint, and the alarm retries. A
+checkpoint of a format this code does not read is passed over for the base. The tombstones a
+checkpoint or base carries are recorded as removed by the commit's snapshot, so files a
+checkpoint skipped are released, and only once no snapshot that could reference them is
+retained. With this, production lifts the 16 MiB state pin (`stack/wrangler.jsonc`) to the
+ledger's 300 MiB.
+
+**Alternatives.** (a) Keep reading the base whole, with the 16 MiB pin (D47's interim). (b) Stream
+the base only and never read checkpoints (the change `ledger/README.md` asked for). (c) A new
+incarnation writes a format-2 checkpoint at start, so a re-base reads parts only (D47's (f)).
+(d) Diff by merging the key-ordered input against `live` read in key order, with no staging.
+(e) On a missing or mismatched part, fall back to the base in the same publish, as the ledger's
+rebuild passes over a bad checkpoint. (f) Keep the published keys of the tenant in memory and
+stream only the files.
+
+**Why.** (a) caps a tenant at about 15,800 files. (b) bounds memory on its own, and is what a
+re-base right after a ledger storage loss does here (a new incarnation has no checkpoint before
+its 256th segment); reading the newest checkpoint is added so that a publisher that re-bases
+late, or after losing its own storage, does not read every segment since the base, and because
+the base is one object of about 250 MB at the limit while parts are 1 MiB reads, a few at a
+time. Measured here at 300,000 files: a re-base took 8.0 s from parts, 13.4 s from the base and
+17.0 s from a format-1 checkpoint of the same state, all with identical output.
+(c) doubles a start's writes in the ledger, which owns that choice. (d) needs its input in key
+order: parts are, a base is not promised to be (the contract says nothing of `added`'s order),
+and the changes after the start must be merged in as well. (e) would hide a corrupt checkpoint,
+which should be seen, and turns a missing part, which a retry heals once the newer checkpoint
+is listed, into a read of the whole base; it is kept as what would change. (f) is memory in
+proportion to the tenant: 300,000 keys of about 130 characters are tens of MB of the 128 MB.
+
+**Measured** (here, local workerd, `publisher/bench/`, 2026-11-19, load average 7–9; not on
+Cloudflare): at 300,000 S4-shaped files (an estimated state of 299 MiB), a first publication, a
+re-base onto a new incarnation, a publish from the cursor and a resync from R2 all completed
+with V8's old space capped at 100 MB (plus 12 MB of young generation, under the isolate's 128 MB),
+from parts, from the base and from a format-1 checkpoint, with byte-identical Iceberg output;
+with the old space at 32 MB the first publication ran out of heap. The publisher before this
+change, on the same data, ran out of heap at 32,000 files with the old space at 48 MB, and grew
+the process by up to 226 MB at 100,000 files.
+
+**Cost of it.** A re-base writes every file of the tenant to `stage` and deletes it after
+(about two row writes per file, 600,000 at the limit: modelled at about $0.60 per re-base at
+$1 per million rows written, a price from training knowledge); a first publication also writes
+each added file's statistics into its row once. Re-bases are slower than holding the state in
+memory: at 100,000 files 2.3 s from parts against 1.0 s for the publisher before (which could
+not reach 300,000), and a first publication of 300,000 files took 30–38 s. The commit writes two
+manifests at a time instead of four. A corrupt checkpoint stops that tenant's re-base until the
+ledger writes a newer one or an operator removes it. The publisher becomes a reader of the
+checkpoint format, which `contracts/LEDGER-LOG.md` says only the ledger reads; a newer format
+is passed over, so the ledger still needs no readers-first release to change it.
+
+**Would change if.** A re-base or first publication of the largest tenants exceeds the
+publisher's CPU limit on Cloudflare (then progress kept across invocations, or a higher
+`limits.cpu_ms`); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
+files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
+part is checked on its own as it arrives, not only the totals at the end).

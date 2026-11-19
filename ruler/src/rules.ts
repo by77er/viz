@@ -199,12 +199,28 @@ export function ruleKey(kind: 'alert' | 'record' | 'anomaly' | 'slo', name: stri
   return hash64(`${kind}\u0000${name}\u0000${exprText}\u0000${labelsKey(labels)}`)
 }
 
+/** The anomaly rules stored in a group, for an entry saved over one of them (`priorAnomaly`). */
+export type StoredAnomalyRules = (group: string) => readonly AnomalyRuleV2[] | undefined
+
+/**
+ * The stored anomaly rule an entry is saved over: in the same group, the one with the entry's
+ * monitor id; without a monitor id, the only one with the same alert name and expression. Its
+ * defaults are kept for what the entry leaves out (`parseAnomalySpec`).
+ */
+export function priorAnomaly(stored: readonly AnomalyRuleV2[] | undefined, name: string, exprText: unknown, monitorId: string | null): AnomalyRuleV2 | null {
+  if (!stored) return null
+  if (monitorId !== null) return stored.find((r) => r.monitor?.id === monitorId) ?? null
+  const same = stored.filter((r) => r.name === name && r.expr === exprText)
+  return same.length === 1 ? (same[0] as AnomalyRuleV2) : null
+}
+
 /**
  * Validate a rule file. `cfg` supplies limits, the default interval and the classification
  * thresholds. Group-level limits that depend on what is already stored (max groups) are
- * checked by the caller.
+ * checked by the caller. `stored` gives what is stored now, so that an anomaly rule saved again
+ * keeps the defaults it was stored with.
  */
-export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
+export function parseRuleFile(doc: unknown, cfg: RulerConfig, stored?: StoredAnomalyRules): ParsedGroups {
   const c = new Ctx()
   const groups: RuleGroup[] = []
   const anomalyPaths = new Map<AnomalyRuleV2, string>()
@@ -228,6 +244,7 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
       c.err(`${gp}.name`, 'group name is required', 'Give the group a non-empty name.')
       return
     }
+    const storedAnomaly = stored?.(name)
     if (byteLength(name) > 256) c.err(`${gp}.name`, 'group name is longer than 256 bytes', 'Shorten the name.')
     if (name.startsWith('viz:')) c.err(`${gp}.name`, 'group names starting with "viz:" are reserved', 'Choose another name.')
     if (seen.has(name)) c.err(`${gp}.name`, `group name "${name}" is repeated in this file`, 'Group names must be unique.')
@@ -352,7 +369,8 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
             if (k in annotations) c.err(`${rp}.annotations.${k}`, `the ${k} annotation is written by the detector`, 'Remove it; use description or summary for your own text.')
           }
           if (monitor?.condition) c.err(`${rp}.monitor.condition`, 'an anomaly rule has no threshold condition', 'Remove the condition; the detector decides.')
-          const spec = parseAnomalySpec(c, r.anomaly, `${rp}.anomaly`, intervalMs, forMs, labels, cfg)
+          const prior = priorAnomaly(storedAnomaly, name, r.expr, monitor?.id ?? null)
+          const spec = parseAnomalySpec(c, r.anomaly, `${rp}.anomaly`, intervalMs, forMs, labels, cfg, prior?.anomaly ?? null)
           if (!cost || !spec) return
           const ruleLabels = { ...labels, severity: spec.severity }
           const rule: AnomalyRuleV2 = {

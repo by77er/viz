@@ -24,12 +24,18 @@ Read the times as rough; the counts, bytes and memory figures are exact for the 
    of engine time locally. The cardinality report, label values and single-series queries
    answer in 25 to 145 ms of engine time.
 2. **At 100,000 series, four limits bite, three of them before the query is even looked at:**
-   - **The unflushed tail.** Every query reads every shard's whole tail, and the tail
+   - **The unflushed tail.** Every query read every shard's whole tail, and the tail
      counts against `maxFetchBytes` (16 MiB). Ten minutes of 100,000 series at 60 s is
      20.2 MB of tail, so **every query, label call and cardinality report of that tenant
      was refused** (422) until a flush, whatever its range or metric. In steady state the
      tail is about the tenant's shards times up to one 4 MiB seal each (modelled), so a
      tenant spread over more than four to eight shards is refused all the time.
+     **Fixed for queries and the report by the filtered, paged tail (item 1, D48, D54):** a
+     query takes from the shards only its metric and window (one series of 21.17 MiB of tail:
+     under 1 KiB), and a split query or report whose tail does not fit the coordinator has
+     each part read the rest in its key range (68 MiB of tail answered; before, a shard's
+     35.9 MB answer could not even cross RPC). The label endpoints are still refused when
+     the tail of their metric passes 16 MiB (item 3's "left").
    - **Single-series reads.** Files were pruned by metric name and time only. One series of
      a 100,000-series metric over an hour had a scan bound of 6.6 M samples (every row of
      the metric), above `maxScanSamples` (3 M): `rate(m{instance="x"}[5m])` was refused.
@@ -71,7 +77,8 @@ Read the times as rough; the counts, bytes and memory figures are exact for the 
 | Identity | `series_id` is a 64-bit hash of the labels; collisions are a probability (D19) | |
 | Storage | `metric_series`: one row per series per file, 22 to 23 bytes a series (measured here, native); `metric_samples`: 3.7 to 3.8 bytes a sample; row groups of at most 100,000 rows sorted by (metric, `series_id`); index fragments with time and name ranges, each row group's first and last `series_id` and the footer's place (new, D41) | measured here |
 | Planning | files and row groups pruned by time and `__name__` from the fragments, read as byte ranges; when that does not fit one place and a matcher selects by more than the name, matchers resolved against the series files first and only row groups holding a selected series read (new, D41); `maxScanSamples` 3 M (one place), `maxQueryScanSamples` 100 M (split); the series estimate from the series files, exact once resolved | limit |
-| One place | `maxSeries` 20,000, `maxSamples` 2 M, `maxStepPoints` 1 M, `maxFetchBytes` 16 MiB (files and the whole tail) | limit |
+| Tail | each shard keeps the read's metric names, window and pinned labels and pages its answer (D48); a split part reads the rest of a tail too large for the coordinator in its key range (new, D54) | filter |
+| One place | `maxSeries` 20,000, `maxSamples` 2 M, `maxStepPoints` 1 M, `maxFetchBytes` 16 MiB (files and the tail the query's filter keeps) | limit |
 | Split | leaves by samples and by series, at most 32; `maxQuerySeries` 640,000, `maxQuerySamples` 64 M | limit |
 | Label endpoints | a series-only read of series files and tail series tables, "in the range" per file (new); `maxMetadataSeries` 200,000 series listed, `maxFetchBytes` over the series files | limit |
 | Cardinality report | exact, from series files and tail series tables; `maxCardinalitySeries` 1 M, `maxCardinalityPairs` 400,000 (was 2 M); over leaves above 50,000 series (new) | exact, capped |
@@ -268,6 +275,31 @@ of state. **Experiment that settles the Cloudflare figures:** the one-series que
 label values call over an hour of a 100,000-series tenant on a staged deployment, cold and
 warm, recording reads, bytes and CPU from the analytics API.
 
+## The tail, filtered and paged: before and after (item 1)
+
+Built on 2026-11-19 (D48 on the shard's side; D54 here; `query/README.md`, "The tail, and the
+fence"). **Measured here, local workerd**, `test/tail.bench.ts`, two runs at load average 7.6
+to 9.3: 100,000 series at 60 s, ten minutes flushed, seven minutes unflushed in two shards.
+Before = shards answering whole (the previous release; what the coordinator received before),
+with `maxFetchBytes` raised to 64 MiB so it answers; after = this release, default limits.
+Bodies byte-identical wherever both answer.
+
+| | before, default limits | before, cap raised | after |
+|---|---|---|---|
+| 21.17 MiB of tail: one series, 15 min | 422 | 21.17 MiB of tail read, 41 MiB coordinator WASM | **under 1 KiB** read, 13 MiB WASM |
+| a twentieth of the series (`job="job-07"`) | 422 | 21.17 MiB | **1.06 MiB** |
+| `sum by (job)(rate(m[5m]))`, 8 leaves | 422 | **130–133 MiB of coordinator WASM** (the tail cut by part in the engine) | 2.0 MiB (cut by id in JavaScript; the same leaves, RPC and leaf memory) |
+| `/series` of one instance | 422 | 21.17 MiB | under 1 KiB |
+| `/label/job/values?match[]=m` | 422 | 200 | **422** (the metric's whole tail is 21 MiB: the label endpoints are not counted over leaves yet) |
+| 68.1 MiB of tail (one request a minute), any call | **503**: a shard's answer (35.9 MB) is over the 32 MiB an RPC may carry | 503 | 200 for every call above but the label values; the full-metric split over 9 leaves reads 68.1 MiB, 16 of them at the coordinator and the rest in the parts' key ranges |
+
+Times were within the machine's noise of each other where both answer (factor of two between
+runs). **Modelled for Cloudflare:** what the before path moved over the network (21 MiB from
+two shards, then again to the leaves) is gone for selective calls; each part's rest read costs
+its shard a scan of the tail from where the rest starts (D48 "Cost of it"), `L` of them for a
+split whose tail does not fit. **Experiment that settles it:** these calls from a staged query
+Worker against staged shards with a 20 MB tail, with the shards' CPU from the analytics API.
+
 ## What is left, in order of what it unblocks
 
 1. **The tail** (`shard/`): a filtered, paged `tailRead` (time range, metric names, series
@@ -275,12 +307,15 @@ warm, recording reads, bytes and CPU from the analytics API.
    range. Until then a high-volume tenant is refused whenever its unflushed bytes pass
    16 MiB. **Status (2026-11-19): built on the shard's side** (D48; `shard/README.md`, "Tail
    reads filtered and paged"): on a 22 MB tail of 100,000 series, one series reads 248 bytes
-   and a leaf of 8 reads 2.8 MB (measured here, workerd). **Not yet used by `query/`**: the
-   coordinator and leaves must pass the filter and follow pages (`shard/README.md`, "Needed
-   changes elsewhere"); until then nothing here changes. Interim, in `query/`: a separate,
-   higher tail cap for split queries and the
-   report (the coordinator holds only the tail there); not done, because 20 MB is already
-   most of what one RPC message may carry (32 MiB).
+   and a leaf of 8 reads 2.8 MB (measured here, workerd). **Used by `query/` since
+   2026-11-19 (D54, above):** queries and label endpoints send their metric, window and
+   pinned labels, every read pages under the byte cap, and a split query or cardinality
+   report whose tail does not fit the coordinator has each part read the rest in its key
+   range. Left: the label endpoints over leaves (item 3); the report reads its whole tail
+   (its counts depend on whole batch spans); each part's rest read scans its shard's tail
+   (per-batch metadata in `shard/` would skip batches); a tail whose series carry
+   `__type__`/`__unit__` and that does not fit is refused; `!=` and regular expressions are
+   not sent to the shards.
 2. **Series-level pruning: built, in part (2026-11-19; above, D41).** Matchers are resolved
    against `metric_series` first and only the sample row groups (byte ranges, with the
    footer) whose `(metric, series_id)` range holds a match are read; split parts read their

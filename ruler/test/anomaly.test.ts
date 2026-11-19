@@ -16,10 +16,13 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { DETECTORS } from '../../anomaly/src/index.ts'
-import type { AnomalyRuleStatus, MonitorView } from '../contracts-proposal/rules.v2'
+import type { AnomalyRuleStatus, AnomalyRuleV2, DetectorGuide, MonitorView, RuleGroup } from '../contracts-proposal/rules.v2'
 import spec from '../openapi.json'
-import { ANOMALY_ROW_BYTES, readStateRows, stateRows } from '../src/anomaly'
+import { ANOMALY_ROW_BYTES, anomalyLimits, DEFAULT_DETECTOR, evalAnomaly, newAnomalyRt, PREVIOUS_DEFAULTS, readStateRows, ROBUST_Z_DEFAULTS, SEASONAL_DEFAULTS, stateRows } from '../src/anomaly'
+import { DEFAULT_RULER_CONFIG } from '../src/ruler'
+import { parseRuleFile } from '../src/rules'
 import { exportRuleFile, importRuleFile } from '../src/rulefile'
+import before20261119 from './fixtures/anomaly/before-2026-11-19.json'
 import { fingerprint } from '../src/util'
 import { apiKey, call } from './api'
 import { Crash, T0, tenantWorld, world } from './harness'
@@ -65,7 +68,7 @@ const ewmaRule = (extra: Record<string, unknown> = {}, anomaly: Record<string, u
   alert: 'LatencyAnomaly',
   expr: LAT,
   ...extra,
-  anomaly: { params: { halfLifePoints: 10, minPoints: 5 }, unit: 'ms', ...anomaly },
+  anomaly: { detector: 'ewma', params: { halfLifePoints: 10, minPoints: 5 }, unit: 'ms', ...anomaly },
 })
 
 /** The stored state of one series, decoded. */
@@ -417,20 +420,22 @@ describe('the monitors API', () => {
     return { tenant, key, w }
   }
 
-  it('an anomaly monitor is query + anomaly; its defaults are the held-out ones (ewma, half-life 100, k 8; ticket; for 0s, keep firing 10m) and it starts out warming', async () => {
+  it('an anomaly monitor is query + anomaly; its defaults follow the evidence (D33: robust z with the quantile spread, window 1,500, k 2; ticket; for 0s, keep firing 10m; max_series what fits) and it starts out warming', async () => {
     const { tenant, key } = await scene()
     const res = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'checkout latency', query: LAT, anomaly: {} })
     expect(res.status).toBe(201)
-    expect(res.json).toMatchObject({ group: 'anomalies/1m', cost: { class: 'tail' }, history: { tick: 'tail', coldStart: expect.any(String), minPoints: 30 }, warnings: [] })
+    expect(res.json).toMatchObject({ group: 'anomalies/1m', cost: { class: 'tail' }, history: { tick: 'tail', coldStart: 'rollup', minPoints: 20, lookbackMs: 1500 * MIN } })
+    // About 55 KB of state a series: 18 series fit the 1 MiB a rule may keep, and the save says so.
+    expect(res.json.warnings).toEqual([{ path: 'anomaly.maxSeries', message: expect.stringMatching(/^max_series defaults to 18 here, not 100: robust_z/), fix: expect.any(String) }])
     const ruler = rulerStub(tenant)
     world.now = Math.max(world.now, ok(await ruler.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(ruler)).toBe(true)
     const m = (await call(key.auth, 'GET', `/api/v1/monitors/${res.json.id}`)).json.monitor as MonitorView
     expect(m).toMatchObject({ state: 'warming', query: LAT, condition: null, forMs: 0, keepFiringForMs: 10 * MIN, labels: { severity: 'ticket' } })
-    expect(m.anomaly).toMatchObject({ detector: 'ewma', given: [], severity: 'ticket', maxSeries: 100, params: { halfLifePoints: 100, k: 8 }, status: { status: 'warming', series: 2 } })
+    expect(m.anomaly).toMatchObject({ detector: 'robust_z', given: [], severity: 'ticket', maxSeries: 18, params: { windowPoints: 1500, k: 2, spread: 'quantile', spreadQuantile: 0.99, windowMs: 0, minPoints: 20 }, status: { status: 'warming', series: 2 } })
     expect(m.anomaly!.status!.message).toMatch(/^2 of 2 series warming: /)
-    expect(m.anomaly!.guide.evidence).toMatchObject({ kind: 'held_out', defaultsValidated: true, nab: { standard: 30.1 } })
-    expect(m.thresholdText).toBe('ewma: 8 σ from a 100-point mean')
+    expect(m.anomaly!.guide.evidence).toMatchObject({ kind: 'held_out', defaultsValidated: true, nab: { standard: 42.6 } })
+    expect(m.thresholdText).toBe('robust_z: 2 × the 0.99 quantile deviation from the trailing median')
     const list = (await call(key.auth, 'GET', '/api/v1/monitors')).json
     expect(list.counts.warming).toBe(1)
   })
@@ -444,48 +449,76 @@ describe('the monitors API', () => {
     const cusumPage = await post({ anomaly: { detector: 'cusum', severity: 'page' } })
     expect(cusumPage.json.problems).toMatchObject([{ path: 'anomaly.severity', message: expect.stringMatching(/cusum may not page/) }])
     const pageNoLevel = await post({ anomaly: { severity: 'page' } })
-    expect(pageNoLevel.json.problems).toMatchObject([{ path: 'anomaly.params', fix: expect.stringMatching(/static threshold.*beat EWMA when false alarms cost most/) }])
+    expect(pageNoLevel.json.problems).toMatchObject([{ path: 'anomaly.params', fix: expect.stringMatching(/static threshold, because it held up best where false alarms cost most \(low-FP profile: NAB held out 5.5 vs EWMA 3.9; SMD 15.5 vs EWMA -38.4\)/) }])
     const both = await post({ anomaly: {}, condition: { op: '>', threshold: 1 } })
     expect(both.json.problems).toMatchObject([{ path: 'condition' }])
     const tooMany = await post({ anomaly: { maxSeries: 5000 } })
     expect(tooMany.json.problems).toMatchObject([{ path: 'anomaly.maxSeries', message: expect.stringMatching(/above this ruler's limit of 1000/) }])
     const unknown = await post({ anomaly: { params: { window: 5 } } })
-    expect(unknown.json.problems).toMatchObject([{ path: 'anomaly.params.window', message: 'ewma has no parameter "window"' }])
-    const madWarn = await post({ anomaly: { detector: 'robust_z', maxSeries: 10 }, dryRun: true })
+    expect(unknown.json.problems).toMatchObject([{ path: 'anomaly.params.window', message: 'robust_z has no parameter "window"' }])
+    const madWarn = await post({ anomaly: { detector: 'robust_z', maxSeries: 10, params: { spread: 'mad' } }, dryRun: true })
     expect(madWarn.status).toBe(200)
-    expect(madWarn.json.warnings).toMatchObject([{ path: 'anomaly.detector', message: expect.stringMatching(/scored below a static threshold on held-out NAB \(-105.9 vs 21.8\)/) }])
+    expect(madWarn.json.warnings).toMatchObject([{ path: 'anomaly.params.spread', message: expect.stringMatching(/robust_z with the MAD spread scored below a static threshold on held-out NAB \(-105.9 vs 21.8\) and on SMD \(-318.2 vs 16.4\)/) }])
+    const ewmaWarn = await post({ anomaly: { detector: 'ewma' }, dryRun: true })
+    expect(ewmaWarn.json.warnings).toMatchObject([{ path: 'anomaly.detector', message: expect.stringMatching(/on SMD, data never used to choose it, ewma scored below a static threshold in every profile \(10.4 vs 16.4; held-out NAB 30.1 vs 21.8\)/) }])
     // A backtest of an anomaly monitor runs its detector over history (test/history.test.ts); with no
     // history to read it fails explicitly, it does not answer an empty result.
     const bt = await call(key.auth, 'POST', '/api/v1/monitors/backtest', { monitor: { name: 'x', query: LAT, anomaly: {} }, fromMs: T0, toMs: T0 + 10 * MIN, step: '1m' })
     expect([bt.status, bt.json.error.code]).toEqual([502, 'evaluation_failed'])
     const quantile = await post({ anomaly: { detector: 'robust_z', maxSeries: 10, params: { spread: 'quantile' } }, dryRun: true })
+    const pageZ = await post({ anomaly: { detector: 'robust_z', maxSeries: 10, severity: 'page' }, dryRun: true })
+    expect(pageZ.json.warnings).toMatchObject([{ path: 'anomaly.severity', message: expect.stringMatching(/lead over a static threshold in the low-false-positive profile is not significant/) }])
     // Not given, max_series is what fits the per-rule state limit, and the save says so.
     const fitted = await post({ anomaly: { detector: 'cusum' }, dryRun: true })
     expect(fitted.status).toBe(200)
     expect(fitted.json.warnings).toMatchObject([
       { path: 'anomaly.maxSeries', message: expect.stringMatching(/^max_series defaults to 49 here, not 100: cusum/) },
-      { path: 'anomaly.detector', message: expect.stringMatching(/cusum as configured scored below a static threshold on held-out NAB \(15.1 vs 21.8\)/) },
+      { path: 'anomaly.detector', message: expect.stringMatching(/cusum scored below a static threshold on held-out NAB \(15.1 vs 21.8\) and on SMD \(-147.6 vs 16.4\)/) },
     ])
-    expect(quantile.json.warnings).toMatchObject([{ path: 'anomaly.params.spread', message: expect.stringMatching(/not validated: it was chosen after seeing the NAB results/) }])
+    // The quantile spread was confirmed on data it had not seen (SMD): no longer warned as unvalidated.
+    expect(quantile.json.warnings).toEqual([])
   })
 
-  it('GET /monitors/detectors: ewma is the default and the only one with validated defaults; threshold for pages; STL, CUSUM and PELT explain and do not page; nothing post hoc is presented as validated', async () => {
+  it('GET /monitors/detectors: robust z with the quantile spread is the default, threshold for pages; every number carries its kind of evidence, and the default window\'s SMD score is post hoc; STL, CUSUM and PELT explain and do not page', async () => {
     const { key } = await scene()
     const d = (await call(key.auth, 'GET', '/api/v1/monitors/detectors')).json
-    expect([d.default, d.defaultForPage]).toEqual(['ewma', 'threshold'])
-    const by = Object.fromEntries((d.detectors as { name: string }[]).map((x) => [x.name, x])) as unknown as Record<string, { inRules: boolean; pageAllowed: boolean; notFor: string; goodFor: string; evidence: { defaultsValidated: boolean; nab: { standard: number } | null; note: string } }>
-    expect(Object.entries(by).filter(([, g]) => g.evidence.defaultsValidated).map(([n]) => n)).toEqual(['ewma'])
+    expect([d.default, d.defaultForPage]).toEqual(['robust_z', 'threshold'])
+    const by = Object.fromEntries((d.detectors as DetectorGuide[]).map((x) => [x.name, x])) as Record<string, DetectorGuide>
+    // Validated: scored on data the defaults were not chosen on (held out on NAB, or frozen and scored on SMD).
+    expect(Object.entries(by).filter(([, g]) => g.evidence.defaultsValidated).map(([n]) => n)).toEqual(['robust_z', 'ewma', 'seasonal'])
+    for (const g of Object.values(by)) {
+      expect(g.evidence.lines!.length, g.name).toBeGreaterThan(0)
+      for (const l of g.evidence.lines!) {
+        expect(['held_out', 'confirmed', 'not_confirmed', 'post_hoc', 'not_scorable'], `${g.name}: ${l.config}`).toContain(l.kind)
+        // SMD was never used to choose anything: a line on it is a confirmation (or not), or post hoc; never "held out".
+        if (l.data === 'SMD') expect(['confirmed', 'not_confirmed', 'post_hoc'], `${g.name}: ${l.config}`).toContain(l.kind)
+      }
+    }
+    // The default: its window was set by the state limit; NAB held out; SMD post hoc (only 4,000 was pre-registered, and that one is confirmed).
+    expect(by.robust_z!.defaults).toEqual({ ...ROBUST_Z_DEFAULTS })
+    const z = (data: string, config: string) => by.robust_z!.evidence.lines!.find((l) => l.data === data && l.config.startsWith(config))!
+    expect(z('NAB', 'quantile spread, window 1,500')).toMatchObject({ kind: 'held_out', score: { standard: 42.6, lowFp: 29.7, lowFn: 55.4 } })
+    expect(z('SMD', 'quantile spread, window 1,500')).toMatchObject({ kind: 'post_hoc', score: { standard: 42.5, lowFp: 21.2, lowFn: 50.8 } })
+    expect(z('SMD', 'quantile spread, window 4,000')).toMatchObject({ kind: 'confirmed', score: { standard: 42.8 } })
+    expect(z('NAB', 'quantile spread, window and k chosen')).toMatchObject({ kind: 'post_hoc', score: { standard: 44.8 } })
+    // It beats EWMA and the static threshold on both benchmarks, which is what made it the default.
+    const std = (n: string, data: string) => by[n]!.evidence.lines!.find((l) => l.data === data)!.score!.standard
+    for (const data of ['NAB', 'SMD']) {
+      expect(z(data, 'quantile spread, window 1,500').score!.standard, data).toBeGreaterThan(Math.max(std('ewma', data), std('threshold', data)))
+    }
+    // EWMA, the default until 2026-11-19, did not hold on SMD, and says so.
+    expect(by.ewma!.evidence.lines!.find((l) => l.data === 'SMD')).toMatchObject({ kind: 'not_confirmed', score: { standard: 10.4 } })
+    expect(by.ewma!.notFor).toMatch(/A default, and paging/)
+    expect(by.seasonal!.defaults).toEqual({ ...SEASONAL_DEFAULTS })
+    // Literally: a change to the constants above must show here.
+    expect(by.robust_z!.defaults).toEqual({ windowPoints: 1500, k: 2, spread: 'quantile', spreadQuantile: 0.99 })
+    expect(by.seasonal!.defaults).toEqual({ seasons: 1, k: 2, adapt: 'robust', spread: 'quantile', spreadQuantile: 0.99 })
+    expect(by.seasonal!.evidence.lines!.find((l) => l.data === 'SMD' && l.config.startsWith('quantile'))).toMatchObject({ kind: 'confirmed', score: { standard: 35.5 } })
     for (const n of ['stl', 'pelt', 'cusum']) {
       expect(by[n]!.pageAllowed, n).toBe(false)
       expect(`${by[n]!.goodFor} ${by[n]!.notFor} ${by[n]!.evidence.note}`, n).toMatch(/explanation/i)
     }
     expect([by.stl!.inRules, by.pelt!.inRules, by.cusum!.inRules]).toEqual([false, false, true])
-    for (const n of ['robust_z', 'seasonal']) {
-      expect(by[n]!.evidence.nab!.standard, n).toBeLessThan(by.threshold!.evidence.nab!.standard)
-      expect(by[n]!.evidence.note, n).toMatch(/after seeing these results|post hoc/)
-      expect(by[n]!.evidence.note, n).toMatch(/not a default/)
-    }
-    expect(by.ewma!.evidence.nab!.standard).toBeGreaterThan(by.threshold!.evidence.nab!.standard)
   })
 
   it('authorisation: creating, editing and deleting an anomaly monitor needs monitors:write; reading it and the detectors needs monitors:read', async () => {
@@ -500,7 +533,7 @@ describe('the monitors API', () => {
     expect((await call(read.auth, 'GET', '/api/v1/monitors/detectors')).status).toBe(200)
     expect((await call(ack.auth, 'GET', '/api/v1/monitors/detectors')).status).toBe(403)
     expect((await call(null, 'GET', '/api/v1/monitors/detectors')).status).toBe(401)
-    expect((await call(key.auth, 'GET', `/api/v1/monitors/${id}`)).json.monitor.anomaly.detector).toBe('ewma')
+    expect((await call(key.auth, 'GET', `/api/v1/monitors/${id}`)).json.monitor.anomaly.detector).toBe('robust_z')
   })
 
   it('tenant isolation: the tenant is the credential\'s; another tenant\'s key, whatever it names in paths, queries, headers or bodies, never sees or changes an anomaly monitor or its state', async () => {
@@ -569,5 +602,174 @@ describe('the monitors API', () => {
     for (const g of d.detectors) agree('DetectorGuide', g)
     const statuses = (schemas.AnomalyStatus!.properties.status as { enum: string[] }).enum
     expect(statuses.sort()).toEqual(['ok', 'series_cap_exceeded', 'state_limit_exceeded', 'state_unreadable', 'unknown', 'warming'])
+  })
+})
+
+describe('defaults across an upgrade (D33 replaced on 2026-11-19: robust z with the quantile spread instead of EWMA)', () => {
+  /** The rules the release before the change stored (test/fixtures/anomaly), and their keys. */
+  const OLD = JSON.parse(before20261119.stored) as RuleGroup
+  const OLD_RULES = OLD.anomalyRules as AnomalyRuleV2[]
+  const oldRule = (name: string) => OLD_RULES.find((r) => r.name === name)!
+  const spike = (s: string, i: number) => (s === 'b' && i === 22 ? 130 : noise(i))
+
+  /** A tenant whose storage holds the group exactly as the release before the change left it; evicted, so the constructor reads it. */
+  async function upgraded() {
+    const r = await rig([ewmaRule()], { values: spike })
+    await runInDurableObject(r.stub, (_i, s) => {
+      s.storage.sql.exec('UPDATE rule_group SET spec = ? WHERE tenant = ? AND name = ?', before20261119.stored, r.tenant, 'anomalies/1m')
+      // Its warm-ups finished long ago (or it predates them): none pending, no state yet.
+      s.storage.sql.exec('DELETE FROM warmup WHERE tenant = ?', r.tenant)
+      s.storage.sql.exec('DELETE FROM anomaly_state WHERE tenant = ?', r.tenant)
+    })
+    await evictDurableObject(r.stub)
+    return r
+  }
+  const storedRules = async (r: Awaited<ReturnType<typeof upgraded>>) => ok(await r.stub.listGroups(r.tenant)).groups.find((g) => g.name === 'anomalies/1m')!.anomalyRules!
+
+  it('a rule stored without a detector before the change still evaluates as EWMA after the upgrade, and robust z and seasonal stored without a spread still run the MAD: state and scores equal a batch run of the library with the stored parameters', async () => {
+    const r = await upgraded()
+    expect((await storedRules(r)).map((x) => [x.name, x.key, x.anomaly.detector, x.anomaly.params])).toEqual(OLD_RULES.map((x) => [x.name, x.key, x.anomaly.detector, x.anomaly.params]))
+    expect(oldRule('LatencyAnomaly').anomaly).toMatchObject({ detector: 'ewma', given: [], params: { halfLifePoints: 100, k: 8 } })
+    for (let i = 0; i < 24; i++) await r.tick()
+    const rows = await r.rows()
+    for (const old of OLD_RULES) {
+      const own = rows.filter((x) => x.rule_key === old.key)
+      expect(own.length, old.name).toBeGreaterThan(0)
+      for (const svc of r.services) {
+        const vals = r.times.map((_t, i) => r.values(svc, i) as number)
+        const lib = libraryBatch(old.anomaly.detector as keyof typeof DETECTORS, { ...old.anomaly.params, unit: old.anomaly.unit }, r.times, vals)
+        const got = seriesState(own, svc)!
+        expect(got.state, `${old.name} ${svc}`).toEqual(lib.state)
+        const last = lib.points.at(-1) as unknown as { status: string; anomalous: boolean; score: number }
+        expect([got.last!.status, got.last!.flag, got.last!.score], `${old.name} ${svc}`).toEqual([last.status === 'warming' ? 'warming' : 'ok', last.anomalous, last.score])
+      }
+    }
+    // The robust z rule scored (minPoints 20), with the MAD spread it was stored with.
+    expect(seriesState(rows.filter((x) => x.rule_key === oldRule('LatencyRobust').key), 'b')!.last!.status).toBe('ok')
+    // A rule saved now, leaving the detector out, gets the new default.
+    const fresh = ok(await r.stub.saveGroups(r.tenant, { groups: [{ name: 'new', interval: '1m', rules: [{ alert: 'Fresh', expr: LAT, anomaly: {} }] }] }))
+    const freshRule = ok(await r.stub.listGroups(r.tenant)).groups.find((g) => g.name === 'new')!.anomalyRules![0]!
+    expect(fresh.groups[0]!.rules[0]!.kind).toBe('anomaly')
+    expect([freshRule.anomaly.detector, freshRule.anomaly.params.spread, freshRule.anomaly.params.windowPoints, freshRule.anomaly.params.k]).toEqual([DEFAULT_DETECTOR, 'quantile', 1500, 2])
+  })
+
+  it('saved again unchanged, a stored rule keeps the defaults it was stored with (its key and state too), and the save says so; naming the detector or a parameter changes it, and a new rule gets today\'s defaults', async () => {
+    const r = await upgraded()
+    for (let i = 0; i < 3; i++) await r.tick()
+    const keys = new Set((await r.rows()).map((x) => x.rule_key))
+    expect(keys).toEqual(new Set(OLD_RULES.map((x) => x.key)))
+    // The very document the author saved before the change.
+    const again = ok(await r.stub.saveGroups(r.tenant, before20261119.input))
+    expect(again.groups[0]!.rules.map((x) => x.key)).toEqual(OLD_RULES.map((x) => x.key))
+    expect((await storedRules(r)).map((x) => x.anomaly)).toEqual(OLD_RULES.map((x) => x.anomaly))
+    expect(new Set((await r.rows()).map((x) => x.rule_key)), 'the detector state carried over').toEqual(keys)
+    expect(again.warnings).toEqual(expect.arrayContaining([
+      { path: 'groups[0].rules[0].anomaly.detector', message: 'this rule keeps detector ewma, the default when it was saved; a new rule would get robust_z with the quantile spread (design D33)', fix: expect.any(String) },
+      { path: 'groups[0].rules[1].anomaly.params', message: 'this rule keeps spread "mad", windowPoints 288, k 3.5, the default when it was saved; a new rule would get spread "quantile", windowPoints 1500, k 2 (design D33)', fix: expect.any(String) },
+      { path: 'groups[0].rules[2].anomaly.params', message: 'this rule keeps spread "mad", seasons 4, k 4, the default when it was saved; a new rule would get spread "quantile", seasons 1, k 2 (design D33)', fix: expect.any(String) },
+    ]))
+    // Changing a parameter without naming the detector edits the EWMA rule; it does not switch detector.
+    const input = before20261119.input.groups[0]!
+    const edited = (rule0: Record<string, unknown>, extra: Record<string, unknown>[] = []) => ({ groups: [{ ...input, rules: [rule0, ...input.rules.slice(1), ...extra] }] })
+    ok(await r.stub.saveGroups(r.tenant, edited({ ...input.rules[0], anomaly: { unit: 'ms', params: { k: 9 } } })))
+    expect((await storedRules(r))[0]!.anomaly).toMatchObject({ detector: 'ewma', given: ['k'], params: { k: 9, halfLifePoints: 100 } })
+    // Parameters that are not EWMA's describe another detector: today's default.
+    ok(await r.stub.saveGroups(r.tenant, edited({ ...input.rules[0], anomaly: { unit: 'ms', params: { windowPoints: 1000 } } })))
+    expect((await storedRules(r))[0]!.anomaly).toMatchObject({ detector: 'robust_z', given: ['windowPoints'], params: { windowPoints: 1000, spread: 'quantile', k: 2 } })
+    // Named, it changes; a new rule beside it gets today's default.
+    const named = ok(await r.stub.saveGroups(r.tenant, edited({ ...input.rules[0], anomaly: { unit: 'ms', detector: 'robust_z' } }, [{ alert: 'Another', expr: LAT, anomaly: {} }])))
+    const now = await storedRules(r)
+    expect(now[0]!.anomaly).toMatchObject({ detector: 'robust_z', params: { ...ROBUST_Z_DEFAULTS } })
+    expect(now.find((x) => x.name === 'Another')!.anomaly).toMatchObject({ detector: 'robust_z', params: { ...ROBUST_Z_DEFAULTS } })
+    expect(named.warnings.filter((w) => w.path === 'groups[0].rules[0].anomaly.detector')).toEqual([])
+    // robust_z and seasonal still named without a spread keep the MAD they were stored with throughout.
+    expect(now.slice(1, 3).map((x) => x.anomaly)).toEqual(OLD_RULES.slice(1).map((x) => x.anomaly))
+  })
+
+  it('through the monitors API: a monitor stored as EWMA (as one saved without a detector was) and edited with the detector left out, even renamed, stays EWMA; naming one changes it', async () => {
+    world.now = T0
+    const tenant = newTenant('anu')
+    const key = await apiKey(tenant)
+    ok(await rulerStub(tenant).configure(tenant, { deadman: false, heartbeatMs: 30 * MIN }))
+    // Saved with detector "ewma" and nothing else, the stored form is the one the release before the
+    // change wrote for a monitor that named no detector (the fixture's first rule): detector,
+    // parameters and `given` alike.
+    const id = (await call(key.auth, 'POST', '/api/v1/monitors', { name: 'checkout latency', query: LAT, anomaly: { detector: 'ewma' } })).json.id as string
+    const get = async () => (await call(key.auth, 'GET', `/api/v1/monitors/${id}`)).json.monitor as MonitorView
+    expect((await get()).anomaly).toMatchObject({ detector: 'ewma', params: oldRule('LatencyAnomaly').anomaly.params, given: [] })
+    const put = await call(key.auth, 'PUT', `/api/v1/monitors/${id}`, { name: 'checkout latency (p50)', query: LAT, anomaly: {} })
+    expect(put.status, put.text).toBe(200)
+    expect(put.json.warnings).toEqual(expect.arrayContaining([{ path: 'anomaly.detector', message: expect.stringMatching(/^this rule keeps detector ewma, the default when it was saved/), fix: expect.any(String) }]))
+    expect((await get()).anomaly).toMatchObject({ detector: 'ewma', params: oldRule('LatencyAnomaly').anomaly.params })
+    expect((await call(key.auth, 'PUT', `/api/v1/monitors/${id}`, { name: 'checkout latency (p50)', query: LAT, anomaly: { detector: 'robust_z' } })).status).toBe(200)
+    expect((await get()).anomaly).toMatchObject({ detector: 'robust_z', params: { ...ROBUST_Z_DEFAULTS } })
+  })
+
+  it('the 4,000-point configuration confirmed on SMD stays nameable: refused at save over the per-series state limit, with why and what fits; accepted where the operator raised the limit', async () => {
+    const { tenant, stub } = await setup()
+    const save = (anomaly: Record<string, unknown>) => stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly }] }] })
+    expect(await save({ detector: 'robust_z', params: { windowPoints: 4000 } })).toMatchObject({
+      status: 'invalid',
+      errors: [{
+        path: 'groups[0].rules[0].anomaly.params',
+        message: 'robust_z with these parameters keeps about 145400 bytes of state per series at a 1m interval; the limit is 65536. This is the configuration frozen on NAB and confirmed on SMD (42.8); its window is over this ruler\'s per-series state limit',
+        fix: expect.stringMatching(/^Use a shorter window: windowPoints 1500, the default, is the largest whose state fits 65,536 bytes a series for any values \(NAB held out 42.6, SMD 42.5 post hoc\)\. A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries\.$/),
+      }],
+    })
+    const raised = await setup({ limits: { maxAnomalyStateBytesPerSeries: 160_000 } })
+    const okd = ok(await raised.stub.saveGroups(raised.tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', params: { windowPoints: 4000 } } }] }] }))
+    expect(okd.warnings).toEqual([expect.objectContaining({ path: 'groups[0].rules[0].anomaly.max_series', message: expect.stringMatching(/^max_series defaults to 7 here/) })])
+    // spread "mad", given: the library's own defaults, as before, and the evidence against it.
+    const mad = ok(await save({ detector: 'robust_z', params: { spread: 'mad' } }))
+    expect(mad.warnings.map((w) => w.path)).toEqual(['groups[0].rules[0].anomaly.max_series', 'groups[0].rules[0].anomaly.params.spread'])
+    expect(ok(await stub.listGroups(tenant)).groups[0]!.anomalyRules![0]!.anomaly.params).toMatchObject({ spread: 'mad', windowPoints: 288, k: 3.5 })
+    // seasonal named without a spread: the configuration frozen on NAB and confirmed on SMD.
+    const seasonal = ok(await save({ detector: 'seasonal', params: { periodMs: 60 * MIN } }))
+    expect(seasonal.warnings, 'the quantile spread is not warned about').toEqual([])
+    expect(ok(await stub.listGroups(tenant)).groups[0]!.anomalyRules![0]!.anomaly.params).toMatchObject({ seasons: 1, k: 2, adapt: 'robust', spread: 'quantile', spreadQuantile: 0.99, periodMs: 60 * MIN })
+  })
+
+  it('PREVIOUS_DEFAULTS is what the release before the change stored for an entry that left the fields out (the fixture), and not today\'s defaults', () => {
+    const noDetector = oldRule('LatencyAnomaly').anomaly
+    expect(noDetector.given).toEqual([])
+    expect(noDetector.detector).toBe(PREVIOUS_DEFAULTS.detector)
+    for (const name of ['LatencyRobust', 'LatencySeasonal']) {
+      const a = oldRule(name).anomaly
+      const before = PREVIOUS_DEFAULTS.params[a.detector]!
+      expect(Object.keys(before).length, name).toBeGreaterThan(0)
+      for (const [k, v] of Object.entries(before)) {
+        expect(a.params[k], `${name}.${k}`).toBe(v)
+        expect(a.given, `${name}.${k}`).not.toContain(k)
+      }
+    }
+    expect(PREVIOUS_DEFAULTS.detector).not.toBe(DEFAULT_DETECTOR)
+    expect(PREVIOUS_DEFAULTS.params.robust_z!.spread).not.toBe(ROBUST_Z_DEFAULTS.spread)
+  })
+
+  it('the default window fits the per-series state limit for any values: 1,500 points of the longest-printing numbers, under labels of eight names, are stored without a refusal', () => {
+    const parsed = parseRuleFile({ groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Z', expr: LAT, anomaly: { max_series: 1 } }] }] }, DEFAULT_RULER_CONFIG)
+    expect(parsed.errors).toEqual([])
+    const rule = parsed.groups[0]!.anomalyRules![0]!
+    expect(rule.anomaly.detector).toBe('robust_z')
+    const W = rule.anomaly.params.windowPoints as number
+    const labels = { __name__: 'http_request_duration_seconds', service: 'checkout', instance: '10.0.12.34:9090', job: 'api', region: 'eu-west-1', cluster: 'prod-2', namespace: 'payments', pod: 'checkout-7d9f8b6c5d-x2x9q' }
+    // -1.2345678901234567e-6 prints as -0.0000012345678901234567: 25 characters, the longest a value takes.
+    const value = (i: number) => -0.0000012345678901234567 * (1 + (i % 13) / 7)
+    const ts = Array.from({ length: W + 10 }, (_, i) => T0 + i * MIN)
+    const lib = libraryBatch('robust_z', { ...rule.anomaly.params }, ts, ts.map((_t, i) => value(i)))
+    const rt = newAnomalyRt(rule)
+    rt.series.set(fingerprint(labels), { labels, state: lib.state, last: null, seenAt: ts.at(-1)! })
+    const limits = anomalyLimits(DEFAULT_RULER_CONFIG)
+    const next = T0 + ts.length * MIN
+    // Flagged, so that the stored entry carries the explanation too.
+    const spikeValue = -0.000031234567890123457
+    const r = evalAnomaly(rule, rt, [{ metric: labels, value: spikeValue, text: String(spikeValue) }], next, MIN, limits, {})
+    expect(r.ok, r.ok ? '' : r.error).toBe(true)
+    if (!r.ok) return
+    expect(r.flagged.length).toBe(1)
+    const bytes = new TextEncoder().encode(r.json.get(fingerprint(labels))!).length
+    expect(bytes).toBeLessThanOrEqual(limits.maxAnomalyStateBytesPerSeries)
+    // With room to spare for longer labels (measured 60.9 KB at the time of writing).
+    expect(bytes).toBeLessThan(limits.maxAnomalyStateBytesPerSeries - 4000)
   })
 })

@@ -15,7 +15,9 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { encodeLedgerCheckpointPart, ledgerSegmentKey, parseLedgerLogKey, type Table } from '../../contracts/ledger'
+import { encodeLedgerCheckpointPart, ledgerSegmentKey, parseLedgerLogKey, type FileEntry, type LedgerChange, type Table } from '../../contracts/ledger'
+import { FORMATS } from '../src/schema'
+import { goldenFile } from './golden'
 import {
   DAY_MS,
   T0,
@@ -535,6 +537,95 @@ describe('ledger N-1 and N+1 (contracts/COMPATIBILITY.md)', () => {
     expect(r.tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: { ledgerIncarnation: 1, version: 1 } }, rebase: { source: 'base', version: 0, files: 1 } })
     expect(await icebergLive(cell, 'metric_samples')).toEqual([u1.files[0]!.key])
     expect(await icebergLive(cell, 'metric_series')).toEqual([u1.files[1]!.key])
+  })
+})
+
+// ───────────────────────────── golden: a checkpoint in parts as the ledger writes it ─────────────────────────────
+
+const GOLDEN = `formats/read.ledger-checkpoint.v${FORMATS['read.ledger-checkpoint']}.json`
+/** The golden's tenant. Only the first test below drives a ledger of that name. */
+const FIX = 'ckptfix'
+
+interface CheckpointGolden {
+  format: string
+  version: number
+  note: string
+  tenant: string
+  checkpointAt: number
+  /** Every log object, as the ledger wrote it, by key relative to the cell. */
+  objects: Record<string, string>
+  cursor: { ledgerIncarnation: number; version: number }
+  live: Record<Table, string[]>
+}
+
+/** What differs from run to run: the ledger's clock and the checkpoint's attempt name. */
+const scrubbed = (s: string, attempt: string) => s.replace(/"at":\d+/g, '"at":0').replaceAll(attempt, 'ATTEMPT')
+const attemptOf = (keys: string[]) => /ckpt-\d{12}-([0-9a-f]{8})\//.exec(keys.find((k) => k.includes('/ckpt-') && k.endsWith('.jsonl') && /-[0-9a-f]{8}\//.test(k)) ?? '')?.[1] ?? 'none'
+
+describe('golden: a checkpoint in parts, real bytes from the ledger', () => {
+  it('the ledger writes what this publisher reads at this format version (timestamps and attempt aside)', async () => {
+    const { cell } = fresh()
+    const { checkpointAt } = await scenario(cell, FIX, 'parts')
+    const objects: Record<string, string> = {}
+    for (const k of await listKeys(`${cell}/ledger/tenant=${FIX}/`)) objects[k.slice(cell.length + 1)] = await (await env.BUCKET.get(k))!.text()
+    const live = { metric_samples: await liveKeys(FIX, 'metric_samples'), metric_series: await liveKeys(FIX, 'metric_series') }
+    const got = { checkpointAt, objects, cursor: await ledgerVersion(FIX), live }
+    const g = goldenFile(GOLDEN) as CheckpointGolden | undefined
+    if (!g) {
+      const doc: CheckpointGolden = {
+        format: 'read.ledger-checkpoint',
+        version: FORMATS['read.ledger-checkpoint'],
+        note: 'Written by ledger/src/ledger.ts through publisher/test/checkpoints.test.ts (scenario, format 2, parts of 700 characters). Bytes as the ledger wrote them; only "at" and the attempt name differ between runs.',
+        tenant: FIX,
+        ...got,
+      }
+      console.log(`GOLDEN ${GOLDEN} ${JSON.stringify(doc)}`)
+      throw new Error(`no golden file test/golden/${GOLDEN}. Review the JSON printed above and check it in under that name.`)
+    }
+    const [a, b] = [attemptOf(Object.keys(objects)), attemptOf(Object.keys(g.objects))]
+    expect(Object.keys(objects).map((k) => k.replaceAll(a, 'ATTEMPT')).sort()).toEqual(Object.keys(g.objects).map((k) => k.replaceAll(b, 'ATTEMPT')).sort())
+    for (const k of Object.keys(g.objects)) expect(scrubbed(objects[k.replaceAll(b, a)]!, a), k).toBe(scrubbed(g.objects[k]!, b))
+    expect({ checkpointAt: got.checkpointAt, cursor: got.cursor, live: got.live }).toEqual({ checkpointAt: g.checkpointAt, cursor: g.cursor, live: g.live })
+    expect(Object.keys(g.objects).filter((k) => parseLedgerLogKey(k)?.type === 'checkpoint_part').length).toBeGreaterThan(4)
+  })
+
+  it('publishes the checked-in log from its checkpoint in parts', async () => {
+    const g = goldenFile(GOLDEN) as CheckpointGolden
+    const { cell } = fresh()
+    const files = new Map<string, FileEntry>()
+    for (const [k, body] of Object.entries(g.objects)) {
+      await env.BUCKET.put(`${cell}/${k}`, body)
+      for (const line of body.split('\n').slice(1)) {
+        if (!line) continue
+        const x = JSON.parse(line) as Partial<LedgerChange> & { file?: FileEntry }
+        if (x.file) files.set(x.file.key, x.file)
+        for (const f of x.added ?? []) files.set(f.key, f)
+      }
+    }
+    await putObjects([...files.values()])
+    const p = publisher(cell)
+    const r = await p.publish([g.tenant])
+    expect(r.tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: g.cursor, metric_series: g.cursor }, rebase: { source: 'checkpoint', format: 2, version: g.checkpointAt } })
+    for (const table of TABLES) expect(await icebergLive(cell, table), table).toEqual(g.live[table])
+    await expectVerified(p)
+  })
+
+  it('the segment golden\'s format-1 checkpoint is re-based from too (its incarnation 1, from scratch)', async () => {
+    const g = goldenFile(`formats/read.ledger-segment.v${FORMATS['read.ledger-segment']}.json`) as { tenant: string; objects: Record<string, string>; stages: { objects: string[]; cursor: { ledgerIncarnation: number; version: number }; live: Record<Table, string[]> }[] }
+    const stage = g.stages[1]! // a unit, then a compaction and its checkpoint
+    expect(stage.objects.some((k) => parseLedgerLogKey(k)?.type === 'checkpoint')).toBe(true)
+    const { cell } = fresh()
+    const files = new Map<string, FileEntry>()
+    for (const k of stage.objects) {
+      await env.BUCKET.put(`${cell}/${k}`, g.objects[k]!)
+      for (const line of g.objects[k]!.split('\n').slice(1)) if (line) for (const f of (JSON.parse(line) as LedgerChange).added) files.set(f.key, f)
+    }
+    await putObjects([...files.values()])
+    const p = publisher(cell)
+    const r = await p.publish([g.tenant])
+    expect(r.tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: stage.cursor }, rebase: { source: 'checkpoint', format: 1 } })
+    for (const table of TABLES) expect(await icebergLive(cell, table), table).toEqual(stage.live[table])
+    await expectVerified(p)
   })
 })
 

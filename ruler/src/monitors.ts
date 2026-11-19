@@ -142,12 +142,12 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
   } else if (m.anomaly !== undefined) {
     // An anomaly monitor: `query` is what to watch; the detector decides when it alerts.
     const a = m.anomaly
-    if (!isObject(a)) err('anomaly', 'anomaly must be an object', 'Send {} for the default detector (ewma), or { "detector": "...", "params": {...} }.')
+    if (!isObject(a)) err('anomaly', 'anomaly must be an object', 'Send {} for the default detector (robust z with the quantile spread; a static threshold when severity is page), or { "detector": "...", "params": {...} }.')
     else {
       for (const k of Object.keys(a)) if (!ANOMALY_FIELDS.includes(k)) err(`anomaly.${k}`, `unknown field "${k}"`, `anomaly has: ${ANOMALY_FIELDS.join(', ')}.`)
       if (a.detector !== undefined && (typeof a.detector !== 'string' || !(ANOMALY_DETECTORS as readonly string[]).includes(a.detector))) {
         const guide = typeof a.detector === 'string' ? DETECTOR_GUIDE[a.detector] : undefined
-        err('anomaly.detector', guide && !guide.inRules ? `"${a.detector}" cannot run in a monitor: ${guide.notFor}` : `unknown detector ${JSON.stringify(a.detector)}`, `Use one of ${ANOMALY_DETECTORS.join(', ')}; leave it out for ewma. GET /api/v1/monitors/detectors says what each is for.`)
+        err('anomaly.detector', guide && !guide.inRules ? `"${a.detector}" cannot run in a monitor: ${guide.notFor}` : `unknown detector ${JSON.stringify(a.detector)}`, `Use one of ${ANOMALY_DETECTORS.join(', ')}; leave it out for robust_z with the quantile spread. GET /api/v1/monitors/detectors says what each is for.`)
       }
       if (a.maxSeries !== undefined && (typeof a.maxSeries !== 'number' || !Number.isInteger(a.maxSeries))) err('anomaly.maxSeries', 'maxSeries must be a whole number', 'Give the most series the query may return, e.g. 100.')
       anomaly = {}

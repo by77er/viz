@@ -10,12 +10,13 @@ and physical deletes wait. Nothing else.
 | File | Contents |
 |---|---|
 | `src/publisher.ts` | `Publisher`: publish, commit, resync, expire, sweep, `verify`, `safeToDelete`; the one alarm and its deadlines |
-| `src/log.ts` | Reading a ledger's R2 log, segments and the first layout: changes after a cursor in version order, in whole segments, up to the first hole or unreadable object; a strict replay for `verify` |
+| `src/log.ts` | Reading a ledger's R2 log, segments and the first layout: changes after a cursor in version order, in whole segments, up to the first hole or unreadable object; a re-base from the newest checkpoint (one object, or parts) or the base, streamed into SQLite; the six-connection slots; a strict replay for `verify` |
 | `src/nudge.ts` | `nudge(PUBLISHER, cell, tenants)`: what the maintenance run calls; bounded, never throws (D34) |
 | `src/iceberg.ts` | Table schemas, Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 78 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout) |
+| `test/` | 101 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `bench/` | The re-base at the ledger's state limit (`rebase.bench.test.ts`), the frozen publisher from before it streamed (`before/`, the counterfactual), `phases.mjs` (memory per phase) |
 | `tools/fixtures/` | Rust: real Parquet files made with `viz_storage::encode_segment` and `merge_files` |
 | `tools/verify_readers.py` | PyIceberg and DuckDB read the published tables and are compared with the ledgers |
 | `tools/mutants.mjs` | Mutation checks |
@@ -80,9 +81,10 @@ tenant from the lower of the two. Each incarnation uses one layout:
   inside it); if none does, that is a hole. It reads whole segments only, contiguous, until
   about `maxChangesPerTenant` changes (at least one segment; the rest is `more`), decodes each
   with the contract's codec against its key and tenant, then checks it against what this
-  publisher reads (below). Checkpoints are never read. A newer incarnation is re-based from the
-  first line of its first segment, which must be its `base`; an incarnation that also has a
-  `base.json` is corrupt.
+  publisher reads (below). A newer incarnation (or a tenant with no cursor) is **re-based**: from
+  its newest checkpoint this code reads, else from the first line of its first segment, which
+  must be its `base`, then the segments after it; streamed, never held ("Re-base in bounded
+  memory", below). An incarnation that also has a `base.json` is corrupt.
 - **The first layout** (`base.json` and one `{version}.json` per change): read as before, for
   incarnations a trial deployment may still hold (COMPATIBILITY.md §3.6, step 3). A ledger
   that takes such a tenant over starts a new incarnation in segments, which the publisher
@@ -101,8 +103,10 @@ for a log written before it, from the key layout of contracts/TABLES.md. `remove
 does not list `removed` key for key is `corrupt`.
 
 R2 operations per tenant read: one list (incarnations), one list (segments after the cursor;
-a second only when the cursor is inside a segment), one get per segment read, one head on a
-re-base. When nothing is new, one more list looks for the first layout. A cursor inside the
+a second only when the cursor is inside a segment), one get per segment read; a re-base adds
+one list (the incarnation's checkpoints, with a delimiter so each checkpoint's parts are one
+prefix), one head, and the get of its checkpoint's manifest and each part, or of the base
+segment. When nothing is new, one more list looks for the first layout. A cursor inside the
 newest segment (this reader never leaves one; another release might) waits until the ledger
 writes the next segment, which the "starts above `version + 1`" rule then catches.
 

@@ -1,0 +1,38 @@
+v7-dashboard-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+v7-dashboard-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+v7-dashboard-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 77 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-dashboard-400-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 77 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-dialog-1500-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+v7-dialog-1500-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
+v7-dialog-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 2 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+v7-dialog-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 2 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+v7-states-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+v7-states-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+v7-states-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 10 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-states-400-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 10 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-long-table-1500-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+v7-long-table-1500-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
+v7-long-table-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 37 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 5 partly scrolled out of a strip (acme-prod, Settings, Max, cores, Memory, MiB, Restarts)
+v7-long-table-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 37 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 5 partly scrolled out of a strip (acme-prod, Settings, Max, cores, Memory, MiB, Restarts)
+v7-folded-list-1500-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+v7-folded-list-1500-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
+v7-folded-list-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 39 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-folded-list-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 39 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-monitor-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+v7-monitor-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+v7-monitor-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 21 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 2 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+  IN SENTENCE 109.8x18  node-b overview  (text, exempt; never the main path)
+  IN SENTENCE 117.9x16  notification settings  (text, exempt; never the main path)
+v7-monitor-400-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 21 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 2 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+  IN SENTENCE 109.8x18  node-b overview  (text, exempt; never the main path)
+  IN SENTENCE 117.9x16  notification settings  (text, exempt; never the main path)
+v7-charts-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+v7-charts-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+v7-charts-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 56 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-charts-400-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 56 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v7-folded-list-320-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 29 hit areas, 1 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 4 partly scrolled out of a strip (Traces, Logs, acme-prod, Settings)
+  SMALL 73x36.5  <button> Actions for cart-7d9f8c6b5-85167
+v7-folded-list-320-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 29 hit areas, 1 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 4 partly scrolled out of a strip (Traces, Logs, acme-prod, Settings)
+  SMALL 73x36.5  <button> Actions for cart-7d9f8c6b5-85167
+v7-folded-list-400-coarse-hit-areas-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 26 hit areas, 1 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+  SMALL 355.3x41.3  <a> checkout-api-7d9f8c6b5-4623a

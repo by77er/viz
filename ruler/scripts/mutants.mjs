@@ -426,12 +426,12 @@ export const MUTANTS = [
     tests: ['test/anomaly.test.ts'],
   },
   {
-    name: 'anomaly: the default EWMA uses the library\'s parameters (half-life 30, k 4: 0.0 on NAB) instead of the held-out ones',
+    name: 'anomaly: the ruler\'s evidence-based defaults dropped (the library\'s own: robust z with the MAD, EWMA 30 / 4, which scored 0.0 on NAB)',
     edits: one('src/anomaly.ts', '{ ...libraryDefaults(detector), ...guide.defaults }', '{ ...libraryDefaults(detector) }'),
     tests: ['test/anomaly.test.ts'],
   },
   {
-    name: 'anomaly: severity page without a detector defaults to EWMA, not the static threshold',
+    name: 'anomaly: severity page without a detector gets the non-paging default, not the static threshold',
     edits: one('src/anomaly.ts', "detector = givenSeverity === 'page' ? DEFAULT_PAGE_DETECTOR : DEFAULT_DETECTOR", 'detector = DEFAULT_DETECTOR'),
     tests: ['test/anomaly.test.ts'],
   },
@@ -847,6 +847,67 @@ export const MUTANTS = [
     name: 'entrypoint, health: /healthz does not count a missing sink',
     edits: one('src/index.ts', "  if (!env.SINK && !env.INGEST) missing.push('SINK')\n", ''),
     tests: ['test/wiring.test.ts'],
+  },
+  // ───────────── anomaly defaults (D33 replaced, 2026-11-19): robust z with the quantile spread ─────────────
+  {
+    name: 'default (D33): flipped back to EWMA',
+    edits: one('src/anomaly.ts', "export const DEFAULT_DETECTOR: AnomalyDetector = 'robust_z'", "export const DEFAULT_DETECTOR: AnomalyDetector = 'ewma'"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'default (D33): robust z without a spread defaults to the MAD',
+    edits: one('src/anomaly.ts', "export const ROBUST_Z_DEFAULTS = { windowPoints: 1500, k: 2, spread: 'quantile',", "export const ROBUST_Z_DEFAULTS = { windowPoints: 1500, k: 2, spread: 'mad',"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'default (D33): seasonal without a spread defaults to the MAD',
+    edits: one('src/anomaly.ts', "export const SEASONAL_DEFAULTS = { seasons: 1, k: 2, adapt: 'robust', spread: 'quantile',", "export const SEASONAL_DEFAULTS = { seasons: 1, k: 2, adapt: 'robust', spread: 'mad',"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: a stored rule that named no detector is resolved at evaluation (today\'s default runs instead of the stored EWMA)',
+    edits: one('src/anomaly.ts', 'const det = DETECTORS[spec.detector] as unknown as { detect(', 'const det = DETECTORS[spec.given.length === 0 ? DEFAULT_DETECTOR : spec.detector] as unknown as { detect('),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: today\'s defaults merged over the stored parameters at evaluation (a stored MAD rule runs the quantile spread)',
+    edits: one('src/anomaly.ts', 'const params = { ...spec.params, stepMs: intervalMs, unit: spec.unit }', 'const params = { ...spec.params, ...(DETECTOR_GUIDE[spec.detector]?.defaults ?? {}), stepMs: intervalMs, unit: spec.unit }'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: a rule saved again takes today\'s defaults (the stored rule is not consulted)',
+    edits: one('src/ruler.ts', 'parseRuleFile(file, this.cfg, (group) => this.groups.get(group)?.spec.anomalyRules)', 'parseRuleFile(file, this.cfg)'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: a rule saved again keeps the stored detector but takes today\'s parameter defaults',
+    edits: one('src/anomaly.ts', 'for (const [k, old] of Object.entries(PREVIOUS_DEFAULTS.params[detector] ?? {})) {', 'for (const [k, old] of Object.entries({} as Record<string, AnomalyParamValue>)) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'upgrade: a monitor saved again is matched by name, not by its id (renamed, it takes today\'s default)',
+    edits: one('src/rules.ts', 'if (monitorId !== null) return stored.find((r) => r.monitor?.id === monitorId) ?? null', 'if (monitorId === null && false) return null'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'default window: 1,781 points (the save-time estimate\'s edge, 36 bytes a point) instead of 1,500',
+    edits: one('src/anomaly.ts', "export const ROBUST_Z_DEFAULTS = { windowPoints: 1500,", "export const ROBUST_Z_DEFAULTS = { windowPoints: 1781,"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'evidence: the default window\'s SMD score labelled confirmed (it is post hoc: only 4,000 was frozen)',
+    edits: one('src/anomaly.ts', "{ kind: 'post_hoc', data: 'SMD', config: 'quantile spread, window 1,500, k 2 (this default)'", "{ kind: 'confirmed', data: 'SMD', config: 'quantile spread, window 1,500, k 2 (this default)'"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'the 4,000-point configuration: refused without saying what it is',
+    edits: one('src/anomaly.ts', "(confirmed ? `. This is the configuration frozen on NAB and confirmed on SMD", "(false ? `. This is the configuration frozen on NAB and confirmed on SMD"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'PREVIOUS_DEFAULTS: robust z\'s earlier k wrong (3 instead of 3.5)',
+    edits: one('src/anomaly.ts', "robust_z: { spread: 'mad', windowPoints: 288, k: 3.5 },", "robust_z: { spread: 'mad', windowPoints: 288, k: 3 },"),
+    tests: ['test/anomaly.test.ts'],
   },
 ]
 

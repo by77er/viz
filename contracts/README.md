@@ -5,10 +5,10 @@ change it here first; nothing else may redefine these.
 
 | File | Contract |
 |---|---|
-| `BATCH.md` | The columnar batch: what `edge` produces, a shard stores opaquely, and the engine decodes |
+| `BATCH.md` | The columnar batch: what `edge` produces, a shard stores opaquely, and the engine decodes. Signal 1 (metrics) is built; signals 2 (spans) and 3 (log records) are settled and encoded and decoded, not yet stored by shards (stage 2), with their routing to per-signal pools proposed |
 | `TABLES.md` | Parquet schemas, sort orders, partitioning and object keys for the metrics tables |
-| `TRACES.md` | Proposed: the `spans` table and `trace_index`, the read plan the TraceQL engine (`engine/traceql`) produces, and how missing values read. Storage does not implement it yet |
-| `LOGS.md` | Proposed: the log-records table (stream id, labels, line, structured metadata, OTLP severity and trace ids), its sort and token filter, and the `LogSource` read seam the LogQL engine (`engine/logql`) uses. Storage does not implement it yet |
+| `TRACES.md` | The `spans` table and `trace_index`: layout, sort, promoted attributes and index fragments settled and written by `engine/storage`; the read plan the TraceQL engine (`engine/traceql`) produces, and how missing values read. Flush, ledger, query and publication of these tables are proposed |
+| `LOGS.md` | The log-records table (stream id, labels, line, structured metadata, OTLP severity and trace ids), the OTLP and Loki push mappings, its sort, index fragment and token-filter format, and the `LogSource` read seam the LogQL engine (`engine/logql`) uses. Layout settled and written by `engine/storage`; flush, ledger, query and the token filter are proposed |
 | `ledger.ts` | The tenant ledger's RPC surface: file precedence (`LiveFile`, which file wins a duplicate sample), and the proposed tombstone surface used for physical deletion |
 | `LEDGER-LOG.md` | The ledger's change log as batched segments written in the background: format, drain, checkpoints, truncation, readers. Built; replaced one object per change (whose keys `ledger.ts` keeps for readers) |
 | `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |
@@ -21,5 +21,6 @@ change it here first; nothing else may redefine these.
 | `../shard/src/shard.ts` | The shard's RPC surface (already implemented) |
 | `../shard/src/pool.ts` | Pool maps and routing (already implemented) |
 
-Scope of this first build: **metrics only** (float samples). Traces and logs follow the
-same shapes later.
+Scope of the first build: **metrics** (float samples). Traces and logs, stage 1
+(2026-11-19): their batches, ingest decoding (behind `INGEST_SIGNALS`) and Parquet layout;
+stage 2 wires them through shards, flush, the ledger and query.

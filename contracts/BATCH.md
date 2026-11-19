@@ -1,8 +1,21 @@
-# Batch format `VZB1` (metrics)
+# Batch format `VZB1`
 
 One batch is one acknowledged unit of ingest for one tenant: the payload of
 `Shard.append`. `edge` encodes it; shards never look inside; the engine decodes it for
 flush and for tail reads. All integers little-endian.
+
+| `signal` | Rows | Status |
+|---|---|---|
+| 1 | metric samples (this section and the next five) | built |
+| 2 | spans ("Spans, signal 2" below) | format settled 2026-11-19; `edge` encodes it and `engine/storage` decodes and flushes it, but no shard stores it yet (stage 2) |
+| 3 | log records ("Log records, signal 3" below) | as signal 2 |
+
+Every signal has the same 16-byte header (magic, signal, flags, reserved, `n_rows`, and at
+offset 12 the size of the batch's entry table) and the same strictness: a decoder rejects
+anything an encoder following this file would not produce. Signals 2 and 3 are never mixed
+with signal 1 in one shard stream ("Streams per signal" below).
+
+## Metrics, signal 1
 
 ```
 offset  size  field
@@ -118,3 +131,198 @@ A request succeeds only if every batch is appended. If any append is refused or 
 whole request gets a retryable status (429 with `Retry-After` for backpressure, 503
 otherwise) and the sender retries all of it. `partial_success` is used only for rows
 rejected by validation, which a retry would not fix.
+
+## Rules common to signals 2 and 3
+
+Settled 2026-11-19 with the first encoder (`edge/src/spans.ts`, `edge/src/logs.ts`) and
+decoder (`engine/storage/src/otel.rs`).
+
+**Layout.** The 16-byte header as for metrics: magic `VZB1`, `signal`, `flags` 0,
+`reserved` 0, `n_rows` u32, and `n_entries` u32 at offset 12 (resources for spans, streams
+for logs). Then the entry table, then the columns in the order listed for the signal.
+**Every column starts at a multiple of 8** from the start of the batch (zero padding before
+it), and the batch ends at the end of its last column padded with zeros to a multiple of 8.
+A fixed-width column is `n_rows` values back to back. A **variable-length column** is
+`off u32[n_rows + 1]` (`off[0] = 0`, never decreasing), then, starting at the next multiple
+of 8, `off[n_rows]` data bytes; row `i`'s value is `data[off[i]..off[i+1]]`.
+
+**Strings** are valid UTF-8. `edge` replaces invalid sequences in OTLP strings with U+FFFD, as
+the OTLP specification recommends ("UTF-8 String Handling"), rather than refusing the item.
+
+**Typed attribute list** (`attrs`), used for resource and span attributes:
+
+```
+n        u16                   at most 128
+n times: key_len u16, key      UTF-8, 1 to 1,024 bytes
+         type u8, then         1 string: len u32, UTF-8, at most 65,536 bytes
+                               2 int:    i64
+                               3 double: u64, the IEEE 754 bits as received
+                               4 bool:   u8, 0 or 1
+                               5 other:  len u32, canonical OTLP JSON of the AnyValue, at most 65,536 bytes
+```
+
+Entries are sorted by key in UTF-8 byte order and keys are unique: when OTLP sends a key
+twice in one list, the **last** value is kept. "Other" is an array, a key-value list, bytes,
+or an AnyValue with no value set (`{}`).
+
+**Canonical OTLP JSON** is the OTLP/JSON encoding (OTLP specification, "JSON Protobuf
+Encoding") written one way only, so that equal values have equal bytes:
+
+- an AnyValue is exactly one of `{"stringValue":S}`, `{"boolValue":true|false}`,
+  `{"intValue":"<decimal>"}`, `{"doubleValue":N}`, `{"arrayValue":{"values":[…]}}`,
+  `{"kvlistValue":{"values":[…]}}`, `{"bytesValue":"<base64>"}`, or `{}`; an empty array
+  or list is `{"arrayValue":{}}` / `{"kvlistValue":{}}`;
+- a key-value list is `[{"key":K,"value":V},…]`, at every depth sorted by key in UTF-8 byte
+  order with the last of duplicate keys kept; arrays keep their order;
+- `<decimal>` has no sign for zero or positives, no leading zeros; base64 is RFC 4648 with
+  padding; `N` is ECMAScript `Number.prototype.toString` of the double, except that NaN and
+  ±Infinity are the strings `"NaN"`, `"Infinity"`, `"-Infinity"` (proto3 JSON);
+- strings are escaped as `JSON.stringify` (RFC 8785) escapes them; no whitespace anywhere.
+
+**Plain JSON text** of an AnyValue (for log lines and label values made from OTLP values):
+a string is itself (unquoted, at the top level only); otherwise the JSON value: booleans,
+integers as decimal digits (exact), doubles as above (NaN and ±Infinity as quoted strings),
+bytes as a base64 string, arrays in order, key-value lists as objects with keys sorted by
+UTF-8 bytes (last duplicate kept), an empty AnyValue as `null`.
+
+**Timestamps** are Unix nanoseconds as i64, from 0 to 2^63−1 (1970-01-01 to
+2262-04-11T23:47:16.854775807Z): what an INT64 nanosecond column can hold. `edge` rejects
+anything else, and anything outside the signal's accept window.
+
+**Decoders are strict**, as for metrics: wrong magic or signal, non-zero flags, reserved or
+padding bytes, trailing bytes, an entry index out of range, offsets that decrease or point
+past the data, a string that is not UTF-8, attribute lists unsorted or with duplicate or
+empty keys or unknown types, a value outside the ranges stated here: all are errors.
+`n_rows = 0` with `n_entries = 0` is valid and contributes nothing, but is not sent.
+
+## Spans, signal 2
+
+**Entry table: one entry per (resource, instrumentation scope) pair.**
+
+```
+resource_fp   i64        FNV-1a 64 (as series_id) over the canonical OTLP JSON of the full
+                         resource attribute list, as a signed integer
+resource      attrs      the full resource attribute list, typed
+scope_name    u16 len, UTF-8, at most 8,192 bytes
+scope_version u16 len, UTF-8, at most 8,192 bytes
+scope_attrs   u32 len, canonical OTLP JSON key-value list of the scope's attributes;
+                         length 0 when the scope has none
+```
+
+An entry is at most 256 KiB. `resource_fp` is computed only by `edge`; downstream trusts it
+(decoders do not recompute it, as for `series_id`).
+
+**Columns** (`n = n_rows`):
+
+| # | Column | Type | Meaning |
+|---|---|---|---|
+| 1 | `entry` | u32[n] | index into the entry table |
+| 2 | `trace_id` | 16 bytes × n | never all zero |
+| 3 | `span_id` | 8 bytes × n | never all zero |
+| 4 | `parent_span_id` | 8 bytes × n | all zero: no parent (OTLP's empty or all-zero parent) |
+| 5 | `start` | i64[n] | `start_time_unix_nano` |
+| 6 | `end` | i64[n] | `end_time_unix_nano`, never before `start` |
+| 7 | `flags` | u32[n] | OTLP span flags, 0 when not sent |
+| 8 | `dropped` | u32[3n] | per row: dropped attributes, events, links counts as received |
+| 9 | `kind` | u8[n] | 0 to 5 (OTLP `SpanKind`) |
+| 10 | `status` | u8[n] | 0 to 2 (OTLP `StatusCode`) |
+| 11 | `name` | variable | UTF-8, at most 8,192 bytes; may be empty |
+| 12 | `trace_state` | variable | UTF-8, at most 8,192 bytes |
+| 13 | `status_message` | variable | UTF-8, at most 8,192 bytes |
+| 14 | `attrs` | variable | a typed attribute list (span attributes) |
+| 15 | `events` | variable | `n_events u16` (at most 128), then per event: `time i64`, `name_len u16`, name, `attrs_len u32`, canonical OTLP JSON key-value list (`[]` when none), in OTLP order |
+| 16 | `links` | variable | `n_links u16` (at most 128), then per link: `trace_id` 16 bytes, `span_id` 8 bytes, `trace_state_len u16`, trace state, `attrs_len u32`, canonical OTLP JSON key-value list, in OTLP order |
+
+A row is at most 256 KiB, counting 94 bytes (its fixed columns, 70 bytes, and its six
+offsets) plus its variable-length bytes, so a row and its entry always fit one batch.
+
+What `edge` does before encoding (each refusal is per span, counted in `partial_success`):
+a `trace_id` that is not 16 bytes or is all zero, a `span_id` that is not 8 bytes or is all
+zero, a `parent_span_id` of another length than 0 or 8, a kind or status code outside the
+enums, a start or end outside the timestamp range or a start outside the accept window, an
+attribute with an empty key, more than 128 attributes in a list, a key over 1,024 bytes, a
+value over 65,536 bytes, more than 128 events or links, a link whose ids have the wrong
+length, a field over its limit and a row over 256 KiB are refused; every span of a resource
+whose entry would be over 256 KiB is refused. A span whose end is before its start is
+stored with `end = start` and the span attribute `viz.clamped_end = true` (bool).
+
+Not carried (not in `contracts/TRACES.md`'s tables): `schema_url`, the span's
+`type` (OTLP 1.12, development), event and link `dropped_attributes_count`, link `flags`,
+`entity_refs`, the resource's `dropped_attributes_count`.
+
+**Row key and duplicates.** A span is identified by `(trace_id, span_id)`. If one tenant's
+data holds two rows with the same key, the **later row wins**, everywhere: within a batch the
+later row, across batches the later batch, across files the file of higher precedence
+(`contracts/TABLES.md`), as `(series_id, ts)` does for metrics. A retried request is stored
+again only if it was split differently, and is invisible after de-duplication.
+
+## Log records, signal 3
+
+**Entry table: one entry per stream**, exactly a metrics series entry without the
+`__name__` rule:
+
+```
+stream_id   i64          FNV-1a 64 over `name 0x00 value 0x00` per label, as series_id
+n_labels    u32          at most 32 (contracts/LOGS.md)
+n_labels times: u16 name_len, name, u16 value_len, value
+```
+
+Labels are sorted by name in UTF-8 byte order, names unique, values non-empty; names match
+`[A-Za-z_][A-Za-z0-9_]*` and are at most 1,024 bytes; values at most 8,192 bytes, no NUL.
+`stream_id` is computed only by `edge` and is exactly `series_id`'s function of the labels.
+
+**Columns** (`n = n_rows`):
+
+| # | Column | Type | Meaning |
+|---|---|---|---|
+| 1 | `entry` | u32[n] | index into the stream table |
+| 2 | `ts` | i64[n] | Unix ns |
+| 3 | `observed_ts` | i64[n] | OTLP `observed_time_unix_nano`; 0 when absent |
+| 4 | `trace_id` | 16 bytes × n | all zero when absent |
+| 5 | `span_id` | 8 bytes × n | all zero when absent |
+| 6 | `flags` | u32[n] | OTLP log record flags; 0 when absent |
+| 7 | `severity_number` | u8[n] | 1 to 24; 0 when absent |
+| 8 | `line` | variable | UTF-8, at most 262,144 bytes (256 KiB); may be empty |
+| 9 | `severity_text` | variable | UTF-8, at most 1,024 bytes; empty when absent |
+| 10 | `metadata` | variable | per row: `n u16` (at most 128), then `name_len u16, name, value_len u16, value` per entry, sorted by name in UTF-8 byte order, names unique and following the label-name rule, values non-empty and at most 8,192 bytes, names and values together at most 65,536 bytes |
+
+With these limits a row and its stream entry always fit one batch.
+
+**Row key and duplicates** (`contracts/LOGS.md` §4): `(stream_id, ts, line, metadata)`.
+Rows equal on all four are one row; the later row wins for the other columns.
+
+## Streams per signal (proposed for stage 2)
+
+Spans and log records are appended to shards of their own, so that a shard stream (and so a
+sealed segment, a flush and a tail read) holds one signal only: for a tenant whose pool map
+is `{pool, slots, spread, epoch}`, spans go to the pool `{pool}/traces` and log records to
+`{pool}/logs`, with the same `slots`, `spread` and `epoch`. Shard names stay
+`{pool}/{slot}` (so `shared/c1/traces/3`), and keys, streams, watermarks and units need no new
+field. The base pool name must therefore be at most 113 characters; `edge` refuses a tenant
+whose derived pool name breaks `POOL_NAME` (503). `design/DECISIONS.md` D55 gives the
+alternatives. As built, `edge` appends there only when `INGEST_SIGNALS` enables the signal.
+
+## Routing (signals 2 and 3)
+
+As for metrics, by sender: the routing key is `job=<job>\u0000instance=<instance>`.
+
+- **OTLP traces and logs**: per resource, `job` is `service.name` with `service.namespace/`
+  in front when that is set, and `instance` is `service.instance.id` (values rendered as the
+  OTLP metrics path renders them), so one sender's metrics, spans and logs take the same
+  slot number in their pools.
+- **Loki push**: per stream, from its `job` and `instance` labels (missing = empty), as for
+  Remote Write.
+
+`edge` groups rows by slot and splits each slot's rows into batches of at most
+`MAX_BATCH_BYTES`, in arrival order.
+
+## Fingerprint, metering, responses (signals 2 and 3)
+
+- **Fingerprint**: the lowercase hex SHA-256 of the batch bytes, as for metrics; it saves
+  storage, the row keys above make retries safe.
+- **Active series**: span batches are sent without `seriesIds` (not metered). Log batches
+  too, for now; metering active streams with the same mechanism (`seriesIds` = the stream
+  ids, against a separate per-tenant limit) is proposed, not built.
+- **Responses** follow "Responses when a request spans shards": a request succeeds only if
+  every batch is appended; `partial_success` (OTLP) and 400 (Loki push) are used only for
+  items refused by validation.

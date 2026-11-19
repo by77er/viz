@@ -43,8 +43,9 @@
   "triggers": { "crons": ["7 * * * *"] },
   "vars": {
     "CELL": "cell-0",
-    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
-    // Mirrors wrangler.jsonc (the publisher reads a new base whole until it streams parts).
-    "LEDGER_STATE_MAX_BYTES": "16777216"
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"
+    // No LEDGER_STATE_MAX_BYTES: the ledger's own limit, 300 MiB (D47), applies. The 16 MiB pin
+    // that stood here until the publisher re-based streaming is gone (D55; publisher/README.md,
+    // "Re-base in bounded memory": 300,000 files re-based under a capped heap).
   }
 }

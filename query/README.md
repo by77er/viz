@@ -560,6 +560,35 @@ All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node
 workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing in this
 section ran on Cloudflare (the Worker itself did, in two staged trials: `deploy/README.md`).
 
+**After the filtered, paged tail (2026-11-19, D48/D54; 06:13 to 06:15 UTC, load average 8.9
+to 10.5):** `npx vitest run --maxWorkers=2`: **101 tests, all passing** in 12 files (102 s);
+`npx tsc --noEmit`: clean; the WASM modules unchanged (`viz_query.wasm` SHA-256 `0bea9229…`).
+The mutation tool's own unmutated run at 06:22 to 06:24 passed in full as well. Before the
+change, the same day at 05:37 (load 7.7 to 15): 86 of 86. New: `test/tail.test.ts` (15 tests):
+the 69 queries, 6 label calls and 2 reports of both tenants give the reference (queries) and
+identical bodies (all) whether the shards filter and page, answer as the previous release
+(unfiltered, `tailHooks.previousRelease`), or one of each, and the filtered tail is never more
+bytes than the whole one (smaller for more than 69 calls); pages followed to the end with each
+shard examining one stored batch per call; `stale_watermark` on a later page re-plans once
+(exact) and past the bound is 503, as is `incarnation_mismatch`; `invalid`,
+`unsupported_version`, `schema_too_new`, a page of version 2 and an unpaged `ok` on a later page
+are 503 at once on queries, labels and the report; a tail over the cap (the coordinator's cap
+forced to 1 byte, half and a third of the tail, 2 tenants, the 69 queries and 30 aggregations
+as range and instant, more than 60 of them through the parts) is refused naming
+`max_fetch_bytes` ("at least") or answered byte-identically to one place with the same samples
+and series loaded; a previous-release shard next to one of this release, and a shard rolled
+back between the coordinator's read and a part's; a previous-release leaf (503); a part whose
+rest page is refused (re-plan, then 503) or over its own cap (422); the report over leaves
+reading their key ranges; a series carrying `__type__` (exact when the coordinator cuts, refused
+when the shards would); and three unit properties: `tailFilter` keeps every row some range
+selects (400 random trials through the shard's own `compileFilter`/`filterBatch`), `cutById`
+gives each part the shard's key-range bytes exactly (300 random batches, 1 to 40 parts, and ids
+written at every part's edges), `tailEstimate`. Changed for the filter (counts of tail batches
+are now per metric and window, and depend on where the senders went): `http.test.ts`
+(`Tail-Batches` at least 1, `Tail-Mode`), `invariance.test.ts` (at least 2 and 1 instead of 4
+and 2), `limits.test.ts` (a tail read that stops at a batch it cannot tell is the last says
+"at least").
+
 **After series-level pruning and the series-only read (2026-11-19, ABI 3; 05:21 to 05:23
 UTC, load average 10 to 12):** `npx vitest run --maxWorkers=2`: **86 tests, all passing** in
 11 files (111 s), against `engine/wasm-query/js/viz_query.wasm` rebuilt from this tree (SHA-256
@@ -719,6 +748,14 @@ rewritten), a range read put back one byte off (the one-series test), and the la
 bounded by the query's `maxSeries` instead of `maxMetadataSeries` (the label-calls test). The
 engine's and storage's mutants for this change are in their READMEs (10 of 10, 18 of 18).
 
+**The filtered, paged tail (2026-11-19, mutants 47 to 60, on a scratch tree, 06:15 to 06:24 UTC,
+load average 7 to 10): 14 of 14 killed**, the shared tree's mutated files unchanged
+(`d080c6bd72b5248c` before and after; `61a5df516d3b6f5f` for the re-run of 56). Mutant 56's
+first form did not type-check (INVALID) and was rewritten; the unmutated suite of the first
+run had two invariance tests failing (a count of tail batches that depends on where the
+senders went, since relaxed), which cannot kill a mutant and killed none; the re-run's
+unmutated suite passed in full. Rows 47 to 60 of the table below.
+
 `node tools/mutants.mjs` applies one change to the source, runs the whole suite,
 restores the source, and prints the failing tests. It first confirms that every mutant
 applies and runs the unmutated suite; a test that fails there (another component
@@ -783,6 +820,21 @@ rebuilt module had the same SHA-256 as before the run.
 | 41 | the plan-only answer leaves out the refusal the query would get | split › /api/v1/plan says what a query would read |
 | 42 | the plan-only endpoint reads the tail (wakes every shard) | split › /api/v1/plan (no shard call) |
 | 43 | **the cardinality report ignores its series estimate** (one place whatever the series) | cardinality › the tsdb status of a known data set (splits by itself above cardinalitySplitAboveSeries) |
+| 44–46 | series-level pruning and the series-only read (above) | pruning › … |
+| 47 | **the tail filter sends a label one range pins as if every range did** | tail › the same answers from shards that filter…; keeps every row some range selects; sends only what every range pins |
+| 48 | the tail filter sends metric names when only some ranges pin one | tail › keeps every row…; sends only what every range pins |
+| 49 | the tail filter's time range is the first range's | tail › keeps every row…; sends only what every range pins |
+| 50 | **a stale watermark on a later page ends the read with the pages so far** | tail › a refusal on a later page… |
+| 51 | a shard that stops paging mid-read is taken as the rest of the tail | tail › a refusal on a later page… |
+| 52 | **`page_limit` is taken as the end of the tail** | tail › a tail over the cap…; previous release next to this one; rolled back; leaf of the previous release; … (7 tests) |
+| 53 | tails that fit one by one but not together are not refused | limits › max_fetch_bytes |
+| 54 | **a part reads the rest without its key range** | tail › a tail over the cap…; previous release next to this one; rolled back (3 tests) |
+| 55 | **a part does not check for rows of other parts** (a series whose key is not its id is lost) | tail › a series whose split key is not its id |
+| 56 | **a split leaf of the previous release (ignoring the rest) is believed** | tail › a leaf of the previous release… |
+| 57 | a part's rest starts at the end the coordinator saw, not after its last batch | tail › a tail over the cap… |
+| 58 | a part's tail is not capped by `maxFetchBytes` | tail › a part whose shard refuses…; over a part's cap; the cardinality report… |
+| 59 | **a shard that discarded above a part's watermark is an empty rest** | tail › a part whose shard refuses a page of the rest… |
+| 60 | `cutById` ignores the low word of the id (edge ids in the wrong part) | tail › cutById puts ids at the very edges of every part… (only it: random ids never land on an edge) |
 
 **Run 2026-11-19, 01:16 to 01:53 UTC, all 43 mutants on a scratch copy** (load average 7 to
 21): **43 of 43 killed, none survived, none invalid**; the unmutated suite passed first in
@@ -812,6 +864,55 @@ behavioural cache test would need two objects whose keys differ only in their ha
 the write path never produces.
 
 ### Measurements
+
+#### The filtered, paged tail (2026-11-19, D48/D54)
+
+`npm run measure -- test/tail.bench.ts`. **Measured here, local workerd** (R2, shards and leaves
+in one process, so times say how much work is done, not what Cloudflare takes), two complete
+runs at 06:00 to 06:03 and 06:24 to 06:27 UTC, load average 7.6 to 9.3; split leaves one after
+another. 100,000 series of one metric at 60 s, ten minutes flushed and seven minutes in two
+shards' tails, through edge as Remote Write. **A**: the seven minutes in one request (labels
+sent once, the shard's own case): 21.17 MiB of tail. **B**: one request a minute: 68.1 MiB.
+Before = the shards answer as the previous release (whole, unfiltered: what the coordinator
+received before this change) with `maxFetchBytes` raised to 64 MiB so that it answers at all
+(that is the old coordinator's path: whole tail, cut by part in the engine); after = this
+release, default limits. Three calls each, medians of the two runs; bodies byte-identical
+wherever both answer (asserted).
+
+| A, 21.17 MiB unflushed | before, default limits | before, cap 64 MiB | after, default limits |
+|---|---|---|---|
+| one series, `rate(m{instance}[5m])`, 15 min | **422** `max_fetch_bytes` | 200: 21.17 MiB of tail, 41 MiB coordinator WASM, 191–267 ms | 200: **1 batch, under 1 KiB** of tail, 13 MiB WASM, 149–297 ms |
+| selective, `sum(rate(m{job="job-07"}[5m]))` | **422** | 200 in one place: 21.17 MiB, 42 MiB WASM, 294–382 ms | 200 in one place: **1.06 MiB**, 14.8 MiB WASM, 185–359 ms |
+| full metric, `sum by (job)(rate(m[5m]))`, 8 leaves | **422** | 200: the coordinator cuts 21.17 MiB in the engine: **130.3–132.6 MiB of coordinator WASM**, 2.2–2.6 s | 200: the tail passes 16 MiB, cut by id (`cutById`): **2.0 MiB of coordinator WASM**, 2.4 s; same RPC (48 MiB) and leaf peak (25.8 MiB) |
+| the same, leaves as sized | **422** | 200 over 7: 140.9 MiB coordinator WASM, 2.2–3.0 s | 200 over 7: 1.9 MiB, 2.3–2.9 s |
+| `/label/job/values?match[]=m` | **422** | 200: 41 MiB WASM, 315–470 ms | **422** `max_fetch_bytes` (series files 1.64 MiB + tail 21.17 MiB; item 2) |
+| `/series?match[]=m{instance}` | **422** | 200: 31.7 MiB WASM, 192–213 ms | 200: **under 1 KiB** of tail, 10.5 MiB WASM, 127–150 ms |
+| `/status/tsdb` | **422** | 200 over 2 or 3 leaves, 629–866 ms | 200 over 3 leaves (the tail passes 16 MiB: cut by id), 723–770 ms |
+
+| B, 68.1 MiB unflushed (34 MiB a shard) | before (any limits) | after, default limits |
+|---|---|---|
+| every call above | **503**: a shard's whole tail is 35.5–35.9 MB, over the 32 MiB an RPC answer may carry | |
+| one series | | 200: 7 batches, under 1 KiB of tail, 4 shard calls, 210–234 ms |
+| selective | | 200 in one place: 3.41 MiB of tail, 256–291 ms |
+| full metric, 8 leaves | | 200: **the parts read the rest**: 68.10 MiB of tail in all (16 MiB of it read by the coordinator), 20 shard calls, 58 MiB of RPC, leaf peak 25.8 MiB, coordinator 2.0 MiB WASM, 3.6–3.8 s |
+| full metric, leaves as sized | | 200 over **9** leaves (sized for 68 MiB at half of 16 MiB a part), 22 shard calls, 4.7–5.1 s |
+| `/label/job/values` | | **422** `max_fetch_bytes`, "at least 32.3 MB" (item 2) |
+| `/series` one instance | | 200, 245–276 ms |
+| `/status/tsdb` | | 200 over 9 leaves reading their key ranges, 1.8–2.2 s |
+
+What it says: the bytes a query takes from the shards follow its selectivity (21.17 MiB to under
+1 KiB for one series; to 1.06 MiB for a twentieth of the series), so such queries no longer pay
+for the whole tail against `maxFetchBytes`; a tail no single RPC can carry is read at all; and a
+tail too large for the coordinator no longer refuses a query that splits. Times are within this
+machine's noise of each other where both answer (the two runs disagree by up to a factor of
+two for the same call); they are not the gain here. The coordinator's memory is: cutting a tail
+by split key in the engine held 130 to 141 MiB of WASM for 21 MiB of 100,000 series. **Modelled
+for Cloudflare** (not measured): the before path moves 21 MiB from two shards to the coordinator
+and 21 MiB on to the leaves (0.2 to 1 s more than locally at the shard README's assumed RPC
+bandwidth, training knowledge), and was refused anyway at the default cap; the after path moves
+under 1 KiB for one series. **Experiment that settles it:** the same calls from a staged query
+Worker against staged shards holding a 20 MB tail, cold and warm, with the shards' CPU from the
+analytics API (each part's rest read is a scan of the shard's tail from where it starts).
 
 #### With split execution (2026-11-19)
 

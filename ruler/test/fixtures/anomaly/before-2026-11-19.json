@@ -1,0 +1,55 @@
+{
+ "about": "What the release before 2026-11-19 (commit 50a3232, design D33 with EWMA as the default) stored for three anomaly rules that leave fields out: no detector, robust_z without a spread, seasonal without a spread. Produced by that release's own parseRuleFile (the code at 50a3232, bundled and run in Node) with the default ruler config, before this change was made. The stored spec is exactly what Ruler.commitGroups writes to rule_group.spec. Used by test/anomaly.test.ts to check that an upgrade changes nothing these rules do, and to pin PREVIOUS_DEFAULTS.",
+ "input": {
+  "groups": [
+   {
+    "name": "anomalies/1m",
+    "interval": "1m",
+    "rules": [
+     {
+      "alert": "LatencyAnomaly",
+      "expr": "latency_ms",
+      "annotations": {
+       "summary": "{{ $labels.service }} latency"
+      },
+      "anomaly": {
+       "unit": "ms"
+      }
+     },
+     {
+      "alert": "LatencyRobust",
+      "expr": "latency_ms",
+      "anomaly": {
+       "detector": "robust_z",
+       "max_series": 10
+      }
+     },
+     {
+      "alert": "LatencySeasonal",
+      "expr": "latency_ms",
+      "anomaly": {
+       "detector": "seasonal",
+       "params": {
+        "periodMs": 3600000
+       },
+       "max_series": 10
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "warnings": [
+  {
+   "path": "groups[0].rules[1].anomaly.detector",
+   "message": "robust_z as configured scored below a static threshold on held-out NAB (-105.9 vs 21.8)",
+   "fix": "With the MAD spread (the library default, used here) it scored below a static threshold on held-out NAB. A 99th-percentile spread (params.spread \"quantile\") scored 44.8, but that change was made after seeing these results and is unconfirmed on data it has not seen; it is not a default. Consider ewma, the default."
+  },
+  {
+   "path": "groups[0].rules[2].anomaly.detector",
+   "message": "seasonal as configured scored below a static threshold on held-out NAB (-76.4 vs 21.8)",
+   "fix": "With the MAD spread it scored below a static threshold on held-out NAB. With params.spread \"quantile\" 41.4, post hoc and unconfirmed; not a default. Consider ewma, the default."
+  }
+ ],
+ "stored": "{\"name\":\"anomalies/1m\",\"intervalMs\":60000,\"queryOffsetMs\":0,\"limit\":0,\"rules\":[],\"anomalyRules\":[{\"kind\":\"anomaly\",\"name\":\"LatencyAnomaly\",\"expr\":\"latency_ms\",\"anomaly\":{\"detector\":\"ewma\",\"params\":{\"minDeviation\":0,\"direction\":\"both\",\"minSpread\":0,\"halfLifePoints\":100,\"k\":8,\"minPoints\":30,\"clip\":true,\"acceptAfter\":5,\"staleAfterMs\":1.7976931348623157e+308},\"given\":[],\"unit\":\"ms\",\"severity\":\"ticket\",\"maxSeries\":100,\"history\":{\"tick\":\"tail\",\"coldStart\":\"recent\",\"lookbackMs\":12000000,\"tickLookbackMs\":0,\"resolutionMs\":0,\"minPoints\":30,\"incremental\":true,\"reason\":\"Reads 1 minute per tick from persisted state (tail); a cold start reads 200 minutes (recent). Five numbers of state; a cold start needs about 200 points (200 minutes) to settle.\"},\"stateBytesPerSeries\":1400},\"forMs\":0,\"keepFiringForMs\":0,\"labels\":{\"severity\":\"ticket\"},\"annotations\":{\"summary\":\"{{ $labels.service }} latency\"},\"key\":\"97accdb67b988870\",\"cost\":{\"class\":\"tail\",\"windowMs\":300000,\"reason\":\"reads back 300000 ms, within the 600000 ms shards hold; the detector: Reads 1 minute per tick from persisted state (tail); a cold start reads 200 minutes (recent). Five numbers of state; a cold start needs about 200 points (200 minutes) to settle.\"}},{\"kind\":\"anomaly\",\"name\":\"LatencyRobust\",\"expr\":\"latency_ms\",\"anomaly\":{\"detector\":\"robust_z\",\"params\":{\"minDeviation\":0,\"direction\":\"both\",\"minSpread\":0,\"windowMs\":0,\"windowPoints\":288,\"k\":3.5,\"minPoints\":20,\"spread\":\"mad\",\"spreadQuantile\":0.99},\"given\":[],\"unit\":\"\",\"severity\":\"ticket\",\"maxSeries\":10,\"history\":{\"tick\":\"tail\",\"coldStart\":\"recent\",\"lookbackMs\":17280000,\"tickLookbackMs\":0,\"resolutionMs\":0,\"minPoints\":20,\"incremental\":true,\"reason\":\"Reads 1 minute per tick from persisted state (tail); a cold start reads 288 minutes (recent). Median and MAD of the trailing 288 minutes; state holds that window's points.\"},\"stateBytesPerSeries\":11768},\"forMs\":0,\"keepFiringForMs\":0,\"labels\":{\"severity\":\"ticket\"},\"annotations\":{},\"key\":\"35fe5946ad332dd6\",\"cost\":{\"class\":\"tail\",\"windowMs\":300000,\"reason\":\"reads back 300000 ms, within the 600000 ms shards hold; the detector: Reads 1 minute per tick from persisted state (tail); a cold start reads 288 minutes (recent). Median and MAD of the trailing 288 minutes; state holds that window's points.\"}},{\"kind\":\"anomaly\",\"name\":\"LatencySeasonal\",\"expr\":\"latency_ms\",\"anomaly\":{\"detector\":\"seasonal\",\"params\":{\"minDeviation\":0,\"direction\":\"both\",\"minSpread\":0,\"periodMs\":3600000,\"seasons\":4,\"decay\":1,\"blend\":\"median\",\"k\":4,\"minSeasons\":2,\"residualWindowMs\":0,\"minResiduals\":12,\"adapt\":\"robust\",\"agileWindowMs\":0,\"contamination\":\"clip\",\"acceptAfter\":0,\"spread\":\"mad\",\"spreadQuantile\":0.99},\"given\":[\"periodMs\"],\"unit\":\"\",\"severity\":\"ticket\",\"maxSeries\":10,\"history\":{\"tick\":\"tail\",\"coldStart\":\"recent\",\"lookbackMs\":20400000,\"tickLookbackMs\":0,\"resolutionMs\":60000,\"minPoints\":120,\"incremental\":true,\"reason\":\"Reads 1 minute per tick from persisted state (tail); a cold start reads 340 minutes (recent). Same phase in the last 4 × 1 hour at 1 minute resolution, plus 100 minutes of residuals; state holds 342 numbers.\"},\"stateBytesPerSeries\":8340},\"forMs\":0,\"keepFiringForMs\":0,\"labels\":{\"severity\":\"ticket\"},\"annotations\":{},\"key\":\"ae0190e62f6f7381\",\"cost\":{\"class\":\"tail\",\"windowMs\":300000,\"reason\":\"reads back 300000 ms, within the 600000 ms shards hold; the detector: Reads 1 minute per tick from persisted state (tail); a cold start reads 340 minutes (recent). Same phase in the last 4 × 1 hour at 1 minute resolution, plus 100 minutes of residuals; state holds 342 numbers.\"}}]}"
+}

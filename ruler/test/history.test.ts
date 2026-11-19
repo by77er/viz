@@ -35,7 +35,7 @@ const SERVICES = ['a', 'b', 'c']
 /** A deterministic noisy level: 97..103 around 100, by absolute minute (so history and live agree). */
 const noise = (t: number) => 100 + ((Math.round(t / MIN) * 37) % 7) - 3
 
-const ewma = (extra: Record<string, unknown> = {}) => ({ alert: 'LatencyAnomaly', expr: LAT, keep_firing_for: '0s', ...extra, anomaly: { params: { halfLifePoints: 10, minPoints: 5 }, unit: 'ms' } })
+const ewma = (extra: Record<string, unknown> = {}) => ({ alert: 'LatencyAnomaly', expr: LAT, keep_firing_for: '0s', ...extra, anomaly: { detector: 'ewma', params: { halfLifePoints: 10, minPoints: 5 }, unit: 'ms' } })
 
 /** Values of `latency_ms` per service at a time; history and live ticks read the same function. */
 type Values = (service: string, t: number) => number
@@ -145,7 +145,7 @@ describe('warming a new rule from history', () => {
       throw new Error('fetched although over budget')
     }
     w.plan = () => ({ scanSamples: 5_000_000, bytesToRead: 40 << 20, seriesEstimate: 3, refusal: null })
-    const created = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'Latency', query: LAT, anomaly: { params: { halfLifePoints: 10, minPoints: 5 } } })
+    const created = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'Latency', query: LAT, anomaly: { detector: 'ewma', params: { halfLifePoints: 10, minPoints: 5 } } })
     expect(created.status, created.text).toBe(201)
     world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
@@ -157,7 +157,7 @@ describe('warming a new rule from history', () => {
     // The budget is a limit like the others: raised, a new rule is warmed.
     ok(await stub.configure(tenant, { limits: { maxWarmupScanSamples: 10_000_000, maxWarmupBytes: 64 << 20 } }))
     w.range = (_q, start, end, step) => matrixOf((_s, t) => noise(t), start, end, step)
-    const second = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'Latency 2', query: LAT, anomaly: { params: { halfLifePoints: 10, minPoints: 5 } } })
+    const second = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'Latency 2', query: LAT, anomaly: { detector: 'ewma', params: { halfLifePoints: 10, minPoints: 5 } } })
     world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
     expect((await call(key.auth, 'GET', `/api/v1/monitors/${second.json.id}`)).json.monitor.anomaly.status.warmup.status).toBe('done')
@@ -557,7 +557,7 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
     expect(evaluated * (CPU.sloEvaluated - CPU.sloWarm)).toBeGreaterThan(2000)
   })
 
-  const long = (name: string) => ({ alert: name, expr: LAT, keep_firing_for: '0s', anomaly: { params: { halfLifePoints: 300, minPoints: 5 }, unit: 'ms' } })
+  const long = (name: string) => ({ alert: name, expr: LAT, keep_firing_for: '0s', anomaly: { detector: 'ewma', params: { halfLifePoints: 300, minPoints: 5 }, unit: 'ms' } })
   const keyOf = async (r: Awaited<ReturnType<typeof rig>>, name: string) => ok(await r.stub.listGroups(r.tenant)).groups.flatMap((g) => g.anomalyRules ?? []).find((x) => x.name === name)!.key
   const stateOf = async (r: Awaited<ReturnType<typeof rig>>, name: string, service: string) => {
     const key = await keyOf(r, name)

@@ -457,8 +457,8 @@ const MUTANTS = [
     name: 'A split leaf of the previous release (it ignores the rest of the tail) is believed',
     tests: ['test/tail.test.ts'],
     file: 'src/coordinator.ts',
-    find: "      if (!a.tail) throw new ApiError('unavailable', 'a split leaf of an earlier release",
-    replace: "      if (!a.tail && a.tail !== undefined) throw new ApiError('unavailable', 'a split leaf of an earlier release",
+    find: "      if (!a.tail) throw new ApiError('unavailable', 'a split leaf of an earlier release answered without reading its part of the tail; retry')",
+    replace: "      if (!a.tail) a.tail = { calls: 0, batches: 0, bytes: 0 }",
   },
   {
     name: 'A part reads the rest from the end the coordinator saw, not from the last batch it read (rows in between are lost)',

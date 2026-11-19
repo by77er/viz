@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS pending (tenant TEXT PRIMARY KEY, since INTEGER NOT N
       up: (sql) => void sql.exec(`CREATE TABLE IF NOT EXISTS due (job TEXT PRIMARY KEY, at INTEGER NOT NULL);`),
     },
     {
-      // Scratch for state that must not be held in memory (D-PUBSTREAM). `stage`: what a re-base read (a
+      // Scratch for state that must not be held in memory (D55). `stage`: what a re-base read (a
       // ledger checkpoint or base, streamed a part at a time), then the changes after it, which a
       // commit diffs against `live` in SQL. `live_next`: a table's files as R2 says, filled a
       // manifest at a time by a resync and swapped into `live` in one transaction. Both are
@@ -95,4 +95,11 @@ export const FORMATS = {
    * segment bytes written by the ledger, and by `test/golden/formats/read.ledger-segment.v1.json`.
    */
   'read.ledger-segment': 1,
+  /**
+   * The ledger's checkpoints as the publisher READS them for a re-base (contracts/LEDGER-LOG.md,
+   * "Checkpoints": format 1, one object; format 2, a manifest and parts). Pinned by
+   * `test/golden/formats/read.ledger-checkpoint.v2.json`, a real log with a checkpoint in parts
+   * written by the ledger. Format 1 is pinned by `read.ledger-segment.v1.json`, which holds one.
+   */
+  'read.ledger-checkpoint': 2,
 } as const

@@ -32,6 +32,8 @@ hourly cron. It is deployed as viz-ingest (`deploy/`).
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
 | `test/precedence.property.test.ts` | 6 seeded runs: random rewrites of the same samples always read back as the latest write |
 | `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
+| `test/settle.ts` | The soak's checked purge and orphan sweep and its end phase, shared with `test/settle.test.ts` |
+| `test/settle.test.ts` | 1 test: the end phase reaches its end state while a ledger's drain is still backing off (regression test for the soak's end-phase failure of 2026-11-19) |
 | `test/sim.ts`, `test/world.ts` | Simulated deployments: tenants, real requests, queues under test control, the model, the invariants |
 | `scripts/mutants.mjs` | Mutation check for the four new parts |
 | `tools/hyparquet_check.mjs` | Reads one produced Parquet file with hyparquet, in Node |
@@ -326,8 +328,9 @@ live set is exactly what it references: every live key is an object of the liste
 key is both live and tombstoned, and every other object under the tenant's prefix is
 tombstoned (the janitor's) or has a name the orphan sweep can judge (nothing leaked). Checked at each deletion: a purged key had a tombstone, older than the grace
 and with a logged removal; an orphan was unreferenced, old enough, and (a flush file)
-below its stream's logged watermark. At the end, after flushing, compacting, expiring and
-deleting everything: the objects in R2 are exactly the ledger's live set, all level 2, no
+below its stream's logged watermark. At the end, after flushing, compacting and expiring
+everything, waiting out the graces and for each ledger to log its removals (by its own
+drain), and deleting: the objects in R2 are exactly the ledger's live set, all level 2, no
 tombstone and no pending segment left.
 
 **Result.** Last run (`npm run soak`, seed 20261118, on the final code: file precedence and
