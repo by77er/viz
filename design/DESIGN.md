@@ -475,7 +475,10 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   rule's own evaluation in time windows sized to a memory budget, only the rule's state carried
   between them (D43). **Backtests** of threshold, anomaly and SLO rules run the same
   evaluation over a past range in time order, under a larger budget, and return when each alert
-  would have fired and resolved with the explanation it would have carried.
+  would have fired and resolved with the explanation it would have carried. Both are also priced
+  in CPU (a model calibrated per point read) and refused whole over a budget under the Durable
+  Object's per-invocation limit, rather than cut off by it; warm-ups share a budget per alarm, and
+  one that does not fit what is left waits for the next alarm (D51).
 - **Agentic monitors** are a natural-language objective with a deterministic guard and a
   budget. They run as a Workflow when a rule fires, an anomaly is detected, a schedule
   comes due or a person asks. They use the same read-only, tenant-scoped tools as external

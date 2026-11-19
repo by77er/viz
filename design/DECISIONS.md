@@ -1159,7 +1159,7 @@ buckets, or (a)).
 
 (Rewritten the same day: the first version fetched each read whole and bounded only the bytes read;
 a 7-day backtest over 100 series then held about 0.6 GB, which would have killed the Durable Object
-rather than been refused. The windows and the memory budget are new.)
+rather than been refused. The windows and the memory budget are new. Their CPU budget is D51.)
 
 **Decision.** When an anomaly or SLO rule is created (a new rule key: a new detector, parameter,
 SLI or interval), a warm-up job is stored with it. At the rule's first tick the ruler builds the
@@ -1499,3 +1499,47 @@ Loki looks wrong (`rate_counter`) but surprises users comparing the two.
 **Would change if.** A Loki release changes an observed behaviour (the differential run is pinned
 to a tag and would show it), or viz decides a Loki behaviour is a bug worth diverging from; each
 divergence is then listed in the README's "Differences from Loki".
+
+## D51. Warm-ups and backtests are refused on a modelled CPU cost, checked before each window is evaluated; they are not resumed across invocations
+
+**Decision.** A Durable Object invocation (a request, or an alarm) may use 30 s of CPU by default
+and 5 minutes at most (`limits.cpu_ms`); over it the object is reset, not refused
+(`ruler/README.md` part 14 cites the documentation). So the ruler prices every warm-up and backtest
+with a CPU model (`ruler/src/history.ts` `CPU`: µs per point read, by rule kind and, for robust_z
+and seasonal, by the state they keep per series; per window; per run) calibrated in local workerd
+at 1.5 times the largest measurement. Before each window is fed, the run projects its whole cost
+(spent, this window, every remaining step at the most series any window has shown) and stops over
+its budget, keeping nothing: refused after reading the first window, or stopped before the first
+window whose series take it over. Budgets: 20 s for a backtest (its own request); 5 s per alarm
+for all its warm-ups together, each reserving what is left before it reads. A warm-up over the
+whole 5 s is refused and its rule starts cold; one that fits the whole but not what this alarm has
+left waits for the next alarm (no attempt counted) and is then warmed whole there.
+
+**Alternatives.** (a) Resumable runs: a cursor and the rule's state persisted after each bounded
+slice, continued from later alarms, with progress and the final result through the API. (b) Run
+them elsewhere (a Workflow or a separate Worker with its own limits) and hand the state back. (c) A
+static up-front bound from the plan and the rule's series bound alone, before any read. (d) Raise
+`limits.cpu_ms` to 5 minutes and keep runs unbounded. (e) Measure CPU at run time instead of
+modelling it.
+
+**Why.** (a) writes the run's whole state as rows at every slice (an SLO rule's rings are about
+80 KB a series), needs a job lifecycle (progress, cancellation, results kept and expired) and a
+second deadline in an object whose single alarm is the tick schedule, and competes with the live
+ticks on one thread; the refusal covers every case measured at 100 series and names its remedy.
+(b) moves the evaluation away from the code live ticks run, which the backtest/live equivalence
+rests on. (c) prices every rule at its bound (1,000 series for an alerting rule) however few series
+it has, refusing most backtests; one window read first counts them. (d) only moves the cliff: a
+1,000-series week of EWMA is about 50 s measured, and alarms share their time with ticks. (e) is
+impossible inside workerd: its clocks do not advance during computation, so a run cannot see its
+own CPU.
+
+**Cost.** Useful runs are refused: a week of 1,000 series at 1 minute, and the warm-up of a daily
+seasonal rule over 100 series at 5 minutes, at the defaults. An over-budget run still reads and
+parses one window. The model's prices are calibrated on this machine under load, not on Cloudflare,
+and its per-run and per-window allowances are not measured. A warm-up deferred to the next alarm
+delays its rule's first evaluation by an interval.
+
+**Would change if.** People need full-resolution backtests of thousands of series over weeks (then
+(a) or (b)); viz-query's plan reports the series a read returns (then the check can refuse before
+any read); Cloudflare's measured `cpuTime` for the same runs disagrees with the model by more than
+its margin (then the prices change); or the platform exposes CPU time to the running code.

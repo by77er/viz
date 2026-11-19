@@ -2,7 +2,7 @@
  * Calibration of the history CPU model (`src/history.ts` `CPU`): CPU time per point fed through
  * each kind of rule's evaluation in a streamed backtest, and per point of the engine's JSON parsed
  * and indexed by step (which the fake engine here does not do: it hands over built objects).
- * Run one case per process (`-t "K. ewma"`) with `--config vitest.measure.config.ts --maxWorkers=1`.
+ * Run one case per process (`-t "K. anomaly ewma:"`) with `--config vitest.measure.config.ts --maxWorkers=1`.
  * CPU is workerd's thread time (`HOST`), with the fake engine's own CPU (building the windows'
  * matrices, measured alone afterwards over the same windows) taken off.
  */
