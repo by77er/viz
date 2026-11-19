@@ -155,9 +155,15 @@ in a deployed Worker (`design/VERIFICATION.md` §4).
 
 ```
 (cd ../engine/wasm && ./build.sh)
-npm ci && npm test       # 14 tests in workerd, 2 files
+npm ci && npm test       # 24 tests in workerd, 3 files
 npx tsc --noEmit         # clean
 ```
+
+Last run (2026-11-19) against a stable copy of the committed `ledger/`, `shard/`, `edge/` and
+`contracts/` (snapshot `dc2a1c3`), because `ledger/` was being changed by another engineer at the
+time (asynchronous log drain): 24 of 24, tsc clean. The tests drain the ledger explicitly where
+they need its log (`flushSettled`, `changesOf`), so they hold for either ledger; the run
+against the real tree is recorded below once `ledger/` is green.
 
 | Test | What it asserts |
 |---|---|
@@ -166,15 +172,31 @@ npx tsc --noEmit         # clean
 | removes duplicate rows two flush files share | 96 rows in, the distinct rows out, result unchanged |
 | a step that stops after its PUTs | repeated with the same keys, `exists`, no second object |
 | conflict (`blocking`) | not a test of its own here: the ledger's refusal of a swap that would jump over a file is in `ledger/test/precedence.test.ts`, and `compactStep` handles it as any conflict (concurrent steps with different policies hit it in `stack/test/precedence.property.test.ts`) |
-| conflict | retention expires an input between PUT and `replace`: nothing swapped, both outputs deleted, the expired day does not return |
-| conflict after an identical step won | a slow step's twin finishes, a reader takes a plan listing the twin's outputs, retention removes them; the slow step's `replace` conflicts and it deletes nothing (the objects are tombstoned and the reader can read every file). Found in this review: the step used to delete them, because it asked only whether they were live |
+| conflict | retention expires an input between PUT and `replace`: nothing swapped, the outputs left in place, the expired day does not return; the sweep keeps them until the expired inputs are purged, then deletes them |
+| conflict after an identical step won | a slow step's twin finishes, a reader takes a plan listing the twin's outputs, retention removes them; the slow step's `replace` conflicts and it deletes nothing (the reader can read every file) |
+| fails closed on an unknown `replace` answer | a ledger answering `schema_too_new` from `replace`: the step throws, nothing swapped, nothing deleted |
+| **R-2**, ported from the reviewer | attempt 1 crashes after its PUTs; attempt 2 adopts the objects (`exists`) and a sweep with its clock 25 h ahead runs between attempt 2's PUT and `replace`: nothing deleted, the listed outputs exist, the rows survive the purge of the inputs. Failed before D30 (the sweep deleted both outputs) |
+| **R-2**, the review's exact sequence | the sweep lists the leftover and asks the ledger; before it deletes (`beforeDelete` hook) the adopting attempt commits; the sweep then deletes nothing. Failed before (a live pair with no objects) |
+| **F14**, the model's trace | steps A and B, same inputs; while A is between PUT and `replace`, B runs with retention expiring the inputs unlogged, B conflicts; the ledger loses its storage and rebuilds without the expiry; A commits. Every listed file has its object. Failed before (B had deleted them) |
+| a leftover is deleted once its inputs are gone for good | kept a year on while inputs are live; kept while they are expired but not purged; deleted once purged |
+| golden (5) | `inputs16` and both key shapes of fixed inputs; the inputs record; every output a real step writes carries it and it decodes to the step's inputs; the reader refuses a newer version, a list that does not hash to the key, keys of another tenant, no record, not JSON |
 | two (three) steps at once | one pair, one `replace` in the log, no stray object |
 | closed day | several budgeted merges take every file to level 2; result never changes |
 | guards | `row_count` and `too_slow` leave the ledger untouched |
 | Workflow | runs to `complete` under introspection, one merge per step, files end at level 2 |
 
 The property test for I8 and the soak are in `stack/` (`test/compaction.property.test.ts`,
-`test/soak.test.ts`). Mutants: `stack/scripts/mutants.mjs compaction`; results in `stack/README.md`.
+`test/soak.test.ts`). Mutants: `stack/scripts/mutants.mjs compaction` and `review` (run on a
+copy, never in the checkout); results in `stack/README.md`.
+
+## Formats (contracts/COMPATIBILITY.md)
+
+`src/formats.ts` lists what compaction writes for another release: `key.compaction-output` v1
+(the key, `inputs16` and the content hash are derived identifiers, §3.4) and
+`r2.compaction-inputs` v1 (the `viz-inputs` metadata, read by `janitor/`). Each has a golden
+file in `test/golden/formats/`; `janitor/test/golden.test.ts` reads compact's golden record as
+an independent reader. A reader refuses a record whose `v` it does not know by keeping the
+object (§3.2).
 
 ## Known risks
 
