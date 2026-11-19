@@ -1280,6 +1280,46 @@ needed); another Worker needs to write derived series (it is added to
 `RECORDED_SAMPLES_CALLERS`); or query gets the same kind of entrypoint (then the ruler needs no
 stored key at all, the ruler's README "Needed changes" 1).
 
+## D46. Release records carry each Durable Object class's schema versions, stamped on every version; a rollback judges every version since its target
+
+**Decision.** `deploy/workers.json` names, for every Durable Object class a Worker defines, its
+`SchemaSpec` or why it keeps no storage. `deploy/lib/schemas.mjs` reads the specs from the
+sources (esbuild bundles just them; a Node `vm` evaluates the bundle with platform modules
+stubbed; `contracts/schema.ts`'s own `schemaRelease` runs on them). Each class's `{latest,
+compat}` goes into the release record and into **every version's `VIZ_SCHEMAS` var**. A
+release is recorded forward-only when a class's `compat` is above what the version serving
+before it declares (a version that declares nothing counts as knowing version 1), or when it
+changes a class's lifecycle. `release.mjs rollback` lists every version Cloudflare keeps of the
+target's Workers that is newer than the target's, reads their `VIZ_SCHEMAS`, and refuses,
+naming the release and migration, when any of them ran a class the target cannot open
+(`canOpen`). A record or a newer version without schema versions is refused, not guessed.
+
+**Alternatives.** (a) Each component publishes a generated `schema.json`: a change in every
+component, and a second copy of the spec to keep in step. (b) `/healthz` reports the schema:
+needs the version running and a request to it, and says nothing about versions no longer
+serving. (c) A high-water mark the deploy writes to KV or R2: extra state outside the versions,
+KV's eventual consistency, and a rollback that restores old versions must still update it. (d)
+The chain of CI release records: artifacts expire after 90 days and the job would download
+many. (e) Judge only the version serving now: a forward-only release that was itself rolled
+back would be missed (A → B → C with C raising `compat`, back to B, then to A passes, and A
+cannot open what C migrated: `deploy/test/release.test.mjs`).
+
+**Why.** A rollback can only reach a version Cloudflare still keeps, and every such version
+carries what its code knows, so the data the check needs lives exactly as long as the rollback
+is possible, with no store of its own. Judging every version since the target is the rule of
+contracts/COMPATIBILITY.md §6 ("the newest release that ever ran since T"), made conservative
+(uploaded versions that never served count too).
+
+**Cost.** A deploy reads one version per Worker (it already did, for the release tag); a
+rollback reads one version per Worker per version since its target (tens of API calls). A spec
+module that does more than define values at load time breaks the read, loudly. Format versions
+(queue messages, R2 objects, KV records) are not recorded yet, so the tool does not refuse a
+rollback below the reader of a format.
+
+**Would change if.** Format versions join the record (the same var can carry them); components
+start publishing their specs in a form the deploy can read directly; or Cloudflare keeps
+deployment metadata that makes listing versions unnecessary.
+
 ## D47. A ledger checkpoint larger than one part is written in parts across drains from the state at its version, kept by pre-images; a rebuild streams into SQLite
 
 This replaces the size limit of D36 as the answer to review S-2 (D36's alternative (h)).

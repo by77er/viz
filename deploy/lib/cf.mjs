@@ -103,6 +103,19 @@ export async function versionInfo(name, versionId) {
   return j.result ?? null
 }
 
+/** Every version Cloudflare keeps of a script (the 100 most recent): `[{ id, number, metadata, annotations }]`, newest first. */
+export async function listVersions(name) {
+  const out = []
+  for (let page = 1; page <= 10; page++) {
+    const j = await cf('GET', `/workers/scripts/${encodeURIComponent(name)}/versions?page=${page}&per_page=100`, undefined, { okStatuses: [404] })
+    if (j.status === 404) return out
+    const items = j.result?.items ?? (Array.isArray(j.result) ? j.result : [])
+    out.push(...items)
+    if (items.length < 100) break
+  }
+  return out.sort((a, b) => (b.number ?? 0) - (a.number ?? 0))
+}
+
 export async function deleteScript(name) {
   const j = await cf('DELETE', `/workers/scripts/${encodeURIComponent(name)}?force=true`, undefined, { okStatuses: [404] })
   return j.status !== 404

@@ -584,7 +584,11 @@ forward-only. `design/UPGRADES.md` has the inventory of formats, the verified pl
 facts, the rollback rules and what each component still has to change. As built, control,
 the ruler, the publisher, and on the write path the ledger, the shard and edge follow it,
 as do the flush and maintenance messages; `UPGRADES.md` §7 lists what the others still
-have to change.
+have to change. The deploy records each class's schema version in every release record and
+on every Worker version, marks a release forward-only when a class's `readableFrom` is above
+what the release before it knew, and refuses a rollback when any version that ran since the
+target wrote storage the target cannot open (D46; `deploy/README.md`). Format versions are not
+in that check yet.
 
 ## 12. Launch scope
 

@@ -1,10 +1,11 @@
 // node --test deploy/test/: configure.mjs, without the network.
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { configure, durableObjectsOf, generateWorker, loadPlan, queuesOf } from '../configure.mjs'
+import { configure, durableObjectsOf, generateWorker, loadPlan, queuesOf, stageVars } from '../configure.mjs'
 import { GENERATED_DIR, REPO_ROOT, checkStage, parseJsonc, readJsonc, stagedName } from '../lib/common.mjs'
+import { SCHEMAS_VAR, parseSource, readSchemas, schemaSources, schemasVar } from '../lib/schemas.mjs'
 
 const { plan } = loadPlan()
 const worker = (name) => plan.workers.find((w) => w.name === name)
@@ -110,7 +111,8 @@ test('stage names that would overlap production are refused; names must start vi
 
 test('configure writes every config and a manifest in dependency order', () => {
   const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
-  assert.deepEqual(m.order, ['viz-citest-ingest', 'viz-citest-control', 'viz-citest-query', 'viz-citest-ruler', 'viz-citest-mcp', 'viz-citest-gateway'])
+  assert.deepEqual(m.order, ['viz-citest-publisher', 'viz-citest-ingest', 'viz-citest-control', 'viz-citest-query', 'viz-citest-ruler', 'viz-citest-mcp', 'viz-citest-gateway'])
+  assert.equal(m.releaseFrom, 'viz-citest-ingest')
   assert.deepEqual(m.resources.r2, ['viz-citest-lake'])
   assert.ok(m.workers.filter((w) => !w.deploy).every((w) => w.reason))
 })
@@ -134,10 +136,14 @@ test('every service a Worker binds is deployed before it, and resolves to a depl
       assert.ok(m.order.indexOf(callee) < m.order.indexOf(w.name), `${w.name} binds ${callee}, which must deploy first`)
     }
   }
+  // The write path binds the cell's publisher, which therefore deploys first (callee first).
+  const ingest = m.workers.find((w) => w.canonical === 'viz-ingest')
+  assert.ok(ingest.crossScript.includes('PUBLISHER → viz-citest-publisher:Publisher'), ingest.crossScript.join(', '))
   const ruler = m.workers.find((w) => w.canonical === 'viz-ruler')
   assert.deepEqual(ruler.crossScript.sort(), ['INGEST → viz-citest-ingest', 'QUERY → viz-citest-query', 'TENANT → viz-citest-control:Tenant'])
   const mcp = m.workers.find((w) => w.canonical === 'viz-mcp')
-  assert.deepEqual(mcp.crossScript.sort(), ['CONTROL → viz-citest-control', 'QUERY → viz-citest-query', 'RULER → viz-citest-ruler'])
+  // mcp/ may bind more (its OAuth work binds control's Tenant too); the order check above covers every binding.
+  for (const b of ['CONTROL → viz-citest-control', 'QUERY → viz-citest-query', 'RULER → viz-citest-ruler']) assert.ok(mcp.crossScript.includes(b), `${b} in ${mcp.crossScript.join(', ')}`)
   const gateway = m.workers.find((w) => w.canonical === 'viz-gateway')
   assert.ok(gateway.crossScript.includes('RULER → viz-citest-ruler') && gateway.crossScript.includes('MCP → viz-citest-mcp'))
 })
@@ -152,4 +158,90 @@ test('--expires sets the stage deadline in every Worker; production refuses one'
   assert.throws(() => configure({ release: 'r1', idsOptional: true, quiet: true, expires: '2026-11-20T06:00:00Z' }), /stage only/)
   assert.throws(() => configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, expires: 'tomorrow' }), /ISO 8601/)
   configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+})
+
+// ───────────────────────────── the publisher, schemas, stage vars ─────────────────────────────
+
+test('viz-publisher is deployed, first, with its health route; nothing deployed is left without a reason', () => {
+  const pub = worker('viz-publisher')
+  assert.equal(pub.deploy, true)
+  assert.equal(plan.workers.findIndex((w) => w.name === 'viz-publisher'), 0)
+  assert.equal(pub.health, '/healthz')
+  // The route the record names is the one publisher/src/index.ts serves (its test calls it).
+  assert.match(readFileSync(join(REPO_ROOT, 'publisher', 'src', 'index.ts'), 'utf8'), /pathname !== '\/healthz'/)
+  const c = gen('viz-publisher', 'trial').config
+  assert.equal(c.name, 'viz-trial-publisher')
+  assert.equal(c.r2_buckets[0].bucket_name, 'viz-trial-lake')
+  assert.equal(c.vars.ICEBERG_LOCATION_PREFIX, 's3://viz-trial-lake')
+  assert.equal(c.workers_dev, false)
+  for (const w of plan.workers) assert.ok(w.deploy || w.reason, w.name)
+})
+
+test('every Durable Object class a Worker defines has its schema declared, and the declaration is the spec its class opens storage with', () => {
+  for (const w of plan.workers) {
+    const cfg = readJsonc(join(REPO_ROOT, w.component, 'wrangler.jsonc'))
+    for (const cls of durableObjectsOf(cfg).classes) {
+      const ref = w.schemas?.[cls]
+      if (ref === undefined) {
+        assert.ok(w.unversioned?.[cls], `${w.name}: ${cls} is declared neither in schemas nor in unversioned`)
+        continue
+      }
+      const { module, name } = parseSource(ref, w.name)
+      assert.match(readFileSync(join(REPO_ROOT, module), 'utf8'), new RegExp(`export const ${name}: SchemaSpec`), `${module} exports ${name}`)
+      // The class's own file opens its storage with that spec.
+      const dir = join(REPO_ROOT, w.component, 'src')
+      const files = readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => readFileSync(join(dir, f), 'utf8'))
+      const owner = files.concat(cls === 'Shard' ? [readFileSync(join(REPO_ROOT, 'shard/src/shard.ts'), 'utf8')] : [], cls === 'Ledger' ? [readFileSync(join(REPO_ROOT, 'ledger/src/ledger.ts'), 'utf8')] : [])
+        .find((t) => new RegExp(`export class ${cls} extends`).test(t))
+      assert.ok(owner, `${w.name}: no source defines class ${cls}`)
+      assert.match(owner, new RegExp(`openSchema\\([^)]*\\b${name}\\)`), `${cls} opens its storage with ${name}`)
+    }
+  }
+  // An undeclared class is an error, not a silently unchecked rollback.
+  const bare = { ...worker('viz-control'), schemas: {} }
+  assert.throws(() => generateWorker({ worker: bare, cfg: readJsonc(join(REPO_ROOT, 'control/wrangler.jsonc')), componentDir: join(REPO_ROOT, 'control'), plan, stage: 'trial', release: 'x', ids, outDir: GENERATED_DIR }), /Tenant has no "schemas" entry/)
+})
+
+test('the schemas are read from the components themselves, into the manifest and each version\'s VIZ_SCHEMAS var', () => {
+  const read = readSchemas(schemaSources(plan.workers))
+  const by = Object.fromEntries(read.map((s) => [s.component, s]))
+  assert.deepEqual(Object.keys(by).sort(), ['control.Tenant', 'ledger.Ledger', 'publisher.Publisher', 'ruler.Notifier', 'ruler.Ruler', 'ruler.RulerIndex', 'shard.Shard'])
+  // The ledger's migration 2 (the segment log) is forward-only: readableFrom 2.
+  const m2 = by['ledger.Ledger'].migrations.find((m) => m.version === 2)
+  assert.equal(m2.readableFrom, 2)
+  assert.ok(by['ledger.Ledger'].compat >= 2)
+  for (const s of read) {
+    assert.equal(s.latest, s.migrations.length)
+    assert.equal(s.compat, Math.max(...s.migrations.map((m) => m.readableFrom)))
+  }
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+  for (const w of m.workers.filter((x) => x.deploy)) {
+    const cfg = JSON.parse(readFileSync(join(REPO_ROOT, w.config), 'utf8').replace(/^\/\/.*\n/, ''))
+    if (w.schemas.length === 0) assert.equal(cfg.vars[SCHEMAS_VAR], undefined, w.name)
+    else assert.equal(cfg.vars[SCHEMAS_VAR], schemasVar(w.schemas), w.name)
+  }
+  const ingest = m.workers.find((w) => w.canonical === 'viz-ingest')
+  assert.deepEqual(ingest.schemas.map((s) => s.component), ['shard.Shard', 'ledger.Ledger'])
+  assert.deepEqual(JSON.parse(schemasVar(ingest.schemas)).classes['ledger.Ledger'], { latest: by['ledger.Ledger'].latest, compat: by['ledger.Ledger'].compat, by: `2: ${m2.name}` })
+})
+
+test('VIZ_STAGE_VARS: per Worker, strings only, and never for production', () => {
+  assert.deepEqual(stageVars(undefined, 'trial'), {})
+  assert.deepEqual(stageVars('{"viz-ingest":{"MAINTENANCE":"{}"}}', 'trial'), { 'viz-ingest': { MAINTENANCE: '{}' } })
+  assert.throws(() => stageVars('{"viz-ingest":{"MAINTENANCE":"{}"}}', undefined), /stage only/)
+  assert.throws(() => stageVars('{"viz-ingest":{"X":1}}', 'trial'), /strings/)
+  assert.throws(() => stageVars('nope', 'trial'), /not JSON/)
+  const g = generateWorker({ worker: worker('viz-ingest'), cfg: readJsonc(join(REPO_ROOT, 'stack/wrangler.jsonc')), componentDir: join(REPO_ROOT, 'stack'), plan, stage: 'trial', release: 'x', ids, outDir: GENERATED_DIR, extraVars: { MAINTENANCE: '{"deleteGraceMs":60000}' } })
+  assert.equal(g.config.vars.MAINTENANCE, '{"deleteGraceMs":60000}')
+})
+
+test('stack/wrangler.test.jsonc differs from the config production is generated from only by the publisher binding and the test main', () => {
+  const prod = readJsonc(join(REPO_ROOT, 'stack/wrangler.jsonc'))
+  const test = readJsonc(join(REPO_ROOT, 'stack/wrangler.test.jsonc'))
+  const strip = (c, binding) => ({ ...c, main: null, durable_objects: { bindings: c.durable_objects.bindings.filter((b) => b.name !== binding) }, migrations: c.migrations.filter((m) => m.tag === 'v1') })
+  assert.deepEqual(strip(test, 'TEST_PUBLISHER'), strip(prod, 'PUBLISHER'))
+  assert.deepEqual(prod.durable_objects.bindings.find((b) => b.name === 'PUBLISHER'), { name: 'PUBLISHER', class_name: 'Publisher', script_name: 'viz-publisher' })
+  assert.deepEqual(test.durable_objects.bindings.find((b) => b.name === 'TEST_PUBLISHER'), { name: 'TEST_PUBLISHER', class_name: 'TestPublisher' })
+  assert.equal(test.main, 'test/worker.ts')
+  assert.equal(prod.main, 'src/index.ts')
 })

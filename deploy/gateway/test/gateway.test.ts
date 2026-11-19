@@ -45,6 +45,14 @@ describe('routing', () => {
     ['/api/v1/agent', 'mcp'],
     ['/api/v1/agent/tools/validate_query', 'mcp'],
     ['/api/v1/agent/resources/read', 'mcp'],
+    // OAuth for MCP clients: the resource's metadata to mcp, the authorization server to control
+    ['/.well-known/oauth-protected-resource', 'mcp'],
+    ['/.well-known/oauth-protected-resource/mcp', 'mcp'],
+    ['/.well-known/oauth-authorization-server', 'control'],
+    ['/oauth/register', 'control'],
+    ['/oauth/authorize', 'control'],
+    ['/oauth/token', 'control'],
+    ['/oauth/revoke', 'control'],
   ]
 
   it.each(table)('%s goes to %s, with x-viz-route', async (path, backend) => {
@@ -62,6 +70,9 @@ describe('routing', () => {
     '/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/v1/logs', '/healthz/x', '/app',
     // near misses of the ruler's and mcp's prefixes
     '/api/v1/monitorsx', '/api/v1/monitor', '/api/v1/rules/x', '/api/v1/alerts/x', '/api/v1/rulesx', '/mcpx', '/mcp/', '/mcp/x', '/api/v1/agents', '/api/v1/agentx', '/api/v2/alerts',
+    // near misses of the OAuth paths: exact paths only, and no OpenID Connect discovery (not offered)
+    '/oauth', '/oauth/', '/oauth/x', '/oauth/token/', '/oauth/authorizex', '/.well-known', '/.well-known/openid-configuration', '/.well-known/oauth-authorization-server/x',
+    '/.well-known/oauth-protected-resource/x', '/.well-known/oauth-protected-resource/mcp/x', '/.well-known/oauth-protected-resourcex',
   ]
   it.each(notFound)('%s is a JSON 404 listing the entry points, not a page', async (path) => {
     const res = await call(path)
