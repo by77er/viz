@@ -17,8 +17,8 @@ const flatFamilies = Object.keys(t).filter((k) => !['name', 'version', 'color', 
 const flat = flatFamilies.flatMap((f) => t[f].tokens).map((k) => `  --${k.name}: ${k.value};`).join('\n')
 const fams = Object.entries(t.type.families).map(([k, v]) => `  --font-${k}: ${v};`).join('\n')
 const styles = t.type.groups.flatMap((g) => g.styles.map((s) => ({ ...s, family: s.family ?? g.family })))
-// Each type style as one `font` shorthand plus its parts, so components never write a literal size.
-const typeProps = styles.map((s) => `  --text-${s.name}: ${s.fontWeight} ${s.fontSize}/${s.lineHeight} var(--font-${s.family});\n  --text-${s.name}-size: ${s.fontSize};${s.letterSpacing ? `\n  --text-${s.name}-track: ${s.letterSpacing};` : ''}`).join('\n')
+// Each type style as one `font` shorthand plus its parts (size, line height, weight, tracking), so components never write a literal size or weight.
+const typeProps = styles.map((s) => `  --text-${s.name}: ${s.fontWeight} ${s.fontSize}/${s.lineHeight} var(--font-${s.family});\n  --text-${s.name}-size: ${s.fontSize};\n  --text-${s.name}-lh: ${s.lineHeight};\n  --text-${s.name}-weight: ${s.fontWeight};${s.letterSpacing ? `\n  --text-${s.name}-track: ${s.letterSpacing};` : ''}`).join('\n')
 const typeClasses = styles.map((s) => `.vz-text-${s.name} { font: var(--text-${s.name});${s.letterSpacing ? ` letter-spacing: ${s.letterSpacing};` : ''} }`).join('\n')
 const tokensCss = `/* viz — generated from tokens.json */
 :root, [data-theme="${themes[0]}"] {\n${block(themes[0])}\n  color-scheme: light;\n}

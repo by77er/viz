@@ -67,7 +67,7 @@
   "states": 45342,
   "transitions": 124472,
   "depth": 11,
-  "seconds": 2.7,
+  "seconds": 2,
   "collisionProb": 5.6e-11,
   "violated": "I4_NoGapAtSeam",
   "trace": [

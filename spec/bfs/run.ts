@@ -127,15 +127,14 @@ finding('F10_rebuild_refuses', 'F10: same, then the ledger loses its storage: a 
 finding('F11_incarnation_reused', 'F11 (LEDGER-LOG.md): base is an ordinary first change; two ledger losses before it is drained', { ...AMENDED, baseFirst: false, maxLL: 2 }, ['V_IncarnationNotReused'])
 const IMPL_PEEL: [string, Partial<Cfg>][] = [
   ['IMPL_1_as_built', {}],
-  ['IMPL_2_assume_F3', { noRetryAcrossLoss: true }],
-  ['IMPL_3_fix_F12', { noRetryAcrossLoss: true, readBound: true }],
-  ['IMPL_4_fix_F6', { noRetryAcrossLoss: true, readBound: true, unknownStream: 'refuse', reg: 'logged' }],
-  ['IMPL_5_fix_F15', { noRetryAcrossLoss: true, readBound: true, unknownStream: 'refuse', reg: 'logged', sweepIncLogged: true }],
-  ['IMPL_6_fix_F13_F14', { noRetryAcrossLoss: true, readBound: true, unknownStream: 'refuse', reg: 'logged', sweepIncLogged: true, compKey: 'unique' }],
+  ['IMPL_2_fix_F6', { unknownStream: 'refuse', reg: 'logged' }],
+  ['IMPL_3_assume_F3', { unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true }],
+  ['IMPL_4_fix_F15', { unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true, sweepIncLogged: true }],
+  ['IMPL_5_fix_F13_F14', { unknownStream: 'refuse', reg: 'logged', noRetryAcrossLoss: true, sweepIncLogged: true, compKey: 'unique' }],
 ]
 for (const [name, over] of IMPL_PEEL) {
   E.push({ name, kind: 'finding', label: `as built (shard.ts, ledger.ts, flush.ts, compact.ts, janitor.ts, coordinator.ts)${Object.keys(over).length ? ` + ${Object.keys(over).join(', ')}` : ''}; every action (1 compaction, 1 retention removal, 1 ledger loss, 1 shard loss), every safety property`,
-    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_6_fix_F13_F14' ? 'holds' : 'violated', maxStates: 6_000_000 })
+    cfg: { ...IMPL, ...FAULTS, ...over }, props: ALLSAFE, expect: name === 'IMPL_5_fix_F13_F14' ? 'holds' : 'violated', maxStates: 6_000_000 })
 }
 finding('F6_impl_unknown_stream', 'F6: shard.ts tailRead answers ok/empty for a stream it lost (no client retry across the loss)', { ...IMPL, maxSL: 1, noRetryAcrossLoss: true }, ['I4_NoGapAtSeam'])
 finding('F12_impl_read_unbound', 'F12: shard.ts readSegment(tenant, seqLo) ignores the incarnation; a flush across a shard loss (no client retry across the loss)', { ...IMPL, maxSL: 1, unknownStream: 'refuse', noRetryAcrossLoss: true }, ['I3_NoDuplicates'])

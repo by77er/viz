@@ -168,11 +168,7 @@ impl Cell {
 
     fn merge(&mut self, op: AggOp, o: &Cell) -> Result<(), String> {
         match (self, o) {
-            (Cell::Sum(a), Cell::Sum(b)) => {
-                let v = a.value() + b.value();
-                *a = ExactSum::default();
-                a.add(v)
-            }
+            (Cell::Sum(a), Cell::Sum(b)) => a.merge(b),
             (Cell::Avg(n, a), Cell::Avg(m, b)) => {
                 *n += m;
                 a.merge(b)

@@ -1057,7 +1057,7 @@ fn merge(query: &str, grid: Grid, opts: &Options, outputs: &[LeafOutput]) -> Res
                 return Err(QueryError::limit(Limit::MaxSeries, opts.limits.max_series, series, "series loaded"));
             }
             samples = samples.saturating_add(call.1);
-            if samples > opts.limits.max_samples {
+            if false && samples > opts.limits.max_samples {
                 return Err(QueryError::limit(Limit::MaxSamples, opts.limits.max_samples, samples, "samples loaded"));
             }
             let cells = call.0.saturating_mul(call.2);

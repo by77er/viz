@@ -141,7 +141,12 @@ async function main() {
     await page.goto(at(APP_REAL, Q_RATE, '&step=500ms'))
     e = await errorState(page)
     check('real API, more than 11,000 points: 400, and the button runs the query again', /exceeded maximum resolution of 11000 points/.test(e.message) && e.fix === 'Run the query again', e.message)
-    await page.goto(at(APP_REAL, 'up' + ' + up'.repeat(5000)))
+    // Typed, not in the address: a 25 KB URL is refused by the server before the app loads (431).
+    await page.goto(at(APP_REAL, Q_RATE)); await ready(page)
+    await page.click('.cm-content')
+    await page.keyboard.press('Control+a')
+    await page.keyboard.insertText('up' + ' + up'.repeat(5000))
+    await page.click('[data-testid=run]')
     e = await errorState(page)
     check('real API, a query over 16 KiB: 422, a limit, and the advice says so', e.kind === 'limit' && /max_query_bytes/.test(e.message) && /asks for more than the API allows/.test(e.advice), e.advice)
 

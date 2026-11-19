@@ -97,6 +97,7 @@ const QueryRow = memo(function QueryRow({
   client,
   editorRef,
   rangeRef,
+  onEditorReady,
 }: {
   committed: string
   loading: boolean
@@ -104,13 +105,14 @@ const QueryRow = memo(function QueryRow({
   client: ReturnType<typeof useSettings>['client']
   editorRef: React.RefObject<PromqlEditorHandle | null>
   rangeRef: React.RefObject<{ start: number; end: number } | null>
+  onEditorReady: () => void
 }) {
   countRender('QueryRow')
   return (
     <div className="query-row">
       <div className="vz-query query-well" onClick={() => editorRef.current?.focus()}>
         <Suspense fallback={<div className={committed ? undefined : 'cell-quiet'}>{committed || 'Loading the query editor'}</div>}>
-          <PromqlEditor value={committed} onRun={run} client={client} handleRef={editorRef} rangeRef={rangeRef} />
+          <PromqlEditor value={committed} onRun={run} client={client} handleRef={editorRef} rangeRef={rangeRef} onReady={onEditorReady} />
         </Suspense>
       </div>
       <button className="vz-button" data-tone="blue" onClick={run} aria-busy={loading} data-testid="run" aria-keyshortcuts="Control+Enter Meta+Enter">
@@ -143,6 +145,10 @@ export function ExplorePage() {
   // ---- query text: the URL holds the committed query; the editor owns the text being typed
   // and is read when the query is run. Nothing here changes on a keystroke.
   const editorRef = useRef<PromqlEditorHandle | null>(null)
+  // The editor is a lazy chunk: an error state shown before it loaded asks it again once it has
+  // (where the syntax error is). One render, at load; typing renders nothing.
+  const [editorReady, setEditorReady] = useState(false)
+  const onEditorReady = useCallback(() => setEditorReady(true), [])
 
   // ---- time window: resolved when the range, the step, the width or the run counter changes.
   const [runId, setRunId] = useState(0)
@@ -535,7 +541,7 @@ export function ExplorePage() {
       <h1 className="sr-only">Explore metrics</h1>
 
       {/* Query row: the one blue button of the view. */}
-      <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={lookupRange} />
+      <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={lookupRange} onEditorReady={onEditorReady} />
 
       {/* Toolbar: every control carries its label, so the row needs no explanation. */}
       <div className="toolbar">
@@ -643,7 +649,7 @@ export function ExplorePage() {
               error={error}
               tries={query.failureCount}
               elapsedMs={lastWaitMs.current}
-              syntaxErrorAt={() => editorRef.current?.syntaxErrorAt(q) ?? null}
+              syntaxErrorAt={() => (editorReady ? (editorRef.current?.syntaxErrorAt(q) ?? null) : null)}
               onGoTo={(at) => editorRef.current?.focus(at)}
               onRetry={run}
               onOpenSettings={openSettings}

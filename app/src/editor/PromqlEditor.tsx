@@ -94,6 +94,8 @@ interface Props {
   handleRef?: React.RefObject<PromqlEditorHandle | null>
   /** The page's query window (epoch seconds), read by autocomplete at each lookup. */
   rangeRef?: React.RefObject<{ start: number; end: number } | null>
+  /** Called once, when the editor and its handle exist (it is a lazily loaded chunk). */
+  onReady?: () => void
 }
 
 /**
@@ -102,7 +104,7 @@ interface Props {
  * nothing in React (design review B3). The extensions are built once per editor, and the
  * autocomplete source once per connection.
  */
-export default memo(function PromqlEditor({ value, onRun, client, handleRef, rangeRef }: Props) {
+export default memo(function PromqlEditor({ value, onRun, client, handleRef, rangeRef, onReady }: Props) {
   countRender('PromqlEditor')
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -160,6 +162,7 @@ export default memo(function PromqlEditor({ value, onRun, client, handleRef, ran
         getValue: () => view.state.doc.toString(),
         syntaxErrorAt: (query) => (view.state.doc.toString().trim() === query.trim() ? firstSyntaxError(view.state) : null),
       }
+    onReady?.()
     return () => {
       view.destroy()
       viewRef.current = null
