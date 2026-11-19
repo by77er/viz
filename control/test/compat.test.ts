@@ -25,7 +25,7 @@ import { TENANT_SCHEMA } from '../src/schema'
 import type { Tenant } from '../src/tenant'
 import v0 from './fixtures/storage-v0.json'
 import { expectGolden, goldenDir } from './golden'
-import { call, createDashboard, get, newTenant, post, stubOf } from './helpers'
+import { call, createDashboard, example, get, newTenant, post, stubOf } from './helpers'
 import { type Dump, dumpOf, install, replaceWith, schemaRow, withoutVersion } from './storage'
 
 const V0 = v0 as unknown as Dump & { tenant: string; admin: { id: string }; agent: { id: string; keyId: string } }
