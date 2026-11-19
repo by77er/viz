@@ -115,8 +115,12 @@ deeper than 1000.
 module no longer links the Unicode Perl-class tables.
 
 **Mutation checks** are run from the two engines' scripts on scratch copies (this crate is
-copied next to the engine's copy): `engine/traceql/tools/mutate.py` mutants 26–31 change this
-crate and are run against its own suite too; `engine/logql/tools/mutate.py` mutant 30.
+copied next to the engine's copy): `engine/traceql/tools/mutate.py` mutants 27–32 change this
+crate and are run against its own suite too (Unicode `\d \w \s`, Unicode `\b`, the nested-count
+bound dropped, `{` as an error, parentheses unbalanced: all caught by `tests/go_rules.rs` or the
+unit tests and by TraceQL's Tempo test; mutant 31, one of the two balance checks removed, is
+equivalent and survives); `engine/logql/tools/mutate.py` mutant 30 (nesting limit lifted:
+caught by LogQL's `limits` and `props`).
 
 ## Known risks
 

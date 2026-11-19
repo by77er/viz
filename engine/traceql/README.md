@@ -180,11 +180,11 @@ and no network: `tests/api.rs` (14 tests), `tests/props.rs` (6 properties, 48 ca
 289 patterns against Tempo's recorded answers, section 8), `tests/conformance.rs` (prints
 `SKIPPED: … not found` and passes when the Tempo list has not been fetched), and the
 differential exporter, which is `#[ignore]`d. Nothing in the default run needs Tempo, its
-corpus or Go. Verified on the final code (limits included) with `testdata/upstream/`
-deleted, Go removed from `PATH` and `cargo test -j 2 --offline`: api 14 passed, props 6
-passed, limits 6 passed, conformance 1 passed (printed `SKIPPED`), differential 1 ignored,
-exit 0, no warnings (7 s with a warm build directory). The checks that do need them are
-explicit commands:
+corpus or Go. Verified on the final code of 2026-11-19 (regex dialect and `MAX_DEPTH` 100
+included) with `testdata/upstream/` moved away, Go removed from `PATH` and
+`cargo test -j 2 --offline`: api 14 passed, props 6 passed, limits 6 passed, regex_dialect 1
+passed, conformance 1 passed (skips), differential 1 ignored, exit 0, no warnings (10 s with a
+warm build directory). The checks that do need them are explicit commands:
 
 | Check | Command (from `engine/traceql`) | Needs |
 |---|---|---|
@@ -346,15 +346,17 @@ addition (now exact: i128 for integers, Shewchuk partials for floats, as metrics
 
 ### 4. Mutation checks
 
-`python3 -I tools/mutate.py <scratch>` copies the crate to a scratch directory, applies one
-change at a time to the copy, runs `api`, `conformance`, `props` and `limits` (48 cases
-per property), and removes the copy. The source tree is never modified. A suite that dies
-of a stack overflow is reported as "aborted"; that is how a missing limit shows.
+`python3 -I tools/mutate.py <scratch> [--only N,…]` copies the crate, and `engine/goregex`
+next to it, to a scratch directory, applies one change at a time to the copies, runs `api`,
+`regex_dialect`, `conformance`, `props` and `limits` (48 cases per property), plus the
+regex crate's own tests (`goregex`) for mutants of that crate, and removes the copies. The
+source tree is never modified. A suite that dies of a stack overflow is reported as
+"aborted"; that is how a missing limit shows.
 
 | # | Mutant | Caught by |
 |---:|---|---|
 | 1 | a missing attribute satisfies `!=` | api (`filters_compare_typed_values`, `regex_is_anchored_and_arrays_match_elements`) |
-| 2 | regex not anchored | api (`regex_is_anchored_and_arrays_match_elements`) |
+| 2 | regex not anchored (`Wrap::DotNl` instead of `Wrap::Anchored`) | api (`regex_is_anchored_and_arrays_match_elements`), regex_dialect, limits |
 | 3 | unconnected spans take part in structural operators (right side) | api (`spanset_operators`) |
 | 4 | child relation reversed | api (`spanset_operators`) |
 | 5 | `>>` binds looser than `&&` and `\|\|` | api (`spanset_operators`) |
@@ -377,9 +379,24 @@ of a stack overflow is reported as "aborted"; that is how a missing limit shows.
 | 22 | regex nesting at the regex crate's default (250) | limits (`regexes_are_bounded_in_nesting_size_and_number`) |
 | 23 | regex size at the regex crate's default (10 MiB) | limits (`regexes_are_bounded_in_nesting_size_and_number`) |
 | 24 | regexes per query not counted | limits (`regexes_are_bounded_in_nesting_size_and_number`) |
+| 25 | nesting limit loosened back to 200 | limits (`each_shape_runs_at_its_limit_and_is_refused_one_past_it`) |
+| 26 | Unicode classes back on: the pattern compiled untranslated, as before | regex_dialect (`regexes_answer_as_tempo_does`), limits |
+| 27 | Unicode classes back on: `\d \w \s` passed to Rust as written (in `engine/goregex`) | regex_dialect, goregex (`ascii_classes`, `named_groups`) |
+| 28 | Unicode word boundary (`\b` passed as written) | regex_dialect, goregex (`ascii_classes`) |
+| 29 | Go's bound on nested counted repetitions dropped | regex_dialect, goregex (`counted_repetitions_follow_gos_bound`) |
+| 30 | a `{` that starts no repetition is an error, not a literal | regex_dialect, goregex (`go_only_escapes_and_literals`) |
+| 31 | an unmatched `)` passed through | **not caught** (equivalent, below) |
+| 32 | parentheses not balanced at all (unmatched `)` passed, unclosed `(` allowed) | regex_dialect, goregex (`what_go_refuses_is_refused`) |
 
-**24 of 24 caught** on the final run (after the limits were added); the copy was restored
-and re-run green after each, then deleted. Mutant 2 (regex not anchored) is now also caught
+**31 of 32 caught** on the final run of 2026-11-19 (final code: regex dialect, `MAX_DEPTH`
+100); the copies were restored and re-run green after each, then deleted. Mutants 1–24 are
+the earlier ones, re-run; 2, 17, 18, 22 and 23 were re-targeted where the code they change
+moved (anchoring is now `Wrap::Anchored`; the regex limits are a `Limits` value; the
+tree-height check gained the `nesting()` measurement line). Mutant 31 survives because it is
+equivalent: an unmatched `)` can only be rebalanced by the anchoring wrapper if an unclosed
+`(` follows it, and the translator refuses that separately (or Rust refuses the result), so
+removing one of the two checks changes no answer; mutant 32 removes both and is caught. Mutant
+4 is also caught by `regex_dialect` (its structural form). Mutant 2 is also caught
 by `limits`. The lazy-DFA cache limit has no mutant: it bounds memory and has no observable
 output to test. The first run of mutants 1–16 caught 13: mutant 3 then filtered the left side only, which is
 an equivalent mutant (an unconnected span can relate only to unconnected spans, and the

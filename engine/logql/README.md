@@ -373,7 +373,7 @@ stand-ins: `cargo build --release --target wasm32-unknown-unknown`. `node check.
 
 | | |
 |---|---|
-| module (`viz_logql_wasm_check.wasm`) | **2,422,595 bytes**, **738,830 bytes** `gzip -9` |
+| module (`viz_logql_wasm_check.wasm`) | **2,436,954 bytes**, **762,419 bytes** `gzip -9` (2026-11-19, with `engine/goregex`; 2,422,595 and 738,830 before) |
 | imports | **0** (`WebAssembly.Module.imports` is `[]`) |
 | exports | `memory`, `viz_logql_alloc`, `viz_logql_free`, `viz_logql_query` |
 | instantiation with `{}` | succeeds; mean 0.5 to 0.6 ms over 200 instances (Node, module compiled once) |
@@ -411,6 +411,37 @@ needle search from 146 ms to 53 ms in the earlier, more loaded run. Pipelines wi
 build a label set per row (about 1.3 µs per logfmt row here) and templates cost about 4 µs
 per line: the next things to optimise. Native, not WASM, and not measured on Cloudflare.
 
+### (g) The regex translator moved to `engine/goregex` (2026-11-19)
+
+`src/goregex.rs` moved, with its three unit tests, into the shared crate `engine/goregex`, which
+viz-traceql now uses too, and was extended there with the Go rules that Tempo's answers
+showed (`engine/goregex/README.md`). The call sites are unchanged (`crate::goregex::…` is the
+shared crate); `label_replace`'s translation now reports the translator's error type as text.
+Checked on the final code, against the unchanged code run first on the same machine:
+
+| Check | Before | After |
+|---|---|---|
+| `cargo test -j 2 --offline` | unit 25, api 8, conformance 1, limits 5, props 8, semantics 10, doc 1: all pass | unit 22 (3 moved), the rest identical: all pass |
+| Loki oracle (`tools/oracle/fetch.sh`, then `--test conformance`) | 371 pass, 10 pinned failures, 9 skipped, 10 not extracted | identical |
+| Differential exports, seeds 7, 11, 12, 21, 33 at 60 rounds (7,895 evaluations, 6,187 of them with a regex) | | **byte-identical** case files, so the comparison with Loki's recorded answers (section (b)) is unchanged; the Loki harness was not rebuilt |
+| WASM (`wasm-check`) | 0 imports; limits 12 refused, 12 evaluated, no trap | 0 imports; the same 24 limit cases, no trap; module 14 KB larger (the translator) |
+| Mutant 30, regex nesting limit lifted (now in the shared crate, copied next to this crate's copy by `tools/mutate.py`) | caught by limits and props | caught by limits and props |
+
+What changes for LogQL queries, from the shared rules (verified against Go's `regexp` and Tempo,
+not against Loki, which compiles with Go's `regexp` too): patterns Go accepts and this crate
+refused before now work (`x{,5}` and other `{` that start no repetition, `\<` as a literal,
+`[a&&b]` and `[a~~b]` with literal members, `(?ii)`, `(?i-i)`, `(?)`, `a(?i)*`, `^*`); patterns
+Go refuses and this crate accepted before are refused (`(?x)`, `(?u)`, Rust-only escapes
+such as `\e`, a single-digit `\1`, `\Q` or `\b` inside a class, `x**`, `x{2}{3}`, counts above
+1000 alone or multiplied through nesting, `[[:foo:]]`, unbalanced parentheses that a wrapper
+rebalanced); Unicode classes (`\p{Greek}`), which compiled with Rust's semantics, are refused
+(Not implemented). None of these occurs in the suites above.
+
+The old translator was quadratic in one case: at every `[:` inside a class it copied and
+searched the rest of the pattern for `:]`. Measured here (release build, scratch program, both
+translators on `[` + `[:a` repeated + `]`): 61 ms at 16 KiB, 244 ms at 32 KiB, 1.25 s at 64 KiB
+and 4.9 s at 128 KiB; the shared translator takes 0.8, 1.6, 3.9 and 10 ms.
+
 ## Differences from Loki (by design or undecidable)
 
 - **Equal timestamps.** Across streams, entries that share a timestamp go to the smaller
@@ -443,6 +474,9 @@ per line: the next things to optimise. Native, not WASM, and not measured on Clo
   (section "Nesting limits"); the token-soup and deep-nesting properties are random testing,
   not proof.
 - The oracle cannot test structured metadata (the mock querier drops it).
+- Regexes follow Go's dialect through `engine/goregex`, checked against Go's `regexp` and
+  against Tempo, not against Loki; Loki documents its regexes as Go's RE2 syntax, so
+  the rules should hold, but no Loki probe covers the edges listed in section (g).
 
 ## Integration (not done here)
 
