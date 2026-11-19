@@ -451,7 +451,7 @@ bad query; no shard, leaf or R2 read), and unit tests of `seriesEstimate` and `l
 `cardinality.test.ts` also checks that the report splits by itself above
 `cardinalitySplitAboveSeries` with the same bytes. `npx tsc --noEmit`: clean. Before these
 changes, after a container restart, the same suite was run on the committed state
-(09f601d, 00:50 UTC): 78 passed, tsc clean.
+(commit 6488856, "state at container restart", 00:50 UTC): 78 passed, tsc clean.
 
 **After split execution and the cardinality report (2026-11-19, about 01:00 UTC, load
 average near 20):** `npx vitest run --maxWorkers=2`: **78 tests, all passing**, in 10 files

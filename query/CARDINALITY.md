@@ -124,7 +124,7 @@ leaves, cold and warm (`design/VERIFICATION.md` S1 extended with this Worker).
 | modelled production, one hour | 0.3 to 1.0 s | 1 to 4.5 s (warm leaves) | refused in 0.1 to 0.3 s from the ledger and the leaves' first counts |
 
 **The counterfactual** (local stack, 100,000 series, everything flushed): the same bench,
-the same data generator, with `query/src` as at commit 09f601d (before this work) in a
+the same data generator, with `query/src` as at commit 6488856 ("state at container restart", before this work; 09f601d before the history rewrite of 2026-11-19) in a
 scratch tree, run after the new code, both at a load average of 9 to 12.
 
 | query | before (samples only) | now (samples and series) |

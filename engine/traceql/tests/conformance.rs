@@ -100,6 +100,9 @@ fn tempo_examples() {
             "unsupported" => k != "ok",
             _ => true,
         };
+        if std::env::var("VIZ_SHOW").is_ok() && ((section == "parse_fails" && k != "parse") || (section == "validate_fails" && k != "validation") || (section == "unsupported" && k != "unsupported")) {
+            println!("CATEGORY [{section}] {q:?} -> {k}: {}", r.as_ref().err().map(|e| e.to_string()).unwrap_or_default());
+        }
         if section == "valid" && k == "unsupported" {
             unsupported_valid.push(format!("{q:?}: {}", r.as_ref().err().map(|e| e.to_string()).unwrap_or_default()));
         }
