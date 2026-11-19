@@ -252,7 +252,7 @@ impl SpanSource for MemSource {
             if plan.full_traces {
                 visit(t)?;
             } else {
-                let spans: Vec<Span> = t.spans.iter().filter(|s| plan.span_may_match(t, s)).cloned().collect();
+                let spans: Vec<Span> = (0..t.spans.len()).filter(|&i| plan.span_may_match(t, i)).map(|i| t.spans[i].clone()).collect();
                 if spans.is_empty() {
                     continue;
                 }

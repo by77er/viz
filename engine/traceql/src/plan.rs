@@ -87,16 +87,17 @@ impl ReadPlan {
         trace_ok(&self.trace_filter, &mut ctx)
     }
 
-    pub fn span_may_match(&self, t: &Trace, s: &Span) -> bool {
+    /// Whether span `i` of trace `t` must be kept.
+    pub fn span_may_match(&self, t: &Trace, i: usize) -> bool {
         if self.full_traces {
             return true;
         }
+        let s: &Span = &t.spans[i];
         if let (Some((ws, we)), true) = (self.span_window, self.span_local) {
             if s.start_unix_nano <= ws || s.start_unix_nano > we {
                 return false;
             }
         }
-        let Some(i) = t.spans.iter().position(|x| std::ptr::eq(x, s)) else { return true };
         let mut ctx = TraceCtx::new(t);
         self.span_filter.eval(&mut ctx, i)
     }

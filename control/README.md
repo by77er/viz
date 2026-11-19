@@ -352,7 +352,7 @@ npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 
 Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 75 s
 on a shared machine (75 s on a cold cache with the load average above 6). Last run
-2026-11-20: 100 of 100 pass, `tsc` clean.
+2026-11-19: 100 of 100 pass, `tsc` clean.
 
 What the tests establish:
 
@@ -501,6 +501,10 @@ failed (a suite that crashed or hung is reported as `NO RESULT` and counts as no
 and refuses to run inside a git work tree: run it from `control/` in a copy of the
 repository (its header lists what the copy needs).
 
+**59–65** (the service surface, this change) were run on 2026-11-19 in a copy in a scratch
+directory (`node scripts/mutants.mjs "service:"`): **7 of 7 killed**; the copy was taken from
+the shared tree after its suite passed 100 of 100. 1–58 were not re-run in this change.
+
 **All 58 were run as one set on the final code on 2026-11-19, in a copy in a scratch
 directory whose unmutated suite was first checked green (92 of 92): 58 of 58 killed.**
 Afterwards the copy's `control/src`, `contracts/schema.ts` and `openapi.json` were compared
@@ -568,13 +572,13 @@ first run, before a container restart, did not report, so this is their only res
 | 56 | Migration 2 declared forward-only (`readableFrom: 2`) | compat (3) |
 | 57 | Released migration 2 edited in place (the column is not added) | isolation, compat, creation, dashboards, durability, proposals, scopes, settings (32) |
 | 58 | `/healthz` not served (or behind a credential) | http (1) |
-| 59 | service: `notificationTarget` answers for any tenant | MUTANTS_59 |
-| 60 | service: `serviceKey` issues for any tenant | MUTANTS_60 |
-| 61 | service: the webhook secret stored in the settings value (reads and audit carry it) | MUTANTS_61 |
-| 62 | service: a webhook secret follows the webhook to a new URL | MUTANTS_62 |
-| 63 | service: a service key a person disabled is replaced | MUTANTS_63 |
-| 64 | service: a rotation keeps the previous secret live | MUTANTS_64 |
-| 65 | service: a person may create a key under the reserved `service:` prefix | MUTANTS_65 |
+| 59 | service: `notificationTarget` answers for any tenant | service (1) |
+| 60 | service: `serviceKey` issues for any tenant | service (1) |
+| 61 | service: the webhook secret stored in the settings value (reads and audit carry it) | service (2) |
+| 62 | service: a webhook secret follows the webhook to a new URL | service (1) |
+| 63 | service: a service key a person disabled is replaced | service (1) |
+| 64 | service: a rotation keeps the previous secret live | service (1) |
+| 65 | service: a person may create a key under the reserved `service:` prefix | service (1) |
 
 Mutants 36–40 break `contracts/schema.ts`, the runner every component shares; they are run
 here because this suite tests it most fully.

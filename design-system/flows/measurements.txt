@@ -1,76 +1,102 @@
 1-dashboards-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 1-dashboards-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
-1-dashboards-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 17 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+1-dashboards-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 17 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+1-dashboards-400-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 17 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 1-dashboards-error-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
-1-dashboards-empty-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 10 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-1-dashboards-first-run-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 7 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+1-dashboards-empty-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 10 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+1-dashboards-first-run-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 7 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 1-dashboards-first-run-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
 2-dashboard-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 2-dashboard-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
-2-dashboard-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 26 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+2-dashboard-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 28 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+2-dashboard-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 28 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 2-dashboard-error-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 2-dashboard-waiting-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 3-monitors-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 3-monitors-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
-3-monitors-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 17 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-3-monitors-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 18 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-3-monitors-first-run-400-light: sideways overflow 0px; smallest text 14px; tabular sans 0; 7 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-3-monitors-400-hit-areas-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 17 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+3-monitors-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 17 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+3-monitors-400-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 17 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+3-monitors-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 18 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+3-monitors-first-run-400-light: sideways overflow 0px; smallest text 14px; tabular sans 0; 7 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+3-monitors-400-hit-areas-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 17 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 3-monitors-zoom-200-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 4-monitor-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 4-monitor-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
-4-monitor-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 22 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 22 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-400-hit-areas-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 22 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-silence-menu-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 26 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-ack-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 22 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-ack-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 22 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-silenced-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 22 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-notice-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-error-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 22 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-4-monitor-nodata-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 22 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+4-monitor-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-400-hit-areas-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-silence-menu-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 13 hit areas, 0 under 44px, 4 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+  COVERED  p99 by route, checkout-api, ms, 09:16 to  (its centre belongs to 4 h, until 19:16)
+  COVERED  Zoom in  (its centre belongs to nothing it owns)
+  COVERED  Series  (its centre belongs to Silence until 16:16)
+  COVERED  Last, ms  (its centre belongs to nothing it owns)
+4-monitor-silence-menu-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 13 hit areas, 0 under 44px, 4 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+  COVERED  p99 by route, checkout-api, ms, 09:16 to  (its centre belongs to 4 h, until 19:16)
+  COVERED  Zoom in  (its centre belongs to nothing it owns)
+  COVERED  Series  (its centre belongs to Silence until 16:16)
+  COVERED  Last, ms  (its centre belongs to nothing it owns)
+4-monitor-ack-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-ack-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-silenced-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-notice-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 26 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-error-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-nodata-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 24 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+4-monitor-silence-menu-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 4-monitor-zoom-200-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 5-new-monitor-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 5-new-monitor-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
-5-new-monitor-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 25 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+5-new-monitor-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 27 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+5-new-monitor-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 27 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 5-new-monitor-error-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 5-new-monitor-many-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+5-new-monitor-many-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 36 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+6-investigation-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+6-investigation-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+6-investigation-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 33 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+6-investigation-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 33 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+6-investigation-confirmed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 32 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+6-investigation-running-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+6-investigation-failed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 35 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 7-proposed-change-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 7-proposed-change-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
-7-proposed-change-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 16 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+7-proposed-change-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 18 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 1 links inside sentences; 1 partly scrolled out of a strip (Settings)
+  IN SENTENCE 105x16  Checkout latency  (text, exempt; never the main path)
+7-proposed-change-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 18 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 1 links inside sentences; 1 partly scrolled out of a strip (Settings)
+  IN SENTENCE 105x16  Checkout latency  (text, exempt; never the main path)
 7-proposed-change-applied-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
-7-proposed-change-failed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 18 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+7-proposed-change-failed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 20 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 1 links inside sentences; 1 partly scrolled out of a strip (Settings)
+  IN SENTENCE 105x16  Checkout latency  (text, exempt; never the main path)
 8-keys-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 8-keys-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
-8-keys-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 10 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-8-keys-new-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 5 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+8-keys-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 10 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+8-keys-400-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 10 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+8-keys-new-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 5 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
 8-keys-secret-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 8-keys-secret-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
-8-keys-saved-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 5 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-8-keys-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 6 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-8-keys-revoke-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 2 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+8-keys-saved-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 5 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+8-keys-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 6 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+8-keys-revoke-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 2 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
 8-keys-menu-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+8-keys-menu-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 9 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 3 partly scrolled out of a strip (Settings, Rename, Revoke key…)
 8-keys-arrived-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 9-traces-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 9-traces-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
-9-traces-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 19 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+9-traces-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 29 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+9-traces-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 29 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 9-traces-error-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 10-logs-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 10-logs-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
-10-logs-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 20 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+10-logs-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 21 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+10-logs-400-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 21 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 10-logs-error-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
-12-routes-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
-12-routes-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
-12-routes-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 13 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-12-routes-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 14 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-6-investigation-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
-6-investigation-1440-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
-6-investigation-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 32 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-6-investigation-confirmed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 31 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-6-investigation-running-1440-light: sideways overflow 0px; smallest text 11px; tabular sans 0
-6-investigation-failed-400-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 34 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
 11-notification-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 11-notification-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
-11-notification-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 7 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
-11-notification-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 8 hit areas, 0 under 44px; 1 partly scrolled out of a strip (Settings)
+11-notification-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 7 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+11-notification-400-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 7 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+11-notification-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 8 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
 11-notification-ack-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+12-routes-1440-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+12-routes-1440-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
+12-routes-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 13 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+12-routes-400-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 13 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)
+12-routes-error-400-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 14 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 partly scrolled out of a strip (Settings)

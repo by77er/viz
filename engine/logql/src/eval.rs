@@ -166,12 +166,53 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
         });
         entries.truncate(limit);
     };
+    let line_only = pipeline.line_only();
+    let mut cache: (*const (String, String), usize, bool, Option<usize>) = (std::ptr::null(), 0, false, None);
     src.select(&req, &mut |labels, row| {
-        if err.is_some() || row.ts_ns < start || row.ts_ns >= end || !crate::source::stream_matches(&ms, labels) {
+        if err.is_some() || row.ts_ns < start || row.ts_ns >= end {
+            return;
+        }
+        if (labels.as_ptr(), labels.len()) != (cache.0, cache.1) {
+            cache = (labels.as_ptr(), labels.len(), crate::source::stream_matches(&ms, labels), None);
+        }
+        if !cache.2 {
             return;
         }
         stats.lines_processed += 1;
         stats.bytes_processed += row.line.len() as u64;
+        if line_only && row.metadata.is_empty() {
+            // Labels pass through unchanged: the stream's slot is computed once.
+            if !pipeline.keep_line(&row.line) {
+                return;
+            }
+            stats.entries_after_pipeline += 1;
+            if limit == 0 {
+                return;
+            }
+            let idx = match cache.3 {
+                Some(i) => i,
+                None => {
+                    let key = labels.to_vec();
+                    let i = match keys.get(&key) {
+                        Some(i) => *i,
+                        None => {
+                            let i = key_list.len();
+                            keys.insert(key.clone(), i);
+                            key_list.push(key);
+                            i
+                        }
+                    };
+                    cache.3 = Some(i);
+                    i
+                }
+            };
+            seq += 1;
+            entries.push((row.ts_ns, seq, idx, row.line.clone()));
+            if entries.len() >= limit.saturating_mul(2).max(1024) {
+                trim(&mut entries, &key_list);
+            }
+            return;
+        }
         let mut ls = LabelSet::new(labels, &row.metadata);
         let Some(line) = pipeline.process(row.ts_ns, &row.line, &mut ls) else { return };
         stats.entries_after_pipeline += 1;
@@ -349,19 +390,64 @@ pub(crate) fn eval_range(
     let required = required_clauses(&r.log.stages);
     let (lo, hi) = range_bounds(r, &grid);
     let ms = crate::source::compile_matchers(&r.log.matchers)?;
-    let mut series: HashMap<Vec<(String, String)>, Vec<(i64, f64)>> = HashMap::new();
+    // Series by label set; `index` maps a label set to its slot.
+    let mut index: HashMap<Vec<(String, String)>, usize> = HashMap::new();
+    let mut series: Vec<(Vec<(String, String)>, Vec<(i64, f64)>)> = Vec::new();
     let mut err: Option<Error> = None;
+    // Per-stream cache: rows of one stream arrive together, so the stream's match and (for
+    // pipelines that leave labels alone) its series slot are computed once.
+    let line_only = pipeline.line_only() && r.unwrap.is_none();
+    let mut cache: (*const (String, String), usize, bool, Option<usize>) = (std::ptr::null(), 0, false, None);
     let mut stats = ctx.stats;
     stats.selects += 1;
     let max_series = ctx.opts.max_series;
     let req = SelectRequest { matchers: &r.log.matchers, start_ns: lo, end_ns: hi, required: &required };
     let unwrapped = r.unwrap.is_some();
+    let mut slot = |key: Vec<(String, String)>, series: &mut Vec<(Vec<(String, String)>, Vec<(i64, f64)>)>| -> Result<usize, Error> {
+        if let Some(i) = index.get(&key) {
+            return Ok(*i);
+        }
+        if series.len() >= max_series {
+            return Err(Error::Limit(format!("maximum of series ({max_series}) reached for a single query")));
+        }
+        index.insert(key.clone(), series.len());
+        series.push((key, Vec::new()));
+        Ok(series.len() - 1)
+    };
     ctx.src.select(&req, &mut |labels, row| {
-        if err.is_some() || row.ts_ns < lo || row.ts_ns >= hi || !crate::source::stream_matches(&ms, labels) {
+        if err.is_some() || row.ts_ns < lo || row.ts_ns >= hi {
+            return;
+        }
+        if (labels.as_ptr(), labels.len()) != (cache.0, cache.1) {
+            cache = (labels.as_ptr(), labels.len(), crate::source::stream_matches(&ms, labels), None);
+        }
+        if !cache.2 {
             return;
         }
         stats.lines_processed += 1;
         stats.bytes_processed += row.line.len() as u64;
+        if line_only && row.metadata.is_empty() {
+            if !pipeline.keep_line(&row.line) {
+                return;
+            }
+            stats.entries_after_pipeline += 1;
+            let i = match cache.3 {
+                Some(i) => i,
+                None => match slot(group_labels(labels.to_vec(), grouping), &mut series) {
+                    Ok(i) => {
+                        cache.3 = Some(i);
+                        i
+                    }
+                    Err(e) => {
+                        err = Some(e);
+                        return;
+                    }
+                },
+            };
+            let value = if matches!(op, RangeOp::BytesOverTime | RangeOp::BytesRate) { row.line.len() as f64 } else { 1.0 };
+            series[i].1.push((row.ts_ns, value));
+            return;
+        }
         let mut ls = LabelSet::new(labels, &row.metadata);
         let Some(line) = pipeline.process(row.ts_ns, &row.line, &mut ls) else { return };
         let value = match (&r.unwrap, op) {
@@ -391,12 +477,10 @@ pub(crate) fn eval_range(
             return;
         }
         stats.entries_after_pipeline += 1;
-        let key = group_labels(ls.sorted(), grouping);
-        if !series.contains_key(&key) && series.len() >= max_series {
-            err = Some(Error::Limit(format!("maximum of series ({max_series}) reached for a single query")));
-            return;
+        match slot(group_labels(ls.sorted(), grouping), &mut series) {
+            Ok(i) => series[i].1.push((row.ts_ns, value)),
+            Err(e) => err = Some(e),
         }
-        series.entry(key).or_default().push((row.ts_ns, value));
     })?;
     ctx.stats = stats;
     if let Some(e) = err {
@@ -404,7 +488,7 @@ pub(crate) fn eval_range(
     }
     let mut out = Vec::new();
     if op == RangeOp::AbsentOverTime {
-        let mut all: Vec<i64> = series.values().flat_map(|v| v.iter().map(|x| x.0)).collect();
+        let mut all: Vec<i64> = series.iter().flat_map(|v| v.1.iter().map(|x| x.0)).collect();
         all.sort_unstable();
         let mut vals = vec![None; grid.n];
         for (i, slot) in vals.iter_mut().enumerate() {
@@ -427,7 +511,7 @@ pub(crate) fn eval_range(
         }
         return Ok(out);
     }
-    let mut keys: Vec<_> = series.into_iter().collect();
+    let mut keys = series;
     keys.sort_by(|a, b| a.0.cmp(&b.0));
     for (labels, mut samples) in keys {
         // By time; samples that share a timestamp in a fixed order (by value), so that sums

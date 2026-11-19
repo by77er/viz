@@ -59,6 +59,7 @@ fn data() -> Vec<Trace> {
                 a("f", AttrValue::Float(1.5)),
                 a("arr", AttrValue::StrArray(vec!["x".into(), "y".into()])),
                 a("n", AttrValue::Int(3)),
+                a("env", s("staging")),
             ]),
             a2,
             span(0xa3, Some(0xa2), "query", Some("db"), Kind::Internal, Status::Ok, 20, 200, vec![a("n", AttrValue::Int(7))]),
@@ -150,6 +151,8 @@ fn intrinsics_and_scopes() {
     assert_eq!(ids(r#"{ resource.service.name = "backend" }"#), vec![0xa2, 0xa4, 0xb2, 0xd2, 0xd3]);
     assert_eq!(ids(r#"{ resource.service.name = "" }"#), vec![0xd4], "a missing service.name reads as empty");
     assert_eq!(ids(r#"{ .env = "prod" && .n > 4 }"#), vec![0xa2, 0xa3, 0xa4], "unscoped: span, then resource");
+    assert_eq!(ids(r#"{ .env = "staging" }"#), vec![0xa1], "a span attribute shadows the resource's");
+    assert_eq!(ids(r#"{ resource.env = "prod" }"#).len(), 10);
     assert_eq!(ids(r#"{ trace:rootName = "GET /" }"#), vec![0xa1, 0xa2, 0xa3, 0xa4]);
     assert_eq!(ids(r#"{ trace:rootService = "frontend" }"#).len(), 10);
     assert_eq!(ids("{ trace:duration > 600ms }"), vec![0xa1, 0xa2, 0xa3, 0xa4]);
@@ -193,7 +196,13 @@ fn spanset_operators() {
     assert_eq!(ids(r#"{ } !< { }"#), vec![0xa3, 0xa4, 0xb2, 0xd2], "leaves; spans not connected to a root take no part");
     assert_eq!(ids(r#"{ } > { }"#), vec![0xa2, 0xa3, 0xa4, 0xb2, 0xd2]);
     // Precedence: structural operators bind tighter than && and ||.
-    assert_eq!(ids(r#"{ } || { name = "nope" } > { }"#).len(), 10);
+    for op in [">", ">>", "<", "<<", "~", "!>", "!>>", "!<", "!<<", "!~", "&>", "&>>", "&<", "&<<", "&~"] {
+        // `{ } || ({nope} op { })`: every span; `({ } || {nope}) op { }` would not be.
+        let q = format!(r#"{{ }} || {{ name = "nope" }} {op} {{ name = "GET /" }}"#);
+        assert_eq!(ids(&q).len(), 10, "{q}");
+        let q = format!(r#"{{ name = "nope" }} && {{ }} {op} {{ }}"#);
+        assert_eq!(ids(&q).len(), 0, "{q}: && applies to the structural result");
+    }
     assert_eq!(ids(r#"{ name = "GET /" } > { } > { }"#), vec![0xa3], "left-associative");
 }
 

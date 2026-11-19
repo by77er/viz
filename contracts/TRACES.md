@@ -121,6 +121,19 @@ trace in it was complete when numbered; otherwise readers must fall back to the 
 **Sampling weight (proposed).** A span's sampling probability, from W3C tracestate `ot=th:`,
 is not stored as a column yet; TraceQL `with(extrapolate=true)` is unsupported until it is.
 
+**How the engine reads these values** (`engine/traceql`, chosen to match Tempo; see its
+README):
+
+- A span without `service.name` reads as `resource.service.name = ""` (Tempo stores the
+  service name in a column that cannot be null, and rejects `resource.service.name = nil`).
+  Storage still writes null; the engine supplies the empty string.
+- Structural operators (`>`, `>>`, `<`, `<<`, `~` and their `!`/`&` forms) consider only
+  spans connected to a root span through `parent_span_id`. A span whose parent (or an
+  ancestor's parent) is missing from the trace takes no part in them, on either side.
+  Several parentless spans in one trace are each a root, and are siblings of one another.
+- `span:childCount` counts the spans whose `parent_span_id` is the span's id, connected or
+  not.
+
 ## `trace_index`
 
 One row per (trace, data file) fragment, written by flush next to the `spans` file it

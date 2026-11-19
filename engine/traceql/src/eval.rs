@@ -460,14 +460,6 @@ fn structural(op: SpansetOp, ctx: &mut TraceCtx, l: &[usize], r: &[usize]) -> Ve
     let spans = &ctx.trace.spans;
     let l: Vec<usize> = l.iter().copied().filter(|&i| connected[i]).collect();
     let r: Vec<usize> = r.iter().copied().filter(|&i| connected[i]).collect();
-    let mut lset = vec![false; spans.len()];
-    for &i in &l {
-        lset[i] = true;
-    }
-    let mut rset = vec![false; spans.len()];
-    for &i in &r {
-        rset[i] = true;
-    }
     let is_ancestor = |a: usize, mut d: usize| -> bool {
         let mut steps = 0;
         while let Some(p) = parents[d] {
@@ -538,7 +530,6 @@ fn structural(op: SpansetOp, ctx: &mut TraceCtx, l: &[usize], r: &[usize]) -> Ve
             }
         }
     }
-    let _ = (lset, rset);
     out
 }
 

@@ -4,7 +4,7 @@
  * published final_results.json for three of its detectors.
  */
 import { describe, expect, it } from 'vitest'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import {
   sweepRows, weighted, scoreAt, optimizeThreshold, normalize, nullScore, probationaryLength, scaledSigmoid, windowMetrics,
   loadCorpus, loadProfiles, loadPublishedScores, publishedFinalResults, NAB_DIR, PROFILE_NAMES, type NabFile, type CostMatrix,
@@ -53,6 +53,15 @@ describe('NAB scoring equals NAB sweeper.py', () => {
     expect(scoreAt([{ rows, scores: s }], CM.standard!, 0.5).score).toBeCloseTo(1, 12)
     expect(normalize(1, nullScore([{ rows }], CM.standard!), 1, CM.standard!)).toBe(100)
   })
+  it('no caller passes sweepRows to map(): its optional second argument (probation) would receive the index', () => {
+    // a bare `.map(sweepRows)` once silently gave each file a probation equal to its position
+    const dirs = ['../bench/', './'].map((d) => new URL(d, import.meta.url).pathname)
+    const offenders = dirs.flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.ts')).map((f) => d + f))
+      .filter((p) => /\.map\(\s*sweepRows\s*\)/.test(readFileSync(p, 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')))
+    expect(offenders).toEqual([])
+    const f = toy(100, [[60, 69]])
+    expect(Array.from(sweepRows(f).window.slice(0, 16))).toEqual([...Array(15).fill(-2), -1])
+  })
   it('window metrics: recall, event precision, delay from the label', () => {
     const f = toy(100, [[60, 69]])
     const det = new Uint8Array(100)
@@ -68,7 +77,7 @@ describe.skipIf(!existsSync(`${NAB_DIR}results/windowedGaussian`))('reproduces N
   it.each(['windowedGaussian', 'relativeEntropy', 'numenta'])('%s at NAB\'s stored thresholds', (det) => {
     const files = loadCorpus()
     const profiles = loadProfiles()
-    const rows = files.map(sweepRows)
+    const rows = files.map((f) => sweepRows(f))
     const stored = JSON.parse(readFileSync(`${NAB_DIR}config/thresholds.json`, 'utf8'))
     const entries = files.map((f, i) => ({ rows: rows[i]!, scores: loadPublishedScores(det, f) }))
     const nWindows = files.reduce((a, f) => a + f.windows.length, 0)

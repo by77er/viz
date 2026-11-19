@@ -327,6 +327,20 @@ All measured here unless it says Cloudflare.
   fails against the `workers.json` that still named control's OpenAPI document).
   Re-run 2026-11-19: 55 and 22 pass (one matrix test added since by 587f3df); `npx tsc
   --noEmit` clean.
+  **With viz-ruler and viz-mcp (2026-11-19): 77 and 25 pass** (`npx vitest run
+  --maxWorkers=2`, then `node --test`). The 25 include the ruler's own Remote Write encoder
+  (`ruler/src/remote.ts`, loaded in Node) read back by snappyjs and protobufjs: labels sorted,
+  `3.5`, `+Inf` and `NaN` values, millisecond timestamps. Added: routing of `/api/v1/rules`, `/api/v1/alerts`,
+  `/api/v1/monitors` and five paths below it to the ruler, `/mcp`, `/api/v1/agent` and two paths
+  below it to mcp (11 more routed paths), 11 near misses that must 404 (`/api/v1/monitorsx`,
+  `/api/v1/monitor`, `/api/v1/rules/x`, `/api/v1/alerts/x`, `/api/v1/rulesx`, `/mcpx`, `/mcp/`,
+  `/mcp/x`, `/api/v1/agents`, `/api/v1/agentx`, `/api/v2/alerts`); health over five backends,
+  unhealthy naming the ruler or mcp when either fails or throws; the order and stage names of
+  the six deployed Workers; every service a deployed Worker binds is deployed before it and in
+  the same stage (the ruler's `TENANT`, `QUERY`, `INGEST`; mcp's `QUERY`, `CONTROL`, `RULER`;
+  the gateway's `RULER`, `MCP`); `--expires` sets `VIZ_STAGE_EXPIRES_AT` in every staged Worker
+  and is refused for production and for a non-ISO time. `npx tsc --noEmit` clean (now also
+  over `trial/sink`).
 - `npx tsc --noEmit` in deploy/: clean. It covers the gateway and the stage queue-name
   mapping, not `stage/ingest.ts`: typing that file means type-checking the whole write path
   (stack/, ledger/, …), which is their CI job's business and was mid-edit by others while this
@@ -354,6 +368,15 @@ All measured here unless it says Cloudflare.
   | control's health probes the OpenAPI document again | control's health is its own `/healthz` (1) |
   | bootstrap answers a `schema_too_new` refusal with 500 | a retryable 503, nothing created (1) |
   | a throwing backend crashes the gateway | retryable 502 (1) |
+  | monitors prefix matches `/api/v1/monitorsx` | `/api/v1/monitorsx` is a 404 (2) |
+  | `/mcp` matched as a prefix (`/mcpx`, `/mcp/x` reach the agent surface) | the three `/mcp…` near misses are 404 (4) |
+  | agent prefix matches `/api/v1/agents` | `/api/v1/agents`, `/api/v1/agentx` are 404 (3) |
+  | the ruler is left out of `/healthz` | healthy over five backends; unhealthy naming the ruler (2) |
+  | the ruler's paths go to the query service (both speak the Prometheus API) | the ruler's routing rows (8) |
+
+  The five above are this change's: run on 2026-11-19 with the other 13, in a scratch copy
+  whose `gateway/` was equal to the shared tree's: **18 of 18 killed** (the script now runs
+  vitest with at most 2 workers).
 
 - `wrangler deploy --dry-run` of all four generated production configs: bundles (viz-ingest
   2,642.54 KiB / 799.96 KiB gzip, viz-control 303.48 / 58.00, viz-query 2,625.71 / 824.97,
@@ -484,6 +507,71 @@ trial were deleted with it.
 
 
 
+## Trial 2: monitors, alerting and the agent surface on Cloudflare (2026-11-19)
+
+`deploy.sh --stage trial2` against the real account, then `trial/trial2.mjs`, then
+`resources.mjs destroy --stage trial2` and `trial2.mjs sink-down`. Workers `viz-trial2-ingest`,
+`-control`, `-query`, `-ruler`, `-mcp`, `-gateway` (only the gateway on workers.dev), and
+`viz-trial2-sink` (a webhook receiver, `trial/sink/index.ts`, workers.dev, KV `viz-trial2-sink`);
+R2 `viz-trial2-lake`, KV `viz-trial2-config`, queues `viz-trial2-flush`, `-maint`, `-flush-dlq`,
+`-maint-dlq`. Production and `vis.bitcru.sh` were not touched.
+
+**Cost, stated before it ran** (modelled, Workers Paid rates): at most 2 hours (the stage's
+`VIZ_STAGE_EXPIRES_AT` stops the ruler's alarms and cron and the sink by themselves), about
+1,100 ruler alarms an hour with one or two queries each (about 15,000 Durable Object requests an
+hour across rulers, query leaves, shards and the ledger), about 1,000 Remote Write requests, a
+few hundred R2 writes and KV writes: well under US$0.10 modelled, **stated as under US$1 worst
+case**. It ran about 14 minutes from the first deploy to the last deletion (02:25–02:39 UTC). No bill was read from Cloudflare's
+analytics for it.
+
+**How it ran.** From a snapshot of the working tree in a scratch directory (others were editing
+it), with `VIZ_SKIP_NPM_CI=1` (node_modules linked from the shared tree) and
+`VIZ_WASM_PREBUILT=1` (the modules in the tree, each newer than its binding; the smoke test's
+query proved the read path's module and binding agree). Since the snapshot, two files changed
+without changing behaviour: `ruler/src/remote.ts` inlines a one-line helper (so Node can load it
+for the encoder test), and `trial/trial2.mjs` reports `urlShownToAdmin` where it reported a
+constant `urlTokenInAnswer: false`.
+
+| Step | Result |
+|---|---|
+| deploy without acknowledgement | **refused, exit 3**, before anything was uploaded; the refusal listed exactly `viz-ingest@v1`, `viz-control@v1`, `viz-query@v1`, `viz-ruler@v2` |
+| deploy with those four | five Workers deployed (migrations applied: ingest, control, query `v1`, ruler `v2`; mcp new); the gateway's first `wrangler deploy` failed **after** its upload with `This Worker does not exist on your account [code: 10007]` (Cloudflare's API, right after creating the script). Nothing was rolled back (migrations had been applied), as designed |
+| deploy again, same release | fix forward: every Worker uploaded and promoted, the gateway too; smoke on health: **all five backends 200** through the gateway (ingest, query, control, ruler, mcp); 111 s |
+| bootstrap `trial2-tenant` | admin and smoke keys written to 0600 files in the scratch directory, never printed; secret deleted and confirmed gone |
+| smoke with data | Remote Write 204 in 577 ms; all 9 samples returned 1,292 ms after the acknowledgement |
+| sink | deployed; its path token and the webhook secret generated here, set with `wrangler secret put` on stdin |
+| keys and settings, through the gateway | data (`write`, `read`), monitors (`monitors:*`) and agent (`read`, `monitors:read`, `dashboards:read`, kind `agent`) keys through `/api/v1/control/keys`; **control's notification settings** set to the sink's URL, `webhookFormat: json`, a signing secret: 200, `webhookSecretSetAt` set, the secret not in the answer |
+| routing | `PUT /api/v1/monitors/notifier` with `route: { receiver: viz:default, group_by: [alertname, run], group_wait: 0s, group_interval: 10s }`, no receivers of its own: 200 |
+| rules, through the ruler's API on the gateway | threshold monitor `max by (run) (viz_trial2_value) > 100`, `for: 0s`, interval 10 s, cost class `tail`: 201; anomaly monitor on `viz_trial2_wave` (EWMA): 201; recording rule `viz_trial2:value:max = max(viz_trial2_value)`, 10 s: 200 |
+| 20 runs, 15 s apart | one new series `viz_trial2_value{run="rk"} = 150` each (Remote Write 204 every time) |
+| **webhook** | **20 of 20 runs notified, one firing notification each, 0 duplicate requests**; every request's `X-Viz-Signature` verified by the sink with the shared secret; `Idempotency-Key` equal to the body's `idempotencyKey`; **no secret, key or path token in any body**. Content of `r1`: `version: viz.notification/v1`, receiver `viz:default`, `name: trial2 value high`, `labels.run: r1`, `value: 150`, `annotations.summary: "run r1 at 150"`, `endsAt: null`, `Content-Type: application/json`, `User-Agent: viz-notifier`. Also the dead-man's switch (one firing notification) and resolutions as each run's series went stale |
+| the Alertmanager form | `webhookFormat` switched to `alertmanager` in control (URL unchanged, so the secret kept); after the notifier's refresh (≤ 60 s) the next run (`ram`) arrived as Alertmanager's version "4" body, signed, `groupLabels {alertname, run}`, `endsAt 0001-01-01T00:00:00Z`; later resolutions too |
+| anomaly rule | **evaluates**: `health: ok`, state `ok`, detector status `ok`, 1 series scored, 0 warming, 352 B of state, `lastEvaluationMs` set; `/api/v1/rules` evaluation time 0.068 s |
+| recording rule | **through Remote Write and back**: the query `viz_trial2:value:max` returned `150` (the ruler's Remote Write body, decoded by edge on Cloudflare) |
+| Prometheus reads | `/api/v1/rules`: four groups (`anomalies/10s`, `monitors/10s`, `trial2-recorded`, `viz:deadman`), all `health: ok`, evaluation time 0.003–0.17 s; `/api/v1/alerts`: 200, 12 alerts |
+| service key | one key `service:viz-ruler/0` (`read`, `write`, created by `system:viz-ruler`) in the tenant's key list, one `key.service` audit entry: no rotation was needed |
+| what the APIs show | `GET /api/v1/monitors/notifier`: `viz:default` with one signed webhook integration; neither it nor `GET /api/v1/monitors` contains the URL's path token or the secret |
+| **MCP over `/mcp`** (JSON-RPC, 2025-06-18, agent key) | `tools/list`: 11 tools (those the key's scopes allow); `list_monitors`: "2 monitor(s): 1 firing, 1 ok" naming both; `get_monitor`: 11 active alerts, 62 history entries; `query`: the runs' series over 30 minutes; `validate_query`: valid, with the **query service's plan** in the structure (`execution: single`, 0 files listed: everything was still in the shards' tails); `search_telemetry`: 3 metrics. 279–915 ms per call from outside |
+
+**Latency from rule evaluation to webhook, measured on Cloudflare** (the alert's `startsAt`,
+which is the evaluation time of the tick that first saw the series, to the sink Worker's clock
+when the request arrived; both Cloudflare's clocks; one sample per run, nearest rank):
+**n = 20: p50 174 ms, p90 187 ms, p99 266 ms** (min 149, max 266). It includes the alarm
+running after its tick, the query, the hand-off to the notifier, its flush (`group_wait: 0s`) and
+the delivery. Resolutions arrive on the group's next `group_interval` tick, by Alertmanager's
+rules: n = 4 in the plain form, 172 ms to 10.1 s (`group_interval: 10s`).
+
+### Cleanup (Trial 2)
+
+`resources.mjs destroy --stage trial2` deleted the four queue consumers, the six Workers
+(callers first), the four queues, `viz-trial2-config` and the bucket with its one object; it
+then reported the sink Worker and its KV namespace as left over (exit 1: they are not stage
+resources); `trial2.mjs sink-down` deleted both. Listing the account afterwards: **no Worker, KV
+namespace, R2 bucket, queue, custom domain or Durable Object namespace whose name contains
+`viz-trial2`**; the `viz-` resources left are two spike Workers and one spike bucket that are not
+this trial's. The API keys, the sink token and the webhook secret were deleted from the scratch
+directory; the shared tree's `resources.json` was never written (the trial ran from the snapshot).
+
 ## Cost
 
 Modelled, not read from Cloudflare's analytics. Production idle: three Durable Object
@@ -500,6 +588,17 @@ right after the trial for 23:10–23:50 UTC, returned no rows for the `viz-trial
 (already deleted, or not yet ingested), so there is no measured bill for it here.
 
 ## Needed changes in components
+
+From Trial 2 and the ruler (none made here):
+
+- **`query/src/index.ts`: an RPC entrypoint (`QueryService`) for the ruler**, so a group's tick
+  is one call with one plan instead of N HTTP requests with a stored key. The exact shape is in
+  `ruler/README.md`, "Needed changes" 1; the deploy then binds it as the ruler's `EVALUATOR`.
+- **Cloudflare 10007 on a new Worker's first `wrangler deploy`** (Trial 2, the gateway): not a
+  component change; re-running the deploy fixed it. If it recurs in CI, `release.mjs` could
+  retry `wrangler deploy` once on that code.
+
+From the first trial:
 
 None of these were made here; 3 was made since in query/, and 4 in control/ and the gateway.
 
@@ -576,6 +675,16 @@ deployment and nothing here needs it: the gateway has no page and no static asse
 - **The workflows have not run on GitHub** (see above).
 
 ## Known risks
+
+- **viz-mcp behind the gateway shares the gateway request's six connections** with everything
+  it calls (Six connections, above): `read_dashboard`'s six queries in flight then wait on each
+  other inside the platform. Not measured; the trial's MCP calls took 279–915 ms from outside.
+- **The ruler evaluates through HTTP one query at a time** (decision D39): fine for groups of
+  tens of rules, too slow for a 1,000-rule group until query exports an RPC entrypoint.
+- **Right after a destination is set in control, the notifier shows `viz:default` without its
+  integration** until its first refresh (on the next hand-off or alarm; Trial 2's routing step
+  showed `integrations: []`); notifications are not affected, since a refresh precedes every
+  hand-off it processes.
 
 - **A deploy is not atomic across Workers.** Between viz-ingest's promotion and
   viz-gateway's, callers run the previous release against new callees (a minute or so in the

@@ -14,12 +14,18 @@ Author: one engineer (an AI agent, Claude), 2026-11-19, working alone on this cr
    module (downloaded into the Go module cache to build the black-box harness) was opened,
    listed for content, searched or diffed. The harness was written against the exported API
    as documented on pkg.go.dev (signatures and doc comments only).
-2. **The earlier viz TraceQL crate was not read.** It was removed in commit `6b5e5bb`; no
-   `git show`, `git log -p` or checkout of `engine/traceql` before that commit was run, and
-   no copy of it on GitHub or in any scratch directory was opened. (One incident, recorded
-   for completeness: a mistyped `ls` of a path in the shared scratch area printed a directory
-   listing of an unrelated older harness directory, file names and sizes only; no file in it
-   was opened, and the path was not used again.)
+2. **The earlier viz TraceQL crate was not read.** It was removed from the tree in the
+   commit the brief named (`6b5e5bb`), and the owner later removed it, and the Tempo checkout
+   it came with, from the repository history altogether. No `git show`, `git log -p` or
+   checkout of an older `engine/traceql` was run, and no copy of it on GitHub or in any
+   scratch directory was opened. The only git commands run in this work were one
+   `git log --oneline` (commit subjects) at the start, before the instruction not to run git
+   was noticed, and later one `git status --short` whose output was discarded (a slip);
+   neither reads file contents from history. One incident, for completeness: an `ls -la` of the path
+   where the harness binary was to go printed the listing of a pre-existing directory of
+   that name in the shared scratch area (file names `cases.json`, `diff_test.go`, `go.mod`,
+   `go.sum`, `out1.txt`, `out2.txt` and sizes, dated the day before). No file in it was
+   opened; all later work used a fresh subdirectory.
 3. **Tempo's tests were used only as a behavioural oracle**, fetched at test time into a
    git-ignored directory, at the level "this query is accepted / rejected at parse /
    rejected at validation / unsupported". No test was consulted for implementation strategy
@@ -93,4 +99,27 @@ known from training and not re-fetched.
 
 ## What was learned from observed behaviour
 
-Recorded in `README.md`, "Differential run", with the queries that showed each point.
+Tempo was run only through `tools/godiff` (its exported API over a vParquet5 block). Two
+kinds of observation shaped the code:
+
+- **Probes** (`tools/probes/`): small hand-made data sets and targeted queries, written
+  while building the engine, to settle what the documentation leaves open: operator
+  precedence, comparison of missing and mixed-type values, array matching, event and link
+  scoping, structural operators over incomplete traces, result keys and value encodings,
+  the metrics time grid, empty points, `by` labels, log2 buckets and quantile
+  interpolation, request alignment. `README.md`, "Semantics settled by observing Tempo",
+  lists each rule with the query that showed it.
+- **The differential run** (`tests/differential.rs`, `tools/compare.py`): generated data and
+  queries; every difference was either fixed in viz or explained by a rule checked against
+  the data (`README.md`, section 2).
+
+Nothing was inferred from Tempo's source, and the Tempo-specific defects listed in the
+README were established only from its answers.
+
+## Statement
+
+I followed the rules above for the whole of this work: I did not read Tempo's
+implementation source or the earlier viz TraceQL crate; I used Tempo's tests only as an
+accept/reject oracle fetched at test time into a git-ignored directory; I ran Tempo only as
+a separate, test-only program built from the Go module proxy at the pinned release; and
+nothing from Tempo is stored in this crate.

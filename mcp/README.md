@@ -474,7 +474,7 @@ npm run spike:libs     # the library check above (3 tests)
 ```
 
 Measured here: vitest 5.1.1 in workerd, TypeScript 5.9, Node 22.23, wrangler 4. The suite
-takes about 25–75 s on a shared machine. Last run 2026-11-20: 182 of 182 pass, `tsc` clean.
+takes about 25–75 s on a shared machine. Last run 2026-11-19: 182 of 182 pass, `tsc` clean.
 
 | File | Tests | What |
 |---|---|---|
@@ -576,6 +576,13 @@ the dry-run probe that `mayApply` replaced).
 | 21 | No answer on `mayApply` (an older control release, or edge's fallback) taken as yes | isolation (1) |
 | 22 | A proposed new dashboard sent as a direct create | write (1) |
 | 23 | `read_dashboard` lists panels in structure in layout order, not in the text's order (`panelOrder`) | examples (3) |
+| 24 | `validate_query` does not ask the query service for its plan (the estimate is the series count alone) | tools (2) |
+| 25 | `validate_query` drops the refusal the plan foresees | tools (1) |
+| 26 | `/healthz` says ok whatever is bound | tools (1) |
+
+24–26 (this change) were run on 2026-11-19 in a scratch copy (`node scripts/mutants.mjs 24 25 26`, the
+script now runs vitest with at most 2 workers), taken after the suite passed 182 of 182: **3 of
+3 killed**. 1–23 were not re-run in this change.
 
 Mutant 14 **survived** its first version, which only stopped new queries from starting:
 the deadline is also enforced by aborting what is in flight, so the panels were still

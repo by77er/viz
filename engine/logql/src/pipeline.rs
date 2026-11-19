@@ -458,6 +458,19 @@ impl Pipeline {
         Ok(Pipeline { stages: out, now_ns: None })
     }
 
+    /// True when every stage is a line filter: labels pass through unchanged.
+    pub fn line_only(&self) -> bool {
+        self.stages.iter().all(|s| matches!(s, CStage::Line(_)))
+    }
+
+    /// For a [`Pipeline::line_only`] pipeline: does the line pass?
+    pub fn keep_line(&self, line: &str) -> bool {
+        self.stages.iter().all(|s| match s {
+            CStage::Line(f) => f.keep(line),
+            _ => true,
+        })
+    }
+
     /// Run one entry through the pipeline. Returns the (possibly rewritten) line, or `None`
     /// when a filter drops the entry. `labels` is updated in place.
     pub fn process<'l>(&self, ts_ns: i64, line: &'l str, labels: &mut LabelSet) -> Option<Cow<'l, str>> {

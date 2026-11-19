@@ -199,8 +199,8 @@ message without `v`; no `sealed_at` migration; an unreadable series window start
 **Survived, then addressed:** "the check reads the fingerprint first" (the test named "a
 refused append reads nothing" never stored the batch it retried; it now does) and "the tenant
 cap ignores bytes waiting in the group" (no test sent concurrent appends past the cap; one does
-now, `groupcommit.test.ts` "the tenant cap counts what waits in the open group"). Both re-run
-on the final code: see below. **Survived, equivalent:** "R-12: fingerprint expiry names no
+now, `groupcommit.test.ts` "the tenant cap counts what waits in the open group"). Both were
+re-run on the final code and **killed** by those tests: 19 of 20 in all. **Survived, equivalent:** "R-12: fingerprint expiry names no
 tenant": every tenant has the same fingerprint TTL, so deleting other tenants' expired rows
 changes nothing observable; the rule (every statement names its tenant) is met by reading.
 

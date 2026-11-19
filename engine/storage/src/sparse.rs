@@ -13,15 +13,18 @@
 //! in-memory format between the engine and its binding (never stored); its magic is its
 //! version. A whole Parquet file (starting with `PAR1`) is accepted anywhere a container is.
 //!
-//! Readers ([`crate::select`], `viz-query`'s series reader) skip a row group whose bytes are
-//! not in the container: the caller left it out because it holds no row the read needs
-//! (`FileIndex::row_group_may_hold`). Everything else (the footer, every page of a row
-//! group that is read) must be present, or the read fails; it never returns a partial answer.
+//! Readers ([`crate::select`], `viz-query`'s series reader) skip a row group whose
+//! `series_id` column chunk is not in the container: the caller left it out because it
+//! holds no row the read needs (`RowGroupIndex::may_hold`). Everything else a read touches
+//! (the footer, the pages it decodes) must be present, or the read fails: it never returns
+//! a partial answer. (A caller may therefore also leave out pages of `ts` and `value` that
+//! hold no wanted row; the tests do, to show that such pages are not read.)
 use crate::error::{Error, Result};
 use bytes::{Buf, Bytes};
 use parquet::errors::ParquetError;
 use parquet::file::metadata::RowGroupMetaData;
-use parquet::file::reader::{ChunkReader, Length};
+use parquet::file::reader::{ChunkReader, Length, SerializedFileReader};
+use parquet::file::serialized_reader::ReadOptionsBuilder;
 use std::sync::Arc;
 
 /// Magic of a sparse file container.
@@ -99,9 +102,12 @@ impl Source {
         self.find(start, len).is_some()
     }
 
-    /// Whether every column chunk of a row group is held (the reader may read it).
+    /// Whether a row group is held: its `series_id` column chunk (column 1 in both tables)
+    /// is. A caller that leaves a row group out leaves all of it out; one that keeps it
+    /// keeps at least that chunk and every page the read decodes (a read that reaches a
+    /// byte that is not held fails).
     pub fn has_row_group(&self, md: &RowGroupMetaData) -> bool {
-        md.columns().iter().all(|c| {
+        md.columns().get(1).is_some_and(|c| {
             let (o, l) = c.byte_range();
             self.has(o, l)
         })
@@ -136,6 +142,13 @@ impl ChunkReader for Source {
         let at = (start - o) as usize;
         Ok(b.slice(at..at + length))
     }
+}
+
+/// Open a file for reading with its offset index (written by default, and held in the
+/// footer region): a page a read skips is then passed over by its location, without
+/// reading even its header. A file without an offset index is read as before.
+pub fn reader(src: Source) -> parquet::errors::Result<SerializedFileReader<Source>> {
+    SerializedFileReader::new_with_options(src, ReadOptionsBuilder::new().with_page_index().build())
 }
 
 /// Build a sparse file container: `file_len` bytes, of which `segments` (offset, bytes)

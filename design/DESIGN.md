@@ -212,7 +212,7 @@ incarnation number is never used for two histories and versions are never reused
 Checkpoints, taken once the log since the last one is as large as it, bound a rebuild, which
 runs outside `blockConcurrencyWhile`: requests meanwhile wait at most 2 s and are refused as
 retryable. Because a base or checkpoint is the whole state in one piece, a ledger's state is
-bounded (16 MiB, about 14,000 files): above it `addUnit` answers `full`, retryably, until
+bounded (16 MiB, about 15,800 files): above it `addUnit` answers `full`, retryably, until
 compaction or retention makes room (`contracts/LEDGER-LOG.md`, "Size").
 Measured on Cloudflare: 234–422 units per second with eight writers, and a rebuild of
 5,008 changes in 5.4 s (`spikes/s4-ledger-scale/`). The orphan sweeper deletes an object only if the
@@ -561,6 +561,6 @@ have to change.
 | ~~The ledger admits about one flush unit per second~~ (measured, `spikes/s4-ledger-scale/`) | **Fixed** (D36): it answers after the SQLite commit and logs in batched background segments; 234–422 units per second with eight writers, measured on Cloudflare 2026-11-19 |
 | A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6) | Not fixed. Register a new incarnation with the ledger before the shard accepts its first write (spec F1), across shard, ledger, flush and query |
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
-| A tenant's ledger holds at most 16 MiB of state, about 14,000 live files (a base or checkpoint is the whole state in one piece; review S-2) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. Lifting it needs checkpoints written in pieces and a rebuild that streams into SQLite: not built |
+| A tenant's ledger holds at most 16 MiB of state, about 15,800 live files (a base or checkpoint is the whole state in one piece; review S-2) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. Lifting it needs checkpoints written in pieces and a rebuild that streams into SQLite: not built |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |

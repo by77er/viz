@@ -46,7 +46,18 @@
     "fpScope": "stream",
     "tailScope": "stream",
     "noRetryAcrossLoss": false,
-    "retain": false
+    "retain": false,
+    "sweepSteps": false,
+    "sweepAge": true,
+    "purgeSteps": false,
+    "startSteps": false,
+    "goal": "query",
+    "sweepGone": "both",
+    "sweepOrder": "listFirst",
+    "sweepNewerLogged": true,
+    "maxSweeps": 99,
+    "maxRB": 0,
+    "rbFix": "none"
   },
   "props": [],
   "expect": "violated",
@@ -56,7 +67,7 @@
   "states": 1124318,
   "transitions": 4573766,
   "depth": 36,
-  "seconds": 84.9,
+  "seconds": 98.6,
   "collisionProb": 3.4e-8,
   "violated": "LIVE_QueryCanComplete",
   "trace": [

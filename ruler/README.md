@@ -415,6 +415,16 @@ it through its `RULER` binding.
 --expires` for a stage only): after it the Ruler's and the Notifier's alarms delete themselves
 and the cron sweeper does nothing.
 
+**On Cloudflare (Trial 2, `deploy/README.md`; measured on Cloudflare, 2026-11-19).** A staged
+deployment of the six Workers, since destroyed: a threshold monitor, an anomaly monitor and a
+recording rule through the API on the gateway; 20 runs each made one alert, and the sink set in
+control's notification settings received **20 firing notifications, 0 duplicates, every one
+signed and with `Idempotency-Key` equal to the body's key, no secret in any body**; switching
+the format in control turned the next one into Alertmanager's body. **Rule evaluation
+(`startsAt`) to webhook arrival: n = 20, p50 174 ms, p90 187 ms, p99 266 ms.** The anomaly rule
+evaluated (`ok`, one series scored); the recorded series came back through Remote Write and
+the query path; one service key was issued for the whole run (no rotation).
+
 ### Versioned storage and formats (`contracts/COMPATIBILITY.md`)
 
 - **Storage.** `Ruler`, `Notifier` and `RulerIndex` open SQLite in the constructor, inside
@@ -894,7 +904,9 @@ at cents for tail-class rules and dollars for the rest.
   Alertmanager has none (it is usually done in the paging tool).
 - **Silences from an alert** match every label of that alert exactly and can be undone
   (deleted) for 60 s; other silences can be created and expired, not edited.
-- **Delivery:** `Idempotency-Key`, `X-Viz-Signature`, seeded backoff, dead letters.
+- **Delivery:** `Idempotency-Key`, `X-Viz-Signature`, seeded backoff, dead letters; besides
+  Alertmanager's body, a plain JSON form (`format: json`, `viz.notification/v1`) with each
+  alert's value; the receiver `viz:default` is the destination set in the control plane.
 - **Regular expressions** are JavaScript's, anchored, at most 1,024 characters.
 - **Payloads:** `generatorURL` empty; at most 500 alerts per webhook body.
 

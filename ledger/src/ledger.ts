@@ -187,8 +187,12 @@ export const CHECKPOINT_EVERY = 256
  * Cloudflare). Lifting it needs a rebuild and checkpoints that stream (ledger/README.md).
  */
 export const STATE_MAX_BYTES = 16 * 1024 * 1024
-/** What one live file adds to a base, beyond its key and index fragment (field names, numbers, unit): an estimate. */
-const FILE_OVERHEAD_BYTES = 256
+/**
+ * What one live file adds to a base, beyond its key and index fragment (field names, numbers,
+ * its unit reference): an estimate, calibrated on 2026-11-19 against checkpoints of S4-shaped
+ * files (1,040 bytes per file written; ledger/bench/checkpoint.bench.test.ts).
+ */
+const FILE_OVERHEAD_BYTES = 448
 const entryBytes = (f: { key: string; index: string }): number => f.key.length + f.index.length + FILE_OVERHEAD_BYTES
 /** The same estimate in SQL, over rows of `file`. */
 const ENTRY_BYTES_SQL = `COALESCE(SUM(LENGTH(idx) + LENGTH(key) + ${FILE_OVERHEAD_BYTES}), 0)`

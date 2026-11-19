@@ -69,6 +69,7 @@ impl IpMatcher {
     }
 
     /// Does a label value (one address) match?
+    #[cfg(test)]
     pub fn matches_value(&self, s: &str) -> bool {
         parse_addr(s).is_some_and(|a| self.contains(&a))
     }

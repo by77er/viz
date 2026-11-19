@@ -187,7 +187,7 @@ impl FileIndex {
         };
         let mut row_groups = Vec::with_capacity(rg.len());
         for g in rg {
-            let r = RowGroupIndex {
+            row_groups.push(RowGroupIndex {
                 rows: uint(g, "rows")?,
                 offset: uint(g, "off")?,
                 length: uint(g, "len")?,
@@ -196,17 +196,11 @@ impl FileIndex {
                 min_ts: int(g, "min_ts")?,
                 max_ts: int(g, "max_ts")?,
                 sid: pair(g, "sid")?,
-            };
-            r.offset.checked_add(r.length).ok_or_else(|| bad("off"))?;
-            row_groups.push(r);
+            });
         }
         let foot = match pair(&v, "foot")? {
             None => None,
-            Some((o, l)) => {
-                let (o, l) = (u64::try_from(o).map_err(|_| bad("foot"))?, u64::try_from(l).map_err(|_| bad("foot"))?);
-                o.checked_add(l).ok_or_else(|| bad("foot"))?;
-                Some((o, l))
-            }
+            Some((o, l)) => Some((u64::try_from(o).map_err(|_| bad("foot"))?, u64::try_from(l).map_err(|_| bad("foot"))?)),
         };
         Ok(FileIndex { row_groups, foot })
     }
@@ -465,7 +459,7 @@ pub(crate) fn open_shared(bytes: Bytes, table: Table, index: usize) -> Result<(R
 }
 
 fn open_source(src: Source, table: Table, index: usize) -> Result<Reader> {
-    let r = SerializedFileReader::new(src).map_err(perr(Some(index)))?;
+    let r = crate::sparse::reader(src).map_err(perr(Some(index)))?;
     let descr = r.metadata().file_metadata().schema_descr();
     let want = table.columns();
     if descr.num_columns() != want.len() {

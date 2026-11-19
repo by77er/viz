@@ -13,7 +13,9 @@
  */
 import type { SampleBatch, Sink } from '../contracts-proposal/rules.v2'
 import type { CredentialSource, Fetcher } from './engine'
-import { errorText } from './evaluator'
+
+/** No runtime imports: deploy/test/prw.test.mjs loads this file in Node to read its output with independent decoders. */
+const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 500)
 
 function varint(n: number | bigint, out: number[]): void {
   let v = BigInt(n)

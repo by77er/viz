@@ -99,10 +99,13 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
 |---|---|---|---|---|---|---|---|
 | `LIVE_amended` amended protocol, ledger loss + shard loss + compaction (1 send per batch) | AG EF done | stopped: memory bound: stopped at 3,000,001 states; every state reachable in at most 29 steps checked, no violation | 3,000,001 | 12,002,784 | 29 | 188.3 s | 2.4e-7 |
-| `LIVE_design` DESIGN as written, ledger loss + shard loss (1 send per batch) | AG EF done | **violated** LIVE_QueryCanComplete in 5 steps | 1,124,318 | 4,573,766 | 36 | 84.9 s | 3.4e-8 |
+| `LIVE_amended_ll` amended protocol, ledger loss, compaction, no shard loss (1 send per batch) | AG EF done | stopped: memory bound: stopped at 3,000,002 states; every state reachable in at most 36 steps checked, no violation | 3,000,002 | 15,730,125 | 36 | 371.4 s | 2.4e-7 |
+| `LIVE_amended_sl` amended protocol, shard loss, no ledger loss, no compaction (1 send per batch) | AG EF done | holds (exhaustive) | 162,812 | 640,662 | 38 | 24.5 s | 7.2e-10 |
+| `LIVE_design` DESIGN as written, ledger loss + shard loss (1 send per batch) | AG EF done | **violated** LIVE_QueryCanComplete in 5 steps | 1,124,318 | 4,573,766 | 36 | 98.6 s | 3.4e-8 |
 | `LIVE_impl_V1` code of 2026-11-18 (tailRead ok/empty for a lost stream), ledger loss + shard loss, no compaction (1 send per batch) | AG EF done | holds (exhaustive) | 233,906 | 924,430 | 40 | 24.3 s | 1.5e-9 |
 | `LIVE_impl` code at HEAD: tailRead refuses an incarnation it lost, but nothing re-registers the stream; shard loss (1 send per batch) | AG EF done | **violated** LIVE_QueryCanComplete in 8 steps | 43,849 | 160,307 | 34 | 6.7 s | 5.2e-11 |
 | `LIVE_impl_F6_fixed` code at HEAD + F6 fixed completely (register before writes, so a refusing shard re-registers); ledger loss + shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 688,379 | 2,776,255 | 42 | 77.4 s | 1.3e-8 |
+| `LEAK_D30_maintenance` no leak, D30 + log as built: compaction (2 steps at once), retention of every file, ledger loss, no client retry; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,002 states; every state reachable in at most 31 steps checked, no violation | 3,000,002 | 16,323,879 | 31 | 319.6 s | 2.4e-7 |
 
 ## Counterexamples
 

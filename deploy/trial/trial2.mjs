@@ -157,7 +157,7 @@ export async function run({ stage, state, runs = 20 }) {
   // The default destination, in control: the sink, plain JSON, signed.
   const webhookUrl = `${sinkUrl}/hook/${token}`
   const dest = await settled(() => req(base, admin, 'PUT', '/api/v1/control/settings/notifications', { value: { webhookUrl, webhookFormat: 'json', webhookSecret: secret } }), { what: 'notification settings' })
-  step('control notifications', { status: dest.status, version: dest.json.version, webhookSecretSet: dest.json.value.webhookSecretSetAt !== null, secretInAnswer: dest.text.includes(secret), urlTokenInAnswer: false })
+  step('control notifications', { status: dest.status, version: dest.json.version, webhookSecretSet: dest.json.value.webhookSecretSetAt !== null, secretInAnswer: dest.text.includes(secret), urlShownToAdmin: dest.text.includes(token) })
   // The tenant's routing: everything to the control destination, a group per run, no wait.
   const routing = await settled(() => req(base, keys.monitors, 'PUT', '/api/v1/monitors/notifier', { route: { receiver: 'viz:default', group_by: ['alertname', 'run'], group_wait: '0s', group_interval: '10s', repeat_interval: '4h' }, receivers: [] }), { what: 'notifier routing' })
   step('notifier routing', { status: routing.status, receivers: routing.json?.receivers ?? null })

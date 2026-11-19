@@ -207,6 +207,11 @@ export const MUTANTS = [
     tests: ['test/smd-scorer.test.ts'],
   },
   {
+    name: 'NAB run: sweepRows passed to map(), so each file\'s index becomes its probation length',
+    edits: one('bench/nab-run.ts', 'const rows = files.map((f) => sweepRows(f)) // not map(sweepRows): the index would become the probation length', 'const rows = files.map(sweepRows)'),
+    tests: ['test/nab-scorer.test.ts'],
+  },
+  {
     name: 'SMD normalisation: the null score not subtracted',
     edits: one('bench/smd.ts', 'return (100 * (r - n)) / (k * tpWeight - n)', 'return (100 * r) / (k * tpWeight)'),
     tests: ['test/smd-scorer.test.ts'],

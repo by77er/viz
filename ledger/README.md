@@ -71,7 +71,8 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   that version, read in the same synchronous step that fixed the segment's bounds. Then the
   older checkpoints of the incarnation are deleted (review S-2).
 - **The state is bounded** (review S-2). `meta.state_bytes` estimates the state as a base
-  would hold it (each live file's key and index fragment plus 256 bytes), kept with every
+  would hold it (each live file's key and index fragment plus 448 bytes, calibrated against
+  checkpoints written), kept with every
   mutation and recomputed exactly at every start and checkpoint. `addUnit` answers `full`
   (`{ status, stateBytes, limitBytes }`, nothing changed, retryable) once it would pass
   16 MiB (`STATE_MAX_BYTES`, `LEDGER_STATE_MAX_BYTES`); `replace` and `expire` are never
@@ -131,6 +132,23 @@ drain in flight). A drain of an incarnation that has since been replaced changes
   deleted once a newer one is written).
 - Changes committed but not yet in a segment are lost (one drain cycle). An unlogged unit
   must be re-sent (the shard still holds its rows; flush notices the watermark went back).
+
+**Checkpoint cost, before and after review S-2** (measured here, in local workerd,
+`bench/checkpoint.bench.test.ts`, 2026-11-19, two runs; the machine was shared, load average
+14–16; local workerd does not enforce the 128 MB isolate limit; peak RSS of the largest process
+803 MB at 100,000 files). S4-shaped files (an index fragment of about 460 characters):
+
+| Live files | Checkpoint | Synchronous part (state, JSON, body, bytes) | Drain that writes one | Next drain, before | Next drain, after |
+|---|---|---|---|---|---|
+| 8,000 | 8.3 MB | 165–262 ms | 0.41–0.72 s | the same again every 256 segments | 32–46 ms: none until the log since is 8.3 MB |
+| 32,000 | 33.3 MB | 0.70–0.96 s | 1.9–2.3 s | as above | 10–24 ms |
+| 100,000 | 104.6 MB | 2.5–3.3 s | 5.9–7.8 s | as above (and, on Cloudflare, over the isolate's memory) | 14–19 ms; and now refused before it gets there |
+
+After: `addUnit` answered `full` at 12,000 files when units carried 4,000 files each (the
+limit is about 15,800 such files), with the estimate at 12.7 MB. A checkpoint now costs R2 at
+most what the log since the last one did, instead of the whole state every 256 segments; older
+checkpoints are deleted. What did not change: a checkpoint, a base and a rebuild still hold
+the whole state at once, which is why the limit exists.
 
 **Time.** Measured on Cloudflare (`spikes/s4-ledger-scale/`, 2026-11-19): 5,008 changes in
 104 segments, no checkpoint, rebuilt in 5.4 s; a base of 5,000 files alone in 2.8–3.5 s; the
@@ -230,8 +248,20 @@ a rebuild accepting a gap, a rebuild skipping an unreadable segment, R-3 (the st
 drain. **Survived:** the recorded bounds not made durable before the PUT: workerd tests
 cannot crash between a local commit and its durability; it is right by reading.
 
-**Run 2** (the final code, with the review's fixes and their mutants): in progress when this
-was written; its results replace this paragraph.
+**Run 2** (2026-11-19, the final code, with the segment-log review's fixes): **43 of 46
+killed.** The 33 above again, and: S-1 (a rebuild skipping first-layout objects; the rollback
+signature not healed from SQLite; a log fault not reported as stuck; an outbox that may skip
+versions; storage readable by code that knows only version 1), S-2 (no limit; checkpoints
+every N segments whatever the log's size; superseded checkpoints kept; `expire` not shrinking
+the estimate), S-5 (starting empty over data objects), S-9 (`deletable` counting a recorded
+but unwritten segment as logged): each killed by the test named for it above. One mutant of
+run 1, "a checkpoint for a segment that does not end at the committed version", survived run
+2 at first: deleting superseded checkpoints had hidden the bad one from its test. The test now
+makes the newer checkpoint's write fail, and the mutant was killed on re-run. **Survived (3):**
+the recorded bounds not made durable before the PUT (untestable here, as above); and the two
+S-7 guards (`rebuildFromLog` waiting for a drain in flight; `segmentWritten` ignoring a
+replaced incarnation): each covers the other, and no test empties storage in place while a
+drain is in flight, so S-7 is right by reading, not by test.
 
 ## Not implemented
 

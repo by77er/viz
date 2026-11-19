@@ -100,10 +100,13 @@ ledger/tenant={tenant}/{ledgerIncarnation}/seg-{firstVersion:012}-{lastVersion:0
 The base and every checkpoint are the whole state as one JSON line, built in one synchronous
 step, and a rebuild holds the state as objects. So the state is bounded: `addUnit` answers
 `full` (nothing changed, retryable) once the state, estimated as each live file's key and
-index fragment plus 256 bytes, would exceed 16 MiB (`STATE_MAX_BYTES`; about 14,000 files of
-S4's shape). `replace` and `expire` are never refused, so compaction and retention make
-room. The limit is modelled (about four copies of the state in memory at the peak, against
-a 128 MB isolate), not measured on Cloudflare. Lifting it needs the base and checkpoints
+index fragment plus 448 bytes (which matches what a checkpoint writes), would exceed 16 MiB
+(`STATE_MAX_BYTES`; about 15,800 files of S4's shape). `replace` and `expire` are never
+refused, so compaction and retention make room. Measured in workerd (2026-11-19,
+`ledger/bench/checkpoint.bench.test.ts`, a shared machine at load 14–16): a checkpoint is
+8.3 MB at 8,000 files, 33 MB at 32,000 and 105 MB at 100,000, its synchronous part
+0.17–0.26 s, 0.7–1.0 s and 2.5–3.3 s. The limit itself is modelled (about four copies of the
+state in memory at the peak, against a 128 MB isolate), not measured on Cloudflare. Lifting it needs the base and checkpoints
 written as many lines across several steps and a rebuild that streams into SQLite instead of
 building the state in memory: not built (`ledger/README.md`, "Not implemented").
 

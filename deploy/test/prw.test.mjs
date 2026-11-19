@@ -41,3 +41,24 @@ test('percentiles are nearest-rank', () => {
   assert.deepEqual(percentiles([5, 1, 4, 2, 3]), { n: 5, p50: 3, p90: 5, p99: 5, min: 1, max: 5 })
   assert.deepEqual(percentiles([]), { n: 0 })
 })
+
+// The ruler writes recording rules' samples with its own copy of this encoder
+// (ruler/src/remote.ts): read back here by the same independent implementations.
+test('the ruler\'s Remote Write body (ruler/src/remote.ts) decodes to the recorded samples', async () => {
+  const { encodeWriteRequest: enc, seriesOf, snappyLiterals: lit } = await import('../../ruler/src/remote.ts')
+  const batches = [
+    { id: 't/0/g/k@1795003200000', samples: [{ labels: { __name__: 'job:up:sum', job: 'api' }, timeMs: 1795003200000, value: '3.5' }, { labels: { job: 'web', __name__: 'job:up:sum' }, timeMs: 1795003200000, value: '+Inf' }] },
+    { id: 't/0/g/k@1795003260000', samples: [{ labels: { __name__: 'job:up:sum', job: 'api' }, timeMs: 1795003260000, value: 'NaN' }] },
+  ]
+  const raw = snappy.uncompress(Buffer.from(lit(enc(seriesOf(batches)))))
+  const msg = WriteRequest.toObject(WriteRequest.decode(raw), { longs: String })
+  const got = msg.timeseries.map((t) => [Object.fromEntries(t.labels.map((l) => [l.name, l.value])), t.samples.map((s) => [s.timestamp, s.value])])
+  assert.equal(got.length, 2)
+  assert.deepEqual(got[0][0], { __name__: 'job:up:sum', job: 'api' })
+  assert.deepEqual(got[0][1][0], ['1795003200000', 3.5])
+  assert.equal(got[0][1][1][0], '1795003260000')
+  assert.ok(Number.isNaN(got[0][1][1][1]))
+  assert.deepEqual(got[1], [{ __name__: 'job:up:sum', job: 'web' }, [['1795003200000', Infinity]]])
+  // Labels go out sorted by name, as Prometheus sends them.
+  for (const t of msg.timeseries) assert.deepEqual(t.labels.map((l) => l.name), [...t.labels.map((l) => l.name)].sort())
+})

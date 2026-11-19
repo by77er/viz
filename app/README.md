@@ -725,17 +725,20 @@ React.
 
 ### Bundle (built assets)
 
+Before is the app at commit `060d3bd`, after is this change, both built against the same
+design-system snapshot (the sizes `e2e/measure.cjs` records in `rapi-{before,after}-4.json`).
+
 | File | Before raw | Before gzip | After raw | After gzip |
 |---|---|---|---|---|
-| `index-*.js` (app, React, router, query, uPlot): the shell | 443.7 kB | 145.9 kB | 443.2 kB | 146.1 kB |
-| `PromqlEditor-*.js` (CodeMirror + PromQL, lazy) | 451.9 kB | 143.0 kB | 448.4 kB | 141.7 kB |
-| `index-*.css` | 24.4 kB | 6.3 kB | 26.4 kB | 5.7 kB |
-| `index.html` | 1.0 kB | 0.6 kB | 1.4 kB | 0.8 kB |
-| Fonts (WOFF2, already compressed) | none | | 128.8 kB | sans 74.7 kB, mono 54.1 kB |
+| `index-*.js` (app, React, router, query, uPlot): the shell | 458.4 kB | 150.9 kB | 476.0 kB | 156.6 kB |
+| `PromqlEditor-*.js` (CodeMirror + PromQL, lazy) | 448.9 kB | 141.9 kB | 449.7 kB | 142.2 kB |
+| `index-*.css` | 51.6 kB | 9.8 kB | 51.6 kB | 9.8 kB |
+| `index.html` | 1.4 kB | 0.8 kB | 1.4 kB | 0.8 kB |
+| Fonts (WOFF2, already compressed) | 128.8 kB | | 128.8 kB | |
 
-gzip level 9, as `e2e/measure.cjs` computes it. The shell's script is 146.1 kB compressed,
-under the 200 kB limit. The fonts are new bytes: the sans file is preloaded, the mono file is
-not preloaded.
+gzip level 9, as `e2e/measure.cjs` computes it. The shell's script grows by 5.7 kB
+compressed (the parser, the error kinds and advice, the retries) to 156.6 kB, under the
+200 kB limit. The worker reader is not in the build (nothing imports it but its type).
 
 ## Known issues
 
